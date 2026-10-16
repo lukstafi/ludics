@@ -181,7 +181,15 @@ export BASE_CALL_LOG="$TMP/base-calls"
 export SHIM_FW="$FW"   # the dispatcher copy, for the shim's mid-read conclusion below
 cat > "$TMP/dispatcher/ship-pr/scripts/pr-review.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$* grace=${SHIP_PR_BASE_ABSENT_GRACE:-unset} interval=${SHIP_PR_CHECKS_INTERVAL:-unset}" >> "$BASE_CALL_LOG"
+# The call is logged with --advisory-red's file spelled FILE: the gate stages a fresh one per read
+# (ludics-lite#651), and the exact call lines below pin everything else about it.
+logged="" prev="" advisory_file=""
+for arg in "$@"; do
+  if [ "$prev" = --advisory-red ]; then advisory_file="$arg"; arg=FILE; fi
+  logged="${logged:+$logged }$arg"
+  prev="$arg"
+done
+printf '%s\n' "$logged grace=${SHIP_PR_BASE_ABSENT_GRACE:-unset} interval=${SHIP_PR_CHECKS_INTERVAL:-unset}" >> "$BASE_CALL_LOG"
 # `prs` reads (SHIM_PRS names a fixture directory): the open-PR list, `rounds`, `checks` and the
 # head commit's date, each answered from a file there, or 3 (the API never answered) without one.
 # `rounds-N` holds the count, then optionally the trailer line to print instead of the real shape
@@ -244,6 +252,11 @@ case " $* " in *" --wait=$((SHIP_PR_BASE_ABSENT_GRACE + SHIP_PR_CHECKS_INTERVAL)
 # And it opts in to the interim verdict (ludics-lite#308): a launch through a merge burst is not
 # waiting for the tip's own run, so every gate read carries --interim.
 case " $* " in *" --interim "*) ;; *) exit 4 ;; esac
+# And it hands the checker a file for --advisory-red (ludics-lite#651), which a green fills: with
+# the jobs SHIM_BASE_ADVISORY_RED names (a JSON array, as the checker writes it), `[]` when it is
+# unset, and nothing at all when it is set empty (a green that never wrote the file).
+[ -n "$advisory_file" ] && [ -f "$advisory_file" ] || exit 4
+if [ "${SHIM_BASE_RC:-0}" = 0 ]; then printf '%s' "${SHIM_BASE_ADVISORY_RED-[]}" > "$advisory_file" || exit 3; fi
 # SHIM_BASE_TOUCH: a marker this read leaves behind, so a test can change the world between the
 # preflight and the launch's far side (the tmux shim's SHIM_TMUX_GENV_WHEN reads it).
 [ -z "${SHIM_BASE_TOUCH:-}" ] || touch "$SHIM_BASE_TOUCH"
@@ -848,13 +861,33 @@ mkdir -p "$TMP/lone-skills/ship-pr/scripts" && printf '#!/usr/bin/env bash\necho
 expect "...and from that checkout, not from a ship-pr beside the link" 0 "BASE GREEN" -- \
   "$TMP/lone-skills/issue-wave/scripts/fleet-worker.sh" gate --target-repo example/project --base-branch topic
 grep -q "DECOY" <<<"$out" && ko "the gate read the decoy checker beside the link: $out" || ok "...and the decoy was never read"
-grep -Fxq -- '--repo example/project base topic --wait=360 --interim grace=300 interval=60' "$BASE_CALL_LOG" && ok "explicit native branch passed to coordinator helper" || ko "native branch lost"
-grep -Fxq -- '--repo example/project base master --wait=360 --interim grace=300 interval=60' "$BASE_CALL_LOG" && ok "worktree base branch passed to coordinator helper" || ko "worktree base lost"
+grep -Fxq -- '--repo example/project base topic --wait=360 --interim --advisory-red FILE grace=300 interval=60' "$BASE_CALL_LOG" && ok "explicit native branch passed to coordinator helper" || ko "native branch lost"
+grep -Fxq -- '--repo example/project base master --wait=360 --interim --advisory-red FILE grace=300 interval=60' "$BASE_CALL_LOG" && ok "worktree base branch passed to coordinator helper" || ko "worktree base lost"
 # The value itself, and the relation behind it: 360 is 300 + 60, a whole round of margin over the
 # grace. `--wait=301` left a one-second margin that one round's API latency swallowed, so the gate
 # reached its ceiling and refused dispatch for a docs-only tip the next round would have settled
 # (ludics-lite#175); the checker now warns loudly about that band, and nothing here may spell it.
 grep -q -- '--wait=301 ' "$BASE_CALL_LOG" && ko "the hand-spelled 301 ceiling is back" || ok "no base read carries a ceiling inside the grace's own round"
+# A red only in jobs the repository's advisory file names (ludics-lite#651) is the checker's to
+# take out of the verdict under --advisory-red, and it hands the jobs back in the file at its
+# green: the gate admits and names each one. The checker's side -- which red is advisory-only,
+# and that a required red or an unreadable list keeps the red -- is pinned in
+# test-pr-review-base-red.sh; what is here is the gate reading the file, fail closed.
+adv_sha=0123456789abcdef0123456789abcdef01234567
+adv_row='{"workflow":"skill scripts","sha":"'"$adv_sha"'","run":"7","job":"bash 3.2 suites, a (macos)","conclusion":"failure"}'
+expect "an advisory-only red is admitted, each job named with its commit" 0 \
+  "ADVISORY-RED: 'bash 3.2 suites, a (macos)' at $adv_sha; launching" -- \
+  env SHIM_BASE_ADVISORY_RED="[$adv_row,${adv_row/a (macos)/b (macos)}]" "$FW" gate --target-repo example/project --base-branch topic
+grep -Fq "ADVISORY-RED: 'bash 3.2 suites, b (macos)' at $adv_sha; launching" <<<"$out" && ok "...one line per job" || ko "the second job was not named: $out"
+expect "a green with no advisory red names none" 0 "BASE GREEN" -- "$FW" gate --target-repo example/project --base-branch topic
+grep -q "ADVISORY-RED" <<<"$out" && ko "a plain green printed an advisory line: $out" || ok "...and prints no ADVISORY-RED line"
+for bad in '' '{}' '[{"job":"x"}]' '[{"job":"","sha":"'"$adv_sha"'"}]' 'not json'; do
+  expect "a green whose advisory-red file reads $(printf %q "$bad") refuses" 1 "without a readable advisory-red record" -- \
+    env SHIM_BASE_ADVISORY_RED="$bad" "$FW" gate --target-repo example/project --base-branch topic
+done
+expect "an advisory-only red launches through the CLI too" 0 "ADVISORY-RED: 'bash 3.2 suites, a (macos)' at $adv_sha; launching" -- \
+  env SHIM_BASE_ADVISORY_RED="[$adv_row]" "$FW" launch testbox advisory-red --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/advisory-red
+settle advisory-red
 original_base=$(git -C "$proj" rev-parse origin/master)
 later_base=$(git -C "$proj" commit-tree 'HEAD^{tree}' -p HEAD -m later)
 expect "new worktree uses confirmed SHA despite later ref movement" 0 "LAUNCHED testbox/pinned-base" -- env SHIM_MOVE_REF_AFTER_CONFIRM="$later_base" "$FW" launch testbox pinned-base --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/pinned-base
@@ -2108,7 +2141,7 @@ for spec in "int-a coordinator Example/Project pass true" "int-b coordinator exa
 done
 : > "$BASE_CALL_LOG"
 expect "the gate hands the checker its target's integration records" 0 "BASE GREEN" -- "$FW" gate --target-repo example/project
-grep -Fq -- '--repo example/project base --wait=360 --interim --integration-records ' "$BASE_CALL_LOG" && ok "...after the wait, as a file" || ko "no records file handed over: $(cat "$BASE_CALL_LOG")"
+grep -Fq -- '--repo example/project base --wait=360 --interim --advisory-red FILE --integration-records ' "$BASE_CALL_LOG" && ok "...after the wait, as a file" || ko "no records file handed over: $(cat "$BASE_CALL_LOG")"
 [ "$(grep -c '^records: ' "$BASE_CALL_LOG")" = 1 ] && grep -q "^records: $ran	pass	int-a	" "$BASE_CALL_LOG" && ok "...only the marked integration pass/fail for that repository" || ko "wrong records offered: $(cat "$BASE_CALL_LOG")"
 # (With no record for the target, the call carries no flag at all: the "base gate" section's
 # exact call lines above pin that, since its gates ran before any record existed.)

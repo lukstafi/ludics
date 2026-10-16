@@ -320,7 +320,91 @@ test_a_wait_that_runs_out_over_an_older_red_has_no_verdict() {
     "with the job that failed in it"
 }
 
+# --advisory-red (the fleet-worker gate's, ludics-lite#651): the repository's advisory list names
+# CHECKS, a workflow's red is a RUN, and the two meet in the run's jobs. This repository's own
+# list, as its default branch holds it, comments and all: the second ERE is the two macOS jobs.
+THIS_REPOS_ADVISORY_LIST='# The checks that are advisory on this repository.
+^(claude|Claude Code|github pages docs)$
+^bash 3\.2 suites, .* \(macos\)$
+'
+advisory_red_run() { # <jobs json>: ci red at the tip in run 3003, green under it, with those jobs
+  RUNS_1=$(runs_json 1 "$(jq -cn --arg c "$SHA_C" --arg a "$SHA_A" \
+    '[{conclusion:"failure", head_sha:$c, id:3003}, {conclusion:"success", head_sha:$a, id:3001}]')")
+  JOBS_3003=$(jobs_json "$1")
+  ADVISORY_LIST="$THIS_REPOS_ADVISORY_LIST"
+  ADVISORY_OUT="$TEST_ROOT/advisory-red.json"
+  : >"$ADVISORY_OUT"
+}
+
+# The red the wave-20261015 gate refused eight launches over: only a macOS job failed, and the
+# list says the macOS jobs carry no verdict. Under the flag it is out of the verdict, said on its
+# own line, and the job is in the file with the commit it failed at; without it, `base` is the
+# tip's truth as before.
+test_an_advisory_only_red_is_out_of_the_verdict_under_advisory_red() {
+  reset_fixture
+  advisory_red_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"failure"},
+                     {"name":"bash 3.2 suites, b (macos)","conclusion":"cancelled"},
+                     {"name":"fixtures (ubuntu)","conclusion":"success"},
+                     {"name":"classify the diff","conclusion":"skipped"}]'
+  run_base --advisory-red "$ADVISORY_OUT"
+  assert_eq "$BASE_RC" 0 "a red only in advisory jobs is green under --advisory-red ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "advisory-red  ci — failure at ${SHA_C:0:8}" "on a line of its own"
+  assert_contains "$BASE_OUTPUT" "only in advisory job(s): bash 3.2 suites, a (macos) (failure)" "naming the job"
+  assert_not_contains "$BASE_OUTPUT" "is RED" "and not headlined as red"
+  assert_eq "$(jq -c '[.[] | [.job, .sha, .run, .conclusion, .workflow]]' "$ADVISORY_OUT")" \
+    "[[\"bash 3.2 suites, a (macos)\",\"$SHA_C\",\"3003\",\"failure\",\"ci\"]]" "the file names the job and its commit"
+  assert_contains "$(cat "$REQUEST_LOG")" "contents/.github/ship-pr-advisory-checks" "the repository's own list was read"
+  # The control: the same base without the flag is red, and reads no advisory file.
+  reset_fixture
+  advisory_red_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"failure"},
+                     {"name":"fixtures (ubuntu)","conclusion":"success"}]'
+  run_base
+  assert_eq "$BASE_RC" 1 "without the flag the same red is the verdict"
+  assert_not_contains "$(cat "$REQUEST_LOG")" "ship-pr-advisory-checks" "and the advisory file is not read"
+}
+
+# The negative control: one advisory and one required job red in the same run. The run is red in a
+# job the list does not name, so the red stands -- with the reason -- and the file stays unwritten.
+test_a_required_red_beside_an_advisory_one_stays_red() {
+  reset_fixture
+  advisory_red_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"failure"},
+                     {"name":"fixtures (ubuntu)","conclusion":"failure"}]'
+  run_base --advisory-red "$ADVISORY_OUT"
+  assert_eq "$BASE_RC" 1 "a required job's red is the verdict ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "is RED" "headlined as red"
+  assert_contains "$BASE_OUTPUT" "not an advisory-only red: fixtures (ubuntu) (failure) is not advisory" "saying why"
+  assert_eq "$(wc -c <"$ADVISORY_OUT" | tr -d ' ')" 0 "and no green wrote the file"
+  # A required job that was stopped, not judged, is no pass either.
+  reset_fixture
+  advisory_red_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"failure"},
+                     {"name":"fixtures (ubuntu)","conclusion":"cancelled"}]'
+  run_base --advisory-red "$ADVISORY_OUT"
+  assert_eq "$BASE_RC" 1 "a cancelled required job keeps the red ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "fixtures (ubuntu) (cancelled) did not pass" "saying why"
+}
+
+# Fail closed: a list that cannot be read never reads as "everything advisory". A refused read
+# (403) and a file that is no list (no ERE line) both keep the red.
+test_an_unreadable_advisory_list_keeps_the_red() {
+  reset_fixture
+  advisory_red_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"failure"}]'
+  FAIL_ENDPOINT="repos/$REPO/contents/.github/ship-pr-advisory-checks"
+  FAIL_STATUS=403
+  run_base --advisory-red "$ADVISORY_OUT"
+  assert_eq "$BASE_RC" 1 "an unreadable list keeps the red ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "not an advisory-only red: the repository's advisory list could not be read" "saying why"
+  reset_fixture
+  advisory_red_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"failure"}]'
+  ADVISORY_LIST='# only comments'
+  run_base --advisory-red "$ADVISORY_OUT"
+  assert_eq "$BASE_RC" 1 "a list with no ERE keeps the red ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "holds no ERE line" "and the reader says what is wrong with it"
+}
+
 tests=(
+  test_an_advisory_only_red_is_out_of_the_verdict_under_advisory_red
+  test_a_required_red_beside_an_advisory_one_stays_red
+  test_an_unreadable_advisory_list_keeps_the_red
   test_red_names_the_failing_job_and_the_first_red_commit
   test_a_window_of_only_reds_does_not_name_a_first_red_commit
   test_a_red_streak_past_the_page_finds_its_floor_below_it

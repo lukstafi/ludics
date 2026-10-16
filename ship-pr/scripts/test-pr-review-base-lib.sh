@@ -133,6 +133,9 @@ COMMIT_META=""
 # workflow file answering 404 is really absent there.
 WORKFLOW_DIR=""
 TIP_PULLS=""
+# `.github/ship-pr-advisory-checks` as the Contents API serves it raw: what `--advisory-red` reads
+# for the jobs of a red run (ludics-lite#651).
+ADVISORY_LIST=""
 HEAD_PR=""
 HEAD_CHECKS=""
 HEAD_RUNS=""
@@ -291,6 +294,7 @@ reset_fixture() {
   COMMIT_META='{}'
   WORKFLOW_DIR='[{"type":"file","path":".github/workflows/ci.yml"}]'
   TIP_PULLS='[]'
+  ADVISORY_LIST=""
   HEAD_PR='{}'
   HEAD_CHECKS='{"check_runs":[]}'
   HEAD_RUNS='{"workflow_runs":[]}'
@@ -424,6 +428,8 @@ gh() {
     [ -z "$base" ] || eval "response=\"\${YAML_OF_$base:-}\""
     [ -n "$response" ] || response="$WORKFLOW_YAML"
     ;;
+  # The repository's advisory list, which only `--advisory-red` reads (ludics-lite#651), raw.
+  "repos/$REPO/contents/.github/ship-pr-advisory-checks") response="$ADVISORY_LIST" ;;
   "repos/$REPO/contents/"*) response="$WORKFLOW_YAML" ;;
   "repos/$REPO/compare/"*)
     # Oldest first, so each commit's first parent is the one before it and the first commit's is
