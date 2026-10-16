@@ -52,7 +52,11 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
    commit. On TUF that was a local master 1622 commits behind origin. The brief therefore requires
    these steps in the app's worktree before any edit: `git fetch origin`, a check of the verified
    base SHA, and `git switch -c <topic> <verified-sha>`. A SHA as the start point sets no upstream.
-   The pilot's `git checkout -B <branch> origin/master` made origin/master the upstream.
+   The pilot's `git checkout -B <branch> origin/master` made origin/master the upstream. A
+   replacement worker continues the existing topic branch instead. Its brief names the branch,
+   commits and PR, and it starts only after the old worker's worktree has been removed as in
+   [close-out](#intervention-and-close-out), which frees the branch. It then runs
+   `git fetch origin` and `git switch <topic>` in its own worktree.
 6. The result gives the `local_` session id and the `name`. `get_session` on that id reports
    `worktreePath`, `branch`, `permissionMode`, `isRemote` and `isRunning`. Record all of them.
    The brief names the coordinator's own `local_` id (`get_session "self"`). The worker's
@@ -123,10 +127,16 @@ explicit agreement for each session, so ask in a batch at close-out, or before a
 needs the old writer stopped.
 
 Archiving left the worktree and the app's branch on the box. The app's `clean_up_worktrees`
-does not work over SSH. After the hand-back, the merge, the archive and a check that no process
-or reservation still uses the checkout, remove both with git on the box:
-`git -C <checkout> worktree remove <worktreePath>`, then delete the app's branch and the topic
-branch. That is the cleanup in [native-workers.md](native-workers.md#close-out-and-bounded-smoke).
+does not work over SSH. Clean up only after the hand-back, the merge, the archive, and a check
+that no process or reservation still uses the checkout. Run the cleanup in
+[native-workers.md](native-workers.md#close-out-and-bounded-smoke) on the box:
+
+1. Archive unique experiment inputs and instrumentation.
+2. Run ship-pr's `post-merge-cleanup.sh <checkout> <worktreePath> <topic> --base <base>`, with
+   the project's `--regenerable` directories. It refuses other ignored local data rather than
+   deleting it.
+3. Delete the app's own `claude/<random>` branch with `git branch -D`. Once the worker has
+   switched to its topic branch, no worktree has the app's branch checked out.
 Collect the hand-back with `list_events` and consolidate it as SKILL.md's *Close out* requires.
 
 The pilot made no PR, so nobody has seen which session a worker's PR binds to.
