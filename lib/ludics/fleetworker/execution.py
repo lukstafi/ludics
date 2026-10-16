@@ -1,6 +1,7 @@
 """``execution``: the anchor's execution registry, and the conclusions read off a run on its box
 (fleet-worker.sh's ``cmd_execution``, ``execution_listing``, ``execution_host_of``,
-``conclude_from_run``, ``conclude_from_bg_run``, ``endpoint_map``, ``execution_refresh``).
+``conclude_from_run``, ``conclude_from_bg_run``, ``endpoint_map``, ``execution_refresh``), and
+``conclude --standing-handback``, a standing reservation's conclusion at its worker's hand-back.
 
 The registry itself is ``ludics.fleetworker.registry``: its SOURCE travels to the anchor and runs
 there from stdin under a Python >= 3.12 the far side finds (``FIND_PYTHON``), inside the lease
@@ -10,13 +11,14 @@ lock for every action but ``list``; its argv is ``root action coordinator token 
 ``execution slot`` and ``execution hold`` take no registry lock and run on THIS box: they are
 ``ludics.fleetworker.slot``.
 
-The far sides of ``conclude --from-run`` and ``--from-bg-run`` stay the shell's, verbatim: they
-run on the box that holds the run, and read its record with the tools that wrote it.
+The far sides of ``conclude --from-run``, ``--from-bg-run`` and ``--standing-handback`` stay the
+shell's, verbatim: they run on the box that holds the run, and read its record with the tools that
+wrote it.
 
 Every commit a payload names is checked before the anchor is asked (ludics-lite#561): what is read,
 where, and the outcomes are ``ludics.fleetworker.revision``'s header.
 
-THE CO-TENANT EVIDENCE (ludics-lite#566): a conclusion of a MEASUREMENT, in any of its three forms,
+THE CO-TENANT EVIDENCE (ludics-lite#566): a conclusion of a MEASUREMENT, in any of its forms,
 gets a summary of the GPU co-tenant record its ``execution hold --request`` left on the execution
 host (``cotenants.py``) appended to its evidence, read there by ``GPU_RECORD``. Nothing else is read,
 and a ``not-launched`` conclusion, which describes no run, reads nothing.
@@ -201,6 +203,50 @@ printf 'status=rc\nrc=%s\nsentinel=%s\n' "$code" "$sentinel"
 """
 
 
+# Far side of `conclude --standing-handback --from-run` (ludics-lite#605 item 3), on the execution
+# host: FROM_RUN's reading of a finished test-run.sh record, with what FROM_RUN refuses for being no
+# evidence of ONE commit reported instead -- the worktree gone, the launch-time `head` not the
+# observed one, a nonempty `dirty`. Still refused: no verdict yet (no directory, a missing record
+# file, an exit that is no status, a run still going) and a malformed head/dirty pair. With the
+# worktree gone the runner cannot be asked, so the supervisor pid is the check, as with no runner.
+# Args: run-dir, the observed checkout, its HEAD. Prints `exit=`, `wt=`, `gone=`, `record=`,
+# `head=`, `dirty=`, `rel=` lines, or one FROM-RUN REFUSED line. `rel` places the launch head
+# against the observed HEAD, read in the observed checkout: same, ancestor, or outside.
+FROM_RUN_STANDING = r"""dir="$1" co="$2" ohead="$3"
+refuse() { echo "FROM-RUN REFUSED: $*"; exit 1; }
+[ -d "$dir" ] || refuse "no run directory $dir on $BOX"
+for f in exit log wt cmd; do
+  [ -f "$dir/$f" ] || refuse "$dir has no $f (the run is unfinished, died without a verdict, or is not a test-run.sh record)"
+done
+code=$(head -n1 "$dir/exit"); case "$code" in ''|*[!0-9]*) refuse "$dir/exit holds '$code', not a status" ;; esac
+wt=$(head -n1 "$dir/wt"); gone=1; [ -d "$wt" ] && gone=0
+if [ "$gone" = 0 ] && [ -x "$wt/tools/test-run.sh" ]; then
+  (cd "$wt" && tools/test-run.sh status "$dir" >/dev/null 2>&1); st=$?
+  [ "$st" -eq 0 ] || refuse "tools/test-run.sh status $dir exit $st: not a finished run"
+elif [ -s "$dir/pid" ] && kill -0 "$(head -n1 "$dir/pid")" 2>/dev/null; then
+  refuse "supervisor pid $(head -n1 "$dir/pid") of $dir is still alive"
+fi
+rhead= n=0 rel=
+if [ -e "$dir/head" ] && [ -e "$dir/dirty" ]; then
+  [ -f "$dir/head" ] && [ -f "$dir/dirty" ] || refuse "$dir/head or $dir/dirty is not a regular file: a malformed record"
+  rhead=$(cat "$dir/head")
+  case "$rhead" in ''|*[!0-9a-f]*) refuse "$dir/head holds '$rhead', not one commit ID: a malformed record" ;; esac
+  [ -s "$dir/dirty" ] && n=$(grep -c '' "$dir/dirty")
+  if [ "$rhead" = "$ohead" ]; then rel=same
+  elif git -C "$co" merge-base --is-ancestor "$rhead" "$ohead" 2>/dev/null; then rel=ancestor
+  else rel=outside; fi
+  record=launch
+elif [ -e "$dir/head" ]; then
+  refuse "$dir has a head but no dirty: a malformed record (test-run.sh writes dirty first, so both or neither)"
+elif [ -e "$dir/dirty" ]; then
+  refuse "$dir has a dirty but no head: a malformed record (test-run.sh writes head after dirty, so both or neither)"
+else
+  record=none
+fi
+printf 'exit=%s\nwt=%s\ngone=%s\nrecord=%s\nhead=%s\ndirty=%s\nrel=%s\n' "$code" "$wt" "$gone" "$record" "$rhead" "$n" "$rel"
+"""
+
+
 # Far side of `--observed-from <checkout>`, on the execution host: the checkout's HEAD, the commit a
 # conclusion records instead of a SHA copied by hand (ludics-lite#561). Arg: the checkout. Prints one
 # `head=` line, or one OBSERVED-FROM REFUSED line.
@@ -381,6 +427,54 @@ def conclude_from_bg_run(
             }
         )
     )
+
+
+HANDBACK_VERDICTS = ("pass", "fail", "timeout", "cancelled")  # not-launched names no run, so no observed_sha
+REL = {
+    "same": ", observed_sha itself",
+    "ancestor": ", an ancestor of observed_sha",
+    "outside": ", which is not in observed_sha's history (rewritten by a rebase, or never pushed)",
+}
+
+
+def standing_run_clause(facts: str, run_dir: str, host: str) -> tuple[str, str] | Refusal:
+    """A standing hand-back's run record, read by FROM_RUN_STANDING: its verdict, and the evidence
+    clause that records what FROM_RUN would have refused it for."""
+    code, wt, gone = facts_of(facts, "exit"), facts_of(facts, "wt"), facts_of(facts, "gone")
+    record, rhead, dirty, rel = (facts_of(facts, key) for key in ("record", "head", "dirty", "rel"))
+    shaped = record == "none" or (
+        record == "launch" and re.fullmatch(r"[0-9a-f]+", rhead) and dirty.isdecimal() and rel in REL
+    )
+    if not (code.isdecimal() and code.isascii() and wt and gone in ("0", "1") and shaped):
+        return Refusal(f"FROM-RUN REFUSED: unreadable record facts from {host}: {facts}", 1)
+    verdict = run_verdict(code, timeout_codes=("142",))
+    clause = f"last batch: test-run.sh record {run_dir} on {host}, exit {code} ({verdict})"
+    if record == "launch":
+        clause += f", launched at {rhead}{REL[rel]}"
+        clause += f" over {dirty} uncommitted path(s) its dirty lists" if dirty != "0" else " on a clean tree"
+    else:
+        clause += ", its record naming no launch revision (no head or dirty)"
+    if gone == "1":
+        clause += f"; its recorded worktree {wt} is gone"
+    return verdict, clause
+
+
+def standing_handback(
+    request: str, host: str, checkout: str, head: str, evidence: str, verdict: str, run: tuple[str, str] | None
+) -> str:
+    """The payload of ``conclude --standing-handback``: ``run`` is the record's directory and
+    evidence clause, or None when the hand-back's own verdict stands alone."""
+    evidence += f"; standing hand-back, observed_sha read as HEAD of {checkout} on {host}"
+    if run is None:
+        handle, log = f"standing-handback:{request}", "none: no run record named (the evidence is the hand-back's)"
+        evidence += f"; verdict {verdict} as the worker's hand-back reports it, no run record named"
+    else:
+        run_dir, clause = run
+        handle, log = "test-run:" + basename(run_dir), run_dir + "/log"
+        evidence += "; " + clause
+    data = {"request_id": request, "evidence": evidence, "observed_sha": head, "remote_checkout": checkout,
+            "handle": handle, "log": log, "verdict": verdict, "execution_host": host}  # fmt: skip
+    return compact(data)
 
 
 def observed_head(cfg: Config, box: str, checkout: str) -> str | Refusal:
@@ -598,7 +692,8 @@ LIST_USAGE = "execution list: expected --active, --compact or --host <box>"
 USAGE = (
     "execution: list, slot -- <command>, hold -- <command>, leg --request <id> ... -- <runner>,"
     " run|reserve|dispatch|record|reconcile|conclude <json-file>, window <box> <json-file>,"
-    " conclude --from-run|--from-bg-run <run-dir> --request <id>, or tip-run <json-file> --checkout <dir> -- <command>"
+    " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
+    " or tip-run <json-file> --checkout <dir> -- <command>"
 )
 CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"
 
@@ -917,6 +1012,82 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
     )
 
 
+HANDBACK_USAGE = (
+    "execution conclude --standing-handback --request <id> --observed-from <checkout> --evidence <text>"
+    " [--from-run <run-dir>] [--verdict pass|fail|timeout|cancelled]"
+)
+PLAIN_FORMS = (
+    "conclude --from-run <run-dir> --request <id> --sha <sha>, conclude --from-bg-run <run-dir> --request <id>"
+    " --sha <sha>|--observed-from <checkout>, or conclude <json-file> [--observed-from <checkout>]"
+)
+
+
+def standing_handback_payload(cfg: Config, args: list[str]) -> str:
+    """``conclude --standing-handback`` (ludics-lite#605 item 3): a standing reservation concluded at
+    its worker's hand-back. A standing record is the ownership record of a worker's whole life, not
+    a verdict source, so its last batch's record is evidence, with whatever makes it no evidence for
+    one commit (FROM_RUN's refusals: a dirty tree, a launch head that is not observed_sha, the
+    worktree gone) recorded rather than refused. observed_sha is read off --observed-from and checked
+    on GitHub as any conclusion's is; it is not bound to requested_revision (#634 keeps standing
+    records exempt). The verdict is the run record's with --from-run, else --verdict, never a default;
+    both given must agree."""
+    values = flag_values(
+        args[2:], ("--request", "--observed-from", "--evidence", "--from-run", "--verdict"), HANDBACK_USAGE
+    )
+    request, observed_from = values.get("--request", ""), values.get("--observed-from", "")
+    evidence, run_dir, verdict = values.get("--evidence", ""), values.get("--from-run", ""), values.get("--verdict", "")
+    for name, value in (("--request <id>", request), ("--observed-from <checkout>", observed_from),
+                        ("--evidence <text>", evidence)):  # fmt: skip
+        if not value.strip():
+            die(f"execution conclude --standing-handback: {name} required ({HANDBACK_USAGE})")
+    checkout_arg(observed_from, " --standing-handback")
+    if run_dir and not run_dir.startswith("/"):
+        die("execution conclude --standing-handback: --from-run <run-dir> must be absolute (it is read on the execution host)")
+    if verdict and verdict not in HANDBACK_VERDICTS:
+        die(f"execution conclude --standing-handback: --verdict must be one of {'|'.join(HANDBACK_VERDICTS)}, not {verdict!r}")
+    if not (run_dir or verdict):
+        die(
+            "execution conclude --standing-handback: --verdict pass|fail|timeout|cancelled required without"
+            " --from-run (the worker's hand-back says which; there is no default)"
+        )
+    check_identity(cfg)
+    record = record_to_check(cfg, request)
+    if record is None:
+        cli.say(f"EXECUTION REFUSED: unknown request_id {request}; nothing concluded")
+        raise cli.Exit(1)
+    if field(record, "request", "standing") is not True:
+        cli.say(
+            f"EXECUTION REFUSED: {request} is not a standing reservation (its request has no \"standing\": true),"
+            f" so a hand-back does not conclude it; use {PLAIN_FORMS}; nothing concluded"
+        )
+        raise cli.Exit(1)
+    host = jq_text(field(record, "request", "execution_host"))
+    head = observed_sha_of(cfg, record, host, observed_from)
+    if isinstance(head, Refusal):
+        return concluded(head)
+    if record.get("state") != "concluded":
+        fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "observed_sha", head, gh_timeout(cfg)))
+    run: tuple[str, str] | None = None
+    if run_dir:
+        done = run_on(cfg, host, prelude(cfg, host) + FROM_RUN_STANDING, [run_dir, observed_from, head], capture=True)
+        if done.unreachable:
+            return concluded(Refusal(f"FROM-RUN UNREACHABLE {host}: nothing concluded", 4))
+        facts = substitution(done.out)
+        if done.rc != 0:
+            return concluded(Refusal(facts, 1))
+        read = standing_run_clause(facts, run_dir, host)
+        if isinstance(read, Refusal):
+            return concluded(read)
+        if verdict and verdict != read[0]:
+            cli.say(
+                f"EXECUTION REFUSED: --verdict {verdict}, but {run_dir} reads {read[0]} ({read[1]});"
+                " give one of them; nothing concluded"
+            )
+            raise cli.Exit(1)
+        verdict, run = read[0], (run_dir, read[1])
+    return standing_handback(request, host, observed_from, head, evidence, verdict, run)
+
+
 def concluded(conclusion: Conclusion) -> str:
     match conclusion:
         case Payload():
@@ -1009,6 +1180,8 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
                 payload = from_run_payload(cfg, args)
             elif mode == "--from-bg-run":
                 payload = from_bg_run_payload(cfg, args)
+            elif mode == "--standing-handback":
+                payload = standing_handback_payload(cfg, args)
             else:
                 payload = conclude_payload(cfg, args)
             payload = with_gpu_record(cfg, payload)

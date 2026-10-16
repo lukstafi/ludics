@@ -48,6 +48,7 @@ SECTIONS=(
   "execution conclude --from-bg-run"
   "execution tip-run"
   "execution revisions resolve"
+  "execution conclude --standing-handback"
   "execution leg"
   "prs (the supervision read)"
   "refresh (execution-only boxes)"
@@ -2480,6 +2481,88 @@ expect "a malformed head-of is refused at reserve" 1 "is not head-of:<one branch
 expect "head-of:HEAD names no branch, refused at reserve" 1 "is not head-of:<one branch name>" -- \
   "${FWR[@]}" execution reserve "$(rv_req rv-head6 'head-of:HEAD')"
 unset SHIM_GH_HEADS
+}
+
+section "execution conclude --standing-handback" && {
+need_lease
+# ludics-lite#605 item 3: a standing reservation is concluded at its worker's hand-back. Its last
+# batch ran over uncommitted edits, or at a local commit later rebased away, or in a worktree since
+# removed: `--from-run` rightly refuses each as evidence for one commit, so the coordinator wrote
+# JSON by hand. The standing form records each in the evidence, reads observed_sha off the
+# checkout, takes the verdict from the record or the hand-back (never a default), and refuses a
+# request that is not standing.
+FWH=(env FLEET_BOXES="testbox other" "$FW")
+hwt="$TMP/handback wt"; git clone -q "$TMP/proj.git" "$hwt" && mkdir -p "$hwt/tools"
+cat > "$hwt/tools/test-run.sh" <<'RUNNER'
+#!/usr/bin/env bash
+[ "$1" = status ] || exit 2
+exit "${SHIM_RUN_STATUS:-0}"
+RUNNER
+chmod +x "$hwt/tools/test-run.sh"
+hbase=$(git -C "$hwt" rev-parse HEAD)
+git -C "$hwt" commit -q --allow-empty -m "the pushed head"
+hhead=$(git -C "$hwt" rev-parse HEAD)
+hruns="$TMP/handback runs"
+hrun() { # <name> <exit or -> <launch head or -> <dirty lines or -> [worktree] -> a test-run.sh record
+  local d="$hruns/$1"; mkdir -p "$d"; printf 'build @scans\n' > "$d/cmd"; printf '%s\n' "${5:-$hwt}" > "$d/wt"
+  printf 'exit: %s\n' "$2" > "$d/log"; [ "$2" = - ] || printf '%s\n' "$2" > "$d/exit"
+  [ "$3" = - ] || { printf '%s\n' "$3" > "$d/head"; printf '%s' "${4#-}" > "$d/dirty"; }
+}
+hreq() { # <id> [standing: true|false] -> a reservation payload file, requested at the base (#634)
+  jq -n --arg id "$1" --arg rev "$hbase" --argjson standing "${2:-true}" '{request_id:$id, wave:"w", worker:$id, transport:"subagent",
+    issue:"o/r#605", purpose:"standing fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
+    requested_revision:$rev, kind:"correctness"} + (if $standing then {standing:true} else {} end)' > "$TMP/$1.json"
+  "${FWH[@]}" execution run "$TMP/$1.json" >/dev/null 2>&1 || ko "could not reserve $1 (setup)"
+}
+hb() { local id="$1"; shift; "${FWH[@]}" execution conclude --standing-handback --request "$id" --observed-from "$hwt" "$@"; }
+hstate() { "$FW" execution list | jq -r --arg id "$1" '[.[] | select(.request_id == $id) | .state] | join(",")'; }
+hrun dirty 0 "$hbase" $' M lib/a.ml\n?? test/new_test.ml\n'; hrun rewritten 0 "$(printf 'd%.0s' $(seq 40))" ""
+hrun gone 1 - - "$TMP/handback removed wt"; hrun unfinished - - -
+hreq hb-usage
+expect "the standing form needs the request" 2 "--request <id> required" -- "${FWH[@]}" execution conclude --standing-handback --observed-from "$hwt" --evidence x --verdict pass
+expect "...the checkout observed_sha is read off" 2 "--observed-from <checkout> required" -- "${FWH[@]}" execution conclude --standing-handback --request hb-usage --evidence x --verdict pass
+expect "...an absolute one" 2 "must be absolute" -- hb hb-usage --observed-from "handback wt" --evidence x --verdict pass
+expect "...the hand-back's evidence" 2 "--evidence <text> required" -- hb hb-usage --verdict pass
+expect "...and a verdict when no run is named: there is no default" 2 "--verdict pass|fail|timeout|cancelled required without --from-run" -- hb hb-usage --evidence "all green"
+expect "...a verdict of the registry's vocabulary that names a run" 2 "--verdict must be one of pass|fail|timeout|cancelled, not 'not-launched'" -- hb hb-usage --evidence x --verdict not-launched
+expect "...an absolute run directory" 2 "--from-run <run-dir> must be absolute" -- hb hb-usage --evidence x --from-run runs/x
+expect "...and no stray flag" 2 "conclude --standing-handback --request <id>" -- hb hb-usage --evidence x --verdict pass --sha "$hhead"
+hreq hb-plain false
+expect "a request that is not standing is refused, naming the plain forms" 1 "hb-plain is not a standing reservation .*use conclude --from-run <run-dir>" -- hb hb-plain --evidence x --verdict pass
+[ "$(hstate hb-plain)" = launching ] && ok "...and left dispatched" || ko "the refusal changed hb-plain: $(hstate hb-plain)"
+fixture_done hb-plain
+expect "an unknown request is refused" 1 "unknown request_id hb-none" -- hb hb-none --evidence x --verdict pass
+expect "an unfinished run is still refused: no verdict to read" 1 "FROM-RUN REFUSED: .*has no exit" -- hb hb-usage --evidence x --from-run "$hruns/unfinished"
+expect "...as is a run its runner says is still going" 1 "not a finished run" -- env SHIM_RUN_STATUS=3 "${FWH[@]}" execution conclude --standing-handback --request hb-usage --observed-from "$hwt" --evidence x --from-run "$hruns/dirty"
+expect "a --verdict the run record contradicts is refused" 1 "--verdict fail, but $hruns/dirty reads pass .*give one of them" -- hb hb-usage --evidence x --from-run "$hruns/dirty" --verdict fail
+expect "an observed HEAD GitHub does not have in the repository is refused" 1 "observed_sha $hhead is no commit of o/r" -- \
+  env SHIM_GH_NO_COMMIT="$hhead" "${FWH[@]}" execution conclude --standing-handback --request hb-usage --observed-from "$hwt" --evidence x --verdict pass
+[ "$(hstate hb-usage)" = launching ] && ok "every refusal left the standing record dispatched" || ko "a refusal changed hb-usage: $(hstate hb-usage)"
+fixture_done hb-usage
+# The three cases --from-run refuses, each concluded with what made it no evidence for one commit.
+hreq hb-dirty
+expect "a last batch over uncommitted edits at an earlier commit concludes with its verdict, requested at the base, observed at the head" 0 '"verdict": "pass"' -- \
+  hb hb-dirty --evidence "all batches green" --from-run "$hruns/dirty"
+for want in "\"observed_sha\": \"$hhead\"" "\"remote_checkout\": \"$hwt\"" "\"handle\": \"test-run:dirty\"" "\"log\": \"$hruns/dirty/log\"" \
+    "all batches green; standing hand-back, observed_sha read as HEAD of $hwt on testbox" \
+    "exit 0 (pass), launched at $hbase, an ancestor of observed_sha over 2 uncommitted path(s) its dirty lists"; do
+  grep -Fq -- "$want" <<<"$out" && ok "...recorded $want" || ko "missing $want in $out"
+done
+hreq hb-rewritten
+expect "a last batch at a commit since rewritten concludes, saying so" 0 "launched at $(printf 'd%.0s' $(seq 40)), which is not in observed_sha's history (rewritten by a rebase, or never pushed) on a clean tree" -- \
+  hb hb-rewritten --evidence "green" --from-run "$hruns/rewritten"
+hreq hb-gone
+expect "a last batch whose worktree is gone concludes with its red verdict, saying so" 0 "its recorded worktree $TMP/handback removed wt is gone" -- \
+  hb hb-gone --evidence "one batch red" --from-run "$hruns/gone"
+grep -Fq '"verdict": "fail"' <<<"$out" && ok "...as fail" || ko "exit 1 did not read as fail: $out"
+hreq hb-verdict
+expect "with no run named, the hand-back's own verdict concludes it" 0 "verdict fail as the worker's hand-back reports it, no run record named" -- \
+  hb hb-verdict --evidence "the scans batch stayed red" --verdict fail
+grep -Fq '"handle": "standing-handback:hb-verdict"' <<<"$out" && grep -Fq '"verdict": "fail"' <<<"$out" && ok "...as fail, its handle naming the hand-back" || ko "no-run conclusion: $out"
+# The answer lost, the retry comes after the worker moved its checkout on: the recorded SHA stands.
+git -C "$hwt" commit -q --allow-empty -m "moved on"
+expect "...and a retry once the checkout has moved on is the registry's harmless retry" 0 "\"observed_sha\": \"$hhead\"" -- \
+  env SHIM_GH=down "${FWH[@]}" execution conclude --standing-handback --request hb-verdict --observed-from "$hwt" --evidence "the scans batch stayed red" --verdict fail
 }
 
 section "execution leg" && {
