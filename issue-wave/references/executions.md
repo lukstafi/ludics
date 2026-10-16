@@ -638,9 +638,25 @@ coordinator takes one `kind: correctness` reservation per worker at launch (`exe
 request id `<wave>-<issue>-<host>-iterate`, `"standing": true`, purpose naming the bounded
 aliases and `-j` width) and names it in the brief; the worker then runs those batches through
 the project runner without asking, blocks on each inside its turn, and reports every run
-directory. The reservation is concluded at hand-back with `conclude --from-run` on the last
-batch's record, or, with none to read, a JSON conclusion with `--observed-from <the worker's
-worktree>` rather than a SHA copied from the report. Measurement, one-off cross-box legs and full suites still go through a request.
+directory. Measurement, one-off cross-box legs and full suites still go through a request.
+
+The reservation is concluded once, at hand-back, in the standing form:
+
+```
+fleet-worker.sh execution conclude --standing-handback --request <id> --observed-from <the worker's worktree> \
+  --evidence <the hand-back's words> [--from-run <the last batch's run dir>] [--verdict pass|fail|timeout|cancelled]
+```
+
+`observed_sha` is that checkout's HEAD, read on the execution host and checked on GitHub like any
+conclusion's (so conclude after the push), never a SHA copied from the report, and it is not bound
+to `requested_revision` (standing records are exempt, #634). With `--from-run` the verdict is the
+record's exit, and what plain `conclude --from-run` refuses the record for goes into the evidence
+instead: a nonempty `dirty`, a launch `head` that is not `observed_sha` (an ancestor of it, or
+outside its history: rewritten or never pushed), a recorded worktree that is gone. An unfinished
+run or a malformed record is still refused. Without a run the verdict is `--verdict`, the
+hand-back's own, with no default; beside `--from-run` it must agree. A standing record is the
+worker's ownership record, not a verdict source, so only a `"standing": true` request takes this
+form, and any other is refused, naming the plain ones (#605).
 
 `"standing": true` is what exempts the record from the box's slot count, and it is explicit
 rather than read off the `-iterate` id convention: a mistyped id must not silently escape the
@@ -695,10 +711,11 @@ the run. A GPU batch passes no `-j` (above), so the box's GPU tokens (rog-nv-lin
 bound it however many standing records the box holds. A batch that can outlast the tool cap runs
 the leg under `bg-run.sh spawn` on the agent host, and blocks there with `bg-run.sh wait <dir>`.
 
-Each standing reservation is concluded at hand-back from its own box's last batch: its runner
-record with `--from-run` (read on the reservation's execution host), or the leg's `bg-run.sh`
-directory with `--from-bg-run --box <agent host>`, or, with none to read, a JSON conclusion with `--observed-from
-<the far-side checkout>`. The coordinator records the far-side checkout on the board and removes
+Each standing reservation is concluded at hand-back from its own box's last batch, with
+`--observed-from <the far-side checkout>`: its runner record in the [standing
+form](#standing-iteration-reservation) (`--from-run`, read on the reservation's execution host, or
+no run and the hand-back's `--verdict`), or the leg's `bg-run.sh` directory with `--from-bg-run
+--box <agent host>`. The coordinator records the far-side checkout on the board and removes
 it at close-out with the worker's local one, once that conclusion has landed. A measurement
 there, and a one-off leg on a box the plan names no iteration for, still go through a request.
 

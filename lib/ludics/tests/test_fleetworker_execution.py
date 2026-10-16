@@ -101,6 +101,77 @@ class Conclusions(unittest.TestCase):
             self.assertIsNone(records_of(text), text)
 
 
+class StandingHandback(unittest.TestCase):
+    """``conclude --standing-handback`` (#605 item 3): FROM_RUN's refusals become evidence."""
+
+    RUN = "/runs/20261016T101010Z-1"
+
+    @staticmethod
+    def facts(**over: str) -> str:
+        base = {"exit": "0", "wt": "/w t", "gone": "0", "record": "launch", "head": "b" * 40, "dirty": "0", "rel": "same"}
+        base.update(over)
+        return "\n".join(f"{k}={v}" for k, v in base.items())
+
+    def clause(self, **over: str) -> tuple[str, str]:
+        read = execution.standing_run_clause(self.facts(**over), self.RUN, "testbox")
+        assert not isinstance(read, Refusal), read
+        return read
+
+    def test_the_verdict_is_the_records_exit(self) -> None:
+        for code, want in (("0", "pass"), ("1", "fail"), ("142", "timeout"), ("143", "cancelled")):
+            self.assertEqual(self.clause(exit=code)[0], want, code)
+
+    def test_a_clean_run_at_observed_sha_says_so(self) -> None:
+        self.assertEqual(self.clause()[1], f"last batch: test-run.sh record {self.RUN} on testbox, exit 0 (pass),"
+                         f" launched at {'b' * 40}, observed_sha itself on a clean tree")
+
+    def test_what_from_run_refuses_is_recorded(self) -> None:
+        _, text = self.clause(dirty="3", rel="outside", gone="1")
+        self.assertIn("over 3 uncommitted path(s) its dirty lists", text)
+        self.assertIn("not in observed_sha's history (rewritten by a rebase, or never pushed)", text)
+        self.assertIn("its recorded worktree /w t is gone", text)
+        self.assertIn("an ancestor of observed_sha", self.clause(rel="ancestor")[1])
+
+    def test_a_record_naming_no_revision_says_so(self) -> None:
+        _, text = self.clause(record="none", head="", dirty="0", rel="")
+        self.assertIn("its record naming no launch revision", text)
+
+    def test_unreadable_facts_are_refused(self) -> None:
+        for over in ({"exit": ""}, {"exit": "x"}, {"gone": "2"}, {"record": "odd"}, {"rel": "near"}, {"dirty": "-1"}, {"wt": ""},
+                     {"head": "b" * 39}, {"head": "b" * 41}, {"head": "B" * 40}):
+            read = execution.standing_run_clause(self.facts(**over), self.RUN, "testbox")
+            self.assertIsInstance(read, Refusal, over)
+
+    def test_the_payload_without_a_run_carries_the_hand_backs_verdict(self) -> None:
+        data = json.loads(execution.standing_handback("r-iterate", "testbox", "/w t", SHA, "all green", "fail", None))
+        self.assertEqual((data["verdict"], data["observed_sha"], data["remote_checkout"], data["execution_host"]),
+                         ("fail", SHA, "/w t", "testbox"))
+        self.assertEqual(data["handle"], "standing-handback:r-iterate")
+        self.assertTrue(data["log"])
+        self.assertEqual(data["evidence"], "all green; standing hand-back, observed_sha read as HEAD of /w t on testbox;"
+                         " verdict fail as the worker's hand-back reports it, no run record named")
+
+    def test_the_payload_with_a_run_names_its_record(self) -> None:
+        verdict, text = self.clause()
+        data = json.loads(execution.standing_handback("r", "testbox", "/w t", SHA, "ok", verdict, (self.RUN, text)))
+        self.assertEqual((data["handle"], data["log"]), ("test-run:20261016T101010Z-1", self.RUN + "/log"))
+        self.assertTrue(data["evidence"].endswith("; " + text))
+
+    def test_a_retry_reuses_the_recorded_conclusion_however_the_box_changed(self) -> None:
+        verdict, text = self.clause()
+        landed: dict[str, Any] = json.loads(execution.standing_handback("r", "testbox", "/w t", SHA, "ok", verdict, (self.RUN, text)))
+        del landed["execution_host"]  # the registry checks it and records the rest
+        rec = {"state": "concluded", "history": [{"action": "conclude", "data": landed}]}
+        again = execution.recorded_handback(rec, "r", "/w t", "testbox", "ok", self.RUN, "")
+        self.assertEqual(json.loads(again or "{}"), landed)
+        self.assertIsNotNone(execution.recorded_handback(rec, "r", "/w t", "testbox", "ok", self.RUN, "pass"))
+        for call in (("r", "/w t", "testbox", "other words", self.RUN, ""), ("r", "/w t", "testbox", "ok", "/runs/other", ""),
+                     ("r", "/w u", "testbox", "ok", self.RUN, ""), ("r", "/w t", "testbox", "ok", self.RUN, "fail"),
+                     ("r", "/w t", "testbox", "ok", "", "pass")):
+            self.assertIsNone(execution.recorded_handback(rec, *call), call)
+        self.assertIsNone(execution.recorded_handback({**rec, "state": "running"}, "r", "/w t", "testbox", "ok", self.RUN, ""))
+
+
 class Revisions(unittest.TestCase):
     """ludics-lite#561: a commit a payload names must exist in the request's repository on GitHub.
     No commit (422) and no repository (404) refuse (1); anything else is UNVERIFIED (4)."""

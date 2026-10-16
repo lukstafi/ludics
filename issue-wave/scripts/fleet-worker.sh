@@ -148,6 +148,12 @@
 #   fleet-worker.sh execution conclude --from-bg-run <run-dir> --request <id> --sha <sha>
 #                          | --observed-from <checkout> [--box <box>] [--checkout <text>] [--evidence <text>]   # verdict and log
 #                          # read from a bg-run.sh directory (the mapping: lib/ludics/fleetworker/execution.py)
+#   fleet-worker.sh execution conclude --standing-handback --request <id> --observed-from <checkout>
+#                          --evidence <text> [--from-run <run-dir>] [--verdict pass|fail|timeout|cancelled]
+#                          # a "standing": true reservation only, at its worker's hand-back: observed_sha
+#                          # read off the checkout; the verdict the run record's, else --verdict (no
+#                          # default); the record's dirty list, launch head and gone worktree go into
+#                          # the evidence, not a refusal (executions.md, Standing iteration reservation)
 #   fleet-worker.sh execution tip-run <json-file> --checkout <dir> [--runs <dir>] [--cpu] -- <command...>
 #                          # one integration-loop run (ludics-lite#615): yield to anything outstanding
 #                          # on the box but standing reservations, `execution run` the request (its
