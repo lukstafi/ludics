@@ -325,6 +325,11 @@ a worker-box transport failure. Unknown, no verdict and a missing checker never 
 The helper runs with its default advisory policy, source-only test mode and API/check polling
 bounds: the coordinator's repository-specific `SHIP_PR_ADVISORY_CHECKS` and those overrides are
 cleared for the read, while connection/authentication and state paths stay the coordinator's.
+A red only in jobs the repository's own `.github/ship-pr-advisory-checks` names (the file
+`checks` and `merge` read) is decided by that file: the gate passes `--advisory-red`, and a
+workflow whose red run failed only in those jobs, with every other job passed, is no red; the
+gate admits and prints `ADVISORY-RED: <job> at <sha>; launching` per job. A red in any other
+job, or a list or jobs read that fails, still refuses (ludics-lite#651).
 Which branch is checked: for a new worktree, `origin/<branch>`, with `--base-branch` for any
 other base; for `--cwd` and for native dispatch, the repository default branch unless
 `--base-branch` names the intended base. The coordinator names the repository and base that

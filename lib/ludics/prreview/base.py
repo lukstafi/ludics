@@ -30,6 +30,16 @@ Stdout: the verdict line, then one line per workflow (and its notes). Exit: 0 gr
 green under --interim included); 1 red; 2 usage or configuration; 3 UNKNOWN (a read the verdict
 rests on failed); 4 no verdict (nothing ran, nothing judged the tip, or --wait ran out).
 
+``--advisory-red <file>`` is the fleet-worker gate's (ludics-lite#651). The repository's
+advisory list (``.github/ship-pr-advisory-checks`` on its default branch, read as ``checks`` and
+``merge`` read it, the first time a red needs it) names CHECKS, and a workflow's red is a run; so
+a workflow whose verdict run is red only in jobs that list names, with every other job of it
+passed, is taken out of the verdict -- green for the wait and for the report, on an
+``advisory-red`` line of its own -- and each such job is written to the file at a green. A list or
+jobs read that failed keeps the red. It is a flag of ``base`` and not a reading of its red by the
+gate because a red at the tip ends the wait at once and outranks every pending workflow in the
+report: a gate that discounted the red afterwards would take workflows the wait never waited for.
+
 The merged PR head's build signal (source (a)) is ``gate_checks``, the ``checks`` subcommand's
 gate (gate.Gate), run as ``tip_pr_head_verdict`` ran it: no wait, under this command's advisory
 list, its report captured and its stderr dropped.
@@ -37,6 +47,7 @@ list, its report captured and its stderr dropped.
 
 import contextlib
 import io
+import json
 import math
 import os
 import re
@@ -84,7 +95,8 @@ _HEX = re.compile(r"[0-9a-f]+")
 class Knobs:
     """The source-time constants ``base`` reads beyond the core's: the absence grace and the
     poll's interval, ceiling and heartbeat (whole seconds), and the advisory list as the shell
-    resolved it (``BUILD_ADVISORY``: ``base`` never reads a repository's advisory file)."""
+    resolved it (``BUILD_ADVISORY``: only ``--advisory-red`` reads a repository's advisory file,
+    and only for the jobs of a red run)."""
 
     absent_grace: int
     checks_interval: int
@@ -262,6 +274,10 @@ class Folded:
     vwhen: str
     vurl: str
     wfid: str
+    # The run ids of the newest completed and newest judged runs ("" where there is none): the
+    # run a red verdict is read from, for ``--advisory-red``'s jobs read.
+    crun: str = ""
+    vrun: str = ""
 
 
 def fold(rows: Sequence[RunRow]) -> list[Folded]:
@@ -289,8 +305,28 @@ def fold(rows: Sequence[RunRow]) -> list[Folded]:
             cwhen=c.created_at if c else "-", curl=c.url if c else "-",
             vconcl=v.conclusion if v else "-", vsha=v.head_sha if v else "-",
             vwhen=v.created_at if v else "-", vurl=v.url if v else "-", wfid=k,
+            crun=c.run_id if c else "", vrun=v.run_id if v else "",
         ))
     return out
+
+
+def advisory_only(jobs: Sequence[tuple[str, str]],
+                  is_advisory: Callable[[str], bool]) -> tuple[list[tuple[str, str]], str]:
+    """Is a red run red ONLY in advisory jobs (``--advisory-red``)? Its red jobs and "" when it
+    has at least one, each named and matched by ``is_advisory``, and every job the list does not
+    name passed (green-class: a cancelled or unfinished required job is no pass); else no jobs and
+    the first reason it is not. The list matches job names, as it matches check-run names in
+    ``checks``: a job's name is its check run's."""
+    reds = [(name, concl) for name, concl in jobs if conclusion_class(concl) == "red"]
+    if not reds:
+        return [], "no job in its run concluded red"
+    for name, concl in jobs:
+        advisory = bool(name) and is_advisory(name)
+        if conclusion_class(concl) == "red" and not advisory:
+            return [], f"{tsv(name) or 'a job with no name'} ({tsv(concl)}) is not advisory"
+        if not advisory and conclusion_class(concl) != "green":
+            return [], f"{tsv(name) or 'a job with no name'} ({tsv(concl)}) did not pass"
+    return reds, ""
 
 
 @dataclass(frozen=True)
@@ -447,6 +483,9 @@ class _Round:
     norun_ids: list[Want] = field(default_factory=lambda: [])
     exhausted_wids: set[str] = field(default_factory=lambda: set())
     exhausted: list[str] = field(default_factory=lambda: [])
+    # --advisory-red: (workflow, sha, run id, job, conclusion) per red job of a red run the
+    # advisory list took out of the verdict.
+    advisory_red: list[tuple[str, str, str, str, str]] = field(default_factory=lambda: [])
     folded: list[Folded] = field(default_factory=lambda: [])
     by_wid: dict[str, list[RunRow]] = field(default_factory=lambda: {})
     names: dict[str, str] = field(default_factory=lambda: {})
@@ -487,7 +526,8 @@ class Base:
         self.is_advisory = Matcher(knobs.advisory)
         # The workflow-file readers and the paths-ignore walk, shared with checks/merge.
         self.reads = Reads(session, repo, self.gate_config.limits, self.is_advisory)
-        self._jobs_cache: dict[str, str] = {}
+        self._jobs_cache: dict[str, list[tuple[str, str]]] = {}
+        self._advisory_jobs: Matcher | None = None
         self._trigger_cache: dict[str, Trigger] = {}
         self._ignore_cache: dict[str, bool] = {}
 
@@ -600,27 +640,63 @@ class Base:
                       f"{indent}green under it, so the red may start further back\n")
         if not _DIGITS.fullmatch(run_id):
             return detail
-        cached = self._jobs_cache.get(run_id)
-        if cached is not None:
-            return detail + cached + "\n"
-        pages = self.gh_pages(["api", "--paginate",
-                               f"repos/{self.repo}/actions/runs/{run_id}/jobs?per_page=100"])
-        if isinstance(pages, (GhFailed, GhUnanswered)):
+        jobs = self.run_jobs(run_id)
+        if jobs is None:
             return (detail + f"{indent}which job failed is UNKNOWN ({self.err_line()}) — the red above"
                     " stands; open the run\n")
-        failed: list[str] = []
-        for page in pages:
-            for job in _items(get(page, "jobs")) or []:
-                name = tsv(get(job, "name"))
-                concl = tsv(alt(get(job, "conclusion"), "pending"))
-                if name and conclusion_class(concl) == "red":
-                    failed.append(f"{name} ({concl})")
+        failed = [f"{tsv(name)} ({tsv(concl)})" for name, concl in jobs
+                  if name and conclusion_class(concl) == "red"]
         if failed:
             line = f"{indent}failed job(s): {', '.join(failed)}"
         else:
             line = f"{indent}no job in that run concluded red — a startup or workflow-level failure"
-        self._jobs_cache[run_id] = line
         return detail + line + "\n"
+
+    def run_jobs(self, run_id: str) -> list[tuple[str, str]] | None:
+        """Every job of the run, ``(name, conclusion)`` as the API spells them (a job with no
+        conclusion is ``pending``), or None when the read failed -- which is not remembered: one
+        that answered is, since a completed run's jobs do not change."""
+        cached = self._jobs_cache.get(run_id)
+        if cached is not None:
+            return cached
+        pages = self.gh_pages(["api", "--paginate",
+                               f"repos/{self.repo}/actions/runs/{run_id}/jobs?per_page=100"])
+        if isinstance(pages, (GhFailed, GhUnanswered)):
+            return None
+        jobs: list[tuple[str, str]] = []
+        for page in pages:
+            for job in _items(get(page, "jobs")) or []:
+                name = get(job, "name")
+                jobs.append((name if isinstance(name, str) else "",
+                             jq_raw(alt(get(job, "conclusion"), "pending"))))
+        self._jobs_cache[run_id] = jobs
+        return jobs
+
+    def advisory_jobs(self) -> Matcher | None:
+        """``--advisory-red``'s list: the repository's own advisory file, read as ``checks`` and
+        ``merge`` read it (``Gate.advisory_policy``, #530), the first time a red needs it. None
+        when that read was refused or unanswered (said on stderr): a red then stands. Not
+        remembered on a failure, so a later round asks again."""
+        if self._advisory_jobs is None:
+            gate = Gate(self.session, self.repo, self.gate_config, clock=self.clock)
+            if gate.advisory_policy() != 0:
+                return None
+            self._advisory_jobs = Matcher(gate.advisory)
+        return self._advisory_jobs
+
+    def advisory_red(self, run_id: str) -> tuple[list[tuple[str, str]], str]:
+        """Under ``--advisory-red``: the red run's red jobs when every one of them is a job the
+        advisory list names and every other job passed, with "" -- else no jobs and why the red
+        stands. Fail closed: an unreadable list or jobs read keeps the red."""
+        if not _DIGITS.fullmatch(run_id):
+            return [], "its run is not known"
+        matcher = self.advisory_jobs()
+        if matcher is None:
+            return [], f"the repository's advisory list could not be read ({self.err_line()})"
+        jobs = self.run_jobs(run_id)
+        if jobs is None:
+            return [], f"its jobs could not be read ({self.err_line()})"
+        return advisory_only(jobs, matcher)
 
     # --- the workflow file ---
 
@@ -696,8 +772,7 @@ class Base:
 
     def _gate_checks(self, num: str) -> GateSignal | None:
         """``gate_checks <num> 0``, as ``tip_pr_head_verdict`` ran it: no wait, under this
-        command's advisory list (BUILD_ADVISORY -- ``base`` never reads a repository's advisory
-        file), its report captured and its stderr dropped. None where the shell's subshell ended
+        command's advisory list (BUILD_ADVISORY, never the repository's advisory file), its report captured and its stderr dropped. None where the shell's subshell ended
         without its trailer: the gate ended the command (a usage or configuration exit). A refusal
         of the gate's own gh call (GhRefusedOwn) ends this command too, as it did."""
         gate = Gate(self.session, self.repo, self.gate_config, clock=self.clock, advisory=self.knobs.advisory)
@@ -913,6 +988,7 @@ class Args:
     wait_for: int
     interim: bool
     records: str
+    advisory_red: str = ""
 
 
 def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
@@ -920,6 +996,7 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
     already named -- branches carry slashes too (``claude/...``)."""
     interim = False
     records = ""
+    advisory_red = ""
     branch = ""
     wait_text = "0"
     i = 0
@@ -934,6 +1011,15 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
             i += 1
         elif arg.startswith("--integration-records="):
             records = arg[len("--integration-records="):]
+        elif arg == "--advisory-red":
+            if i + 1 >= len(args) or not args[i + 1]:
+                die("base: --advisory-red takes a file")
+            advisory_red = args[i + 1]
+            i += 1
+        elif arg.startswith("--advisory-red="):
+            advisory_red = arg[len("--advisory-red="):]
+            if not advisory_red:
+                die("base: --advisory-red takes a file")
         elif "/" in arg:
             if not repo:
                 repo = arg
@@ -950,7 +1036,7 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
         i += 1
     if not _DIGITS.fullmatch(wait_text):
         die(f"base: --wait takes seconds, got '{wait_text}'")
-    return Args(repo, branch, int(wait_text), interim, records)
+    return Args(repo, branch, int(wait_text), interim, records, advisory_red)
 
 
 def run(session: GhSession, args: list[str], *, clock: Clock | FuncClock | None = None,
@@ -1378,18 +1464,36 @@ class Wait:
                 rnd.nogo_at_tip += 1
             # The newest JUDGED run carries the verdict; a stopped run over it is context.
             stopped_note = ""
+            crun = f.crun
             if conclusion_class(concl) == "nogo" and f.vsha != "-":
                 stopped_note = (f"           (newest completed run: {concl} at {csha[:8]}, stopped not"
                                 " judged — verdict above is the newest judged run)\n")
-                concl, csha, cwhen, curl = f.vconcl, f.vsha, f.vwhen, f.vurl
+                concl, csha, cwhen, curl, crun = f.vconcl, f.vsha, f.vwhen, f.vurl, f.vrun
             klass = conclusion_class(concl)
+            # --advisory-red (the fleet-worker gate's, ludics-lite#651): a run red ONLY in jobs the
+            # repository's advisory list names is not this workflow's red. It reads as green for
+            # the wait and the verdict, on its own line, and is written to the file at a green.
+            standing = ""
+            advisory = False
+            if klass == "red" and self.args.advisory_red:
+                reds, standing = b.advisory_red(crun)
+                if reds:
+                    rnd.advisory_red.extend((name, csha, crun, job, jconcl) for job, jconcl in reds)
+                    jobs = ", ".join(f"{tsv(job)} ({tsv(jconcl)})" for job, jconcl in reds)
+                    out.append(f"  advisory-red  {name} — {concl} at {csha[:8]} ({cwhen}), only in"
+                               f" advisory job(s): {jobs}  {curl}\n")
+                    advisory = True
             match klass:
+                case "red" if advisory:
+                    pass
                 case "red":
                     rnd.red += 1
                     if tip and csha == tip:
                         rnd.red_at_tip += 1
                     out.append(f"  RED      {name} — {concl} at {csha[:8]} ({cwhen})  {curl}\n")
                     out.append(b.red_detail(f.wfid, self.allruns))
+                    if standing:
+                        out.append(f"           (not an advisory-only red: {standing})\n")
                 case "green":
                     out.append(f"  green    {name} — {concl} at {csha[:8]}\n")
                 case "pending":
@@ -1556,6 +1660,23 @@ class Wait:
         rnd.out += f"           (no interim verdict for {names}: {hold_why})\n"
         return "no"
 
+    def write_advisory_red(self, rnd: _Round) -> None:
+        """At a green under ``--advisory-red``: the file holds a JSON array, one object per job the
+        advisory list took out of the verdict (``workflow``, ``sha``, ``run``, ``job``,
+        ``conclusion``), ``[]`` for none -- so a reader can tell "none" from a file never written.
+        A write that fails is exit 3: the green would otherwise hide the reds it stands over."""
+        path = self.args.advisory_red
+        if not path:
+            return
+        rows = [{"workflow": w, "sha": sha, "run": run, "job": job, "conclusion": concl}
+                for w, sha, run, job, concl in rnd.advisory_red]
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(rows) + "\n")
+        except OSError as e:
+            fail(3, f"base: could not write --advisory-red's file {shell_quote(path)} ({e.strerror});",
+                 "the verdict is UNKNOWN, which is NOT 'green'.")
+
     def report(self, rnd: _Round, tip: str, waited_note: str, no_tip_verdict: bool,
                interim_green: bool) -> int:
         repo, branch, out = self.repo, self.branch, rnd.out
@@ -1575,6 +1696,7 @@ class Wait:
             sys.stdout.write(out)
             return 4
         if interim_green:
+            self.write_advisory_red(rnd)
             judged = f"; {rnd.pushless_names} judged by {self.pushless_name}" if rnd.pushless else ""
             cli.say(f"{repo} {branch}: green, interim (tip {t8}; {rnd.tipfly_names} still running at"
                     f" the tip, judged meanwhile by {self.interim_name}{judged})")
@@ -1617,6 +1739,7 @@ class Wait:
                     " green, not red")
             sys.stdout.write(out)
             return 4
+        self.write_advisory_red(rnd)
         if rnd.pushless:
             cli.say(f"{repo} {branch}: green (tip {t8}; {rnd.pushless_names} judged by"
                     f" {self.pushless_name})")

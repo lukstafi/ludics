@@ -593,6 +593,76 @@ def gate_stub(verdict: str, line: str, *, refuse: str = "") -> base.GateRunner:
     return gate
 
 
+ADVISORY = "# comments aside\n^(claude|Claude Code|github pages docs)$\n^bash 3\\.2 suites, .* \\(macos\\)$\n"
+
+
+class AdvisoryRed(unittest.TestCase):
+    """``--advisory-red`` (the fleet-worker gate's, ludics-lite#651): a run red only in jobs the
+    repository's advisory list names is out of the verdict."""
+
+    def test_advisory_only_needs_a_red_every_red_advisory_and_every_other_job_passed(self) -> None:
+        def mac(name: str) -> bool:
+            return name.endswith("(macos)")
+        self.assertEqual(base.advisory_only([("a (macos)", "failure"), ("b (macos)", "cancelled"),
+                                             ("u", "success"), ("v", "skipped")], mac),
+                         ([("a (macos)", "failure")], ""))
+        self.assertEqual(base.advisory_only([("a (macos)", "failure"), ("u", "timed_out")], mac),
+                         ([], "u (timed_out) is not advisory"))
+        self.assertEqual(base.advisory_only([("a (macos)", "failure"), ("u", "cancelled")], mac),
+                         ([], "u (cancelled) did not pass"))
+        self.assertEqual(base.advisory_only([("a (macos)", "success")], mac),
+                         ([], "no job in its run concluded red"))
+        self.assertEqual(base.advisory_only([("", "failure")], lambda _n: True),
+                         ([], "a job with no name (failure) is not advisory"))
+
+    def _world(self) -> dict[str, Answer]:
+        """ci red at the tip only in a macOS job; lint's tip run in flight on round one and green
+        from round two on."""
+        def lint(**more: object) -> str:
+            return runs({"workflow_id": 2, "id": 2000, "name": "lint", "head_sha": C, **more})
+        return world(C, runs({"conclusion": "failure", "head_sha": C}), **{
+            "repos/o/r/actions/workflows?per_page=100": json.dumps(
+                {"workflows": [{"id": 1, "name": "ci"}, {"id": 2, "name": "lint"}]}),
+            "repos/o/r/actions/workflows/2/runs?branch=main&event=push&per_page=10": [
+                lint(status="in_progress", conclusion=None), lint(conclusion="success")],
+            "repos/o/r/actions/runs/1000/jobs?per_page=100": json.dumps({"jobs": [
+                {"name": "bash 3.2 suites, a (macos)", "conclusion": "failure"},
+                {"name": "fixtures (ubuntu)", "conclusion": "success"}]}),
+            "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY,
+            "repos/o/r/actions/workflows/2": json.dumps({"path": ".github/workflows/lint.yml"}),
+            f"repos/o/r/contents/.github/workflows/lint.yml?ref={C}": DOCS_IGNORED,
+        })
+
+    def test_an_advisory_only_red_at_the_tip_does_not_end_the_wait(self) -> None:
+        """Why it is ``base``'s flag and not the gate's reading of the red: a red at the tip ends
+        the wait at once, before lint's own run has judged the tip. Under the flag the wait goes
+        on to lint's verdict, and the green carries the job in the file."""
+        clock = FakeClock()
+        rc, out, _, gh = base_run(self._world(), ["main", "--wait=900"], clock=clock)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(clock.slept, [], "the red at the tip ended the wait on round one")
+        self.assertNotIn("repos/o/r/contents/.github/ship-pr-advisory-checks", gh.asked)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "advisory-red.json")
+            clock = FakeClock()
+            rc, out, _, gh = base_run(self._world(), ["main", "--wait=900", "--advisory-red", path], clock=clock)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(clock.slept, [60], "the wait went on to lint's verdict")
+            self.assertIn(f"  advisory-red  ci — failure at {C[:8]}", out)
+            self.assertIn("only in advisory job(s): bash 3.2 suites, a (macos) (failure)", out)
+            self.assertIn(f"  green    lint — success at {C[:8]}", out)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), [{"workflow": "ci", "sha": C, "run": "1000",
+                                                 "job": "bash 3.2 suites, a (macos)", "conclusion": "failure"}])
+            self.assertEqual(gh.asked.count("repos/o/r/contents/.github/ship-pr-advisory-checks"), 1,
+                             "the list is read once, the first time a red needs it")
+
+    def test_the_flag_takes_a_file(self) -> None:
+        rc, _, err, _ = base_run(self._world(), ["main", "--advisory-red"])
+        self.assertEqual(rc, 2)
+        self.assertIn("base: --advisory-red takes a file", err)
+
+
 class NamedSources(unittest.TestCase):
     def test_a_clean_merge_of_a_green_head_judges_a_retired_workflow(self) -> None:
         rc, out, _, _ = base_run(pushless_world(), ["main"],

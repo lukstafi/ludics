@@ -10,13 +10,22 @@ checkout's physical root. Its clocks are pinned here so the ceiling cannot drift
 ``launch`` reads the same gate, with the commit it fetched as ``expected``: the target branch's
 tip must still be that commit once the verdict is in, or the worker would start from a base the
 verdict never judged.
+
+The read passes ``--advisory-red <file>`` (ludics-lite#651): a workflow red only in jobs the
+repository's own ``.github/ship-pr-advisory-checks`` names is the checker's to take out of the
+verdict, and at a green it writes those jobs to the file; the gate prints one ``ADVISORY-RED``
+line per job when it admits. The file is read as an allowlist: at a green, a JSON array of
+objects whose ``job`` is a non-empty string and whose ``sha`` is 40 lower-case hex, and nothing
+else -- an empty, unwritten or malformed file refuses the gate.
 """
 
+import json
 import os
+import shlex
 import re
 import tempfile
 import urllib.parse
-from typing import Any
+from typing import Any, cast
 
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import field, listing, records_of
@@ -130,6 +139,36 @@ def stage_records(rows: str) -> str | None:
         return None
 
 
+def advisory_red_jobs(text: str) -> list[tuple[str, str]] | None:
+    """The checker's ``--advisory-red`` file at a green: ``(job, sha)`` per job it took out of the
+    verdict, ``[]`` for none, or None for anything that is not that array (the module's
+    allowlist), which refuses the gate."""
+    try:
+        doc: object = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(doc, list):
+        return None
+    jobs: list[tuple[str, str]] = []
+    for row in cast(list[object], doc):
+        if not isinstance(row, dict):
+            return None
+        fields = cast(dict[object, object], row)
+        job, sha = fields.get("job"), fields.get("sha")
+        if not (isinstance(job, str) and job and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha)):
+            return None
+        jobs.append((job, sha))
+    return jobs
+
+
+def _read(path: str) -> str | None:
+    try:
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 def _remove(path: str) -> None:
     try:
         os.unlink(path)
@@ -151,9 +190,6 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
         err(f"BASE REFUSED: coordinator base checker missing: {helper}")
         return 1
     where = f"{target} {branch or 'default branch'}"
-    # The ordinary base read may carry an older green while the tip is running: --wait, bounded by
-    # the derived ceiling, and --interim (ludics-lite#308), which names a green PR head meanwhile.
-    argv = [helper, "--repo", target, "base"] + ([branch] if branch else []) + [f"--wait={BASE_WAIT}", "--interim"]
     rows = integration_records(cfg, target)
     if rows is None:
         err(
@@ -161,10 +197,21 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
             " record judges its tip is unknown; dispatch blocked"
         )
         return 1
+    # The ordinary base read may carry an older green while the tip is running: --wait, bounded by
+    # the derived ceiling, and --interim (ludics-lite#308), which names a green PR head meanwhile.
+    # And --advisory-red (ludics-lite#651): the repository's own advisory file decides a red that
+    # is only in jobs it names, and the checker writes those jobs to this file at a green.
+    advisory = stage_records("")
+    if advisory is None:
+        err(f"BASE REFUSED: {where}: cannot stage the checker's advisory-red file; dispatch blocked")
+        return 1
+    argv = [helper, "--repo", target, "base"] + ([branch] if branch else []) + [f"--wait={BASE_WAIT}", "--interim"]
+    argv += ["--advisory-red", advisory]
     records = ""
     if rows:
         staged = stage_records(rows)
         if staged is None:
+            _remove(advisory)
             err(f"BASE REFUSED: {where}: cannot stage the integration records; dispatch blocked")
             return 1
         records = staged
@@ -172,6 +219,9 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
     rc = base_checker(cfg, argv)
     if records:
         _remove(records)
+    text = _read(advisory)
+    _remove(advisory)
+    admitted: list[tuple[str, str]] = []
     # The records were a snapshot, and the read can wait minutes: a green is taken only over the
     # records it was given (review round 6 of #401).
     if rc == 0:
@@ -185,6 +235,14 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
                 " verdict did not see; re-run the gate"
             )
             return 1
+        jobs = advisory_red_jobs(text) if text is not None else None
+        if jobs is None:
+            err(
+                f"BASE REFUSED: {where}: the checker's green came without a readable advisory-red record"
+                " (its --advisory-red file is empty, unwritten or malformed); dispatch blocked"
+            )
+            return 1
+        admitted = jobs
     if rc == 1 and force and reason:
         err(f"BASE TRIAGE OVERRIDE: {where}: {reason}")
         rc = 0
@@ -202,6 +260,8 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
         if tip != expected:
             err(f"BASE REFUSED: {target} {branch} moved or differs from fetched base {expected} (now {tip}); dispatch blocked")
             return 1
+    for job, sha in admitted:
+        err(f"ADVISORY-RED: {shlex.quote(job)} at {sha}; launching")
     return 0
 
 
