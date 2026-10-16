@@ -447,6 +447,9 @@ requirements for every transport with transport-specific setup and identity, and
   Claude worker as [Blocking on a run](references/native-claude.md#blocking-on-a-run) says, a
   Codex worker by keeping its turn open, because a returned turn says only that the turn ended
   (Supervise: *A returned turn means the turn ended*).
+- **A desktop coordinator's native Claude worker in bypass permissions mode turns its PR's
+  Auto-fix off** right after its `gh pr create`, as
+  [native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs) says.
 - Model-agnostic text: the commit trailer says "credit your own model" (the project's
   `Co-Authored-By` shape with the worker's own model name), never a model the coordinator
   copied from its own instructions (2026-09-15: an Opus worker inherited a Fable line and
@@ -623,7 +626,9 @@ controlled through the tools in your coordinator's file, never through those com
   stopped - a message, an interruption request or a missing listing is not that proof. CLI
   unstick, capacity errors and finishers are script-fenced in
   [cli-claude.md](references/cli-claude.md#intervening); app workers follow
-  [separate-codex.md](references/separate-codex.md#supervision-and-intervention).
+  [separate-codex.md](references/separate-codex.md#supervision-and-intervention). A desktop
+  Auto-fix event on a worker's PR is log-only:
+  [native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs).
 - **Babysit through `pr-review.sh`, not hand-rolled `gh`.** When the coordinator ends up
   shepherding a PR itself - a takeover after failed unsticks, a finisher's branch, a stranded
   PR inherited from a dead session - drive the review loop with the ship-pr skill's

@@ -169,3 +169,34 @@ holds a background task and is not stalled, so spawn no finisher on its worktree
 (Supervise: *Stay alive, but design for dying*). After any interruption reconcile from
 `ListAgents`, the board and the PRs rather than from memory; an idle worker is still there to
 resume.
+
+## Auto-fix events on worker PRs
+
+In the Claude desktop app, a PR's "Auto-fix CI & address comments" monitor wakes the session the
+PR is bound to with a `<ci-monitor-event>` on a CI failure, a merge conflict or a review comment,
+each asking that session to push a fix. It is a wake source only: it reads no review state,
+counts no rounds, gates no merge, and exists only in desktop sessions, so ship-pr stays on
+`pr-review.sh`. Under a desktop coordinator a worker's PR lands in the coordinator's session: a
+native worker's `gh pr create` bound it there with Auto-fix already on (2026-10-16,
+ludics-lite#653: `mcp__ccd_pr__get_status` from the worker read `bound: true`, `auto_fix: true`).
+One writer per branch (SKILL.md, *Supervise*) rules out acting on its events:
+
+- **Log-only on a worker-owned PR.** An event gets one board line, never a push and never a turn
+  spent on the PR. A finding the coordinator judges silent (must-fix, SKILL.md *Converge long
+  reviews*) and that the worker may have missed is forwarded to the worker with `SendMessage`,
+  naming the PR, the round and the thread.
+- **Turn the monitor off right after the PR opens.** A session holds one bound PR, and the app binds
+  one whenever the session runs `gh pr create` or pushes a branch that has a PR (`get_status`'s
+  own unbound reply says so), so a sibling's next PR or push can take the binding. The moment a
+  PR is known to be bound is just after the worker's own `gh pr create`. The brief has the worker call
+  `mcp__ccd_pr__get_status` (session `"self"`, the default) then, and when it shows the worker's
+  own PR, `mcp__ccd_pr__set_monitor` with `auto_fix: false` and that PR's url as `get_status`
+  reports it (`address_comments` is the same switch). Any other PR there means the binding has
+  already moved, and the worker leaves it alone. The call asks the user's approval outside bypass
+  permissions mode, and an unseen prompt stalls a worker, so a brief for a worker in another mode
+  leaves the step out, and the coordinator makes the same call whenever `get_status` shows it a
+  wave PR still on. The worker's backgrounded `pr-review.sh watch` is that PR's wake source.
+
+Why it matters: in wave-20261015 about 40 such events each cost a coordinator turn, and since
+they covered only the ludics-lite PRs they also gave a false picture of review progress
+(ludics-lite#650: lukstafi/ocannl-staging#1170 reached 12 rounds unseen).
