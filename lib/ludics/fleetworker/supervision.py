@@ -107,7 +107,7 @@ def cmd_load(cfg: Config, args: list[str]) -> int:
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _POSITIVE = re.compile(r"[1-9][0-9]*")
-_ROUNDS = re.compile(r"rounds: n=([0-9]+) threshold=off first=([0-9]+|unknown)")
+ROUNDS_TRAILER = re.compile(r"rounds: n=([0-9]+) threshold=off first=([0-9]+|unknown)")
 # The convergence note's early trigger (issue-wave SKILL.md, *Converge long reviews*; ludics-lite#650):
 # a round 1 of LARGE_FIRST or more inline findings is flagged from round EARLY_ROUND, ahead of --flag-at.
 EARLY_ROUND = 3
@@ -305,7 +305,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     rounds_env = {**cfg.env, "SHIP_PR_ROUND_THRESHOLD": "off"}
     for n, sha, created, draft, branch, title in rows:
         _, rounds_out = helper_read([helper, "rounds", f"{repo}#{n}"], env=rounds_env)
-        found = _ROUNDS.fullmatch(last_line(rounds_out))
+        found = ROUNDS_TRAILER.fullmatch(last_line(rounds_out))
         rounds = found.group(1) if found else "?"
         first = found.group(2) if found else "unknown"
         if (rounds == "?" or first == "unknown") and worst != 1:

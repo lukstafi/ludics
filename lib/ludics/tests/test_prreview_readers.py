@@ -350,10 +350,14 @@ class Rounds(unittest.TestCase):
         # round 2's comments are not read.
         gh = feeds(reviews=[review(1, "aaaa", "2026-09-01T10:00:00Z"), review(2, "aaaa", "2026-09-01T10:00:03Z"),
                             review(3, "bbbb", "2026-09-01T11:00:00Z")])
-        finding = {"id": 50, "body": "P2"}
-        gh.answers["repos/o/r/pulls/7/reviews/1/comments?per_page=100"] = [finding, finding, {**finding, "in_reply_to_id": 9}]
-        gh.answers["repos/o/r/pulls/7/reviews/2/comments?per_page=100"] = [finding] * 3
-        gh.answers["repos/o/r/pulls/7/reviews/3/comments?per_page=100"] = [finding] * 40
+        finding: Json = {"id": 50, "body": "P2"}
+        reply: Json = {"id": 51, "body": "ok", "in_reply_to_id": 50}
+        first: list[Json] = [finding, finding, reply]
+        second: list[Json] = [finding] * 3
+        later: list[Json] = [finding] * 40
+        gh.answers["repos/o/r/pulls/7/reviews/1/comments?per_page=100"] = first
+        gh.answers["repos/o/r/pulls/7/reviews/2/comments?per_page=100"] = second
+        gh.answers["repos/o/r/pulls/7/reviews/3/comments?per_page=100"] = later
         got = state.review_rounds(ctx(gh), "7", 900, first=True)
         self.assertEqual((got.token(), got.first_token()), ("2", "5"))
         self.assertNotIn("repos/o/r/pulls/7/reviews/3/comments?per_page=100", gh.calls)

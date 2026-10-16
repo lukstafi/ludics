@@ -20,7 +20,7 @@ from ludics.fleetworker.__main__ import usage_text
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.gate import uri
 from ludics.fleetworker.preflight import siblings_of, slots_report
-from ludics.fleetworker.supervision import _ROUNDS, converge_note, each, head_age, length, load_line, pr_rows, wave_issues
+from ludics.fleetworker.supervision import ROUNDS_TRAILER, converge_note, each, head_age, length, load_line, pr_rows, wave_issues
 from ludics.fleetworker.workers import feeder_wait_ok, preflight_note, valid_name
 from ludics.prreview.core import JsonStreamError, json_docs, json_stream
 from ludics.prreview.jqsem import JqError, jstr, tojson
@@ -137,11 +137,12 @@ class Prs(unittest.TestCase):
         self.assertIn("(flag at 2)", converge_note("3", "9", "2"), "--flag-at wins where both apply")
 
     def test_the_rounds_trailer_must_carry_round_1(self) -> None:
-        found = _ROUNDS.fullmatch("rounds: n=3 threshold=off first=7")
+        found = ROUNDS_TRAILER.fullmatch("rounds: n=3 threshold=off first=7")
         self.assertEqual(found.groups() if found else None, ("3", "7"))
-        self.assertEqual((_ROUNDS.fullmatch("rounds: n=3 threshold=off first=unknown") or [None, None])[2], "unknown")
-        self.assertIsNone(_ROUNDS.fullmatch("rounds: n=3 threshold=off"))
-        self.assertIsNone(_ROUNDS.fullmatch("rounds: n=3 threshold=12 first=7"))
+        found = ROUNDS_TRAILER.fullmatch("rounds: n=3 threshold=off first=unknown")
+        self.assertEqual(found.groups() if found else None, ("3", "unknown"))
+        self.assertIsNone(ROUNDS_TRAILER.fullmatch("rounds: n=3 threshold=off"))
+        self.assertIsNone(ROUNDS_TRAILER.fullmatch("rounds: n=3 threshold=12 first=7"))
 
     def test_head_age_reads_the_newer_date_and_formats_it_as_the_shell_did(self) -> None:
         epoch = calendar.timegm((2027, 1, 15, 8, 0, 0, 0, 0, 0)) + 0.5  # jq's `now`, a float
