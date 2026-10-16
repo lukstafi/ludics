@@ -63,15 +63,18 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
    already checked out. Start it only after the old writer is proven stopped as SKILL.md's
    *Intervene* bullet requires. That means its session process, which archiving stops, every
    child of it such as a `bg-run.sh` run, and its reservations. Pass `cwd`: the old `worktreePath` and `use_worktree: false`, which the
-   schema defines as that folder as it is. Its brief names the branch, commits and PR. That
-   worktree is then cleaned up once, at close-out.
+   schema defines as that folder as it is. Its brief names the topic branch, commits and PR
+   where they exist. If the inherited worktree is still on the app's branch, the replacement
+   runs the fresh-start steps above. That worktree is then cleaned up once, at close-out.
 6. The result gives the `local_` session id and the `name`. `get_session` on that id reports
    `worktreePath`, `branch`, `model`, `permissionMode`, `isRemote` and `isRunning`. Record
    all of them.
    The brief names the coordinator's own `local_` id (`get_session "self"`). The worker's
    linked-sessions note names only the top session of the family, not the session that
-   started it. The worker's startup report goes to that id by `SendMessage`: its absolute
-   worktree, topic branch, base SHA and a harmless Git mutation with its exit status. Then it
+   started it. The worker's startup report goes to that id by `SendMessage`. It carries the
+   `hostname`, the absolute worktree, the topic branch, the base SHA, and a harmless Git
+   mutation with its exit status. The coordinator checks the hostname against the planned box;
+   the pilot reported `tuf-amd-linux`. Then it
    carries on with the task. Its final hand-back is the final message of its last turn.
 
 ## Board and recovery
@@ -146,8 +149,9 @@ a check that no process or reservation still uses the checkout. Run the cleanup 
 1. Archive unique experiment inputs and instrumentation.
 2. Run ship-pr's `post-merge-cleanup.sh <checkout> <worktreePath> <topic> --base <base>`, with
    the project's `--regenerable` directories. It refuses other ignored local data rather than
-   deleting it.
-3. Delete the app's own `claude/<random>` branch with `git branch -D`. Once the worker has
+   deleting it. The helper works against `origin`. Where the development remote has another
+   name, retain the worktree and report it.
+3. Delete the app's own `claude/<random>` branch with `git -C <checkout> branch -D`. Once the worker has
    switched to its topic branch, no worktree has the app's branch checked out.
 
 The pilot made no PR, so nobody has seen which session a worker's PR binds to.
