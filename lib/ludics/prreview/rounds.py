@@ -8,22 +8,28 @@ than SHIP_PR_ROUND_GAP seconds after the previous item. Not rounds: pending revi
 own replies, the round-started placeholder, a no-findings verdict, an initialization failure
 (either shape), and an empty envelope holding nothing but the connector's fixed reply.
 
-Stdout: the count line, then the trailer ``rounds: n=<count|unknown> threshold=<n|off>``.
-Exit: 0 at or under the threshold (or none set), 1 past it, 3 the count could not be read.
+Stdout: the count line, then the trailer ``rounds: n=<count|unknown> threshold=<n|off>
+first=<k|unknown>``, ``first`` being round 1's inline findings (``state.first_round_findings``,
+ludics-lite#650: ``fleet-worker.sh prs`` flags a large round 1 at round 3).
+Exit: 0 at or under the threshold (or none set), 1 past it, 3 the count could not be read; an
+unread ``first`` alone leaves the exit to the count.
 """
 
 from ludics import cli
 from ludics.prreview.core import GhSession, pr_arg
 from ludics.prreview.knobs import is_digits
 from ludics.prreview.feeds import Ctx, outside_watch
-from ludics.prreview.state import review_rounds
+from ludics.prreview.state import Rounds, review_rounds
+
+
+def as_result(rounds: Rounds) -> str:
+    """``review_rounds`` (state's port, which ``watch`` counts its rounds with) as the
+    shell's ``<count>|<detail>``, the count ``unknown`` when a read failed."""
+    return f"{rounds.token()}|{rounds.detail}"
 
 
 def rounds_result(ctx: Ctx, pr: str) -> str:
-    """``review_rounds`` (state's port, which ``watch`` counts its rounds with) as the
-    shell's ``<count>|<detail>``, the count ``unknown`` when a read failed."""
-    rounds = review_rounds(ctx, pr, ctx.session.config.round_gap)
-    return f"{rounds.token()}|{rounds.detail}"
+    return as_result(review_rounds(ctx, pr, ctx.session.config.round_gap))
 
 
 def threshold_text(threshold: int | None) -> str:
@@ -69,10 +75,12 @@ def run(session: GhSession, args: list[str]) -> int:
         cli.exit_with(1, "1: usage: rounds <pr>")
     target = pr_arg(args[0], session.config.repo)
     ctx = outside_watch(session, target.repo)
-    result = rounds_result(ctx, target.num)
+    rounds = review_rounds(ctx, target.num, session.config.round_gap, first=True)
+    result = as_result(rounds)
     line, rc = rounds_line(result, session.config.round_threshold)
     cli.say(line)
     cli.say(
         f"rounds: n={count_token(result)} threshold={threshold_text(session.config.round_threshold)}"
+        f" first={rounds.first_token()}"
     )
     return rc

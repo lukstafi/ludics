@@ -107,7 +107,11 @@ def cmd_load(cfg: Config, args: list[str]) -> int:
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _POSITIVE = re.compile(r"[1-9][0-9]*")
-_ROUNDS = re.compile(r"rounds: n=([0-9]+) threshold=off")
+_ROUNDS = re.compile(r"rounds: n=([0-9]+) threshold=off first=([0-9]+|unknown)")
+# The convergence note's early trigger (issue-wave SKILL.md, *Converge long reviews*; ludics-lite#650):
+# a round 1 of LARGE_FIRST or more inline findings is flagged from round EARLY_ROUND, ahead of --flag-at.
+EARLY_ROUND = 3
+LARGE_FIRST = 5
 _VERDICT = re.compile(r"checks: verdict=([a-z]+)")
 _YEAR = re.compile(r"[0-9]{4}-")
 
@@ -188,6 +192,20 @@ def head_age(date: str, created: str, now: float) -> str:
     return f"{age // 86400}d{age % 86400 // 3600}h"
 
 
+def converge_note(rounds: str, first: str, flag: str) -> str:
+    """The CONVERGE note of one PR's line, or "": at ``flag`` rounds or more, or at EARLY_ROUND or
+    more after a round 1 of LARGE_FIRST or more inline findings. An unread count ("?") or round-1
+    size ("unknown") raises no note here; ``cmd_prs`` reads either as exit 4."""
+    if rounds == "?":
+        return ""
+    if int(rounds) >= int(flag):
+        return f" -- CONVERGE: {rounds} review rounds with findings (flag at {flag}): send the convergence policy"
+    if first != "unknown" and int(rounds) >= EARLY_ROUND and int(first) >= LARGE_FIRST:
+        return (f" -- CONVERGE: {rounds} review rounds with findings after a round 1 of {first}"
+                f" (flag at {EARLY_ROUND} after {LARGE_FIRST} or more): send the convergence policy")
+    return ""
+
+
 def helper_read(argv: list[str], env: dict[str, str] | None = None) -> tuple[int, str]:
     """``$("$helper" ... 2>/dev/null)``: the status and the output, its trailing newlines dropped."""
     done = run(argv, capture=True, stderr_null=True, env=env)
@@ -200,8 +218,10 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     showed the count: staging#783 reached round 10 before the coordinator noticed, and ended at 14.
     One line per open PR -- ``pr-review.sh rounds`` (review rounds with findings), ``pr-review.sh
     checks`` (the build signal on the head, never waited for) and the head's age -- and a CONVERGE
-    note on a PR at --flag-at rounds or more. Of the helper's text only the machine-readable trailer
-    each command ends with is read (ludics-lite#423), never the prose above it. --wave keeps the PRs
+    note on a PR at --flag-at rounds or more, or at EARLY_ROUND or more when round 1 had LARGE_FIRST
+    or more inline findings (the rounds trailer's ``first``, ludics-lite#650). Of the helper's text
+    only the machine-readable trailer each command ends with is read (ludics-lite#423), never the
+    prose above it. --wave keeps the PRs
     that close an issue some execution record of that wave names. Exit: 0 read | 1 a PR is at the
     flag, or refused | 4 some read did not answer (a flag wins)."""
     repo = wave = ""
@@ -287,7 +307,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         _, rounds_out = helper_read([helper, "rounds", f"{repo}#{n}"], env=rounds_env)
         found = _ROUNDS.fullmatch(last_line(rounds_out))
         rounds = found.group(1) if found else "?"
-        if rounds == "?" and worst != 1:
+        first = found.group(2) if found else "unknown"
+        if (rounds == "?" or first == "unknown") and worst != 1:
             worst = 4
         checks_rc, checks_out = helper_read([helper, "checks", f"{repo}#{n}"])
         verdict = _VERDICT.fullmatch(last_line(checks_out))
@@ -296,9 +317,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
             worst = 4
         date_rc, date = helper_read([helper, "retry", "--read", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date"])
         age = head_age(date if date_rc == 0 else "", created, time.time())
-        note = ""
-        if rounds != "?" and int(rounds) >= int(flag):
-            note = f" -- CONVERGE: {rounds} review rounds with findings (flag at {flag}): send the convergence policy"
+        note = converge_note(rounds, first, flag)
+        if note:
             worst = 1
         mark = "draft " if draft == "draft" else ""
         cli.say(f"{repo}#{n} rounds={rounds} ci={ci} head={age} {mark}{branch}: {title}{note}")

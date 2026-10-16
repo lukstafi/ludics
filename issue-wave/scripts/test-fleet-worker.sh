@@ -195,8 +195,8 @@ if [ -n "${SHIM_PRS:-}" ]; then
   case "$1" in
     rounds)
       [ "${SHIP_PR_ROUND_THRESHOLD:-}" = off ] || exit 2
-      [ -f "$SHIM_PRS/rounds-${2##*#}" ] || { echo "review rounds: UNKNOWN — fixture; this is NOT 'no rounds yet', retry"; echo "rounds: n=unknown threshold=off"; exit 3; }
-      { read -r cnt; read -r trailer || trailer="rounds: n=$cnt threshold=off"; } < "$SHIM_PRS/rounds-${2##*#}"
+      [ -f "$SHIM_PRS/rounds-${2##*#}" ] || { echo "review rounds: UNKNOWN — fixture; this is NOT 'no rounds yet', retry"; echo "rounds: n=unknown threshold=off first=unknown"; exit 3; }
+      { read -r cnt; read -r trailer || trailer="rounds: n=$cnt threshold=off first=0"; } < "$SHIM_PRS/rounds-${2##*#}"
       echo "review rounds with findings: $cnt (fixture); no threshold set"
       [ "$trailer" = - ] || printf '%s\n' "$trailer"; exit 0 ;;
     checks)
@@ -2769,9 +2769,18 @@ probe '3\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n  a line after it\n'
 [ "$rc" -eq 4 ] && grep -q " ci=unknown " <<<"$out" && ok "a checks trailer that is not the last line is not read" || ko "trailer not last (exit $rc): $out"
 probe '3\n-\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=? ci=green " <<<"$out" && ok "a count with no rounds trailer is rounds=?, even under readable prose" || ko "no rounds trailer (exit $rc): $out"
-probe '3\nrounds: n=6 threshold=off\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
+probe '3\nrounds: n=6 threshold=off first=0\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
 [ "$rc" -eq 1 ] && grep -q "^o/r#9 rounds=6 ci=green .*CONVERGE" <<<"$out" && ok "...and the count is the trailer's, not the prose's" || ko "trailer count (exit $rc): $out"
-probe '3\nrounds: n=6 threshold=12\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
+probe '3\nrounds: n=6 threshold=off\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
+[ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=? " <<<"$out" && ok "a rounds trailer without round 1's size is not read" || ko "no first= (exit $rc): $out"
+# ludics-lite#650: round 3 is due after a round 1 of five or more inline findings, round 5 otherwise.
+probe '3\nrounds: n=3 threshold=off first=5\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
+[ "$rc" -eq 1 ] && grep -q "^o/r#9 rounds=3 ci=green .* -- CONVERGE: 3 review rounds with findings after a round 1 of 5 (flag at 3 after 5 or more)" <<<"$out" && ok "a large round 1 is flagged at round 3" || ko "early flag (exit $rc): $out"
+probe '3\nrounds: n=4 threshold=off first=4\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
+[ "$rc" -eq 0 ] && ! grep -q CONVERGE <<<"$out" && ok "...and a smaller one waits for round 5" || ko "small round 1 (exit $rc): $out"
+probe '3\nrounds: n=4 threshold=off first=unknown\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
+[ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=4 ci=green " <<<"$out" && ! grep -q CONVERGE <<<"$out" && ok "...and an unread round 1 is exit 4, no flag" || ko "unread round 1 (exit $rc): $out"
+probe '3\nrounds: n=6 threshold=12 first=0\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=? " <<<"$out" && ok "a rounds trailer under a threshold prs did not ask for is not read" || ko "threshold mismatch (exit $rc): $out"
 rm "$P/list.json" "$P/list-full.json"
 expect "an open-PR list that never answered is UNREACHABLE, exit 4" 4 "PRS UNREACHABLE: the open PRs of o/r did not answer" -- "$FW" prs o/r

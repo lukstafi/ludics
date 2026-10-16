@@ -345,6 +345,33 @@ class Rounds(unittest.TestCase):
         with mock.patch.object(state, "unique", side_effect=jq.JqError("broken on purpose")):
             self.assertEqual(self.count(reviews), f"2|2 round(s) of {REV} findings over ? head(s)")
 
+    def test_round_1s_size_is_its_reviews_top_level_inline_comments(self) -> None:
+        # ludics-lite#650: two reviews in round 1's burst, one with a thread reply that is no finding;
+        # round 2's comments are not read.
+        gh = feeds(reviews=[review(1, "aaaa", "2026-09-01T10:00:00Z"), review(2, "aaaa", "2026-09-01T10:00:03Z"),
+                            review(3, "bbbb", "2026-09-01T11:00:00Z")])
+        finding = {"id": 50, "body": "P2"}
+        gh.answers["repos/o/r/pulls/7/reviews/1/comments?per_page=100"] = [finding, finding, {**finding, "in_reply_to_id": 9}]
+        gh.answers["repos/o/r/pulls/7/reviews/2/comments?per_page=100"] = [finding] * 3
+        gh.answers["repos/o/r/pulls/7/reviews/3/comments?per_page=100"] = [finding] * 40
+        got = state.review_rounds(ctx(gh), "7", 900, first=True)
+        self.assertEqual((got.token(), got.first_token()), ("2", "5"))
+        self.assertNotIn("repos/o/r/pulls/7/reviews/3/comments?per_page=100", gh.calls)
+        self.assertIsNone(state.review_rounds(ctx(gh), "7", 900).first, "not read unless asked")
+
+    def test_round_1s_size_is_unknown_when_unread_and_zero_with_no_rounds(self) -> None:
+        gh = feeds(reviews=[review(1, "aaaa", "2026-09-01T10:00:00Z")])
+        gh.down.add("repos/o/r/pulls/7/reviews/1/comments?per_page=100")
+        got = state.review_rounds(ctx(gh), "7", 900, first=True)
+        self.assertEqual((got.token(), got.first_token()), ("1", "unknown"))
+        idless = {k: v for k, v in review(1, "aaaa", "2026-09-01T10:00:00Z").items() if k != "id"}
+        got = state.review_rounds(ctx(feeds(reviews=[idless])), "7", 900, first=True)
+        self.assertEqual(got.first_token(), "unknown", "a review with no numeric id is not counted as empty")
+        self.assertEqual(state.review_rounds(ctx(feeds()), "7", 900, first=True).first_token(), "0")
+        # A comment-only round 1 counts no inline findings: the size is a lower bound.
+        only = feeds(comments=[comment(9, "2026-09-01T10:00:00Z", "**Reviewed commit:** `aaaa111`")])
+        self.assertEqual(state.review_rounds(ctx(only), "7", 900, first=True).first_token(), "0")
+
     def test_rounds_line(self) -> None:
         self.assertEqual(rounds.rounds_line("2|d", 12), ("review rounds with findings: 2 of 12 (d)", 0))
         self.assertEqual(rounds.rounds_line("2|d", None)[1], 0)

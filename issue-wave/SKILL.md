@@ -585,7 +585,8 @@ controlled through the tools in your coordinator's file, never through those com
   fifteen minutes after its last main-conversation activity, and a background waiter held
   inside a native worker does NOT hold the pause. While workers are working and the user may be
   away, keep a coordinator-side heartbeat under that threshold - a dynamic /loop or
-  ScheduleWakeup, doing a cheap external check each tick (`fleet-worker.sh ls` is one). After
+  ScheduleWakeup, doing a cheap external check each tick (`fleet-worker.sh ls` is one, and the
+  review-rounds read of *Converge long reviews* is another every tick makes). After
   ANY interruption - pause, restart, dropped remote-control connection, a box that slept
   through the night - reconcile from the board, the agent listing and the PRs, never from
   memory: an idle native worker is still there to resume, and a CLI worker kept running
@@ -651,13 +652,18 @@ controlled through the tools in your coordinator's file, never through those com
   has it state its recovery or readiness boundary on its first push ("recovery re-reads by
   content", "`--wait` is a point-in-time check"), and a finding past that boundary is rebutted
   on it or deferred to the one follow-up issue below (ludics-lite#625: five rounds of resume
-  corners until the boundary was written down). At 5 rounds send the policy - `fleet-worker.sh prs
-  <owner/repo> [--wave <id>]` lists each open PR's round count, CI and head age and flags the
-  ones there (ludics-lite#405; one reached 10 unnoticed) - whose axis is
-  **silent vs loud**: a silent defect (a claim that cannot fail, a sweep that deletes what it
-  shouldn't, an oracle a scheduler accident satisfies) is must-fix through round twelve, while a
-  loud one (a false refusal or error on valid-but-absent shapes) defers to ONE follow-up
-  issue; a silent finding only reachable by code nobody has written defers too (reachability
+  corners until the boundary was written down). Send the policy at round 3 when round 1 had five
+  or more findings, and at round 5 otherwise. The count is read on every heartbeat with
+  `fleet-worker.sh prs <owner/repo> --wave <id>` for EACH wave repository - the PR repository
+  (`lukstafi/ocannl-staging` for an ahrefs/ocannl wave), not the tracker - and no wake event (a
+  desktop CI-monitor event, a worker's notification) stands in for that read. It lists each open
+  PR's round count, CI and head age and flags the PRs due (ludics-lite#405: one reached 10
+  unnoticed; ludics-lite#650: lukstafi/ocannl-staging#1170 ran 12 rounds with no note, its rounds
+  never read, while every note that removed machinery or stated a boundary ended its loop within
+  one or two rounds). The policy's axis is **silent vs loud**: a silent defect (a claim that
+  cannot fail, a sweep that deletes what it shouldn't, an oracle a scheduler accident satisfies)
+  is must-fix through round twelve, while a loud one (a false refusal or error on
+  valid-but-absent shapes) defers to ONE follow-up issue; a silent finding only reachable by code nobody has written defers too (reachability
   qualifier); and defects in machinery the review itself introduced are the worker's to fix,
   not to defer ("filing bugs against myself") - through the twelfth round; past it ship-pr's
   threshold applies and they defer unless they meet its blocking criteria. When a
