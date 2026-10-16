@@ -71,8 +71,9 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
    all of them.
    The brief names the coordinator's own `local_` id (`get_session "self"`). The worker's
    linked-sessions note names only the top session of the family, not the session that
-   started it. The brief also names the expected `hostname`, which is the box name on this
-   fleet: the pilot reported `tuf-amd-linux`. The worker's first command compares it. On a
+   started it. The brief also names the expected hostname: the exact output of
+   `ssh <box> hostname` on the coordinator, which for TUF was `tuf-amd-linux`. The worker's
+   first command compares its own `hostname` with it. On a
    mismatch, the worker ends its turn with a report and touches nothing. Its startup report goes
    to the coordinator's id by `SendMessage`. It carries the hostname, the absolute worktree, the
    topic branch, the base SHA, and a harmless Git mutation with its exit status. Then the worker
@@ -152,7 +153,8 @@ a check that no process or reservation still uses the checkout. Run the cleanup 
    the project's `--regenerable` directories. It refuses other ignored local data rather than
    deleting it. The helper works against `origin`. Where the development remote has another
    name, retain the worktree and report it.
-3. Delete the app's own `claude/<random>` branch with `git -C <checkout> branch -D`. Once the worker has
+3. Delete the app's own branch, the recorded `claude/<random>`, with
+   `git -C <checkout> branch -D <app-branch>`. Once the worker has
    switched to its topic branch, no worktree has the app's branch checked out.
 
 The pilot made no PR, so nobody has seen which session a worker's PR binds to.
