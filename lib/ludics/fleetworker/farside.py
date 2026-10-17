@@ -1242,7 +1242,8 @@ if [ -s "$d/stderr.log" ]; then echo "--- stderr (tail):"; tail -n 5 "$d/stderr.
 LOG_LAST_RESULT = r"""name="$1"; d="$WORKERS/$name"
 [ -f "$d/meta" ] || { echo "UNKNOWN $BOX/$name: never launched here"; exit 3; }
 kind=$(meta_get "$d" kind)
-# Each program ends in {text} or {why}: read once for the why, once more to print the text.
+# Each program ends in {text} or {why}. The stream is read ONCE into that object, and the verdict
+# and the text both come from it: a second read could meet a turn that ended in between.
 case "$kind" in
   claude) prog='[inputs | fromjson? | select(type == "object" and .type == "result")] | last
     | if . == null then {why: "no result event in the stream: no turn has ended yet"}
@@ -1261,9 +1262,10 @@ case "$kind" in
   *) echo "NO RESULT $BOX/$name: unknown worker kind '$kind'"; exit 1 ;;
 esac
 [ -r "$d/stream.jsonl" ] || { echo "NO RESULT $BOX/$name: no stream yet"; exit 1; }
-why=$(jq -Rrn "$prog | .why // empty" "$d/stream.jsonl" 2>&1) || { echo "NO RESULT $BOX/$name: cannot read the stream: $(printf '%s' "$why" | head -n 1)"; exit 1; }
+got=$(jq -Rcn "$prog" "$d/stream.jsonl" 2>&1) || { echo "NO RESULT $BOX/$name: cannot read the stream: $(printf '%s' "$got" | head -n 1)"; exit 1; }
+why=$(printf '%s' "$got" | jq -r '.why // empty')
 [ -z "$why" ] || { echo "NO RESULT $BOX/$name: $why"; exit 1; }
-jq -Rrn "$prog | .text" "$d/stream.jsonl"
+printf '%s' "$got" | jq -r '.text'
 """
 
 
