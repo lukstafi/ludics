@@ -945,8 +945,13 @@ transport-specific: native in [native-workers.md](references/native-workers.md#c
 app in [separate-codex.md](references/separate-codex.md#close-out) or
 [app-claude.md](references/app-claude.md#intervention-and-close-out), CLI in
 [cli-claude.md](references/cli-claude.md#close-out); no checkout is removed while an
-outstanding reservation refers to it. Notify any sessions the user asked to be told. If the
-wave surfaced a new coordination trap, add it to the project's agent-notes or this skill -
+outstanding reservation refers to it. For a wave with native Claude workers, put the summary of
+`~/.claude/skills/issue-wave/scripts/cache-misses.py --since <the wave's start date>` in the
+report: its exit 1 means a worker turn after a block rewrote the worker's whole context, which a
+coordinator host without the 1-hour subagent cache does after any wait past 5 minutes ([Blocking on a
+run](references/native-claude.md#blocking-on-a-run)), and its `--list` lines name the transcript
+and the command. Notify any sessions the user asked to be told. If the wave surfaced a new
+coordination trap, add it to the project's agent-notes or this skill -
 whichever the trap belongs to.
 
 In the default mode, complete this wave's close-out before starting its post-wave, retain the

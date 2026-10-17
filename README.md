@@ -393,6 +393,7 @@ The scripts carry their own test suites (Python fixtures use `python3`; PowerShe
 issue-wave/scripts/test-fleet-worker.sh
 python3 issue-wave/scripts/test-fleet-execution.py
 issue-wave/scripts/test-bg-run.sh
+python3 issue-wave/scripts/test-cache-misses.py
 wait-and-proceed/scripts/test-wait-for.sh
 ./issue-wave/scripts/test-windows-driver.ps1
 python3 ship-pr/hooks/test-ship-pr-nudge.py

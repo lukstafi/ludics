@@ -68,6 +68,17 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   script's header is the full contract, the run directory's layout included, and `test-bg-run.sh`
   beside it pins the races each verdict closes (ludics-lite#357, #388).
 
+**The wait keeps the cache only under a 1-hour subagent TTL.** A subagent's prompt cache lives 5
+minutes from its last request (a main session's an hour) unless the coordinator's host sets
+`"subagentPromptCacheTtl": "1h"` in `~/.claude/settings.json` (or exports
+`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`; Claude Code 2.1.242 and later). Without it every wait
+that returns past ~300 s makes the worker's next turn rewrite its whole context: over
+2026-10-09..17, 1147 worker turns wrote 299M tokens that way, 95% of them after a `bg-run.sh
+wait`, none after a gap under 300 s. With it that turn re-reads the cache at a tenth of the input
+price, and the price is a cache write at twice the input price instead of 1.25 times, which those
+misses dwarf. [`scripts/cache-misses.py`](../scripts/cache-misses.py) counts such turns (SKILL.md,
+*Close out*).
+
 ## Worker channel
 
 A Claude Code native worker cannot wait mid-turn: nothing lets it block on a coordinator
