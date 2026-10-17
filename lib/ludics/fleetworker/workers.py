@@ -276,14 +276,27 @@ def cmd_log(cfg: Config, args: list[str]) -> int:
     if not valid_name(name):
         die("log: name must be [A-Za-z0-9._-]+")
     lines = "40"
+    last_result = n_given = False
     rest = args[2:]
     i = 0
     while i < len(rest):
+        if rest[i] == "--last-result":
+            last_result = True
+            i += 1
+            continue
         if rest[i] != "-n":
             die(f"log: unknown option {rest[i]}")
         lines = _value(rest, i) or "40"
+        n_given = True
         i += 2
-    done = run_on(cfg, box, prelude(cfg, box) + farside.LOG, [name, lines])
+    # The final message is read whole or not at all: a tail of it could cut off the lines a
+    # coordinator parses it for (EXECUTION_REQUEST / EXECUTION_RESULT, the hand-back report).
+    if last_result and n_given:
+        die("log: --last-result prints the whole final message; -n does not apply to it")
+    if last_result:
+        done = run_on(cfg, box, prelude(cfg, box) + farside.LOG_LAST_RESULT, [name])
+    else:
+        done = run_on(cfg, box, prelude(cfg, box) + farside.LOG, [name, lines])
     if done.unreachable:
         return _unreachable(f"LOG UNREACHABLE {box}/{name}")
     return done.rc

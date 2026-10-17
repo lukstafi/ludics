@@ -39,8 +39,12 @@ and whose process now awaits input (`FAILED ... idle` if that turn ended in an e
 `DONE` / `FAILED` / `VANISHED` for a process that has ended; run it as a harness-tracked
 background task, one per worker, and its completion notification is the wake signal - exactly
 the wait-and-proceed shape. An `IDLE` or `DONE` line is a returned turn and nothing more
-(SKILL.md, Supervise: *A returned turn means the turn ended*): read the final output for a
-request or a result before calling the issue finished.
+(SKILL.md, Supervise: *A returned turn means the turn ended*): read the turn's final message
+with `fleet-worker.sh log <box> <name> --last-result` for a request or a result before calling
+the issue finished. It prints that message whole and nothing else (a Claude worker's last
+`result`, a Codex worker's last `agent_message` of its last ended turn), or one
+`NO RESULT <box>/<name>: <why>` line with exit 1 when no turn has ended with one; plain `log` is
+the tail of every turn's text, and cuts a long hand-back.
 
 ## Blocking in a headless turn
 
@@ -82,7 +86,8 @@ with the wait to run in the foreground.
 - **Nothing is stranded by a coordinator interruption; the wave just went unobserved.**
   Detached workers keep running on their boxes, so after any interruption the recovery is
   `fleet-worker.sh ls` across the fleet, then `attach` again per running worker and
-  `status`/verdict per finished one. A fleet-length wave (10 h and more) is therefore not a
+  `status`/verdict per finished one, and `log --last-result` for a turn that ended while
+  unobserved. A fleet-length wave (10 h and more) is therefore not a
   heartbeat problem. `attach` itself retries an unreachable box for ~40 minutes before giving
   up (exit 4 - wake the box and re-attach).
 
@@ -133,7 +138,8 @@ with the wait to run in the foreground.
 
 ## Close-out
 
-A Claude worker's process ends only when its input closes: once its hand-back turn is read,
+A Claude worker's process ends only when its input closes: once its hand-back turn is read
+(`log <box> <name> --last-result`),
 `fleet-worker.sh close <box> <name>` closes the input, waits for the exit and prints the final
 `DONE`/`FAILED` verdict (it refuses a worker mid-turn or with its latest message unanswered; on
 an ended worker it prints the verdict as it stands). `fleet-worker.sh ls` must show no `RUNNING`, no `IDLE` and no `ORPHANED` CLI worker on
