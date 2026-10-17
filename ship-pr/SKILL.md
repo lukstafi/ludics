@@ -305,9 +305,11 @@ client, the `<pr-created>` tag renders a PR card, and the review-event feed behi
 "Auto-fix CI & address comments" switch. Do not assume it is off: on ludics-lite#653
 (2026-10-16) `mcp__ccd_pr__get_status` read `auto_fix: true` right after `gh pr create`, in a
 session whose app setting "Auto-fix pull requests" was on; elsewhere a PR opened with the tag and
-no other setup drew a review no event announced. `get_status` reports the switch; a worker PR in
-an issue wave follows issue-wave's
-[native-claude.md](../issue-wave/references/native-claude.md#auto-fix-events-on-worker-prs). If
+no other setup drew a review no event announced. `get_status` reports the switch. On a PR an
+issue wave owns (a worker's, or its coordinator's), the user has authorized switching it off for
+good (2026-10-17), and issue-wave's
+[native-claude.md](../issue-wave/references/native-claude.md#auto-fix-events-on-worker-prs) says
+who makes the call and when. If
 review events do arrive and carry the comment bodies and ids inline, take them as they come and
 stop polling for what they delivered.
 

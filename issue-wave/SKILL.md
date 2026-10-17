@@ -216,10 +216,7 @@ decision they own:
    before the affected worker launches.
 
 Most waves should have an empty tier 3. If every question keeps landing in tier 3, the
-triage is wrong, not the backlog. A desktop coordinator with native Claude workers whose wave
-request did not settle Auto-fix on worker PRs adds that question to a batch already going out,
-never opening one for it alone
-([native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs)).
+triage is wrong, not the backlog.
 
 ## Launch
 
@@ -457,9 +454,8 @@ requirements for every transport with transport-specific setup and identity, and
   Claude worker as [Blocking on a run](references/native-claude.md#blocking-on-a-run) says, a
   Codex worker by keeping its turn open, because a returned turn says only that the turn ended
   (Supervise: *A returned turn means the turn ended*).
-- **Auto-fix on a desktop coordinator's worker PRs stays as the user left it** unless the user
-  authorized the switch-off for this wave; only then does a bypass-mode native Claude worker's
-  brief carry the step, as
+- **Auto-fix goes off on every wave PR**, under the user's standing authorization (2026-10-17):
+  a bypass-mode native Claude worker's brief carries the switch-off step and cites it, as
   [native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs) says.
 - Model-agnostic text: the commit trailer says "credit your own model" (the project's
   `Co-Authored-By` shape with the worker's own model name), never a model the coordinator
