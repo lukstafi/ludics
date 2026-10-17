@@ -23,7 +23,7 @@ composition the near side does around it:
   REFRESH      after FRESHNESS
   LAUNCH_EXISTS, LAUNCH_FETCH, LAUNCH (after ghprobe)
   VERDICT      the verdict of a finished worker, for ATTACH and CLOSE
-  ATTACH, STATUS, LOG, UNSTICK (after ghprobe), CLOSE, LS
+  ATTACH, STATUS, LOG, LOG_LAST_RESULT, UNSTICK (after ghprobe), CLOSE, LS
 """
 
 import shlex
@@ -1224,6 +1224,46 @@ case "$(meta_get "$d" kind)" in
   codex)  jq -Rr 'fromjson? | select(.type=="item.completed" and .item.type=="agent_message") | .item.text' "$d/stream.jsonl" 2>/dev/null | tail -n "$n" ;;
 esac
 if [ -s "$d/stderr.log" ]; then echo "--- stderr (tail):"; tail -n 5 "$d/stderr.log"; fi
+"""
+
+
+# `log --last-result`. Args: name. The final message of the worker's latest ENDED turn, whole and
+# alone on stdout -- what a coordinator parses for EXECUTION_REQUEST / EXECUTION_RESULT and the
+# hand-back -- so no stderr tail follows it (`log` without the flag has that). A turn still in
+# progress has no final message yet: the one printed is its predecessor's, and `status` says
+# whether a turn is running. The rule per kind, over the whole append-only stream:
+#   claude: the `.result` of the last `result` event, the event that ends every turn (an error
+#           result included: its text is the turn's last word, as attach reports it);
+#   codex:  a turn runs from `turn.started` to its `turn.completed` or `turn.failed` (each resume
+#           is a new process appending a new turn); the message is the last `agent_message` item
+#           inside the last turn that ended. A turn that failed has no final message, nor does a
+#           completed one with no agent_message; an unterminated turn (a killed exec) is skipped.
+# Anything else is one line, `NO RESULT <box>/<name>: <why>`, exit 1 (UNKNOWN stays exit 3).
+LOG_LAST_RESULT = r"""name="$1"; d="$WORKERS/$name"
+[ -f "$d/meta" ] || { echo "UNKNOWN $BOX/$name: never launched here"; exit 3; }
+kind=$(meta_get "$d" kind)
+# Each program ends in {text} or {why}: read once for the why, once more to print the text.
+case "$kind" in
+  claude) prog='[inputs | fromjson? | select(type == "object" and .type == "result")] | last
+    | if . == null then {why: "no result event in the stream: no turn has ended yet"}
+      elif (.result | type) == "string" then {text: .result}
+      else {why: "the latest turn ended (\(.subtype // "no subtype")) with no result text"} end' ;;
+  codex) prog='reduce (inputs | fromjson? | select(type == "object")) as $e ({cur: null, last: null};
+      if $e.type == "turn.started" then .cur = null
+      elif $e.type == "item.completed" and ($e.item | type) == "object" and $e.item.type == "agent_message" then .cur = ($e.item.text // "" | tostring)
+      elif $e.type == "turn.completed" or $e.type == "turn.failed" then .last = {type: $e.type, text: .cur, err: ($e.error.message? // "" | tostring)} | .cur = null
+      else . end)
+    | .last
+    | if . == null then {why: "no turn.completed or turn.failed in the stream: no turn has ended yet"}
+      elif .type == "turn.failed" then {why: "the latest turn ended turn.failed: \(.err[0:200] | gsub("\n"; " "))"}
+      elif .text == null then {why: "the latest turn completed with no agent_message"}
+      else {text: .text} end' ;;
+  *) echo "NO RESULT $BOX/$name: unknown worker kind '$kind'"; exit 1 ;;
+esac
+[ -r "$d/stream.jsonl" ] || { echo "NO RESULT $BOX/$name: no stream yet"; exit 1; }
+why=$(jq -Rrn "$prog | .why // empty" "$d/stream.jsonl" 2>&1) || { echo "NO RESULT $BOX/$name: cannot read the stream: $(printf '%s' "$why" | head -n 1)"; exit 1; }
+[ -z "$why" ] || { echo "NO RESULT $BOX/$name: $why"; exit 1; }
+jq -Rrn "$prog | .text" "$d/stream.jsonl"
 """
 
 

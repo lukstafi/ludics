@@ -89,7 +89,10 @@
 #                          [--replace] [-- <extra CLI args>]
 #   fleet-worker.sh attach <box> <name> [--interval <sec>]
 #   fleet-worker.sh status <box> <name>
-#   fleet-worker.sh log <box> <name> [-n <lines>]
+#   fleet-worker.sh log <box> <name> [-n <lines>]   # the tail of every turn's assistant text
+#   fleet-worker.sh log <box> <name> --last-result  # the latest ended turn's final message, whole
+#                          # and alone (no -n): claude's last `result`, codex's last agent_message
+#                          # of its last ended turn; none yet is `NO RESULT <box>/<name>: <why>`, exit 1
 #   fleet-worker.sh unstick <box> <name> --message <file> [--kill] [-- <extra CLI args>]
 #                          # a live claude worker: append (APPENDED); else kill-and-resume (RESUMED)
 #   fleet-worker.sh unstick <box> <name> --interrupt [--message <file>]

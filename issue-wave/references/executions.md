@@ -736,8 +736,10 @@ fleet tests or experiments, it writes the requested revision, execution host, wo
 exact bounded command/batch, checkout and intended log path to the request file, prints
 `EXECUTION_REQUEST <absolute-path>`, and ends its turn without starting that execution.
 
-The coordinator observes the tracked `attach` exit, reads the file (over ssh when needed), and
-confirms through `status` that the turn has ended: a Claude worker `IDLE`, a Codex exec exited.
+The coordinator observes the tracked `attach` exit, takes the path from the turn's final
+message (`fleet-worker.sh log <agent-box> <worker> --last-result`; `EXECUTION_RESULT <path>`
+likewise ends the result turn), reads the file (over ssh when needed), and confirms through
+`status` that the turn has ended: a Claude worker `IDLE`, a Codex exec exited.
 Queue the request until the execution host is available. Reserve it with `transport: "cli"` and
 the actual `agent_host`, then call `execution dispatch`. Only after successful dispatch, send the
 continuation with `fleet-worker.sh unstick <agent-box> <worker> --message <brief-file>` (an

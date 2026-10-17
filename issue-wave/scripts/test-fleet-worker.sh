@@ -43,6 +43,7 @@ SECTIONS=(
   "failure verdicts"
   "unstick"
   "codex workers"
+  "log --last-result (fixture streams)"
   "halt"
   "execution run and conclude --from-run"
   "execution conclude --from-bg-run"
@@ -1951,6 +1952,63 @@ printf 'Watch armed; it wakes me later\n' > "$TMP/cstrand.md"
 "$FW" launch testbox cst --target-repo example/project --kind codex --brief "$TMP/cstrand.md" --cwd "$proj" >/dev/null
 expect "a codex turn's last agent message is read for the strand mark too" 0 \
   'DONE testbox/cst exit=0 turn.completed .* | PROBABLE STRAND: the final message says "wakes me"' -- "$FW" attach testbox cst --interval 1
+}
+
+section "log --last-result (fixture streams)" && {
+# Hand-written records: the far side reads meta's kind and stream.jsonl, nothing else, so a
+# fixture stream pins the turn rules (farside.LOG_LAST_RESULT) without a CLI run.
+# fixture_stream <name> <kind>: a finished record whose stream is stdin.
+fixture_stream() {
+  local d="$ISSUE_WAVE_STATE/workers/$1"
+  mkdir -p "$d" && printf 'kind=%s\n' "$2" > "$d/meta" && cat > "$d/stream.jsonl" && printf '0\n' > "$d/exit"
+}
+# expect_exact <label> <want-rc> <want-file> -- <cmd...>: stdout byte for byte, and the status.
+expect_exact() {
+  local label="$1" want_rc="$2" want="$3"; shift 3; [ "$1" = -- ] && shift
+  "$@" > "$TMP/exact.out" 2>&1; rc=$?
+  if [ "$rc" -eq "$want_rc" ] && cmp -s "$want" "$TMP/exact.out"; then ok "$label"
+  else ko "$label (rc=$rc want $want_rc) -- $(diff "$want" "$TMP/exact.out" | head -n 8)"; fi
+}
+two=$(printf 'EXECUTION_REQUEST /state/workers/lr-turns/request.json\nThe hand-back, line two.')
+jq -cn --arg two "$two" '
+  {type:"system",subtype:"init",session_id:"s1"},
+  {type:"assistant",message:{content:[{type:"text",text:"working on turn one"}]}},
+  {type:"result",subtype:"success",is_error:false,result:"turn one final"},
+  {type:"user",isReplay:true,uuid:"u2",message:{content:"continue"}},
+  {type:"assistant",message:{content:[{type:"text",text:"working on turn two"}]}},
+  {type:"result",subtype:"success",is_error:false,result:$two}' | fixture_stream lr-turns claude
+printf '%s\n' "$two" > "$TMP/want-turns"
+expect_exact "a claude stream of several turns prints the last result alone, whole" 0 "$TMP/want-turns" -- "$FW" log testbox lr-turns --last-result
+printf '%s\n' '{"type":"user","isReplay":true,"uuid":"u3","message":{"content":"more"}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"turn three, mid-flight"}]}}' >> "$ISSUE_WAVE_STATE/workers/lr-turns/stream.jsonl"
+expect_exact "...and a turn still in progress leaves the latest ended turn's result in place" 0 "$TMP/want-turns" -- "$FW" log testbox lr-turns --last-result
+seq -f 'hand-back line %g' 1 60 > "$TMP/want-long"
+jq -cn --rawfile r "$TMP/want-long" '($r | rtrimstr("\n")) as $t
+  | {type:"assistant",message:{content:[{type:"text",text:$t}]}}, {type:"result",subtype:"success",is_error:false,result:$t}' | fixture_stream lr-long claude
+expect_exact "a result longer than log's 40-line default prints whole" 0 "$TMP/want-long" -- "$FW" log testbox lr-long --last-result
+out=$("$FW" log testbox lr-long 2>&1); [ "$(grep -c '' <<<"$out")" -eq 40 ] && ok "...where plain log still shows the 40-line tail" || ko "plain log of lr-long: $(grep -c '' <<<"$out") lines"
+expect "-n with --last-result is refused" 2 "log: --last-result prints the whole final message; -n does not apply" -- "$FW" log testbox lr-long --last-result -n 5
+jq -cn '{type:"system",subtype:"init",session_id:"s1"}, {type:"assistant",message:{content:[{type:"text",text:"still going"}]}}' | fixture_stream lr-none claude
+printf 'NO RESULT testbox/lr-none: no result event in the stream: no turn has ended yet\n' > "$TMP/want-none"
+expect_exact "a claude stream with no result event is one NO RESULT line, exit 1" 1 "$TMP/want-none" -- "$FW" log testbox lr-none --last-result
+jq -cn '{type:"result",subtype:"error_max_turns",is_error:true}' | fixture_stream lr-notext claude
+expect "a last result with no text names its subtype" 1 "^NO RESULT testbox/lr-notext: the latest turn ended (error_max_turns) with no result text$" -- "$FW" log testbox lr-notext --last-result
+expect "an unknown worker stays UNKNOWN, exit 3" 3 "^UNKNOWN testbox/lr-nope" -- "$FW" log testbox lr-nope --last-result
+# codex: a turn is turn.started .. turn.completed|turn.failed; each resume appends one.
+jq -cn '
+  {type:"thread.started",thread_id:"t1"}, {type:"turn.started"},
+  {type:"item.completed",item:{type:"agent_message",text:"codex turn one final"}}, {type:"turn.completed"},
+  {type:"thread.started",thread_id:"t1"}, {type:"turn.started"},
+  {type:"item.completed",item:{type:"agent_message",text:"codex turn two, a progress note"}},
+  {type:"item.completed",item:{type:"command_execution",command:"dune test"}},
+  {type:"item.completed",item:{type:"agent_message",text:"EXECUTION_RESULT /state/result.json\ncodex turn two final"}}, {type:"turn.completed"},
+  {type:"thread.started",thread_id:"t1"}, {type:"turn.started"},
+  {type:"item.completed",item:{type:"agent_message",text:"a turn the exec never finished"}}' | fixture_stream lr-codex codex
+printf 'EXECUTION_RESULT /state/result.json\ncodex turn two final\n' > "$TMP/want-codex"
+expect_exact "a codex stream prints the last agent_message of the last completed turn" 0 "$TMP/want-codex" -- "$FW" log testbox lr-codex --last-result
+printf '%s\n' '{"type":"thread.started","thread_id":"t1"}' '{"type":"turn.started"}' '{"type":"turn.failed","error":{"message":"Selected model is at capacity"}}' >> "$ISSUE_WAVE_STATE/workers/lr-codex/stream.jsonl"
+expect "...and a latest turn that failed is NO RESULT naming the failure" 1 "^NO RESULT testbox/lr-codex: the latest turn ended turn.failed: Selected model is at capacity$" -- "$FW" log testbox lr-codex --last-result
+jq -cn '{type:"thread.started",thread_id:"t2"}, {type:"turn.started"}, {type:"item.completed",item:{type:"agent_message",text:"mid-turn"}}' | fixture_stream lr-codex-none codex
+expect "a codex stream with no ended turn is NO RESULT" 1 "^NO RESULT testbox/lr-codex-none: no turn.completed or turn.failed in the stream" -- "$FW" log testbox lr-codex-none --last-result
 }
 
 section "halt" && {

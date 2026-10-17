@@ -923,8 +923,8 @@ When the last gate clears: every worker on the board has finished its work and i
 task -> box -> PR -> merge state), residuals and follow-up issues, and any gates left for the next
 invocation. Workers ran `after-merge` in hand-back mode, so each close-out - collected through
 the transport's channel: the coordinator file's messages and waits for a native worker,
-`read_thread` or `list_events` for an app worker, `fleet-worker.sh log <box> <name>` for a CLI
-worker; the thread or CLI stream is the full record - arrives carrying proposed issues, chip candidates,
+`read_thread` or `list_events` for an app worker, `fleet-worker.sh log <box> <name> --last-result`
+for a CLI worker; the thread or CLI stream is the full record - arrives carrying proposed issues, chip candidates,
 and reasoned drops; the coordinator's role here is editorial, not generative. Combine
 overlapping proposals across workers into single issues - cross-worker recurrence is the
 strongest priority signal a wave produces - revise drafts against the tracker's style, then do
