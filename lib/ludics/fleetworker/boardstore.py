@@ -23,6 +23,9 @@ lock and no lease. So it imports nothing from the ``ludics`` package, and its ar
 
 Argv: <state root> <action> <coordinator> <json payload>
 
+The payload word `-` says the payload is on file descriptor 3 (ludics-lite#636), one JSON string,
+as ``registry.py``'s header states it for the registry; any other word is the payload itself.
+
   set   {"wave", "create", "task", "fields": [[key, value], ...]}   a task's row: each key set, in
         order (a new key joins the row's end; a task not yet on the board joins the table's end)
   note  {"wave", "create", "fields": [[key, value], ...]}           the wave's own facts (coordinator,
@@ -237,8 +240,25 @@ def render(doc: Doc) -> str:
     return "\n".join(out) + "\n"
 
 
+def payload_word(word: str) -> str:
+    """The JSON payload argv names: the word itself, or for ``-`` the one JSON string on fd 3 (the
+    header). registry.py carries the same reader: each shipped module is self-contained."""
+    if word != "-":
+        return word
+    try:
+        with open(3, "rb") as stream:
+            data = stream.read()
+    except OSError as exc:
+        raise ValueError(f"payload `-` names file descriptor 3, which cannot be read ({exc.strerror})") from None
+    text: Any = json.loads(data.decode("ascii"))
+    if not isinstance(text, str):
+        raise ValueError("the payload on file descriptor 3 must be one JSON string")
+    return text
+
+
 def main(argv: list[str]) -> None:
-    root, action, coordinator, raw = argv[1:5]
+    root, action, coordinator, word = argv[1:5]
+    raw = payload_word(word)
     decoded: Any = json.loads(raw)
     if not isinstance(decoded, dict):
         refuse("the payload must be a JSON object")

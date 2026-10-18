@@ -13,7 +13,9 @@ Its header is the contract: the document, what it accepts, and the markdown view
 The writers run inside the lease lock after the lease check (``lease.LEASE_MUTATION``), the lock and
 check every halt and registry write takes; ``show`` takes neither, so anyone may read a board. Every
 argument travels inside one JSON payload, ASCII-escaped, so no cell text is a shell word, a ``sed``
-pattern or a delimiter on the near side, over ssh, or on the anchor. A ``key=value`` splits at its
+pattern or a delimiter on the near side, over ssh, or on the anchor; the payload rides the far-side
+script to the store's fd 3, never one argv word, so no length of it fails execve (ludics-lite#636,
+``transport.shipped_python``). A ``key=value`` splits at its
 FIRST ``=``: the value is everything after it, ``=`` included. ``--create`` is read only right after
 ``set`` or ``note``, so no value can be mistaken for it; ``log`` takes none and never starts a board,
 since an append is not idempotent and a retried first write must be.
@@ -27,7 +29,7 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
-from ludics.fleetworker.transport import prelude, run_on
+from ludics.fleetworker.transport import PAYLOAD_ON_FD, prelude, run_on, shipped_python
 
 USAGE = (
     "board set [--create] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
@@ -41,11 +43,12 @@ FIND_PYTHON = (
 )
 
 
-def store_command() -> str:
-    """The far side's last lines: the store's source as the program, its argv after it."""
+def store_command(raw: str) -> str:
+    """The far side's last lines: the store's source as the program, its argv after it, and the
+    payload on its fd 3 (``transport.shipped_python``; the argv's payload word is PAYLOAD_ON_FD)."""
     with open(boardstore.__file__, encoding="utf-8") as f:
         source = f.read()
-    return FIND_PYTHON + "\"$py\" -X utf8 -P - \"$ANCHOR_STATE\" \"$@\" <<'FLEET_BOARD_PY'\n" + source + "\nFLEET_BOARD_PY\n"
+    return shipped_python(FIND_PYTHON, source, "FLEET_BOARD_PY", raw)
 
 
 def fields_of(words: list[str], action: str) -> list[list[str]]:
@@ -102,13 +105,13 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
     action, payload = payload_of(args)
     raw = json.dumps(payload, separators=(",", ":"))
     if action == "show":
-        script = prelude(cfg, cfg.anchor) + "shift 3\n" + store_command()
-        argv = ["BOARD", "x", "x", action, "x", raw]
+        script = prelude(cfg, cfg.anchor) + "shift 3\n" + store_command(raw)
+        argv = ["BOARD", "x", "x", action, "x", PAYLOAD_ON_FD]
     else:
         check_identity(cfg)
         token = my_token(cfg)
-        script = prelude(cfg, cfg.anchor) + LEASE_MUTATION + store_command()
-        argv = ["BOARD", token, cfg.lock_wait, action, coordinator_id(cfg), raw]
+        script = prelude(cfg, cfg.anchor) + LEASE_MUTATION + store_command(raw)
+        argv = ["BOARD", token, cfg.lock_wait, action, coordinator_id(cfg), PAYLOAD_ON_FD]
     done = run_on(cfg, cfg.anchor, script, argv)
     if done.unreachable:
         cli.say(f"BOARD UNREACHABLE {cfg.anchor}")

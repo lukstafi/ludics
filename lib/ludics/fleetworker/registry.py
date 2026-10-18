@@ -14,6 +14,14 @@ package's unit tests import; `main` runs when the module is run as a program, as
 Argv: <state root> <action> <coordinator> <lease token> <json payload> <FLEET_BOXES>
       [<FLEET_BOX_CORRECTNESS_SLOTS> [<endpoint map> [<anchor> <lab host>]]]
 
+The payload (ludics-lite#636): the word `-` says it is on file descriptor 3, where fleet-worker puts
+it -- one line, the payload as a JSON string, read to its end and closed (`payload_word`); any other
+word is the payload itself (a direct `python registry.py` call, the in-process suites). So argv
+carries only the small words above, and no length of payload, which is the caller's to choose (a
+hand-written `evidence`), can fail execve: one argv word is capped at 128 KiB on Linux, for the
+local `bash -s` and ssh's remote command alike. The far-side framing is fleet-worker's
+`transport.shipped_python`; this module reads only what its contract says, nothing else on fd 3.
+
 Ownership per execution host (ludics-lite#157): a `measurement` assignment is exclusive -- it
 refuses while anything else is outstanding on the box, and everything refuses while it is. A
 `correctness` assignment shares the box with other correctness assignments up to that box's
@@ -510,8 +518,25 @@ def publish(directory: Path, record: Record) -> None:
         if os.path.exists(temporary):
             os.unlink(temporary)
 
+def payload_word(word: str) -> str:
+    """The JSON payload argv names: the word itself, or for `-` the one JSON string on fd 3 (the
+    header). boardstore.py carries the same reader: each shipped module is self-contained."""
+    if word != "-":
+        return word
+    try:
+        with open(3, "rb") as stream:
+            data = stream.read()
+    except OSError as exc:
+        raise ValueError(f"payload `-` names file descriptor 3, which cannot be read ({exc.strerror})") from None
+    text: Any = json.loads(data.decode("ascii"))
+    if not isinstance(text, str):
+        raise ValueError("the payload on file descriptor 3 must be one JSON string")
+    return text
+
+
 def main(argv: list[str]) -> None:
-    root, action, coordinator, token, raw, boxes = argv[1:7]
+    root, action, coordinator, token, word, boxes = argv[1:7]
+    raw = payload_word(word)
     slots_spec = argv[7] if len(argv) > 7 else ""
     map_spec = argv[8] if len(argv) > 8 else ""
     anchor, lab = (argv[9:11] + ["", ""])[:2]
