@@ -79,12 +79,17 @@ handle, log and verdict, and leave worktree cleanup to the coordinator.
 
 ## Supervision, recovery and evidence
 
-Maintain the board on the anchor under `FLEET_ANCHOR_STATE` (default
-`~/.local/state/issue-wave`, for example as `native-workers.md` there), alongside the script's
-CLI records. Store wave and coordinator identity, the durable brief, runtime identity, transport,
-agent host, intended execution hosts, checkout ownership, branch and base, dispatch status,
-PR/head/merge state, last observation, remaining gates, hand-back, and reservation request
-IDs. Check the lease before board writes and interventions.
+Maintain the board on the anchor with `fleet-worker.sh board`: `board set [--create] <wave>
+<task> key=value ...` for a worker's row, `board note <wave> key=value ...` for wave-level facts,
+`board log <wave> <text>` for the append-only log, and `board show <wave> [--json]` to read it
+(the store and its grammar: `lib/ludics/fleetworker/boardstore.py`). A wave whose board predates
+the verb (a markdown file under `FLEET_ANCHOR_STATE`, such as `<wave>-board.md`) keeps that file
+to its close-out, and recovery reads it there: `board show` reads only the structured boards and
+refuses a wave it has none for. Store wave and coordinator identity, the durable brief, runtime
+identity, transport, agent host, intended execution hosts, checkout ownership, branch and base,
+dispatch status, PR/head/merge state, last observation, remaining gates, hand-back, and
+reservation request IDs. The writers check the lease themselves; check it before interventions.
+A board write that fails may or may not have landed: re-read with `board show` before retrying it.
 
 Use the runtime's messages and bounded waits, retaining real identities. Follow up in the same
 agent when work is unfinished and observe the response. A returned turn is read by its final

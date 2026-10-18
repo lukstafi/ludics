@@ -4,8 +4,8 @@
 # own machine or a remote one reached over ssh (ludics-lite#4).
 #
 # Native workers use runtime subagents (or explicitly chosen app tasks); this script supplies their provider-specific native
-# freshness preflight and point-in-time gate. Their board is coordinator-maintained (see
-# references/native-workers.md); ls/status/attach/unstick below only handle CLI workers.
+# freshness preflight and point-in-time gate. Their board is coordinator-maintained through
+# `board` (see references/native-workers.md); ls/status/attach/unstick below only handle CLI workers.
 #
 # A CLI worker is a detached tmux session on its box running a headless CLI, with its event
 # stream on disk under the box's ~/.local/state/issue-wave/workers/<name>/. Everything the
@@ -176,10 +176,18 @@
 #                          # after a round 1 of 5 or more inline findings (read-only); --wave
 #                          # keeps the PRs that close or reference an issue the wave's records name
 #   fleet-worker.sh halt <reason> | resume-launches | halted
+#   fleet-worker.sh board set [--create] <wave> <task> <key>=<value>...   # the wave board, one JSON
+#                          # document per wave under FLEET_ANCHOR_STATE/boards (ludics-lite#619): a
+#                          # task's row, each key set; any text in a value, split at the first `=`
+#   fleet-worker.sh board note [--create] <wave> <key>=<value>...   # the wave's own facts
+#   fleet-worker.sh board log <wave> <text>...   # one line appended to its log, stamped
+#   fleet-worker.sh board show <wave> [--json]   # the markdown view (or the document); no lease
+#                          # (set/note --create starts the board; without it every writer refuses
+#                          # an unknown wave; the contract: lib/ludics/fleetworker/boardstore.py)
 #
-# `launch`, `unstick`, `close`, `halt` and `resume-launches` require the lease; `launch` also refuses
-# while halted (`--force` admits the one triage worker) and runs the preflight on the box first.
-# Lease and halt live on FLEET_ANCHOR.
+# `launch`, `unstick`, `close`, `halt`, `resume-launches` and the board's writers require the lease;
+# `launch` also refuses while halted (`--force` admits the one triage worker) and runs the preflight
+# on the box first. Lease, halt and boards live on FLEET_ANCHOR.
 #
 # <box> is an ssh destination (rog-nv-linux, minix-amd-linux, tuf-amd-linux), or `local` / this machine's own fleet
 # name (detected from the hostname through FLEET_HOSTNAME_MAP; FLEET_LOCAL_BOX overrides) for the
