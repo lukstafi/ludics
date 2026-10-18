@@ -147,12 +147,14 @@ def wave_issues(records: Json, wave: str) -> list[Json]:
     return unique(i for r in wave_records(records, wave) if (i := path(r, "request", "issue")) is not None)
 
 
-def wave_workers(records: Json, wave: str) -> tuple[str, ...]:
-    """The worker names of one wave's records that a PR branch can end in (see the boundary above
-    WAVE_WORKER): a worker transport's (``subagent``, ``app``, ``cli``), spelled as one branch-name
-    component."""
+def wave_workers(records: Json, wave: str, repo: str) -> tuple[str, ...]:
+    """The worker names of one wave's records for ``repo`` that a PR branch can end in (see the
+    boundary above WAVE_WORKER): a worker transport's (``subagent``, ``app``, ``cli``), spelled as one
+    branch-name component."""
     return tuple(sorted({w for r in wave_records(records, wave)
                    if path(r, "request", "transport") in WORKER_TRANSPORTS
+                   and isinstance(owner_name := path(r, "request", "repository"), str)
+                   and owner_name.casefold() == repo.casefold()
                    and isinstance(w := path(r, "request", "worker"), str) and WAVE_WORKER.fullmatch(w)}))
 
 
@@ -224,9 +226,11 @@ WAVE_ISSUE = re.compile(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([1-9][0-9]*)")
 # A post-wave task has no issue of its own, so its records name none (ludics-lite#664; `reserve`
 # refuses an `issue` not spelled `owner/name#N`), and a worker's PR that forgets its `Refs` line
 # references nothing: neither read above finds it. Boundary, a fail-closed allowlist: what is read is
-# each wave record's `worker` and `transport`, never PR text; a worker counts only when its record's
-# transport is a worker's (WORKER_TRANSPORTS -- a coordinator's own record names no worker PR) and its
-# name is one branch-name component (WAVE_WORKER: no `/`, so `/root/issue12` is not read); an open PR
+# each wave record's `worker`, `transport` and `repository`, never PR text; a worker counts only when
+# its record's transport is a worker's (WORKER_TRANSPORTS -- a coordinator's own record names no worker
+# PR), its record's `repository` is the one listed (GitHub names compare case-insensitively: a wave
+# spanning two repositories keeps each worker to its own, as the records name the PR repository,
+# lukstafi/ocannl-staging for an ahrefs/ocannl wave), and its name is one branch-name component (WAVE_WORKER: no `/`, so `/root/issue12` is not read); an open PR
 # is kept when its `headRefName` is that name or ends in `/` and that name, compared exactly (git
 # branch names are case-sensitive). Nothing is read beyond the open list prs already holds.
 WORKER_TRANSPORTS = frozenset({"subagent", "app", "cli"})
@@ -398,7 +402,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
             if docs is None or len(docs) != 1:
                 raise JqError("not one registry listing")
             known = bool(wave_records(docs[0], wave))
-            issues, workers = wave_issues(docs[0], wave), wave_workers(docs[0], wave)
+            issues, workers = wave_issues(docs[0], wave), wave_workers(docs[0], wave, repo)
         except JqError:
             cli.say("PRS REFUSED: the anchor's registry did not parse")
             return 1

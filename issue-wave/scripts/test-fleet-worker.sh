@@ -3210,6 +3210,7 @@ jq -n --arg now "$now" '[{number: 7, title: "post-wave PR", headRefName: "claude
 expect "--wave keeps a PR on a branch of a worker its records name, with no issue to read" 0 "^o/r#7 rounds=2 .* claude/wvp-p1t2: post-wave PR$" -- "$FW" prs o/r --wave wvp --flag-at 7
 grep -q "o/r#12" <<<"$out" && ko "a branch that only contains the worker's name was kept: $out" || ok "...and drops a branch whose last component is another name"
 grep -q graphql "$P/calls" && ko "a cross-reference read for a wave naming no issue: $(cat "$P/calls")" || ok "...with no cross-reference read"
+expect "...and only in the repository the worker's records name" 0 "^PRS o/other: no open PRs closing or referencing an issue of wave wvp, or on a branch of its workers$" -- "$FW" prs o/other --wave wvp
 fixture_done prs-p
 unset SHIM_PRS
 }
