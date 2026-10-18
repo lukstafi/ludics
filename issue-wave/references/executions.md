@@ -228,7 +228,8 @@ requests already queued, and any a worker has said is about to follow) and run t
 in arrival order: open a window with the first, and when its result line comes in, conclude it and
 open the next one's window in the same turn. The conclusion restores the standing reservations and
 the next window suspends them again, two registry calls with no message to the workers, whose
-batches are refused naming whichever window is open. A request arriving while a window is open
+batches and legs under `--wait-window` wait through both (without it, each is refused naming
+whichever window is open). A request arriving while a window is open
 joins the queue. The last conclusion leaves the standing reservations restored, and the workers'
 batches are admitted again.
 
@@ -581,7 +582,13 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   hold --request <id>`, which takes `--deadline` alone. A record holding a `resolved_revision`
   (a [`head-of:` request](#reserve-launch-observe-conclude)), or a non-standing one whose
   `requested_revision` is exactly one commit, refuses any `--rev` that comes to
-  another commit, and the registry refuses any `observed_sha` but that commit for it.
+  another commit, and the registry refuses any `observed_sha` but that commit for it. A standing
+  record a [measurement window](#exclusivity-and-the-run-time-slots) has `suspended` is refused at
+  once naming the window, unless the leg has `--wait-window[=<s>]` (ludics-lite#666): then it waits
+  on the caller's box, in the slot's own wait (`EXECUTION LEG <box>: measurement window <id> holds
+  <box> ...`), until nothing is measuring on the record's box, for at most that bound, and is
+  refused past it as the slot is (`EXECUTION LEG REFUSED <box>: measurement <id> still holds <box>
+  after <n>s (--wait-window); nothing ran`); the slot on the box gets what is left of the bound.
 - **The worktree.** `--checkout` is the project's checkout on the box and `--worktree` a linked
   worktree of it (paths absolute, or a quoted `~/`, expanded on the box; the caller's shell
   expands an unquoted one to the caller's home): made with `git worktree add --detach` when the path does
@@ -681,7 +688,8 @@ request/assign/report round-trips parked three workers idle between review round
 A measurement on a box where the worker holds one suspends that reservation for as long as it runs: the
 coordinator opens it as a [measurement window](#exclusivity-and-the-run-time-slots), the record's
 state is `suspended` meanwhile, and a batch on the box waits for the window under the brief's
-`execution slot --wait-window` (or is refused naming it without that flag). A standing
+`execution slot --wait-window`, a [leg](#a-leg-on-another-box) under its own `--wait-window` (or
+either is refused naming it without that flag). A standing
 reservation taken while a window is open is admitted suspended, and restored with the others.
 
 ### The GPU home box
