@@ -1,7 +1,8 @@
 """Units of ``merge``'s build of the would-be merge commit (ludics-lite#611, prreview/mergebuild.py):
-the config's grammar, the build-input boundary, the clone's remote, and the build itself in a real
-scratch repository -- refused with its output, passed, refused on a textual conflict, superseded on
-a moved head -- each leaving the clone as it was.
+the config's grammar, the build-input boundary and the trigger, the clone's remote, and the build
+itself in a real scratch repository -- refused with its output, passed, refused on a textual
+conflict, superseded on a moved head, its command's contract, an interrupt during its setup
+(ludics-lite#635) -- each leaving the clone as it was.
 
 test-pr-review-merge.sh runs the same build end to end through `merge`; these pin the rules a
 regression would bend first.
@@ -21,7 +22,7 @@ import unittest
 from ludics import cli
 from ludics.prreview import drift, mergebuild
 from ludics.prreview.core import Json
-from ludics.prreview.mergebuild import BuildConfig, build_inputs, parse_config
+from ludics.prreview.mergebuild import BuildConfig, build_inputs, build_reason, parse_config
 
 
 def parsed(text: str) -> tuple[BuildConfig | None, str]:
@@ -41,8 +42,22 @@ class Grammar(unittest.TestCase):
         config, _ = parsed("command make\ninput *.c\n")
         self.assertEqual(config, BuildConfig("make", ("*.c",), mergebuild.DEFAULT_TIMEOUT))
 
+    def test_the_trigger_defaults_to_same_input(self) -> None:
+        config, _ = parsed("command make\ninput *.c\n")
+        self.assertEqual(config and config.trigger, "same-input")
+        values: tuple[mergebuild.Trigger, ...] = ("same-input", "any-input")
+        for value in values:
+            with self.subTest(value=value):
+                config, err = parsed(f"command make\ninput *.c\ntrigger {value}\n")
+                self.assertEqual(config, BuildConfig("make", ("*.c",), mergebuild.DEFAULT_TIMEOUT, value))
+                self.assertEqual(err, "")
+
     def test_every_other_line_refuses_naming_it(self) -> None:
         for text, named in (
+            ("command make\ninput *.c\ntrigger both-sides\n", "trigger both-sides"),
+            ("command make\ninput *.c\ntrigger Any-Input\n", "trigger Any-Input"),
+            ("command make\ninput *.c\ntrigger\n", "trigger"),
+            ("command make\ninput *.c\ntrigger any-input\ntrigger same-input\n", "trigger same-input"),
             ("command make\ninputs *.c\n", "inputs *.c"),
             ("command make\ninput *.c\nCommand make\n", "Command make"),
             ("command make\ninput\n", "input"),
@@ -83,6 +98,34 @@ class Inputs(unittest.TestCase):
         renamed = {"docs/api.txt": ["src/api.ml"], "src/api.ml": ["docs/api.txt"]}
         self.assertEqual(build_inputs(["docs/api.txt"], ("*.ml",), renamed), ["docs/api.txt"])
         self.assertEqual(build_inputs(["docs/api.txt"], ("*.ml",)), [])
+
+    def test_the_trigger_decides_on_the_two_sides(self) -> None:
+        same = BuildConfig("make", ("*.ml",))
+        anyi = BuildConfig("make", ("*.ml",), trigger="any-input")
+
+        def reason(config: BuildConfig, pr: list[str] | None, base: list[str] | None) -> tuple[str | None, str]:
+            overlap = None if pr is None or base is None else sorted(set(pr) & set(base))
+            return build_reason(drift.Drift(0, "main", "h", "t", overlap, {}, pr, base), config)
+
+        # The single-side clash: the base renamed a name in a.ml, the PR calls it from b.ml.
+        self.assertEqual(reason(same, ["b.ml"], ["a.ml"]), (None, "no path changed on both sides (trigger same-input)"))
+        why, _ = reason(anyi, ["b.ml"], ["a.ml"])
+        self.assertEqual(why, "build inputs changed on each side (trigger any-input): the PR's b.ml; the base's a.ml")
+        # any-input needs a build input on EACH side.
+        self.assertEqual(reason(anyi, ["b.ml"], ["notes.md"]), (None, "trigger any-input, and the base changed no build input (*.ml)"))
+        self.assertEqual(reason(anyi, ["notes.md"], ["a.ml"]), (None, "trigger any-input, and the PR changed no build input (*.ml)"))
+        # same-input is today's rule, unchanged.
+        why, _ = reason(same, ["a.ml", "x"], ["a.ml", "x"])
+        self.assertEqual(why, "1 build input(s) changed on both sides: a.ml")
+        self.assertEqual(reason(same, ["x"], ["x"]), (None, "none of the 1 path(s) changed on both sides is a build input (*.ml)"))
+        # Unknown sides build under either trigger.
+        for config in (same, anyi):
+            with self.subTest(trigger=config.trigger):
+                why, _ = reason(config, None, None)
+                self.assertIn("UNKNOWN", why or "")
+        # A long side is named in part.
+        why, _ = reason(anyi, [f"m{i}.ml" for i in range(25)], ["a.ml"])
+        self.assertIn("(and 15 more)", why or "")
 
     def test_the_drift_maps_renames_on_both_sides(self) -> None:
         forward: Json = {"files": [{"filename": "a.ml", "previous_filename": "a.txt"}, {"filename": "x"}]}
@@ -240,6 +283,24 @@ class Build(unittest.TestCase):
         time.sleep(3)
         self.assertFalse(os.path.exists(survived), "the group was ended after its leader exited")
 
+    def test_the_command_is_told_both_sides_and_the_parent_order(self) -> None:
+        """THE COMMAND'S CONTRACT (ludics-lite#635): HEAD's first parent is the base's tip, its
+        second the gated head, and the environment names both."""
+        head, tip = self.sides("keep", "seam() { :; }")
+        command = (
+            f'test "$SHIP_PR_MERGE_BASE_SHA" = {tip} && test "$SHIP_PR_MERGE_HEAD_SHA" = {head}'
+            ' && test "$(git rev-parse HEAD^1)" = "$SHIP_PR_MERGE_BASE_SHA"'
+            ' && test "$(git rev-parse HEAD^2)" = "$SHIP_PR_MERGE_HEAD_SHA"'
+            ' && git merge-base "$SHIP_PR_MERGE_BASE_SHA" "$SHIP_PR_MERGE_HEAD_SHA" && sh ./api.sh'
+        )
+        os.environ[mergebuild.BASE_SHA_VAR] = "inherited"
+        try:
+            rc, out = self.build(head, command)
+        finally:
+            del os.environ[mergebuild.BASE_SHA_VAR]
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PASSED", out)
+
     def test_the_builds_git_writes_stay_in_its_own_repository(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
         rc, out = self.build(head, "git tag built && git branch built2 && git update-ref refs/remotes/origin/main HEAD && sh ./api.sh")
@@ -376,6 +437,95 @@ class Build(unittest.TestCase):
                 time.sleep(4)
                 self.assertFalse(os.path.exists(survived), "the build was stopped with the merge")
                 self.assert_untouched(refs)
+
+    @unittest.skipIf(os.name == "nt", "POSIX signals")
+    def test_an_interrupt_during_the_setup_stops_its_git_call(self) -> None:
+        """A SIGTERM or SIGHUP to merge while the setup's fetch runs ends that git call and removes
+        the scratch (INTERRUPTS, ludics-lite#635): each child runs in a session of its own, so the
+        signal reaches it only through merge."""
+        head, _ = self.sides("keep", "seam() { :; }")
+        real_git = shutil.which("git")
+        assert real_git is not None
+        bin_dir = os.path.join(self.dir, "bin")
+        os.makedirs(bin_dir)
+        fake = os.path.join(bin_dir, "git")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write(
+                "#!/bin/sh\n"
+                f'case " $* " in *" fetch "*) echo $$ > "{self.dir}/fetch.pid"; exec sleep 30 ;; esac\n'
+                f'exec "{real_git}" "$@"\n'
+            )
+        os.chmod(fake, 0o755)
+        lib = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(sig=sig):
+                pidfile = os.path.join(self.dir, "fetch.pid")
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(pidfile)
+                tmp = os.path.join(self.dir, f"tmp-{sig}")
+                os.makedirs(tmp)
+                code = (
+                    "import os\n"
+                    "from ludics.prreview.mergebuild import _build, BuildConfig\n"
+                    "from ludics import cli\n"
+                    f"os.chdir({self.clone!r})\n"
+                    "try:\n"
+                    f"    _build('owner/repo', '7', {head!r}, 'main', {self.tip!r}, BuildConfig('sh ./api.sh', ('*.sh',), 60), 'test')\n"
+                    "except cli.Exit as exc:\n"
+                    "    raise SystemExit(exc.rc)\n"
+                )
+                child = subprocess.Popen(
+                    [sys.executable, "-B", "-c", code],
+                    env={**os.environ, "PYTHONPATH": lib, "TMPDIR": tmp, "PATH": bin_dir + os.pathsep + os.environ["PATH"]},
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                try:
+                    text = ""
+                    for _ in range(400):
+                        with contextlib.suppress(FileNotFoundError), open(pidfile, encoding="utf-8") as f:
+                            text = f.read().strip()
+                        if text:
+                            break
+                        time.sleep(0.05)
+                    fetch = int(text)
+                    self.assertTrue(any(n.startswith("pr-review-build.") for n in os.listdir(tmp)), "the scratch was made")
+                    child.send_signal(sig)
+                    rc = child.wait(timeout=20)
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait()
+                self.assertEqual(rc, 128 + sig)
+                gone = False
+                for _ in range(100):
+                    try:
+                        os.kill(fetch, 0)
+                    except ProcessLookupError:
+                        gone = True
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(gone, "the setup's git call was stopped with the merge")
+                self.assertEqual(os.listdir(tmp), [], "the scratch was removed")
+
+
+class Interrupts(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX signals")
+    def test_a_signal_during_a_held_step_waits_for_it_to_end(self) -> None:
+        guard = mergebuild._Interrupts()  # pyright: ignore[reportPrivateUsage]
+        before = signal.getsignal(signal.SIGTERM)
+        with guard.installed():
+            with guard.held():
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(0.1)  # the handler has run, and held it
+            with self.assertRaises(cli.Exit) as caught:
+                guard.check()
+            self.assertEqual(caught.exception.rc, 128 + signal.SIGTERM)
+            guard.check()  # acted on once
+            with self.assertRaises(cli.Exit):
+                os.kill(os.getpid(), signal.SIGHUP)
+                time.sleep(1)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), before, "the handlers are put back")
 
 
 if __name__ == "__main__":

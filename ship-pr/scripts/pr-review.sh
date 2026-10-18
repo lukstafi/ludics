@@ -208,8 +208,9 @@
 #                                          # that turns red during the wait was never waived, so
 #                                          # it refuses with 1 (ludics-lite#392). Where the
 #                                          # repository's default branch has a
-#                                          # .github/ship-pr-merge-build and a path both sides
-#                                          # changed is one of its build inputs, it first BUILDS
+#                                          # .github/ship-pr-merge-build and its trigger holds
+#                                          # (by default: a path both sides changed is one of
+#                                          # its build inputs), it first BUILDS
 #                                          # the head merged with the base's tip in a scratch
 #                                          # repository borrowing the objects of the local
 #                                          # clone it runs in, and refuses

@@ -1,6 +1,7 @@
 """``merge``'s build of the would-be merge commit (ludics-lite#611): when the base has moved since
-the head's CI run AND a path both sides changed is a build input, build the PR merged with the
-current base locally, before the merge call, and refuse the merge when that build fails.
+the head's CI run AND the config's trigger holds (by default, a path both sides changed is a build
+input), build the PR merged with the current base locally, before the merge call, and refuse the
+merge when that build fails.
 
 Why. On 2026-10-15 lukstafi/ocannl-staging#1142 and #1139 merged minutes apart, each on its own
 green head, five paths changed on both sides "all in DISJOINT hunks": the merge was textually clean
@@ -22,6 +23,8 @@ naming it:
     command <shell command>    exactly one: run by `sh -c` at the root of the merged tree
     input <glob>               one or more: the BUILD INPUTS (below)
     timeout <seconds>          at most one, 1 to 86400 (default 1200): the build's bound
+    trigger same-input         at most one trigger line, default same-input: WHEN IT BUILDS
+    trigger any-input
 
 BUILD INPUTS -- the boundary. A path is a build input when one ``input`` glob matches the WHOLE
 repository-relative path (``/``-separated) under Python's ``fnmatch.fnmatchcase``: case-sensitive,
@@ -29,17 +32,22 @@ and ``*``, ``?`` and ``[...]`` match ``/`` too, so ``*.ml`` matches an ``.ml`` f
 ``dune`` only the root ``dune``, and ``*/dune`` every nested one. Nothing else counts: no path is a
 build input by its contents, by being generated, or by a default list.
 
-WHEN IT BUILDS. Only when the merge's own base-drift read (drift.py) leaves a build possible: the
-intersection of the paths the PR changed and the paths the base's advance changed since their merge
-base (old names of renames included) holds a build input -- a path a rename on either side
-touched counting by its other name too, since git carries an edit of the old name into the new -- or that intersection is UNKNOWN (a
-compare call that did not answer, GitHub's 300-file cap), which is never "none" and so builds. An
-empty intersection means the base has not moved since the PR's merge base on any path the PR
-touched, and then the config is not even read. "The base moved since the head's CI run" is read as
-"the base's tip is not in the head's history", the drift read's own anchor: a ``pull_request`` run
-that already built the merge with this very tip makes the build redundant, never wrong. A semantic
-conflict across paths only ONE side changed (the PR uses a name the base renamed in another file) is
-outside this boundary, and stays the integration loop's to catch on the merged tip.
+WHEN IT BUILDS. Only when the merge's own base-drift read (drift.py) leaves a build possible. It
+reads two sides: the paths the PR changed and the paths the base's advance changed since their
+merge base (old names of renames included; a path a rename on either side touched counts by its
+other name too, since git carries an edit of the old name into the new). When either side is
+empty, no build is possible and the config is not even read. Otherwise the trigger decides:
+``same-input`` (the default) builds when a path BOTH sides changed is a build input;
+``any-input`` builds when EACH side changed some build input, the same one or not, which also
+catches a clash across paths only one side changed (the PR calls, in ``b.ml``, a name the base
+renamed in ``a.ml``). ``any-input`` builds more often -- replaying a month of OCANNL's merges, 17
+builds against 5 (ludics-lite#635) -- so it suits a cheap command. Sides that are UNKNOWN (a compare
+call that did not answer, GitHub's 300-file cap) are never "none" and build under either trigger.
+"The base moved since the head's CI run" is read as "the base's tip is not in the head's history",
+the drift read's own anchor: a ``pull_request`` run that already built the merge with this very tip
+makes the build redundant, never wrong. Under ``same-input``, a semantic conflict across paths only
+ONE side changed is outside this boundary, and stays the integration loop's to catch on the merged
+tip.
 
 HOW IT BUILDS. From a local clone of the repository: the git checkout the merge runs in, whose
 remote (``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional,
@@ -62,14 +70,39 @@ it is removed whatever the outcome, and one a SIGKILLed merge leaves is in pr-re
 temporary family (``pr-review-build.<pid>.*``). What the clone keeps is the fetched objects, which
 nothing names, as after any fetch.
 
+THE COMMAND'S CONTRACT. The command runs with its cwd at the root of the merged tree, which is the
+work tree of a git repository whose ``HEAD`` is the merge commit, detached. Its FIRST parent is the
+base's tip and its SECOND the PR's gated head, and the environment names both:
+``SHIP_PR_MERGE_BASE_SHA`` (the base's tip, as the drift read it) and ``SHIP_PR_MERGE_HEAD_SHA``
+(the gated head), each a full SHA in that repository, so ``git merge-base "$SHIP_PR_MERGE_BASE_SHA"
+"$SHIP_PR_MERGE_HEAD_SHA"`` and a diff of either side against it work there. A command that picks
+its own tiers by what each side changed reads these, not its guess of the parent order. Its stdin
+is ``/dev/null``; its stdout and stderr are the build's log. Git's repository-selection variables
+are cleared (below); the rest of merge's environment is inherited.
+
 HOSTS AND CLONES -- the boundary. The merge build runs on POSIX hosts (the fleet's macOS and Linux
-boxes); under Windows a merge that needs one is refused (exit 2). It needs a FULL clone: a shallow
-one may lack the merge base, and a partial one (a promisor remote) holds objects only as promises
-the build's repository cannot redeem, so both are refused (exit 2) rather than deepened or
-materialized here. Git's repository-selection variables (``GIT_DIR``, ``GIT_WORK_TREE``, ...) are
+boxes); under Windows a merge that needs one is refused (exit 2), so nothing below has a Windows
+branch. It needs a FULL clone: a shallow one may lack the merge base, and a partial one (a promisor
+remote) holds objects only as promises the build's repository cannot redeem, so both are refused
+(exit 2) rather than deepened or materialized here. Deepening is declined, not deferred: it would
+rewrite the caller's clone (its ``shallow`` file, or its promisor packs) as a side effect of a merge,
+the one lasting change to the clone this build otherwise never makes; ``git fetch --unshallow`` is
+the caller's to run. Git's repository-selection variables (``GIT_DIR``, ``GIT_WORK_TREE``, ...) are
 cleared for every git call and for the build, so an inherited one aims nothing at the caller's
-repository. A signal to merge during the fetch or the git setup (before the build starts) ends
-merge without stopping that git call; the scratch is the sweeper's then.
+repository.
+
+INTERRUPTS -- the recovery boundary. From before the scratch is made to the moment it is gone,
+SIGTERM and SIGHUP to merge (and SIGINT while it has Python's default handler, so not when merge was
+started with it ignored) end whatever child is running -- a setup git call, the slot probe, or the
+build -- by its process group (SIGTERM, then SIGKILL five seconds later), then remove the scratch,
+and end merge with 128+n (SIGINT: a KeyboardInterrupt), nothing merged. Every child runs in a
+session of its own, so this is the only way a signal reaches it. A signal that lands while a child
+is being spawned or its group ended, or while the scratch is being made or removed, is held until
+that step ends and acted on at the next spawn or at the end, so neither a child nor a scratch
+escapes between two steps. Outside the boundary: SIGKILL (a running git call is left to finish on
+its own bound-less, and the scratch to ``watch``'s sweeper), a process that leaves the group
+(``setsid``, a daemon git starts for itself, such as ``gc --auto``), and a signal before the build's
+decision or after the scratch is gone, which is merge's own default handling.
 
 TRUST. The command is the repository's own configuration, read from its default branch: it is
 trusted as a developer's build is, and the scratch repository is a place to build, not a sandbox.
@@ -82,12 +115,12 @@ VERDICTS. Passed: the merge proceeds. Failed (any nonzero status): exit 1, refus
 output (its first and last lines when long, each line and each end bounded in bytes). Not finished
 within the bound: exit 4. Could not run (the slot refused, a fetch or git step failed): exit 3.
 After the command ends, however it ends, its process group is ended too, so a process it left
-behind does not outlive the merge; interrupted (Ctrl-C, SIGTERM, SIGHUP), the group is ended
-before the scratch goes, and the command exits 128+n. The build judges the base tip the drift read;
+behind does not outlive the merge; interrupted, see INTERRUPTS. The build judges the base tip the drift read;
 a base that moves again between the build and the merge call is not rebuilt (that, again, is the
 integration loop's). No flag waives a failed build.
 """
 
+import contextlib
 import fnmatch
 import os
 import re
@@ -96,9 +129,11 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import assert_never
+from types import FrameType
+from typing import Literal, assert_never
 
 from ludics import cli, proc
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
@@ -117,6 +152,10 @@ SHOWN_HEAD = 100  # a long build log is shown as its first and last lines
 SHOWN_TAIL = 100
 SHOWN_BYTES = 64 * 1024  # at most this much is read from each end of a long log
 LINE_CHARS = 1000  # a longer line is shown cut
+NAMED = 10  # a side's build inputs are named up to this many in the build's reason
+TRIGGERS = ("same-input", "any-input")
+BASE_SHA_VAR = "SHIP_PR_MERGE_BASE_SHA"  # THE COMMAND'S CONTRACT: the merge commit's first parent
+HEAD_SHA_VAR = "SHIP_PR_MERGE_HEAD_SHA"  # and its second
 
 _LINE = re.compile(r"([a-z]+)(?:[ \t]+(.*))?")
 _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
@@ -125,11 +164,15 @@ _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
 _WRAPPER = 'sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; exit "$rc"'
 
 
+type Trigger = Literal["same-input", "any-input"]
+
+
 @dataclass(frozen=True)
 class BuildConfig:
     command: str
     inputs: tuple[str, ...]
     timeout: int = DEFAULT_TIMEOUT
+    trigger: Trigger = "same-input"
 
 
 def parse_config(text: str, where: str) -> BuildConfig | None:
@@ -138,6 +181,7 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
     command: str | None = None
     inputs: list[str] = []
     timeout: int | None = None
+    trigger: Trigger | None = None
     for raw in text.split("\n"):
         line = (raw[:-1] if raw.endswith("\r") else raw).strip(" \t")
         if not line or line.startswith("#"):
@@ -161,16 +205,27 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
                 warn(f"{where}'s timeout is not a whole number of seconds from 1 to {MAX_TIMEOUT}: {line}")
                 return None
             timeout = int(value)
+        elif key == "trigger" and value:
+            if trigger is not None:
+                warn(f"{where} names a second trigger line: {line}")
+                return None
+            if value == "same-input":
+                trigger = "same-input"
+            elif value == "any-input":
+                trigger = "any-input"
+            else:
+                warn(f"{where}'s trigger is neither `same-input` nor `any-input`: {line}")
+                return None
         else:
             warn(
                 f"{where} holds a line that is none of `command <shell command>`, `input <glob>`,",
-                f"`timeout <seconds>`, a # comment or a blank line: {line}",
+                f"`timeout <seconds>`, `trigger same-input|any-input`, a # comment or a blank line: {line}",
             )
             return None
     if command is None or not inputs:
         warn(f"{where} needs one `command` line and at least one `input` line; it has", f"{'a' if command else 'no'} command and {len(inputs)} input(s).")
         return None
-    return BuildConfig(command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout)
+    return BuildConfig(command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout, trigger or "same-input")
 
 
 def build_inputs(paths: list[str], globs: tuple[str, ...], renamed: dict[str, list[str]] | None = None) -> list[str]:
@@ -179,6 +234,34 @@ def build_inputs(paths: list[str], globs: tuple[str, ...], renamed: dict[str, li
     carries an edit of the old name into the new one."""
     names = renamed or {}
     return [p for p in paths if any(fnmatch.fnmatchcase(n, g) for n in (p, *names.get(p, [])) for g in globs)]
+
+
+def _named(paths: list[str]) -> str:
+    shown = " ".join(paths[:NAMED])
+    return shown if len(paths) <= NAMED else f"{shown} (and {len(paths) - NAMED} more)"
+
+
+def build_reason(drift: Drift, config: BuildConfig) -> tuple[str | None, str]:
+    """Whether the config's trigger holds on the drift read (the module docstring's WHEN IT
+    BUILDS): ``(why, "")`` to build, or ``(None, why not)``. Called only once both sides are known
+    to be nonempty, or unknown."""
+    if drift.overlap is None or drift.pr_paths is None or drift.base_paths is None:
+        return "the paths each side changed are UNKNOWN (above), which is never none", ""
+    if config.trigger == "same-input":
+        inputs = build_inputs(drift.overlap, config.inputs, drift.renamed)
+        if inputs:
+            return f"{len(inputs)} build input(s) changed on both sides: {_named(inputs)}", ""
+        if not drift.overlap:
+            return None, "no path changed on both sides (trigger same-input)"
+        return None, f"none of the {len(drift.overlap)} path(s) changed on both sides is a build input ({' '.join(config.inputs)})"
+    mine = build_inputs(drift.pr_paths, config.inputs, drift.renamed)
+    theirs = build_inputs(drift.base_paths, config.inputs, drift.renamed)
+    if mine and theirs:
+        return f"build inputs changed on each side (trigger any-input): the PR's {_named(mine)}; the base's {_named(theirs)}", ""
+    return None, (
+        f"trigger any-input, and {'the PR' if not mine else 'the base'} changed no build input"
+        f" ({' '.join(config.inputs)})"
+    )
 
 
 def read_config(session: GhSession, repo: str, cap: int) -> BuildConfig | None:
@@ -240,7 +323,8 @@ def _clean_env(base: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def _git(args: list[str], cwd: str, *, timeout: float = GIT_TIMEOUT, env: dict[str, str] | None = None) -> proc.Completed:
-    return proc.run_tool("git", args, cwd=cwd, env=_clean_env(env), stdin=subprocess.DEVNULL, timeout=timeout)
+    """A bounded git call, supervised (INTERRUPTS): a signal to merge ends it."""
+    return _supervised(["git", *args], cwd, timeout, _clean_env(env))
 
 
 def _first_line(done: proc.Completed) -> str:
@@ -292,7 +376,7 @@ def _slot_runner() -> str | None:
     here = Path(__file__).resolve().parents[3] / "issue-wave" / "scripts" / "fleet-worker.sh"
     if not here.is_file():
         return None
-    probe = proc.run_tool("bash", [str(here), "execution", "slot", "--probe"], stdin=subprocess.DEVNULL, timeout=PROBE_TIMEOUT)
+    probe = _supervised(["bash", str(here), "execution", "slot", "--probe"], os.getcwd(), PROBE_TIMEOUT, dict(os.environ))
     if probe.rc == 0 and probe.stdout.startswith("EXECUTION SLOT PROBE "):
         return str(here)
     return None
@@ -324,119 +408,163 @@ def _shown(log: str) -> list[str]:
     return [*map(cut, first), f"... (the log is {size} bytes; its middle is left out) ...", *map(cut, last)]
 
 
+class _Interrupts:
+    """The module docstring's INTERRUPTS: while ``installed()`` holds, SIGTERM and SIGHUP (and
+    SIGINT, unless it was ignored) raise out of whatever the build is waiting on, so the running
+    child's group is ended and the scratch removed on the way out -- except inside ``held()``,
+    where the first one waits until the block ends."""
+
+    def __init__(self) -> None:
+        self.holding = False
+        self.pending: int | None = None
+
+    @staticmethod
+    def _raise(signum: int) -> None:
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise cli.Exit(128 + signum, f"the merge build was interrupted by signal {signum}; it was stopped and its scratch removed, nothing merged")
+
+    def _handler(self, signum: int, _frame: FrameType | None) -> None:
+        if self.holding:
+            if self.pending is None:
+                self.pending = signum
+            return
+        self._raise(signum)
+
+    def check(self) -> None:
+        """Act on a signal held by a ``held()`` block that has ended."""
+        if self.pending is not None:
+            signum, self.pending = self.pending, None
+            self._raise(signum)
+
+    @contextlib.contextmanager
+    def held(self) -> Generator[None]:
+        """A step no signal may cut in two (a spawn, ending a group, making or removing the
+        scratch). The caller calls ``check`` once what the step made is in hand."""
+        was, self.holding = self.holding, True
+        try:
+            yield
+        finally:
+            self.holding = was
+
+    @contextlib.contextmanager
+    def installed(self) -> Generator[None]:
+        self.pending = None
+        sigs = [signal.SIGTERM, signal.SIGHUP]
+        if signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+            sigs.append(signal.SIGINT)
+        previous = {sig: signal.signal(sig, self._handler) for sig in sigs}
+        try:
+            yield
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+            self.pending = None
+
+
+_INTERRUPTS = _Interrupts()
+
+
 def _end_group(child: subprocess.Popen[bytes]) -> None:
-    """End the build's process group, and wait for its leader: SIGTERM first (an `execution slot`
-    wrapper ends its own command's group on it), SIGKILL to what is left five seconds later. Run
-    after a build that ENDED too, since a command may leave a process running behind it (`cmd &`):
-    the group outlives its leader. Under Windows, the leader's process tree."""
-    if os.name == "nt":
-        if child.poll() is None:
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(child.pid)], stdin=subprocess.DEVNULL, capture_output=True, check=False)
-            child.kill()
-    else:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            # EPERM is "nothing left this process may signal": macOS answers it for a group whose
-            # last members are zombies awaiting their reaper.
+    """End the child's process group, and wait for its leader: SIGTERM first (an `execution slot`
+    wrapper ends its own command's group on it, git removes its lock files), SIGKILL to what is
+    left five seconds later. Run after a build that ENDED too, since a command may leave a process
+    running behind it (`cmd &`): the group outlives its leader. POSIX only, as the whole build is
+    (HOSTS AND CLONES). Held (INTERRUPTS): a second signal does not cut the ending short."""
+    with _INTERRUPTS.held():
+        _end_group_held(child)
+
+
+def _end_group_held(child: subprocess.Popen[bytes]) -> None:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        # EPERM is "nothing left this process may signal": macOS answers it for a group whose
+        # last members are zombies awaiting their reaper.
+        try:
+            os.killpg(child.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            break
+        gone = False
+        deadline = time.monotonic() + 5
+        while not gone and time.monotonic() < deadline:
+            child.poll()
             try:
-                os.killpg(child.pid, sig)
+                os.killpg(child.pid, 0)
+                time.sleep(0.05)
             except (ProcessLookupError, PermissionError):
-                break
-            gone = False
-            deadline = time.monotonic() + 5
-            while not gone and time.monotonic() < deadline:
-                child.poll()
-                try:
-                    os.killpg(child.pid, 0)
-                    time.sleep(0.05)
-                except (ProcessLookupError, PermissionError):
-                    gone = True
-            if gone:
-                break
+                gone = True
+        if gone:
+            break
     try:
         child.wait(timeout=5)
     except subprocess.TimeoutExpired:
         pass
 
 
-def _run_build(argv: list[str], cwd: str, bound: float) -> proc.Completed:
-    """The wrapped build in a process group of its own, under ``bound`` (124 past it, as
-    ``proc.run_tool`` reports a timeout). The group is ended however the wait for it ends -- the
-    build's own exit (a process it left behind), the bound, an exception, Ctrl-C, or a SIGTERM or
-    SIGHUP to merge, which end the command (exit 128+n) only after the build is stopped and its
-    scratch removed -- so nothing in the group outlives the merge that started it. A process
-    that leaves the group (``setsid``, a daemon) is outside this boundary, as it is for
-    ``execution slot`` (fleetworker/group.py)."""
-    prefix = proc.command_argv(argv[0])
-    if prefix is None:
-        return proc.Completed(127, "", f"{argv[0]}: command not found\n")
-    full = [*prefix, *argv[1:]]
-    posix = os.name != "nt"
+def _supervised(
+    argv: list[str], cwd: str, bound: float, env: dict[str, str], *, merged: bool = False, end_group: bool = False
+) -> proc.Completed:
+    """``argv`` in a session of its own under ``bound`` (124 past it, as ``proc.run_tool`` reports
+    a timeout), stdin ``/dev/null``, its output captured (stderr into stdout when ``merged``). Its
+    group is ended when the wait for it ends any way but its own exit -- the bound, an exception,
+    an INTERRUPT -- and after its own exit too when ``end_group`` (the build: a process it left
+    behind). A child that cannot be spawned raises the ``OSError``/``ValueError`` to the caller.
+    A tool the caller's shell bridges (a sourcing suite's fake ``git``) runs through the bridge, as
+    under ``proc.run_tool``."""
+    full = proc.bridge_argv(argv[0], argv[1:], env)
+    if full is None:
+        prefix = proc.command_argv(argv[0], env)
+        if prefix is None:
+            return proc.Completed(127, "", f"{argv[0]}: command not found\n")
+        full = [*prefix, *argv[1:]]
+    child: subprocess.Popen[bytes] | None = None
     try:
-        child = subprocess.Popen(
-            full if posix else proc.windows_command_line(full),
-            cwd=cwd,
-            env=_clean_env(),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=posix,
-        )
-    except (ValueError, OSError) as exc:
-        # A command no exec can take (a NUL in it, past the argument limit): the config's fault.
-        fail(2, f"NOT merging: {CONFIG_FILE}'s command cannot be run ({exc}); fix the file on the default branch.")
-
-    def interrupted(signum: int, _frame: object) -> None:
-        raise cli.Exit(128 + signum, f"the merge build was interrupted by signal {signum}; it was stopped, nothing merged")
-
-    previous: dict[int, object] = {}
-    if posix:
-        for sig in (signal.SIGTERM, signal.SIGHUP):
-            previous[sig] = signal.signal(sig, interrupted)
-    try:
+        with _INTERRUPTS.held():
+            child = subprocess.Popen(
+                full,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT if merged else subprocess.PIPE,
+                start_new_session=True,
+            )
+        _INTERRUPTS.check()
         try:
-            out, _ = child.communicate(timeout=bound)
+            out, err = child.communicate(timeout=bound)
         except subprocess.TimeoutExpired:
             _end_group(child)
             try:
-                out, _ = child.communicate(timeout=5)
+                out, err = child.communicate(timeout=5)
             except (subprocess.TimeoutExpired, ValueError):
-                out = b""
-            return proc.Completed(124, proc.decode(out), f"no answer in {bound:g}s\n")
-        except BaseException:
+                out, err = b"", b""
+            return proc.Completed(124, proc.decode(out), proc.decode(err or b"") + f"{argv[0]}: no answer in {bound:g}s\n")
+        if end_group:
             _end_group(child)
-            raise
-        _end_group(child)
-        return proc.Completed(child.returncode, proc.decode(out), "")
-    finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)  # pyright: ignore[reportArgumentType]
-
-
-def _posix(path: str) -> str:
-    """A path as the ``sh`` the wrapper runs under reads it: forward slashes (Git Bash's sh takes
-    ``C:/...``, not ``C:\\...``)."""
-    return path.replace("\\", "/")
+        return proc.Completed(child.returncode, proc.decode(out), proc.decode(err or b""))
+    except BaseException:
+        # The hold first, before any call: CPython runs a signal handler only at a call or a
+        # backward jump, so no second signal cuts in between the exception and the hold.
+        was, _INTERRUPTS.holding = _INTERRUPTS.holding, True
+        try:
+            if child is not None:
+                _end_group(child)
+        finally:
+            _INTERRUPTS.holding = was
+        raise
 
 
 def merge_build(session: GhSession, repo: str, pr: str, gated: str, drift: Drift, cap: int) -> None:
     """Build the would-be merge commit when the config and the drift read ask for it (the module
     docstring); return to merge, or end the command with its refusal."""
-    if drift.overlap is not None and not drift.overlap:
-        return  # nothing both sides changed: no build is possible, and the config is not read
+    if drift.pr_paths is not None and drift.base_paths is not None and not (drift.pr_paths and drift.base_paths):
+        return  # a side that changed nothing: no build is possible under either trigger, and the config is not read
     config = read_config(session, repo, cap)
     if config is None:
         return
-    if drift.overlap is None:
-        why = "the paths both sides changed are UNKNOWN (above), which is never none"
-    else:
-        inputs = build_inputs(drift.overlap, config.inputs, drift.renamed)
-        if not inputs:
-            cli.say(
-                f"merge build {repo}#{pr}: no build — none of the {len(drift.overlap)} path(s) changed on both sides"
-                f" is a build input ({' '.join(config.inputs)})"
-            )
-            return
-        why = f"{len(inputs)} build input(s) changed on both sides: {' '.join(inputs)}"
+    why, why_not = build_reason(drift, config)
+    if why is None:
+        cli.say(f"merge build {repo}#{pr}: no build — {why_not}")
+        return
     if os.name == "nt":
         fail(
             2,
@@ -459,15 +587,25 @@ def merge_build(session: GhSession, repo: str, pr: str, gated: str, drift: Drift
 
 
 def _build(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str) -> None:
+    """The build under the INTERRUPTS boundary (module docstring)."""
+    with _INTERRUPTS.installed():
+        _build_in_scratch(repo, pr, gated, base_ref, tip, config, why)
+
+
+def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str) -> None:
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
     # (a whole build tree, and the repository it is in) is swept by the next `watch`
-    # (watch.tmp_sweep_stale): nothing of the build lives anywhere else.
-    scratch = os.path.realpath(tempfile.mkdtemp(prefix=f"pr-review-build.{proc.own_pid()}."))
-    hooks = os.path.join(scratch, "no-hooks")
-    os.mkdir(hooks)
-    tree = os.path.join(scratch, "tree")
-    quiet = ["-c", f"core.hooksPath={hooks}"]
+    # (watch.tmp_sweep_stale): nothing of the build lives anywhere else. It is made and removed
+    # with signals held, so no signal leaves it behind.
+    scratch: str | None = None
     try:
+        with _INTERRUPTS.held():
+            scratch = os.path.realpath(tempfile.mkdtemp(prefix=f"pr-review-build.{proc.own_pid()}."))
+        _INTERRUPTS.check()
+        hooks = os.path.join(scratch, "no-hooks")
+        os.mkdir(hooks)
+        tree = os.path.join(scratch, "tree")
+        quiet = ["-c", f"core.hooksPath={hooks}"]
         root, remote = find_clone(repo, os.getcwd(), hooks)
         shallow = _git([*quiet, "rev-parse", "--is-shallow-repository"], root)
         if shallow.stdout.strip() != "false":
@@ -575,14 +713,20 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: Buil
         )
         log = os.path.join(scratch, "build.log")
         status = os.path.join(scratch, "build.status")
-        wrapped = ["sh", "-c", _WRAPPER, "merge-build", config.command, _posix(log), _posix(status)]
+        wrapped = ["sh", "-c", _WRAPPER, "merge-build", config.command, log, status]
         bound = float(config.timeout)
         if runner:
             wrapped = ["bash", runner, "execution", "slot", "--cpu", "--wait", str(SLOT_WAIT),
                        f"--wait-window={SLOT_WAIT}", "--deadline", str(config.timeout), "--", *wrapped]
             bound += 2 * SLOT_WAIT + 120
+        # THE COMMAND'S CONTRACT: the merge commit's parents, by name.
+        env = {**_clean_env(), BASE_SHA_VAR: tip, HEAD_SHA_VAR: gated}
         started = time.monotonic()
-        done = _run_build(wrapped, tree, bound)
+        try:
+            done = _supervised(wrapped, tree, bound, env, merged=True, end_group=True)
+        except (ValueError, OSError) as exc:
+            # A command no exec can take (a NUL in it, past the argument limit): the config's fault.
+            fail(2, f"NOT merging: {CONFIG_FILE}'s command cannot be run ({exc}); fix the file on the default branch.")
         took = int(time.monotonic() - started)
         try:
             with open(status, encoding="utf-8") as handle:
@@ -616,4 +760,11 @@ def _build(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: Buil
             f"{done.rc} before the command did, output above). Retry.",
         )
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        # Held from its first instruction (as in _supervised), so no signal skips the removal.
+        was, _INTERRUPTS.holding = _INTERRUPTS.holding, True
+        try:
+            if scratch is not None:
+                shutil.rmtree(scratch, ignore_errors=True)
+        finally:
+            _INTERRUPTS.holding = was
+        _INTERRUPTS.check()

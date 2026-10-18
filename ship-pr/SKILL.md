@@ -1147,18 +1147,20 @@ compare API could not answer prints `UNKNOWN`, which is not "not behind": check 
 five shared paths changed "all in DISJOINT hunks" — and the merge did not compile, leaving master
 red for an hour. A repository that names a build in `.github/ship-pr-merge-build` on its default
 branch (read like the advisory list: only a 404 the listing confirms is "no file") gets one local
-check before the merge call. When a path in the drift read's intersection matches one of the
-file's `input` globs, or the intersection is UNKNOWN, `merge` builds the gated head merged with the
-base's tip in a scratch repository that borrows the objects of the clone it runs in (nothing is
-registered in the clone, and nothing of the build outlives it), inside the box's run-time slot
-where it has slots, bounded by the file's timeout, and refuses with exit 1 and the build's output
-when it fails:
+check before the merge call. When the file's trigger holds (by default, a path in the drift read's
+intersection matches one of its `input` globs) or the two sides are UNKNOWN, `merge` builds the
+gated head merged with the base's tip in a scratch repository that borrows the objects of the clone
+it runs in (nothing is registered in the clone, and nothing of the build outlives it), inside the
+box's run-time slot where it has slots, bounded by the file's timeout, and refuses with exit 1 and
+the build's output when it fails:
 
 ```
 # pr-review.sh merge's build of the would-be merge commit (ludics-lite#611). A path is a build
 # input when an `input` glob matches the whole repository path (fnmatch: `*` crosses `/`).
 # The command is trusted as a developer's build is: its scratch repository is a place to build,
-# not a sandbox. timeout: 1 to 86400 seconds.
+# not a sandbox. timeout: 1 to 86400 seconds. trigger: same-input (default) or any-input.
+# The command runs at the merged tree's root; HEAD^1 is the base's tip and HEAD^2 the PR's head,
+# also named by $SHIP_PR_MERGE_BASE_SHA and $SHIP_PR_MERGE_HEAD_SHA.
 command dune build @check
 input *.ml
 input *.mli
@@ -1177,9 +1179,12 @@ repository: one with no remote naming it, a shallow one (which may lack the merg
 partial one (a promisor remote) is exit 2. A
 build that does not finish is exit 4, one that could not run (the fetch, the slot) exit 3, a head
 that moved exit 5, a textual conflict exit 1. Nothing waives a failed build: merge the base in, fix
-the clash, push. The boundary is the intersection: a clash across paths only one side changed (a
-caller in a file the base never touched) is still the integration loop's, as is a base that moves
-again between the build and the call (`prreview/mergebuild.py` states both).
+the clash, push. By default the boundary is the intersection: a clash across paths only one side
+changed (a caller in a file the base never touched) is still the integration loop's. `trigger
+any-input` widens it to a build whenever EACH side changed some build input, which catches that
+clash at about three times the builds (ludics-lite#635), so it suits a cheap command. A base that
+moves again between the build and the call is the integration loop's either way
+(`prreview/mergebuild.py` states both).
 
 **Standalone use does not watch CI at all** (since 2026-08-31): trailing failures on the merged
 base belong to the repository's **post-merge owner**, the watch or triage routine its agent notes
