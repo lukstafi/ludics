@@ -870,24 +870,29 @@ internal function (ludics-lite#403): the gate through `checks`, the override's w
 did not answer.
 
 `test-pr-review-merge.sh` also runs `merge`'s build of the would-be merge commit (ludics-lite#611)
-in a real clone of a scratch remote, whose path ends in the repository's owner/name: two heads
-whose hunks are disjoint (the drift read says so) and whose merge commit does not run are refused
-with the build's output (exit 1, no merge call), and the same layout whose merge runs merges; a
-base that moved with no build input among the paths both sides changed merges unbuilt, and with
-nothing changed on both sides the config is not even read; a repository without
+in a real clone of a scratch remote, whose path ends in the repository's owner/name: two heads whose
+hunks are disjoint (the drift read says so) and whose merge commit does not run are refused with the
+build's output (exit 1, no merge call), and the same layout whose merge runs merges; a base that
+moved with no build input among the paths both sides changed merges unbuilt, and with no path
+changed on both sides the config is read and nothing is built, and with a side that changed nothing
+it is not even read; a clash across paths only one side changed merges unbuilt under the default
+trigger and is built and refused under `trigger any-input` (ludics-lite#635); a repository without
 `.github/ship-pr-merge-build` merges the clash unbuilt, as before; a line outside the config's
-grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2. Each build case
-then checks the clone: its working tree, its worktree list and its refs are as they were. Under Git
-Bash the merge build is POSIX-only by design, so the cases that would build (the clash, its control
-and the merge outside a clone) assert its refusal there instead (exit 2, why the merge needed a
-build and where to run it, nothing built or merged, the clone untouched; ludics-lite#515).
-`lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the glob boundary, the remote
-match, a textual conflict, a moved head, a build past its bound, an interrupted merge and a process
-the build leaves behind (neither outlives the merge), a shallow or a partial clone (exit 2), a
-sparse one (the merge is still built whole), a force-push over a head the clone already holds (exit
-5), the build's own git writes, under an inherited `GIT_DIR` too (kept in its scratch repository), a
-command no exec takes (exit 2), a rename across the input boundary (a build input by its other
-name) and a log of any size (read bounded).
+grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2. Each build case then
+checks the clone: its working tree, its worktree list and its refs are as they were. Under Git Bash
+the merge build is POSIX-only by design, so the cases that would build (the clash, its control, the
+single-side clash under `any-input` and the merge outside a clone) assert its refusal there instead
+(exit 2, why the merge needed a build and where to run it, nothing built or merged, the clone
+untouched; ludics-lite#515). `lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the
+glob boundary, the trigger's decision on the two sides, the remote match, a textual conflict, a
+moved head, a build past its bound, an interrupted merge and a process the build leaves behind
+(neither outlives the merge), a SIGTERM or SIGHUP during the setup's fetch (the git call is stopped
+and the scratch removed) and a signal held across a step no signal may cut, the command's contract
+(the two SHAs in its environment, HEAD's parents in that order), a shallow or a partial clone (exit
+2), a sparse one (the merge is still built whole), a force-push over a head the clone already holds
+(exit 5), the build's own git writes, under an inherited `GIT_DIR` too (kept in its scratch
+repository), a command no exec takes (exit 2), a rename across the input boundary (a build input by
+its other name) and a log of any size (read bounded).
 
 `test-pr-review-retry.sh` drives `retry`: the plain retry's classification, and `retry run
 watch`, which addresses its run as

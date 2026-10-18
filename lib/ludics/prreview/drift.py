@@ -140,7 +140,10 @@ class Drift:
     ``base_sha`` are None where they were not read; ``overlap`` is the exact intersection of the
     paths the PR and the base's advance changed (old names of renames included), or None for
     UNKNOWN -- never "none"; ``renamed`` maps each name a rename on either side touched to the
-    other name of that rename, so a path in the overlap can be judged by where its content went."""
+    other name of that rename, so a path in the overlap can be judged by where its content went;
+    ``pr_paths`` and ``base_paths`` are the two sides the overlap intersects (the PR's changes and
+    the base's advance since their merge base, old names of renames included), None exactly when
+    ``overlap`` is (a build's ``trigger any-input`` reads them)."""
 
     rc: int
     base_ref: str | None = None
@@ -148,6 +151,8 @@ class Drift:
     base_sha: str | None = None
     overlap: list[str] | None = None
     renamed: dict[str, list[str]] = field(default_factory=lambda: dict[str, list[str]]())
+    pr_paths: list[str] | None = None
+    base_paths: list[str] | None = None
 
 
 def warn_base_drift(
@@ -349,8 +354,9 @@ def read_base_drift(
         )
     known = None if overlap_unknown else overlap
     renamed = _renames(forward, reverse) if not overlap_unknown else {}
+    sides = (forward_set[1], reverse_set[1]) if not overlap_unknown and forward_set and reverse_set else (None, None)
     rc = 3 if count_unknown or overlap_unknown else 1 if count_warn or dirty_warn or meeting else 0
-    return Drift(rc, base, head_sha, base_sha, known, renamed)
+    return Drift(rc, base, head_sha, base_sha, known, renamed, *sides)
 
 
 def _renames(*docs: Json) -> dict[str, list[str]]:

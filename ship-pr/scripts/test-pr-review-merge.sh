@@ -2290,7 +2290,9 @@ build_compare() { # <work> <from> <to> <behind> <ahead>
 # <kind>: clash = the base renames hook() on api.sh's first line while the PR calls hook on a line
 # appended at its end: disjoint hunks, a clean textual merge, and a merge commit `sh ./api.sh`
 # fails on, while each side alone runs clean; compatible = the same, the PR calling keep(), which
-# both sides keep; notes = both sides edit notes.md alone, in disjoint hunks. Sets BUILD_CLONE,
+# both sides keep; notes = both sides edit notes.md alone, in disjoint hunks; split = the base
+# renames hook() as in clash while the PR calls hook from a new use.sh: a clash across paths only one
+# side changed, with no path changed on both sides (ludics-lite#635). Sets BUILD_CLONE,
 # BUILD_HEAD and BUILD_TIP, and points the fixture's gated head, tip, compares and series at them.
 build_fixture() { # <kind>
   local root="$TEST_ROOT/build-$1" work remote base
@@ -2317,6 +2319,10 @@ build_fixture() { # <kind>
   clash) printf 'hook\n' >>"$work/api.sh" ;;
   compatible) printf 'keep\n' >>"$work/api.sh" ;;
   notes) printf 'pr\n' >>"$work/notes.md" ;;
+  split)
+    printf '%s\n' '. ./api.sh' 'hook' >"$work/use.sh"
+    build_git "$work" add use.sh
+    ;;
   *) bail "build_fixture: no kind $1" ;;
   esac
   build_git "$work" commit -q -a -m 'the PR'
@@ -2358,9 +2364,10 @@ esac
 
 # The Windows refusal of a merge that needs a build (exit 2): it names why the merge needed one and
 # where to run it, builds nothing, makes no merge call and leaves the clone as it was.
-assert_posix_only_refusal() { # <what>
+assert_posix_only_refusal() { # <what> [<why>]
+  local why=${2:-'1 build input(s) changed on both sides: api.sh'}
   assert_eq "$MERGE_RC" 2 "$1 is refused under Windows, the merge build being POSIX-only ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_STDERR" "NOT merging $REPO#7: 1 build input(s) changed on both sides: api.sh, and the merge build runs on POSIX hosts only (the fleet's macOS and Linux boxes). Run this merge from one of them." \
+  assert_contains "$MERGE_STDERR" "NOT merging $REPO#7: $why, and the merge build runs on POSIX hosts only (the fleet's macOS and Linux boxes). Run this merge from one of them." \
     "the refusal names why it needed a build and where to run it"
   assert_not_contains "$MERGE_STDOUT" "merge build $REPO#7" "nothing was built"
   assert_no_merge_call
@@ -2425,7 +2432,8 @@ test_a_merge_commit_that_builds_merges() {
 }
 
 # The base moved, and the paths both sides changed hold no build input: the config is read, nothing
-# is built, and the merge proceeds. With nothing changed on both sides the config is not even read.
+# is built, and the merge proceeds. So with no path changed on both sides (the default trigger). With
+# a side that changed nothing, no trigger can hold, and the config is not even read.
 test_no_build_input_on_both_sides_builds_nothing() {
   reset
   build_fixture notes
@@ -2440,7 +2448,42 @@ test_no_build_input_on_both_sides_builds_nothing() {
   COMPARE_REVERSE=$(jq -cn '{behind_by:1, ahead_by:0, merge_base_commit:{sha:"merge-base"}, files:[{filename:"other.sh"}]}')
   FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   assert_eq "$MERGE_RC" 0 "nothing changed on both sides merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: no build — no path changed on both sides (trigger same-input)" \
+    "and says why nothing was built"
+  COMPARE_REVERSE=$(jq -cn '{behind_by:1, ahead_by:0, merge_base_commit:{sha:"merge-base"}, files:[]}')
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 0 "a base whose advance changed no path merges ($MERGE_OUTPUT)"
   assert_not_contains "$MERGE_CALLS" "CALL merge-build-config" "and the config is not read"
+}
+
+# A clash across paths only ONE side changed (ludics-lite#635): the base renames hook() in api.sh,
+# the PR calls hook from its new use.sh. The default trigger builds nothing and merges, as before;
+# `trigger any-input` builds the merge commit, since each side changed a build input, and refuses it.
+MERGE_BUILD_SPLIT=$'command for f in *.sh; do sh "$f" || exit 1; done\ninput *.sh\ntimeout 120'
+test_any_input_catches_a_single_side_clash() {
+  reset
+  build_fixture split
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SPLIT
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 0 "the default trigger merges a single-side clash unbuilt ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: no build — no path changed on both sides (trigger same-input)" \
+    "and says why nothing was built"
+  assert_contains "$MERGE_CALLS" "pr merge 7" "the merge is made"
+  reset
+  build_fixture split
+  MERGE_BUILD_CONFIG=$'trigger any-input\n'"$MERGE_BUILD_SPLIT"
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  local why="build inputs changed on each side (trigger any-input): the PR's use.sh; the base's api.sh"
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a single-side clash under trigger any-input" "$why"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "trigger any-input refuses a single-side clash ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: $why" "says why it builds"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: FAILED" "says the build failed"
+  assert_contains "$MERGE_STDOUT" "hook" "the output names what does not resolve"
+  assert_no_merge_call
+  assert_clone_untouched
 }
 
 # A repository without the config keeps today's behaviour: the clash above merges unbuilt.
@@ -2586,6 +2629,7 @@ tests=(
   test_no_build_input_on_both_sides_builds_nothing
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges
+  test_any_input_catches_a_single_side_clash
 )
 
 run_tests "${tests[@]}" -- "$@"
