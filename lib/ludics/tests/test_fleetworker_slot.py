@@ -166,19 +166,19 @@ class HolderRecord(Locks):
         bads: list[dict[str, object]] = [
             {"pid": True}, {"pid": 0}, {"pid": "7"}, {"command": []}, {"command": "x"}, {"command": ["x", 1]},
             {"started": "1"}, {"started": False}, {"deadline": 0}, {"deadline": 1.5}, {"deadline": True},
-            {"pid": 2**31}, {"expires": "1"}, {"expires": True},
+            {"pid": 2**31}, {"expires": "1"}, {"expires": True}, {"started": 10**400}, {"expires": 10**400},
         ]
         for bad in bads:
             self.write(json.dumps(good | bad))
             self.assertIsNone(read_holder(self.path()), bad)
-        for text in ("", "not json", "[]", '{"pid": 7, "command": ["x"], "started": NaN, "deadline": null}',
+        for text in ("", "not json", "[]", "[" * 60000, '{"pid": 7, "command": ["x"], "started": NaN, "deadline": null}',
                      json.dumps(good | {"pad": "x" * slot.HOLDER_READ})):
             self.write(text)
             self.assertIsNone(read_holder(self.path()), text[:40])
         self.assertIsNone(read_holder(os.path.join(self.dir, "slot.9")))
 
     def line(self, holder: Holder | None, now: float = 10_000.0, clock: float = 0.0,
-             waited: float | None = None) -> str | None:
+             waited: float | None = None) -> str:
         return holder_line("testbox", "m1", 2, holder, now, clock, waited)
 
     def test_the_line_names_a_holder_that_may_hold_the_slot_long_as_recorded(self) -> None:
@@ -193,10 +193,10 @@ class HolderRecord(Locks):
                          " pid 4242, slot taken 10m ago, recorded --deadline 6000s, about 1h30m left; for: tune")
         # Before its command starts, all of its deadline is ahead.
         self.assertIn("about 1h40m left;", str(self.line(Holder(4242, ("tune",), now - 600, 6000), now)))
-        # A --deadline that ends the batch within LONG_HOLDER is not worth a decision.
-        self.assertIsNone(self.line(Holder(4242, ("x",), now, 6000, float(slot.LONG_HOLDER)), now))
-        self.assertIsNone(self.line(Holder(4242, ("x",), now, slot.LONG_HOLDER), now))
-        self.assertIsNotNone(self.line(Holder(4242, ("x",), now, 6000, slot.LONG_HOLDER + 60.0), now))
+        # A short or spent cap is reported too: the record may be an earlier taker's, so no
+        # record of it may silence the line.
+        self.assertIn("recorded --deadline 60s, about 30s left;", self.line(Holder(4242, ("x",), now, 60, 30.0), now))
+        self.assertIn("recorded --deadline 60s, about 0s left;", self.line(Holder(4242, ("x",), now, 60, -5.0), now))
 
     def test_the_line_judges_nothing_about_the_pid_and_advises_nothing(self) -> None:
         # An ended pid is said as recorded too: the record is what the line reports.
@@ -243,11 +243,19 @@ class HolderRecord(Locks):
         self.assertLess(took, 5)
         self.assertTrue(self.locked())
 
-    def test_a_holder_its_deadline_ends_soon_gets_only_the_line_it_had(self) -> None:
+    def test_a_holder_its_deadline_ends_soon_is_named_too(self) -> None:
         self.hold("slot.1")
         record_holder(self.held[0], ["quick"], 60)
         out, _ = self.drain(0.2, 0.8)
-        self.assertEqual(out, "EXECUTION HOLD testbox: measurement m1 waits for the batch in slot 1 to end\n")
+        self.assertIn("recorded --deadline 60s, about 1m left; for: quick", out)
+
+    def test_nothing_the_naming_raises_stops_the_drain(self) -> None:
+        self.hold("slot.1")
+        with mock.patch.object(slot, "read_holder", side_effect=OverflowError("int too large")):
+            out, took = self.drain(0.2, 0.8)
+        self.assertIn("measurement m1 waits on slot 1: its record is unread (OverflowError('int too large'))", out)
+        self.assertLess(took, 5)
+        self.assertTrue(self.locked())
 
     def test_a_draining_hold_records_its_slots_unbounded_until_its_command_starts(self) -> None:
         self.hold("slot.2")

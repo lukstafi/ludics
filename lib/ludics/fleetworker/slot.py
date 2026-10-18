@@ -24,10 +24,9 @@ brief:
 - THE DRAIN (ludics-lite#481): a ``hold --request`` takes every slot of the box before its command
   starts, so no batch runs beside a measurement.
 - THE HOLDER RECORD (ludics-lite#668): whoever takes a slot writes into its lock file who it is
-  (pid, command, start, ``--deadline``), and a drain waiting on a slot whose holder may hold it
-  long -- no ``--deadline``, more than ``LONG_HOLDER`` seconds of one left, or no record to say --
-  names that holder as recorded on stderr, at once and then every ``FLEET_HOLD_DRAIN_REPEAT``
-  seconds, so the coordinator can decide without first finding what the drain waits for.
+  (pid, command, start, ``--deadline``), and a drain waiting on a slot reports that record on
+  stderr, as recorded, at once and then every ``FLEET_HOLD_DRAIN_REPEAT`` seconds, so the
+  coordinator can decide without first finding what the drain waits for.
 - THE WINDOW WAIT (ludics-lite#557): ``slot --wait-window[=<seconds>]`` turns the refusal beside an
   outstanding measurement on this box (a window or not) into a bounded wait for it to conclude, then
   queues for a slot under ``--wait`` as usual: two waits, each with its own bound and refusal line.
@@ -319,7 +318,6 @@ def _is_held(path: str) -> bool | None:
 # which on Linux and macOS is one system-wide clock that a wall-clock step does not move, and
 # ``expires`` is read against the same clock here, on the box the slot file is on.
 
-LONG_HOLDER = 600  # seconds of --deadline left past which the drain names a slot's holder
 HOLDER_REPEAT = 300  # FLEET_HOLD_DRAIN_REPEAT's default: seconds between the naming lines
 HOLDER_READ = 65536
 PID_MAX = 2**31 - 1  # the range of every pid_t this package runs on
@@ -357,7 +355,12 @@ def _whole(value: object, top: int | None = None) -> bool:
 
 
 def _finite(value: object) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # a JSON integer past a float's range
+        return False
 
 
 def read_holder(path: str) -> Holder | None:
@@ -371,7 +374,7 @@ def read_holder(path: str) -> Holder | None:
         return None
     try:
         decoded: Any = json.loads(data.decode("utf-8"))
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: nesting deeper than the parser's stack
         return None
     if not isinstance(decoded, dict):
         return None
@@ -409,11 +412,11 @@ def printable(text: str) -> str:
 
 
 def holder_line(box: str, request: str, index: int, holder: Holder | None, now: float, clock: float,
-                waited: float | None) -> str | None:
-    """The line naming slot ``index``'s holder when it may hold the slot long, or None when its
-    ``--deadline`` ends it within LONG_HOLDER seconds. ``now`` is the wall clock, ``clock`` this
+                waited: float | None) -> str:
+    """The line reporting slot ``index``'s holder record. ``now`` is the wall clock, ``clock`` this
     box's ``time.monotonic()``; ``waited``: seconds the drain has waited so far, None for the
-    first line."""
+    first line. Every held slot gets it, whatever its recorded cap: a record may be an earlier
+    taker's (THE HOLDER RECORD), so no record of it may silence the line."""
     lead = (f"{HOLD_PREFIX} {box}: measurement {request} " +
             (f"waits on slot {index}" if waited is None else f"still waits for slot {index} after {span(waited)}") + ": ")
     if holder is None:
@@ -425,8 +428,6 @@ def holder_line(box: str, request: str, index: int, holder: Holder | None, now: 
     else:
         # Before its command starts the deadline has not begun to count: all of it is ahead.
         left = holder.deadline if holder.expires is None else holder.expires - clock
-        if left <= LONG_HOLDER:
-            return None
         cap = f"recorded --deadline {holder.deadline}s, about {span(left)} left"
     return lead + (f"recorded holder pid {holder.pid}, slot taken {span(now - holder.started)} ago, {cap};"
                    f" for: {printable(shlex.join(holder.command))}")
@@ -434,9 +435,10 @@ def holder_line(box: str, request: str, index: int, holder: Holder | None, now: 
 
 def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, repeat: float) -> None:
     """Take slot ``index`` (its lock file ``path``, open on ``descriptor``) for the measurement,
-    waiting for its batch to end: the unchanged ``waits for the batch`` line, then the holder named
-    (``holder_line``) at once and every ``repeat`` seconds while it may hold the slot long. The
-    wait is a blocking flock in a thread, so a freed slot wakes it at once. Raises OSError."""
+    waiting for its batch to end: the unchanged ``waits for the batch`` line, then the holder's
+    record (``holder_line``) at once and every ``repeat`` seconds. The wait is a blocking flock in
+    a thread, so a freed slot wakes it at once. Raises OSError (the take's own failure only:
+    naming the holder is a diagnostic, and nothing it raises stops the drain)."""
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return
@@ -457,8 +459,11 @@ def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, r
     waiter.join(0.2)  # a batch ending in this instant needs no naming
     waited: float | None = None
     while waiter.is_alive():
-        line = holder_line(box, request, index, read_holder(path), time.time(), time.monotonic(), waited)
-        if line is not None and waiter.is_alive():
+        try:
+            line = holder_line(box, request, index, read_holder(path), time.time(), time.monotonic(), waited)
+        except Exception as exc:  # a diagnostic: never the measurement's end
+            line = f"{HOLD_PREFIX} {box}: measurement {request} waits on slot {index}: its record is unread ({exc!r})"
+        if waiter.is_alive():
             errline(line)
         waiter.join(repeat)
         waited = time.monotonic() - start

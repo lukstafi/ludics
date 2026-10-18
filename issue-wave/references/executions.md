@@ -164,9 +164,8 @@ already running, or already waiting for a slot, when the window opened. **The dr
 any other slot file there) before its runner starts, waiting for a running batch to end with
 `EXECUTION HOLD <box>: measurement <id> waits for the batch in slot <n> to end`, and holds them
 for as long as the runner's tree runs. Each take of a slot records its holder (pid, command,
-`--deadline`) in the slot's lock file, so where that batch may hold the slot long - no
-`--deadline`, more than ten minutes of one left, or no record - the drain names it on the next line,
-as recorded: `EXECUTION HOLD <box>: measurement <id> waits on slot <n>: recorded holder pid <p>,
+`--deadline`) in the slot's lock file, and the drain reports that record on the next line, as
+recorded: `EXECUTION HOLD <box>: measurement <id> waits on slot <n>: recorded holder pid <p>,
 slot taken <t> ago, <cap>; for: <command>`, and again every five minutes
 (`FLEET_HOLD_DRAIN_REPEAT`) as `still waits for slot <n> after <t>`. The line judges nothing about
 the pid and advises nothing: look at it before stopping the batch, or stop the hold to give the box
