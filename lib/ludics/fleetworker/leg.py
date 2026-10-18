@@ -19,6 +19,32 @@ a correctness record runs the runner under ``execution slot`` on that box (``--c
 --request <id>`` (``--deadline`` alone). When the record carries a ``resolved_revision`` (a
 ``head-of:<branch>`` request resolved at assignment), ``--rev`` must come to exactly that commit.
 
+THE WINDOW WAIT (ludics-lite#666). A standing record a measurement window has ``suspended`` is
+refused at once -- unless the leg was given ``--wait-window[=<s>]``, when it waits here, on the
+caller's box, in the slot's own wait (``slot.await_measurements``, in this verb's voice): until no
+measurement is outstanding on the record's box and the record is no longer suspended, re-reading
+the anchor's registry, for at most the bound (an hour when none is given); past it, refused naming
+the measurement, as the slot is. The record counts too, as held by the window it names, because a
+listing is no snapshot: a conclusion restores the records it suspended and then concludes the
+window, file by file, and an opening publishes the window and then suspends, so one read can show
+the window concluded, or not yet listed, beside the record still suspended. A suspension the
+registry never ends (which its conclusion rules out) is therefore waited out to the bound like a
+window. Then the record is judged as above, and the leg goes on to the box with its flags as given:
+a window opened after this wait (the next of a coordinator's back-to-back windows) is the slot's to
+wait for there, under its own ``--wait-window``, as for any batch. So these are two waits, each
+under the bound, as the slot's own window wait and slot wait are; the bound is not carried across
+the setup between them (the copy, the ssh, the fetch), whose time no clock on either side measures
+for the other. The leg waits for no window when its record is not suspended: the slot on the box
+does, as for any batch.
+
+Its boundary: a bounded, best-effort wait that re-reads the registry. It ends at once when the
+record is gone or concluded (a worker handing back mid-window), and otherwise proceeds only on a
+read in which the record is active again; the leg then judges that record as above (launching,
+running or uncertain), so it never runs against a record that read showed suspended or concluded.
+It refuses loudly on a registry it cannot read at the bound, and at the bound. When a refusal
+lands within a poll interval of the window's own end, or which of two failed reads it names, is
+outside it.
+
 THE CHECKOUT AND THE REVISION, on the box (paths absolute, or ``~/``): ``--checkout`` is a git
 checkout of the project there, ``--worktree`` a LINKED worktree of it (never the main one), made
 with ``git worktree add --detach`` when the path does not exist and checked out ``--detach`` at
@@ -77,9 +103,10 @@ import secrets
 import subprocess
 import sys
 import threading
+from typing import Any
 
 from ludics import cli
-from ludics.fleetworker import execution, revision
+from ludics.fleetworker import execution, revision, slot
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.preflight import knob
@@ -330,6 +357,54 @@ def refused(text: str, rc: int = 1) -> int:
     return rc
 
 
+LEG_VOICE = slot.Voice("EXECUTION LEG", "running the leg", "nothing ran")
+
+
+def window_bound(slot_flags: list[str]) -> int | None:
+    """The leg's ``--wait-window`` bound in seconds, the last given winning as in the slot; None
+    without one."""
+    bound: int | None = None
+    for flag in slot_flags:
+        if flag == "--wait-window":
+            bound = slot.WINDOW_WAIT
+        elif flag.startswith("--wait-window="):
+            bound = int(flag[len("--wait-window=") :])
+    return bound
+
+
+def await_window(cfg: Config, request: str, record: dict[str, Any], records: list[dict[str, Any]],
+                 slot_flags: list[str], runner: list[str]) -> dict[str, Any] | int:
+    """THE WINDOW WAIT (see the header) for a ``suspended`` record: the record read again once no
+    measurement holds its box; or the refusal's status."""
+    window = execution.jq_text(record.get("suspended_by"))
+    bound = window_bound(slot_flags)
+    if bound is None:
+        return refused(f"{request} is suspended by measurement window {window}; run the leg once that window"
+                       " concludes, or give it --wait-window, which waits for it")
+    host = execution.jq_text(execution.field(record, "request", "execution_host"))
+
+    def holders(read: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # The box's measurements; else the window this record is still suspended by, from the read
+        # or by its id alone when the read does not list it (a torn read, see the header).
+        own = execution.record_of(read, request)
+        if own is None or own.get("state") not in ("suspended", *DISPATCHED):
+            return []  # gone or concluded: nothing to wait for, and the leg refuses it
+        held = slot.measurement_records(read, host)
+        if held or own.get("state") != "suspended":
+            return held
+        by = execution.jq_text(own.get("suspended_by"))
+        return [execution.record_of(read, by) or {"request_id": by, "window": True}]
+
+    waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE, holders)
+    if isinstance(waited, int):
+        return waited
+    again = execution.record_of(waited, request)
+    if again is None:
+        return refused(f"unknown request_id {request} after waiting for window {window}: a leg runs only inside"
+                       " a dispatched reservation")
+    return again
+
+
 def box_path(value: str, flag: str) -> str:
     """A path on the box: absolute, or ``~/`` (expanded there)."""
     if not (value.startswith("/") or value.startswith("~/")):
@@ -406,18 +481,19 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     record = execution.record_of(records, request)
     if record is None:
         return refused(f"unknown request_id {request}: a leg runs only inside a dispatched reservation")
-    state = execution.jq_text(record.get("state"))
-    if state == "suspended":
-        return refused(
-            f"{request} is suspended by measurement window {execution.jq_text(record.get('suspended_by'))};"
-            " run the leg once that window concludes"
-        )
-    if state not in DISPATCHED:
-        return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")
     host = execution.jq_text(execution.field(record, "request", "execution_host"))
     box = values.get("--box", host)
+    # The box before any wait: a leg named for another box is refused now, not after a window.
     if fleet_name(cfg, box) != host:
         return refused(f"{request} is reserved on {host}, not {box}")
+    if execution.jq_text(record.get("state")) == "suspended":
+        waited = await_window(cfg, request, record, records, slot_flags, runner)
+        if isinstance(waited, int):
+            return waited
+        record = waited
+    state = execution.jq_text(record.get("state"))
+    if state not in DISPATCHED:
+        return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")
     kind = execution.jq_text(execution.field(record, "request", "kind"))
     if kind == "measurement":
         extra = [flag for flag in slot_flags if flag.startswith("--") and flag != "--deadline"]

@@ -3091,6 +3091,55 @@ expect "a measurement's leg takes no slot flags" 2 "is a measurement, run under 
 expect "a measurement's leg runs under execution hold --request" 0 "^runner hold: testbox leg-m$" -- \
   leg --request leg-m --rev main --checkout "$lco" --worktree "$lwt" --deadline 600 -- tools/check.sh
 fixture_done leg-m
+# THE WINDOW WAIT (ludics-lite#666): a standing record a measurement window suspended is refused
+# at once without --wait-window; with it the leg waits in the slot's own wait, on this side, for
+# its record's box, under the one bound, and runs once nothing holds the box.
+legwin() { # <id> -> open a measurement window on testbox under that id
+  jq -n --arg id "$1" '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#666", purpose:"leg window fixture",
+    agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"measurement"}' > "$TMP/$1.json"
+  "${FWL[@]}" execution window testbox "$TMP/$1.json" >/dev/null 2>&1 || ko "could not open window $1 (setup)"
+}
+jq -n '{request_id:"leg-s", wave:"w", worker:"leg-s", transport:"subagent", issue:"o/r#666", purpose:"leg fixture", agent_host:"testbox",
+  execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true}' > "$TMP/leg-s.json"
+"${FWL[@]}" execution run "$TMP/leg-s.json" >/dev/null 2>&1 || ko "could not take the standing reservation leg-s (setup)"
+legwin leg-w1
+n=$(marks)
+expect "a leg of a standing record a window suspended is refused at once without --wait-window, naming the window" 1 \
+  "EXECUTION LEG REFUSED: leg-s is suspended by measurement window leg-w1; run the leg once that window concludes, or give it --wait-window" -- \
+  leg --request leg-s --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "...and with --wait-window on the wrong box, refused before any wait" 1 "leg-s is reserved on testbox, not other" -- \
+  leg --request leg-s --box other --rev claude/topic --checkout "$lco" --worktree "$lwt" --wait-window=60 -- tools/check.sh
+expect "a window that outlasts the leg's --wait-window bound refuses it there, naming the window" 1 \
+  "^EXECUTION LEG REFUSED testbox: measurement leg-w1 still holds testbox after 1s (--wait-window); nothing ran$" -- \
+  env FLEET_SLOT_WINDOW_POLL=1 "${FWL[@]}" execution leg --request leg-s --rev claude/topic --checkout "$lco" --worktree "$lwt" --wait-window=1 -- tools/check.sh
+grep -q "^EXECUTION LEG testbox: measurement window leg-w1 holds testbox (coordinator " <<<"$out" && ok "...having named the window and its owner" || ko "the bounded leg never named the window: $out"
+[ "$(marks)" = "$n" ] && ok "...none of them ran the runner" || ko "a leg ran its runner during the window"
+# The coordinator's back-to-back windows: leg-w1 concludes and leg-w2 opens while the leg waits.
+# Its re-reads are 5 s apart, so the two registry calls land between two of them and the leg reads
+# the second window, never the gap (a leg admitted in a gap would be any batch's case: the slot on
+# the box and the window's drain see to it).
+leg_said() { # <pattern>: wait up to 40 s for the waiting leg's output to show it
+  local i; for i in $(seq 200); do grep -q "$1" "$TMP/leg-ww.out" 2>/dev/null && return 0; sleep 0.2; done; return 1
+}
+env FLEET_SLOT_WINDOW_POLL=5 "${FWL[@]}" execution leg --request leg-s --rev claude/topic --checkout "$lco" --worktree "$lwt" \
+  --wait-window=120 -- tools/check.sh > "$TMP/leg-ww.out" 2>&1 &
+lww=$!
+if leg_said "^EXECUTION LEG testbox: waiting up to 120s (--wait-window) for it to conclude, then for a slot, for: tools/check.sh$"; then
+  ok "a leg given --wait-window waits for the window that suspended its standing record"
+  fixture_done leg-w1; legwin leg-w2
+  leg_said "^EXECUTION LEG testbox: measurement window leg-w2 holds testbox" && ok "...and for a window opened mid-wait, which it names" ||
+    ko "the waiting leg never named the window opened mid-wait: $(cat "$TMP/leg-ww.out")"
+  [ "$(marks)" = "$n" ] && kill -0 "$lww" 2>/dev/null && ok "...still waiting, the runner not run" || ko "the leg ran or ended during the second window: $(cat "$TMP/leg-ww.out")"
+  fixture_done leg-w2
+  wait "$lww"; lwwrc=$?
+  [ "$lwwrc" = 0 ] && [ "$(tail -n 1 "$TMP/leg-ww.out")" = "execution-leg: exit: 0" ] && [ "$(marks)" = $((n + 1)) ] &&
+    ok "...and once it concludes inside the bound the leg runs, once, its status the runner's" || ko "the waited leg: rc=$lwwrc runs $(marks) (from $n) -- $(cat "$TMP/leg-ww.out")"
+  grep -q "^EXECUTION LEG testbox: no measurement holds testbox after [0-9]*s; running the leg$" "$TMP/leg-ww.out" &&
+    grep -q "^EXECUTION SLOT testbox: slot [0-9] of 4[^:]* held for: bash" "$TMP/leg-ww.out" && ok "...in a slot on the box, after saying the box is free" || ko "the waited leg's output: $(cat "$TMP/leg-ww.out")"
+else
+  ko "the leg never said it waits for the window: $(cat "$TMP/leg-ww.out")"; kill "$lww" 2>/dev/null; wait "$lww" 2>/dev/null; fixture_done leg-w1
+fi
+fixture_done leg-s
 unset LEG_MARK
 }
 

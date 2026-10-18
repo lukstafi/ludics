@@ -996,6 +996,19 @@ def outstanding_measurements(records: list[dict[str, Any]], box: str, window_onl
 
 
 @dataclass(frozen=True)
+class Voice:
+    """Who is waiting, in ``await_measurements``' lines: the slot itself, or a caller that waits
+    before it reaches one (``execution leg``, ludics-lite#666), whose lines are its own."""
+
+    prefix: str  # what every line starts with
+    proceed: str  # said once nothing holds the box any more
+    refused: str  # what a refusal at the bound adds: what did not happen
+
+
+SLOT_VOICE = Voice(SLOT_PREFIX, "taking a slot", "no slot taken")
+
+
+@dataclass(frozen=True)
 class Unread:
     """The anchor's registry could not be read: the lines a refusal prints, and its status."""
 
@@ -1010,19 +1023,19 @@ class Unread:
 WAKE_LAB_ANCHOR = re.compile(r"[A-Za-z0-9._@][A-Za-z0-9._@-]*")
 
 
-def unreachable_lines(anchor: str) -> tuple[str, ...]:
+def unreachable_lines(anchor: str, voice: Voice = SLOT_VOICE) -> tuple[str, ...]:
     """The UNREACHABLE refusal: the registry line, then why a freshly woken box may only need a retry."""
-    retry = (f"{SLOT_PREFIX} UNREACHABLE {anchor}: a box woken in the last few minutes may only need its"
+    retry = (f"{voice.prefix} UNREACHABLE {anchor}: a box woken in the last few minutes may only need its"
              f" ssh to {anchor} to come up; retry in a minute")
     if WAKE_LAB_ANCHOR.fullmatch(anchor):
         retry += (f" (on a native-Linux box, WAKE_LAB_ANCHOR={anchor} wake-lab.sh --wait <box> waits for that"
                   " leg; it does not ask a WSL guest's)")
     else:
         retry += ", once its route to the anchor is up"
-    return (f"{SLOT_PREFIX} UNREACHABLE {anchor}: registry unread, no slot taken", retry)
+    return (f"{voice.prefix} UNREACHABLE {anchor}: registry unread, {voice.refused}", retry)
 
 
-def read_registry(cfg: Config, box: str) -> list[dict[str, Any]] | Unread:
+def read_registry(cfg: Config, box: str, voice: Voice = SLOT_VOICE) -> list[dict[str, Any]] | Unread:
     done = listing(cfg)
     if done.unreachable:
         # Refused at once, never retried here: later in a box's uptime an anchor that does not
@@ -1032,35 +1045,45 @@ def read_registry(cfg: Config, box: str) -> list[dict[str, Any]] | Unread:
         # native-Linux box -- that `wake-lab.sh --wait` waits for it. The command names this
         # anchor, this box's spelling of it, as WAKE_LAB_ANCHOR wants: wake-lab's own default
         # (mac-studio) is FLEET_ANCHOR's default, not whatever this one is.
-        return Unread(4, unreachable_lines(cfg.anchor))
+        return Unread(4, unreachable_lines(cfg.anchor, voice))
     if done.rc != 0:
-        return Unread(1, (substitution(done.out), f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry could not be read"))
+        return Unread(1, (substitution(done.out), f"{voice.prefix} REFUSED {box}: the anchor's registry could not be read"))
     records = records_of(done.out)
     if records is None:
-        return Unread(1, (f"{SLOT_PREFIX} REFUSED {box}: the anchor's registry did not parse",))
+        return Unread(1, (f"{voice.prefix} REFUSED {box}: the anchor's registry did not parse",))
     return records
 
 
-def describe_measurement(box: str, record: dict[str, Any]) -> str:
-    """Which measurement holds the box, and whose: one line, said once per measurement waited for."""
+def describe_measurement(box: str, record: dict[str, Any], prefix: str = SLOT_PREFIX) -> str:
+    """Which measurement holds the box, and whose: one line, said once per measurement waited for.
+    A holder with no ``request`` is one a caller knows only by id (``execution leg``'s suspending
+    window, absent from a read), said so."""
     what = "measurement window" if record.get("window") is True else "measurement"
+    if "request" not in record:
+        return (f"{prefix} {box}: {what} {jq_text(record.get('request_id'))} holds {box} (its record is not in"
+                " this read of the registry)")
     owner = jq_text(record.get("coordinator"))
     worker = jq_text(field(record, "request", "worker"))
     issue = jq_text(field(record, "request", "issue"))
     since = jq_text(record.get("created_at"))
     return (
-        f"{SLOT_PREFIX} {box}: {what} {jq_text(record.get('request_id'))} holds {box} (coordinator {owner};"
+        f"{prefix} {box}: {what} {jq_text(record.get('request_id'))} holds {box} (coordinator {owner};"
         f" {worker} for {issue}; reserved {since}; no expected end is recorded)"
     )
 
 
 def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bound: int,
-                       command: Sequence[str]) -> list[dict[str, Any]] | int:
-    """``--wait-window`` (ludics-lite#557): block until no measurement is outstanding on this box,
+                       command: Sequence[str], voice: Voice = SLOT_VOICE,
+                       holders: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+                       ) -> list[dict[str, Any]] | int:
+    """``--wait-window`` (ludics-lite#557): block until no measurement is outstanding on ``box``,
     re-reading the registry every ``FLEET_SLOT_WINDOW_POLL`` seconds (15), for at most ``bound``
     seconds; the registry it last read, or the refusal's status. A measurement on another box is
     not this box's (``measurement_records``), so it never blocks. Each measurement waited for is
-    named once, and a line every ``WINDOW_PROGRESS`` seconds says the batch is still waiting."""
+    named once, and a line every ``WINDOW_PROGRESS`` seconds says the batch is still waiting.
+    ``execution leg`` waits here too, on the agent host for its execution host's box, in its own
+    ``voice``, with ``holders`` (what holds the box in a registry read; the box's measurements when
+    not given) adding the window its record is still suspended by (ludics-lite#666)."""
     try:
         poll = max(float(cfg.env.get("FLEET_SLOT_WINDOW_POLL", "15")), 0.1)
     except ValueError:
@@ -1070,18 +1093,18 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     named: set[str] = set()
     unread: Unread | None = None
     while True:
-        holding = measurement_records(records, box)
+        holding = holders(records) if holders is not None else measurement_records(records, box)
         if not holding and unread is None:
             if named:
-                errline(f"{SLOT_PREFIX} {box}: no measurement holds {box} after {int(time.monotonic() - start)}s;"
-                        " taking a slot")
+                errline(f"{voice.prefix} {box}: no measurement holds {box} after {int(time.monotonic() - start)}s;"
+                        f" {voice.proceed}")
             return records
         for record in holding:
             identity = jq_text(record.get("request_id"))
             if identity not in named:
                 named.add(identity)
-                errline(describe_measurement(box, record))
-                errline(f"{SLOT_PREFIX} {box}: waiting up to {bound}s (--wait-window) for it to conclude, then for a"
+                errline(describe_measurement(box, record, voice.prefix))
+                errline(f"{voice.prefix} {box}: waiting up to {bound}s (--wait-window) for it to conclude, then for a"
                         f" slot, for: {' '.join(command)}")
         now = time.monotonic()
         ids = ", ".join(jq_text(r.get("request_id")) for r in holding)
@@ -1090,11 +1113,11 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                 for line in unread.lines:
                     cli.say(line)
                 return unread.rc
-            cli.say(f"{SLOT_PREFIX} REFUSED {box}: measurement {ids} still holds {box} after {bound}s"
-                    " (--wait-window); no slot taken")
+            cli.say(f"{voice.prefix} REFUSED {box}: measurement {ids} still holds {box} after {bound}s"
+                    f" (--wait-window); {voice.refused}")
             return 1
         if now >= progress:
-            errline(f"{SLOT_PREFIX} {box}: still waiting for measurement {ids}"
+            errline(f"{voice.prefix} {box}: still waiting for measurement {ids}"
                     f" ({int(now - start)}s of {bound}s, --wait-window)")
             progress += WINDOW_PROGRESS
         time.sleep(min(poll, deadline - now))
@@ -1102,12 +1125,18 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
             # The bound is the bound: no read after it, which over a remote anchor could run past
             # it by the transport's timeout and then admit the batch late.
             continue
-        read = read_registry(cfg, box)
+        read = read_registry(cfg, box, voice)
+        if time.monotonic() >= deadline:
+            # Nor a read that came back past it: a slow transport must not admit the batch late
+            # either (ludics-lite#683 review). Such a read decides which refusal is said -- its
+            # own failure, or the measurement's -- and never whether the batch runs.
+            unread = read if isinstance(read, Unread) else None
+            continue
         if isinstance(read, Unread):
             # One failed read mid-wait is not the window's answer: said, and asked again until the
             # bound, when the refusal is the read's own.
             unread = read
-            errline(f"{SLOT_PREFIX} {box}: the registry could not be read while waiting"
+            errline(f"{voice.prefix} {box}: the registry could not be read while waiting"
                     f" ({' '.join(line for line in read.lines if line)}); asking again")
             continue
         records, unread = read, None
