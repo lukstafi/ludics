@@ -49,10 +49,18 @@
 #     all four ignored, and so does one under a `start` launched with `&` (INT and QUIT ignored);
 #     a copy with the reset emptied is the control, whose command survives each;
 #   - `stop` (ludics-lite#510) ends a spawned run's whole group, a grandchild behind an exited
-#     subshell included, from a caller that survives it, and a wait there then reads DIED; it sends
+#     subshell included, from a caller that survives it, and a wait there then reads STOPPED
+#     (exit 7, ludics-lite#638), never DIED, its `stopped` marker the one file added; it sends
 #     KILL after BG_RUN_STOP_GRACE to a command that ignores TERM; it signals nothing, exit 1, on a
-#     run that finished, one never started, and a pid the system has reused for another process;
-#     and it refuses, exit 2, a run started by `start` in a group it does not lead, which runs on;
+#     run that finished, one never started, one already stopped, and a pid the system has reused
+#     for another process; and it refuses, exit 2, a run started by `start` in a group it does not
+#     lead, which runs on;
+#   - STOPPED (ludics-lite#638): a stop ended inside its grace, the wrapper gone but a member of its
+#     group left, reads RUNNING, not DIED (the marker is in before the signal) and not STOPPED;
+#     a second stop ends that remnant, and the run then reads STOPPED. Staged: a dead pid with the
+#     marker reads STOPPED, with an rc beside it rc, and without the marker DIED (the control); a
+#     live process that has since taken the wrapper's pid, leading a group of its own, is not
+#     read as the run's group;
 #   - when zsh is installed, a start issued through `zsh -c` the way the Bash tool issues it,
 #     with its arguments passed through intact.
 #
@@ -439,7 +447,7 @@ if until_file "$d/pid" 10; then
   # Two beats fit the 3 s window (at 1 s and 2 s); a loaded box may stretch a 1 s poll past one.
   [ "$beats" -ge 1 ] && ok "...with a heartbeat line on stderr while it blocked ($beats of them)" \
     || ko "want a heartbeat line on stderr, got $beats -- $herr"
-  if printf '%s\n' "$herr" | grep -E -q '^(rc=|RUNNING|STARTING|DIED|REFUSED)'; then
+  if printf '%s\n' "$herr" | grep -E -q '^(rc=|RUNNING|STARTING|STOPPED|DIED|REFUSED)'; then
     ko "a heartbeat line starts with a verdict word -- $herr"
   else
     ok "...none of which starts with a verdict word"
@@ -452,8 +460,12 @@ if until_file "$d/pid" 10; then
     env BG_RUN_HEARTBEAT=0 "$BG" wait "$d" --within 2
   contains "$out" 'still waiting' && ko "a heartbeat was printed with BG_RUN_HEARTBEAT=0 -- $out" \
     || ok "...and says nothing while it blocks"
-  expect "a --within 0 wait reads 'RUNNING after 0 s of --within 0'" 3 'RUNNING after 0 s of --within 0' -- \
+  # $SECONDS ticks on whole seconds, so a read that straddles a tick says 1 s (main went red on
+  # it, 2026-10-17); what the case pins is that the wait returns at once, with its bound named.
+  expect "a --within 0 wait reads 'RUNNING after <0|1> s of --within 0'" 3 ' s of --within 0' -- \
     "$BG" wait "$d" --within 0
+  case $out in 'RUNNING after '[01]' s of --within 0') ok "...at once ($out)" ;;
+    *) ko "the --within 0 wait printed /$out/" ;; esac
   [ -s "$d/cpid" ] && kill -9 "$(head -n 1 "$d/cpid")" 2>/dev/null
 else
   ko "the heartbeat fixture never published its pid"
@@ -473,6 +485,25 @@ expect "a dead pid beside an rc reads rc=3, not DIED" 0 'rc=3' -- "$BG" wait "$d
 d="$TMP/dead-no-rc"; mkdir -p "$d"
 printf '99999999\n' > "$d/pid"
 expect "control: a dead pid with no rc reads DIED" 5 DIED -- "$BG" wait "$d" --within 0
+# The stop marker (ludics-lite#638): the same dead pid reads STOPPED once a stop has marked it, and
+# an rc beside the marker still wins.
+: > "$d/stopped"
+expect "a dead pid with no rc and a stop's marker reads STOPPED (exit 7), not DIED" 7 \
+  'STOPPED by bg-run.sh stop before the command returned' -- "$BG" wait "$d" --within 0
+expect "...and stop there signals nothing (NOT RUNNING: STOPPED)" 1 'NOT RUNNING: STOPPED' -- "$BG" stop "$d"
+printf '143\n' > "$d/rc"
+expect "an rc beside a stop's marker reads rc: the command returned" 0 'rc=143' -- "$BG" wait "$d" --within 0
+# A live process that has taken the wrapper's pid since, leading a group of its own, is another
+# process (its start time differs), and its group is not the run's: STOPPED, not RUNNING.
+set -m
+sleep 30 &
+sp=$!
+set +m
+BGPIDS="$BGPIDS $sp"
+d="$TMP/stopped-reused"; mkdir -p "$d"
+printf '%s\n%s\n' "$sp" 'ThuJan100:00:001970' > "$d/pid"; cp "$d/pid" "$d/cpid"; : > "$d/stopped"
+expect "a stopped run whose wrapper pid a new group leader has taken reads STOPPED" 7 STOPPED -- "$BG" wait "$d" --within 0
+kill -9 "$sp" 2>/dev/null; { wait "$sp"; } 2>/dev/null
 
 # --- spawn: new plus a detached start, in one call that returns ------------------------------------
 p="$TMP/spawned"
@@ -564,8 +595,41 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 done
 [ -n "$gc" ] && $gone && ok "...a grandchild behind an exited subshell included" \
   || ko "the grandchild (${gc:-never recorded}) outlived the stop"
-expect "...and a wait there reads DIED" 5 DIED -- "$BG" wait "$d" --within 5
-expect "a second stop there signals nothing (NOT RUNNING, exit 1)" 1 'NOT RUNNING: DIED' -- "$BG" stop "$d"
+expect "...and a wait there reads STOPPED (exit 7), not DIED (ludics-lite#638)" 7 \
+  'STOPPED by bg-run.sh stop before the command returned' -- "$BG" wait "$d" --within 5
+[ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid stopped " ] && ok "...its marker the one file the stop added" \
+  || ko "the stopped directory holds: $(ls -A "$d" | tr '\n' ' ')"
+expect "a second stop there signals nothing (NOT RUNNING, exit 1)" 1 'NOT RUNNING: STOPPED' -- "$BG" stop "$d"
+# A stop ended inside its grace (ludics-lite#638): the command leaves a TERM-ignoring grandchild
+# behind an exited subshell, the stop is killed once the wrapper is gone, and the grandchild is
+# the remnant. A wait then reads RUNNING -- not DIED, since the marker went in before the signal,
+# and not STOPPED, since a member of the group is left -- and a second stop ends it.
+printf '%s\n' '#!/bin/sh' '( sh -c '"'"'trap "" TERM; echo $$ > "$0"; while :; do sleep 1; done'"'"' "$1" & )' 'exec sleep 300' > "$TMP/stubborn-tree.sh"
+d=$("$BG" spawn "$TMP/remnant" -- sh "$TMP/stubborn-tree.sh" "$TMP/remnant.gc")
+until_file "$TMP/remnant.gc" 10
+rgc=$(cat "$TMP/remnant.gc" 2>/dev/null); BGPIDS="$BGPIDS $rgc"
+rw=$(head -n 1 "$d/pid" 2>/dev/null)
+env BG_RUN_STOP_GRACE=60 "$BG" stop "$d" > "$TMP/remnant.stop" 2>&1 &
+rs=$!; BGPIDS="$BGPIDS $rs"
+# A wrapper a non-reaping PID 1 leaves a zombie has exited, as bg-run.sh's own `running` reads it.
+proc_live() {
+  kill -0 "$1" 2>/dev/null || return 1
+  case $(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ') in Z*|X*) return 1 ;; esac
+  return 0
+}
+i=0
+while proc_live "${rw:-99999999}" && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+kill -9 "$rs" 2>/dev/null; { wait "$rs"; } 2>/dev/null
+if [ -n "$rgc" ] && proc_live "$rgc" && ! proc_live "${rw:-99999999}"; then
+  expect "a stop ended in its grace leaves a remnant that reads RUNNING, not DIED or STOPPED" 3 RUNNING -- \
+    "$BG" wait "$d" --within 0
+  expect "...and a second stop ends the remnant" 0 'TERM, then KILL after 1 s' -- env BG_RUN_STOP_GRACE=1 "$BG" stop "$d"
+  case $(ps -o stat= -p "$rgc" 2>/dev/null) in ''|Z*) ok "...the grandchild included" ;;
+    *) ko "the remnant grandchild ($rgc) outlived the second stop" ;; esac
+  expect "...after which the run reads STOPPED" 7 STOPPED -- "$BG" wait "$d" --within 0
+else
+  ko "the remnant fixture did not stage (wrapper ${rw:-none}, grandchild ${rgc:-none}) -- $(cat "$TMP/remnant.stop")"
+fi
 # A command that ignores TERM gets KILL after the grace.
 d=$("$BG" spawn "$TMP/stubborn" -- sh -c 'trap "" TERM; : > "$0"; while :; do sleep 1; done' "$TMP/stubborn.ready")
 until_exists "$TMP/stubborn.ready" 10

@@ -323,8 +323,9 @@ whose turn's end kills its background tasks) runs `watch` and `merge --wait` und
 `bg-run.sh spawn` and blocks on `bg-run.sh wait` in the same turn, as
 [Blocking on a run](../issue-wave/references/native-claude.md#blocking-on-a-run) says. To stop a
 spawned `merge --wait` (a pause, or "do not merge"), run
-`~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>`; a merge already inside its merge call
-may still land, so re-read the PR's state after (that section is the verb's contract).
+`~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>`; a `wait` there then reads `STOPPED`,
+which is never re-armed. A merge already inside its merge call may still land, so re-read the PR's
+state after (that section is the verb's contract).
 
 `watch` *is* the polling loop — don't hand-roll a sleep loop around `poll`, which is what a long
 review otherwise turns into. It returns the moment a round lands (printing exactly what `poll`

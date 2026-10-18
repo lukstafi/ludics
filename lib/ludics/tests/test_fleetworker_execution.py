@@ -79,6 +79,26 @@ class Conclusions(unittest.TestCase):
             self.assertEqual(run_verdict(code, timeout_codes=("142",)), want, code)
         self.assertEqual(run_verdict("124", timeout_codes=("124", "142")), "timeout")
 
+    def test_a_stopped_bg_run_concludes_cancelled_and_nothing_else_does(self) -> None:
+        """#638: the far side's ``status=stopped`` (bg-run.sh wait's STOPPED) is cancelled, with no
+        status read; any other fact beside it is unreadable, not a conclusion."""
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+        with tempfile.NamedTemporaryFile("w", suffix=".sh") as bgrun:
+            def conclude(out: str) -> execution.Conclusion:
+                with mock.patch.object(execution, "run_on", return_value=execution.Done(0, out)):
+                    return execution.conclude_from_bg_run(
+                        cfg, "/runs/run-3", "req-1", "testbox", "testbox", SHA, "", "", bgrun.name)
+            done = conclude("status=stopped\n")
+            assert isinstance(done, Payload), done
+            payload = json.loads(done.json)
+            self.assertEqual(payload["verdict"], "cancelled")
+            self.assertIn("/runs/run-3 on testbox: STOPPED by bg-run.sh stop before the command returned", payload["evidence"])
+            self.assertEqual(payload["handle"], "bg-run:testbox:/runs/run-3")
+            for out in ("status=stopped\nrc=0\nsentinel=", "status=STOPPED", "status=stopped\nstatus=rc"):
+                refused = conclude(out)
+                assert isinstance(refused, Refusal), (out, refused)
+                self.assertIn("FROM-BG-RUN REFUSED: unreadable run facts", refused.text)
+
     def test_facts_are_read_by_key_as_sed_reads_them(self) -> None:
         facts = "exit=0\nwt=/w t\nhead=" + SHA + "\nrecord=none"
         self.assertEqual((facts_of(facts, "exit"), facts_of(facts, "wt"), facts_of(facts, "record")), ("0", "/w t", "none"))
