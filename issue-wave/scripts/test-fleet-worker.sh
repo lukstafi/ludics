@@ -157,9 +157,12 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed"; exit 0; }
 # and scratch tree, nothing else. A process that left the group (setsid, a `set -m` job of its own)
 # is the section's to stop, as in scripts/run-against-base.sh; a KILL of the supervisor itself
 # gives it no chance to act, and the child then runs on unwatched, as the suite ran before. Process
-# state is read with `ps -o` (a zombie still answers kill -0), or with kill -0 on the Cygwin
-# family, whose ps has no -o and whose kill skips exited processes; Git for Windows ships no tmux,
-# so there the suite skips above before any of this runs.
+# state is read with `ps -o` (a zombie still answers kill -0; a host whose ps cannot print fields
+# is refused, since every run would read as already over), or with kill -0 on the Cygwin family,
+# whose ps has no -o and whose kill skips exited processes; Git for Windows ships no tmux, so
+# there the suite skips above before any of this runs. Why the KILL is load-bearing: a shell with
+# an EXIT trap that is blocked reading a `$(...)` whose pipe an orphan holds -- the #633 shape --
+# ignores TERM (bash 3.2 retries the interrupted read), so its own cleanup never runs either.
 WATCH_GRACE=5
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) PROC_READING=kill ;; *) PROC_READING=ps ;; esac
 # proc_alive <pid> / group_alive <pgid>: running, zombies excluded.
@@ -214,6 +217,12 @@ watch_end() {
   exit "$1"
 }
 if [ "$SECTION_TIMEOUT" -gt 0 ] && [ -z "${TEST_FLEET_WORKER_WATCH:-}" ]; then
+  # A ps that cannot print fields answers empty for every process, which reads as a run already
+  # over: the watchdog would stop watching at once and block on the run instead. Refused up front.
+  [ "$PROC_READING" = kill ] || ps -o pgid=,stat= -p "$$" >/dev/null 2>&1 || {
+    echo "FAIL: the section watchdog reads processes with ps -o, which this host's ps refuses; FLEET_WORKER_TEST_SECTION_TIMEOUT=off runs the suite unwatched" >&2
+    exit 1
+  }
   WATCH=$(mktemp -d "${TMPDIR:-/tmp}/fleet-worker-watch.XXXXXX")
   WATCH=$(CDPATH= cd "${WATCH:?}" && pwd -P) ||
     { echo "FAIL: could not create the section watchdog's scratch directory" >&2; exit 1; }
@@ -4106,7 +4115,11 @@ expect "a section timeout that is not a number of seconds is refused before anyt
   "FLEET_WORKER_TEST_SECTION_TIMEOUT must be a number of seconds, 0, or off, got soon" -- \
   env -u TEST_FLEET_WORKER_WATCH FLEET_WORKER_TEST_SECTION_TIMEOUT=soon "$BASH" "$HERE/test-fleet-worker.sh" usage
 wd="$TMP/watchdog"; mir="$TMP/watchdog/copy"
-mkdir -p "$mir/issue-wave/scripts" "$mir/scripts" "$wd/tmp"
+mkdir -p "$mir/issue-wave/scripts" "$mir/scripts" "$wd/tmp" "$wd/nops"
+printf '#!/bin/sh\nexit 1\n' > "$wd/nops/ps" && chmod +x "$wd/nops/ps"
+expect "a host whose ps cannot print fields is refused, not watched blind (every run would read as over)" 1 \
+  "reads processes with ps -o, which this host's ps refuses" -- \
+  env -u TEST_FLEET_WORKER_WATCH PATH="$wd/nops:$SUITE_PATH" "$BASH" "$HERE/test-fleet-worker.sh" usage
 cp "$HERE/fleet-worker.sh" "$HERE/bg-run.sh" "$mir/issue-wave/scripts/"
 [ ! -f "$HERE/fleet-execution.py" ] || cp "$HERE/fleet-execution.py" "$mir/issue-wave/scripts/"
 cp "$HERE/../../scripts/py" "$mir/scripts/py"
