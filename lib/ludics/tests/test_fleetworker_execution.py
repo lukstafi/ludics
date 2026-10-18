@@ -121,16 +121,123 @@ class Conclusions(unittest.TestCase):
             self.assertIsNone(records_of(text), text)
 
 
+def run_text(**over: str) -> str:
+    """FROM_RUN's output for a finished record launched clean at ``"b" * 40``, ``over`` replacing facts."""
+    base = {"exit": "0", "wt": "/w t", "gone": "0", "runner": "0", "alive": "", "pair": "both", "dirty": "0",
+            "rel": "same", "whead": "b" * 40, "known": "1", "launched": "b" * 40}
+    base.update(over)
+    return "dir=1\n" + "\n".join(f"{k}={v}" for k, v in base.items())
+
+
+def run_record(**over: str) -> dict[str, str]:
+    facts = execution.run_facts(run_text(**over))
+    assert facts is not None, over
+    return facts
+
+
+class RunFacts(unittest.TestCase):
+    """#657: FROM_RUN prints a test-run.sh record's facts and refuses nothing; the reading is fail-closed."""
+
+    def test_a_record_reads_key_by_key(self) -> None:
+        facts = run_record()
+        self.assertEqual((facts["dir"], facts["exit"], facts["wt"], facts["pair"], facts["launched"]),
+                         ("1", "0", "/w t", "both", "b" * 40))
+        self.assertEqual(execution.run_facts("dir=0"), {"dir": "0"})
+        self.assertEqual(execution.run_facts("dir=1\nmissing=exit"), {"dir": "1", "missing": "exit"})
+
+    def test_anything_but_its_own_shape_is_unreadable(self) -> None:
+        full = run_text()
+        for text in ("", "dir=2", "dir=1\nmissing=pid", "dir=1\nmissing=exit\nexit=0", "dir=0\nexit=0",
+                     full.replace("gone=0\nrunner", "runner"), full.replace("\nwt=", "\nwt=x\nwt="),
+                     full.replace("exit=0\nwt", "wt=/w t\nexit=0\nwt"), "junk\n" + full):
+            self.assertIsNone(execution.run_facts(text), text)
+        for over in ({"gone": "2"}, {"runner": "x"}, {"alive": "1 2"}, {"pair": "odd"}, {"dirty": "-1"},
+                     {"rel": "near"}, {"known": "yes"}, {"rel": ""}, {"pair": "none"}, {"launched": "B" * 40}):
+            self.assertIsNone(execution.run_facts(run_text(**over)), over)
+
+    def test_launched_is_last_and_whole_so_a_head_file_injects_no_fact(self) -> None:
+        facts = execution.run_facts(run_text(rel="", launched="b" * 40 + "\nexit=1\nknown=0"))
+        assert facts is not None
+        self.assertEqual((facts["exit"], facts["known"]), ("0", "1"))
+        refused = execution.run_unfinished(facts, "/r", "box")
+        assert refused is not None
+        self.assertIn("/r/head holds 'bbbb", refused.text)
+        self.assertIn("not one commit ID: a malformed record", refused.text)
+
+
+class FromRunForms(unittest.TestCase):
+    """#657's negative controls: on the one far side's facts, each form refuses what it refused
+    before -- ``run_unfinished`` for both, ``from_run_refusal`` for --from-run alone."""
+
+    SHA = "b" * 40
+    UNFINISHED = (
+        ({"dir": "0"}, "no run directory /r on box"),
+        ({"dir": "1", "missing": "exit"}, "/r has no exit (the run is unfinished"),
+        (run_record(exit="x"), "/r/exit holds 'x', not a status"),
+        (run_record(exit=""), "/r/exit holds '', not a status"),
+        (run_record(wt="", gone="1", runner="none", whead=""), "/r/wt names no worktree"),
+        (run_record(runner="3"), "tools/test-run.sh status /r exit 3: not a finished run"),
+        (run_record(runner="none", alive="42"), "supervisor pid 42 of /r is still alive"),
+        (run_record(pair="irregular", rel="", launched=""), "/r/head or /r/dirty is not a regular file"),
+        (run_record(pair="head", rel="", launched=""), "/r has a head but no dirty"),
+        (run_record(pair="dirty", rel="", launched=""), "/r has a dirty but no head"),
+        (run_record(launched="b" * 39, rel="same"), "/r/head holds '" + "b" * 39 + "', not one commit ID"),
+        (run_record(launched="not-a-sha", rel=""), "/r/head holds 'not-a-sha', not one commit ID"),
+    )
+
+    def test_both_forms_refuse_a_record_with_no_verdict_or_a_malformed_one(self) -> None:
+        for facts, want in self.UNFINISHED:
+            for refused in (execution.from_run_refusal(facts, "/r", "box", self.SHA),
+                            execution.standing_run_clause(facts, "/r", "box")):
+                assert isinstance(refused, Refusal), (facts, refused)
+                self.assertEqual(refused.rc, 1)
+                self.assertTrue(refused.text.startswith("FROM-RUN REFUSED: "), refused.text)
+                self.assertIn(want, refused.text)
+
+    def test_from_run_refuses_what_is_no_evidence_for_one_commit_and_standing_records_it(self) -> None:
+        other = "c" * 40
+        for over, want in (
+            ({"gone": "1", "runner": "none", "whead": ""}, "recorded worktree /w t is gone"),
+            ({"launched": other, "rel": "outside"}, f"/r/head records {other} as the revision launched, but the reported revision is {self.SHA}"),
+            ({"launched": other, "rel": "ancestor"}, f"this run is evidence for {other}, not {self.SHA}"),
+            ({"dirty": "2"}, "/r/dirty lists 2 uncommitted path(s) at launch"),
+            ({"whead": ""}, "cannot read HEAD of /w t"),
+            ({"known": "0"}, f"/w t does not contain the reported revision {self.SHA}"),
+        ):
+            refused = execution.from_run_refusal(run_record(**over), "/r", "box", self.SHA)
+            assert refused is not None, over
+            self.assertIn(want, refused.text)
+            self.assertNotIsInstance(execution.standing_run_clause(run_record(**over), "/r", "box"), Refusal)
+        self.assertIsNone(execution.from_run_refusal(run_record(), "/r", "box", self.SHA))
+        self.assertIsNone(execution.from_run_refusal(run_record(pair="none", rel="", launched=""), "/r", "box", self.SHA))
+
+    def test_from_run_concludes_a_clean_record_as_before(self) -> None:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+        moved = "d" * 40
+        with mock.patch.object(execution, "run_on", return_value=execution.Done(0, run_text(whead=moved) + "\n")) as ran:
+            done = execution.conclude_from_run(cfg, "/runs/r-1", "req", "testbox", self.SHA, "")
+        self.assertEqual(ran.call_args.args[3], ["/runs/r-1", self.SHA, ""])
+        assert isinstance(done, Payload), done
+        data = json.loads(done.json)
+        self.assertEqual((data["verdict"], data["observed_sha"], data["remote_checkout"], data["handle"], data["execution_host"]),
+                         ("pass", self.SHA, "/w t", "test-run:r-1", "testbox"))
+        self.assertEqual(data["evidence"], f"test-run.sh record /runs/r-1 on testbox: exit 0 published, no process remains;"
+                         f" launched at {self.SHA} on a clean tree (the record's head and dirty); checkout head is now {moved}")
+        for out, rc in (("dir=1\nexit=0", 0), ("", 1)):
+            with mock.patch.object(execution, "run_on", return_value=execution.Done(rc, out)):
+                refused = execution.conclude_from_run(cfg, "/runs/r-1", "req", "testbox", self.SHA, "")
+            assert isinstance(refused, Refusal), out
+            self.assertIn("FROM-RUN REFUSED: unreadable record facts from testbox", refused.text)
+
+
 class StandingHandback(unittest.TestCase):
-    """``conclude --standing-handback`` (#605 item 3): FROM_RUN's refusals become evidence."""
+    """``conclude --standing-handback`` (#605 item 3): what --from-run refuses becomes evidence."""
 
     RUN = "/runs/20261016T101010Z-1"
 
     @staticmethod
-    def facts(**over: str) -> str:
-        base = {"exit": "0", "wt": "/w t", "gone": "0", "record": "launch", "head": "b" * 40, "dirty": "0", "rel": "same"}
-        base.update(over)
-        return "\n".join(f"{k}={v}" for k, v in base.items())
+    def facts(**over: str) -> dict[str, str]:
+        return run_record(**over)
 
     def clause(self, **over: str) -> tuple[str, str]:
         read = execution.standing_run_clause(self.facts(**over), self.RUN, "testbox")
@@ -146,19 +253,18 @@ class StandingHandback(unittest.TestCase):
                          f" launched at {'b' * 40}, observed_sha itself on a clean tree")
 
     def test_what_from_run_refuses_is_recorded(self) -> None:
-        _, text = self.clause(dirty="3", rel="outside", gone="1")
+        _, text = self.clause(dirty="3", rel="outside", gone="1", runner="none", whead="")
         self.assertIn("over 3 uncommitted path(s) its dirty lists", text)
         self.assertIn("not in observed_sha's history (rewritten by a rebase, or never pushed)", text)
         self.assertIn("its recorded worktree /w t is gone", text)
         self.assertIn("an ancestor of observed_sha", self.clause(rel="ancestor")[1])
 
     def test_a_record_naming_no_revision_says_so(self) -> None:
-        _, text = self.clause(record="none", head="", dirty="0", rel="")
+        _, text = self.clause(pair="none", launched="", dirty="0", rel="")
         self.assertIn("its record naming no launch revision", text)
 
-    def test_unreadable_facts_are_refused(self) -> None:
-        for over in ({"exit": ""}, {"exit": "x"}, {"gone": "2"}, {"record": "odd"}, {"rel": "near"}, {"dirty": "-1"}, {"wt": ""},
-                     {"head": "b" * 39}, {"head": "b" * 41}, {"head": "B" * 40}):
+    def test_a_malformed_record_is_refused(self) -> None:
+        for over in ({"exit": ""}, {"exit": "x"}, {"wt": ""}, {"launched": "b" * 39}, {"launched": "b" * 41}):
             read = execution.standing_run_clause(self.facts(**over), self.RUN, "testbox")
             self.assertIsInstance(read, Refusal, over)
 
@@ -428,6 +534,60 @@ class CallerPythonpath(unittest.TestCase):
             cli.restore_caller_environment({})
             self.assertEqual(proc.own_pid(), os.getpid())
 
+
+
+class RetryRule(unittest.TestCase):
+    """#657: THE RETRY RULE, one helper for every conclude form -- a concluded record plus a call
+    that matches what landed returns the landed payload; anything else composes afresh."""
+
+    LANDED: dict[str, Any] = {"request_id": "r", "evidence": "ok; GPU co-tenants on rog (rog:/p): x", "observed_sha": SHA,
+                              "remote_checkout": "/w", "handle": "h", "log": "l", "verdict": "pass"}
+
+    def rec(self, **over: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {"request_id": "r", "state": "concluded", "observed_sha": SHA,
+                                "request": {"kind": "measurement", "execution_host": "rog"},
+                                "history": [{"action": "dispatch", "data": {}}, {"action": "conclude", "data": dict(self.LANDED)}]}
+        base.update(over)
+        return base
+
+    def test_a_matching_call_gets_the_landed_payload(self) -> None:
+        self.assertEqual(execution.retried(self.rec()), self.LANDED)
+        self.assertEqual(execution.retried(self.rec(), {"handle": "h", "verdict": "pass"}, lambda said: said.startswith("ok; ")), self.LANDED)
+
+    def test_anything_else_composes_afresh(self) -> None:
+        for record, fields in ((self.rec(state="running"), {}), (self.rec(history=[]), {}), (self.rec(history="x"), {}),
+                               (self.rec(history=[{"data": "x"}]), {}), (self.rec(), {"handle": "other"}),
+                               (self.rec(), {"absent": "x"})):
+            self.assertIsNone(execution.retried(record, fields), (record, fields))
+        self.assertIsNone(execution.retried(self.rec(), evidence=lambda said: said.startswith("other")))
+        landed = {**self.LANDED, "evidence": 7}
+        self.assertIsNone(execution.retried(self.rec(history=[{"data": landed}]), evidence=lambda said: True))
+        self.assertEqual(execution.retried(self.rec(history=[{"data": landed}])), landed)
+
+    def test_observed_from_keeps_the_landed_sha_and_reads_otherwise(self) -> None:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+        with mock.patch.object(execution, "observed_head", return_value="c" * 40) as read:
+            self.assertEqual(execution.observed_sha_of(cfg, self.rec(), "rog", "/w"), SHA)
+            read.assert_not_called()
+            self.assertEqual(execution.observed_sha_of(cfg, self.rec(state="running"), "rog", "/w"), "c" * 40)
+            no_sha = {k: v for k, v in self.LANDED.items() if k != "observed_sha"}
+            self.assertEqual(execution.observed_sha_of(cfg, self.rec(history=[{"data": no_sha}]), "rog", "/w"), "c" * 40)
+
+    def test_a_measurements_retry_reuses_its_recorded_clause_and_nothing_else_does(self) -> None:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+        def gpu(record: dict[str, Any], evidence: str) -> dict[str, Any]:
+            listing = execution.Done(0, json.dumps([record]))
+            payload = json.dumps({"request_id": "r", "evidence": evidence, "verdict": "pass"})
+            with mock.patch.object(execution, "listing", return_value=listing), \
+                    mock.patch.object(execution, "gpu_record_evidence", return_value="GPU co-tenants on rog (rog:/q): fresh") as fresh:
+                out = json.loads(execution.with_gpu_record(cfg, payload))
+            out["fresh"] = fresh.called
+            return out
+        self.assertEqual(gpu(self.rec(), "ok")["evidence"], self.LANDED["evidence"])
+        self.assertEqual(gpu(self.rec(), "ok")["fresh"], False)
+        self.assertEqual(gpu(self.rec(), "other")["evidence"], "other")  # the registry's to refuse
+        running = gpu(self.rec(state="running"), "ok")
+        self.assertEqual((running["evidence"], running["fresh"]), ("ok; GPU co-tenants on rog (rog:/q): fresh", True))
 
 
 class GpuClause(unittest.TestCase):

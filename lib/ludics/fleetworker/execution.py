@@ -11,9 +11,10 @@ lock for every action but ``list``; its argv is ``root action coordinator token 
 ``execution slot`` and ``execution hold`` take no registry lock and run on THIS box: they are
 ``ludics.fleetworker.slot``.
 
-The far sides of ``conclude --from-run``, ``--from-bg-run`` and ``--standing-handback`` stay the
-shell's, verbatim: they run on the box that holds the run, and read its record with the tools that
-wrote it.
+The far sides of ``conclude --from-run``, ``--from-bg-run`` and ``--standing-handback`` run on the
+box that holds the run, and read its record with the tools that wrote it. A test-run.sh record has
+one far side for both forms that read it, ``FROM_RUN``, which prints its facts and refuses nothing:
+each form's refusals are Python's (ludics-lite#657).
 
 Every commit a payload names is checked before the anchor is asked (ludics-lite#561): what is read,
 where, and the outcomes are ``ludics.fleetworker.revision``'s header.
@@ -28,7 +29,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, assert_never, cast
 
@@ -121,51 +122,64 @@ def record_of(records: list[dict[str, Any]], request: str) -> dict[str, Any] | N
 
 # --- the conclusions read off a run --------------------------------------------------------------
 
-# Far side of `conclude --from-run`, on the execution box: read a finished test-run.sh record
-# (OCANNL's `tools/test-run.sh`: `exit`, `log`, `wt` and `cmd` under the run directory) and the
-# checkout's head, and refuse anything short of a published verdict with no process left. Since
+# Far side of `conclude --from-run` and `conclude --standing-handback --from-run` (ludics-lite#657),
+# on the execution box: the FACTS of a test-run.sh record (OCANNL's `tools/test-run.sh`: `exit`,
+# `log`, `wt` and `cmd` under the run directory), and it refuses nothing -- each form's refusals are
+# its own, in Python (`run_unfinished`, `from_run_refusal`, `standing_run_clause`). Since
 # ocannl-staging#808 the record also names the source it ran, as launch-time facts: `head` and
-# `dirty`, `dirty` written first, so the writer leaves both or neither (ludics-lite#438). Args:
-# run-dir, reported sha. Prints `exit=`, `wt=`, `head=`, `record=` lines, or one FROM-RUN REFUSED line.
-FROM_RUN = r"""dir="$1" sha="$2"
-refuse() { echo "FROM-RUN REFUSED: $*"; exit 1; }
-[ -d "$dir" ] || refuse "no run directory $dir on $BOX"
+# `dirty`, `dirty` written first, so the writer leaves both or neither (ludics-lite#438).
+# Args: run-dir, a commit, the checkout to place that commit in ('' for the record's worktree).
+# Prints, one `key=value` line each and in this order:
+#   dir      1, or 0 (no such directory: nothing else is read);
+#   missing  the first of exit/log/wt/cmd that is no regular file (nothing else is read);
+#   exit     the first line of `exit`; wt the first line of `wt`; gone 1 when that is no directory;
+#   runner   the exit status of `tools/test-run.sh status <dir>`, the project's authority on
+#            "published and no process remains" (0; 3 still running, 1 died), or `none` when the
+#            worktree is gone or has no runner; alive the supervisor pid when, with no runner, it
+#            is still alive;
+#   pair     none, both, head (no dirty), dirty (no head), or irregular (either not a regular file);
+#   dirty    the count of lines `dirty` lists; rel same|ancestor|outside, the launch head against
+#            the commit, read in the checkout (only for a head of hex digits alone);
+#   whead    the worktree's HEAD now; known 1 when the checkout contains the commit;
+#   launched LAST, `head`'s whole content as `$(cat)` reads it, newlines and all.
+# Every value but `launched` is one line by construction (`head -n1`, a count, a word, an ID).
+FROM_RUN = r"""dir="$1" sha="$2" co="$3"
+[ -d "$dir" ] || { printf 'dir=0\n'; exit 0; }
+printf 'dir=1\n'
 for f in exit log wt cmd; do
-  [ -f "$dir/$f" ] || refuse "$dir has no $f (the run is unfinished, died without a verdict, or is not a test-run.sh record)"
+  [ -f "$dir/$f" ] || { printf 'missing=%s\n' "$f"; exit 0; }
 done
-code=$(head -n1 "$dir/exit"); case "$code" in ''|*[!0-9]*) refuse "$dir/exit holds '$code', not a status" ;; esac
-wt=$(head -n1 "$dir/wt"); [ -d "$wt" ] || refuse "recorded worktree $wt is gone"
-# The project's runner is the authority on "published and no process remains" (exit 0; 3 still
-# running, 1 died); without it, the supervisor pid must be gone.
-if [ -x "$wt/tools/test-run.sh" ]; then
-  (cd "$wt" && tools/test-run.sh status "$dir" >/dev/null 2>&1); st=$?
-  [ "$st" -eq 0 ] || refuse "tools/test-run.sh status $dir exit $st: not a finished run"
+code=$(head -n1 "$dir/exit"); wt=$(head -n1 "$dir/wt"); gone=1; [ -d "$wt" ] && gone=0
+runner=none alive=
+if [ "$gone" = 0 ] && [ -x "$wt/tools/test-run.sh" ]; then
+  (cd "$wt" && tools/test-run.sh status "$dir" >/dev/null 2>&1); runner=$?
 elif [ -s "$dir/pid" ] && kill -0 "$(head -n1 "$dir/pid")" 2>/dev/null; then
-  refuse "supervisor pid $(head -n1 "$dir/pid") of $dir is still alive"
+  alive=$(head -n1 "$dir/pid")
 fi
+[ -n "$co" ] || co=$wt
+rhead= n=0 rel=
 if [ -e "$dir/head" ] && [ -e "$dir/dirty" ]; then
-  [ -f "$dir/head" ] && [ -f "$dir/dirty" ] || refuse "$dir/head or $dir/dirty is not a regular file: a malformed record"
-  rhead=$(cat "$dir/head")
-  case "$rhead" in ''|*[!0-9a-f]*) refuse "$dir/head holds '$rhead', not one commit ID: a malformed record" ;; esac
-  [ "$rhead" = "$sha" ] || refuse "$dir/head records $rhead as the revision launched, but the reported revision is $sha: this run is evidence for $rhead, not $sha"
-  if [ -s "$dir/dirty" ]; then
-    n=$(grep -c '' "$dir/dirty")
-    refuse "$dir/dirty lists $n uncommitted path(s) at launch: the run tested $sha plus those edits, so it is not evidence for $sha; conclude it with a JSON payload whose evidence says so"
+  pair=both
+  if [ -f "$dir/head" ] && [ -f "$dir/dirty" ]; then
+    rhead=$(cat "$dir/head")
+    [ -s "$dir/dirty" ] && n=$(grep -c '' "$dir/dirty")
+    # git reads the head only when it is hex digits alone: never an option, never a revision range.
+    case "$rhead" in
+      ''|*[!0-9a-f]*) ;;
+      "$sha") rel=same ;;
+      *) if git -C "$co" merge-base --is-ancestor "$rhead" "$sha" 2>/dev/null; then rel=ancestor; else rel=outside; fi ;;
+    esac
+  else
+    pair=irregular
   fi
-  record=launch
-elif [ -e "$dir/head" ]; then
-  refuse "$dir has a head but no dirty: a malformed record (test-run.sh writes dirty first, so both or neither)"
-elif [ -e "$dir/dirty" ]; then
-  refuse "$dir has a dirty but no head: a malformed record (test-run.sh writes head after dirty, so both or neither)"
-else
-  record=none
-fi
-head=$(git -C "$wt" rev-parse --verify HEAD^{commit} 2>/dev/null) || refuse "cannot read HEAD of $wt"
-# With no launch record the revision that ran is the coordinator's to name (--sha, from the
-# worker's result line). Either way the checkout has to KNOW that commit, and its head now is
-# reported so a conclusion over a moved checkout says so in its evidence.
-git -C "$wt" cat-file -e "$sha^{commit}" 2>/dev/null || refuse "$wt does not contain the reported revision $sha"
-printf 'exit=%s\nwt=%s\nhead=%s\nrecord=%s\n' "$code" "$wt" "$head" "$record"
+elif [ -e "$dir/head" ]; then pair=head
+elif [ -e "$dir/dirty" ]; then pair=dirty
+else pair=none; fi
+whead=; [ "$gone" = 0 ] && whead=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
+known=0; git -C "$co" cat-file -e "$sha^{commit}" 2>/dev/null && known=1
+printf 'exit=%s\nwt=%s\ngone=%s\nrunner=%s\nalive=%s\npair=%s\ndirty=%s\nrel=%s\nwhead=%s\nknown=%s\n' \
+  "$code" "$wt" "$gone" "$runner" "$alive" "$pair" "$n" "$rel" "$whead" "$known"
+printf 'launched=%s\n' "$rhead"
 """
 
 # Far side of `conclude --from-bg-run`, on the box that holds the directory: bg-run.sh's own `wait
@@ -207,52 +221,6 @@ case "$code" in ''|*[!0-9]*) refuse "$dir/rc holds '$code', not a status" ;; esa
 [ -f "$dir/log" ] || refuse "$dir has an rc but no log"
 sentinel=$(LC_ALL=C grep -a -E '^([A-Za-z0-9._-]+: )?exit: (0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$' "$dir/log" | tail -n 1)
 printf 'status=rc\nrc=%s\nsentinel=%s\n' "$code" "$sentinel"
-"""
-
-
-# Far side of `conclude --standing-handback --from-run` (ludics-lite#605 item 3), on the execution
-# host: FROM_RUN's reading of a finished test-run.sh record, with what FROM_RUN refuses for being no
-# evidence of ONE commit reported instead -- the worktree gone, the launch-time `head` not the
-# observed one, a nonempty `dirty`. Still refused: no verdict yet (no directory, a missing record
-# file, an exit that is no status, a run still going) and a malformed head/dirty pair. With the
-# worktree gone the runner cannot be asked, so the supervisor pid is the check, as with no runner.
-# Args: run-dir, the observed checkout, its HEAD. Prints `exit=`, `wt=`, `gone=`, `record=`,
-# `head=`, `dirty=`, `rel=` lines, or one FROM-RUN REFUSED line. `rel` places the launch head
-# against the observed HEAD, read in the observed checkout: same, ancestor, or outside.
-FROM_RUN_STANDING = r"""dir="$1" co="$2" ohead="$3"
-refuse() { echo "FROM-RUN REFUSED: $*"; exit 1; }
-[ -d "$dir" ] || refuse "no run directory $dir on $BOX"
-for f in exit log wt cmd; do
-  [ -f "$dir/$f" ] || refuse "$dir has no $f (the run is unfinished, died without a verdict, or is not a test-run.sh record)"
-done
-code=$(head -n1 "$dir/exit"); case "$code" in ''|*[!0-9]*) refuse "$dir/exit holds '$code', not a status" ;; esac
-wt=$(head -n1 "$dir/wt"); gone=1; [ -d "$wt" ] && gone=0
-if [ "$gone" = 0 ] && [ -x "$wt/tools/test-run.sh" ]; then
-  (cd "$wt" && tools/test-run.sh status "$dir" >/dev/null 2>&1); st=$?
-  [ "$st" -eq 0 ] || refuse "tools/test-run.sh status $dir exit $st: not a finished run"
-elif [ -s "$dir/pid" ] && kill -0 "$(head -n1 "$dir/pid")" 2>/dev/null; then
-  refuse "supervisor pid $(head -n1 "$dir/pid") of $dir is still alive"
-fi
-rhead= n=0 rel=
-if [ -e "$dir/head" ] && [ -e "$dir/dirty" ]; then
-  [ -f "$dir/head" ] && [ -f "$dir/dirty" ] || refuse "$dir/head or $dir/dirty is not a regular file: a malformed record"
-  rhead=$(cat "$dir/head")
-  # One exact object ID, 40 or 64 hex digits: a truncated one would read as a rewritten commit.
-  case "$rhead" in *[!0-9a-f]*) refuse "$dir/head holds '$rhead', not one commit ID: a malformed record" ;; esac
-  case ${#rhead} in 40|64) ;; *) refuse "$dir/head holds '$rhead', not one commit ID: a malformed record" ;; esac
-  [ -s "$dir/dirty" ] && n=$(grep -c '' "$dir/dirty")
-  if [ "$rhead" = "$ohead" ]; then rel=same
-  elif git -C "$co" merge-base --is-ancestor "$rhead" "$ohead" 2>/dev/null; then rel=ancestor
-  else rel=outside; fi
-  record=launch
-elif [ -e "$dir/head" ]; then
-  refuse "$dir has a head but no dirty: a malformed record (test-run.sh writes dirty first, so both or neither)"
-elif [ -e "$dir/dirty" ]; then
-  refuse "$dir has a dirty but no head: a malformed record (test-run.sh writes head after dirty, so both or neither)"
-else
-  record=none
-fi
-printf 'exit=%s\nwt=%s\ngone=%s\nrecord=%s\nhead=%s\ndirty=%s\nrel=%s\n' "$code" "$wt" "$gone" "$record" "$rhead" "$n" "$rel"
 """
 
 
@@ -330,26 +298,131 @@ def compact(obj: dict[str, str]) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
+# How a launch head stands against the commit it is placed against (FROM_RUN's `rel`).
+REL = {
+    "same": ", observed_sha itself",
+    "ancestor": ", an ancestor of observed_sha",
+    "outside": ", which is not in observed_sha's history (rewritten by a rebase, or never pushed)",
+}
+RUN_KEYS = ("exit", "wt", "gone", "runner", "alive", "pair", "dirty", "rel", "whead", "known")
+RUN_FILES = ("exit", "log", "wt", "cmd")
+
+
+def run_facts(text: str) -> dict[str, str] | None:
+    """FROM_RUN's facts by key, or None for anything but its own shape, a fail-closed reading: the
+    keys it prints, each once and in its order, every value but ``launched`` (the last) one line of
+    its own vocabulary."""
+    if text == "dir=0":
+        return {"dir": "0"}
+    lines, cut, launched = text.partition("\nlaunched=")
+    rows = lines.split("\n")
+    if rows[0] != "dir=1":
+        return None
+    if not cut:
+        missing = rows[1].removeprefix("missing=") if len(rows) == 2 else ""
+        return {"dir": "1", "missing": missing} if missing in RUN_FILES else None
+    if len(rows) != 1 + len(RUN_KEYS) or not all(row.startswith(key + "=") for key, row in zip(RUN_KEYS, rows[1:])):
+        return None
+    facts = {key: row[len(key) + 1 :] for key, row in zip(RUN_KEYS, rows[1:])}
+    facts.update(dir="1", launched=launched)
+    # rel places a launch head of hex digits alone, and nothing else.
+    placed = facts["pair"] == "both" and re.fullmatch(r"[0-9a-f]+", launched) is not None
+    if not (facts["gone"] in ("0", "1") and re.fullmatch(r"none|[0-9]+", facts["runner"])
+            and re.fullmatch(r"[0-9]*", facts["alive"]) and re.fullmatch(r"[0-9]+", facts["dirty"])
+            and facts["pair"] in ("none", "both", "head", "dirty", "irregular") and facts["known"] in ("0", "1")
+            and (facts["rel"] in REL if placed else facts["rel"] == "")):  # fmt: skip
+        return None
+    return facts
+
+
+def read_run(cfg: Config, box: str, run_dir: str, sha: str, checkout: str = "") -> dict[str, str] | Refusal:
+    """FROM_RUN's facts of the record ``run_dir`` on ``box``, ``sha`` placed in ``checkout`` (the
+    record's worktree when empty); a refusal only when they cannot be read."""
+    done = run_on(cfg, box, prelude(cfg, box) + FROM_RUN, [run_dir, sha, checkout], capture=True)
+    if done.unreachable:
+        return Refusal(f"FROM-RUN UNREACHABLE {box}: nothing concluded", 4)
+    text = substitution(done.out)
+    facts = run_facts(text) if done.rc == 0 else None
+    if facts is None:
+        return Refusal(f"FROM-RUN REFUSED: unreadable record facts from {box} (exit {done.rc}): {text}", 1)
+    return facts
+
+
+def run_unfinished(facts: dict[str, str], run_dir: str, box: str) -> Refusal | None:
+    """What every form refuses of a test-run.sh record: no verdict to read yet (no directory, a
+    record file missing, an exit that is no status, a run still going) or a malformed record."""
+    pair, launched = facts.get("pair"), facts.get("launched", "")
+    if facts["dir"] == "0":
+        why = f"no run directory {run_dir} on {box}"
+    elif "missing" in facts:
+        why = (f"{run_dir} has no {facts['missing']} (the run is unfinished, died without a verdict, or is not"
+               " a test-run.sh record)")
+    elif not re.fullmatch(r"[0-9]+", facts["exit"]):
+        why = f"{run_dir}/exit holds '{facts['exit']}', not a status"
+    elif not facts["wt"]:
+        why = f"{run_dir}/wt names no worktree: a malformed record"
+    elif facts["runner"] not in ("none", "0"):
+        why = f"tools/test-run.sh status {run_dir} exit {facts['runner']}: not a finished run"
+    elif facts["alive"]:
+        why = f"supervisor pid {facts['alive']} of {run_dir} is still alive"
+    elif pair == "irregular":
+        why = f"{run_dir}/head or {run_dir}/dirty is not a regular file: a malformed record"
+    elif pair == "head":
+        why = f"{run_dir} has a head but no dirty: a malformed record (test-run.sh writes dirty first, so both or neither)"
+    elif pair == "dirty":
+        why = f"{run_dir} has a dirty but no head: a malformed record (test-run.sh writes head after dirty, so both or neither)"
+    elif pair == "both" and not revision.OBJECT_ID.fullmatch(launched):
+        # One exact object ID, 40 or 64 hex digits: a truncated one would read as a rewritten commit.
+        why = f"{run_dir}/head holds '{launched}', not one commit ID: a malformed record"
+    else:
+        return None
+    return Refusal(f"FROM-RUN REFUSED: {why}", 1)
+
+
+def from_run_refusal(facts: dict[str, str], run_dir: str, box: str, sha: str) -> Refusal | None:
+    """``--from-run``'s refusals: a finished record that is no evidence for the one commit ``sha``
+    (its worktree gone, launched at another commit or over uncommitted edits, a worktree whose
+    HEAD cannot be read or that does not contain ``sha``), after ``run_unfinished``'s."""
+    unfinished = run_unfinished(facts, run_dir, box)
+    if unfinished is not None:
+        return unfinished
+    wt, launched, n = facts["wt"], facts["launched"], facts["dirty"]
+    if facts["gone"] == "1":
+        why = f"recorded worktree {wt} is gone"
+    elif facts["pair"] == "both" and launched != sha:
+        why = (f"{run_dir}/head records {launched} as the revision launched, but the reported revision is {sha}:"
+               f" this run is evidence for {launched}, not {sha}")
+    elif facts["pair"] == "both" and n != "0":
+        why = (f"{run_dir}/dirty lists {n} uncommitted path(s) at launch: the run tested {sha} plus those edits,"
+               f" so it is not evidence for {sha}; conclude it with a JSON payload whose evidence says so")
+    elif not facts["whead"]:
+        why = f"cannot read HEAD of {wt}"
+    elif facts["known"] != "1":
+        why = f"{wt} does not contain the reported revision {sha}"
+    else:
+        return None
+    return Refusal(f"FROM-RUN REFUSED: {why}", 1)
+
+
 def conclude_from_run(cfg: Config, run_dir: str, request: str, box: str, sha: str, evidence: str) -> Conclusion:
     """The conclude payload read off a finished test-run.sh record on the box. The box is the
     reservation's execution host: the payload names it and the registry checks it, so a record
     read on the wrong machine cannot conclude another box's assignment."""
-    done = run_on(cfg, box, prelude(cfg, box) + FROM_RUN, [run_dir, sha], capture=True)
-    if done.unreachable:
-        return Refusal(f"FROM-RUN UNREACHABLE {box}: nothing concluded", 4)
-    facts = substitution(done.out)
-    if done.rc != 0:
-        return Refusal(facts, 1)
-    code, wt, head = facts_of(facts, "exit"), facts_of(facts, "wt"), facts_of(facts, "head")
-    record = facts_of(facts, "record")
-    if not (SHA40.fullmatch(head) and code and wt and record in ("launch", "none")):
-        return Refusal(f"FROM-RUN REFUSED: unreadable record facts from {box}: {facts}", 1)
+    facts = read_run(cfg, box, run_dir, sha)
+    if isinstance(facts, Refusal):
+        return facts
+    refused = from_run_refusal(facts, run_dir, box, sha)
+    if refused is not None:
+        return refused
+    code, wt, head, record = facts["exit"], facts["wt"], facts["whead"], facts["pair"]
+    if not SHA40.fullmatch(head):
+        return Refusal(f"FROM-RUN REFUSED: unreadable HEAD {head!r} of {wt} from {box}", 1)
     # test-run.sh's exit vocabulary: 142 the cap, 129/130/137/143 a signal; every other nonzero
     # (dune's own 1, a refused invocation, 126/127 toolchain) is a failed run.
     verdict = run_verdict(code, timeout_codes=("142",))
     if not evidence:
         evidence = f"test-run.sh record {run_dir} on {box}: exit {code} published, no process remains"
-    if record == "launch":
+    if record == "both":
         evidence += f"; launched at {sha} on a clean tree (the record's head and dirty)"
     else:
         evidence += (
@@ -446,32 +519,24 @@ def conclude_from_bg_run(
 
 
 HANDBACK_VERDICTS = ("pass", "fail", "timeout", "cancelled")  # not-launched names no run, so no observed_sha
-REL = {
-    "same": ", observed_sha itself",
-    "ancestor": ", an ancestor of observed_sha",
-    "outside": ", which is not in observed_sha's history (rewritten by a rebase, or never pushed)",
-}
 
 
-def standing_run_clause(facts: str, run_dir: str, host: str) -> tuple[str, str] | Refusal:
-    """A standing hand-back's run record, read by FROM_RUN_STANDING: its verdict, and the evidence
-    clause that records what FROM_RUN would have refused it for."""
-    code, wt, gone = facts_of(facts, "exit"), facts_of(facts, "wt"), facts_of(facts, "gone")
-    record, rhead, dirty, rel = (facts_of(facts, key) for key in ("record", "head", "dirty", "rel"))
-    shaped = record == "none" or (
-        record == "launch" and revision.OBJECT_ID.fullmatch(rhead) and dirty.isdecimal() and rel in REL
-    )
-    if not (code.isdecimal() and code.isascii() and wt and gone in ("0", "1") and shaped):
-        return Refusal(f"FROM-RUN REFUSED: unreadable record facts from {host}: {facts}", 1)
+def standing_run_clause(facts: dict[str, str], run_dir: str, host: str) -> tuple[str, str] | Refusal:
+    """A standing hand-back's run record: its verdict, and the evidence clause that records what
+    ``from_run_refusal`` would have refused it for. ``run_unfinished``'s refusals stand."""
+    unfinished = run_unfinished(facts, run_dir, host)
+    if unfinished is not None:
+        return unfinished
+    code, dirty = facts["exit"], facts["dirty"]
     verdict = run_verdict(code, timeout_codes=("142",))
     clause = f"last batch: test-run.sh record {run_dir} on {host}, exit {code} ({verdict})"
-    if record == "launch":
-        clause += f", launched at {rhead}{REL[rel]}"
+    if facts["pair"] == "both":
+        clause += f", launched at {facts['launched']}{REL[facts['rel']]}"
         clause += f" over {dirty} uncommitted path(s) its dirty lists" if dirty != "0" else " on a clean tree"
     else:
         clause += ", its record naming no launch revision (no head or dirty)"
-    if gone == "1":
-        clause += f"; its recorded worktree {wt} is gone"
+    if facts["gone"] == "1":
+        clause += f"; its recorded worktree {facts['wt']} is gone"
     return verdict, clause
 
 
@@ -489,23 +554,16 @@ def handback_handle(request: str, run_dir: str) -> tuple[str, str]:
 def recorded_handback(
     record: dict[str, Any], request: str, checkout: str, host: str, evidence: str, run_dir: str, verdict: str
 ) -> str | None:
-    """A retry of a hand-back that landed with its answer lost: the recorded conclusion, when this
-    call names its request, checkout, record (or none), evidence and any --verdict. Re-read, the run
-    record could describe a worktree removed or a history rewritten since, and the registry takes
-    only an identical payload as a retry. None for anything else, which composes afresh."""
-    history: Any = record.get("history")
-    last: Any = cast(list[Any], history)[-1] if isinstance(history, list) and history else None
-    data: Any = cast(dict[str, Any], last).get("data") if isinstance(last, dict) else None
-    if record.get("state") != "concluded" or not isinstance(data, dict):
-        return None
-    landed = cast(dict[str, Any], data)
+    """THE RETRY RULE for a hand-back: the recorded conclusion, when this call names its request,
+    checkout, record (or none), evidence and any --verdict. Re-read, the run record could describe a
+    worktree removed or a history rewritten since. None for anything else, which composes afresh."""
     handle, log = handback_handle(request, run_dir)
-    said = landed.get("evidence")
-    if (landed.get("request_id") == request and landed.get("handle") == handle and landed.get("log") == log
-            and landed.get("remote_checkout") == checkout and (not verdict or landed.get("verdict") == verdict)
-            and isinstance(said, str) and said.startswith(handback_lead(evidence, checkout, host) + "; ")):  # fmt: skip
-        return json.dumps(landed, separators=(",", ":"), ensure_ascii=False)
-    return None
+    fields = {"request_id": request, "handle": handle, "log": log, "remote_checkout": checkout}
+    if verdict:
+        fields["verdict"] = verdict
+    lead = handback_lead(evidence, checkout, host) + "; "
+    landed = retried(record, fields, lambda said: said.startswith(lead))
+    return None if landed is None else json.dumps(landed, separators=(",", ":"), ensure_ascii=False)
 
 
 def standing_handback(
@@ -538,13 +596,40 @@ def observed_head(cfg: Config, box: str, checkout: str) -> str | Refusal:
     return head
 
 
+def retried(
+    record: dict[str, Any], fields: Mapping[str, Any] | None = None, evidence: Callable[[str], bool] | None = None
+) -> dict[str, Any] | None:
+    """THE RETRY RULE, one implementation for every conclude form (ludics-lite#657): a record already
+    concluded is a conclusion's earlier call having landed with its answer lost, so a call that
+    MATCHES what landed gets the landed payload back, to compose the registry's identical retry
+    however the box, the checkout or the run record have changed since. The call matches when every
+    one of ``fields`` equals the landed payload's and, given ``evidence``, the landed evidence is a
+    string it accepts; a further check is one more field (or one more predicate here). None when the
+    record is not concluded or the call does not match: the caller composes afresh, and the
+    registry refuses anything but an identical payload for a concluded record."""
+    if record.get("state") != "concluded":
+        return None
+    history: Any = record.get("history")
+    last: Any = cast(list[Any], history)[-1] if isinstance(history, list) and history else None
+    data: Any = cast(dict[str, Any], last).get("data") if isinstance(last, dict) else None
+    if not isinstance(data, dict):
+        return None
+    landed = cast(dict[str, Any], data)
+    if any(landed.get(key) != value for key, value in (fields or {}).items()):
+        return None
+    said = landed.get("evidence")
+    if evidence is not None and not (isinstance(said, str) and evidence(said)):
+        return None
+    return landed
+
+
 def observed_sha_of(cfg: Config, record: dict[str, Any], host: str, checkout: str) -> str | Refusal:
-    """``--observed-from``'s SHA. A record already concluded at an observed_sha is this conclusion's
-    earlier call having landed with its answer lost: that SHA stands, so a retry composes the same
-    payload (the registry's identical-retry rule) even once the checkout has moved on or been
-    removed, and any other payload meets the registry's "already concluded" refusal."""
-    recorded = record.get("observed_sha")
-    if record.get("state") == "concluded" and isinstance(recorded, str) and recorded:
+    """``--observed-from``'s SHA. THE RETRY RULE with no further check: the observed_sha the landed
+    conclusion names stands, so a retry composes the same payload even once the checkout has moved
+    on or been removed, and any other payload meets the registry's "already concluded" refusal."""
+    landed = retried(record)
+    recorded = None if landed is None else landed.get("observed_sha")
+    if isinstance(recorded, str) and recorded:
         return recorded
     return observed_head(cfg, host, checkout)
 
@@ -643,19 +728,15 @@ def with_gpu_record(cfg: Config, payload: str) -> str:
     record = record_of(records, request)
     if record is None or field(record, "request", "kind") != "measurement":
         return payload
-    if record.get("state") == "concluded":
-        # A retry of a conclusion that landed with its answer lost: the clause it recorded stands,
-        # so the payload is the registry's identical retry however the box or its record has
-        # changed since. Any other payload for a concluded record is the registry's to refuse.
-        history: Any = record.get("history")
-        last: Any = cast(list[Any], history)[-1] if isinstance(history, list) and history else None
-        recorded = field(cast(dict[str, Any], last), "data", "evidence") if isinstance(last, dict) else None
-        host = jq_text(field(record, "request", "execution_host"))
-        if isinstance(recorded, str) and gpu_clause(evidence, recorded, host):
-            data["evidence"] = recorded
-            return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
-        return payload
     host = jq_text(field(record, "request", "execution_host"))
+    # THE RETRY RULE: the clause the landed conclusion recorded stands, so the payload is the
+    # registry's identical retry however the box or its record has changed since.
+    landed = retried(record, evidence=lambda said: gpu_clause(evidence, said, host))
+    if landed is not None:
+        data["evidence"] = landed["evidence"]
+        return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    if record.get("state") == "concluded":
+        return payload  # any other payload for a concluded record is the registry's to refuse
     data["evidence"] = f"{evidence}; {gpu_record_evidence(cfg, host, request, jq_text(record.get('created_at')))}"
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
@@ -1073,7 +1154,7 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
     """``conclude --standing-handback`` (ludics-lite#605 item 3): a standing reservation concluded at
     its worker's hand-back. A standing record is the ownership record of a worker's whole life, not
     a verdict source, so its last batch's record is evidence, with whatever makes it no evidence for
-    one commit (FROM_RUN's refusals: a dirty tree, a launch head that is not observed_sha, the
+    one commit (``from_run_refusal``'s: a dirty tree, a launch head that is not observed_sha, the
     worktree gone) recorded rather than refused. observed_sha is read off --observed-from and checked
     on GitHub as any conclusion's is; it is not bound to requested_revision (#634 keeps standing
     records exempt). The verdict is the run record's with --from-run, else --verdict, never a default;
@@ -1119,12 +1200,9 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
         return again
     run: tuple[str, str] | None = None
     if run_dir:
-        done = run_on(cfg, host, prelude(cfg, host) + FROM_RUN_STANDING, [run_dir, observed_from, head], capture=True)
-        if done.unreachable:
-            return concluded(Refusal(f"FROM-RUN UNREACHABLE {host}: nothing concluded", 4))
-        facts = substitution(done.out)
-        if done.rc != 0:
-            return concluded(Refusal(facts, 1))
+        facts = read_run(cfg, host, run_dir, head, observed_from)
+        if isinstance(facts, Refusal):
+            return concluded(facts)
         read = standing_run_clause(facts, run_dir, host)
         if isinstance(read, Refusal):
             return concluded(read)

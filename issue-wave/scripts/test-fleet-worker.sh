@@ -2335,6 +2335,9 @@ mksrc() { # <name> <head or -> <dirty lines or -> -> a finished passed record wi
 }
 mksrc src-clean "$ran" ""; mksrc src-other "$moved" ""; mksrc src-dirty "$ran" $' M lib/a.ml\n?? test/new_test.ml\n'
 mksrc src-head-only "$ran" -; mksrc src-dirty-only - ""; mksrc src-bad-head "not-a-sha" ""
+# ludics-lite#657: the far side prints facts and Python refuses, so a head file is read whole (a
+# second line injects no fact) and held to one exact object ID, as --standing-handback holds it.
+mksrc src-two-line-head "$ran"$'\nexit=1' ""; mksrc src-short-head "${ran%??????}" ""
 # src_refused <label> <record> <want>: a refusal that leaves its reservation dispatched.
 src_refused() {
   "${FWX[@]}" execution run "$(reqjson "run-$2")" >/dev/null || ko "could not reserve run-$2 (setup)"
@@ -2348,6 +2351,8 @@ src_refused "a record launched over uncommitted edits is refused, with their cou
 src_refused "a head without a dirty is a malformed record" src-head-only "FROM-RUN REFUSED: .*has a head but no dirty"
 src_refused "a dirty without a head is a malformed record" src-dirty-only "FROM-RUN REFUSED: .*has a dirty but no head"
 src_refused "a head that is not a commit ID is a malformed record" src-bad-head "FROM-RUN REFUSED: .*/head holds 'not-a-sha'"
+src_refused "a head file of two lines is a malformed record, not a fact" src-two-line-head "FROM-RUN REFUSED: .*/head holds '$ran$"
+src_refused "a truncated head is a malformed record, not another revision" src-short-head "FROM-RUN REFUSED: .*/head holds '${ran%??????}', not one commit ID"
 expect "a record launched clean at the reported revision concludes, and says so" 0 "launched at $ran on a clean tree" -- run_conclude run-src-clean "$runs/src-clean"
 grep -Fq "\"observed_sha\": \"$ran\"" <<<"$out" && grep -Fq '"verdict": "pass"' <<<"$out" && ok "...as a pass at the recorded revision" || ko "clean record: $out"
 fixture_done run-other
