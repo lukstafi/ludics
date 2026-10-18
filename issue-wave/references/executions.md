@@ -98,6 +98,11 @@ slot that is held now, or it is reported and ignored. The GPU check reads the cu
 spec rather than the marker, so a GPU batch inside a slot that an enclosing batch took as
 `--cpu` is refused. A wrapper around a runner that may hold the GPU must therefore not declare
 `--cpu`, and the runner's own declaration is the better one to rely on.
+The probe's sibling read, `execution slot --holders` (ludics-lite#639), says who holds the box's
+slots now: one JSON line per held slot (`box`, `event`, `at`, `slot`, `slots`, `kind` gpu|cpu,
+`pid`, `user`, `command`, `cwd`, `source`, `unknown`), taking nothing, the holder read from
+`/proc/locks`; where there is none (macOS) the slot is still listed, each field it cannot know
+`null` and named in `unknown`.
 
 **The measurement's own run** (ludics-lite#480). A runner that takes the slot itself also does so
 inside a measurement, where every slot is refused - so OCANNL's `tools/test-run.sh` was refused by

@@ -3327,6 +3327,33 @@ held "$TMP/slot-p1.log" "slot 1 of 1 held" &&
   expect "...and it answers while every slot is held (it takes none)" 0 "^EXECUTION SLOT PROBE testbox 1 1$" -- \
     "${FWS[@]}" execution slot --probe
 kill -9 "$p1" 2>/dev/null; wait "$p1" 2>/dev/null
+# THE HOLDERS (ludics-lite#639): who holds the box's slots, one JSON line per held slot with its kind,
+# read from the flocks -- the holder from /proc/locks where the box has one (Linux), and elsewhere
+# named unknown in a field. A GPU batch holds the token (slot 1 of 3), a --cpu one the top slot; each
+# wrapper keeps its pid through every exec, so $! is the lock's holder.
+"${FWT[@]}" execution slot -- sleep 30 > "$TMP/slot-w1.log" 2>&1 &
+w1=$!
+"${FWT[@]}" execution slot --cpu -- sleep 30 > "$TMP/slot-w2.log" 2>&1 &
+w2=$!
+if held "$TMP/slot-w1.log" "slot 1 of 3, GPU token 1 of 1 held" && held "$TMP/slot-w2.log" "slot 3 of 3 held"; then
+  expect "--holders lists the two held slots" 0 '"event":"held"' -- "${FWT[@]}" execution slot --holders
+  kinds=$(jq -r '"\(.slot) \(.kind) \(.slots) \(.box)"' <<<"$out" 2>/dev/null | tr '\n' ' ')
+  [ "$kinds" = "1 gpu 3 testbox 3 cpu 3 testbox " ] && ok "...with their kinds: the GPU token and the --cpu batch's slot" \
+    || ko "--holders listed '$kinds', want slot 1 gpu and slot 3 cpu -- $out"
+  if [ -r /proc/locks ]; then
+    who=$(jq -r '"\(.slot) \(.source) \(.pid) \(.unknown | length) \(.command | test("sleep 30")) \(.cwd != null)"' <<<"$out" 2>/dev/null | tr '\n' ' ')
+    [ "$who" = "1 proc-locks $w1 0 true true 3 proc-locks $w2 0 true true " ] && ok "...each with its holder's pid, command and cwd read from /proc/locks" \
+      || ko "--holders did not name the holders $w1 and $w2 from /proc/locks: '$who' -- $out"
+  else
+    who=$(jq -r '"\(.source) \(.pid) \(.unknown | keys | join(","))"' <<<"$out" 2>/dev/null | sort -u | tr '\n' ' ')
+    [ "$who" = "flock-test null command,cwd,pid,user " ] && ok "...and with no /proc/locks, each holder's fields null and named in unknown" \
+      || ko "--holders without /proc/locks said '$who' -- $out"
+  fi
+fi
+kill -9 "$w1" "$w2" 2>/dev/null; wait "$w1" 2>/dev/null; wait "$w2" 2>/dev/null
+for wi in $(seq 50); do out=$("${FWT[@]}" execution slot --holders 2>&1); [ -z "$out" ] && break; sleep 0.1; done
+[ -z "$out" ] && ok "--holders lists nothing once the batches are gone" || ko "--holders still lists holders after the kill -- $out"
+expect "--holders takes no other word" 2 "--holders takes no other word" -- "${FWT[@]}" execution slot --holders --cpu
 expect "a host with no fleet name has no probe answer" 2 "this host has no fleet name" -- \
   env FLEET_LOCAL_BOX= FLEET_BOXES="testbox other" "$FW" execution slot --probe
 # THE PROBE WITHOUT PYTHON: any answer but the PROBE line sends a project runner on without a
