@@ -237,6 +237,29 @@ class HolderRecord(Locks):
         out, _ = self.drain(0.2, 0.8)
         self.assertEqual(out, "EXECUTION HOLD testbox: measurement m1 waits for the batch in slot 1 to end\n")
 
+    def test_a_draining_hold_records_its_slots_unbounded_until_its_command_starts(self) -> None:
+        self.hold("slot.2")
+        record_holder(self.held[0], ["batch"], None)
+        during: list[Holder | None] = []
+
+        def release() -> None:
+            during.append(read_holder(self.path()))
+            os.close(self.held.pop(0))
+
+        class Started(Exception):
+            pass
+
+        threading.Timer(0.6, release).start()
+        lock = os.path.join(self.dir, "measurement.lock")
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(slot, "run_command", side_effect=Started), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Started):
+            os.environ.pop("FLEET_MEASUREMENT_HELD", None)
+            slot.hold("testbox", "", "why", lock, "testbox m1", 2, ["measure"], 900, 0.2)
+        self.assertEqual([(h.command, h.deadline) if h else None for h in during], [(("measure",), None)])
+        after = read_holder(self.path())
+        self.assertEqual((after.command, after.deadline) if after else None, (("measure",), 900))
+
 
 class SlotArguments(unittest.TestCase):
     def refused(self, args: list[str]) -> str:

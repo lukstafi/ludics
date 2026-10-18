@@ -766,16 +766,23 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
         nested = os.environ.get("FLEET_MEASUREMENT_HELD") == marker and _is_held(hold_lock) is True
         if nested:
             indices = set[int]()
+        taken: list[int] = []
         for index in sorted(indices):
             try:
                 path = os.path.join(directory, f"slot.{index}")
                 descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
                 drain_slot(box, request, path, descriptor, index, repeat)
                 os.set_inheritable(descriptor, True)
-                record_holder(descriptor, command, deadline)  # no earlier taker's record outlives the take
+                # No earlier taker's record outlives the take. While the drain goes on, nothing bounds
+                # this hold: its --deadline starts with its command, after the drain.
+                record_holder(descriptor, command, None)
+                taken.append(descriptor)
             except OSError as exc:
                 errline(f"{HOLD_PREFIX} {box}: WARNING: slot {index} is not held for the measurement, so a batch"
                         f" may run beside it -- {exc}")
+        if deadline is not None:
+            for descriptor in taken:
+                record_holder(descriptor, command, deadline)
         # The measurement's marker and the lock that proves it live: SHARED, so a second hold of the
         # same measurement is not refused, and inherited by the whole command tree. Fail-open.
         try:
