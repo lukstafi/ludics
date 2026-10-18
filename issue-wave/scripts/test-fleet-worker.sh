@@ -2485,7 +2485,7 @@ absent=$(printf 'c%.0s' $(seq 40))   # a commit no repository here has
 tipreq() { # <id> [sha] [jq object to add] -> a loop run's request on testbox
   local more='{}'; [ -z "${3:-}" ] || more=$3
   jq -n --arg id "$1" --arg sha "${2:-$tip}" --argjson more "$more" '{request_id:$id, wave:"w", worker:"coordinator",
-    transport:"coordinator", issue:"o/r integration", purpose:"GPU integration loop, cuda: fixture", agent_host:"testbox",
+    transport:"coordinator", purpose:"o/r integration, GPU integration loop, cuda: fixture", agent_host:"testbox",
     execution_host:"testbox", repository:"o/r", requested_revision:$sha, kind:"correctness"} + $more' > "$TMP/$1.json"
   printf '%s' "$TMP/$1.json"
 }

@@ -369,6 +369,14 @@ class WindowWait(unittest.TestCase):
         self.assertIn("waiting up to 30s (--wait-window) for it to conclude, then for a slot, for: echo x", err)
         self.assertIn("no measurement holds testbox after", err)
 
+    def test_a_measurement_without_an_issue_is_named_by_its_purpose(self) -> None:
+        # ludics-lite#664: `issue` is optional; a post-wave task's record names none.
+        record = measurement("win")
+        del record["request"]["issue"]
+        record["request"]["purpose"] = "post-1-task-2 timing"
+        _, _, err = self.wait([record], [[record], [measurement("win", state="concluded")]])
+        self.assertIn("(coordinator coord; w for post-1-task-2 timing;", err)
+
     def test_a_window_on_another_box_does_not_block(self) -> None:
         records = [measurement("elsewhere", box="other")]
         result, out, err = self.wait(records, [])

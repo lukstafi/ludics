@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
 
     def request(identity, host='rog'):
         return dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
-                    issue='repo#129', purpose='fixture', agent_host='mac', execution_host=host,
+                    issue='owner/repo#129', purpose='fixture', agent_host='mac', execution_host=host,
                     repository='owner/repo', requested_revision='origin/main', kind='correctness')
 
     def records():
@@ -256,7 +256,7 @@ with tempfile.TemporaryDirectory(prefix='fleet-slots-') as temporary:
 
     def request(identity, host='mac', kind='correctness'):
         return dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
-                    issue='repo#157', purpose='fixture', agent_host='mac', execution_host=host,
+                    issue='owner/repo#157', purpose='fixture', agent_host='mac', execution_host=host,
                     repository='owner/repo', requested_revision='origin/main', kind=kind)
 
     def records():
@@ -394,7 +394,7 @@ def one_entry_per_box():
 
         def request(identity, host, kind='measurement'):
             return dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
-                        issue='repo#395', purpose='fixture', agent_host='mac', execution_host=host,
+                        issue='owner/repo#395', purpose='fixture', agent_host='mac', execution_host=host,
                         repository='owner/repo', requested_revision='origin/main', kind=kind)
 
         def records():
@@ -504,7 +504,7 @@ def lane_lock_interlock():
 
         def request(identity, host, kind='measurement'):
             return dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
-                        issue='repo#445', purpose='fixture', agent_host='mac', execution_host=host,
+                        issue='owner/repo#445', purpose='fixture', agent_host='mac', execution_host=host,
                         repository='owner/repo', requested_revision='origin/main', kind=kind)
 
         def records():
@@ -597,7 +597,7 @@ def lab_host_identity():
 
         def request(identity, host, kind='measurement'):
             return dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
-                        issue='repo#454', purpose='fixture', agent_host='mac', execution_host=host,
+                        issue='owner/repo#454', purpose='fixture', agent_host='mac', execution_host=host,
                         repository='owner/repo', requested_revision='origin/main', kind=kind)
 
         def records():
@@ -678,7 +678,7 @@ def measurement_window():
 
         def request(identity, host='mac', kind='correctness', standing=False):
             data = dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
-                        issue='repo#481', purpose='fixture', agent_host='mac', execution_host=host,
+                        issue='owner/repo#481', purpose='fixture', agent_host='mac', execution_host=host,
                         repository='owner/repo', requested_revision='origin/main', kind=kind)
             return {**data, 'standing': True} if standing else data
 
@@ -826,7 +826,7 @@ from unittest.mock import patch
 with tempfile.TemporaryDirectory(prefix='fleet-durable-') as temporary:
     roster = 'mac'
     payload = dict(request_id='durable', wave='wave', worker='durable', transport='subagent',
-                   issue='repo#157', purpose='fixture', agent_host='mac', execution_host='mac',
+                   issue='owner/repo#157', purpose='fixture', agent_host='mac', execution_host='mac',
                    repository='owner/repo', requested_revision='origin/main', kind='correctness')
     events = []
     real_sync, real_replace = os.fsync, os.replace
@@ -856,7 +856,7 @@ with tempfile.TemporaryDirectory(prefix='fleet-durable-') as temporary:
 with tempfile.TemporaryDirectory(prefix='fleet-lane-held-') as temporary:
     locks = Path(temporary) / 'locks'
     payload = dict(request_id='held', wave='wave', worker='held', transport='subagent',
-                   issue='repo#445', purpose='fixture', agent_host='mac', execution_host='rog-nv-linux',
+                   issue='owner/repo#445', purpose='fixture', agent_host='mac', execution_host='rog-nv-linux',
                    repository='owner/repo', requested_revision='origin/main', kind='measurement')
     seen = []
     real_replace = os.replace
@@ -908,7 +908,7 @@ with tempfile.TemporaryDirectory(prefix='fleet-window-order-') as temporary:
 
     def request(identity, kind='correctness', standing=True):
         data = dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
-                    issue='repo#481', purpose='fixture', agent_host='mac', execution_host='mac',
+                    issue='owner/repo#481', purpose='fixture', agent_host='mac', execution_host='mac',
                     repository='owner/repo', requested_revision='origin/main', kind=kind)
         return {**data, 'standing': True} if standing else data
 

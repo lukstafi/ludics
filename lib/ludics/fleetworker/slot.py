@@ -1046,7 +1046,8 @@ def describe_measurement(box: str, record: dict[str, Any]) -> str:
     what = "measurement window" if record.get("window") is True else "measurement"
     owner = jq_text(record.get("coordinator"))
     worker = jq_text(field(record, "request", "worker"))
-    issue = jq_text(field(record, "request", "issue"))
+    # A request without an issue (ludics-lite#664: a post-wave task, an integration run) is named by its purpose.
+    issue = jq_text(field(record, "request", "issue") or field(record, "request", "purpose"))
     since = jq_text(record.get("created_at"))
     return (
         f"{SLOT_PREFIX} {box}: {what} {jq_text(record.get('request_id'))} holds {box} (coordinator {owner};"

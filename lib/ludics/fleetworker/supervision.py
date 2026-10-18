@@ -136,9 +136,31 @@ def last_line(text: str) -> str:
     return text.split("\n")[-1]
 
 
+def wave_records(records: Json, wave: str) -> list[Json]:
+    """``[.[] | select(.request.wave == $w)]``: the execution records of one wave."""
+    return [r for r in each(records) if path(r, "request", "wave") == wave]
+
+
 def wave_issues(records: Json, wave: str) -> list[Json]:
-    """``[.[] | select(.request.wave == $w) | .request.issue] | unique``."""
-    return unique(path(r, "request", "issue") for r in each(records) if path(r, "request", "wave") == wave)
+    """``[.[] | select(.request.wave == $w) | .request.issue // empty] | unique``: a record without
+    an issue (ludics-lite#664) names none."""
+    return unique(i for r in wave_records(records, wave) if (i := path(r, "request", "issue")) is not None)
+
+
+def wave_workers(records: Json, wave: str) -> tuple[str, ...]:
+    """The worker names of one wave's records that a PR branch can end in (see the boundary above
+    WAVE_WORKER): a worker transport's (``subagent``, ``app``, ``cli``), spelled as one branch-name
+    component."""
+    return tuple(sorted({w for r in wave_records(records, wave)
+                   if path(r, "request", "transport") in WORKER_TRANSPORTS
+                   and isinstance(w := path(r, "request", "worker"), str) and WAVE_WORKER.fullmatch(w)}))
+
+
+def on_worker_branch(pr: Json, workers: tuple[str, ...]) -> bool:
+    """Is the PR's head branch one of ``workers``, alone or as its last ``/`` component
+    (``claude/w1016-p1t2`` for worker ``w1016-p1t2``), compared exactly."""
+    branch = idx(pr, "headRefName")
+    return isinstance(branch, str) and any(branch == w or branch.endswith(f"/{w}") for w in workers)
 
 
 def closes_one_of(pr: Json, issues: list[Json]) -> bool:
@@ -160,14 +182,16 @@ def sorted_prs(listing_doc: Json) -> list[Json]:
     return sort_by(listing_doc, lambda p: idx(p, "number"))
 
 
-def pr_rows(listing_doc: Json, issues: list[Json] | None, referencing: frozenset[int] = frozenset()) -> list[list[str]]:
-    """The open PRs in number order, kept when they close an issue of ``issues`` or their number is
-    in ``referencing`` (all of them when ``issues`` is None), as the fields the lines print: number,
-    head sha, creation, draft, branch, title."""
+def pr_rows(listing_doc: Json, issues: list[Json] | None, referencing: frozenset[int] = frozenset(),
+            workers: tuple[str, ...] = ()) -> list[list[str]]:
+    """The open PRs in number order, kept when they close an issue of ``issues``, their number is
+    in ``referencing`` or their branch is one of ``workers``' (all of them when ``issues`` is None),
+    as the fields the lines print: number, head sha, creation, draft, branch, title."""
     rows: list[list[str]] = []
     for pr in sorted_prs(listing_doc):
         number = idx(pr, "number")
-        if issues is not None and not (closes_one_of(pr, issues) or (type(number) is int and number in referencing)):
+        if issues is not None and not (closes_one_of(pr, issues) or on_worker_branch(pr, workers)
+                                       or (type(number) is int and number in referencing)):
             continue
         fields: list[Json] = [
             number,
@@ -187,13 +211,26 @@ def pr_rows(listing_doc: Json, issues: list[Json] | None, referencing: frozenset
 # allowlist: what is read is each wave issue's cross-reference timeline (GraphQL CROSS_REFERENCED_EVENT,
 # GitHub's own record of a PR mentioning the issue), never PR or commit text; an issue is a record's
 # `issue` spelled exactly `owner/name#N` (WAVE_ISSUE) -- any other spelling (`<repo> integration`, a
-# post-wave task label) names no issue and was never matched by the closing filter either; a source
-# counts only when it is a PullRequest whose repository is the one listed (GitHub names compare
-# case-insensitively), and only a PR the open list also holds is printed. One paged read per wave
-# issue, made only when some open PR is not already kept by its closing references. A read that did
+# post-wave task label, on a record `reserve` admitted before ludics-lite#664) names no issue and was
+# never matched by the closing filter either; a source counts only when it is a PullRequest whose
+# repository is the one listed (GitHub names compare case-insensitively), and only a PR the open list
+# also holds is printed. One paged read per wave issue, made only when some open PR is not already
+# kept by its closing references or its branch (the boundary below WAVE_ISSUE). A read that did
 # not answer (exit 3) is PRS UNREACHABLE and exit 4; one refused or of a shape outside this query's is
 # PRS REFUSED and exit 1. Either way the read goes on with the PRs it can name, and says so.
 WAVE_ISSUE = re.compile(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([1-9][0-9]*)")
+
+# --- prs --wave: the PRs on a wave worker's branch --------------------------------------------------
+# A post-wave task has no issue of its own, so its records name none (ludics-lite#664; `reserve`
+# refuses an `issue` not spelled `owner/name#N`), and a worker's PR that forgets its `Refs` line
+# references nothing: neither read above finds it. Boundary, a fail-closed allowlist: what is read is
+# each wave record's `worker` and `transport`, never PR text; a worker counts only when its record's
+# transport is a worker's (WORKER_TRANSPORTS -- a coordinator's own record names no worker PR) and its
+# name is one branch-name component (WAVE_WORKER: no `/`, so `/root/issue12` is not read); an open PR
+# is kept when its `headRefName` is that name or ends in `/` and that name, compared exactly (git
+# branch names are case-sensitive). Nothing is read beyond the open list prs already holds.
+WORKER_TRANSPORTS = frozenset({"subagent", "app", "cli"})
+WAVE_WORKER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 XREF_QUERY = (
     "query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {"
     " repository(owner: $owner, name: $name) { issue(number: $number) {"
@@ -311,7 +348,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     only the machine-readable trailer each command ends with is read (ludics-lite#423), never the
     prose above it. --wave keeps the PRs that close an issue some execution record of that wave
     names, and those that only reference one (its cross-reference timeline, one paged read per wave
-    issue: see the boundary above WAVE_ISSUE). Exit: 0 read | 1 a PR is at the flag, or refused |
+    issue: see the boundary above WAVE_ISSUE), and those on a branch of one of its workers (the
+    boundary above WAVE_WORKER). Exit: 0 read | 1 a PR is at the flag, or refused |
     4 some read did not answer (a flag wins)."""
     repo = wave = ""
     flag = "5"
@@ -345,6 +383,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         cli.say(f"PRS REFUSED: ship-pr's pr-review.sh missing: {helper}")
         return 1
     issues: list[Json] | None = None
+    workers: tuple[str, ...] = ()
     if wave:
         done = listing(cfg)
         if done.unreachable:
@@ -358,12 +397,13 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         try:
             if docs is None or len(docs) != 1:
                 raise JqError("not one registry listing")
-            issues = wave_issues(docs[0], wave)
+            known = bool(wave_records(docs[0], wave))
+            issues, workers = wave_issues(docs[0], wave), wave_workers(docs[0], wave)
         except JqError:
             cli.say("PRS REFUSED: the anchor's registry did not parse")
             return 1
-        if not issues:
-            cli.say(f"PRS REFUSED: no execution record names wave {wave}, so its issues are unknown")
+        if not known:
+            cli.say(f"PRS REFUSED: no execution record names wave {wave}, so its issues and workers are unknown")
             return 1
     # `--limit` is a cap on what gh fetches, not a page size (it pages internally up to it), so a
     # list that reaches it may have lost PRs past it: said on its own line and read as exit 4.
@@ -388,7 +428,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
             cli.say(f"PRS INCOMPLETE {repo}: the list reached its cap of {limit} open PRs (FLEET_PRS_LIMIT), so PRs past it are not shown")
             worst = 4
         pages = [sorted_prs(doc) for doc in docs]
-        unkept = issues is not None and any(not closes_one_of(pr, issues) for page in pages for pr in page)
+        unkept = issues is not None and any(not (closes_one_of(pr, issues) or on_worker_branch(pr, workers))
+                                            for page in pages for pr in page)
     except JqError:
         cli.say(f"PRS REFUSED: the open-PR list of {repo} did not parse")
         return 1
@@ -404,7 +445,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
             elif worst != 1:
                 worst = 4
     try:
-        rows = [row for doc in docs for row in pr_rows(doc, issues, frozenset(referencing))]
+        rows = [row for doc in docs for row in pr_rows(doc, issues, frozenset(referencing), workers)]
     except JqError:
         cli.say(f"PRS REFUSED: the open-PR list of {repo} did not parse")
         return 1
@@ -429,5 +470,5 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         mark = "draft " if draft == "draft" else ""
         cli.say(f"{repo}#{n} rounds={rounds} ci={ci} head={age} {mark}{branch}: {title}{note}")
     if not rows:
-        cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}" if wave else ""))
+        cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}, or on a branch of its workers" if wave else ""))
     return worst
