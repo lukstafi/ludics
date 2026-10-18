@@ -1281,8 +1281,8 @@ reported instead of holding the job until CI's own timeout. `SHIP_PR_TEST_LOG_DI
 per-case logs where CI can collect them. Each case runs Git under its own scratch global config
 and no system or environment config (ludics-lite#386), so a user's `core.hooksPath` cannot send
 Git past a case's `.git/hooks` race fixture. A case that `set -e` ends writes an `ERREXIT:` line to
-its log naming the failing command, its function and its line (ludics-lite#649; bash 3.2 gives
-no line). The runner also tests itself, from patched scratch
+its log naming the failing command (a pipeline by its components' statuses), its function and
+its line (ludics-lite#649; bash 3.2 gives no line). The runner also tests itself, from patched scratch
 copies: refused arguments, `--help` with an inherited pid list, the deadline, an in-place rewrite
 of both scripts mid-run (with a negative control that strips the parse guard), a
 `core.hooksPath` planted through each config channel (with one that strips the isolation), and a
