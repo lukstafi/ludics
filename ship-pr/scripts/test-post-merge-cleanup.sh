@@ -5304,6 +5304,65 @@ test_runner_names_a_setup_case_failure() {
   echo "PASS: a failure inside setup_case fails the right-named case without hanging"
 }
 
+test_runner_names_an_errexit_death() {
+  # ludics-lite#649: a case that set -e ends is reported with its command and line, and only that
+  # one. The copy's selected case first fails a command in each shape report_errexit must keep
+  # quiet -- under if, ||, &&, !, inside a function called from an if, inside a command
+  # substitution whose capture is then checked, and a pipeline that only pipefail fails, under
+  # set +e, whose PIPESTATUS is then checked (bash 3.2 resets it to the trap's own status if the
+  # trap runs a command) -- and then dies on an unguarded command inside a block whose stderr goes
+  # to a file, as the helper's output did on 2026-10-15. Exactly one ERREXIT line may appear,
+  # naming that command, its function and its line in the copy (bash >= 4; bash 3.2, which gives
+  # a trap no usable line, says so instead). The copy runs on the `bash` PATH finds, through its
+  # shebang, so that bash's version decides the form.
+  local tag="errexit$$" copy="$TEST_ROOT/$COPY_DIR" out="$TEST_ROOT/copy.out" patched rc line version where
+  local death='test -e /nonexistent/runner-self-case-errexit'
+  copy_runner "$copy" "$tag"
+  patched=$(awk -v target="$SELF_CASE() {" -v death="$death" '{
+    print
+    if ($0 == target) {
+      print "  runner_self_guarded() { false; }"
+      print "  if false; then :; fi"
+      print "  false || :"
+      print "  false && :"
+      print "  ! false"
+      print "  if runner_self_guarded; then :; fi"
+      print "  runner_self_capture=$(false; echo captured)"
+      print "  [ \"$runner_self_capture\" = captured ] || fail \"a substitution capture changed: $runner_self_capture\""
+      print "  set +e; false | true; runner_self_statuses=\"${PIPESTATUS[*]}\"; set -e"
+      print "  [ \"$runner_self_statuses\" = \"1 0\" ] || fail \"the ERR trap reset PIPESTATUS under set +e: $runner_self_statuses\""
+      print "  {"
+      print "    " death
+      print "  } 2>\"$TEST_ROOT/runner-self-case.err\""
+    }
+  }' "$copy/test-post-merge-cleanup.sh")
+  printf '%s\n' "$patched" >"$copy/test-post-merge-cleanup.sh"
+  line=$(grep -nxF -- "    $death" "$copy/test-post-merge-cleanup.sh" | cut -d: -f1)
+  [ -n "$line" ] || fail "could not plant the errexit death in the copy"
+  version=$(run_copy bash -c 'printf "%s %s" "${BASH_VERSINFO[0]}" "$BASH_VERSION"') ||
+    fail "could not read the version of the bash the copy runs on"
+  if [ "${version%% *}" -ge 4 ]; then
+    where="line $line"
+  else
+    where="bash ${version#* } gives a trap no line inside a function"
+  fi
+
+  if run_copy env SHIP_PR_TEST_CASE_TIMEOUT="$SELF_CASE_TIMEOUT" "$copy/test-post-merge-cleanup.sh" -j 1 "$SELF_CASE" >"$out" 2>&1 </dev/null; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] || fail "the copy exited $rc after its case died under set -e, expected 1: $(cat "$out")"
+  grep -Fqx "===== FAIL: $SELF_CASE (exit 1) =====" "$out" ||
+    fail "the errexit death was not reported under the selected case name: $(cat "$out")"
+  grep -Fqx "ERREXIT: set -e ended this shell of the case at \`$death\` (exit 1) in $SELF_CASE, $where" "$out" ||
+    fail "the errexit death did not name its command, function and $where: $(cat "$out")"
+  [ "$(grep -c '^ERREXIT: ' "$out")" -eq 1 ] ||
+    fail "a guarded failure was reported as an errexit death: $(cat "$out")"
+  assert_copy_root_gone "$tag"
+  echo "PASS: a case that set -e ends names its command and line, and guarded failures stay quiet"
+}
+
 test_runner_reaps_a_statusless_case() {
   # Candidate (2) of ludics-lite#9: a case shell may exit without running its status trap. Remove
   # the trap from a copy; the scheduler must notice the gone or zombie child, reap it, and report
@@ -5718,6 +5777,7 @@ TESTS=(
   test_identity_refusals
   test_preexisting_recovery_ref
   test_runner_names_a_setup_case_failure
+  test_runner_names_an_errexit_death
   test_runner_reaps_a_statusless_case
   test_runner_cleans_up_after_a_closed_pipe
   test_runner_term_midrun_exits_130
@@ -5914,11 +5974,41 @@ run_case() {
   # the scratch slug and write a status file the parent never looks for. Resolve the path now.
   CASE_STATUS_FILE="$LOG_DIR/$name.status"
   trap 'echo "$?" >"$CASE_STATUS_FILE"' EXIT
+  # fd 8 is the case log as opened here, so report_errexit reaches it from inside a block whose
+  # stderr the case sent to a file. `set -E` hands the ERR trap to every function and subshell.
+  exec 8>&2
+  set -E
+  trap 'case $- in *e*) report_errexit "$?" "$LINENO" "${FUNCNAME[0]:-}" "$BASH_COMMAND" ;; esac' ERR
   TEST_ROOT="$TEST_ROOT/$2"
   CASE_NAME="$name" # skip_boundary names its line with it
   mkdir -p "$TEST_ROOT" || exit 1
   isolate_git_config
   "$name"
+}
+
+# report_errexit <status> <line> <function> <command>: the case's ERR trap (ludics-lite#649). A
+# command that fails under `set -e` ends the case with a bare status, and its output may have gone
+# to a file the case never got to print: on 2026-10-15 main went red on `===== FAIL: <case>
+# (exit 1) =====` and nothing else. So a shell of the case that errexit is about to end first
+# writes one line to the case log naming the command, its status, its function and its line.
+# Boundary -- what it reports: exactly the failures errexit acts on, since bash runs ERR under
+# errexit's own rules, and only where errexit is on (`$-` holds e). Quiet by construction: a
+# command guarded by `if`, `while`, `until`, `!`, or any but the last of an `&&`/`||` list (and
+# everything inside a function called from one), a `set +e` region, and a command substitution, where bash clears errexit, so a substitution's capture
+# never gains the line. Not reported: `fail` and every other explicit `exit`, which say their own
+# piece, and a case killed by a signal or its deadline, which report_case names. A subshell that
+# errexit ends reports itself, and bash 5 then reports the subshell's command in its parent too;
+# a background subshell's line is true of that subshell, not of the case. The `$-` test sits in
+# the trap itself, not in here: in bash 3.2 an ERR trap that runs any simple command resets
+# PIPESTATUS, which test_runner_cleans_up_after_a_closed_pipe reads after a pipeline it lets fail
+# under `set +e`, so where errexit is off the trap must run nothing. bash 3.2 also gives a trap
+# the line of an enclosing compound command, not the failing one's, so there the report says so
+# instead of misleading (a DEBUG-trap line tracker resets PIPESTATUS the same way).
+# test_runner_names_an_errexit_death pins the report and the quiet shapes.
+report_errexit() {
+  local line="line $2"
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] || line="bash $BASH_VERSION gives a trap no line inside a function"
+  printf '%s\n' "ERREXIT: set -e ended this shell of the case at \`$4\` (exit $1) in ${3:-the top level of the case}, $line" >&8
 }
 
 # isolate_git_config: the case's Git -- its fixtures, its hooks, and the helper, which inherits
