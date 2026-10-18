@@ -124,8 +124,24 @@ does not tell us the target Unix username.
   `git -C ~/ludics-lite fetch -q origin && ssh <box> "bash <(printf %s $(git -C ~/ludics-lite show
   origin/main:scripts/install-linux.sh | base64 | tr -d '\n') | base64 -d) --bench-venv"`
   (append `nvidia`, `amd` or `cpu` to override the detection; `ssh -t` lets sudo prompt). Run it
-  in the box's execution slot when other sessions may be measuring. Check: `~/.venvs/ocannl-bench/bin/python
-  -c 'import torch; print(torch.__version__); torch.ones(1).cuda()'`.
+  in the box's execution slot when other sessions may be measuring; a GPU slot (no `--cpu`), since
+  the box check below round-trips a tensor through the device.
+- The box check (ludics-lite#641). Provisioning, in both modes, ends with OCANNL's own
+  `benchmarks/check-box.sh --box <id> --box-only`, the check measurement sessions and
+  `tools/sweep.sh` run, against `~/.venvs/ocannl-bench` and `~/ocannl-staging/benchmarks/fixtures`.
+  The script and what it reads (`fixture_digest.py`, the workload specs, `DIGESTS.txt`) come from
+  origin's tip, not the box's checkout, which is often stale: a depth-1, blob-less clone of
+  `~/ocannl-staging`'s origin into the run's scratch directory, with only `benchmarks/` checked out,
+  removed with that directory when the run ends however it ends. It is not a `git worktree` of the
+  shared checkout, which a killed run would leave registered there. `<id>` is the box's
+  measurement-box ID, from `FLEET_LOCAL_BOX` (the endpoint the shared setup prompts for):
+  `rog-nv-linux` is `rog-nv`, `minix-amd-linux` `minix`, `tuf-amd-linux` `tuf`; any other endpoint
+  is not checked. The check reports and never repairs: each `GAP` line carries check-box's
+  `repair:` line, and nothing here acts on it. The standalone mode's exit status says how it
+  ended: **0** provisioned and READY; **1** provisioning failed (an `ERROR:` line); **3**
+  provisioned, the check found a GAP; **4** provisioned, the check did not run (no measurement-box
+  ID, no fixture store, no tip to clone, or check-box's own usage/harness exit 2), the reason on a
+  `Box check NOT RUN` line. The shared setup prints the same verdict and carries on.
 
 Existing repositories are checked for the expected origin and left untouched.
 Skill conflicts stop with instructions rather than replacing local work. Existing

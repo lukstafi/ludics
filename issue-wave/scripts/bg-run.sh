@@ -40,14 +40,21 @@
 #
 # `stop <dir>` ends a run's whole tree. It reads the run as `wait` does, and a run that is not
 # RUNNING it leaves alone and says so: `NOT RUNNING: <verdict>`, exit 1 -- a run that has
-# finished, one that died, one whose pid the system has since reused for another process (the
+# finished, one that died, one a stop has already ended, one whose pid the system has since reused for another process (the
 # start-time check `alive` makes), one that has published no pid yet. For a live run it reads the
 # process group of the identity-checked wrapper (or, the wrapper gone, command), and signals it
 # only when that group is the run's own: led by the wrapper's pid, as `spawn` makes it, and not
-# `stop`'s own. It re-checks the identity, sends SIGTERM to the group, and sends SIGKILL once
-# BG_RUN_STOP_GRACE seconds (whole, default 10) pass with any member still running; it prints
-# `STOPPED <dir>: process group <g> (TERM)` (or `(TERM, then KILL after <n> s)`) and exits 0. A
-# wait there then reads DIED, the wrapper stopped before it could write rc. A run whose wrapper
+# `stop`'s own. It re-checks the identity, publishes the marker `stopped` in <dir> (ludics-lite#638),
+# sends SIGTERM to the group, and sends SIGKILL once BG_RUN_STOP_GRACE seconds (whole, default 10)
+# pass with any member still running; it prints `STOPPED <dir>: process group <g> (TERM)` (or
+# `(TERM, then KILL after <n> s)`) and exits 0. A wait there then reads STOPPED, never DIED: the run
+# was ended on purpose, and DIED's re-arm would relaunch what was stopped. The marker goes in BEFORE
+# the signal, so no wait between the wrapper's death and the stop's end reads DIED; until no member
+# of the group is left, a wait reads RUNNING (the stop is still ending it). A stop that was itself
+# ended inside its grace leaves such a remnant, and a second stop signals that group again. A
+# signal that finds the group already gone (`NOT RUNNING`, exit 1) leaves the marker in place: a
+# concurrent stop may be the one that ended it, and a run that ended on its own in that instant
+# still reads rc when it wrote one, and otherwise STOPPED, as the stop asked. A run whose wrapper
 # does not lead its own group (a `start` run as a harness task, or a managed session's command)
 # shares its caller's, and `stop` refuses it, exit 2, signalling nothing: the harness's own
 # task-stop ends that one. What `stop` does not reach: a process that left the group itself (one
@@ -113,7 +120,12 @@
 #   DIED       5  a pid was published, it and the command are both gone, and no rc was
 #                 written: the task was killed before the command returned (the harness does this, ~40 min into a
 #                 backgrounded `merge --wait`). It says nothing about what the command saw:
-#                 re-arm it in a new directory. A run `stop` ended reads DIED too.
+#                 re-arm it in a new directory. A run `stop` ended reads STOPPED instead.
+#   STOPPED    7  `stop` ended the run (its marker `stopped` is there), and no process of it is
+#                 left: not the wrapper, not the command, no member of the wrapper's process group.
+#                 The run was ended on purpose, so it is NOT re-armed; the line is `STOPPED by
+#                 bg-run.sh stop before the command returned`. An rc written before the signal
+#                 landed still wins: the command returned, and rc=<n> says how.
 # While it blocks, every 120 s of the wait (BG_RUN_HEARTBEAT, whole seconds; 0 for none) it says
 # so on stderr, `bg-run: still waiting after <e> s of --within <w> (<state>)`, so a long wait does
 # not read as a hang. A heartbeat line starts with `bg-run:`, never with a verdict word, and is
@@ -121,7 +133,8 @@
 # `new` exits 0 having printed the directory, and 2 when it cannot create one (a parent that is a
 # file, or one it cannot write in: an error, never a search through ever higher N). `stop` exits 0
 # having stopped the run, 1 when it is not running, 2 when it refuses one. Usage errors exit 2,
-# from any subcommand. (Exit 6, the retired REFUSED verdict, is never used.)
+# from any subcommand. (Exit 6, the retired REFUSED verdict, is never used; STOPPED took 7 so that
+# no reader of an older bg-run.sh takes it for REFUSED.)
 #
 # The races this closes, each pinned by test-bg-run.sh:
 #   1. a killed task never writes rc: `wait` reads the dead pid as DIED instead of polling forever;
@@ -142,7 +155,9 @@
 # The directory layout is a contract a reader may rely on without going through `wait`
 # (ludics-lite#405's `execution conclude --from-bg-run` reads it): `rc` holds one line, the decimal
 # exit status, and appears only once complete (rename); `log` is the command's whole output;
-# `pid` and `cpid` are the liveness evidence behind RUNNING and DIED. A directory written by a
+# `pid` and `cpid` are the liveness evidence behind RUNNING and DIED; `stopped`, which only `stop`
+# writes (complete, by rename, before it signals), is what turns a run with no process left into
+# STOPPED rather than DIED, its content (`process group <g>`) for the reader. A directory written by a
 # bg-run.sh from before ludics-lite#425 may also hold `refused`, which nothing reads any more.
 # Dot-files (`new`'s token, in-flight temporaries) are never a reader's. `wait <dir> --within 0` gives the same
 # verdict in one call.
@@ -342,14 +357,27 @@ alive() {
   return 0
 }
 
-# verdict <dir>: sets V to rc | STARTING | RUNNING | DIED.
+# verdict <dir>: sets V to rc | STARTING | RUNNING | STOPPED | DIED.
 verdict() {
   if [ -s "$1/rc" ]; then V=rc
   elif [ ! -s "$1/pid" ]; then V=STARTING
   elif alive "$1/pid" || alive "$1/cpid"; then V=RUNNING
   elif [ -s "$1/rc" ]; then V=rc   # it finished between the rc read and the probe
+  elif [ -e "$1/stopped" ]; then
+    # A stop signalled the group the wrapper leads (cmd_stop). A member left in it is the stop
+    # still ending the run. A live process that holds the wrapper's pid now is another process:
+    # the system does not reuse an id while a group by that id exists, so the run's group is gone.
+    { IFS= read -r lead; } < "$1/pid"
+    if group_left "$lead" && ! running "$lead"; then V=RUNNING; else V=STOPPED; fi
   else V=DIED
   fi
+}
+
+# running <pid>: a live process holds the pid; a zombie, which has exited, does not.
+running() {
+  kill -0 "$1" 2>/dev/null || return 1
+  case $(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ') in Z*|X*) return 1 ;; esac
+  return 0
 }
 
 cmd_wait() {
@@ -404,12 +432,14 @@ cmd_wait() {
     RUNNING) printf 'RUNNING after %s s of --within %s\n' "$elapsed" "$within"; exit 3 ;;
     STARTING) printf 'STARTING after %s s of --within %s\n' "$elapsed" "$within"; exit 4 ;;
     DIED) echo DIED; exit 5 ;;
+    STOPPED) printf '%s\n' 'STOPPED by bg-run.sh stop before the command returned'; exit 7 ;;
   esac
 }
 
 # group_left <g>: whether a process of group <g> is still running; a zombie, which has exited, is
 # not. Where ps cannot list the groups, kill -0 on the group stands.
 group_left() {
+  case $1 in ''|*[!0-9]*) return 1 ;; esac
   kill -0 -- "-$1" 2>/dev/null || return 1
   members=$(ps -A -o pgid= -o stat= 2>/dev/null) && [ -n "$members" ] || return 0
   printf '%s\n' "$members" | awk -v g="$1" '$1 == g && $2 !~ /^[ZX]/ { f = 1 } END { exit !f }'
@@ -428,6 +458,7 @@ cmd_stop() {
     rc) printf 'NOT RUNNING: rc=%s, the command has finished; nothing was signalled\n' "$(cat "$dir/rc")"; exit 1 ;;
     STARTING) printf '%s\n' 'NOT RUNNING: STARTING, no start has published its pid here; nothing was signalled'; exit 1 ;;
     DIED) printf '%s\n' 'NOT RUNNING: DIED, no process of the run is alive (a pid there names another process, or none); nothing was signalled'; exit 1 ;;
+    STOPPED) printf '%s\n' 'NOT RUNNING: STOPPED, a stop has already ended this run and no process of it is left; nothing was signalled'; exit 1 ;;
   esac
   # The group of a live process of the run, identity-checked; the run's own only when the wrapper
   # leads it, as spawn makes it, and never this stop's own.
@@ -439,16 +470,30 @@ cmd_stop() {
     g=$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')
     [ -z "$g" ] || break
   done
+  # Wrapper and command gone, a member of their group left, and a stop's marker there: a stop
+  # ended inside its grace left this remnant, and the group is still the wrapper's (verdict).
+  [ -n "$g" ] || [ ! -e "$dir/stopped" ] || g=$lead
   mine=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
   if [ -z "$g" ] || [ "$g" != "$lead" ] || [ "$g" = "$mine" ]; then
     say "refused: the run in $(printf '%q' "$dir") has no process group of its own (it was started by start, not spawn), so a group kill would reach whoever started it; nothing was signalled -- stop it through the task that runs it"
     exit 2
   fi
   # The identity again, immediately before the signal, to keep the window narrow (header).
-  if ! alive "$dir/pid" && ! alive "$dir/cpid"; then
+  verdict "$dir"
+  if [ "$V" != RUNNING ]; then
     printf '%s\n' 'NOT RUNNING: the run ended while stop read it; nothing was signalled'
     exit 1
   fi
+  # The marker before the signal (header): a wait that reads the wrapper gone reads STOPPED, never
+  # the DIED whose re-arm would relaunch what is being stopped.
+  if [ ! -e "$dir/stopped" ]; then
+    { printf 'process group %s\n' "$g" > "$dir/.stopped.$$" && mv -f -- "$dir/.stopped.$$" "$dir/stopped"; } || {
+      rm -f -- "$dir/.stopped.$$"
+      say "refused: cannot publish the stopped marker in $(printf '%q' "$dir"), so a wait there would read DIED; nothing was signalled"
+      exit 2
+    }
+  fi
+  # A group already gone keeps the marker (header): another stop may have ended it.
   kill -TERM -- "-$g" 2>/dev/null || {
     printf '%s\n' 'NOT RUNNING: the run ended while stop read it; nothing was signalled'
     exit 1
@@ -459,6 +504,9 @@ cmd_stop() {
     if [ $((SECONDS - t0)) -ge "$grace" ]; then
       kill -KILL -- "-$g" 2>/dev/null
       how="TERM, then KILL after $grace s"
+      # A killed member is gone at once, short of a process stuck in the kernel; 2 s for it.
+      n=0
+      while group_left "$g" && [ "$n" -lt 20 ]; do sleep 0.1; n=$((n + 1)); done
       break
     fi
     sleep 0.2

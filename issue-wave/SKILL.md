@@ -813,8 +813,8 @@ controlled through the tools in your coordinator's file, never through those com
     waiting at most that run for a token, unless the coordinator, which reserved it, ends the
     run for it. A measurement asked for while a loop run holds its box always ends that run -
     `ssh <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh stop <dir>'`, which ends
-    its whole tree; the run then reads DIED, which `--from-bg-run` refuses, so conclude it
-    `cancelled` with a JSON payload - then open the window.
+    its whole tree; the run then reads `STOPPED`, which `--from-bg-run` concludes `cancelled`
+    (ludics-lite#638) - then open the window.
   - **Informative, never a gate.** Its records never carry `"integration": true`, so the base
     gate never reads them (*Base gate*): launch verdicts stay the tip's own push run and the cc
     loop's records. A GPU red reaches the wave through the loop itself, below. Its request ids

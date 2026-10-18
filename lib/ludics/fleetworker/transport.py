@@ -7,8 +7,9 @@ for any other -- with its arguments as positional parameters. Only the near side
 (ludics-lite#403), so every line a box runs is exactly what it ran, and the anchor's lease lock
 (``take_lock``, a mkdir lock recording its holder's pid and start time) is still one implementation.
 
-``prelude`` is what every far side starts with: the paths, BOX and its locality, then the shell's
-prelude helpers byte for byte. ``run`` starts a process with a script on its stdin and the far
+``prelude`` is what every far side starts with: the paths, BOX and its locality, the coordinator's
+fleet configuration for any fleet-worker.sh the far side starts (``fleet_worker``, below), then the
+shell's prelude helpers byte for byte. ``run`` starts a process with a script on its stdin and the far
 side's stderr passed through, which ``ludics.proc.run_tool`` (captured streams, inherited stdin)
 does not offer.
 """
@@ -20,7 +21,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from ludics.fleetworker.config import Config
+from ludics.fleetworker.config import REGISTRY_PIN, Config, anchor_name, registry_pin
 from ludics.fleetworker.farside import HELPERS
 
 SSH_OPTS = [
@@ -63,6 +64,99 @@ def emit_var(name: str, value: str) -> str:
     return f"{name}={shlex.quote(value)}\n"
 
 
+# THE COORDINATOR'S FLEET CONFIGURATION ON THE FAR SIDE (ludics-lite#632). A fleet-worker.sh that a
+# far side starts on a box -- `execution leg`'s slot or hold, `execution tip-run`'s `slot --bg` --
+# reads its configuration from its environment, which on a remote box is that box's own (its
+# ~/.config/fleet/env.sh, sourced by the ssh shell's ~/.bashrc, and the header's defaults). So
+# every such start goes through the prelude's `fleet_worker`, which runs it under the
+# coordinator's resolved value of each knob below: the facts every box must resolve alike.
+#
+# The boundary, a fail-closed allowlist: FORWARDED alone travels. Never forwarded, because each is
+# the box's own: FLEET_LOCAL_BOX (its name), FLEET_SLOT_STATE (its slot locks, which every caller
+# on the box must share, or two caps would count two lock sets), ISSUE_WAVE_STATE (its worker
+# state; the far side's own paths already come from the prelude's STATE), FLEET_SYSTEMD_INHIBIT and
+# FLEET_TMUX_SOCKET; nor the per-call bounds (FLEET_*_TIMEOUT, FLEET_*_WAIT, FLEET_SLOT_WINDOW_POLL)
+# or the identity (FLEET_COORDINATOR: a far side's verbs read the registry, which needs none). Only
+# a far side that starts fleet-worker.sh gets the knobs, and only for that process and what it
+# starts: never the far shell itself, whose children include a launch's tmux server, which would
+# keep them in its global environment for every later session (the hazard ludics-lite#327 names).
+# Where the far side reaches a box by a hand-written ssh instead (no run_on), nothing travels:
+# that is what `execution leg` is for.
+#
+# The registry's location is pinned too (config.REGISTRY_PIN): FLEET_ANCHOR travels as a fleet
+# name, so a coordinator anchor of `local` becomes the coordinator's own box name, and with no name
+# to give it the start is REFUSED on the far side, never run against the box's own state. The pin
+# goes with the knobs, and any fleet-worker.sh under the started one checks it.
+FORWARDED = (
+    "FLEET_BOXES",
+    "FLEET_HOSTNAME_MAP",
+    "FLEET_ANCHOR",
+    "FLEET_ANCHOR_STATE",
+    "FLEET_LAB_HOST",
+    "FLEET_BOX_CORRECTNESS_SLOTS",
+    "FLEET_BOX_GPU_TOKENS",
+    "FLEET_SKILLS_REPO",
+)
+
+# The far side's runner of a fleet-worker.sh: `fleet_worker <fleet-worker.sh> <verb> ...`, its
+# configuration FLEET_FORWARD (the names above and the pin, as `env` assignments), or, when the
+# coordinator's configuration cannot be given to this box, a refusal naming why (exit 2, as a
+# usage refusal: the call cannot be made from here as configured).
+FLEET_WORKER = r"""fleet_worker() {
+  if [ -n "$FLEET_FORWARD_REFUSED" ]; then
+    printf '%s\n' "fleet-worker.sh not started on $BOX: $FLEET_FORWARD_REFUSED" >&2
+    return 2
+  fi
+  env "${FLEET_FORWARD[@]}" "$@"
+}
+"""
+
+
+class Unforwardable(Exception):
+    """The coordinator's configuration names something the box cannot resolve as it does."""
+
+
+def fleet_box_of(cfg: Config, box: str, variable: str, value: str) -> str:
+    """A box-valued knob for the far side: ``local`` is the coordinator's own box, by name."""
+    if value != "local" or is_local(cfg, box):
+        return value
+    if cfg.local_box:
+        return cfg.local_box
+    raise Unforwardable(
+        f"the coordinator's {variable} is local, and its own box has no fleet name to give {box}"
+        " (set FLEET_LOCAL_BOX on the coordinator)"
+    )
+
+
+def forwarded(cfg: Config, box: str) -> list[tuple[str, str]]:
+    """The coordinator's resolved value of each FORWARDED knob, then the registry pin, as the far
+    side's fleet-worker.sh must read them. Values travel unexpanded: a ``$HOME/`` path is expanded
+    where it is used (the anchor's state on the anchor), never on the box in between."""
+    anchor = fleet_box_of(cfg, box, "FLEET_ANCHOR", cfg.anchor)
+    values = {
+        "FLEET_BOXES": cfg.boxes,
+        "FLEET_HOSTNAME_MAP": cfg.hostname_map,
+        "FLEET_ANCHOR": anchor,
+        "FLEET_ANCHOR_STATE": cfg.anchor_state,
+        "FLEET_LAB_HOST": fleet_box_of(cfg, box, "FLEET_LAB_HOST", cfg.lab_host),
+        "FLEET_BOX_CORRECTNESS_SLOTS": cfg.slots,
+        "FLEET_BOX_GPU_TOKENS": cfg.gpu_tokens,
+        "FLEET_SKILLS_REPO": cfg.skills_repo,
+    }
+    pin = registry_pin(anchor if anchor != "local" else anchor_name(cfg), cfg.anchor_state)
+    return [(name, values[name]) for name in FORWARDED] + [(REGISTRY_PIN, pin)]
+
+
+def forward_text(cfg: Config, box: str) -> str:
+    """The prelude's FLEET_FORWARD and FLEET_FORWARD_REFUSED, then ``fleet_worker``."""
+    try:
+        pairs = forwarded(cfg, box)
+    except Unforwardable as why:
+        return f"FLEET_FORWARD=()\nFLEET_FORWARD_REFUSED={shlex.quote(str(why))}\n" + FLEET_WORKER
+    words = " ".join(shlex.quote(f"{name}={value}") for name, value in pairs)
+    return f"FLEET_FORWARD=({words})\nFLEET_FORWARD_REFUSED=''\n" + FLEET_WORKER
+
+
 def prelude(cfg: Config, box: str) -> str:
     """What every far-side script here starts with: BOX is the name the coordinator addressed the
     box by, so every line it prints is greppable by that name."""
@@ -74,6 +168,7 @@ def prelude(cfg: Config, box: str) -> str:
         + f"BOX={shlex.quote(box)}\n"
         + f"FEEDER_WAIT={shlex.quote(cfg.feeder_wait)}\n"
         + f"BOX_IS_LOCAL={1 if is_local(cfg, box) else 0}\n"
+        + forward_text(cfg, box)
         + HELPERS
     )
 

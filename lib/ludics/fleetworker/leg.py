@@ -246,7 +246,7 @@ printf "control=%s\n" "$crc" >> "$results"
 git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
 exit 0
 FLEET_LEG_RUNS
-"${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
+fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }
 main=$(fact main)
 now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)

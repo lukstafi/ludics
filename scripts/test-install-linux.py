@@ -593,6 +593,80 @@ sys.exit(0 if ok else 1)
         self.run_shell(self.BENCH_STUB + 'uname() { echo Darwin; }; bench_venv_only', False)
         self.assertEqual(self.calls(), '')
 
+    # The box check (ludics-lite#641): origin is a real git repository whose benchmarks/check-box.sh
+    # records where it ran from and its arguments, then exits FAKE_CHECK_RC; the box's checkout holds
+    # a stale one that must never run.
+    FAKE_CHECK_BOX = r"""#!/bin/sh
+printf '%s\n' "$0" "$@" > "$CHECK_ARGS"
+echo "check-box: stub: ${FAKE_CHECK_RC:-0}"
+exit "${FAKE_CHECK_RC:-0}"
+"""
+
+    def check_setup(self):
+        self.bench_setup()
+        origin = self.root / 'origin'
+        (origin / 'benchmarks').mkdir(parents=True)
+        (origin / 'benchmarks/check-box.sh').write_text(self.FAKE_CHECK_BOX)
+        (origin / 'README').write_text('not checked out\n')
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com', '-C']
+        subprocess.run(git + [str(origin), 'init', '-q'], check=True)
+        subprocess.run(git + [str(origin), 'add', '.'], check=True)
+        subprocess.run(git + [str(origin), 'commit', '-q', '-m', 'tip'], check=True)
+        self.tip_sha = subprocess.run(['git', '-C', str(origin), 'rev-parse', 'HEAD'], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+        checkout = self.root / 'ocannl'
+        (checkout / 'benchmarks/check-box.sh').write_text('#!/bin/sh\necho stale > "$CHECK_ARGS"\n')
+        subprocess.run(['git', '-C', str(checkout), 'init', '-q'], check=True)
+        subprocess.run(['git', '-C', str(checkout), 'remote', 'add', 'origin', 'file://' + str(origin)], check=True)
+        return ('export CHECK_ARGS=$PWD/check-args FLEET_LOCAL_BOX=${ENDPOINT-minix-amd-linux}; '
+                + self.BENCH_STUB + 'uname() { echo Linux; }; ')
+
+    def check_args(self):
+        path = self.root / 'check-args'
+        return path.read_text().splitlines() if path.exists() else None
+
+    def test_bench_measurement_box_maps_the_linux_endpoints_and_refuses_others(self):
+        out = self.run_shell('for e in rog-nv-linux minix-amd-linux tuf-amd-linux; do bench_measurement_box "$e"; done').stdout
+        self.assertEqual(out, 'rog-nv\nminix\ntuf\n')
+        for endpoint in ['mac-studio', 'minix', 'rog-nv', '']:
+            self.run_shell('bench_measurement_box ' + repr(endpoint), False)
+
+    def test_bench_venv_ends_with_check_box_from_origin_tip(self):
+        stub = self.check_setup()
+        result = self.run_shell(stub + 'bench_venv_only')
+        args = self.check_args()
+        self.assertTrue(args[0].endswith('/ocannl-tip/benchmarks/check-box.sh'), args)
+        self.assertEqual(args[1:], ['--box', 'minix', '--box-only', '--venv', str(self.root / 'venvs/ocannl-bench'),
+                                    '--fixture-dir', str(self.root / 'ocannl/benchmarks/fixtures')])
+        self.assertFalse(Path(args[0]).exists(), 'the tip clone outlived the run')
+        self.assertIn(self.tip_sha, result.stdout)
+        self.assertTrue(result.stdout.endswith('Box check: minix READY.\n'), result.stdout)
+        self.assertLess(self.calls().index('smoke '), self.calls().index('ssh '))
+
+    def test_bench_check_gap_and_harness_error_set_the_exit_status(self):
+        stub = self.check_setup()
+        result = self.run_shell(stub + 'FAKE_CHECK_RC=1 bench_venv_only', False)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn('Box check: minix GAP (exit 3)', result.stdout)
+        self.assertTrue((self.root / 'venvs/ocannl-bench').is_symlink(), 'the GAP undid the provisioning')
+        result = self.run_shell(stub + 'FAKE_CHECK_RC=2 bench_venv_only', False)
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        self.assertIn('Box check NOT RUN (exit 4): check-box.sh exited 2', result.stdout)
+
+    def test_bench_check_not_run_without_an_endpoint_a_store_or_a_tip(self):
+        stub = self.check_setup()
+        for env, why in [('ENDPOINT=mac-studio; ', 'fleet endpoint mac-studio (FLEET_LOCAL_BOX) has no measurement-box ID'),
+                         ('ENDPOINT=; ', "fleet endpoint '' (FLEET_LOCAL_BOX) has no"),
+                         ('git -C ocannl remote set-url origin "file://$PWD/nowhere"; ', 'cannot check out benchmarks/check-box.sh')]:
+            result = self.run_shell(env + stub + 'bench_venv_only', False)
+            self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+            self.assertIn('Box check NOT RUN (exit 4): ' + why, result.stdout)
+            self.assertIsNone(self.check_args())
+            self.assertTrue((self.root / 'venvs/ocannl-bench').is_symlink())
+        result = self.run_shell(stub + 'BENCH_CHECKOUT=$PWD/none; bench_venv_only', False)
+        self.assertEqual(result.returncode, 4)
+        self.assertIn('no fixture store', result.stdout)
+
     def test_endpoint_names_exclude_the_local_sentinel(self):
         self.run_shell('valid_endpoint rog-nv-linux && ! valid_endpoint local && ! valid_endpoint macbook-air && ! valid_endpoint user@host')
 

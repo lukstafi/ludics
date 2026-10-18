@@ -98,6 +98,11 @@ slot that is held now, or it is reported and ignored. The GPU check reads the cu
 spec rather than the marker, so a GPU batch inside a slot that an enclosing batch took as
 `--cpu` is refused. A wrapper around a runner that may hold the GPU must therefore not declare
 `--cpu`, and the runner's own declaration is the better one to rely on.
+The probe's sibling read, `execution slot --holders` (ludics-lite#639), says who holds the box's
+slots now: one JSON line per held slot (`box`, `event`, `at`, `slot`, `slots`, `kind` gpu|cpu,
+`pid`, `user`, `command`, `cwd`, `source`, `unknown`), taking nothing, the holder read from
+`/proc/locks`; where there is none (macOS) the slot is still listed, each field it cannot know
+`null` and named in `unknown`.
 
 **The measurement's own run** (ludics-lite#480). A runner that takes the slot itself also does so
 inside a measurement, where every slot is refused - so OCANNL's `tools/test-run.sh` was refused by
@@ -515,7 +520,8 @@ plus the runner's `exit:` sentinel when the log has one (a whole line `exit:
 N` or `<name>: exit: N`, the last one winning; OCANNL's `test-run.sh` and `machine-verify.sh`
 print one): the code is the sentinel when that is nonzero, else `rc`, so a pass needs both. Then
 0 is pass, 124 or 142 timeout, a signal code (129, 130, 137, 143) cancelled, anything else fail.
-`RUNNING`, `STARTING` and `DIED` are refused. A `DIED` task was killed before its
+`STOPPED` (a run `bg-run.sh stop` ended, no process of its group left) is `cancelled`, the log's
+sentinel unread (ludics-lite#638). `RUNNING`, `STARTING` and `DIED` are refused. A `DIED` task was killed before its
 command returned, and bg-run.sh's header names a window in which the command can outlive it
 unpublished, so check that no process of the run remains and conclude it by JSON (`cancelled`). The directory is read on `--box`, by default the reservation's
 execution host. Name the box that drove the run when the leg went over ssh (a machine-verify trip
@@ -582,6 +588,12 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   (a [`head-of:` request](#reserve-launch-observe-conclude)), or a non-standing one whose
   `requested_revision` is exactly one commit, refuses any `--rev` that comes to
   another commit, and the registry refuses any `observed_sha` but that commit for it.
+- **The configuration.** The slot or hold on the box runs under the caller's fleet configuration,
+  not the box's `~/.config/fleet/env.sh`: its roster, anchor and anchor state, lab host, slot and
+  token specs and skills checkout travel with it (ludics-lite#632; `execution tip-run` does the
+  same). The box keeps its own name and slot locks. A `fleet-worker.sh` anywhere under it that
+  resolves another registry (an anchor or anchor state re-set in between) refuses to run. A
+  hand-written `ssh <box> ... fleet-worker.sh execution slot` gets none of this: use the leg.
 - **The worktree.** `--checkout` is the project's checkout on the box and `--worktree` a linked
   worktree of it (paths absolute, or a quoted `~/`, expanded on the box; the caller's shell
   expands an unquoted one to the caller's home): made with `git worktree add --detach` when the path does

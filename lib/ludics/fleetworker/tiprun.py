@@ -36,10 +36,9 @@ In order, each step yielding rather than waiting:
     <runs> --wait 0``: one GPU token unless ``--cpu``, taken only if one is free at once, never
     queued behind or among the workers' batches, and with no ``--wait-window``. An enclosing
     slot's or measurement's marker is dropped first: a loop run is never part of another batch.
-    That ``fleet-worker.sh`` is the box's own, and resolves the box's fleet configuration (its
-    header's site defaults and ``~/.config/fleet/env.sh``), as every remote call of it does today
-    (``run_on``'s far sides, a worker's batch on its GPU home box); forwarding the coordinator's
-    is ludics-lite#632, for all of them at once.
+    That ``fleet-worker.sh`` is the box's own, run under the coordinator's fleet configuration
+    (the prelude's ``fleet_worker``, ludics-lite#632: the roster, the anchor and its registry, the
+    slot and token specs), never the box's own ``~/.config/fleet/env.sh``.
  5. THE SLOT'S ANSWER is read off the run's log for up to ``SETTLE`` seconds. The boundary, a
     fail-closed allowlist: the run STARTED when the log holds the line ``take_slot`` prints after
     it took the slot and before it runs the command (``EXECUTION SLOT <box>: slot <i> of <n>[, GPU
@@ -103,7 +102,7 @@ head=$(git rev-parse HEAD 2>/dev/null)
 [ -z "$(git status --porcelain </dev/null 2>/dev/null)" ] || refuse "$co on $BOX is not clean after checking out $sha"
 unset FLEET_SLOT_HELD FLEET_MEASUREMENT_HELD
 if [ "$kind" = cpu ]; then set -- --cpu -- "$@"; else set -- -- "$@"; fi
-dir=$("$fw" execution slot --bg "$runs" --wait 0 "$@" </dev/null) || refuse "execution slot --bg did not start the run (above)"
+dir=$(fleet_worker "$fw" execution slot --bg "$runs" --wait 0 "$@" </dev/null) || refuse "execution slot --bg did not start the run (above)"
 case "$dir" in /*) [ -d "$dir" ] || refuse "execution slot --bg printed '$dir', not a run directory" ;; *) refuse "execution slot --bg printed '$dir', not a run directory" ;; esac
 held='^EXECUTION SLOT [^ ]+: slot [0-9]+ of [0-9]+(, GPU token [0-9]+ of [0-9]+)? held for: '
 holds() { LC_ALL=C grep -a -E -q "$held" "$dir/log" 2>/dev/null; }

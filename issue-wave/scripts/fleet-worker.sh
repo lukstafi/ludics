@@ -120,6 +120,10 @@
 #   fleet-worker.sh execution slot --probe             # `EXECUTION SLOT PROBE <box> <slots> <gpu
 #                          # tokens>` for this box, taking nothing (exit 2: not a fleet host),
 #                          # then `measurement <id>` inside a live `execution hold --request <id>`
+#   fleet-worker.sh execution slot --holders           # one JSON line per held slot of THIS box:
+#                          # slot, kind gpu|cpu, pid, user, command, cwd (Linux, from /proc/locks;
+#                          # elsewhere null, each named in `unknown`), taking nothing
+#                          # (lib/ludics/fleetworker/holders.py)
 #   fleet-worker.sh execution hold [--why <text>] [--request <id>] [--deadline <seconds>] -- <command...>
 #                          # run under THIS box's OS-level sleep guard alone (a systemd-inhibit
 #                          # block lock; bare where none): the wrapper for an exclusive
@@ -249,6 +253,12 @@
 #     `<box> <slot> <slots> <gpu|cpu>`, the slot the batch holds (THE NESTED SLOT, below).
 #   FLEET_MEASUREMENT_HELD: set BY `execution hold --request <id>` in its command's environment,
 #     never by hand: `<box> <id>`, the measurement the run belongs to (THE MEASUREMENT'S OWN RUN).
+#   FLEET_REGISTRY_PIN: set BY a coordinator's far side, never by hand, in the environment of a
+#     fleet-worker.sh it starts on a box (`execution leg`, `execution tip-run`), beside the
+#     coordinator's own roster, anchor, anchor state, lab host, slot and token specs and skills
+#     checkout, which that start reads instead of the box's env.sh (ludics-lite#632; the boundary:
+#     FORWARDED in lib/ludics/fleetworker/transport.py). Every verb under it refuses (exit 1) when
+#     this box resolves another registry than the pinned one.
 #   FLEET_SYSTEMD_INHIBIT: the systemd-inhibit that `execution hold` (and so `execution slot`)
 #     wraps a run in; systemd-inhibit on PATH. A name that resolves to no executable runs the
 #     command bare, as on macOS; the suites pin it to a stub or to nothing, never to the runner's.

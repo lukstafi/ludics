@@ -88,7 +88,7 @@ are run from a repo checkout, not from the skill directory.
 roughly every other call returning `503 No server is currently available`) a single attempt is a
 coin flip, so the script retries every call — 4 tries, 5s doubling to 20s, on 5xx and that body,
 never on a 4xx, on a GraphQL error no retry can change (a node or page limit, an unknown field, a
-parse error), or on gh refusing a `retry` call's own arguments (an unknown flag or `--json` field:
+parse error, a `Could not resolve to …` NOT_FOUND), or on gh refusing a `retry` call's own arguments (an unknown flag or `--json` field:
 exit 2, since nothing was sent). gh withholding an answer for its terminal escape sequences — a job's
 log read without `--allow-escape-sequences` — is exit 2 too: re-sending it is withheld again, so add
 the flag (and keep the raw log in a file). gh refusing an argument the script itself sends (a field or flag
@@ -323,8 +323,9 @@ whose turn's end kills its background tasks) runs `watch` and `merge --wait` und
 `bg-run.sh spawn` and blocks on `bg-run.sh wait` in the same turn, as
 [Blocking on a run](../issue-wave/references/native-claude.md#blocking-on-a-run) says. To stop a
 spawned `merge --wait` (a pause, or "do not merge"), run
-`~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>`; a merge already inside its merge call
-may still land, so re-read the PR's state after (that section is the verb's contract).
+`~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>`; a `wait` there then reads `STOPPED`,
+which is never re-armed. A merge already inside its merge call may still land, so re-read the PR's
+state after (that section is the verb's contract).
 
 `watch` *is* the polling loop — don't hand-roll a sleep loop around `poll`, which is what a long
 review otherwise turns into. It returns the moment a round lands (printing exactly what `poll`
