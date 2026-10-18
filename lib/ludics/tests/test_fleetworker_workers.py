@@ -293,6 +293,7 @@ class TmNew(unittest.TestCase):
         self.assertEqual((rc, err, len(calls)), (1, "server exited unexpectedly\n", 5))
 
 
+@unittest.skipIf(shutil.which("bash") is None, "no bash")
 class FleetPython(unittest.TestCase):
     """farside.FLEET_PYTHON: the box's first Python >= 3.12 in scripts/py's order, or what each
     candidate was."""
