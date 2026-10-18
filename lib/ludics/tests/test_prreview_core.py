@@ -42,9 +42,9 @@ class Session:
         self.session = GhSession(config(**overrides), sleep=self.sleeps.append)
         self.stderr = io.StringIO()
 
-    def retry(self, mode: core.Mode, args: Sequence[str]) -> core.GhResult:
+    def retry(self, mode: core.Mode, args: Sequence[str], *, include: bool = False) -> core.GhResult:
         with contextlib.redirect_stderr(self.stderr):
-            return self.session.retry(mode, args)
+            return self.session.retry(mode, args, include=include)
 
 
 class LoadConfig(unittest.TestCase):
@@ -350,6 +350,147 @@ class Retry(unittest.TestCase):
                 result = s.session.retry_caller("read", ["ext", "x"], listed=False)
             self.assertEqual(result, GhUnanswered())
             self.assertEqual(len(gh.calls()), 3)
+
+
+def included(status: str, *headers: str, body: str = "") -> str:
+    """What ``gh api --include`` prints on stdout: the status line, the headers, a blank line, and
+    the body (gh 2.101.0's processResponse, CRLF and all)."""
+    return "".join(f"{line}\r\n" for line in (status, *headers)) + "\r\n" + body
+
+
+EMPTY = "unexpected end of JSON input\n"
+POST = ["api", "-X", "POST", "repos/o/r/issues/7/comments", "-f", "body=x", "--jq", ".html_url"]
+
+
+class UnreadableAnswer(unittest.TestCase):
+    """ludics-lite#612: an answer whose body gh could not read, classified by the status line
+    ``--include`` keeps."""
+
+    def test_the_decoder_complaints_are_matched_whole(self) -> None:
+        for line in (
+            "unexpected end of JSON input",
+            "invalid character '<' looking for beginning of value",
+            "invalid character 'H' looking for beginning of value",
+            "invalid character '\\'' after top-level value",
+            "invalid character '\\x00' in string literal",
+            "invalid character 'r' in literal true (expecting 'u')",
+            "invalid character 'x' in \\u hexadecimal character escape",
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(core.gh_unreadable_answer(line))
+        for line in (
+            "gh: unexpected end of JSON input",
+            "unexpected end of JSON input (HTTP 500)",
+            "unexpected EOF",
+            "invalid character",
+            "invalid character '<<' looking for beginning of value",
+            "gh: Bad Gateway (HTTP 502)",
+        ):
+            with self.subTest(line=line):
+                self.assertFalse(core.gh_unreadable_answer(line))
+
+    def test_the_header_block_is_read_only_in_gh_s_shape(self) -> None:
+        got = core.split_included(included("HTTP/2.0 502 Bad Gateway", "Content-Type: application/json",
+                                           "X-Github-Request-Id: AB:CD", body="u\n"))
+        self.assertEqual(got, core.Included(502, (("content-type", "application/json"),
+                                                  ("x-github-request-id", "AB:CD")), "u\n"))
+        self.assertEqual(core.split_included("HTTP/1.1 200 OK\n\n"), core.Included(200, (), ""))
+        self.assertEqual(core.split_included("HTTP/2.0 204\r\n\r\n"), core.Included(204, (), ""))
+        for stdout in ("", "https://github.com/o/r/pull/7\n", "HTTP/2.0 502 Bad Gateway\r\nA: b\r\n",
+                       "HTTP/2.0 5022 x\r\n\r\n", "HTTP/2.0 502\r\nnot a header\r\n\r\n",
+                       "x HTTP/2.0 502\r\n\r\n"):
+            with self.subTest(stdout=stdout):
+                self.assertIsNone(core.split_included(stdout))
+
+    def test_a_success_s_header_block_never_reaches_stdout(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(0, included("HTTP/2.0 201 Created", "X-Ratelimit-Remaining: 9",
+                                         body="https://github.com/o/r/pull/7#issuecomment-1\n")))
+            s = Session()
+            self.assertEqual(s.retry("write", POST, include=True),
+                             GhOk("https://github.com/o/r/pull/7#issuecomment-1"))
+            self.assertEqual(gh.calls()[0], [*POST, "--include"])
+            # A stdout not in that shape is the body whole (a fixture's, or a gh that changed it).
+            gh.script(Answer(0, "u\n"))
+            self.assertEqual(s.retry("write", POST, include=True), GhOk("u"))
+
+    def test_an_empty_bodied_gateway_refusal_is_re_sent(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(1, included("HTTP/2.0 502 Bad Gateway", "Content-Type: application/json",
+                                         "X-Github-Request-Id: AB:CD", "Set-Cookie: no"), EMPTY),
+                      Answer(1, included("HTTP/2.0 503 Service Unavailable"), EMPTY),
+                      Answer(0, included("HTTP/2.0 201 Created", body="u\n")))
+            s = Session()
+            self.assertEqual(s.retry("write", POST, include=True), GhOk("u"))
+            self.assertEqual(len(gh.calls()), 3)
+            self.assertEqual(s.session.unclear_attempts(), 0, "a gateway refusal leaves nothing open")
+            note = s.stderr.getvalue()
+            self.assertIn("gh api got an answer gh could not read (unexpected end of JSON input): HTTP 502;"
+                          " headers: content-type=application/json x-github-request-id=AB:CD\n", note)
+            self.assertNotIn("set-cookie", note, "only the evidence headers are named")
+            self.assertIn("retrying in 5s: unexpected end of JSON input (HTTP 502)", note)
+            self.assertIn("(none of the quota or request headers)", note)
+            # Every attempt refused: unanswered, and nothing was posted.
+            gh.script(Answer(1, included("HTTP/2.0 503 Service Unavailable"), EMPTY))
+            s = Session(SHIP_PR_API_ATTEMPTS="2")
+            self.assertEqual(s.retry("write", POST, include=True), GhUnanswered())
+            self.assertEqual(s.session.err_line(), "unexpected end of JSON input (HTTP 503)")
+            self.assertEqual(s.session.recovered_status(), 503)
+
+    def test_a_2xx_or_a_500_stays_ambiguous_and_is_never_re_sent(self) -> None:
+        for status in ("HTTP/2.0 200 OK", "HTTP/2.0 201 Created", "HTTP/2.0 500 Internal Server Error"):
+            with self.subTest(status=status), FakeTool("gh") as gh:
+                gh.script(Answer(1, included(status), EMPTY))
+                s = Session()
+                self.assertEqual(s.retry("write", POST, include=True), GhFailed())
+                self.assertEqual(len(gh.calls()), 1)
+                self.assertFalse(core.api_rejection(s.session.err_line()))
+                self.assertFalse(core.gateway_failure(s.session.err_line()))
+                self.assertEqual(s.session.unclear_attempts(), 1)
+
+    def test_an_empty_bodied_4xx_is_the_api_answering(self) -> None:
+        with FakeTool("gh") as gh:
+            gh.script(Answer(1, included("HTTP/2.0 422 Unprocessable Entity"), EMPTY))
+            s = Session()
+            self.assertEqual(s.retry("write", POST, include=True), GhFailed())
+            self.assertTrue(core.api_rejection(s.session.err_line()))
+            self.assertEqual(s.session.unclear_attempts(), 0)
+
+    def test_an_empty_bodied_403_or_429_is_the_quota_s(self) -> None:
+        for status in ("HTTP/2.0 403 Forbidden", "HTTP/2.0 429 Too Many Requests"):
+            for mode in ("read", "write"):
+                with self.subTest(status=status, mode=mode), FakeTool("gh") as gh:
+                    gh.script(Answer(1, included(status, "Retry-After: 60"), EMPTY))
+                    s = Session()
+                    self.assertEqual(s.retry(mode, POST, include=True), GhUnanswered())
+                    self.assertEqual(len(gh.calls()), 1, "not retried on the backoff")
+                    self.assertIn("retry-after=60", s.stderr.getvalue())
+
+    def test_gh_s_own_line_is_the_classification_when_it_read_the_answer(self) -> None:
+        # The status line is read only behind a decoder complaint: gh's own words win otherwise.
+        with FakeTool("gh") as gh:
+            gh.script(Answer(1, included("HTTP/2.0 502 Bad Gateway", body='{"message":"Not Found"}'),
+                             "gh: Not Found (HTTP 404)\n"))
+            s = Session()
+            self.assertEqual(s.retry("write", POST, include=True), GhFailed())
+            self.assertEqual(s.session.err_line(), "gh: Not Found (HTTP 404)")
+            self.assertIsNone(s.session.recovered_status())
+            self.assertEqual(s.stderr.getvalue(), "")
+
+    def test_without_include_or_a_header_block_the_status_stays_unknown(self) -> None:
+        with FakeTool("gh") as gh:
+            # No --include: stdout is not read as headers, whatever it holds.
+            gh.script(Answer(1, included("HTTP/2.0 502 Bad Gateway"), EMPTY))
+            s = Session()
+            self.assertEqual(s.retry("write", POST), GhFailed())
+            self.assertEqual(gh.calls()[0], POST)
+            self.assertEqual(s.session.err_line(), "unexpected end of JSON input")
+            # --include, but no header block: the classification a call without it had.
+            gh.script(Answer(1, "", EMPTY))
+            self.assertEqual(s.retry("write", POST, include=True), GhFailed())
+            self.assertEqual(s.session.err_line(), "unexpected end of JSON input")
+            self.assertIsNone(s.session.recovered_status())
+            self.assertEqual(s.session.unclear_attempts(), 1)
 
 
 class ShellQuote(unittest.TestCase):

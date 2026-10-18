@@ -123,7 +123,8 @@ def thread_url(repo: str, pr: str, comment_id: str) -> str:
 
 def post_reply(session: GhSession, repo: str, pr: str, comment_id: str, text: str) -> GhResult:
     """``post_reply``: one reply into one thread, under the WRITE policy (re-sent only after a
-    gateway refusal, which no backend ran)."""
+    gateway refusal, which no backend ran). With ``--include``, so an answer gh could not read is
+    classified by its status line (ludics-lite#612, ``core.gh_unreadable_answer``)."""
     return session.retry(
         "write",
         [
@@ -136,6 +137,7 @@ def post_reply(session: GhSession, repo: str, pr: str, comment_id: str, text: st
             "--jq",
             ".html_url",
         ],
+        include=True,
     )
 
 

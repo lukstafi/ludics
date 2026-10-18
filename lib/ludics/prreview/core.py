@@ -11,6 +11,9 @@ history; read them there before changing a rule here):
   GhSession.retry / retry_caller  ``gh_retry`` and its classification: ``gateway_failure``,
                                   ``api_rejection``, ``graphql_fixed_answer``,
                                   ``graphql_not_found`` (ludics-lite#663),
+                                  ``gh_unreadable_answer`` and ``split_included`` (an answer
+                                  gh could not read, classified by the status line
+                                  ``--include`` keeps: ludics-lite#612),
                                   ``gh_client_refusal``, ``transient_failure``, ``gh_err_line``,
                                   ``gh_refused_own`` (an exception here, not a USR2 trap and a
                                   marker file: #471's stop is one ``GhRefusedOwn`` reaching main)
@@ -152,10 +155,20 @@ _QUOTA_MARKERS = (
 )
 
 
+# gh's own commands (`pr merge`, `pr view`, ...) ride go-gh's client, which prints an error status
+# whose body it could not read as `HTTP <n> (<url>)` and nothing else (go-gh 2.16.1's
+# HTTPError.Error with no message). A 429 is a rate limit by definition; a 403 GitHub refuses for
+# any other reason (a permission, a protected branch) carries a message, so a BODILESS 403 is read
+# as the quota's too (ludics-lite#612). Matched as the whole first line.
+_BODILESS_QUOTA = re.compile(r"HTTP 4(03|29) \(https?://[^\s()]+\)")
+
+
 def quota_failure(text: str) -> bool:
     """``quota_failure``: does this text say GitHub's quota refused the call? Then it is no answer
     about what was asked (the polling budget, budget.py)."""
-    return any(marker in text for marker in _QUOTA_MARKERS)
+    return any(marker in text for marker in _QUOTA_MARKERS) or (
+        _BODILESS_QUOTA.fullmatch(text) is not None
+    )
 
 
 def api_rejection(text: str) -> bool:
@@ -278,6 +291,105 @@ _ESCAPE_REFUSAL = (
 def gh_withheld_escapes(first_line: str) -> bool:
     """Did gh withhold an answer for the terminal escape sequences in it (post-wave-3 task 8)?"""
     return first_line == _ESCAPE_REFUSAL
+
+
+# --- an answer gh could not read (ludics-lite#612) ------------------------------------------------
+#
+# When GitHub's answer to `gh api` has an empty, cut-off or non-JSON body, gh prints its JSON
+# decoder's complaint ALONE -- no `gh: `, no HTTP status -- for a 200, a 403 or a 502 alike: an
+# error status with a JSON content type goes through gh's error-body parse, which fails before the
+# `gh: ... (HTTP <n>)` line is formed, and a gateway's HTML page under `--jq` fails in the filter
+# (gh 2.101.0, pkg/cmd/api/api.go processResponse). So a write cannot tell "no backend ran it" from
+# "it may have landed", and a quota refusal never reaches the hold. `gh api --include` prints the
+# status line and the headers on stdout BEFORE the body is parsed, so they survive the failure;
+# the own writes that are `gh api` calls (``retry(..., include=True)``) send it.
+#
+# The boundary, fail-closed both ways. The status line is read ONLY when the first stderr line is
+# one of the decoder complaints below, matched whole (Go's encoding/json, which both gh's
+# error-body parse and its --jq filter use): with any other first line gh read the answer and said
+# what it was, and that line stays the classification. The header block is read only in gh's own
+# shape: a first line ``HTTP/<version> <three digits>[ <reason>]``, header lines, and a blank line
+# (``\r\n`` endings, a bare ``\n`` taken too); stdout of any other shape is the body, whole, and the
+# status stays unknown -- the classification a call without --include had. The status found is
+# appended to the complaint as gh's own ``(HTTP <n>)``, so the readers above classify it as the line
+# gh prints when it can read the body: a 502/503/504 is a gateway refusal (``gateway_failure``),
+# any other 4xx the API's rejection (``api_rejection``), a 429 the quota's (``quota_failure``). A
+# BODILESS 403 is the quota's too (``bodiless_quota``): GitHub words every other 403. A 2xx, a 500,
+# or any other status keeps the write ambiguous: the backend ran it, or may have.
+_DECODER_COMPLAINTS = (
+    re.compile(r"unexpected end of JSON input"),
+    re.compile(r"invalid character '(\\.|[^\\'\n]|\\x[0-9a-f]{2}|\\u[0-9a-f]{4})' [a-z][a-z :'()\\-]*"),
+)
+_STATUS_LINE = re.compile(r"HTTP/[0-9.]+ ([0-9]{3})(?: [^\r\n]*)?")
+# The headers named on stderr when a status is recovered, for the evidence #612's second proposal
+# asks for (is an empty answer a secondary rate limit?): the quota's and the request's own, nothing
+# else of the response.
+_EVIDENCE_HEADERS = (
+    "retry-after",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-used",
+    "x-ratelimit-reset",
+    "x-ratelimit-resource",
+    "x-github-request-id",
+    "content-type",
+    "content-length",
+)
+
+
+def gh_unreadable_answer(first_line: str) -> bool:
+    """Is this first stderr line gh's JSON decoder complaining about GitHub's answer (the boundary
+    above)?"""
+    return any(p.fullmatch(first_line) for p in _DECODER_COMPLAINTS)
+
+
+@dataclass(frozen=True)
+class Included:
+    """What ``gh api --include`` printed: the status, the headers (names lowercased, in gh's
+    order), and the body after them."""
+
+    status: int
+    headers: tuple[tuple[str, str], ...]
+    body: str
+
+
+def split_included(stdout: str) -> Included | None:
+    """The header block gh's ``--include`` prints ahead of the body; None when stdout does not
+    start with one (the boundary above)."""
+    lines = stdout.split("\n")
+    m = _STATUS_LINE.fullmatch(lines[0].removesuffix("\r"))
+    if m is None:
+        return None
+    headers: list[tuple[str, str]] = []
+    # The last element is what follows the last newline: never a whole line, so never the blank.
+    for i in range(1, len(lines) - 1):
+        line = lines[i].removesuffix("\r")
+        if line == "":
+            return Included(int(m.group(1)), tuple(headers), "\n".join(lines[i + 1 :]))
+        name, sep, value = line.partition(":")
+        if not sep:
+            return None
+        headers.append((name.strip().lower(), value.strip()))
+    return None
+
+
+def _unreadable_evidence(args: Sequence[str], complaint: str, included: Included) -> str:
+    """The stderr note for an answer gh could not read: its status and the evidence headers, so a
+    wave's logs show whether such answers are a secondary rate limit (ludics-lite#612)."""
+    named = " ".join(
+        f"{name}={value}" for name, value in included.headers if name in _EVIDENCE_HEADERS
+    )
+    command = args[0] if args else "api"
+    return (
+        f"gh {command} got an answer gh could not read ({complaint}): HTTP {included.status};"
+        f" headers: {named or '(none of the quota or request headers)'}"
+    )
+
+
+def bodiless_quota(status: int) -> bool:
+    """A status gh could not read a body for, read as a quota refusal: a 429, or a 403 (the boundary
+    above)."""
+    return status in (403, 429)
 
 
 _API_ONLY_WHOLE = frozenset(
@@ -472,6 +584,7 @@ class GhSession:
         self._sleep = sleep
         self._err_line = ""
         self._unclear_attempts = 0
+        self._status: int | None = None
         # The polling budget (budget.py): every own call passes its hold's gate. None in the unit
         # tests that drive the retry policy alone.
         self.budget = budget
@@ -489,10 +602,22 @@ class GhSession:
         starts it again."""
         return self._unclear_attempts
 
-    def retry(self, mode: Mode, args: Sequence[str]) -> GhResult:
+    def recovered_status(self) -> int | None:
+        """The HTTP status of the last FAILED attempt's answer when gh could not read its body and
+        the status line could be read instead (``include``; ludics-lite#612); None otherwise."""
+        return self._status
+
+    def retry(self, mode: Mode, args: Sequence[str], *, include: bool = False) -> GhResult:
         """``gh_retry <mode> <args>`` for THIS script's own arguments. gh refusing one of them
-        raises ``GhRefusedOwn`` (exit 2 for the whole command)."""
-        result = self._retry(mode, args, "own", budgeted=True)
+        raises ``GhRefusedOwn`` (exit 2 for the whole command).
+
+        ``include``: the call is a ``gh api`` call that prints its answer (no --paginate, --silent
+        or --verbose); ``--include`` is appended, the header block is taken off stdout, and an
+        answer gh could not read is classified by its status (the boundary at
+        ``gh_unreadable_answer``)."""
+        if include:
+            args = [*args, "--include"]
+        result = self._retry(mode, args, "own", budgeted=True, include=include)
         match result:
             case GhArgsRefused() | GhOutputWithheld():
                 raise AssertionError("an own call's refusal raises, it is never returned")
@@ -516,8 +641,10 @@ class GhSession:
         whose: Literal["own", "listed", "unlisted"],
         *,
         budgeted: bool,
+        include: bool = False,
     ) -> GhCallerResult:
         self._unclear_attempts = 0
+        self._status = None
         attempts = self.config.api_attempts
         delay = self.config.api_backoff
         attempt = 1
@@ -534,11 +661,20 @@ class GhSession:
                     return GhUnanswered()
             done = self._run("gh", args)
             err = proc.substitution(done.stderr)
-            out = proc.substitution(done.stdout)
+            included = split_included(done.stdout) if include else None
+            out = proc.substitution(included.body if included is not None else done.stdout)
+            self._status = None
             if done.rc == 0:
                 self._err_line = ""
                 return GhOk(out)
             first = _first_line(err)
+            if included is not None and gh_unreadable_answer(first):
+                self._status = included.status
+                warn(_unreadable_evidence(args, first, included))
+                # gh's own shape for an error it can read, so every reader below classifies it.
+                recovered = f"{first} (HTTP {included.status})"
+                err = recovered + err[len(first) :]
+                first = recovered
             self._err_line = first
             # A refusal of the arguments sent nothing, so under either policy there is nothing to
             # retry and, for a write, nothing that could have landed.
@@ -554,7 +690,7 @@ class GhSession:
             # it is not retried on the backoff below: it sets the hold instead. An observer's read
             # waits that hold out at the gate above and repeats; a read the probe found no hold for
             # gets one more try, and a write is never repeated.
-            if quota_failure(first):
+            if quota_failure(first) or (self._status is not None and bodiless_quota(self._status)):
                 if budget is not None:
                     unrecorded = budget.quota_hit(args)
                     if unrecorded is not None:

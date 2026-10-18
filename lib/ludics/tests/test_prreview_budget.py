@@ -128,6 +128,16 @@ class Classification(unittest.TestCase):
         self.assertTrue(core.quota_failure("You have exceeded a secondary rate limit"))
         self.assertFalse(core.quota_failure("gh: Resource not accessible by integration (HTTP 403)"))
 
+    def test_go_gh_s_bodiless_403_and_429_are_the_quota_s(self) -> None:
+        # gh's own commands (`pr merge`), on an error status whose body they could not read
+        # (ludics-lite#612): the whole line, and a worded 403 is still the API's answer.
+        self.assertTrue(core.quota_failure("HTTP 403 (https://api.github.com/graphql)"))
+        self.assertTrue(core.quota_failure("HTTP 429 (https://api.github.com/graphql)"))
+        self.assertFalse(core.quota_failure("HTTP 403: 403 Forbidden (https://api.github.com/graphql)"))
+        self.assertFalse(core.quota_failure("HTTP 404 (https://api.github.com/graphql)"))
+        self.assertFalse(core.quota_failure("failed: HTTP 403 (https://api.github.com/graphql)"))
+        self.assertTrue(core.gateway_failure("HTTP 502 (https://api.github.com/graphql)"))
+
 
 class Probe(Scratch):
     def probe(self, answer: proc.Completed) -> str:
@@ -321,6 +331,39 @@ class Session(Scratch):
             read = s.retry("read", ["api", "repos/o/r/pulls/7", "--jq", ".head.sha"])
         self.assertEqual(read, GhOk("sha"))
         self.assertEqual(self.clock.slept, [600])
+
+    def test_an_empty_bodied_403_sets_the_hold_from_the_endpoint_s_headers(self) -> None:
+        # ludics-lite#612: a write gh could not read the answer to, whose --include status line
+        # says 403, is the quota's: not re-sent, and the hold is the probed endpoint's.
+        self.gh = Gh(proc.Completed(1, "HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\n\r\n",
+                                    "unexpected end of JSON input\n"),
+                     headers("HTTP/2.0 403 Forbidden", "X-Ratelimit-Remaining: 0",
+                             f"X-Ratelimit-Reset: {T0 + 900}"))
+        b = self.budget()
+        s = self.session(b)
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = s.retry("write", ["api", "-X", "POST", "repos/o/r/issues/7/comments", "-f", "body=x"],
+                             include=True)
+        self.assertEqual(result, GhUnanswered())
+        self.assertEqual(len(self.gh.calls), 2, "the write once, then the probe")
+        self.assertEqual(self.gh.calls[1], ["gh", "api", "-i", "--hostname", "github.com",
+                                            "repos/o/r/issues/7/comments"])
+        hold = b.hold_read()
+        self.assertIsNotNone(hold)
+        assert hold is not None
+        self.assertEqual((hold.until, hold.ep), (T0 + 900, "repos/o/r/issues/7/comments"))
+
+    def test_a_merge_s_bodiless_429_sets_the_hold(self) -> None:
+        self.gh = Gh(proc.Completed(1, "", "HTTP 429 (https://api.github.com/graphql)\n"),
+                     headers("HTTP/2.0 429 Too Many", "Retry-After: 120"))
+        b = self.budget()
+        s = self.session(b)
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = s.retry("write", ["pr", "merge", "7", "--repo", "o/r", "--match-head-commit", "abc"])
+        self.assertEqual(result, GhUnanswered())
+        hold = b.hold_read()
+        assert hold is not None
+        self.assertEqual((hold.until, hold.ep), (T0 + 120, "graphql"))
 
     def test_a_forwarded_merge_is_still_gated(self) -> None:
         self.plant(T0 + 600, "graphql", 600)

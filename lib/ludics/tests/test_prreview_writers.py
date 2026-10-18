@@ -239,6 +239,52 @@ class Comment(unittest.TestCase):
                 self.assertEqual(len(gh.calls), calls)
 
 
+def unreadable(status: str) -> Completed:
+    """An answer gh could not read the body of, as ``gh api --include`` prints it (ludics-lite#612):
+    the status line and a blank line on stdout, the decoder's complaint alone on stderr."""
+    return Completed(1, f"{status}\r\n\r\n", "unexpected end of JSON input\n")
+
+
+class UnreadableAnswers(unittest.TestCase):
+    """ludics-lite#612: each own `gh api` write carries --include, and an answer gh could not read
+    is told apart by its status line."""
+
+    def test_comment_tells_the_statuses_apart(self) -> None:
+        for status, want_rc, says, calls in (
+            ("HTTP/2.0 502 Bad Gateway", 3, "Nothing was posted, so retry.", 2),
+            ("HTTP/2.0 503 Service Unavailable", 3, "Nothing was posted, so retry.", 2),
+            ("HTTP/2.0 200 OK", 3, "will not post it twice", 1),
+            ("HTTP/2.0 422 Unprocessable Entity", 1, "was REJECTED, not dropped", 1),
+            ("HTTP/2.0 429 Too Many Requests", 3, "Nothing was posted, so retry.", 1),
+        ):
+            with self.subTest(status=status):
+                gh = Gh(lambda call, st=status: unreadable(st))
+                rc, out, errs = invoke(lambda gh=gh: comment.run(session(gh), ["a/b#8", "Done."]))
+                self.assertEqual((rc, out), (want_rc, ""))
+                self.assertIn(says, errs)
+                self.assertIn(f"(HTTP {status.split()[1]})", errs, "the status is named")
+                self.assertEqual(len(gh.calls), calls)
+                self.assertEqual(gh.calls[0][-1], "--include")
+        # The gateway's refusal re-sent, and the second answer read past its header block.
+        answers = [unreadable("HTTP/2.0 502 Bad Gateway"),
+                   Completed(0, "HTTP/2.0 201 Created\r\n\r\nhttps://github.com/a/b/pull/8#issuecomment-1\n", "")]
+        gh = Gh(lambda call: answers[min(len(gh.calls), 2) - 1])
+        rc, out, _ = invoke(lambda: comment.run(session(gh), ["a/b#8", "Done."]))
+        self.assertEqual((rc, out), (0, "https://github.com/a/b/pull/8#issuecomment-1\n"))
+
+    def test_reply_says_nothing_was_posted_only_for_a_gateway_s_status(self) -> None:
+        for status, want_rc, says in (
+            ("HTTP/2.0 503 Service Unavailable", 3, "Nothing was posted for comment 900"),
+            ("HTTP/2.0 201 Created", 3, "the reply MAY have landed"),
+        ):
+            with self.subTest(status=status):
+                gh = Gh(lambda call, st=status: unreadable(st))
+                rc, _, errs = invoke(lambda gh=gh: reply.run(session(gh), ["7", "900", "x"]))
+                self.assertEqual(rc, want_rc)
+                self.assertIn(says, errs)
+                self.assertTrue(all(call[-1] == "--include" for call in gh.calls))
+
+
 def thread(cid: int | None, resolved: bool = False, **extra: Json) -> dict[str, Json]:
     first: dict[str, Json] = {"fullDatabaseId": str(cid), "databaseId": cid}
     node: dict[str, Json] = {

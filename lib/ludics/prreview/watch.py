@@ -739,6 +739,7 @@ class Watch:
                     "api", "-X", "POST", f"repos/{self.repo}/issues/{self.pr}/comments", "-f",
                     f"body={_REQUEST_BODY}", "--jq", ".html_url",
                 ],
+                include=True,
             )
         finally:
             session.config = saved
