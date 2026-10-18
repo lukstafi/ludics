@@ -14,6 +14,9 @@ the incident history behind each default. What is ported here, and from where:
   in_roster / box_spec_count / box_correctness_slots / box_gpu_tokens
                            the ``<box>=<n>`` spec readers, the registry's grammar (a repeated box
                            keeps its LAST value, as the registry's dict does)
+  REGISTRY_PIN / pin_refusal
+                           the registry a coordinator's far side pinned (ludics-lite#632; new with
+                           the port, no shell original)
 
 The script's own path is the forwarder's first argument (``"$0"``): ``here`` is its directory as
 ``cd "$(dirname "$0")" && pwd`` gives it (logical), and ``checkout`` the skills checkout by its
