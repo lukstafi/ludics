@@ -10,7 +10,8 @@ the halt (halt, resume-launches, halted), the native gate (gate), every ``execut
 preflight and refresh (``preflight``), a CLI worker's life (``workers``: launch, attach, status,
 log, unstick, close, ls) and the supervision reads (``supervision``: load, prs). The one answer
 fleet-worker.sh still gives itself is ``execution slot --probe``, which must answer on a box with no
-Python >= 3.12 (THE PROBE WITHOUT PYTHON, in fleet-worker.sh).
+Python >= 3.12 (THE PROBE WITHOUT PYTHON, in fleet-worker.sh). Under a coordinator's far side,
+every verb first checks the registry pin (``config.pin_refusal``, ludics-lite#632).
 """
 
 import os
@@ -19,7 +20,7 @@ import sys
 
 from ludics import cli
 from ludics.fleetworker import execution, gate, lease, preflight, supervision, workers
-from ludics.fleetworker.config import Config, load_config
+from ludics.fleetworker.config import Config, load_config, pin_refusal
 from ludics.fleetworker.identity import PROG, die
 
 VERBS = (
@@ -77,6 +78,11 @@ def dispatch(argv: list[str]) -> int:
     if not argv:
         die("usage: python -m ludics.fleetworker <fleet-worker.sh path> <verb> [args...]")
     cfg = load_config(argv[0], os.environ)
+    refusal = pin_refusal(cfg)
+    if refusal:
+        # Under a coordinator's far side, a box that would read another registry than the
+        # coordinator's refuses every verb before it reads anything (ludics-lite#632).
+        cli.exit_with(1, refusal)
     verb = argv[1] if len(argv) > 1 else ""
     rest = argv[2:]
     match verb:

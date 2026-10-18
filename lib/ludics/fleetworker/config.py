@@ -22,10 +22,13 @@ PHYSICAL path, as ``cd -P "$(dirname "$0")/../.."`` gives it -- the script is re
 """
 
 import fnmatch
+import json
 import os
+import shlex
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any, cast
 
 DEFAULT_BOXES = "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux"
 DEFAULT_HOSTNAME_MAP = (
@@ -81,6 +84,7 @@ class Config:
     script: str
     here: str
     checkout: str
+    hostname_map: str
     local_box: str
     anchor: str
     lab_host: str
@@ -116,6 +120,7 @@ def load_config(script: str, env: Mapping[str, str], host: str | None = None) ->
         script=script,
         here=os.path.abspath(directory),
         checkout=os.path.realpath(os.path.join(directory, "..", "..")),
+        hostname_map=hostname_map,
         local_box=local_box,
         anchor=_or_default(env, "FLEET_ANCHOR", "mac-studio"),
         lab_host=_or_default(env, "FLEET_LAB_HOST", "mac-studio"),
@@ -136,6 +141,59 @@ def load_config(script: str, env: Mapping[str, str], host: str | None = None) ->
         feeder_wait=_or_default(env, "FLEET_FEEDER_WAIT", "10"),
         lock_wait=_or_default(env, "FLEET_LOCK_WAIT", "10"),
         env=env,
+    )
+
+
+# --- the registry pin (ludics-lite#632) ------------------------------------------------------
+
+# Set BY a coordinator's far side in the environment of every fleet-worker.sh it starts on a box
+# (``transport.prelude``'s ``fleet_worker``), never by hand: the registry that coordinator reads,
+# as ``registry_pin`` spells it. Every process below inherits it, so a fleet-worker.sh started
+# anywhere under that far side -- the slot, a runner's nested slot -- refuses rather than read
+# another registry, whatever re-set FLEET_ANCHOR or FLEET_ANCHOR_STATE in between.
+REGISTRY_PIN = "FLEET_REGISTRY_PIN"
+
+
+def anchor_name(cfg: Config) -> str:
+    """The anchor as a fleet name: ``local`` is this box's own name, when it has one."""
+    return cfg.local_box if cfg.anchor == "local" and cfg.local_box else cfg.anchor
+
+
+def registry_pin(anchor: str, anchor_state: str) -> str:
+    """The registry's location, one value: the anchor's fleet name and the state path there."""
+    return json.dumps([anchor, anchor_state])
+
+
+def _pin_pair(pin: str) -> tuple[str, str] | None:
+    try:
+        decoded: Any = json.loads(pin)
+    except ValueError:
+        return None
+    if not isinstance(decoded, list):
+        return None
+    items = cast(list[Any], decoded)
+    if len(items) != 2 or not all(isinstance(item, str) for item in items):
+        return None
+    return (cast(str, items[0]), cast(str, items[1]))
+
+
+def pin_refusal(cfg: Config) -> str:
+    """Empty when no pin is set or this box resolves the pinned registry; else the refusal. The
+    boundary, fail-closed: a pin that is not exactly a JSON array of two strings refuses too."""
+    pin = cfg.env.get(REGISTRY_PIN)
+    if pin is None:
+        return ""
+    here = (anchor_name(cfg), cfg.anchor_state)
+    pinned = _pin_pair(pin)
+    if pinned == here:
+        return ""
+    theirs = f"an unreadable pin {shlex.quote(pin)}" if pinned is None else \
+        f"anchor {shlex.quote(pinned[0])}, state {shlex.quote(pinned[1])}"
+    return (
+        f"REFUSED: this box resolves the execution registry as anchor {shlex.quote(here[0])}, state"
+        f" {shlex.quote(here[1])}, but the coordinator that started it reads {theirs} ({REGISTRY_PIN},"
+        " ludics-lite#632): something between them re-set FLEET_ANCHOR or FLEET_ANCHOR_STATE, so nothing"
+        " here reads the registry"
     )
 
 
