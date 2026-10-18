@@ -107,8 +107,12 @@ measurement on its box concluded less than that long ago (its record's `updated_
 clock) while standing records are outstanding there, the window is not written: `run` exits 3 with
 `{"gap": {"box", "after", "ago", "gap", "wait", "standing"}}` on stdout and an `EXECUTION WINDOW`
 line on stderr naming the measurement it follows and the seconds still to go (`wait`, at most
-`gap`). The near side (`execution window`) waits those seconds with no lock held and asks again,
-so a handover stays two calls, the second taking up to the gap. The gap's boundary, a fail-closed
+`gap`). The gap is the last of a new window's admission checks, so a window anything else refuses
+(a halt, a lane lock, an open window) is refused at once. The near side (`execution window`) waits
+those seconds with no lock held and asks again with the gap less what it has waited, so its whole
+wait is the gap at most, a conclusion stamped ahead of this clock included, and a handover stays
+two calls, the second taking up to the gap. A conclusion is stamped when it is published, after the
+records it restores, so the gap is measured from the moment a reader sees the box free. The gap's boundary, a fail-closed
 proxy: standing records are what it reads as "workers there may be waiting" -- every native
 worker's batches and merge builds run under one -- and nothing else; it sees no waiting process,
 so it is paid whether or not one waits, and a batch run under no record (a coordinator's own) is
@@ -543,7 +547,8 @@ def check_gap(host: str, gap: int, records: dict[str, Record], now: datetime) ->
     ago = (now - at).total_seconds()
     if ago >= gap:
         return
-    # A conclusion stamped ahead of this clock waits the gap and no more.
+    # A conclusion stamped ahead of this clock (one stepped back) waits the gap and no more: the near
+    # side asks again with the gap less what it has waited, so its whole wait is the gap at most.
     wait = min(gap, max(1, int(gap - ago + 0.999)))
     raise Gap({"gap": {"box": host, "after": after, "ago": max(0, int(ago)), "gap": gap, "wait": wait,
                        "standing": standing}},
@@ -703,8 +708,6 @@ def main(argv: list[str]) -> None:
             if "triage_reason" in request and not halted:
                 refuse("triage reservations require an active halt")
             queued = check_capacity(request, records, canonical_hosts, slots_spec, window=action == "window")
-            if action == "window":
-                check_gap(request["execution_host"], window_gap, records, clock)
             if request["kind"] == "measurement":
                 check_lane_lock(request["execution_host"], map_spec, anchor, lab)
             if halted:
@@ -714,6 +717,10 @@ def main(argv: list[str]) -> None:
                 # One explicitly named exception, not an unrestricted force flag.
                 if any(r["state"] != "concluded" and halt_generation(r.get("halt_identity")) == halt_identity for r in records.values()):
                     refuse("an outstanding triage assignment already exists")
+            if action == "window":
+                # Last of the admission checks: a gap answer is retried, and only a window every
+                # other check admits may wait for one.
+                check_gap(request["execution_host"], window_gap, records, clock)
             record = {"request_id": identity, "request": request, "coordinator": coordinator,
                       "lease_token": token, "state": "reserved", "created_at": now, "history": []}
             if "triage_reason" in request:
@@ -847,6 +854,10 @@ def main(argv: list[str]) -> None:
         events.append((action, data))
     for other in before:
         publish(directory, other)
+    if action == "conclude":
+        # A conclusion is stamped when it is published, after the restorations: its `updated_at`
+        # is when the box reads free, which the gap after it is measured from (see the header).
+        now = datetime.now(timezone.utc).isoformat()
     if events:
         record["updated_at"] = now
         for event_action, event_data in events:

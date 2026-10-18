@@ -342,6 +342,25 @@ class WindowGap(RegistryCase):
         self.conclude("r")
         self.assertEqual(self.window("w2", boxes="mac rog")[0], 0)
 
+    def test_every_other_admission_check_comes_before_the_gap(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.window("w1")
+        self.conclude("w1")
+        with open(os.path.join(self.root, "HALT"), "w") as f:
+            f.write("2026-10-18T00:00:00Z id=h1 unit\n")
+        rc, _, err = self.window("w2")
+        self.assertEqual(rc, 1)
+        self.assertIn("fleet halted", err)
+
+    def test_a_conclusion_is_stamped_after_the_records_it_restores(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.window("w1")
+        self.conclude("w1")
+        records = {r["request_id"]: r for r in self.call("list", {})[1]}
+        concluded, restored = records["w1"], records["s"]
+        self.assertGreaterEqual(concluded["updated_at"], restored["updated_at"])
+        self.assertEqual(concluded["history"][-1]["at"], concluded["updated_at"])
+
     def test_a_retried_window_never_waits(self) -> None:
         self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
         self.window("w1")

@@ -1237,7 +1237,6 @@ def _nonempty(path: str) -> bool:
 
 WINDOW_USAGE = "execution window [--no-gap] <box> <measurement reserve.json>"
 WINDOW_GAP = 60  # FLEET_WINDOW_GAP's default, in seconds (ludics-lite#667)
-GAP_WAITS = 3  # how many gaps one `execution window` waits out before it refuses
 
 
 def window_gap(cfg: Config, args: list[str]) -> tuple[list[str], int]:
@@ -1266,6 +1265,16 @@ def gap_wait(done: Done) -> int | None:
 
 
 def window_payload(args: list[str], gap: int = 0) -> str:
+    return with_gap(window_lines(args), gap)
+
+
+def with_gap(lines: list[dict[str, Any]], gap: int) -> str:
+    """The registry's payload: one JSON line per wrapped value, each carrying ``gap`` when it is not 0."""
+    return "\n".join(json.dumps({**line, "gap": gap} if gap else line, separators=(",", ":"), ensure_ascii=False)
+                     for line in lines)
+
+
+def window_lines(args: list[str]) -> list[dict[str, Any]]:
     if len(args) != 3 or not args[1] or not os.access(args[2], os.R_OK):
         die(f"{WINDOW_USAGE}: a box and a readable JSON file required")
     try:
@@ -1277,7 +1286,7 @@ def window_payload(args: list[str], gap: int = 0) -> str:
     # several print several lines; the registry refuses either payload (exit 1). Only text that
     # does not parse is the usage refusal (exit 2).
     decoder = json.JSONDecoder()
-    lines: list[str] = []
+    lines: list[dict[str, Any]] = []
     position = 0
     while True:
         while position < len(text) and text[position] in " \t\n\r":  # JSON's whitespace
@@ -1288,18 +1297,16 @@ def window_payload(args: list[str], gap: int = 0) -> str:
             request, position = decoder.raw_decode(text, position)
         except ValueError:
             die(f"execution window: {args[2]} is not a JSON reservation")
-        wrapped: dict[str, Any] = {"box": args[1], "request": request}
-        if gap:
-            wrapped["gap"] = gap
-        lines.append(json.dumps(wrapped, separators=(",", ":"), ensure_ascii=False))
-    return "\n".join(lines)
+        lines.append({"box": args[1], "request": request})
+    return lines
 
 
 def cmd_execution(cfg: Config, args: list[str]) -> int:
     action = args[0] if args else ""
     payload = "{}"
     resolution = ""
-    pending, gap = payload, 0  # a window's unresolved payload and its gap (THE GAP below)
+    gap = 0  # a window's gap, and its wrapped requests (THE GAP below)
+    requests: list[dict[str, Any]] = []
     match action:
         case "list":
             options: dict[str, bool | str] = {"active": False, "compact": False}
@@ -1362,10 +1369,10 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             # the call says which box's standing reservations it suspends, and the registry refuses
             # a payload measuring on any other. THE GAP (ludics-lite#667): see the loop below.
             args, gap = window_gap(cfg, args)
-            payload = window_payload(args, gap)
+            requests = window_lines(args)
+            payload = with_gap(requests, gap)
             check_identity(cfg)
             checked_request(cfg, payload, action)
-            pending = payload
             payload, resolution = with_resolution(cfg, payload, action)
         case _:
             die(USAGE)
@@ -1387,18 +1394,18 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
         cfg.boxes, cfg.slots, map_spec, fleet_name(cfg, cfg.anchor), fleet_name(cfg, cfg.lab_host),
     ]  # fmt: skip
     done = run_on(cfg, cfg.anchor, script, argv, capture=True)
-    waits = 0
-    while action == "window" and (wait := gap_wait(done)) is not None:
+    left = gap
+    while action == "window" and left > 0 and (wait := gap_wait(done)) is not None:
         # THE GAP (ludics-lite#667): the registry wrote nothing and said why on stderr. Waited here,
-        # no lock held, then asked again -- a head-of request resolved afresh, as at any dispatch.
-        if waits == GAP_WAITS:
-            cli.say(f"EXECUTION REFUSED: still inside the gap after {GAP_WAITS} waits; no window opened")
-            return 1
-        waits += 1
+        # no lock held, then asked again with the gap less what was waited, so the whole wait is
+        # the gap at most and a gap of 0 is never answered with another -- a head-of request
+        # resolved afresh, as at any dispatch.
+        wait = min(wait, left)
         err(f"EXECUTION WINDOW {args[1]}: waiting {wait}s, then opening the window (FLEET_WINDOW_GAP={gap};"
             " --no-gap opens it at once)")
         time.sleep(wait)
-        payload, resolution = with_resolution(cfg, pending, action)
+        left -= wait
+        payload, resolution = with_resolution(cfg, with_gap(requests, left), action)
         argv[6] = payload
         done = run_on(cfg, cfg.anchor, script, argv, capture=True)
     out = substitution(done.out)
