@@ -4091,11 +4091,12 @@ section "section watchdog" && {
 # ludics-lite#640: a section still running past FLEET_WORKER_TEST_SECTION_TIMEOUT fails the run by
 # its name, and nothing of the run outlives it. The run under test is a copy of this suite, in a
 # mirror of the checkout's layout (the dispatcher it copies sits beside it), with a stall planted
-# in "usage" once its worker has run (so the copy has a tmux server to leave behind): a descendant
-# that ignores TERM, so only a watchdog that escalates to KILL across the run's whole process group
-# ends it. "load" runs first, so the copy also shows a finished section's elapsed-time line. The
-# copy runs with the PATH this suite found and a TMPDIR of its own, which must be empty afterwards:
-# the copy's scratch tree and the watchdog's own.
+# at the top of "usage": a tmux server on the copy's socket, as a launch starts one (a daemon,
+# outside the run's process group, so only the cleanup reaches it), then a descendant that ignores
+# TERM, so only a watchdog that escalates to KILL across the run's whole process group ends it.
+# "load" runs first, so the copy also shows a finished section's elapsed-time line. The copy runs
+# with the PATH this suite found and a TMPDIR of its own, which must be empty afterwards: the copy's
+# scratch tree and the watchdog's own.
 expect "a section timeout that is not a number of seconds is refused before anything runs" 1 \
   "FLEET_WORKER_TEST_SECTION_TIMEOUT must be a number of seconds, 0, or off, got soon" -- \
   env -u TEST_FLEET_WORKER_WATCH FLEET_WORKER_TEST_SECTION_TIMEOUT=soon "$BASH" "$HERE/test-fleet-worker.sh" usage
@@ -4105,9 +4106,8 @@ cp "$HERE/fleet-worker.sh" "$HERE/bg-run.sh" "$mir/issue-wave/scripts/"
 [ ! -f "$HERE/fleet-execution.py" ] || cp "$HERE/fleet-execution.py" "$mir/issue-wave/scripts/"
 cp "$HERE/../../scripts/py" "$mir/scripts/py"
 cp -R "$HERE/../../lib" "$mir/lib"
-plant="echo \$\$ > $(printf '%q' "$wd/shell.pid"); [ ! -S \"\${TMUX_TMPDIR:-/tmp}/tmux-\$(id -u)/\$FLEET_TMUX_SOCKET\" ] || : > $(printf '%q' "$wd/had-socket"); sh -c 'trap \"\" TERM; echo \$\$ > \"\$0\"; exec sleep 3571' $(printf '%q' "$wd/stall.pid")"
-PLANT="$plant" awk '{ print } $0 == "section \"usage\" && {" { u = 1 } u && $0 == "need_worker w1" { print ENVIRON["PLANT"]; u = 0 }' \
-  "$HERE/test-fleet-worker.sh" \
+plant="echo \$\$ > $(printf '%q' "$wd/shell.pid"); tmux -L \"\$FLEET_TMUX_SOCKET\" new-session -d -s stall 'sleep 3571' && : > $(printf '%q' "$wd/had-socket"); sh -c 'trap \"\" TERM; echo \$\$ > \"\$0\"; exec sleep 3571' $(printf '%q' "$wd/stall.pid")"
+PLANT="$plant" awk '{ print } $0 == "section \"usage\" && {" { print ENVIRON["PLANT"] }' "$HERE/test-fleet-worker.sh" \
   > "$mir/issue-wave/scripts/test-fleet-worker.sh"
 if grep -qxF -- "$plant" "$mir/issue-wave/scripts/test-fleet-worker.sh"; then
   out=$(env -u TEST_FLEET_WORKER_WATCH PATH="$SUITE_PATH" TMPDIR="$wd/tmp" FLEET_WORKER_TEST_SECTION_TIMEOUT=3 \
@@ -4125,7 +4125,7 @@ if grep -qxF -- "$plant" "$mir/issue-wave/scripts/test-fleet-worker.sh"; then
     if proc_alive "$stall"; then
       ko "the TERM-ignoring stall (pid $stall) outlived the watchdog"; kill -KILL "$stall" 2>/dev/null
     else ok "...and the stall that ignored TERM did not outlive it"; fi
-    if [ ! -e "$wd/had-socket" ]; then ko "the copy had no tmux socket when it stalled, so nothing checks its removal"
+    if [ ! -e "$wd/had-socket" ]; then ko "the copy's tmux server never started, so nothing checks its removal"
     elif [ ! -e "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/fwtest-$shell" ]; then ok "...nor did the copy's tmux server"
     else ko "the stopped copy left its tmux socket fwtest-$shell"; fi
   else ko "the planted stall never ran, so nothing here checks the stop -- $out"; fi
