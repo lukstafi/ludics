@@ -239,7 +239,7 @@ if [ "$SECTION_TIMEOUT" -gt 0 ] && [ -z "${TEST_FLEET_WORKER_WATCH:-}" ]; then
     if [ $(($(date +%s) - since)) -ge "$SECTION_TIMEOUT" ]; then
       stop_group "$child"
       wait "$child" 2>/dev/null
-      echo "FAIL: $label still running after ${SECTION_TIMEOUT}s (FLEET_WORKER_TEST_SECTION_TIMEOUT); the run's process group was stopped"
+      echo "FAIL: $label still running after ${SECTION_TIMEOUT}s (FLEET_WORKER_TEST_SECTION_TIMEOUT; raise it on a box this slow); the run's process group was stopped"
       watch_end 1
     fi
     # Waited in the background, so a signal is taken at once rather than after the sleep.
@@ -4112,7 +4112,7 @@ PLANT="$plant" awk '{ print } $0 == "section \"usage\" && {" { print ENVIRON["PL
 if grep -qxF -- "$plant" "$mir/issue-wave/scripts/test-fleet-worker.sh"; then
   out=$(env -u TEST_FLEET_WORKER_WATCH PATH="$SUITE_PATH" TMPDIR="$wd/tmp" FLEET_WORKER_TEST_SECTION_TIMEOUT=3 \
     "$BASH" "$mir/issue-wave/scripts/test-fleet-worker.sh" load usage 2>&1 </dev/null); rc=$?
-  [ "$rc" -eq 1 ] && grep -qx 'FAIL: section "usage" still running after 3s (FLEET_WORKER_TEST_SECTION_TIMEOUT); the run'"'"'s process group was stopped' <<<"$out" &&
+  [ "$rc" -eq 1 ] && grep -qx 'FAIL: section "usage" still running after 3s (FLEET_WORKER_TEST_SECTION_TIMEOUT; raise it on a box this slow); the run'"'"'s process group was stopped' <<<"$out" &&
     ok "a section past FLEET_WORKER_TEST_SECTION_TIMEOUT fails the run by its name, exit 1" ||
     ko "the stalled section was not failed by name (rc=$rc) -- $out"
   grep -qx -- '--- [0-9]*s: load' <<<"$out" && ok "...after the section before it printed its elapsed time" ||

@@ -698,13 +698,22 @@ shape with the passing shape beside each, against scratch checkouts that pin the
 scope, and finally against the three suites that rediscovered the fix, each with its resolution
 line removed, where the guard must find what their authors found by accident.
 
-`test-fleet-worker.sh` runs its ~180 assertions top to bottom in one shell, which takes about three
-and a half minutes. Arguments narrow that: each one selects every section whose name contains it
-(`test-fleet-worker.sh unstick`, `test-fleet-worker.sh 'real checkout'`), `--list` prints the
-section names, and an argument matching none of them is refused before anything runs. The setup the
-sections share (the shim CLIs, the scratch skills checkout, the scratch project repo) runs whatever
-is selected, and a section that needs more than that, such as the coordinator lease or a finished
-worker to read, takes it itself, so every section also passes when it is the only one selected.
+`test-fleet-worker.sh` runs its ~1000 assertions top to bottom in one shell, which takes about
+twelve minutes on CI's Ubuntu runner and up to fifteen on a mac shared with other workers. Arguments
+narrow that, and while iterating they are the lever: each one selects every section whose name
+contains it (`test-fleet-worker.sh unstick`, `test-fleet-worker.sh 'real checkout'`), `--list`
+prints the section names, and an argument matching none of them is refused before anything runs.
+The setup the sections share (the shim CLIs, the scratch skills checkout, the scratch project repo)
+runs whatever is selected, and a section that needs more than that, such as the coordinator lease
+or a finished worker to read, takes it itself, so every section also passes when it is the only one
+selected. Each section prints its elapsed time when it ends (`--- 37s: unstick`), and the tally its
+total. A section, or the setup before or between sections, still running after
+`FLEET_WORKER_TEST_SECTION_TIMEOUT` seconds (default 300; `0` or `off` disables the watchdog) fails
+the run by its name: the suite runs as the child of a supervisor, in a process group of its own,
+which the supervisor stops (TERM, then KILL five seconds later) before removing what the stopped
+run left, its tmux servers and scratch tree. A hang then names its section instead of running on to
+the CI job's timeout (ludics-lite#640). The `section watchdog` section proves it on a copy of the
+suite with a planted stall.
 
 `test-wake-lab-linux.sh` exercises native Ubuntu status, wake and power handling with the WSL
 adapter absent, including the lab-lock columns (a held lock, a free one with a stale line, and no
