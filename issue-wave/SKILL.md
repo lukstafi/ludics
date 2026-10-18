@@ -372,8 +372,11 @@ ceiling and refuse every launch (20-40 min per launch on 09-24 and 09-25). The g
 `--interim` (ludics-lite#308): a tip whose own push run is in flight, with nothing red and
 nothing else in flight, is green meanwhile when it is GitHub's clean merge of a PR whose head
 built that workflow green, and the verdict line reads `green, interim (...; judged meanwhile by
-PR #N's head run ...)`. A tip that is not such a merge stays pending and refused, and so does one
-with a run at an older merge still going. The advisory file decides there too (ludics-lite#659):
+PR #N's head run ...)`. An integration record at the tip is read before that head: a pass is the
+interim's source, a fail the tip's red at once. Only a repository whose integration loop is a
+local run has records (OCANNL; not this one, whose loop is its CI run), and a record lifts no
+other hold. A tip with neither source stays pending and refused, and so does one with a run at
+an older merge still going. The advisory file decides there too (ludics-lite#659):
 a merged head, or an older run, going only on jobs it names, every other job passed, holds
 nothing. Under a push group that keeps one running run and the
 newest pending one (this repository's main since ludics-lite#597, OCANNL's `ci`), that refusal
@@ -752,8 +755,12 @@ controlled through the tools in your coordinator's file, never through those com
   span. That holds for a CI-verdict repository, whose push workflow keeps one running run and
   only the newest pending one (this repository's `skill-scripts.yml`, whose `concurrency:`
   comment says why that is not #511's failure), and for a local integration run like OCANNL's
-  alike. A local run goes on a quiet, strong box with the whole board in view
-  (`fleet-worker.sh load` - CPU/GPU five-minute averages, dune count, agent sessions per box; a
+  alike. An idle local loop does not wait for more merges either (ludics-lite#618): when no run
+  is going and the tip has moved past the last one, the next starts at once. That is launch
+  latency too, since its record at the tip is a base-gate source (*Base gate*). A CI-verdict
+  loop writes no record, so arming its `base --wait` sooner moves no verdict. A local run goes on
+  a quiet, strong box with the whole board in view (`fleet-worker.sh load` - CPU/GPU five-minute
+  averages, dune count, agent sessions per box; a
   box already running this wave's GPU measurement is NOT quiet whatever its CPU says; the
   maintainer chose minix-amd-linux over tuf-amd-linux): take an execution reservation there,
   and run the MERGED
