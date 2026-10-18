@@ -13,8 +13,6 @@ from unittest import mock
 
 from ludics import cli
 from ludics.fleetworker import board, boardstore
-from ludics.fleetworker.config import load_config
-from ludics.fleetworker.transport import Done
 
 # The cell texts that broke `sed` on the OCANNL wave-20261014 board, and the rest of the shell's and
 # markdown's metacharacters.
@@ -148,7 +146,7 @@ class Store(StoreCase):
         self.assertEqual(calls, [os.path.join(self.root, "boards", "w.json")] * 2)
         self.assertEqual(sorted(os.listdir(os.path.join(self.root, "boards"))), ["w.json"], "no temporary left")
 
-    def test_a_refusal_means_nothing_was_written(self) -> None:
+    def test_a_failed_replace_leaves_the_board_whole(self) -> None:
         self.set("t", ("k", "v"))
         path = os.path.join(self.root, "boards", "w.json")
         with open(path) as f:
@@ -163,20 +161,6 @@ class Store(StoreCase):
         with open(path) as f:
             self.assertEqual(f.read(), before)
         self.assertEqual(os.listdir(os.path.join(self.root, "boards")), ["w.json"], "no temporary left")
-
-    def test_a_lost_acknowledgement_is_exit_3_not_a_refusal(self) -> None:
-        self.set("t", ("k", "v"))
-
-        class Full(io.StringIO):
-            def write(self, s: str) -> int:
-                raise OSError(28, "No space left on device")
-
-        err = io.StringIO()
-        with contextlib.redirect_stdout(Full()), contextlib.redirect_stderr(err):
-            rc = boardstore.run(["-", self.root, "log", "coord", json.dumps({"wave": "w", "text": "x"})])
-        self.assertEqual(rc, 3)
-        self.assertTrue(err.getvalue().startswith("BOARD WRITTEN, acknowledgement lost: "))
-        self.assertEqual([line["text"] for line in self.doc()["log"]], ["x"], "the write landed")
 
     def test_the_acknowledgement_is_ascii_whatever_the_task_holds(self) -> None:
         rc, out, _ = self.set("\u00fc #1", ("k", "\u00fc"))
@@ -217,28 +201,6 @@ class CommandLine(unittest.TestCase):
         self.assertIn("board note: give at least one", self.refused("note", "--create", "w"))
         self.assertIn("board log: expected the line's text", self.refused("log", "w"))
         self.assertEqual(self.payload("show", "w", "--json"), ("show", {"wave": "w", "json": True}))
-
-
-class Outcome(unittest.TestCase):
-    def outcome(self, args: list[str], rc: int) -> tuple[int, str]:
-        cfg = load_config("/nonexistent/fleet-worker.sh", {"FLEET_COORDINATOR": "c", "FLEET_ANCHOR": "a", "HOME": "/tmp"})
-        out = io.StringIO()
-
-        def ran(*args: object, **kwargs: object) -> Done:
-            return Done(rc, "")
-
-        with mock.patch.object(board, "run_on", ran), contextlib.redirect_stdout(out):
-            got = board.cmd_board(cfg, args)
-        return got, out.getvalue()
-
-    def test_only_a_refusal_says_nothing_was_written(self) -> None:
-        self.assertEqual(self.outcome(["log", "w", "x"], 1), (1, ""))
-        self.assertEqual(self.outcome(["log", "w", "x"], 0), (0, ""))
-        self.assertEqual(self.outcome(["log", "w", "x"], 3)[1][:28], "BOARD UNKNOWN a: the writer ")
-        self.assertEqual(self.outcome(["log", "w", "x"], 120),
-                         (120, "BOARD UNKNOWN a: the writer exited 120; outcome unknown; show the board before retrying\n"))
-        self.assertEqual(self.outcome(["show", "w"], 120), (120, ""), "a read changes nothing")
-        self.assertEqual(self.outcome(["show", "w"], 255), (4, "BOARD UNREACHABLE a\n"))
 
 
 if __name__ == "__main__":

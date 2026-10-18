@@ -89,6 +89,7 @@ refuses a wave it has none for. Store wave and coordinator identity, the durable
 identity, transport, agent host, intended execution hosts, checkout ownership, branch and base,
 dispatch status, PR/head/merge state, last observation, remaining gates, hand-back, and
 reservation request IDs. The writers check the lease themselves; check it before interventions.
+A board write that fails may or may not have landed: re-read with `board show` before retrying it.
 
 Use the runtime's messages and bounded waits, retaining real identities. Follow up in the same
 agent when work is unfinished and observe the response. A returned turn is read by its final

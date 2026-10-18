@@ -9,11 +9,12 @@ What a board is, and is not (the boundary every rule below is drawn against): a 
 lease-gated, best-effort record of a wave, written in the coordinator's own words through this
 verb. It is not a registry, a lock or a verdict source: nothing gates on it. So its durability is
 that of one fsynced file replaced atomically -- a power loss may lose the latest write, never leave a
-partial board -- with no directory sync. Every refusal is made before the replace, so ``BOARD
-REFUSED`` (exit 1) means nothing was written; an acknowledgement lost after the replace is exit 3,
-and any writer exit but 0 and 1 leaves the outcome unknown, which the near side says, to show the
-board before a retry. Its inputs are what the verb writes; a file edited by hand is read only as far
-as ``validate`` checks its shape.
+partial board -- with no directory sync. Its writer is the coordinator, and its recovery is a
+re-read: a failed or interrupted write may or may not have landed (an acknowledgement lost after
+the replace, a connection dropped), so before retrying one the coordinator re-reads the board with
+``board show``. There is no outcome-unknown exit: 0 is written, anything else is re-read. Its
+inputs are what the verb writes; a file edited by hand is read only as far as ``validate`` checks
+its shape.
 
 How it runs, as the execution registry runs (``registry.py``'s header): this module is SHIPPED.
 ``fleet-worker.sh board`` sends its source to the anchor, where a Python >= 3.12 runs it from stdin,
@@ -236,10 +237,6 @@ def render(doc: Doc) -> str:
     return "\n".join(out) + "\n"
 
 
-class Published(Exception):
-    """The write landed and its acknowledgement did not: exit 3, never a refusal's exit 1."""
-
-
 def main(argv: list[str]) -> None:
     root, action, coordinator, raw = argv[1:5]
     decoded: Any = json.loads(raw)
@@ -293,21 +290,14 @@ def main(argv: list[str]) -> None:
             said = f"BOARD LOG {wave}: line {len(log)} at {now}"
     doc["updated_at"] = now
     publish(path, doc)
-    try:
-        print(said)
-        sys.stdout.flush()
-    except Exception as exc:  # whatever fails the acknowledgement, the write has landed
-        raise Published(str(exc)) from exc
+    print(said)
 
 
 def run(argv: list[str]) -> int:
-    """``main`` with the board's exits: a refusal is one ``BOARD REFUSED: <why>`` line on stderr, exit 1
-    (nothing written); a write whose acknowledgement was lost is ``BOARD WRITTEN, ...``, exit 3."""
+    """``main`` with the board's exit: any failure is one ``BOARD REFUSED: <why>`` line on stderr, exit
+    1 (whether a failed write landed is a re-read's to say: the header)."""
     try:
         main(argv)
-    except Published as exc:
-        print(f"BOARD WRITTEN, acknowledgement lost: {exc}", file=sys.stderr)
-        return 3
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"BOARD REFUSED: {exc}", file=sys.stderr)
         return 1
@@ -316,6 +306,5 @@ def run(argv: list[str]) -> int:
 
 # A program (``python - <argv>`` on the anchor) or ``runpy.run_path``, never an import.
 if __name__ in ("__main__", "<run_path>"):
-    status = run(sys.argv)
-    if status != 0:
-        sys.exit(status)
+    if run(sys.argv) != 0:
+        sys.exit(1)

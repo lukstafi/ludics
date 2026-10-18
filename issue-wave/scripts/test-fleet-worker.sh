@@ -2110,7 +2110,7 @@ expect "a field without = is a usage error" 2 "board set: expected <key>=<value>
 expect "show of a wave with no board refuses" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
 expect "an unknown board action is a usage error" 2 "board: expected set, note, log or show" -- "$FW" board edit bw
 expect "show against an anchor that does not answer is unreachable" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board show bw
-expect "a write against one says its outcome is unknown" 4 "^BOARD UNREACHABLE far-anchor: outcome unknown" -- env FLEET_ANCHOR=far-anchor "$FW" board log bw x
+expect "...and so is a write" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board log bw x
 }
 
 section "execution run and conclude --from-run" && {

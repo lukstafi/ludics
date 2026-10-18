@@ -111,10 +111,6 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
         argv = ["BOARD", token, cfg.lock_wait, action, coordinator_id(cfg), raw]
     done = run_on(cfg, cfg.anchor, script, argv)
     if done.unreachable:
-        cli.say(f"BOARD UNREACHABLE {cfg.anchor}" + ("" if action == "show" else ": outcome unknown; show the board before retrying"))
+        cli.say(f"BOARD UNREACHABLE {cfg.anchor}")
         return 4
-    if action != "show" and done.rc not in (0, 1):
-        # Every refusal (the lease's, the store's, no Python) is exit 1 and wrote nothing; any other
-        # failure may follow the store's replace, e.g. its acknowledgement lost (boardstore's header).
-        cli.say(f"BOARD UNKNOWN {cfg.anchor}: the writer exited {done.rc}; outcome unknown; show the board before retrying")
     return done.rc
