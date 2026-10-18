@@ -7,6 +7,7 @@ import subprocess
 import unittest
 from collections.abc import Mapping
 
+from ludics.fleetworker import leg, tiprun
 from ludics.fleetworker.config import REGISTRY_PIN, Config, load_config, pin_refusal, registry_pin
 from ludics.fleetworker.transport import FORWARDED, forwarded, prelude
 
@@ -105,6 +106,13 @@ class FleetWorker(unittest.TestCase):
         self.assertIn("fleet-worker.sh not started on far: the coordinator's FLEET_ANCHOR is local", done.stderr)
         # Its own box still runs it: `local` is the same box there.
         self.assertEqual(run_far(cfg, "local", "fleet_worker echo started\n", {}).stdout, "started\n")
+
+
+    def test_the_far_sides_that_start_fleet_worker_go_through_it(self) -> None:
+        # The leg's slot or hold (its nested slots inherit from it) and tip-run's slot --bg: the two
+        # far sides that start a fleet-worker.sh (the shell suite drives the leg's over ssh).
+        self.assertIn('fleet_worker "${wrap[@]}" -- bash "$results.sh"', leg.LEG)
+        self.assertIn('dir=$(fleet_worker "$fw" execution slot --bg', tiprun.FAR)
 
 
 class Pin(unittest.TestCase):
