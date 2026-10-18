@@ -7,6 +7,7 @@ import io
 import os
 import shutil
 import tempfile
+import time
 import unittest
 
 from typing import Any
@@ -207,6 +208,20 @@ class WindowWait(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
         self.assertLessEqual(reads.call_count, 3)  # reads at 0.3, 0.6 and 0.9 s, none at 1.0
+
+    def test_a_read_that_returns_past_the_bound_does_not_admit_the_batch(self) -> None:
+        # A slow transport: the read starts inside the bound and answers "closed" after it.
+        def slow(*_: object) -> list[dict[str, Any]]:
+            time.sleep(1.2)
+            return []
+
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.1"}, host="testbox")
+        out = io.StringIO()
+        with mock.patch.object(slot, "read_registry", side_effect=slow), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
+        self.assertIn("still holds testbox after 1s (--wait-window); no slot taken", out.getvalue())
 
     def test_a_failed_read_mid_wait_is_asked_again_and_refused_as_itself_at_the_bound(self) -> None:
         unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))

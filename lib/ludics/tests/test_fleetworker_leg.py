@@ -10,6 +10,7 @@ from unittest import mock
 
 from ludics.fleetworker import leg, slot
 from ludics.fleetworker.config import load_config
+from ludics.fleetworker.transport import UNREACHABLE, Done
 
 
 class Stream(unittest.TestCase):
@@ -162,11 +163,33 @@ class WindowWait(unittest.TestCase):
         self.assertEqual(out, "EXECUTION LEG REFUSED testbox: measurement w1 still holds testbox after 1s"
                               " (--wait-window); nothing ran\n")
 
-    def test_a_record_suspended_by_a_measurement_the_registry_does_not_hold_is_refused(self) -> None:
-        result, out, _, _ = self.wait([[standing(by="w9"), window("w1", "concluded")]], ["--wait-window=30"])
+    def test_a_suspending_window_absent_from_a_read_is_waited_for_by_its_id(self) -> None:
+        # The opening's torn read: the record already suspended, the window not yet listed.
+        unlisted = [standing(by="w2"), window("w1", "concluded")]
+        restored = [standing("launching"), window("w1", "concluded"), window("w2", "concluded")]
+        result, out, err, reads = self.wait([unlisted, [standing(by="w2"), window("w2")], restored],
+                                            ["--wait-window=30"], first=unlisted)
+        assert isinstance(result, tuple)
+        self.assertEqual((result[0]["state"], out, reads), ("launching", "", 3))
+        self.assertIn("EXECUTION LEG testbox: measurement window w2 holds testbox (its record is not in this read of"
+                      " the registry)", err)
+
+    def test_a_suspension_the_registry_never_ends_is_refused_at_the_bound_naming_its_window(self) -> None:
+        orphan = [standing(by="w9"), window("w1", "concluded")]
+        result, out, _, _ = self.wait([orphan] * 10000, ["--wait-window=1"], first=orphan)
         self.assertEqual(result, 1)
-        self.assertEqual(out, "EXECUTION LEG REFUSED: it is still suspended by w9, a measurement the registry does"
-                              " not hold; nothing ran\n")
+        self.assertEqual(out, "EXECUTION LEG REFUSED testbox: measurement w9 still holds testbox after 1s"
+                              " (--wait-window); nothing ran\n")
+
+    def test_an_unreachable_anchor_is_said_in_the_legs_voice(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "agent", "FLEET_ANCHOR": "far-anchor"}, host="agent")
+        with mock.patch.object(slot, "listing", mock.Mock(return_value=Done(UNREACHABLE, ""))):
+            unread = slot.read_registry(cfg, "testbox", leg.LEG_VOICE)
+        assert isinstance(unread, slot.Unread)
+        self.assertEqual(unread.rc, 4)
+        self.assertEqual(unread.lines[0], "EXECUTION LEG UNREACHABLE far-anchor: registry unread, nothing ran")
+        self.assertTrue(unread.lines[1].startswith("EXECUTION LEG UNREACHABLE far-anchor: a box woken"))
 
     def test_a_record_gone_from_the_registry_after_the_wait_is_refused(self) -> None:
         result, out, _, _ = self.wait([[window("w1", "concluded")]], ["--wait-window=30"])
