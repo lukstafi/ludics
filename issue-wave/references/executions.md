@@ -583,7 +583,8 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   `requested_revision` is exactly one commit, refuses any `--rev` that comes to
   another commit, and the registry refuses any `observed_sha` but that commit for it.
 - **The worktree.** `--checkout` is the project's checkout on the box and `--worktree` a linked
-  worktree of it (paths absolute or `~/`): made with `git worktree add --detach` when the path does
+  worktree of it (paths absolute, or a quoted `~/`, expanded on the box; the caller's shell
+  expands an unquoted one to the caller's home): made with `git worktree add --detach` when the path does
   not exist, checked out `--detach` at the commit when it does, and refused when it is another
   repository's, the main checkout itself, or dirty, which a leg never overwrites; and refused when
   it is not clean once at the commit, submodules included (a submodule is never updated). A full SHA the

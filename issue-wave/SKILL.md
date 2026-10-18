@@ -453,7 +453,17 @@ requirements for every transport with transport-specific setup and identity, and
   [Codex worker channel](references/native-codex.md#worker-channel), or the
   [CLI reservation handoff](references/executions.md#cli-reservation-handoff). A resumed worker
   runs only the assigned command, reports runner evidence and yields again; neither the
-  returned turn nor its report releases the box.
+  returned turn nor its report releases the box. The brief's measurement forms are the ones
+  the verbs accept: on the worker's own box `fleet-worker.sh execution hold --request <id> --
+  <runner>`, on another box an [`execution leg`](references/executions.md#a-leg-on-another-box)
+  with no slot flag (`--deadline` alone: a measurement leg refuses `--cpu`, `--gpu`, `--wait`
+  and `--wait-window`, and four workers of wave-20261016-ocannl copied them from the brief).
+  The session fails fast on its first cell, behind the project's own measurement gate, which
+  the brief points to rather than paraphrases (OCANNL: `benchmarks/README.md`, *Measurement
+  boxes*; two rog windows measured nothing on a session script that predated it,
+  ahrefs/ocannl#1324 and #1326). Every leg spells its far-side paths absolutely: an unquoted
+  `~` is expanded by the caller's shell to the caller's home (a leg from rog reached mac-studio
+  as `/home/lukstafi/...` and was refused).
 - **Block on every run before yielding**, the review watch and the merge wait included: a
   Claude worker as [Blocking on a run](references/native-claude.md#blocking-on-a-run) says, a
   Codex worker by keeping its turn open, because a returned turn says only that the turn ended
@@ -521,7 +531,9 @@ requirements for every transport with transport-specific setup and identity, and
   worker as [Blocking in a headless turn](references/cli-claude.md#blocking-in-a-headless-turn) says); if a review watch goes quiet
   suspiciously long, read the PR feed directly (`gh pr view --comments`) rather than re-arming
   the watch (reactions persist across rounds and strand it); commit early and often - commits
-  are what survives every failure mode below.
+  are what survives every failure mode below - and park work in progress as WIP commits, never
+  `git stash`: the stash stack is shared by every worktree of the repository, and a worker's
+  `stash pop` applied a stranger's (ahrefs/ocannl#1161).
 - **Never re-request review as stall recovery** (2026-08-29): the Codex GitHub reviewer's
   no-findings verdict can arrive as a PR COMMENT ("Didn't find any major issues... Reviewed
   commit: <sha>") rather than only the 👍 reaction, and an `@codex review` re-request CLEARS
