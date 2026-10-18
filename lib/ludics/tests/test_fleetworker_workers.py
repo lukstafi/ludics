@@ -252,6 +252,47 @@ class Load(unittest.TestCase):
 
 
 @unittest.skipIf(shutil.which("bash") is None, "no bash")
+class TmNew(unittest.TestCase):
+    """farside.HELPERS' tm_new: new-session, tried again only while the server it reached was
+    exiting (ludics-lite#658)."""
+
+    def run_new(self, answers: list[str]) -> tuple[int, str, list[str]]:
+        """tm_new against a tmux whose n-th call answers answers[n] on stderr (exit 1), or
+        succeeds past the list; returns the status, stderr and each call's arguments."""
+        with tempfile.TemporaryDirectory() as d:
+            for i, answer in enumerate(answers):
+                with open(os.path.join(d, f"answer{i}"), "w") as f:
+                    f.write(answer + "\n")
+            with open(os.path.join(d, "tmux"), "w") as f:
+                f.write(
+                    '#!/bin/sh\nn=0; [ ! -e "$0.calls" ] || n=$(($(wc -l < "$0.calls")))\n'
+                    'echo "$*" >> "$0.calls"\n'
+                    'if [ -e "$(dirname "$0")/answer$n" ]; then cat "$(dirname "$0")/answer$n" >&2; exit 1; fi\n'
+                )
+            os.chmod(os.path.join(d, "tmux"), 0o755)
+            env = {**os.environ, "PATH": d + os.pathsep + os.environ["PATH"], "TMUX_SOCKET": "sock", "STATE": d}
+            done = subprocess.run(
+                ["bash", "-c", farside.HELPERS + 'tm_new -d -s fw-x "bash run.sh"'],
+                env=env, capture_output=True, text=True, check=False,
+            )
+            with open(os.path.join(d, "tmux.calls")) as f:
+                calls = f.read().splitlines()
+        return done.returncode, done.stderr, calls
+
+    def test_a_server_caught_exiting_is_tried_again(self) -> None:
+        rc, err, calls = self.run_new(["server exited unexpectedly"] * 2)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(calls, ["-L sock new-session -d -s fw-x bash run.sh"] * 3)
+
+    def test_any_other_refusal_is_final_and_keeps_its_message(self) -> None:
+        rc, err, calls = self.run_new(["duplicate session: fw-x", "server exited unexpectedly"])
+        self.assertEqual((rc, err, len(calls)), (1, "duplicate session: fw-x\n", 1))
+
+    def test_a_server_that_keeps_exiting_refuses_after_five_tries(self) -> None:
+        rc, err, calls = self.run_new(["server exited unexpectedly"] * 9)
+        self.assertEqual((rc, err, len(calls)), (1, "server exited unexpectedly\n", 5))
+
+
 class FleetPython(unittest.TestCase):
     """farside.FLEET_PYTHON: the box's first Python >= 3.12 in scripts/py's order, or what each
     candidate was."""
