@@ -15,7 +15,10 @@ Usage: bash scripts/install-linux.sh [--help]
 local), for a box bootstrapped before that step existed.
 --jq installs only the fleet's pinned jq into /usr/local/bin, on native Linux or WSL.
 --bench-venv provisions only the shared OCANNL benchmark venv (~/.venvs/ocannl-bench) and copies
-the missing fixtures from the anchor; the GPU is detected unless named.
+the missing fixtures from the anchor; the GPU is detected unless named. It ends with OCANNL's
+benchmarks/check-box.sh --box-only from origin's tip, which reports and never repairs. Exit 0:
+provisioned and READY; 1: provisioning failed; 3: provisioned, the check found a GAP; 4:
+provisioned, the check did not run.
 Interactive setup for native Ubuntu 26.04, with Tailscale already connected.
 Installs development tools, Codex, Claude Code, Bun and ludics-lite skills;
 optionally configures SSH, logins and an OCANNL OCaml 5.5.1 switch.
@@ -584,6 +587,55 @@ bench_provision() {
   for warning in ${BENCH_WARNINGS[@]+"${BENCH_WARNINGS[@]}"}; do printf 'WARNING: %s\n' "$warning"; done
 }
 
+# THE BOX CHECK (ludics-lite#641). Provisioning ends with OCANNL's benchmarks/check-box.sh
+# --box-only, the check measurement sessions and tools/sweep.sh run, so a box verifies itself by
+# their rules. Its script, fixture_digest.py, workload specs and DIGESTS.txt come from origin's tip:
+# a depth-1, blob-less clone of $BENCH_CHECKOUT's origin into this run's scratch, removed with it,
+# checking out only benchmarks/ -- never the box's checkout, which is often stale, and never a
+# worktree of it, which a killed run would leave registered there. It judges this box's venv
+# ($BENCH_VENV) and fixture store ($BENCH_CHECKOUT/benchmarks/fixtures). A GAP is printed with
+# check-box's own repair line and repaired by nothing here. Returns 0 READY, 3 GAP, 4 not run.
+BENCH_CHECK_GAP=3 BENCH_CHECK_NOT_RUN=4
+
+# Fleet endpoint -> its measurement-box ID in DIGESTS.txt's `measurement-boxes` header. A
+# fail-closed allowlist: an endpoint not listed is not checked, never guessed at.
+bench_measurement_box() {
+  case $1 in
+    rog-nv-linux) printf 'rog-nv\n' ;;
+    minix-amd-linux) printf 'minix\n' ;;
+    tuf-amd-linux) printf 'tuf\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+bench_not_run() { printf 'Box check NOT RUN (exit %s): %s\n' "$BENCH_CHECK_NOT_RUN" "$*"; return "$BENCH_CHECK_NOT_RUN"; }
+
+bench_check() {
+  local endpoint=$1 id url sha rc tip=$scratch/ocannl-tip
+  id=$(bench_measurement_box "$endpoint") ||
+    { bench_not_run "fleet endpoint $(printf '%q' "$endpoint") (FLEET_LOCAL_BOX) has no measurement-box ID; this installer knows rog-nv-linux, minix-amd-linux and tuf-amd-linux."; return; }
+  [[ -d $BENCH_CHECKOUT/benchmarks/fixtures ]] ||
+    { bench_not_run "no fixture store $(printf '%q' "$BENCH_CHECKOUT/benchmarks/fixtures") to check."; return; }
+  url=$(git -C "$BENCH_CHECKOUT" remote get-url origin) ||
+    { bench_not_run "$(printf '%q' "$BENCH_CHECKOUT") has no origin remote."; return; }
+  rm -rf -- "${tip:?}"
+  if ! GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 --filter=blob:none --no-checkout -- "$url" "$tip" ||
+     ! git -C "$tip" checkout -q HEAD -- benchmarks || [[ ! -f $tip/benchmarks/check-box.sh ]]; then
+    bench_not_run "cannot check out benchmarks/check-box.sh at the tip of $(printf '%q' "$url")."
+    return
+  fi
+  sha=$(git -C "$tip" rev-parse HEAD)
+  printf 'Box check: check-box.sh --box %s --box-only at %q %s\n' "$id" "$url" "$sha"
+  if bash "$tip/benchmarks/check-box.sh" --box "$id" --box-only --venv "$BENCH_VENV" \
+       --fixture-dir "$BENCH_CHECKOUT/benchmarks/fixtures"; then rc=0; else rc=$?; fi
+  case $rc in
+    0) printf 'Box check: %s READY.\n' "$id" ;;
+    1) printf 'Box check: %s GAP (exit %s): each GAP line above names its repair; nothing was repaired.\n' "$id" "$BENCH_CHECK_GAP"
+       return "$BENCH_CHECK_GAP" ;;
+    *) bench_not_run "check-box.sh exited $rc, judging nothing." ;;
+  esac
+}
+
 # The venv alone, non-interactively apart from sudo for the dev headers:
 #   ssh <box> "bash <(printf %s <base64 of this script> | base64 -d) --bench-venv [nvidia|amd|cpu]"
 bench_venv_only() {
@@ -595,6 +647,7 @@ bench_venv_only() {
   scratch=$(cd "$scratch" && pwd -P)
   trap 'rm -rf -- "$scratch"; bench_cleanup' EXIT
   bench_provision "$@"
+  bench_check "${FLEET_LOCAL_BOX:-}"
 }
 
 setup_gpu() {
@@ -851,6 +904,7 @@ main() {
   fi
   if ask 'Provision the shared benchmark venv (~/.venvs/ocannl-bench) and copy the fixtures from the anchor?'; then
     bench_provision
+    bench_check "$box" || true  # its last line is the verdict; the setup itself is done
   fi
   printf '\nSetup stages finished. Open a new login shell before using the tools.\n'
   printf 'Next: register this endpoint in the hub Flotilla config and coordinator roster.\n'
