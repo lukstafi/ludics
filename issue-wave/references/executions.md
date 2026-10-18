@@ -565,9 +565,10 @@ field on any other shape. Concluded `pass` or `fail` at an exact `observed_sha`,
 (ludics-lite#401); a correctness run without the field is a targeted batch and is never offered.
 
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
-`fleet-worker.sh execution tip-run <reserve.json> --checkout <dir> [--runs <dir>] [--cpu] --
-<command...>`. Its request is the coordinator's non-standing `correctness` request whose
-`requested_revision` is exactly one full SHA. It yields, reserving nothing, to anything
+`fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] --checkout <dir> [--runs <dir>]
+[--cpu] -- <command...>`. Its request is the coordinator's non-standing `correctness` request whose
+`requested_revision` is exactly one full SHA, or names none under `--tip`, which writes the branch's
+head on GitHub into it. It yields, reserving nothing, to anything
 outstanding on the box but standing reservations (read again once its own is published); then it
 runs `execution run`, starts nothing on a remote box whose skills checkout the refresh did not
 bring current, checks the SHA out
@@ -577,8 +578,11 @@ directory, `~/.local/state/issue-wave` on the box unless `ISSUE_WAVE_STATE` name
 takes a GPU token, unless `--cpu`, only if one is free at once.
 It prints `TIP-RUN STARTED <id> <box> <sha> <dir>` with the record moved to `running`, or `TIP-RUN
 NOT STARTED <id>: <why>` (exit 1) with anything it reserved concluded `not-launched`; exit 4 is an
-outcome to reconcile. Conclude a started run with `conclude --from-bg-run <dir> --request <id>
---sha <sha>`. The rules it enforces are `lib/ludics/fleetworker/tiprun.py`'s header.
+outcome to reconcile. `execution tip-run --wait <id> [--within <s>]` concludes a started run: it
+reads the box, directory and SHA off the record, waits there up to `--within` (480 s), and runs
+`conclude --from-bg-run` with them, printing `TIP-RUN CONCLUDED <id> <verdict> <box> <sha> <dir>`,
+or `TIP-RUN RUNNING ...` (exit 3, re-issue it). The rules it enforces are
+`lib/ludics/fleetworker/tiprun.py`'s header.
 
 ## A leg on another box
 
