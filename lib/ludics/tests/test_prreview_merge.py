@@ -154,6 +154,41 @@ class Production(unittest.TestCase):
                 done = self.run_cmd(entry, "checks", "o/r#7", "--wait=")
                 self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (0, "checks: verdict=green"))
 
+    def test_an_override_is_announced_only_before_the_merge_call(self) -> None:
+        # ludics-lite#684's negative control: "OVERRIDE: merging" printed at the verdict stood above
+        # the refusals that followed it. Each refusal after the gate says nothing of merging over it.
+        why = "base red, not this PR: ci, test t, red at basesha; owned by o/r#1"
+        red_run = (["actions/runs?head_sha=headsha"], 0,
+                   "2026-09-01T00:00:00Z\t100\t1\tpull_request\tci\tcompleted\tfailure\t1\n", "")
+        # A close-out's reads of the merge queue: the base, and no queue on it.
+        no_queue = [(["mergeQueue"], 0, "\n", ""), (["--jq .base.ref"], 0, "main\n", "")]
+        beside_green = [(["check-runs"], 0, "ci\tfailure\tu\t1\nlint\tsuccess\tu\t1\n", ""), red_run, *no_queue, *GREEN]
+        red_alone = [(["check-runs"], 0, "ci\tfailure\tu\t1\n", ""), red_run, *no_queue, *GREEN]
+        threads_unread = [(["reviewThreads"], 1, "", "gh: Bad Gateway (HTTP 502)\n"), *beside_green]
+        for entry in self.entries():
+            with self.subTest(entry=entry[0], refusal="require-green"):
+                self.route(red_alone)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--require-green", "--override", why)
+                self.assertEqual(done.returncode, 4, done.stdout + done.stderr)
+                self.assertIn("beside the red --override waived", done.stderr)
+                self.assertNotIn("OVERRIDE: merging", done.stdout + done.stderr)
+            with self.subTest(entry=entry[0], refusal="threads"):
+                self.route(threads_unread)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--override", why)
+                self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+                self.assertIn("whether review threads are still open is UNKNOWN", done.stderr)
+                self.assertNotIn("OVERRIDE: merging", done.stdout + done.stderr)
+                self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
+            with self.subTest(entry=entry[0], refusal="none"):
+                self.route(beside_green)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--require-green", "--override", why)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                lines = done.stdout.splitlines()
+                said = lines.index(f"OVERRIDE: merging o/r#7 over a RED build signal — {why}")
+                self.assertLess(lines.index("base-drift file overlap o/r#7: none"), said, done.stdout)
+                self.assertEqual(lines[said + 1:], ["o/r#7 merged=true state=closed"], "said once, then merged")
+                self.assertEqual(done.stderr.count("OVERRIDE: merging o/r#7 over "), 1, done.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

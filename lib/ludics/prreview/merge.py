@@ -11,8 +11,10 @@ review round:
   list, the gate (with the override's waiver), the close-out refusals, the base drift, the build of
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue last,
-  and an ABSENT verdict's base (ludics-lite#523); then the call, bound to the gated head
-  (``--match-head-commit``), and the merged state confirmed over REST.
+  and an ABSENT verdict's base (ludics-lite#523); then what the merge goes over (an override's
+  waived red, an unread signal), announced once, after every refusal before the first call has
+  passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
+  over REST.
 
 Exit: 0 merged; 1 refused (red, a moved head, a real conflict, an open thread, a deferred merge);
 2 usage; 3 something that decides it could not be read; 4 no verdict; 5 the head was superseded.
@@ -136,6 +138,11 @@ class Merge:
         self.gate = Gate(session, repo, config, clock)
         self.multi = MultiClose(session, repo)
         self.series = SeriesClose(session, repo)
+        # What the merge goes over (--override's waived red, --allow-no-verdict's unread signal):
+        # each a stdout line and its stderr record, held by judge() and said by announce() just
+        # before the first merge call. Said at the verdict, "merging" stood above a refusal that
+        # followed it -- --require-green's, the merge build's, an open thread's (ludics-lite#684).
+        self.announced: list[tuple[str, tuple[str, ...]]] = []
 
     def drift(self) -> Drift:
         return read_base_drift(self.session, self.repo, self.num, self.config.stale_base)
@@ -237,6 +244,23 @@ class Merge:
         self.drift()
         return False
 
+    def announce_override(self, waived: int) -> None:
+        repo, pr, why = self.repo, self.num, self.opts.override
+        self.announced.append((
+            f"OVERRIDE: merging {repo}#{pr} over a RED build signal — {why}",
+            (
+                f"OVERRIDE: merging {repo}#{pr} over {waived} red build",
+                f"check(s)/run(s), each red when the override was given (marked WAIVED above) — {why}",
+            ),
+        ))
+
+    def announce(self) -> None:
+        """Say what the merge goes over, once, after every refusal before the call has passed."""
+        for line, record in self.announced:
+            cli.say(line)
+            warn(*record)
+        self.announced = []
+
     def judge(self) -> None:
         """The gate's verdict, and every refusal the merge makes on it."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
@@ -250,11 +274,7 @@ class Merge:
         match rc:
             case 1:
                 if opts.override and gate.verdict == "waived":
-                    cli.say(f"OVERRIDE: merging {repo}#{pr} over a RED build signal — {opts.override}")
-                    warn(
-                        f"OVERRIDE: merging {repo}#{pr} over {waived} red build",
-                        f"check(s)/run(s), each red when the override was given (marked WAIVED above) — {opts.override}",
-                    )
+                    self.announce_override(waived)
                 elif opts.override:
                     fail(
                         1,
@@ -282,25 +302,23 @@ class Merge:
                 fail(5, f"NOT merging {repo}#{pr}: the observed head was SUPERSEDED; re-run to judge the new head.")
             case 4:
                 if opts.allow_no_verdict and waived > 0:
-                    cli.say(
+                    self.announced.append((
                         f"ALLOW-NO-VERDICT: merging {repo}#{pr} with NO verdict on the unfinished build signal"
-                        " (listed above)"
-                    )
-                    warn(
-                        f"ALLOW-NO-VERDICT: merging {repo}#{pr} with checks or runs still unjudged (see",
-                        "above) — beside a red the override waives, so this is not 'nothing has failed'.",
-                    )
-                    cli.say(f"OVERRIDE: merging {repo}#{pr} over a RED build signal — {opts.override}")
-                    warn(
-                        f"OVERRIDE: merging {repo}#{pr} over {waived} red build",
-                        f"check(s)/run(s), each red when the override was given (marked WAIVED above) — {opts.override}",
-                    )
+                        " (listed above)",
+                        (
+                            f"ALLOW-NO-VERDICT: merging {repo}#{pr} with checks or runs still unjudged (see",
+                            "above) — beside a red the override waives, so this is not 'nothing has failed'.",
+                        ),
+                    ))
+                    self.announce_override(waived)
                 elif opts.allow_no_verdict:
-                    cli.say(f"ALLOW-NO-VERDICT: merging {repo}#{pr} with NO build verdict on the head commit")
-                    warn(
-                        f"ALLOW-NO-VERDICT: merging {repo}#{pr} unread — nothing has failed, nothing has",
-                        "passed either (see above).",
-                    )
+                    self.announced.append((
+                        f"ALLOW-NO-VERDICT: merging {repo}#{pr} with NO build verdict on the head commit",
+                        (
+                            f"ALLOW-NO-VERDICT: merging {repo}#{pr} unread — nothing has failed, nothing has",
+                            "passed either (see above).",
+                        ),
+                    ))
                 elif waived > 0:
                     fail(
                         4,
@@ -361,6 +379,7 @@ class Merge:
                     )
                 attempt += 1
                 continue
+            self.announce()
             args = ["pr", "merge", pr, "--repo", repo, "--match-head-commit", gate.check_sha, *opts.gh_args]
             if opts.forwarded:
                 # Still this script's own call, so the polling budget gates it.
