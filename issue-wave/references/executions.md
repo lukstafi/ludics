@@ -578,10 +578,11 @@ directory, `~/.local/state/issue-wave` on the box unless `ISSUE_WAVE_STATE` name
 takes a GPU token, unless `--cpu`, only if one is free at once.
 It prints `TIP-RUN STARTED <id> <box> <sha> <dir>` with the record moved to `running`, or `TIP-RUN
 NOT STARTED <id>: <why>` (exit 1) with anything it reserved concluded `not-launched`; exit 4 is an
-outcome to reconcile. `execution tip-run --wait <id> [--within <s>]` concludes a started run: it
+outcome to reconcile. `execution tip-run --wait <id> [--within <s>] [--tip <branch>]` concludes a started run: it
 reads the box, directory and SHA off the record, waits there up to `--within` (480 s), and runs
 `conclude --from-bg-run` with them, printing `TIP-RUN CONCLUDED <id> <verdict> <box> <sha> <dir>`,
-or `TIP-RUN RUNNING ...` (exit 3, re-issue it). The rules it enforces are
+or `TIP-RUN RUNNING ...` (exit 3, re-issue it); with `--tip` a conclusion adds `TIP-RUN TIP <branch>
+<sha> moved|current`, whether the branch's head has moved past the run. The rules it enforces are
 `lib/ludics/fleetworker/tiprun.py`'s header.
 
 ## A leg on another box

@@ -2564,6 +2564,12 @@ expect "--wait blocks on it and concludes it, from the request id alone" 0 "^TIP
 grep -Fxq "TIP-RUN CONCLUDED tip-i pass testbox $tip $tdir" <<<"$out" && ok "...naming the directory the start printed" || ko "the conclusion line: $out"
 expect "...and a second --wait reads the verdict again" 0 "^TIP-RUN CONCLUDED tip-i pass testbox $tip /" -- \
   "${FWT[@]}" execution tip-run --wait tip-i
+expect "--wait --tip says when the tip is still the run's" 0 "^TIP-RUN TIP main $tip current$" -- \
+  env SHIM_GH_HEADS="$TMP/tip-heads" "${FWT[@]}" execution tip-run --wait tip-i --tip main
+printf 'main %s\n' "$absent" >> "$TMP/tip-heads"
+expect "...and when it has moved past it, the next run to start" 0 "^TIP-RUN TIP main $absent moved$" -- \
+  env SHIM_GH_HEADS="$TMP/tip-heads" "${FWT[@]}" execution tip-run --wait tip-i --tip main
+printf 'main %s\n' "$tip" > "$TMP/tip-heads"
 expect "--wait on an unknown request is refused" 1 "^TIP-RUN REFUSED tip-zz: the registry holds no such request$" -- "${FWT[@]}" execution tip-run --wait tip-zz
 expect "--wait on a record no tip-run started is refused" 1 "^TIP-RUN REFUSED tip-stand: it is launching, not a run tip-run started" -- "${FWT[@]}" execution tip-run --wait tip-stand
 expect "--tip beside a named revision is refused" 2 "--tip reads the revision, so the payload names no requested_revision" -- \

@@ -82,7 +82,10 @@ side does) waits on the directory for up to ``--within`` seconds (``WITHIN``, 48
 exit 0; ``RUNNING`` prints ``TIP-RUN RUNNING <id> <box> <dir>: <wait's line>``, exit 3, to be
 re-issued; any other answer (``STARTING``, ``DIED``, an unreachable box, a conclusion that did not
 land) prints ``TIP-RUN UNKNOWN <id>: <why>``, exit 4, and concludes nothing. Exit 0 says the record
-is concluded, not that the run passed: the verdict is the line's fourth word.
+is concluded, not that the run passed: the verdict is the line's fourth word. With ``--tip <branch>``
+a concluded answer adds the loop's next move (ludics-lite#618), read off GitHub as ``--tip`` reads
+it at the start: ``TIP-RUN TIP <branch> <sha> moved`` (the tip is past the run: start the next one
+now), ``... current`` (nothing new to run), or ``TIP-RUN TIP <branch> - unread: <why>``.
 """
 
 import json
@@ -103,7 +106,7 @@ from ludics.fleetworker.transport import err, is_local, prelude, run, run_on
 
 USAGE = (
     "execution tip-run <json-file> [--tip <branch>] --checkout <dir> [--runs <dir>] [--cpu] -- <command> [args...],"
-    " or tip-run --wait <id> [--within <s>]"
+    " or tip-run --wait <id> [--within <s>] [--tip <branch>]"
 )
 SHA40 = re.compile(r"[0-9a-f]{40}")
 SETTLE = 60  # seconds the far side waits for the slot's answer; `--wait 0` answers in about one registry read
@@ -166,19 +169,28 @@ class TipRunArgs:
 class WaitArgs:
     request_id: str
     within: int
+    tip: str = ""
 
 
 def parse_wait(args: list[str]) -> WaitArgs:
-    """``--wait <id> [--within <s>]``, ``args`` starting at ``--wait``."""
-    usage = "execution tip-run --wait <id> [--within <s>]"
+    """``--wait <id> [--within <s>] [--tip <branch>]``, ``args`` starting at ``--wait``."""
+    usage = "execution tip-run --wait <id> [--within <s>] [--tip <branch>]"
     if len(args) < 2 or not args[1] or args[1].startswith("-"):
         die(f"{usage}: the request id TIP-RUN STARTED printed is required")
-    rest, within = args[2:], WITHIN
-    if rest:
-        if len(rest) != 2 or rest[0] != "--within" or not rest[1].isdigit():
-            die(f"{usage}: --within takes whole seconds")
-        within = int(rest[1])
-    return WaitArgs(args[1], within)
+    rest, within, tip = args[2:], WITHIN, ""
+    while rest:
+        if len(rest) < 2 or rest[0] not in ("--within", "--tip"):
+            die(usage)
+        if rest[0] == "--within":
+            if not rest[1].isdigit():
+                die(f"{usage}: --within takes whole seconds")
+            within = int(rest[1])
+        else:
+            if not rest[1] or rest[1].startswith("-"):
+                die(f"{usage}: expected a branch for --tip")
+            tip = rest[1]
+        rest = rest[2:]
+    return WaitArgs(args[1], within, tip)
 
 
 def parse(args: list[str]) -> TipRunArgs:
@@ -462,7 +474,7 @@ def cmd_wait(cfg: Config, parsed: WaitArgs) -> int:
         return 1
     if record.get("state") == "concluded":
         cli.say(concluded_line(record))
-        return 0
+        return next_tip(cfg, record, parsed.tip)
     if record.get("state") != "running":
         cli.say(f"TIP-RUN REFUSED {request_id}: it is {record.get('state')}, not a run tip-run started (running); reconcile it")
         return 1
@@ -504,4 +516,20 @@ def cmd_wait(cfg: Config, parsed: WaitArgs) -> int:
         cli.say(f"TIP-RUN UNKNOWN {request_id}: concluded (above), but its record could not be read back; re-issue the wait to read its verdict")
         return 4
     cli.say(concluded_line(record))
+    return next_tip(cfg, record, parsed.tip)
+
+
+def next_tip(cfg: Config, record: dict[str, Any], branch: str) -> int:
+    """With ``--tip``, the loop's next move once its run is concluded (ludics-lite#618: an idle loop
+    starts again as soon as the tip moves): ``TIP-RUN TIP <branch> <sha> moved`` when the branch's
+    head on GitHub is no longer the run's commit, ``... current`` when it is, ``... unread`` with why
+    when GitHub did not answer. Only this line is added; the exit stays 0, the record is concluded."""
+    if not branch:
+        return 0
+    repo = str(field(record, "request", "repository"))
+    read = revision.branch_head(repo, branch, gh_timeout(cfg))
+    if not isinstance(read, str):
+        cli.say(f"TIP-RUN TIP {branch} - unread: {read[0]}")
+    else:
+        cli.say(f"TIP-RUN TIP {branch} {read} {'current' if read == record.get('observed_sha') else 'moved'}")
     return 0

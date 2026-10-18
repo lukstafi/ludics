@@ -75,9 +75,11 @@ class ParseTipAndWait(unittest.TestCase):
     def test_wait_takes_the_id_and_a_bound(self) -> None:
         self.assertEqual(parse_wait(["--wait", "w-gpu-rog-1"]), tiprun.WaitArgs("w-gpu-rog-1", tiprun.WITHIN))
         self.assertEqual(parse_wait(["--wait", "w-gpu-rog-1", "--within", "0"]), tiprun.WaitArgs("w-gpu-rog-1", 0))
+        self.assertEqual(parse_wait(["--wait", "w-gpu-rog-1", "--tip", "main", "--within", "9"]), tiprun.WaitArgs("w-gpu-rog-1", 9, "main"))
         self.assertLess(tiprun.WITHIN, 600, "one --wait fits a foreground tool call")
         for args in (["--wait"], ["--wait", "--within", "5"], ["--wait", "x", "--within"], ["--wait", "x", "--within", "-1"],
-                     ["--wait", "x", "--within", "5s"], ["--wait", "x", "y"], ["--wait", "x", "--within", "5", "--cpu"]):
+                     ["--wait", "x", "--within", "5s"], ["--wait", "x", "y"], ["--wait", "x", "--within", "5", "--cpu"],
+                     ["--wait", "x", "--tip"], ["--wait", "x", "--tip", "--within"]):
             self.refused(parse_wait, args)
 
 
@@ -345,6 +347,20 @@ class Wait(unittest.TestCase):
         rc, out, far, worker = self.wait([[running(state="concluded", verdict="fail")]], None)
         self.assertEqual((rc, far, worker), (0, [], []))
         self.assertIn("TIP-RUN CONCLUDED w-gpu-rog-1 fail", out)
+
+    def test_tip_adds_the_loops_next_move(self) -> None:
+        done = running(state="concluded", verdict="pass", request={"execution_host": "rog-nv-linux", "repository": "o/r"})
+        other = "b" * 40
+        for head, want in [(other, f"TIP-RUN TIP main {other} moved"), (SHA, f"TIP-RUN TIP main {SHA} current"),
+                           (("EXECUTION UNVERIFIED github.com: x", 4), "TIP-RUN TIP main - unread: EXECUTION UNVERIFIED github.com: x")]:
+            with mock.patch.object(tiprun.revision, "branch_head", return_value=head) as read:
+                rc, out, far, _ = self.wait([[done]], None, args=("--tip", "main"))
+            self.assertEqual((rc, far), (0, []), head)
+            self.assertEqual(read.call_args.args[:2], ("o/r", "main"))
+            self.assertEqual(out.splitlines()[-1], want)
+        with mock.patch.object(tiprun.revision, "branch_head", side_effect=AssertionError("GitHub was asked")):
+            rc, out, _, _ = self.wait([[running()]], Done(3, "RUNNING after 1 s of --within 1\n"), args=("--tip", "main"))
+        self.assertEqual(rc, 3, "a run still going has no next move")
 
     def test_records_no_start_wrote_are_refused(self) -> None:
         for records, want in [

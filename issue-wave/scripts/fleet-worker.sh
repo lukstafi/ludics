@@ -171,10 +171,11 @@
 #                          # if one is free now); prints TIP-RUN STARTED <id> <box> <sha> <dir>
 #                          # (exit 0) or TIP-RUN NOT STARTED <id>: <why> (exit 1, anything reserved
 #                          # concluded not-launched)
-#   fleet-worker.sh execution tip-run --wait <id> [--within <s>]
+#   fleet-worker.sh execution tip-run --wait <id> [--within <s>] [--tip <branch>]
 #                          # block on that run (480 s by default) off its record, and conclude it
 #                          # --from-bg-run: TIP-RUN CONCLUDED <id> <verdict> <box> <sha> <dir> (exit
-#                          # 0), TIP-RUN RUNNING ... (exit 3: re-issue) (lib/ludics/fleetworker/tiprun.py)
+#                          # 0; with --tip also TIP-RUN TIP <branch> <sha> moved|current), TIP-RUN
+#                          # RUNNING ... (exit 3: re-issue) (lib/ludics/fleetworker/tiprun.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state and head age; flags <n> (5) or more rounds, or 3 or more
 #                          # after a round 1 of 5 or more inline findings (read-only); --wave

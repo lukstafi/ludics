@@ -852,7 +852,7 @@ controlled through the tools in your coordinator's file, never through those com
     worker's):
 
         fleet-worker.sh execution tip-run <reserve.json> --tip <base> --checkout <dir> -- <command...>
-        fleet-worker.sh execution tip-run --wait <id>
+        fleet-worker.sh execution tip-run --wait <id> --tip <base>
 
     The request is an ordinary non-standing `correctness` request of transport `coordinator`
     with no `requested_revision`: `--tip` reads `<base>`'s head on GitHub and runs exactly that
@@ -866,9 +866,10 @@ controlled through the tools in your coordinator's file, never through those com
     by default. `--wait <id>` is the rest of the run, in one foreground call: it reads the box,
     directory and SHA off the record (nothing copied by hand, so the id and the directory cannot
     drift apart), blocks up to 480 s, and concludes it `--from-bg-run`, printing `TIP-RUN
-    CONCLUDED <id> <verdict> <box> <sha> <dir>`; exit 3 is RUNNING, re-issue it. The cc loop's
-    local run may take the same calls, its request carrying `"integration": true`: yielding is
-    how it finds a quiet box too.
+    CONCLUDED <id> <verdict> <box> <sha> <dir>`, then `TIP-RUN TIP <base> <sha> moved` when the
+    tip has moved past the run, the cue to start the next one at once; exit 3 is RUNNING, re-issue
+    it. The cc loop's local run may take the same calls, its request carrying `"integration":
+    true`: yielding is how it finds a quiet box too.
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
     rerun pending"`; one rerun at the same SHA on a box of that backend under the halt's one
     triage reservation (the same `tip-run`, its request carrying `triage_reason`); green, a
