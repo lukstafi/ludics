@@ -502,6 +502,16 @@ the record's, which is checked too (a record written before this check may hold 
 with its answer lost reuses the SHA the record holds rather than the checkout's HEAD now, so it is
 still the registry's harmless identical retry after the worktree has moved on or gone.
 
+A non-standing request whose `requested_revision` is exactly one commit is concluded only at that
+commit (ludics-lite#634), as a `head-of:` request is at its `resolved_revision`: an `observed_sha`
+naming another commit, in any `dispatch`, `record`, `reconcile` or `conclude` (named, read off
+`--observed-from`, `--sha`, or inherited from the record), is refused naming the reserved one. A
+revision with prose or a ref beside it (`<sha> plus working diff`) is free text and binds nothing,
+and a standing record is exempt: it is concluded at its worker's final head. A deliberate re-pin is
+a new request id; conclude the old one at its reserved commit (`cancelled`, evidence naming the new
+id), or `not-launched` when nothing ran. The rule is `bound_commit` in
+`lib/ludics/fleetworker/registry.py`.
+
 When the run went through OCANNL's `tools/test-run.sh` (or any runner leaving `exit`, `log`,
 `wt` and `cmd` under a run directory), `fleet-worker.sh execution conclude --from-run <run-dir>
 --request <id> --sha <sha> [--box <execution host>] [--evidence <text>]` composes that payload

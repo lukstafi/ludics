@@ -189,5 +189,91 @@ class HeadOf(RegistryCase):
         self.assertIn("invalid resolved revision", err)
 
 
+class Binding(RegistryCase):
+    """ludics-lite#634: a non-standing request for exactly one commit is concluded only at it."""
+
+    SHA, OTHER = "a" * 40, "b" * 40
+    DONE = {"verdict": "pass", "log": "/l", "evidence": "x", "handle": "h", "remote_checkout": "/w"}
+
+    def test_what_binds_is_fail_closed(self) -> None:
+        def bound(**extra: object) -> str | None:
+            return registry.bound_commit({"request_id": "r", "request": request("r", **extra)})
+
+        self.assertEqual(bound(requested_revision=self.SHA), self.SHA)
+        self.assertEqual(bound(requested_revision="e" * 64), "e" * 64)
+        for free in (f"{self.SHA} plus working diff", f" {self.SHA}", f"{self.SHA}\n", self.SHA.upper(),
+                     self.SHA[:39], "origin/main", f"origin/{self.SHA}", f"{self.SHA}^"):
+            self.assertIsNone(bound(requested_revision=free), repr(free))
+        self.assertIsNone(bound(requested_revision=self.SHA, standing=True), "a standing record is exempt")
+        resolved = {"request_id": "h", "resolved_revision": self.OTHER,
+                    "request": request("h", requested_revision="head-of:topic", standing=True)}
+        self.assertEqual(registry.bound_commit(resolved), self.OTHER, "a resolution binds whatever the record")
+        self.assertIsNone(registry.bound_commit({"request": "not an object"}))
+
+    def test_every_payload_naming_another_commit_is_refused_and_the_reserved_one_passes(self) -> None:
+        self.call("reserve", request("e", requested_revision=self.SHA))
+        payloads = [
+            ("dispatch", {"request_id": "e", "evidence": "go", "observed_sha": self.OTHER}),
+            ("reconcile", {"request_id": "e", "state": "running", "evidence": "x", "observed_sha": self.OTHER}),
+        ]
+        for action, payload in payloads:
+            rc, _, err = self.call(action, payload)
+            self.assertEqual(rc, 1, action)
+            self.assertIn(f"observed_sha {self.OTHER} is not {self.SHA}, the exact commit non-standing request e"
+                          " reserved (ludics-lite#634)", err)
+            self.assertIn("reserve that run under a new request id (a deliberate re-pin)", err)
+        self.assertEqual(self.call("dispatch", {"request_id": "e", "evidence": "go", "observed_sha": self.SHA})[0], 0)
+        rc, _, err = self.call("record", {"request_id": "e", "state": "running", "evidence": "x", "observed_sha": self.OTHER})
+        self.assertEqual(rc, 1)
+        self.assertIn("is not " + self.SHA, err)
+        rc, _, err = self.call("conclude", {"request_id": "e", **self.DONE, "observed_sha": self.OTHER})
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.call("list", {})[1][0]["state"], "launching", "a refusal changes nothing")
+        rc, rec, _ = self.call("conclude", {"request_id": "e", **self.DONE, "observed_sha": self.SHA})
+        self.assertEqual((rc, rec["verdict"], rec["observed_sha"]), (0, "pass", self.SHA))
+
+    def test_an_inherited_observed_sha_is_bound_and_not_launched_names_none(self) -> None:
+        self.call("run", request("e", requested_revision=self.SHA))
+        path = os.path.join(self.root, "executions", "e.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["observed_sha"] = self.OTHER  # recorded before the binding existed
+        with open(path, "w") as f:
+            json.dump(data, f)
+        rc, _, err = self.call("conclude", {"request_id": "e", **self.DONE})
+        self.assertEqual(rc, 1)
+        self.assertIn(f"the recorded observed_sha {self.OTHER}, which this conclusion inherits, is not {self.SHA}", err)
+        rc, rec, _ = self.call("conclude", {"request_id": "e", "verdict": "not-launched", "log": "/l", "evidence": "x"})
+        self.assertEqual((rc, rec["verdict"]), (0, "not-launched"))
+
+    def test_standing_free_text_and_concluded_retries_are_not_bound(self) -> None:
+        self.call("run", request("s", requested_revision=self.SHA, standing=True))
+        self.assertEqual(self.call("conclude", {"request_id": "s", **self.DONE, "observed_sha": self.OTHER})[0], 0)
+        self.call("run", request("f", requested_revision=f"{self.SHA} plus working diff"))
+        self.assertEqual(self.call("conclude", {"request_id": "f", **self.DONE, "observed_sha": self.OTHER})[0], 0)
+        # A record concluded at another commit before the binding existed answers its identical retry.
+        self.call("run", request("old", requested_revision=self.SHA))
+        done = {"request_id": "old", **self.DONE, "observed_sha": self.SHA}
+        self.assertEqual(self.call("conclude", done)[0], 0)
+        path = os.path.join(self.root, "executions", "old.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["observed_sha"] = data["history"][-1]["data"]["observed_sha"] = self.OTHER
+        with open(path, "w") as f:
+            json.dump(data, f)
+        rc, rec, _ = self.call("conclude", {**done, "observed_sha": self.OTHER})
+        self.assertEqual((rc, rec["observed_sha"]), (0, self.OTHER))
+
+    def test_a_resolved_head_of_conclusion_inheriting_another_commit_is_refused(self) -> None:
+        self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
+        self.call("record", {"request_id": "h", "state": "running", "evidence": "x", "observed_sha": self.SHA})
+        self.call("reconcile", {"request_id": "h", "state": "reserved", "evidence": "nothing ran"})
+        self.call("dispatch", {"request_id": "h", "evidence": "go", "resolved_revision": self.OTHER})
+        rc, _, err = self.call("conclude", {"request_id": "h", **self.DONE})
+        self.assertEqual(rc, 1)
+        self.assertIn(f"the recorded observed_sha {self.SHA}, which this conclusion inherits, is not {self.OTHER},"
+                      " the commit head-of:topic was resolved to at assignment", err)
+
+
 if __name__ == "__main__":
     unittest.main()
