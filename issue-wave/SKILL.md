@@ -851,22 +851,25 @@ controlled through the tools in your coordinator's file, never through those com
   - **One call per run**, in a checkout on the box that is the coordinator's own (never a
     worker's):
 
-        fleet-worker.sh execution tip-run <reserve.json> --checkout <dir> -- <command...>
+        fleet-worker.sh execution tip-run <reserve.json> --tip <base> --checkout <dir> -- <command...>
+        fleet-worker.sh execution tip-run --wait <id> --tip <base>
 
     The request is an ordinary non-standing `correctness` request of transport `coordinator`
-    whose `requested_revision` is exactly the SHA to run (`git ls-remote origin
-    refs/heads/<base>` for the tip). It yields as above, reserves and dispatches (`execution
-    run`, with every check that makes, a halt's included), checks the SHA out detached in the
-    clean checkout, starts the command under `execution slot --bg` on a GPU token (`--cpu` for
-    a CPU backend), records it running, and prints `TIP-RUN STARTED <id> <box> <sha> <dir>`;
-    or `TIP-RUN NOT STARTED <id>: <why>` (exit 1), with anything it reserved concluded
-    `not-launched`. For OCANNL the command is `tools/test-run.sh run --test-cap 0 build
-    @runtest @train`, which runs the box's own backend by default. Block on the run with `ssh
-    <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh wait <dir>'`, or try the conclusion at
-    each supervision pass (a RUNNING run is refused, never concluded): `fleet-worker.sh
-    execution conclude --from-bg-run <dir> --request <id> --sha <sha>`. The cc loop's local run
-    may take the same call, its request carrying `"integration": true`: yielding is how it
-    finds a quiet box too.
+    with no `requested_revision`: `--tip` reads `<base>`'s head on GitHub and runs exactly that
+    SHA (a rerun names the red SHA as `requested_revision` instead, without `--tip`). It yields
+    as above, reserves and dispatches (`execution run`, with every check that makes, a halt's
+    included), checks the SHA out detached in the clean checkout, starts the command under
+    `execution slot --bg` on a GPU token (`--cpu` for a CPU backend), records it running, and
+    prints `TIP-RUN STARTED <id> <box> <sha> <dir>`; or `TIP-RUN NOT STARTED <id>: <why>` (exit
+    1), with anything it reserved concluded `not-launched`. For OCANNL the command is
+    `tools/test-run.sh run --test-cap 0 build @runtest @train`, which runs the box's own backend
+    by default. `--wait <id>` is the rest of the run, in one foreground call: it reads the box,
+    directory and SHA off the record (nothing copied by hand, so the id and the directory cannot
+    drift apart), blocks up to 480 s, and concludes it `--from-bg-run`, printing `TIP-RUN
+    CONCLUDED <id> <verdict> <box> <sha> <dir>`, then `TIP-RUN TIP <base> <sha> moved` when the
+    tip has moved past the run, the cue to start the next one at once; exit 3 is RUNNING, re-issue
+    it. The cc loop's local run may take the same calls, its request carrying `"integration":
+    true`: yielding is how it finds a quiet box too.
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
     rerun pending"`; one rerun at the same SHA on a box of that backend under the halt's one
     triage reservation (the same `tip-run`, its request carrying `triage_reason`); green, a
@@ -1014,8 +1017,8 @@ execution - `execution run <reserve.json>` then `execution conclude --from-run <
 --request <id> --sha <sha>` - plus a standing reservation per worker for its own iteration
 batches on its agent host, and one on its GPU home box (executions.md, *The GPU home box*),
 taken at launch and concluded at hand-back, with `execution slot` around each batch
-bounding the box's load; an integration-loop run is one `execution tip-run` call, concluded
-`--from-bg-run` (*Supervise*). A measurement on a box where those are outstanding opens with
+bounding the box's load; an integration-loop run is `execution tip-run`, concluded by its
+`--wait <id>` (*Supervise*). A measurement on a box where those are outstanding opens with
 `execution window <box> <reserve.json>` in place of `run`, which suspends them until it concludes
 (executions.md, *The measurement window*, which also says how to batch a box's pending
 measurements). `load` is an observation, not ownership, and neither it nor these

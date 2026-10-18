@@ -12,9 +12,14 @@ loop's carries ``"integration": true``; the GPU loop's does not, so the base gat
 In order, each step yielding rather than waiting:
 
  1. THE REQUEST is ``execution run``'s payload, a non-standing ``correctness`` request of transport
-    ``coordinator`` whose ``requested_revision`` is exactly one full commit SHA: the tip the caller
-    read, or a red tip being rerun. Anything else is a usage refusal (exit 2) before the anchor is
-    asked.
+    ``coordinator`` whose ``requested_revision`` is exactly one full commit SHA: a red tip being
+    rerun, or the tip itself. With ``--tip <branch>`` the payload names no ``requested_revision``
+    and the run reads it (ludics-lite#616): the commit ``<branch>`` of the request's repository
+    names on GitHub now (``revision.branch_head``, the read a ``head-of:`` request's dispatch
+    makes), written into the request before anything else sees it, so the record holds that one
+    SHA as if the caller had named it. A payload naming one beside ``--tip`` is refused: one
+    source for the revision. Any other shape is a usage refusal (exit 2) before GitHub or the
+    anchor is asked; a branch GitHub does not answer for starts nothing and reserves nothing (exit 1).
  2. THE YIELD. The registry is read, before the reservation and again once it is published (the
     first read is not atomic with it: of two runs racing, each then sees the other, or the later
     one the earlier one, so two never run at once), and a record outstanding on the execution
@@ -57,6 +62,30 @@ Exit: 0 started and recorded, one line ``TIP-RUN STARTED <id> <box> <sha> <run d
 unknown, ``TIP-RUN UNKNOWN <id>: <why>`` (a run started but not recorded among them, its directory
 named; the record is left for the coordinator to reconcile). What the steps print themselves (the
 dispatched record, the refresh line) goes to stderr.
+
+THE END: ``execution tip-run --wait <id> [--within <s>]`` (ludics-lite#616) blocks on a started run
+inside one foreground tool call and concludes it. It takes the request id alone: the box, the run
+directory and the SHA are read off the record the start wrote, so the id and the directory a
+waiter watches cannot drift apart (wave-20261014's hand-written loop watched the wrong one twice).
+What it reads, a fail-closed allowlist:
+  - a ``concluded`` record: its verdict is reported again (a retry after a lost answer), as
+    ``TIP-RUN CONCLUDED <id> <verdict> <box> <sha> <dir>``, ``-`` for a field it has none of;
+    nothing is read on a box;
+  - a ``running`` record whose ``handle`` is ``bg-run:<execution host>:<absolute dir>`` and whose
+    ``observed_sha`` is one full SHA -- what the start records, and nothing else: any other state
+    or handle is refused (exit 1), naming it, and left to the coordinator.
+On the box, the coordinator's own ``bg-run.sh`` (carried in the script, as ``--from-bg-run``'s far
+side does) waits on the directory for up to ``--within`` seconds (``WITHIN``, 480: the tool call's
+600 s cap less the registry and GitHub calls around it). Its verdict decides, and nothing else:
+``rc=`` or ``STOPPED`` concludes the record with ``execution conclude --from-bg-run <dir> --request
+<id> --sha <sha>`` (its verdict mapping is that one's) and reports the record's verdict as above,
+exit 0; ``RUNNING`` prints ``TIP-RUN RUNNING <id> <box> <dir>: <wait's line>``, exit 3, to be
+re-issued; any other answer (``STARTING``, ``DIED``, an unreachable box, a conclusion that did not
+land) prints ``TIP-RUN UNKNOWN <id>: <why>``, exit 4, and concludes nothing. Exit 0 says the record
+is concluded, not that the run passed: the verdict is the line's fourth word. With ``--tip <branch>``
+a concluded answer adds the loop's next move (ludics-lite#618), read off GitHub as ``--tip`` reads
+it at the start: ``TIP-RUN TIP <branch> <sha> moved`` (the tip is past the run: start the next one
+now), ``... current`` (nothing new to run), or ``TIP-RUN TIP <branch> - unread: <why>``.
 """
 
 import json
@@ -69,14 +98,20 @@ from typing import Any, cast
 
 from ludics import cli
 from ludics.fleetworker.config import Config
-from ludics.fleetworker.execution import field, listing, record_of, records_of
+from ludics.fleetworker import revision
+from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.preflight import refresh_box
 from ludics.fleetworker.transport import err, is_local, prelude, run, run_on
 
-USAGE = "execution tip-run <json-file> --checkout <dir> [--runs <dir>] [--cpu] -- <command> [args...]"
+USAGE = (
+    "execution tip-run <json-file> [--tip <branch>] --checkout <dir> [--runs <dir>] [--cpu] -- <command> [args...],"
+    " or tip-run --wait <id> [--within <s>] [--tip <branch>]"
+)
 SHA40 = re.compile(r"[0-9a-f]{40}")
 SETTLE = 60  # seconds the far side waits for the slot's answer; `--wait 0` answers in about one registry read
+WITHIN = 480  # --wait's default bound on the box: under the 600 s tool cap with the calls around it
+HANDLE = re.compile(r"bg-run:([^:]+):(/.*)", re.DOTALL)
 
 # Far side, on the execution host, read by `bash -s` from stdin: so every child that could read
 # stdin is given /dev/null, or it would eat the rest of this script. Args: checkout, sha, runs parent (empty: $STATE/tip-runs), the
@@ -127,13 +162,48 @@ class TipRunArgs:
     runs: str
     cpu: bool
     command: list[str]
+    tip: str = ""
+
+
+@dataclass(frozen=True)
+class WaitArgs:
+    request_id: str
+    within: int
+    tip: str = ""
+
+
+def parse_wait(args: list[str]) -> WaitArgs:
+    """``--wait <id> [--within <s>] [--tip <branch>]``, ``args`` starting at ``--wait``."""
+    usage = "execution tip-run --wait <id> [--within <s>] [--tip <branch>]"
+    if len(args) < 2 or not args[1] or args[1].startswith("-"):
+        die(f"{usage}: the request id TIP-RUN STARTED printed is required")
+    rest, within, tip = args[2:], WITHIN, ""
+    while rest:
+        if len(rest) < 2 or rest[0] not in ("--within", "--tip"):
+            die(usage)
+        if rest[0] == "--within":
+            if not rest[1].isdigit():
+                die(f"{usage}: --within takes whole seconds")
+            within = int(rest[1])
+        else:
+            if not rest[1] or rest[1].startswith("-"):
+                die(f"{usage}: expected a branch for --tip")
+            tip = rest[1]
+        rest = rest[2:]
+    return WaitArgs(args[1], within, tip)
 
 
 def parse(args: list[str]) -> TipRunArgs:
-    payload, checkout, runs, cpu = "", "", "", False
+    payload, checkout, runs, cpu, tip = "", "", "", False, ""
     i = 0
     while i < len(args):
         arg = args[i]
+        if arg == "--tip":
+            if i + 1 >= len(args) or not args[i + 1] or args[i + 1].startswith("-"):
+                die("execution tip-run: expected a branch for --tip")
+            tip = args[i + 1]
+            i += 2
+            continue
         if arg in ("--checkout", "--runs"):
             if i + 1 >= len(args) or not args[i + 1]:
                 die(f"execution tip-run: expected a directory for {arg}")
@@ -153,7 +223,7 @@ def parse(args: list[str]) -> TipRunArgs:
                 die("execution tip-run: a command to run is required, after --")
             if not payload or not checkout:
                 die(USAGE)
-            return TipRunArgs(payload, checkout, runs, cpu, command)
+            return TipRunArgs(payload, checkout, runs, cpu, command, tip)
         elif not payload and not arg.startswith("-"):
             payload = arg
         else:
@@ -162,8 +232,9 @@ def parse(args: list[str]) -> TipRunArgs:
     die(USAGE)
 
 
-def request_problem(request: Any) -> str | None:
-    """Why the payload cannot be a loop run's request, or None (the registry checks the rest)."""
+def request_problem(request: Any, tip: bool = False) -> str | None:
+    """Why the payload cannot be a loop run's request, or None (the registry checks the rest).
+    With ``tip`` (``--tip``) the revision is the run's to read, so the payload names none."""
     if not isinstance(request, dict):
         return "the payload is not a JSON object"
     fields = cast(dict[str, Any], request)
@@ -176,9 +247,13 @@ def request_problem(request: Any) -> str | None:
         return "transport must be coordinator: a loop run is the coordinator's own"
     if "standing" in fields:
         return "a loop run is never standing: it is one run, concluded when it ends"
-    revision = fields.get("requested_revision")
-    if not (isinstance(revision, str) and SHA40.fullmatch(revision)):
-        return "requested_revision must be exactly one full 40-hex commit SHA, the revision the run checks out"
+    named = fields.get("requested_revision")
+    if tip:
+        if "requested_revision" in fields:
+            return "--tip reads the revision, so the payload names no requested_revision: give one or the other"
+        return None
+    if not (isinstance(named, str) and SHA40.fullmatch(named)):
+        return "requested_revision must be exactly one full 40-hex commit SHA, the revision the run checks out, or --tip <branch>"
     return None
 
 
@@ -239,16 +314,29 @@ def not_started(cfg: Config, request_id: str, why: str, log: str) -> int:
 
 
 def cmd_tip_run(cfg: Config, args: list[str]) -> int:
+    if args and args[0] == "--wait":
+        return cmd_wait(cfg, parse_wait(args))
     parsed = parse(args)
     try:
         with open(parsed.payload, encoding="utf-8", errors="surrogateescape") as f:
             request: Any = json.loads(f.read())
     except (OSError, ValueError) as exc:
         die(f"execution tip-run: {parsed.payload} is not a readable JSON request ({exc})")
-    problem = request_problem(request)
+    problem = request_problem(request, bool(parsed.tip))
     if problem:
         die(f"execution tip-run: {problem}")
     fields = cast(dict[str, Any], request)
+    resolved: dict[str, Any] | None = None
+    if parsed.tip:
+        repo = str(fields["repository"])
+        read = revision.branch_head(repo, parsed.tip, gh_timeout(cfg))
+        if not isinstance(read, str):
+            cli.say(read[0])
+            cli.say(f"TIP-RUN NOT STARTED {fields['request_id']}: the tip of {parsed.tip} in {repo} could not be read (above); nothing reserved")
+            return 1
+        resolved = {**fields, "requested_revision": read}
+        fields = resolved
+        err(f"TIP-RUN TIP {fields['request_id']}: {parsed.tip} is {read} in {repo} on GitHub now; the run checks out that commit")
     request_id, box, sha = fields["request_id"], fields["execution_host"], fields["requested_revision"]
 
     listed = listing(cfg)
@@ -266,7 +354,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         cli.say(f"TIP-RUN NOT STARTED {request_id}: {box} has {', '.join(busy)} outstanding; a loop run yields to it; nothing reserved")
         return 1
 
-    rc = fleet_worker(cfg, ["execution", "run", parsed.payload])
+    # A resolved request is staged anew: the file names no revision.
+    rc = fleet_worker(cfg, ["execution", "run"], resolved) if resolved else fleet_worker(cfg, ["execution", "run", parsed.payload])
     if rc != 0:
         if rc == 4:
             cli.say(f"TIP-RUN UNKNOWN {request_id}: the reservation's outcome is unknown (above); reconcile it")
@@ -319,7 +408,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
                 " read its log, then record or conclude the reservation")
         return 4
     running = {"request_id": request_id, "state": "running",
-               "evidence": f"tip-run: {shlex.join(parsed.command)} under execution slot --bg on {box}, at {sha} in a clean checkout",
+               "evidence": f"tip-run: {shlex.join(parsed.command)} under execution slot --bg on {box}, at {sha} in a clean checkout"
+                           + (f" (the tip of {parsed.tip} on GitHub when the run started)" if parsed.tip else ""),
                "observed_sha": sha, "remote_checkout": parsed.checkout,
                "handle": f"bg-run:{box}:{run_dir}", "log": f"{box}:{run_dir}/log"}
     if fleet_worker(cfg, ["execution", "record"], running) != 0:
@@ -327,4 +417,119 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
                 " take its running record (above); the record stays dispatched, record it by hand")
         return 4
     cli.say(f"TIP-RUN STARTED {request_id} {box} {sha} {run_dir}")
+    return 0
+
+
+# Far side of `--wait`, on the run's box: the coordinator's bg-run.sh, carried in the script, waits on
+# the directory. Args: the run directory, the bound. Prints wait's one line and exits with its code
+# (its heartbeats go to stderr, passed through), or one TIP-RUN REFUSED line, exit 1, for a
+# directory that is not there.
+WAIT_HEAD = r"""dir="$1" within="$2"
+[ -d "$dir" ] || { echo "TIP-RUN REFUSED: no run directory $dir on $BOX"; exit 1; }
+bash -s -- wait "$dir" --within "$within" <<'FLEET_BG_RUN_SH'
+"""
+WAIT_TAIL = "FLEET_BG_RUN_SH\n"
+
+
+def started_run(record: dict[str, Any]) -> tuple[str, str, str] | str:
+    """A running record the start wrote, as (box, dir, sha), or why it is not one."""
+    host = field(record, "request", "execution_host")
+    handle, sha = record.get("handle"), record.get("observed_sha")
+    found = HANDLE.fullmatch(handle) if isinstance(handle, str) else None
+    if found is None or found.group(1) != host:
+        return f"its handle is {json.dumps(handle)}, not bg-run:{host}:<dir>, the one a started tip-run records"
+    if not (isinstance(sha, str) and SHA40.fullmatch(sha)):
+        return f"its observed_sha is {json.dumps(sha)}, not one full SHA"
+    return found.group(1), found.group(2), sha
+
+
+def concluded_line(record: dict[str, Any]) -> str:
+    """``TIP-RUN CONCLUDED <id> <verdict> <box> <sha> <dir>`` off a concluded record, ``-`` for a
+    field it lacks (a not-launched record names no run)."""
+    handle = record.get("handle")
+    found = HANDLE.fullmatch(handle) if isinstance(handle, str) else None
+    words = [record.get("verdict"), field(record, "request", "execution_host"), record.get("observed_sha"),
+             found.group(2) if found else None]
+    shown = [w if isinstance(w, str) and w else "-" for w in words]
+    return f"TIP-RUN CONCLUDED {record.get('request_id')} {' '.join(shown)}"
+
+
+def read_record(cfg: Config, request_id: str) -> dict[str, Any] | None | str:
+    """The record of ``request_id``, None when the registry holds none, or why it could not be read."""
+    listed = listing(cfg)
+    records = records_of(listed.out) if listed.rc == 0 else None
+    if records is None:
+        return f"the anchor's registry could not be read (exit {listed.rc})"
+    return record_of(records, request_id)
+
+
+def cmd_wait(cfg: Config, parsed: WaitArgs) -> int:
+    request_id = parsed.request_id
+    record = read_record(cfg, request_id)
+    if isinstance(record, str):
+        cli.say(f"TIP-RUN UNKNOWN {request_id}: {record}; nothing waited on")
+        return 4
+    if record is None:
+        cli.say(f"TIP-RUN REFUSED {request_id}: the registry holds no such request")
+        return 1
+    if record.get("state") == "concluded":
+        cli.say(concluded_line(record))
+        return next_tip(cfg, record, parsed.tip)
+    if record.get("state") != "running":
+        cli.say(f"TIP-RUN REFUSED {request_id}: it is {record.get('state')}, not a run tip-run started (running); reconcile it")
+        return 1
+    run_facts = started_run(record)
+    if isinstance(run_facts, str):
+        cli.say(f"TIP-RUN REFUSED {request_id}: {run_facts}; conclude it by hand")
+        return 1
+    box, run_dir, sha = run_facts
+    bgrun = os.path.join(cfg.here, "bg-run.sh")
+    try:
+        with open(bgrun, encoding="utf-8", errors="surrogateescape") as f:
+            bg_source = f.read()
+    except OSError as exc:
+        die(f"execution tip-run --wait: cannot read {bgrun} ({exc.strerror})")
+    script = prelude(cfg, box) + WAIT_HEAD + bg_source + WAIT_TAIL
+    done = run_on(cfg, box, script, [run_dir, str(parsed.within)], capture=True)
+    lines = done.out.rstrip("\n").split("\n")
+    said = lines[-1] if lines else ""
+    if done.unreachable:
+        cli.say(f"TIP-RUN UNKNOWN {request_id}: {box} did not answer; nothing concluded, re-issue the wait")
+        return 4
+    if done.rc == 1 and said.startswith("TIP-RUN REFUSED: "):
+        cli.say(f"TIP-RUN UNKNOWN {request_id}: {said[len('TIP-RUN REFUSED: '):]}; nothing concluded, reconcile it")
+        return 4
+    if done.rc == 3 and said.startswith("RUNNING"):
+        cli.say(f"TIP-RUN RUNNING {request_id} {box} {run_dir}: {said}")
+        return 3
+    if not ((done.rc == 0 and said.startswith("rc=")) or (done.rc == 7 and said.startswith("STOPPED"))):
+        cli.say(f"TIP-RUN UNKNOWN {request_id}: bg-run.sh wait on {run_dir} on {box} said {said!r} (exit {done.rc});"
+                " nothing concluded, reconcile it (bg-run.sh's header reads the verdict)")
+        return 4
+    rc = fleet_worker(cfg, ["execution", "conclude", "--from-bg-run", run_dir, "--request", request_id, "--sha", sha, "--box", box])
+    if rc != 0:
+        cli.say(f"TIP-RUN UNKNOWN {request_id}: the run in {run_dir} on {box} ended ({said}), but the conclusion did not land"
+                " (above); re-issue the wait")
+        return 4
+    record = read_record(cfg, request_id)
+    if not isinstance(record, dict) or record.get("state") != "concluded":
+        cli.say(f"TIP-RUN UNKNOWN {request_id}: concluded (above), but its record could not be read back; re-issue the wait to read its verdict")
+        return 4
+    cli.say(concluded_line(record))
+    return next_tip(cfg, record, parsed.tip)
+
+
+def next_tip(cfg: Config, record: dict[str, Any], branch: str) -> int:
+    """With ``--tip``, the loop's next move once its run is concluded (ludics-lite#618: an idle loop
+    starts again as soon as the tip moves): ``TIP-RUN TIP <branch> <sha> moved`` when the branch's
+    head on GitHub is no longer the run's commit, ``... current`` when it is, ``... unread`` with why
+    when GitHub did not answer. Only this line is added; the exit stays 0, the record is concluded."""
+    if not branch:
+        return 0
+    repo = str(field(record, "request", "repository"))
+    read = revision.branch_head(repo, branch, gh_timeout(cfg))
+    if not isinstance(read, str):
+        cli.say(f"TIP-RUN TIP {branch} - unread: {read[0]}")
+    else:
+        cli.say(f"TIP-RUN TIP {branch} {read} {'current' if read == record.get('observed_sha') else 'moved'}")
     return 0

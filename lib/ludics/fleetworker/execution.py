@@ -821,7 +821,7 @@ USAGE = (
     "execution: list, slot -- <command>, hold -- <command>, leg --request <id> ... -- <runner>,"
     " run|reserve|dispatch|record|reconcile|conclude <json-file>, window <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
-    " or tip-run <json-file> --checkout <dir> -- <command>"
+    " or tip-run <json-file> [--tip <branch>] --checkout <dir> -- <command>, tip-run --wait <id>"
 )
 CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"
 
