@@ -877,7 +877,10 @@ base that moved with no build input among the paths both sides changed merges un
 nothing changed on both sides the config is not even read; a repository without
 `.github/ship-pr-merge-build` merges the clash unbuilt, as before; a line outside the config's
 grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2. Each build case
-then checks the clone: its working tree, its worktree list and its refs are as they were.
+then checks the clone: its working tree, its worktree list and its refs are as they were. Under Git
+Bash the merge build is POSIX-only by design, so the cases that would build (the clash, its control
+and the merge outside a clone) assert its refusal there instead (exit 2, why the merge needed a
+build and where to run it, nothing built or merged, the clone untouched; ludics-lite#515).
 `lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the glob boundary, the remote
 match, a textual conflict, a moved head, a build past its bound, an interrupted merge and a process
 the build leaves behind (neither outlives the merge), a shallow or a partial clone (exit 2), a

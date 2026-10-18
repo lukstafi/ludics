@@ -2346,6 +2346,27 @@ build_fixture() { # <kind>
 
 MERGE_BUILD_SH=$'# The fixture\'s merge build.\ncommand sh ./api.sh\ninput *.sh\ntimeout 120'
 
+# Under Git Bash (and MSYS, Cygwin) pr-review runs on Windows' Python -- scripts/py takes the `py`
+# launcher there, the same uname arms -- and a merge that needs a build is refused by design
+# (exit 2, mergebuild.py's HOSTS AND CLONES boundary) before anything is built or merged. So each
+# case that would build asserts that refusal there, and the build's own verdicts on POSIX hosts
+# only; a case whose merge needs no build runs the same everywhere (ludics-lite#515).
+case "$(uname -s 2>/dev/null)" in
+MINGW* | MSYS* | CYGWIN*) MERGE_BUILD_RUNS=0 ;;
+*) MERGE_BUILD_RUNS=1 ;;
+esac
+
+# The Windows refusal of a merge that needs a build (exit 2): it names why the merge needed one and
+# where to run it, builds nothing, makes no merge call and leaves the clone as it was.
+assert_posix_only_refusal() { # <what>
+  assert_eq "$MERGE_RC" 2 "$1 is refused under Windows, the merge build being POSIX-only ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "NOT merging $REPO#7: 1 build input(s) changed on both sides: api.sh, and the merge build runs on POSIX hosts only (the fleet's macOS and Linux boxes). Run this merge from one of them." \
+    "the refusal names why it needed a build and where to run it"
+  assert_not_contains "$MERGE_STDOUT" "merge build $REPO#7" "nothing was built"
+  assert_no_merge_call
+  assert_clone_untouched
+}
+
 # The caller's clone after a merge build: its working tree, its worktrees and every ref as they
 # were -- its remote-tracking ones included.
 assert_clone_untouched() {
@@ -2363,6 +2384,10 @@ test_a_merge_commit_that_does_not_build_is_refused() {
   build_fixture clash
   MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
   FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge commit that needs a build"
+    return 0
+  fi
   assert_eq "$MERGE_RC" 1 "a merge commit that does not build is refused ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDOUT" '1 path(s) changed on both sides, all in DISJOINT hunks' \
     "the incident's shape: git merges the two by construction"
@@ -2389,6 +2414,10 @@ test_a_merge_commit_that_builds_merges() {
   build_fixture compatible
   MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
   FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge commit that would build"
+    return 0
+  fi
   assert_eq "$MERGE_RC" 0 "a merge commit that builds merges ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDOUT" "merge build $REPO#7: PASSED" "says the build passed"
   assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
@@ -2444,6 +2473,11 @@ test_an_unusable_merge_build_never_merges() {
   MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
   MERGE_CWD=$TEST_ROOT
   FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    # The host refusal comes before the clone is looked for.
+    assert_posix_only_refusal "a merge build outside a clone"
+    return 0
+  fi
   assert_eq "$MERGE_RC" 2 "a merge build outside a clone refuses ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDERR" "Run merge from a clone of $REPO" "and says where to run it"
   assert_no_merge_call
