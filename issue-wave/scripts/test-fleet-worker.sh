@@ -17,8 +17,10 @@
 #
 # Each section prints its elapsed time when it ends, and a run that blocks fails by name: a section
 # (or the setup between two) still running after FLEET_WORKER_TEST_SECTION_TIMEOUT seconds (default
-# 300; 0 or off disables the watchdog) is reported, and the run's process group stopped. See the
-# section watchdog below.
+# 600; 0 or off disables the watchdog) is reported, and the run's process group stopped. See the
+# section watchdog below. The default is sized on the slowest section measured: `unstick`, 350 s on
+# GitHub's macOS runner, 240 s on its Ubuntu one and on a loaded mac-studio (ludics-lite#640's
+# follow-up); a CI job with a tighter cap sets its own bound in skill-scripts.yml.
 
 set -uo pipefail
 # No `... | grep -q` under that pipefail: grep exits on its first match and the writer takes
@@ -79,7 +81,7 @@ needs more than that -- the coordinator lease, a finished worker to read -- take
 it itself, so any section stands on its own.
 
 Each section prints its elapsed time. One still running after
-FLEET_WORKER_TEST_SECTION_TIMEOUT seconds (default 300; 0 or off disables this)
+FLEET_WORKER_TEST_SECTION_TIMEOUT seconds (default 600; 0 or off disables this)
 fails the run by its name, and the run's processes are stopped.
 USAGE
 }
@@ -114,7 +116,7 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-SECTION_TIMEOUT=${FLEET_WORKER_TEST_SECTION_TIMEOUT:-300}
+SECTION_TIMEOUT=${FLEET_WORKER_TEST_SECTION_TIMEOUT:-600}
 case "$SECTION_TIMEOUT" in
   off) SECTION_TIMEOUT=0 ;;
   '' | *[!0-9]*)
