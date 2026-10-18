@@ -5,8 +5,12 @@ import contextlib
 import fcntl
 import io
 import os
+import json
 import shutil
+import subprocess
 import tempfile
+import threading
+import time
 import unittest
 
 from typing import Any
@@ -17,16 +21,21 @@ from ludics.fleetworker import slot
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.slot import (
     Covered,
+    Holder,
     Inside,
     Refused,
     Take,
     Uncovered,
     Unread,
     await_measurements,
+    drain_slot,
+    holder_line,
     judge_measurement,
     judge_nested,
     parse_slot,
+    read_holder,
     read_registry,
+    record_holder,
     unreachable_lines,
 )
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -107,6 +116,190 @@ class MeasurementHold(Locks):
         ):
             self.assertEqual(judge_measurement("testbox", self.dir, marker, measuring), Uncovered(reason), marker)
 
+
+def ended_pid() -> int:
+    done = subprocess.run(["sh", "-c", "echo $$"], capture_output=True, text=True, check=True)
+    return int(done.stdout)
+
+
+class HolderRecord(Locks):
+    """THE HOLDER RECORD (ludics-lite#668): what a slot's taker writes, and the drain's naming of it."""
+
+    def path(self) -> str:
+        return os.path.join(self.dir, "slot.1")
+
+    def locked(self) -> bool:
+        descriptor = os.open(self.path(), os.O_RDWR)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(descriptor)
+        return False
+
+    def write(self, text: str) -> None:
+        with open(self.path(), "w") as stream:
+            stream.write(text)
+
+    def test_a_take_records_its_pid_command_and_deadline_over_an_earlier_record(self) -> None:
+        self.write(json.dumps({"pid": 1, "command": ["an", "earlier", "taker's", "much longer", "record"] * 50,
+                               "started": 0, "deadline": None}))
+        descriptor = os.open(self.path(), os.O_RDWR)
+        self.held.append(descriptor)
+        before = time.time()
+        record_holder(descriptor, ["sleep", "30"], 6000)
+        holder = read_holder(self.path())
+        assert holder is not None
+        self.assertEqual((holder.pid, holder.command, holder.deadline), (os.getpid(), ("sleep", "30"), 6000))
+        self.assertGreaterEqual(holder.started, before)
+        record_holder(descriptor, ["true"], None)  # shorter than the record it replaces: nothing of that is left
+        again = read_holder(self.path())
+        self.assertEqual((again.command, again.deadline) if again else None, (("true",), None))
+
+    def test_the_reader_takes_the_allowlisted_shape_or_nothing(self) -> None:
+        good: dict[str, object] = {"pid": 7, "command": ["x"], "started": 1.5, "deadline": 60, "other": [1]}
+        self.write(json.dumps(good))
+        self.assertEqual(read_holder(self.path()), Holder(7, ("x",), 1.5, 60))
+        self.write(json.dumps(good | {"expires": 12.5}))
+        self.assertEqual(read_holder(self.path()), Holder(7, ("x",), 1.5, 60, 12.5))
+        bads: list[dict[str, object]] = [
+            {"pid": True}, {"pid": 0}, {"pid": "7"}, {"command": []}, {"command": "x"}, {"command": ["x", 1]},
+            {"started": "1"}, {"started": False}, {"deadline": 0}, {"deadline": 1.5}, {"deadline": True},
+            {"pid": 2**31}, {"expires": "1"}, {"expires": True}, {"started": 10**400}, {"expires": 10**400},
+        ]
+        for bad in bads:
+            self.write(json.dumps(good | bad))
+            self.assertIsNone(read_holder(self.path()), bad)
+        for text in ("", "not json", "[]", "[" * 60000, '{"pid": 7, "command": ["x"], "started": NaN, "deadline": null}',
+                     json.dumps(good | {"pad": "x" * slot.HOLDER_READ})):
+            self.write(text)
+            self.assertIsNone(read_holder(self.path()), text[:40])
+        self.assertIsNone(read_holder(os.path.join(self.dir, "slot.9")))
+
+    def line(self, holder: Holder | None, now: float = 10_000.0, clock: float = 0.0,
+             waited: float | None = None) -> str:
+        return holder_line("testbox", "m1", 2, holder, now, clock, waited)
+
+    def test_the_line_names_a_holder_that_may_hold_the_slot_long_as_recorded(self) -> None:
+        now = 10_000.0
+        unbounded = self.line(Holder(4242, ("sleep", "a b"), now - 125, None), now)
+        self.assertEqual(unbounded, "EXECUTION HOLD testbox: measurement m1 waits on slot 2: recorded holder pid 4242,"
+                         " slot taken 2m ago, no --deadline recorded; for: sleep 'a b'")
+        # The cap left is read on the clock the deadline is enforced on: ``expires`` against
+        # time.monotonic(), whatever the wall clock says.
+        capped = self.line(Holder(4242, ("tune",), now - 600, 6000, 5400.0), now, 0.0, 310)
+        self.assertEqual(capped, "EXECUTION HOLD testbox: measurement m1 still waits for slot 2 after 5m: recorded holder"
+                         " pid 4242, slot taken 10m ago, recorded --deadline 6000s, about 1h30m left; for: tune")
+        # Before its command starts, all of its deadline is ahead.
+        self.assertIn("about 1h40m left;", str(self.line(Holder(4242, ("tune",), now - 600, 6000), now)))
+        # A short or spent cap is reported too: the record may be an earlier taker's, so no
+        # record of it may silence the line.
+        self.assertIn("recorded --deadline 60s, about 30s left;", self.line(Holder(4242, ("x",), now, 60, 30.0), now))
+        self.assertIn("recorded --deadline 60s, about 0s left;", self.line(Holder(4242, ("x",), now, 60, -5.0), now))
+
+    def test_the_line_judges_nothing_about_the_pid_and_advises_nothing(self) -> None:
+        # An ended pid is said as recorded too: the record is what the line reports.
+        line = str(self.line(Holder(ended_pid(), ("x",), 0.0, None), 0.0))
+        self.assertIn("recorded holder pid", line)
+        self.assertNotIn("stop", line)
+
+    def test_no_record_is_said(self) -> None:
+        self.assertIn("measurement m1 waits on slot 2: its holder left no record of its command or --deadline",
+                      str(self.line(None)))
+
+    def test_a_recorded_command_is_quoted_on_one_line(self) -> None:
+        line = str(self.line(Holder(4242, ("sh", "-c", "a\nb\x1b"), 0.0, None), 0.0))
+        self.assertTrue(line.endswith("for: sh -c 'a\\nb\\x1b'"), line)
+        self.assertNotIn("\n", line)
+
+    def drain(self, repeat: float, release_after: float | None) -> tuple[str, float]:
+        descriptor = os.open(self.path(), os.O_CREAT | os.O_RDWR, 0o644)
+        self.held.append(descriptor)
+        err = io.StringIO()
+        start = time.monotonic()
+        if release_after is not None:
+            holder = self.held.pop(0)
+            threading.Timer(release_after, os.close, [holder]).start()
+        with contextlib.redirect_stderr(err):
+            drain_slot("testbox", "m1", self.path(), descriptor, 1, repeat)
+        return err.getvalue(), time.monotonic() - start
+
+    def test_a_free_slot_is_taken_saying_nothing(self) -> None:
+        out, _ = self.drain(0.1, None)
+        self.assertEqual(out, "")
+        self.assertTrue(self.locked())
+
+    def test_the_drain_keeps_its_line_then_names_the_holder_at_once_and_again(self) -> None:
+        self.hold("slot.1")
+        record_holder(self.held[0], ["tune", "--cold"], None)
+        out, took = self.drain(0.3, 1.2)
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "EXECUTION HOLD testbox: measurement m1 waits for the batch in slot 1 to end")
+        self.assertRegex(lines[1], r"^EXECUTION HOLD testbox: measurement m1 waits on slot 1: recorded holder pid [0-9]+,"
+                         r" slot taken 0s ago, no --deadline recorded; for: tune --cold$")
+        self.assertGreaterEqual(len(lines), 3, out)
+        self.assertTrue(all("still waits for slot 1 after" in line for line in lines[2:]), out)
+        self.assertLess(took, 5)
+        self.assertTrue(self.locked())
+
+    def test_a_holder_its_deadline_ends_soon_is_named_too(self) -> None:
+        self.hold("slot.1")
+        record_holder(self.held[0], ["quick"], 60)
+        out, _ = self.drain(0.2, 0.8)
+        self.assertIn("recorded --deadline 60s, about 1m left; for: quick", out)
+
+    def test_nothing_the_naming_raises_stops_the_drain(self) -> None:
+        self.hold("slot.1")
+        with mock.patch.object(slot, "read_holder", side_effect=OverflowError("int too large")):
+            out, took = self.drain(0.2, 0.8)
+        self.assertIn("measurement m1 waits on slot 1: its record is unread (OverflowError('int too large'))", out)
+        self.assertLess(took, 5)
+        self.assertTrue(self.locked())
+
+    def test_a_draining_hold_records_its_slots_unbounded_until_its_command_starts(self) -> None:
+        self.hold("slot.2")
+        record_holder(self.held[0], ["batch"], None)
+        during: list[Holder | None] = []
+
+        def release() -> None:
+            during.append(read_holder(self.path()))
+            os.close(self.held.pop(0))
+
+        threading.Timer(0.6, release).start()
+        lock = os.path.join(self.dir, "measurement.lock")
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(slot, "run_command", side_effect=started), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Started):
+            os.environ.pop("FLEET_MEASUREMENT_HELD", None)
+            slot.hold("testbox", "", "why", lock, "testbox m1", 2, ["measure"], 900, 0.2)
+        self.assertEqual([(h.command, h.deadline, h.expires) if h else None for h in during], [(("measure",), None, None)])
+        after = read_holder(self.path())
+        assert after is not None and during[0] is not None
+        self.assertEqual((after.command, after.deadline, after.started), (("measure",), 900, during[0].started))
+        # Its deadline's end, on the clock the deadline is enforced on, from the command's start.
+        self.assertAlmostEqual(after.expires or 0.0, time.monotonic() + 900, delta=5)
+
+    def test_a_batch_records_its_deadline_end_when_its_command_starts(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(slot, "run_command", side_effect=started), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Started):
+            slot.take_slot("testbox", self.dir, 1, 0, True, 0, "", ["suite"], 1200)
+        after = read_holder(self.path())
+        self.assertEqual((after.command, after.deadline, after.pid) if after else None, (("suite",), 1200, os.getpid()))
+        self.assertAlmostEqual(after.expires if after and after.expires else 0.0, time.monotonic() + 1200, delta=5)
+
+
+class Started(Exception):
+    pass
+
+
+def started(*args: object, **kwargs: object) -> None:
+    """``run_command`` stubbed: the command starts (its ``on_start``), and nothing runs."""
+    on_start = kwargs.get("on_start")
+    if callable(on_start):
+        on_start()
+    raise Started
 
 class SlotArguments(unittest.TestCase):
     def refused(self, args: list[str]) -> str:

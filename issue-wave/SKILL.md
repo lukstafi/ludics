@@ -451,7 +451,10 @@ requirements for every transport with transport-specific setup and identity, and
   one-off cross-box leg, a full suite - needs a request first, in the transport's shape:
   the [Claude Code worker channel](references/native-claude.md#worker-channel), the
   [Codex worker channel](references/native-codex.md#worker-channel), or the
-  [CLI reservation handoff](references/executions.md#cli-reservation-handoff). A resumed worker
+  [CLI reservation handoff](references/executions.md#cli-reservation-handoff). A batch that can
+  hold a slot past about 20 minutes (a cold tuned search) is requested too, never run under the
+  standing reservation: a window's drain waits for it with the box's other slots idle
+  (ludics-lite#668). A resumed worker
   runs only the assigned command, reports runner evidence and yields again; neither the
   returned turn nor its report releases the box. The brief's measurement forms are the ones
   the verbs accept: on the worker's own box `fleet-worker.sh execution hold --request <id> --
