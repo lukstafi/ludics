@@ -244,6 +244,42 @@ whichever window is open). A request arriving while a window is open
 joins the queue. The last conclusion leaves the standing reservations restored, and the workers'
 batches are admitted again.
 
+**The gap between windows, and a window's bound** (ludics-lite#667). Back to back is not gapless.
+In wave-20261016-ocannl the windows on rog ran with no moment between them and starved the box's
+correctness work: a worker's merge build (`pr-review.sh merge --wait` builds the merged head under
+`execution slot --wait-window=1800`) was refused four times, 30 minutes each; three batches waited
+an hour each and were refused; a window blocked its own worker's merge build until it was
+concluded. A batch waiting out a window re-reads the registry every `FLEET_SLOT_WINDOW_POLL`
+seconds (15), so a conclusion followed seconds later by the next window is a moment it never reads.
+So:
+
+- `execution window` leaves the gap itself. When a measurement on the box concluded less than
+  `FLEET_WINDOW_GAP` seconds ago (60, read where the window is opened) and standing reservations
+  are outstanding there, it says so (`EXECUTION WINDOW <box>: measurement <id> concluded on <box>
+  <n>s ago, and standing reservations are outstanding there (<ids>) ...; <m>s to go`, then
+  `EXECUTION WINDOW <box>: waiting <m>s, then opening the window ...`), waits with no lock held,
+  and opens the window. Every batch waiting out the last window, a merge build included, reads the
+  box free in that gap and takes its slot; the next measurement starts once they end (its hold's
+  drain waits for them, naming each), so the measurement pays for the gap, never the batches.
+  `--no-gap`, right after `window`, opens at once: for a box you know has no waiters.
+- The gap's boundary: standing reservations are what it reads as workers that may be waiting, and
+  nothing else. It sees no waiting process, so it is paid whether or not one waits, and a batch
+  run under no record (your own `check-box`) is not waited for: conclude, run it, then open. A leg
+  waiting on its agent host (`execution leg --wait-window`) reads the gap too, but its setup (the
+  copy, the ssh, the fetch) comes before its slot, so it may meet the next window in the slot's
+  own wait on the box.
+- The handover stays two registry calls with no message to the workers, conclude and then
+  `execution window`, the second taking up to the gap. A leg re-reading the registry every 5 s
+  read the second window and never the gap (#666's fixture, which now opens its windows
+  `--no-gap` to model exactly that); with the gap it reads the box free and goes for its slot.
+- A window's bound is 30 minutes from open to conclusion: 1800 s is the shortest wait a batch gives
+  a window (the merge build's; a brief's `--wait-window` waits an hour), and a waiter's bound runs
+  on across back-to-back windows, so the gap is where it gets out. Plan each window's measurement
+  to fit (its runner under `--deadline`), and give a longer one a window of its own. When a window
+  passes the bound with no result line, look at its run: a live one runs on (concluding its window
+  frees nothing while its hold holds the slots), a hung one is stopped and concluded `timeout`,
+  and its request queues again behind a gap.
+
 ## The OS-level sleep guard
 
 On native Linux the lab locks are advisory: they bind sessions that go through `wake-lab.sh`,

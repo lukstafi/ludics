@@ -147,8 +147,10 @@
 #   fleet-worker.sh execution conclude <json-file> --observed-from <checkout>   # observed_sha is
 #                          # that checkout's HEAD, read on the execution host
 #   fleet-worker.sh execution run <json-file>          # reserve + dispatch in one step
-#   fleet-worker.sh execution window <box> <json-file> # `run` for a measurement that suspends the
-#                          # box's standing reservations, restored when it concludes
+#   fleet-worker.sh execution window [--no-gap] <box> <json-file> # `run` for a measurement that suspends
+#                          # the box's standing reservations, restored when it concludes; it first
+#                          # waits out FLEET_WINDOW_GAP after the box's last measurement while
+#                          # standing reservations are outstanding there (none with --no-gap)
 #   fleet-worker.sh execution conclude --from-run <run-dir> --request <id> --sha <sha>
 #                          [--box <box>] [--evidence <text>]   # verdict, log and checkout read from a
 #                                                     # test-run.sh record on the reserved box
@@ -254,6 +256,8 @@
 #     same directory (as every coordinator must resolve FLEET_ANCHOR_STATE to the same one).
 #   FLEET_SLOT_WINDOW_POLL: how often, in seconds, `execution slot --wait-window` re-reads the
 #     registry while a measurement holds the box; 15.
+#   FLEET_WINDOW_GAP: the seconds `execution window` leaves between the box's last measurement and
+#     the window, so batches waiting out the last one take their slots (ludics-lite#667); 60.
 #   FLEET_SLOT_HELD: set BY `execution slot` in its command's environment, never by hand:
 #     `<box> <slot> <slots> <gpu|cpu>`, the slot the batch holds (THE NESTED SLOT, below).
 #   FLEET_MEASUREMENT_HELD: set BY `execution hold --request <id>` in its command's environment,

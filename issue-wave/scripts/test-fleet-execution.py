@@ -673,8 +673,11 @@ def measurement_window():
         def change(action, data, expected=0, owner='first'):
             return run('execution', action, payload(data), expected=expected, owner=owner)
 
+        # --no-gap: these windows open back to back over standing records by design, and the gap a
+        # window waits out after the box's last measurement (ludics-lite#667) is test-fleet-worker.sh's
+        # case (THE GAP) and the registry unit tests'.
         def window(data, box='mac', expected=0, owner='first'):
-            return run('execution', 'window', box, payload(data), expected=expected, owner=owner)
+            return run('execution', 'window', '--no-gap', box, payload(data), expected=expected, owner=owner)
 
         def request(identity, host='mac', kind='correctness', standing=False):
             data = dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
@@ -705,7 +708,7 @@ def measurement_window():
         out, err = window(request('elsewhere', 'rog', kind='measurement'), expected=1)
         assert 'the window is for mac, but the measurement names rog' in err, err
         out, err = run('execution', 'window', 'mac', expected=2)
-        assert 'execution window <box> <measurement reserve.json>' in err, err
+        assert 'execution window [--no-gap] <box> <measurement reserve.json>' in err, err
         change('run', request('assigned'))
         out, err = window(request('blocked', kind='measurement'), expected=1)
         assert 'request=assigned' in err and 'suspends only standing reservations' in err, err

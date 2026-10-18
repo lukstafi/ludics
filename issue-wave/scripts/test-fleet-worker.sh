@@ -3241,7 +3241,7 @@ fixture_done leg-m
 legwin() { # <id> -> open a measurement window on testbox under that id
   jq -n --arg id "$1" '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#666", purpose:"leg window fixture",
     agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"measurement"}' > "$TMP/$1.json"
-  "${FWL[@]}" execution window testbox "$TMP/$1.json" >/dev/null 2>&1 || ko "could not open window $1 (setup)"
+  "${FWL[@]}" execution window --no-gap testbox "$TMP/$1.json" >/dev/null 2>&1 || ko "could not open window $1 (setup)"
 }
 jq -n '{request_id:"leg-s", wave:"w", worker:"leg-s", transport:"subagent", issue:"o/r#666", purpose:"leg fixture", agent_host:"testbox",
   execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true}' > "$TMP/leg-s.json"
@@ -3261,7 +3261,8 @@ grep -q "^EXECUTION LEG testbox: measurement window leg-w1 holds testbox (coordi
 # The coordinator's back-to-back windows: leg-w1 concludes and leg-w2 opens while the leg waits.
 # Its re-reads are 5 s apart, so the two registry calls land between two of them and the leg reads
 # the second window, never the gap (a leg admitted in a gap would be any batch's case: the slot on
-# the box and the window's drain see to it).
+# the box and the window's drain see to it). The windows open with --no-gap: the gap a window waits
+# out by default (ludics-lite#667) would let the leg through, which is the slot section's case.
 leg_said() { # <pattern>: wait up to 40 s for the waiting leg's output to show it
   local i; for i in $(seq 200); do grep -q "$1" "$TMP/leg-ww.out" 2>/dev/null && return 0; sleep 0.2; done; return 1
 }
@@ -4106,8 +4107,10 @@ expect "a plain measurement is refused beside a standing reservation, pointing a
 "${FWS[@]}" execution slot -- sleep 30 > "$TMP/win-b0.log" 2>&1 &
 b0=$!
 held "$TMP/win-b0.log" "slot 1 of 1 held"
+# --no-gap: the GPU measurements above concluded a moment ago, and the batch in slot 1 is the
+# drain's to wait for, not the gap's (THE GAP, below).
 expect "execution window opens a measurement over the box's standing reservations" 0 "EXECUTION WINDOW testbox: win-measure open; suspended win-iterate" -- \
-  "${FWS[@]}" execution window testbox "$(slotreq win-measure measurement)"
+  "${FWS[@]}" execution window --no-gap testbox "$(slotreq win-measure measurement)"
 grep -q '"window": true' <<<"$out" && grep -q '"state": "launching"' <<<"$out" && ok "...dispatched, and marked a window" || ko "the window's record: $out"
 listing=$("${FWS[@]}" execution list --active --compact 2>&1)
 [ "$(jq -r '.[] | select(.request_id == "win-iterate") | "\(.state) \(.suspended_by)"' <<<"$listing")" = "suspended win-measure" ] &&
@@ -4140,7 +4143,11 @@ expect "...while the measurement's own run is admitted inside its hold" 0 "insid
 grep -q "^window-own-run$" <<<"$out" && ok "...and runs" || ko "the window's own run did not run: $out"
 expect "a second window on the box is refused while one is open" 1 "measurement window win-measure is already open on testbox" -- \
   "${FWS[@]}" execution window testbox "$(slotreq win-second measurement)"
-expect "execution window takes a box and a reservation" 2 "execution window <box> <measurement reserve.json>" -- "${FWS[@]}" execution window testbox
+expect "execution window takes a box and a reservation" 2 "execution window \[--no-gap\] <box> <measurement reserve.json>" -- "${FWS[@]}" execution window testbox
+expect "...and --no-gap only right after window" 2 "execution window \[--no-gap\] <box> <measurement reserve.json>" -- \
+  "${FWS[@]}" execution window testbox --no-gap "$(slotreq win-second measurement)"
+expect "...and a gap of whole seconds" 2 "FLEET_WINDOW_GAP must be a whole number of seconds" -- \
+  env FLEET_WINDOW_GAP=soon "${FWS[@]}" execution window testbox "$(slotreq win-second measurement)"
 expect "concluding the measurement restores the standing reservation" 0 "EXECUTION WINDOW testbox: win-measure concluded; restored win-iterate (launching)" -- \
   "${FWS[@]}" execution conclude "$(jq -n '{request_id:"win-measure", verdict:"not-launched", log:"/dev/null", evidence:"fixture: nothing ran"}' > "$TMP/win-done.json"; printf '%s' "$TMP/win-done.json")"
 expect "...and a batch is admitted again" 0 "slot 1 of 1 held for: echo after-window" -- "${FWS[@]}" execution slot --wait 0 -- echo after-window
@@ -4149,7 +4156,8 @@ fixture_done win-iterate
 # than refusing, then queues for a slot as --wait says; a measurement on another box never blocks
 # it. `execution list --host` selects one box's records, an alias selecting its roster entry's.
 "${FWS[@]}" execution run "$(slotreq ww-iterate correctness true)" >/dev/null || ko "could not take the standing reservation (setup)"
-"${FWS[@]}" execution window testbox "$(slotreq ww-measure measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+# --no-gap: win-measure concluded a moment ago, and the gap after it is THE GAP's case, below.
+"${FWS[@]}" execution window --no-gap testbox "$(slotreq ww-measure measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
 expect "a --bg batch with --wait-window returns its run directory at once during a window" 0 "^$TMP/slot-ww/run-1$" -- \
   env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-ww" --wait-window=60 --wait 0 -- echo after-window-wait
 bgd="$TMP/slot-ww/run-1"
@@ -4168,6 +4176,26 @@ if held "$bgd/log" "waiting up to 60s (--wait-window) for it to conclude, then f
     ok "...in its slot, with its output in the run's log" || ko "the waited batch's log: $(cat "$bgd/log")"
 else ko "the --wait-window batch never said it waits: $(cat "$bgd/log" 2>/dev/null)"; fixture_done ww-measure; fi
 bgkill "$bgd"
+# THE GAP (ludics-lite#667): a coordinator's back-to-back windows are two registry calls, and a
+# batch waiting out the first re-reads the registry every FLEET_SLOT_WINDOW_POLL seconds, so it
+# read the second window and never the moment between them. Now the second window, on a box whose
+# workers hold standing reservations, waits out FLEET_WINDOW_GAP after the last measurement there
+# concluded, and says so; the waiting batch takes its slot and runs in that gap.
+"${FWS[@]}" execution window --no-gap testbox "$(slotreq gap-a measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-gap" --wait-window=60 --wait 0 -- echo ran-in-the-gap >/dev/null
+gbd="$TMP/slot-gap/run-1"
+if held "$gbd/log" "waiting up to 60s (--wait-window) for it to conclude, then for a slot, for: echo ran-in-the-gap"; then
+  fixture_done gap-a
+  expect "the next window on a box with standing reservations waits out the gap after the last measurement there" 0 \
+    "EXECUTION WINDOW testbox: gap-b open; suspended ww-iterate" -- env FLEET_WINDOW_GAP=5 "${FWS[@]}" execution window testbox "$(slotreq gap-b measurement)"
+  grep -q "^EXECUTION WINDOW testbox: measurement gap-a concluded on testbox [0-9]*s ago, and standing reservations are outstanding there (ww-iterate), whose batches may be waiting: they get 5s to take its slots before the next window (ludics-lite#667); [1-5]s to go$" <<<"$out" &&
+    grep -q "^EXECUTION WINDOW testbox: waiting [1-5]s, then opening the window (FLEET_WINDOW_GAP=5; --no-gap opens it at once)$" <<<"$out" &&
+    ok "...saying what it waits for, and for how long" || ko "the gap's lines: $out"
+  expect "...in which the batch that waited out the first window ran (rc=0), the second still open" 0 "rc=0" -- "$BGR" wait "$gbd" --within 30
+  grep -q "^ran-in-the-gap$" "$gbd/log" && ok "...its output in the run's log" || ko "the batch in the gap: $(cat "$gbd/log")"
+  fixture_done gap-b
+else ko "the --wait-window batch never said it waits: $(cat "$gbd/log" 2>/dev/null)"; fixture_done gap-a; fi
+bgkill "$gbd"
 "${FWS[@]}" execution window other "$(slotreq ww-other measurement false other)" >/dev/null 2>&1 || ko "could not open the other box's window (setup)"
 expect "a window on another box does not block a --wait-window batch" 0 "slot 1 of 1 held for: echo not-blocked" -- \
   "${FWS[@]}" execution slot --wait-window=60 --wait 0 -- echo not-blocked

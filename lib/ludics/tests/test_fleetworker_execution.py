@@ -483,6 +483,93 @@ class WindowPayload(unittest.TestCase):
             self.assertEqual(caught.exception.rc, 2, text)
 
 
+class WindowGap(unittest.TestCase):
+    """ludics-lite#667: ``execution window`` asks for FLEET_WINDOW_GAP (or none with ``--no-gap``),
+    and waits out the registry's gap answer (exit 3) with no lock held before asking again."""
+
+    def setUp(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            f.write('{"request_id":"w2"}')
+        self.file = f.name
+
+    def tearDown(self) -> None:
+        os.unlink(self.file)
+
+    def cfg(self, **env: str) -> Any:
+        return load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", env, host="testbox")
+
+    def test_the_gap_is_the_knob_or_none_with_no_gap_right_after_window(self) -> None:
+        cfg = self.cfg()
+        self.assertEqual(execution.window_gap(cfg, ["window", "b", "f"]), (["window", "b", "f"], 60))
+        self.assertEqual(execution.window_gap(self.cfg(FLEET_WINDOW_GAP=""), ["window", "b", "f"])[1], 60)
+        self.assertEqual(execution.window_gap(self.cfg(FLEET_WINDOW_GAP="0"), ["window", "b", "f"])[1], 0)
+        self.assertEqual(execution.window_gap(cfg, ["window", "--no-gap", "b", "f"]), (["window", "b", "f"], 0))
+        self.assertEqual(execution.window_gap(cfg, ["window", "b", "--no-gap", "f"])[0], ["window", "b", "--no-gap", "f"],
+                         "anywhere else it is a word window_payload refuses")
+        for bad in ("soon", "-1", "1.5"):
+            with self.assertRaises(cli.Exit) as caught, contextlib.redirect_stderr(io.StringIO()):
+                execution.window_gap(self.cfg(FLEET_WINDOW_GAP=bad), ["window", "b", "f"])
+            self.assertEqual(caught.exception.rc, 2, bad)
+
+    def test_the_payload_carries_a_gap_only_when_there_is_one(self) -> None:
+        self.assertEqual(window_payload(["window", "tbox", self.file], 60), '{"box":"tbox","request":{"request_id":"w2"},"gap":60}')
+        self.assertEqual(window_payload(["window", "tbox", self.file], 0), '{"box":"tbox","request":{"request_id":"w2"}}')
+
+    def test_only_the_registrys_gap_answer_is_waited_out(self) -> None:
+        answer = '{"gap":{"box":"b","after":"w1","ago":3,"gap":60,"wait":57,"standing":["s"]}}'
+        self.assertEqual(execution.gap_wait(execution.Done(3, answer)), 57)
+        for done in (execution.Done(0, answer), execution.Done(1, answer), execution.Done(3, "nope"),
+                     execution.Done(3, '{"gap":{"wait":0}}'), execution.Done(3, '{"gap":{"wait":true}}'),
+                     execution.Done(3, '{"gap":{"wait":"5"}}'), execution.Done(3, "[]")):
+            self.assertIsNone(execution.gap_wait(done), done)
+
+    def run_window(self, answers: list[Any], words: list[str] | None = None, **env: str) -> tuple[int, str, str, list[Any], list[float]]:
+        calls: list[Any] = []
+        slept: list[float] = []
+
+        def unresolved(cfg: Any, payload: str, action: str) -> tuple[str, str]:
+            return payload, ""
+
+        def run_on(cfg: Any, box: str, script: str, argv: list[str], capture: bool = False) -> Any:
+            calls.append(json.loads(argv[6]))
+            return answers.pop(0)
+
+        out, err = io.StringIO(), io.StringIO()
+        with (mock.patch.object(execution, "check_identity"), mock.patch.object(execution, "checked_request"),
+              mock.patch.object(execution, "with_resolution", side_effect=unresolved),
+              mock.patch.object(execution, "endpoint_map", return_value=""),
+              mock.patch.object(execution, "my_token", return_value="tok"),
+              mock.patch.object(execution, "coordinator_id", return_value="coord"),
+              mock.patch.object(execution, "execution_refresh"),
+              mock.patch.object(execution, "run_on", side_effect=run_on),
+              mock.patch.object(execution.time, "sleep", side_effect=slept.append),
+              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
+            rc = execution.cmd_execution(self.cfg(**env), ["window", *(words or []), "testbox", self.file])
+        return rc, out.getvalue(), err.getvalue(), calls, slept
+
+    def test_a_gap_answer_is_waited_then_asked_again_and_the_record_printed_once(self) -> None:
+        gap = execution.Done(3, '{"gap":{"box":"testbox","after":"w1","ago":50,"gap":60,"wait":10,"standing":["s"]}}')
+        opened = execution.Done(0, '{"request_id":"w2"}')
+        rc, out, err, calls, slept = self.run_window([gap, opened])
+        self.assertEqual((rc, out, slept), (0, '{"request_id":"w2"}\n', [10]))
+        self.assertEqual([c.get("gap") for c in calls], [60, 50])
+        self.assertEqual(err, "EXECUTION WINDOW testbox: waiting 10s, then opening the window (FLEET_WINDOW_GAP=60;"
+                              " --no-gap opens it at once)\n")
+        rc, _, _, calls, slept = self.run_window([opened], ["--no-gap"])
+        self.assertEqual((rc, slept, "gap" in calls[0]), (0, [], False))
+        rc, _, _, calls, slept = self.run_window([gap, gap, opened])
+        self.assertEqual((rc, slept, [c.get("gap") for c in calls]), (0, [10, 10], [60, 50, 40]),
+                         "each retry asks for the gap less what was waited")
+        future = execution.Done(3, '{"gap":{"box":"testbox","after":"w1","ago":0,"gap":60,"wait":60,"standing":["s"]}}')
+        rc, _, _, calls, slept = self.run_window([future, opened])
+        self.assertEqual((rc, slept, "gap" in calls[1]), (0, [60], False), "a whole gap waited asks for none")
+        rc, out, _, calls, slept = self.run_window([execution.Done(3, '{"gap":{"wait":70}}'), future])
+        self.assertEqual((rc, slept, len(calls)), (3, [60], 2), "never more than the gap, whatever is answered")
+        self.assertIn('"wait":60', out)
+        rc, out, _, _, slept = self.run_window([execution.Done(1, "")])
+        self.assertEqual((rc, out, slept), (1, "", []), "a refusal is no gap")
+
+
 class CallerPythonpath(unittest.TestCase):
     """scripts/py's notes put the caller's PYTHONPATH and PYTHONCOERCECLOCALE back for every child
     of an entry point."""

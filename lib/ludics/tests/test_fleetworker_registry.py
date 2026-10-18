@@ -275,5 +275,114 @@ class Binding(RegistryCase):
                       " the commit head-of:topic was resolved to at assignment", err)
 
 
+class WindowGap(RegistryCase):
+    """ludics-lite#667: a new window inside the gap after its box's last measurement, while standing
+    records are outstanding there, is answered exit 3 with the seconds to wait, and nothing written."""
+
+    def window(self, identity: str, gap: int | None = 60, boxes: str = "mac") -> tuple[int, Any, str]:
+        payload: dict[str, object] = {"box": "mac", "request": request(identity, kind="measurement")}
+        if gap is not None:
+            payload["gap"] = gap
+        return self.call("window", payload, boxes=boxes)
+
+    def conclude(self, identity: str) -> None:
+        self.assertEqual(self.call("conclude", {"request_id": identity, "verdict": "not-launched", "log": "/dev/null",
+                                                "evidence": "unit"})[0], 0)
+
+    def age(self, identity: str, at: str) -> None:
+        path = os.path.join(self.root, "executions", f"{identity}.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["updated_at"] = at
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+    def test_the_first_window_opens_and_the_next_one_waits_out_the_gap(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.assertEqual(self.window("w1")[0], 0, "no measurement concluded on the box: no gap")
+        self.conclude("w1")
+        rc, out, err = self.window("w2")
+        self.assertEqual(rc, 3)
+        gap = out["gap"]
+        self.assertEqual((gap["box"], gap["after"], gap["gap"], gap["standing"]), ("mac", "w1", 60, ["s"]))
+        self.assertTrue(0 < gap["wait"] <= 60 and gap["ago"] >= 0, gap)
+        self.assertRegex(err, r"\AEXECUTION WINDOW mac: measurement w1 concluded on mac [0-9]+s ago, and standing"
+                              r" reservations are outstanding there \(s\), whose batches may be waiting: they get 60s"
+                              r" to take its slots before the next window \(ludics-lite#667\); [0-9]+s to go\n\Z")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "executions", "w2.json")), "nothing written")
+        self.assertEqual(self.call("list", {"active": True})[1][0]["state"], "launching", "s is not suspended")
+
+    def test_no_gap_asked_no_standing_record_or_a_gap_already_past_opens_at_once(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.window("w1", gap=None)
+        self.conclude("w1")
+        self.assertEqual(self.window("w2", gap=0)[0], 0, "--no-gap")
+        self.conclude("w2")
+        self.assertEqual(self.window("w3", gap=None)[0], 0, "an old client's payload: no gap")
+        self.conclude("w3")
+        self.age("w3", "2026-01-01T00:00:00+00:00")
+        self.age("w2", "2026-01-01T00:00:01")  # naive, as UTC
+        self.age("w1", "2026-01-01T00:00:00+00:00")
+        self.assertEqual(self.window("w4")[0], 0, "the last measurement concluded long ago")
+        self.conclude("w4")
+        self.conclude("s")
+        self.assertEqual(self.call("run", request("plain", kind="measurement"))[0], 0)
+        self.conclude("plain")
+        self.assertEqual(self.call("run", request("s2", standing=True, execution_host="rog"), boxes="mac rog")[0], 0)
+        self.assertEqual(self.window("w5", boxes="mac rog")[0], 0, "no standing record on this box: nobody to wait for")
+
+    def test_any_measurement_on_the_box_starts_the_gap_and_another_boxs_does_not(self) -> None:
+        self.assertEqual(self.call("run", request("plain", kind="measurement"))[0], 0)
+        self.conclude("plain")
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        rc, out, _ = self.window("w1")
+        self.assertEqual((rc, out["gap"]["after"]), (3, "plain"))
+        self.age("plain", "2026-01-01T00:00:00+00:00")
+        self.assertEqual(self.call("run", request("r", kind="measurement", execution_host="rog"), boxes="mac rog")[0], 0)
+        self.conclude("r")
+        self.assertEqual(self.window("w2", boxes="mac rog")[0], 0)
+
+    def test_every_other_admission_check_comes_before_the_gap(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.window("w1")
+        self.conclude("w1")
+        with open(os.path.join(self.root, "HALT"), "w") as f:
+            f.write("2026-10-18T00:00:00Z id=h1 unit\n")
+        rc, _, err = self.window("w2")
+        self.assertEqual(rc, 1)
+        self.assertIn("fleet halted", err)
+
+    def test_a_conclusion_is_stamped_after_the_records_it_restores(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.window("w1")
+        self.conclude("w1")
+        records = {r["request_id"]: r for r in self.call("list", {})[1]}
+        concluded, restored = records["w1"], records["s"]
+        self.assertGreaterEqual(concluded["updated_at"], restored["updated_at"])
+        self.assertEqual(concluded["history"][-1]["at"], concluded["updated_at"])
+
+    def test_a_retried_window_never_waits(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.window("w1")
+        self.conclude("w1")
+        self.assertEqual(self.window("w2", gap=0)[0], 0)
+        rc, out, _ = self.window("w2")
+        self.assertEqual((rc, out["request_id"], out["state"]), (0, "w2", "launching"))
+
+    def test_a_gap_is_a_whole_number_and_a_corrupt_conclusion_time_refuses(self) -> None:
+        for bad in (True, -1, "60", 1.5):
+            rc, _, err = self.window("w", gap=bad)  # type: ignore[arg-type]
+            self.assertEqual((rc, err), (1, "EXECUTION REFUSED: a window's gap must be a whole number of seconds\n"), bad)
+        rc, _, err = self.call("window", {"box": "mac", "request": request("w", kind="measurement"), "wait": 1})
+        self.assertEqual((rc, err), (1, "EXECUTION REFUSED: window payload must be {box, request} or {box, request, gap}\n"))
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.window("w1", gap=0)
+        self.conclude("w1")
+        self.age("w1", "yesterday")
+        rc, _, err = self.window("w2")
+        self.assertEqual(rc, 1)
+        self.assertIn("w1: updated_at 'yesterday' is no ISO 8601 time, so the gap after it cannot be measured", err)
+
+
 if __name__ == "__main__":
     unittest.main()
