@@ -297,8 +297,11 @@ class Wait(unittest.TestCase):
             worker_calls.append(argv)
             return conclude_rc
 
+        def listing(_cfg: object) -> Done:
+            return Done(0, json.dumps(next(reads)))
+
         out = io.StringIO()
-        with mock.patch.object(tiprun, "listing", side_effect=lambda _c: Done(0, json.dumps(next(reads)))), \
+        with mock.patch.object(tiprun, "listing", side_effect=listing), \
                 mock.patch.object(tiprun, "run_on", side_effect=far_side), \
                 mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
                 contextlib.redirect_stdout(out):
