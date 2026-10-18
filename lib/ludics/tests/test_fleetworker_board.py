@@ -145,17 +145,21 @@ class Store(StoreCase):
         self.assertEqual(calls, [os.path.join(self.root, "boards", "w.json")] * 2)
         self.assertEqual(sorted(os.listdir(os.path.join(self.root, "boards"))), ["w.json"], "no temporary left")
 
-    def test_the_first_write_syncs_the_state_root_that_gained_the_boards_directory(self) -> None:
-        synced: list[str] = []
-        real = boardstore.sync_directory
+    def test_a_refusal_means_nothing_was_written(self) -> None:
+        self.set("t", ("k", "v"))
+        path = os.path.join(self.root, "boards", "w.json")
+        with open(path) as f:
+            before = f.read()
 
-        def recording(path: Any) -> None:
-            synced.append(str(path))
-            real(path)
+        def failing(src: str, dst: str) -> None:
+            raise OSError("no space left")
 
-        with mock.patch.object(boardstore, "sync_directory", recording):
-            self.set("t", ("k", "v"))
-        self.assertEqual(synced, [self.root, os.path.join(self.root, "boards")])
+        with mock.patch.object(boardstore.os, "replace", failing):
+            rc, _, err = self.call("log", {"wave": "w", "text": "x"})
+        self.assertEqual((rc, err), (1, "BOARD REFUSED: no space left\n"))
+        with open(path) as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(os.listdir(os.path.join(self.root, "boards")), ["w.json"], "no temporary left")
 
     def test_show_of_an_unknown_wave_refuses(self) -> None:
         self.assertEqual(self.call("show", {"wave": "nope"})[:2], (1, ""))

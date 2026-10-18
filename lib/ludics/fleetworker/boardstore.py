@@ -5,6 +5,14 @@ broke on cell text holding ``#``, ``(``, ``)`` or ``/`` (OCANNL wave-20261014, t
 board is one JSON document per wave, ``<state root>/boards/<wave>.json``, and the markdown is a view
 rendered from it: no cell text is ever a pattern, a delimiter or a shell word anywhere on its way in.
 
+What a board is, and is not (the boundary every rule below is drawn against): a coordinator-only,
+lease-gated, best-effort record of a wave, written in the coordinator's own words through this
+verb. It is not a registry, a lock or a verdict source: nothing gates on it. So its durability is
+that of one fsynced file replaced atomically -- a power loss may lose the latest write, never leave a
+partial board -- with no directory sync, and nothing can fail after the replace: a refusal means
+nothing was written. Its inputs are what the verb writes; a file edited by hand is read only as far
+as ``validate`` checks its shape.
+
 How it runs, as the execution registry runs (``registry.py``'s header): this module is SHIPPED.
 ``fleet-worker.sh board`` sends its source to the anchor, where a Python >= 3.12 runs it from stdin,
 the writers inside the lease lock after the lease check (``lease.LEASE_MUTATION``), ``show`` with no
@@ -165,19 +173,10 @@ def load(path: Path, wave: str) -> Doc | None:
     return validate(data, wave, path)
 
 
-def sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
 def publish(path: Path, doc: Doc) -> None:
-    """Write the whole document atomically and durably: exactly one ``os.replace``."""
+    """Write the whole document atomically: one fsynced file, then exactly one ``os.replace``, the last
+    thing that can fail (the header: best effort, no directory sync)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Sync even on retry: an earlier failed sync may have left the new directory visible.
-    sync_directory(path.parent.parent)
     fd, temporary = tempfile.mkstemp(prefix=".board-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -186,7 +185,6 @@ def publish(path: Path, doc: Doc) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        sync_directory(path.parent)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
