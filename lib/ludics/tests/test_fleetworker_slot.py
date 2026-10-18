@@ -161,9 +161,12 @@ class HolderRecord(Locks):
         good: dict[str, object] = {"pid": 7, "command": ["x"], "started": 1.5, "deadline": 60, "other": [1]}
         self.write(json.dumps(good))
         self.assertEqual(read_holder(self.path()), Holder(7, ("x",), 1.5, 60))
+        self.write(json.dumps(good | {"expires": 12.5}))
+        self.assertEqual(read_holder(self.path()), Holder(7, ("x",), 1.5, 60, 12.5))
         bads: list[dict[str, object]] = [
             {"pid": True}, {"pid": 0}, {"pid": "7"}, {"command": []}, {"command": "x"}, {"command": ["x", 1]},
             {"started": "1"}, {"started": False}, {"deadline": 0}, {"deadline": 1.5}, {"deadline": True},
+            {"pid": 2**31}, {"expires": "1"}, {"expires": True},
         ]
         for bad in bads:
             self.write(json.dumps(good | bad))
@@ -174,30 +177,65 @@ class HolderRecord(Locks):
             self.assertIsNone(read_holder(self.path()), text[:40])
         self.assertIsNone(read_holder(os.path.join(self.dir, "slot.9")))
 
+    def line(self, holder: Holder | None, now: float = 10_000.0, clock: float = 0.0, waited: float | None = None,
+             age: float | None = 10_000.0) -> str | None:
+        """The line, the holder's process as old as ``age`` (None: its age is unread)."""
+        with mock.patch.object(slot, "process_age", return_value=age):
+            return holder_line("testbox", "m1", 2, holder, now, clock, waited)
+
     def test_the_line_names_a_holder_that_may_hold_the_slot_long(self) -> None:
-        now = 10_000.0
-        unbounded = holder_line("testbox", "m1", 2, Holder(os.getpid(), ("sleep", "a b"), now - 125, None), now, None)
-        self.assertEqual(unbounded, f"EXECUTION HOLD testbox: measurement m1 waits on slot 2: held by pid {os.getpid()}"
-                         f" for 2m so far, and no --deadline bounds it; stopping pid {os.getpid()} ends that batch and"
+        now, me = 10_000.0, os.getpid()
+        unbounded = self.line(Holder(me, ("sleep", "a b"), now - 125, None), now)
+        self.assertEqual(unbounded, f"EXECUTION HOLD testbox: measurement m1 waits on slot 2: held by pid {me}"
+                         f" for 2m so far, and no --deadline bounds it; stopping pid {me} ends that batch and"
                          " starts the measurement, for: sleep 'a b'")
-        capped = holder_line("testbox", "m1", 2, Holder(os.getpid(), ("tune",), now - 600, 6000), now, 310)
-        self.assertIsNotNone(capped)
+        # The remaining cap is read on the clock the deadline is enforced on: ``expires`` against
+        # time.monotonic(), whatever the wall clock says.
+        capped = self.line(Holder(me, ("tune",), now - 600, 6000, 5400.0), now, 0.0, 310)
         self.assertIn("measurement m1 still waits for slot 2 after 5m: held by pid", str(capped))
         self.assertIn("for 10m so far, and its --deadline 6000s ends it in about 1h30m;", str(capped))
+        # Before its command starts, all of its deadline is ahead.
+        self.assertIn("ends it in about 1h40m;", str(self.line(Holder(me, ("tune",), now - 600, 6000), now)))
         # A --deadline that ends the batch within LONG_HOLDER is not worth a decision.
-        self.assertIsNone(holder_line("testbox", "m1", 2, Holder(os.getpid(), ("x",), now, slot.LONG_HOLDER), now, None))
-        self.assertIsNotNone(holder_line("testbox", "m1", 2, Holder(os.getpid(), ("x",), now, slot.LONG_HOLDER + 60), now, None))
+        self.assertIsNone(self.line(Holder(me, ("x",), now, 6000, float(slot.LONG_HOLDER)), now))
+        self.assertIsNone(self.line(Holder(me, ("x",), now, slot.LONG_HOLDER), now))
+        self.assertIsNotNone(self.line(Holder(me, ("x",), now, 6000, slot.LONG_HOLDER + 60.0), now))
 
     def test_no_record_or_a_stale_one_is_said_without_a_command_or_a_cap(self) -> None:
-        none = str(holder_line("testbox", "m1", 1, None, 0.0, None))
-        self.assertIn("measurement m1 waits on slot 1: its holder left no record of its command or --deadline", none)
+        none = str(self.line(None))
+        self.assertIn("measurement m1 waits on slot 2: its holder left no record of its command or --deadline", none)
         pid = ended_pid()
-        stale = str(holder_line("testbox", "m1", 1, Holder(pid, ("secret",), 0.0, None), 0.0, None))
+        stale = str(self.line(Holder(pid, ("secret",), 0.0, None)))
         self.assertIn(f"its recorded holder, pid {pid}, has ended", stale)
         self.assertNotIn("secret", stale)
 
+    def test_a_reused_pid_is_not_offered_to_stop(self) -> None:
+        # A running process that started after the record was written did not write it.
+        now, me = 10_000.0, os.getpid()
+        reused = str(self.line(Holder(me, ("secret",), now - 60, None), now, age=30.0))
+        self.assertIn(f"its recorded holder, pid {me}, has ended", reused)
+        self.assertNotIn("secret", reused)
+        # Within OWNER_SKEW, ps's whole seconds, it is the recorder.
+        self.assertIn("stopping pid", str(self.line(Holder(me, ("x",), now - 60, None), now, age=59.0)))
+        unread = str(self.line(Holder(me, ("x",), now - 60, None), now, age=None))
+        self.assertIn(f"pid {me} could not be confirmed as the batch's own wrapper (its age is unread)", unread)
+        self.assertNotIn("stopping pid", unread)
+        # This process, read for real: it started before a record written now.
+        real = holder_line("testbox", "m1", 1, Holder(me, ("x",), time.time(), None), time.time(), 0.0, None)
+        self.assertIn(f"stopping pid {me} ends that batch", str(real))
+
+    def test_process_age_reads_every_etime_shape(self) -> None:
+        for text, seconds in (("   00:07", 7), ("12:34", 754), ("01:02:03", 3723), ("2-01:00:00", 176400)):
+            with mock.patch.object(slot.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, text + "\n", "")):
+                self.assertEqual(slot.process_age(1), seconds, text)
+        for done in (subprocess.CompletedProcess([], 1, "", ""), subprocess.CompletedProcess([], 0, "soon\n", "")):
+            with mock.patch.object(slot.subprocess, "run", return_value=done):
+                self.assertIsNone(slot.process_age(1))
+        with mock.patch.object(slot.subprocess, "run", side_effect=FileNotFoundError("ps")):
+            self.assertIsNone(slot.process_age(1))
+
     def test_a_recorded_command_is_quoted_on_one_line(self) -> None:
-        line = str(holder_line("testbox", "m1", 1, Holder(os.getpid(), ("sh", "-c", "a\nb\x1b"), 0.0, None), 0.0, None))
+        line = str(self.line(Holder(os.getpid(), ("sh", "-c", "a\nb\x1b"), 0.0, None), 0.0))
         self.assertTrue(line.endswith("for: sh -c 'a\\nb\\x1b'"), line)
         self.assertNotIn("\n", line)
 
@@ -246,20 +284,40 @@ class HolderRecord(Locks):
             during.append(read_holder(self.path()))
             os.close(self.held.pop(0))
 
-        class Started(Exception):
-            pass
-
         threading.Timer(0.6, release).start()
         lock = os.path.join(self.dir, "measurement.lock")
         with mock.patch.dict(os.environ, {}, clear=False), \
-                mock.patch.object(slot, "run_command", side_effect=Started), \
+                mock.patch.object(slot, "run_command", side_effect=started), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Started):
             os.environ.pop("FLEET_MEASUREMENT_HELD", None)
             slot.hold("testbox", "", "why", lock, "testbox m1", 2, ["measure"], 900, 0.2)
-        self.assertEqual([(h.command, h.deadline) if h else None for h in during], [(("measure",), None)])
+        self.assertEqual([(h.command, h.deadline, h.expires) if h else None for h in during], [(("measure",), None, None)])
         after = read_holder(self.path())
-        self.assertEqual((after.command, after.deadline) if after else None, (("measure",), 900))
+        assert after is not None and during[0] is not None
+        self.assertEqual((after.command, after.deadline, after.started), (("measure",), 900, during[0].started))
+        # Its deadline's end, on the clock the deadline is enforced on, from the command's start.
+        self.assertAlmostEqual(after.expires or 0.0, time.monotonic() + 900, delta=5)
 
+    def test_a_batch_records_its_deadline_end_when_its_command_starts(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(slot, "run_command", side_effect=started), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Started):
+            slot.take_slot("testbox", self.dir, 1, 0, True, 0, "", ["suite"], 1200)
+        after = read_holder(self.path())
+        self.assertEqual((after.command, after.deadline, after.pid) if after else None, (("suite",), 1200, os.getpid()))
+        self.assertAlmostEqual(after.expires if after and after.expires else 0.0, time.monotonic() + 1200, delta=5)
+
+
+class Started(Exception):
+    pass
+
+
+def started(*args: object, **kwargs: object) -> None:
+    """``run_command`` stubbed: the command starts (its ``on_start``), and nothing runs."""
+    on_start = kwargs.get("on_start")
+    if callable(on_start):
+        on_start()
+    raise Started
 
 class SlotArguments(unittest.TestCase):
     def refused(self, args: list[str]) -> str:

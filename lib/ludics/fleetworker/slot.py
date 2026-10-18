@@ -215,8 +215,8 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # unchanged, and then names the holder (`holder_line`) whenever it may hold the slot long. The
 # record is written by the holder AFTER its flock, so the content of a held file is its holder's,
 # except across an upgrade: a batch started by a fleet-worker older than #668 writes nothing, and
-# the file then holds an earlier taker's record, which the reader's pid check tells apart only while
-# that pid is not reused. The waiting itself is still a blocking flock (in a thread, so the main
+# the file then holds an earlier taker's record, which the reader tells apart while its pid has
+# ended or names a process younger than the record (``owner``). The waiting itself is still a blocking flock (in a thread, so the main
 # one can speak), so a freed slot still wakes the drain at once, ahead of a batch polling for one
 # each second.
 # Exit: the command's own status; 127 with `EXECUTION HOLD REFUSED` when it cannot be run; 2 usage;
@@ -231,10 +231,11 @@ import select
 import shlex
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn, assert_never, cast
 
@@ -302,16 +303,31 @@ def _is_held(path: str) -> bool | None:
 # --- THE HOLDER RECORD ----------------------------------------------------------------------------
 #
 # The boundary of the reader (``read_holder``), as a fail-closed allowlist: it reads at most
-# HOLDER_READ bytes of a slot file, as one JSON object, and takes from it exactly four fields --
-# ``pid`` (a positive integer), ``command`` (a non-empty list of strings), ``started`` (a finite
-# number, the epoch second the slot was taken) and ``deadline`` (null, or the positive whole
-# ``--deadline`` seconds). Any other key is not read. A file that is empty, longer, not that shape,
-# or not readable is no record ("left no record"), never a partial one. A recorded pid that is no
-# longer running makes the record stale, said as such, and its command and cap are not shown.
+# HOLDER_READ bytes of a slot file, as one JSON object, and takes from it exactly five fields --
+# ``pid`` (an integer from 1 to PID_MAX, the range of every pid_t this package runs on),
+# ``command`` (a non-empty list of strings), ``started`` (a finite number, the epoch second the
+# slot was taken), ``deadline`` (null, or the positive whole ``--deadline`` seconds) and
+# ``expires`` (absent or null until the command starts, then a finite ``time.monotonic()`` reading
+# at which that deadline ends it). Any other key is not read. A file that is empty, longer, not
+# that shape, or not readable is no record ("left no record"), never a partial one.
+#
+# What the drain then says rests on two clocks of THIS box, the one the slot file is on.
+# ``expires`` is the clock the deadline is enforced on (``group.run`` waits on
+# ``time.monotonic()``, which on Linux and macOS is one system-wide clock that a wall-clock step
+# does not move), read here against the same clock. Whether the pid is still the recorder
+# (``owner``) is judged from its age as ``ps -o etime=`` gives it: a process that started more than
+# OWNER_SKEW seconds after the record was written cannot have written it (a pid names one process
+# at a time), so the pid was reused; one that started before it is the recorder. That comparison
+# is against the wall clock, so a wall-clock step back of more than OWNER_SKEW between the record
+# and the read can take a reused pid for the recorder -- the boundary. Only a confirmed recorder
+# is offered as the pid to stop; an ended or reused pid is said as such, and a pid whose age
+# cannot be read is named with no advice to stop it.
 
 LONG_HOLDER = 600  # seconds of --deadline left past which the drain names a slot's holder
 HOLDER_REPEAT = 300  # FLEET_HOLD_DRAIN_REPEAT's default: seconds between the naming lines
 HOLDER_READ = 65536
+PID_MAX = 2**31 - 1
+OWNER_SKEW = 2.0  # seconds: ps's etime is whole seconds, truncated
 
 
 @dataclass(frozen=True)
@@ -320,22 +336,33 @@ class Holder:
     command: tuple[str, ...]
     started: float
     deadline: int | None
+    expires: float | None = None
 
 
-def record_holder(descriptor: int, command: Sequence[str], deadline: int | None) -> None:
-    """Write this process's holder record into the slot file it has just locked. Fail-open: a
-    record that cannot be written leaves the drain saying the holder left none."""
-    record = {"pid": os.getpid(), "command": list(command), "started": time.time(), "deadline": deadline}
+def record_holder(descriptor: int, command: Sequence[str], deadline: int | None,
+                  expires: float | None = None, started: float | None = None) -> float:
+    """Write this process's holder record into the slot file it has locked; the ``started`` it
+    wrote, which a rewrite at the command's start passes back. Fail-open: a record that cannot be
+    written leaves the drain saying the holder left none."""
+    when = time.time() if started is None else started
+    record = {"pid": os.getpid(), "command": list(command), "started": when, "deadline": deadline,
+              "expires": expires}
     data = (json.dumps(record) + "\n").encode("utf-8", "backslashreplace")
     try:
         os.ftruncate(descriptor, 0)
         os.pwrite(descriptor, data, 0)
     except OSError:
         pass
+    return when
 
 
-def _whole(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+def _whole(value: object, top: int | None = None) -> bool:
+    return (isinstance(value, int) and not isinstance(value, bool) and value > 0
+            and (top is None or value <= top))
+
+
+def _finite(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
 def read_holder(path: str) -> Holder | None:
@@ -358,28 +385,52 @@ def read_holder(path: str) -> Holder | None:
     command: Any = record.get("command")
     started: Any = record.get("started")
     deadline: Any = record.get("deadline")
-    if not _whole(pid) or not (isinstance(command, list) and command):
+    expires: Any = record.get("expires")
+    if not _whole(pid, PID_MAX) or not (isinstance(command, list) and command):
         return None
     words = cast(list[Any], command)
     if not all(isinstance(word, str) for word in words):
         return None
-    if isinstance(started, bool) or not isinstance(started, (int, float)) or not math.isfinite(started):
+    if not _finite(started) or (deadline is not None and not _whole(deadline)):
         return None
-    if deadline is not None and not _whole(deadline):
+    if expires is not None and not _finite(expires):
         return None
-    return Holder(int(pid), tuple(str(word) for word in words), float(started), None if deadline is None else int(deadline))
+    return Holder(int(pid), tuple(str(word) for word in words), float(started),
+                  None if deadline is None else int(deadline), None if expires is None else float(expires))
 
 
-def _running(pid: int) -> bool:
+ETIME = re.compile(r"(?:(?:([0-9]+)-)?([0-9]+):)?([0-9]+):([0-9]+)")
+
+
+def process_age(pid: int) -> float | None:
+    """Seconds since ``pid`` started, from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``), or None."""
     try:
-        os.kill(pid, 0)
+        done = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)], capture_output=True, text=True,
+                              timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = ETIME.fullmatch(done.stdout.strip()) if done.returncode == 0 else None
+    if match is None:
+        return None
+    days, hours, minutes, seconds = (int(part) if part else 0 for part in match.groups())
+    return float(((days * 24 + hours) * 60 + minutes) * 60 + seconds)
+
+
+def owner(holder: Holder, now: float) -> str:
+    """``recorder`` (the pid is the process that wrote the record), ``ended`` (no such process, or
+    one that started after the record: the pid was reused) or ``unknown`` (its age is unread)."""
+    try:
+        os.kill(holder.pid, 0)
     except ProcessLookupError:
-        return False
+        return "ended"
     except PermissionError:
-        return True  # another user's process, but a running one
-    except OSError:
-        return False
-    return True
+        pass  # another user's process, but a running one
+    except (OSError, OverflowError):
+        return "unknown"
+    age = process_age(holder.pid)
+    if age is None:
+        return "unknown"
+    return "ended" if now - age > holder.started + OWNER_SKEW else "recorder"
 
 
 def span(seconds: float) -> str:
@@ -396,30 +447,35 @@ def printable(text: str) -> str:
     return "".join(ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in text)
 
 
-def holder_line(box: str, request: str, index: int, holder: Holder | None, now: float,
+def holder_line(box: str, request: str, index: int, holder: Holder | None, now: float, clock: float,
                 waited: float | None) -> str | None:
     """The line naming slot ``index``'s holder when it may hold the slot long, or None when its
-    ``--deadline`` ends it within LONG_HOLDER seconds. ``waited``: seconds the drain has waited so
-    far, None for the first line."""
+    ``--deadline`` ends it within LONG_HOLDER seconds. ``now`` is the wall clock, ``clock`` this
+    box's ``time.monotonic()``; ``waited``: seconds the drain has waited so far, None for the
+    first line."""
     lead = (f"{HOLD_PREFIX} {box}: measurement {request} " +
             (f"waits on slot {index}" if waited is None else f"still waits for slot {index} after {span(waited)}") + ": ")
     if holder is None:
         return lead + ("its holder left no record of its command or --deadline (a batch started by a fleet-worker"
                        " older than ludics-lite#668, or one whose record could not be written), so nothing says"
                        " when it ends")
-    if not _running(holder.pid):
+    whose = owner(holder, now)
+    if whose == "ended":
         return lead + (f"its recorded holder, pid {holder.pid}, has ended: something it started still holds the"
                        " slot, or a batch that left no record does, so nothing says when it ends")
-    ran = now - holder.started
     if holder.deadline is None:
         cap = "no --deadline bounds it"
     else:
-        left = holder.deadline - ran
+        # Before its command starts the deadline has not begun to count: all of it is ahead.
+        left = holder.deadline if holder.expires is None else holder.expires - clock
         if left <= LONG_HOLDER:
             return None
         cap = f"its --deadline {holder.deadline}s ends it in about {span(left)}"
-    return lead + (f"held by pid {holder.pid} for {span(ran)} so far, and {cap}; stopping pid {holder.pid} ends that batch"
-                   f" and starts the measurement, for: {printable(shlex.join(holder.command))}")
+    advice = (f"stopping pid {holder.pid} ends that batch and starts the measurement" if whose == "recorder" else
+              f"pid {holder.pid} could not be confirmed as the batch's own wrapper (its age is unread), so check it"
+              " before stopping it")
+    return lead + (f"held by pid {holder.pid} for {span(now - holder.started)} so far, and {cap}; {advice},"
+                   f" for: {printable(shlex.join(holder.command))}")
 
 
 def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, repeat: float) -> None:
@@ -447,7 +503,7 @@ def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, r
     waiter.join(0.2)  # a batch ending in this instant needs no naming
     waited: float | None = None
     while waiter.is_alive():
-        line = holder_line(box, request, index, read_holder(path), time.time(), waited)
+        line = holder_line(box, request, index, read_holder(path), time.time(), time.monotonic(), waited)
         if line is not None and waiter.is_alive():
             errline(line)
         waiter.join(repeat)
@@ -639,7 +695,7 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
 
 def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, why: str,
                 deadline: int | None, nested: bool = False,
-                recorder: "Recorder | None" = None) -> NoReturn:
+                recorder: "Recorder | None" = None, on_start: Callable[[], None] | None = None) -> NoReturn:
     """Run the command: resolved before the guard (a command that cannot be found takes no
     inhibitor), the guard beside it when there is one, then the command as the leader of a process
     group of its own, which a deadline or a signal to this wrapper ends (THE GROUP, ``group.py``).
@@ -654,7 +710,9 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
     ``recorder`` (THE CO-TENANTS) takes its opening snapshot just before the command starts and
     writes it once the command has started, and takes its closing one once the command's leader
     has ended, however it ended, before this wrapper exits or dies: a command that cannot be
-    started records nothing, and the deadline counts from the command's start as before."""
+    started records nothing, and the deadline counts from the command's start as before.
+    ``on_start`` (THE HOLDER RECORD) is called first, once the command has started, the moment its
+    deadline starts to count."""
     if shutil.which(command[0]) is None:
         refuse_unrunnable(prefix, box, command, "no such executable")
     if not (nested and deadline is None):
@@ -671,6 +729,8 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, w
 
     def started(leader: int) -> None:
         pgid.append(leader)
+        if on_start is not None:
+            on_start()
         if recorder is not None:
             recorder.opened(leader)
 
@@ -729,14 +789,21 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             # The lock lives on this descriptor, which the command inherits. Nothing releases it
             # afterwards -- the kernel does, when the last process holding it ends.
             os.set_inheritable(descriptor, True)
-            record_holder(descriptor, command, bound)  # THE HOLDER RECORD, for a drain waiting on it
+            # THE HOLDER RECORD, for a drain waiting on it; its deadline's end once that counts.
+            taken = record_holder(descriptor, command, bound)
+
+            def counting() -> None:
+                if bound is not None:
+                    record_holder(descriptor, command, bound, time.monotonic() + bound, taken)
+
             held = f"slot {index} of {cap}"
             if tokens and index <= tokens:
                 held += f", GPU token {index} of {tokens}"
             errline(f"{SLOT_PREFIX} {box}: {held} held for: {' '.join(command)}")
             # The marker a nested `execution slot` (and a runner that takes its own slot) reads.
             os.environ["FLEET_SLOT_HELD"] = f"{box} {index} {cap} {'gpu' if not tokens or index <= tokens else 'cpu'}"
-            run_command(SLOT_PREFIX, box, command, inhibitor, f"{box} {held}: {' '.join(command)}", bound)
+            run_command(SLOT_PREFIX, box, command, inhibitor, f"{box} {held}: {' '.join(command)}", bound,
+                        on_start=counting)
         if time.monotonic() >= deadline:
             if tokens and not cpu:
                 cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {tokens} GPU tokens (slots 1-{tokens} of {cap}) busy"
@@ -752,6 +819,14 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
     """``execution hold``: with a measurement (``hold_lock``), THE DRAIN and the marker's shared lock
     first, then the command under the guard, THE CO-TENANTS recorded before and after it."""
     recorder: Recorder | None = None
+    taken: list[tuple[int, float]] = []  # THE HOLDER RECORD: each slot drained, and when
+
+    def counting() -> None:
+        if deadline is not None:
+            expires = time.monotonic() + deadline
+            for descriptor, when in taken:
+                record_holder(descriptor, command, deadline, expires, when)
+
     if hold_lock:
         request = marker.split()[1]
         directory = os.path.dirname(hold_lock)
@@ -766,7 +841,6 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
         nested = os.environ.get("FLEET_MEASUREMENT_HELD") == marker and _is_held(hold_lock) is True
         if nested:
             indices = set[int]()
-        taken: list[int] = []
         for index in sorted(indices):
             try:
                 path = os.path.join(directory, f"slot.{index}")
@@ -775,14 +849,10 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
                 os.set_inheritable(descriptor, True)
                 # No earlier taker's record outlives the take. While the drain goes on, nothing bounds
                 # this hold: its --deadline starts with its command, after the drain.
-                record_holder(descriptor, command, None)
-                taken.append(descriptor)
+                taken.append((descriptor, record_holder(descriptor, command, None)))
             except OSError as exc:
                 errline(f"{HOLD_PREFIX} {box}: WARNING: slot {index} is not held for the measurement, so a batch"
                         f" may run beside it -- {exc}")
-        if deadline is not None:
-            for descriptor in taken:
-                record_holder(descriptor, command, deadline)
         # The measurement's marker and the lock that proves it live: SHARED, so a second hold of the
         # same measurement is not refused, and inherited by the whole command tree. Fail-open.
         try:
@@ -799,7 +869,7 @@ def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: i
         # THE CO-TENANTS: every hold records its own pair, a nested one too, since nothing bounds
         # its life by its enclosing hold's (a backgrounded nested hold outlives it).
         recorder = Recorder(box, request, directory, os.getpgrp() if nested else None)
-    run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline, recorder=recorder)
+    run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline, recorder=recorder, on_start=counting)
 
 
 class Recorder:

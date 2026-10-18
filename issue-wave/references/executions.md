@@ -167,8 +167,9 @@ for as long as the runner's tree runs. Each take of a slot records its holder (p
 `--deadline`) in the slot's lock file, so where that batch may hold the slot long - no
 `--deadline`, more than ten minutes of one left, or no record - the drain names it on the next line,
 `EXECUTION HOLD <box>: measurement <id> waits on slot <n>: held by pid <p> ...`, and again every
-five minutes (`FLEET_HOLD_DRAIN_REPEAT`) as `still waits for slot <n> after <t>`: stopping that pid
-ends the batch, or stopping the hold gives the box back (ludics-lite#668). So no batch runs beside the measurement however it was
+five minutes (`FLEET_HOLD_DRAIN_REPEAT`) as `still waits for slot <n> after <t>`. Where that pid is
+confirmed as the record's writer (running, and older than the record), the line says stopping it
+ends the batch; stopping the hold instead gives the box back (ludics-lite#668). So no batch runs beside the measurement however it was
 admitted: a batch waiting for a slot either ends before the measurement starts or starts after it
 ends. While such a hold is live a `FLEET_SLOT_HELD` marker is not trusted, since the slot it names
 is held by the hold, not by an enclosing batch; the measurement's own runs carry its marker
