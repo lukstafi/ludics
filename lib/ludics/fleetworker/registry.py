@@ -113,6 +113,20 @@ carrying `resolved_revision` for one is refused, as is a head-of dispatch withou
 head-of record never dispatched names no commit, so reconcile refuses to make it `running` or
 `uncertain`; and once resolved, an `observed_sha` that any later payload names must be that commit.
 
+THE BINDING (ludics-lite#634): the one commit a record's evidence may name, `bound_commit`. Fail-closed
+on what binds, and nothing else: a record's `resolved_revision` (above), else -- for a request
+WITHOUT `"standing": true` -- a `requested_revision` that is, whole, one exact object ID (40 or 64
+lowercase hex, as `observed_sha` is spelled). Every other revision is free text (`<sha> plus working
+diff`, a ref, prose, a SHA with surrounding blanks) and binds nothing; a standing record covers a
+worker's whole life, each batch at the commit it then has, and binds only through a resolution.
+For a bound record, a `dispatch`, `record`, `reconcile` or `conclude` whose `observed_sha` is
+another commit is refused naming the bound one; so is a conclusion naming none (other than
+`not-launched`) when the observed_sha it would inherit is another commit (one recorded before this
+check). The escape for a deliberate re-pin is a new request id, which the refusal states. A
+concluded record answers its identical retry before this check, so a record concluded before it
+existed keeps its retries. `execution leg` reads the same function, so it refuses to run what the
+registry would refuse to record.
+
 A request's `issue` is optional (ludics-lite#664): the one issue the work is for, spelled exactly
 `owner/name#N` -- `fleet-worker.sh prs --wave` reads it as one -- or absent, for work with no issue of
 its own (a post-wave task, an integration run), whose label goes in `purpose`. A placeholder that
@@ -174,6 +188,39 @@ def ref_name_ok(name: str) -> bool:
     if not re.fullmatch(r"[A-Za-z0-9._/-]+", name) or name.startswith("-") or ".." in name or name == "HEAD":
         return False
     return all(part and not part.startswith(".") and not part.endswith((".", ".lock")) for part in name.split("/"))
+
+
+def bound_commit(record: Record) -> str | None:
+    """THE BINDING (see the header): the commit a record's evidence must name, or None when it is
+    bound to none. Read defensively, as `execution leg` hands it a record off a listing."""
+    resolved = record.get("resolved_revision")
+    if isinstance(resolved, str) and OBJECT_ID.fullmatch(resolved):
+        return resolved
+    request = as_object(record.get("request"))
+    if request is None or request.get("standing") is True:
+        return None
+    requested = request.get("requested_revision")
+    return requested if isinstance(requested, str) and OBJECT_ID.fullmatch(requested) else None
+
+
+def check_binding(record: Record, data: Record, action: str) -> None:
+    """THE BINDING's refusal (see the header) of a payload's observed_sha, named or inherited."""
+    bound = bound_commit(record)
+    if bound is None:
+        return
+    named = "observed_sha" in data
+    inherits = action == "conclude" and data.get("verdict") != "not-launched"
+    sha = data.get("observed_sha") if named else record.get("observed_sha") if inherits else None
+    if sha is None or sha == bound:
+        return
+    what = f"observed_sha {sha}" if named else f"the recorded observed_sha {sha}, which this conclusion inherits,"
+    if "resolved_revision" in record:
+        # The commit a head-of request was assigned is the one its evidence is about.
+        refuse(f"{what} is not {bound}, the commit {record['request']['requested_revision']} was resolved to at assignment")
+    refuse(f"{what} is not {bound}, the exact commit non-standing request {record['request_id']} reserved "
+           f"(ludics-lite#634): evidence at another commit is another request's -- reserve that run under a new "
+           f"request id (a deliberate re-pin), and conclude this one at {bound} (cancelled, evidence naming the "
+           f"new id) or not-launched if nothing ran")
 
 
 def resolve_dispatch(record: Record, resolved: Any, event: Record) -> None:
@@ -724,11 +771,7 @@ def main(argv: list[str]) -> None:
             refuse("unknown operation")
         if "observed_sha" in data and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", data["observed_sha"]):
             refuse("observed_sha must be an exact Git object ID")
-        assigned = record.get("resolved_revision")
-        if "observed_sha" in data and assigned and data["observed_sha"] != assigned:
-            # The commit a head-of request was assigned is the one its evidence is about.
-            refuse(f"observed_sha {data['observed_sha']} is not {assigned}, the commit "
-                   f"{record['request']['requested_revision']} was resolved to at assignment")
+        check_binding(record, data, action)
         for key in ("observed_sha", "remote_checkout", "handle", "log", "verdict"):
             if key in data:
                 nonempty(data, [key])

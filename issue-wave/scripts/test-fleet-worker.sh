@@ -2355,6 +2355,25 @@ src_refused "a head file of two lines is a malformed record, not a fact" src-two
 src_refused "a truncated head is a malformed record, not another revision" src-short-head "FROM-RUN REFUSED: .*/head holds '${ran%??????}', not one commit ID"
 expect "a record launched clean at the reported revision concludes, and says so" 0 "launched at $ran on a clean tree" -- run_conclude run-src-clean "$runs/src-clean"
 grep -Fq "\"observed_sha\": \"$ran\"" <<<"$out" && grep -Fq '"verdict": "pass"' <<<"$out" && ok "...as a pass at the recorded revision" || ko "clean record: $out"
+# ludics-lite#634: a non-standing request for exactly one commit is concluded only at that commit;
+# a standing one is not bound. $moved is a commit the checkout holds, so only the binding refuses.
+pinreq() { # <id> <true|false: standing> -> a reservation of exactly $ran
+  jq -n --arg id "$1" --arg sha "$ran" --argjson st "$2" '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#1",
+    purpose:"fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:$sha,
+    kind:"correctness"} + (if $st then {standing: true} else {} end)' > "$TMP/$1.json"
+  printf '%s' "$TMP/$1.json"
+}
+"${FWX[@]}" execution run "$(pinreq run-pin false)" >/dev/null || ko "could not reserve run-pin (setup)"
+expect "a non-standing exact-SHA reservation concluded at another commit is refused, naming the reserved one" 1 \
+  "EXECUTION REFUSED: observed_sha $moved is not $ran, the exact commit non-standing request run-pin reserved .*new request id" -- \
+  "${FWX[@]}" execution conclude --from-run "$run1" --request run-pin --sha "$moved"
+"$FW" execution list | jq -e '[.[] | select(.request_id == "run-pin") | .state] == ["launching"]' >/dev/null &&
+  ok "...and left it dispatched" || ko "the refused conclusion changed run-pin"
+expect "...and the same conclusion at the reserved commit passes" 0 "\"observed_sha\": \"$ran\"" -- \
+  "${FWX[@]}" execution conclude --from-run "$run1" --request run-pin --sha "$ran"
+"${FWX[@]}" execution run "$(pinreq run-pin-standing true)" >/dev/null || ko "could not reserve run-pin-standing (setup)"
+expect "a standing exact-SHA reservation is not bound: it concludes at a later commit" 0 "\"observed_sha\": \"$moved\"" -- \
+  "${FWX[@]}" execution conclude --from-run "$run1" --request run-pin-standing --sha "$moved"
 fixture_done run-other
 expect "a run of a request outside the roster is refused" 1 "canonical FLEET_BOXES" -- "$FW" execution run "$(reqjson run-e)"
 # The command line's own refusals and the anchor's transport, each with its exit code.

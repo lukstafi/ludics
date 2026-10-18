@@ -16,8 +16,10 @@ THE RESERVATION. ``--request`` names a dispatched record (``launching``, ``runni
 coordinator identity. The box is the record's execution host (``--box``, when given, must be it);
 a correctness record runs the runner under ``execution slot`` on that box (``--cpu``/``--gpu``,
 ``--wait``, ``--wait-window``, ``--deadline`` passed to it), a measurement under ``execution hold
---request <id>`` (``--deadline`` alone). When the record carries a ``resolved_revision`` (a
-``head-of:<branch>`` request resolved at assignment), ``--rev`` must come to exactly that commit.
+--request <id>`` (``--deadline`` alone). When the registry binds the record to one commit
+(``registry.bound_commit``: a ``head-of:<branch>`` request's ``resolved_revision``, or a non-standing
+request whose ``requested_revision`` is exactly one commit, ludics-lite#634), ``--rev`` must come to
+exactly that commit.
 
 THE WINDOW WAIT (ludics-lite#666). A standing record a measurement window has ``suspended`` is
 refused at once -- unless the leg was given ``--wait-window[=<s>]``, when it waits here, on the
@@ -110,7 +112,7 @@ from ludics.fleetworker import execution, revision, slot
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.preflight import knob
-from ludics.fleetworker.registry import ref_name_ok
+from ludics.fleetworker.registry import bound_commit, ref_name_ok
 from ludics.fleetworker.transport import fleet_name, far_argv, is_local, prelude, put_file, substitution
 
 USAGE = (
@@ -511,14 +513,10 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     else:
         wrap = ["execution", "slot", *slot_flags]
     nest = ["--deadline", deadline, *[flag for flag in slot_flags if flag in ("--cpu", "--gpu")]]
-    resolved = record.get("resolved_revision")
-    want = resolved if isinstance(resolved, str) and OBJECT_ID.fullmatch(resolved) else ""
+    # The registry's binding (ludics-lite#634): the commit it would accept as this record's
+    # observed_sha, so the leg runs nothing the registry would refuse to record.
+    want = bound_commit(record) or ""
     requested = execution.field(record, "request", "requested_revision")
-    # A non-standing request for one exact commit is about that commit too. A standing record is
-    # not: it covers every batch of a worker's life, each at the commit it then has.
-    if not want and isinstance(requested, str) and OBJECT_ID.fullmatch(requested) \
-            and execution.field(record, "request", "standing") is not True:
-        want = requested
     if isinstance(requested, str) and requested.startswith("head-of:") and not want:
         # Reconciled to running without a dispatch, say: the branch was never resolved, so no commit
         # is this request's, and any --rev would pass.
