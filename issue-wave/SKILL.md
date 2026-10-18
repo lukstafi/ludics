@@ -635,7 +635,7 @@ controlled through the tools in your coordinator's file, never through those com
   origin/<base>:<path>`, `git -C <main> grep <pattern> origin/<base>`, or a scratch worktree
   added `--detach` at `origin/<base>` and removed after, and never run what moves its HEAD,
   index or working tree there (`checkout`, `switch`, `reset`, `merge`, `rebase`, `stash`); the
-  fleet's own scripted fast-forwards (the preflight's, ship-pr's helpers') are its only moves
+  fast-forwards the preflight and ship-pr prescribe are its only moves
   (2026-10-14: a coordinator checking post-wave chip premises ran `git checkout --detach
   origin/master` in OCANNL's; ludics-lite#622). This is the one statement of the rule; every
   brief names the main checkout's path and carries it for the worker. For `~/ludics-lite` the
