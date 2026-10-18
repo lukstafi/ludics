@@ -913,10 +913,9 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
         read = read_registry(cfg, box, voice)
         if time.monotonic() >= deadline:
             # Nor a read that came back past it: a slow transport must not admit the batch late
-            # either (ludics-lite#683 review). Its records are dropped, but a read that answered
-            # proves the registry reachable, so an earlier failed read is not the refusal.
-            if not isinstance(read, Unread):
-                unread = None
+            # either (ludics-lite#683 review). Such a read decides which refusal is said -- its
+            # own failure, or the measurement's -- and never whether the batch runs.
+            unread = read if isinstance(read, Unread) else None
             continue
         if isinstance(read, Unread):
             # One failed read mid-wait is not the window's answer: said, and asked again until the
