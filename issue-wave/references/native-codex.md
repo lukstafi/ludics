@@ -63,6 +63,11 @@ itself is gone, use the shared [finisher and reconciliation policy](native-worke
 only after proving the old writer stopped; the coordinator handles reservation
 reconciliation before dispatching further work.
 
+`STOPPED` (exit 7, ludics-lite#638) is not `DIED`: `bg-run.sh stop` ended the run on purpose and
+no process of it is left. It is NOT retried or re-armed, since a re-arm would relaunch what was
+stopped; re-arm only on a decision to resume, as for a fresh run. `execution conclude
+--from-bg-run` concludes it `cancelled`.
+
 ## Coordinator supervision
 
 Keep a current snapshot at the top of the board (worker, PR/head, gate, runner handle and

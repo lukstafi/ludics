@@ -186,7 +186,10 @@ concludes `cancelled` and judges nothing, so a verdict covers a span of merges);
 the tip's where each push has its own. With `--interim` such a tip is green meanwhile when it is GitHub's clean merge of
 a PR whose head built that workflow green and no run at an older commit is still in flight (that
 run judges base changes the PR head may never have met); the verdict line says `green, interim`
-and names the PR. That is the wave gate's opt-in and the base watch's; it is never the tip's own verdict, so a
+and names its source. An integration record at the tip, which the wave gate hands in, is read
+before the PR head (a `pass` is the interim's source, a `fail` the tip's red), and under the
+gate's `--advisory-red` a merged head or older run going only on advisory jobs holds nothing
+(issue-wave's *Base gate*). That is the wave gate's opt-in and the base watch's; it is never the tip's own verdict, so a
 read that needs that (`base --wait` after a merge) does not pass it.
 
 ## Open
