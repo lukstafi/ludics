@@ -51,11 +51,13 @@ One term per concept, used in this file and in every reference it links:
   follows from the transport chosen at launch; the board and every reservation carry both.
 - **Anchor**: the box (mac-studio) holding the coordinator lease, the halt, the board and the
   execution registry under `FLEET_ANCHOR_STATE`.
-- **Board**: the coordinator-maintained file on the anchor recording every worker of the wave:
+- **Board**: the coordinator-maintained record on the anchor of every worker of the wave:
   native and app workers in full, and for a CLI worker its issue, box, PR, gates and hand-back,
   since the script's own records under `~/.local/state/issue-wave/workers/` hold only that
   worker's session, stream and exit. `fleet-worker.sh ls/status/log/attach/unstick` read those
-  records and know nothing of native or app workers.
+  records and know nothing of native or app workers. The board is structured data written with
+  `fleet-worker.sh board set|note|log` and read with `board show`, never a markdown file edited
+  in place.
 - **Request**, **reservation**, **assignment**: a worker *requests* an execution; the
   coordinator turns the request into a *reservation*, one record in the execution registry
   (`fleet-worker.sh execution run`); the *assignment* is the message that resumes the worker

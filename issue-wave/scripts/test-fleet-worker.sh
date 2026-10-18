@@ -45,6 +45,7 @@ SECTIONS=(
   "codex workers"
   "log --last-result (fixture streams)"
   "halt"
+  "board"
   "execution run and conclude --from-run"
   "execution conclude --from-bg-run"
   "execution tip-run"
@@ -2069,6 +2070,41 @@ for verb in halt resume-launches halted gate; do
   esac
   expect "$verb against an anchor that does not answer is unreachable" 4 "$want" -- env FLEET_ANCHOR=far-anchor "$FW" "${args[@]}"
 done
+}
+
+section "board" && {
+# The wave board as structured data (ludics-lite#619): the cell texts that broke `sed` on a markdown
+# board travel through the command line, the far side's bash -s and the shipped store unchanged.
+need_lease
+hostile='a|b (c) #d /e `f` $(touch "$TMP/pwned") '"'q'"' "dq" s/x/y/g \ & <br>'
+expect "a writer refuses a wave with no board" 1 "^BOARD REFUSED: no board for wave bw on the anchor (start it with --create)$" -- \
+  "$FW" board set bw "ll#1" state=x
+expect "set --create starts the board" 0 '^BOARD SET bw: "ll#1" state pr$' -- "$FW" board set --create bw "ll#1" "state=$hostile" pr=
+expect "a note takes any text" 0 "^BOARD NOTE bw: base scope$" -- "$FW" board note bw base=abc "scope=$hostile"
+expect "a log line is appended" 0 "^BOARD LOG bw: line 1 at " -- "$FW" board log bw "$hostile"
+expect "a task name takes the same text" 0 "^BOARD SET bw: " -- "$FW" board set bw "$hostile" "pr=#12 (draft)"
+"$FW" board show bw --json > "$TMP/board.json"
+got=$(jq -r '[.tasks[0].task, .tasks[0].fields.state, .notes.scope, .log[0].text, .tasks[1].task, .tasks[1].fields.pr] | join("\n")' "$TMP/board.json")
+want=$(printf '%s\n' "ll#1" "$hostile" "$hostile" "$hostile" "$hostile" "#12 (draft)")
+[ "$got" = "$want" ] && ok "every field round-trips byte for byte" || ko "round trip: got [$got] want [$want]"
+[ ! -e "$TMP/pwned" ] && ok "...and nothing in it ran" || ko "a value was run as a command"
+[ "$(jq -r '.log[0].by' "$TMP/board.json")" = test-coordinator ] && ok "a log line names its coordinator" || ko "log by: $(jq -c '.log[0]' "$TMP/board.json")"
+expect "show renders the markdown view, the pipe escaped" 0 '^| ll#1 | a\\|b (c) #d /e `f` ' -- "$FW" board show bw
+grep -q '^| task | state | pr |$' <<<"$out" && grep -q '^## Log$' <<<"$out" && ok "...with the table header and the log" || ko "view: $out"
+expect "another coordinator reads the board without the lease" 0 "^# Board: bw$" -- "${B[@]}" board show bw
+expect "...and without any identity" 0 "^# Board: bw$" -- env -u FLEET_COORDINATOR "$FW" board show bw
+expect "...but cannot write it" 1 "BOARD REFUSED fleet: coordinator lease held by" -- "${B[@]}" board log bw "not mine"
+expect "a writer needs an identity" 2 "no coordinator identity" -- env -u FLEET_COORDINATOR "$FW" board log bw x
+mkdir "$ISSUE_WAVE_STATE/COORDINATOR.lock"
+expect "a writer waits for the lease lock and fails after the bound" 1 "BOARD FAILED: lease lock" -- env FLEET_LOCK_WAIT=1 "$FW" board log bw x
+rmdir "$ISSUE_WAVE_STATE/COORDINATOR.lock"
+[ "$(jq '.log | length' "$ISSUE_WAVE_STATE/boards/bw.json")" = 1 ] && ok "no refused write reached the board" || ko "board after refusals: $(cat "$ISSUE_WAVE_STATE/boards/bw.json")"
+expect "a key outside the grammar is refused by the store" 1 "^BOARD REFUSED: a key must be" -- "$FW" board set bw t "bad key=1"
+expect "a field without = is a usage error" 2 "board set: expected <key>=<value>" -- "$FW" board set bw t novalue
+expect "show of a wave with no board refuses" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
+expect "an unknown board action is a usage error" 2 "board: expected set, note, log or show" -- "$FW" board edit bw
+expect "show against an anchor that does not answer is unreachable" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board show bw
+expect "a write against one says its outcome is unknown" 4 "^BOARD UNREACHABLE far-anchor: outcome unknown" -- env FLEET_ANCHOR=far-anchor "$FW" board log bw x
 }
 
 section "execution run and conclude --from-run" && {

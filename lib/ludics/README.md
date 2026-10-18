@@ -149,11 +149,13 @@ and the shell suites where they always ran. `scripts/fleet-peers.py` is not behi
 yet: its callers and its tests run it with `python3` and by path.
 
 The execution registry (formerly `issue-wave/scripts/fleet-execution.py`) is
-`lib/ludics/fleetworker/registry.py`, and it is the one module here that is SHIPPED: `fleet-worker.sh
-execution` sends its source to the anchor box, where a Python >= 3.12 found by the far side's own
-probe runs it from stdin. So it imports nothing from `ludics` (the anchor's checkout may hold
-another version) and its positional argv is a contract; `issue-wave/scripts/test-fleet-execution.py`
-loads it with `runpy` and patches `os.replace` between records.
+`lib/ludics/fleetworker/registry.py`, and it is SHIPPED: `fleet-worker.sh execution` sends its
+source to the anchor box, where a Python >= 3.12 found by the far side's own probe runs it from
+stdin. So it imports nothing from `ludics` (the anchor's checkout may hold another version) and its
+positional argv is a contract; `issue-wave/scripts/test-fleet-execution.py` loads it with `runpy`
+and patches `os.replace` between records. The wave board's store,
+`lib/ludics/fleetworker/boardstore.py` (`fleet-worker.sh board`, ludics-lite#619), is the other
+shipped module, under the same rules: self-contained, its argv a contract (its header).
 
 Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its box, local child or
 `ssh <box> bash -s` -- is still bash, the shell's heredocs byte for byte, in

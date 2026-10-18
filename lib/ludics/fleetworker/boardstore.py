@@ -236,32 +236,35 @@ def main(argv: list[str]) -> None:
     if doc is None:
         if payload.get("create") is not True:
             refuse(f"no board for wave {wave} on the anchor (start it with --create)")
-        doc = {"board": 1, "wave": wave, "created_at": now, "created_by": coordinator, "updated_at": now,
-               "notes": {}, "tasks": [], "log": []}
+        doc = cast(Doc, {"board": 1, "wave": wave, "created_at": now, "created_by": coordinator,
+                         "updated_at": now, "notes": {}, "tasks": [], "log": []})
     match action:
         case "set":
             task = task_ok(payload.get("task"))
             pairs = fields_ok(payload.get("fields"))
             tasks = cast(list[Doc], doc["tasks"])
-            row = next((entry for entry in tasks if entry["task"] == task), None)
+            row: Doc | None = next((entry for entry in tasks if entry["task"] == task), None)
             if row is None:
                 row = {"task": task, "fields": {}, "updated_at": now}
                 tasks.append(row)
+            fields = cast(dict[str, str], row["fields"])
             for key, value in pairs:
-                row["fields"][key] = value
+                fields[key] = value
             row["updated_at"] = now
             said = f"BOARD SET {wave}: {json.dumps(task, ensure_ascii=False)} " + " ".join(key for key, _ in pairs)
         case "note":
             pairs = fields_ok(payload.get("fields"))
+            notes = cast(dict[str, str], doc["notes"])
             for key, value in pairs:
-                doc["notes"][key] = value
+                notes[key] = value
             said = f"BOARD NOTE {wave}: " + " ".join(key for key, _ in pairs)
         case _:
             text = text_ok(payload.get("text"), "a log line")
             if not text.strip():
                 refuse("a log line must not be empty")
-            doc["log"].append({"at": now, "by": coordinator, "text": text})
-            said = f"BOARD LOG {wave}: line {len(doc['log'])} at {now}"
+            log = cast(list[Doc], doc["log"])
+            log.append({"at": now, "by": coordinator, "text": text})
+            said = f"BOARD LOG {wave}: line {len(log)} at {now}"
     doc["updated_at"] = now
     publish(path, doc)
     print(said)
