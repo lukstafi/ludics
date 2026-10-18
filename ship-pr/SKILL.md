@@ -812,7 +812,7 @@ just above its watermark: the window opened rounds b+1 to n, or none when n ≤ 
   discrepancy.
 - Build-relevant checks on the final head fail: the merge gate includes every non-advisory
   check, not just checks required by branch protection. That gate still applies independently
-  of which change caused the failure.
+  of which change caused the failure, save a coordinated wave's owned base red (*The override*).
 
 Severity alone is insufficient: a high-priority pre-existing defect that the PR merely exposes
 gets a bug report with the appropriate urgency, not a merge block. Record it in the consolidated
@@ -837,7 +837,8 @@ the reviewer never 👍'd defensible:
 
 - the build gate has READ a green on the final head: merge with `--require-green`, which refuses
   `absent` as well as red and no-verdict — a run that does not exist yet is not a green, and a
-  merge the reviewer never 👍'd does not get the path-filter allowance the ordinary gate gives;
+  merge the reviewer never 👍'd does not get the path-filter allowance the ordinary gate gives
+  (over a coordinated wave's owned base red, `--override` instead, *The override*);
 - every thread is answered with its disposition — fixed / removed / deferred / rebutted — and
   resolved;
 - the PR body carries a review-record paragraph (edited in with `body`, above): how many rounds,
@@ -1229,6 +1230,24 @@ about the tree you are merging into: the identical red is on `master` from befor
 existed; the failing step is infrastructure no source change can reach (an opam solve, a runner
 image, a registry timeout, a rate limit); or you can point at another PR whose build fails the same
 way. In each of those you have opened the run and read it.
+
+**In a coordinated wave, an owned base red is established for you** (ludics-lite#623, the
+maintainer's decision). When your head's red is the base's own — the same check failing the same
+test at the base's tip — and the wave coordinator has halted launches on it and named its owner,
+the triage issue (issue-wave's stop-the-world notice names all three), merge over it without
+waiting for the fix, and do not chase it: its attribution is the owner's. It covers a test that
+fails, never a build that breaks; where the repository has a merge build (*How stale the base has
+grown*), `merge` refuses a clash in the merge itself. The reason cites the check and test, the base
+SHA and the owner, so every merge in the red span names the red it rode over:
+
+```bash
+~/.claude/skills/ship-pr/scripts/pr-review.sh merge <owner>/<repo>#<pr> --wait \
+  --override "base red, not this PR: <check>, test <test>, red at <base sha>; owned by <owner>/<repo>#<issue>"
+```
+
+It goes without `--require-green`, at either exit of the review loop: that flag refuses any red
+the override waives. Under auto permission mode it still needs the user's go-ahead (*PR or direct
+commit?*): the standing merge rule there does not cover `--override`.
 
 It is not legitimate for "the error looks unrelated", for a red you have not opened, or for a flake
 you are assuming rather than confirming — re-run the job instead. A re-run costs minutes; an

@@ -318,6 +318,14 @@ class Merge:
                     )
             case _:
                 pass
+        if opts.require_green and gate.verdict == "waived":
+            fail(
+                4,
+                f"REFUSING to merge {repo}#{pr}: --require-green and the build signal is a red --override",
+                "waived, not green. A close-out merge needs a green READ on the final head; the one red it",
+                "merges over is a coordinated wave's owned base red, with --override and without",
+                "--require-green (ship-pr's *The override*, ludics-lite#623).",
+            )
         if opts.require_green and gate.verdict != "green":
             fail(
                 4,
