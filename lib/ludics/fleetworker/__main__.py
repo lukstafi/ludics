@@ -8,7 +8,8 @@ knob is read from the environment, as the shell read it (``ludics.fleetworker.co
 Every verb is served here (ludics-lite#403): the coordinator lease (claim, release, coordinator),
 the halt (halt, resume-launches, halted), the native gate (gate), every ``execution`` action, the
 preflight and refresh (``preflight``), a CLI worker's life (``workers``: launch, attach, status,
-log, unstick, close, ls) and the supervision reads (``supervision``: load, prs). The one answer
+log, unstick, close, ls), the supervision reads (``supervision``: load, prs) and the wave board
+(``board``: set, note, log, show). The one answer
 fleet-worker.sh still gives itself is ``execution slot --probe``, which must answer on a box with no
 Python >= 3.12 (THE PROBE WITHOUT PYTHON, in fleet-worker.sh).
 """
@@ -18,7 +19,7 @@ import re
 import sys
 
 from ludics import cli
-from ludics.fleetworker import execution, gate, lease, preflight, supervision, workers
+from ludics.fleetworker import board, execution, gate, lease, preflight, supervision, workers
 from ludics.fleetworker.config import Config, load_config
 from ludics.fleetworker.identity import PROG, die
 
@@ -35,6 +36,7 @@ VERBS = (
     "ls",
     "load",
     "prs",
+    "board",
     "execution",
     "halt",
     "resume-launches",
@@ -104,6 +106,8 @@ def dispatch(argv: list[str]) -> int:
             return supervision.cmd_load(cfg, rest)
         case "prs":
             return supervision.cmd_prs(cfg, rest)
+        case "board":
+            return board.cmd_board(cfg, rest)
         case "execution":
             return execution.cmd_execution(cfg, rest)
         case "halt":
