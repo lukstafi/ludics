@@ -722,6 +722,138 @@ class AdvisoryRed(unittest.TestCase):
         self.assertIn("base: --advisory-red takes a file", err)
 
 
+def job(name: str, concl: str | None) -> dict[str, object]:
+    """A job as the API serves it: an unfinished one has no conclusion and no completion time."""
+    return {"name": name, "conclusion": concl, "created_at": "2026-10-18T13:00:00Z",
+            "completed_at": None if concl is None else "2026-10-18T13:10:00Z"}
+
+
+MAC = "bash 3.2 suites, a (macos)"
+UBUNTU = "fixtures (ubuntu)"
+
+
+class RepositoryAdvisoryInterim(unittest.TestCase):
+    """ludics-lite#659: under ``--advisory-red`` the interim judges by the repository's advisory list
+    where it judged by the default -- the merged PR head's build signal (source (a)), and an older
+    run still in flight whose only unfinished jobs the list names. The live shape (2026-10-18): the
+    previous merge's push run was going only on its two macOS jobs, and every launch waited for
+    the macOS queue. Without the flag (the base watch, and ``base --wait`` alone) nothing changes."""
+
+    def _world(self, *, head_status: str = "completed", head_concl: str | None = "success",
+               head_jobs: Sequence[dict[str, object]] = (), older: dict[str, object] | None = None,
+               older_jobs: Sequence[dict[str, object]] = ()) -> dict[str, Answer]:
+        """The tip C (GitHub's merge of PR #7, head H) with its own ci run in flight, a green at A
+        under it, and optionally a run at B in flight between them. The head is read through the
+        real checks gate (gate.Gate), not a stub: which list it judges by is the subject."""
+        def at(sha: str, rid: int, created: str, **more: object) -> dict[str, object]:
+            return {"conclusion": "success", "head_sha": sha, "id": rid, "created_at": created,
+                    "run_attempt": 1, **more}
+        rows = [at(C, 10, "2026-10-18T14:30:00Z", status="pending", conclusion=None)]
+        if older is not None:
+            rows.append(at(B, 9, "2026-10-18T13:00:00Z", **older))
+        rows.append(at(A, 8, "2026-10-18T12:00:00Z"))
+        mac_check = head_jobs[1]["conclusion"] if len(head_jobs) > 1 else "success"
+        answers = pushless_world()
+        answers.update({
+            f"repos/o/r/contents/.github/workflows/ci.yml?ref={C}": DOCS_IGNORED,
+            "repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=10": runs(*rows),
+            "repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=100": runs(*rows),
+            "repos/o/r/actions/runs/10": json.dumps({"status": "pending"}),
+            "repos/o/r/actions/runs/9/jobs?per_page=100": json.dumps({"jobs": list(older_jobs)}),
+            "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY,
+            "repos/o/r/pulls/7": json.dumps({"head": {"sha": H, "ref": "claude/topic"},
+                                             "base": {"sha": B}, "updated_at": "2026-10-18T13:40:00Z"}),
+            f"repos/o/r/commits/{H}/check-runs?filter=latest&per_page=100": json.dumps({"check_runs": [
+                {"name": UBUNTU, "conclusion": "success", "html_url": "https://x/check/1",
+                 "check_suite": {"id": 5}},
+                {"name": MAC, "conclusion": mac_check, "html_url": "https://x/check/2",
+                 "check_suite": {"id": 5}}]}),
+            f"repos/o/r/actions/runs?head_sha={H}&per_page=100": json.dumps({"workflow_runs": [
+                {"created_at": "2026-10-18T13:41:00Z", "id": 8001, "workflow_id": 1, "run_attempt": 1,
+                 "event": "pull_request", "name": "ci", "status": head_status, "conclusion": head_concl,
+                 "check_suite_id": 5}]}),
+            "repos/o/r/actions/runs/8001/jobs?per_page=100": json.dumps(
+                {"jobs": list(head_jobs) or [job(UBUNTU, "success"), job(MAC, "success")]}),
+            "repos/o/r/actions/runs/8001/attempts/1/jobs?per_page=100": json.dumps(
+                {"jobs": list(head_jobs) or [job(UBUNTU, "success"), job(MAC, "success")]}),
+        })
+        return answers
+
+    def _base(self, answers: dict[str, Answer], advisory: bool = False) -> tuple[int, str, list[dict[str, str]] | None]:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "advisory-red.json")
+            args = ["main", "--wait=120", "--interim"] + (["--advisory-red", path] if advisory else [])
+            rc, out, err, _ = base_run(answers, args, clock=FakeClock(),
+                                       knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+            record = None
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    record = json.load(f)
+        return rc, out + err, record
+
+    def test_a_head_still_running_only_advisory_jobs_is_green_meanwhile(self) -> None:
+        """`merge` does not wait for the macOS jobs, so the merged head's run is usually still going
+        on them: by the repository's list that head is green, as `merge` read it."""
+        answers = self._world(head_status="in_progress", head_concl=None,
+                              head_jobs=[job(UBUNTU, "success"), job(MAC, None)])
+        rc, out, record = self._base(answers, advisory=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"green, interim (tip {C[:8]}", out)
+        self.assertIn("ci still running there only in jobs the repository's advisory list names", out)
+        self.assertEqual(record, [])
+        rc, out, _ = self._base(answers)
+        self.assertEqual(rc, 4, out)
+        self.assertNotIn("green, interim", out, "without the flag the default list holds it, as before")
+
+    def test_a_head_red_only_in_advisory_jobs_is_green_meanwhile(self) -> None:
+        answers = self._world(head_concl="failure", head_jobs=[job(UBUNTU, "success"), job(MAC, "failure")])
+        rc, out, _ = self._base(answers, advisory=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"green, interim (tip {C[:8]}", out)
+        rc, out, _ = self._base(answers)
+        self.assertEqual(rc, 4, out)
+
+    def test_a_head_red_in_a_required_job_has_no_interim(self) -> None:
+        answers = self._world(head_concl="failure", head_jobs=[job(UBUNTU, "failure"), job(MAC, "failure")])
+        rc, out, _ = self._base(answers, advisory=True)
+        self.assertEqual(rc, 4, out)
+        self.assertNotIn("green, interim", out)
+
+    def test_an_older_run_going_only_on_advisory_jobs_is_not_in_flight(self) -> None:
+        """The live shape: the previous merge's run at B has passed every required job and is
+        going only on the macOS ones. Under the flag the interim answers and names that run;
+        without it, the run holds the interim as before."""
+        answers = self._world(older={"status": "in_progress", "conclusion": None},
+                              older_jobs=[job(UBUNTU, "success"), job(MAC, None)])
+        rc, out, _ = self._base(answers, advisory=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"green, interim (tip {C[:8]}", out)
+        self.assertIn(f"(run 9 of ci at {B[:8]} is still running, but only jobs the repository's advisory"
+                      " list names — not waited for)", out)
+        rc, out, _ = self._base(answers)
+        self.assertEqual(rc, 4, out)
+        self.assertNotIn("green, interim", out)
+
+    def test_an_older_run_still_owing_a_required_job_holds_the_interim(self) -> None:
+        for name, jobs in (("a required job running", [job(UBUNTU, None), job(MAC, None)]),
+                           ("a required job red", [job(UBUNTU, "failure"), job(MAC, None)]),
+                           ("no job yet", [])):
+            with self.subTest(name):
+                answers = self._world(older={"status": "in_progress", "conclusion": None}, older_jobs=jobs)
+                rc, out, _ = self._base(answers, advisory=True)
+                self.assertEqual(rc, 4, out)
+                self.assertNotIn("green, interim", out)
+
+    def test_an_unreadable_list_holds_the_interim(self) -> None:
+        """Fail closed: a list that cannot be read releases nothing and judges no head."""
+        answers = self._world(older={"status": "in_progress", "conclusion": None},
+                              older_jobs=[job(UBUNTU, "success"), job(MAC, None)])
+        answers["repos/o/r/contents/.github/ship-pr-advisory-checks"] = (1, "gh: Forbidden (HTTP 403)")
+        rc, out, _ = self._base(answers, advisory=True)
+        self.assertEqual(rc, 4, out)
+        self.assertNotIn("green, interim", out)
+
+
 class NamedSources(unittest.TestCase):
     def test_a_clean_merge_of_a_green_head_judges_a_retired_workflow(self) -> None:
         rc, out, _, _ = base_run(pushless_world(), ["main"],

@@ -371,7 +371,9 @@ ceiling and refuse every launch (20-40 min per launch on 09-24 and 09-25). The g
 nothing else in flight, is green meanwhile when it is GitHub's clean merge of a PR whose head
 built that workflow green, and the verdict line reads `green, interim (...; judged meanwhile by
 PR #N's head run ...)`. A tip that is not such a merge stays pending and refused, and so does one
-with a run at an older merge still going. Under a push group that keeps one running run and the
+with a run at an older merge still going. The advisory file decides there too (ludics-lite#659):
+a merged head, or an older run, going only on jobs it names, every other job passed, holds
+nothing. Under a push group that keeps one running run and the
 newest pending one (this repository's main since ludics-lite#597, OCANNL's `ci`), that refusal
 comes only from the one running run, and runs cancelled while pending never hold it (ship-pr's
 *Read the base before you branch*). The integration
