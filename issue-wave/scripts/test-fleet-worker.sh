@@ -4058,8 +4058,10 @@ expect "a plain measurement is refused beside a standing reservation, pointing a
 "${FWS[@]}" execution slot -- sleep 30 > "$TMP/win-b0.log" 2>&1 &
 b0=$!
 held "$TMP/win-b0.log" "slot 1 of 1 held"
+# --no-gap: the GPU measurements above concluded a moment ago, and the batch in slot 1 is the
+# drain's to wait for, not the gap's (THE GAP, below).
 expect "execution window opens a measurement over the box's standing reservations" 0 "EXECUTION WINDOW testbox: win-measure open; suspended win-iterate" -- \
-  "${FWS[@]}" execution window testbox "$(slotreq win-measure measurement)"
+  "${FWS[@]}" execution window --no-gap testbox "$(slotreq win-measure measurement)"
 grep -q '"window": true' <<<"$out" && grep -q '"state": "launching"' <<<"$out" && ok "...dispatched, and marked a window" || ko "the window's record: $out"
 listing=$("${FWS[@]}" execution list --active --compact 2>&1)
 [ "$(jq -r '.[] | select(.request_id == "win-iterate") | "\(.state) \(.suspended_by)"' <<<"$listing")" = "suspended win-measure" ] &&
