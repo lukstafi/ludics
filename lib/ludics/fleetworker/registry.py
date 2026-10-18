@@ -98,6 +98,22 @@ the same request never dispatches twice: it suspends any standing record not yet
 the record. There is one measurement per window, so the registry still never holds two outstanding
 measurements on a box (`execution slot`'s in-hold admission, ludics-lite#480, relies on that).
 
+The gap between windows (ludics-lite#667). A coordinator running a box's measurements back to back
+concluded one window and opened the next seconds later, so a batch waiting out the first (`execution
+slot --wait-window`, which re-reads this registry every 15 s) read the second and never the gap
+between them, and was refused at its bound: a merge build four times, 30 minutes each. So a NEW
+window's payload may carry `"gap": <seconds>` (a whole number; absent or 0 is none), and when a
+measurement on its box concluded less than that long ago (its record's `updated_at`, this anchor's
+clock) while standing records are outstanding there, the window is not written: `run` exits 3 with
+`{"gap": {"box", "after", "ago", "gap", "wait", "standing"}}` on stdout and an `EXECUTION WINDOW`
+line on stderr naming the measurement it follows and the seconds still to go (`wait`, at most
+`gap`). The near side (`execution window`) waits those seconds with no lock held and asks again,
+so a handover stays two calls, the second taking up to the gap. The gap's boundary, a fail-closed
+proxy: standing records are what it reads as "workers there may be waiting" -- every native
+worker's batches and merge builds run under one -- and nothing else; it sees no waiting process,
+so it is paid whether or not one waits, and a batch run under no record (a coordinator's own) is
+not waited for. A retried window (its record exists) never waits.
+
 A request that follows a branch (ludics-lite#558): `"requested_revision": "head-of:<branch>"` names
 no commit at request time, so a request queued behind a halt or a busy box cannot go stale (three
 SHA-keyed requests of the 2026-10-05 wave did, one twice). The branch is resolved when the work is
@@ -492,6 +508,50 @@ def suspend(record: Record, window: str, now: str, coordinator: str) -> None:
         "request_id": record["request_id"], "evidence": f"suspended by measurement window {window}"}})
 
 
+class Gap(ValueError):
+    """A new window inside the gap after its box's last measurement (see the header): not a
+    refusal of the request, an answer the near side waits out."""
+
+    def __init__(self, answer: Record, line: str) -> None:
+        super().__init__(line)
+        self.answer = answer
+
+
+def check_gap(host: str, gap: int, records: dict[str, Record], now: datetime) -> None:
+    """Raise Gap when a measurement on ``host`` concluded less than ``gap`` seconds before ``now``
+    and standing records are outstanding there (see the header)."""
+    if gap <= 0:
+        return
+    standing = sorted(r["request_id"] for r in records.values()
+                      if r["state"] != "concluded" and r["request"]["execution_host"] == host
+                      and r["request"].get("standing"))
+    if not standing:
+        return
+    ended: list[tuple[datetime, str]] = []
+    for r in records.values():
+        if (r["state"] == "concluded" and r["request"]["execution_host"] == host
+                and r["request"]["kind"] == "measurement"):
+            try:
+                at = datetime.fromisoformat(r["updated_at"])
+            except ValueError:
+                refuse(f"{r['request_id']}: updated_at {r['updated_at']!r} is no ISO 8601 time, so the gap"
+                       f" after it cannot be measured")
+            ended.append((at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc), r["request_id"]))
+    if not ended:
+        return
+    at, after = max(ended)
+    ago = (now - at).total_seconds()
+    if ago >= gap:
+        return
+    # A conclusion stamped ahead of this clock waits the gap and no more.
+    wait = min(gap, max(1, int(gap - ago + 0.999)))
+    raise Gap({"gap": {"box": host, "after": after, "ago": max(0, int(ago)), "gap": gap, "wait": wait,
+                       "standing": standing}},
+              f"measurement {after} concluded on {host} {max(0, int(ago))}s ago, and standing reservations"
+              f" are outstanding there ({', '.join(standing)}), whose batches may be waiting: they get {gap}s"
+              f" to take its slots before the next window (ludics-lite#667); {wait}s to go")
+
+
 def publish(directory: Path, record: Record) -> None:
     """Write one record atomically and durably: exactly one `os.replace` per record."""
     directory.mkdir(exist_ok=True)
@@ -542,12 +602,16 @@ def main(argv: list[str]) -> None:
         return
     decoded: Any = json.loads(raw)
     window_box: str | None = None
+    window_gap = 0
     if action == "window":
         payload = as_object(decoded)
-        if payload is None or set(payload) != {"box", "request"}:
-            refuse("window payload must be {box, request}")
+        if payload is None or set(payload) - {"gap"} != {"box", "request"}:
+            refuse("window payload must be {box, request} or {box, request, gap}")
         nonempty(payload, ["box"])
-        window_box, decoded = cast(str, payload["box"]), payload["request"]
+        gap_value = payload.get("gap", 0)
+        if type(gap_value) is not int or gap_value < 0:
+            refuse("a window's gap must be a whole number of seconds")
+        window_box, window_gap, decoded = cast(str, payload["box"]), gap_value, payload["request"]
     request_data = as_object(decoded)
     if request_data is None:
         refuse("request must be a JSON object")
@@ -560,7 +624,8 @@ def main(argv: list[str]) -> None:
     # Preserve existing mixed-case identities; never publish another spelling over them.
     if any(name.casefold() == identity.casefold() and name != identity for name in records):
         refuse("request_id collides with an existing identity by case")
-    now = datetime.now(timezone.utc).isoformat()
+    clock = datetime.now(timezone.utc)
+    now = clock.isoformat()
     halt_path = Path(root) / "HALT"
     halt_identity = halt_generation(halt_path.read_text()) if halt_path.exists() else None
     if halt_identity is not None and not halt_identity.strip():
@@ -638,6 +703,8 @@ def main(argv: list[str]) -> None:
             if "triage_reason" in request and not halted:
                 refuse("triage reservations require an active halt")
             queued = check_capacity(request, records, canonical_hosts, slots_spec, window=action == "window")
+            if action == "window":
+                check_gap(request["execution_host"], window_gap, records, clock)
             if request["kind"] == "measurement":
                 check_lane_lock(request["execution_host"], map_spec, anchor, lab)
             if halted:
@@ -804,9 +871,14 @@ def main(argv: list[str]) -> None:
 
 
 def run(argv: list[str]) -> int:
-    """`main` with the registry's refusal contract: one `EXECUTION REFUSED: <why>` line on stderr, exit 1."""
+    """`main` with the registry's refusal contract: one `EXECUTION REFUSED: <why>` line on stderr, exit 1;
+    a window inside the gap (see the header) is exit 3, its answer on stdout."""
     try:
         main(argv)
+    except Gap as gap:
+        print(f"EXECUTION WINDOW {gap.answer['gap']['box']}: {gap}", file=sys.stderr)
+        print(json.dumps(gap.answer, separators=(",", ":")))
+        return 3
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"EXECUTION REFUSED: {exc}", file=sys.stderr)
         return 1
@@ -816,5 +888,6 @@ def run(argv: list[str]) -> int:
 # A program (`python - <argv>` on the anchor, `python registry.py`) or `runpy.run_path`, never an
 # import: the in-process suite reads LANE_LOCKS from the namespace runpy returns.
 if __name__ in ("__main__", "<run_path>"):
-    if run(sys.argv) != 0:
-        sys.exit(1)
+    status = run(sys.argv)
+    if status != 0:
+        sys.exit(status)
