@@ -527,13 +527,16 @@ class WindowGap(unittest.TestCase):
         calls: list[Any] = []
         slept: list[float] = []
 
+        def unresolved(cfg: Any, payload: str, action: str) -> tuple[str, str]:
+            return payload, ""
+
         def run_on(cfg: Any, box: str, script: str, argv: list[str], capture: bool = False) -> Any:
             calls.append(json.loads(argv[6]))
             return answers.pop(0)
 
         out, err = io.StringIO(), io.StringIO()
         with (mock.patch.object(execution, "check_identity"), mock.patch.object(execution, "checked_request"),
-              mock.patch.object(execution, "with_resolution", side_effect=lambda cfg, p, a: (p, "")),
+              mock.patch.object(execution, "with_resolution", side_effect=unresolved),
               mock.patch.object(execution, "endpoint_map", return_value=""),
               mock.patch.object(execution, "my_token", return_value="tok"),
               mock.patch.object(execution, "coordinator_id", return_value="coord"),

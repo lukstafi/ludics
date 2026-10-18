@@ -1261,7 +1261,7 @@ def gap_wait(done: Done) -> int | None:
         decoded: Any = json.loads(done.out)
     except ValueError:
         return None
-    wait = field(decoded, "gap", "wait") if isinstance(decoded, dict) else None
+    wait = field(cast(dict[str, Any], decoded), "gap", "wait") if isinstance(decoded, dict) else None
     return wait if type(wait) is int and wait > 0 else None
 
 
