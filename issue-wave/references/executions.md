@@ -168,7 +168,13 @@ already running, or already waiting for a slot, when the window opened. **The dr
 `execution hold --request <id>` takes every slot of the box (`slot.1` up to the box's count, and
 any other slot file there) before its runner starts, waiting for a running batch to end with
 `EXECUTION HOLD <box>: measurement <id> waits for the batch in slot <n> to end`, and holds them
-for as long as the runner's tree runs. So no batch runs beside the measurement however it was
+for as long as the runner's tree runs. Each take of a slot records its holder (pid, command,
+`--deadline`) in the slot's lock file, and the drain reports that record on the next line, as
+recorded: `EXECUTION HOLD <box>: measurement <id> waits on slot <n>: recorded holder pid <p>,
+slot taken <t> ago, <cap>; for: <command>`, and again every five minutes
+(`FLEET_HOLD_DRAIN_REPEAT`) as `still waits for slot <n> after <t>`. The line judges nothing about
+the pid and advises nothing: look at it before stopping the batch, or stop the hold to give the box
+back (ludics-lite#668). So no batch runs beside the measurement however it was
 admitted: a batch waiting for a slot either ends before the measurement starts or starts after it
 ends. While such a hold is live a `FLEET_SLOT_HELD` marker is not trusted, since the slot it names
 is held by the hold, not by an enclosing batch; the measurement's own runs carry its marker
@@ -521,7 +527,8 @@ plus the runner's `exit:` sentinel when the log has one (a whole line `exit:
 N` or `<name>: exit: N`, the last one winning; OCANNL's `test-run.sh` and `machine-verify.sh`
 print one): the code is the sentinel when that is nonzero, else `rc`, so a pass needs both. Then
 0 is pass, 124 or 142 timeout, a signal code (129, 130, 137, 143) cancelled, anything else fail.
-`RUNNING`, `STARTING` and `DIED` are refused. A `DIED` task was killed before its
+`STOPPED` (a run `bg-run.sh stop` ended, no process of its group left) is `cancelled`, the log's
+sentinel unread (ludics-lite#638). `RUNNING`, `STARTING` and `DIED` are refused. A `DIED` task was killed before its
 command returned, and bg-run.sh's header names a window in which the command can outlive it
 unpublished, so check that no process of the run remains and conclude it by JSON (`cancelled`). The directory is read on `--box`, by default the reservation's
 execution host. Name the box that drove the run when the leg went over ssh (a machine-verify trip

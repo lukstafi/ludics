@@ -698,13 +698,22 @@ shape with the passing shape beside each, against scratch checkouts that pin the
 scope, and finally against the three suites that rediscovered the fix, each with its resolution
 line removed, where the guard must find what their authors found by accident.
 
-`test-fleet-worker.sh` runs its ~180 assertions top to bottom in one shell, which takes about three
-and a half minutes. Arguments narrow that: each one selects every section whose name contains it
-(`test-fleet-worker.sh unstick`, `test-fleet-worker.sh 'real checkout'`), `--list` prints the
-section names, and an argument matching none of them is refused before anything runs. The setup the
-sections share (the shim CLIs, the scratch skills checkout, the scratch project repo) runs whatever
-is selected, and a section that needs more than that, such as the coordinator lease or a finished
-worker to read, takes it itself, so every section also passes when it is the only one selected.
+`test-fleet-worker.sh` runs its ~1000 assertions top to bottom in one shell, which takes about
+twelve minutes on CI's Ubuntu runner and up to fifteen on a mac shared with other workers. Arguments
+narrow that, and while iterating they are the lever: each one selects every section whose name
+contains it (`test-fleet-worker.sh unstick`, `test-fleet-worker.sh 'real checkout'`), `--list`
+prints the section names, and an argument matching none of them is refused before anything runs.
+The setup the sections share (the shim CLIs, the scratch skills checkout, the scratch project repo)
+runs whatever is selected, and a section that needs more than that, such as the coordinator lease
+or a finished worker to read, takes it itself, so every section also passes when it is the only one
+selected. Each section prints its elapsed time when it ends (`--- 37s: unstick`), and the tally its
+total. A section, or the setup before or between sections, still running after
+`FLEET_WORKER_TEST_SECTION_TIMEOUT` seconds (default 300; `0` or `off` disables the watchdog) fails
+the run by its name: the suite runs as the child of a supervisor, in a process group of its own,
+which the supervisor stops (TERM, then KILL five seconds later) before removing what the stopped
+run left, its tmux servers and scratch tree. A hang then names its section instead of running on to
+the CI job's timeout (ludics-lite#640). The `section watchdog` section proves it on a copy of the
+suite with a planted stall.
 
 `test-wake-lab-linux.sh` exercises native Ubuntu status, wake and power handling with the WSL
 adapter absent, including the lab-lock columns (a held lock, a free one with a stale line, and no
@@ -868,7 +877,10 @@ base that moved with no build input among the paths both sides changed merges un
 nothing changed on both sides the config is not even read; a repository without
 `.github/ship-pr-merge-build` merges the clash unbuilt, as before; a line outside the config's
 grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2. Each build case
-then checks the clone: its working tree, its worktree list and its refs are as they were.
+then checks the clone: its working tree, its worktree list and its refs are as they were. Under Git
+Bash the merge build is POSIX-only by design, so the cases that would build (the clash, its control
+and the merge outside a clone) assert its refusal there instead (exit 2, why the merge needed a
+build and where to run it, nothing built or merged, the clone untouched; ludics-lite#515).
 `lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the glob boundary, the remote
 match, a textual conflict, a moved head, a build past its bound, an interrupted merge and a process
 the build leaves behind (neither outlives the merge), a shallow or a partial clone (exit 2), a
@@ -1283,10 +1295,13 @@ deadline (`SHIP_PR_TEST_CASE_TIMEOUT`, five minutes by default): a stalled case 
 reported instead of holding the job until CI's own timeout. `SHIP_PR_TEST_LOG_DIR` keeps the
 per-case logs where CI can collect them. Each case runs Git under its own scratch global config
 and no system or environment config (ludics-lite#386), so a user's `core.hooksPath` cannot send
-Git past a case's `.git/hooks` race fixture. The runner also tests itself, from patched scratch
+Git past a case's `.git/hooks` race fixture. A case that `set -e` ends writes an `ERREXIT:` line to
+its log naming the failing command (a pipeline by its components' statuses), its function and
+its line (ludics-lite#649; bash 3.2 gives no line). The runner also tests itself, from patched scratch
 copies: refused arguments, `--help` with an inherited pid list, the deadline, an in-place rewrite
-of both scripts mid-run (with a negative control that strips the parse guard), and a
-`core.hooksPath` planted through each config channel (with one that strips the isolation).
+of both scripts mid-run (with a negative control that strips the parse guard), a
+`core.hooksPath` planted through each config channel (with one that strips the isolation), and a
+case that `set -e` ends after failing in each guarded shape that must stay quiet.
 
 **The Python rewrite (ludics-lite#403).** The core scripts are moving to type-checked,
 standard-library-only Python 3.12 in one package, `lib/ludics/`, one script (and for `pr-review.sh`

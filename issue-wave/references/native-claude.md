@@ -47,7 +47,10 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   re-issue it once, and a second one means the launch itself failed, so spawn again. `DIED` (5):
   the run was killed before the command returned, which says nothing about what the command was
   reading: re-arm it, and for `merge --wait` first re-read the merge state as ship-pr's *The
-  approval is one gate* says. Every re-arm takes a new `spawn`. The command starts with SIGINT,
+  approval is one gate* says. Every re-arm takes a new `spawn`. `STOPPED` (7): `bg-run.sh stop`
+  ended the run on purpose and no process of it is left. It is NOT re-armed: a re-arm would
+  relaunch what was stopped (a merge wait stopped for a pause merges with nobody there).
+  Re-arm only on a decision to resume, as for a fresh run. The command starts with SIGINT,
   SIGQUIT, SIGHUP and SIGTERM at their default dispositions, so a suite that signals its own
   children runs under `spawn` and `execution slot --bg` as it does in the foreground
   (ludics-lite#524).
@@ -57,7 +60,7 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   `stop` ends that session's process group - the command, its `gh` calls and `sleep`s, and a
   grandchild whose parent has already exited - with SIGTERM, then SIGKILL after 10 s
   (`BG_RUN_STOP_GRACE`). It prints `STOPPED <dir>: ...` (exit 0), and a `wait` there then reads
-  `DIED`. A run that has already ended, or whose pid the system has since reused for another
+  `STOPPED` (ludics-lite#638), not `DIED`. A run that has already ended, or whose pid the system has since reused for another
   process (the start-time check `wait` makes), is left alone: `NOT RUNNING: <verdict>`, exit 1.
   The caller is never in the run's group, so the stop cannot take the caller down. A `merge`
   already inside its merge call when the stop lands may still have reached GitHub, so re-read the

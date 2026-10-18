@@ -323,8 +323,9 @@ whose turn's end kills its background tasks) runs `watch` and `merge --wait` und
 `bg-run.sh spawn` and blocks on `bg-run.sh wait` in the same turn, as
 [Blocking on a run](../issue-wave/references/native-claude.md#blocking-on-a-run) says. To stop a
 spawned `merge --wait` (a pause, or "do not merge"), run
-`~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>`; a merge already inside its merge call
-may still land, so re-read the PR's state after (that section is the verb's contract).
+`~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>`; a `wait` there then reads `STOPPED`,
+which is never re-armed. A merge already inside its merge call may still land, so re-read the PR's
+state after (that section is the verb's contract).
 
 `watch` *is* the polling loop — don't hand-roll a sleep loop around `poll`, which is what a long
 review otherwise turns into. It returns the moment a round lands (printing exactly what `poll`
@@ -812,7 +813,7 @@ just above its watermark: the window opened rounds b+1 to n, or none when n ≤ 
   discrepancy.
 - Build-relevant checks on the final head fail: the merge gate includes every non-advisory
   check, not just checks required by branch protection. That gate still applies independently
-  of which change caused the failure.
+  of which change caused the failure, save a coordinated wave's owned base red (*The override*).
 
 Severity alone is insufficient: a high-priority pre-existing defect that the PR merely exposes
 gets a bug report with the appropriate urgency, not a merge block. Record it in the consolidated
@@ -837,7 +838,8 @@ the reviewer never 👍'd defensible:
 
 - the build gate has READ a green on the final head: merge with `--require-green`, which refuses
   `absent` as well as red and no-verdict — a run that does not exist yet is not a green, and a
-  merge the reviewer never 👍'd does not get the path-filter allowance the ordinary gate gives;
+  merge the reviewer never 👍'd does not get the path-filter allowance the ordinary gate gives
+  (over a coordinated wave's owned base red, with `--override` too, *The override*);
 - every thread is answered with its disposition — fixed / removed / deferred / rebutted — and
   resolved;
 - the PR body carries a review-record paragraph (edited in with `body`, above): how many rounds,
@@ -1229,6 +1231,25 @@ about the tree you are merging into: the identical red is on `master` from befor
 existed; the failing step is infrastructure no source change can reach (an opam solve, a runner
 image, a registry timeout, a rate limit); or you can point at another PR whose build fails the same
 way. In each of those you have opened the run and read it.
+
+**In a coordinated wave, an owned base red is established for you** (ludics-lite#623, the
+maintainer's decision). When your head's red is the base's own — the same check failing the same
+test at the base's tip — and the wave coordinator has halted launches on it and named its owner,
+the triage issue (issue-wave's stop-the-world notice names all three), merge over it without
+waiting for the fix, and do not chase it: its attribution is the owner's. It covers a test that
+fails, never a build that breaks; where the repository has a merge build (*How stale the base has
+grown*), `merge` refuses a clash in the merge itself. The reason cites the check and test, the base
+SHA and the owner, so every merge in the red span names the red it rode over:
+
+```bash
+~/.claude/skills/ship-pr/scripts/pr-review.sh merge <owner>/<repo>#<pr> --wait \
+  --override "base red, not this PR: <check>, test <test>, red at <base sha>; owned by <owner>/<repo>#<issue>"
+```
+
+At the loop's close-out exit (*When the loop ends*) it keeps `--require-green`, which takes a red
+the override waived as read and keeps its other refusals. Under auto permission mode it still
+needs the user's go-ahead (*PR or direct commit?*): the standing merge rule there does not cover
+`--override`.
 
 It is not legitimate for "the error looks unrelated", for a red you have not opened, or for a flake
 you are assuming rather than confirming — re-run the job instead. A re-run costs minutes; an

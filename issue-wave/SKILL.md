@@ -451,7 +451,10 @@ requirements for every transport with transport-specific setup and identity, and
   one-off cross-box leg, a full suite - needs a request first, in the transport's shape:
   the [Claude Code worker channel](references/native-claude.md#worker-channel), the
   [Codex worker channel](references/native-codex.md#worker-channel), or the
-  [CLI reservation handoff](references/executions.md#cli-reservation-handoff). A resumed worker
+  [CLI reservation handoff](references/executions.md#cli-reservation-handoff). A batch that can
+  hold a slot past about 20 minutes (a cold tuned search) is requested too, never run under the
+  standing reservation: a window's drain waits for it with the box's other slots idle
+  (ludics-lite#668). A resumed worker
   runs only the assigned command, reports runner evidence and yields again; neither the
   returned turn nor its report releases the box. The brief's measurement forms are the ones
   the verbs accept: on the worker's own box `fleet-worker.sh execution hold --request <id> --
@@ -757,7 +760,9 @@ controlled through the tools in your coordinator's file, never through those com
   **On a red at the tip, halt launches at once** (`fleet-worker.sh halt "<red at <sha>, rerun
   pending>"`): the rerun below puts the tip's run back in flight, where the base gate's interim
   would admit a launch onto the red. Merges are not frozen (roll-forward: a merge never waits on
-  the base's tip); what lands meanwhile joins the span the next verdict covers. Then, in order:
+  the base's tip); what lands meanwhile joins the span the next verdict covers. Nor does a PR
+  whose own head shows that red, once the red has an owner (below): its worker merges over it as
+  ship-pr's *The override* says (ludics-lite#623). Then, in order:
   1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed --repo <owner/repo>`,
      without `--failed` when the report names no failed job, a startup failure; a local run,
      once more at the same SHA under the halt's one triage reservation, references/executions.md
@@ -811,8 +816,8 @@ controlled through the tools in your coordinator's file, never through those com
     waiting at most that run for a token, unless the coordinator, which reserved it, ends the
     run for it. A measurement asked for while a loop run holds its box always ends that run -
     `ssh <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh stop <dir>'`, which ends
-    its whole tree; the run then reads DIED, which `--from-bg-run` refuses, so conclude it
-    `cancelled` with a JSON payload - then open the window.
+    its whole tree; the run then reads `STOPPED`, which `--from-bg-run` concludes `cancelled`
+    (ludics-lite#638) - then open the window.
   - **Informative, never a gate.** Its records never carry `"integration": true`, so the base
     gate never reads them (*Base gate*): launch verdicts stay the tip's own push run and the cc
     loop's records. A GPU red reaches the wave through the loop itself, below. Its request ids
@@ -862,8 +867,10 @@ controlled through the tools in your coordinator's file, never through those com
   the red span until attribution (the integration loop's order, above) names an owner. Then tell
   the running workers
   through the channel they already read - a `pr-review.sh comment` on every open wave PR
-  stating that master's red is established and owned, so nobody bisects it independently, and
-  a message to each native or app worker - and dispatch one triage worker with `launch --force
+  and a message to each native or app worker, stating that master's red is established and
+  owned and naming the red check and test, the tip SHA it is red at and the owner's triage
+  issue, so nobody bisects it independently and a head showing that red can cite them to merge
+  over it - and dispatch one triage worker with `launch --force
   --allow-red-base "<triage reason>"` (or native `gate --target-repo <owner/repo> --force
   --allow-red-base "<triage reason>"` followed by the runtime's spawn tool, recorded on the
   board; the only launch the halt admits): fix directly when the fix is straightforward, file

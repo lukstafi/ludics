@@ -318,7 +318,9 @@ class Merge:
                     )
             case _:
                 pass
-        if opts.require_green and gate.verdict != "green":
+        # A red --override waived is a verdict READ (ludics-lite#623: a coordinated wave's owned base
+        # red), so a close-out merge may go over it and keeps every other refusal of --require-green.
+        if opts.require_green and gate.verdict not in ("green", "waived"):
             fail(
                 4,
                 f"REFUSING to merge {repo}#{pr}: --require-green and the build signal is {gate.verdict},",
@@ -328,10 +330,13 @@ class Merge:
                 "close-out merge is never made by dropping --require-green.",
             )
         if opts.require_green and gate.check_passed == 0:
+            waived = gate.verdict == "waived"
             fail(
                 4,
-                f"REFUSING to merge {repo}#{pr}: --require-green and every build check on the head",
-                "was skipped or neutral — green, but no build RAN. A close-out merge needs at least one",
+                f"REFUSING to merge {repo}#{pr}: --require-green and every build check on the head"
+                + (" beside the red --override waived" if waived else ""),
+                "was skipped or neutral — " + ("no build RAN green" if waived else "green, but no build RAN")
+                + ". A close-out merge needs at least one",
                 "check that concluded success. If the head genuinely runs no build (job-level path",
                 "filters), get one onto it (gh workflow run) or hand the merge to the maintainer with",
                 "the record; a close-out merge is never made by dropping --require-green.",

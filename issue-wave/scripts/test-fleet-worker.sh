@@ -14,6 +14,11 @@
 # before anything runs. The setup the sections share -- the shim CLIs, the scratch skills checkout,
 # the scratch project repo -- runs whatever is selected, and a section that needs more than that
 # (the coordinator lease, a finished worker) takes it explicitly, so any section runs on its own.
+#
+# Each section prints its elapsed time when it ends, and a run that blocks fails by name: a section
+# (or the setup between two) still running after FLEET_WORKER_TEST_SECTION_TIMEOUT seconds (default
+# 300; 0 or off disables the watchdog) is reported, and the run's process group stopped. See the
+# section watchdog below.
 
 set -uo pipefail
 # No `... | grep -q` under that pipefail: grep exits on its first match and the writer takes
@@ -55,6 +60,7 @@ SECTIONS=(
   "refresh (execution-only boxes)"
   "execution slot"
   "usage"
+  "section watchdog"
 )
 
 usage() {
@@ -70,6 +76,10 @@ Selected sections run in file order, after the setup they all share: the shim
 CLIs, the scratch skills checkout and the scratch project repo. A section that
 needs more than that -- the coordinator lease, a finished worker to read -- takes
 it itself, so any section stands on its own.
+
+Each section prints its elapsed time. One still running after
+FLEET_WORKER_TEST_SECTION_TIMEOUT seconds (default 300; 0 or off disables this)
+fails the run by its name, and the run's processes are stopped.
 USAGE
 }
 
@@ -82,6 +92,7 @@ select_section() {
   for s in ${SELECTED[@]+"${SELECTED[@]}"}; do [ "$s" = "$1" ] && return 0; done
   SELECTED+=("$1")
 }
+ARGS=("$@")   # as given, for the section watchdog's run of this file
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) usage; exit 0 ;;
@@ -102,8 +113,18 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+SECTION_TIMEOUT=${FLEET_WORKER_TEST_SECTION_TIMEOUT:-300}
+case "$SECTION_TIMEOUT" in
+  off) SECTION_TIMEOUT=0 ;;
+  '' | *[!0-9]*)
+    printf '%s\n' "FAIL: FLEET_WORKER_TEST_SECTION_TIMEOUT must be a number of seconds, 0, or off, got $(printf '%q' "$SECTION_TIMEOUT")" >&2
+    exit 1
+    ;;
+  *) SECTION_TIMEOUT=$((10#$SECTION_TIMEOUT)) ;;
+esac
 
 CURRENT_SECTION=""   # the selected section running now, for section_left
+SECTION_STARTED=0    # ...and $SECONDS when it started
 # section <name>: print the header, and say whether this run includes the section. Every section
 # below is `section "..." && { ... }`, so an unselected one is skipped whole.
 section() {
@@ -113,14 +134,143 @@ section() {
   for s in ${SELECTED[@]+"${SELECTED[@]}"}; do [ "$s" = "$1" ] && found=1; done
   [ "$found" -eq 1 ] || return 1
   CURRENT_SECTION="$1"
+  SECTION_STARTED=$SECONDS
+  watch_now "section \"$1\""
   echo "--- $1"
 }
 
 command -v tmux >/dev/null 2>&1 || { echo "SKIP: tmux not installed"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not installed"; exit 0; }
 
+# --- section watchdog (ludics-lite#640) -------------------------------------------------------
+# A hang used to end in the CI job's own timeout, a cancel that named nothing: three heads of #633
+# lost their 20 minutes each to an orphaned `sleep` holding a worktree lock's descriptor. So the
+# suite runs as the child of a supervisor -- this same file, run again with TEST_FLEET_WORKER_WATCH
+# naming a directory where the child records what runs now and since when (`watch_now`: a section,
+# or the setup before or between them) and where its scratch tree is -- in a process group of its
+# own (`set -m`). A label past SECTION_TIMEOUT seconds fails the run by that name. The group is
+# sent TERM, which runs the child's own cleanup, and KILL after WATCH_GRACE seconds for whatever
+# ignores it; then the supervisor removes what a killed child's cleanup left (its tmux servers and
+# scratch tree). INT, TERM and HUP to the supervisor stop the group the same way, and a group left
+# running after the child exits is stopped and noted. Boundary: the supervisor stops the child's
+# process group, the orphan that kept it (the #633 shape) included, and the run's own tmux servers
+# and scratch tree, nothing else. A process that left the group (setsid, a `set -m` job of its own)
+# is the section's to stop, as in scripts/run-against-base.sh; a KILL of the supervisor itself
+# gives it no chance to act, and the child then runs on unwatched, as the suite ran before. Process
+# state is read with `ps -o` (a zombie still answers kill -0; a host whose ps cannot print fields
+# is refused, since every run would read as already over), or with kill -0 on the Cygwin family,
+# whose ps has no -o and whose kill skips exited processes; Git for Windows ships no tmux, so
+# there the suite skips above before any of this runs. Why the KILL is load-bearing: a shell with
+# an EXIT trap that is blocked reading a `$(...)` whose pipe an orphan holds -- the #633 shape --
+# ignores TERM (bash 3.2 retries the interrupted read), so its own cleanup never runs either.
+WATCH_GRACE=5
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) PROC_READING=kill ;; *) PROC_READING=ps ;; esac
+# proc_alive <pid> / group_alive <pgid>: running, zombies excluded.
+proc_alive() {
+  if [ "$PROC_READING" = kill ]; then kill -0 "$1" 2>/dev/null; return; fi
+  case "$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" in '' | Z*) return 1 ;; esac
+}
+group_alive() {
+  if [ "$PROC_READING" = kill ]; then kill -0 -- "-$1" 2>/dev/null; return; fi
+  ps -A -o pgid=,stat= 2>/dev/null | awk -v g="$1" '$1 == g && $2 !~ /^Z/ { f = 1 } END { exit !f }'
+}
+proc_pgid() {
+  if [ "$PROC_READING" = kill ]; then cat "/proc/$1/pgid" 2>/dev/null; return; fi
+  ps -o pgid= -p "$1" 2>/dev/null | tr -d ' '
+}
+# stop_group <pgid>: TERM, then KILL for what is still running after the grace.
+stop_group() {
+  local tries=0
+  kill -TERM -- "-$1" 2>/dev/null
+  while group_alive "$1" && [ "$tries" -lt $((WATCH_GRACE * 5)) ]; do sleep 0.2; tries=$((tries + 1)); done
+  ! group_alive "$1" || kill -KILL -- "-$1" 2>/dev/null
+  return 0
+}
+# run_cleanup <pid> <scratch>: a run's tmux servers, named after its shell's pid, and its scratch
+# tree. The servers go first: they hold sockets and cwds inside the tree.
+run_cleanup() {
+  local s
+  for s in "fwtest-$1" "fwtest-env-$1" "fwtest-none-$1"; do
+    tmux -L "$s" kill-server 2>/dev/null
+    rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$s"
+  done
+  rm -rf "${2:?}"
+}
+# watch_now <label>: tell the supervisor what runs from now on (a no-op in an unwatched run).
+watch_now() {
+  [ -n "${TEST_FLEET_WORKER_WATCH:-}" ] || return 0
+  printf '%s %s\n' "$(date +%s)" "$1" > "$TEST_FLEET_WORKER_WATCH/now.new" &&
+    mv -f "$TEST_FLEET_WORKER_WATCH/now.new" "$TEST_FLEET_WORKER_WATCH/now"
+}
+# watch_end <status>: the supervisor's exit -- stop whatever of the run is still going, remove what
+# it left, and exit.
+watch_end() {
+  trap '' INT TERM HUP
+  [ -z "$poll" ] || kill "$poll" 2>/dev/null
+  if [ -n "$child" ]; then
+    group_alive "$child" && stop_group "$child"
+    wait "$child" 2>/dev/null
+    left=$(cat "$WATCH/tmp" 2>/dev/null) || left=""
+    case "$left" in */fleet-worker-test.*) [ ! -d "$left" ] || run_cleanup "$child" "$left" ;; esac
+  fi
+  rm -rf "${WATCH:?}"
+  exit "$1"
+}
+if [ "$SECTION_TIMEOUT" -gt 0 ] && [ -z "${TEST_FLEET_WORKER_WATCH:-}" ]; then
+  # A ps that cannot print fields answers empty for every process, which reads as a run already
+  # over: the watchdog would stop watching at once and block on the run instead. Refused up front.
+  [ "$PROC_READING" = kill ] || ps -o pgid=,stat= -p "$$" >/dev/null 2>&1 || {
+    echo "FAIL: the section watchdog reads processes with ps -o, which this host's ps refuses; FLEET_WORKER_TEST_SECTION_TIMEOUT=off runs the suite unwatched" >&2
+    exit 1
+  }
+  WATCH=$(mktemp -d "${TMPDIR:-/tmp}/fleet-worker-watch.XXXXXX")
+  WATCH=$(CDPATH= cd "${WATCH:?}" && pwd -P) ||
+    { echo "FAIL: could not create the section watchdog's scratch directory" >&2; exit 1; }
+  child="" poll="" pending=""
+  # Deferred until `child` is recorded: a signal taken in between would leave the run unstopped.
+  trap 'pending=130' INT
+  trap 'pending=143' TERM HUP
+  set -m
+  TEST_FLEET_WORKER_WATCH="$WATCH" "$BASH" "$0" ${ARGS[@]+"${ARGS[@]}"} </dev/null &
+  child=$!
+  set +m
+  trap 'watch_end 130' INT
+  trap 'watch_end 143' TERM HUP
+  [ -z "$pending" ] || watch_end "$pending"
+  # Proven, not trusted: a child outside a group of its own could not be stopped as one, and the
+  # watchdog would then report a stop that never happened (job control's setpgid races on macOS).
+  [ "$(proc_pgid "$child")" = "$child" ] || ! proc_alive "$child" || {
+    kill -TERM "$child" 2>/dev/null
+    echo "FAIL: the section watchdog could not place the run in a process group of its own"
+    watch_end 1
+  }
+  since=$(date +%s) label="the start-up"
+  while proc_alive "$child"; do
+    [ ! -f "$WATCH/now" ] || read -r since label < "$WATCH/now" || true
+    if [ $(($(date +%s) - since)) -ge "$SECTION_TIMEOUT" ]; then
+      stop_group "$child"
+      wait "$child" 2>/dev/null
+      echo "FAIL: $label still running after ${SECTION_TIMEOUT}s (FLEET_WORKER_TEST_SECTION_TIMEOUT; raise it on a box this slow); the run's process group was stopped"
+      watch_end 1
+    fi
+    # Waited in the background, so a signal is taken at once rather than after the sleep.
+    sleep 1 >/dev/null 2>&1 </dev/null &
+    poll=$!
+    wait "$poll"
+    poll=""
+  done
+  wait "$child"
+  rc=$?
+  if group_alive "$child"; then
+    echo "note: the run left processes in its process group; the section watchdog stopped them"
+  fi
+  watch_end "$rc"
+fi
+
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/fleet-worker-test.XXXXXX")
 TMP=$(cd "$TMP" && pwd -P)   # canonical: macOS mktemp answers under /var, which resolves to /private/var
+[ -z "${TEST_FLEET_WORKER_WATCH:-}" ] || printf '%s\n' "$TMP" > "$TEST_FLEET_WORKER_WATCH/tmp"
+watch_now "the setup before the first section"
 export HOME="$TMP/home"
 mkdir -p "$HOME/.claude/skills" "$HOME/.codex/skills" "$TMP/bin"
 # Hermetic: every ambient FLEET_* and ISSUE_WAVE_* knob is cleared before the suite sets its own. A
@@ -145,6 +295,7 @@ unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID
 # An exported GitHub token changes the preflight's credential repair text (ludics-lite#360), so the
 # runner's own must not reach it.
 unset GH_TOKEN GITHUB_TOKEN
+SUITE_PATH="$PATH"   # as the suite found it, for the section watchdog's copy of the suite
 export PATH="$TMP/bin:$PATH"
 # `execution slot` runs its command under `execution hold`, which wraps it in systemd-inhibit when
 # one resolves (ludics-lite#317). The CI runner is Ubuntu, whose real systemd-inhibit would make
@@ -155,16 +306,10 @@ export FLEET_SYSTEMD_INHIBIT="fleet-test-no-systemd-inhibit"
 # A scratch git identity, so worktree/commit steps work on a bare runner.
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
-# kill-server leaves the socket file behind, so each run's own are removed by name: never a
-# prefix glob, since peer sessions run this suite concurrently on the same box.
-cleanup() {
-  local s
-  for s in "$FLEET_TMUX_SOCKET" "fwtest-env-$$" "fwtest-none-$$"; do
-    tmux -L "$s" kill-server 2>/dev/null
-    rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$s"
-  done
-  rm -rf "$TMP"
-}
+# kill-server leaves the socket file behind, so each run's own are removed by name (run_cleanup,
+# above, beside the watchdog that also calls it): never a prefix glob, since peer sessions run this
+# suite concurrently on the same box. FLEET_TMUX_SOCKET is the first of its names.
+cleanup() { run_cleanup "$$" "$TMP"; }
 trap cleanup EXIT
 
 # Copy the dispatcher beside a canned base helper: no live GitHub reads, and no
@@ -315,6 +460,8 @@ section_left() {
   else
     ko "section \"$CURRENT_SECTION\": the registry could not be read after it"
   fi
+  echo "--- $((SECONDS - SECTION_STARTED))s: $CURRENT_SECTION"
+  watch_now "the setup after section \"$CURRENT_SECTION\""
   CURRENT_SECTION=""
 }
 
@@ -804,6 +951,7 @@ EOF
   && ok "production preflight refuses every skill link derived from the tree when it is missing" \
   || ko "production preflight did not refuse these missing derived skill links:$unverified_skills"
 }
+section_left   # here, so the shared setup below is not timed as this section
 
 # --- a scratch skills checkout with an origin, deployed the way the README deploys it --------
 origin="$TMP/origin.git"; repo="$TMP/ludics lite"
@@ -2296,6 +2444,13 @@ expect "...and an explicit --checkout replaces it" 0 '"remote_checkout": "/named
 d="$TMP/bg runs/died"; mkdir -p "$d"; sh -c 'exit 0' & gone=$!; wait "$gone"; printf '%s\n\n' "$gone" > "$d/pid"; : > "$d/log"
 expect "a task killed before the command returned (DIED) is refused, never concluded" 1 "FROM-BG-RUN REFUSED: bg-run.sh wait: DIED" -- bgc bg-died "$d"
 fixture_done bg-died
+# ludics-lite#638: the same dead task with the marker `bg-run.sh stop` leaves reads STOPPED, which
+# concludes as cancelled; a log sentinel there is not read.
+d="$TMP/bg runs/stopped"; mkdir -p "$d"; sh -c 'exit 0' & gone=$!; wait "$gone"; printf '%s\n\n' "$gone" > "$d/pid"
+printf 'exit: 0\n' > "$d/log"; printf 'process group %s\n' "$gone" > "$d/stopped"
+expect "a run bg-run.sh stop ended (STOPPED) concludes as cancelled" 0 '"verdict": "cancelled"' -- bgc bg-stopped "$d"
+grep -Fq "STOPPED by bg-run.sh stop before the command returned, no process of it left; revision $sha" <<<"$out" \
+  && ok "...saying so in its evidence" || ko "the stopped conclusion's evidence: $out"
 d="$TMP/bg runs/live"; mkdir -p "$d"; printf '%s\n\n' "$$" > "$d/pid"
 expect "a live task (RUNNING) is refused" 1 "FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING" -- bgc bg-live "$d"
 d="$TMP/bg runs/never"; mkdir -p "$d"
@@ -2462,10 +2617,11 @@ expect "a GitHub that does not answer is UNVERIFIED (exit 4), never a silent acc
   env SHIM_GH=down "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
 expect "GitHub's other 422 (an endpoint it calls spammed) is UNVERIFIED, not a missing commit" 4 "^EXECUTION UNVERIFIED github.com: observed_sha $good could not be checked in o/r (gh: Validation Failed" -- \
   env SHIM_GH=spam "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
-SECONDS=0
+gh_t0=$SECONDS   # not SECONDS=0: the section clock and the run's total read SECONDS too
 expect "a GitHub call that never returns is cut at FLEET_GH_TIMEOUT: UNVERIFIED" 4 "could not be checked in o/r (gh: no answer in 1s)" -- \
   env SHIM_GH=hang FLEET_GH_TIMEOUT=1 "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
-[ "$SECONDS" -lt 25 ] && ok "...in ${SECONDS}s, its child process killed with it" || ko "the bound did not hold: ${SECONDS}s"
+gh_t=$((SECONDS - gh_t0))
+[ "$gh_t" -lt 25 ] && ok "...in ${gh_t}s, its child process killed with it" || ko "the bound did not hold: ${gh_t}s"
 expect "a FLEET_GH_TIMEOUT that is not a number of seconds is a usage error" 2 "FLEET_GH_TIMEOUT must be a positive whole number" -- \
   env FLEET_GH_TIMEOUT=soon "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")"
 expect "a 404 is UNVERIFIED: no repository, or a private one the token cannot see" 4 "Not Found (HTTP 404): no repository o/r, or one this box's gh token cannot see" -- \
@@ -3799,6 +3955,10 @@ m0=$!
 if held "$TMP/win-m.log" "measurement win-measure waits for the batch in slot 1 to end"; then
   grep -q "^measuring$" "$TMP/win-m.log" && ko "the measurement started beside a running batch: $(cat "$TMP/win-m.log")" ||
     ok "the measurement's hold waits for a batch running when the window opened"
+  # THE HOLDER RECORD (ludics-lite#668): a batch with no --deadline may hold the slot long, so the
+  # drain names it after the line above, as its slot record says: its pid, its cap and its command.
+  held "$TMP/win-m.log" "measurement win-measure waits on slot 1: recorded holder pid [0-9]*, slot taken [0-9]*s ago, no --deadline recorded; for: sleep 30$" &&
+    ok "...naming the batch it waits for, which no --deadline bounds"
   kill -9 "$b0" 2>/dev/null; wait "$b0" 2>/dev/null
   held "$TMP/win-m.log" "^measuring$" && ok "...and starts once it ends"
   expect "...after which a slot marker is not trusted, since the hold is what holds that slot" 1 "does not cover this batch (a measurement's .execution hold --request. holds this box's slots)" -- \
@@ -3991,12 +4151,67 @@ expect "a copy of the script away from its checkout names the missing scripts/py
   bash "$TMP/stray/issue-wave/scripts/fleet-worker.sh" status testbox w1
 }
 
+section "section watchdog" && {
+# ludics-lite#640: a section still running past FLEET_WORKER_TEST_SECTION_TIMEOUT fails the run by
+# its name, and nothing of the run outlives it. The run under test is a copy of this suite, in a
+# mirror of the checkout's layout (the dispatcher it copies sits beside it), with a stall planted
+# at the top of "usage" in the #633 shape: a tmux server on the copy's socket, as a launch starts
+# one (a daemon, outside the run's process group, so only a cleanup reaches it), then a `$(...)`
+# whose pipe an orphan holds open -- a background `sleep` that ignores TERM. The shell blocked
+# reading that pipe ignores TERM too (with an EXIT trap set, bash 3.2 retries the interrupted read),
+# so only the KILL ends either, and the copy's own cleanup never runs: the supervisor's has to.
+# "load" runs first, so the copy also shows a finished section's elapsed-time line. The copy runs
+# with the PATH this suite found and a TMPDIR of its own, which must be empty afterwards (its
+# scratch tree and the watchdog's), and writes to a file: a stall the watchdog missed would hold a
+# pipe, and this section would hang on it instead of failing.
+expect "a section timeout that is not a number of seconds is refused before anything runs" 1 \
+  "FLEET_WORKER_TEST_SECTION_TIMEOUT must be a number of seconds, 0, or off, got soon" -- \
+  env -u TEST_FLEET_WORKER_WATCH FLEET_WORKER_TEST_SECTION_TIMEOUT=soon "$BASH" "$HERE/test-fleet-worker.sh" usage
+wd="$TMP/watchdog"; mir="$TMP/watchdog/copy"
+mkdir -p "$mir/issue-wave/scripts" "$mir/scripts" "$wd/tmp" "$wd/nops"
+printf '#!/bin/sh\nexit 1\n' > "$wd/nops/ps" && chmod +x "$wd/nops/ps"
+expect "a host whose ps cannot print fields is refused, not watched blind (every run would read as over)" 1 \
+  "reads processes with ps -o, which this host's ps refuses" -- \
+  env -u TEST_FLEET_WORKER_WATCH PATH="$wd/nops:$SUITE_PATH" "$BASH" "$HERE/test-fleet-worker.sh" usage
+cp "$HERE/fleet-worker.sh" "$HERE/bg-run.sh" "$mir/issue-wave/scripts/"
+[ ! -f "$HERE/fleet-execution.py" ] || cp "$HERE/fleet-execution.py" "$mir/issue-wave/scripts/"
+cp "$HERE/../../scripts/py" "$mir/scripts/py"
+cp -R "$HERE/../../lib" "$mir/lib"
+plant="echo \$\$ > $(printf '%q' "$wd/shell.pid"); tmux -L \"\$FLEET_TMUX_SOCKET\" new-session -d -s stall 'sleep 3571' && : > $(printf '%q' "$wd/had-socket"); held=\$(sh -c 'trap \"\" TERM; echo \$\$ > \"\$0\"; exec sleep 3571' $(printf '%q' "$wd/stall.pid") &)"
+PLANT="$plant" awk '{ print } $0 == "section \"usage\" && {" { print ENVIRON["PLANT"] }' "$HERE/test-fleet-worker.sh" \
+  > "$mir/issue-wave/scripts/test-fleet-worker.sh"
+if grep -qxF -- "$plant" "$mir/issue-wave/scripts/test-fleet-worker.sh"; then
+  env -u TEST_FLEET_WORKER_WATCH PATH="$SUITE_PATH" TMPDIR="$wd/tmp" FLEET_WORKER_TEST_SECTION_TIMEOUT=3 \
+    "$BASH" "$mir/issue-wave/scripts/test-fleet-worker.sh" load usage > "$wd/out" 2>&1 </dev/null; rc=$?
+  out=$(cat "$wd/out")
+  [ "$rc" -eq 1 ] && grep -qx 'FAIL: section "usage" still running after 3s (FLEET_WORKER_TEST_SECTION_TIMEOUT; raise it on a box this slow); the run'"'"'s process group was stopped' <<<"$out" &&
+    ok "a section past FLEET_WORKER_TEST_SECTION_TIMEOUT fails the run by its name, exit 1" ||
+    ko "the stalled section was not failed by name (rc=$rc) -- $out"
+  grep -qx -- '--- [0-9]*s: load' <<<"$out" && ok "...after the section before it printed its elapsed time" ||
+    ko "no elapsed-time line for the finished section -- $out"
+  stall=$(cat "$wd/stall.pid" 2>/dev/null) shell=$(cat "$wd/shell.pid" 2>/dev/null)
+  if [ -n "$stall" ] && [ -n "$shell" ]; then
+    # A settle, not a deadline: the stall sleeps for an hour unless the watchdog killed it.
+    tries=0
+    while proc_alive "$stall" && [ "$tries" -lt 20 ]; do sleep 0.1; tries=$((tries + 1)); done
+    if proc_alive "$stall"; then
+      ko "the TERM-ignoring stall (pid $stall) outlived the watchdog"; kill -KILL "$stall" 2>/dev/null
+    else ok "...and the stall that ignored TERM did not outlive it"; fi
+    if [ ! -e "$wd/had-socket" ]; then ko "the copy's tmux server never started, so nothing checks its removal"
+    elif [ ! -e "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/fwtest-$shell" ]; then ok "...nor did the copy's tmux server"
+    else ko "the stopped copy left its tmux socket fwtest-$shell"; fi
+  else ko "the planted stall never ran, so nothing here checks the stop -- $out"; fi
+  left=$(ls -A "$wd/tmp")
+  [ -z "$left" ] && ok "...nor its scratch tree or the watchdog's" || ko "the stopped copy left in its TMPDIR: $left"
+else ko "could not plant the stall in the copy of the suite (setup)"; fi
+}
+
 section_left
 echo
 if [ "$NAMED" -eq 1 ]; then
-  echo "$pass passed, $fail failed (${#SELECTED[@]} of ${#SECTIONS[@]} sections)"
+  echo "$pass passed, $fail failed (${#SELECTED[@]} of ${#SECTIONS[@]} sections) in ${SECONDS}s"
 else
-  echo "$pass passed, $fail failed"
+  echo "$pass passed, $fail failed in ${SECONDS}s"
 fi
 [ "$fail" -eq 0 ]
 exit "$?"
