@@ -5,8 +5,12 @@ import contextlib
 import fcntl
 import io
 import os
+import json
 import shutil
+import subprocess
 import tempfile
+import threading
+import time
 import unittest
 
 from typing import Any
@@ -17,16 +21,21 @@ from ludics.fleetworker import slot
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.slot import (
     Covered,
+    Holder,
     Inside,
     Refused,
     Take,
     Uncovered,
     Unread,
     await_measurements,
+    drain_slot,
+    holder_line,
     judge_measurement,
     judge_nested,
     parse_slot,
+    read_holder,
     read_registry,
+    record_holder,
     unreachable_lines,
 )
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -106,6 +115,114 @@ class MeasurementHold(Locks):
             ("testbox m1", "m1, m2", "other measurements are outstanding on testbox too: m1, m2"),
         ):
             self.assertEqual(judge_measurement("testbox", self.dir, marker, measuring), Uncovered(reason), marker)
+
+
+def ended_pid() -> int:
+    done = subprocess.run(["sh", "-c", "echo $$"], capture_output=True, text=True, check=True)
+    return int(done.stdout)
+
+
+class HolderRecord(Locks):
+    """THE HOLDER RECORD (ludics-lite#668): what a slot's taker writes, and the drain's naming of it."""
+
+    def path(self) -> str:
+        return os.path.join(self.dir, "slot.1")
+
+    def write(self, text: str) -> None:
+        with open(self.path(), "w") as stream:
+            stream.write(text)
+
+    def test_a_take_records_its_pid_command_and_deadline_over_an_earlier_record(self) -> None:
+        self.write(json.dumps({"pid": 1, "command": ["an", "earlier", "taker's", "much longer", "record"] * 50,
+                               "started": 0, "deadline": None}))
+        descriptor = os.open(self.path(), os.O_RDWR)
+        self.held.append(descriptor)
+        before = time.time()
+        record_holder(descriptor, ["sleep", "30"], 6000)
+        holder = read_holder(self.path())
+        assert holder is not None
+        self.assertEqual((holder.pid, holder.command, holder.deadline), (os.getpid(), ("sleep", "30"), 6000))
+        self.assertGreaterEqual(holder.started, before)
+        record_holder(descriptor, ["true"], None)  # shorter than the record it replaces: nothing of that is left
+        again = read_holder(self.path())
+        self.assertEqual((again.command, again.deadline) if again else None, (("true",), None))
+
+    def test_the_reader_takes_the_allowlisted_shape_or_nothing(self) -> None:
+        good: dict[str, object] = {"pid": 7, "command": ["x"], "started": 1.5, "deadline": 60, "other": [1]}
+        self.write(json.dumps(good))
+        self.assertEqual(read_holder(self.path()), Holder(7, ("x",), 1.5, 60))
+        for bad in ({"pid": True}, {"pid": 0}, {"pid": "7"}, {"command": []}, {"command": "x"}, {"command": ["x", 1]},
+                    {"started": "1"}, {"started": False}, {"deadline": 0}, {"deadline": 1.5}, {"deadline": True}):
+            self.write(json.dumps(good | bad))
+            self.assertIsNone(read_holder(self.path()), bad)
+        for text in ("", "not json", "[]", '{"pid": 7, "command": ["x"], "started": NaN, "deadline": null}',
+                     json.dumps(good | {"pad": "x" * slot.HOLDER_READ})):
+            self.write(text)
+            self.assertIsNone(read_holder(self.path()), text[:40])
+        self.assertIsNone(read_holder(os.path.join(self.dir, "slot.9")))
+
+    def test_the_line_names_a_holder_that_may_hold_the_slot_long(self) -> None:
+        now = 10_000.0
+        unbounded = holder_line("testbox", "m1", 2, Holder(os.getpid(), ("sleep", "a b"), now - 125, None), now, None)
+        self.assertEqual(unbounded, f"EXECUTION HOLD testbox: measurement m1 waits on slot 2: held by pid {os.getpid()}"
+                         f" for 2m so far, and no --deadline bounds it; stopping pid {os.getpid()} ends that batch and"
+                         " starts the measurement, for: sleep 'a b'")
+        capped = holder_line("testbox", "m1", 2, Holder(os.getpid(), ("tune",), now - 600, 6000), now, 310)
+        self.assertIsNotNone(capped)
+        self.assertIn("measurement m1 still waits for slot 2 after 5m: held by pid", str(capped))
+        self.assertIn("for 10m so far, and its --deadline 6000s ends it in about 1h30m;", str(capped))
+        # A --deadline that ends the batch within LONG_HOLDER is not worth a decision.
+        self.assertIsNone(holder_line("testbox", "m1", 2, Holder(os.getpid(), ("x",), now, slot.LONG_HOLDER), now, None))
+        self.assertIsNotNone(holder_line("testbox", "m1", 2, Holder(os.getpid(), ("x",), now, slot.LONG_HOLDER + 60), now, None))
+
+    def test_no_record_or_a_stale_one_is_said_without_a_command_or_a_cap(self) -> None:
+        none = str(holder_line("testbox", "m1", 1, None, 0.0, None))
+        self.assertIn("measurement m1 waits on slot 1: its holder left no record of its command or --deadline", none)
+        pid = ended_pid()
+        stale = str(holder_line("testbox", "m1", 1, Holder(pid, ("secret",), 0.0, None), 0.0, None))
+        self.assertIn(f"its recorded holder, pid {pid}, has ended", stale)
+        self.assertNotIn("secret", stale)
+
+    def test_a_recorded_command_is_quoted_on_one_line(self) -> None:
+        line = str(holder_line("testbox", "m1", 1, Holder(os.getpid(), ("sh", "-c", "a\nb\x1b"), 0.0, None), 0.0, None))
+        self.assertTrue(line.endswith("for: sh -c 'a\\nb\\x1b'"), line)
+        self.assertNotIn("\n", line)
+
+    def drain(self, repeat: float, release_after: float | None) -> tuple[str, float]:
+        descriptor = os.open(self.path(), os.O_CREAT | os.O_RDWR, 0o644)
+        self.held.append(descriptor)
+        err = io.StringIO()
+        start = time.monotonic()
+        if release_after is not None:
+            holder = self.held.pop(0)
+            threading.Timer(release_after, os.close, [holder]).start()
+        with contextlib.redirect_stderr(err):
+            drain_slot("testbox", "m1", self.path(), descriptor, 1, repeat)
+        return err.getvalue(), time.monotonic() - start
+
+    def test_a_free_slot_is_taken_saying_nothing(self) -> None:
+        out, _ = self.drain(0.1, None)
+        self.assertEqual(out, "")
+        self.assertTrue(slot._is_held(self.path()))
+
+    def test_the_drain_keeps_its_line_then_names_the_holder_at_once_and_again(self) -> None:
+        self.hold("slot.1")
+        record_holder(self.held[0], ["tune", "--cold"], None)
+        out, took = self.drain(0.3, 1.2)
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "EXECUTION HOLD testbox: measurement m1 waits for the batch in slot 1 to end")
+        self.assertRegex(lines[1], r"^EXECUTION HOLD testbox: measurement m1 waits on slot 1: held by pid [0-9]+ for 0s"
+                         r" so far, and no --deadline bounds it; .* for: tune --cold$")
+        self.assertGreaterEqual(len(lines), 3, out)
+        self.assertTrue(all("still waits for slot 1 after" in line for line in lines[2:]), out)
+        self.assertLess(took, 5)
+        self.assertTrue(slot._is_held(self.path()))
+
+    def test_a_holder_its_deadline_ends_soon_gets_only_the_line_it_had(self) -> None:
+        self.hold("slot.1")
+        record_holder(self.held[0], ["quick"], 60)
+        out, _ = self.drain(0.2, 0.8)
+        self.assertEqual(out, "EXECUTION HOLD testbox: measurement m1 waits for the batch in slot 1 to end\n")
 
 
 class SlotArguments(unittest.TestCase):
