@@ -94,7 +94,7 @@ class WindowWait(unittest.TestCase):
     under --wait-window in the slot's own wait, the registry re-reads stubbed in order."""
 
     def wait(self, reads: list[Any], flags: list[str], first: list[dict[str, Any]] | None = None
-             ) -> tuple[object, str, str, int]:
+             ) -> tuple[tuple[dict[str, Any], list[str]] | int, str, str, int]:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
                           {"FLEET_LOCAL_BOX": "agent", "FLEET_SLOT_WINDOW_POLL": "0.01"}, host="agent")
         records = first if first is not None else [standing(), window("w1")]
