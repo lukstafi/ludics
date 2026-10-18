@@ -3098,6 +3098,18 @@ expect "the repository's main checkout is never moved" 1 "--worktree $lco is the
   leg --request leg-a --rev main --checkout "$lwt" --worktree "$lco" -- tools/check.sh
 expect "a directory of another repository is no worktree to move" 1 "is not a worktree of $lco" -- \
   leg --request leg-a --rev main --checkout "$lco" --worktree "$proj" -- tools/check.sh
+# ludics-lite#669: a `~` the caller's shell expanded arrives as another box's home (rog's /home/<user>
+# at mac-studio); the refusal keeps its first words and says so. The box's home here is $HOME.
+expect "a checkout under a home directory not the box's is refused, naming a ~ the caller's shell expanded" 1 \
+  "EXECUTION LEG REFUSED testbox: --checkout /home/leg669/ludics-lite is not a git checkout on testbox; /home/leg669 is not testbox's home directory ($HOME): a ~ expanded by the caller's shell?" -- \
+  leg --request leg-a --rev main --checkout /home/leg669/ludics-lite --worktree "$lwt" -- tools/check.sh
+if [ ! -w /home ]; then   # a worktree no leg can create there (a CI runner that is root could)
+  expect "...and so is a worktree there that cannot be created" 1 \
+    "in $lco failed (above); /home/leg669 is not testbox's home directory ($HOME): a ~ expanded by the caller's shell?" -- \
+    leg --request leg-a --rev main --checkout "$lco" --worktree /home/leg669/wt -- tools/check.sh
+fi
+expect "...but a checkout under the box's own home is refused with no such hint" 1 "is not a git checkout on testbox$" -- \
+  leg --request leg-a --rev main --checkout "$HOME/no-such-checkout" --worktree "$lwt" -- tools/check.sh
 [ "$(marks)" = "$n" ] && ok "...none of them ran the runner" || ko "a refused leg ran its runner"
 # The control: a patch that must make the runner fail, in the same slot, reverted after.
 expect "a control the runner catches makes the leg pass" 0 "control failed as required (exit 4), patch reverted" -- \

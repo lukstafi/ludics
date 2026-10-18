@@ -52,7 +52,9 @@ checkout of the project there, ``--worktree`` a LINKED worktree of it (never the
 with ``git worktree add --detach`` when the path does not exist and checked out ``--detach`` at
 the commit when it does -- refused when it is another repository's, or has uncommitted changes,
 which a leg never overwrites; and refused when it is not clean once at the commit, submodules
-included (a submodule the checkout moved past is refused, never updated). A runner that is no
+included (a submodule the checkout moved past is refused, never updated). A ``~/`` must arrive
+quoted: one the caller's shell expanded names that host's home, and a checkout or worktree refused
+under a home directory that is not the box's says so (``NOT_HOME``, ludics-lite#669). A runner that is no
 executable command in the worktree is refused before it is counted as run. A full SHA already in the checkout is used as it is; anything else is
 fetched from ``--remote`` (``origin``) -- a branch as ``refs/heads/<rev>``, so a tag of the same
 name is never taken for it -- INTO A PRIVATE REF of the checkout, ``refs/fleet-leg/<pid>``,
@@ -129,12 +131,32 @@ WHOLE = re.compile(r"[0-9]+")
 RUN_BOUND = "86400"  # each run's --deadline when the leg names none: a day, a bound only to reap with
 HELD_BACK = 64  # bytes of an unfinished line kept back for the status line; it is never longer than 45
 
+# A HINT FOR A PATH FROM ANOTHER BOX'S HOME (ludics-lite#669), appended to the far side's refusals of
+# a --checkout or --worktree it cannot use. A `~` the CALLER's shell expanded arrives as that box's
+# home (rog's /home/<user> at mac-studio, whose home is /Users/<user>), which expand_tilde, seeing no
+# `~`, cannot undo. Its boundary, an allowlist: a path under /home/<name> or /Users/<name> whose home
+# directory is neither this box's $HOME nor, physically, the directory $HOME is, and which is not
+# under $HOME, gets the hint; any other path, and a box with no $HOME, gets none (empty output). It
+# says why only as a question: another user's home on this box is the same shape.
+NOT_HOME = r"""not_home() {
+  local rest name top here
+  case "$1" in /home/?*|/Users/?*) ;; *) return 0 ;; esac
+  [ -n "${HOME:-}" ] || return 0
+  case "$1" in "${HOME%/}"|"${HOME%/}"/*) return 0 ;; esac
+  rest=${1#/*/}; name=${rest%%/*}; [ -n "$name" ] || return 0
+  top="${1%%/"$rest"}/$name"
+  here=$(cd "$HOME" 2>/dev/null && pwd -P) || here=${HOME%/}
+  [ -d "$top" ] && [ "$(cd "$top" 2>/dev/null && pwd -P)" = "$here" ] && return 0
+  printf "; %s is not %s's home directory (%s): a ~ expanded by the caller's shell? spell far-side paths absolutely, or quote '~/...'" "$top" "$BOX" "$HOME"
+}
+"""
+
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
 # (FLEET_FETCH_TIMEOUT), the status token (see the header), the wrapper's word count and
 # words (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot
 # flags' count and words, then the runner's argv.
-LEG = r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" nwrap="${10}"
+LEG = NOT_HOME + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" nwrap="${10}"
 shift 10
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
@@ -160,7 +182,7 @@ gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2
 # never an empty (clean) answer.
 dirt() { git -C "$1" status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null; }
 [ -x "$fw" ] || refuse "no executable fleet-worker.sh at $fw (the skills checkout on $BOX; run fleet-worker.sh refresh $BOX)"
-cdir=$(common "$co"); [ -n "$cdir" ] || refuse "--checkout $co is not a git checkout on $BOX"
+cdir=$(common "$co"); [ -n "$cdir" ] || refuse "--checkout $co is not a git checkout on $BOX$(not_home "$co")"
 # One leg at a time in a worktree, from the status check through the control's revert: a second
 # leg moving it would make the first test another commit than the observed_sha it reports. The lock
 # is a flock on a file under $STATE/leg-locks, taken on descriptor 9 of this shell, which every
@@ -177,7 +199,7 @@ canon() {
   base=$(cd "$p" && pwd -P) || return 1
   printf '%s%s' "${base%/}" "$rest"
 }
-wkey=$(canon "$wt") || refuse "cannot resolve --worktree $wt on $BOX"
+wkey=$(canon "$wt") || refuse "cannot resolve --worktree $wt on $BOX$(not_home "$wt")"
 mkdir -p "$STATE/leg-locks" || refuse "cannot create $STATE/leg-locks on $BOX"
 wlock="$STATE/leg-locks/$(printf '%s' "$wkey" | cksum | tr ' ' -)"
 exec 9>>"$wlock" || refuse "cannot open the worktree lock $wlock on $BOX"
@@ -222,7 +244,7 @@ if [ -e "$wt" ] || [ -L "$wt" ]; then
   made=refreshed
 else
   git -C "$co" worktree prune >/dev/null 2>&1
-  git -C "$co" worktree add -q --detach "$wt" "$sha" </dev/null >&2 || refuse "git worktree add --detach $wt $sha in $co failed (above)"
+  git -C "$co" worktree add -q --detach "$wt" "$sha" </dev/null >&2 || refuse "git worktree add --detach $wt $sha in $co failed (above)$(not_home "$wt")"
   made=created
 fi
 head=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}') || refuse "cannot read HEAD of $wt"

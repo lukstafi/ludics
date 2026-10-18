@@ -3,12 +3,17 @@ leg` section drives the whole verb against a fake remote)."""
 
 import contextlib
 import io
+import os
+import shlex
 import shutil
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from ludics.fleetworker import leg, slot
+from ludics.fleetworker import farside, leg, slot
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
 
@@ -201,6 +206,56 @@ class WindowWait(unittest.TestCase):
         self.assertEqual(leg.window_bound(["--wait-window"]), slot.WINDOW_WAIT)
         self.assertEqual(leg.window_bound(["--wait-window=90", "--wait-window=7"]), 7)
         self.assertEqual(leg.window_bound(["--wait-window=7", "--wait-window"]), slot.WINDOW_WAIT)
+
+
+HINT = ": a ~ expanded by the caller's shell? spell far-side paths absolutely, or quote '~/...'"
+
+
+class ForeignHome(unittest.TestCase):
+    """A far-side path under a home directory that is not the box's (ludics-lite#669): the trace of
+    a `~` the caller's shell expanded on another box, which the refusal names as such."""
+
+    bash = shutil.which("bash") or "/bin/bash"
+
+    def hint(self, home: str, path: str) -> str:
+        script = "BOX=box\n" + leg.NOT_HOME + 'not_home "$1"\n'
+        done = subprocess.run([self.bash, "-c", script, "x", path], env={**os.environ, "HOME": home},
+                              capture_output=True, text=True, check=True)
+        return done.stdout
+
+    def test_a_checkout_under_another_boxs_home_is_refused_saying_why(self) -> None:
+        # The whole far side, to its first refusal: rog's /home/<user> reaching a box whose home is
+        # /Users/<user>. The refusal's first words are unchanged; the hint follows them.
+        root = Path(leg.__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as state:
+            script = f"STATE={shlex.quote(state)}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
+            done = subprocess.run(
+                [self.bash, "-s", "/home/leg669/ludics-lite", "/home/leg669/wt", "origin", "main", "", "", "req", "5",
+                 "t0k", "0", "0", "true"],
+                input=script, env={**os.environ, "HOME": "/Users/leg669"}, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(done.stderr, "EXECUTION LEG REFUSED box: --checkout /home/leg669/ludics-lite is not a git checkout"
+                                      " on box; /home/leg669 is not box's home directory (/Users/leg669)" + HINT + "\n")
+
+    def test_another_boxs_home_either_way_round_gets_the_hint(self) -> None:
+        self.assertEqual(self.hint("/Users/u", "/home/u/ludics-lite"), "; /home/u is not box's home directory (/Users/u)" + HINT)
+        self.assertEqual(self.hint("/home/u", "/Users/u/wts/w 1"), "; /Users/u is not box's home directory (/home/u)" + HINT)
+        self.assertEqual(self.hint("/home/u", "/home/v"), "; /home/v is not box's home directory (/home/u)" + HINT)
+
+    def test_a_path_under_the_boxs_own_home_or_outside_any_home_gets_none(self) -> None:
+        for home, path in [("/home/u", "/home/u/ludics-lite"), ("/home/u/", "/home/u"), ("/Users/u/deep", "/Users/u/deep/x"),
+                           ("/home/u", "/opt/ludics-lite"), ("/home/u", "/home/"), ("", "/home/u/x")]:
+            with self.subTest(home=home, path=path):
+                self.assertEqual(self.hint(home, path), "")
+
+    def test_a_home_reached_through_a_symlink_is_the_boxs_own(self) -> None:
+        real = os.path.expanduser("~")
+        if not real.startswith(("/home/", "/Users/")) or real.count("/") != 2 or not os.path.isdir(real):
+            self.skipTest(f"this account's home {real} is under neither /home nor /Users")
+        with tempfile.TemporaryDirectory() as tmp:
+            link = os.path.join(tmp, "home")
+            os.symlink(real, link)
+            self.assertEqual(self.hint(link, os.path.join(real, "ludics-lite")), "")
 
 
 if __name__ == "__main__":
