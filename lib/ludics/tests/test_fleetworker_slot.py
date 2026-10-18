@@ -188,7 +188,7 @@ class HolderRecord(Locks):
         unbounded = self.line(Holder(me, ("sleep", "a b"), now - 125, None), now)
         self.assertEqual(unbounded, f"EXECUTION HOLD testbox: measurement m1 waits on slot 2: held by pid {me}"
                          f" for 2m so far, and no --deadline bounds it; stopping pid {me} ends that batch and"
-                         " starts the measurement, for: sleep 'a b'")
+                         " frees the slot for the measurement, for: sleep 'a b'")
         # The remaining cap is read on the clock the deadline is enforced on: ``expires`` against
         # time.monotonic(), whatever the wall clock says.
         capped = self.line(Holder(me, ("tune",), now - 600, 6000, 5400.0), now, 0.0, 310)

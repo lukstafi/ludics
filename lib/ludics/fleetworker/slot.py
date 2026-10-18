@@ -471,7 +471,9 @@ def holder_line(box: str, request: str, index: int, holder: Holder | None, now: 
         if left <= LONG_HOLDER:
             return None
         cap = f"its --deadline {holder.deadline}s ends it in about {span(left)}"
-    advice = (f"stopping pid {holder.pid} ends that batch and starts the measurement" if whose == "recorder" else
+    # The drain takes the slots in order, so a freed slot lets it go on to the next busy one, if any.
+    advice = (f"stopping pid {holder.pid} ends that batch and frees the slot for the measurement"
+              if whose == "recorder" else
               f"pid {holder.pid} could not be confirmed as the batch's own wrapper (its age is unread), so check it"
               " before stopping it")
     return lead + (f"held by pid {holder.pid} for {span(now - holder.started)} so far, and {cap}; {advice},"
