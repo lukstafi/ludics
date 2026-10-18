@@ -26,8 +26,8 @@ brief:
 - THE HOLDER RECORD (ludics-lite#668): whoever takes a slot writes into its lock file who it is
   (pid, command, start, ``--deadline``), and a drain waiting on a slot whose holder may hold it
   long -- no ``--deadline``, more than ``LONG_HOLDER`` seconds of one left, or no record to say --
-  names that holder on stderr, at once and then every ``FLEET_HOLD_DRAIN_REPEAT`` seconds, so the
-  coordinator can stop the batch or the hold without first finding what it waits for.
+  names that holder as recorded on stderr, at once and then every ``FLEET_HOLD_DRAIN_REPEAT``
+  seconds, so the coordinator can decide without first finding what the drain waits for.
 - THE WINDOW WAIT (ludics-lite#557): ``slot --wait-window[=<seconds>]`` turns the refusal beside an
   outstanding measurement on this box (a window or not) into a bounded wait for it to conclude, then
   queues for a slot under ``--wait`` as usual: two waits, each with its own bound and refusal line.
@@ -215,10 +215,10 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # unchanged, and then names the holder (`holder_line`) whenever it may hold the slot long. The
 # record is written by the holder AFTER its flock, so the content of a held file is its holder's,
 # except across an upgrade: a batch started by a fleet-worker older than #668 writes nothing, and
-# the file then holds an earlier taker's record, which the reader tells apart while its pid has
-# ended or names a process younger than the record (``owner``). The waiting itself is still a blocking flock (in a thread, so the main
-# one can speak), so a freed slot still wakes the drain at once, ahead of a batch polling for one
-# each second.
+# the file then holds an earlier taker's record. That is why the line says "recorded" and judges
+# nothing: the coordinator reads it as the record, and looks before stopping anything. The waiting
+# itself is still a blocking flock (in a thread, so the main one can speak), so a freed slot still
+# wakes the drain at once, ahead of a batch polling for one each second.
 # Exit: the command's own status; 127 with `EXECUTION HOLD REFUSED` when it cannot be run; 2 usage;
 # 124 when --deadline ended the command's process group (ludics-lite#566).
 
@@ -231,7 +231,6 @@ import select
 import shlex
 import shutil
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -311,23 +310,19 @@ def _is_held(path: str) -> bool | None:
 # at which that deadline ends it). Any other key is not read. A file that is empty, longer, not
 # that shape, or not readable is no record ("left no record"), never a partial one.
 #
-# What the drain then says rests on two clocks of THIS box, the one the slot file is on.
-# ``expires`` is the clock the deadline is enforced on (``group.run`` waits on
-# ``time.monotonic()``, which on Linux and macOS is one system-wide clock that a wall-clock step
-# does not move), read here against the same clock. Whether the pid is still the recorder
-# (``owner``) is judged from its age as ``ps -o etime=`` gives it: a process that started more than
-# OWNER_SKEW seconds after the record was written cannot have written it (a pid names one process
-# at a time), so the pid was reused; one that started before it is the recorder. That comparison
-# is against the wall clock, so a wall-clock step back of more than OWNER_SKEW between the record
-# and the read can take a reused pid for the recorder -- the boundary. Only a confirmed recorder
-# is offered as the pid to stop; an ended or reused pid is said as such, and a pid whose age
-# cannot be read is named with no advice to stop it.
+# What the drain says is what the record says, labelled as recorded: the slot, the recorded pid,
+# the command, how long ago the slot was taken, and the cap. It judges nothing about the pid --
+# whether it still runs, was reused, or is a zombie whose descendant holds the lock -- and advises
+# no action: the coordinator, who can look, decides (ludics-lite#677's review, rounds 1-3, found a
+# corner of such advice each round, so it is not given). The one reading it computes is the cap
+# left, on the clock the deadline is enforced on: ``group.run`` waits on ``time.monotonic()``,
+# which on Linux and macOS is one system-wide clock that a wall-clock step does not move, and
+# ``expires`` is read against the same clock here, on the box the slot file is on.
 
 LONG_HOLDER = 600  # seconds of --deadline left past which the drain names a slot's holder
 HOLDER_REPEAT = 300  # FLEET_HOLD_DRAIN_REPEAT's default: seconds between the naming lines
 HOLDER_READ = 65536
-PID_MAX = 2**31 - 1
-OWNER_SKEW = 2.0  # seconds: ps's etime is whole seconds, truncated
+PID_MAX = 2**31 - 1  # the range of every pid_t this package runs on
 
 
 @dataclass(frozen=True)
@@ -399,40 +394,6 @@ def read_holder(path: str) -> Holder | None:
                   None if deadline is None else int(deadline), None if expires is None else float(expires))
 
 
-ETIME = re.compile(r"(?:(?:([0-9]+)-)?([0-9]+):)?([0-9]+):([0-9]+)")
-
-
-def process_age(pid: int) -> float | None:
-    """Seconds since ``pid`` started, from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``), or None."""
-    try:
-        done = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)], capture_output=True, text=True,
-                              timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    match = ETIME.fullmatch(done.stdout.strip()) if done.returncode == 0 else None
-    if match is None:
-        return None
-    days, hours, minutes, seconds = (int(part) if part else 0 for part in match.groups())
-    return float(((days * 24 + hours) * 60 + minutes) * 60 + seconds)
-
-
-def owner(holder: Holder, now: float) -> str:
-    """``recorder`` (the pid is the process that wrote the record), ``ended`` (no such process, or
-    one that started after the record: the pid was reused) or ``unknown`` (its age is unread)."""
-    try:
-        os.kill(holder.pid, 0)
-    except ProcessLookupError:
-        return "ended"
-    except PermissionError:
-        pass  # another user's process, but a running one
-    except (OSError, OverflowError):
-        return "unknown"
-    age = process_age(holder.pid)
-    if age is None:
-        return "unknown"
-    return "ended" if now - age > holder.started + OWNER_SKEW else "recorder"
-
-
 def span(seconds: float) -> str:
     """``1h40m``, ``12m``, ``45s``: a duration at the precision a decision needs."""
     whole = max(int(seconds), 0)
@@ -459,24 +420,15 @@ def holder_line(box: str, request: str, index: int, holder: Holder | None, now: 
         return lead + ("its holder left no record of its command or --deadline (a batch started by a fleet-worker"
                        " older than ludics-lite#668, or one whose record could not be written), so nothing says"
                        " when it ends")
-    whose = owner(holder, now)
-    if whose == "ended":
-        return lead + (f"its recorded holder, pid {holder.pid}, has ended: something it started still holds the"
-                       " slot, or a batch that left no record does, so nothing says when it ends")
     if holder.deadline is None:
-        cap = "no --deadline bounds it"
+        cap = "no --deadline recorded"
     else:
         # Before its command starts the deadline has not begun to count: all of it is ahead.
         left = holder.deadline if holder.expires is None else holder.expires - clock
         if left <= LONG_HOLDER:
             return None
-        cap = f"its --deadline {holder.deadline}s ends it in about {span(left)}"
-    # The drain takes the slots in order, so a freed slot lets it go on to the next busy one, if any.
-    advice = (f"stopping pid {holder.pid} ends that batch and frees the slot for the measurement"
-              if whose == "recorder" else
-              f"pid {holder.pid} could not be confirmed as the batch's own wrapper (its age is unread), so check it"
-              " before stopping it")
-    return lead + (f"held by pid {holder.pid} for {span(now - holder.started)} so far, and {cap}; {advice},"
+        cap = f"recorded --deadline {holder.deadline}s, about {span(left)} left"
+    return lead + (f"recorded holder pid {holder.pid}, slot taken {span(now - holder.started)} ago, {cap};"
                    f" for: {printable(shlex.join(holder.command))}")
 
 

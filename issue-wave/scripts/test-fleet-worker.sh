@@ -3707,8 +3707,8 @@ if held "$TMP/win-m.log" "measurement win-measure waits for the batch in slot 1 
   grep -q "^measuring$" "$TMP/win-m.log" && ko "the measurement started beside a running batch: $(cat "$TMP/win-m.log")" ||
     ok "the measurement's hold waits for a batch running when the window opened"
   # THE HOLDER RECORD (ludics-lite#668): a batch with no --deadline may hold the slot long, so the
-  # drain names it after the line above: its pid, its cap and its command.
-  held "$TMP/win-m.log" "measurement win-measure waits on slot 1: held by pid [0-9]* for [0-9]*s so far, and no --deadline bounds it; stopping pid [0-9]* ends that batch and frees the slot for the measurement, for: sleep 30$" &&
+  # drain names it after the line above, as its slot record says: its pid, its cap and its command.
+  held "$TMP/win-m.log" "measurement win-measure waits on slot 1: recorded holder pid [0-9]*, slot taken [0-9]*s ago, no --deadline recorded; for: sleep 30$" &&
     ok "...naming the batch it waits for, which no --deadline bounds"
   kill -9 "$b0" 2>/dev/null; wait "$b0" 2>/dev/null
   held "$TMP/win-m.log" "^measuring$" && ok "...and starts once it ends"

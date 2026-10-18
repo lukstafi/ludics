@@ -177,65 +177,39 @@ class HolderRecord(Locks):
             self.assertIsNone(read_holder(self.path()), text[:40])
         self.assertIsNone(read_holder(os.path.join(self.dir, "slot.9")))
 
-    def line(self, holder: Holder | None, now: float = 10_000.0, clock: float = 0.0, waited: float | None = None,
-             age: float | None = 10_000.0) -> str | None:
-        """The line, the holder's process as old as ``age`` (None: its age is unread)."""
-        with mock.patch.object(slot, "process_age", return_value=age):
-            return holder_line("testbox", "m1", 2, holder, now, clock, waited)
+    def line(self, holder: Holder | None, now: float = 10_000.0, clock: float = 0.0,
+             waited: float | None = None) -> str | None:
+        return holder_line("testbox", "m1", 2, holder, now, clock, waited)
 
-    def test_the_line_names_a_holder_that_may_hold_the_slot_long(self) -> None:
-        now, me = 10_000.0, os.getpid()
-        unbounded = self.line(Holder(me, ("sleep", "a b"), now - 125, None), now)
-        self.assertEqual(unbounded, f"EXECUTION HOLD testbox: measurement m1 waits on slot 2: held by pid {me}"
-                         f" for 2m so far, and no --deadline bounds it; stopping pid {me} ends that batch and"
-                         " frees the slot for the measurement, for: sleep 'a b'")
-        # The remaining cap is read on the clock the deadline is enforced on: ``expires`` against
+    def test_the_line_names_a_holder_that_may_hold_the_slot_long_as_recorded(self) -> None:
+        now = 10_000.0
+        unbounded = self.line(Holder(4242, ("sleep", "a b"), now - 125, None), now)
+        self.assertEqual(unbounded, "EXECUTION HOLD testbox: measurement m1 waits on slot 2: recorded holder pid 4242,"
+                         " slot taken 2m ago, no --deadline recorded; for: sleep 'a b'")
+        # The cap left is read on the clock the deadline is enforced on: ``expires`` against
         # time.monotonic(), whatever the wall clock says.
-        capped = self.line(Holder(me, ("tune",), now - 600, 6000, 5400.0), now, 0.0, 310)
-        self.assertIn("measurement m1 still waits for slot 2 after 5m: held by pid", str(capped))
-        self.assertIn("for 10m so far, and its --deadline 6000s ends it in about 1h30m;", str(capped))
+        capped = self.line(Holder(4242, ("tune",), now - 600, 6000, 5400.0), now, 0.0, 310)
+        self.assertEqual(capped, "EXECUTION HOLD testbox: measurement m1 still waits for slot 2 after 5m: recorded holder"
+                         " pid 4242, slot taken 10m ago, recorded --deadline 6000s, about 1h30m left; for: tune")
         # Before its command starts, all of its deadline is ahead.
-        self.assertIn("ends it in about 1h40m;", str(self.line(Holder(me, ("tune",), now - 600, 6000), now)))
+        self.assertIn("about 1h40m left;", str(self.line(Holder(4242, ("tune",), now - 600, 6000), now)))
         # A --deadline that ends the batch within LONG_HOLDER is not worth a decision.
-        self.assertIsNone(self.line(Holder(me, ("x",), now, 6000, float(slot.LONG_HOLDER)), now))
-        self.assertIsNone(self.line(Holder(me, ("x",), now, slot.LONG_HOLDER), now))
-        self.assertIsNotNone(self.line(Holder(me, ("x",), now, 6000, slot.LONG_HOLDER + 60.0), now))
+        self.assertIsNone(self.line(Holder(4242, ("x",), now, 6000, float(slot.LONG_HOLDER)), now))
+        self.assertIsNone(self.line(Holder(4242, ("x",), now, slot.LONG_HOLDER), now))
+        self.assertIsNotNone(self.line(Holder(4242, ("x",), now, 6000, slot.LONG_HOLDER + 60.0), now))
 
-    def test_no_record_or_a_stale_one_is_said_without_a_command_or_a_cap(self) -> None:
-        none = str(self.line(None))
-        self.assertIn("measurement m1 waits on slot 2: its holder left no record of its command or --deadline", none)
-        pid = ended_pid()
-        stale = str(self.line(Holder(pid, ("secret",), 0.0, None)))
-        self.assertIn(f"its recorded holder, pid {pid}, has ended", stale)
-        self.assertNotIn("secret", stale)
+    def test_the_line_judges_nothing_about_the_pid_and_advises_nothing(self) -> None:
+        # An ended pid is said as recorded too: the record is what the line reports.
+        line = str(self.line(Holder(ended_pid(), ("x",), 0.0, None), 0.0))
+        self.assertIn("recorded holder pid", line)
+        self.assertNotIn("stop", line)
 
-    def test_a_reused_pid_is_not_offered_to_stop(self) -> None:
-        # A running process that started after the record was written did not write it.
-        now, me = 10_000.0, os.getpid()
-        reused = str(self.line(Holder(me, ("secret",), now - 60, None), now, age=30.0))
-        self.assertIn(f"its recorded holder, pid {me}, has ended", reused)
-        self.assertNotIn("secret", reused)
-        # Within OWNER_SKEW, ps's whole seconds, it is the recorder.
-        self.assertIn("stopping pid", str(self.line(Holder(me, ("x",), now - 60, None), now, age=59.0)))
-        unread = str(self.line(Holder(me, ("x",), now - 60, None), now, age=None))
-        self.assertIn(f"pid {me} could not be confirmed as the batch's own wrapper (its age is unread)", unread)
-        self.assertNotIn("stopping pid", unread)
-        # This process, read for real: it started before a record written now.
-        real = holder_line("testbox", "m1", 1, Holder(me, ("x",), time.time(), None), time.time(), 0.0, None)
-        self.assertIn(f"stopping pid {me} ends that batch", str(real))
-
-    def test_process_age_reads_every_etime_shape(self) -> None:
-        for text, seconds in (("   00:07", 7), ("12:34", 754), ("01:02:03", 3723), ("2-01:00:00", 176400)):
-            with mock.patch.object(slot.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, text + "\n", "")):
-                self.assertEqual(slot.process_age(1), seconds, text)
-        for done in (subprocess.CompletedProcess([], 1, "", ""), subprocess.CompletedProcess([], 0, "soon\n", "")):
-            with mock.patch.object(slot.subprocess, "run", return_value=done):
-                self.assertIsNone(slot.process_age(1))
-        with mock.patch.object(slot.subprocess, "run", side_effect=FileNotFoundError("ps")):
-            self.assertIsNone(slot.process_age(1))
+    def test_no_record_is_said(self) -> None:
+        self.assertIn("measurement m1 waits on slot 2: its holder left no record of its command or --deadline",
+                      str(self.line(None)))
 
     def test_a_recorded_command_is_quoted_on_one_line(self) -> None:
-        line = str(self.line(Holder(os.getpid(), ("sh", "-c", "a\nb\x1b"), 0.0, None), 0.0))
+        line = str(self.line(Holder(4242, ("sh", "-c", "a\nb\x1b"), 0.0, None), 0.0))
         self.assertTrue(line.endswith("for: sh -c 'a\\nb\\x1b'"), line)
         self.assertNotIn("\n", line)
 
@@ -262,8 +236,8 @@ class HolderRecord(Locks):
         out, took = self.drain(0.3, 1.2)
         lines = out.splitlines()
         self.assertEqual(lines[0], "EXECUTION HOLD testbox: measurement m1 waits for the batch in slot 1 to end")
-        self.assertRegex(lines[1], r"^EXECUTION HOLD testbox: measurement m1 waits on slot 1: held by pid [0-9]+ for 0s"
-                         r" so far, and no --deadline bounds it; .* for: tune --cold$")
+        self.assertRegex(lines[1], r"^EXECUTION HOLD testbox: measurement m1 waits on slot 1: recorded holder pid [0-9]+,"
+                         r" slot taken 0s ago, no --deadline recorded; for: tune --cold$")
         self.assertGreaterEqual(len(lines), 3, out)
         self.assertTrue(all("still waits for slot 1 after" in line for line in lines[2:]), out)
         self.assertLess(took, 5)
