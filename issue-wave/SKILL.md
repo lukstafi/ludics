@@ -393,7 +393,8 @@ requirements for every transport with transport-specific setup and identity, and
 - Setup: expected host, branch and base, environment script, and docs to read. CLI launch
   supplies the worktree path; a native worker receives the coordinator-created absolute path;
   an app worker verifies its app-created path. Require an explicit command cwd, absolute
-  assigned edit paths, branch/base and a successful harmless Git mutation at startup.
+  assigned edit paths, branch/base and a successful harmless Git mutation at startup, and name
+  the project's main checkout with Supervise's *The main checkout is read, never moved*.
 - The task: issue number and repo, a summary, and the instruction to read the issue and its
   comments first - including the decision comment, where the gate POSTED one: only tier-2
   (recommendation-with-veto) and tier-3 (user-owned) questions get a comment, a tier-1 call is
@@ -631,6 +632,19 @@ controlled through the tools in your coordinator's file, never through those com
   arguments - `pgrep -fl '[p]r-review.sh watch <owner>/<repo>#<pr>( |$)'` - not by cwd; after
   a harness restart those claims are unreliable in both directions (2026-08-23: observed three
   times; commits proved durable every time).
+- **The main checkout is read, never moved.** A project's main checkout (`~/ocannl-staging`,
+  this repository's `~/ludics-lite`) is shared: the user and peer sessions work in it, and
+  `~/ludics-lite` serves every box its skills. Read the tree through `git -C <main> show
+  origin/<base>:<path>`, `git -C <main> grep <pattern> origin/<base>`, or a scratch worktree
+  added `--detach` at `origin/<base>` and removed after, and never run what moves its HEAD,
+  index or working tree there (`checkout`, `switch`, `reset`, `merge`, `rebase`, `stash`); the
+  fast-forwards the preflight and ship-pr prescribe are its only moves
+  (2026-10-14: a coordinator checking post-wave chip premises ran `git checkout --detach
+  origin/master` in OCANNL's; ludics-lite#622). This is the one statement of the rule; every
+  brief names the main checkout's path and carries it for the worker. For `~/ludics-lite` the
+  *Skill-freshness preflight* already refuses a detached HEAD, another branch or a staged
+  change at every launch on the agent box (a native wave's is the coordinator's own); a
+  project's main checkout has no such guard.
 - **A returned turn means the turn ended, and nothing more.** This is the one statement of the
   rule; the coordinator files say only what the signal is on each runtime. A returned turn is
   not a verdict on a run and not a merge (2026-09-15: twice a "finished" notification arrived
