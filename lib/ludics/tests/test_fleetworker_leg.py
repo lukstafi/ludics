@@ -95,7 +95,7 @@ class WindowWait(unittest.TestCase):
     under --wait-window in the slot's own wait, the registry re-reads stubbed in order."""
 
     def wait(self, reads: list[Any], flags: list[str], first: list[dict[str, Any]] | None = None
-             ) -> tuple[tuple[dict[str, Any], list[str]] | int, str, str, int]:
+             ) -> tuple[dict[str, Any] | int, str, str, int]:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
                           {"FLEET_LOCAL_BOX": "agent", "FLEET_SLOT_WINDOW_POLL": "0.01"}, host="agent")
         records = first if first is not None else [standing(), window("w1")]
@@ -112,16 +112,11 @@ class WindowWait(unittest.TestCase):
         self.assertEqual(out, "EXECUTION LEG REFUSED: it is suspended by measurement window w1; run the leg once that"
                               " window concludes, or give it --wait-window, which waits for it\n")
 
-    def test_a_window_that_closes_inside_the_bound_lets_the_leg_run_with_the_rest_of_it(self) -> None:
+    def test_a_window_that_closes_inside_the_bound_lets_the_leg_run(self) -> None:
         restored = [standing("launching"), window("w1", "concluded")]
         result, out, err, _ = self.wait([[standing(), window("w1")], restored], ["--cpu", "--wait-window=30", "--wait", "0"])
-        assert isinstance(result, tuple)
-        record, flags = result
-        self.assertEqual((record["state"], out), ("launching", ""))
-        # The far side's slot gets what is left of the one bound (a started second spent), the
-        # other flags as they were.
-        self.assertEqual(flags[:3], ["--cpu", "--wait", "0"])
-        self.assertIn(flags[3], [f"--wait-window={n}" for n in range(25, 30)])
+        assert isinstance(result, dict)
+        self.assertEqual((result["state"], out), ("launching", ""))
         self.assertIn("EXECUTION LEG testbox: measurement window w1 holds testbox (coordinator coord; m for o/r#2;", err)
         self.assertIn("EXECUTION LEG testbox: waiting up to 30s (--wait-window) for it to conclude, then for a slot,"
                       " for: tools/check.sh", err)
@@ -133,9 +128,8 @@ class WindowWait(unittest.TestCase):
         second = [standing(by="w2"), window("w1", "concluded"), window("w2")]
         restored = [standing("launching"), window("w1", "concluded"), window("w2", "concluded")]
         result, out, err, reads = self.wait([[standing(), window("w1")], second, second, restored], ["--wait-window"])
-        assert isinstance(result, tuple)
-        self.assertEqual((result[0]["state"], out, reads), ("launching", "", 4))
-        self.assertIn(result[1], [[f"--wait-window={slot.WINDOW_WAIT - n}"] for n in range(1, 6)])
+        assert isinstance(result, dict)
+        self.assertEqual((result["state"], out, reads), ("launching", "", 4))
         self.assertIn("measurement window w1 holds testbox", err)
         self.assertIn("measurement window w2 holds testbox", err)
 
@@ -152,8 +146,8 @@ class WindowWait(unittest.TestCase):
         torn = [standing(), window("w1", "concluded")]
         restored = [standing("launching"), window("w1", "concluded")]
         result, out, err, reads = self.wait([torn, restored], ["--wait-window=30"])
-        assert isinstance(result, tuple)
-        self.assertEqual((result[0]["state"], out, reads), ("launching", "", 2))
+        assert isinstance(result, dict)
+        self.assertEqual((result["state"], out, reads), ("launching", "", 2))
         self.assertEqual(err.count("measurement window w1 holds testbox"), 1)
 
     def test_a_record_the_registry_never_restores_is_refused_at_the_bound_naming_its_window(self) -> None:
@@ -169,8 +163,8 @@ class WindowWait(unittest.TestCase):
         restored = [standing("launching"), window("w1", "concluded"), window("w2", "concluded")]
         result, out, err, reads = self.wait([unlisted, [standing(by="w2"), window("w2")], restored],
                                             ["--wait-window=30"], first=unlisted)
-        assert isinstance(result, tuple)
-        self.assertEqual((result[0]["state"], out, reads), ("launching", "", 3))
+        assert isinstance(result, dict)
+        self.assertEqual((result["state"], out, reads), ("launching", "", 3))
         self.assertIn("EXECUTION LEG testbox: measurement window w2 holds testbox (its record is not in this read of"
                       " the registry)", err)
 

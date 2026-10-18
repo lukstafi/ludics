@@ -593,7 +593,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   on the caller's box, in the slot's own wait (`EXECUTION LEG <box>: measurement window <id> holds
   <box> ...`), until nothing is measuring on the record's box, for at most that bound, and is
   refused past it as the slot is (`EXECUTION LEG REFUSED <box>: measurement <id> still holds <box>
-  after <n>s (--wait-window); nothing ran`); the slot on the box gets what is left of the bound.
+  after <n>s (--wait-window); nothing ran`). The slot on the box then takes the leg's
+  `--wait-window` as any batch's, so a window opened in between is waited for there: two waits,
+  each under the bound.
 - **The configuration.** The slot or hold on the box runs under the caller's fleet configuration,
   not the box's `~/.config/fleet/env.sh`: its roster, anchor and anchor state, lab host, slot and
   token specs and skills checkout travel with it (ludics-lite#632; `execution tip-run` does the

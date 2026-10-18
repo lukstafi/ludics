@@ -29,10 +29,12 @@ listing is no snapshot: a conclusion restores the records it suspended and then 
 window, file by file, and an opening publishes the window and then suspends, so one read can show
 the window concluded, or not yet listed, beside the record still suspended. A suspension the
 registry never ends (which its conclusion rules out) is therefore waited out to the bound like a
-window. Then the record is judged as above, and the far side's slot gets
-``--wait-window=<what is left of the bound>``, so a window opened between the two (the next of a
-coordinator's back-to-back windows) is waited for by the slot on the box, and the whole leg waits
-under one bound. The leg waits for no window when its record is not suspended: the slot on the box
+window. Then the record is judged as above, and the leg goes on to the box with its flags as given:
+a window opened after this wait (the next of a coordinator's back-to-back windows) is the slot's to
+wait for there, under its own ``--wait-window``, as for any batch. So these are two waits, each
+under the bound, as the slot's own window wait and slot wait are; the bound is not carried across
+the setup between them (the copy, the ssh, the fetch), whose time no clock on either side measures
+for the other. The leg waits for no window when its record is not suspended: the slot on the box
 does, as for any batch.
 
 THE CHECKOUT AND THE REVISION, on the box (paths absolute, or ``~/``): ``--checkout`` is a git
@@ -87,14 +89,12 @@ the slot never started the runner), or ``EXECUTION LEG UNREACHABLE`` (4) that th
 or the connection dropped, with the runner perhaps started -- find out on the box before a retry.
 """
 
-import math
 import os
 import re
 import secrets
 import subprocess
 import sys
 import threading
-import time
 from typing import Any
 
 from ludics import cli
@@ -365,10 +365,9 @@ def window_bound(slot_flags: list[str]) -> int | None:
 
 
 def await_window(cfg: Config, request: str, record: dict[str, Any], records: list[dict[str, Any]],
-                 slot_flags: list[str], runner: list[str]) -> tuple[dict[str, Any], list[str]] | int:
+                 slot_flags: list[str], runner: list[str]) -> dict[str, Any] | int:
     """THE WINDOW WAIT (see the header) for a ``suspended`` record: the record read again once no
-    measurement holds its box, and the slot flags with the rest of the bound; or the refusal's
-    status."""
+    measurement holds its box; or the refusal's status."""
     window = execution.jq_text(record.get("suspended_by"))
     bound = window_bound(slot_flags)
     if bound is None:
@@ -386,7 +385,6 @@ def await_window(cfg: Config, request: str, record: dict[str, Any], records: lis
         by = execution.jq_text(own.get("suspended_by"))
         return [execution.record_of(read, by) or {"request_id": by, "window": True}]
 
-    start = time.monotonic()
     waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE, holders)
     if isinstance(waited, int):
         return waited
@@ -394,9 +392,7 @@ def await_window(cfg: Config, request: str, record: dict[str, Any], records: lis
     if again is None:
         return refused(f"unknown request_id {request} after waiting for window {window}: a leg runs only inside"
                        " a dispatched reservation")
-    left = max(bound - math.ceil(time.monotonic() - start), 0)
-    flags = [flag for flag in slot_flags if not flag.startswith("--wait-window")]
-    return again, [*flags, f"--wait-window={left}"]
+    return again
 
 
 def box_path(value: str, flag: str) -> str:
@@ -484,7 +480,7 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
         waited = await_window(cfg, request, record, records, slot_flags, runner)
         if isinstance(waited, int):
             return waited
-        record, slot_flags = waited
+        record = waited
     state = execution.jq_text(record.get("state"))
     if state not in DISPATCHED:
         return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")
