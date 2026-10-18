@@ -341,6 +341,11 @@ out=$(FW_LISTING="$measured" SSH_UP=0 WAKE_LAB_DOWN_WAIT_SECONDS=0 "$tmp/wake-la
 check '--force takes a measured box anyway' '[ "$rc" = 0 ] && grep -q -- "--check-inhibitors=yes suspend" "$SSH_LOG"'
 cp "$here/wake-lab-wsl.sh" "$tmp/wake-lab-wsl.sh"
 sed 's/echo linux/echo wsl/' "$tmp/hosts.sh" >"$tmp/tuf-wsl.sh"
+# ludics-lite#637: one native-Linux box among WSL ones has a leg to ask, so the allowlist holds.
+sed 's/rog|minix|tuf) echo linux/rog|minix) echo linux ;; tuf) echo wsl/' "$tmp/lab-hosts.sh" >"$tmp/mixed-hosts.sh"
+: >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/mixed-hosts.sh" SSH_UP=1 WAKE_LAB_ANCHOR=2001:db8::1 WAKE_LAB_WAIT_SECONDS=1 "$tmp/wake-lab.sh" --wait tuf rog 2>&1); rc=$?
+check 'a wait with one linux box among wsl ones still refuses an anchor outside the allowlist' '[ "$rc" = 1 ] && [[ "$out" == *"is not a plain ssh destination; nothing was sent"* ]] && [ ! -s "$SSH_LOG" ] && grep -q "echo wsl" "$tmp/mixed-hosts.sh"'
 out=$(WAKE_LAB_HOSTS="$tmp/tuf-wsl.sh" SSH_UP=tuf-amd-win "$tmp/wake-lab.sh" status tuf 2>&1); rc=$?
 check 'the renamed TUF keeps its Windows endpoint when configured for WSL' '[ "$rc" = 0 ] && [[ "$out" == *"win=UP"* ]] && [[ "$out" == *"wsl=--"* ]] && [[ "$out" == *"os=windows"* ]]'
 out=$(WAKE_LAB_HOSTS="$tmp/tuf-wsl.sh" SSH_UP=tuf-amd-wsl "$tmp/wake-lab.sh" status tuf 2>&1); rc=$?

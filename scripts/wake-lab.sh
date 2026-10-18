@@ -1053,10 +1053,14 @@ wait_for() { # wait_for <box...> — poll until every box answers, for up to WAI
 # Boundary, a fail-closed allowlist: only a box whose kind is `linux` is asked, through its linux
 # endpoint, which is where its fleet shell runs. A wsl box's fleet shell is its WSL guest, and a
 # windows box runs no fleet work; neither is asked, and each says so on a line of its own rather
-# than passing as checked by omission. ANCHOR is the anchor's name as the BOX's ssh spells it,
-# fleet-worker.sh's FLEET_ANCHOR default; WAKE_LAB_ANCHOR overrides it, and set empty turns the leg
-# off for a lab with no fleet. It must be a plain ssh destination, since it is spliced into the
-# remote command line (checked before anything is sent).
+# than passing as checked by omission. A WSL guest's own leg stays outside by that boundary
+# (ludics-lite#637), not by oversight: the fleet's boxes run native Linux, a WSL guest is booted by
+# hand for one placement (issue-wave/references/wsl-boxes.md), and its fleet-worker's UNREACHABLE
+# refusal already says this wait does not ask it.
+# ANCHOR is the anchor's name as the BOX's ssh spells it, fleet-worker.sh's FLEET_ANCHOR default;
+# WAKE_LAB_ANCHOR overrides it, and set empty turns the leg off for a lab with no fleet. It must be
+# a plain ssh destination, since it is spliced into the remote command line (checked before
+# anything is sent, on a run with a leg to ask).
 # What `all up` claims is POINT-IN-TIME: at the last poll every asked leg answered, and every box
 # the leg did not ask still answered after the anchor wait (the final pass in the wake dispatch).
 # A route that flaps after that is outside it; `execution slot`'s UNREACHABLE refusal says to
@@ -1101,7 +1105,7 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
       echo "anchor leg not asked on $n: the anchor $ANCHOR is that box itself, read without ssh"
       ANCHOR_UNASKED="$ANCHOR_UNASKED $n"
     elif a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1); caps+=("$PROBE_CAP")
-    else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked"
+    else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked (a WSL guest is a manual boot, outside this wait)"
          ANCHOR_UNASKED="$ANCHOR_UNASKED $n"; fi
   done
   [ ${#names[@]} -gt 0 ] || return 0
@@ -1717,7 +1721,11 @@ fi
 # fail-closed allowlist, [A-Za-z0-9._@-] not led by `-`: a host name, user@host, an IPv4 literal.
 # Any other spelling ssh may take (an IPv6 literal, a scoped one) is outside it, and slot's
 # UNREACHABLE line offers this wait only for an anchor inside it (slot.WAKE_LAB_ANCHOR).
-if [ "$VERB" = wake ] && [ "$WAIT" = 1 ]; then
+# Only where a leg can be asked (ludics-lite#637): a run with no target anchor_alias names -- every
+# box a wsl or windows one -- never splices the anchor anywhere, so its spelling is not refused.
+anchor_spliced=0
+for t in "${TARGETS[@]}"; do anchor_alias "$t" >/dev/null && { anchor_spliced=1; break; }; done
+if [ "$VERB" = wake ] && [ "$WAIT" = 1 ] && [ "$anchor_spliced" = 1 ]; then
   case "$ANCHOR" in
     -*|*[!A-Za-z0-9._@-]*)
       printf '%s\n' "wake-lab.sh: WAKE_LAB_ANCHOR $(printf '%q' "$ANCHOR") is not a plain ssh destination; nothing was sent." >&2
