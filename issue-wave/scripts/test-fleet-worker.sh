@@ -2547,6 +2547,31 @@ grep -q "GPU token 1 of 1 held for: " "$tdir/log" && grep -Fq "ran at $tip" "$td
 expect "...which concludes from its bg-run directory" 0 '"verdict": "pass"' -- "${FWT[@]}" execution conclude --from-bg-run "$tdir" --request tip-a --sha "$tip"
 expect "a request id the registry holds is never run again" 1 "^TIP-RUN NOT STARTED tip-a: the registry already holds it (concluded); a loop run takes a fresh request id$" -- \
   "${FWT[@]}" execution tip-run "$TMP/tip-a.json" --checkout "$tco" -- echo never
+# ludics-lite#616: --tip reads the revision off GitHub, and --wait <id> concludes the run off its
+# record alone, so the id and the directory waited on cannot drift apart.
+printf 'main %s\n' "$tip" > "$TMP/tip-heads"
+jq 'del(.requested_revision)' "$(tipreq tip-i)" > "$TMP/tip-i-tip.json"
+expect "--tip runs the commit the branch names on GitHub now" 0 "^TIP-RUN STARTED tip-i testbox $tip /" -- \
+  env SHIM_GH_HEADS="$TMP/tip-heads" "${FWT[@]}" execution tip-run "$TMP/tip-i-tip.json" --tip main --checkout "$tco" --cpu -- sh -c 'sleep 10; echo "exit: 0"'
+tdir=$(sed -n "s/^TIP-RUN STARTED tip-i testbox $tip //p" <<<"$out")
+grep -Fq "TIP-RUN TIP tip-i: main is $tip in o/r on GitHub now" <<<"$out" && ok "...saying which commit the tip was" || ko "no TIP line: $out"
+"$FW" execution list | jq -e --arg tip "$tip" '.[] | select(.request_id == "tip-i") | .request.requested_revision == $tip' >/dev/null &&
+  ok "...and recording it as the request's revision" || ko "tip-i's request: $("$FW" execution list | jq -c '.[] | select(.request_id == "tip-i") | .request')"
+expect "--wait on a run still going says RUNNING (exit 3), concluding nothing" 3 "^TIP-RUN RUNNING tip-i testbox /.*: RUNNING after 0 s of --within 0$" -- \
+  "${FWT[@]}" execution tip-run --wait tip-i --within 0
+expect "--wait blocks on it and concludes it, from the request id alone" 0 "^TIP-RUN CONCLUDED tip-i pass testbox $tip /" -- \
+  "${FWT[@]}" execution tip-run --wait tip-i --within 60
+grep -Fxq "TIP-RUN CONCLUDED tip-i pass testbox $tip $tdir" <<<"$out" && ok "...naming the directory the start printed" || ko "the conclusion line: $out"
+expect "...and a second --wait reads the verdict again" 0 "^TIP-RUN CONCLUDED tip-i pass testbox $tip /" -- \
+  "${FWT[@]}" execution tip-run --wait tip-i
+expect "--wait on an unknown request is refused" 1 "^TIP-RUN REFUSED tip-zz: the registry holds no such request$" -- "${FWT[@]}" execution tip-run --wait tip-zz
+expect "--wait on a record no tip-run started is refused" 1 "^TIP-RUN REFUSED tip-stand: it is launching, not a run tip-run started" -- "${FWT[@]}" execution tip-run --wait tip-stand
+expect "--tip beside a named revision is refused" 2 "--tip reads the revision, so the payload names no requested_revision" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-j)" --tip main --checkout "$tco" -- echo never
+jq 'del(.requested_revision)' "$TMP/tip-j.json" > "$TMP/tip-j-tip.json"
+expect "a branch GitHub does not have starts nothing" 1 "^TIP-RUN NOT STARTED tip-j: the tip of gone in o/r could not be read (above); nothing reserved$" -- \
+  env SHIM_GH_HEADS="$TMP/tip-heads" "${FWT[@]}" execution tip-run "$TMP/tip-j-tip.json" --tip gone --checkout "$tco" -- echo never
+[ -z "$(state_of tip-j)" ] && ok "...reserving nothing" || ko "tip-j was reserved: $(state_of tip-j)"
 # THE YIELD: a worker's assigned leg (any non-standing record) on the box, and nothing is reserved.
 jq -n '{request_id:"tip-leg", wave:"w", worker:"w1", transport:"subagent", issue:"o/r#1", purpose:"cuda leg",
   agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness"}' > "$TMP/tip-leg.json"
@@ -2593,7 +2618,7 @@ expect "a measurement is refused" 2 "kind must be correctness" -- \
 expect "a worker's request is refused" 2 "transport must be coordinator" -- \
   "${FWT[@]}" execution tip-run "$(tipreq tip-h "$tip" '{"transport":"subagent"}')" --checkout "$tco" -- echo never
 expect "a relative checkout is refused" 2 "--checkout must be absolute" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" --checkout co -- echo never
-expect "the checkout is required" 2 "execution tip-run <json-file> --checkout <dir>" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" -- echo never
+expect "the checkout is required" 2 "execution tip-run <json-file> \[--tip <branch>\] --checkout <dir>" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" -- echo never
 expect "the command is required" 2 "a command to run is required" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" --checkout "$tco" --
 [ -z "$(state_of tip-h)" ] && ok "...each before anything is reserved" || ko "tip-h was reserved: $(state_of tip-h)"
 jq -n '{request_id:"tip-stand", evidence:"fixture: iteration over", verdict:"not-launched", log:"/dev/null"}' > "$TMP/tip-stand-done.json"

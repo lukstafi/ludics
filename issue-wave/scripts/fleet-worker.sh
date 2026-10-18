@@ -161,16 +161,20 @@
 #                          # read off the checkout; the verdict the run record's, else --verdict (no
 #                          # default); the record's dirty list, launch head and gone worktree go into
 #                          # the evidence, not a refusal (executions.md, Standing iteration reservation)
-#   fleet-worker.sh execution tip-run <json-file> --checkout <dir> [--runs <dir>] [--cpu] -- <command...>
+#   fleet-worker.sh execution tip-run <json-file> [--tip <branch>] --checkout <dir> [--runs <dir>] [--cpu] -- <command...>
 #                          # one integration-loop run (ludics-lite#615): yield to anything outstanding
 #                          # on the box but standing reservations, `execution run` the request (its
-#                          # requested_revision one full SHA), check that SHA out detached in the
+#                          # requested_revision one full SHA, or with --tip the branch's head on
+#                          # GitHub now), check that SHA out detached in the
 #                          # clean checkout on the box, and start the command there under
 #                          # `execution slot --bg <runs> --wait 0` (a GPU token unless --cpu, only
 #                          # if one is free now); prints TIP-RUN STARTED <id> <box> <sha> <dir>
 #                          # (exit 0) or TIP-RUN NOT STARTED <id>: <why> (exit 1, anything reserved
-#                          # concluded not-launched); conclude it with --from-bg-run
-#                          # (lib/ludics/fleetworker/tiprun.py)
+#                          # concluded not-launched)
+#   fleet-worker.sh execution tip-run --wait <id> [--within <s>]
+#                          # block on that run (480 s by default) off its record, and conclude it
+#                          # --from-bg-run: TIP-RUN CONCLUDED <id> <verdict> <box> <sha> <dir> (exit
+#                          # 0), TIP-RUN RUNNING ... (exit 3: re-issue) (lib/ludics/fleetworker/tiprun.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state and head age; flags <n> (5) or more rounds, or 3 or more
 #                          # after a round 1 of 5 or more inline findings (read-only); --wave

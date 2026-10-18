@@ -13,10 +13,12 @@ from unittest import mock
 from ludics import cli
 from ludics.fleetworker import tiprun
 from ludics.fleetworker.config import load_config
-from ludics.fleetworker.tiprun import far_facts, parse, request_problem, yielding_to
+from ludics.fleetworker.tiprun import concluded_line, far_facts, parse, parse_wait, request_problem, started_run, yielding_to
 from ludics.fleetworker.transport import Done
 
 SHA = "a" * 40
+# The repository's own fleet-worker.sh, so --wait finds the bg-run.sh beside it.
+SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "issue-wave", "scripts", "fleet-worker.sh")
 
 
 def request(**fields: object) -> dict[str, Any]:
@@ -53,7 +55,30 @@ class Parse(unittest.TestCase):
         self.assertIn("a command to run is required", self.refused(["/p.json", "--checkout", "/co", "--"]))
         for args in (["/p.json", "--", "true"], ["--checkout", "/co", "--", "true"], ["/p.json", "--checkout", "/co", "true"],
                      ["/p.json", "--checkout", "/co", "--oops", "--", "true"], ["/p.json", "/q.json", "--checkout", "/co", "--", "true"]):
-            self.assertIn("execution tip-run <json-file> --checkout <dir>", self.refused(args), args)
+            self.assertIn("execution tip-run <json-file> [--tip <branch>] --checkout <dir>", self.refused(args), args)
+
+
+class ParseTipAndWait(unittest.TestCase):
+    def refused(self, call: Any, args: list[str]) -> str:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(cli.Exit) as caught:
+            call(args)
+        self.assertEqual(caught.exception.rc, 2)
+        return caught.exception.message
+
+    def test_tip_names_the_branch(self) -> None:
+        self.assertEqual(parse(["/p.json", "--tip", "main", "--checkout", "/co", "--", "true"]).tip, "main")
+        self.assertEqual(parse(["/p.json", "--checkout", "/co", "--", "true"]).tip, "")
+        for args in (["/p.json", "--tip", "--checkout", "/co", "--", "true"], ["/p.json", "--checkout", "/co", "--tip"]):
+            self.assertIn("expected a branch for --tip", self.refused(parse, args), args)
+
+    def test_wait_takes_the_id_and_a_bound(self) -> None:
+        self.assertEqual(parse_wait(["--wait", "w-gpu-rog-1"]), tiprun.WaitArgs("w-gpu-rog-1", tiprun.WITHIN))
+        self.assertEqual(parse_wait(["--wait", "w-gpu-rog-1", "--within", "0"]), tiprun.WaitArgs("w-gpu-rog-1", 0))
+        self.assertLess(tiprun.WITHIN, 600, "one --wait fits a foreground tool call")
+        for args in (["--wait"], ["--wait", "--within", "5"], ["--wait", "x", "--within"], ["--wait", "x", "--within", "-1"],
+                     ["--wait", "x", "--within", "5s"], ["--wait", "x", "y"], ["--wait", "x", "--within", "5", "--cpu"]):
+            self.refused(parse_wait, args)
 
 
 class RequestShape(unittest.TestCase):
@@ -79,6 +104,17 @@ class RequestShape(unittest.TestCase):
             problem = request_problem(value)
             self.assertIsNotNone(problem, value)
             self.assertIn(want, problem or "", value)
+
+
+    def test_tip_reads_the_revision_so_the_payload_names_none(self) -> None:
+        bare = request()
+        del bare["requested_revision"]
+        self.assertIsNone(request_problem(bare, tip=True))
+        self.assertIn("names no requested_revision", request_problem(request(), tip=True) or "")
+        self.assertIn("names no requested_revision", request_problem(request(requested_revision=None), tip=True) or "")
+        self.assertIn("transport must be coordinator", request_problem({**bare, "transport": "cli"}, tip=True) or "",
+                      "the rest of the shape is checked as without --tip")
+        self.assertIn("or --tip <branch>", request_problem(bare) or "", "without --tip a revision is required")
 
 
 class Yield(unittest.TestCase):
@@ -168,6 +204,154 @@ class Race(unittest.TestCase):
         self.assertEqual([c[0] for c in calls], [["execution", "run", payload], ["execution", "conclude"]])
         self.assertEqual((calls[1][1] or {}).get("verdict"), "not-launched")
         self.assertIn("the skills checkout on rog-nv-linux was not refreshed", out.getvalue())
+
+
+class Tip(unittest.TestCase):
+    """--tip: the branch's head on GitHub becomes the request's one SHA before anything is reserved."""
+
+    def payload(self, tmp: str) -> str:
+        bare = request()
+        del bare["requested_revision"]
+        path = os.path.join(tmp, "req.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(bare, f)
+        return path
+
+    def test_the_resolved_request_is_the_one_reserved(self) -> None:
+        cfg = load_config(SCRIPT, {}, host="h")
+        calls: list[tuple[list[str], dict[str, Any] | None]] = []
+
+        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+            calls.append((args, body))
+            return 1  # refused: the test stops at the reservation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.payload(tmp)
+            with mock.patch.object(tiprun.revision, "branch_head", return_value=SHA) as head, \
+                    mock.patch.object(tiprun, "listing", return_value=Done(0, "[]")), \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = tiprun.cmd_tip_run(cfg, [payload, "--tip", "main", "--checkout", "/co", "--", "true"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(head.call_args.args[:2], ("o/r", "main"))
+        self.assertEqual(calls, [(["execution", "run"], {**request(), "requested_revision": SHA})])
+        self.assertIn(f"TIP-RUN TIP w-gpu-rog-1: main is {SHA} in o/r on GitHub now", err.getvalue())
+
+    def test_an_unread_tip_reserves_nothing(self) -> None:
+        cfg = load_config(SCRIPT, {}, host="h")
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self.payload(tmp)
+            out = io.StringIO()
+            with mock.patch.object(tiprun.revision, "branch_head", return_value=("EXECUTION UNVERIFIED github.com: x", 4)), \
+                    mock.patch.object(tiprun, "listing", side_effect=AssertionError("the anchor was asked")), \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=AssertionError("something was reserved")), \
+                    contextlib.redirect_stdout(out):
+                rc = tiprun.cmd_tip_run(cfg, [payload, "--tip", "main", "--checkout", "/co", "--", "true"])
+        self.assertEqual(rc, 1, "nothing was reserved, so nothing is left to reconcile")
+        self.assertIn("EXECUTION UNVERIFIED github.com: x", out.getvalue())
+        self.assertIn("TIP-RUN NOT STARTED w-gpu-rog-1: the tip of main in o/r could not be read (above); nothing reserved", out.getvalue())
+
+
+def running(**fields: object) -> dict[str, Any]:
+    record: dict[str, Any] = {"request_id": "w-gpu-rog-1", "state": "running", "observed_sha": SHA,
+                              "handle": "bg-run:rog-nv-linux:/s/tip-runs/run-3", "request": {"execution_host": "rog-nv-linux"}}
+    record.update(fields)
+    return record
+
+
+class Wait(unittest.TestCase):
+    """--wait <id>: the run's box, directory and SHA come off the record, never from the caller."""
+
+    def test_only_the_record_a_start_writes_is_a_run_to_wait_on(self) -> None:
+        self.assertEqual(started_run(running()), ("rog-nv-linux", "/s/tip-runs/run-3", SHA))
+        for record, want in [
+            (running(handle="bg-run:minix-amd-linux:/s/run-3"), "not bg-run:rog-nv-linux:<dir>"),
+            (running(handle="bg-run:rog-nv-linux:s/run-3"), "not bg-run:rog-nv-linux:<dir>"),
+            (running(handle="test-run:run-3"), "not bg-run:rog-nv-linux:<dir>"),
+            (running(handle=None), "null"),
+            (running(observed_sha=SHA[:12]), "not one full SHA"),
+        ]:
+            self.assertIn(want, str(started_run(record)), record)
+
+    def test_the_concluded_line(self) -> None:
+        self.assertEqual(concluded_line(running(state="concluded", verdict="fail")),
+                         f"TIP-RUN CONCLUDED w-gpu-rog-1 fail rog-nv-linux {SHA} /s/tip-runs/run-3")
+        bare = {"request_id": "w-gpu-rog-2", "state": "concluded", "verdict": "not-launched", "request": {"execution_host": "h"}}
+        self.assertEqual(concluded_line(bare), "TIP-RUN CONCLUDED w-gpu-rog-2 not-launched h - -")
+
+    def wait(self, records: list[list[dict[str, Any]]], far: Done | None, conclude_rc: int = 0,
+             args: tuple[str, ...] = ()) -> tuple[int, str, list[list[str]], list[list[str]]]:
+        cfg = load_config(SCRIPT, {}, host="h")
+        reads = iter(records)
+        far_calls: list[list[str]] = []
+        worker_calls: list[list[str]] = []
+
+        def far_side(_cfg: object, box: str, script: str, argv: list[str], *, capture: bool = False) -> Done:
+            self.assertEqual(box, "rog-nv-linux")
+            self.assertIn("bash -s -- wait", script)
+            far_calls.append(argv)
+            assert far is not None, "the box was read"
+            return far
+
+        def worker(_cfg: object, argv: list[str], body: dict[str, Any] | None = None) -> int:
+            worker_calls.append(argv)
+            return conclude_rc
+
+        out = io.StringIO()
+        with mock.patch.object(tiprun, "listing", side_effect=lambda _c: Done(0, json.dumps(next(reads)))), \
+                mock.patch.object(tiprun, "run_on", side_effect=far_side), \
+                mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                contextlib.redirect_stdout(out):
+            rc = tiprun.cmd_tip_run(cfg, ["--wait", "w-gpu-rog-1", *args])
+        return rc, out.getvalue(), far_calls, worker_calls
+
+    def test_a_finished_run_is_concluded_from_its_record(self) -> None:
+        rc, out, far, worker = self.wait([[running()], [running(state="concluded", verdict="pass")]], Done(0, "rc=0\n"),
+                                         args=("--within", "30"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(far, [["/s/tip-runs/run-3", "30"]])
+        self.assertEqual(worker, [["execution", "conclude", "--from-bg-run", "/s/tip-runs/run-3", "--request", "w-gpu-rog-1",
+                                   "--sha", SHA, "--box", "rog-nv-linux"]])
+        self.assertEqual(out, f"TIP-RUN CONCLUDED w-gpu-rog-1 pass rog-nv-linux {SHA} /s/tip-runs/run-3\n")
+
+    def test_a_stopped_run_is_concluded_too(self) -> None:
+        rc, out, _, worker = self.wait([[running()], [running(state="concluded", verdict="cancelled")]],
+                                       Done(7, "STOPPED /s/tip-runs/run-3\n"))
+        self.assertEqual((rc, len(worker)), (0, 1))
+        self.assertIn("TIP-RUN CONCLUDED w-gpu-rog-1 cancelled", out)
+
+    def test_a_running_run_is_reissued_and_concludes_nothing(self) -> None:
+        rc, out, far, worker = self.wait([[running()]], Done(3, "RUNNING after 480 s of --within 480\n"))
+        self.assertEqual((rc, worker), (3, []))
+        self.assertEqual(far, [["/s/tip-runs/run-3", str(tiprun.WITHIN)]])
+        self.assertEqual(out, "TIP-RUN RUNNING w-gpu-rog-1 rog-nv-linux /s/tip-runs/run-3: RUNNING after 480 s of --within 480\n")
+
+    def test_any_other_answer_concludes_nothing(self) -> None:
+        for far in (Done(5, "DIED: pid 4 gone\n"), Done(4, "STARTING after 0 s\n"), Done(255, ""), Done(0, "RUNNING\n"),
+                    Done(1, "TIP-RUN REFUSED: no run directory /s/tip-runs/run-3 on rog-nv-linux\n")):
+            rc, out, _, worker = self.wait([[running()]], far)
+            self.assertEqual((rc, worker), (4, []), far)
+            self.assertIn("TIP-RUN UNKNOWN w-gpu-rog-1: ", out, far)
+
+    def test_a_conclusion_that_did_not_land_is_unknown(self) -> None:
+        rc, out, _, worker = self.wait([[running()]], Done(0, "rc=1\n"), conclude_rc=4)
+        self.assertEqual((rc, len(worker)), (4, 1))
+        self.assertIn("the conclusion did not land (above); re-issue the wait", out)
+
+    def test_a_concluded_record_is_read_again_and_no_box_is(self) -> None:
+        rc, out, far, worker = self.wait([[running(state="concluded", verdict="fail")]], None)
+        self.assertEqual((rc, far, worker), (0, [], []))
+        self.assertIn("TIP-RUN CONCLUDED w-gpu-rog-1 fail", out)
+
+    def test_records_no_start_wrote_are_refused(self) -> None:
+        for records, want in [
+            ([], "the registry holds no such request"),
+            ([running(state="uncertain")], "it is uncertain, not a run tip-run started"),
+            ([running(handle="bg-run:minix-amd-linux:/s/run-3")], "not bg-run:rog-nv-linux:<dir>"),
+        ]:
+            rc, out, far, worker = self.wait([records], None)
+            self.assertEqual((rc, far, worker), (1, [], []), records)
+            self.assertIn(want, out, records)
 
 
 if __name__ == "__main__":
