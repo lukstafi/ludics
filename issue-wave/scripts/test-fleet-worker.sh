@@ -3195,6 +3195,22 @@ expect "with every open PR kept by its closing references, nothing more is read"
 grep -q graphql "$P/calls" && ko "a cross-reference read with nothing to find: $(cat "$P/calls")" || ok "...no cross-reference read"
 expect "--wave with no records is refused, not read as an empty wave" 1 "no execution record names wave nowave" -- "$FW" prs o/r --wave nowave
 fixture_done prs-7
+# A post-wave task has no issue of its own (lukstafi/ludics-lite#664): its records name none, and its
+# PR may reference nothing, so --wave finds it by its worker's branch. A placeholder is refused.
+jq -n '{request_id:"prs-p", wave:"wvp", worker:"wvp-p1t2", transport:"subagent", purpose:"post-wave task p1t2",
+  agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true}' > "$TMP/prs-p.json"
+jq '.request_id = "prs-q" | .issue = "o/r#post-1"' "$TMP/prs-p.json" > "$TMP/prs-q.json"
+expect "reserve refuses an issue that names no issue" 1 "issue 'o/r#post-1' is not one issue spelled owner/name#N" -- \
+  env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-q.json"
+env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-p.json" >/dev/null 2>&1 || ko "could not reserve prs-p without an issue (setup)"
+jq -n --arg now "$now" '[{number: 7, title: "post-wave PR", headRefName: "claude/wvp-p1t2", headRefOid: "c7", createdAt: $now, isDraft: false,
+  closingIssuesReferences: []},
+  {number: 12, title: "second", headRefName: "claude/xwvp-p1t2", headRefOid: "c12", createdAt: $now, isDraft: false, closingIssuesReferences: []}]' > "$P/list.json"
+: > "$P/calls"
+expect "--wave keeps a PR on a branch of a worker its records name, with no issue to read" 0 "^o/r#7 rounds=2 .* claude/wvp-p1t2: post-wave PR$" -- "$FW" prs o/r --wave wvp --flag-at 7
+grep -q "o/r#12" <<<"$out" && ko "a branch that only contains the worker's name was kept: $out" || ok "...and drops a branch whose last component is another name"
+grep -q graphql "$P/calls" && ko "a cross-reference read for a wave naming no issue: $(cat "$P/calls")" || ok "...with no cross-reference read"
+fixture_done prs-p
 unset SHIM_PRS
 }
 
