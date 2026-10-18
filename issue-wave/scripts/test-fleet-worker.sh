@@ -2382,6 +2382,7 @@ for anchor in testbox other; do
   jq -n --arg id "run-big-$anchor" --rawfile ev "$TMP/big-evidence.txt" '{request_id:$id, verdict:"not-launched", log:"/dev/null", evidence:$ev}' > "$TMP/big-$anchor.json"
   expect "a conclusion whose evidence is 200 KiB is recorded whole (anchor $anchor)" 0 '"state": "concluded"' -- \
     env SHIM_SSH_LOCAL=other FLEET_ANCHOR="$anchor" "${FWX[@]}" execution conclude "$TMP/big-$anchor.json"
+  [ "$rc" -eq 0 ] || fixture_done "run-big-$anchor"   # free the box for the cases after it
   [ "$(jq -r '.history[-1].data.evidence | length' <<<"$out")" = 204800 ] && ok "...all 204800 characters of it" ||
     ko "the 200 KiB evidence did not land whole over $anchor: $(head -c 300 <<<"$out")"
 done
