@@ -515,7 +515,8 @@ plus the runner's `exit:` sentinel when the log has one (a whole line `exit:
 N` or `<name>: exit: N`, the last one winning; OCANNL's `test-run.sh` and `machine-verify.sh`
 print one): the code is the sentinel when that is nonzero, else `rc`, so a pass needs both. Then
 0 is pass, 124 or 142 timeout, a signal code (129, 130, 137, 143) cancelled, anything else fail.
-`RUNNING`, `STARTING` and `DIED` are refused. A `DIED` task was killed before its
+`STOPPED` (a run `bg-run.sh stop` ended, no process of its group left) is `cancelled`, the log's
+sentinel unread (ludics-lite#638). `RUNNING`, `STARTING` and `DIED` are refused. A `DIED` task was killed before its
 command returned, and bg-run.sh's header names a window in which the command can outlive it
 unpublished, so check that no process of the run remains and conclude it by JSON (`cancelled`). The directory is read on `--box`, by default the reservation's
 execution host. Name the box that drove the run when the leg went over ssh (a machine-verify trip

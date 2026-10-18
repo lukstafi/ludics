@@ -2292,6 +2292,13 @@ expect "...and an explicit --checkout replaces it" 0 '"remote_checkout": "/named
 d="$TMP/bg runs/died"; mkdir -p "$d"; sh -c 'exit 0' & gone=$!; wait "$gone"; printf '%s\n\n' "$gone" > "$d/pid"; : > "$d/log"
 expect "a task killed before the command returned (DIED) is refused, never concluded" 1 "FROM-BG-RUN REFUSED: bg-run.sh wait: DIED" -- bgc bg-died "$d"
 fixture_done bg-died
+# ludics-lite#638: the same dead task with the marker `bg-run.sh stop` leaves reads STOPPED, which
+# concludes as cancelled; a log sentinel there is not read.
+d="$TMP/bg runs/stopped"; mkdir -p "$d"; sh -c 'exit 0' & gone=$!; wait "$gone"; printf '%s\n\n' "$gone" > "$d/pid"
+printf 'exit: 0\n' > "$d/log"; printf 'process group %s\n' "$gone" > "$d/stopped"
+expect "a run bg-run.sh stop ended (STOPPED) concludes as cancelled" 0 '"verdict": "cancelled"' -- bgc bg-stopped "$d"
+grep -Fq "STOPPED by bg-run.sh stop before the command returned, no process of it left; revision $sha" <<<"$out" \
+  && ok "...saying so in its evidence" || ko "the stopped conclusion's evidence: $out"
 d="$TMP/bg runs/live"; mkdir -p "$d"; printf '%s\n\n' "$$" > "$d/pid"
 expect "a live task (RUNNING) is refused" 1 "FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING" -- bgc bg-live "$d"
 d="$TMP/bg runs/never"; mkdir -p "$d"

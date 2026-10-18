@@ -174,7 +174,9 @@ printf 'exit=%s\nwt=%s\nhead=%s\nrecord=%s\n' "$code" "$wt" "$head" "$record"
 # read the directory with another version. The one thing read past `wait` is the runner's own exit
 # sentinel in `log`, a fail-closed allowlist: a whole line `exit: <status>` or `<name>: exit:
 # <status>`, the name [A-Za-z0-9._-]+ and the status 0-255 without leading zeros; the LAST such
-# line wins. Prints `status=rc`, `rc=` and `sentinel=` lines, or one FROM-BG-RUN REFUSED line.
+# line wins. Prints `status=rc`, `rc=` and `sentinel=` lines; `status=stopped` alone for wait's
+# STOPPED (exit 7: `bg-run.sh stop` ended the run and no process of it is left, ludics-lite#638),
+# which carries no status to read; or one FROM-BG-RUN REFUSED line.
 FROM_BG_RUN_HEAD = r"""dir="$1"
 refuse() { echo "FROM-BG-RUN REFUSED: $*"; exit 1; }
 [ -d "$dir" ] || refuse "no run directory $dir on $BOX"
@@ -192,6 +194,11 @@ case "$wrc" in
   # killed alone before its command published `cpid`), and no pause bounds how late the command
   # may still publish and run. The coordinator checks for the run's processes itself.
   5) refuse "bg-run.sh wait: DIED -- the task was killed before the command returned; bg-run cannot rule out a command that outlived it unpublished, so make sure no process of the run remains, then conclude it with a JSON payload (cancelled)" ;;
+  # STOPPED is a conclusion: the stop signalled the run's whole group, a command that had not yet
+  # published cpid included, and wait reads it only once no member of that group is left. What it
+  # cannot see is a process that left the group itself (bg-run.sh's header, on stop).
+  7) case "$said" in STOPPED*) printf 'status=stopped\n'; exit 0 ;; esac
+     refuse "bg-run.sh wait exit 7 printed '$said', not STOPPED" ;;
   *) refuse "bg-run.sh wait exit $wrc: $said" ;;
 esac
 code=${said#rc=}
@@ -384,6 +391,8 @@ def conclude_from_bg_run(
         so a pass needs BOTH rc 0 and no nonzero sentinel;
       - 0 pass; 124 (timeout(1)) and 142 (test-run.sh's cap) timeout; 129/130/137/143 (a signal)
         cancelled; anything else fail;
+      - bg-run's STOPPED (``bg-run.sh stop`` ended the run, and no process of it is left) is
+        cancelled: the run was ended on purpose, and the log's sentinel is not read;
       - bg-run's DIED is refused, not mapped, as are RUNNING and STARTING.
     The read box need not be the execution host (a trip driven over ssh leaves its directory on
     the box that drove it), so the payload carries no ``execution_host`` binding, and the log and
@@ -397,19 +406,24 @@ def conclude_from_bg_run(
     facts = substitution(done.out)
     if done.rc != 0:
         return Refusal(facts, 1)
-    if facts_of(facts, "status") != "rc":
+    status = facts_of(facts, "status")
+    if status == "stopped" and facts == "status=stopped":
+        verdict = "cancelled"
+        note = f"bg-run {run_dir} on {box}: STOPPED by bg-run.sh stop before the command returned, no process of it left"
+    elif status == "rc":
+        code, sentinel = facts_of(facts, "rc"), facts_of(facts, "sentinel")
+        if not re.fullmatch(r"[0-9]+", code):
+            return Refusal(f"FROM-BG-RUN REFUSED: unreadable run facts from {box}: {facts}", 1)
+        note = f"bg-run {run_dir} on {box}: rc={code}"
+        if sentinel:
+            scode = sentinel.rsplit("exit: ", 1)[-1]
+            note += f", runner sentinel '{sentinel}'"
+            if scode != "0":
+                code = scode
+        verdict = run_verdict(code, timeout_codes=("124", "142"))
+        note += "; the command returned"
+    else:
         return Refusal(f"FROM-BG-RUN REFUSED: unreadable run facts from {box}: {facts}", 1)
-    code, sentinel = facts_of(facts, "rc"), facts_of(facts, "sentinel")
-    if not re.fullmatch(r"[0-9]+", code):
-        return Refusal(f"FROM-BG-RUN REFUSED: unreadable run facts from {box}: {facts}", 1)
-    note = f"bg-run {run_dir} on {box}: rc={code}"
-    if sentinel:
-        scode = sentinel.rsplit("exit: ", 1)[-1]
-        note += f", runner sentinel '{sentinel}'"
-        if scode != "0":
-            code = scode
-    verdict = run_verdict(code, timeout_codes=("124", "142"))
-    note += "; the command returned"
     if not evidence:
         evidence = f"{note}; revision {sha} {source}"
     elif source != REPORTED:
