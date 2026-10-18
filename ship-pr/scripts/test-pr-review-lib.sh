@@ -404,6 +404,7 @@ gh_fixture_parse() {
   FIXTURE_BODY_KIND=""
   FIXTURE_QUERY=""
   FIXTURE_INPUT=""
+  FIXTURE_INCLUDE=""
   __fixture_field_keys=" "
   local method_named="" slurp="" outputs=" "
   [ "${1:-}" = api ] || bail "fixture received non-api gh call: $*"
@@ -475,6 +476,7 @@ gh_fixture_parse() {
         bail "fixture cannot parse '$arg' in: gh $call — $name takes no value, so this is either a boolean written as '$name=$value' or short options bundled as one word; write them apart"
       case "$name" in
       --paginate) FIXTURE_PAGINATE=1 ;;
+      -i | --include) FIXTURE_INCLUDE=1 ;;
       --slurp) slurp=1 ;;
       --silent | --verbose) outputs="$outputs$name " ;;
       esac
@@ -537,7 +539,24 @@ gh_fixture_parse() {
     printf '%s\n' "$FIXTURE_ENDPOINT" >>"$PAGINATE_LOG"
 }
 
+# A call with --include (pr-review.sh's own writes, ludics-lite#612) gets what gh prints ahead of the
+# body: the status line, the headers and a blank line, CRLF-ended (gh 2.101.0's processResponse).
+gh_fixture_headers() { # <status line, e.g. "200 OK">
+  printf 'HTTP/2.0 %s\r\nContent-Type: application/json; charset=utf-8\r\nX-Github-Request-Id: FIX:TURE\r\n\r\n' "$1"
+}
+
+# What gh prints for an answer it could not read the body of: under --include the status line still
+# reaches stdout, and stderr is the JSON decoder's complaint alone, with no `gh: ` and no status
+# (ludics-lite#612). gh then exits 1, which is the caller's `return 1`.
+gh_fixture_unreadable() { # <status line>
+  if [ -n "$FIXTURE_INCLUDE" ]; then gh_fixture_headers "$1"; fi
+  printf 'unexpected end of JSON input\n' >&2
+}
+
 gh_fixture_answer() {
+  if [ -n "$FIXTURE_INCLUDE" ]; then
+    case "$FIXTURE_METHOD" in POST) gh_fixture_headers "201 Created" ;; *) gh_fixture_headers "200 OK" ;; esac
+  fi
   if [ -n "$FIXTURE_FILTER" ]; then
     jq -r "$FIXTURE_FILTER" <<<"$1"
   else
@@ -1473,6 +1492,7 @@ test_gh_fixture_parse() {
   assert_eq "$FIXTURE_ENDPOINT" graphql "nor does a field's value, wherever the endpoint sits"
   gh_fixture_parse api repos/o/n/other
   assert_eq "$FIXTURE_FILTER" "" "no filter without --jq"
+  assert_eq "$FIXTURE_INCLUDE" "" "no header block without --include"
   assert_eq "$FIXTURE_PAGINATE" "" "not paginated without the flag"
   assert_eq "$(cat "$plog")" repos/o/n/thing "an unpaginated read is not logged as paginated"
   out=$(gh_fixture_answer '{"a":"x"}')
@@ -1503,6 +1523,7 @@ test_gh_fixture_parse_knows_gh_s_option_table() {
   assert_eq "$FIXTURE_ENDPOINT" repos/o/n/thing "nor do --paginate, --slurp and --verbose"
   gh_fixture_parse api repos/o/n/thing --include --jq .a
   assert_eq "$FIXTURE_ENDPOINT" repos/o/n/thing "nor when it stands after the endpoint"
+  assert_eq "$FIXTURE_INCLUDE" 1 "--include is noted, so the answer carries the header block"
   assert_eq "$FIXTURE_FILTER" .a "and it does not swallow the option after it (#102 round 2)"
   # The filter in every spelling gh accepts: separated long and short, and each attached form.
   gh_fixture_parse api repos/o/n/thing -q .a

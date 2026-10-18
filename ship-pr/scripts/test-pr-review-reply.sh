@@ -56,6 +56,10 @@ CWD_REPO=""
 # The comment id whose write fails, and how. 0 is never.
 FAIL_ID=0
 FAIL_MSG=""
+# Set, a failing write (a reply, the PATCH, a comment) answers as GitHub's answer with no readable
+# body does (ludics-lite#612): this status line ahead of the headers on stdout, which the script's
+# --include asks for, and gh's JSON decoder complaint alone on stderr. FAIL_MSG is not read then.
+FAIL_STATUS=""
 # The threads the PR has, as "<comment id>:<resolved>" pairs; a comment id absent from this list
 # is a thread that does not exist, which is `resolve`'s one exit-1 answer. How the connection pages
 # them, and a totalCount other than the rows it serves, are the library's THREADS_FIXTURE_PAGE and
@@ -86,6 +90,7 @@ reset_fixture() {
   mkdir -p "$BODIES"
   FAIL_ID=0
   FAIL_MSG=""
+  FAIL_STATUS=""
   CWD_REPO=""
   REPO="$TARGET_REPO"
   THREADS="900:false 901:false 902:false 903:true"
@@ -146,6 +151,7 @@ gh() {
     }
     printf '%s' "$body" >>"$BODIES/$id"
     if [ "$FAIL_ID" != 0 ] && [ "$id" = "$FAIL_ID" ]; then
+      if [ -n "$FAIL_STATUS" ]; then gh_fixture_unreadable "$FAIL_STATUS"; return 1; fi
       echo "gh: $FAIL_MSG" >&2
       return 1
     fi
@@ -168,6 +174,7 @@ gh() {
     # Counted off the log, not by decrementing BODY_FAILS: each attempt runs the fixture in a fresh
     # bash (the forward's bridge), whose assignments never reach the next attempt.
     if [ "$(wc -l <"$BODIES/pr-methods")" -le "$BODY_FAILS" ]; then
+      if [ -n "$FAIL_STATUS" ]; then gh_fixture_unreadable "$FAIL_STATUS"; return 1; fi
       echo "$BODY_FAIL_PREFIX$FAIL_MSG" >&2
       return 1
     fi
@@ -188,6 +195,7 @@ gh() {
     }
     printf '%s' "$body" >"$BODIES/comment"
     if [ "$(wc -l <"$BODIES/comment-methods")" -le "$COMMENT_FAILS" ]; then
+      if [ -n "$FAIL_STATUS" ]; then gh_fixture_unreadable "$FAIL_STATUS"; return 1; fi
       echo "gh: $FAIL_MSG" >&2
       return 1
     fi
@@ -977,6 +985,105 @@ test_comment_exits_stay_apart() {
   assert_eq "$(comment_attempts)" 1 "and the write policy does not repeat it itself"
 }
 
+# --- an answer gh could not read (ludics-lite#612) -----------------------------------------------
+
+# GitHub sometimes answers with an empty body, and gh then prints only its JSON decoder's complaint,
+# with no status: a gateway's 502 that posted nothing and a 200 that posted the comment read the
+# same, and a quota's 403 never reached the hold. Every write here carries --include, which keeps
+# the status line on stdout ahead of the body, and the status tells them apart: a gateway's
+# refusal is re-sent, a 2xx or a 500 stays ambiguous and is never re-sent, another 4xx is the API's
+# rejection, and a 403 or 429 the quota's.
+test_an_unreadable_comment_is_told_apart_by_its_status() {
+  reset_fixture
+  retune API_ATTEMPTS=3
+  COMMENT_FAILS=1
+  FAIL_STATUS="502 Bad Gateway"
+  run_cmd cmd_comment "The comment."
+  assert_eq "$RC" 0 "a gateway's empty answer posted nothing, so it is re-sent ($ERR)"
+  assert_eq "$(comment_attempts)" 2 "once"
+  assert_eq "$OUT" "https://github.com/example/repo/pull/7#issuecomment-4242" \
+    "and the url is the whole of stdout, the header block of the answer that landed taken off"
+  assert_contains "$ERR" "could not read (unexpected end of JSON input): HTTP 502;" \
+    "the status found is said on stderr"
+  assert_contains "$ERR" "x-github-request-id=FIX:TURE" "with the evidence headers"
+  local status
+  for status in "200 OK" "201 Created" "500 Internal Server Error"; do
+    reset_fixture
+    retune API_ATTEMPTS=3
+    COMMENT_FAILS=5
+    FAIL_STATUS="$status"
+    run_cmd cmd_comment "The comment."
+    assert_eq "$RC" 3 "an empty $FAIL_STATUS is not a verdict"
+    assert_contains "$ERR" "failed AMBIGUOUSLY: unexpected end of JSON input (HTTP ${FAIL_STATUS%% *})" \
+      "a $FAIL_STATUS may have posted it"
+    assert_not_contains "$ERR" "Nothing was posted" "so it never says nothing was ($FAIL_STATUS)"
+    assert_eq "$(comment_attempts)" 1 "and it is not re-sent ($FAIL_STATUS)"
+  done
+  reset_fixture
+  COMMENT_FAILS=5
+  FAIL_STATUS="422 Unprocessable Entity"
+  run_cmd cmd_comment "The comment."
+  assert_eq "$RC" 1 "an empty 422 is the API answering"
+  assert_contains "$ERR" "was REJECTED, not dropped: unexpected end of JSON input (HTTP 422)" "named so"
+  assert_eq "$(comment_attempts)" 1 "and it is not re-sent"
+  for status in "403 Forbidden" "429 Too Many Requests"; do
+    reset_fixture
+    COMMENT_FAILS=5
+    FAIL_STATUS="$status"
+    run_cmd cmd_comment "The comment."
+    assert_eq "$RC" 3 "an empty $FAIL_STATUS is the quota's, no answer about the comment"
+    assert_contains "$ERR" "Nothing was posted" "and nothing was posted ($FAIL_STATUS)"
+    assert_eq "$(comment_attempts)" 1 "a write is never repeated into a quota ($FAIL_STATUS)"
+  done
+}
+
+test_an_unreadable_reply_is_told_apart_by_its_status() {
+  reset_fixture
+  retune API_ATTEMPTS=2
+  FAIL_ID=900
+  FAIL_STATUS="503 Service Unavailable"
+  run_cmd cmd_reply 900+901 "The answer."
+  assert_eq "$RC" 3 "a gateway's empty answer on every attempt is transport"
+  assert_contains "$ERR" "Nothing was posted for comment 900, so retry with: 900+901" \
+    "and it posted nothing"
+  assert_eq "$(writes_to 900)" 2 "after it was re-sent"
+  assert_eq "$(writes_to 901)" 0 "and the batch stopped there"
+  reset_fixture
+  retune API_ATTEMPTS=2
+  FAIL_ID=901
+  FAIL_STATUS="201 Created"
+  run_cmd cmd_reply 900+901 "The answer."
+  assert_eq "$RC" 3 "an empty 201 is not a verdict"
+  assert_contains "$ERR" "the reply MAY have landed" "it may have landed"
+  assert_contains "$ERR" "The replies to 900 DID land" "and the progress before it stands"
+  assert_eq "$(writes_to 901)" 1 "so it is not re-sent"
+  assert_eq "$OUT" "https://github.com/example/repo/pull/7#discussion_r900" \
+    "and the reply that landed is printed without its header block"
+}
+
+test_an_unreadable_body_edit_is_told_apart_by_its_status() {
+  reset_fixture
+  retune API_ATTEMPTS=2
+  BODY_FAILS=5
+  FAIL_STATUS="503 Service Unavailable"
+  body_file "The body."
+  run_cmd cmd_body "$BODY_FILE"
+  assert_eq "$RC" 3 "a gateway's empty answer on every attempt is transport"
+  assert_contains "$ERR" "Nothing was changed, so retry" "and changed nothing"
+  assert_not_contains "$ERR" "may or may not have landed" "which is no longer left open"
+  reset_fixture
+  retune API_ATTEMPTS=2
+  BODY_FAILS=5
+  FAIL_STATUS="200 OK"
+  body_file "The body."
+  run_cmd cmd_body "$BODY_FILE"
+  assert_eq "$RC" 3 "an empty 200 on every attempt is not a verdict"
+  assert_contains "$ERR" "may or may not have landed" "it may have landed"
+  assert_contains "$ERR" "(HTTP 200) -- gh's JSON decoder: GitHub's answer had no readable body" \
+    "and the status is named, not called unknown"
+  assert_eq "$(wc -l <"$BODIES/pr-methods" | tr -d ' ')" 2 "repeated, since a PATCH sets the body whole"
+}
+
 # Every shape that is not `comment <pr> <body>` is an invocation error, before any request: a
 # missing body, an unquoted one (which would otherwise post its first word), a blank one, and a
 # PR with no repo named.
@@ -1369,6 +1476,9 @@ tests=(
   test_comment_retries_a_gateway_refusal
   test_comment_exits_stay_apart
   test_comment_invocation_errors_send_nothing
+  test_an_unreadable_comment_is_told_apart_by_its_status
+  test_an_unreadable_reply_is_told_apart_by_its_status
+  test_an_unreadable_body_edit_is_told_apart_by_its_status
   test_a_mention_is_refused_before_anything_is_posted
   test_allow_mention_posts_a_meant_mention
   test_the_bare_nudge_is_the_one_comment_that_passes

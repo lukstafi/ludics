@@ -8,7 +8,10 @@ answer is a plain PR comment -- and so is the '@codex review' nudge the watch ve
 lukstafi/ocannl-staging#475's release prep the workaround was hand-building the PR's URL), so the
 comment is POSTed to the REST issues endpoint, through the same write policy as every other write.
 issues/<n>/comments and not pulls/<n>/comments: on GitHub a PR *is* an issue, and the pulls endpoint
-posts INLINE review comments, which need a commit and a path. Same marker as ``reply``.
+posts INLINE review comments, which need a commit and a path. Same marker as ``reply``. The POST
+carries ``--include`` (ludics-lite#612), so an answer gh could not read is classified by its status
+line (``core.gh_unreadable_answer``): a gateway's 502/503 posted nothing and is re-sent, a 403/429
+is the quota's, and a 2xx or a 500 stays ambiguous.
 
 A body mentioning '@codex' is refused before any request unless ``--allow-mention``; the bare nudge
 is the one body that passes without it (``reply.mention_refusal``).
@@ -68,6 +71,7 @@ def run(session: GhSession, args: list[str]) -> int:
             "--jq",
             ".html_url",
         ],
+        include=True,
     )
     match result:
         case GhOk(stdout=url):

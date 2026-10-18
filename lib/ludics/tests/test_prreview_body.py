@@ -45,14 +45,16 @@ class Body(unittest.TestCase):
     def test_the_pr_is_patched_from_the_file_and_its_url_is_stdout(self) -> None:
         for entry in self.entries():
             with self.subTest(entry=entry[0]), FakeTool("gh") as gh:
-                gh.script(Answer(0, "https://github.com/o/r/pull/7\n"))
+                # gh's --include prints the status line and the headers first (ludics-lite#612).
+                gh.script(Answer(0, "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n\r\n"
+                                    "https://github.com/o/r/pull/7\n"))
                 done = self.run_cmd(entry, "o/r#7", self.file)
                 self.assertEqual((done.returncode, done.stdout, done.stderr),
                                  (0, "https://github.com/o/r/pull/7\n", ""))
                 self.assertEqual(
                     gh.calls(),
                     [["api", "-X", "PATCH", "repos/o/r/pulls/7", "-F", f"body=@{self.file}",
-                      "--jq", ".html_url"]],
+                      "--jq", ".html_url", "--include"]],
                 )
 
     def test_the_exits_stay_apart(self) -> None:
@@ -62,6 +64,14 @@ class Body(unittest.TestCase):
             # Ambiguous: repeated, since the PATCH sets the body whole, and still 3 once spent.
             (Answer(1, "", "gh: Internal Server Error (HTTP 500)\n"), 3, "repeating the same command is safe", 2),
             (Answer(1, "", "unexpected end of JSON input\n"), 3, "GitHub sent no readable answer", 2),
+            # The same complaint with the status line --include keeps (ludics-lite#612): a
+            # gateway's refusal changed nothing, a 2xx may have landed.
+            (Answer(1, "HTTP/2.0 503 Service Unavailable\r\n\r\n", "unexpected end of JSON input\n"),
+             3, "Nothing was changed, so retry", 2),
+            (Answer(1, "HTTP/2.0 200 OK\r\n\r\n", "unexpected end of JSON input\n"),
+             3, "(HTTP 200) -- gh's JSON decoder: GitHub's answer had no readable body", 2),
+            (Answer(1, "HTTP/2.0 404 Not Found\r\n\r\n", "unexpected end of JSON input\n"),
+             1, "was REJECTED, not dropped", 1),
         )
         for entry in self.entries():
             for answer, rc, says, calls in cases:

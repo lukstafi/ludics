@@ -39,8 +39,11 @@ permit a merge.
 
 BOUNDARY. The quota reader is a fail-closed ALLOWLIST over the FIRST line of gh's stderr, with
 these shapes: ``API rate limit exceeded`` or ``API rate limit already exceeded`` (the primary limit,
-in its REST and GraphQL spellings), ``secondary rate limit``, and ``(HTTP 429)``. A 403 with any
-other message is still the API's answer. The probe reads its own answer: the headers up to the
+in its REST and GraphQL spellings), ``secondary rate limit``, and ``(HTTP 429)``; and two BODILESS
+shapes (ludics-lite#612): go-gh's whole line ``HTTP 403 (<url>)`` or ``HTTP 429 (<url>)`` (gh's own
+commands, on an error status with no readable body), and a 403 or 429 an own ``gh api`` call's
+``--include`` status line names when gh could not read the body (core.py's
+``gh_unreadable_answer`` boundary). A 403 with any message is still the API's answer. The probe reads its own answer: the headers up to the
 first blank line, and the body after it in ``quota_failure``'s words (GraphQL answers an exhausted
 quota with a 200). A probe addresses the call's own endpoint: the one positional of ``api``,
 ``repos/<repo>/actions/runs/<id>`` (or ``.../jobs/<id>`` with ``--job``) for ``run view``, and

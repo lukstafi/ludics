@@ -16,7 +16,10 @@ is retried on the backoff, where the write policy stops at it because a repeated
 ``unexpected end of JSON input`` -- no ``gh:``, no HTTP status -- and two runs eight seconds
 apart both stopped at exit 3, landing nothing, while the same PATCH by hand went through nine
 seconds after the second. The payload
-was never the cause: gh reads the file itself (``-F body=@file``), byte for byte.
+was never the cause: gh reads the file itself (``-F body=@file``), byte for byte. Since
+ludics-lite#612 the PATCH carries ``--include``, so such an answer is classified by the status line
+gh still prints (``core.gh_unreadable_answer``): a gateway's 502/503/504 changed nothing, another
+4xx is the API's rejection, a 403 or 429 the quota's, and a 2xx or a 500 stays ambiguous.
 
 Stdout: the PR's URL, and nothing else. Exit: 0 done; 1 the API rejected it (a 4xx); 2 usage;
 3 not done (a gateway or quota refusal on every attempt) or ambiguous (an attempt failed in a way
@@ -34,20 +37,24 @@ from ludics.prreview.core import (
     GhSession,
     api_rejection,
     die,
+    gh_unreadable_answer,
     fail,
     pr_arg,
 )
 
 _SPACE_BYTES = frozenset(b" \t\n\r\f\v")
 
-# gh's JSON decoder, on an answer whose body is empty, cut off or not JSON: gh prints the decoder's
-# error alone, without the HTTP status it prints for an answer it can read.
-_DECODER_COMPLAINTS = ("unexpected end of JSON input", "invalid character ")
-
-
-def _why(err_line: str) -> str:
-    """The last failure, and what it means when gh could not read GitHub's answer at all."""
-    if any(err_line.startswith(c) for c in _DECODER_COMPLAINTS):
+def _why(session: GhSession) -> str:
+    """The last failure, and what it means when gh could not read GitHub's answer's body: its
+    status, read off the header block ``--include`` prints (ludics-lite#612), or unknown when
+    there was none to read."""
+    err_line = session.err_line()
+    if session.recovered_status() is not None:
+        return (
+            f"{err_line} -- gh's JSON decoder: GitHub's answer had no readable body, and the"
+            " status is its status line's"
+        )
+    if gh_unreadable_answer(err_line):
         return (
             f"{err_line} -- gh's JSON decoder: GitHub sent no readable answer, so its HTTP status"
             " is unknown"
@@ -87,6 +94,7 @@ def run(session: GhSession, args: list[str]) -> int:
     result = session.retry(
         "read",
         ["api", "-X", "PATCH", f"repos/{repo}/pulls/{num}", "-F", f"body=@{path}", "--jq", ".html_url"],
+        include=True,
     )
     match result:
         case GhOk(stdout=url):
@@ -97,7 +105,7 @@ def run(session: GhSession, args: list[str]) -> int:
                 fail(
                     3,
                     f"body of PR {repo}#{num} failed AMBIGUOUSLY on all {session.config.api_attempts}"
-                    f" attempts (last: {_why(session.err_line())}). The edit may or may not have landed;",
+                    f" attempts (last: {_why(session)}). The edit may or may not have landed;",
                     "it sets the body whole, so repeating the same command is safe.",
                 )
             fail(
@@ -123,7 +131,7 @@ def run(session: GhSession, args: list[str]) -> int:
                 )
             fail(
                 3,
-                f"body of PR {repo}#{num} failed AMBIGUOUSLY: {_why(session.err_line())}. The edit may or may not",
+                f"body of PR {repo}#{num} failed AMBIGUOUSLY: {_why(session)}. The edit may or may not",
                 "have landed; it sets the body whole, so repeating the same command is safe.",
             )
         case _:
