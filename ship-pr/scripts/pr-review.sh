@@ -230,7 +230,8 @@
 #                                          # [--integration-records <file>] (fleet-worker gate)
 #                                          # [--advisory-red <file>] (the gate's): a workflow red
 #                                          # only in jobs .github/ship-pr-advisory-checks names
-#                                          # is not red; those jobs are written to <file>
+#                                          # is not red; those jobs are written to <file>; and
+#                                          # the interim judges by that list too (#659)
 #                                          # --interim: a tip whose own push run is in flight is
 #                                          # green by a NAMED source meanwhile (the merged PR's
 #                                          # head run), never the tip's own verdict; opt-in, for
@@ -719,7 +720,8 @@ main() {
                                              # --integration-records <file>: fleet-worker gate's;
                                              # --advisory-red <file>: the gate's too — a run red
                                              # only in jobs the repository's advisory file names
-                                             # is not red, and its jobs go to <file>;
+                                             # is not red, and its jobs go to <file>; the
+                                             # interim judges by that file too;
                                              # --interim: a named green while the tip's run is in
                                              # flight — the gate's and the base watch's, never
                                              # the integration loop's)
