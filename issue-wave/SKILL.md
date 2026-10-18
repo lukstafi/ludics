@@ -757,7 +757,9 @@ controlled through the tools in your coordinator's file, never through those com
   **On a red at the tip, halt launches at once** (`fleet-worker.sh halt "<red at <sha>, rerun
   pending>"`): the rerun below puts the tip's run back in flight, where the base gate's interim
   would admit a launch onto the red. Merges are not frozen (roll-forward: a merge never waits on
-  the base's tip); what lands meanwhile joins the span the next verdict covers. Then, in order:
+  the base's tip); what lands meanwhile joins the span the next verdict covers. Nor does a PR
+  whose own head shows that red, once the red has an owner (below): its worker merges over it as
+  ship-pr's *The override* says (ludics-lite#623). Then, in order:
   1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed --repo <owner/repo>`,
      without `--failed` when the report names no failed job, a startup failure; a local run,
      once more at the same SHA under the halt's one triage reservation, references/executions.md
@@ -862,8 +864,10 @@ controlled through the tools in your coordinator's file, never through those com
   the red span until attribution (the integration loop's order, above) names an owner. Then tell
   the running workers
   through the channel they already read - a `pr-review.sh comment` on every open wave PR
-  stating that master's red is established and owned, so nobody bisects it independently, and
-  a message to each native or app worker - and dispatch one triage worker with `launch --force
+  and a message to each native or app worker, stating that master's red is established and
+  owned and naming the red check and test, the tip SHA it is red at and the owner's triage
+  issue, so nobody bisects it independently and a head showing that red can cite them to merge
+  over it - and dispatch one triage worker with `launch --force
   --allow-red-base "<triage reason>"` (or native `gate --target-repo <owner/repo> --force
   --allow-red-base "<triage reason>"` followed by the runtime's spawn tool, recorded on the
   board; the only launch the halt admits): fix directly when the fix is straightforward, file
