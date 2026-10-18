@@ -410,9 +410,9 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
-    # Re-measured on v2 (ludics-lite#403): 703-770s over runs 37340116809, 37377439485,
-    # 37385847278, 37390277847 and 37404230827, x1.5.
-    timeout-minutes: 20
+    # Re-measured 2026-10-18 (ludics-lite#640's follow-up): 965-1184s over the job's 13 green runs
+    # that day (jobs 117711250363 to 117729143780; it had crept to 19.7 of the old 20), x1.5.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -428,6 +428,12 @@ jobs:
       - name: Exercise execution reservations
         run: python3 issue-wave/scripts/test-fleet-execution.py
       - name: Exercise the fleet launcher against the local box
+        # The suite's per-section watchdog (ludics-lite#640), tighter than its 600 s default so a
+        # hang in its last section still fails by name inside this job's cap: the slowest section
+        # here, `unstick`, took 207-240 s over ten runs (x1.5); the suite starts ~85 s in and takes
+        # 853-1042 s.
+        env:
+          FLEET_WORKER_TEST_SECTION_TIMEOUT: 360
         run: issue-wave/scripts/test-fleet-worker.sh
       - name: Exercise the background-run waiter
         run: issue-wave/scripts/test-bg-run.sh
