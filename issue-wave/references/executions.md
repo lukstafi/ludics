@@ -98,6 +98,11 @@ slot that is held now, or it is reported and ignored. The GPU check reads the cu
 spec rather than the marker, so a GPU batch inside a slot that an enclosing batch took as
 `--cpu` is refused. A wrapper around a runner that may hold the GPU must therefore not declare
 `--cpu`, and the runner's own declaration is the better one to rely on.
+The probe's sibling read, `execution slot --holders` (ludics-lite#639), says who holds the box's
+slots now: one JSON line per held slot (`box`, `event`, `at`, `slot`, `slots`, `kind` gpu|cpu,
+`pid`, `user`, `command`, `cwd`, `source`, `unknown`), taking nothing, the holder read from
+`/proc/locks`; where there is none (macOS) the slot is still listed, each field it cannot know
+`null` and named in `unknown`.
 
 **The measurement's own run** (ludics-lite#480). A runner that takes the slot itself also does so
 inside a measurement, where every slot is refused - so OCANNL's `tools/test-run.sh` was refused by
@@ -589,6 +594,12 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   <box> ...`), until nothing is measuring on the record's box, for at most that bound, and is
   refused past it as the slot is (`EXECUTION LEG REFUSED <box>: measurement <id> still holds <box>
   after <n>s (--wait-window); nothing ran`); the slot on the box gets what is left of the bound.
+- **The configuration.** The slot or hold on the box runs under the caller's fleet configuration,
+  not the box's `~/.config/fleet/env.sh`: its roster, anchor and anchor state, lab host, slot and
+  token specs and skills checkout travel with it (ludics-lite#632; `execution tip-run` does the
+  same). The box keeps its own name and slot locks. A `fleet-worker.sh` anywhere under it that
+  resolves another registry (an anchor or anchor state re-set in between) refuses to run. A
+  hand-written `ssh <box> ... fleet-worker.sh execution slot` gets none of this: use the leg.
 - **The worktree.** `--checkout` is the project's checkout on the box and `--worktree` a linked
   worktree of it (paths absolute, or a quoted `~/`, expanded on the box; the caller's shell
   expands an unquoted one to the caller's home): made with `git worktree add --detach` when the path does
