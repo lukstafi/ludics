@@ -1635,7 +1635,8 @@ test_a_waived_leg_does_not_redden_its_run() {
   assert_contains "$MERGE_OUTPUT" "workflow run ci (red through a check above that is WAIVED)" "naming the run"
   assert_not_contains "$MERGE_OUTPUT" ": green" "never a green"
   assert_contains "$MERGE_OUTPUT" "OVERRIDE: merging" "so the merge goes over a red, and says so"
-  # ...which --require-green, needing a green it READ, refuses.
+  # ...which --require-green takes as a verdict READ since ludics-lite#623 (a coordinated wave's
+  # close-out over its owned base red): the merge still goes over a red, and still says so.
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ubuntu","conclusion":"failure","html_url":"u","check_suite":{"id":11}},
                                         {"name":"macos","conclusion":null,"html_url":"m","check_suite":{"id":11}}]')"
@@ -1645,9 +1646,9 @@ test_a_waived_leg_does_not_redden_its_run() {
   JOBS_JSON=$(jobs_json '[{"name":"ubuntu","conclusion":"failure"},
                           {"name":"macos","conclusion":"success"}]')
   run_merge --wait=30 --override "$WAIVE_WHY" --require-green
-  assert_eq "$MERGE_RC" 4 "a waived red is not the green a close-out merge needs ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_OUTPUT" "the build signal is waived, not green" "and the refusal says so"
-  assert_eq "$MERGE_CALLS" "" "no merge call is made"
+  assert_eq "$MERGE_RC" 0 "a close-out merge takes the waived red as read ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" ": RED, WAIVED" "still a waived red, not a green"
+  assert_contains "$MERGE_OUTPUT" "OVERRIDE: merging" "and the merge over it is announced"
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ubuntu","conclusion":"failure","html_url":"u"},
                                         {"name":"macos","conclusion":null,"html_url":"m"}]')")
