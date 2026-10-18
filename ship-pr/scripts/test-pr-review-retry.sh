@@ -376,11 +376,6 @@ test_a_fixed_graphql_answer_is_a_rejection() {
     # A gateway marker the message only QUOTES, from `{ viewer { login "Bad gateway" } }`: the
     # gateway scan reads substrings, so the allowlist has to be read before it (review round 1).
     'gh: Expected NAME, actual: STRING ("Bad gateway") at [1, 18]'
-    # GraphQL's NOT_FOUND (ludics-lite#663): a wave issue that does not exist was read four times
-    # and reported as the API never answering. Under `GraphQL: ` gh appends the error's path.
-    'gh: Could not resolve to an Issue with the number of 99999.'
-    "gh: Could not resolve to a Repository with the name 'lukstafi/no-such-repo-xyz'."
-    'GraphQL: Could not resolve to an issue or pull request with the number of 99999. (repository.issue)'
   )
   retune API_ATTEMPTS=3
   for body in "${bodies[@]}"; do
@@ -404,6 +399,36 @@ test_a_fixed_graphql_answer_is_a_rejection() {
     assert_contains "$RETRY_OUT" "was rejected: $body" "and is reported as rejected"
     assert_not_contains "$RETRY_OUT" "AMBIGUOUSLY" "not as a write that may have landed ($body)"
     assert_eq "$(gh_calls | wc -l | tr -d ' ')" 1 "nor re-sent ($body)"
+  done
+}
+
+# GraphQL's NOT_FOUND (ludics-lite#663): a wave issue that does not exist was read four times and
+# reported as the API never answering. Verbatim from gh 2.101.0, `gh api graphql`'s bare line (its
+# stdout the real error document) and gh's own commands' line with the error's path. Never re-sent;
+# a read is the fact (exit 1), but a write stays ambiguous (exit 3), since unlike a query GraphQL
+# refused to validate, the document ran and another of its fields may have landed.
+test_a_graphql_not_found_is_fixed() {
+  local body
+  local -a bodies=(
+    'gh: Could not resolve to an Issue with the number of 99999.'
+    "gh: Could not resolve to a Repository with the name 'lukstafi/no-such-repo-xyz'."
+    'GraphQL: Could not resolve to an issue or pull request with the number of 99999. (repository.issue)'
+  )
+  retune API_ATTEMPTS=3
+  for body in "${bodies[@]}"; do
+    reset_fixture
+    GQL_ERROR="$body"
+    GQL_OUT='{"data":{"repository":{"issue":null}},"errors":[{"type":"NOT_FOUND","path":["repository","issue"],"locations":[{"line":1,"column":50}],"message":"Could not resolve to an Issue with the number of 99999."}]}'
+    run_retry --read api graphql -f query=q
+    assert_eq "$RETRY_RC" 1 "a read of what does not exist is exit 1 ($body: $RETRY_OUT)"
+    assert_contains "$RETRY_OUT" "was rejected: $body" "the message is the API's answer, quoted"
+    assert_eq "$(gh_calls | wc -l | tr -d ' ')" 1 "and it is not re-sent ($body)"
+    reset_fixture
+    GQL_ERROR="$body"
+    run_retry api graphql -f query=q
+    assert_eq "$RETRY_RC" 3 "a write that met a NOT_FOUND may have landed a field ($body: $RETRY_OUT)"
+    assert_contains "$RETRY_OUT" "AMBIGUOUSLY" "so it is reported as ambiguous ($body)"
+    assert_eq "$(gh_calls | wc -l | tr -d ' ')" 1 "and not re-sent ($body)"
   done
 }
 
@@ -1135,6 +1160,7 @@ tests=(
   test_a_cancelled_run_is_stopped_not_judged
   test_the_await_beats_and_never_sleeps_past_its_deadline
   test_a_fixed_graphql_answer_is_a_rejection
+  test_a_graphql_not_found_is_fixed
   test_a_graphql_outage_still_retries
   test_a_near_miss_still_retries
   test_a_client_refusal_is_a_usage_error

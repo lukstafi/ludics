@@ -120,7 +120,9 @@ class Classification(unittest.TestCase):
             "GraphQL: Could not resolve to a PullRequest with the number of 99999."
             " (repository.pullRequest)",
         ):
-            self.assertTrue(core.graphql_fixed_answer(line), line)
+            self.assertTrue(core.graphql_not_found(line), line)
+            # Not a validation refusal: the document ran.
+            self.assertFalse(core.graphql_fixed_answer(line), line)
         for line in (
             # The path suffix belongs to `GraphQL: ` alone, and is required there.
             "gh: Could not resolve to an Issue with the number of 99999. (repository.issue)",
@@ -133,7 +135,7 @@ class Classification(unittest.TestCase):
             "gh: Could not resolve to an Issue with the number of 99999 yet, try again.",
             "gh: Could not resolve to an Issue with the number of 99999. (HTTP 502)",
         ):
-            self.assertFalse(core.graphql_fixed_answer(line), line)
+            self.assertFalse(core.graphql_not_found(line), line)
 
     def test_client_refusals_verbatim(self) -> None:
         for line in (
@@ -272,7 +274,8 @@ class Retry(unittest.TestCase):
                 s = Session()
                 self.assertEqual(s.retry(mode, ["api", "graphql"]), GhFailed())
                 self.assertEqual(len(gh.calls()), 1)
-                self.assertEqual(s.session.unclear_attempts(), 0)
+                # The document ran, so another field of a mutation may have landed.
+                self.assertEqual(s.session.unclear_attempts(), 1)
 
     def test_a_later_success_clears_the_error_line(self) -> None:
         with FakeTool("gh") as gh:
