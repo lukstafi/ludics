@@ -145,12 +145,28 @@ class WindowWait(unittest.TestCase):
                               " (--wait-window); nothing ran\n")
         self.assertIn("measurement window w1 holds testbox", err)
 
-    def test_a_record_still_suspended_once_nothing_holds_the_box_is_refused(self) -> None:
+    def test_a_read_torn_by_the_conclusion_is_waited_past(self) -> None:
+        # The conclusion restores the record, then concludes the window, file by file: a listing
+        # between the two shows the window concluded beside the record still suspended.
+        torn = [standing(), window("w1", "concluded")]
+        restored = [standing("launching"), window("w1", "concluded")]
+        result, out, err, reads = self.wait([torn, restored], ["--wait-window=30"])
+        assert isinstance(result, tuple)
+        self.assertEqual((result[0]["state"], out, reads), ("launching", "", 2))
+        self.assertEqual(err.count("measurement window w1 holds testbox"), 1)
+
+    def test_a_record_the_registry_never_restores_is_refused_at_the_bound_naming_its_window(self) -> None:
         stuck = [standing(), window("w1", "concluded")]
-        result, out, _, _ = self.wait([stuck], ["--wait-window=30"])
+        result, out, _, _ = self.wait([stuck] * 10000, ["--wait-window=1"])
         self.assertEqual(result, 1)
-        self.assertEqual(out, "EXECUTION LEG REFUSED: it is still suspended by w1, though no measurement holds testbox;"
-                              " nothing ran\n")
+        self.assertEqual(out, "EXECUTION LEG REFUSED testbox: measurement w1 still holds testbox after 1s"
+                              " (--wait-window); nothing ran\n")
+
+    def test_a_record_suspended_by_a_measurement_the_registry_does_not_hold_is_refused(self) -> None:
+        result, out, _, _ = self.wait([[standing(by="w9"), window("w1", "concluded")]], ["--wait-window=30"])
+        self.assertEqual(result, 1)
+        self.assertEqual(out, "EXECUTION LEG REFUSED: it is still suspended by w9, a measurement the registry does"
+                              " not hold; nothing ran\n")
 
     def test_a_record_gone_from_the_registry_after_the_wait_is_refused(self) -> None:
         result, out, _, _ = self.wait([[window("w1", "concluded")]], ["--wait-window=30"])

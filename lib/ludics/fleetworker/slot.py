@@ -211,7 +211,7 @@ import shutil
 import signal
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn, assert_never
 
@@ -843,14 +843,17 @@ def describe_measurement(box: str, record: dict[str, Any], prefix: str = SLOT_PR
 
 
 def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bound: int,
-                       command: Sequence[str], voice: Voice = SLOT_VOICE) -> list[dict[str, Any]] | int:
+                       command: Sequence[str], voice: Voice = SLOT_VOICE,
+                       holders: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+                       ) -> list[dict[str, Any]] | int:
     """``--wait-window`` (ludics-lite#557): block until no measurement is outstanding on ``box``,
     re-reading the registry every ``FLEET_SLOT_WINDOW_POLL`` seconds (15), for at most ``bound``
     seconds; the registry it last read, or the refusal's status. A measurement on another box is
     not this box's (``measurement_records``), so it never blocks. Each measurement waited for is
     named once, and a line every ``WINDOW_PROGRESS`` seconds says the batch is still waiting.
     ``execution leg`` waits here too, on the agent host for its execution host's box, in its own
-    ``voice`` (ludics-lite#666)."""
+    ``voice``, with ``holders`` (what holds the box in a registry read; the box's measurements when
+    not given) adding the window its record is still suspended by (ludics-lite#666)."""
     try:
         poll = max(float(cfg.env.get("FLEET_SLOT_WINDOW_POLL", "15")), 0.1)
     except ValueError:
@@ -860,7 +863,7 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     named: set[str] = set()
     unread: Unread | None = None
     while True:
-        holding = measurement_records(records, box)
+        holding = holders(records) if holders is not None else measurement_records(records, box)
         if not holding and unread is None:
             if named:
                 errline(f"{voice.prefix} {box}: no measurement holds {box} after {int(time.monotonic() - start)}s;"

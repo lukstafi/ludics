@@ -22,9 +22,12 @@ a correctness record runs the runner under ``execution slot`` on that box (``--c
 THE WINDOW WAIT (ludics-lite#666). A standing record a measurement window has ``suspended`` is
 refused at once -- unless the leg was given ``--wait-window[=<s>]``, when it waits here, on the
 caller's box, in the slot's own wait (``slot.await_measurements``, in this verb's voice): until no
-measurement is outstanding on the record's box, re-reading the anchor's registry, for at most the
-bound (an hour when none is given); past it, refused naming the measurement, as the slot is. Then
-the record is read again from that registry and judged as above, and the far side's slot gets
+measurement is outstanding on the record's box and the record is no longer suspended, re-reading
+the anchor's registry, for at most the bound (an hour when none is given); past it, refused naming
+the measurement, as the slot is. The record counts too because a listing is no snapshot: a
+conclusion restores the records it suspended and then concludes the window, file by file, so one
+read can show the window concluded beside the record not yet restored. Then the record is judged
+as above, and the far side's slot gets
 ``--wait-window=<what is left of the bound>``, so a window opened between the two (the next of a
 coordinator's back-to-back windows) is waited for by the slot on the box, and the whole leg waits
 under one bound. The leg waits for no window when its record is not suspended: the slot on the box
@@ -370,8 +373,19 @@ def await_window(cfg: Config, request: str, record: dict[str, Any], records: lis
         return refused(f"{request} is suspended by measurement window {window}; run the leg once that window"
                        " concludes, or give it --wait-window, which waits for it")
     host = execution.jq_text(execution.field(record, "request", "execution_host"))
+
+    def holders(read: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # The box's measurements; else the window this record is still suspended by, when the read
+        # has it (a torn read of its conclusion, see the header).
+        held = slot.measurement_records(read, host)
+        own = execution.record_of(read, request)
+        if held or own is None or own.get("state") != "suspended":
+            return held
+        by = execution.record_of(read, execution.jq_text(own.get("suspended_by")))
+        return [by] if by is not None else []
+
     start = time.monotonic()
-    waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE)
+    waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE, holders)
     if isinstance(waited, int):
         return waited
     again = execution.record_of(waited, request)
@@ -379,10 +393,9 @@ def await_window(cfg: Config, request: str, record: dict[str, Any], records: lis
         return refused(f"unknown request_id {request} after waiting for window {window}: a leg runs only inside"
                        " a dispatched reservation")
     if execution.jq_text(again.get("state")) == "suspended":
-        # No measurement holds the box, yet the record names one: the registry's restore did not
-        # happen, which waiting longer would not change.
-        return refused(f"{request} is still suspended by {execution.jq_text(again.get('suspended_by'))}, though no"
-                       f" measurement holds {host}; nothing ran")
+        # Suspended by a measurement the registry does not hold: no conclusion will restore it.
+        return refused(f"{request} is still suspended by {execution.jq_text(again.get('suspended_by'))}, a"
+                       f" measurement the registry does not hold; nothing ran")
     left = max(bound - math.ceil(time.monotonic() - start), 0)
     flags = [flag for flag in slot_flags if not flag.startswith("--wait-window")]
     return again, [*flags, f"--wait-window={left}"]
