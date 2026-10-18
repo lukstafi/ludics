@@ -593,6 +593,8 @@ test_require_green_takes_a_waived_red() {
   run_merge --require-green --override "$why"
   assert_eq "$MERGE_RC" 4 "a waived red with nothing green beside it is no build that ran green ($MERGE_OUTPUT)"
   assert_contains "$MERGE_OUTPUT" "beside the red --override waived" "the refusal says what it read"
+  # The announcement waits for the refusals (ludics-lite#684's negative control printed it above one).
+  assert_not_contains "$MERGE_OUTPUT" "OVERRIDE: merging" "and nothing is announced as merged over"
   assert_no_merge_call
 }
 
@@ -2162,6 +2164,11 @@ test_no_verdict_refuses_without_the_flag() {
   assert_contains "$MERGE_OUTPUT" "ALLOW-NO-VERDICT: merging example/repo#7 with NO build verdict on the head commit" \
     "and says so on stdout"
   assert_contains "$MERGE_STDERR" "nothing has failed, nothing has passed either" "and on stderr"
+  # ...but only for a merge it makes: a close-out's refusal of the same head announces nothing.
+  run_merge --allow-no-verdict --require-green
+  assert_eq "$MERGE_RC" 4 "a close-out merge needs a verdict it READ ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_OUTPUT" "ALLOW-NO-VERDICT: merging" "nothing is announced as merged unread"
+  assert_no_merge_call
 }
 
 # A gate that could not read the checks is UNKNOWN, and no flag merges past it.

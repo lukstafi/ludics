@@ -1214,8 +1214,8 @@ substitute for each other: a red is never "no verdict", and a queue is never "an
 
 `--override` takes a reason in **words** — a bare token like `yes` is rejected — because what makes
 an override legitimate is being able to say why *this* red is unrelated to *this* PR, and that
-sentence is what the next reader finds in the log. It prints on both stdout and stderr, loudly, and
-then merges.
+sentence is what the next reader finds in the log. It prints on both stdout and stderr, loudly,
+just before the merge call: a merge refused first, by `--require-green` say, says nothing of it.
 
 It waives **exactly the reds the gate read when it was given** — the checks (and checkless
 workflow runs) that were red at the gate's first read, marked `WAIVED` in the report, each keyed
