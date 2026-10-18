@@ -223,6 +223,25 @@ class WindowWait(unittest.TestCase):
             self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
         self.assertIn("still holds testbox after 1s (--wait-window); no slot taken", out.getvalue())
 
+    def test_a_late_read_that_answers_clears_an_earlier_failed_one(self) -> None:
+        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))
+        answers: list[Any] = [unread]
+
+        def reads(*_: object) -> Any:
+            if answers:
+                return answers.pop()
+            time.sleep(1.2)  # answers, but past the bound
+            return []
+
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.1"}, host="testbox")
+        out = io.StringIO()
+        with mock.patch.object(slot, "read_registry", side_effect=reads), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
+        self.assertEqual(out.getvalue(), "EXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 1s"
+                                         " (--wait-window); no slot taken\n")
+
     def test_a_failed_read_mid_wait_is_asked_again_and_refused_as_itself_at_the_bound(self) -> None:
         unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))
         result, _, err = self.wait([measurement("win")], [unread, []])
