@@ -1564,7 +1564,7 @@ kill_real_server "$envsock"
 echo 2 > "$TMP/exiting"
 expect "a probe session that reaches an exiting tmux server is tried again, and passes" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
   "${fresh[@]}" SHIM_TMUX_EXITING="$TMP/exiting" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
-[ "$(cat "$TMP/exiting")" = 0 ] && ok "...past both of those refusals" || ko "the exiting-server shim was not reached ($(cat "$TMP/exiting") left)"
+[ "$(cat "$TMP/exiting")" = 0 ] && ok "...past both of those refusals" || ko "the probe met $((2 - $(cat "$TMP/exiting"))) of the 2 exiting-server refusals, want both"
 echo 9 > "$TMP/exiting"
 expect "...while a server that keeps exiting still refuses, naming it" 1 "PREFLIGHT REFUSED testbox: tmux on testbox refused a probe session (server exited unexpectedly), so it would refuse a CLI worker's too" -- \
   "${fresh[@]}" SHIM_TMUX_EXITING="$TMP/exiting" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
@@ -2116,7 +2116,7 @@ settle p-1
 echo 1 > "$TMP/exiting"
 expect "a launch whose worker session reaches an exiting tmux server tries again, and launches" 0 "LAUNCHED testbox/te" -- \
   env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-*' "$FW" launch testbox te --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
-[ "$(cat "$TMP/exiting")" = 0 ] && ok "...past that refusal" || ko "the exiting-server shim was not reached by the worker's session"
+[ "$(cat "$TMP/exiting")" = 0 ] && ok "...past that refusal" || ko "the worker's session never met the exiting-server refusal"
 settle te
 expect "a first launch whose tmux fails leaves no record behind" 1 "LAUNCH REFUSED testbox/tf: tmux failed" -- env SHIM_TMUX_FAIL_NEW=1 "$FW" launch testbox tf --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
 [ -d "$ISSUE_WAVE_STATE/workers/tf" ] && ko "failed first launch left a record" || ok "no record left by the failed first launch"
