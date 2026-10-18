@@ -33,9 +33,14 @@ one ``os.replace`` of the whole document, so a reader without the lock sees the 
 new one, never a part.
 
 The markdown view, and its boundary: the JSON document is the board, and the view is for reading.
-In a cell ``|`` is written ``\\|`` and a line break ``<br>``; in a note or a log line a line break
-is ``<br>``. Nothing else is escaped, so text that is itself markdown (backticks, links, emphasis)
-renders as markdown. Columns are the keys in the order the rows first name them.
+Everywhere in it, a line break -- each one ``str.splitlines`` breaks at (``\\r\\n``, ``\\n``, ``\\r``,
+``\\v``, ``\\f``, U+001C-U+001E, U+0085, U+2028, U+2029) -- is written ``<br>``, and any other
+control character but the tab is written U+FFFD, so no text can end a row or a bullet. In a cell,
+``|`` is written ``\\|`` with the backslashes just before it doubled, so the pipe stays escaped
+whatever backslashes precede it (GFM's cell scanner reads ``\\\\`` as one escaped backslash); inside
+a code span such a doubled backslash shows doubled. Nothing else is escaped, so text that is itself
+markdown (backticks, links, emphasis) renders as markdown. Columns are the keys in the order the
+rows first name them.
 """
 import json
 import os
@@ -187,13 +192,20 @@ def publish(path: Path, doc: Doc) -> None:
             os.unlink(temporary)
 
 
+# The view's boundary (the header): the line breaks str.splitlines breaks at.
+LINE_BREAK = re.compile("\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
+PIPE = re.compile(r"(\\*)\|")
+
+
 def cell(text: str) -> str:
-    """A table cell's markdown: ``|`` escaped and line breaks as ``<br>`` (the view's boundary)."""
-    return lines(text).replace("|", "\\|")
+    """A table cell's markdown: one line, its pipes escaped whatever backslashes precede them."""
+    return PIPE.sub(lambda m: m.group(1) * 2 + "\\|", lines(text))
 
 
 def lines(text: str) -> str:
-    return text.replace("\r\n", "<br>").replace("\r", "<br>").replace("\n", "<br>")
+    """Text as one markdown line: line breaks as ``<br>``, other control characters as U+FFFD."""
+    one = LINE_BREAK.sub("<br>", text)
+    return "".join("\ufffd" if c != "\t" and unicodedata.category(c) == "Cc" else c for c in one)
 
 
 def render(doc: Doc) -> str:

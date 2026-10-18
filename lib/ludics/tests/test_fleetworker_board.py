@@ -83,6 +83,17 @@ class Store(StoreCase):
         self.assertEqual(lines[9], "## Log")
         self.assertRegex(lines[10], r"^- \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ one \| two$")
 
+    def test_no_text_ends_a_row_and_no_backslash_unescapes_a_pipe(self) -> None:
+        self.set("t", ("a", "x\\|y"), ("b", "one\u2028two\x85three\u2029four\vfive"), ("c", "bell\x07\ttab\x1f"))
+        self.call("log", {"wave": "w", "text": "x\u2028y"})
+        rc, out, _ = self.call("show", {"wave": "w"})
+        self.assertEqual(rc, 0)
+        lines = out.split("\n")
+        self.assertEqual(lines[4], "| t | x\\\\\\|y | one<br>two<br>three<br>four<br>five | bell\ufffd\ttab\ufffd |")
+        self.assertTrue(lines[7].endswith(" x<br>y"), lines)
+        self.assertEqual(len(out.splitlines()), len(lines) - 1, "no line break but the view's own")
+        self.assertEqual(self.doc()["tasks"][0]["fields"]["a"], "x\\|y", "the document keeps the text as given")
+
     def test_the_grammar_is_fail_closed(self) -> None:
         cases: list[tuple[dict[str, Any], str]] = [
             ({"wave": "../x", "create": True, "task": "t", "fields": [["k", "v"]]}, "a wave must be"),
