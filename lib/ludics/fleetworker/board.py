@@ -7,7 +7,7 @@ Its header is the contract: the document, what it accepts, and the markdown view
 
   board set [--create] <wave> <task> <key=value>...   a task's row (lease)
   board note [--create] <wave> <key=value>...         the wave's own facts (lease)
-  board log [--create] <wave> <text>...               one appended log line, the words joined (lease)
+  board log <wave> <text>...                          one appended log line, the words joined (lease)
   board show <wave> [--json]                          the markdown view, or the document (no lease)
 
 The writers run inside the lease lock after the lease check (``lease.LEASE_MUTATION``), the lock and
@@ -15,7 +15,8 @@ check every halt and registry write takes; ``show`` takes neither, so anyone may
 argument travels inside one JSON payload, ASCII-escaped, so no cell text is a shell word, a ``sed``
 pattern or a delimiter on the near side, over ssh, or on the anchor. A ``key=value`` splits at its
 FIRST ``=``: the value is everything after it, ``=`` included. ``--create`` is read only right after
-the action, so no value or log text can be mistaken for it.
+``set`` or ``note``, so no value can be mistaken for it; ``log`` takes none and never starts a board,
+since an append is not idempotent and a retried first write must be.
 """
 
 import json
@@ -30,7 +31,7 @@ from ludics.fleetworker.transport import prelude, run_on
 
 USAGE = (
     "board set [--create] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
-    "board log [--create] <wave> <text>... | board show <wave> [--json]"
+    "board log <wave> <text>... | board show <wave> [--json]"
 )
 
 FIND_PYTHON = (
@@ -72,11 +73,15 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
     if action not in ("set", "note", "log"):
         die(f"board: expected set, note, log or show ({USAGE})")
     create = bool(rest) and rest[0] == "--create"
+    if create and action == "log":
+        die(f"board log: takes no --create; start the board with set or note --create ({USAGE})")
     if create:
         rest = rest[1:]
     if not rest:
         die(f"board {action}: expected <wave> ({USAGE})")
-    payload: dict[str, object] = {"wave": rest[0], "create": create}
+    payload: dict[str, object] = {"wave": rest[0]}
+    if action != "log":
+        payload["create"] = create
     rest = rest[1:]
     match action:
         case "set":

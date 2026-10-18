@@ -176,10 +176,10 @@
 #                          # document per wave under FLEET_ANCHOR_STATE/boards (ludics-lite#619): a
 #                          # task's row, each key set; any text in a value, split at the first `=`
 #   fleet-worker.sh board note [--create] <wave> <key>=<value>...   # the wave's own facts
-#   fleet-worker.sh board log [--create] <wave> <text>...   # one line appended to its log, stamped
+#   fleet-worker.sh board log <wave> <text>...   # one line appended to its log, stamped
 #   fleet-worker.sh board show <wave> [--json]   # the markdown view (or the document); no lease
-#                          # (--create starts the board; without it a writer refuses an unknown
-#                          # wave; the contract: lib/ludics/fleetworker/boardstore.py)
+#                          # (set/note --create starts the board; without it every writer refuses
+#                          # an unknown wave; the contract: lib/ludics/fleetworker/boardstore.py)
 #
 # `launch`, `unstick`, `close`, `halt`, `resume-launches` and the board's writers require the lease;
 # `launch` also refuses while halted (`--force` admits the one triage worker) and runs the preflight

@@ -2077,8 +2077,10 @@ section "board" && {
 # board travel through the command line, the far side's bash -s and the shipped store unchanged.
 need_lease
 hostile='a|b (c) #d /e `f` $(touch "$TMP/pwned") '"'q'"' "dq" s/x/y/g \ & <br>'
-expect "a writer refuses a wave with no board" 1 "^BOARD REFUSED: no board for wave bw on the anchor (start it with --create)$" -- \
+expect "a writer refuses a wave with no board" 1 "^BOARD REFUSED: no board for wave bw on the anchor (start it with set or note --create)$" -- \
   "$FW" board set bw "ll#1" state=x
+expect "log never starts a board" 1 "^BOARD REFUSED: no board for wave bw on the anchor" -- "$FW" board log bw x
+expect "...and takes no --create" 2 "board log: takes no --create" -- "$FW" board log --create bw x
 expect "set --create starts the board" 0 '^BOARD SET bw: "ll#1" state pr$' -- "$FW" board set --create bw "ll#1" "state=$hostile" pr=
 expect "a note takes any text" 0 "^BOARD NOTE bw: base scope$" -- "$FW" board note bw base=abc "scope=$hostile"
 expect "a log line is appended" 0 "^BOARD LOG bw: line 1 at " -- "$FW" board log bw "$hostile"

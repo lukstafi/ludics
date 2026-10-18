@@ -16,15 +16,18 @@ Argv: <state root> <action> <coordinator> <json payload>
         order (a new key joins the row's end; a task not yet on the board joins the table's end)
   note  {"wave", "create", "fields": [[key, value], ...]}           the wave's own facts (coordinator,
         scope, base, ...), shown above the table
-  log   {"wave", "create", "text"}                                  one line appended to the log,
-        stamped with the time and the coordinator; nothing edits or removes a log line
+  log   {"wave", "text"}                                            one line appended to the log,
+        stamped with the time and the coordinator; nothing edits or removes a log line, and it
+        never starts a board (an append is not idempotent: a retried first write must be)
   show  {"wave", "json"}                                            the markdown view, or the document
 
 What it accepts, fail-closed (anything else refuses, ``BOARD REFUSED: <why>`` on stderr, exit 1):
 a wave is ``[A-Za-z0-9][A-Za-z0-9._-]*`` (it names a file); a key is ``[A-Za-z][A-Za-z0-9_-]*``; a
-task is nonempty text with no control character, not starting with ``-``; a value or a log line is
-any text that is valid UTF-8, newlines included. A writer on a wave with no board refuses unless
-``create`` is true; ``create`` on an existing board is no refusal, so a retried first write is safe.
+task is nonempty text with no control character (Unicode category Cc) and no line or paragraph
+separator (Zl, Zp), not starting with ``-``; a value or a log line is any text that is valid UTF-8,
+newlines included. ``set`` or ``note`` on a wave with no board refuses unless ``create`` is true;
+``create`` on an existing board is no refusal, so a retried first write is safe. ``log`` refuses a
+wave with no board.
 A board file that does not parse as a board is refused, never overwritten. Every write is exactly
 one ``os.replace`` of the whole document, so a reader without the lock sees the old board or the
 new one, never a part.
@@ -39,6 +42,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -47,7 +51,9 @@ type Doc = dict[str, Any]
 
 WAVE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
-CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+# What may not appear in a task name, which is a table row's first cell: a control character, or a
+# character that breaks a line (U+0085 is Cc; U+2028 and U+2029 are Zl and Zp).
+NOT_IN_TASK = frozenset({"Cc", "Zl", "Zp"})
 
 
 def refuse(message: str) -> NoReturn:
@@ -79,8 +85,8 @@ def key_ok(value: Any) -> str:
 
 def task_ok(value: Any) -> str:
     task = text_ok(value, "a task")
-    if not task or task.startswith("-") or CONTROL.search(task):
-        refuse("a task must be nonempty, with no control character, and not start with '-'")
+    if not task or task.startswith("-") or any(unicodedata.category(c) in NOT_IN_TASK for c in task):
+        refuse("a task must be nonempty, with no control character or line separator, and not start with '-'")
     return task
 
 
@@ -113,7 +119,7 @@ def validate(data: Any, wave: str, path: Path) -> Doc:
         doc = cast(Doc, data)
         if doc.get("board") != 1 or doc.get("wave") != wave:
             refuse(f"not board version 1 of wave {wave}")
-        for key in ("created_at", "updated_at"):
+        for key in ("created_at", "created_by", "updated_at"):
             text_ok(doc.get(key), key)
         string_map(doc.get("notes"), "notes")
         tasks: Any = doc.get("tasks")
@@ -165,6 +171,8 @@ def sync_directory(path: Path) -> None:
 def publish(path: Path, doc: Doc) -> None:
     """Write the whole document atomically and durably: exactly one ``os.replace``."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Sync even on retry: an earlier failed sync may have left the new directory visible.
+    sync_directory(path.parent.parent)
     fd, temporary = tempfile.mkstemp(prefix=".board-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -234,8 +242,8 @@ def main(argv: list[str]) -> None:
         refuse(f"unknown action {action}")
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if doc is None:
-        if payload.get("create") is not True:
-            refuse(f"no board for wave {wave} on the anchor (start it with --create)")
+        if action == "log" or payload.get("create") is not True:
+            refuse(f"no board for wave {wave} on the anchor (start it with set or note --create)")
         doc = cast(Doc, {"board": 1, "wave": wave, "created_at": now, "created_by": coordinator,
                          "updated_at": now, "notes": {}, "tasks": [], "log": []})
     match action:

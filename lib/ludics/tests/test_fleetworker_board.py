@@ -45,11 +45,12 @@ class Store(StoreCase):
     def test_a_writer_refuses_an_unknown_wave_unless_create(self) -> None:
         rc, out, err = self.set("t", ("k", "v"), create=False)
         self.assertEqual((rc, out), (1, ""))
-        self.assertEqual(err, "BOARD REFUSED: no board for wave w on the anchor (start it with --create)\n")
+        self.assertEqual(err, "BOARD REFUSED: no board for wave w on the anchor (start it with set or note --create)\n")
         self.assertFalse(os.path.exists(os.path.join(self.root, "boards")))
         self.assertEqual(self.set("t", ("k", "v"))[0], 0)
         self.assertEqual(self.set("t", ("k", "w"))[0], 0, "create on an existing board is no refusal")
         self.assertEqual(self.doc()["tasks"][0]["fields"], {"k": "w"})
+        self.assertEqual(self.call("log", {"wave": "w", "text": " "})[2], "BOARD REFUSED: a log line must not be empty\n")
 
     def test_hostile_text_round_trips_in_every_field(self) -> None:
         self.assertEqual(self.set(HOSTILE, ("state", HOSTILE), ("multi", "one\ntwo"))[0], 0)
@@ -89,20 +90,26 @@ class Store(StoreCase):
             ({"wave": "w", "create": True, "task": "t", "fields": []}, "fields must be a nonempty list"),
             ({"wave": "w", "create": True, "task": "-t", "fields": [["k", "v"]]}, "a task must be"),
             ({"wave": "w", "create": True, "task": "a\nb", "fields": [["k", "v"]]}, "a task must be"),
+            ({"wave": "w", "create": True, "task": "a\u0085b", "fields": [["k", "v"]]}, "a task must be"),
+            ({"wave": "w", "create": True, "task": "a\u2028b", "fields": [["k", "v"]]}, "a task must be"),
             ({"wave": "w", "create": True, "task": "t", "fields": [["k", "\udcff"]]}, "not valid UTF-8"),
         ]
         for payload, why in cases:
             rc, _, err = self.call("set", payload)
             self.assertEqual(rc, 1, payload)
             self.assertIn(why, err)
-        self.assertEqual(self.call("log", {"wave": "w", "create": True, "text": " "})[2],
-                         "BOARD REFUSED: a log line must not be empty\n")
+        self.assertEqual(self.call("log", {"wave": "w", "text": "x"})[2],
+                         "BOARD REFUSED: no board for wave w on the anchor (start it with set or note --create)\n")
+        self.assertEqual(self.call("log", {"wave": "w", "create": True, "text": "x"})[0], 1, "log never starts a board")
         self.assertFalse(os.path.exists(os.path.join(self.root, "boards")), "no refusal wrote anything")
 
     def test_a_corrupt_board_is_refused_and_never_overwritten(self) -> None:
-        os.makedirs(os.path.join(self.root, "boards"))
         path = os.path.join(self.root, "boards", "w.json")
-        for text in ("{not json", json.dumps({"board": 1, "wave": "other"})):
+        self.set("t", ("k", "v"))
+        with open(path) as f:
+            valid = json.load(f)
+        del valid["created_by"]
+        for text in ("{not json", json.dumps({"board": 1, "wave": "other"}), json.dumps(valid)):
             with open(path, "w") as f:
                 f.write(text)
             rc, _, err = self.set("t", ("k", "v"))
@@ -127,6 +134,18 @@ class Store(StoreCase):
         self.assertEqual(calls, [os.path.join(self.root, "boards", "w.json")] * 2)
         self.assertEqual(sorted(os.listdir(os.path.join(self.root, "boards"))), ["w.json"], "no temporary left")
 
+    def test_the_first_write_syncs_the_state_root_that_gained_the_boards_directory(self) -> None:
+        synced: list[str] = []
+        real = boardstore.sync_directory
+
+        def recording(path: Any) -> None:
+            synced.append(str(path))
+            real(path)
+
+        with mock.patch.object(boardstore, "sync_directory", recording):
+            self.set("t", ("k", "v"))
+        self.assertEqual(synced, [self.root, os.path.join(self.root, "boards")])
+
     def test_show_of_an_unknown_wave_refuses(self) -> None:
         self.assertEqual(self.call("show", {"wave": "nope"})[:2], (1, ""))
 
@@ -148,7 +167,8 @@ class CommandLine(unittest.TestCase):
         )
 
     def test_create_is_read_only_right_after_the_action(self) -> None:
-        self.assertEqual(self.payload("log", "w", "--create", "x")[1], {"wave": "w", "create": False, "text": "--create x"})
+        self.assertEqual(self.payload("log", "w", "--create", "x")[1], {"wave": "w", "text": "--create x"})
+        self.assertIn("board log: takes no --create", self.refused("log", "--create", "w", "x"))
         self.assertIn("expected <key>=<value>, got \"--create\"", self.refused("set", "w", "t", "k=v", "--create"))
 
     def test_usage_refusals(self) -> None:
