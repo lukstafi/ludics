@@ -199,23 +199,25 @@ watch_now() {
   printf '%s %s\n' "$(date +%s)" "$1" > "$TEST_FLEET_WORKER_WATCH/now.new" &&
     mv -f "$TEST_FLEET_WORKER_WATCH/now.new" "$TEST_FLEET_WORKER_WATCH/now"
 }
+# watch_end <status>: the supervisor's exit -- stop whatever of the run is still going, remove what
+# it left, and exit.
+watch_end() {
+  trap '' INT TERM HUP
+  [ -z "$poll" ] || kill "$poll" 2>/dev/null
+  if [ -n "$child" ]; then
+    group_alive "$child" && stop_group "$child"
+    wait "$child" 2>/dev/null
+    left=$(cat "$WATCH/tmp" 2>/dev/null) || left=""
+    case "$left" in */fleet-worker-test.*) [ ! -d "$left" ] || run_cleanup "$child" "$left" ;; esac
+  fi
+  rm -rf "${WATCH:?}"
+  exit "$1"
+}
 if [ "$SECTION_TIMEOUT" -gt 0 ] && [ -z "${TEST_FLEET_WORKER_WATCH:-}" ]; then
-  WATCH=$(mktemp -d "${TMPDIR:-/tmp}/fleet-worker-watch.XXXXXX") && WATCH=$(CDPATH= cd "$WATCH" && pwd -P) ||
+  WATCH=$(mktemp -d "${TMPDIR:-/tmp}/fleet-worker-watch.XXXXXX")
+  WATCH=$(CDPATH= cd "${WATCH:?}" && pwd -P) ||
     { echo "FAIL: could not create the section watchdog's scratch directory" >&2; exit 1; }
   child="" poll="" pending=""
-  # watch_end <status>: stop whatever of the run is still going, remove what it left, and exit.
-  watch_end() {
-    trap '' INT TERM HUP
-    [ -z "$poll" ] || kill "$poll" 2>/dev/null
-    if [ -n "$child" ]; then
-      group_alive "$child" && stop_group "$child"
-      wait "$child" 2>/dev/null
-      left=$(cat "$WATCH/tmp" 2>/dev/null) || left=""
-      case "$left" in */fleet-worker-test.*) [ ! -d "$left" ] || run_cleanup "$child" "$left" ;; esac
-    fi
-    rm -rf "${WATCH:?}"
-    exit "$1"
-  }
   # Deferred until `child` is recorded: a signal taken in between would leave the run unstopped.
   trap 'pending=130' INT
   trap 'pending=143' TERM HUP
