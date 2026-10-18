@@ -2112,12 +2112,13 @@ expect "unstick --kill of the finished worker leaves the sibling session alone" 
 expect "...the sibling is still running" 0 "RUNNING testbox/p-12" -- "$FW" status testbox p-12
 settle p-1
 "$FW" unstick testbox p-12 --message "$TMP/msg.md" --kill >/dev/null; settle p-12
-# A worker's session that reaches a server caught exiting (ludics-lite#658) is tried again.
-echo 1 > "$TMP/exiting"
-expect "a launch whose worker session reaches an exiting tmux server tries again, and launches" 0 "LAUNCHED testbox/te" -- \
+# A worker's session is never tried again (ludics-lite#658): "server exited unexpectedly" can
+# follow a session the server did create, and a second try could start a second worker.
+echo 2 > "$TMP/exiting"
+expect "a launch whose worker session reaches an exiting tmux server refuses, not tries again" 1 "LAUNCH REFUSED testbox/te: tmux failed" -- \
   env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-*' "$FW" launch testbox te --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
-[ "$(cat "$TMP/exiting")" = 0 ] && ok "...past that refusal" || ko "the worker's session never met the exiting-server refusal"
-settle te
+[ "$(cat "$TMP/exiting")" = 1 ] && ok "...after its one try" || ko "worker-session tries against an exiting server: $((2 - $(cat "$TMP/exiting"))), want 1"
+[ -d "$ISSUE_WAVE_STATE/workers/te" ] && ko "the refused launch left a record" || ok "...leaving no record"
 expect "a first launch whose tmux fails leaves no record behind" 1 "LAUNCH REFUSED testbox/tf: tmux failed" -- env SHIM_TMUX_FAIL_NEW=1 "$FW" launch testbox tf --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
 [ -d "$ISSUE_WAVE_STATE/workers/tf" ] && ko "failed first launch left a record" || ok "no record left by the failed first launch"
 expect "...so the name launches normally afterwards" 0 "LAUNCHED testbox/tf" -- "$FW" launch testbox tf --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"

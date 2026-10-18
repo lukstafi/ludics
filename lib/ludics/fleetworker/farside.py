@@ -39,7 +39,10 @@ tm() { if [ -n "$TMUX_SOCKET" ]; then tmux -L "$TMUX_SOCKET" "$@"; else tmux "$@
 # A server exits when its last session ends, and a client that connects in that moment gets
 # "server exited unexpectedly" where the next one starts a server of its own: a concurrent
 # launch's probe session ending is that moment (ludics-lite#658). Any other refusal, or that one
-# five times running, is final, with the last attempt's message on stderr.
+# five times running, is final, with the last attempt's message on stderr. For the GitHub probe's
+# throwaway session only: the same message can follow a session the server did create before it
+# exited, so a worker's session retried this way could start a second copy of the worker, and
+# launch and unstick keep their single try and its refusal.
 tm_new() {
   local i err=""
   for i in 1 2 3 4 5; do
@@ -1042,7 +1045,7 @@ fi
 } > "$d/meta" || refuse "cannot write $d/meta"
 msg=$(tmux_env_check) || refuse "$msg"   # the preflight's read may be minutes old
 tmux_gh_check || refuse "$tmux_gh_msg"   # and so may its GitHub probe of the server
-tm_new -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")" || refuse "tmux failed"
+tm new-session -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")" || refuse "tmux failed"
 started=1
 # Ownership is now visible as a live session; the box-wide lock can go.
 release_lock "$blaunch"; blaunch=""
@@ -1506,7 +1509,7 @@ if [ "$kind" = claude ]; then
   ilines=$il
   printf '%s\n' "$line" >> "$d/input.jsonl" 2>/dev/null || { echo "UNSTICK REFUSED $BOX/$name: cannot append to $d/input.jsonl"; exit 1; }
 fi
-if ! tm_new -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")"; then
+if ! tm new-session -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")"; then
   [ -e "$d/exit.prev" ] && mv -f "$d/exit.prev" "$d/exit"
   mv -f "$d/meta.prev" "$d/meta"
   echo "UNSTICK REFUSED $BOX/$name: tmux failed (previous exit record and meta kept)"; exit 1
