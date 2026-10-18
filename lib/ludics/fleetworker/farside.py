@@ -35,6 +35,19 @@ import shlex
 HELPERS = r"""set -uo pipefail
 expand_tilde() { case "$1" in '~/'*) printf '%s' "$HOME/${1#\~/}" ;; '~') printf '%s' "$HOME" ;; *) printf '%s' "$1" ;; esac; }
 tm() { if [ -n "$TMUX_SOCKET" ]; then tmux -L "$TMUX_SOCKET" "$@"; else tmux "$@"; fi; }
+# tm_new <new-session args>: tm new-session, tried again while the server it reached was exiting.
+# A server exits when its last session ends, and a client that connects in that moment gets
+# "server exited unexpectedly" where the next one starts a server of its own: a concurrent
+# launch's probe session ending is that moment (ludics-lite#658). Any other refusal, or that one
+# five times running, is final, with the last attempt's message on stderr.
+tm_new() {
+  local i err=""
+  for i in 1 2 3 4 5; do
+    err=$(tm new-session "$@" 2>&1 >/dev/null) && return 0
+    case "$err" in *"server exited unexpectedly"*) sleep 0.2 ;; *) break ;; esac
+  done
+  printf '%s\n' "$err" >&2; return 1
+}
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 now() { date +%s; }
 meta_get() { sed -n "s/^$2=//p" "$1/meta" 2>/dev/null | head -n1; }
@@ -499,7 +512,7 @@ tmux_gh_check() {
     [ "$ghst" != ok ] || want=$ghlast   # GitHub silent: no login to hold the server to
   fi
   tm show-environment -g >/dev/null 2>&1 || had=0
-  if perr=$(tm new-session -d -s "$ps" "bash $(printf '%q' "$pf") $(printf '%q' "$pd") $(printf '%q' "$gh_bound") tmux" 2>&1); then
+  if perr=$(tm_new -d -s "$ps" "bash $(printf '%q' "$pf") $(printf '%q' "$pd") $(printf '%q' "$gh_bound") tmux" 2>&1); then
     # Both calls' bounds and a margin, in tenths; a session gone without `done` has no more to say.
     waited=0
     while [ ! -e "$pd/done" ] && [ "$waited" -lt $((gh_bound * 30 + 150)) ] && tm has-session -t "=$ps" 2>/dev/null; do
@@ -1029,7 +1042,7 @@ fi
 } > "$d/meta" || refuse "cannot write $d/meta"
 msg=$(tmux_env_check) || refuse "$msg"   # the preflight's read may be minutes old
 tmux_gh_check || refuse "$tmux_gh_msg"   # and so may its GitHub probe of the server
-tm new-session -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")" || refuse "tmux failed"
+tm_new -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")" || refuse "tmux failed"
 started=1
 # Ownership is now visible as a live session; the box-wide lock can go.
 release_lock "$blaunch"; blaunch=""
@@ -1493,7 +1506,7 @@ if [ "$kind" = claude ]; then
   ilines=$il
   printf '%s\n' "$line" >> "$d/input.jsonl" 2>/dev/null || { echo "UNSTICK REFUSED $BOX/$name: cannot append to $d/input.jsonl"; exit 1; }
 fi
-if ! tm new-session -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")"; then
+if ! tm_new -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")"; then
   [ -e "$d/exit.prev" ] && mv -f "$d/exit.prev" "$d/exit"
   mv -f "$d/meta.prev" "$d/meta"
   echo "UNSTICK REFUSED $BOX/$name: tmux failed (previous exit record and meta kept)"; exit 1
