@@ -570,6 +570,15 @@ wake_wsl() { env WAKE_LAB_HOSTS="$TMP/hosts.sh" WAKE_LAB_WAIT_SECONDS=1 WAKE_LAB
 : > "$SSH_LOG"; out=$(wake_wsl --wsl 2>&1)
 grep -q 'wsl up' <<<"$out" && ! grep -q -- '--shutdown' "$SSH_LOG" \
   && ok "...and neither does --wait --wsl" || ko "--wait --wsl shut a VM down, or never started one -- $out; $(cat "$SSH_LOG")"
+# ludics-lite#637: WAKE_LAB_ANCHOR's allowlist guards the one place it is spliced, a native-Linux
+# box's anchor leg. An all-WSL wait asks no leg, so an anchor spelled outside it (an IPv6 literal)
+# is no reason to refuse that wait; the run says the leg was not checked instead.
+: > "$SSH_LOG"; out=$(env WAKE_LAB_ANCHOR=2001:db8::1 WAKE_LAB_HOSTS="$TMP/hosts.sh" WAKE_LAB_WAIT_SECONDS=1 \
+  WAKE_LAB_WSL_WAIT_SECONDS=1 SSH_UP="rog-lan rog-nv-wsl" "$WL" --wait --wsl rog 2>&1); rc=$?
+[ "$rc" -eq 0 ] && grep -q '^all up$' <<<"${out##*$'\n'}" && ! grep -q 'not a plain ssh destination' <<<"$out" \
+  && grep -q '^anchor leg not checked on rog: its kind is wsl' <<<"$out" && ! grep -q '2001:db8' "$SSH_LOG" \
+  && ok "an all-WSL --wait is not refused for an anchor it never asks, and says the leg was not checked (rc=$rc)" \
+  || ko "an all-WSL --wait was refused for, or spliced, an anchor no leg asks (rc=$rc) -- $out; $(cat "$SSH_LOG")"
 : > "$SSH_LOG"; out=$(wake_wsl --restart-wsl 2>&1); rc=$?
 [ "$rc" -eq 0 ] && grep -q 'wsl shut down on rog (via rog-lan)' <<<"$out" && grep -q 'wsl up' <<<"$out" \
   && grep -q '^all up$' <<<"${out##*$'\n'}" && grep -q '^rog-lan :: wsl.exe --shutdown$' "$SSH_LOG" \
