@@ -611,10 +611,16 @@ rgc=$(cat "$TMP/remnant.gc" 2>/dev/null); BGPIDS="$BGPIDS $rgc"
 rw=$(head -n 1 "$d/pid" 2>/dev/null)
 env BG_RUN_STOP_GRACE=60 "$BG" stop "$d" > "$TMP/remnant.stop" 2>&1 &
 rs=$!; BGPIDS="$BGPIDS $rs"
+# A wrapper a non-reaping PID 1 leaves a zombie has exited, as bg-run.sh's own `running` reads it.
+proc_live() {
+  kill -0 "$1" 2>/dev/null || return 1
+  case $(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ') in Z*|X*) return 1 ;; esac
+  return 0
+}
 i=0
-while kill -0 "${rw:-99999999}" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+while proc_live "${rw:-99999999}" && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
 kill -9 "$rs" 2>/dev/null; { wait "$rs"; } 2>/dev/null
-if [ -n "$rgc" ] && kill -0 "$rgc" 2>/dev/null && ! kill -0 "${rw:-99999999}" 2>/dev/null; then
+if [ -n "$rgc" ] && proc_live "$rgc" && ! proc_live "${rw:-99999999}"; then
   expect "a stop ended in its grace leaves a remnant that reads RUNNING, not DIED or STOPPED" 3 RUNNING -- \
     "$BG" wait "$d" --within 0
   expect "...and a second stop ends the remnant" 0 'TERM, then KILL after 1 s' -- env BG_RUN_STOP_GRACE=1 "$BG" stop "$d"
