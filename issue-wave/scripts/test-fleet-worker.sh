@@ -4091,12 +4091,15 @@ section "section watchdog" && {
 # ludics-lite#640: a section still running past FLEET_WORKER_TEST_SECTION_TIMEOUT fails the run by
 # its name, and nothing of the run outlives it. The run under test is a copy of this suite, in a
 # mirror of the checkout's layout (the dispatcher it copies sits beside it), with a stall planted
-# at the top of "usage": a tmux server on the copy's socket, as a launch starts one (a daemon,
-# outside the run's process group, so only the cleanup reaches it), then a descendant that ignores
-# TERM, so only a watchdog that escalates to KILL across the run's whole process group ends it.
+# at the top of "usage" in the #633 shape: a tmux server on the copy's socket, as a launch starts
+# one (a daemon, outside the run's process group, so only a cleanup reaches it), then a `$(...)`
+# whose pipe an orphan holds open -- a background `sleep` that ignores TERM. The shell blocked
+# reading that pipe ignores TERM too (with an EXIT trap set, bash 3.2 retries the interrupted read),
+# so only the KILL ends either, and the copy's own cleanup never runs: the supervisor's has to.
 # "load" runs first, so the copy also shows a finished section's elapsed-time line. The copy runs
-# with the PATH this suite found and a TMPDIR of its own, which must be empty afterwards: the copy's
-# scratch tree and the watchdog's own.
+# with the PATH this suite found and a TMPDIR of its own, which must be empty afterwards (its
+# scratch tree and the watchdog's), and writes to a file: a stall the watchdog missed would hold a
+# pipe, and this section would hang on it instead of failing.
 expect "a section timeout that is not a number of seconds is refused before anything runs" 1 \
   "FLEET_WORKER_TEST_SECTION_TIMEOUT must be a number of seconds, 0, or off, got soon" -- \
   env -u TEST_FLEET_WORKER_WATCH FLEET_WORKER_TEST_SECTION_TIMEOUT=soon "$BASH" "$HERE/test-fleet-worker.sh" usage
@@ -4106,12 +4109,13 @@ cp "$HERE/fleet-worker.sh" "$HERE/bg-run.sh" "$mir/issue-wave/scripts/"
 [ ! -f "$HERE/fleet-execution.py" ] || cp "$HERE/fleet-execution.py" "$mir/issue-wave/scripts/"
 cp "$HERE/../../scripts/py" "$mir/scripts/py"
 cp -R "$HERE/../../lib" "$mir/lib"
-plant="echo \$\$ > $(printf '%q' "$wd/shell.pid"); tmux -L \"\$FLEET_TMUX_SOCKET\" new-session -d -s stall 'sleep 3571' && : > $(printf '%q' "$wd/had-socket"); sh -c 'trap \"\" TERM; echo \$\$ > \"\$0\"; exec sleep 3571' $(printf '%q' "$wd/stall.pid")"
+plant="echo \$\$ > $(printf '%q' "$wd/shell.pid"); tmux -L \"\$FLEET_TMUX_SOCKET\" new-session -d -s stall 'sleep 3571' && : > $(printf '%q' "$wd/had-socket"); held=\$(sh -c 'trap \"\" TERM; echo \$\$ > \"\$0\"; exec sleep 3571' $(printf '%q' "$wd/stall.pid") &)"
 PLANT="$plant" awk '{ print } $0 == "section \"usage\" && {" { print ENVIRON["PLANT"] }' "$HERE/test-fleet-worker.sh" \
   > "$mir/issue-wave/scripts/test-fleet-worker.sh"
 if grep -qxF -- "$plant" "$mir/issue-wave/scripts/test-fleet-worker.sh"; then
-  out=$(env -u TEST_FLEET_WORKER_WATCH PATH="$SUITE_PATH" TMPDIR="$wd/tmp" FLEET_WORKER_TEST_SECTION_TIMEOUT=3 \
-    "$BASH" "$mir/issue-wave/scripts/test-fleet-worker.sh" load usage 2>&1 </dev/null); rc=$?
+  env -u TEST_FLEET_WORKER_WATCH PATH="$SUITE_PATH" TMPDIR="$wd/tmp" FLEET_WORKER_TEST_SECTION_TIMEOUT=3 \
+    "$BASH" "$mir/issue-wave/scripts/test-fleet-worker.sh" load usage > "$wd/out" 2>&1 </dev/null; rc=$?
+  out=$(cat "$wd/out")
   [ "$rc" -eq 1 ] && grep -qx 'FAIL: section "usage" still running after 3s (FLEET_WORKER_TEST_SECTION_TIMEOUT; raise it on a box this slow); the run'"'"'s process group was stopped' <<<"$out" &&
     ok "a section past FLEET_WORKER_TEST_SECTION_TIMEOUT fails the run by its name, exit 1" ||
     ko "the stalled section was not failed by name (rc=$rc) -- $out"
