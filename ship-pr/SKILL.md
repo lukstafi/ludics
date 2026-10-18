@@ -1147,12 +1147,12 @@ compare API could not answer prints `UNKNOWN`, which is not "not behind": check 
 five shared paths changed "all in DISJOINT hunks" — and the merge did not compile, leaving master
 red for an hour. A repository that names a build in `.github/ship-pr-merge-build` on its default
 branch (read like the advisory list: only a 404 the listing confirms is "no file") gets one local
-check before the merge call. When a path in the drift read's intersection matches one of the
-file's `input` globs, or the intersection is UNKNOWN, `merge` builds the gated head merged with the
-base's tip in a scratch repository that borrows the objects of the clone it runs in (nothing is
-registered in the clone, and nothing of the build outlives it), inside the box's run-time slot
-where it has slots, bounded by the file's timeout, and refuses with exit 1 and the build's output
-when it fails:
+check before the merge call. When the file's trigger holds (by default, a path in the drift read's
+intersection matches one of its `input` globs) or the two sides are UNKNOWN, `merge` builds the
+gated head merged with the base's tip in a scratch repository that borrows the objects of the clone
+it runs in (nothing is registered in the clone, and nothing of the build outlives it), inside the
+box's run-time slot where it has slots, bounded by the file's timeout, and refuses with exit 1 and
+the build's output when it fails:
 
 ```
 # pr-review.sh merge's build of the would-be merge commit (ludics-lite#611). A path is a build
