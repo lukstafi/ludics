@@ -6,7 +6,10 @@ itself from ``/proc/locks``, owned here in one format beside the GPU co-tenant r
 
 One line per held slot file, its fields:
 
-- ``box``: this box's fleet name; ``event``: ``held``; ``at``: UTC, ISO 8601, when the slot was read;
+- ``box``: this box's fleet name; ``at``: UTC, ISO 8601, when the slots were read; ``event``:
+  ``held``, or ``untested`` for a slot file whose lock could not be tested (it cannot be opened)
+  and that no lock-table line names -- said, never read as a free slot, with ``held`` among its
+  ``unknown`` fields;
 - ``slot``, ``slots``: the slot file's index, and the box's slot count under the current spec (a
   ``slot.<n>`` file past it, left by a wider spec, is listed when held, with its own index);
 - ``kind``: ``gpu`` or ``cpu``, the slot's kind under the current token spec, as
@@ -25,9 +28,10 @@ One line per held slot file, its fields:
 WHAT IT READS, AND WHAT IT DOES NOT (the boundary). It reads the slot directory's ``slot.<n>``
 files (``<n>`` decimal) and nothing else there: not ``measurement.lock`` (a live ``execution hold
 --request`` shows as the holder of every slot it drained), not the co-tenant records, not the
-registry. A slot is listed when a non-blocking exclusive flock on it fails NOW -- the test
-``execution slot`` itself makes of a nested marker -- which takes the lock for an instant when it
-is free, so a batch taking a slot in that instant tries its next one. Who holds it is read, on
+registry. A slot is listed when a non-blocking exclusive flock on a new read-only descriptor of it
+fails NOW -- the test ``execution slot`` itself makes of a nested marker -- or when the lock table
+names a holder of it; the test takes the lock for an instant when it is free, so a batch taking a
+slot in that instant tries its next one. Who holds it is read, on
 a system that has it, from ``/proc/locks``: a ``FLOCK`` line (not a ``->`` waiter) whose
 ``<major>:<minor>:<inode>`` is the slot file's own ``st_dev`` and ``st_ino``, its pid the process
 that took the lock (the slot's wrapper; a holder the kernel shows as pid 0, outside this pid
@@ -41,10 +45,10 @@ is unreadable, and said so). Everything is read once, so a slot taken or freed w
 show as either.
 """
 
+import fcntl
 import json
 import os
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -113,32 +117,58 @@ def read_cwd(proc: str, pid: int) -> tuple[str | None, str]:
         return None, f"{os.path.join(proc, str(pid), 'cwd')}: {exc.strerror or exc}"
 
 
-def holders(box: str, directory: str, cap: int, tokens: int, is_held: Callable[[str], bool | None],
-            run: cotenants.Runner = cotenants.run_bounded, locks: str = PROC_LOCKS, proc: str = PROC,
-            platform: str = "") -> list[dict[str, Any]]:
+def held_now(path: str) -> bool | str:
+    """Whether some process holds the flock on ``path`` now: a non-blocking exclusive lock on a new
+    READ-ONLY descriptor (flock needs no write access, so another user's 0644 slot is tested too)
+    fails even for a descendant of the holder. Why not, when the file cannot be opened."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        return f"{path}: cannot open it to test its lock: {exc.strerror or exc}"
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        os.close(descriptor)
+    return False
+
+
+def table_pids(table: list[Holder], path: str) -> list[int]:
+    """The holders the lock table names for ``path``, by its device and inode."""
+    try:
+        status = os.stat(path)
+    except OSError:
+        return []
+    device = (os.major(status.st_dev), os.minor(status.st_dev))
+    return [h.pid for h in table if h.inode == status.st_ino and (h.major, h.minor) == device]
+
+
+def holders(box: str, directory: str, cap: int, tokens: int, run: cotenants.Runner = cotenants.run_bounded,
+            locks: str = PROC_LOCKS, proc: str = PROC, platform: str = "") -> list[dict[str, Any]]:
     """The held slots of ``directory``, one line each (the module's fields)."""
     table = read_lock_table(locks)
     at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    held: list[tuple[int, list[int]]] = []
+    held: list[tuple[int, list[int], str]] = []
     for index in slot_files(directory):
         path = os.path.join(directory, f"slot.{index}")
-        if is_held(path) is not True:
-            continue
-        pids: list[int] = []
-        if table is not None:
-            try:
-                status = os.stat(path)
-            except OSError:
-                status = None
-            if status is not None:
-                pids = [h.pid for h in table
-                        if h.inode == status.st_ino and (h.major, h.minor) == (os.major(status.st_dev), os.minor(status.st_dev))]
-        held.append((index, pids))
-    names = cotenants.describe([pid for _, pids in held for pid in pids if pid > 0], run)
+        tested = held_now(path)
+        pids = table_pids(table, path) if table is not None and tested is not False else []
+        if tested is True or pids:
+            held.append((index, pids, ""))
+        elif isinstance(tested, str):
+            held.append((index, [], tested))
+    names = cotenants.describe([pid for _, pids, _ in held for pid in pids if pid > 0], run)
     lines: list[dict[str, Any]] = []
-    for index, pids in held:
+    for index, pids, untested in held:
         base: dict[str, Any] = {"box": box, "event": "held", "at": at, "slot": index, "slots": cap,
                                 "kind": kind_of(index, tokens)}
+        if untested:
+            # Neither the test nor the table says it is held: said, never read as a free slot.
+            lines.append({**base, "event": "untested", "pid": None, "user": None, "command": None, "cwd": None,
+                          "source": "proc-locks" if table is not None else "flock-test",
+                          "unknown": {name: untested for name in ("held", "pid", "user", "command", "cwd")}})
+            continue
         if table is None:
             why = f"no {locks} on this system ({platform or os.uname().sysname}): a flock's holder is not recorded"
             lines.append({**base, "pid": None, "user": None, "command": None, "cwd": None, "source": "flock-test",

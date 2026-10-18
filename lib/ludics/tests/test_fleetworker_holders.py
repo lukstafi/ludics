@@ -14,7 +14,7 @@ from collections.abc import Sequence
 
 from ludics import cli
 from ludics.fleetworker import holders
-from ludics.fleetworker.slot import _is_held, parse_slot  # pyright: ignore[reportPrivateUsage]
+from ludics.fleetworker.slot import parse_slot
 
 FIELDS = ("pid", "user", "command", "cwd")
 
@@ -72,7 +72,7 @@ class Holders(unittest.TestCase):
         self.hold("slot.3")  # past the tokens: a cpu slot
         self.hold("measurement.lock")  # not a slot file
         self.touch("slot.x")
-        lines = holders.holders("testbox", self.dir, 3, 1, _is_held, run=FakePs({}),
+        lines = holders.holders("testbox", self.dir, 3, 1, run=FakePs({}),
                                 locks=os.path.join(self.root, "no-locks"), platform="Darwin")
         self.assertEqual([(line["slot"], line["kind"]) for line in lines], [(1, "gpu"), (3, "cpu")])
         for line in lines:
@@ -84,12 +84,12 @@ class Holders(unittest.TestCase):
 
     def test_a_box_whose_tokens_do_not_bind_lists_every_slot_as_gpu(self) -> None:
         self.hold("slot.6")
-        lines = holders.holders("testbox", self.dir, 6, 0, _is_held, run=FakePs({}), locks=os.path.join(self.root, "none"))
+        lines = holders.holders("testbox", self.dir, 6, 0, run=FakePs({}), locks=os.path.join(self.root, "none"))
         self.assertEqual([(line["slot"], line["kind"]) for line in lines], [(6, "gpu")])
 
     def test_a_slot_file_past_the_count_is_listed_when_held(self) -> None:
         self.hold("slot.5")
-        lines = holders.holders("testbox", self.dir, 3, 1, _is_held, run=FakePs({}), locks=os.path.join(self.root, "none"))
+        lines = holders.holders("testbox", self.dir, 3, 1, run=FakePs({}), locks=os.path.join(self.root, "none"))
         self.assertEqual([(line["slot"], line["slots"], line["kind"]) for line in lines], [(5, 3, "cpu")])
 
     def test_the_lock_table_names_the_holder_by_device_and_inode(self) -> None:
@@ -109,7 +109,7 @@ class Holders(unittest.TestCase):
             "garbage",
         ])
         run = FakePs({4242: ("alice", "python3 -m ludics.fleetworker fleet-worker.sh execution slot -- sleep 30")})
-        lines = holders.holders("testbox", self.dir, 3, 1, _is_held, run=run, locks=locks, proc=proc)
+        lines = holders.holders("testbox", self.dir, 3, 1, run=run, locks=locks, proc=proc)
         by_slot = {line["slot"]: line for line in lines}
         self.assertEqual(sorted(by_slot), [1, 2, 3])
         one = by_slot[1]
@@ -130,24 +130,40 @@ class Holders(unittest.TestCase):
         status = os.stat(os.path.join(self.dir, "slot.1"))
         other = (os.major(status.st_dev), os.minor(status.st_dev) + 1)
         locks = self.write_table([f"1: FLOCK  ADVISORY  WRITE 4242 {other[0]:02x}:{other[1]:02x}:{status.st_ino} 0 EOF"])
-        [line] = holders.holders("testbox", self.dir, 1, 0, _is_held, run=FakePs({}), locks=locks)
+        [line] = holders.holders("testbox", self.dir, 1, 0, run=FakePs({}), locks=locks)
         self.assertEqual((line["pid"], line["source"]), (None, "proc-locks"))
 
     def test_a_holder_outside_this_pid_namespace_is_unknown(self) -> None:
         self.hold("slot.1")
         locks = self.write_table([self.table_line("slot.1", 0)])
         run = FakePs({})
-        [line] = holders.holders("testbox", self.dir, 1, 0, _is_held, run=run, locks=locks)
+        [line] = holders.holders("testbox", self.dir, 1, 0, run=run, locks=locks)
         self.assertIsNone(line["pid"])
         self.assertIn("names pid 0: a holder outside this pid namespace", line["unknown"]["pid"])
         self.assertEqual(run.calls, [])
 
+    @unittest.skipIf(os.geteuid() == 0, "root opens a mode-000 file")
+    def test_a_slot_whose_lock_cannot_be_tested_is_said_never_read_as_free(self) -> None:
+        self.hold("slot.1")
+        self.hold("slot.2")
+        os.chmod(os.path.join(self.dir, "slot.1"), 0o444)  # another user's: readable, not writable
+        os.chmod(os.path.join(self.dir, "slot.2"), 0o000)  # not even readable
+        locks = os.path.join(self.root, "none")
+        lines = holders.holders("testbox", self.dir, 2, 0, run=FakePs({}), locks=locks)
+        self.assertEqual([(line["slot"], line["event"]) for line in lines], [(1, "held"), (2, "untested")])
+        self.assertIn("cannot open it to test its lock", lines[1]["unknown"]["held"])
+        # The lock table names a holder the test could not reach: held.
+        table = self.write_table([self.table_line("slot.2", 4242)])
+        run = FakePs({4242: ("alice", "sleep 30")})
+        lines = holders.holders("testbox", self.dir, 2, 0, run=run, locks=table, proc=os.path.join(self.root, "proc"))
+        self.assertEqual([(line["slot"], line["event"], line["pid"]) for line in lines], [(1, "held", None), (2, "held", 4242)])
+
     def test_a_missing_slot_directory_lists_nothing(self) -> None:
-        self.assertEqual(holders.holders("testbox", os.path.join(self.root, "absent"), 3, 1, _is_held), [])
+        self.assertEqual(holders.holders("testbox", os.path.join(self.root, "absent"), 3, 1), [])
 
     def test_render_is_one_json_object_per_line(self) -> None:
         self.hold("slot.1")
-        text = holders.render(holders.holders("testbox", self.dir, 1, 0, _is_held, run=FakePs({}),
+        text = holders.render(holders.holders("testbox", self.dir, 1, 0, run=FakePs({}),
                                               locks=os.path.join(self.root, "none")))
         self.assertEqual([json.loads(line)["slot"] for line in text.splitlines()], [1])
         self.assertEqual(holders.render([]), "")

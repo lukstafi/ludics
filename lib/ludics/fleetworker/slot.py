@@ -923,7 +923,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     if parsed.holders:
         # THE HOLDERS (ludics-lite#639, ``holders.py``): who holds this box's slots now, one JSON line
         # per held slot; like the probe, it takes nothing and reads no registry.
-        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens, _is_held)))
+        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens)))
         return 0
     if parsed.probe:
         # THE PROBE: what a slot here would be, taking nothing and reading no registry; inside a
