@@ -94,7 +94,7 @@ from typing import Any, cast
 PROBE_TIMEOUT = 15  # seconds per probe; nvidia-smi answers in about one
 COMMAND_WIDTH = 300  # characters of a process's args kept in the record
 SHOWN = 8  # processes a summary names before "+<n> more"
-SUMMARY_WIDTH = 16000  # characters of a conclusion's clause: its payload is one argv word (128 KiB on Linux)
+SUMMARY_WIDTH = 16000  # characters of a conclusion's clause: a readable record (no transport cap since ludics-lite#636)
 
 type Runner = Callable[[Sequence[str]], tuple[int, str]]
 """Run a command with a bound: its status and stdout (127 when it cannot be started, 124 on time out)."""

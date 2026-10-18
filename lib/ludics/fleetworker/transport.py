@@ -14,6 +14,7 @@ side's stderr passed through, which ``ludics.proc.run_tool`` (captured streams, 
 does not offer.
 """
 
+import json
 import shlex
 import shutil
 import subprocess
@@ -170,6 +171,37 @@ def prelude(cfg: Config, box: str) -> str:
         + f"BOX_IS_LOCAL={1 if is_local(cfg, box) else 0}\n"
         + forward_text(cfg, box)
         + HELPERS
+    )
+
+
+# A SHIPPED PROGRAM'S PAYLOAD (ludics-lite#636). The execution registry and the board store run on the
+# anchor as Python reading its program from stdin (a here-document of the module's source), their
+# small words -- state root, action, coordinator, token, roster, slots, endpoint map, names -- as
+# argv. Their JSON payload does not ride argv: one argv word is capped (Linux's MAX_ARG_STRLEN,
+# 128 KiB, for the local `bash -s` and for ssh's one remote command word alike), and a payload past
+# it failed execve (exit 127) with nothing recorded. It travels inside the far-side script instead,
+# which is the far shell's stdin and has no such cap, as a second here-document: the program's file
+# descriptor 3, holding ONE line, the payload as a JSON string (ASCII-escaped, so no line of it can
+# be the delimiter, it starts with `"`, and no byte of it is ever a shell word). The program's argv
+# says so with the payload word PAYLOAD_ON_FD, which no JSON payload can be; the program reads fd 3
+# to its end, decodes the one string, and closes it (registry.py's and boardstore.py's
+# ``payload_word``). Any other payload word is the payload itself, as a direct ``python registry.py``
+# call and the in-process suites pass it.
+PAYLOAD_ON_FD = "-"
+
+
+def shipped_python(find_python: str, source: str, tag: str, payload: str) -> str:
+    """The far side's last lines: ``source`` run as a program from stdin by the ``$py`` that
+    ``find_python`` sets, ``"$ANCHOR_STATE" "$@"`` its argv (the payload word PAYLOAD_ON_FD among
+    them), ``payload`` on its fd 3 (the contract above). ``tag`` delimits the source; ``tag_PAYLOAD``
+    the payload."""
+    return (
+        find_python
+        + f"\"$py\" -X utf8 -P - \"$ANCHOR_STATE\" \"$@\" 3<<'{tag}_PAYLOAD' <<'{tag}'\n"
+        + json.dumps(payload)
+        + f"\n{tag}_PAYLOAD\n"
+        + source
+        + f"\n{tag}\n"
     )
 
 

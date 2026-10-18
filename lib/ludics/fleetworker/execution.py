@@ -5,8 +5,10 @@
 
 The registry itself is ``ludics.fleetworker.registry``: its SOURCE travels to the anchor and runs
 there from stdin under a Python >= 3.12 the far side finds (``FIND_PYTHON``), inside the lease
-lock for every action but ``list``; its argv is ``root action coordinator token payload boxes
-[slots map anchor lab]``. The rules it enforces are its own header's.
+lock for every action but ``list``; its argv is ``root action coordinator token - boxes
+[slots map anchor lab]``, the ``-`` saying the JSON payload is on its fd 3, inside the far-side
+script, never one argv word (ludics-lite#636; ``transport.shipped_python``). The rules it enforces
+are its own header's.
 
 ``execution slot`` and ``execution hold`` take no registry lock and run on THIS box: they are
 ``ludics.fleetworker.slot``.
@@ -41,7 +43,18 @@ from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
 from ludics.fleetworker.preflight import knob, refresh_box
-from ludics.fleetworker.transport import Done, emit_var, err, fleet_name, prelude, run, run_on, substitution
+from ludics.fleetworker.transport import (
+    PAYLOAD_ON_FD,
+    Done,
+    emit_var,
+    err,
+    fleet_name,
+    prelude,
+    run,
+    run_on,
+    shipped_python,
+    substitution,
+)
 
 REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registry.py")
 
@@ -54,14 +67,10 @@ FIND_PYTHON = (
 )
 
 
-def registry_command(source: str) -> str:
-    """The far side's last lines: the registry's source as the program, its argv after it."""
-    return (
-        FIND_PYTHON
-        + "\"$py\" -X utf8 -P - \"$ANCHOR_STATE\" \"$@\" <<'FLEET_EXECUTION_PY'\n"
-        + source
-        + "\nFLEET_EXECUTION_PY\n"
-    )
+def registry_command(source: str, payload: str) -> str:
+    """The far side's last lines: the registry's source as the program, its argv after it, and the
+    payload on its fd 3 (``transport.shipped_python``; the argv's payload word is PAYLOAD_ON_FD)."""
+    return shipped_python(FIND_PYTHON, source, "FLEET_EXECUTION_PY", payload)
 
 
 def registry_source() -> str:
@@ -78,8 +87,8 @@ def registry_source() -> str:
 def listing(cfg: Config) -> Done:
     """The anchor's whole registry as JSON (captured). ``list`` takes no lease and mutates nothing,
     so a worker with no coordinator identity may read it."""
-    script = prelude(cfg, cfg.anchor) + "shift 3\n" + registry_command(registry_source())
-    args = ["EXECUTION", "x", "x", "list", "x", "x", "{}", cfg.boxes, cfg.slots]
+    script = prelude(cfg, cfg.anchor) + "shift 3\n" + registry_command(registry_source(), "{}")
+    args = ["EXECUTION", "x", "x", "list", "x", "x", PAYLOAD_ON_FD, cfg.boxes, cfg.slots]
     return run_on(cfg, cfg.anchor, script, args, capture=True)
 
 
@@ -1387,10 +1396,10 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
     script = (
         prelude(cfg, cfg.anchor)
         + (LEASE_MUTATION if action != "list" else "shift 3\n")
-        + registry_command(source)
+        + registry_command(source, payload)
     )
     argv = [
-        "EXECUTION", token, cfg.lock_wait, action, coordinator_id(cfg), token, payload,
+        "EXECUTION", token, cfg.lock_wait, action, coordinator_id(cfg), token, PAYLOAD_ON_FD,
         cfg.boxes, cfg.slots, map_spec, fleet_name(cfg, cfg.anchor), fleet_name(cfg, cfg.lab_host),
     ]  # fmt: skip
     done = run_on(cfg, cfg.anchor, script, argv, capture=True)

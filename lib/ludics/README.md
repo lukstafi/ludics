@@ -152,7 +152,8 @@ The execution registry (formerly `issue-wave/scripts/fleet-execution.py`) is
 `lib/ludics/fleetworker/registry.py`, and it is SHIPPED: `fleet-worker.sh execution` sends its
 source to the anchor box, where a Python >= 3.12 found by the far side's own probe runs it from
 stdin. So it imports nothing from `ludics` (the anchor's checkout may hold another version) and its
-positional argv is a contract; `issue-wave/scripts/test-fleet-execution.py` loads it with `runpy`
+positional argv is a contract, its JSON payload on file descriptor 3 rather than one argv word
+(ludics-lite#636, `transport.shipped_python`); `issue-wave/scripts/test-fleet-execution.py` loads it with `runpy`
 and patches `os.replace` between records. The wave board's store,
 `lib/ludics/fleetworker/boardstore.py` (`fleet-worker.sh board`, ludics-lite#619), is the other
 shipped module, under the same rules: self-contained, its argv a contract (its header).

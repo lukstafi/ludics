@@ -646,8 +646,11 @@ EOF
 # coordinator's, which the coordinator's own environment cannot fake (it runs under scripts/py too).
 # `SHIM_SSH_ENV=<file>` is that box's own ~/.config/fleet/env.sh, sourced there as the ssh shell's
 # ~/.bashrc sources it: a box whose fleet configuration is not the coordinator's (ludics-lite#632).
+# Every shape first meets Linux's cap on one argv word (MAX_ARG_STRLEN, 128 KiB), which macOS does not
+# have: there execve of ssh fails E2BIG and run_on completes 127, so here too (ludics-lite#636).
 cat > "$TMP/bin/ssh" <<'SHIMEOF'
 #!/usr/bin/env bash
+for word in "$@"; do [ "${#word}" -lt 131072 ] || { echo "ssh: Argument list too long" >&2; exit 127; }; done
 host=""
 while [ $# -gt 0 ]; do case "$1" in -o) shift ;; -*) ;; *) host="$1"; break ;; esac; shift; done
 shift
@@ -2371,6 +2374,18 @@ expect "a capped run concludes as timeout" 0 '"verdict": "timeout"' -- run_concl
 expect "a red run concludes as fail, with the given evidence" 0 '"evidence": "sweep red on scans; the record has no head or dirty' -- run_conclude run-c "$runs/20260915T201414Z-4" --evidence "sweep red on scans"
 grep -q '"verdict": "fail"' <<<"$out" && ok "...as fail" || ko "exit 1 did not read as fail: $out"
 expect "conclude --from-run on an unknown request is refused before any box is read" 1 "unknown request_id run-zz" -- "${FWX[@]}" execution conclude --from-run "$run1" --request run-zz --sha "$ran"
+# ludics-lite#636: a payload past one argv word's cap (Linux's 128 KiB; the ssh shim holds it on
+# every OS) reaches the anchor whole, on a local anchor and over ssh: it rides the far-side script.
+head -c 204800 /dev/zero | tr '\0' e > "$TMP/big-evidence.txt"   # read by jq from the file: as an argument it would hit the cap itself
+for anchor in testbox other; do
+  "${FWX[@]}" execution run "$(reqjson "run-big-$anchor")" >/dev/null || ko "could not reserve run-big-$anchor (setup)"
+  jq -n --arg id "run-big-$anchor" --rawfile ev "$TMP/big-evidence.txt" '{request_id:$id, verdict:"not-launched", log:"/dev/null", evidence:$ev}' > "$TMP/big-$anchor.json"
+  expect "a conclusion whose evidence is 200 KiB is recorded whole (anchor $anchor)" 0 '"state": "concluded"' -- \
+    env SHIM_SSH_LOCAL=other FLEET_ANCHOR="$anchor" "${FWX[@]}" execution conclude "$TMP/big-$anchor.json"
+  [ "$rc" -eq 0 ] || fixture_done "run-big-$anchor"   # free the box for the cases after it
+  [ "$(jq -r '.history[-1].data.evidence | length' <<<"$out")" = 204800 ] && ok "...all 204800 characters of it" ||
+    ko "the 200 KiB evidence did not land whole over $anchor: $(head -c 300 <<<"$out")"
+done
 # A checkout that moved on after the run still concludes on the reported revision, and says so.
 git -C "$wt" commit -q --allow-empty -m moved   # a guaranteed new head, whatever the clone holds
 expect "a moved checkout concludes on the reported revision and records the drift" 0 "revision is $ran as reported by the worker; checkout head is now $(git -C "$wt" rev-parse HEAD)" -- run_conclude run-d "$runs/20260915T201414Z-5"

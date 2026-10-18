@@ -1,15 +1,20 @@
 """ludics.fleetworker.transport: the coordinator's fleet configuration on the far side (ludics-lite#632),
-and the registry pin a fleet-worker.sh started there checks (config.pin_refusal)."""
+the registry pin a fleet-worker.sh started there checks (config.pin_refusal), and a shipped program's
+payload on its fd 3 (ludics-lite#636)."""
 
+import json
 import os
 import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 from collections.abc import Mapping
+from unittest import mock
 
-from ludics.fleetworker import leg, tiprun
+from ludics.fleetworker import board, boardstore, execution, leg, registry, tiprun
 from ludics.fleetworker.config import REGISTRY_PIN, Config, load_config, pin_refusal, registry_pin
-from ludics.fleetworker.transport import FORWARDED, forwarded, prelude
+from ludics.fleetworker.transport import FORWARDED, PAYLOAD_ON_FD, Done, forwarded, prelude, run_on
 
 SCRIPT = "/repo/issue-wave/scripts/fleet-worker.sh"
 # A box's own ~/.config/fleet/env.sh, every forwarded knob set to something else.
@@ -135,6 +140,73 @@ class Pin(unittest.TestCase):
         for pin in ("", "not json", '["hub"]', '["hub", 1]', '{"a": "b"}', '["a", "b", "c"]'):
             refusal = pin_refusal(load_config(SCRIPT, {REGISTRY_PIN: pin}, host="h"))
             self.assertIn("an unreadable pin", refusal, pin)
+
+
+class ShippedPayload(unittest.TestCase):
+    """ludics-lite#636: a shipped program's payload rides the far-side script to its fd 3, never one
+    argv word, so a payload past Linux's 128 KiB single-argument cap reaches the anchor whole."""
+
+    def setUp(self) -> None:
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-shipped-test."))
+        self.cfg = coordinator(FLEET_ANCHOR="local", FLEET_ANCHOR_STATE=self.root)
+        # The far side's interpreter is this one, whatever the box's PATH offers.
+        self.env = mock.patch.dict(os.environ, {"LUDICS_PY_CANDIDATES": sys.executable})
+        self.env.start()
+
+    def tearDown(self) -> None:
+        self.env.stop()
+        shutil.rmtree(self.root)
+
+    def registry(self, action: str, payload: object) -> Done:
+        script = prelude(self.cfg, "local") + "shift 3\n" + execution.registry_command(execution.registry_source(), json.dumps(payload))
+        args = ["EXECUTION", "x", "x", action, "owner", "token", PAYLOAD_ON_FD, "mac"]
+        self.assertLess(max(len(a) for a in args), 64)
+        return run_on(self.cfg, "local", script, args, capture=True)
+
+    def test_a_200_kib_evidence_concludes_a_record_through_the_far_side(self) -> None:
+        reserve = dict(request_id="big", wave="w", worker="big", transport="subagent", issue="o/r#1", purpose="unit",
+                       agent_host="mac", execution_host="mac", repository="o/r", requested_revision="origin/main",
+                       kind="correctness")
+        self.assertEqual(self.registry("reserve", reserve).rc, 0)
+        evidence = "x" * (200 * 1024)
+        done = self.registry("conclude", dict(request_id="big", verdict="not-launched", log="/dev/null", evidence=evidence))
+        self.assertEqual(done.rc, 0, done.out[-400:])
+        record = json.loads(done.out)
+        self.assertEqual((record["state"], record["history"][-1]["data"]["evidence"]), ("concluded", evidence))
+
+    def test_hostile_payload_text_round_trips_and_nothing_in_it_runs(self) -> None:
+        # Every line the far side's here-documents end at, a line break, the shell's metacharacters
+        # and text past ASCII, inside one board value of over 128 KiB.
+        hostile = "\nFLEET_BOARD_PY_PAYLOAD\nFLEET_BOARD_PY\n'q' \"dq\" $(touch pwned) `touch pwned` \\ ü\n" * 2000
+        self.assertGreater(len(hostile), 128 * 1024)
+        raw = json.dumps({"wave": "w", "create": True, "fields": [["k", hostile]]})
+        script = prelude(self.cfg, "local") + "shift 3\n" + board.store_command(raw)
+        done = run_on(self.cfg, "local", script, ["BOARD", "x", "x", "note", "coord", PAYLOAD_ON_FD], capture=True)
+        self.assertEqual(done.rc, 0, done.out)
+        with open(os.path.join(self.root, "boards", "w.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["notes"]["k"], hostile)
+        self.assertFalse(os.path.exists("pwned") or os.path.exists(os.path.join(self.root, "pwned")))
+
+    def test_the_payload_word_with_no_fd_3_is_a_refusal(self) -> None:
+        calls = (([registry.__file__, self.root, "list", "o", "t", PAYLOAD_ON_FD, "mac"], "EXECUTION"),
+                 ([boardstore.__file__, self.root, "show", "o", PAYLOAD_ON_FD], "BOARD"))
+        for argv, label in calls:
+            # subprocess closes every descriptor past stderr, so fd 3 is not open in the child.
+            done = subprocess.run([sys.executable, *argv], capture_output=True, text=True, check=False)
+            self.assertEqual(done.returncode, 1, done.stderr)
+            self.assertIn(f"{label} REFUSED: payload `-` names file descriptor 3, which cannot be read", done.stderr)
+
+    def test_the_callers_put_only_the_payload_word_on_argv(self) -> None:
+        with mock.patch.object(board, "run_on", return_value=Done(0, "")) as sent, \
+                mock.patch.object(board, "check_identity"), mock.patch.object(board, "my_token", return_value="t"), \
+                mock.patch.object(board, "coordinator_id", return_value="c"):
+            board.cmd_board(self.cfg, ["log", "w", "y" * 200_000])
+        _, _, script, argv = sent.call_args.args
+        self.assertEqual(argv[-1], PAYLOAD_ON_FD)
+        self.assertIn("y" * 200_000, script)
+        with mock.patch.object(execution, "run_on", return_value=Done(0, "[]")) as sent:
+            execution.listing(self.cfg)
+        self.assertEqual(sent.call_args.args[3][6], PAYLOAD_ON_FD)
 
 
 if __name__ == "__main__":
