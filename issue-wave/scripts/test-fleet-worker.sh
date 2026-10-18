@@ -608,6 +608,14 @@ cat > "$TMP/bin/tmux" <<EOF
 #!/usr/bin/env bash
 # A worker's session only (iw-*): the GitHub probe's own session (ludics-lite#374) goes through.
 if [ -n "\${SHIM_TMUX_FAIL_NEW:-}" ]; then case " \$* " in *" new-session "*" -s iw-"*) echo "shim: tmux refuses new-session" >&2; exit 1 ;; esac; fi
+# A server caught exiting (ludics-lite#658): while the file SHIM_TMUX_EXITING names holds a count
+# above 0, a new-session of a session named by the glob SHIM_TMUX_EXITING_S (any, unset) takes one
+# off it and answers as a client that reached an exiting server does.
+if [ -n "\${SHIM_TMUX_EXITING:-}" ] && [ "\$(cat "\$SHIM_TMUX_EXITING")" -gt 0 ]; then
+  case " \$* " in *" new-session "*" -s "\${SHIM_TMUX_EXITING_S:-*}" "*)
+    echo \$((\$(cat "\$SHIM_TMUX_EXITING") - 1)) > "\$SHIM_TMUX_EXITING"; echo "server exited unexpectedly" >&2; exit 1 ;;
+  esac
+fi
 # The server the preflight's environment check reads (ludics-lite#327): SHIM_TMUX_GENV names a
 # file holding \`show-environment -g\` output, or \`none\` for no server running; SHIM_TMUX_SESSIONS
 # lists its session names and SHIM_TMUX_UPDATE_ENV its update-environment option; with
@@ -1438,6 +1446,28 @@ ln -sfn "$repo/ship-pr" "$HOME/.claude/skills/ship-pr"
 # The shim plays the server; `fresh` pins the three GPU/OCaml variables of the far-side shell, the
 # reference a server started now would inherit.
 fresh=(env -u ROCM_PATH -u HIP_PATH -u OPAM_SWITCH_PREFIX)
+# real_server <socket> <session> [VAR=value ...]: a real tmux server on <socket> running <session>,
+# started from a fresh shell with the variables given. A fixture that fails says so: a missing
+# server otherwise reads as one whose credential works, and the case after it as a pass or a fail
+# it does not test (ludics-lite#658).
+real_server() {
+  local sock=$1 s=$2; shift 2
+  "${fresh[@]}" "$@" "$REAL_TMUX" -L "$sock" new-session -d -s "$s" 'sleep 60' || ko "fixture: no tmux server on $sock running $s"
+}
+# kill_real_server <socket>: kill-server returns before the server has closed its socket, and a
+# client in that window reaches the exiting server ("server exited unexpectedly") instead of
+# starting one of its own (ludics-lite#658: CI run 38894575944, whose next fixture so started no
+# server). Waits until a client can no longer connect: tmux then says no server is running.
+kill_real_server() {
+  local e
+  "$REAL_TMUX" -L "$1" kill-server 2>/dev/null
+  for _ in $(seq 1 100); do
+    e=$("$REAL_TMUX" -L "$1" list-sessions 2>&1 >/dev/null)
+    case "$e" in *"no server running on "*|*"error connecting to "*) return 0 ;; esac
+    sleep 0.1
+  done
+  ko "fixture: the tmux server on $1 still answers 10s after kill-server"
+}
 printf 'PATH=%s\n-ROCM_PATH\nTERM=screen\n' "$PATH" > "$TMP/genv-match"
 printf 'PATH=%s\nROCM_PATH=/usr\n' "$PATH" > "$TMP/genv-rocm"
 printf 'PATH=/old/bin:%s\n' "$PATH" > "$TMP/genv-path"
@@ -1472,7 +1502,7 @@ expect "native workers never run under tmux, so a stale server does not refuse t
 # The same fact against a real tmux server, on a socket of its own: the shim above must not be the
 # only thing that knows the output shape of show-environment.
 envsock="fwtest-env-$$"
-"${fresh[@]}" ROCM_PATH=/usr "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+real_server "$envsock" iw-real ROCM_PATH=/usr
 expect "a real server started with ROCM_PATH=/usr refuses a fresh shell without it" 1 \
   "ROCM_PATH is /usr in the server but unset in a fresh shell): .*wait for its live worker session(s) (iw-real;" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe
@@ -1487,8 +1517,8 @@ expect "a real server that refreshes ROCM_PATH from the client passes despite it
 "$REAL_TMUX" -L "$envsock" kill-session -t iw-real
 expect "a real server left with no session (exit-empty off) is still checked" 1 "ROCM_PATH is /usr in the server .*no worker session is live on it, so restart it with \`tmux -L $envsock kill-server\`" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe
-"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
-"${fresh[@]}" "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+kill_real_server "$envsock"
+real_server "$envsock" iw-real
 # The GitHub probe runs inside that server too (ludics-lite#374), as a throwaway session, and
 # remain-on-exit must not leave it behind.
 "$REAL_TMUX" -L "$envsock" set-option -g remain-on-exit on
@@ -1496,10 +1526,10 @@ expect "...and a real server started from the same environment passes" 0 "PREFLI
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
 left=$("$REAL_TMUX" -L "$envsock" list-sessions -F '#{session_name}' 2>&1)
 [ "$left" = iw-real ] && ok "...leaving no probe session behind" || ko "sessions after the probe: $left"
-"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
+kill_real_server "$envsock"
 # A server whose environment hands gh a dead credential (the shim reads SHIM_GH from the
 # environment it runs in, as gh reads GH_TOKEN): this session's probe passes, the server's refuses.
-"${fresh[@]}" SHIM_GH=401 "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+real_server "$envsock" iw-real SHIM_GH=401
 expect "a real server whose environment has a dead GitHub credential refuses a CLI launch" 1 \
   "PREFLIGHT REFUSED testbox: the running tmux server on testbox gives a new session a GitHub credential that does not work (gh api user: gh: Bad credentials (HTTP 401)): a CLI worker started now would inherit it; wait for its live worker session(s) (iw-real; " -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
@@ -1510,26 +1540,38 @@ expect "...but not a native one, which never runs under tmux" 0 "PREFLIGHT OK" -
 "$REAL_TMUX" -L "$envsock" set-option -ga update-environment SHIM_GH
 expect "...and passes once the server refreshes that variable from the client" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
-"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
-"${fresh[@]}" SHIM_GH_CRED=none "$REAL_TMUX" -L "$envsock" new-session -d -s notes 'sleep 60'
+kill_real_server "$envsock"
+real_server "$envsock" notes SHIM_GH_CRED=none
 expect "a real server whose git gets no credential refuses, and names kill-server" 1 \
   "server on testbox gives a new session a GitHub credential that does not work (git credential fill: fatal: could not read Username .*no worker session is live on it, so restart it with \`tmux -L $envsock kill-server\` (kill-server also ends its non-worker session(s): notes) and try again" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
-"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
+kill_real_server "$envsock"
 # The server must answer as the account this session proved, not merely with a live token: here it
 # holds another account's, for gh and git alike.
-"${fresh[@]}" SHIM_GH_LOGIN=other-user "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+real_server "$envsock" iw-real SHIM_GH_LOGIN=other-user
 expect "a real server whose credential is another account's refuses" 1 "the running tmux server on testbox gives a new session a GitHub credential that does not work (gh api user answers as other-user, not as shim-user)" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
-"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
+kill_real_server "$envsock"
 # A server still holding the token every session used to export (ludics-lite#567): its credential
 # works, so nothing refuses, but a CLI worker started there hands it to every process it starts.
-"${fresh[@]}" GH_TOKEN=ghp_dead "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+real_server "$envsock" iw-real GH_TOKEN=ghp_dead
 expect "a real server that still gives new sessions GH_TOKEN is noted, with the restart" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (a new session of the running tmux server on testbox gets GH_TOKEN, so a CLI worker started now hands the fleet PAT to every process it starts: wait for its live worker session(s) (iw-real; .*; ludics-lite#567)$" -- \
   "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
 expect "...and not when this session exports one too (its own export is the cause)" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
   "${fresh[@]}" GH_TOKEN=ghp_dead FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
-"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
+kill_real_server "$envsock"
+# A probe session that reaches a server caught exiting is tried again, as a worker's session is
+# (ludics-lite#658: a concurrent launch's probe session had been that server's last); one that
+# keeps exiting still refuses, naming it.
+echo 2 > "$TMP/exiting"
+expect "a probe session that reaches an exiting tmux server is tried again, and passes" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
+  "${fresh[@]}" SHIM_TMUX_EXITING="$TMP/exiting" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
+[ "$(cat "$TMP/exiting")" = 0 ] && ok "...past both of those refusals" || ko "the probe met $((2 - $(cat "$TMP/exiting"))) of the 2 exiting-server refusals, want both"
+echo 9 > "$TMP/exiting"
+expect "...while a server that keeps exiting still refuses, naming it" 1 "PREFLIGHT REFUSED testbox: tmux on testbox refused a probe session (server exited unexpectedly), so it would refuse a CLI worker's too" -- \
+  "${fresh[@]}" SHIM_TMUX_EXITING="$TMP/exiting" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
+[ "$(cat "$TMP/exiting")" = 4 ] && ok "...after five tries" || ko "tries against a server that keeps exiting: $((9 - $(cat "$TMP/exiting"))), want 5"
+kill_real_server "$envsock"
 # No server running: the worker's session starts one from this shell, run by tmux's default shell,
 # whose startup can change the credential (zsh's ~/.zshenv sources env.sh on the anchor). A default
 # shell that exports a dead one is refused though this shell's passes, and the probe's server exits
@@ -1542,14 +1584,14 @@ for _ in $(seq 1 30); do "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1
 "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1 && ko "the probe left a tmux server running on $nosock" || ok "...and the server the probe started exits with it"
 expect "...while a default shell that leaves it alone passes" 0 "PREFLIGHT OK testbox skills=[0-9a-f]*$" -- \
   "${fresh[@]}" SHELL="$(command -v bash)" FLEET_TMUX_SOCKET="$nosock" "$FW" preflight testbox --no-probe --no-cross
-"$REAL_TMUX" -L "$nosock" kill-server 2>/dev/null
+kill_real_server "$nosock"
 printf '#!/usr/bin/env bash\nexport GITHUB_TOKEN=ghp_dead\nexec bash "$@"\n' > "$TMP/tokshell"; chmod +x "$TMP/tokshell"
 expect "...and one whose startup exports a token is noted, naming the variable" 0 "PREFLIGHT OK testbox skills=[0-9a-f]* (a tmux server started from this session on testbox gives a new session GITHUB_TOKEN: its default shell's startup files export it" -- \
   "${fresh[@]}" SHELL="$TMP/tokshell" FLEET_TMUX_SOCKET="$nosock" "$FW" preflight testbox --no-probe --no-cross
-"$REAL_TMUX" -L "$nosock" kill-server 2>/dev/null
+kill_real_server "$nosock"
 # A preflight killed outright (no trap runs) while its probe session is live: the probe ends that
 # session itself, so a remain-on-exit server keeps no dead fw-ghprobe-* session.
-"${fresh[@]}" SHIM_GH_SLOW=3 "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+real_server "$envsock" iw-real SHIM_GH_SLOW=3
 "$REAL_TMUX" -L "$envsock" set-option -g remain-on-exit on
 killtree() { local c; for c in $(pgrep -P "$1"); do killtree "$c"; done; kill -9 "$1" 2>/dev/null; }
 "${fresh[@]}" FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross > /dev/null 2>&1 & pfpid=$!
@@ -1565,11 +1607,11 @@ done
 left=$("$REAL_TMUX" -L "$envsock" list-sessions -F '#{session_name}' 2>&1)
 if [ "$seen" = 1 ] && [ "$left" = iw-real ]; then ok "a probe session outlives no killed preflight, even under remain-on-exit"
 else ko "probe session seen=$seen; sessions after the killed preflight: $left"; fi
-"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
-"${fresh[@]}" SHIM_GH=hang "$REAL_TMUX" -L "$envsock" new-session -d -s iw-real 'sleep 60'
+kill_real_server "$envsock"
+real_server "$envsock" iw-real SHIM_GH=hang
 expect "a gh call that hangs only in the server is bounded and noted" 0 "PREFLIGHT OK .*(GitHub unreachable from testbox: in a tmux session: no answer from gh api user in 1s)" -- \
   "${fresh[@]}" FLEET_GH_TIMEOUT=1 FLEET_TMUX_SOCKET="$envsock" "$FW" preflight testbox --no-probe --no-cross
-"$REAL_TMUX" -L "$envsock" kill-server 2>/dev/null
+kill_real_server "$envsock"
 }
 
 # --- load: an asleep box is a row, not a failure ------------------------------------------------
@@ -2072,6 +2114,13 @@ expect "unstick --kill of the finished worker leaves the sibling session alone" 
 expect "...the sibling is still running" 0 "RUNNING testbox/p-12" -- "$FW" status testbox p-12
 settle p-1
 "$FW" unstick testbox p-12 --message "$TMP/msg.md" --kill >/dev/null; settle p-12
+# A worker's session is never tried again (ludics-lite#658): "server exited unexpectedly" can
+# follow a session the server did create, and a second try could start a second worker.
+echo 2 > "$TMP/exiting"
+expect "a launch whose worker session reaches an exiting tmux server refuses, not tries again" 1 "LAUNCH REFUSED testbox/te: tmux failed" -- \
+  env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-*' "$FW" launch testbox te --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
+[ "$(cat "$TMP/exiting")" = 1 ] && ok "...after its one try" || ko "worker-session tries against an exiting server: $((2 - $(cat "$TMP/exiting"))), want 1"
+[ -d "$ISSUE_WAVE_STATE/workers/te" ] && ko "the refused launch left a record" || ok "...leaving no record"
 expect "a first launch whose tmux fails leaves no record behind" 1 "LAUNCH REFUSED testbox/tf: tmux failed" -- env SHIM_TMUX_FAIL_NEW=1 "$FW" launch testbox tf --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
 [ -d "$ISSUE_WAVE_STATE/workers/tf" ] && ko "failed first launch left a record" || ok "no record left by the failed first launch"
 expect "...so the name launches normally afterwards" 0 "LAUNCHED testbox/tf" -- "$FW" launch testbox tf --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
