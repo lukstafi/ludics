@@ -160,9 +160,12 @@ def wave_workers(records: Json, wave: str, repo: str) -> tuple[str, ...]:
 
 def on_worker_branch(pr: Json, workers: tuple[str, ...]) -> bool:
     """Is the PR's head branch one of ``workers``, alone or as its last ``/`` component
-    (``claude/w1016-p1t2`` for worker ``w1016-p1t2``), compared exactly."""
+    (``claude/w1016-p1t2`` for worker ``w1016-p1t2``), compared exactly, and a branch of the listed
+    repository itself (``isCrossRepository`` exactly false: a fork's branch of the same name is not
+    a worker's)."""
     branch = idx(pr, "headRefName")
-    return isinstance(branch, str) and any(branch == w or branch.endswith(f"/{w}") for w in workers)
+    return (idx(pr, "isCrossRepository") is False and isinstance(branch, str)
+            and any(branch == w or branch.endswith(f"/{w}") for w in workers))
 
 
 def closes_one_of(pr: Json, issues: list[Json]) -> bool:
@@ -232,7 +235,9 @@ WAVE_ISSUE = re.compile(r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([1-9][0-9]*)")
 # spanning two repositories keeps each worker to its own, as the records name the PR repository,
 # lukstafi/ocannl-staging for an ahrefs/ocannl wave), and its name is one branch-name component (WAVE_WORKER: no `/`, so `/root/issue12` is not read); an open PR
 # is kept when its `headRefName` is that name or ends in `/` and that name, compared exactly (git
-# branch names are case-sensitive). Nothing is read beyond the open list prs already holds.
+# branch names are case-sensitive), and its `isCrossRepository` is exactly false -- a worker pushes to
+# the repository itself, so a fork's branch of the same name, or a row without the field, is not one.
+# Nothing is read beyond the open list prs already holds.
 WORKER_TRANSPORTS = frozenset({"subagent", "app", "cli"})
 WAVE_WORKER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 XREF_QUERY = (
@@ -413,7 +418,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     # list that reaches it may have lost PRs past it: said on its own line and read as exit 4.
     listed = run(
         [helper, "retry", "--read", "pr", "list", "--repo", repo, "--state", "open", "--limit", limit,
-         "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,closingIssuesReferences"],
+         "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,isCrossRepository,closingIssuesReferences"],
         capture=True,
     )  # fmt: skip
     if listed.rc == 3:

@@ -159,8 +159,12 @@ class Prs(unittest.TestCase):
             {"number": 7, "headRefName": "claude/elsewhere"}, {"number": 8}, {"number": 9, "headRefName": "a/b/cw"},
             {"number": 10, "headRefName": "claude/other-repo"},
         ]))
+        for pr in listing:
+            pr["isCrossRepository"] = False
+        listing += json.loads('[{"number": 11, "headRefName": "claude/w1016-p1t2", "isCrossRepository": true},'
+                              ' {"number": 12, "headRefName": "claude/w1016-p1t2"}]')
         kept = [row[0] for row in pr_rows(listing, [], frozenset(), wave_workers(records, "w", "o/r"))]
-        self.assertEqual(kept, ["1", "2", "9"], "the branch is the worker, or ends in / and the worker, exactly")
+        self.assertEqual(kept, ["1", "2", "9"], "the branch is the worker, or ends in / and the worker, exactly, never a fork's")
 
     def test_cross_references_count_the_prs_of_the_listed_repository_only(self) -> None:
         def page(nodes: list[object], more: bool = False) -> Json:
