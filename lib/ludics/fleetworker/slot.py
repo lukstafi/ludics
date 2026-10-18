@@ -224,7 +224,7 @@ from ludics.fleetworker.config import (
     in_roster,
     short_hostname,
 )
-from ludics.fleetworker import cotenants, group
+from ludics.fleetworker import cotenants, group, holders
 from ludics.fleetworker.execution import field, jq_text, listing, records_of, registry_source
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
@@ -672,6 +672,7 @@ SLOT_USAGE = (
     "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>]"
     " -- <command> [args...]"
     " | execution slot --probe"
+    " | execution slot --holders"
 )
 WINDOW_WAIT = 3600  # --wait-window's bound when it names none: an hour of measuring
 WINDOW_PROGRESS = 60  # seconds between the lines that say a waiting batch is still waiting
@@ -687,6 +688,7 @@ class SlotArgs:
     command: list[str]
     window_wait: int | None = None  # --wait-window's bound; None: refuse at once under a measurement
     deadline: int | None = None
+    holders: bool = False  # --holders (ludics-lite#639): list who holds this box's slots, take nothing
 
 
 def parse_deadline(verb: str, args: list[str], i: int) -> int:
@@ -697,6 +699,12 @@ def parse_deadline(verb: str, args: list[str], i: int) -> int:
 
 
 def parse_slot(args: list[str]) -> SlotArgs:
+    if args and args[0] == "--holders":
+        # A read of the box's locks, taking none: it takes no option, so no word is accepted and
+        # then ignored (a --probe line's options are a runner's, the holders' have no such caller).
+        if len(args) > 1:
+            die("execution slot: --holders takes no other word; it runs nothing")
+        return SlotArgs(600, "", False, "", [], holders=True)
     wait, kind, probe, bg = 600, "", False, ""
     deadline: int | None = None
     window_wait: int | None = None
@@ -707,6 +715,8 @@ def parse_slot(args: list[str]) -> SlotArgs:
         arg = args[i]
         if arg == "--probe":
             probe = True
+        elif arg == "--holders":
+            die("execution slot: --holders takes no other word; it runs nothing")
         elif arg == "--bg":
             if i + 1 >= len(args) or not args[i + 1]:
                 die("execution slot: expected a parent directory for --bg")
@@ -910,6 +920,11 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     directory = os.path.join(cfg.path(cfg.slot_state), box)
     cpu = parsed.kind == "--cpu"
     marker_measure = os.environ.get("FLEET_MEASUREMENT_HELD", "")
+    if parsed.holders:
+        # THE HOLDERS (ludics-lite#639, ``holders.py``): who holds this box's slots now, one JSON line
+        # per held slot; like the probe, it takes nothing and reads no registry.
+        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens, _is_held)))
+        return 0
     if parsed.probe:
         # THE PROBE: what a slot here would be, taking nothing and reading no registry; inside a
         # live `execution hold --request` here, the measurement it runs. fleet-worker.sh answers
