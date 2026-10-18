@@ -46,6 +46,13 @@ SHA_H=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 # The next merge, landing on the branch while a round is being read.
 SHA_D=dddddddddddddddddddddddddddddddddddddddd
 
+# This repository's own advisory list, as its default branch holds it: the second ERE is the two
+# macOS jobs (test-pr-review-base-red.sh reads the same list for --advisory-red's reds).
+THIS_REPOS_ADVISORY_LIST='# The checks that are advisory on this repository.
+^(claude|Claude Code|github pages docs)$
+^bash 3\.2 suites, .* \(macos\)$
+'
+
 # A `ci` whose push trigger was dropped: pull requests, a schedule and manual runs — no push.
 PUSHLESS_YAML='name: ci
 on:
@@ -641,6 +648,64 @@ test_interim_finds_an_older_run_off_the_page() {
   assert_eq "$BASE_RC" 0 "the same page with that run finished: the interim answers"
 }
 
+# Under --advisory-red (the gate's read, beside --interim) the interim judges by the repository's
+# advisory list (ludics-lite#659), at both places it judged by the default: the live shape of
+# 2026-10-18, the previous merge's run going ONLY on its two macOS jobs while the tip's run waits
+# behind it, and a merged head whose macOS jobs `merge` did not wait for. Each holds the interim
+# without the flag, as before; a required job unfinished keeps the older run in flight.
+test_interim_under_the_repositorys_advisory_list() {
+  local older='[{"status":"pending","conclusion":null,"head_sha":"cccccccccccccccccccccccccccccccccccccccc","id":7802},
+                {"status":"in_progress","conclusion":null,"head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","id":7801},
+                {"conclusion":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","id":7800}]'
+  local done='"created_at":"2026-09-26T07:42:00Z","completed_at":"2026-09-26T07:50:00Z"'
+  local going='"created_at":"2026-09-26T07:42:00Z","completed_at":null'
+  local out="$TEST_ROOT/advisory-red.json" flag
+  for flag in --advisory-red ""; do
+    burst_fixture "$older"
+    JOBS_7801=$(jobs_json "[{\"name\":\"fixtures (ubuntu)\",\"conclusion\":\"success\",$done},
+                            {\"name\":\"bash 3.2 suites, a (macos)\",\"conclusion\":null,$going}]")
+    ADVISORY_LIST="$THIS_REPOS_ADVISORY_LIST"
+    : >"$out"
+    run_base --wait=2 --interim ${flag:+"$flag" "$out"}
+    if [ -n "$flag" ]; then
+      assert_eq "$BASE_RC" 0 "an older run going only on advisory jobs is not in flight ($BASE_OUTPUT)"
+      assert_contains "$BASE_OUTPUT" "green, interim (tip ${SHA_C:0:8};" "the interim answers"
+      assert_contains "$BASE_OUTPUT" "(run 7801 of ci at ${SHA_B:0:8} is still running, but only jobs the repository's advisory list names — not waited for)" \
+        "and names the run it did not wait for"
+      assert_eq "$(cat "$out")" "[]" "no red was taken out of the verdict"
+    else
+      assert_eq "$BASE_RC" 4 "without the flag that run holds the interim, as before"
+      assert_not_contains "$BASE_OUTPUT" "green, interim" "no green over it"
+    fi
+  done
+  burst_fixture "$older"
+  JOBS_7801=$(jobs_json "[{\"name\":\"fixtures (ubuntu)\",\"conclusion\":null,$going},
+                          {\"name\":\"bash 3.2 suites, a (macos)\",\"conclusion\":null,$going}]")
+  ADVISORY_LIST="$THIS_REPOS_ADVISORY_LIST"
+  run_base --wait=2 --interim --advisory-red "$out"
+  assert_eq "$BASE_RC" 4 "a required job still running keeps it in flight"
+  assert_not_contains "$BASE_OUTPUT" "green, interim" "and holds the interim"
+  # The merged head still going on its macOS jobs: green by the list `merge` merged it under.
+  for flag in --advisory-red ""; do
+    burst_fixture "$BURST_RUNS"
+    HEAD_CHECKS='{"check_runs":[{"name":"build","conclusion":"success","html_url":"https://example.test/check/1"},
+                                {"name":"bash 3.2 suites, a (macos)","conclusion":null,"html_url":"https://example.test/check/2"}]}'
+    HEAD_RUNS='{"workflow_runs":[{"created_at":"2026-09-26T07:41:00Z","id":8001,"workflow_id":1,"event":"pull_request","name":"ci","status":"in_progress","conclusion":null}]}'
+    JOBS_8001=$(jobs_json "[{\"name\":\"build\",\"conclusion\":\"success\",$done},
+                           {\"name\":\"bash 3.2 suites, a (macos)\",\"conclusion\":null,$going}]")
+    ADVISORY_LIST="$THIS_REPOS_ADVISORY_LIST"
+    run_base --interim ${flag:+"$flag" "$out"}
+    if [ -n "$flag" ]; then
+      assert_eq "$BASE_RC" 0 "a head going only on advisory jobs is green meanwhile ($BASE_OUTPUT)"
+      assert_contains "$BASE_OUTPUT" "(ci still running there only in jobs the repository's advisory list names)" \
+        "and the source's line says so"
+    else
+      assert_eq "$BASE_RC" 4 "without the flag the default list holds it, as before"
+      assert_contains "$BASE_OUTPUT" "(no interim verdict for ci: source (a): PR #7's head" "naming the source"
+    fi
+  done
+}
+
 # The fold's own deeper read (ludics-lite#535) leaves the interim as #533 set it. Twelve cancelled
 # rows over a judged GREEN at an older merge, the tip's own run in flight on top: the fold now
 # finds that green below the page, so a plain read settles for it as it does for a green on the
@@ -969,6 +1034,7 @@ tests=(
   test_interim_is_not_asked_outside_its_shape
   test_interim_in_a_group_that_does_not_cancel
   test_interim_finds_an_older_run_off_the_page
+  test_interim_under_the_repositorys_advisory_list
   test_interim_over_a_green_behind_a_page_of_cancelled_runs
   test_a_hundred_runs_that_judged_nothing_are_never_green
   test_interim_reconfirms_the_tip
