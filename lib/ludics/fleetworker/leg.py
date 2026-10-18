@@ -37,6 +37,14 @@ the setup between them (the copy, the ssh, the fetch), whose time no clock on ei
 for the other. The leg waits for no window when its record is not suspended: the slot on the box
 does, as for any batch.
 
+Its boundary: a bounded, best-effort wait that re-reads the registry. It ends at once when the
+record is gone or concluded (a worker handing back mid-window), and otherwise proceeds only on a
+read in which the record is active again; the leg then judges that record as above (launching,
+running or uncertain), so it never runs against a record that read showed suspended or concluded.
+It refuses loudly on a registry it cannot read at the bound, and at the bound. When a refusal
+lands within a poll interval of the window's own end, or which of two failed reads it names, is
+outside it.
+
 THE CHECKOUT AND THE REVISION, on the box (paths absolute, or ``~/``): ``--checkout`` is a git
 checkout of the project there, ``--worktree`` a LINKED worktree of it (never the main one), made
 with ``git worktree add --detach`` when the path does not exist and checked out ``--detach`` at
@@ -378,9 +386,11 @@ def await_window(cfg: Config, request: str, record: dict[str, Any], records: lis
     def holders(read: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # The box's measurements; else the window this record is still suspended by, from the read
         # or by its id alone when the read does not list it (a torn read, see the header).
-        held = slot.measurement_records(read, host)
         own = execution.record_of(read, request)
-        if held or own is None or own.get("state") != "suspended":
+        if own is None or own.get("state") not in ("suspended", *DISPATCHED):
+            return []  # gone or concluded: nothing to wait for, and the leg refuses it
+        held = slot.measurement_records(read, host)
+        if held or own.get("state") != "suspended":
             return held
         by = execution.jq_text(own.get("suspended_by"))
         return [execution.record_of(read, by) or {"request_id": by, "window": True}]

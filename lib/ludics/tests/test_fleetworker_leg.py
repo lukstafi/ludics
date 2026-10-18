@@ -70,9 +70,6 @@ class Stream(unittest.TestCase):
         self.assertEqual(self.run_far(script, local=True)[0], 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 def standing(state: str = "suspended", by: str = "w1") -> dict[str, Any]:
     record: dict[str, Any] = {
@@ -175,6 +172,15 @@ class WindowWait(unittest.TestCase):
         self.assertEqual(out, "EXECUTION LEG REFUSED testbox: measurement w9 still holds testbox after 1s"
                               " (--wait-window); nothing ran\n")
 
+    def test_a_reservation_concluded_mid_window_ends_the_wait_at_once(self) -> None:
+        # A worker handing back mid-window: the window is still open, but nothing will restore
+        # the record, so the wait ends and the leg refuses it as not dispatched.
+        handed_back = [standing("concluded"), window("w1")]
+        result, out, err, reads = self.wait([handed_back], ["--wait-window=30"])
+        assert isinstance(result, dict)
+        self.assertEqual((result["state"], out, reads), ("concluded", "", 1))
+        self.assertIn("no measurement holds testbox after 0s; running the leg", err)
+
     def test_an_unreachable_anchor_is_said_in_the_legs_voice(self) -> None:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
                           {"FLEET_LOCAL_BOX": "agent", "FLEET_ANCHOR": "far-anchor"}, host="agent")
@@ -195,3 +201,7 @@ class WindowWait(unittest.TestCase):
         self.assertEqual(leg.window_bound(["--wait-window"]), slot.WINDOW_WAIT)
         self.assertEqual(leg.window_bound(["--wait-window=90", "--wait-window=7"]), 7)
         self.assertEqual(leg.window_bound(["--wait-window=7", "--wait-window"]), slot.WINDOW_WAIT)
+
+
+if __name__ == "__main__":
+    unittest.main()
