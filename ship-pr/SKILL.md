@@ -838,7 +838,7 @@ the reviewer never 👍'd defensible:
 - the build gate has READ a green on the final head: merge with `--require-green`, which refuses
   `absent` as well as red and no-verdict — a run that does not exist yet is not a green, and a
   merge the reviewer never 👍'd does not get the path-filter allowance the ordinary gate gives
-  (over a coordinated wave's owned base red, `--override` instead, *The override*);
+  (over a coordinated wave's owned base red, with `--override` too, *The override*);
 - every thread is answered with its disposition — fixed / removed / deferred / rebutted — and
   resolved;
 - the PR body carries a review-record paragraph (edited in with `body`, above): how many rounds,
@@ -1245,9 +1245,10 @@ SHA and the owner, so every merge in the red span names the red it rode over:
   --override "base red, not this PR: <check>, test <test>, red at <base sha>; owned by <owner>/<repo>#<issue>"
 ```
 
-It goes without `--require-green`, at either exit of the review loop: that flag refuses any red
-the override waives. Under auto permission mode it still needs the user's go-ahead (*PR or direct
-commit?*): the standing merge rule there does not cover `--override`.
+At the loop's close-out exit (*When the loop ends*) it keeps `--require-green`, which takes a red
+the override waived as read and keeps its other refusals. Under auto permission mode it still
+needs the user's go-ahead (*PR or direct commit?*): the standing merge rule there does not cover
+`--override`.
 
 It is not legitimate for "the error looks unrelated", for a red you have not opened, or for a flake
 you are assuming rather than confirming — re-run the job instead. A re-run costs minutes; an

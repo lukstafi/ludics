@@ -573,20 +573,27 @@ test_an_absent_head_merges_and_a_close_out_refuses_it() {
   assert_no_merge_call
 }
 
-# ludics-lite#623: a close-out merge never goes over a red, waived or not, and the refusal names the
-# one merge that may (an owned base red in a coordinated wave: --override without --require-green)
-# instead of the generic "never made by dropping --require-green".
-test_require_green_refuses_a_waived_red_and_names_the_override_merge() {
+# ludics-lite#623: a coordinated wave's close-out merge may go over its owned base red. A red
+# --override waived is a verdict READ, so --require-green takes it and keeps its other refusals:
+# without the override the red still refuses, and a waived red with no passing check beside it is
+# still no build that RAN green.
+test_require_green_takes_a_waived_red() {
+  local why='base red, not this PR: ubuntu, test t, red at base-sha; owned by o/r#1'
   reset
-  CHECK_ROWS="$(printf 'red\tubuntu\tfailure\thttps://example/ubuntu\t1')"
-  run_merge --require-green --override 'base red, not this PR: ubuntu, test t, owned by o/r#1'
-  assert_eq "$MERGE_RC" 4 "--require-green refuses a waived red ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_OUTPUT" "a red --override" "the refusal names the waived red"
-  assert_contains "$MERGE_OUTPUT" "with --override and without" "and the merge that may go over it"
-  assert_not_contains "$MERGE_OUTPUT" "never made by dropping --require-green" "not the generic line"
+  CHECK_ROWS="$(row red ubuntu failure)"$'\n'"$(row green macos success)"
+  run_merge --require-green
+  assert_eq "$MERGE_RC" 1 "a close-out without the override refuses the red ($MERGE_OUTPUT)"
   assert_no_merge_call
-  run_merge --override 'base red, not this PR: ubuntu, test t, owned by o/r#1'
-  assert_eq "$MERGE_RC" 0 "the same override without --require-green merges ($MERGE_OUTPUT)"
+  run_merge --require-green --override "$why"
+  assert_eq "$MERGE_RC" 0 "a close-out with the override merges over the waived red ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "OVERRIDE: merging example/repo#7 over a RED build signal — $why" \
+    "the override is announced with its reason"
+  reset
+  CHECK_ROWS="$(row red ubuntu failure)"
+  run_merge --require-green --override "$why"
+  assert_eq "$MERGE_RC" 4 "a waived red with nothing green beside it is no build that ran green ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "beside the red --override waived" "the refusal says what it read"
+  assert_no_merge_call
 }
 
 test_superseded_head_never_merges() {
@@ -2539,7 +2546,7 @@ tests=(
   test_a_rejected_merge_call_and_an_unconfirmed_state
   test_a_deferred_close_out_that_cannot_be_disarmed_is_loud
   test_an_unread_merge_queue_refuses_a_close_out
-  test_require_green_refuses_a_waived_red_and_names_the_override_merge
+  test_require_green_takes_a_waived_red
   test_a_merge_commit_that_does_not_build_is_refused
   test_a_merge_commit_that_builds_merges
   test_no_build_input_on_both_sides_builds_nothing
