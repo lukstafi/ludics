@@ -9,8 +9,10 @@ What a board is, and is not (the boundary every rule below is drawn against): a 
 lease-gated, best-effort record of a wave, written in the coordinator's own words through this
 verb. It is not a registry, a lock or a verdict source: nothing gates on it. So its durability is
 that of one fsynced file replaced atomically -- a power loss may lose the latest write, never leave a
-partial board -- with no directory sync, and nothing can fail after the replace: a refusal means
-nothing was written. Its inputs are what the verb writes; a file edited by hand is read only as far
+partial board -- with no directory sync. Every refusal is made before the replace, so ``BOARD
+REFUSED`` (exit 1) means nothing was written; any other failure of a writer (its acknowledgement
+lost, exit 1 never) leaves the outcome unknown, and the near side says to show the board before a
+retry. Its inputs are what the verb writes; a file edited by hand is read only as far
 as ``validate`` checks its shape.
 
 How it runs, as the execution registry runs (``registry.py``'s header): this module is SHIPPED.

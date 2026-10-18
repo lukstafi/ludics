@@ -13,6 +13,8 @@ from unittest import mock
 
 from ludics import cli
 from ludics.fleetworker import board, boardstore
+from ludics.fleetworker.config import load_config
+from ludics.fleetworker.transport import Done
 
 # The cell texts that broke `sed` on the OCANNL wave-20261014 board, and the rest of the shell's and
 # markdown's metacharacters.
@@ -195,6 +197,27 @@ class CommandLine(unittest.TestCase):
         self.assertIn("board note: give at least one", self.refused("note", "--create", "w"))
         self.assertIn("board log: expected the line's text", self.refused("log", "w"))
         self.assertEqual(self.payload("show", "w", "--json"), ("show", {"wave": "w", "json": True}))
+
+
+class Outcome(unittest.TestCase):
+    def outcome(self, args: list[str], rc: int) -> tuple[int, str]:
+        cfg = load_config("/nonexistent/fleet-worker.sh", {"FLEET_COORDINATOR": "c", "FLEET_ANCHOR": "a", "HOME": "/tmp"})
+        out = io.StringIO()
+
+        def ran(*args: object, **kwargs: object) -> Done:
+            return Done(rc, "")
+
+        with mock.patch.object(board, "run_on", ran), contextlib.redirect_stdout(out):
+            got = board.cmd_board(cfg, args)
+        return got, out.getvalue()
+
+    def test_only_a_refusal_says_nothing_was_written(self) -> None:
+        self.assertEqual(self.outcome(["log", "w", "x"], 1), (1, ""))
+        self.assertEqual(self.outcome(["log", "w", "x"], 0), (0, ""))
+        self.assertEqual(self.outcome(["log", "w", "x"], 120),
+                         (120, "BOARD UNKNOWN a: the writer exited 120; outcome unknown; show the board before retrying\n"))
+        self.assertEqual(self.outcome(["show", "w"], 120), (120, ""), "a read changes nothing")
+        self.assertEqual(self.outcome(["show", "w"], 255), (4, "BOARD UNREACHABLE a\n"))
 
 
 if __name__ == "__main__":
