@@ -374,6 +374,13 @@ must exist before launch. For example `reserve.json`:
 }
 ```
 
+`issue` is optional: the one issue the work is for, spelled exactly `owner/repo#N`, or no field at
+all for work without an issue of its own (a post-wave task, an integration run), whose label goes in
+`purpose`. A new request whose `issue` names no issue (`owner/repo#post-1`, `<repo> integration`) is
+refused, since `fleet-worker.sh prs --wave` reads the field as one; it finds a wave's PRs by the
+issues its records name and by its workers' branches (a head branch that is the `worker` of a record
+naming that `repository`, or ends in `/` and it).
+
 `requested_revision` is free text: a pushed ref (`origin/main`), an exact SHA, or a SHA with a note
 (`<sha> plus working diff`). Each whitespace-separated word of it made only of hex digits, seven or
 more, is read as a commit and must be the full 40-hex SHA of a commit GitHub has in `repository`

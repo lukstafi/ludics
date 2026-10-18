@@ -2523,7 +2523,7 @@ absent=$(printf 'c%.0s' $(seq 40))   # a commit no repository here has
 tipreq() { # <id> [sha] [jq object to add] -> a loop run's request on testbox
   local more='{}'; [ -z "${3:-}" ] || more=$3
   jq -n --arg id "$1" --arg sha "${2:-$tip}" --argjson more "$more" '{request_id:$id, wave:"w", worker:"coordinator",
-    transport:"coordinator", issue:"o/r integration", purpose:"GPU integration loop, cuda: fixture", agent_host:"testbox",
+    transport:"coordinator", purpose:"o/r integration, GPU integration loop, cuda: fixture", agent_host:"testbox",
     execution_host:"testbox", repository:"o/r", requested_revision:$sha, kind:"correctness"} + $more' > "$TMP/$1.json"
   printf '%s' "$TMP/$1.json"
 }
@@ -3200,7 +3200,7 @@ expect "prs flags a PR at five or more rounds, exit 1" 1 "o/r#12 rounds=6 ci=gre
 grep -q "^o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR$" <<<"$out" && ok "...a PR under the flag gets its line, no note, age from the newer of commit and creation" || ko "PR 7's line: $out"
 grep -q "^o/r#9 rounds=? ci=absent head=[01]m claude/issue-9: -$" <<<"$out" && ok "...an unread count reads as ?, never as 0, and an unread commit date leaves the age to the creation time" || ko "PR 9's line: $out"
 [ "$(grep -o '^o/r#[0-9]*' <<<"$out" | tr '\n' ' ')" = "o/r#7 o/r#9 o/r#12 " ] && ok "...in PR order" || ko "order: $out"
-grep -q "rounds o/r#12 threshold=off" "$P/calls" && grep -q "^retry --read pr list --repo o/r --state open" "$P/calls" && ok "...through pr-review.sh, the repo spelled out in every read" || ko "calls: $(cat "$P/calls")"
+grep -q "rounds o/r#12 threshold=off" "$P/calls" && grep -q "^retry --read pr list --repo o/r --state open .*isCrossRepository" "$P/calls" && ok "...through pr-review.sh, the repo spelled out in every read" || ko "calls: $(cat "$P/calls")"
 expect "--flag-at raises the flag; an unread count alone exits 4" 4 "o/r#9 rounds=?" -- "$FW" prs o/r --flag-at 7
 grep -q CONVERGE <<<"$out" && ko "a PR under --flag-at was flagged: $out" || ok "...and nothing is flagged under it"
 expect "a list that reaches its cap says PRs past it are not shown, exit 4" 4 "PRS INCOMPLETE o/r: the list reached its cap of 3 open PRs" -- env FLEET_PRS_LIMIT=3 "$FW" prs o/r --flag-at 7
@@ -3282,6 +3282,27 @@ expect "with every open PR kept by its closing references, nothing more is read"
 grep -q graphql "$P/calls" && ko "a cross-reference read with nothing to find: $(cat "$P/calls")" || ok "...no cross-reference read"
 expect "--wave with no records is refused, not read as an empty wave" 1 "no execution record names wave nowave" -- "$FW" prs o/r --wave nowave
 fixture_done prs-7
+# A post-wave task has no issue of its own (lukstafi/ludics-lite#664): its records name none, and its
+# PR may reference nothing, so --wave finds it by its worker's branch. A placeholder is refused.
+jq -n '{request_id:"prs-p", wave:"wvp", worker:"wvp-p1t2", transport:"subagent", purpose:"post-wave task p1t2",
+  agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true}' > "$TMP/prs-p.json"
+jq '.request_id = "prs-q" | .issue = "o/r#post-1"' "$TMP/prs-p.json" > "$TMP/prs-q.json"
+expect "reserve refuses an issue that names no issue" 1 "issue 'o/r#post-1' is not one issue spelled owner/name#N" -- \
+  env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-q.json"
+env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-p.json" >/dev/null 2>&1 || ko "could not reserve prs-p without an issue (setup)"
+jq -n --arg now "$now" '[{number: 7, title: "post-wave PR", headRefName: "claude/wvp-p1t2", headRefOid: "c7", createdAt: $now, isDraft: false,
+  isCrossRepository: false, closingIssuesReferences: []},
+  {number: 12, title: "second", headRefName: "claude/xwvp-p1t2", headRefOid: "c12", createdAt: $now, isDraft: false, isCrossRepository: false,
+   closingIssuesReferences: []},
+  {number: 9, title: "fork", headRefName: "claude/wvp-p1t2", headRefOid: "c9", createdAt: $now, isDraft: false, isCrossRepository: true,
+   closingIssuesReferences: []}]' > "$P/list.json"
+: > "$P/calls"
+expect "--wave keeps a PR on a branch of a worker its records name, with no issue to read" 0 "^o/r#7 rounds=2 .* claude/wvp-p1t2: post-wave PR$" -- "$FW" prs o/r --wave wvp --flag-at 7
+grep -q "o/r#12" <<<"$out" && ko "a branch that only contains the worker's name was kept: $out" || ok "...and drops a branch whose last component is another name"
+grep -q "o/r#9" <<<"$out" && ko "a fork's branch of the worker's name was kept: $out" || ok "...and a fork's branch of the same name"
+grep -q graphql "$P/calls" && ko "a cross-reference read for a wave naming no issue: $(cat "$P/calls")" || ok "...with no cross-reference read"
+expect "...and only in the repository the worker's records name" 0 "^PRS o/other: no open PRs closing or referencing an issue of wave wvp, or on a branch of its workers$" -- "$FW" prs o/other --wave wvp
+fixture_done prs-p
 unset SHIM_PRS
 }
 

@@ -96,7 +96,11 @@ workflow to this explicit task list, with these adaptations for tasks without is
 - Put the local task ID and full task text in the brief and board where an issue number and
   body would normally go. Record decision-gate recommendations and decisions there too; do
   not send `gh issue` calls or fabricate closing keywords for these tasks. Use the task ID in
-  worker names and scratch paths; omit optional issue metadata in tools that provide it.
+  worker names and scratch paths; omit optional issue metadata in tools that provide it. A task's
+  execution records name the chip's source issue (`owner/repo#N`, the issue of the PR whose
+  hand-back proposed it) or carry no `issue`, never a placeholder such as `#post-1` (`reserve`
+  refuses one); `prs --wave` finds the task's PR by its worker's branch either way, so the
+  branch ends in the worker name.
 - Workers ship through `ship-pr` and report the result against their board task. A merged PR
   and verified hand-back close the task without an issue-closing comment. For non-code tasks,
   verify the specified deliverable instead. Workers run `after-merge` in hand-back mode for

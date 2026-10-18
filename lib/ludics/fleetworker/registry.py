@@ -112,6 +112,13 @@ carrying `resolved_revision` for one is refused, as is a head-of dispatch withou
 `reserved` and a later dispatch resolve again: each dispatch records the commit it assigned. A
 head-of record never dispatched names no commit, so reconcile refuses to make it `running` or
 `uncertain`; and once resolved, an `observed_sha` that any later payload names must be that commit.
+
+A request's `issue` is optional (ludics-lite#664): the one issue the work is for, spelled exactly
+`owner/name#N` -- `fleet-worker.sh prs --wave` reads it as one -- or absent, for work with no issue of
+its own (a post-wave task, an integration run), whose label goes in `purpose`. A placeholder that
+names no issue (`owner/name#post-1`, `<repo> integration`) is refused when a request is NEW (reserve,
+run, window). The ledger keeps the free-text spellings recorded before, and a retry of such a request
+still answers with its record: what a record holds is validated only as a nonempty string.
 """
 import fcntl
 import json
@@ -143,8 +150,10 @@ def nonempty(obj: Record, keys: list[str]) -> None:
             refuse(f"{key} must be a nonempty string")
 
 
-REQUEST_FIELDS = {"request_id", "wave", "worker", "transport", "issue", "purpose",
+REQUEST_FIELDS = {"request_id", "wave", "worker", "transport", "purpose",
                   "agent_host", "execution_host", "repository", "requested_revision", "kind"}
+OPTIONAL_FIELDS = {"issue", "triage_reason", "standing", "integration"}
+ISSUE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
 STATES = {"reserved", "launching", "running", "uncertain", "suspended", "concluded"}
 SUSPENDABLE = STATES - {"suspended", "concluded"}   # what `suspended_from` may name
 HEAD_OF = "head-of:"
@@ -182,11 +191,12 @@ def resolve_dispatch(record: Record, resolved: Any, event: Record) -> None:
 
 def validate_request(data: Any) -> None:
     request = as_object(data)
-    if request is None or set(request) - REQUEST_FIELDS - {"triage_reason", "standing", "integration"}:
+    if request is None or set(request) - REQUEST_FIELDS - OPTIONAL_FIELDS:
         refuse("unknown reservation fields or invalid request")
     nonempty(request, list(REQUEST_FIELDS))
-    if "triage_reason" in request:
-        nonempty(request, ["triage_reason"])
+    for key in ("issue", "triage_reason"):
+        if key in request:
+            nonempty(request, [key])
     if request["kind"] not in {"correctness", "measurement"}:
         refuse("kind must be correctness or measurement")
     if request["requested_revision"].startswith(HEAD_OF) and head_of_branch(request["requested_revision"]) is None:
@@ -206,6 +216,13 @@ def validate_request(data: Any) -> None:
             refuse("integration must be true when present")
         if request["kind"] != "correctness" or request["transport"] != "coordinator" or request.get("standing"):
             refuse("only a coordinator's non-standing correctness reservation can be an integration run")
+
+
+def check_issue(request: Record) -> None:
+    """A NEW request's `issue` (see the header): absent, or one issue spelled `owner/name#N`."""
+    if "issue" in request and not ISSUE.fullmatch(request["issue"]):
+        refuse(f"issue {request['issue']!r} is not one issue spelled owner/name#N: name the issue the work is for, "
+               "or omit the field (a post-wave task, an integration run) and say what the work is in purpose")
 
 
 def validate_record(data: Any, path: Path) -> Record:
@@ -569,6 +586,7 @@ def main(argv: list[str]) -> None:
                 if record["request"]["kind"] == "measurement":
                     check_lane_lock(record["request"]["execution_host"], map_spec, anchor, lab)
         else:
+            check_issue(request)
             halted = halt_identity is not None
             if "triage_reason" in request and not halted:
                 refuse("triage reservations require an active halt")

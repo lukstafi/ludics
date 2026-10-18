@@ -31,6 +31,7 @@ from ludics.fleetworker.supervision import (
     pr_rows,
     referencing_prs,
     wave_issues,
+    wave_workers,
 )
 from ludics.fleetworker.workers import feeder_wait_ok, preflight_note, valid_name
 from ludics.prreview.core import Json, JsonStreamError, json_docs, json_stream
@@ -137,6 +138,33 @@ class Prs(unittest.TestCase):
         listing = json.loads('[{"number": 1, "closingIssuesReferences": []}, {"number": 2}, {"number": 3}]')
         self.assertEqual([row[0] for row in pr_rows(listing, ["o/r#7"], frozenset({2}))], ["2"])
         self.assertEqual([row[0] for row in pr_rows(listing, None, frozenset({2}))], ["1", "2", "3"])
+
+    def test_a_wave_keeps_a_pr_on_a_branch_of_one_of_its_workers(self) -> None:
+        # ludics-lite#664: a post-wave task's records name no issue, and its PR may reference nothing.
+        def rec(worker: str, transport: str = "subagent", wave: str = "w", repository: str = "o/r", **more: str) -> dict[str, object]:
+            return {"request": {"wave": wave, "worker": worker, "transport": transport, "repository": repository, **more}}
+
+        records = json.loads(json.dumps([
+            rec("w1016-p1t2"), rec("w1016-605", "app", issue="o/r#605"), rec("cw", "cli", repository="O/R"),
+            rec("coordinator", "coordinator", issue="o/r integration"), rec("/root/issue12"),
+            rec("elsewhere", wave="v"), rec("other-repo", repository="o/other"), {"request": {"wave": "w", "worker": "norepo", "transport": "cli"}},
+        ]))
+        self.assertEqual(wave_workers(records, "w", "o/r"), ("cw", "w1016-605", "w1016-p1t2"))
+        self.assertEqual(wave_workers(records, "w", "o/other"), ("other-repo",), "each worker to its own repository")
+        self.assertEqual(wave_issues(records, "w"), ["o/r integration", "o/r#605"], "a record without an issue names none")
+        listing = json.loads(json.dumps([
+            {"number": 1, "headRefName": "claude/w1016-p1t2"}, {"number": 2, "headRefName": "w1016-605"},
+            {"number": 3, "headRefName": "claude/xw1016-p1t2"}, {"number": 4, "headRefName": "claude/W1016-P1T2"},
+            {"number": 5, "headRefName": "claude/w1016-p1t2/more"}, {"number": 6, "headRefName": "claude/coordinator"},
+            {"number": 7, "headRefName": "claude/elsewhere"}, {"number": 8}, {"number": 9, "headRefName": "a/b/cw"},
+            {"number": 10, "headRefName": "claude/other-repo"},
+        ]))
+        for pr in listing:
+            pr["isCrossRepository"] = False
+        listing += json.loads('[{"number": 11, "headRefName": "claude/w1016-p1t2", "isCrossRepository": true},'
+                              ' {"number": 12, "headRefName": "claude/w1016-p1t2"}]')
+        kept = [row[0] for row in pr_rows(listing, [], frozenset(), wave_workers(records, "w", "o/r"))]
+        self.assertEqual(kept, ["1", "2", "9"], "the branch is the worker, or ends in / and the worker, exactly, never a fork's")
 
     def test_cross_references_count_the_prs_of_the_listed_repository_only(self) -> None:
         def page(nodes: list[object], more: bool = False) -> Json:

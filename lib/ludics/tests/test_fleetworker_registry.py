@@ -149,6 +149,33 @@ class HeadOf(RegistryCase):
         self.assertEqual(rc, 1)
         self.assertIn("resolved_revision is only valid for dispatch", err)
 
+    def test_an_issue_is_one_owner_name_number_or_absent_on_a_new_request(self) -> None:
+        # ludics-lite#664: a post-wave placeholder named no issue, so `prs --wave` could not find its PR.
+        no_issue = request("bare")
+        del no_issue["issue"]
+        self.assertEqual(self.call("reserve", no_issue, slots="mac=9")[0], 0)
+        self.assertEqual(self.call("run", request("ok", issue="a.b/c_d-e#10"), slots="mac=9")[0], 0)
+        for i, bad in enumerate(("lukstafi/ludics-lite#post-1", "o/r integration", "o/r#0", "#7", "o/r#7 x", "o/r#1,#2")):
+            for action in ("reserve", "run"):
+                rc, out, err = self.call(action, request(f"bad{i}{action}", issue=bad), slots="mac=9")
+                self.assertEqual((rc, out), (1, None), bad)
+                self.assertIn(f"EXECUTION REFUSED: issue {bad!r} is not one issue spelled owner/name#N", err)
+        self.assertEqual(self.call("reserve", request("empty", issue=""))[0], 1)
+        self.assertEqual(sorted(r["request_id"] for r in self.call("list", {})[1]), ["bare", "ok"])
+
+    def test_a_free_text_issue_already_in_the_ledger_still_validates_and_retries(self) -> None:
+        legacy = request("old", issue="o/r#1", standing=True)
+        self.call("reserve", legacy)
+        path = os.path.join(self.root, "executions", "old.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["request"]["issue"] = legacy["issue"] = "o/r integration"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        self.assertEqual(self.call("list", {})[0], 0)
+        rc, out, _ = self.call("reserve", legacy)
+        self.assertEqual((rc, out["request"]["issue"]), (0, "o/r integration"), "the retry answers with the record")
+
     def test_a_record_holding_a_resolution_for_another_revision_is_invalid(self) -> None:
         self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
         path = os.path.join(self.root, "executions", "h.json")
