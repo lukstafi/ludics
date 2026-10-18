@@ -88,7 +88,7 @@ are run from a repo checkout, not from the skill directory.
 roughly every other call returning `503 No server is currently available`) a single attempt is a
 coin flip, so the script retries every call — 4 tries, 5s doubling to 20s, on 5xx and that body,
 never on a 4xx, on a GraphQL error no retry can change (a node or page limit, an unknown field, a
-parse error), or on gh refusing a `retry` call's own arguments (an unknown flag or `--json` field:
+parse error, a `Could not resolve to …` NOT_FOUND), or on gh refusing a `retry` call's own arguments (an unknown flag or `--json` field:
 exit 2, since nothing was sent). gh withholding an answer for its terminal escape sequences — a job's
 log read without `--allow-escape-sequences` — is exit 2 too: re-sending it is withheld again, so add
 the flag (and keep the raw log in a file). gh refusing an argument the script itself sends (a field or flag

@@ -12,9 +12,10 @@
 # verdicts would be worse than the inference it replaced).
 #
 # It also pins the plain `retry`'s line between a GraphQL answer and transport (ludics-lite#422): a
-# query-cost rejection was retried four times and reported as "the API never answered". The
-# fixed-answer bodies below are verbatim from real `gh` 2.101.0 calls; each must exit 1 on its first
-# attempt, while a gateway failure and the near-misses outside the allowlist still retry to exit 3.
+# query-cost rejection was retried four times and reported as "the API never answered", and so was
+# a NOT_FOUND for an issue that does not exist (ludics-lite#663). The fixed-answer bodies below are
+# verbatim from real `gh` 2.101.0 calls; each must exit 1 on its first attempt, while a gateway
+# failure and the near-misses outside the allowlist still retry to exit 3.
 # And gh's own refusal of a caller's arguments (ludics-lite#452): `gh pr view 1 --json nosuchfield`
 # sends nothing, yet was retried four times and reported as exit 3. Those bodies are verbatim too,
 # and each must exit 2 on its first attempt, while their near-misses still retry to exit 3 (Cobra's
@@ -375,6 +376,11 @@ test_a_fixed_graphql_answer_is_a_rejection() {
     # A gateway marker the message only QUOTES, from `{ viewer { login "Bad gateway" } }`: the
     # gateway scan reads substrings, so the allowlist has to be read before it (review round 1).
     'gh: Expected NAME, actual: STRING ("Bad gateway") at [1, 18]'
+    # GraphQL's NOT_FOUND (ludics-lite#663): a wave issue that does not exist was read four times
+    # and reported as the API never answering. Under `GraphQL: ` gh appends the error's path.
+    'gh: Could not resolve to an Issue with the number of 99999.'
+    "gh: Could not resolve to a Repository with the name 'lukstafi/no-such-repo-xyz'."
+    'GraphQL: Could not resolve to an issue or pull request with the number of 99999. (repository.issue)'
   )
   retune API_ATTEMPTS=3
   for body in "${bodies[@]}"; do
@@ -426,6 +432,9 @@ test_a_near_miss_still_retries() {
     'gh: proxy: By the time this query traverses to the comments connection, it is requesting up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000.'
     "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (query.viewer.nosuchfield)"
     $'gh: Something went wrong (HTTP 500)\ngh: Field \'nosuchfield\' doesn\'t exist on type \'User\''
+    # NOT_FOUND's path suffix is `GraphQL: `'s alone, and required there.
+    'gh: Could not resolve to an Issue with the number of 99999. (repository.issue)'
+    'GraphQL: Could not resolve to an Issue with the number of 99999.'
   )
   retune API_ATTEMPTS=3
   for body in "${bodies[@]}"; do

@@ -18,7 +18,8 @@ without ``--allow-escape-sequences``) is the caller's call to fix too, though th
 GitHub: it was read as transport, retried four times and reported UNKNOWN (post-wave-3 task 8).
 
 Stdout: gh's own, on success. Exit: 0 done; 1 the API rejected it (a 4xx, or a GraphQL error no
-retry can change, ludics-lite#422); 2 usage, or gh refused the arguments and sent nothing, or gh
+retry can change: a node or page limit, an unknown field, a parse error, ludics-lite#422, or a
+NOT_FOUND, ludics-lite#663); 2 usage, or gh refused the arguments and sent nothing, or gh
 withheld the answer for want of ``--allow-escape-sequences``; 3 the API never answered, or a write
 failed ambiguously -- the outcome is UNKNOWN, never a failure of the command's job.
 """

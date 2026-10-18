@@ -165,9 +165,38 @@ def api_rejection(text: str) -> bool:
     return _HTTP_4XX.search(text) is not None
 
 
-# graphql_fixed_answer's fail-closed allowlist of whole-line shapes (ludics-lite#422); the shell
-# comment above graphql_fixed_answer is the boundary statement. ERE -> Python: the same classes,
-# matched against the whole message.
+# Did GraphQL answer with an error whose answer is FIXED, one that re-sending the same query can
+# never change (ludics-lite#422)? Retried as transport, a query-cost rejection spent four attempts
+# and ~35s and then reported "the API never answered" -- which it had.
+#
+# The boundary. This reads ONE line, the first line of gh's stderr, where gh prints a GraphQL
+# error's message after `gh: ` (`gh api graphql`) or `GraphQL: ` (every other gh command). It is a
+# fail-closed ALLOWLIST of whole-line shapes, each copied from a real failing call (gh 2.101.0):
+#   the node limit    By the time this query traverses to the <c> connection, it is requesting up
+#                     to <n> possible nodes which exceeds the maximum limit of <n>.
+#   the page limit    Requesting <n> records on the `<c>` connection exceeds the `first|last`
+#                     limit of <n> records.
+#   an unknown field  Field '<f>' doesn't exist on type '<T>'
+#   a parse error     Expected <tokens>, actual: <TOKEN> ("<text>") at [<line>, <column>]
+#   not found         Could not resolve to a|an <Type> with the <key> <n>|'<text>'.
+#                     (GraphQL's NOT_FOUND, ludics-lite#663: an issue, PR, repository, user or
+#                     node id that does not exist; under `GraphQL: ` gh appends ` (<path>)`, which
+#                     this shape alone takes, since every NOT_FOUND carries a path)
+# The first four are refused before the query runs, so it did nothing. NOT_FOUND is the answer of
+# a query that ran: the object it names does not exist, and no retry creates it. In a mutation the
+# field whose argument did not resolve did nothing; a document of several fields, some of which
+# ran, is outside this boundary (every mutation the script sends is one field). The machine type
+# (`errors[].type`) is not read: only `gh api graphql` prints the error document, on stdout, while
+# gh's own commands (`pr view`, `issue view`) print only the message, so the message is the one
+# reading that serves both. It deliberately does not read stdout (a read's data can quote any of
+# these sentences), the lines after the first, a ` (<path>)` suffix on any shape but not found,
+# several errors gh joined onto one line, gh's own client-side refusals (`Unknown JSON field`), or
+# any other GraphQL message. Those keep the classification they had, and that direction is the
+# point: a fixed shape this misses costs only the retries it always cost, while a transient failure
+# read as fixed would turn an unanswered read into a false fact (exit 1).
+_GRAPHQL_NOT_FOUND = r"Could not resolve to an? [A-Za-z ]+ with the [A-Za-z ]+ ([0-9]+|'[^']*')\."
+_GRAPHQL_NOT_FOUND_GH = re.compile(_GRAPHQL_NOT_FOUND)
+_GRAPHQL_NOT_FOUND_PATHED = re.compile(_GRAPHQL_NOT_FOUND + r" \([A-Za-z0-9_.]+\)")
 _GRAPHQL_FIXED = tuple(
     re.compile(p)
     for p in (
@@ -182,15 +211,18 @@ _GRAPHQL_FIXED = tuple(
 
 
 def graphql_fixed_answer(first_line: str) -> bool:
-    """``graphql_fixed_answer``: GraphQL refused to validate the query, so re-sending it can never
-    change the answer. Reads the first stderr line only, behind gh's ``gh: ``/``GraphQL: ``."""
+    """``graphql_fixed_answer``: GraphQL refused to validate the query, or answered that what it
+    names does not exist, so re-sending it can never change the answer. Reads the first stderr line
+    only, behind gh's ``gh: ``/``GraphQL: `` (the boundary above)."""
     if first_line.startswith("gh: "):
         msg = first_line[len("gh: ") :]
+        not_found = _GRAPHQL_NOT_FOUND_GH
     elif first_line.startswith("GraphQL: "):
         msg = first_line[len("GraphQL: ") :]
+        not_found = _GRAPHQL_NOT_FOUND_PATHED
     else:
         return False
-    return any(p.fullmatch(msg) for p in _GRAPHQL_FIXED)
+    return not_found.fullmatch(msg) is not None or any(p.fullmatch(msg) for p in _GRAPHQL_FIXED)
 
 
 _SPACE = r" \t\n\r\f\v"  # [[:space:]] in the C locale, which is what the shell's lists mean

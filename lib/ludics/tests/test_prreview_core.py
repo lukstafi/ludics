@@ -107,6 +107,34 @@ class Classification(unittest.TestCase):
         ):
             self.assertFalse(core.graphql_fixed_answer(line), line)
 
+    def test_graphql_not_found_verbatim(self) -> None:
+        # NOT_FOUND (ludics-lite#663), verbatim from gh 2.101.0: `gh api graphql` prints the bare
+        # message, gh's own commands append the error's ` (<path>)`.
+        for line in (
+            "gh: Could not resolve to an Issue with the number of 99999.",
+            "gh: Could not resolve to a Repository with the name 'lukstafi/no-such-repo-xyz'.",
+            "gh: Could not resolve to a node with the global id of 'MDU6SXNzdWUxMjM0NTY3ODk5OTk5'.",
+            "gh: Could not resolve to a User with the login of 'no-such-user-xyzzy-1234567'.",
+            "GraphQL: Could not resolve to an issue or pull request with the number of 99999."
+            " (repository.issue)",
+            "GraphQL: Could not resolve to a PullRequest with the number of 99999."
+            " (repository.pullRequest)",
+        ):
+            self.assertTrue(core.graphql_fixed_answer(line), line)
+        for line in (
+            # The path suffix belongs to `GraphQL: ` alone, and is required there.
+            "gh: Could not resolve to an Issue with the number of 99999. (repository.issue)",
+            "GraphQL: Could not resolve to an Issue with the number of 99999.",
+            # Two errors gh joined onto one line; another prefix; no prefix; a reworded tail.
+            "GraphQL: Could not resolve to an Issue with the number of 1. (repository.a),"
+            " Could not resolve to an Issue with the number of 2. (repository.b)",
+            "gh: proxy: Could not resolve to an Issue with the number of 99999.",
+            "Could not resolve to an Issue with the number of 99999.",
+            "gh: Could not resolve to an Issue with the number of 99999 yet, try again.",
+            "gh: Could not resolve to an Issue with the number of 99999. (HTTP 502)",
+        ):
+            self.assertFalse(core.graphql_fixed_answer(line), line)
+
     def test_client_refusals_verbatim(self) -> None:
         for line in (
             'Unknown JSON field: "a b"',
@@ -229,6 +257,22 @@ class Retry(unittest.TestCase):
                 s = Session()
                 self.assertEqual(s.retry(mode, ["api", "graphql"]), GhFailed())
                 self.assertEqual(len(gh.calls()), 1)
+
+    def test_a_graphql_not_found_is_not_retried_under_either_policy(self) -> None:
+        # ludics-lite#663: a wave issue that does not exist was read four times over ~35s and
+        # reported as the API never answering. The document and the line are gh 2.101.0's own.
+        document = (
+            '{"data":{"repository":{"issue":null}},"errors":[{"type":"NOT_FOUND",'
+            '"path":["repository","issue"],"locations":[{"line":1,"column":50}],'
+            '"message":"Could not resolve to an Issue with the number of 99999."}]}'
+        )
+        for mode in ("read", "write"):
+            with FakeTool("gh") as gh:
+                gh.script(Answer(1, document, "gh: Could not resolve to an Issue with the number of 99999.\n"))
+                s = Session()
+                self.assertEqual(s.retry(mode, ["api", "graphql"]), GhFailed())
+                self.assertEqual(len(gh.calls()), 1)
+                self.assertEqual(s.session.unclear_attempts(), 0)
 
     def test_a_later_success_clears_the_error_line(self) -> None:
         with FakeTool("gh") as gh:
