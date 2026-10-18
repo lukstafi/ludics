@@ -178,6 +178,11 @@ class Store(StoreCase):
         self.assertTrue(err.getvalue().startswith("BOARD WRITTEN, acknowledgement lost: "))
         self.assertEqual([line["text"] for line in self.doc()["log"]], ["x"], "the write landed")
 
+    def test_the_acknowledgement_is_ascii_whatever_the_task_holds(self) -> None:
+        rc, out, _ = self.set("\u00fc #1", ("k", "\u00fc"))
+        self.assertEqual((rc, out), (0, 'BOARD SET w: "\\u00fc #1" k\n'))
+        self.assertTrue(out.isascii())
+
     def test_show_of_an_unknown_wave_refuses(self) -> None:
         self.assertEqual(self.call("show", {"wave": "nope"})[:2], (1, ""))
 

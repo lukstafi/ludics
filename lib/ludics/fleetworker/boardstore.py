@@ -275,7 +275,9 @@ def main(argv: list[str]) -> None:
             for key, value in pairs:
                 fields[key] = value
             row["updated_at"] = now
-            said = f"BOARD SET {wave}: {json.dumps(task, ensure_ascii=False)} " + " ".join(key for key, _ in pairs)
+            # ASCII whatever the task holds (json escapes it; wave and keys are ASCII by grammar), so
+            # no stdout encoding can fail the acknowledgement.
+            said = f"BOARD SET {wave}: {json.dumps(task)} " + " ".join(key for key, _ in pairs)
         case "note":
             pairs = fields_ok(payload.get("fields"))
             notes = cast(dict[str, str], doc["notes"])
@@ -294,7 +296,7 @@ def main(argv: list[str]) -> None:
     try:
         print(said)
         sys.stdout.flush()
-    except OSError as exc:
+    except Exception as exc:  # whatever fails the acknowledgement, the write has landed
         raise Published(str(exc)) from exc
 
 
