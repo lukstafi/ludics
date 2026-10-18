@@ -19,6 +19,17 @@ a correctness record runs the runner under ``execution slot`` on that box (``--c
 --request <id>`` (``--deadline`` alone). When the record carries a ``resolved_revision`` (a
 ``head-of:<branch>`` request resolved at assignment), ``--rev`` must come to exactly that commit.
 
+THE WINDOW WAIT (ludics-lite#666). A standing record a measurement window has ``suspended`` is
+refused at once -- unless the leg was given ``--wait-window[=<s>]``, when it waits here, on the
+caller's box, in the slot's own wait (``slot.await_measurements``, in this verb's voice): until no
+measurement is outstanding on the record's box, re-reading the anchor's registry, for at most the
+bound (an hour when none is given); past it, refused naming the measurement, as the slot is. Then
+the record is read again from that registry and judged as above, and the far side's slot gets
+``--wait-window=<what is left of the bound>``, so a window opened between the two (the next of a
+coordinator's back-to-back windows) is waited for by the slot on the box, and the whole leg waits
+under one bound. The leg waits for no window when its record is not suspended: the slot on the box
+does, as for any batch.
+
 THE CHECKOUT AND THE REVISION, on the box (paths absolute, or ``~/``): ``--checkout`` is a git
 checkout of the project there, ``--worktree`` a LINKED worktree of it (never the main one), made
 with ``git worktree add --detach`` when the path does not exist and checked out ``--detach`` at
@@ -71,15 +82,18 @@ the slot never started the runner), or ``EXECUTION LEG UNREACHABLE`` (4) that th
 or the connection dropped, with the runner perhaps started -- find out on the box before a retry.
 """
 
+import math
 import os
 import re
 import secrets
 import subprocess
 import sys
 import threading
+import time
+from typing import Any
 
 from ludics import cli
-from ludics.fleetworker import execution, revision
+from ludics.fleetworker import execution, revision, slot
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.preflight import knob
@@ -330,6 +344,50 @@ def refused(text: str, rc: int = 1) -> int:
     return rc
 
 
+LEG_VOICE = slot.Voice("EXECUTION LEG", "running the leg", "nothing ran")
+
+
+def window_bound(slot_flags: list[str]) -> int | None:
+    """The leg's ``--wait-window`` bound in seconds, the last given winning as in the slot; None
+    without one."""
+    bound: int | None = None
+    for flag in slot_flags:
+        if flag == "--wait-window":
+            bound = slot.WINDOW_WAIT
+        elif flag.startswith("--wait-window="):
+            bound = int(flag[len("--wait-window=") :])
+    return bound
+
+
+def await_window(cfg: Config, request: str, record: dict[str, Any], records: list[dict[str, Any]],
+                 slot_flags: list[str], runner: list[str]) -> tuple[dict[str, Any], list[str]] | int:
+    """THE WINDOW WAIT (see the header) for a ``suspended`` record: the record read again once no
+    measurement holds its box, and the slot flags with the rest of the bound; or the refusal's
+    status."""
+    window = execution.jq_text(record.get("suspended_by"))
+    bound = window_bound(slot_flags)
+    if bound is None:
+        return refused(f"{request} is suspended by measurement window {window}; run the leg once that window"
+                       " concludes, or give it --wait-window, which waits for it")
+    host = execution.jq_text(execution.field(record, "request", "execution_host"))
+    start = time.monotonic()
+    waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE)
+    if isinstance(waited, int):
+        return waited
+    again = execution.record_of(waited, request)
+    if again is None:
+        return refused(f"unknown request_id {request} after waiting for window {window}: a leg runs only inside"
+                       " a dispatched reservation")
+    if execution.jq_text(again.get("state")) == "suspended":
+        # No measurement holds the box, yet the record names one: the registry's restore did not
+        # happen, which waiting longer would not change.
+        return refused(f"{request} is still suspended by {execution.jq_text(again.get('suspended_by'))}, though no"
+                       f" measurement holds {host}; nothing ran")
+    left = max(bound - math.ceil(time.monotonic() - start), 0)
+    flags = [flag for flag in slot_flags if not flag.startswith("--wait-window")]
+    return again, [*flags, f"--wait-window={left}"]
+
+
 def box_path(value: str, flag: str) -> str:
     """A path on the box: absolute, or ``~/`` (expanded there)."""
     if not (value.startswith("/") or value.startswith("~/")):
@@ -406,18 +464,19 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     record = execution.record_of(records, request)
     if record is None:
         return refused(f"unknown request_id {request}: a leg runs only inside a dispatched reservation")
-    state = execution.jq_text(record.get("state"))
-    if state == "suspended":
-        return refused(
-            f"{request} is suspended by measurement window {execution.jq_text(record.get('suspended_by'))};"
-            " run the leg once that window concludes"
-        )
-    if state not in DISPATCHED:
-        return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")
     host = execution.jq_text(execution.field(record, "request", "execution_host"))
     box = values.get("--box", host)
+    # The box before any wait: a leg named for another box is refused now, not after a window.
     if fleet_name(cfg, box) != host:
         return refused(f"{request} is reserved on {host}, not {box}")
+    if execution.jq_text(record.get("state")) == "suspended":
+        waited = await_window(cfg, request, record, records, slot_flags, runner)
+        if isinstance(waited, int):
+            return waited
+        record, slot_flags = waited
+    state = execution.jq_text(record.get("state"))
+    if state not in DISPATCHED:
+        return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")
     kind = execution.jq_text(execution.field(record, "request", "kind"))
     if kind == "measurement":
         extra = [flag for flag in slot_flags if flag.startswith("--") and flag != "--deadline"]
