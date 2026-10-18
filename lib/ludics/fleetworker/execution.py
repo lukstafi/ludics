@@ -1393,11 +1393,8 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             return 1
         map_spec = found
     token = my_token(cfg)
-    script = (
-        prelude(cfg, cfg.anchor)
-        + (LEASE_MUTATION if action != "list" else "shift 3\n")
-        + registry_command(source, payload)
-    )
+    head = prelude(cfg, cfg.anchor) + (LEASE_MUTATION if action != "list" else "shift 3\n")
+    script = head + registry_command(source, payload)
     argv = [
         "EXECUTION", token, cfg.lock_wait, action, coordinator_id(cfg), token, PAYLOAD_ON_FD,
         cfg.boxes, cfg.slots, map_spec, fleet_name(cfg, cfg.anchor), fleet_name(cfg, cfg.lab_host),
@@ -1415,7 +1412,8 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
         time.sleep(wait)
         left -= wait
         payload, resolution = with_resolution(cfg, with_gap(requests, left), action)
-        argv[6] = payload
+        # The payload rides the script, never argv (ludics-lite#636): a new payload is a new script.
+        script = head + registry_command(source, payload)
         done = run_on(cfg, cfg.anchor, script, argv, capture=True)
     out = substitution(done.out)
     cli.emit(out)

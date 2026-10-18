@@ -25,6 +25,7 @@ from ludics.fleetworker.execution import (
     window_payload,
 )
 from ludics.fleetworker.gate import integration_rows
+from ludics.fleetworker.transport import PAYLOAD_ON_FD
 from ludics.tests.fake import Answer, FakeTool
 
 SHA = "a" * 40
@@ -531,7 +532,10 @@ class WindowGap(unittest.TestCase):
             return payload, ""
 
         def run_on(cfg: Any, box: str, script: str, argv: list[str], capture: bool = False) -> Any:
-            calls.append(json.loads(argv[6]))
+            # The payload is the script's fd-3 line, argv only says so (ludics-lite#636).
+            self.assertEqual(argv[6], PAYLOAD_ON_FD)
+            framed = script.split("3<<'FLEET_EXECUTION_PY_PAYLOAD' <<'FLEET_EXECUTION_PY'\n", 1)[1].split("\n", 1)[0]
+            calls.append(json.loads(json.loads(framed)))
             return answers.pop(0)
 
         out, err = io.StringIO(), io.StringIO()
