@@ -486,12 +486,16 @@ EOF
 # the stand-in for a second box, so a cross-box path is exercised through run_on's real quoting.
 # `SHIM_SSH_PY=<list>` is that box's own LUDICS_PY_CANDIDATES: a box whose Pythons are not the
 # coordinator's, which the coordinator's own environment cannot fake (it runs under scripts/py too).
+# `SHIM_SSH_ENV=<file>` is that box's own ~/.config/fleet/env.sh, sourced there as the ssh shell's
+# ~/.bashrc sources it: a box whose fleet configuration is not the coordinator's (ludics-lite#632).
 cat > "$TMP/bin/ssh" <<'SHIMEOF'
 #!/usr/bin/env bash
 host=""
 while [ $# -gt 0 ]; do case "$1" in -o) shift ;; -*) ;; *) host="$1"; break ;; esac; shift; done
 shift
 [ -z "${SHIM_SSH_LOCAL:-}" ] || [ "$host" != "$SHIM_SSH_LOCAL" ] || [ -z "${SHIM_SSH_PY:-}" ] || export LUDICS_PY_CANDIDATES="$SHIM_SSH_PY"
+# shellcheck disable=SC1090  # the box's env.sh, named by the case
+[ -z "${SHIM_SSH_LOCAL:-}" ] || [ "$host" != "$SHIM_SSH_LOCAL" ] || [ -z "${SHIM_SSH_ENV:-}" ] || . "$SHIM_SSH_ENV"
 [ -n "${SHIM_SSH_LOCAL:-}" ] && [ "$host" = "$SHIM_SSH_LOCAL" ] && exec bash -c "$*"
 [ "$*" = "exit 0" ] || { echo "ssh: Could not resolve hostname $host: nodename nor servname provided" >&2; exit 255; }
 [ "$host" = "${SHIM_SSH_HANG:-}" ] && sleep 30
@@ -2887,6 +2891,19 @@ expect "a leg over ssh passes the runner's words through the remote shell untouc
 grep -q "^EXECUTION LEG other: refreshed $lwt at $lb" <<<"$out" && ok "...on the reserved box" || ko "not run as other: $out"
 expect "a box that does not answer is UNREACHABLE (exit 4), not a runner's status" 4 "^EXECUTION LEG UNREACHABLE other: ssh failed or the connection dropped" -- \
   leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+# ludics-lite#632: the box's own env.sh names another roster, anchor, registry and slot spec. The
+# leg's slot there runs under the coordinator's: its roster has the box, its spec four slots, and
+# its registry is the one the leg's own record is in. Read with the box's, the slot would refuse.
+cat > "$TMP/other-env.sh" <<EOF
+export FLEET_BOXES="elsewhere" FLEET_ANCHOR="nowhere" FLEET_ANCHOR_STATE="$TMP/not the registry"
+export FLEET_BOX_CORRECTNESS_SLOTS="elsewhere=1" FLEET_BOX_GPU_TOKENS=""
+EOF
+expect "a leg over ssh takes its slot under the coordinator's fleet configuration, not the box's env.sh" 0 "^runner slot: testbox [1-4] 4 gpu$" -- \
+  env SHIM_SSH_LOCAL=other SHIM_SSH_ENV="$TMP/other-env.sh" "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+# ...and a fleet-worker.sh under it that something re-pointed at another registry refuses (the pin).
+expect "a fleet-worker.sh under the leg whose anchor was re-set refuses to read another registry" 1 "REFUSED: this box resolves the execution registry as anchor nowhere, .*but the coordinator that started it reads anchor testbox, " -- \
+  env SHIM_SSH_LOCAL=other SHIM_SSH_ENV="$TMP/other-env.sh" "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- \
+  env FLEET_ANCHOR=nowhere "$FW" execution list
 fixture_done leg-o
 # A head-of request's leg runs the commit resolved at assignment, not where the branch is now.
 printf 'claude/topic %s\n' "$lb" > "$TMP/leg-heads"

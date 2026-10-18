@@ -587,6 +587,12 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   (a [`head-of:` request](#reserve-launch-observe-conclude)), or a non-standing one whose
   `requested_revision` is exactly one commit, refuses any `--rev` that comes to
   another commit, and the registry refuses any `observed_sha` but that commit for it.
+- **The configuration.** The slot or hold on the box runs under the caller's fleet configuration,
+  not the box's `~/.config/fleet/env.sh`: its roster, anchor and anchor state, lab host, slot and
+  token specs and skills checkout travel with it (ludics-lite#632; `execution tip-run` does the
+  same). The box keeps its own name and slot locks. A `fleet-worker.sh` anywhere under it that
+  resolves another registry (an anchor or anchor state re-set in between) refuses to run. A
+  hand-written `ssh <box> ... fleet-worker.sh execution slot` gets none of this: use the leg.
 - **The worktree.** `--checkout` is the project's checkout on the box and `--worktree` a linked
   worktree of it (paths absolute, or a quoted `~/`, expanded on the box; the caller's shell
   expands an unquoted one to the caller's home): made with `git worktree add --detach` when the path does
