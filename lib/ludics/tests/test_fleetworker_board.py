@@ -122,7 +122,8 @@ class Store(StoreCase):
         with open(path) as f:
             valid = json.load(f)
         del valid["created_by"]
-        for text in ("{not json", json.dumps({"board": 1, "wave": "other"}), json.dumps(valid)):
+        for text in ("{not json", json.dumps({"board": 1, "wave": "other"}), json.dumps(valid),
+                     json.dumps({**valid, "created_by": "c", "board": True})):
             with open(path, "w") as f:
                 f.write(text)
             rc, _, err = self.set("t", ("k", "v"))
@@ -162,6 +163,20 @@ class Store(StoreCase):
         with open(path) as f:
             self.assertEqual(f.read(), before)
         self.assertEqual(os.listdir(os.path.join(self.root, "boards")), ["w.json"], "no temporary left")
+
+    def test_a_lost_acknowledgement_is_exit_3_not_a_refusal(self) -> None:
+        self.set("t", ("k", "v"))
+
+        class Full(io.StringIO):
+            def write(self, s: str) -> int:
+                raise OSError(28, "No space left on device")
+
+        err = io.StringIO()
+        with contextlib.redirect_stdout(Full()), contextlib.redirect_stderr(err):
+            rc = boardstore.run(["-", self.root, "log", "coord", json.dumps({"wave": "w", "text": "x"})])
+        self.assertEqual(rc, 3)
+        self.assertTrue(err.getvalue().startswith("BOARD WRITTEN, acknowledgement lost: "))
+        self.assertEqual([line["text"] for line in self.doc()["log"]], ["x"], "the write landed")
 
     def test_show_of_an_unknown_wave_refuses(self) -> None:
         self.assertEqual(self.call("show", {"wave": "nope"})[:2], (1, ""))
@@ -214,6 +229,7 @@ class Outcome(unittest.TestCase):
     def test_only_a_refusal_says_nothing_was_written(self) -> None:
         self.assertEqual(self.outcome(["log", "w", "x"], 1), (1, ""))
         self.assertEqual(self.outcome(["log", "w", "x"], 0), (0, ""))
+        self.assertEqual(self.outcome(["log", "w", "x"], 3)[1][:28], "BOARD UNKNOWN a: the writer ")
         self.assertEqual(self.outcome(["log", "w", "x"], 120),
                          (120, "BOARD UNKNOWN a: the writer exited 120; outcome unknown; show the board before retrying\n"))
         self.assertEqual(self.outcome(["show", "w"], 120), (120, ""), "a read changes nothing")
