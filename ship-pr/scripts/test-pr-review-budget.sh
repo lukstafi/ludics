@@ -161,11 +161,14 @@ gh() {
     printf 'completed\tsuccess\n'
     return 0
   fi
-  local host="" next=""
+  local host="" next="" method=""
   for a in "$@"; do
     [ -z "$next" ] || { host="$a" next=""; }
-    case "$a" in -i | --include) include=1 ;; --hostname) next=1 ;; esac
+    case "$a" in -i | --include) include=1 ;; --hostname) next=1 ;; -X | --method) method=1 ;; esac
   done
+  # A probe is the call with headers that names no method (a GET, or GraphQL's viewer query). The
+  # script's own writes carry --include too (ludics-lite#612), and they always name theirs.
+  [ -z "$method" ] || include=""
   # A probe names github.com itself, whatever GH_HOST says.
   [ -z "$include" ] || [ "$host" = github.com ] || printf 'probe to %s\n' "${host:-GH_HOST}" >>"$CALL_LOG"
   gh_fixture_parse "$@"
