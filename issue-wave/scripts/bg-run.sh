@@ -52,7 +52,9 @@
 # the signal, so no wait between the wrapper's death and the stop's end reads DIED; until no member
 # of the group is left, a wait reads RUNNING (the stop is still ending it). A stop that was itself
 # ended inside its grace leaves such a remnant, and a second stop signals that group again. A
-# signal that finds the group already gone takes this stop's marker back out. A run whose wrapper
+# signal that finds the group already gone (`NOT RUNNING`, exit 1) leaves the marker in place: a
+# concurrent stop may be the one that ended it, and a run that ended on its own in that instant
+# still reads rc when it wrote one, and otherwise STOPPED, as the stop asked. A run whose wrapper
 # does not lead its own group (a `start` run as a harness task, or a managed session's command)
 # shares its caller's, and `stop` refuses it, exit 2, signalling nothing: the harness's own
 # task-stop ends that one. What `stop` does not reach: a process that left the group itself (one
@@ -484,17 +486,15 @@ cmd_stop() {
   fi
   # The marker before the signal (header): a wait that reads the wrapper gone reads STOPPED, never
   # the DIED whose re-arm would relaunch what is being stopped.
-  marked=
   if [ ! -e "$dir/stopped" ]; then
     { printf 'process group %s\n' "$g" > "$dir/.stopped.$$" && mv -f -- "$dir/.stopped.$$" "$dir/stopped"; } || {
       rm -f -- "$dir/.stopped.$$"
       say "refused: cannot publish the stopped marker in $(printf '%q' "$dir"), so a wait there would read DIED; nothing was signalled"
       exit 2
     }
-    marked=1
   fi
+  # A group already gone keeps the marker (header): another stop may have ended it.
   kill -TERM -- "-$g" 2>/dev/null || {
-    [ -z "$marked" ] || rm -f -- "$dir/stopped"
     printf '%s\n' 'NOT RUNNING: the run ended while stop read it; nothing was signalled'
     exit 1
   }
