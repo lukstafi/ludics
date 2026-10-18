@@ -128,6 +128,16 @@ class HolderRecord(Locks):
     def path(self) -> str:
         return os.path.join(self.dir, "slot.1")
 
+    def locked(self) -> bool:
+        descriptor = os.open(self.path(), os.O_RDWR)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(descriptor)
+        return False
+
     def write(self, text: str) -> None:
         with open(self.path(), "w") as stream:
             stream.write(text)
@@ -151,8 +161,11 @@ class HolderRecord(Locks):
         good: dict[str, object] = {"pid": 7, "command": ["x"], "started": 1.5, "deadline": 60, "other": [1]}
         self.write(json.dumps(good))
         self.assertEqual(read_holder(self.path()), Holder(7, ("x",), 1.5, 60))
-        for bad in ({"pid": True}, {"pid": 0}, {"pid": "7"}, {"command": []}, {"command": "x"}, {"command": ["x", 1]},
-                    {"started": "1"}, {"started": False}, {"deadline": 0}, {"deadline": 1.5}, {"deadline": True}):
+        bads: list[dict[str, object]] = [
+            {"pid": True}, {"pid": 0}, {"pid": "7"}, {"command": []}, {"command": "x"}, {"command": ["x", 1]},
+            {"started": "1"}, {"started": False}, {"deadline": 0}, {"deadline": 1.5}, {"deadline": True},
+        ]
+        for bad in bads:
             self.write(json.dumps(good | bad))
             self.assertIsNone(read_holder(self.path()), bad)
         for text in ("", "not json", "[]", '{"pid": 7, "command": ["x"], "started": NaN, "deadline": null}',
@@ -203,7 +216,7 @@ class HolderRecord(Locks):
     def test_a_free_slot_is_taken_saying_nothing(self) -> None:
         out, _ = self.drain(0.1, None)
         self.assertEqual(out, "")
-        self.assertTrue(slot._is_held(self.path()))
+        self.assertTrue(self.locked())
 
     def test_the_drain_keeps_its_line_then_names_the_holder_at_once_and_again(self) -> None:
         self.hold("slot.1")
@@ -216,7 +229,7 @@ class HolderRecord(Locks):
         self.assertGreaterEqual(len(lines), 3, out)
         self.assertTrue(all("still waits for slot 1 after" in line for line in lines[2:]), out)
         self.assertLess(took, 5)
-        self.assertTrue(slot._is_held(self.path()))
+        self.assertTrue(self.locked())
 
     def test_a_holder_its_deadline_ends_soon_gets_only_the_line_it_had(self) -> None:
         self.hold("slot.1")

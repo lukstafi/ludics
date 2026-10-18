@@ -236,7 +236,7 @@ import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, NoReturn, assert_never
+from typing import Any, NoReturn, assert_never, cast
 
 from ludics import cli
 from ludics.fleetworker.config import (
@@ -353,17 +353,21 @@ def read_holder(path: str) -> Holder | None:
         return None
     if not isinstance(decoded, dict):
         return None
-    pid, command, started, deadline = (decoded.get(k) for k in ("pid", "command", "started", "deadline"))
+    record = cast(dict[str, Any], decoded)
+    pid: Any = record.get("pid")
+    command: Any = record.get("command")
+    started: Any = record.get("started")
+    deadline: Any = record.get("deadline")
     if not _whole(pid) or not (isinstance(command, list) and command):
         return None
-    words: list[Any] = command
+    words = cast(list[Any], command)
     if not all(isinstance(word, str) for word in words):
         return None
     if isinstance(started, bool) or not isinstance(started, (int, float)) or not math.isfinite(started):
         return None
     if deadline is not None and not _whole(deadline):
         return None
-    return Holder(pid, tuple(str(word) for word in words), float(started), deadline)
+    return Holder(int(pid), tuple(str(word) for word in words), float(started), None if deadline is None else int(deadline))
 
 
 def _running(pid: int) -> bool:
