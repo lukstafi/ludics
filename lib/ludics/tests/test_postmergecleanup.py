@@ -408,6 +408,8 @@ class Interrupted(unittest.TestCase):
 
     def setUp(self) -> None:
         self.dir = os.path.realpath(tempfile.mkdtemp(prefix="ludics-pmc-term."))
+        # A cleanup, not tearDown: it runs when setUp skips the case too.
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.main = f"{self.dir}/main"
         self.session = f"{self.dir}/session"
         remote = f"{self.dir}/remote.git"
@@ -420,6 +422,7 @@ class Interrupted(unittest.TestCase):
         self.git("-C", self.main, "worktree", "add", "-q", "-b", "topic", self.session)
         self.git("-C", self.session, *ident, "commit", "-q", "--allow-empty", "-m", "topic")
         self.git("-C", self.main, "checkout", "-q", "--detach")
+        self.require_symref_transactions()
         self.bin = f"{self.dir}/bin"
         os.mkdir(self.bin)
         with open(f"{self.bin}/git", "w", encoding="utf-8") as f:
@@ -432,11 +435,30 @@ class Interrupted(unittest.TestCase):
             )
         os.chmod(f"{self.bin}/git", 0o755)
 
-    def tearDown(self) -> None:
-        shutil.rmtree(self.dir, ignore_errors=True)
-
     def git(self, *args: str) -> str:
         return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+
+    def require_symref_transactions(self) -> None:
+        """Skip on a Git the helper refuses before the base fetch these cases interrupt: it probes
+        `update-ref --stdin`'s symref-update (Git 2.46) before that fetch, after reading
+        `rev-parse --show-ref-format` (2.45), so an older Git ends the run with exit 1, not the
+        TERM. The probe is the helper's own, in this case's repository, so it skips exactly where
+        the helper would refuse (ludics-lite#721: the unit tests are the repository's merge build,
+        which runs on whatever Git the merging box has)."""
+        probe = "refs/test-capability-probe"
+        self.git("-C", self.main, "symbolic-ref", probe, "refs/heads/master")
+        try:
+            done = subprocess.run(
+                ["git", "-C", self.main, "update-ref", "--stdin"],
+                input=f"option no-deref\nsymref-update {probe} refs/heads/master ref refs/heads/master\n",
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        finally:
+            self.git("-C", self.main, "symbolic-ref", "--delete", probe)
+        if done.returncode != 0:
+            self.skipTest("this Git lacks update-ref symref transactions (Git >= 2.46), which the helper requires")
 
     def terminated(self) -> None:
         """Run the helper to the TERM its base fetch sends it; it dies of the signal."""

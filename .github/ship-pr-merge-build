@@ -16,8 +16,10 @@
 # side counts by its other name too.
 #
 # The command -- what it covers. The package's unit tests, as CI's python job runs them (about
-# 80 to 110 s on mac-studio), through the merged tree's own scripts/py. Outside it, and so the integration
-# loop's on main: the shell suites (test-*.sh, which drive the shims end to end), strict pyright
+# 80 to 110 s on mac-studio), through the merged tree's own scripts/py, on the merging box's Git.
+# The post-merge-cleanup cases that need Git 2.46 skip on an older one, where the helper refuses
+# (on Git 2.43 they were the suite's only failures). Outside it, and so the integration loop's on
+# main: the shell suites (test-*.sh, which drive the shims end to end), strict pyright
 # (it needs npx and the network, and CI runs it on every PR head), the lint and prompt guards, a
 # clash across paths only ONE side changed (the default `same-input` trigger), and a clash in
 # files that are not inputs (a shell script, a SKILL.md).
