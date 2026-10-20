@@ -1719,7 +1719,7 @@ test_a_clean_state_record_on_the_head_is_a_verdict() {
   state_fixture
   run_status
   assert_eq "$(state_tok "$STATE")" approved "the record of a clean round on the head, with no 👍 and no 👀"
-  assert_contains "$LINE" "summary records head 66de063's Code Review completed with no unresolved findings at 2026-10-18T16:27:30Z" \
+  assert_contains "$LINE" "summary records head 66de063's Code Review completed with no unresolved findings, Completed at 2026-10-18T16:27:29Z" \
     "the approval names the record it rests on"
   # The same comment's record for another head, or with findings open, is no verdict here.
   COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:27:30Z \
@@ -1760,6 +1760,11 @@ test_a_state_record_yields_to_what_the_reviewer_posted() {
   REACTIONS_JSON="[$(reaction eyes 2026-10-18T16:30:00Z)]"
   run_status
   assert_eq "$(state_tok "$STATE")" stalled "a 👀 newer than the record is not answered by it"
+  # Nor once an edit of the summary (its security-review row) moves the comment's updated_at past
+  # that 👀: the Code Review row dates the record, and it still predates the 👀.
+  COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:31:00Z "$STATE_RECORD")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" stalled "a summary edited after the 👀 is not a newer verdict"
 }
 
 # --- a reviewer run the summary marks Failed (ludics-lite#453) ----------------------------------

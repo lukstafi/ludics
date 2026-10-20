@@ -502,16 +502,20 @@ class NudgeRead(unittest.TestCase):
                 self.assertIn("did not answer", read.why)
 
 
-def state_summary(cid: int, at: str, record: str, row_sha: str = HEAD[:7]) -> dict[str, Json]:
+def state_summary(cid: int, at: str, record: str, row_sha: str = HEAD[:7], edited: str = "") -> dict[str, Json]:
     """The reviewer's summary comment as the app writes it (lukstafi/ludics-lite#690's, 2026-10-18):
-    the tag, the hidden state record, and the table with its Code Review row."""
-    return comment(cid, at, (
+    the tag, the hidden state record, and the table with its Code Review row, Completed at ``at``.
+    ``edited``: the comment's ``updated_at`` when an edit since (a security-review row) moved it."""
+    c = comment(cid, at, (
         "<!-- codex-pull-request-review-summary -->\n"
         f"<!-- codex-review-state:v1 {record} -->\n\n## Codex Review Summary\n\n"
         "This comment shows the latest Codex review activity on this pull request.\n\n"
         "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
         f"| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"{at[:-1]}.001490Z\">{at}</relative-time>"
         f" | `{row_sha}` | New commits |\n\n\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n</details>"))
+    if edited:
+        c["updated_at"] = edited
+    return c
 
 
 def state_record(sha: Json = HEAD, status: Json = "completed", unresolved: Json = False,
@@ -564,8 +568,14 @@ class SummaryStateRecord(unittest.TestCase):
         self.assertIsNone(state.summary_state([twice], REV), "a second record is no reading")
         split = state_summary(1, at, good.replace(",", ",\n", 1))
         self.assertIsNone(state.summary_state([split], REV), "a record across lines is no reading")
-        undated = {**state_summary(1, at, good), "updated_at": "yesterday"}
-        self.assertIsNone(state.summary_state([undated], REV), "nor a summary whose stamp does not read")
+        self.assertIsNone(state.summary_state([state_summary(1, at, good, row_sha="bbbbbbb")], REV),
+                          "a row naming another commit disagrees with the record")
+        undated = state_summary(1, at, good)
+        undated["body"] = str(undated["body"]).replace('datetime="2026-10-18T16:27:30.001490Z"', "")
+        self.assertIsNone(state.summary_state([undated], REV), "nor a record whose row does not date it")
+        edited = state.summary_state([state_summary(1, at, good, edited="2026-10-18T16:31:00Z")], REV)
+        self.assertEqual(edited, state.SummaryState(HEAD, "completed", False, at),
+                         "the row dates the record, never the comment's edit time")
         stranger = state_summary(1, at, good)
         stranger["user"] = {"login": "me"}
         self.assertIsNone(state.summary_state([stranger], REV), "only the reviewer's summary is read")
@@ -578,7 +588,7 @@ class SummaryStateRecord(unittest.TestCase):
         earlier = review(5, "b" * 40, "2026-10-18T16:17:01Z")
         st = run_state(feeds(comments=[state_summary(1, at, state_record())], reviews=[earlier]))
         self.assertEqual(st.tok, "approved", st.line())
-        self.assertIn("completed with no unresolved findings at 2026-10-18T16:27:30Z", st.detail)
+        self.assertIn("completed with no unresolved findings, Completed at 2026-10-18T16:27:30Z", st.detail)
         self.assertEqual(run_state(feeds(reviews=[earlier])).tok, "expected", "control: no record, as before")
 
     def test_a_record_that_is_not_a_clean_verdict_for_the_head_stays_expected(self) -> None:
@@ -609,6 +619,15 @@ class SummaryStateRecord(unittest.TestCase):
         eyes = reaction("eyes", "2026-10-18T16:30:00Z")
         self.assertEqual(run_state(feeds(comments=[rec], reactions=[eyes])).tok, "stalled",
                          "a 👀 newer than the record is a new round")
+        # The local review of #702: an edit of the summary after a newer 👀 moves updated_at, not
+        # the round's completion, so the old record still does not answer the 👀.
+        edited = state_summary(1, at, state_record(), edited="2026-10-18T16:31:00Z")
+        self.assertEqual(run_state(feeds(comments=[edited], reactions=[eyes])).tok, "stalled",
+                         "a summary edited after a newer 👀 is not a newer verdict")
+        unclean_row = state_summary(1, at, state_record())
+        unclean_row["body"] = str(unclean_row["body"]).replace("✅ **Completed**", "⚠️ **Failed**")
+        self.assertNotEqual(run_state(feeds(comments=[unclean_row])).tok, "approved",
+                            "a record whose row is not the Completed shape is not a verdict")
         old_eyes = reaction("eyes", "2026-10-18T16:20:00Z")
         self.assertEqual(run_state(feeds(comments=[rec], reactions=[old_eyes])).tok, "approved",
                          "a 👀 older than the record is the round it records")

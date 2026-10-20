@@ -178,8 +178,10 @@ def _newest_summary(comments: list[Json], reviewer: str) -> Json:
 class SummaryState:
     """The ``code_review`` half of the ``codex-review-state:v1`` record on the reviewer's newest
     summary comment: the commit it is about (40 hex), its ``status`` as written ("running",
-    "completed", ...), ``has_unresolved_findings`` (None while it runs), and when the record was
-    written -- the summary comment's ``updated_at``, ``created_at`` when that is absent."""
+    "completed", ...), ``has_unresolved_findings`` (None while it runs), and when that state began
+    -- the stamp of the same summary's newest Code Review row, which names the same commit
+    (Completed at, Running since), with its fraction cut. Never the comment's ``updated_at``:
+    any edit of the shared summary (its security-review row) moves that without a new verdict."""
 
     sha: str
     status: str
@@ -213,12 +215,15 @@ def summary_state(comments: list[Json], rev: str) -> SummaryState | None:
     occur exactly once, on one line, as ``<!-- codex-review-state:v1 <JSON> -->``. The JSON is
     parsed whole -- never fished for fields -- and must be an object with no duplicate key whose
     ``code_review`` is an object holding ``commit_sha`` (40 lowercase hex), ``status`` (a
-    non-empty string) and ``has_unresolved_findings`` (a boolean, or null). The comment's own
-    stamp must be a GitHub timestamp. Any other shape, a second record, a record that does not
-    parse, or no summary at all is None: no reading, which is what every caller had before the
+    non-empty string) and ``has_unresolved_findings`` (a boolean, or null). The record is dated by
+    the summary's newest Code Review row (``_evidence``'s choice): every Code Review row's stamp
+    must read, and the newest must name a prefix of ``commit_sha`` and carry a GitHub timestamp.
+    Any other shape, a second record, a record that does not parse, a row that disagrees or does
+    not read, or no summary at all is None: no reading, which is what every caller had before the
     record was read. Not read: ``security_review``, ``has_any_findings`` (true on a clean head
-    whose earlier heads drew findings, lukstafi/ludics-lite#690), the table rows (``_done_row``
-    reads those), and any key beyond the three -- an added key changes nothing here."""
+    whose earlier heads drew findings, lukstafi/ludics-lite#690), the row's status cell
+    (``_done_row`` reads it), the comment's own timestamps, and any key beyond the three -- an
+    added key changes nothing here."""
     newest_summary = _newest_summary(comments, rev)
     if newest_summary is None:
         return None
@@ -249,8 +254,14 @@ def summary_state(comments: list[Json], rev: str) -> SummaryState | None:
         return None
     if not (unresolved is None or isinstance(unresolved, bool)):
         return None
-    at = alt(idx(newest_summary, "updated_at"), idx(newest_summary, "created_at"))
-    if not (isinstance(at, str) and _ISO_STAMP.fullmatch(at)):
+    rows = _stamp_rows(body)
+    if not rows or any(r is None for r in rows):
+        return None
+    best = max_by([r for r in rows if r is not None], lambda r: instant(r["at"]))
+    if best is None or not sha.startswith(jstr(best["sha"])):
+        return None
+    at = sub_once(best["at"], _FRACTION_Z, "Z")
+    if not _ISO_STAMP.fullmatch(at):
         return None
     return SummaryState(sha, status, unresolved, at)
 
@@ -493,7 +504,8 @@ def status_state(ctx: Ctx, pr: str) -> State:
 
     # The hidden state record (ludics-lite#702): a round the app records as completed on exactly
     # this head with no unresolved findings, when it put up no 👍 and left no 👀 to bound the
-    # round (the Completed-row arm above needs one). A findings round submits its review seconds
+    # round (the Completed-row arm above needs one). The record and the row must agree (the row's
+    # allowlisted Completed shape, dated by the row). A findings round submits its review seconds
     # BEFORE the record is written (#683: 16:20:15 then 16:20:18), so "nothing since the record"
     # cannot exclude it alone: the record's own has_unresolved_findings does, and so does any
     # finding the reviewer posted about this head, at any time.
@@ -503,6 +515,7 @@ def status_state(ctx: Ctx, pr: str) -> State:
         return unknown(mstate, "the summary's review-state record did not parse")
     if (
         head_state is not None and head_state.status == "completed" and head_state.unresolved is False
+        and done_kind == "completed" and done_at == head_state.at
         and (not eyes_at or eyes_at < head_state.at)
         and (not last_spoke or last_spoke < head_state.at)
         and _after_nudge(head_state.at, nudge_at)
@@ -515,7 +528,8 @@ def status_state(ctx: Ctx, pr: str) -> State:
             return State(
                 "approved", None, mstate,
                 f"{rev}'s summary records head {_short(head_sha)}'s Code Review completed with no"
-                f" unresolved findings at {head_state.at}, with nothing posted since (no 👍 was given)",
+                f" unresolved findings, Completed at {head_state.at}, with nothing posted since (no 👍 was"
+                " given)",
             )
 
     if (
