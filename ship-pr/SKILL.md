@@ -229,21 +229,23 @@ Before the push that opens the PR, and only that one, review the branch locally:
 `codex exec review` once, with the transcript going to a log and only the verdict to a file:
 
 ```bash
-d=$(mktemp -d); mb=$(git merge-base HEAD origin/<base>)
+d=$(mktemp -d) && mb=$(git merge-base HEAD origin/<base>) &&
 codex exec review -o "$d/verdict.md" "Review the code changes against the base branch origin/<base>, merge base $mb: inspect them with git diff $mb and give prioritized, actionable findings. Do not run tests, builds or suites: the author runs them, and a run in this sandbox proves nothing." >"$d/run.log" 2>&1; echo "$d"
 ```
 
 The prompt names the base itself because `--base` refuses a custom prompt (`cannot be used with
 '[PROMPT]'`, codex-cli 0.159), and the no-tests line has to be in it: left to itself the review
-runs suites, in a sandbox that lacks tools (`ps`) and takes no run-time slot, so their failures
-are not real and their load lands on your own runs (ludics-lite#609). Read `verdict.md`, not the
+runs suites, in a sandbox that lacks tools (`ps`) and takes no run-time slot, so their failures are
+not real and their load lands on your own runs (ludics-lite#609). The `&&` chain stops, with git's
+error, on a base `merge-base` cannot resolve: an empty `$mb` would leave a bare `git diff`, the
+working tree only, and a clean verdict on none of the branch's commits. Read `verdict.md`, not the
 output: the transcript is the whole agent run, often thousands of lines, and the verdict is only
-its last message. Open `run.log` only when `verdict.md` is empty. It runs for minutes, so give it
-a long timeout or a background run. Fix the findings you agree with and commit, then run the
-gates above on that commit — they gate the head you push, so they come after the local review, not before it. Name
-each finding you dismiss, with the reason, in the PR body so the reviewer's first round does not
-raise it again. Do not re-run it to a clean pass, and do not run it on later rounds: it gates
-nothing, the reviewer's 👍 stays the review gate, and its job is to spend the first round's
+its last message. Open `run.log` only when `verdict.md` is empty. It runs for minutes, so give it a
+long timeout or a background run. Fix the findings you agree with and commit, then run the gates
+above on that commit — they gate the head you push, so they come after the local review, not before
+it. Name each finding you dismiss, with the reason, in the PR body so the reviewer's first round
+does not raise it again. Do not re-run it to a clean pass, and do not run it on later rounds: it
+gates nothing, the reviewer's 👍 stays the review gate, and its job is to spend the first round's
 findings before the reviewer sees the code. Where `codex` is missing or not logged in, skip it and
 say so in the body.
 
