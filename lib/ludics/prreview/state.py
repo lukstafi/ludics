@@ -193,8 +193,8 @@ def _newest_row(body: str) -> tuple[str, str, str] | None:
 
 
 def _head_running_row(comments: list[Json], rev: str, head_sha: str) -> tuple[bool, str]:
-    """The 👀 arm's read of the summary (ludics-lite#586): (a Running row could not be read, the
-    stamp of a Running row for this head).
+    """``status_state``'s read of a round in flight off the summary (ludics-lite#586): (a Running
+    row could not be read, the stamp of a Running row for this head).
 
     Boundary, fail-closed: read only the reviewer's NEWEST summary comment (``_newest_row``'s
     choice, the one ``_done_row`` and ``summary_state`` read), and in it only its newest Code
@@ -627,29 +627,37 @@ def status_state(ctx: Ctx, pr: str) -> State:
                 " since it arrived",
             )
 
+    # ludics-lite#586: a 👀 is a level, and one left up by an older head's stuck round is no measure
+    # of this head's round. The summary's newest Code Review row, Running on this head, newer than
+    # the reviewer's last word and than any 👀, is the round in flight -- whether that 👀 is live
+    # or spent (review of #747, round 1: a same-head rerun after findings) -- aged from the row,
+    # and it stalls by the row's age. A Running row that does not read may be that round.
+    try:
+        running_unread, running_at = _head_running_row(comments, rev, head_sha)
+    except JqError:
+        return unknown(mstate, "the summary's Code Review rows did not parse")
+    if running_unread:
+        return unknown(
+            mstate,
+            f"a {rev} Code Review row matched the Running test but not the"
+            " SUMMARY_ROW_STAMP_RE, so the running round could not be read",
+        )
+    if (
+        running_at and running_at > last_spoke and (not eyes_at or running_at > eyes_at)
+        and _after_nudge(running_at, nudge_at)
+    ):
+        age = age_of(running_at, ctx.clock.time())
+        eyes = f" and its 👀 ({eyes_at})" if eyes_at else ""
+        spoke = f" ({last_spoke})" if last_spoke else ""
+        detail = (
+            f"{rev} Code Review Running for head {_short(head_sha)} since {running_at}, newer than its"
+            f" last word{spoke}{eyes}"
+        )
+        if age is not None and age >= grace_stall:
+            return State("stalled", age, mstate, detail)
+        return State("reviewing", age, mstate, detail)
+
     if eyes_at and eyes_at > last_spoke:
-        # ludics-lite#586: a 👀 left up by an older head's stuck round is no measure of this head's
-        # round. The summary's newest Code Review row, Running on this head and dated after the
-        # 👀, is the round in flight: it is aged from that row, and stalls by the row's age.
-        try:
-            running_unread, running_at = _head_running_row(comments, rev, head_sha)
-        except JqError:
-            return unknown(mstate, "the summary's Code Review rows did not parse")
-        if running_unread:
-            return unknown(
-                mstate,
-                f"a {rev} Code Review row matched the Running test but not the"
-                " SUMMARY_ROW_STAMP_RE, so the running round could not be read",
-            )
-        if running_at and running_at > eyes_at:
-            age = age_of(running_at, ctx.clock.time())
-            detail = (
-                f"{rev} Code Review Running for head {_short(head_sha)} since {running_at}, after the"
-                f" 👀 at {eyes_at}"
-            )
-            if age is not None and age >= grace_stall:
-                return State("stalled", age, mstate, detail)
-            return State("reviewing", age, mstate, detail)
         age = age_of(eyes_at, ctx.clock.time())
         if age is not None and age >= grace_stall:
             return State("stalled", age, mstate, f"👀 from {rev} at {eyes_at} with nothing posted since")

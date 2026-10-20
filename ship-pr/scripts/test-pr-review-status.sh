@@ -1830,6 +1830,22 @@ test_a_stale_eyes_still_decides_without_the_head_s_newer_running_row() {
   assert_contains "$(state_detail "$STATE")" "matched the Running test but not the" "and says why"
 }
 
+# Review of #747, round 1: findings on the head spend the old 👀, then a rerun on the same head puts
+# the row back to Running. That is the round in flight, not `idle` on the findings it follows.
+test_a_same_head_rerun_after_findings_is_reviewing() {
+  stale_eyes_fixture
+  REVIEWS_JSON="[$(review 6 "$STALE_EYES_HEAD" "$(clock_at -600)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" reviewing "the head's Running row after its findings is the rerun"
+  REACTIONS_JSON='[]'
+  run_status
+  assert_eq "$(state_tok "$STATE")" reviewing "with no 👀 at all, too"
+  # Control: the row older than the findings is the round that posted them.
+  COMMENTS_JSON="[$(running_row 1 fb80745 "$(clock_at -900)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" idle "a row older than the reviewer's last word is that round's"
+}
+
 # --- a reviewer run the summary marks Failed (ludics-lite#453) ----------------------------------
 # lukstafi/ocannl-staging#633, 2026-09-04: the last findings review on 8c090d3 at 22:24:34Z, head
 # 1e14b13 committed at 22:46:29Z, and the summary's Code Review row "⚠️ Failed" on it at
@@ -2004,7 +2020,8 @@ test_a_failed_row_outside_the_allowlist_is_not_read() {
   COMMENTS_JSON="[$(failed_run_summary 1 "${FAILED_RUN_ROW//2026-09-04T22:47:25.387018Z/2026-09-04T22:47:25Z}
 | 📝 **Code Review** | 🔄 **Running** since <relative-time datetime=\"2026-09-04T22:47:25.5Z\">x</relative-time> | \`1e14b13\` | Manual request |")]"
   run_status
-  assert_eq "$(state_tok "$STATE")" expected "a Running row later in the same second is the newest, and no failure is read"
+  # The newest row is the head's round, Running for weeks on the fixture clock: a stall (#586).
+  assert_eq "$(state_tok "$STATE")" stalled "a Running row later in the same second is the newest, and no failure is read"
   # The shape with a datetime the comparisons cannot order: malformed, or in the future.
   for row in "${FAILED_RUN_ROW//2026-09-04T22:47:25.387018Z/garbage}" \
     "${FAILED_RUN_ROW//2026-09-04T22:47:25.387018Z/2099-01-01T00:00:00.1Z}"; do
@@ -2205,6 +2222,7 @@ tests=(
   test_a_state_record_yields_to_what_the_reviewer_posted
   test_a_stale_eyes_under_the_head_s_running_row_is_reviewing
   test_a_stale_eyes_still_decides_without_the_head_s_newer_running_row
+  test_a_same_head_rerun_after_findings_is_reviewing
   test_a_failed_run_on_the_head_is_a_failed_state
   test_a_failed_run_needs_the_head_and_no_approval
   test_a_failed_run_needs_a_silent_reviewer

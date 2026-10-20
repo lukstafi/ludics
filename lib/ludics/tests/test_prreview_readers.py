@@ -694,6 +694,24 @@ class StaleEyesUnderARunningRow(unittest.TestCase):
         st = run_state(feeds(reactions=[self.old_eyes], comments=[older, newest]))
         self.assertEqual(st.tok, "stalled", "only the NEWEST summary is read")
 
+    def test_a_same_head_rerun_after_findings_is_reviewing(self) -> None:
+        # Review of #747, round 1: findings on the head spend the old 👀, then a rerun on the same
+        # head puts the row back to Running -- the round in flight, not `idle` on the old findings.
+        findings = review(5, HEAD, iso(600))
+        st = run_state(feeds(reactions=[self.old_eyes], reviews=[findings],
+                             comments=[running_summary(1, iso(60))]))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        st = run_state(feeds(reviews=[findings], comments=[running_summary(1, iso(60))]))
+        self.assertEqual(st.tok, "reviewing", "with no 👀 at all, too")
+        st = run_state(feeds(reactions=[self.old_eyes], reviews=[findings],
+                             comments=[running_summary(1, iso(900))]))
+        self.assertEqual(st.tok, "idle", "a row older than the reviewer's last word is that round's")
+        st = run_state(feeds(reviews=[findings], comments=[running_summary(1, iso(60), row_sha="bbbbbbb")]))
+        self.assertEqual(st.tok, "idle", "a row for another head is not this head's round")
+        nudge = comment(9, iso(30), "@codex review", login="me")
+        st = run_state(feeds(reviews=[findings], comments=[running_summary(1, iso(60)), nudge]), 2)
+        self.assertEqual(st.tok, "nudged", "a row older than a pending request does not answer it")
+
     def test_an_unreadable_running_row_is_unknown(self) -> None:
         for name, stamp in (("no datetime", "just now"),
                             ("not a timestamp", '<relative-time datetime="yesterday">x</relative-time>')):
@@ -702,8 +720,8 @@ class StaleEyesUnderARunningRow(unittest.TestCase):
                 self.assertEqual(st.tok, "unknown", st.line())
                 self.assertIn("matched the Running test", st.detail)
         unread = running_summary(1, iso(60), stamp="just now")
-        self.assertEqual(run_state(feeds(comments=[unread])).tok, "expected",
-                         "with no 👀 in flight the row is read as before")
+        self.assertEqual(run_state(feeds(comments=[unread])).tok, "unknown",
+                         "nor with no 👀 at all: a readable one would decide there too")
 
     def test_the_read_refuses_when_it_fails(self) -> None:
         gh = feeds(reactions=[self.old_eyes], comments=[running_summary(1, iso(60))])
