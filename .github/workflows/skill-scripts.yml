@@ -2,7 +2,8 @@ name: skill scripts
 
 # The prompts and the shell behind the skills, on the platforms the fleet runs: Ubuntu, macOS, and
 # Windows (PowerShell for the bounded driver; Git Bash is windows-git-bash.yml). Every push to
-# main or v2 and every pull request runs it. v2 is the Python rewrite's integration branch
+# main or v2, every pull request and every dispatch runs it; the macOS jobs skip pull requests
+# (THE MACOS QUEUE below). v2 is the Python rewrite's integration branch
 # (ludics-lite#403): without its push runs, the fleet's base gate (`pr-review.sh base`) would
 # read NO VERDICT on v2 forever. One job per concern, so a new one (a scheduled contract
 # check, say) is one more entry below and no edit to the others.
@@ -20,11 +21,19 @@ name: skill scripts
 # `if:` out. Adding a job that is expensive: give it the `needs: changes` / `if:` pair below.
 #
 # THE MACOS QUEUE. macOS coverage is required (the fleet's bash is 3.2), but the hosted macOS
-# runners are scarce: with one macOS job per suite, each waited for its own runner assignment
-# and a green PR sat one to two hours behind ~9 minutes of actual work (ludics-lite#55). So every
-# macOS suite is one step of ONE macOS job, which installs the shared dependencies once; each
-# step still runs after an earlier one fails (`if: !cancelled()`), still names its suite when it
-# fails (the `::error` annotation), and the job is red if any step is. Those annotations are a
+# runners are scarce. Since ludics-lite#727 the macOS jobs run on pushes to main and v2 and on
+# `workflow_dispatch`, never on a pull request: they are advisory at merge
+# (.github/ship-pr-advisory-checks), so on a PR head they decided nothing, yet with ten workers
+# pushing they queued main's own macOS run for an hour behind theirs. A PR's bash 3.2 evidence is
+# the worker's own run of every suite it touched under /bin/bash, slot-wrapped (issue-wave's
+# SKILL.md); a PR whose change only macOS exercises dispatches this workflow on its branch
+# (`gh workflow run skill-scripts.yml --ref <branch>`), and a macOS-only red is otherwise found on
+# main and owned by the integration loop. The jobs' shape answers the same scarcity: with one
+# macOS job per suite, each waited for its own runner assignment and a green PR sat one to two
+# hours behind ~9 minutes of actual work (ludics-lite#55). So every macOS suite is one step of
+# ONE macOS job, which installs the shared dependencies once; each step still runs after an
+# earlier one fails (`if: !cancelled()`), still names its suite when it fails (the `::error`
+# annotation), and the job is red if any step is. Those annotations are a
 # device of the jobs of that shape: the macOS jobs, the two Ubuntu jobs that gather independent
 # checks into one runner (`prompts` and `pr-review-hostile`), and windows-git-bash.yml's
 # `git-bash` job (one Windows runner, every ship-pr suite a step of it). That `if:` is the whole
@@ -46,6 +55,7 @@ on:
   pull_request:
   push:
     branches: [main, v2]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -481,7 +491,8 @@ jobs:
   # the two draws. What buys it back is 522s: the suites take ~1110s in one job and the bigger
   # half takes ~588s. The mean wait is a fifth of that, so even assuming the two draws are
   # independent -- the pessimistic end, since two jobs submitted together into a starved pool
-  # wait together -- the trade is positive, and it is the merge gate's critical path it buys.
+  # wait together -- the trade is positive, and it was the merge gate's critical path it bought
+  # (since #727 it is main's verdict instead: the jobs no longer run on PR heads).
   #
   # So the ceiling being defended here is RUNTIME, not the assignment count: ~18 minutes was
   # tolerable, half an hour would not be. Should the tail get worse and starve these jobs, the
@@ -495,8 +506,8 @@ jobs:
 
   macos-ship-pr:
     name: bash 3.2 suites, ship-pr (macos)
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
+    # Never on a pull request (THE MACOS QUEUE above): a push or a dispatch runs every suite.
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
     # The cleanup suite kills a stalled case at SHIP_PR_TEST_CASE_TIMEOUT (ludics-lite#14), so
     # this is the backstop behind that, sized for the whole sequence by THE CAPS above. Re-measured
@@ -587,12 +598,12 @@ jobs:
 
   macos-repo:
     name: bash 3.2 suites, repo and fleet (macos)
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
+    # Never on a pull request (THE MACOS QUEUE above): a push or a dispatch runs every suite.
+    if: github.event_name != 'pull_request'
     runs-on: macos-latest
-    # The merge gate's critical path, and the job that drifts: its fleet launcher suite grows
-    # with each stream-channel case that waits in real time (ludics-lite#259). Sized by THE CAPS
-    # above; splitting it was considered and declined (ludics-lite#474). Re-measured on v2
+    # Main's macOS verdict waits on it, and it is the job that drifts: its fleet launcher suite
+    # grows with each stream-channel case that waits in real time (ludics-lite#259). Sized by THE
+    # CAPS above; splitting it was considered and declined (ludics-lite#474). Re-measured on v2
     # (ludics-lite#403): 1822-2088s over the runs named at fleet-worker, x1.5.
     timeout-minutes: 53
     steps:

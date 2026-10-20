@@ -547,11 +547,16 @@ runners are scarce enough that four separate macOS jobs queued a green PR for on
 behind nine minutes of work (ludics-lite#55). Two rather than four, because that exposure grows
 with the runner assignments and not with the work — the second job re-pays only a checkout and a
 `brew install tmux`. Two rather than one, because the suites now take about eighteen minutes
-together and all of it sits on the merge gate's critical path; the halves are cut along what they
-exercise, ship-pr's own suites in one and the repo and fleet guards in the other, and come out at
-roughly nine minutes each. The workflow carries the measured queue waits that trade rests on, and
-the standing answer if the macOS pool starts starving these jobs: not a third assignment, but
-moving suites off the per-push path onto periodic CI. Alongside them runs the `lint` job, which is
+together and all of it sits on the critical path of `main`'s macOS verdict; the halves are cut
+along what they exercise, ship-pr's own suites in one and the repo and fleet guards in the other,
+and come out at roughly nine minutes each. The workflow carries the measured queue waits that
+trade rests on, and the standing answer if the macOS pool starts starving these jobs: not a third
+assignment, but moving suites off the per-push path onto periodic CI. The macOS jobs run on
+pushes to `main` and on `workflow_dispatch`, not on pull requests (ludics-lite#727): they are
+advisory at merge, so on a PR head they decided nothing while taking the scarcest runners. A
+PR's bash 3.2 evidence is the worker's own `/bin/bash` run of the suites it touched; a PR whose
+change only macOS exercises dispatches the workflow on its branch
+(`gh workflow run skill-scripts.yml --ref <branch>`). Alongside them runs the `lint` job, which is
 `scripts/preflight.sh` step by step: `bash -n`, shellcheck at error severity, the mode bits, the
 PowerShell parse, the parse guard (`scripts/check-parse-guards.sh`, with
 `scripts/test-check-parse-guards.sh` beside it), and the jq
