@@ -130,7 +130,7 @@ with `wait` instead of `list`: payload `{"waiter": {"box", "id", "command", "ttl
 options, lease-free like `list`, answered with the listing `list` gives. Before answering it writes
 `waiters/<id>.json` under the state root -- `{box, id, command, seen, expires}`, `expires` being
 `ttl` seconds (1 to 3600) from this anchor's clock -- and removes every other waiter file already
-expired. It writes nothing under `executions/`: a waiter owns nothing, and no lease is needed to say
+expired, both under the flock `waiters/.lock`, so a removal never deletes a renewal. It writes nothing under `executions/`: a waiter owns nothing, and no lease is needed to say
 one is waiting. A waiter's ttl outlasts its poll (the near side sends three polls' worth), so its
 last heartbeat, the one that read the box free, stays fresh while it takes its slot. A new window's
 gap is kept when a waiter on its box (the one-box rule above) has not expired. Fail-closed toward
@@ -631,26 +631,35 @@ def record_waiter(directory: Path, waiter: Any, boxes: str, map_spec: str, now: 
     if box_key(data["box"], map_spec) not in {box_key(entry, map_spec) for entry in boxes.split()}:
         refuse(f"waiter box {data['box']}: no FLEET_BOXES entry ({boxes}) is that box, by the endpoint map or by case")
     directory.mkdir(exist_ok=True)
-    for path in directory.glob("*.json"):
-        try:
-            existing = as_object(json.loads(path.read_text()))
-        except (OSError, ValueError):
-            continue   # unreadable: fresh_waiters counts it; a person removes it
-        expires = waiter_time(existing.get("expires")) if existing is not None else None
-        if expires is not None and expires <= now:
-            with contextlib.suppress(FileNotFoundError):
-                path.unlink()
-    record = {"box": data["box"], "id": data["id"], "command": data["command"][:300], "seen": now.isoformat(),
-              "expires": (now + timedelta(seconds=ttl)).isoformat()}
-    fd, temporary = tempfile.mkstemp(prefix=".waiter-", dir=directory)
+    # The removal of expired files and the renewal of one are serialized under `waiters/.lock`, a
+    # flock held for these few file operations: without it, one waiter could read another's file
+    # expired, the owner renew it, and the first remove the renewal, unseen until the next poll.
+    # The window's read (`fresh_waiters`) takes no lock: every file is replaced whole.
+    lock = os.open(directory / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(record, stream)
-            stream.write("\n")
-        os.replace(temporary, directory / (data["id"] + ".json"))
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for path in directory.glob("*.json"):
+            try:
+                existing = as_object(json.loads(path.read_text()))
+            except (OSError, ValueError):
+                continue   # unreadable: fresh_waiters counts it; a person removes it
+            expires = waiter_time(existing.get("expires")) if existing is not None else None
+            if expires is not None and expires <= now:
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
+        record = {"box": data["box"], "id": data["id"], "command": data["command"][:300], "seen": now.isoformat(),
+                  "expires": (now + timedelta(seconds=ttl)).isoformat()}
+        fd, temporary = tempfile.mkstemp(prefix=".waiter-", dir=directory)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump(record, stream)
+                stream.write("\n")
+            os.replace(temporary, directory / (data["id"] + ".json"))
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        os.close(lock)
 
 
 def publish(directory: Path, record: Record) -> None:

@@ -1,11 +1,13 @@
 """ludics.fleetworker.registry: the shipped registry, imported (main does not run on import)."""
 
 import contextlib
+import fcntl
 import io
 import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from datetime import datetime
 from typing import Any
@@ -441,7 +443,7 @@ class Waiters(RegistryCase):
         with open(path, "w") as f:
             json.dump(data, f)
         self.assertEqual(self.call("wait", {"waiter": self.waiter()})[0], 0)
-        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "waiters"))), ["live.json", "rog-7.json"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "waiters"))), [".lock", "live.json", "rog-7.json"])
 
     def test_a_waiter_is_validated_whole(self) -> None:
         cases: list[tuple[object, str]] = [
@@ -459,6 +461,22 @@ class Waiters(RegistryCase):
             self.assertEqual(rc, 1, payload)
             self.assertIn(why, err, payload)
         self.assertEqual(self.call("wait", {"waiter": self.waiter(box="MAC")})[0], 0, "a roster entry by case")
+
+    def test_removal_and_renewal_are_serialized_under_the_waiters_lock(self) -> None:
+        # Local review of #719: a removal racing a renewal could delete the renewed heartbeat.
+        os.makedirs(os.path.join(self.root, "waiters"))
+        lock = os.open(os.path.join(self.root, "waiters", ".lock"), os.O_CREAT | os.O_RDWR, 0o644)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        results: list[int] = []
+        thread = threading.Thread(target=lambda: results.append(self.call("wait", {"waiter": self.waiter()})[0]))
+        thread.start()
+        thread.join(0.5)
+        self.assertEqual((results, os.listdir(os.path.join(self.root, "waiters"))), ([], [".lock"]), "it waits")
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        thread.join(10)
+        self.assertEqual(results, [0])
+        self.assertTrue(os.path.exists(os.path.join(self.root, "waiters", "rog-7.json")))
 
     def test_a_long_command_is_cut_to_300_characters(self) -> None:
         self.call("wait", {"waiter": self.waiter(command="x" * 400)})
