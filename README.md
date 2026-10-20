@@ -249,7 +249,8 @@ one, that the sweep must never take or honour the **hold** lock. The first three
 sides quietly stop meeting and the interlock is gone) and the fourth fails closed (a held box can
 no longer sweep itself). `test-wake-lab.sh` compares all four against the sweep's own code. It
 reads the revision the sweep routine actually runs — `origin/master` of
-`${OCANNL_STAGING:-$HOME/ocannl-staging}`, since that checkout is often on a WIP branch — and it
+`${OCANNL_STAGING:-$HOME/ocannl-staging}`, since that checkout is often on a WIP branch — as
+`tools/sweep.sh` plus the `tools/lab-map.sh` it sources, when its source line says it does, and it
 runs the sweep's own `take_lab_lock` under a HOME of its own rather than rebuilding the path,
 so the comparison is against the lock file that really appears. It then holds each side's real
 lock and checks the other side's real behaviour, since a lock file without a live `flock` stops
@@ -257,7 +258,7 @@ nothing: a restart is refused while the sweep's own `take_lab_lock` holds the bo
 still takes its lane lock while that box's hold lock is held. The checkout is read strictly
 read-only. Where it is absent, as in CI, the case prints a named `SKIP:` line that the summary
 counts, so a green run says what it did not check. The sweep checks part of the contract from
-its side at startup: `lab_contract_check` in ocannl-staging's `tools/sweep.sh` asks
+its side at startup: `lab_contract_check` in ocannl-staging's `tools/lab-map.sh` asks
 `wake-lab.sh lock-path` for each lane box and refuses the run on a mismatch. That covers the
 directory and the `<box>.lock` name for the boxes a run selects; the hold-lock fact, and the
 behaviour behind the files, are `test-wake-lab.sh`'s alone.
