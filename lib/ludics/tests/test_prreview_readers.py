@@ -618,7 +618,7 @@ class SummaryStateRecord(unittest.TestCase):
 
     def test_the_approval_passes_the_thread_gate(self) -> None:
         rec = state_summary(1, "2026-10-18T16:27:30Z", state_record())
-        thread = {"isResolved": False, "path": "a.py",
+        thread: Json = {"isResolved": False, "path": "a.py",
                   "comments": {"nodes": [{"fullDatabaseId": "9", "author": {"login": "codex"}}]}}
         gh = feeds(comments=[rec], threads=[thread])
         st = run_state(gh)
