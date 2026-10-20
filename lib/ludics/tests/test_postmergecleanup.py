@@ -422,7 +422,7 @@ class Interrupted(unittest.TestCase):
         self.git("-C", self.main, "worktree", "add", "-q", "-b", "topic", self.session)
         self.git("-C", self.session, *ident, "commit", "-q", "--allow-empty", "-m", "topic")
         self.git("-C", self.main, "checkout", "-q", "--detach")
-        self.require_symref_transactions()
+        self.require_helper_preconditions()
         self.bin = f"{self.dir}/bin"
         os.mkdir(self.bin)
         with open(f"{self.bin}/git", "w", encoding="utf-8") as f:
@@ -438,13 +438,21 @@ class Interrupted(unittest.TestCase):
     def git(self, *args: str) -> str:
         return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
 
-    def require_symref_transactions(self) -> None:
-        """Skip on a Git the helper refuses before the base fetch these cases interrupt: it probes
-        `update-ref --stdin`'s symref-update (Git 2.46) before that fetch, after reading
-        `rev-parse --show-ref-format` (2.45), so an older Git ends the run with exit 1, not the
-        TERM. The probe is the helper's own, in this case's repository, so it skips exactly where
-        the helper would refuse (ludics-lite#721: the unit tests are the repository's merge build,
-        which runs on whatever Git the merging box has)."""
+    def require_helper_preconditions(self) -> None:
+        """Skip where the helper refuses before the base fetch these cases interrupt, which ends
+        the run with exit 1, not the TERM. Before that fetch it requires `rev-parse
+        --show-ref-format` to read `files` (an older Git prints the option back; a reftable
+        default, from `init.defaultRefFormat` or `GIT_DEFAULT_REF_FORMAT`, reads `reftable`), and
+        probes `update-ref --stdin`'s symref-update (Git 2.46). Both checks are the helper's own,
+        in this case's repository, so the case skips exactly where the helper would refuse
+        (ludics-lite#721: the unit tests are the repository's merge build, which runs on whatever
+        Git and Git config the merging box has)."""
+        ref_format = self.git("-C", self.main, "rev-parse", "--show-ref-format").strip()
+        if ref_format != "files":
+            self.skipTest(
+                f"rev-parse --show-ref-format reads {ref_format!r} (a Git older than 2.45, or a reftable default),"
+                " and the helper requires 'files'"
+            )
         probe = "refs/test-capability-probe"
         self.git("-C", self.main, "symbolic-ref", probe, "refs/heads/master")
         try:
