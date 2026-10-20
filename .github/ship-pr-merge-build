@@ -1,0 +1,27 @@
+# ship-pr's build of the would-be merge commit (ludics-lite#611, #630), for this repository's own
+# PRs (ludics-lite#721). `pr-review.sh merge` reads this file from main: when main has moved since
+# the PR's head was built and a path BOTH sides changed is an input below, it builds the PR head
+# merged with main's tip in a scratch repository, runs `command` at its root inside the box's
+# run-time slot, and refuses the merge (exit 1, no waiver) when that fails. The grammar, the
+# trigger and the command's contract are lib/ludics/prreview/mergebuild.py's docstring.
+#
+# Why. #700 and #698 were each green on their own heads and both changed
+# lib/ludics/fleetworker/execution.py in disjoint hunks; merged twenty minutes apart they broke
+# WindowGap on main (#698's retry wrote the payload into an argv word #700 had moved to fd 3), and
+# #701 fixed it. Nothing in the merge path built the merged tree, because this file was absent.
+#
+# Inputs -- the boundary. A path is an input when one glob matches the WHOLE repository path
+# (fnmatch, case-sensitive, `*` crossing `/`), so `lib/*.py` is every Python file of the package
+# and its unit tests at any depth under lib/, and nothing else. A shared path renamed on either
+# side counts by its other name too.
+#
+# The command -- what it covers. The package's unit tests, as CI's python job runs them (about
+# 80 to 110 s on mac-studio), through the merged tree's own scripts/py, on the merging box's Git.
+# The post-merge-cleanup cases that need Git 2.46 and files ref storage skip without them, where
+# the helper refuses (on Git 2.43 they were the suite's only failures). Outside it, and so the integration loop's on
+# main: the shell suites (test-*.sh, which drive the shims end to end), strict pyright
+# (it needs npx and the network, and CI runs it on every PR head), the lint and prompt guards, a
+# clash across paths only ONE side changed (the default `same-input` trigger), and a clash in
+# files that are not inputs (a shell script, a SKILL.md).
+command scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'
+input lib/*.py
