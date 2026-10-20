@@ -439,8 +439,9 @@ class Waiting(unittest.TestCase):
 
         def slow_listing(_cfg: object, waiter: Any = None) -> None:
             time.sleep(2)
-            with open(marker, "w") as f:
+            with open(marker + ".tmp", "w") as f:
                 json.dump(waiter, f)
+            os.replace(marker + ".tmp", marker)   # whole, so the poll below never reads it half-written
 
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
         read, write = os.pipe()

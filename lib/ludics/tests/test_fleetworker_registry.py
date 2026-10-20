@@ -9,8 +9,9 @@ import shutil
 import tempfile
 import threading
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+from unittest import mock
 
 from ludics.fleetworker import registry
 
@@ -502,6 +503,30 @@ class Waiters(RegistryCase):
         for bad in ({"id": "rog-7", "done": False}, {"id": "../x", "done": True}, {"id": 7, "done": True}):
             rc, _, err = self.call("wait", {"waiter": bad})
             self.assertEqual((rc, err), (1, "EXECUTION REFUSED: a waiter that is done is {id, done: true}\n"), bad)
+
+    def test_a_fresh_anchor_with_no_state_root_answers_a_heartbeat(self) -> None:
+        # Round 5 of #736: `wait` takes no lease, so nothing has created the state root yet.
+        shutil.rmtree(self.root)
+        rc, out, _ = self.call("wait", {"waiter": self.waiter()})
+        self.assertEqual((rc, out), (0, []))
+        self.assertEqual(self.read()["id"], "rog-7")
+        shutil.rmtree(self.root)
+        self.assertEqual(self.call("wait", {"waiter": {"id": "rog-7", "done": True}})[0], 0)
+        os.makedirs(self.root, exist_ok=True)
+
+    def test_a_waiter_file_gone_mid_scan_is_nobody_waiting(self) -> None:
+        # Round 5 of #736: a release between the listing and the read is not an unreadable file.
+        self.call("wait", {"waiter": self.waiter()})
+        directory = registry.Path(self.root) / "waiters"
+        real = registry.Path.read_text
+
+        def vanishing(path: registry.Path, *args: Any, **kwargs: Any) -> str:
+            if path.name == "rog-7.json":
+                path.unlink()
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(registry.Path, "read_text", vanishing):
+            self.assertEqual(registry.fresh_waiters(directory, "mac", "", datetime.now(timezone.utc)), [])
 
     def test_a_long_command_is_cut_to_300_characters(self) -> None:
         self.call("wait", {"waiter": self.waiter(command="x" * 400)})

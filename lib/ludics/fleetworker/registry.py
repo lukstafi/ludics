@@ -611,6 +611,8 @@ def fresh_waiters(directory: Path, host: str, map_spec: str, now: datetime) -> l
     for path in sorted(directory.glob("*.json")):
         try:
             data = as_object(json.loads(path.read_text()))
+        except FileNotFoundError:
+            continue   # released or expired since the listing: nobody waits there
         except (OSError, ValueError):
             data = None
         expires = waiter_time(data.get("expires")) if data is not None else None
@@ -633,7 +635,7 @@ def record_waiter(directory: Path, waiter: Any, boxes: str, map_spec: str, now: 
         # The waiter no longer needs the gap (it holds its slot, or it was refused): its file goes.
         if data["done"] is not True or not isinstance(data["id"], str) or not WAITER_ID.fullmatch(data["id"]):
             refuse("a waiter that is done is {id, done: true}")
-        directory.mkdir(exist_ok=True)
+        directory.mkdir(parents=True, exist_ok=True)
         lock = os.open(directory / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -658,7 +660,8 @@ def record_waiter(directory: Path, waiter: Any, boxes: str, map_spec: str, now: 
         refuse(f"a waiter's ttl must be a whole number of seconds from 1 to {WAITER_TTL_MAX}")
     if box_key(data["box"], map_spec) not in {box_key(entry, map_spec) for entry in boxes.split()}:
         refuse(f"waiter box {data['box']}: no FLEET_BOXES entry ({boxes}) is that box, by the endpoint map or by case")
-    directory.mkdir(exist_ok=True)
+    # parents: on a fresh anchor no lease has created the state root yet, and `wait` takes none.
+    directory.mkdir(parents=True, exist_ok=True)
     # The removal of expired files and the renewal of one are serialized under `waiters/.lock`, a
     # flock held for these few file operations: without it, one waiter could read another's file
     # expired, the owner renew it, and the first remove the renewal, unseen until the next poll.
