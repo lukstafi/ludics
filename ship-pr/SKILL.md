@@ -930,6 +930,14 @@ head returns 3, never superseded or green. Detection occurs on the next poll (af
 API calls), not through a push notification. If the ceiling runs out it exits 4 naming `--allow-no-verdict`; for anything a compiler sees,
 wait again instead.
 
+**A conflict is refused before the wait, not after it** (ludics-lite#729: on ocannl-staging#1259 it
+surfaced at the merge call, 120 min in). `--wait` first reads the PR's `mergeable` and
+`mergeable_state`: `false` or `dirty` exits 1 at once with the rebase hint, so merge or rebase the
+base in, push, and run `merge --wait` again. GitHub computes the answer lazily, so `null` or
+`unknown` is read again (up to eight reads 5 s apart, inside the wait's ceiling) and never taken as
+clean or as conflicting; still uncomputed, or unread, it is said on stderr and the wait goes on. A
+conflict that arises during the wait is the merge call's to refuse (*What `merge` absorbs*, below).
+
 **The polling budget** (ludics-lite#543) is shared by every observer: `watch`, `checks --wait`,
 `merge --wait` and `base --wait`. Each one reads at once, then pauses for its interval (`WATCH_INTERVAL`,
 `SHIP_PR_CHECKS_INTERVAL`). While nothing moves, the pause doubles up to 300 s for a review and

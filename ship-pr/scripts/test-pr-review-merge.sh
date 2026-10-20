@@ -82,6 +82,11 @@ MERGE_BUILD_CONFIG=""                  # nonempty = the config's contents; empty
 MERGE_BUILD_CONFIG_FAIL=""             # nonempty = the config read answers with a 503
 MERGE_CWD=""                           # nonempty = the directory merge runs in
 MERGEABLE=true                         # what the mergeable read answers; FAIL = it does not answer
+# A --wait's conflict preflight (ludics-lite#729): "<mergeable> TAB <mergeable_state>" as the read
+# answers it, the first read MERGEABILITY, every later one MERGEABILITY_LATER when that is set;
+# FAIL = the read does not answer.
+MERGEABILITY=$'true\tclean'
+MERGEABILITY_LATER=""
 STATE_FAIL=""                          # nonempty = the merged-state read after the call does not answer
 DISABLE_AUTO_FAIL=""                   # nonempty = `pr merge --disable-auto` is refused
 MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 503
@@ -156,6 +161,21 @@ gh() {
     # successor, so the two are told apart by `updated_at` rather than by field count.
     # The series scan's count read: the count and the head, derived from the rows the matching
     # commits read serves, so the two agree unless a case says otherwise.
+    # The --wait's conflict preflight (ludics-lite#729), told by its interpolated projection.
+    *'\(.mergeable)'*)
+      printf 'CALL mergeability\n' >>"$CALLS_FILE"
+      reads=$(fixture_call_count mergeability) || return 1
+      if [ -n "$MERGEABILITY_LATER" ] && [ "$reads" -ge 2 ]; then
+        reads=$MERGEABILITY_LATER
+      else
+        reads=$MERGEABILITY
+      fi
+      if [ "$reads" = FAIL ]; then
+        printf 'gh: 503 No server is currently available to service your request\n' >&2
+        return 1
+      fi
+      printf '%s\t%s\n' "$reads" "$PR_BASE"
+      ;;
     *'.commits|tostring'*)
       printf 'CALL commits-count\n' >>"$CALLS_FILE"
       reads=$(fixture_call_count series-count) || return 1
@@ -456,6 +476,8 @@ reset() {
   MERGE_BUILD_CONFIG_FAIL=""
   MERGE_CWD=""
   MERGEABLE=true
+  MERGEABILITY=$'true\tclean'
+  MERGEABILITY_LATER=""
   STATE_FAIL=""
   DISABLE_AUTO_FAIL=""
   MERGE_QUEUE_FAIL=""
@@ -2207,6 +2229,112 @@ test_not_mergeable_is_decided_by_the_mergeable_field() {
   assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 3 "after three calls"
 }
 
+# ludics-lite#729. A conflict ends no wait in a merge: on ocannl-staging#1259 `merge --wait` found
+# one only at the merge call, after 120 minutes on CI. A --wait reads the PR's mergeability FIRST
+# and refuses a conflict before the gate reads anything. The base leg of each case is realistic:
+# the check still running and the merge call refused as GitHub refuses a conflicting PR.
+test_a_conflicting_pr_is_refused_before_the_wait() {
+  local answer mergeable state
+  for answer in $'false\tdirty' $'false\tblocked' $'true\tdirty'; do
+    mergeable=${answer%%$'\t'*}
+    state=${answer#*$'\t'}
+    reset
+    retune CHECKS_INTERVAL=1
+    CHECK_ROWS="$(row pending ci pending)"
+    CHECK_ROWS_LATER="$(row green ci success)"
+    MERGE_REFUSAL='gh: Pull request is not mergeable'
+    MERGEABLE=false
+    MERGEABILITY=$answer
+    run_merge --wait=30
+    assert_eq "$MERGE_RC" 1 "a conflict ($mergeable $state) is refused ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "REFUSING to merge example/repo#7 before the wait: it CONFLICTS with its base" \
+      "before the wait, saying why"
+    assert_contains "$MERGE_STDERR" "(mergeable=$mergeable, mergeable_state=$state)" "naming what GitHub answered"
+    assert_contains "$MERGE_STDERR" "Merge or rebase origin/main in" "with the rebase hint"
+    assert_eq "$(fixture_call_total checks)" 0 "the gate read nothing"
+    assert_no_merge_call
+  done
+  # Without --wait nothing is read early: the gate is one read and the call's refusal answers it.
+  reset
+  MERGE_REFUSAL='gh: Pull request is not mergeable'
+  MERGEABLE=false
+  MERGEABILITY=$'false\tdirty'
+  run_merge
+  assert_eq "$(fixture_call_total mergeability)" 0 "a merge with no wait has no preflight ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "really does not merge cleanly" "the merge call's refusal still decides"
+  # A clean answer is silent, and the wait goes on to the merge.
+  reset
+  run_merge --wait=30
+  assert_eq "$MERGE_RC" 0 "a clean PR merges ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total mergeability)" 1 "after one preflight read"
+  assert_not_contains "$MERGE_OUTPUT" "mergeab" "which says nothing"
+}
+
+# GitHub computes mergeability lazily: null (or unknown) is "not computed yet", read again a
+# bounded number of times and never read as clean or as conflicting. On the test clock, so the
+# pauses are logged rather than waited.
+test_an_uncomputed_mergeability_is_read_again_never_judged() (
+  export SHIP_PR_TEST_CLOCK="$TEST_ROOT/clock"
+  date +%s >"$SHIP_PR_TEST_CLOCK"
+  sleep() {
+    printf '%s\n' "$1" >>"$TEST_ROOT/sleeps"
+    printf '%s\n' "$(($(cat "$SHIP_PR_TEST_CLOCK") + $1))" >"$SHIP_PR_TEST_CLOCK"
+  }
+  reset
+  : >"$TEST_ROOT/sleeps"
+  MERGEABILITY=$'null\tunknown'
+  MERGEABILITY_LATER=$'false\tdirty'
+  run_merge --wait=30
+  assert_eq "$MERGE_RC" 1 "the computed conflict is refused ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total mergeability)" 2 "on the second read"
+  assert_eq "$(tr '\n' ' ' <"$TEST_ROOT/sleeps")" "5 " "five seconds after the first"
+  assert_no_merge_call
+  # Either field still computing is not computed: mergeable=false beside unknown is read again.
+  reset
+  : >"$TEST_ROOT/sleeps"
+  MERGEABILITY=$'false\tunknown'
+  MERGEABILITY_LATER=$'true\tclean'
+  run_merge --wait=30
+  assert_eq "$MERGE_RC" 0 "a half-computed answer is not a conflict ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total mergeability)" 2 "it was read again"
+  # Still computing after the last read: said, and the wait goes on -- not refused, not clean.
+  reset
+  : >"$TEST_ROOT/sleeps"
+  MERGEABILITY=$'null\tunknown'
+  run_merge --wait=60
+  assert_eq "$MERGE_RC" 0 "an answer never computed refuses nothing ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total mergeability)" 8 "after eight reads"
+  assert_eq "$(tr '\n' ' ' <"$TEST_ROOT/sleeps" | cut -c1-14)" "5 5 5 5 5 5 5 " "five seconds apart"
+  assert_contains "$MERGE_STDERR" "mergeability is NOT YET COMPUTED after 8 read(s) within the wait" "it says so"
+  assert_contains "$MERGE_STDERR" "not read as clean or as conflicting" "in its own terms"
+  # The re-reads stay inside the command's own wait ceiling: no pause past it.
+  reset
+  : >"$TEST_ROOT/sleeps"
+  MERGEABILITY=$'null\tunknown'
+  run_merge --wait=12
+  assert_eq "$MERGE_RC" 0 "a short wait still reaches the gate ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total mergeability)" 3 "after the reads its ceiling holds"
+  assert_eq "$(tr '\n' ' ' <"$TEST_ROOT/sleeps")" "5 5 " "and no pause past it"
+  assert_contains "$MERGE_STDERR" "NOT YET COMPUTED after 3 read(s) within the wait" "it says how many"
+)
+
+# An unread answer, or one in no shape the check knows, can only fail to refuse early: it is said,
+# never read as clean, and the merge call stays the judge.
+test_an_unread_mergeability_neither_refuses_nor_clears() {
+  reset
+  MERGEABILITY=FAIL
+  run_merge --wait=30
+  assert_eq "$MERGE_RC" 0 "an unread preflight blocks nothing ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "conflicts with its base is UNREAD" "it is named as unread"
+  assert_contains "$MERGE_STDERR" "which is not 'no conflict'" "and not as clean"
+  reset
+  MERGEABILITY=$'maybe\tclean'
+  run_merge --wait=30
+  assert_eq "$MERGE_RC" 0 "an unknown shape blocks nothing ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "a shape this check does not know" "it is named"
+  assert_contains "$MERGE_STDERR" "(mergeable=maybe, mergeable_state=clean)" "with what was read"
+}
+
 # A base that moves during every call is retried twice and then refused, never looped on.
 test_a_base_that_moves_during_every_call_stops_after_three() {
   reset
@@ -2625,6 +2753,9 @@ tests=(
   test_no_verdict_refuses_without_the_flag
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
+  test_a_conflicting_pr_is_refused_before_the_wait
+  test_an_uncomputed_mergeability_is_read_again_never_judged
+  test_an_unread_mergeability_neither_refuses_nor_clears
   test_a_base_that_moves_during_every_call_stops_after_three
   test_an_absent_base_that_keeps_moving_stops_after_three_reads
   test_a_rejected_merge_call_and_an_unconfirmed_state
