@@ -1,6 +1,6 @@
 ---
 name: issue-wave
-description: Run a delegation wave over the issue backlog with ONE coordinator for the whole fleet - read the daily sequencing plan, propose a scope of D1/D2 issues with a box per issue from the plan's placement table, launch one worker per issue in its own worktree using native workers (the runtime's own subagents) or CLI workers, each shipping via ship-pr, and supervise the wave to full merge. Use when asked to burn down issues, run a wave, or work the backlog. Preserve user choices of provider/model and transport.
+description: Run a delegation wave over the issue backlog with ONE coordinator for the whole fleet - read the daily sequencing plan, propose a scope of D1-D3 issues (a D3 with paired planning) with a box per issue from the plan's placement table, launch one worker per issue in its own worktree using native workers (the runtime's own subagents) or CLI workers, each shipping via ship-pr, and supervise the wave to full merge. Use when asked to burn down issues, run a wave, or work the backlog. Preserve user choices of provider/model and transport.
 ---
 
 # Issue wave
@@ -218,6 +218,14 @@ decision they own:
    what you recommend" as a global answer. Whatever is decided gets posted to the issue
    before the affected worker launches.
 
+**Planning mode, per issue.** Every D3 gets `paired+critique` and an issue on the D2/D3
+border gets `paired`. Either way GPT Astra plans the issue read-only next to the worker,
+and the worker reconciles the two plans before it codes
+([paired-planning.md](references/paired-planning.md)). D1 and plain D2 issues get neither. List
+the mode per issue in the wave summary, where it is veto-able like tier 2. Under a Claude
+coordinator a Codex worker's issue pairs like any other. Under any other coordinator, pairing
+one is a tier-3 question, and the issue plans alone unless the user confirms.
+
 Most waves should have an empty tier 3. If every question keeps landing in tier 3, the
 triage is wrong, not the backlog. A desktop coordinator with native Claude workers, where the
 site sets no standing `FLEET_AUTOFIX_OFF` and the wave request did not settle Auto-fix on worker
@@ -413,6 +421,9 @@ requirements for every transport with transport-specific setup and identity, and
   ONLY the comments and never the body, so on a comment-less issue it emits zero bytes and
   exits 0 - the worker then holds nothing of its task and reconstructs it from the brief's
   summary (ludics-lite#70 and #76, 2026-09-10).
+- Paired planning, for an issue the gate paired: the brief addition in
+  [paired-planning.md](references/paired-planning.md#the-brief-addition), with its mode. The
+  coordinator starts the second planner on the worker's startup SHA as soon as the launch succeeds.
 - Verification expectations: scoped test runs, negative controls where the work is a checker
   (new fixtures shown to FAIL on base: `~/ludics-lite/scripts/run-against-base.sh <suite>`, slot-wrapped),
   and the box's known environmental traps. **The formatter batch** is the one the project's

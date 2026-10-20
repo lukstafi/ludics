@@ -1321,9 +1321,10 @@ file stays the entry point and forwards to its module: `pr-review.sh` forwards t
 `lib/ludics/README.md`) to `ludics.prreview`; `fleet-worker.sh` every verb but
 `execution slot --probe`, which it still answers in bash so a box without Python 3.12
 answers it, to `ludics.fleetworker`; `check-prompts.sh` forwards
-whole, to `ludics.checkprompts`, and `post-merge-cleanup.sh` its whole command line, to
-`ludics.postmergecleanup`. The shell suites above are the conformance suite for a port,
-unchanged. The package's own checks are `npx --yes pyright@1.1.414` (strict, `pythonVersion`
+whole, to `ludics.checkprompts`, `post-merge-cleanup.sh` its whole command line, to
+`ludics.postmergecleanup`, and `issue-wave/scripts/peer-plan.sh` (paired planning's second
+planner, written in Python from the start, ludics-lite#547) its whole command line, to
+`ludics.peerplan`. The shell suites above are the conformance suite for a port, unchanged. The package's own checks are `npx --yes pyright@1.1.414` (strict, `pythonVersion`
 3.12, from `pyrightconfig.json`; run as Linux and again with `--pythonplatform Darwin`) and
 `scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'`, both run by CI's `python` job.
 Where a port's code goes, how forwarding and the suites' shell bridge work, and the rule for

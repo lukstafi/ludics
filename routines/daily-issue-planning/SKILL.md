@@ -41,6 +41,11 @@ Arrange the material without unhelpful redundancy, the following are needs, not 
     legs on other boxes, name the box where its primary iteration happens as home and list the other
     boxes separately as legs. If one list item groups issues with different homes, label each issue's
     home rather than giving the group an ambiguous shared field.
+  - D3 issues belong in the first-wave list too: the issue-wave coordinator runs a D3 with paired planning, two
+    models planning independently before one implements. Label every item with its class, `D1`, `D2` or `D3`,
+    and write `D2/D3` for a D2 on the border (one whose change couples semantics, interacting states or
+    verification logic), which gets one round of paired planning. A D3 whose design question is tiered "ask"
+    is still listed, with that question named as its gate.
   - Among them, show which ones are good to run in parallel to one-another.
   - Among them, show which ones prefer to run on ROG (NVIDIA GPU), which on Minix (AMD GPU, unified memory), and which on TUF (AMD GPU, discrete memory).
 - CPU ISA: `rog-nv-linux` is Arrow Lake, AVX2 only; `minix-amd-linux` (Zen 5) is the only AVX-512 box, so AVX-512 witnesses and timings go on minix.
