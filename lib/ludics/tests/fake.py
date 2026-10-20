@@ -88,6 +88,7 @@ _HOLDER = """\
 import fcntl, json, os, sys, time
 descriptor = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o644)
 fcntl.flock(descriptor, fcntl.LOCK_EX)
+os.ftruncate(descriptor, 0)  # as record_holder does: no byte of an earlier, longer record is left
 recorded = int(sys.argv[2]) or os.getpid()
 os.write(descriptor, (json.dumps({"pid": recorded, "command": ["sleep", "30"], "started": time.time(),
                                   "deadline": 600, "expires": time.monotonic() + 300}) + "\\n").encode())
