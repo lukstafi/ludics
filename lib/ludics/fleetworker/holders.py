@@ -74,7 +74,10 @@ order, the first that answers deciding:
 
 1. ``proc-locks``: the lock table's FLOCK holders of the file (above), where it names one with a
    pid above 0. Confirmed when the recorded pid is among them, unconfirmed when not: the table
-   names the process that took the lock, so a record of another pid is not this lock's.
+   names the process that took the lock, so a record of another pid is not this lock's. Confirmed
+   here says the record is its taker's, not that the taker still runs: a wrapper killed while its
+   batch keeps the inherited lock is still the table's pid (the line's ``user`` and ``command``,
+   from ``ps``, are then unknown), where 2 and 3 read it unconfirmed.
 2. ``proc-fd`` (a system with ``/proc/self/fd``): the processes one of whose ``/proc/<pid>/fd``
    links reads as the file's real path.
 3. ``lsof`` (elsewhere: macOS, the BSDs): ``lsof -t -- <slot file>``, run bounded the way the
