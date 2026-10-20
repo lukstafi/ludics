@@ -30,6 +30,8 @@ and a ``not-launched`` conclusion, which describes no run, reads nothing.
 import json
 import os
 import re
+import shlex
+import sys
 import time
 from datetime import datetime, timedelta
 from collections.abc import Callable, Mapping, Sequence
@@ -236,12 +238,19 @@ printf 'status=rc\nrc=%s\nsentinel=%s\n' "$code" "$sentinel"
 
 # Far side of `--observed-from <checkout>`, on the execution host: the checkout's HEAD, the commit a
 # conclusion records instead of a SHA copied by hand (ludics-lite#561). Arg: the checkout. Prints one
-# `head=` line, or one OBSERVED-FROM REFUSED line.
+# `head=` line, or one OBSERVED-FROM REFUSED line; then, for a checkout that is not clean, one
+# `dirty=` line (``observed_head``'s warning, ludics-lite#732): the count of `git status --porcelain`
+# entries, or `unreadable`.
 OBSERVED_FROM = r"""co="$1"
 refuse() { echo "OBSERVED-FROM REFUSED: $*"; exit 1; }
 [ -d "$co" ] || refuse "no checkout $co on $BOX"
 head=$(git -C "$co" rev-parse --verify -q 'HEAD^{commit}') || refuse "cannot read HEAD of $co on $BOX (not a git checkout, or no commit yet)"
 printf 'head=%s\n' "$head"
+if left=$(git --no-optional-locks -C "$co" status --porcelain 2>/dev/null); then
+  [ -z "$left" ] || printf 'dirty=%s\n' "$(printf '%s\n' "$left" | grep -c '')"
+else
+  printf 'dirty=unreadable\n'
+fi
 """
 
 
@@ -603,7 +612,32 @@ def observed_head(cfg: Config, box: str, checkout: str) -> str | Refusal:
     head = facts_of(facts, "head")
     if not revision.OBJECT_ID.fullmatch(head):
         return Refusal(f"OBSERVED-FROM REFUSED: unreadable HEAD of {checkout} from {box}: {facts}", 1)
+    dirty_warning(box, checkout, facts_of(facts, "dirty"))
     return head
+
+
+def dirty_warning(box: str, checkout: str, dirty: str) -> None:
+    """THE LEFTOVER WARNING (ludics-lite#732): a checkout a conclusion reads that is not clean -- a
+    golden promoted on the GPU box after its last run, an edit made over ssh -- is named on stderr,
+    so the conclusion's caller learns it before close-out removes the worktree and its edits with it,
+    and before the next ``execution leg`` there refuses it. It warns and never refuses: what is left
+    after a run does not change that run's verdict, and a run launched over edits is the run record's
+    to judge (``from_run_refusal``), not this read's. Its boundary: what ``git status --porcelain``
+    lists (tracked changes and untracked files git does not ignore), read once, at this call; ignored
+    files (a build tree) are not read, and a conclusion's retry that reuses its landed SHA reads no
+    checkout and so warns about nothing. It stays out of the payload, which a retry must compose
+    identically."""
+    if not dirty:
+        return
+    count = "its status could not be read" if dirty == "unreadable" else f"it has {dirty} uncommitted path(s)"
+    where = shlex.quote(checkout)
+    sys.stdout.flush()
+    sys.stderr.write(
+        f"OBSERVED-FROM WARNING: {where} on {box} is not clean: {count} (`git -C {where} status` there)."
+        " Revert or commit them (a promotion made on the box belongs in the branch, not left there):"
+        " an `execution leg` refuses a worktree that is not clean, and removing the worktree discards them\n"
+    )
+    sys.stderr.flush()
 
 
 def retried(
