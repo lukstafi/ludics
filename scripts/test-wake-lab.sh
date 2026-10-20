@@ -2796,18 +2796,47 @@ elif ! git -C "$STAGING" show origin/master:tools/sweep.sh >"$TMP/sweep-master.s
   ko "cannot read origin/master:tools/sweep.sh out of $STAGING, which is the revision the sweep \
 routine archives and runs -- $(tr -d '\000-\037' <"$TMP/sweep-master.err")"
 else
-  SWEEP=$TMP/sweep-master.sh
+  # The sweep's text is tools/sweep.sh plus the tools/lab-map.sh it sources (staging 3ec51c31e moved
+  # lab_map, lab_box_of and lab_contract_check there; ludics-lite#706). Which files make it up is
+  # the sweep's own source line to say, read from origin/master like the rest: no such line is an
+  # older sweep that still defines them itself, and its text is sweep.sh alone. The line names one
+  # spelling; any other way of loading lab-map.sh reads as none, and the anchors below then miss in
+  # sweep.sh alone -- a loud failure, never a check quietly run against the wrong text. The
+  # anchors read the two files as ONE text, so each must still match exactly once across both: a
+  # definition left behind in sweep.sh beside its lab-map.sh copy fails too.
+  lab_map_source='^\. "\$SWEEP_TOOLS/lab-map\.sh"$'
+  SWEEP=$TMP/sweep-text.sh
   anchors=1
-  for anchor in '^LAB_LOCK_DIR=' '^lab_box_of() {' '^take_lab_lock() {' \
-                '^[[:space:]]*lab_box=\$(lab_box_of ' '^[[:space:]]*take_lab_lock "\$lab_box"' \
-                '^lab_map() {' '^[[:space:]]*ask_capped LAB_MAP [0-9][0-9]* "\$WAKE_LAB" endpoint-map' \
-                '[[:space:]{;]lab_map[;[:space:]]' '^set -uo pipefail$'; do
-    n=$(grep -c -- "$anchor" "$SWEEP")
-    [ "$n" -eq 1 ] || { anchors=0
-      ko "origin/master's sweep has $n lines matching /$anchor/, not 1 -- the lane no longer takes \
-its lock, fills the map it reads or sets its shell options the way the cases below assume, so \
-they would stop being about the live sweep"; }
-  done
+  n=$(grep -c -- "$lab_map_source" "$TMP/sweep-master.sh")
+  if [ "$n" -eq 0 ]; then
+    sweep_files=tools/sweep.sh
+    cp "$TMP/sweep-master.sh" "$SWEEP"
+  elif [ "$n" -ne 1 ]; then
+    anchors=0
+    ko "origin/master's tools/sweep.sh has $n lines matching /$lab_map_source/, not 0 or 1 -- \
+which copy of the lab map functions the sweep runs is no longer one this suite can tell"
+  elif ! git -C "$STAGING" show origin/master:tools/lab-map.sh >"$TMP/lab-map-master.sh" \
+       2>"$TMP/sweep-master.err"; then
+    anchors=0
+    ko "origin/master's tools/sweep.sh sources tools/lab-map.sh, but it cannot be read out of \
+$STAGING -- $(tr -d '\000-\037' <"$TMP/sweep-master.err")"
+  else
+    sweep_files="tools/sweep.sh with the tools/lab-map.sh it sources"
+    # A newline between them, so a file without a final one cannot join a line across the seam.
+    { cat "$TMP/sweep-master.sh"; printf '\n'; cat "$TMP/lab-map-master.sh"; } >"$SWEEP"
+  fi
+  if [ "$anchors" -eq 1 ]; then
+    for anchor in '^LAB_LOCK_DIR=' '^lab_box_of() {' '^take_lab_lock() {' \
+                  '^[[:space:]]*lab_box=\$(lab_box_of ' '^[[:space:]]*take_lab_lock "\$lab_box"' \
+                  '^lab_map() {' '^[[:space:]]*ask_capped LAB_MAP [0-9][0-9]* "\$WAKE_LAB" endpoint-map' \
+                  '[[:space:]{;]lab_map[;[:space:]]' '^set -uo pipefail$'; do
+      n=$(grep -c -- "$anchor" "$SWEEP")
+      [ "$n" -eq 1 ] || { anchors=0
+        ko "origin/master's sweep ($sweep_files) has $n lines matching /$anchor/, not 1 -- the lane \
+no longer takes its lock, fills the map it reads or sets its shell options the way the cases below \
+assume, so they would stop being about the live sweep"; }
+    done
+  fi
   if [ "$anchors" -eq 1 ]; then
     { grep '^LAB_LOCK_DIR=' "$SWEEP"
       sed -n '/^lab_box_of() {/,/^}/p' "$SWEEP"
