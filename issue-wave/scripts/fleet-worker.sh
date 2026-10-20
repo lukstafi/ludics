@@ -145,7 +145,8 @@
 #                          # every commit a payload names must exist on GitHub in its repository;
 #                          # a "head-of:<branch>" requested_revision is resolved at run/dispatch
 #   fleet-worker.sh execution conclude <json-file> --observed-from <checkout>   # observed_sha is
-#                          # that checkout's HEAD, read on the execution host
+#                          # that checkout's HEAD, read on the execution host; a checkout that is
+#                          # not clean draws an OBSERVED-FROM WARNING on stderr (every form)
 #   fleet-worker.sh execution run <json-file>          # reserve + dispatch in one step
 #   fleet-worker.sh execution window [--no-gap] <box> <json-file> # `run` for a measurement that suspends
 #                          # the box's standing reservations, restored when it concludes; it first
