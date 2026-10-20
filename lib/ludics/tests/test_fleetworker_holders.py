@@ -9,11 +9,14 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from collections.abc import Sequence
+from typing import Any
 
 from ludics import cli
-from ludics.fleetworker import holders
+from ludics.fleetworker import cotenants, holders
+from ludics.tests import fake
 from ludics.fleetworker.slot import parse_slot
 
 FIELDS = ("pid", "user", "command", "cwd")
@@ -33,7 +36,9 @@ class FakePs:
         return (0 if len(lines) == len(asked) else 1), "".join(line + "\n" for line in lines)
 
 
-class Holders(unittest.TestCase):
+class SlotDir(unittest.TestCase):
+    """A box's slot directory, its flocks held by this process."""
+
     def setUp(self) -> None:
         self.root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-holders-test."))
         self.dir = os.path.join(self.root, "testbox")
@@ -66,6 +71,8 @@ class Holders(unittest.TestCase):
             table.write("".join(line + "\n" for line in lines))
         return path
 
+
+class Holders(SlotDir):
     def test_with_no_lock_table_held_slots_are_listed_with_their_kinds_and_the_holder_unknown(self) -> None:
         self.hold("slot.1")  # a GPU token (one token of three slots)
         self.touch("slot.2")  # free: not listed
@@ -78,7 +85,10 @@ class Holders(unittest.TestCase):
         for line in lines:
             self.assertEqual((line["box"], line["event"], line["slots"], line["source"]), ("testbox", "held", 3, "flock-test"))
             self.assertEqual([line[name] for name in FIELDS], [None] * 4)
-            self.assertEqual(sorted(line["unknown"]), sorted(FIELDS))
+            # A bare flock wrote no holder record (#712): ``record`` null, and named.
+            self.assertIsNone(line["record"])
+            self.assertEqual(sorted(line["unknown"]), sorted(FIELDS + ("record",)))
+            self.assertIn("holds no holder record", line["unknown"]["record"])
             self.assertIn("no " + os.path.join(self.root, "no-locks") + " on this system (Darwin)", line["unknown"]["pid"])
             self.assertRegex(line["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00$")
 
@@ -113,12 +123,13 @@ class Holders(unittest.TestCase):
         by_slot = {line["slot"]: line for line in lines}
         self.assertEqual(sorted(by_slot), [1, 2, 3])
         one = by_slot[1]
-        self.assertEqual((one["pid"], one["user"], one["command"], one["cwd"], one["source"], one["unknown"]),
+        self.assertEqual((one["pid"], one["user"], one["command"], one["cwd"], one["source"], list(one["unknown"])),
                          (4242, "alice", "python3 -m ludics.fleetworker fleet-worker.sh execution slot -- sleep 30",
-                          "/work/tree", "proc-locks", {}))
+                          "/work/tree", "proc-locks", ["record"]))
+        self.assertIsNone(one["record"])  # a bare flock: no holder record (#712)
         two = by_slot[2]
         self.assertEqual((two["pid"], two["user"], two["command"], two["cwd"]), (777, None, None, None))
-        self.assertEqual(sorted(two["unknown"]), ["command", "cwd", "user"])
+        self.assertEqual(sorted(two["unknown"]), ["command", "cwd", "record", "user"])
         self.assertIn("ps does not list pid 777", two["unknown"]["user"])
         three = by_slot[3]
         self.assertEqual((three["pid"], three["source"]), (None, "proc-locks"))
@@ -152,6 +163,8 @@ class Holders(unittest.TestCase):
         lines = holders.holders("testbox", self.dir, 2, 0, run=FakePs({}), locks=locks)
         self.assertEqual([(line["slot"], line["event"]) for line in lines], [(1, "held"), (2, "untested")])
         self.assertIn("cannot open it to test its lock", lines[1]["unknown"]["held"])
+        self.assertIn("cannot open it to test its lock", lines[1]["unknown"]["record"])
+        self.assertIsNone(lines[1]["record"])
         # The lock table names a holder the test could not reach: held.
         table = self.write_table([self.table_line("slot.2", 4242)])
         run = FakePs({4242: ("alice", "sleep 30")})
@@ -167,6 +180,133 @@ class Holders(unittest.TestCase):
                                               locks=os.path.join(self.root, "none")))
         self.assertEqual([json.loads(line)["slot"] for line in text.splitlines()], [1])
         self.assertEqual(holders.render([]), "")
+
+
+class FakeLsof:
+    """``lsof -t -- <file>`` answering with a scripted status and output."""
+
+    def __init__(self, rc: int, out: str) -> None:
+        self.rc, self.out = rc, out
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: Sequence[str]) -> tuple[int, str]:
+        self.calls.append(list(argv))
+        return self.rc, self.out
+
+
+class Confirmation(SlotDir):
+    """THE CONFIRMATION (ludics-lite#712): a held slot's record is confirmed, unconfirmed or unknown,
+    from the lock table, /proc/<pid>/fd or lsof -- never from ps."""
+
+    def record(self, name: str, pid: int, deadline: int | None = 600, expires: float | None = None) -> None:
+        with open(os.path.join(self.dir, name), "w") as stream:
+            stream.write(json.dumps({"pid": pid, "command": ["make", "a b"], "started": 1_800_000_000,
+                                     "deadline": deadline, "expires": expires}))
+
+    def fake_proc(self, openers: dict[int, str]) -> str:
+        """A /proc with ``self/fd`` (so the proc-fd reader is chosen), each pid's fd 3 linked to its path."""
+        proc = os.path.join(self.root, "proc")
+        os.makedirs(os.path.join(proc, "self", "fd"))
+        for pid, target in openers.items():
+            os.makedirs(os.path.join(proc, str(pid), "fd"))
+            os.symlink(target, os.path.join(proc, str(pid), "fd", "3"))
+        return proc
+
+    def one(self, run: cotenants.Runner | None = None, proc: str | None = None,
+            locks: str | None = None, seen: str = "mine") -> dict[str, Any]:
+        lines = holders.holders("testbox", self.dir, 1, 0, run=run or FakePs({}),
+                                locks=locks or os.path.join(self.root, "none"),
+                                proc=proc or os.path.join(self.root, "no-proc"), seen=lambda _: seen)
+        [line] = lines
+        record: dict[str, Any] = line["record"]
+        self.assertNotIn("record", line["unknown"])
+        return record
+
+    def test_the_lock_table_confirms_the_recorded_pid_and_the_record_s_fields_are_shown(self) -> None:
+        self.hold("slot.1")
+        self.record("slot.1", 4242, 600)
+        locks = self.write_table([self.table_line("slot.1", 4242)])
+        record = self.one(FakePs({4242: ("alice", "python3 fleet-worker")}), locks=locks)
+        self.assertEqual((record["verdict"], record["by"], record["pid"], record["pids"]), ("confirmed", "proc-locks", 4242, [4242]))
+        self.assertEqual((record["command"], record["deadline"], record["left"], record["taken"]),
+                         ("make 'a b'", 600, 600, "2027-01-15T08:00:00+00:00"))
+
+    def test_a_record_of_another_pid_than_the_lock_table_s_is_unconfirmed_and_shows_nothing_of_itself(self) -> None:
+        self.hold("slot.1")
+        self.record("slot.1", 4242)
+        locks = self.write_table([self.table_line("slot.1", 777)])
+        record = self.one(locks=locks)
+        self.assertEqual((record["verdict"], record["by"], record["pid"], record["pids"]), ("unconfirmed", "proc-locks", 4242, [777]))
+        self.assertIn("names pid 777 as the lock's holder, not the recorded pid 4242", record["why"])
+        self.assertEqual([record[k] for k in ("command", "taken", "deadline", "left")], [None] * 4)
+
+    def test_with_no_holder_in_the_lock_table_the_open_descriptors_decide(self) -> None:
+        self.hold("slot.1")
+        slot_path = os.path.realpath(os.path.join(self.dir, "slot.1"))
+        # pid 0 in the table: a holder outside this namespace; the proc-fd reader decides instead.
+        locks = self.write_table([self.table_line("slot.1", 0)])
+        self.record("slot.1", 4242, None)
+        proc = self.fake_proc({4242: slot_path, 4243: slot_path, 555: "/elsewhere"})
+        record = self.one(locks=locks, proc=proc)
+        self.assertEqual((record["verdict"], record["by"], record["pids"], record["deadline"], record["left"]),
+                         ("confirmed", "proc-fd", [4242, 4243], None, None))
+        self.record("slot.1", 99)
+        record = self.one(locks=locks, proc=proc)
+        self.assertEqual((record["verdict"], record["by"], record["pids"], record["command"]), ("unconfirmed", "proc-fd", [4242, 4243], None))
+        self.assertIn("pid 99 does not have the slot file open (proc-fd); open by pid 4242, 4243, which may hold the lock or test it",
+                      record["why"])
+        self.assertIn("pid 99 is not running", self.one(locks=locks, proc=proc, seen="gone")["why"])
+        # Another user's process: its descriptors are not visible, so no negative read is made.
+        record = self.one(locks=locks, proc=proc, seen="foreign")
+        self.assertEqual((record["verdict"], record["pids"]), ("unknown", None))
+        self.assertIn("pid 99 is another user's process", record["why"])
+
+    def test_the_reader_s_own_pid_is_never_an_opener(self) -> None:
+        self.hold("slot.1")
+        me = os.getpid()
+        self.record("slot.1", me)
+        proc = self.fake_proc({me: os.path.realpath(os.path.join(self.dir, "slot.1"))})
+        record = self.one(proc=proc)
+        self.assertEqual((record["verdict"], record["pids"]), ("unconfirmed", []))
+        self.assertIn("no other process seen here has it open", record["why"])
+
+    def test_without_proc_lsof_decides_and_cannot_answer_is_unknown(self) -> None:
+        self.hold("slot.1")
+        self.record("slot.1", 4242, 600, time.monotonic() + 120.6)
+        lsof = FakeLsof(0, "4242\n5000\n")
+        record = self.one(lsof)
+        self.assertEqual((record["verdict"], record["by"], record["pids"]), ("confirmed", "lsof", [4242, 5000]))
+        self.assertIn(record["left"], (119, 120))
+        self.assertEqual(lsof.calls[0][1:], ["-t", "--", os.path.join(self.dir, "slot.1")])
+        self.assertTrue(lsof.calls[0][0].endswith("lsof"))
+        record = self.one(FakeLsof(1, ""))
+        self.assertEqual((record["verdict"], record["by"], record["pids"]), ("unconfirmed", "lsof", []))
+        for rc, out, why in ((127, "", "lsof is not installed here"), (124, "", "lsof did not answer within 15s"),
+                             (2, "", "lsof failed (exit 2)"), (0, "4242 x\n", "lsof's answer is not a list of pids"),
+                             (1, "4242\n", "lsof failed (exit 1)")):
+            record = self.one(FakeLsof(rc, out))
+            self.assertEqual((record["verdict"], record["by"], record["pids"], record["command"]), ("unknown", "lsof", None, None), why)
+            self.assertIn(why, record["why"])
+
+    def test_a_real_held_slot_is_confirmed_and_a_stale_record_is_not(self) -> None:
+        """Against this box's kernel: the lock table on Linux, lsof on macOS."""
+        path = os.path.join(self.dir, "slot.1")
+        holder = fake.SlotHolder(path)
+        self.addCleanup(holder.close)
+        [line] = holders.holders("testbox", self.dir, 1, 0)
+        record = line["record"]
+        self.assertEqual((record["verdict"], record["pid"], record["command"], record["deadline"]),
+                         ("confirmed", holder.pid, "sleep 30", 600), line)
+        self.assertIn(record["by"], ("proc-locks", "lsof"))
+        self.assertTrue(0 < record["left"] <= 300, line)
+        holder.close()
+        # The negative control: a record of a live process of this user that does not hold it.
+        stale = fake.SlotHolder(path, recorded=os.getppid())
+        self.addCleanup(stale.close)
+        [line] = holders.holders("testbox", self.dir, 1, 0)
+        record = line["record"]
+        self.assertEqual((record["verdict"], record["pid"], record["command"]), ("unconfirmed", os.getppid(), None), line)
+        self.assertIn(stale.pid, record["pids"], line)
 
 
 class Waiters(unittest.TestCase):

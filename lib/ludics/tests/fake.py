@@ -10,6 +10,7 @@ for the duration and removes it afterwards.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -81,3 +82,36 @@ class FakeTool:
         else:
             os.environ["PATH"] = self._saved_path
         shutil.rmtree(self.dir, ignore_errors=True)
+
+
+_HOLDER = """\
+import fcntl, json, os, sys, time
+descriptor = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o644)
+fcntl.flock(descriptor, fcntl.LOCK_EX)
+recorded = int(sys.argv[2]) or os.getpid()
+os.write(descriptor, (json.dumps({"pid": recorded, "command": ["sleep", "30"], "started": time.time(),
+                                  "deadline": 600, "expires": time.monotonic() + 300}) + "\\n").encode())
+print("ready", flush=True)
+sys.stdin.read()
+"""
+
+
+class SlotHolder:
+    """A real process holding a slot file's flock, with a holder record of ``recorded`` (its own
+    pid when 0): THE CONFIRMATION read against the kernel, not a fake. It holds until closed."""
+
+    def __init__(self, path: str, recorded: int = 0) -> None:
+        self.process = subprocess.Popen([sys.executable, "-c", _HOLDER, path, str(recorded)],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert self.process.stdout is not None
+        if self.process.stdout.readline().strip() != "ready":
+            self.close()
+            raise RuntimeError(f"the slot holder for {path} did not start")
+        self.pid = self.process.pid
+
+    def close(self) -> None:
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+        self.process.wait(10)
+        if self.process.stdout is not None:
+            self.process.stdout.close()
