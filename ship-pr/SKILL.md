@@ -638,10 +638,11 @@ findings round submits its review seconds before that row flips, which is why th
 since the 👀" and not "nothing since the row"; any other row shape, or no 👀 to bound the round,
 reads as it did without the row. A clean round can also leave neither 👍 nor 👀 (ludics-lite#702:
 PRs #677 and #690 read EXPECTED, and `watch` advised the nudge). Then the summary's hidden
-`<!-- codex-review-state:v1 {...} -->` record decides: read whole, fail-closed on any other shape,
-it approves when its `code_review` names the head's full SHA, is `completed` with
-`has_unresolved_findings: false`, and nothing was posted since it was written. A 👀 newer than
-the record also outranks it, as does any finding about this head, whenever it was posted.
+`<!-- codex-review-state:v1 {...} -->` record decides. It is read whole, fail-closed on any other
+shape. It approves when its `code_review` names the head's full SHA, is `completed` with
+`has_unresolved_findings: false`, and agrees with the Completed row above, which dates it (the
+comment's own edit time moves with any edit). Anything posted after that time outranks it,
+including a 👀, and so does any finding about this head, whenever it was posted.
 
 ```bash
 ~/.claude/skills/ship-pr/scripts/pr-review.sh status <owner>/<repo>#<pr>
