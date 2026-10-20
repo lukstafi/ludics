@@ -322,11 +322,15 @@ def critique(args: Sequence[str]) -> int:
     record = os.path.join(d, "claude-plan.md")
     if not (os.path.exists(record) and os.path.samefile(plan, record)):
         shutil.copyfile(plan, record)
-    write(
-        os.path.join(d, "critique-brief.md"),
-        f"{CRITIQUE_BRIEF}\n## The implementer's plan\n\n{fenced(read(plan), 'markdown')}",
-    )
-    cli.say(spawn(d, "critique"))
+    brief = os.path.join(d, "critique-brief.md")
+    write(brief, f"{CRITIQUE_BRIEF}\n## The implementer's plan\n\n{fenced(read(plan), 'markdown')}")
+    try:
+        run = spawn(d, "critique")
+    except cli.Exit:
+        # The brief is the one-critique marker, and no run started: take it back so a retry can.
+        os.remove(brief)
+        raise
+    cli.say(run)
     return 0
 
 

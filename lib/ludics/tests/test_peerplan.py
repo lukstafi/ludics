@@ -206,6 +206,23 @@ class PeerPlan(unittest.TestCase):
         with open(os.path.join(self.dir, "claude-plan.md"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "from elsewhere\n")
 
+    def test_a_failed_critique_launch_can_be_retried(self) -> None:
+        self.assertEqual(self.wait(self.start()), "rc=0")
+        mine = os.path.join(self.dir, "claude-plan.md")
+        with open(mine, "w", encoding="utf-8") as f:
+            f.write("my plan\n")
+        runs = os.path.join(self.dir, "runs")
+        os.chmod(runs, 0o500)  # bg-run.sh new cannot allocate the critique's run directory
+        try:
+            done = self.entry("critique", self.dir, "--plan", mine)
+        finally:
+            os.chmod(runs, 0o700)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("spawn failed", done.stderr)
+        done = self.entry("critique", self.dir, "--plan", mine)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+
     def test_bg_run_stop_ends_codex_too(self) -> None:
         os.environ["FAKE_CODEX_MODE"] = "hang"
         run = self.start()
