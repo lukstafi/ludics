@@ -195,6 +195,9 @@ def brief_text(cfg: Config, keys: dict[str, str], fields: dict[str, str]) -> tup
     """The stored brief, or None and why it could not be read; and the line saying where it was read."""
     if "brief" not in keys:
         return None, "the row has no valid brief key" if "brief" in fields else "the row names no brief"
+    if "brief_host" in fields and "brief_host" not in keys:
+        # Never another box's file by default: an invalid host is no host to read on.
+        return None, f"the row's brief_host is invalid, so {keys['brief']} is read nowhere"
     host = keys.get("brief_host") or fleet_name(cfg, "local")
     where = f"on {host}" if "brief_host" in keys else "on this box (the row names no brief_host)"
     done = run_on(cfg, host, prelude(cfg, host) + READ_BRIEF, [keys["brief"]], capture=True)

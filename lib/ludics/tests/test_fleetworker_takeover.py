@@ -175,6 +175,14 @@ class Takeover(unittest.TestCase):
         self.assertEqual(rc, 3)
         self.assertIn("- BRIEF UNREADABLE: the row names no brief", out)
 
+    def test_an_invalid_brief_host_reads_the_brief_nowhere(self) -> None:
+        # The file exists here, but the row's host is not this box's name: no fallback to this box.
+        self.board("t7", **self.full(brief_host="bad host"))
+        rc, out, _ = self.takeover()
+        self.assertEqual(rc, 3)
+        self.assertNotIn("Do the thing.", out)
+        self.assertIn(f"- BRIEF UNREADABLE: the row's brief_host is invalid, so {self.brief} is read nowhere", out)
+
     def test_a_gone_worktree_and_an_absent_runs_directory_say_so(self) -> None:
         shutil.rmtree(self.wt)
         self.board("t7", **self.full())
