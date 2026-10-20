@@ -307,6 +307,29 @@ class MergeRecovery(Quiet):
         self.assertEqual((rc, recovery.why), (0, ""))
         self.assertEqual(self.writes(gh), ["run cancel 100 --repo o/r", "run rerun 100 --failed --repo o/r"])
 
+    def test_a_cancel_near_the_deadline_still_gets_its_rerun(self) -> None:
+        """Local Codex review: a NEVER STARTED found just before the deadline was cancelled, and the
+        wait then ended at the old deadline -- the run left cancelled, the rerun never sent."""
+        gh = FakeGh()
+        self.head(gh)
+        gh.on("run", "cancel", out="")
+        gh.on("run", "rerun", out="")
+        gh.on("check-runs", out=["build\tpending\tu\t1", "build\tpending\tu\t1", "build\tcancelled\tu\t1",
+                                 "build\tsuccess\tu\t1"])
+        gh.on("actions/runs?head_sha=h1", out=[run_row(status="in_progress", concl="pending")] * 2
+              + [run_row(), run_row(concl="success")])
+        jobs(gh, "100", out=[QUEUED, QUEUED, QUEUED, job_row(created="2025-12-31T23:30:00Z", labels="macos-14"),
+                             job_row(concl="success", steps="5", runner="r", attempt="2")])
+        gh.on("actions/workflows/1/runs", out="130\tin_progress\t2025-12-31T23:40:00Z")
+        jobs(gh, "130", out=STARTED_MAC)
+        clock = FakeClock()
+        gate = make_gate(gh, clock, SHIP_PR_NEVER_STARTED="1860")  # past it on the second round
+        gate.orphans_on = True
+        recovery = Recovery(gate.session, "o/r", "7", gate, gate.clock, 100)
+        gate.recover = recovery
+        self.assertEqual((gate.check("7", 100), recovery.why), (0, ""))
+        self.assertEqual(self.writes(gh), ["run cancel 100 --repo o/r", "run rerun 100 --failed --repo o/r"])
+
     def test_a_job_that_started_before_the_cancel_is_left_alone(self) -> None:
         gh = FakeGh()
         self.head(gh)

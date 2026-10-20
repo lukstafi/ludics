@@ -160,9 +160,10 @@ class Recovery:
 
     - NO RUNNER: ``gh run rerun <id> --failed``, and the wait's deadline moves to at least
       ``now + wait`` -- the rerun gets the budget the first run had.
-    - NEVER STARTED: the job re-read still ``queued``, then ``gh run cancel <id>``; on a later round
-      that sees the run completed, the rerun as above. A cancel that has not completed the run within
-      ``TRANSITION`` seconds ends the wait.
+    - NEVER STARTED: the job re-read still ``queued``, then ``gh run cancel <id>``, and the deadline
+      moves to at least ``TRANSITION`` seconds on; on a later round that sees the run completed,
+      the rerun as above. A cancel that has not completed the run within ``TRANSITION`` seconds
+      ends the wait.
     - After a rerun, a job of the run that again never got a runner on a LATER attempt is the second
       occurrence: the wait ends. Jobs still of the attempt that was rerun are the API showing the
       old attempt, ignored for ``TRANSITION`` seconds, after which the rerun did not take and the
@@ -244,6 +245,9 @@ class Recovery:
                         continue
                     if not self.write(rid, "cancel", attempt, now):
                         return Stop()
+                    # The wait outlives the cancel's window, so the rerun it promises is made (or
+                    # the window's end is what stops it), however near its deadline it was sent.
+                    until = max(until, now + self.TRANSITION)
                     continue
                 if not self.write(rid, "rerun", attempt, now):
                     return Stop()
