@@ -556,7 +556,13 @@ pushes to `main` and on `workflow_dispatch`, not on pull requests (ludics-lite#7
 advisory at merge, so on a PR head they decided nothing while taking the scarcest runners. A
 PR's bash 3.2 evidence is the worker's own `/bin/bash` run of the suites it touched; a PR whose
 change only macOS exercises dispatches the workflow on its branch
-(`gh workflow run skill-scripts.yml --ref <branch>`). Alongside them runs the `lint` job, which is
+(`gh workflow run skill-scripts.yml --ref <branch>`). This repository also declares a merge build
+(`.github/ship-pr-merge-build`, ludics-lite#721): when `main` has moved since a PR's head and both
+sides changed a `lib/*.py` path, `pr-review.sh merge` runs the package's unit tests on the PR
+merged with `main`'s tip and refuses the merge when they fail, as the merge of #700 and #698 would
+have been refused. It does not run the shell suites, pyright or the lint, and it does not build a
+clash in files that are not `lib/*.py` or across paths only one side changed: those stay the
+integration loop's, on `main`. Alongside the suites runs the `lint` job, which is
 `scripts/preflight.sh` step by step: `bash -n`, shellcheck at error severity, the mode bits, the
 PowerShell parse, the parse guard (`scripts/check-parse-guards.sh`, with
 `scripts/test-check-parse-guards.sh` beside it), and the jq
