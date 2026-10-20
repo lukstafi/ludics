@@ -696,6 +696,32 @@ class GpuClause(unittest.TestCase):
         self.assertFalse(execution.gpu_clause("a", "a", "rog"))
 
 
+class LeftoverWarning(unittest.TestCase):
+    """THE LEFTOVER WARNING (ludics-lite#732): a checkout --observed-from reads that is not clean is
+    named on stderr; the HEAD is returned all the same, and a clean one draws nothing."""
+
+    def head(self, out: str) -> tuple[str | Refusal, str]:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+        err = io.StringIO()
+        with mock.patch.object(execution, "run_on", return_value=execution.Done(0, out)), \
+                contextlib.redirect_stderr(err):
+            got = execution.observed_head(cfg, "rog", "/w/a b")
+        return got, err.getvalue()
+
+    def test_a_clean_checkout_draws_nothing(self) -> None:
+        self.assertEqual(self.head(f"head={SHA}\n"), (SHA, ""))
+
+    def test_a_dirty_checkout_is_named_and_still_read(self) -> None:
+        got, err = self.head(f"head={SHA}\ndirty=2\n")
+        self.assertEqual(got, SHA)
+        self.assertIn("OBSERVED-FROM WARNING: '/w/a b' on rog is not clean: it has 2 uncommitted path(s)", err)
+
+    def test_an_unreadable_status_is_named_too(self) -> None:
+        got, err = self.head(f"head={SHA}\ndirty=unreadable\n")
+        self.assertEqual(got, SHA)
+        self.assertIn("is not clean: its status could not be read", err)
+
+
 class ReservedSince(unittest.TestCase):
     def test_a_snapshot_older_than_the_reservation_is_left_out_counted(self) -> None:
         lines: list[dict[str, Any]] = [{"at": "2026-10-15T10:00:00+00:00"}, {"at": "2026-10-15T11:55:00+00:00"},

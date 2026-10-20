@@ -803,7 +803,10 @@ Each standing reservation is concluded at hand-back from its own box's last batc
 form](#standing-iteration-reservation) (`--from-run`, read on the reservation's execution host, or
 no run and the hand-back's `--verdict`), or the leg's `bg-run.sh` directory with `--from-bg-run
 --box <agent host>`. The coordinator records the far-side checkout on the board and removes
-it at close-out with the worker's local one, once that conclusion has landed. A measurement
+it at close-out with the worker's local one, once that conclusion has landed. A conclusion that
+reads a checkout which is not clean (a golden promoted there on hardware) says so in an
+`OBSERVED-FROM WARNING` line and still concludes: resume the worker to commit or revert it before
+the removal discards it. A measurement
 there, and a one-off leg on a box the plan names no iteration for, still go through a request.
 
 ## Native handoffs

@@ -2804,6 +2804,7 @@ grep -Fq "\"remote_checkout\": \"$obs\"" <<<"$out" && grep -Fq "fixture run; obs
   ok "...with the checkout it read and the provenance in the evidence" || ko "checkout or evidence missing: $out"
 grep -qx "repos/o/r/commits/$head" "$SHIM_GH_COMMIT_LOG" && ok "...and checks that HEAD on GitHub, in the request's repository" ||
   ko "--observed-from's HEAD was not checked: $(cat "$SHIM_GH_COMMIT_LOG")"
+grep -q 'OBSERVED-FROM WARNING' <<<"$out" && ko "a clean checkout drew the leftover warning: $out" || ok "...and warns of nothing in a clean checkout"
 # The answer lost, the retry comes after the worker moved its checkout on: the recorded SHA stands.
 git -C "$obs" commit -q --allow-empty -m "moved on"
 expect "...and a retry once the checkout has moved on composes the same payload, the registry's harmless retry" 0 '"state": "concluded"' -- \
@@ -2866,6 +2867,16 @@ expect "--from-bg-run: a retry of a landed --sha conclusion asks GitHub nothing"
 "${FWR[@]}" execution run "$(rv_req rv-bg2 origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg2 (setup)"
 expect "--from-bg-run --observed-from keeps the provenance beside an --evidence of its own" 0 "\"evidence\": \"leg green; revision $head read as HEAD of $obs on testbox\"" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg2 --observed-from "$obs" --evidence "leg green"
+# ludics-lite#732: a checkout left with edits after its last run (a golden promoted on the GPU box)
+# is named on stderr, never refused, and kept out of the payload a retry must compose identically.
+"${FWR[@]}" execution run "$(rv_req rv-dirt origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-dirt (setup)"
+printf 'promoted\n' > "$obs/promoted golden.log"
+expect "--observed-from names a checkout left with uncommitted paths, and still concludes" 0 \
+  "^OBSERVED-FROM WARNING: '$obs' on testbox is not clean: it has 1 uncommitted path(s)" -- \
+  "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-dirt --observed-from "$obs" --evidence "leg green"
+grep -Fq "\"evidence\": \"leg green; revision $head read as HEAD of $obs on testbox\"" <<<"$out" && [ "$(state_of rv-dirt)" = concluded ] &&
+  ok "...at the checkout's HEAD, the warning kept out of the evidence" || ko "the dirty checkout changed the conclusion: $out"
+rm -f "$obs/promoted golden.log"
 # A request that follows a branch (ludics-lite#558): `head-of:<branch>` names no commit when it is
 # made, so it cannot go stale in the queue; the dispatch resolves it on GitHub and records the commit.
 export SHIM_GH_HEADS="$TMP/gh-heads"
