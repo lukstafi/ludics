@@ -44,7 +44,11 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    It reads the issue with `gh` (the planner's sandbox has no network) and adds a detached
    worktree of the base under `<plan-dir>`. Then it starts Astra (`gpt-6-astra`, medium;
    `--model`/`--effort` to change them) there in the background, read-only, and prints a
-   `bg-run.sh` run directory. Record the mode and `<plan-dir>` on the board (`board set <wave>
+   `bg-run.sh` run directory. A native Codex coordinator, whose local `spawn` runs die
+   ([native-codex.md](native-codex.md#local-managed-command-sessions)), passes `--managed` to
+   `start` and `critique` instead. That only allocates and records the run directory, and the
+   coordinator runs `bg-run.sh start <run> -- peer-plan.sh _run plan <plan-dir>` (`critique`
+   for the critique) in a managed foreground session it keeps. Record the mode and `<plan-dir>` on the board (`board set <wave>
    <task> planning=<mode> plan_dir=<plan-dir>`). The worker's brief carries the addition below.
 2. **On `PLAN_READY`** (the worker's handoff): save the block's plan to `<plan-dir>/claude-plan.md`,
    from the task notification or, for a CLI worker, `fleet-worker.sh log <box> <name>
