@@ -636,7 +636,13 @@ round off the summary comment: its newest Code Review row, in exactly the `✅ *
 the app writes, naming the head, newer than the 👀, with the reviewer silent since that 👀. A
 findings round submits its review seconds before that row flips, which is why the test is "nothing
 since the 👀" and not "nothing since the row"; any other row shape, or no 👀 to bound the round,
-reads as it did without the row.
+reads as it did without the row. A clean round can also leave neither 👍 nor 👀 (ludics-lite#702:
+PRs #677 and #690 read EXPECTED, and `watch` advised the nudge). Then the summary's hidden
+`<!-- codex-review-state:v1 {...} -->` record decides. It is read whole, fail-closed on any other
+shape. It approves when its `code_review` names the head's full SHA, is `completed` with
+`has_unresolved_findings: false`, and agrees with the Completed row above, which dates it (the
+comment's own edit time moves with any edit). Anything posted after that time outranks it,
+including a 👀, and so does any finding about this head, whenever it was posted.
 
 ```bash
 ~/.claude/skills/ship-pr/scripts/pr-review.sh status <owner>/<repo>#<pr>
@@ -650,7 +656,7 @@ head SHA, and answers with one of eight:
 
 | state | means | what to do |
 | --- | --- | --- |
-| `approved` | 👍 is on the PR and was given for this head, with no newer current-head running review or findings — or, with no 👍, a no-findings verdict comment naming this head, or the summary's Code Review row marking this head Completed after the 👀 with nothing posted since that 👀 — and no review thread left unresolved | merge |
+| `approved` | 👍 is on the PR and was given for this head, with no newer current-head running review or findings — or, with no 👍, a no-findings verdict comment naming this head, or the summary's Code Review row marking this head Completed after the 👀 with nothing posted since that 👀, or the summary's state record marking this head completed with no unresolved findings, with nothing posted since and no finding about this head — and no review thread left unresolved | merge |
 | `unresolved` | that same 👍, over review threads still open — whatever head they cite | answer each thread and `resolve` it; `merge` refuses until none is open |
 | `reviewing` | the 👀 is newer than the reviewer's last word — a round really is in flight | wait it out |
 | `stalled` | that 👀 has been up longer than a round takes and nothing was posted | `@codex review` |

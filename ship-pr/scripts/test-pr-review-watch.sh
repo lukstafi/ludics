@@ -2163,10 +2163,12 @@ test_no_nudge_posts_nothing() {
 # A head something already stands for is never nudged: an approval ends the wait as one, and a
 # verdict the state machine does not read as an approval still bars the request -- a no-findings
 # comment for the head with a later reviewer word under it, and the summary's Completed row for
-# the head with its 👀 gone. The control is the same overdue head with neither.
+# the head with its 👀 gone. The summary's hidden state record of a clean round on the head is an
+# approval (ludics-lite#702), so it ends the wait with no advice to nudge. The control is the same
+# overdue head with none of them.
 test_a_head_with_a_verdict_is_never_nudged() {
   local kind
-  for kind in thumb verdict outlived-verdict completed-row control; do
+  for kind in thumb verdict outlived-verdict completed-row state-record control; do
     reset_fixture
     retune GRACE=1
     HEAD_AT=2026-09-01T00:00:00Z
@@ -2184,12 +2186,22 @@ test_a_head_with_a_verdict_is_never_nudged() {
 | Review | Status | Commit | Review trigger |
 | 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"$(clock_at -100)\">x</relative-time> | \`${H2:0:7}\` | New commits |")]"
       ;;
+    state-record)
+      # The same row, now with the record the app writes above it (ludics-lite#690's shape).
+      schedule comments 1 "[$(summary_comment 700 "$(clock_at -100)" "<!-- codex-pull-request-review-summary -->
+<!-- codex-review-state:v1 $(jq -cn --arg sha "$H2" '{code_review:{commit_sha:$sha, has_any_findings:true,
+  has_unresolved_findings:false, status:"completed"}, security_review:{commit_sha:null,
+  has_any_findings:null, has_unresolved_findings:null, status:null}}') -->
+| Review | Status | Commit | Review trigger |
+| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"$(clock_at -100)\">x</relative-time> | \`${H2:0:7}\` | New commits |")]"
+      ;;
     esac
     run_watch 0,701,0 60 120
     assert_eq "$WATCH_RC" 0 "$kind: a verdict to act on"
     case "$kind" in
-    thumb | verdict)
+    thumb | verdict | state-record)
       assert_contains "$WATCH_OUT" "approved (" "$kind: the approval ends the wait"
+      assert_not_contains "$WATCH_OUT" "consider nudging" "$kind: with no advice to nudge"
       assert_eq "$(nudges_posted)" 0 "$kind: and nothing is posted over it"
       ;;
     control)

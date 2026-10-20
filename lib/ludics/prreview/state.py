@@ -12,10 +12,11 @@ shell's string, with the leading ``|`` fields the ``failed``, ``nudged`` and ``u
 carry.
 """
 
+import json
 import os
 import re
 from dataclasses import dataclass
-from typing import Literal, assert_never
+from typing import Literal, assert_never, cast
 
 from ludics.prreview import knobs
 from ludics.prreview.core import GhFailed, GhOk, GhUnanswered, Json
@@ -171,6 +172,121 @@ def _stamp_rows(body: str) -> list[dict[str, str | None] | None]:
 def _newest_summary(comments: list[Json], reviewer: str) -> Json:
     summaries = [c for c in comments if login_is(c, reviewer) and _is_summary(c)]
     return max_by(summaries, lambda c: alt(idx(c, "updated_at"), idx(c, "created_at")))
+
+
+@dataclass(frozen=True)
+class SummaryState:
+    """The ``code_review`` half of the ``codex-review-state:v1`` record on the reviewer's newest
+    summary comment: the commit it is about (40 hex), its ``status`` as written ("running",
+    "completed", ...), ``has_unresolved_findings`` (None while it runs), and when that state began
+    -- the stamp of the same summary's newest Code Review row, which names the same commit
+    (Completed at, Running since), with its fraction cut. Never the comment's ``updated_at``:
+    any edit of the shared summary (its security-review row) moves that without a new verdict."""
+
+    sha: str
+    status: str
+    unresolved: bool | None
+    at: str
+
+
+_STATE_MARK = "<!-- codex-review-state:v1 "
+_STATE_RECORD = re.compile(r"<!-- codex-review-state:v1 ([^\n]*?) -->")
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+class _Duplicate(ValueError):
+    pass
+
+
+def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    out: dict[str, object] = {}
+    for k, v in pairs:
+        if k in out:
+            raise _Duplicate(k)
+        out[k] = v
+    return out
+
+
+def summary_state(comments: list[Json], rev: str) -> SummaryState | None:
+    """The newest summary's ``codex-review-state:v1`` record (ludics-lite#702), or None.
+
+    Boundary, as a fail-closed allowlist. Read: only the reviewer's NEWEST summary comment (the
+    one ``_done_row`` and ``_evidence`` read), and in it only the one hidden record, which must
+    occur exactly once, on one line, as ``<!-- codex-review-state:v1 <JSON> -->``. The JSON is
+    parsed whole -- never fished for fields -- and must be an object with no duplicate key whose
+    ``code_review`` is an object holding ``commit_sha`` (40 lowercase hex), ``status`` (a
+    non-empty string) and ``has_unresolved_findings`` (a boolean, or null). The record is dated by
+    the summary's newest Code Review row (``_evidence``'s choice): every Code Review row's stamp
+    must read, and the newest must name a prefix of ``commit_sha`` and carry a GitHub timestamp.
+    Any other shape, a second record, a record that does not parse, a row that disagrees or does
+    not read, or no summary at all is None: no reading, which is what every caller had before the
+    record was read. Not read: ``security_review``, ``has_any_findings`` (true on a clean head
+    whose earlier heads drew findings, lukstafi/ludics-lite#690), the row's status cell
+    (``_done_row`` reads it), the comment's own timestamps, and any key beyond the three -- an
+    added key changes nothing here."""
+    newest_summary = _newest_summary(comments, rev)
+    if newest_summary is None:
+        return None
+    body = body_of(newest_summary)
+    if body.count(_STATE_MARK) != 1:
+        return None
+    m = _STATE_RECORD.search(body)
+    if m is None:
+        return None
+    try:
+        record = json.loads(m.group(1), object_pairs_hook=_no_duplicates)
+    except (ValueError, RecursionError):  # JSONDecodeError and _Duplicate are ValueErrors
+        return None
+    if not isinstance(record, dict):
+        return None
+    code = cast(dict[str, object], record).get("code_review")
+    if not isinstance(code, dict):
+        return None
+    fields = cast(dict[str, object], code)
+    if "has_unresolved_findings" not in fields:
+        return None
+    sha = fields.get("commit_sha")
+    status = fields.get("status")
+    unresolved = fields["has_unresolved_findings"]
+    if not (isinstance(sha, str) and _FULL_SHA.fullmatch(sha)):
+        return None
+    if not (isinstance(status, str) and status):
+        return None
+    if not (unresolved is None or isinstance(unresolved, bool)):
+        return None
+    rows = _stamp_rows(body)
+    if not rows or any(r is None for r in rows):
+        return None
+    best = max_by([r for r in rows if r is not None], lambda r: instant(r["at"]))
+    if best is None or not sha.startswith(jstr(best["sha"])):
+        return None
+    at = sub_once(best["at"], _FRACTION_Z, "Z")
+    if not _ISO_STAMP.fullmatch(at):
+        return None
+    return SummaryState(sha, status, unresolved, at)
+
+
+def head_summary_state(comments: list[Json], rev: str, head_sha: str) -> SummaryState | None:
+    """``summary_state`` when its record is about exactly this head (the full SHA), else None."""
+    st = summary_state(comments, rev)
+    if st is None or not head_sha or st.sha != head_sha:
+        return None
+    return st
+
+
+def _head_findings(comments: list[Json], reviews: list[Json], rev: str, head_sha: str) -> bool:
+    """Has the reviewer posted findings about this exact head: a (substantive) review of it, or a
+    comment stamped with it that is not a no-findings verdict?"""
+    if _review_of_head_at(reviews, rev, head_sha):
+        return True
+    for c in comments:
+        if not login_is(c, rev) or _is_summary(c) or _NO_FINDINGS.search(body_of(c)):
+            continue
+        stamps = capture_all(body_of(c), REVIEWED_COMMIT_RE)
+        sha = jstr(alt(stamps[-1]["s"] if stamps else None, ""))
+        if sha and startswith(head_sha, sha):
+            return True
+    return False
 
 
 def _short(sha: str) -> str:
@@ -385,6 +501,36 @@ def status_state(ctx: Ctx, pr: str) -> State:
             f"{rev}'s summary marks head {_short(head_sha)}'s Code Review Completed at {done_at},"
             f" with nothing posted since its 👀 at {eyes_at} (no 👍 was given)",
         )
+
+    # The hidden state record (ludics-lite#702): a round the app records as completed on exactly
+    # this head with no unresolved findings, when it put up no 👍 and left no 👀 to bound the
+    # round (the Completed-row arm above needs one). The record and the row must agree (the row's
+    # allowlisted Completed shape, dated by the row). A findings round submits its review seconds
+    # BEFORE the record is written (#683: 16:20:15 then 16:20:18), so "nothing since the record"
+    # cannot exclude it alone: the record's own has_unresolved_findings does, and so does any
+    # finding the reviewer posted about this head, at any time.
+    try:
+        head_state = head_summary_state(comments, rev, head_sha)
+    except JqError:
+        return unknown(mstate, "the summary's review-state record did not parse")
+    if (
+        head_state is not None and head_state.status == "completed" and head_state.unresolved is False
+        and done_kind == "completed" and done_at == head_state.at
+        and (not eyes_at or eyes_at < head_state.at)
+        and (not last_spoke or last_spoke < head_state.at)
+        and _after_nudge(head_state.at, nudge_at)
+    ):
+        try:
+            head_findings = _head_findings(comments, reviews, rev, head_sha)
+        except JqError:
+            return unknown(mstate, "the reviewer's findings for the head did not parse")
+        if not head_findings:
+            return State(
+                "approved", None, mstate,
+                f"{rev}'s summary records head {_short(head_sha)}'s Code Review completed with no"
+                f" unresolved findings, Completed at {head_state.at}, with nothing posted since (no 👍 was"
+                " given)",
+            )
 
     if (
         done_kind == "failed" and done_sha and head_sha and not plus

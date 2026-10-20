@@ -1684,6 +1684,89 @@ test_a_completed_row_approval_passes_the_thread_gate() {
     "an open thread under the Completed row's approval is unresolved, as under a 👍"
 }
 
+# --- a clean round the app records only in its hidden state (ludics-lite#702) -----------------
+# lukstafi/ludics-lite#690, 2026-10-18: findings reviews on a448221 and f6121fb, the push of
+# 66de063, and the summary comment rewritten at 16:27:30Z with its hidden record for that head:
+# completed, no unresolved findings. No review, no 👍, and no 👀 left up -- `status` read EXPECTED
+# and `watch` advised the nudge that clears approvals. The record and the row are that comment's,
+# verbatim; has_any_findings stays true from the earlier heads.
+STATE_HEAD=66de0633a9d67f2b922c8d2a22727515720a4498
+STATE_RECORD='{"code_review":{"commit_sha":"66de0633a9d67f2b922c8d2a22727515720a4498","has_any_findings":true,"has_unresolved_findings":false,"status":"completed"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}}'
+
+# STATE_RECORD with one code_review field set to a JSON value, as a record that still parses: a
+# variant that did not would pass every "is not a verdict" case below as no reading at all.
+state_record_with() { # <field> <json value>
+  jq -c --arg f "$1" --argjson v "$2" '.code_review[$f] = $v' <<<"$STATE_RECORD"
+}
+
+state_summary() { # <id> <updated_at> <record>
+  jq -cn --argjson id "$1" --arg at "$2" --arg rec "$3" --arg rev "$REVIEWER" \
+    '{id:$id, user:{login:($rev + "[bot]")}, created_at:"2026-10-18T15:55:45Z", updated_at:$at,
+      body:("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 " + $rec
+        + " -->\n\n## Codex Review Summary\n\nThis comment shows the latest Codex review activity on this pull request.\n\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-10-18T16:27:29.001490Z\">2026-10-18T16:27:29.001490Z</relative-time> | `66de063` | New commits |\n\n\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n</details>")}'
+}
+
+state_fixture() {
+  reset_fixture
+  HEAD_SHA="$STATE_HEAD"
+  HEAD_AT=2026-10-18T16:23:00Z
+  REVIEWS_JSON="[$(review 5 a4482215c1b71473b5417e05bc38f15c3f05efb9 2026-10-18T16:01:59Z),$(
+    review 6 f6121fbc3e97a504a041502e934df817a09b88db 2026-10-18T16:17:01Z)]"
+  COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:27:30Z "$STATE_RECORD")]"
+}
+
+test_a_clean_state_record_on_the_head_is_a_verdict() {
+  state_fixture
+  run_status
+  assert_eq "$(state_tok "$STATE")" approved "the record of a clean round on the head, with no 👍 and no 👀"
+  assert_contains "$LINE" "summary records head 66de063's Code Review completed with no unresolved findings, Completed at 2026-10-18T16:27:29Z" \
+    "the approval names the record it rests on"
+  # The same comment's record for another head, or with findings open, is no verdict here.
+  COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:27:30Z \
+    "$(state_record_with commit_sha '"f6121fbc3e97a504a041502e934df817a09b88db"')")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a record naming another head approves nothing here"
+  COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:27:30Z "$(state_record_with has_unresolved_findings true)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a record with unresolved findings is not clean"
+  COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:27:30Z "$(state_record_with status '"running"')")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a running record is no verdict"
+  # A record that does not parse whole is no reading, never a field fished out of it.
+  COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:27:30Z "${STATE_RECORD:0:${#STATE_RECORD}-1}")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a truncated record is no reading"
+  # And `watch` ends its wait on it, with no nudge and no advice to post one.
+  state_fixture
+  run_watch 0,0,0
+  assert_contains "$WATCH_OUT$WATCH_ERR" "approved (" "watch ends on the clean record"
+  assert_not_contains "$WATCH_OUT$WATCH_ERR" "consider nudging" "and advises no nudge"
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "and posts none"
+}
+
+test_a_state_record_yields_to_what_the_reviewer_posted() {
+  state_fixture
+  # #683's order: a findings review of the head three seconds before the record is written.
+  REVIEWS_JSON="[$(review 7 "$STATE_HEAD" 2026-10-18T16:27:27Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" idle "a round that posted findings on the head is not clean"
+  # A word after the record, whatever its head, is newer than the record.
+  state_fixture
+  REVIEWS_JSON="[$(review 7 f6121fbc3e97a504a041502e934df817a09b88db 2026-10-18T16:28:00Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a review posted after the record outranks it"
+  # A 👀 newer than the record is a new round, read as a round.
+  state_fixture
+  REACTIONS_JSON="[$(reaction eyes 2026-10-18T16:30:00Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" stalled "a 👀 newer than the record is not answered by it"
+  # Nor once an edit of the summary (its security-review row) moves the comment's updated_at past
+  # that 👀: the Code Review row dates the record, and it still predates the 👀.
+  COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:31:00Z "$STATE_RECORD")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" stalled "a summary edited after the 👀 is not a newer verdict"
+}
+
 # --- a reviewer run the summary marks Failed (ludics-lite#453) ----------------------------------
 # lukstafi/ocannl-staging#633, 2026-09-04: the last findings review on 8c090d3 at 22:24:34Z, head
 # 1e14b13 committed at 22:46:29Z, and the summary's Code Review row "⚠️ Failed" on it at
@@ -2055,6 +2138,8 @@ tests=(
   test_a_completed_row_needs_a_round_to_bound_it
   test_a_completed_row_outside_the_allowlist_is_not_a_verdict
   test_a_completed_row_approval_passes_the_thread_gate
+  test_a_clean_state_record_on_the_head_is_a_verdict
+  test_a_state_record_yields_to_what_the_reviewer_posted
   test_a_failed_run_on_the_head_is_a_failed_state
   test_a_failed_run_needs_the_head_and_no_approval
   test_a_failed_run_needs_a_silent_reviewer
