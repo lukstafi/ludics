@@ -303,6 +303,21 @@ class Confirmation(SlotDir):
             self.assertEqual((record["verdict"], record["by"], record["pids"], record["command"]), ("unknown", "lsof", None, None), why)
             self.assertIn(why, record["why"])
 
+    def test_the_slots_are_confirmed_at_once_not_one_lsof_after_another(self) -> None:
+        def slow(argv: Sequence[str]) -> tuple[int, str]:
+            time.sleep(0.6)
+            return 1, ""
+
+        for index in (1, 2, 3, 4):
+            self.hold(f"slot.{index}")
+            self.record(f"slot.{index}", 4242)
+        start = time.monotonic()
+        lines = holders.holders("testbox", self.dir, 4, 0, run=slow, locks=os.path.join(self.root, "none"),
+                                proc=os.path.join(self.root, "no-proc"), seen=lambda _: "mine")
+        self.assertLess(time.monotonic() - start, 1.8)
+        self.assertEqual([(line["slot"], line["record"]["verdict"]) for line in lines],
+                         [(index, "unconfirmed") for index in (1, 2, 3, 4)])
+
     def test_a_real_held_slot_is_confirmed_and_a_stale_record_is_not(self) -> None:
         """Against this box's kernel: the lock table on Linux, lsof on macOS."""
         path = os.path.join(self.dir, "slot.1")

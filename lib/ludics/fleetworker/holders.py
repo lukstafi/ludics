@@ -91,6 +91,11 @@ open, marked inheritable, so the taker's tree has it open too; the rest are inst
 flock, whose pid is the reader's own and is excluded. So a recorded pid in the set is the holder or
 a tester that is the holder itself: confirmed. A set that lacks it is unconfirmed, and its pids are
 reported as the file's openers, never as the lock's holder (which one holds it is not read). The
+positive read binds the record to the pid, not to a process generation: a confirmed record can be
+an earlier taker's only when a taker that writes no record (a fleet-worker older than #668, THE
+HOLDER RECORD's upgrade boundary) runs under that earlier taker's very pid, a recycled pid across
+a reboot included, since the slot files persist. Every current taker rewrites the record after its
+flock, so that is the upgrade's residual, not compared away against process start times. The
 negative read needs the recorded pid's descriptors to be visible here: a pid whose
 ``/proc/<pid>/fd`` cannot be read (another user's, or a non-dumpable process of this user's) is
 ``unknown``, and so, by the signal-0 permission test (``os.kill(pid, 0)``; it gates the negative,
@@ -112,6 +117,7 @@ import shlex
 import shutil
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol, cast
@@ -365,18 +371,24 @@ def holders(box: str, directory: str, cap: int, tokens: int, run: cotenants.Runn
     at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     me = os.getpid()
 
+    pending: list[tuple[dict[str, Any], str]] = []
+
     def with_record(line: dict[str, Any], path: str) -> dict[str, Any]:
-        """``line`` with its ``record`` (THE CONFIRMATION), read now."""
+        """``line``, its ``record`` read once every line is built (``add_record``)."""
+        pending.append((line, path))
+        return line
+
+    def add_record(line: dict[str, Any], path: str) -> None:
+        """``line``'s ``record`` (THE CONFIRMATION), read now."""
         assert read_record is not None
         holder = read_record(path)
         if holder is None:
             line["record"] = None
             line["unknown"]["record"] = (f"{path} holds no holder record (a batch started by a fleet-worker older than"
                                          " ludics-lite#668, or one whose record could not be written)")
-            return line
+            return
         confirmation = confirm(path, holder.pid, table, run, proc, me, locks, seen)
         line["record"] = record_field(holder, confirmation, time.monotonic())
-        return line
 
     held: list[tuple[int, list[int], str]] = []
     for index in slot_files(directory):
@@ -426,6 +438,11 @@ def holders(box: str, directory: str, cap: int, tokens: int, run: cotenants.Runn
                 unknown["cwd"] = why
             lines.append(with_record({**base, "pid": pid, "user": user, "command": command, "cwd": cwd,
                                       "source": "proc-locks", "unknown": unknown}, path))
+    # Each slot's confirmation at once: lsof may take its whole bound, which in turn would add up.
+    if pending:
+        with ThreadPoolExecutor(max_workers=len(pending)) as pool:
+            for done in [pool.submit(add_record, line, path) for line, path in pending]:
+                done.result()
     return lines
 
 

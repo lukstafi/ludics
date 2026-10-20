@@ -481,20 +481,23 @@ def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, r
         pass
     errline(f"{HOLD_PREFIX} {box}: measurement {request} waits for the batch in slot {index} to end")
     failure: list[OSError] = []
+    saying = threading.Lock()
+    taken: list[bool] = []
 
     def take() -> None:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
         except OSError as exc:
             failure.append(exc)
+            return
+        with saying:  # a line being said finishes first; none is said after this
+            taken.append(True)
 
     waiter = threading.Thread(target=take, name=f"drain-slot-{index}", daemon=True)
     start = time.monotonic()
     waiter.start()
     waiter.join(0.2)  # a batch ending in this instant needs no naming
     waited: float | None = None
-    saying = threading.Lock()
-    taken: list[bool] = []
 
     def say(line: str) -> None:
         with saying:
@@ -518,8 +521,6 @@ def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, r
             confirming.start()
         waiter.join(repeat)
         waited = time.monotonic() - start
-    with saying:
-        taken.append(True)  # a confirmation still running says nothing after the take
     if failure:
         raise failure[0]
 
@@ -1355,7 +1356,9 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     if parsed.holders:
         # THE HOLDERS (ludics-lite#639, ``holders.py``): who holds this box's slots now, one JSON line
         # per held slot; like the probe, it takes nothing and reads no registry.
-        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens) + holders.waiters(box, directory)))
+        # The waiters are read first: the holders' confirmations may each take lsof's bound.
+        waiters = holders.waiters(box, directory)
+        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens) + waiters))
         return 0
     if parsed.probe:
         # THE PROBE: what a slot here would be, taking nothing and reading no registry; inside a
