@@ -917,6 +917,16 @@ The other verdicts are not refusals, and none of them is a green light either:
 | 3 | unknown | the checks or the head's runs could not be read — refused |
 | 5 | superseded | the PR head moved from the observed SHA — refused; re-run to judge the successor |
 | 4 | no verdict | still running, every finished job was `cancelled`, or a run for the head is queued, stopped without a verdict, or has yet to create its checks — refused without `--allow-no-verdict` |
+| 6 | no verdict (`merge` only) | a build job never got a runner, and the one rerun below is spent or failed (or `merge` ran without `--wait`) — refused without `--allow-no-verdict`, naming the commands |
+
+**A job that never got a runner** is named on its own line by `checks` and `merge`, with the
+command that recovers it: `NO RUNNER` (cancelled with no step run and no runner, GitHub's "not
+acquired by Runner") and `NEVER STARTED` (queued past `SHIP_PR_NEVER_STARTED`, 20 min, while a
+newer run of its workflow has a job on the same runner labels that started). `checks --wait` ends
+at once on one (exit 4: nothing moves until the run is re-run). `merge --wait` recovers once per
+head run: `gh run rerun <id> --failed` (after `gh run cancel <id>` for a never-started job), and
+its wait gets a fresh `--wait` budget from the rerun. A second one on that run ends it with 6. A
+run you cancelled yourself while its jobs were queued has the NO RUNNER shape too, and is rerun.
 
 **Exit 4 refuses too, by default.** Nothing has failed, but nothing has passed, and a merge that
 waits for neither read nothing — it was a warning until 2026-08-23, when a day-long runner queue

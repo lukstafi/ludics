@@ -1568,6 +1568,35 @@ test_completed_run_without_a_conclusion_is_unjudged() {
   assert_not_contains "$GATE_OUTPUT" ": ABSENT" "it must not settle as absence"
 }
 
+# ludics-lite#560: a job GitHub cancelled before any runner took it -- no step ran, no runner named
+# (the 2026-10-05 outage's "not acquired by Runner") -- stops its run without a verdict, which held
+# `checks --wait` for its whole window. `checks` names it, with the command that recovers it, and
+# the wait ends on it. The control is the same cancel after a step ran: a stop, not a starved
+# queue, which is not named.
+test_a_job_no_runner_took_is_named_and_ends_the_wait() {
+  local start
+  reset_fixture
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"build","conclusion":"cancelled","html_url":"u"}]')")
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"completed","conclusion":"cancelled"}]')")
+  JOBS_JSON=$(jobs_json '[{"id":501,"name":"build","status":"completed","conclusion":"cancelled",
+    "created_at":"2026-01-01T00:00:00Z","steps":[],"runner_id":null,"runner_name":null,
+    "labels":["ubuntu-latest"],"run_attempt":1}]')
+  start=$SECONDS
+  run_gate 20
+  assert_eq "$GATE_RC" 4 "a job no runner took is no verdict ($GATE_OUTPUT)"
+  assert_contains "$GATE_OUTPUT" "NO RUNNER      build — run 101, attempt 1: cancelled before any runner took it" \
+    "the job is named as one no runner took"
+  assert_contains "$GATE_OUTPUT" "recover: gh run rerun 101 --failed --repo $REPO" "with the command that recovers it"
+  assert_contains "$GATE_OUTPUT" "checks: verdict=unjudged" "and the trailer's vocabulary is unchanged"
+  [ $((SECONDS - start)) -lt 15 ] || bail "the wait should end on it, not at its 20 s ceiling ($((SECONDS - start)) s)"
+  JOBS_JSON=$(jobs_json '[{"id":501,"name":"build","status":"completed","conclusion":"cancelled",
+    "created_at":"2026-01-01T00:00:00Z","steps":[{"name":"Set up job"}],"runner_id":7,
+    "runner_name":"GitHub Actions 7","labels":["ubuntu-latest"],"run_attempt":1}]')
+  run_gate 0
+  assert_eq "$GATE_RC" 4 "a cancel after a step ran is still no verdict ($GATE_OUTPUT)"
+  assert_not_contains "$GATE_OUTPUT" "NO RUNNER" "but no runner-less job is named"
+}
+
 # Round 4, P1: the advisory list is a deny-list of CHECK names, and build_checks applies it per
 # check run. A non-advisory workflow whose only failing job is advisory must not come back as red
 # through the run-level conclusion.
@@ -2212,6 +2241,7 @@ tests=(
   test_wait_unchanged_head_turns_green
   test_head_reread_unknown
   test_inflight_run_is_not_absent
+  test_a_job_no_runner_took_is_named_and_ends_the_wait
   test_queued_run_is_not_absent
   test_fresh_push_without_a_run_waits
   test_stale_push_without_a_run_is_absent
