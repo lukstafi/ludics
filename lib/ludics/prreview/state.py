@@ -174,6 +174,55 @@ def _newest_summary(comments: list[Json], reviewer: str) -> Json:
     return max_by(summaries, lambda c: alt(idx(c, "updated_at"), idx(c, "created_at")))
 
 
+def _newest_row(body: str) -> tuple[str, str, str] | None:
+    """A summary body's newest Code Review row by its stamp's instant: (the row's line, the commit
+    it names, its stamp with the fraction cut). None when the body has no Code Review row, or has
+    one whose stamp does not read: then no row can be called the newest."""
+    rows: list[tuple[str, dict[str, str | None]]] = []
+    for line in body.split("\n"):
+        if not _CODE_REVIEW_ROW.search(line):
+            continue
+        stamp = capture_first(line, _SUMMARY_ROW_STAMP)
+        if stamp is None:
+            return None
+        rows.append((line, stamp))
+    best = max_by(rows, lambda r: instant(r[1]["at"]))
+    if best is None:
+        return None
+    return best[0], jstr(best[1]["sha"]), sub_once(best[1]["at"], _FRACTION_Z, "Z")
+
+
+def _head_running_row(comments: list[Json], rev: str, head_sha: str) -> tuple[bool, str]:
+    """``status_state``'s read of a round in flight off the summary (ludics-lite#586): (a Running
+    row could not be read, the stamp of a Running row for this head).
+
+    Boundary, fail-closed: read only the reviewer's NEWEST summary comment (``_newest_row``'s
+    choice, the one ``_done_row`` and ``summary_state`` read), and in it only its newest Code
+    Review row. That row counts only when it passes the ``_RUNNING_ROW`` test, names a prefix of
+    the head's SHA, and its stamp is a GitHub timestamp; it is then this head's round, running
+    since that stamp. A row passing the Running test whose stamp does not read (or does not read
+    as a GitHub timestamp) is the first field, as the 👍 path's ``_evidence`` counts it: it may be
+    this head's round. Any other row, a newest row that is not Running, a row for another head,
+    or no summary is (False, ""): the reactions decide, as before the row was read. Not read:
+    older summaries, the state record, the row's trigger cell, the comment's own timestamps."""
+    newest = _newest_summary(comments, rev)
+    if newest is None:
+        return False, ""
+    body = body_of(newest)
+    for line in body.split("\n"):
+        if _RUNNING_ROW.search(line) and capture_first(line, _SUMMARY_ROW_STAMP) is None:
+            return True, ""
+    row = _newest_row(body)
+    if row is None or not _RUNNING_ROW.search(row[0]):
+        return False, ""
+    _line, sha, at = row
+    if not _ISO_STAMP.fullmatch(at):
+        return True, ""
+    if not head_sha or not head_sha.startswith(sha):
+        return False, ""
+    return False, at
+
+
 @dataclass(frozen=True)
 class SummaryState:
     """The ``code_review`` half of the ``codex-review-state:v1`` record on the reviewer's newest
@@ -254,13 +303,10 @@ def summary_state(comments: list[Json], rev: str) -> SummaryState | None:
         return None
     if not (unresolved is None or isinstance(unresolved, bool)):
         return None
-    rows = _stamp_rows(body)
-    if not rows or any(r is None for r in rows):
+    row = _newest_row(body)
+    if row is None or not sha.startswith(row[1]):
         return None
-    best = max_by([r for r in rows if r is not None], lambda r: instant(r["at"]))
-    if best is None or not sha.startswith(jstr(best["sha"])):
-        return None
-    at = sub_once(best["at"], _FRACTION_Z, "Z")
+    at = row[2]
     if not _ISO_STAMP.fullmatch(at):
         return None
     return SummaryState(sha, status, unresolved, at)
@@ -485,6 +531,41 @@ def status_state(ctx: Ctx, pr: str) -> State:
         head = state_head_read(ctx, pr)
         mstate = head.mstate
     head_sha = head.sha
+
+    # ludics-lite#586: a 👀 is a level, and one left up by an older head's stuck round is no measure
+    # of this head's round. The summary's newest Code Review row, Running on this head, newer than
+    # the reviewer's last word and than any 👀, is the round in flight -- whether that 👀 is live
+    # or spent (review of #747, round 1: a same-head rerun after findings) -- aged from the row,
+    # and it stalls by the row's age. A Running row that does not read may be that round. It is
+    # read before any verdict, as the 👍 path's newer current-head Running row outranks the 👍:
+    # a no-findings verdict on the head is a word of the reviewer's, so a row newer than it is a
+    # rerun that may yet post findings (review of #747, round 2). The summary's Completed, Failed
+    # and record arms below need the newest row to be theirs, so a Running newest row is none of
+    # them.
+    try:
+        running_unread, running_at = _head_running_row(comments, rev, head_sha)
+    except JqError:
+        return unknown(mstate, "the summary's Code Review rows did not parse")
+    if running_unread:
+        return unknown(
+            mstate,
+            f"a {rev} Code Review row matched the Running test but not the"
+            " SUMMARY_ROW_STAMP_RE, so the running round could not be read",
+        )
+    if (
+        running_at and running_at > last_spoke and (not eyes_at or running_at > eyes_at)
+        and _after_nudge(running_at, nudge_at)
+    ):
+        age = age_of(running_at, ctx.clock.time())
+        eyes = f" and its 👀 ({eyes_at})" if eyes_at else ""
+        spoke = f" ({last_spoke})" if last_spoke else ""
+        detail = (
+            f"{rev} Code Review Running for head {_short(head_sha)} since {running_at}, newer than its"
+            f" last word{spoke}{eyes}"
+        )
+        if age is not None and age >= grace_stall:
+            return State("stalled", age, mstate, detail)
+        return State("reviewing", age, mstate, detail)
 
     if verd_sha and head_sha and (not eyes_at or verd_at > eyes_at) and head_sha.startswith(verd_sha):
         return State(
