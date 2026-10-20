@@ -205,9 +205,11 @@ def spawn(d: str, kind: str) -> str:
 
 
 def live(run: str) -> bool:
-    """Whether the bg-run run may still be going, read as ``bg-run.sh wait`` reads it: RUNNING
-    (exit 3) is; STARTING (exit 4) is until its start grace passes with no pid, which is a launch
-    that failed (bg-run.sh's header)."""
+    """Whether the bg-run run may still be going, read as ``bg-run.sh wait`` reads it. Only a
+    final verdict says it is not: ``rc=`` (exit 0), DIED (5), STOPPED (7), or STARTING (4) past
+    bg-run's start grace with no pid, a launch that failed (bg-run.sh's header). RUNNING (3) is
+    live, and a wait that gives no verdict (a usage error, a timeout, no bg-run.sh) is refused,
+    since it cannot say the run is over."""
     # A wait blocks until the run settles, and RUNNING does not: so one-second looks, repeated
     # while the run is STARTING, until bg-run's start grace (BG_RUN_START_GRACE, 60 s) has passed
     # with no pid.
@@ -215,8 +217,13 @@ def live(run: str) -> bool:
     deadline = time.monotonic() + (int(grace) if grace.isdigit() else 60) + 5
     while True:
         done = proc.run_tool(str(BG_RUN), ["wait", run, "--within", "1"], stdin=subprocess.DEVNULL, timeout=60)
-        if done.rc != 4 or time.monotonic() > deadline:
-            return done.rc == 3
+        if done.rc == 4 and time.monotonic() <= deadline:
+            continue
+        if done.rc in (0, 4, 5, 7):
+            return False
+        if done.rc == 3:
+            return True
+        raise cli.Exit(1, f"cannot read the run {run} (bg-run.sh wait exit {done.rc}): {last_line(done.stderr)}")
 
 
 def start(args: Sequence[str]) -> int:

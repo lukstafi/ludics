@@ -211,12 +211,16 @@ class PeerPlan(unittest.TestCase):
         mine = os.path.join(self.dir, "claude-plan.md")
         with open(mine, "w", encoding="utf-8") as f:
             f.write("my plan\n")
+        # A file where the runs directory was: bg-run.sh new cannot allocate in it, root or not.
         runs = os.path.join(self.dir, "runs")
-        os.chmod(runs, 0o500)  # bg-run.sh new cannot allocate the critique's run directory
+        os.rename(runs, runs + ".kept")
+        with open(runs, "w", encoding="utf-8") as f:
+            f.write("")
         try:
             done = self.entry("critique", self.dir, "--plan", mine)
         finally:
-            os.chmod(runs, 0o700)
+            os.remove(runs)
+            os.rename(runs + ".kept", runs)
         self.assertEqual(done.returncode, 1)
         self.assertIn("spawn failed", done.stderr)
         done = self.entry("critique", self.dir, "--plan", mine)
@@ -300,6 +304,15 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("gh account", done.stderr)
         self.assertFalse(os.path.exists(self.dir))
+
+    def test_clean_refuses_when_the_run_cannot_be_read(self) -> None:
+        self.assertEqual(self.wait(self.start()), "rc=0")
+        os.environ["BG_RUN_POLL"] = "x"  # every wait then exits 2, with no verdict
+        self.addCleanup(os.environ.pop, "BG_RUN_POLL", None)
+        done = self.entry("clean", self.dir)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("cannot read the run", done.stderr)
+        self.assertTrue(os.path.isdir(os.path.join(self.dir, "worktree")))
 
     def test_start_refuses_a_used_directory(self) -> None:
         os.makedirs(self.dir)
