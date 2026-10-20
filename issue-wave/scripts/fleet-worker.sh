@@ -143,15 +143,18 @@
 #                          # (the contract: lib/ludics/fleetworker/leg.py)
 #   fleet-worker.sh execution reserve|dispatch|record|reconcile|conclude <json-file>
 #                          # every commit a payload names must exist on GitHub in its repository;
-#                          # a "head-of:<branch>" requested_revision is resolved at run/dispatch
+#                          # a "head-of:<branch>" requested_revision is resolved at run/dispatch;
+#                          # a reserve/run/window payload's "checkout" (absolute, on the execution
+#                          # host; required of a standing one) is the record's, fixed (ludics-lite#731)
 #   fleet-worker.sh execution conclude <json-file> --observed-from <checkout>   # observed_sha is
 #                          # that checkout's HEAD, read on the execution host; a checkout that is
-#                          # not clean draws an OBSERVED-FROM WARNING on stderr (every form)
+#                          # not clean draws an OBSERVED-FROM WARNING on stderr (every form); every
+#                          # --observed-from must be the record's checkout when it names one, or is refused
 #   fleet-worker.sh execution run <json-file>          # reserve + dispatch in one step
 #   fleet-worker.sh execution window [--no-gap] <box> <json-file> # `run` for a measurement that suspends
 #                          # the box's standing reservations, restored when it concludes; it first
 #                          # waits out FLEET_WINDOW_GAP after the box's last measurement while
-#                          # standing reservations are outstanding there (none with --no-gap)
+#                          # a batch is waiting for the box (none with --no-gap)
 #   fleet-worker.sh execution conclude --from-run <run-dir> --request <id> --sha <sha>
 #                          [--box <box>] [--evidence <text>]   # verdict, log and checkout read from a
 #                                                     # test-run.sh record on the reserved box
@@ -190,6 +193,9 @@
 #   fleet-worker.sh board note [--create] <wave> <key>=<value>...   # the wave's own facts
 #   fleet-worker.sh board log <wave> <text>...   # one line appended to its log, stamped
 #   fleet-worker.sh board show <wave> [--json]   # the markdown view (or the document); no lease
+#   fleet-worker.sh board takeover <wave> <task>   # the task's stored brief, then its state at
+#                          # takeover from the row's takeover keys and the live sources; no lease;
+#                          # exit 3 when the brief cannot be read (lib/ludics/fleetworker/takeover.py)
 #                          # (set/note --create starts the board; without it every writer refuses
 #                          # an unknown wave; the contract: lib/ludics/fleetworker/boardstore.py)
 #

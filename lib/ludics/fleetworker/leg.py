@@ -419,7 +419,7 @@ def await_window(cfg: Config, request: str, record: dict[str, Any], records: lis
         by = execution.jq_text(own.get("suspended_by"))
         return [execution.record_of(read, by) or {"request_id": by, "window": True}]
 
-    waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE, holders)
+    waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE, holders, registered=True)
     if isinstance(waited, int):
         return waited
     again = execution.record_of(waited, request)
@@ -493,8 +493,14 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     if not SECONDS.fullmatch(fetch_timeout):
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
 
-    # The reservation: a dispatched record, whose execution host is the box.
-    done = execution.listing(cfg)
+    # The reservation: a dispatched record, whose execution host is the box. A leg that may wait out a
+    # window registers as its waiter in this same read, by its request (THE WAITERS, ludics-lite#719):
+    # the read that finds its record suspended must not leave a moment unseen before the first heartbeat.
+    # It releases the heartbeat when it does not wait, or its wait is refused; after a wait it lets it
+    # expire, so the moment of setup before its slot on the box (the copy, the ssh, the fetch) is
+    # still counted, and the slot there, given --wait-window too, registers on its own.
+    waiter = slot.waiter_of(cfg, runner, request=request) if window_bound(slot_flags) is not None else None
+    done = execution.listing(cfg, waiter)
     if done.unreachable:
         cli.say(f"EXECUTION LEG UNREACHABLE {cfg.anchor}: cannot read request {request}'s record; nothing ran")
         return 4
@@ -509,12 +515,31 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     box = values.get("--box", host)
     # The box before any wait: a leg named for another box is refused now, not after a window.
     if fleet_name(cfg, box) != host:
+        slot.release_waiter(cfg, waiter)
         return refused(f"{request} is reserved on {host}, not {box}")
     if execution.jq_text(record.get("state")) == "suspended":
         waited = await_window(cfg, request, record, records, slot_flags, runner)
         if isinstance(waited, int):
+            slot.release_waiter(cfg, waiter)
             return waited
         record = waited
+        try:
+            # Kept through the setup before the slot on the box, and released when the leg ends,
+            # whatever ends it: a heartbeat left to expire would make a window opened just after a
+            # short leg wait out the gap for nobody.
+            return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
+                           fetch_timeout)
+        finally:
+            slot.release_waiter(cfg, waiter)
+    slot.release_waiter(cfg, waiter)
+    return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
+                   fetch_timeout)
+
+
+def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[str], runner: list[str], box: str, checkout: str, worktree: str, remote: str, rev: str, control: str,
+            fetch_timeout: str) -> int:
+    """The leg on its dispatched record: refuse what the registry would not record, then run it on
+    ``box`` (the far side's slot or hold around it) and stream its result."""
     state = execution.jq_text(record.get("state"))
     if state not in DISPATCHED:
         return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")

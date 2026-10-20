@@ -13,7 +13,8 @@ fleet correctness or measurement run beyond its
 [standing reservations](executions.md#standing-iteration-reservation) (its agent host's, and its
 GPU home box's where the coordinator took one), the worker messages the
 coordinator with revision, execution host, workload kind, the bounded command, checkout and
-intended log path, then waits for dispatch. The coordinator completes the reservation, runs
+intended log path, then waits for dispatch. The coordinator completes the reservation (the
+worker's checkout as the payload's `checkout`), runs
 `fleet-worker.sh execution run <reserve.json>` (`execution window <box> <reserve.json>` for a
 measurement on a box where workers hold standing reservations, [executions.md](executions.md#exclusivity-and-the-run-time-slots)),
 and answers the same agent with the
