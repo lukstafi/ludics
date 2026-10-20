@@ -2913,7 +2913,7 @@ expect "--from-bg-run --observed-from keeps the provenance beside an --evidence 
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg2 --observed-from "$obs" --evidence "leg green"
 # ludics-lite#732: a checkout left with edits after its last run (a golden promoted on the GPU box)
 # is named on stderr, never refused, and kept out of the payload a retry must compose identically.
-"${FWR[@]}" execution run "$(rv_req rv-dirt origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-dirt (setup)"
+"${FWR[@]}" execution run "$(rv_req rv-dirt origin/main testbox "$obs")" >/dev/null 2>&1 || ko "could not reserve rv-dirt (setup)"
 printf 'promoted\n' > "$obs/promoted golden.log"
 expect "--observed-from names a checkout left with uncommitted paths, and still concludes" 0 \
   "^OBSERVED-FROM WARNING: '$obs' on testbox is not clean: it has 1 uncommitted path(s)" -- \
