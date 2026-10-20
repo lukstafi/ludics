@@ -521,6 +521,16 @@ requirements for every transport with transport-specific setup and identity, and
   dead, pushed with a token it copied off tuf; ludics-lite#360). The preflight's `gh api user`
   call now catches the dead token before launch, so this line covers what it cannot: a token
   that dies mid-task, and a leg's box.
+- **The local review before the PR opens**: ship-pr's one `codex exec review` (its *Open*; the
+  brief points to that command, whose prompt carries the do-not-run-tests line, and does not
+  restate it: two of wave-20261020's six reviews, whose prompts lacked that line, ran tests unasked
+  and outside any slot, ludics-lite#742 and #738). The worker fixes or rebuts every finding and
+  lists them in a "Local Codex review" section of the PR body, and never runs the review while a
+  batch of its own is in flight: its slot-wrapped batches are the evidence, and the review's
+  sandbox takes no slot. It catches local defects (0-2 per PR over three waves, real P1s among
+  them) and does not substitute for the convergence policy on open-ended machinery:
+  ludics-lite#625's found nothing, and the remote reviewer then found 11 run-twice and resume
+  corners over six rounds (ludics-lite#609).
 - Landing: the ship-pr skill through review to merge; for a PR that fully resolves the issue,
   include `Closes #N` in its body (`Closes owner/repo#N` for a separate upstream tracker), per
   ship-pr's *Open*. Then close out the tracked issue with a summary comment - `gh issue comment
