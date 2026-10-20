@@ -314,12 +314,13 @@ class MergeRecovery(Quiet):
         self.head(gh)
         gh.on("run", "cancel", out="")
         gh.on("run", "rerun", out="")
-        gh.on("check-runs", out=["build\tpending\tu\t1", "build\tpending\tu\t1", "build\tcancelled\tu\t1",
-                                 "build\tsuccess\tu\t1"])
-        gh.on("actions/runs?head_sha=h1", out=[run_row(status="in_progress", concl="pending")] * 2
+        # The cancel lands on the second round; the run is still in flight at the old deadline.
+        gh.on("check-runs", out=["build\tpending\tu\t1"] * 3 + ["build\tcancelled\tu\t1", "build\tsuccess\tu\t1"])
+        gh.on("actions/runs?head_sha=h1", out=[run_row(status="in_progress", concl="pending")] * 3
               + [run_row(), run_row(concl="success")])
-        jobs(gh, "100", out=[QUEUED, QUEUED, QUEUED, job_row(created="2025-12-31T23:30:00Z", labels="macos-14"),
-                             job_row(concl="success", steps="5", runner="r", attempt="2")])
+        # Scan, scan, the re-read before the cancel, scan (still queued), the cancelled job, the rerun's.
+        jobs(gh, "100", out=[QUEUED] * 4 + [job_row(created="2025-12-31T23:30:00Z", labels="macos-14"),
+                                           job_row(concl="success", steps="5", runner="r", attempt="2")])
         gh.on("actions/workflows/1/runs", out="130\tin_progress\t2025-12-31T23:40:00Z")
         jobs(gh, "130", out=STARTED_MAC)
         clock = FakeClock()
