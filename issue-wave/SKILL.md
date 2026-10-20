@@ -421,7 +421,7 @@ requirements for every transport with transport-specific setup and identity, and
   summary (ludics-lite#70 and #76, 2026-09-10).
 - Paired planning, for an issue the gate paired: the brief addition in
   [paired-planning.md](references/paired-planning.md#the-brief-addition), with its mode. The
-  coordinator starts the second planner before it launches the worker.
+  coordinator starts the second planner on the worker's startup SHA as soon as the launch succeeds.
 - Verification expectations: scoped test runs, negative controls where the work is a checker
   (new fixtures shown to FAIL on base: `~/ludics-lite/scripts/run-against-base.sh <suite>`, slot-wrapped),
   and the box's known environmental traps. **The formatter batch** is the one the project's

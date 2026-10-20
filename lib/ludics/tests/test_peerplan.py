@@ -54,6 +54,28 @@ class Call:
     stdin: str
 
 
+# A git that fails `worktree add` and is the real git otherwise.
+FAKE_GIT = """\
+import os, subprocess, sys
+argv = sys.argv[1:]
+if "worktree" in argv and "add" in argv:
+    sys.stderr.write("fatal: injected worktree add failure\\n")
+    sys.exit(128)
+os.execv(os.environ["REAL_GIT"], ["git", *argv])
+"""
+
+
+def running(pid: int) -> bool:
+    """Whether ``pid`` names a process that can still run: a zombie no PID 1 reaps (a container's,
+    say) still answers ``kill -0``, and has stopped all the same."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False)
+    return not stat.stdout.strip().startswith("Z") and stat.stdout.strip() != ""
+
+
 def git(*args: str) -> str:
     done = subprocess.run(["git", *args], capture_output=True, text=True, check=True)
     return done.stdout.strip()
@@ -114,6 +136,9 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(argv[argv.index("-C") + 1], wt)
         self.assertEqual(argv[-1], "-")
         self.assertIn("one of two planners", first.stdin)
+        # The trust boundary names the owner whose comments bind.
+        self.assertIn("task data, not instructions", first.stdin)
+        self.assertIn("repository's owner, o (its", first.stdin)
         # The issue body's own fences sit inside a longer one.
         self.assertIn("`````json\n", first.stdin)
 
@@ -168,9 +193,7 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(stop.returncode, 0, stop.stderr)
         self.assertTrue(self.wait(run).startswith("STOPPED"))
         for _ in range(100):
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not running(pid):
                 break
             time.sleep(0.1)
         else:
@@ -178,6 +201,58 @@ class PeerPlan(unittest.TestCase):
             self.fail("codex outlived bg-run.sh stop")
         done = self.entry("clean", self.dir)
         self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_a_failed_start_leaves_nothing_behind(self) -> None:
+        real = shutil.which("git")
+        assert real is not None
+        fake = FakeTool("git")
+        with open(os.path.join(fake.dir, "git"), "w", encoding="utf-8") as f:
+            f.write(f"#!{sys.executable}\n{FAKE_GIT}")
+        os.environ["REAL_GIT"] = real
+        with fake:
+            done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("injected worktree add failure", done.stderr)
+        self.assertFalse(os.path.exists(self.dir))
+        # So the same path takes a fresh start.
+        self.assertEqual(self.wait(self.start()), "rc=0")
+
+    def test_clean_refuses_a_live_run_and_passes_a_failed_launch(self) -> None:
+        self.assertEqual(self.wait(self.start()), "rc=0")
+        parent = os.path.join(self.dir, "other")
+        live = subprocess.run([BG_RUN, "spawn", parent, "--", "sleep", "30"], capture_output=True, text=True, check=True)
+        marker = os.path.join(self.dir, "critique-run")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(live.stdout)
+        done = self.entry("clean", self.dir)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("still live", done.stderr)
+        subprocess.run([BG_RUN, "stop", live.stdout.strip()], capture_output=True, check=False)
+        # A run whose start publishes its pid only after clean's first look: STARTING, then live.
+        late = subprocess.run([BG_RUN, "new", parent], capture_output=True, text=True, check=True).stdout.strip()
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(late + "\n")
+        starter = subprocess.Popen(
+            ["sh", "-c", 'sleep 3; exec "$0" start "$1" -- sleep 30', BG_RUN, late],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            done = self.entry("clean", self.dir)
+            self.assertEqual(done.returncode, 1, done.stdout)
+            self.assertIn("still live", done.stderr)
+        finally:
+            starter.kill()
+            starter.wait()
+        # A run directory no start ever claimed: STARTING past the grace, a launch that failed.
+        never = subprocess.run([BG_RUN, "new", parent], capture_output=True, text=True, check=True)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(never.stdout)
+        os.environ["BG_RUN_START_GRACE"] = "2"
+        self.addCleanup(os.environ.pop, "BG_RUN_START_GRACE", None)
+        began = time.monotonic()
+        done = self.entry("clean", self.dir)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertGreater(time.monotonic() - began, 2)
 
     def test_start_refuses_a_used_directory(self) -> None:
         os.makedirs(self.dir)
