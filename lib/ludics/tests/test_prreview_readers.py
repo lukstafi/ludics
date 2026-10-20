@@ -502,6 +502,130 @@ class NudgeRead(unittest.TestCase):
                 self.assertIn("did not answer", read.why)
 
 
+def state_summary(cid: int, at: str, record: str, row_sha: str = HEAD[:7]) -> dict[str, Json]:
+    """The reviewer's summary comment as the app writes it (lukstafi/ludics-lite#690's, 2026-10-18):
+    the tag, the hidden state record, and the table with its Code Review row."""
+    return comment(cid, at, (
+        "<!-- codex-pull-request-review-summary -->\n"
+        f"<!-- codex-review-state:v1 {record} -->\n\n## Codex Review Summary\n\n"
+        "This comment shows the latest Codex review activity on this pull request.\n\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        f"| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"{at[:-1]}.001490Z\">{at}</relative-time>"
+        f" | `{row_sha}` | New commits |\n\n\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n</details>"))
+
+
+def state_record(sha: Json = HEAD, status: Json = "completed", unresolved: Json = False,
+                 any_findings: Json = True) -> str:
+    return json.dumps({
+        "code_review": {"commit_sha": sha, "has_any_findings": any_findings,
+                        "has_unresolved_findings": unresolved, "status": status},
+        "security_review": {"commit_sha": None, "has_any_findings": None,
+                            "has_unresolved_findings": None, "status": None}},
+        separators=(",", ":"))
+
+
+class SummaryStateRecord(unittest.TestCase):
+    """The hidden ``codex-review-state:v1`` record as a clean round's verdict when the app put up no
+    👍 and left no 👀 (ludics-lite#702: PRs #677 and #690 read EXPECTED and drew nudge advice)."""
+
+    def test_the_record_is_read_whole(self) -> None:
+        at = "2026-10-18T16:27:30Z"
+        got = state.summary_state([state_summary(1, at, state_record())], REV)
+        self.assertEqual(got, state.SummaryState(HEAD, "completed", False, at))
+        running = state.summary_state([state_summary(1, at, state_record(status="running", unresolved=None))], REV)
+        self.assertEqual(running, state.SummaryState(HEAD, "running", None, at), "a running record reads too (#586)")
+        self.assertIsNone(state.head_summary_state([state_summary(1, at, state_record())], REV, "b" * 40))
+        self.assertIsNone(state.head_summary_state([state_summary(1, at, state_record(sha=HEAD[:7]))], REV, HEAD))
+
+    def test_any_other_shape_is_no_reading(self) -> None:
+        at = "2026-10-18T16:27:30Z"
+        good = state_record()
+        for name, body_record in (
+            ("not JSON", "{code_review: completed}"),
+            ("truncated", good[:-1]),
+            ("an array", "[" + good + "]"),
+            # Last-wins would read the second, clean, half: a duplicate is no reading at all.
+            ("a duplicate key", state_record(unresolved=True)[:-1] + ',"code_review":'
+             + json.dumps(json.loads(good)["code_review"], separators=(",", ":")) + "}"),
+            ("code_review not an object", '{"code_review":"completed"}'),
+            ("no has_unresolved_findings", '{"code_review":{"commit_sha":"' + HEAD + '","status":"completed"}}'),
+            ("a string flag", state_record(unresolved="false")),
+            ("a number flag", state_record(unresolved=0)),
+            ("a short sha", state_record(sha=HEAD[:7])),
+            ("an upper-case sha", state_record(sha=HEAD.upper())),
+            ("a null sha", state_record(sha=None)),
+            ("an empty status", state_record(status="")),
+            ("a null status", state_record(status=None)),
+        ):
+            with self.subTest(name):
+                self.assertIsNone(state.summary_state([state_summary(1, at, body_record)], REV))
+        twice = state_summary(1, at, good)
+        twice["body"] = str(twice["body"]) + "\n<!-- codex-review-state:v1 " + good + " -->"
+        self.assertIsNone(state.summary_state([twice], REV), "a second record is no reading")
+        split = state_summary(1, at, good.replace(",", ",\n", 1))
+        self.assertIsNone(state.summary_state([split], REV), "a record across lines is no reading")
+        undated = {**state_summary(1, at, good), "updated_at": "yesterday"}
+        self.assertIsNone(state.summary_state([undated], REV), "nor a summary whose stamp does not read")
+        stranger = state_summary(1, at, good)
+        stranger["user"] = {"login": "me"}
+        self.assertIsNone(state.summary_state([stranger], REV), "only the reviewer's summary is read")
+        older = state_summary(1, "2026-10-18T16:00:00Z", good)
+        newest = comment(2, at, "<!-- codex-pull-request-review-summary -->\n| Review | Status |")
+        self.assertIsNone(state.summary_state([older, newest], REV), "only the NEWEST summary is read")
+
+    def test_a_clean_record_for_the_head_is_an_approval(self) -> None:
+        at = "2026-10-18T16:27:30Z"
+        earlier = review(5, "b" * 40, "2026-10-18T16:17:01Z")
+        st = run_state(feeds(comments=[state_summary(1, at, state_record())], reviews=[earlier]))
+        self.assertEqual(st.tok, "approved", st.line())
+        self.assertIn("completed with no unresolved findings at 2026-10-18T16:27:30Z", st.detail)
+        self.assertEqual(run_state(feeds(reviews=[earlier])).tok, "expected", "control: no record, as before")
+
+    def test_a_record_that_is_not_a_clean_verdict_for_the_head_stays_expected(self) -> None:
+        at = "2026-10-18T16:27:30Z"
+        earlier = review(5, "b" * 40, "2026-10-18T16:17:01Z")
+        for name, record in (
+            ("another head", state_record(sha="b" * 40)),
+            ("unresolved findings", state_record(unresolved=True)),
+            ("still running", state_record(status="running", unresolved=None)),
+            ("failed", state_record(status="failed")),
+        ):
+            with self.subTest(name):
+                st = run_state(feeds(comments=[state_summary(1, at, record)], reviews=[earlier]))
+                self.assertEqual(st.tok, "expected", st.line())
+
+    def test_anything_posted_since_or_about_the_head_outranks_the_record(self) -> None:
+        at = "2026-10-18T16:27:30Z"
+        rec = state_summary(1, at, state_record())
+        # #683's order: the findings review three seconds before the record is written.
+        st = run_state(feeds(comments=[rec], reviews=[review(5, HEAD, "2026-10-18T16:27:27Z")]))
+        self.assertEqual(st.tok, "idle", st.line())
+        later = review(5, "b" * 40, "2026-10-18T16:28:00Z")
+        self.assertEqual(run_state(feeds(comments=[rec], reviews=[later])).tok, "expected",
+                         "a review posted after the record, whatever its head")
+        stamped = comment(2, "2026-10-18T16:20:00Z", f"A finding.\n\n**Reviewed commit:** `{HEAD[:10]}`")
+        self.assertEqual(run_state(feeds(comments=[stamped, rec])).tok, "expected",
+                         "a findings comment stamped with the head")
+        eyes = reaction("eyes", "2026-10-18T16:30:00Z")
+        self.assertEqual(run_state(feeds(comments=[rec], reactions=[eyes])).tok, "stalled",
+                         "a 👀 newer than the record is a new round")
+        old_eyes = reaction("eyes", "2026-10-18T16:20:00Z")
+        self.assertEqual(run_state(feeds(comments=[rec], reactions=[old_eyes])).tok, "approved",
+                         "a 👀 older than the record is the round it records")
+        nudge = comment(3, "2026-10-18T16:40:00Z", "@codex review", login="me")
+        self.assertEqual(run_state(feeds(comments=[rec, nudge]), nudge_after=2).tok, "nudged",
+                         "a record older than a pending request does not answer it")
+
+    def test_the_approval_passes_the_thread_gate(self) -> None:
+        rec = state_summary(1, "2026-10-18T16:27:30Z", state_record())
+        thread = {"isResolved": False, "path": "a.py",
+                  "comments": {"nodes": [{"fullDatabaseId": "9", "author": {"login": "codex"}}]}}
+        gh = feeds(comments=[rec], threads=[thread])
+        st = run_state(gh)
+        self.assertEqual(st.tok, "approved", st.line())
+        self.assertEqual(gated(gh, st).tok, "unresolved", "an open thread under it is not a clean approval")
+
+
 class BrokenReads(unittest.TestCase):
     """A read of status_state that no feed can break on its own -- an earlier read of the same feed
     takes every shape it would -- still refuses rather than answers when it fails (ludics-lite#89):
