@@ -767,7 +767,12 @@ class CheckoutBinding(unittest.TestCase):
         rc, _, said = self.conclude(self.rec(), {**payload, "remote_checkout": "/wt/r2"}, "/wt/r")
         self.assertEqual(rc, 1)
         self.assertIn("EXECUTION REFUSED: the payload's remote_checkout /wt/r2 is not --observed-from /wt/r", said)
-        self.assertEqual(self.conclude(self.rec(), {**payload, "remote_checkout": "/wt/r/"}, "/wt/r")[0], 0)
+        # What is admitted is written in the record's spelling, so a retry spelled otherwise is identical.
+        for spelling, named in (("/wt/r/", {}), ("/wt/r", {"remote_checkout": "/wt/r/"}), ("/wt/r//", {})):
+            rc, text, _ = self.conclude(self.rec(), {**payload, **named}, spelling)
+            data = json.loads(text)
+            self.assertEqual((rc, data["remote_checkout"], data["evidence"]),
+                             (0, "/wt/r", "ok; observed_sha read as HEAD of /wt/r on testbox"), spelling)
         rc, text, _ = self.conclude(self.rec(checkout=None), payload, "/anywhere")
         self.assertEqual((rc, json.loads(text)["evidence"]),
                          (0, "ok; observed_sha read as HEAD of /anywhere on testbox, --observed-from unchecked:"
@@ -789,8 +794,11 @@ class CheckoutBinding(unittest.TestCase):
         return 0, text, out.getvalue()
 
     def test_a_hand_back_reads_its_own_worktree_only(self) -> None:
-        rc, text, _ = self.handback(self.rec(), "/wt/r")
-        self.assertEqual((rc, json.loads(text)["remote_checkout"]), (0, "/wt/r"))
+        for spelling in ("/wt/r", "/wt/r/"):
+            rc, text, _ = self.handback(self.rec(), spelling)
+            data = json.loads(text)
+            self.assertEqual((rc, data["remote_checkout"]), (0, "/wt/r"), spelling)
+            self.assertIn("observed_sha read as HEAD of /wt/r on testbox", data["evidence"])
         rc, _, said = self.handback(self.rec(), "/wt/r2")
         self.assertEqual(rc, 1)
         self.assertIn("EXECUTION REFUSED: --observed-from /wt/r2 is not r's recorded checkout /wt/r", said)

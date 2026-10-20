@@ -3026,8 +3026,10 @@ expect "...and so is the checkout's parent" 1 "is not hb-usage's recorded checko
 [ "$(hstate hb-usage)" = launching ] && ok "every refusal left the standing record dispatched" || ko "a refusal changed hb-usage: $(hstate hb-usage)"
 fixture_done hb-usage
 hreq hb-slash
-expect "the recorded checkout spelled with a trailing slash concludes" 0 "\"remote_checkout\": \"$hwt/\"" -- \
+expect "the recorded checkout spelled with a trailing slash concludes, recorded in the record's spelling" 0 "\"remote_checkout\": \"$hwt\"" -- \
   hb hb-slash --observed-from "$hwt/" --evidence x --verdict pass
+expect "...so a retry spelled without it is the registry's harmless retry" 0 '"state": "concluded"' -- \
+  hb hb-slash --observed-from "$hwt" --evidence x --verdict pass
 # A record reserved before #731 names no checkout: it concludes, its evidence saying it was unchecked.
 hreq hb-legacy
 jq 'del(.checkout)' "$ISSUE_WAVE_STATE/executions/hb-legacy.json" > "$TMP/hb-legacy.rec" &&

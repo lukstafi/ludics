@@ -27,7 +27,8 @@ outside it prints ``invalid: <value> (<why>)`` and is not used, a key the row la
 
 What it reads, and nothing else (the boundary): the board (``board show --json`` on the anchor, no
 lock, no lease); the brief, a file on brief_host; on agent_host, the worktree's HEAD, branch and
-uncommitted-path count, and ``bg-run.sh wait <dir> --within 0`` for each ``run-<N>`` under ``runs``
+uncommitted-path count (``git --no-optional-locks``, so no index refresh is written under a live
+worker; a status that fails reads unreadable, never clean), and ``bg-run.sh wait <dir> --within 0`` for each ``run-<N>`` under ``runs``
 (the box's own skills checkout's bg-run.sh); GitHub, ``gh pr view`` of ``pr``, or with no ``pr`` a
 ``gh pr list --head <branch>`` printed as a lookup by branch, never as the row's; and the execution
 registry's records for this wave and ``worker``, every state but ``concluded``, beside the ids the row
@@ -120,7 +121,13 @@ wt=$(expand_tilde "$1")
 [ -d "$wt" ] || { printf 'gone=%s\n' "$wt"; exit 0; }
 head=$(git -C "$wt" rev-parse --verify -q HEAD 2>/dev/null) || { printf 'nogit=%s\n' "$wt"; exit 0; }
 branch=$(git -C "$wt" symbolic-ref -q --short HEAD 2>/dev/null) || branch=
-dirty=$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+# Read-only: no optional lock (no index refresh written under a live worker), and a status that
+# fails is unreadable, never clean.
+if left=$(git --no-optional-locks -C "$wt" status --porcelain 2>/dev/null); then
+  if [ -z "$left" ]; then dirty=0; else dirty=$(printf '%s\n' "$left" | grep -c ''); fi
+else
+  dirty=unreadable
+fi
 printf 'head=%s\nbranch=%s\ndirty=%s\n' "$head" "$branch" "$dirty"
 """
 
@@ -223,7 +230,9 @@ def worktree_lines(cfg: Config, keys: dict[str, str]) -> list[str]:
     if "nogit" in facts:
         return [f"- {wt} on {host} is no git checkout"]
     branch = facts.get("branch", "") or "(detached HEAD)"
-    lines = [f"- on {host}: HEAD {facts.get('head', '?')}, branch {branch}, {facts.get('dirty', '?')} uncommitted path(s)"]
+    dirty = facts.get("dirty", "unreadable")
+    count = "uncommitted paths unreadable (git status failed)" if dirty == "unreadable" else f"{dirty} uncommitted path(s)"
+    lines = [f"- on {host}: HEAD {facts.get('head', '?')}, branch {branch}, {count}"]
     if "branch" in keys and facts.get("branch", "") != keys["branch"]:
         lines.append(f"- CONFLICT: the row says branch {keys['branch']}, the worktree is on {branch}")
     return lines

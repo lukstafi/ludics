@@ -191,6 +191,15 @@ class Takeover(unittest.TestCase):
         self.assertIn(f"- {self.wt} is gone on local", out)
         self.assertIn(f"- no directory {self.root}/runs on local", out)
 
+    def test_a_status_that_fails_reads_unreadable_never_clean(self) -> None:
+        with open(os.path.join(self.wt, ".git", "index"), "wb") as f:
+            f.write(b"not an index")  # HEAD still reads; `git status` fails
+        self.board("t7", **self.full())
+        rc, out, _ = self.takeover()
+        self.assertEqual(rc, 0)
+        self.assertIn(f"- on local: HEAD {self.head}, branch claude/w-7, uncommitted paths unreadable (git status failed)", out)
+        self.assertNotIn("0 uncommitted path(s)", out)
+
     def test_an_unknown_task_or_wave_is_refused(self) -> None:
         self.board("t7", **self.full())
         rc, out, err = self.takeover("t9")

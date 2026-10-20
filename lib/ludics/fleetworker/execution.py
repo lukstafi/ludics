@@ -28,7 +28,8 @@ for a concluded record too. The boundary, fail-closed within it: the comparison 
 once trailing ``/`` or ``\\`` are dropped -- no symlink is resolved, no case folded, no filesystem
 read, so another spelling of the same directory is refused, naming the recorded one. The checkout's
 echoes in the same call must agree with it: a plain payload's ``remote_checkout``, and
-``--from-bg-run``'s ``--checkout``. Nothing else is checked: ``--from-run``'s recorded ``wt``,
+``--from-bg-run``'s ``--checkout``. What is admitted is written as the record spells it, so a retry
+spelled otherwise composes the same payload. Nothing else is checked: ``--from-run``'s recorded ``wt``,
 ``--from-bg-run --checkout`` without ``--observed-from``, ``execution leg --worktree``. A record that
 names no checkout (reserved before #731, or a non-standing request that gave none) is concluded, its
 evidence saying ``--observed-from unchecked``; so a conclusion that landed before #731 without that
@@ -707,6 +708,12 @@ def checkout_refusal(record: dict[str, Any], host: str, checkout: str) -> Refusa
     )
 
 
+def spelled(record: dict[str, Any], checkout: str) -> str:
+    """THE CHECKOUT's one spelling: an admitted ``checkout`` is written as the record spells it, so
+    a retry spelled with another trailing separator composes the same payload."""
+    return recorded_checkout(record) or checkout
+
+
 def unchecked_clause(record: dict[str, Any]) -> str:
     """THE CHECKOUT's note for a record that names none: '' when it names one."""
     if recorded_checkout(record):
@@ -1029,6 +1036,7 @@ def checked_evidence(cfg: Config, text: str, observed_from: str, action: str) ->
         if isinstance(head, Refusal):
             concluded(head)
             return text
+        observed_from = spelled(record, observed_from)
         if "observed_sha" in data and sha != head:
             cli.say(
                 f"EXECUTION REFUSED: the payload's observed_sha {jq_text(sha)} is not HEAD {head} of"
@@ -1047,7 +1055,7 @@ def checked_evidence(cfg: Config, text: str, observed_from: str, action: str) ->
         if checking:
             fail(revision.commit_refusal(repo, "observed_sha", head, gh_timeout(cfg)))
         data["observed_sha"] = head
-        data.setdefault("remote_checkout", observed_from)
+        data["remote_checkout"] = observed_from  # what the check above admitted, in its one spelling
         if isinstance(data.get("evidence"), str) and data["evidence"].strip():
             data["evidence"] += f"; observed_sha read as HEAD of {observed_from} on {host}{unchecked_clause(record)}"
         return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
@@ -1222,6 +1230,7 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
         head = observed_sha_of(cfg, record, host, observed_from)
         if isinstance(head, Refusal):
             return concluded(head)
+        observed_from = spelled(record, observed_from)
         if sha and sha != head:
             cli.say(f"EXECUTION REFUSED: --sha {sha} is not HEAD {head} of {observed_from} on {host}; give one of them")
             raise cli.Exit(1)
@@ -1238,7 +1247,7 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
     # Without --checkout the record's own checkout is restated, or the placeholder when it has none
     # -- always spelled out in the payload, so a retry of a conclusion whose answer was lost
     # composes the same payload and meets the registry's identical-retry rule.
-    checkout = values.get("--checkout", "") or observed_from
+    checkout = observed_from or values.get("--checkout", "")  # an admitted --checkout is --observed-from
     if not checkout:
         recorded = record.get("remote_checkout")
         checkout = "" if recorded is None or recorded is False else jq_text(recorded)
@@ -1305,6 +1314,7 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
     head = observed_sha_of(cfg, record, host, observed_from)
     if isinstance(head, Refusal):
         return concluded(head)
+    observed_from = spelled(record, observed_from)
     if record.get("state") != "concluded":
         fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "observed_sha", head, gh_timeout(cfg)))
     again = recorded_handback(record, request, observed_from, host, evidence, run_dir, verdict)
