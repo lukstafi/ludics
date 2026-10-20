@@ -294,12 +294,16 @@ with tempfile.TemporaryDirectory(prefix='fleet-slots-') as temporary:
     # A standing iteration record (ludics-lite#160) is ownership and evidence, not a running
     # batch: it is admitted past a full box and never fills a slot itself. The slots are taken
     # at run time instead, by `fleet-worker.sh execution slot` around each batch.
-    change('run', {**request('iterate-4'), 'standing': True})
+    change('run', {**request('iterate-4'), 'standing': True, 'checkout': '/wt/iterate-4'})
     assert records()['iterate-4']['request']['standing'] is True
     out = change('run', request('run-4b'), expected=1)
     assert 'correctness slots 3/3 on mac' in out, out
     assert 'run-4b' not in records()
-    change('run', {**request('iterate-5'), 'standing': True})
+    change('run', {**request('iterate-5'), 'standing': True, 'checkout': '/wt/iterate-5'})
+    # It names its worker's checkout (ludics-lite#731), kept beside the request, never in it.
+    assert records()['iterate-5']['checkout'] == '/wt/iterate-5' and 'checkout' not in records()['iterate-5']['request']
+    out = change('run', {**request('iterate-6'), 'standing': True}, expected=1)
+    assert 'a standing reservation must name its checkout' in out and 'iterate-6' not in records(), out
     # It is loud, not read off the `-iterate` id convention: only `true`, only on correctness.
     out = change('run', {**request('standing-bad'), 'standing': 'yes'}, expected=1)
     assert 'standing must be true when present' in out and 'standing-bad' not in records(), out
@@ -683,7 +687,7 @@ def measurement_window():
             data = dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
                         issue='owner/repo#481', purpose='fixture', agent_host='mac', execution_host=host,
                         repository='owner/repo', requested_revision='origin/main', kind=kind)
-            return {**data, 'standing': True} if standing else data
+            return {**data, 'standing': True, 'checkout': f'/wt/{identity}'} if standing else data
 
         def records():
             return {r['request_id']: r for r in json.loads(run('execution', 'list')[0])}
@@ -913,7 +917,7 @@ with tempfile.TemporaryDirectory(prefix='fleet-window-order-') as temporary:
         data = dict(request_id=identity, wave='wave', worker=identity, transport='subagent',
                     issue='owner/repo#481', purpose='fixture', agent_host='mac', execution_host='mac',
                     repository='owner/repo', requested_revision='origin/main', kind=kind)
-        return {**data, 'standing': True} if standing else data
+        return {**data, 'standing': True, 'checkout': f'/wt/{identity}'} if standing else data
 
     def records():
         return {path.stem: json.loads(path.read_text()) for path in executions.glob('*.json')}
