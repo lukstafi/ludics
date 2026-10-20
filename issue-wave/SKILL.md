@@ -531,13 +531,15 @@ requirements for every transport with transport-specific setup and identity, and
   directory" failure ship-pr warns about), and the coordinator may still resume the session
   there for the hand-back. The coordinator removes worktrees at close-out.
 - **In a ludics-lite wave, workers merge with the two macOS jobs advisory** (the maintainer's
-  decision). Before merging, the worker runs every suite it touched under `/bin/bash` (3.2, the
-  macOS jobs' shell), slot-wrapped, and merges with the plain
+  decision), and since ludics-lite#727 those jobs do not run on PR heads at all. Before
+  merging, the worker runs every suite it touched under `/bin/bash` (3.2, the macOS jobs'
+  shell), slot-wrapped, and merges with the plain
   `pr-review.sh merge lukstafi/ludics-lite#<pr> --wait`, blocked on as any merge wait. The
   decision lives in the repository, in `.github/ship-pr-advisory-checks` on `main`, which
   `checks` and `merge` read (ludics-lite#530), so the brief sets no `SHIP_PR_ADVISORY_CHECKS`
   and the command keeps the shape the maintainer's standing merge rule clears. The macOS jobs
-  still run on the merged tip, as the integration loop's to read.
+  run on the merged tip, as the integration loop's to read, and on a dispatch
+  (`gh workflow run skill-scripts.yml --ref <branch>`) for a change only macOS exercises.
 - **The worker's verification ends at its own merge** (2026-08-30: seven workers chased
   master's moving tip for 100-120 minutes each): after `merge` confirms `merged`, the worker
   does NOT watch master's subsequent CI - "the latest tip's workflows" is a moving target under

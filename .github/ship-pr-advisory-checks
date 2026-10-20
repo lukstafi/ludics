@@ -2,9 +2,11 @@
 # repository's PRs, one ERE per line; a name any line matches is advisory. The lines replace the
 # script's default list, so the first spells the default names in. The second matches exactly
 # the two macOS jobs of skill-scripts.yml: the maintainer's decision is that a PR merges without
-# waiting for the macOS runner queue, and those jobs still run on the merged tip, where `base`
-# judges them (only the fleet-worker gate's `base --advisory-red` reads this file, to launch over
-# a red that is only in jobs it names, ludics-lite#651, and to judge its interim by it, #659).
+# waiting for the macOS runner queue. Since ludics-lite#727 those jobs run on a PR head only when
+# its branch is dispatched, and that run still does not hold the merge; they run on the merged
+# tip, where `base` judges them (only the fleet-worker gate's `base --advisory-red` reads this
+# file, to launch over a red that is only in jobs it names, ludics-lite#651, and to judge its
+# interim by it, #659).
 # Read from the default branch: a PR's edit to this file applies only once that PR has merged.
 # Re-check it when the workflow's job names change. No required job may `needs:` either macOS job
 # (the boundary in SHIP_PR_ADVISORY_CHECKS's entry in pr-review.sh's usage text).
