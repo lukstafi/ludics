@@ -30,6 +30,7 @@ from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, warn
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.budget import pause
 from ludics.prreview.clock import Clock, FuncClock, age_of, fmt_age, freshest_age, newest
+from ludics.prreview.runners import HeadRun, Idle, Orphan, Recover, Stop, Wait, report_line, scan
 from ludics.prreview.shtext import herestring_lines, is_digits, placeholder, tab_fields
 from ludics.prreview.workflows import RecognitionLimits, Reads, head_within_paths_ignore
 
@@ -51,6 +52,7 @@ class GateConfig:
     stale_base: int | None  # None: `off`
     threads_page_cap: int
     limits: RecognitionLimits
+    never_started: int | None = 1200  # None: `off` (runners.py)
 
 
 def load_gate_config(env: Mapping[str, str]) -> GateConfig:
@@ -72,6 +74,7 @@ def load_gate_config(env: Mapping[str, str]) -> GateConfig:
             contents_dir_cap=knobs.private_int(env, knobs.ENV_CONTENTS_DIR_CAP, knobs.CONTENTS_DIR_CAP),
             ignore_max_commits=knobs.private_int(env, knobs.ENV_IGNORE_MAX_COMMITS, knobs.IGNORE_MAX_COMMITS),
         ),
+        never_started=knobs.never_started(env),
     )
 
 
@@ -143,6 +146,17 @@ class Gate:
     run_state: str = ""
     waive_mode: Literal["", "record", "apply"] = ""
     waived: set[str] = field(default_factory=lambda: set[str]())
+    # Jobs that never got a runner (runners.py, ludics-lite#560/#728): looked for only when
+    # ``orphans_on`` (``checks`` and ``merge``; ``base`` reads a merged head and leaves it off), on
+    # a round with no verdict. ``orphans`` is the last such round's finding. ``recover`` is
+    # ``merge --wait``'s one recovery (merge.py), given the round's orphans and runs: Stop ends the
+    # wait, Wait keeps it (to a later deadline, after a rerun), Idle leaves the round as it is.
+    # Without it, a round that finds one ends the wait: nothing it waits for moves until someone
+    # reruns the run.
+    orphans_on: bool = False
+    orphans: list[Orphan] = field(default_factory=lambda: list[Orphan]())
+    recover: Recover | None = None
+    _round_runs: list[HeadRun] | None = None
     _advisory: ere.Matcher | None = None
     _selected: ere.Matcher | None = None
 
@@ -398,17 +412,15 @@ class Gate:
         age = age_of(last, self.clock.time())
         return age is not None and age >= self.config.advisory_settle
 
-    def run_signal(self, sha: str, pr_at: str, checks: int, base_sha: str, head_ref: str, pr: str) -> RunSignal:
-        """``run_signal``: the head's workflow runs, read whenever the check fold leaves nothing to
-        wait for, and able to overrule it (see the shell's comment for every round)."""
-        repo = self.repo
-        waived_runs = ""
+    def read_runs(self, sha: str) -> str | None:
+        """The head's workflow runs, newest first, one projection row each; None when the read
+        failed. Kept for the round (``_round_runs``) for the orphan scan."""
         result = self.session.retry(
             "read",
             [
                 "api",
                 "--paginate",
-                f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
+                f"repos/{self.repo}/actions/runs?head_sha={sha}&per_page=100",
                 "--jq",
                 '.workflow_runs[] | [(.created_at // "-"), ((.id // 0) | tostring),\n'
                 "          ((.workflow_id // 0) | tostring),\n"
@@ -418,10 +430,40 @@ class Gate:
             ],
         )
         if not isinstance(result, GhOk):
+            return None
+        raw = newest_first_lines(result.stdout, 1, 2)
+        runs: list[HeadRun] = []
+        for line in herestring_lines(raw):
+            created, rid, wid, event, name, status, concl, _suite = tab_fields(line, 8)
+            if rid:
+                runs.append(HeadRun(rid, wid, event, name, status, concl, created))
+        self._round_runs = runs
+        return raw
+
+    def find_orphans(self, sha: str) -> list[Orphan]:
+        """The jobs of the head's runs that never got a runner (runners.py), read on a round with
+        no verdict; the run list is this round's when ``run_signal`` read it, else read here."""
+        if self._round_runs is None and self.read_runs(sha) is None:
+            return []
+        runs = self._round_runs or []
+
+        def wanted(name: str) -> bool:
+            return self.selects(name) if self.select else not self.is_advisory(name)
+
+        return scan(
+            self.session, self.repo, runs, self.clock.time(), self.config.never_started, self.is_advisory, wanted
+        )
+
+    def run_signal(self, sha: str, pr_at: str, checks: int, base_sha: str, head_ref: str, pr: str) -> RunSignal:
+        """``run_signal``: the head's workflow runs, read whenever the check fold leaves nothing to
+        wait for, and able to overrule it (see the shell's comment for every round)."""
+        repo = self.repo
+        waived_runs = ""
+        raw = self.read_runs(sha)
+        if raw is None:
             return RunSignal(
                 3, 0, waived_runs, f"the workflow runs for this head could not be read ({self.session.err_line()})"
             )
-        raw = newest_first_lines(result.stdout, 1, 2)
         self.run_state = " ".join(
             f"{f[1]}:{f[5]}:{f[6]}" for f in (tab_fields(line, 8) for line in herestring_lines(raw)) if f[1]
         )
@@ -597,6 +639,7 @@ class Gate:
                 started = budget.wait_from
         deadline = started + wait_for
         self.gate_base = ""
+        self.orphans = []
         self.waived = set()
         self.run_waived = 0
         self.check_waived = 0
@@ -618,6 +661,7 @@ class Gate:
             if budget is not None:
                 budget.waited = False
             self.run_state = ""
+            self._round_runs = None
             rows = self.build_checks(sha)
             if rows is None:
                 self.verdict = "unknown"
@@ -727,8 +771,35 @@ class Gate:
                     "verdict; check the name against `gh pr checks` and the ERE.",
                 )
                 return 2
+            # Jobs that never got a runner (runners.py): looked for after the head re-read above, so
+            # a moved head is 5 before ``recover`` writes anything. A round that finds one ends the
+            # wait, unless ``recover`` (merge --wait's one recovery) asks to keep waiting -- through
+            # a verdict the fold has stopped at (``mixed``) too, since the rerun is what it awaits.
+            keep = False
+            self.orphans = []
+            if self.orphans_on and self.verdict in ("pending", "unjudged", "mixed"):
+                self.orphans = self.find_orphans(sha)
+                for orphan in self.orphans:
+                    self.check_lines += report_line(orphan, repo, shlex.quote)
+                if self.recover is not None:
+                    step = self.recover(self.orphans, self._round_runs or [])
+                    match step:
+                        case Stop():
+                            break
+                        case Wait(until=until):
+                            keep = True
+                            if until > deadline:
+                                deadline = until
+                                if budget is not None:
+                                    budget.wait_until = until
+                        case Idle():
+                            pass
+                        case _:
+                            assert_never(step)
+                elif self.orphans:
+                    break
             now = self.clock.now()
-            if self.verdict not in ("pending", "unjudged"):
+            if self.verdict not in ("pending", "unjudged") and not keep:
                 break
             if now >= deadline:
                 break

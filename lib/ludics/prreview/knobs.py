@@ -105,6 +105,18 @@ def stale_base(env: Mapping[str, str]) -> int | None:
     return int(text)
 
 
+def never_started(env: Mapping[str, str]) -> int | None:
+    """NEVER_STARTED (SHIP_PR_NEVER_STARTED, 1200): seconds a build job may sit queued before,
+    with a newer run's job on the same labels started, it reads as NEVER STARTED (runners.py);
+    None for ``off``."""
+    text = _set_or(env, "SHIP_PR_NEVER_STARTED", "1200")
+    if text == "off":
+        return None
+    if not is_digits(text):
+        die(f"SHIP_PR_NEVER_STARTED must be whole seconds or 'off', got '{text}'")
+    return int(text)
+
+
 def build_advisory(env: Mapping[str, str]) -> str:
     """BUILD_ADVISORY as the shell resolved it: the forward's value when there is one (which may
     have come from the repository's advisory file), else SHIP_PR_ADVISORY_CHECKS or the default."""

@@ -18,7 +18,10 @@ review round:
   over REST.
 
 Exit: 0 merged; 1 refused (red, a moved head, a real conflict, an open thread, a deferred merge);
-2 usage; 3 something that decides it could not be read; 4 no verdict; 5 the head was superseded.
+2 usage; 3 something that decides it could not be read; 4 no verdict; 5 the head was superseded;
+6 no verdict because a build job never got a runner (runners.py: NO RUNNER, NEVER STARTED), and the
+one recovery ``--wait`` makes per head run (``Recovery``) is spent or failed, or there was no wait
+to make it in -- the refusal names the commands. ``--allow-no-verdict`` still merges it unread.
 """
 
 import os
@@ -26,7 +29,7 @@ import re
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import assert_never
+from typing import Literal, assert_never
 
 from ludics import cli
 from ludics.prreview.checks import parse_wait
@@ -48,6 +51,18 @@ from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, load_gate_config
 from ludics.prreview.mergebuild import merge_build
+from ludics.prreview.runners import (
+    HeadRun,
+    Idle,
+    Orphan,
+    Step,
+    Stop,
+    Wait,
+    cancel_command,
+    read_jobs,
+    recovery_text,
+    rerun_command,
+)
 from ludics.prreview.shtext import tab_fields
 from ludics.prreview.threads import merge_threads_gate
 
@@ -128,6 +143,152 @@ def parse(args: list[str], config: GateConfig) -> Options:
     return opts
 
 
+@dataclass
+class _Recovered:
+    """What the recovery did to one head run: ``cancel`` (a NEVER STARTED, the rerun still to
+    come) or ``rerun``; the attempt it acted on; and when (the clock's seconds)."""
+
+    action: Literal["cancel", "rerun"]
+    attempt: int | None
+    at: int
+
+
+class Recovery:
+    """``merge --wait``'s one recovery per head run per wait, from a job that never got a runner
+    (runners.py; ludics-lite#560, #728). Its writes are the only ones it makes, both on a run of
+    the gated head, each recorded BEFORE it is sent so an ambiguous one is never sent again:
+
+    - NO RUNNER: ``gh run rerun <id> --failed``, and the wait's deadline moves to at least
+      ``now + wait`` -- the rerun gets the budget the first run had.
+    - NEVER STARTED: the job re-read still ``queued``, then ``gh run cancel <id>``; on a later round
+      that sees the run completed, the rerun as above. A cancel that has not completed the run within
+      ``TRANSITION`` seconds ends the wait.
+    - After a rerun, a job of the run that again never got a runner on a LATER attempt is the second
+      occurrence: the wait ends. Jobs still of the attempt that was rerun are the API showing the
+      old attempt, ignored for ``TRANSITION`` seconds, after which the rerun did not take and the
+      wait ends too.
+
+    Before each write the PR head is re-read: a head that moved is ``superseded`` (5), and nothing
+    is written; one that could not be re-read is ``unread`` (3). Every other end leaves ``why`` and
+    ``commands`` for merge's exit 6."""
+
+    TRANSITION = 300
+
+    def __init__(self, session: GhSession, repo: str, num: str, gate: Gate, clock: Clock, wait_for: int) -> None:
+        self.session = session
+        self.repo = repo
+        self.num = num
+        self.gate = gate
+        self.clock = clock
+        self.wait_for = wait_for
+        self.done: dict[str, _Recovered] = {}
+        self.why = ""
+        self.commands: list[str] = []
+        self.superseded = ""
+        self.unread = False
+
+    def stop(self, why: str, *commands: str) -> Stop:
+        self.why = why
+        self.commands = list(commands)
+        return Stop()
+
+    def head_moved(self) -> bool:
+        read = self.session.retry("read", ["api", f"repos/{self.repo}/pulls/{self.num}", "--jq", '.head.sha // "-"'])
+        if not isinstance(read, GhOk) or read.stdout in ("", "-"):
+            self.why = f"the PR head could not be re-read before the recovery's write ({self.session.err_line()})"
+            self.unread = True
+            return True
+        if read.stdout != self.gate.check_sha:
+            self.superseded = read.stdout
+            return True
+        return False
+
+    def write(self, rid: str, action: Literal["cancel", "rerun"], attempt: int | None, now: int) -> bool:
+        """Record, then send, one write; False (with ``why``) when it was not sent or failed."""
+        if self.head_moved():
+            return False
+        self.done[rid] = _Recovered(action, attempt, now)
+        args = ["run", "cancel", rid, "--repo", self.repo] if action == "cancel" else \
+            ["run", "rerun", rid, "--failed", "--repo", self.repo]
+        command = cancel_command(rid, self.repo) if action == "cancel" else rerun_command(rid, self.repo)
+        warn(f"{self.repo}#{self.num}: run {rid}: a build job never got a runner; recovering once: {command}")
+        result = self.session.retry("write", args)
+        if isinstance(result, GhOk):
+            return True
+        unclear = isinstance(result, GhUnanswered)
+        self.why = (
+            f"`{command}` failed ({self.session.err_line()})"
+            + ("; it may have landed — read `gh run view " + rid + f" --repo {self.repo}` before repeating it" if unclear else "")
+        )
+        self.commands = [command] if action == "rerun" else [command, rerun_command(rid, self.repo)]
+        return False
+
+    def still_queued(self, rid: str, jid: str) -> bool:
+        jobs = read_jobs(self.session, self.repo, rid)
+        return jobs is not None and any(j.jid == jid and j.status == "queued" for j in jobs)
+
+    def __call__(self, orphans: list[Orphan], runs: list[HeadRun]) -> Step:
+        now = self.clock.now()
+        until = 0
+        acted = False
+        by_run: dict[str, Orphan] = {}
+        for orphan in orphans:
+            by_run.setdefault(orphan.rid, orphan)
+        for rid, orphan in by_run.items():
+            done = self.done.get(rid)
+            attempt = orphan.job.attempt
+            if done is None:
+                acted = True
+                if orphan.kind == "never-started":
+                    if not self.still_queued(rid, orphan.job.jid):
+                        continue
+                    if not self.write(rid, "cancel", attempt, now):
+                        return Stop()
+                    continue
+                if not self.write(rid, "rerun", attempt, now):
+                    return Stop()
+                until = max(until, now + self.wait_for)
+            elif done.action == "cancel" and orphan.kind == "no-runner":
+                acted = True
+                if not self.write(rid, "rerun", done.attempt, now):
+                    return Stop()
+                until = max(until, now + self.wait_for)
+            elif done.action == "rerun" and attempt is not None and done.attempt is not None and attempt > done.attempt:
+                return self.stop(
+                    f"run {rid} got no runner again on its rerun (attempt {attempt}): the one recovery this wait"
+                    " makes per run is spent",
+                    rerun_command(rid, self.repo),
+                    rerun_command(rid, self.repo, failed=False),
+                )
+            elif now - done.at >= self.TRANSITION:
+                return self.stop(
+                    f"run {rid} still shows the job that never got a runner {(now - done.at) // 60} min after"
+                    f" its {done.action}, which did not take",
+                    *([cancel_command(rid, self.repo)] if done.action == "cancel" else []),
+                    rerun_command(rid, self.repo),
+                )
+            else:
+                acted = True
+        # A cancelled run whose job did read as started after all (a runner took it between the
+        # re-read and the cancel) is no NO RUNNER, but it was stopped by this recovery: rerun it.
+        for run in runs:
+            done = self.done.get(run.rid)
+            if done is None or done.action != "cancel" or run.rid in by_run:
+                continue
+            acted = True
+            if run.status == "completed":
+                if not self.write(run.rid, "rerun", done.attempt, now):
+                    return Stop()
+                until = max(until, now + self.wait_for)
+            elif now - done.at >= self.TRANSITION:
+                return self.stop(
+                    f"run {run.rid} is still in flight {(now - done.at) // 60} min after its cancel",
+                    cancel_command(run.rid, self.repo),
+                    rerun_command(run.rid, self.repo),
+                )
+        return Wait(until) if acted else Idle()
+
+
 class Merge:
     def __init__(
         self, session: GhSession, repo: str, num: str, config: GateConfig, clock: Clock, opts: Options
@@ -138,7 +299,10 @@ class Merge:
         self.config = config
         self.clock = clock
         self.opts = opts
-        self.gate = Gate(session, repo, config, clock)
+        self.gate = Gate(session, repo, config, clock, orphans_on=True)
+        # The one recovery from a job that never got a runner, under --wait only: a merge that does
+        # not wait does not rerun (runners.py; Recovery above).
+        self.recovery = Recovery(session, repo, num, self.gate, clock, opts.wait_for)
         self.multi = MultiClose(session, repo)
         self.series = SeriesClose(session, repo)
         # What the merge goes over (--override's waived red, --allow-no-verdict's unread signal):
@@ -338,13 +502,31 @@ class Merge:
     def judge(self) -> None:
         """The gate's verdict, and every refusal the merge makes on it."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
+        # The recovery rides on this wait alone; a re-gate after it (absent_base_holds) writes nothing.
+        gate.recover = self.recovery if opts.wait_for > 0 else None
         rc = gate.check(pr, opts.wait_for, waive=bool(opts.override))
+        gate.recover = None
         # The gate's verdict is about the moment of its last round. Nothing after it waits a quota
         # hold out: a read here during one is 3, so the merge never lands on a verdict the wait made
         # old (the polling budget, budget.py).
         if self.session.budget is not None:
             self.session.budget.wait_until = None
         waived = gate.check_waived + gate.run_waived
+        recovery = self.recovery
+        if recovery.superseded:
+            fail(
+                5,
+                f"NOT merging {repo}#{pr}: the head moved ({gate.check_sha[:8]} -> {recovery.superseded[:8]})",
+                "before the rerun of a job that never got a runner was sent; nothing was written. Re-run merge",
+                "to judge the new head.",
+            )
+        if recovery.unread:
+            fail(
+                3,
+                f"NOT merging {repo}#{pr}: {recovery.why}; nothing was written. Retry.",
+            )
+        if rc == 4 and (gate.orphans or recovery.why) and not opts.allow_no_verdict:
+            self.refuse_no_runner()
         match rc:
             case 1:
                 if opts.override and gate.verdict == "waived":
@@ -433,6 +615,28 @@ class Merge:
                 "filters), get one onto it (gh workflow run) or hand the merge to the maintainer with",
                 "the record; a close-out merge is never made by dropping --require-green.",
             )
+
+    def refuse_no_runner(self) -> None:
+        """Exit 6: no verdict because a build job never got a runner (runners.py), and the one
+        recovery is spent, failed, or -- without --wait -- not made. Names the commands."""
+        repo, pr, recovery = self.repo, self.num, self.recovery
+        commands = list(recovery.commands)
+        for orphan in self.gate.orphans:
+            text = recovery_text(orphan, repo)
+            if text not in commands and not any(text.startswith(c) for c in commands):
+                commands.append(text)
+        if recovery.why:
+            why = recovery.why
+        elif self.opts.wait_for > 0:
+            why = "the wait ended on it"
+        else:
+            why = "merge reruns a run only under --wait"
+        fail(
+            6,
+            f"NOT merging {repo}#{pr}: a build job never got a runner (NO RUNNER / NEVER STARTED, listed above) —",
+            f"{why}. No verdict comes of it until the run is re-run. By hand: {'; '.join(commands)};",
+            "then merge again (--wait). --allow-no-verdict merges without the verdict instead.",
+        )
 
     def merge_call(self) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
