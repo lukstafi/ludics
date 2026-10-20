@@ -58,18 +58,21 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    3). For `paired+critique`, after `rc=0`:
 
    ```bash
-   ~/.claude/skills/issue-wave/scripts/peer-plan.sh critique <plan-dir> --plan <plan-dir>/claude-plan.md
+   ~/.claude/skills/issue-wave/scripts/peer-plan.sh critique <plan-dir> --plan <plan-dir>/claude-plan.md [--managed]
    ```
 
-   and wait on the run directory it prints the same way.
+   and wait on the run directory it prints the same way. A coordinator that started the plan
+   with `--managed` passes it here too, and runs `bg-run.sh start <run> -- peer-plan.sh _run
+   critique <plan-dir>` in a managed session, as for the plan.
 3. **Resume the worker** (SendMessage for a native worker, `unstick <box> <name> --message <file>`
    for a CLI one) with `PEER_PLAN`, followed by `<plan-dir>/astra-plan.md` verbatim, and for
    `paired+critique` `PEER_CRITIQUE`, followed by `<plan-dir>/critique.md` verbatim. A run that
    ends other than `rc=0` is not retried. Resume with `PEER_PLAN_UNAVAILABLE <the verdict and
    the run's log tail>`, or with the plan and `PEER_CRITIQUE_UNAVAILABLE <...>`. The worker then
    goes on without the missing piece and says so in its plan comment. A planner that is still
-   running 30 minutes after `PLAN_READY` is stopped (`bg-run.sh stop <run>`) and counts as
-   unavailable.
+   running 30 minutes after `PLAN_READY` is stopped and counts as unavailable. Stop a spawned
+   run with `bg-run.sh stop <run>`. A `--managed` run shares the managed session's process group,
+   which `stop` refuses, so end that session through the runtime by the session ID it kept.
 4. **`PLAN_ESCALATION`**: the worker found a disagreement the user owns. Ask it as a tier-3
    question with the worker's recommendation first, and resume the worker with the answer.
 5. **Clean up** once the worker has resumed: `peer-plan.sh clean <plan-dir>` removes the
