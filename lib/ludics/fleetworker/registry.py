@@ -155,6 +155,20 @@ concluded record answers its identical retry before this check, so a record conc
 existed keeps its retries. `execution leg` reads the same function, so it refuses to run what the
 registry would refuse to record.
 
+THE CHECKOUT (ludics-lite#731): the one checkout a record's `--observed-from` conclusion may read,
+`checkout`, an absolute path on the execution host (POSIX, or a drive letter). A reserve, run or
+window payload may carry it BESIDE the request -- removed from the request, as `run` removes
+`evidence` -- and the record keeps it as a top-level field, fixed for the record's life (in its
+reserve history event too). It is never a request field: every caller ships its own copy of this
+module and validates the whole ledger with it, and an older copy refuses a request field it does
+not know, which would refuse every record to every box whose checkout lags, while it ignores a
+top-level field. A NEW standing request must carry it (a standing record is concluded at its
+worker's hand-back with `--observed-from`, and on 2026-10-18 one was concluded off another worker's
+worktree); any other request may. A retried reserve or run names the same checkout, or none if the
+record has none, or is refused. `remote_checkout` is not it: that is the evidence's own field, which
+any record, reconcile or conclude payload rewrites. What reads it is fleet-worker's near side
+(`execution.observed_sha_of`); this module only records it.
+
 A request's `issue` is optional (ludics-lite#664): the one issue the work is for, spelled exactly
 `owner/name#N` -- `fleet-worker.sh prs --wave` reads it as one -- or absent, for work with no issue of
 its own (a post-wave task, an integration run), whose label goes in `purpose`. A placeholder that
@@ -293,6 +307,16 @@ def validate_request(data: Any) -> None:
             refuse("only a coordinator's non-standing correctness reservation can be an integration run")
 
 
+ABSOLUTE = re.compile(r"/|[A-Za-z]:[/\\]")
+
+
+def checkout_ok(value: Any) -> str:
+    """THE CHECKOUT's shape (see the header): a nonempty string, absolute as POSIX or as a drive letter."""
+    if not isinstance(value, str) or not value.strip() or not ABSOLUTE.match(value):
+        refuse(f"checkout {json.dumps(value)} must be an absolute path on the execution host (POSIX, or a drive letter)")
+    return value
+
+
 def check_issue(request: Record) -> None:
     """A NEW request's `issue` (see the header): absent, or one issue spelled `owner/name#N`."""
     if "issue" in request and not ISSUE.fullmatch(request["issue"]):
@@ -321,6 +345,11 @@ def validate_record(data: Any, path: Path) -> Record:
     for key in ("remote_checkout", "handle", "log", "observed_sha", "verdict", "halt_identity"):
         if key in record:
             nonempty(record, [key])
+    if "checkout" in record:
+        try:
+            checkout_ok(record["checkout"])
+        except ValueError:
+            refuse(f"invalid checkout: {path}")
     if "observed_sha" in record and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", record["observed_sha"]):
         refuse(f"invalid observed SHA: {path}")
     if "resolved_revision" in record and not (isinstance(record["resolved_revision"], str)
@@ -681,11 +710,15 @@ def main(argv: list[str]) -> None:
         # optional `evidence` for the dispatch step (ludics-lite: four calls per execution
         # were a third of a coordinator's tool calls on 2026-09-15). `window` is `run` for a
         # measurement that suspends its box's standing records (see the header).
-        request = data
+        # THE CHECKOUT (see the header): beside the request, never in it.
+        checkout = data.get("checkout")
+        if "checkout" in data:
+            checkout_ok(checkout)
+        request = {k: v for k, v in data.items() if k != "checkout"}
         dispatch_evidence = ("measurement window opened: reserved and dispatched in one step (execution window)"
                              if action == "window" else "reserved and dispatched in one step (execution run)")
         if action in {"run", "window"}:
-            request = {k: v for k, v in data.items() if k not in {"evidence", "resolved_revision"}}
+            request = {k: v for k, v in request.items() if k not in {"evidence", "resolved_revision"}}
             if "evidence" in data:
                 nonempty(data, ["evidence"])
                 dispatch_evidence = data["evidence"]
@@ -702,6 +735,9 @@ def main(argv: list[str]) -> None:
         if record:
             if record["request"] != request:
                 refuse("request_id already names a different assignment")
+            if record.get("checkout") != checkout:
+                refuse(f"request_id already names a different checkout ({json.dumps(record.get('checkout'))});"
+                       f" a reservation's checkout is fixed when it is taken")
             if action == "reserve":
                 sync_directory(directory.parent)
                 sync_directory(directory)
@@ -729,6 +765,9 @@ def main(argv: list[str]) -> None:
                     check_lane_lock(record["request"]["execution_host"], map_spec, anchor, lab)
         else:
             check_issue(request)
+            if request.get("standing") and checkout is None:
+                refuse("a standing reservation must name its checkout: \"checkout\": the worker's worktree, absolute on "
+                       "the execution host, which its hand-back's --observed-from must be (ludics-lite#731)")
             halted = halt_identity is not None
             if "triage_reason" in request and not halted:
                 refuse("triage reservations require an active halt")
@@ -752,7 +791,9 @@ def main(argv: list[str]) -> None:
                 record["halt_identity"] = halt_identity
             if action == "window":
                 record["window"] = True
-            events.append(("reserve", request))
+            if checkout is not None:
+                record["checkout"] = checkout
+            events.append(("reserve", request if checkout is None else {**request, "checkout": checkout}))
         if dispatch:
             triage = record["request"].get("triage_reason")
             if triage and (halt_identity is None or halt_generation(record.get("halt_identity")) != halt_identity):

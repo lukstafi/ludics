@@ -21,6 +21,21 @@ each form's refusals are Python's (ludics-lite#657).
 Every commit a payload names is checked before the anchor is asked (ludics-lite#561): what is read,
 where, and the outcomes are ``ludics.fleetworker.revision``'s header.
 
+THE CHECKOUT (ludics-lite#731): every form that takes ``--observed-from`` (plain ``conclude``,
+``--from-bg-run``, ``--standing-handback``) reads it only when it is the record's own ``checkout``
+(``registry.py``'s THE CHECKOUT), checked in ``observed_sha_of`` before anything is read on the box,
+for a concluded record too. The boundary, fail-closed within it: the comparison is lexical, byte-equal
+once trailing ``/`` or ``\\`` are dropped -- no symlink is resolved, no case folded, no filesystem
+read, so another spelling of the same directory is refused, naming the recorded one. The checkout's
+echoes in the same call must agree with it: a plain payload's ``remote_checkout``, and
+``--from-bg-run``'s ``--checkout``. What is admitted is written as the record spells it, so a retry
+spelled otherwise composes the same payload. Nothing else is checked: ``--from-run``'s recorded ``wt``,
+``--from-bg-run --checkout`` without ``--observed-from``, ``execution leg --worktree``. A record that
+names no checkout (reserved before #731, or a non-standing request that gave none) is concluded, its
+evidence saying ``--observed-from unchecked``; so a conclusion that landed before #731 without that
+note, retried after it, composes another payload and meets the registry's "already concluded".
+A caller on an older checkout ships its older near side, which checks nothing.
+
 THE CO-TENANT EVIDENCE (ludics-lite#566): a conclusion of a MEASUREMENT, in any of its forms,
 gets a summary of the GPU co-tenant record its ``execution hold --request`` left on the execution
 host (``cotenants.py``) appended to its evidence, read there by ``GPU_RECORD``. Nothing else is read,
@@ -559,8 +574,9 @@ def standing_run_clause(facts: dict[str, str], run_dir: str, host: str) -> tuple
     return verdict, clause
 
 
-def handback_lead(evidence: str, checkout: str, host: str) -> str:
-    return f"{evidence}; standing hand-back, observed_sha read as HEAD of {checkout} on {host}"
+def handback_lead(evidence: str, checkout: str, host: str, unchecked: str = "") -> str:
+    """A hand-back's evidence lead; ``unchecked`` is THE CHECKOUT's note for a record naming none."""
+    return f"{evidence}; standing hand-back, observed_sha read as HEAD of {checkout} on {host}{unchecked}"
 
 
 def handback_handle(request: str, run_dir: str) -> tuple[str, str]:
@@ -580,17 +596,19 @@ def recorded_handback(
     fields = {"request_id": request, "handle": handle, "log": log, "remote_checkout": checkout}
     if verdict:
         fields["verdict"] = verdict
-    lead = handback_lead(evidence, checkout, host) + "; "
+    lead = handback_lead(evidence, checkout, host, unchecked_clause(record)) + "; "
     landed = retried(record, fields, lambda said: said.startswith(lead))
     return None if landed is None else json.dumps(landed, separators=(",", ":"), ensure_ascii=False)
 
 
 def standing_handback(
-    request: str, host: str, checkout: str, head: str, evidence: str, verdict: str, run: tuple[str, str] | None
+    request: str, host: str, checkout: str, head: str, evidence: str, verdict: str, run: tuple[str, str] | None,
+    unchecked: str = "",
 ) -> str:
     """The payload of ``conclude --standing-handback``: ``run`` is the record's directory and
-    evidence clause, or None when the hand-back's own verdict stands alone."""
-    evidence = handback_lead(evidence, checkout, host)
+    evidence clause, or None when the hand-back's own verdict stands alone; ``unchecked`` is THE
+    CHECKOUT's note for a record naming none."""
+    evidence = handback_lead(evidence, checkout, host, unchecked)
     handle, log = handback_handle(request, run[0] if run else "")
     if run is None:
         evidence += f"; verdict {verdict} as the worker's hand-back reports it, no run record named"
@@ -667,10 +685,52 @@ def retried(
     return landed
 
 
+def same_checkout(a: str, b: str) -> bool:
+    """THE CHECKOUT's comparison: byte-equal once trailing separators are dropped, nothing else."""
+    return a.rstrip("/\\") == b.rstrip("/\\")
+
+
+def recorded_checkout(record: dict[str, Any]) -> str:
+    """The record's checkout (registry.py's THE CHECKOUT), or '' when it names none."""
+    bound = record.get("checkout")
+    return bound if isinstance(bound, str) else ""
+
+
+def checkout_refusal(record: dict[str, Any], host: str, checkout: str) -> Refusal | None:
+    """THE CHECKOUT (the header): ``--observed-from`` must be the record's own checkout, when it names one."""
+    bound = recorded_checkout(record)
+    if not bound or same_checkout(bound, checkout):
+        return None
+    return Refusal(
+        f"EXECUTION REFUSED: --observed-from {checkout} is not {jq_text(record.get('request_id'))}'s recorded"
+        f" checkout {bound} on {host} (ludics-lite#731: a conclusion reads its own worker's checkout); nothing concluded",
+        1,
+    )
+
+
+def spelled(record: dict[str, Any], checkout: str) -> str:
+    """THE CHECKOUT's one spelling: an admitted ``checkout`` is written as the record spells it, so
+    a retry spelled with another trailing separator composes the same payload."""
+    return recorded_checkout(record) or checkout
+
+
+def unchecked_clause(record: dict[str, Any]) -> str:
+    """THE CHECKOUT's note for a record that names none: '' when it names one."""
+    if recorded_checkout(record):
+        return ""
+    return (f", --observed-from unchecked: {jq_text(record.get('request_id'))} records no checkout"
+            " (reserved before ludics-lite#731, or none given)")
+
+
 def observed_sha_of(cfg: Config, record: dict[str, Any], host: str, checkout: str) -> str | Refusal:
-    """``--observed-from``'s SHA. THE RETRY RULE with no further check: the observed_sha the landed
-    conclusion names stands, so a retry composes the same payload even once the checkout has moved
-    on or been removed, and any other payload meets the registry's "already concluded" refusal."""
+    """``--observed-from``'s SHA, once THE CHECKOUT admits ``checkout`` (before anything is read, and
+    for a concluded record too: the landed conclusion passed the same check). Then THE RETRY RULE with
+    no further check: the observed_sha the landed conclusion names stands, so a retry composes the
+    same payload even once the checkout has moved on or been removed, and any other payload meets
+    the registry's "already concluded" refusal."""
+    refused = checkout_refusal(record, host, checkout)
+    if refused is not None:
+        return refused
     landed = retried(record)
     recorded = None if landed is None else landed.get("observed_sha")
     if isinstance(recorded, str) and recorded:
@@ -976,19 +1036,28 @@ def checked_evidence(cfg: Config, text: str, observed_from: str, action: str) ->
         if isinstance(head, Refusal):
             concluded(head)
             return text
+        observed_from = spelled(record, observed_from)
         if "observed_sha" in data and sha != head:
             cli.say(
                 f"EXECUTION REFUSED: the payload's observed_sha {jq_text(sha)} is not HEAD {head} of"
                 f" {observed_from} on {host}; drop it and let --observed-from record the checkout's"
             )
             raise cli.Exit(1)
+        named = data.get("remote_checkout")
+        if "remote_checkout" in data and not (isinstance(named, str) and same_checkout(named, observed_from)):
+            # THE CHECKOUT: the evidence names the checkout it was read off, not another.
+            cli.say(
+                f"EXECUTION REFUSED: the payload's remote_checkout {jq_text(named)} is not --observed-from"
+                f" {observed_from}; drop it and let --observed-from record the checkout; nothing concluded"
+            )
+            raise cli.Exit(1)
         # Read off a checkout, the SHA has no typo, but the checkout may be another repository's.
         if checking:
             fail(revision.commit_refusal(repo, "observed_sha", head, gh_timeout(cfg)))
         data["observed_sha"] = head
-        data.setdefault("remote_checkout", observed_from)
+        data["remote_checkout"] = observed_from  # what the check above admitted, in its one spelling
         if isinstance(data.get("evidence"), str) and data["evidence"].strip():
-            data["evidence"] += f"; observed_sha read as HEAD of {observed_from} on {host}"
+            data["evidence"] += f"; observed_sha read as HEAD of {observed_from} on {host}{unchecked_clause(record)}"
         return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
     if checking and shaped:
         fail(revision.commit_refusal(repo, "observed_sha", cast(str, sha), gh_timeout(cfg)))
@@ -1161,16 +1230,24 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
         head = observed_sha_of(cfg, record, host, observed_from)
         if isinstance(head, Refusal):
             return concluded(head)
+        observed_from = spelled(record, observed_from)
         if sha and sha != head:
             cli.say(f"EXECUTION REFUSED: --sha {sha} is not HEAD {head} of {observed_from} on {host}; give one of them")
             raise cli.Exit(1)
-        sha, source, what = head, f"read as HEAD of {observed_from} on {host}", "observed_sha"
+        named = values.get("--checkout", "")
+        if named and not same_checkout(named, observed_from):
+            # THE CHECKOUT: the evidence names the checkout it was read off, not another.
+            cli.say(f"EXECUTION REFUSED: --checkout {named} is not --observed-from {observed_from}; give one of them;"
+                    " nothing concluded")
+            raise cli.Exit(1)
+        sha, what = head, "observed_sha"
+        source = f"read as HEAD of {observed_from} on {host}{unchecked_clause(record)}"
     if record.get("state") != "concluded":
         fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), what, sha, gh_timeout(cfg)))
     # Without --checkout the record's own checkout is restated, or the placeholder when it has none
     # -- always spelled out in the payload, so a retry of a conclusion whose answer was lost
     # composes the same payload and meets the registry's identical-retry rule.
-    checkout = values.get("--checkout", "") or observed_from
+    checkout = observed_from or values.get("--checkout", "")  # an admitted --checkout is --observed-from
     if not checkout:
         recorded = record.get("remote_checkout")
         checkout = "" if recorded is None or recorded is False else jq_text(recorded)
@@ -1237,6 +1314,7 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
     head = observed_sha_of(cfg, record, host, observed_from)
     if isinstance(head, Refusal):
         return concluded(head)
+    observed_from = spelled(record, observed_from)
     if record.get("state") != "concluded":
         fail(revision.commit_refusal(jq_text(field(record, "request", "repository")), "observed_sha", head, gh_timeout(cfg)))
     again = recorded_handback(record, request, observed_from, host, evidence, run_dir, verdict)
@@ -1257,7 +1335,7 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
             )
             raise cli.Exit(1)
         verdict, run = read[0], (run_dir, read[1])
-    return standing_handback(request, host, observed_from, head, evidence, verdict, run)
+    return standing_handback(request, host, observed_from, head, evidence, verdict, run, unchecked_clause(record))
 
 
 def concluded(conclusion: Conclusion) -> str:

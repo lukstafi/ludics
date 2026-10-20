@@ -92,7 +92,8 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
 
 1. **Standing reservation, at launch.** The coordinator takes one `kind: correctness`,
    `"standing": true` reservation per worker on its agent host with `fleet-worker.sh execution
-   run` (request id `<wave>-<issue>-<host>-iterate`; see [executions.md](executions.md)) and
+   run` (request id `<wave>-<issue>-<host>-iterate`, its payload's `checkout` the worker's
+   worktree; see [executions.md](executions.md#standing-iteration-reservation)) and
    names it in the brief, and by default one more on the task's GPU home box
    ([executions.md](executions.md#the-gpu-home-box) says when, and the batch's `execution leg` form). It
    pre-authorizes the worker's own targeted test batches there -
@@ -134,7 +135,8 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    queue: the coordinator assigns them one at a time, in order, each after the previous one's
    result is concluded, so a resumed worker holds one assignment and owes one result line.
 3. **Assign.** The coordinator completes the reservation (wave, worker, `transport:
-   "subagent"`, agent host, repository, issue, purpose - the request supplies the rest), runs
+   "subagent"`, agent host, repository, issue, purpose - the request supplies the rest, its
+   `checkout` kept beside the request as the record's), runs
    `execution run <reserve.json>` - or, for a measurement on a box where workers hold standing
    reservations, `execution window <box> <reserve.json>`, batching the box's pending
    measurements as [executions.md](executions.md#exclusivity-and-the-run-time-slots) says - and

@@ -722,7 +722,8 @@ A worker's own targeted correctness batches on its agent host, and on its GPU ho
 ([below](#the-gpu-home-box)), do not each need a request. The
 coordinator takes one `kind: correctness` reservation per worker at launch (`execution run`,
 request id `<wave>-<issue>-<host>-iterate`, `"standing": true`, purpose naming the bounded
-aliases and `-j` width) and names it in the brief; the worker then runs those batches through
+aliases and `-j` width, and beside the request the payload's `"checkout"`: the worker's worktree,
+absolute on the execution host) and names it in the brief; the worker then runs those batches through
 the project runner without asking, blocks on each inside its turn, and reports every run
 directory. Measurement, one-off cross-box legs and full suites still go through a request.
 
@@ -733,6 +734,13 @@ fleet-worker.sh execution conclude --standing-handback --request <id> --observed
   --evidence <the hand-back's words> [--from-run <the last batch's run dir>] [--verdict pass|fail|timeout|cancelled]
 ```
 
+`--observed-from` must be the checkout the reservation names (#731: on 2026-10-18 a standing
+record was concluded off another worker's worktree). A new standing reservation without a
+`checkout` is refused; any other request may name one too, and every `--observed-from` form (plain
+`conclude`, `--from-bg-run`, `--standing-handback`) refuses a path that is not it, lexically, before
+reading anything, naming the recorded one. A record that names none (reserved before #731) is
+concluded with `--observed-from unchecked` in its evidence. The mechanism and its boundary are
+`lib/ludics/fleetworker/registry.py`'s and `execution.py`'s THE CHECKOUT.
 `observed_sha` is that checkout's HEAD, read on the execution host and checked on GitHub like any
 conclusion's (so conclude after the push), never a SHA copied from the report, and it is not bound
 to `requested_revision` (standing records are exempt, #634). With `--from-run` the verdict is the
@@ -773,7 +781,7 @@ reservation taken while a window is open is admitted suspended, and restored wit
 ### The GPU home box
 
 By default the coordinator takes a second standing reservation at launch, beside the agent-host
-one, on the task's GPU box whenever the plan homes the task there or names a GPU iteration leg
+one, its `checkout` the far-side worktree, on the task's GPU box whenever the plan homes the task there or names a GPU iteration leg
 for it: one per such box, request id `<wave>-<issue>-<box>-iterate`, the agent host still the
 worker's (ludics-lite#621). A GPU box that IS the agent host (a CLI worker resident there) takes
 no second one: its agent-host reservation already has that id and covers the batches, run
