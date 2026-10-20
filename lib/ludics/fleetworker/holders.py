@@ -91,10 +91,14 @@ open, marked inheritable, so the taker's tree has it open too; the rest are inst
 flock, whose pid is the reader's own and is excluded. So a recorded pid in the set is the holder or
 a tester that is the holder itself: confirmed. A set that lacks it is unconfirmed, and its pids are
 reported as the file's openers, never as the lock's holder (which one holds it is not read). The
-negative read needs the recorded pid's descriptors to be visible here, which only the signal-0
-permission test says (``os.kill(pid, 0)``; it gates the negative, it never confirms): a pid that
-is another user's process is ``unknown`` (neither /proc nor a non-root ``lsof`` shows its
-descriptors), and a pid no process has is unconfirmed (nothing has it open). ``unknown`` is also a
+negative read needs the recorded pid's descriptors to be visible here: a pid whose
+``/proc/<pid>/fd`` cannot be read (another user's, or a non-dumpable process of this user's) is
+``unknown``, and so, by the signal-0 permission test (``os.kill(pid, 0)``; it gates the negative,
+it never confirms), is a pid that is another user's process (a non-root ``lsof`` does not show its
+descriptors, nor a ``hidepid`` /proc its entry); a pid no process has is unconfirmed (nothing has
+it open). ``lsof -t`` does not say which processes it could not inspect, so its negative read
+rests on the signal-0 test alone: a process of this user's it could not inspect is a boundary of
+this reader, read as not having the file open. ``unknown`` is also a
 reader that cannot answer: ``lsof`` not found, timed out, or failed (each said); it is never read
 as confirmed. Not read: ``ps``, the record's ``started`` against any process's start time, any
 file but the slot file.
@@ -246,24 +250,28 @@ def visibility(pid: int) -> str:
     return "mine"
 
 
-def proc_openers(path: str, proc: str) -> set[int]:
-    """The pids one of whose ``<proc>/<pid>/fd`` links reads as ``path``'s real path: a readlink,
-    which never touches the target (a stat of a link to a hung mount would hang). A process whose
-    descriptors are not readable here, or that sees the file under another path (another mount
-    namespace), is not among them."""
+def proc_openers(path: str, proc: str) -> tuple[set[int], set[int]]:
+    """The pids one of whose ``<proc>/<pid>/fd`` links reads as ``path``'s real path -- a readlink,
+    which never touches the target (a stat of a link to a hung mount would hang) -- and the pids
+    whose descriptors could not be read (another user's, or a non-dumpable one of this user's). A
+    process that sees the file under another path (another mount namespace) is not among them."""
     target = os.path.realpath(path)
     found: set[int] = set()
+    unreadable: set[int] = set()
     try:
         names = os.listdir(proc)
     except OSError:
-        return found
+        return found, unreadable
     for name in names:
         if not (name.isdecimal() and name.isascii()):
             continue
         directory = os.path.join(proc, name, "fd")
         try:
             descriptors = os.listdir(directory)
-        except OSError:  # another user's, or gone
+        except PermissionError:
+            unreadable.add(int(name))
+            continue
+        except OSError:  # gone
             continue
         for descriptor in descriptors:
             try:
@@ -272,7 +280,7 @@ def proc_openers(path: str, proc: str) -> set[int]:
                     break
             except OSError:
                 continue
-    return found
+    return found, unreadable
 
 
 def lsof_openers(path: str, run: cotenants.Runner) -> set[int] | str:
@@ -302,9 +310,11 @@ def confirm(path: str, pid: int, table: list[Holder] | None, run: cotenants.Runn
                 return Confirmation("confirmed", "proc-locks", named, f"{locks} names pid {pid} as the lock's holder")
             return Confirmation("unconfirmed", "proc-locks", named,
                                 f"{locks} names pid {', '.join(map(str, named))} as the lock's holder, not the recorded pid {pid}")
+    unreadable: set[int] = set()
     if os.path.isdir(os.path.join(proc, "self", "fd")):
         by: str = "proc-fd"
-        found: set[int] | str = proc_openers(path, proc)
+        found: set[int] | str
+        found, unreadable = proc_openers(path, proc)
     else:
         by, found = "lsof", lsof_openers(path, run)
     if isinstance(found, str):
@@ -313,6 +323,8 @@ def confirm(path: str, pid: int, table: list[Holder] | None, run: cotenants.Runn
     pids = tuple(sorted(found))
     if pid in found:
         return Confirmation("confirmed", by, pids, f"pid {pid} has the slot file open ({by})")
+    if pid in unreadable:
+        return Confirmation("unknown", by, None, f"pid {pid}'s descriptors are not readable here ({proc}/{pid}/fd)")
     visible = seen(pid)
     if visible == "foreign":
         return Confirmation("unknown", by, None, f"pid {pid} is another user's process, whose descriptors {by} cannot see here")

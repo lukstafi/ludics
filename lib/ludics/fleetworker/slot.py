@@ -454,19 +454,15 @@ def confirmation_line(box: str, request: str, index: int, confirmation: holders.
             f" ({printable(confirmation.why)})")
 
 
-def named_lines(box: str, request: str, index: int, path: str, waited: float | None) -> list[str]:
-    """What the drain says of slot ``index``'s holder: its record (``holder_line``), then, when
-    there is one, the record's confirmation, the drain's own pid excluded."""
-    holder = read_holder(path)
-    lines = [holder_line(box, request, index, holder, time.time(), time.monotonic(), waited)]
-    if holder is not None:
-        try:
-            confirmation = holders.confirm(path, holder.pid, holders.read_lock_table(holders.PROC_LOCKS),
-                                           cotenants.run_bounded, holders.PROC, os.getpid())
-        except Exception as exc:  # the record's line is said either way
-            confirmation = holders.Confirmation("unknown", "", None, f"the confirmation failed: {exc!r}")
-        lines.append(confirmation_line(box, request, index, confirmation))
-    return lines
+def confirmed_line(box: str, request: str, index: int, path: str, pid: int) -> str:
+    """``confirmation_line`` for a record of ``pid`` on slot ``index``, read now, the drain's own
+    pid excluded; a confirmation that fails is said as unknown."""
+    try:
+        confirmation = holders.confirm(path, pid, holders.read_lock_table(holders.PROC_LOCKS),
+                                       cotenants.run_bounded, holders.PROC, os.getpid())
+    except Exception as exc:  # a diagnostic: never the measurement's end
+        confirmation = holders.Confirmation("unknown", "", None, f"the confirmation failed: {exc!r}")
+    return confirmation_line(box, request, index, confirmation)
 
 
 def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, repeat: float) -> None:
@@ -474,6 +470,8 @@ def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, r
     waiting for its batch to end: the unchanged ``waits for the batch`` line, then the holder's
     record (``holder_line``) and its confirmation (``confirmation_line``) at once and every
     ``repeat`` seconds. The wait is a blocking flock in a thread, so a freed slot wakes it at once.
+    The confirmation runs in a thread of its own (``lsof`` may take its whole bound), so neither
+    the record's line nor the take waits for it, and it is said only while the drain still waits.
     Raises OSError (the take's own failure only: naming the holder is a diagnostic, and nothing it
     raises stops the drain)."""
     try:
@@ -495,16 +493,33 @@ def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, r
     waiter.start()
     waiter.join(0.2)  # a batch ending in this instant needs no naming
     waited: float | None = None
-    while waiter.is_alive():
-        try:
-            lines = named_lines(box, request, index, path, waited)
-        except Exception as exc:  # a diagnostic: never the measurement's end
-            lines = [f"{HOLD_PREFIX} {box}: measurement {request} waits on slot {index}: its record is unread ({exc!r})"]
-        if waiter.is_alive():
-            for line in lines:
+    saying = threading.Lock()
+    taken: list[bool] = []
+
+    def say(line: str) -> None:
+        with saying:
+            if not taken and waiter.is_alive():
                 errline(line)
+
+    def confirm(pid: int) -> None:
+        say(confirmed_line(box, request, index, path, pid))
+
+    confirming: threading.Thread | None = None
+    while waiter.is_alive():
+        holder: Holder | None = None
+        try:
+            holder = read_holder(path)
+            line = holder_line(box, request, index, holder, time.time(), time.monotonic(), waited)
+        except Exception as exc:  # a diagnostic: never the measurement's end
+            line = f"{HOLD_PREFIX} {box}: measurement {request} waits on slot {index}: its record is unread ({exc!r})"
+        say(line)
+        if holder is not None and (confirming is None or not confirming.is_alive()):
+            confirming = threading.Thread(target=confirm, args=(holder.pid,), name=f"drain-confirm-{index}", daemon=True)
+            confirming.start()
         waiter.join(repeat)
         waited = time.monotonic() - start
+    with saying:
+        taken.append(True)  # a confirmation still running says nothing after the take
     if failure:
         raise failure[0]
 

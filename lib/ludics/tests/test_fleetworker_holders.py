@@ -261,6 +261,21 @@ class Confirmation(SlotDir):
         self.assertEqual((record["verdict"], record["pids"]), ("unknown", None))
         self.assertIn("pid 99 is another user's process", record["why"])
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 directory")
+    def test_a_recorded_pid_whose_descriptors_cannot_be_read_is_unknown(self) -> None:
+        # A non-dumpable process of this user's passes the signal-0 test, but its fds are unreadable.
+        self.hold("slot.1")
+        self.record("slot.1", 4242)
+        proc = self.fake_proc({4243: os.path.realpath(os.path.join(self.dir, "slot.1"))})
+        os.makedirs(os.path.join(proc, "4242", "fd"))
+        os.chmod(os.path.join(proc, "4242", "fd"), 0o000)
+        try:
+            record = self.one(proc=proc, seen="mine")
+        finally:
+            os.chmod(os.path.join(proc, "4242", "fd"), 0o755)
+        self.assertEqual((record["verdict"], record["by"], record["pids"]), ("unknown", "proc-fd", None))
+        self.assertIn("pid 4242's descriptors are not readable here", record["why"])
+
     def test_the_reader_s_own_pid_is_never_an_opener(self) -> None:
         self.hold("slot.1")
         me = os.getpid()

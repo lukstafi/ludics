@@ -239,13 +239,17 @@ class HolderRecord(Locks):
         self.assertEqual(lines[0], "EXECUTION HOLD testbox: measurement m1 waits for the batch in slot 1 to end")
         self.assertRegex(lines[1], r"^EXECUTION HOLD testbox: measurement m1 waits on slot 1: recorded holder pid [0-9]+,"
                          r" slot taken 0s ago, no --deadline recorded; for: tune --cold$")
-        # Its confirmation, on a line of its own (#712). The record is this test process's own, the
-        # drain's pid, which is never an opener: unconfirmed.
-        self.assertRegex(lines[2], r"^EXECUTION HOLD testbox: measurement m1 slot 1: recorded holder, unconfirmed \(pid [0-9]+"
-                         r" does not have the slot file open \((proc-locks|proc-fd|lsof)\); no other process seen here has it open\)$")
-        self.assertGreaterEqual(len(lines), 5, out)
-        self.assertTrue(all("still waits for slot 1 after" in line for line in lines[3::2]), out)
-        self.assertTrue(all(": recorded holder, unconfirmed (" in line for line in lines[4::2]), out)
+        # Its confirmation, on lines of their own (#712), in a thread of their own, so they may
+        # come after a later record line. The record is this test process's own, the drain's pid,
+        # which is never an opener: unconfirmed.
+        confirmations = [line for line in lines[2:] if ": recorded holder, " in line]
+        self.assertTrue(confirmations, out)
+        for line in confirmations:
+            self.assertRegex(line, r"^EXECUTION HOLD testbox: measurement m1 slot 1: recorded holder, unconfirmed \(pid [0-9]+"
+                             r" does not have the slot file open \((proc-fd|lsof)\); no other process seen here has it open\)$")
+        records = [line for line in lines[2:] if line not in confirmations]
+        self.assertGreaterEqual(len(records), 1, out)
+        self.assertTrue(all("still waits for slot 1 after" in line for line in records), out)
         self.assertLess(took, 5)
         self.assertTrue(self.locked())
 
@@ -262,9 +266,27 @@ class HolderRecord(Locks):
                 drain_slot("testbox", "m1", self.path(), descriptor, 1, 30)
             lines = err.getvalue().splitlines()
             self.assertIn(f"recorded holder pid {recorded or holder.pid},", lines[1])
-            self.assertRegex(lines[2], f"^EXECUTION HOLD testbox: measurement m1 slot 1: recorded holder, {verdict} \\(", lines)
-            self.assertIn(f"pid {holder.pid}", lines[2])
+            [said] = [line for line in lines if ": recorded holder, " in line]
+            self.assertRegex(said, f"^EXECUTION HOLD testbox: measurement m1 slot 1: recorded holder, {verdict} \\(")
+            self.assertIn(f"pid {holder.pid}", said)
             os.close(self.held.pop())
+
+    def test_a_slow_confirmation_neither_holds_the_take_nor_speaks_after_it(self) -> None:
+        self.hold("slot.1")
+        record_holder(self.held[0], ["batch"], None)
+        release = threading.Event()
+
+        def slow(*args: object) -> str:
+            release.wait(10)
+            return "EXECUTION HOLD testbox: measurement m1 slot 1: recorded holder, unknown (late)"
+
+        with mock.patch.object(slot, "confirmed_line", side_effect=slow):
+            out, took = self.drain(0.2, 0.5)
+            release.set()
+            time.sleep(0.2)
+        self.assertLess(took, 3)
+        self.assertIn("waits on slot 1: recorded holder pid", out)
+        self.assertNotIn("(late)", out)
 
     def test_a_holder_its_deadline_ends_soon_is_named_too(self) -> None:
         self.hold("slot.1")
