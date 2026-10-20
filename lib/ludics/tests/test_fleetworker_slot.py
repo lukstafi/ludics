@@ -349,6 +349,92 @@ def measurement(identity: str, box: str = "testbox", state: str = "launching", w
     return record
 
 
+class Waiting(unittest.TestCase):
+    """THE WAITING RECORD (ludics-lite#719): a ``waiting.<pid>`` file, flocked while the batch waits,
+    removed and released before it runs or is refused."""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.mkdtemp(prefix="ludics-waiting-test.")
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def held(self, name: str) -> bool:
+        descriptor = os.open(os.path.join(self.dir, name), os.O_RDONLY)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        finally:
+            os.close(descriptor)
+        return False
+
+    def test_the_record_is_locked_while_it_waits_says_its_phase_and_is_gone_when_done(self) -> None:
+        waiting = slot.WaitingRecord(self.dir, ["make", "test"], "window", "cpu")
+        name = f"waiting.{os.getpid()}"
+        self.assertEqual(os.listdir(self.dir), [name], "no temporary file is left beside it")
+        self.assertTrue(self.held(name))
+        with open(os.path.join(self.dir, name)) as f:
+            data = json.load(f)
+        self.assertEqual((data["pid"], data["command"], data["phase"], data["kind"]), (os.getpid(), "make test", "window", "cpu"))
+        waiting.phase("slot")
+        with open(os.path.join(self.dir, name)) as f:
+            self.assertEqual(json.load(f)["phase"], "slot")
+        waiting.done()
+        waiting.done()
+        self.assertEqual(os.listdir(self.dir), [])
+
+    def test_a_record_its_owner_left_unlocked_is_removed_by_the_next_waiter_and_a_locked_one_is_kept(self) -> None:
+        for name in ("waiting.1", "waiting.2"):
+            with open(os.path.join(self.dir, name), "w") as f:
+                f.write("{}")
+        keeper = os.open(os.path.join(self.dir, "waiting.2"), os.O_RDONLY)
+        self.addCleanup(os.close, keeper)
+        fcntl.flock(keeper, fcntl.LOCK_EX)
+        young = os.path.join(self.dir, ".waiting-young")
+        open(young, "w").close()
+        old = os.path.join(self.dir, ".waiting-old")
+        open(old, "w").close()
+        os.utime(old, (time.time() - 120, time.time() - 120))
+        waiting = slot.WaitingRecord(self.dir, ["x"], "slot", "gpu")
+        self.addCleanup(waiting.done)
+        self.assertEqual(sorted(os.listdir(self.dir)), [".waiting-young", "waiting.2", f"waiting.{os.getpid()}"])
+
+    def test_a_directory_it_cannot_write_says_so_and_waits_without_a_record(self) -> None:
+        open(os.path.join(self.dir, "file"), "w").close()   # a file where its directory would go
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            waiting = slot.WaitingRecord(os.path.join(self.dir, "file", "sub"), ["x"], "slot", "gpu")
+        self.assertIn("no waiting record in", err.getvalue())
+        self.assertIsNone(waiting.descriptor)
+        waiting.phase("slot")
+        waiting.done()
+
+    def test_a_batch_queued_for_a_slot_is_recorded_and_runs_without_its_record(self) -> None:
+        # A held slot 1 makes the batch wait; freed, the batch takes it, and its command sees no record.
+        blocker = os.open(os.path.join(self.dir, "slot.1"), os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(blocker, fcntl.LOCK_EX)
+        seen: list[list[str]] = []
+
+        def release() -> None:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not any(n.startswith("waiting.") for n in os.listdir(self.dir)):
+                time.sleep(0.05)
+            seen.append(sorted(os.listdir(self.dir)))
+            os.close(blocker)
+
+        def run(*_: object, **__: object) -> None:
+            seen.append(sorted(os.listdir(self.dir)))
+            raise cli.Exit(0)
+
+        thread = threading.Thread(target=release)
+        thread.start()
+        with mock.patch.object(slot, "run_command", run), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(cli.Exit):
+                slot.take_slot("testbox", self.dir, 1, 0, False, 30, "", ["make"], None)
+        thread.join()
+        self.assertIn(f"waiting.{os.getpid()}", seen[0], "recorded while it waited")
+        self.assertEqual(seen[1], ["slot.1"], "and gone once it held the slot")
+
+
 class WindowWait(unittest.TestCase):
     """``--wait-window`` (ludics-lite#557), the registry re-reads stubbed in order."""
 
@@ -407,7 +493,7 @@ class WindowWait(unittest.TestCase):
         with mock.patch.object(slot, "read_registry", reads), contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
-        self.assertLessEqual(reads.call_count, 3)  # reads at 0.3, 0.6 and 0.9 s, none at 1.0
+        self.assertLessEqual(reads.call_count, 4)  # reads at 0 (the first heartbeat), 0.3, 0.6 and 0.9 s, none at 1.0
 
     def test_a_read_that_returns_past_the_bound_does_not_admit_the_batch(self) -> None:
         # A slow transport: the read starts inside the bound and answers "closed" after it.
@@ -422,6 +508,28 @@ class WindowWait(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
         self.assertIn("still holds testbox after 1s (--wait-window); no slot taken", out.getvalue())
+
+    def test_every_read_in_the_wait_is_a_heartbeat_and_the_first_is_at_once(self) -> None:
+        # THE WAITERS (ludics-lite#719): the anchor hears of this waiter from the wait's start.
+        reads = mock.Mock(side_effect=[[measurement("win")], []])
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "20"}, host="testbox")
+        started = time.monotonic()
+        with mock.patch.object(slot, "read_registry", reads), mock.patch.object(slot.time, "sleep"), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 600, ["make", "test"]), [])
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(reads.call_count, 2)
+        for call in reads.call_args_list:
+            waiter = call.args[3]
+            self.assertEqual((waiter["box"], waiter["command"], waiter["ttl"]), ("testbox", "make test", 60))
+            self.assertRegex(waiter["id"], rf"\Atestbox-{os.getpid()}\Z")
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.01"}, host="testbox")
+        reads = mock.Mock(return_value=[])
+        with mock.patch.object(slot, "read_registry", reads), contextlib.redirect_stderr(io.StringIO()):
+            await_measurements(cfg, "testbox", [measurement("win")], 600, ["x"])
+        self.assertEqual(reads.call_args.args[3]["ttl"], 30, "a short poll still gets 30 s")
 
     def test_a_late_read_that_answers_clears_an_earlier_failed_one(self) -> None:
         unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))

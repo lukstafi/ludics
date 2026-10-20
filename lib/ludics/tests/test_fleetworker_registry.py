@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from datetime import datetime
 from typing import Any
 
 from ludics.fleetworker import registry
@@ -276,8 +277,8 @@ class Binding(RegistryCase):
 
 
 class WindowGap(RegistryCase):
-    """ludics-lite#667: a new window inside the gap after its box's last measurement, while standing
-    records are outstanding there, is answered exit 3 with the seconds to wait, and nothing written."""
+    """ludics-lite#667, #719: a new window inside the gap after its box's last measurement, while a
+    batch is waiting for the box, is answered exit 3 with the seconds to wait, and nothing written."""
 
     def window(self, identity: str, gap: int | None = 60, boxes: str = "mac") -> tuple[int, Any, str]:
         payload: dict[str, object] = {"box": "mac", "request": request(identity, kind="measurement")}
@@ -285,35 +286,53 @@ class WindowGap(RegistryCase):
             payload["gap"] = gap
         return self.call("window", payload, boxes=boxes)
 
+    def beat(self, identity: str = "rog-7", box: str = "mac", ttl: int = 60, boxes: str = "mac") -> tuple[int, Any, str]:
+        return self.call("wait", {"waiter": {"box": box, "id": identity, "command": "make test", "ttl": ttl}},
+                         boxes=boxes)
+
     def conclude(self, identity: str) -> None:
         self.assertEqual(self.call("conclude", {"request_id": identity, "verdict": "not-launched", "log": "/dev/null",
                                                 "evidence": "unit"})[0], 0)
 
-    def age(self, identity: str, at: str) -> None:
-        path = os.path.join(self.root, "executions", f"{identity}.json")
+    def age(self, identity: str, at: str, kind: str = "executions", key: str = "updated_at") -> None:
+        path = os.path.join(self.root, kind, f"{identity}.json")
         with open(path) as f:
             data = json.load(f)
-        data["updated_at"] = at
+        data[key] = at
         with open(path, "w") as f:
             json.dump(data, f)
 
-    def test_the_first_window_opens_and_the_next_one_waits_out_the_gap(self) -> None:
+    def test_the_first_window_opens_and_the_next_one_waits_out_the_gap_while_a_batch_waits(self) -> None:
         self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
         self.assertEqual(self.window("w1")[0], 0, "no measurement concluded on the box: no gap")
+        self.assertEqual(self.beat()[0], 0)
         self.conclude("w1")
         rc, out, err = self.window("w2")
         self.assertEqual(rc, 3)
         gap = out["gap"]
-        self.assertEqual((gap["box"], gap["after"], gap["gap"], gap["standing"]), ("mac", "w1", 60, ["s"]))
+        self.assertEqual((gap["box"], gap["after"], gap["gap"], gap["waiting"]), ("mac", "w1", 60, ["rog-7"]))
         self.assertTrue(0 < gap["wait"] <= 60 and gap["ago"] >= 0, gap)
-        self.assertRegex(err, r"\AEXECUTION WINDOW mac: measurement w1 concluded on mac [0-9]+s ago, and standing"
-                              r" reservations are outstanding there \(s\), whose batches may be waiting: they get 60s"
-                              r" to take its slots before the next window \(ludics-lite#667\); [0-9]+s to go\n\Z")
+        self.assertRegex(err, r"\AEXECUTION WINDOW mac: measurement w1 concluded on mac [0-9]+s ago, and batches are"
+                              r" waiting for mac \(rog-7\): they get 60s to take its slots before the next window"
+                              r" \(ludics-lite#667, #719\); [0-9]+s to go\n\Z")
         self.assertFalse(os.path.exists(os.path.join(self.root, "executions", "w2.json")), "nothing written")
         self.assertEqual(self.call("list", {"active": True})[1][0]["state"], "launching", "s is not suspended")
 
-    def test_no_gap_asked_no_standing_record_or_a_gap_already_past_opens_at_once(self) -> None:
+    def test_nobody_waiting_opens_at_once_whatever_is_standing(self) -> None:
         self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.window("w1", gap=None)
+        self.conclude("w1")
+        self.assertEqual(self.window("w2")[0], 0, "a standing record is no waiter (#719)")
+        self.conclude("w2")
+        self.beat()
+        self.age("rog-7", "2026-01-01T00:00:00+00:00", kind="waiters", key="expires")
+        self.assertEqual(self.window("w3")[0], 0, "an expired heartbeat is no waiter")
+        self.conclude("w3")
+        self.assertEqual(self.beat(box="rog", boxes="mac rog")[0], 0)
+        self.assertEqual(self.window("w4", boxes="mac rog")[0], 0, "a waiter on another box is not this one's")
+
+    def test_no_gap_asked_or_a_gap_already_past_opens_at_once(self) -> None:
+        self.beat(ttl=3600)
         self.window("w1", gap=None)
         self.conclude("w1")
         self.assertEqual(self.window("w2", gap=0)[0], 0, "--no-gap")
@@ -324,17 +343,11 @@ class WindowGap(RegistryCase):
         self.age("w2", "2026-01-01T00:00:01")  # naive, as UTC
         self.age("w1", "2026-01-01T00:00:00+00:00")
         self.assertEqual(self.window("w4")[0], 0, "the last measurement concluded long ago")
-        self.conclude("w4")
-        self.conclude("s")
-        self.assertEqual(self.call("run", request("plain", kind="measurement"))[0], 0)
-        self.conclude("plain")
-        self.assertEqual(self.call("run", request("s2", standing=True, execution_host="rog"), boxes="mac rog")[0], 0)
-        self.assertEqual(self.window("w5", boxes="mac rog")[0], 0, "no standing record on this box: nobody to wait for")
 
     def test_any_measurement_on_the_box_starts_the_gap_and_another_boxs_does_not(self) -> None:
         self.assertEqual(self.call("run", request("plain", kind="measurement"))[0], 0)
         self.conclude("plain")
-        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.beat()
         rc, out, _ = self.window("w1")
         self.assertEqual((rc, out["gap"]["after"]), (3, "plain"))
         self.age("plain", "2026-01-01T00:00:00+00:00")
@@ -342,8 +355,19 @@ class WindowGap(RegistryCase):
         self.conclude("r")
         self.assertEqual(self.window("w2", boxes="mac rog")[0], 0)
 
+    def test_a_waiter_file_that_does_not_parse_counts_as_waiting_on_every_box(self) -> None:
+        self.window("w1", gap=0)
+        self.conclude("w1")
+        os.makedirs(os.path.join(self.root, "waiters"), exist_ok=True)
+        with open(os.path.join(self.root, "waiters", "torn.json"), "w") as f:
+            f.write("{")
+        rc, out, _ = self.window("w2")
+        self.assertEqual((rc, out["gap"]["waiting"]), (3, ["torn.json (unreadable)"]))
+        self.assertEqual(self.beat()[0], 0)
+        self.assertTrue(os.path.exists(os.path.join(self.root, "waiters", "torn.json")), "a heartbeat leaves it")
+
     def test_every_other_admission_check_comes_before_the_gap(self) -> None:
-        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.beat()
         self.window("w1")
         self.conclude("w1")
         with open(os.path.join(self.root, "HALT"), "w") as f:
@@ -362,7 +386,7 @@ class WindowGap(RegistryCase):
         self.assertEqual(concluded["history"][-1]["at"], concluded["updated_at"])
 
     def test_a_retried_window_never_waits(self) -> None:
-        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.beat()
         self.window("w1")
         self.conclude("w1")
         self.assertEqual(self.window("w2", gap=0)[0], 0)
@@ -375,13 +399,70 @@ class WindowGap(RegistryCase):
             self.assertEqual((rc, err), (1, "EXECUTION REFUSED: a window's gap must be a whole number of seconds\n"), bad)
         rc, _, err = self.call("window", {"box": "mac", "request": request("w", kind="measurement"), "wait": 1})
         self.assertEqual((rc, err), (1, "EXECUTION REFUSED: window payload must be {box, request} or {box, request, gap}\n"))
-        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.beat()
         self.window("w1", gap=0)
         self.conclude("w1")
         self.age("w1", "yesterday")
         rc, _, err = self.window("w2")
         self.assertEqual(rc, 1)
         self.assertIn("w1: updated_at 'yesterday' is no ISO 8601 time, so the gap after it cannot be measured", err)
+
+
+class Waiters(RegistryCase):
+    """ludics-lite#719: ``wait`` records a heartbeat outside the executions and answers as ``list``."""
+
+    def waiter(self, **change: object) -> dict[str, object]:
+        base: dict[str, object] = {"box": "mac", "id": "rog-7", "command": "make test", "ttl": 45}
+        base.update(change)
+        return base
+
+    def read(self, identity: str = "rog-7") -> dict[str, Any]:
+        with open(os.path.join(self.root, "waiters", f"{identity}.json")) as f:
+            return json.load(f)
+
+    def test_a_heartbeat_answers_with_the_listing_and_records_the_waiter_until_its_expiry(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        rc, out, err = self.call("wait", {"waiter": self.waiter(), "active": True, "compact": True})
+        self.assertEqual((rc, err, [r["request_id"] for r in out]), (0, "", ["s"]))
+        self.assertNotIn("history", out[0], "the list options apply")
+        data = self.read()
+        self.assertEqual((data["box"], data["id"], data["command"]), ("mac", "rog-7", "make test"))
+        seen, expires = (datetime.fromisoformat(data[key]) for key in ("seen", "expires"))
+        self.assertEqual((expires - seen).total_seconds(), 45)
+        self.assertEqual(os.listdir(os.path.join(self.root, "executions")), ["s.json"], "no record written")
+
+    def test_a_heartbeat_removes_the_expired_waiters_and_keeps_the_rest(self) -> None:
+        self.call("wait", {"waiter": self.waiter(id="old")})
+        self.call("wait", {"waiter": self.waiter(id="live", ttl=3600)})
+        path = os.path.join(self.root, "waiters", "old.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["expires"] = "2026-01-01T00:00:00+00:00"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        self.assertEqual(self.call("wait", {"waiter": self.waiter()})[0], 0)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "waiters"))), ["live.json", "rog-7.json"])
+
+    def test_a_waiter_is_validated_whole(self) -> None:
+        cases: list[tuple[object, str]] = [
+            ({}, "a wait payload is {waiter, ...list options}"),
+            ({"waiter": self.waiter(extra=1)}, "a waiter is {box, id, command, ttl}"),
+            ({"waiter": self.waiter(id="../x")}, "invalid waiter id"),
+            ({"waiter": self.waiter(command=" ")}, "command must be a nonempty string"),
+            ({"waiter": self.waiter(ttl=0)}, "a waiter's ttl must be a whole number of seconds from 1 to 3600"),
+            ({"waiter": self.waiter(ttl=True)}, "a waiter's ttl must be a whole number of seconds from 1 to 3600"),
+            ({"waiter": self.waiter(box="rgo")}, "waiter box rgo: no FLEET_BOXES entry (mac) is that box"),
+            ({"waiter": self.waiter(), "verbose": True}, "list options must be active/compact booleans and a host"),
+        ]
+        for payload, why in cases:
+            rc, _, err = self.call("wait", payload)
+            self.assertEqual(rc, 1, payload)
+            self.assertIn(why, err, payload)
+        self.assertEqual(self.call("wait", {"waiter": self.waiter(box="MAC")})[0], 0, "a roster entry by case")
+
+    def test_a_long_command_is_cut_to_300_characters(self) -> None:
+        self.call("wait", {"waiter": self.waiter(command="x" * 400)})
+        self.assertEqual(len(self.read()["command"]), 300)
 
 
 if __name__ == "__main__":

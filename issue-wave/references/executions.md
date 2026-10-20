@@ -102,7 +102,11 @@ The probe's sibling read, `execution slot --holders` (ludics-lite#639), says who
 slots now: one JSON line per held slot (`box`, `event`, `at`, `slot`, `slots`, `kind` gpu|cpu,
 `pid`, `user`, `command`, `cwd`, `source`, `unknown`), taking nothing, the holder read from
 `/proc/locks`; where there is none (macOS) the slot is still listed, each field it cannot know
-`null` and named in `unknown`.
+`null` and named in `unknown`. After them come the batches waiting here (ludics-lite#719), one
+`"event":"waiting"` line each, with `phase` (`window` while it waits out a measurement, `slot`
+while it waits for a free slot), `kind`, `pid`, `command` and `since`, read from the
+`waiting.<pid>` record each keeps flocked in the slot directory while it waits, so a waiter that
+died is not listed. A leg waiting on its agent host for this box has no record here.
 
 **The measurement's own run** (ludics-lite#480). A runner that takes the slot itself also does so
 inside a measurement, where every slot is refused - so OCANNL's `tools/test-run.sh` was refused by
@@ -254,20 +258,25 @@ seconds (15), so a conclusion followed seconds later by the next window is a mom
 So:
 
 - `execution window` leaves the gap itself. When a measurement on the box concluded less than
-  `FLEET_WINDOW_GAP` seconds ago (60, read where the window is opened) and standing reservations
-  are outstanding there, it says so (`EXECUTION WINDOW <box>: measurement <id> concluded on <box>
-  <n>s ago, and standing reservations are outstanding there (<ids>) ...; <m>s to go`, then
+  `FLEET_WINDOW_GAP` seconds ago (60, read where the window is opened) and a batch is waiting for
+  the box, it says so (`EXECUTION WINDOW <box>: measurement <id> concluded on <box> <n>s ago, and
+  batches are waiting for <box> (<waiter ids>) ...; <m>s to go`, then
   `EXECUTION WINDOW <box>: waiting <m>s, then opening the window ...`), waits with no lock held,
   and opens the window. Every batch waiting out the last window, a merge build included, reads the
   box free in that gap and takes its slot; the next measurement starts once they end (its hold's
   drain waits for them, naming each), so the measurement pays for the gap, never the batches.
-  `--no-gap`, right after `window`, opens at once: for a box you know has no waiters.
-- The gap's boundary: standing reservations are what it reads as workers that may be waiting, and
-  nothing else. It sees no waiting process, so it is paid whether or not one waits, and a batch
-  run under no record (your own `check-box`) is not waited for: conclude, run it, then open. A leg
-  waiting on its agent host (`execution leg --wait-window`) reads the gap too, but its setup (the
-  copy, the ssh, the fetch) comes before its slot, so it may meet the next window in the slot's
-  own wait on the box.
+  `--no-gap`, right after `window`, opens at once whoever waits.
+- Who counts as waiting (ludics-lite#719): a batch waiting out a measurement reads the registry
+  with a heartbeat (`wait`, not `list`), which the anchor keeps for three of its polls (at least
+  30 s) under `waiters/`, so the read that finds the box free stays counted while the batch takes
+  its slot. That covers `execution slot --wait-window` on the box and `execution leg
+  --wait-window` on its agent host, a coordinator's own batch included, standing record or not.
+  With nobody waiting the window opens at once, so the gap is paid only when someone waits. A
+  waiter file that does not parse counts as waiting on every box. The boundary: a batch queued for
+  a free slot reads no registry and is not counted (a window's drain takes the slots as they
+  free); a box whose fleet-worker predates #719 waits unseen, so refresh a box's checkout before
+  a wave of windows on it. A leg's setup (the copy, the ssh, the fetch) comes before its slot, so
+  it may meet the next window in the slot's own wait on the box.
 - The handover stays two registry calls with no message to the workers, conclude and then
   `execution window`, the second taking up to the gap. A leg re-reading the registry every 5 s
   read the second window and never the gap (#666's fixture, which now opens its windows
