@@ -2310,7 +2310,29 @@ rmdir "$ISSUE_WAVE_STATE/COORDINATOR.lock"
 expect "a key outside the grammar is refused by the store" 1 "^BOARD REFUSED: a key must be" -- "$FW" board set bw t "bad key=1"
 expect "a field without = is a usage error" 2 "board set: expected <key>=<value>" -- "$FW" board set bw t novalue
 expect "show of a wave with no board refuses" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
-expect "an unknown board action is a usage error" 2 "board: expected set, note, log or show" -- "$FW" board edit bw
+expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show or takeover" -- "$FW" board edit bw
+# board takeover (ludics-lite#731): the stored brief, then the state at takeover from the row's keys and
+# the live sources; a read, so no lease and no identity; a missing key printed missing, never guessed.
+tkwt="$TMP/tk wt"; git init -q "$tkwt" && git -C "$tkwt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tk
+git -C "$tkwt" checkout -q -b "claude/tk-1"
+printf '%s\n' "# The brief of tk-1" "$hostile" > "$TMP/tk brief.md"
+"$FW" board set bw tk-1 "worktree=$tkwt" branch=claude/tk-1 agent_host=testbox "brief=$TMP/tk brief.md" brief_host=testbox \
+  worker=tk-1 requests=none >/dev/null || ko "could not write tk-1's row (setup)"
+expect "takeover prints the stored brief first, without the lease or any identity" 0 "^# The brief of tk-1$" -- \
+  env -u FLEET_COORDINATOR "${B[@]}" board takeover bw tk-1
+[ "$(head -n 2 <<<"$out" | tail -n 1)" = "$hostile" ] && ok "...byte for byte" || ko "brief: $(head -n 3 <<<"$out")"
+for want in "^## State at takeover$" "^- pr: missing$" "^- repository: missing$" "^- requests: none$" \
+    "^- on testbox: HEAD $(git -C "$tkwt" rev-parse HEAD), branch claude/tk-1, 0 uncommitted path(s)$" \
+    "^- not read: the row lacks a valid repository$" "^- none outstanding for this worker, and the row names none$"; do
+  grep -q -- "$want" <<<"$out" && ok "...with $want" || ko "takeover lacks $want: $out"
+done
+[ ! -e "$TMP/pwned" ] && ok "...and nothing in the brief ran" || ko "the brief was run as a command"
+expect "a row whose brief cannot be read still prints its state, and exits 3" 3 "^- BRIEF UNREADABLE: no readable file $TMP/gone.md on testbox" -- \
+  sh -c '"$1" board set bw tk-2 "brief=$2" >/dev/null && "$1" board takeover bw tk-2' - "$FW" "$TMP/gone.md"
+expect "takeover of a task the board does not hold is refused" 1 '^BOARD REFUSED: no task "tk-9" on the board of bw$' -- "$FW" board takeover bw tk-9
+expect "...as is one of a wave with no board" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board takeover none tk-1
+expect "takeover takes a wave and a task" 2 "board takeover: expected <wave> <task>" -- "$FW" board takeover bw
+expect "takeover against an anchor that does not answer is unreachable" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board takeover bw tk-1
 expect "show against an anchor that does not answer is unreachable" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board show bw
 expect "...and so is a write" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board log bw x
 }

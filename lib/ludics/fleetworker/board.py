@@ -9,6 +9,8 @@ Its header is the contract: the document, what it accepts, and the markdown view
   board note [--create] <wave> <key=value>...         the wave's own facts (lease)
   board log <wave> <text>...                          one appended log line, the words joined (lease)
   board show <wave> [--json]                          the markdown view, or the document (no lease)
+  board takeover <wave> <task>                        a worker's stored brief and its state now (no
+                                                      lease; ``ludics.fleetworker.takeover``)
 
 The writers run inside the lease lock after the lease check (``lease.LEASE_MUTATION``), the lock and
 check every halt and registry write takes; ``show`` takes neither, so anyone may read a board. Every
@@ -33,7 +35,7 @@ from ludics.fleetworker.transport import PAYLOAD_ON_FD, prelude, run_on, shipped
 
 USAGE = (
     "board set [--create] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
-    "board log <wave> <text>... | board show <wave> [--json]"
+    "board log <wave> <text>... | board show <wave> [--json] | board takeover <wave> <task>"
 )
 
 FIND_PYTHON = (
@@ -74,7 +76,7 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
             die(f"board show: expected <wave> [--json] ({USAGE})")
         return action, {"wave": rest[0], "json": rest[1:] == ["--json"]}
     if action not in ("set", "note", "log"):
-        die(f"board: expected set, note, log or show ({USAGE})")
+        die(f"board: expected set, note, log, show or takeover ({USAGE})")
     create = bool(rest) and rest[0] == "--create"
     if create and action == "log":
         die(f"board log: takes no --create; start the board with set or note --create ({USAGE})")
@@ -102,6 +104,10 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
 
 
 def cmd_board(cfg: Config, args: list[str]) -> int:
+    if args[:1] == ["takeover"]:
+        from ludics.fleetworker import takeover
+
+        return takeover.cmd_takeover(cfg, args[1:])
     action, payload = payload_of(args)
     raw = json.dumps(payload, separators=(",", ":"))
     if action == "show":
