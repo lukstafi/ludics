@@ -934,9 +934,9 @@ wait again instead.
 surfaced at the merge call, 120 min in). `--wait` first reads the PR's `mergeable` and
 `mergeable_state`: `false` or `dirty` exits 1 at once with the rebase hint, so merge or rebase the
 base in, push, and run `merge --wait` again. GitHub computes the answer lazily, so `null` or
-`unknown` is read again (eight reads, 5 s apart) and never taken as clean or as conflicting; still
-uncomputed, or unread, it is said on stderr and the wait goes on. A conflict that arises during the
-wait is the merge call's to refuse (*What `merge` absorbs*, below).
+`unknown` is read again (up to eight reads 5 s apart, inside the wait's ceiling) and never taken as
+clean or as conflicting; still uncomputed, or unread, it is said on stderr and the wait goes on. A
+conflict that arises during the wait is the merge call's to refuse (*What `merge` absorbs*, below).
 
 **The polling budget** (ludics-lite#543) is shared by every observer: `watch`, `checks --wait`,
 `merge --wait` and `base --wait`. Each one reads at once, then pauses for its interval (`WATCH_INTERVAL`,

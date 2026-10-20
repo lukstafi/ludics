@@ -2301,12 +2301,21 @@ test_an_uncomputed_mergeability_is_read_again_never_judged() (
   reset
   : >"$TEST_ROOT/sleeps"
   MERGEABILITY=$'null\tunknown'
-  run_merge --wait=30
+  run_merge --wait=60
   assert_eq "$MERGE_RC" 0 "an answer never computed refuses nothing ($MERGE_OUTPUT)"
   assert_eq "$(fixture_call_total mergeability)" 8 "after eight reads"
   assert_eq "$(tr '\n' ' ' <"$TEST_ROOT/sleeps" | cut -c1-14)" "5 5 5 5 5 5 5 " "five seconds apart"
-  assert_contains "$MERGE_STDERR" "mergeability is NOT YET COMPUTED after 8 reads" "it says so"
+  assert_contains "$MERGE_STDERR" "mergeability is NOT YET COMPUTED after 8 read(s) within the wait" "it says so"
   assert_contains "$MERGE_STDERR" "not read as clean or as conflicting" "in its own terms"
+  # The re-reads stay inside the command's own wait ceiling: no pause past it.
+  reset
+  : >"$TEST_ROOT/sleeps"
+  MERGEABILITY=$'null\tunknown'
+  run_merge --wait=12
+  assert_eq "$MERGE_RC" 0 "a short wait still reaches the gate ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total mergeability)" 3 "after the reads its ceiling holds"
+  assert_eq "$(tr '\n' ' ' <"$TEST_ROOT/sleeps")" "5 5 " "and no pause past it"
+  assert_contains "$MERGE_STDERR" "NOT YET COMPUTED after 3 read(s) within the wait" "it says how many"
 )
 
 # An unread answer, or one in no shape the check knows, can only fail to refuse early: it is said,
