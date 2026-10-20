@@ -207,6 +207,13 @@ class Waiters(unittest.TestCase):
         self.assertEqual(list(lines[22]["unknown"]), ["command"])
         self.assertIsNone(lines[22]["command"])
 
+    def test_a_command_with_undecodable_bytes_is_shown_escaped(self) -> None:
+        argument = b"caf\xe9".decode("utf-8", "surrogateescape")
+        self.record(31, json.dumps({"pid": 31, "command": f"echo {argument}", "since": "s", "phase": "slot", "kind": "cpu"}))
+        (line,) = holders.waiters("testbox", self.dir)
+        self.assertEqual(line["command"], "echo caf\\xe9")
+        holders.render([line]).encode("utf-8")
+
     def test_nothing_else_in_the_directory_is_a_waiter(self) -> None:
         for name in ("slot.1", "waiting.x", ".waiting-abc", "waiting.12.json"):
             open(os.path.join(self.dir, name), "w").close()

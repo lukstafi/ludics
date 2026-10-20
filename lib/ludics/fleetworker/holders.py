@@ -236,7 +236,8 @@ def waiters(box: str, directory: str) -> list[dict[str, Any]]:
         for key in ("phase", "kind", "command", "since"):
             value = fields.get(key)
             if isinstance(value, str):
-                line[key] = value
+                # An argument's undecodable bytes come back as lone surrogates: shown escaped.
+                line[key] = value.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
             else:
                 line["unknown"][key] = f"{path}: no {key} recorded"
         lines.append(line)

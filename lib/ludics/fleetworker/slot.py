@@ -735,7 +735,8 @@ def exec_command(prefix: str, box: str, command: Sequence[str]) -> NoReturn:
 
 
 def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: str,
-              command: Sequence[str], bound: int | None, waiting: "WaitingRecord | None" = None) -> NoReturn:
+              command: Sequence[str], bound: int | None, waiting: "WaitingRecord | None" = None,
+              release: Callable[[], None] = lambda: None) -> NoReturn:
     """Wait up to ``wait`` seconds for a slot (a GPU token unless ``cpu``), then run the command in it;
     from the first pass that finds none free, under a WaitingRecord (``waiting``, when the window
     wait already keeps one)."""
@@ -760,6 +761,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             os.set_inheritable(descriptor, True)
             if waiting is not None:
                 waiting.done()
+            release()   # held: the anchor's heartbeat has done its work (THE WAITERS)
             # THE HOLDER RECORD, for a drain waiting on it; its deadline's end once that counts.
             taken = record_holder(descriptor, command, bound)
 
@@ -778,6 +780,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
         if time.monotonic() >= deadline:
             if waiting is not None:
                 waiting.done()
+            release()
             if tokens and not cpu:
                 cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {tokens} GPU tokens (slots 1-{tokens} of {cap}) busy"
                         f" after {wait}s; a batch that holds no GPU declares --cpu")
@@ -1108,6 +1111,13 @@ def waiter_of(cfg: Config, command: Sequence[str], **where: str) -> dict[str, An
             "ttl": min(max(30, math.ceil(3 * window_poll(cfg))), 3600)}
 
 
+def release_waiter(cfg: Config, waiter: dict[str, Any] | None) -> None:
+    """Tell the anchor this waiter no longer needs the gap (THE WAITERS): best effort, unread, since
+    a heartbeat that is not released expires."""
+    if waiter is not None:
+        listing(cfg, {"id": waiter["id"], "done": True})
+
+
 def waiter_id(cfg: Config) -> str:
     """This waiter's id on the anchor (THE WAITERS): where it runs and its pid, in the registry's
     id alphabet."""
@@ -1158,7 +1168,9 @@ class WaitingRecord:
         if self.descriptor is None or phase == self.fields.get("phase"):
             return
         self.fields["phase"] = phase
-        text = json.dumps(self.fields, separators=(",", ":"), ensure_ascii=False).encode()
+        # ASCII-escaped, as the holder record is: an argument's undecodable bytes reach Python as lone
+        # surrogates, which a UTF-8 encode would refuse.
+        text = json.dumps(self.fields, separators=(",", ":")).encode("ascii")
         with contextlib.suppress(OSError):
             os.ftruncate(self.descriptor, 0)
             os.pwrite(self.descriptor, text + b"\n", 0)
@@ -1325,7 +1337,8 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     # first heartbeat; a batch that then finds the box free leaves a heartbeat that only a window
     # opened in the next half minute reads, and that window's drain waits for the batch anyway.
     window_wait = parsed.window_wait if not marker_measure else None
-    records = read_registry(cfg, box, waiter=waiter_of(cfg, command, box=box) if window_wait is not None else None)
+    waiter = waiter_of(cfg, command, box=box) if window_wait is not None else None
+    records = read_registry(cfg, box, waiter=waiter)
     if isinstance(records, Unread):
         for line in records.lines:
             cli.say(line)
@@ -1352,6 +1365,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         waited = await_measurements(cfg, box, records, window_wait, command, registered=True)
         if isinstance(waited, int):
             waiting.done()
+            release_waiter(cfg, waiter)
             return waited
         records = waited
         measuring = outstanding_measurements(records, box, window_only=False)
@@ -1359,8 +1373,10 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     elif measuring and parsed.window_wait is not None:
         errline(f"{SLOT_PREFIX} {box}: --wait-window does not wait inside a measurement's hold, where it would"
                 " wait for its own measurement")
-    if (window or measuring) and waiting is not None:
-        waiting.done()
+    if window or measuring:
+        if waiting is not None:
+            waiting.done()
+        release_waiter(cfg, waiter)
     if window:
         cli.say(
             f"{SLOT_PREFIX} REFUSED {box}: measurement window {window} is open on {box}, and holds the box"
@@ -1380,7 +1396,8 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         os.makedirs(directory, exist_ok=True)
     except OSError:
         die(f"execution slot: cannot create the slot directory {directory}")
-    take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command, parsed.deadline, waiting)
+    take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command, parsed.deadline, waiting,
+              lambda: release_waiter(cfg, waiter))
 
 
 def cmd_hold(cfg: Config, args: list[str]) -> int:

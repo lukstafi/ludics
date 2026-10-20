@@ -271,8 +271,11 @@ So:
   30 s) under `waiters/`, so the read that finds the box free stays counted while the batch takes
   its slot. That covers `execution slot --wait-window` on the box and `execution leg
   --wait-window` on its agent host, a coordinator's own batch included, standing record or not.
-  With nobody waiting the window opens at once, so the gap is paid only when someone waits. A
-  waiter file that does not parse counts as waiting on every box. The boundary: a batch queued for
+  The read that may find a window is itself the first heartbeat, and a batch releases its
+  heartbeat once it holds its slot, is refused, or finds nothing to wait for (a leg that waited
+  lets it expire, covering its setup before the slot on the box). With nobody waiting the window
+  opens at once, so the gap is paid only when someone waits. A waiter file that does not parse
+  counts as waiting on every box. The boundary: a batch queued for
   a free slot reads no registry and is not counted (a window's drain takes the slots as they
   free); a box whose fleet-worker predates #719 waits unseen, so refresh a box's checkout before
   a wave of windows on it. A leg's setup (the copy, the ssh, the fetch) comes before its slot, so

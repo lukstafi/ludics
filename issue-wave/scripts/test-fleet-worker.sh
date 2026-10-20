@@ -3293,7 +3293,7 @@ grep -q "^EXECUTION LEG testbox: measurement window leg-w1 holds testbox (coordi
 leg_said() { # <pattern>: wait up to 40 s for the waiting leg's output to show it
   local i; for i in $(seq 200); do grep -q "$1" "$TMP/leg-ww.out" 2>/dev/null && return 0; sleep 0.2; done; return 1
 }
-rm -rf "${ISSUE_WAVE_STATE:?}/waiters"   # the bounded legs above left heartbeats; this leg's is the one read below
+# The bounded legs above, refused, released their heartbeats; this leg's is the one read below.
 env FLEET_SLOT_WINDOW_POLL=5 "${FWL[@]}" execution leg --request leg-s --rev claude/topic --checkout "$lco" --worktree "$lwt" \
   --wait-window=120 -- tools/check.sh > "$TMP/leg-ww.out" 2>&1 &
 lww=$!
@@ -4214,7 +4214,7 @@ bgkill "$bgd"
 # batch is waiting for (THE WAITERS, #719: each of its reads leaves a heartbeat on the anchor),
 # waits out FLEET_WINDOW_GAP after the last measurement there concluded, and says so; the waiting
 # batch takes its slot and runs in that gap. With nobody waiting, a window opens at once.
-rm -rf "${ISSUE_WAVE_STATE:?}/waiters"   # the window waits above left heartbeats; this case has none
+# The window waits above released their heartbeats once they held their slots or were refused.
 "${FWS[@]}" execution window --no-gap testbox "$(slotreq gap-0 measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
 fixture_done gap-0
 expect "a window right after a measurement, with standing reservations but nobody waiting, opens at once (#719)" 0 \

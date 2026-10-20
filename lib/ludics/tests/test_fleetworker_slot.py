@@ -408,6 +408,30 @@ class Waiting(unittest.TestCase):
         waiting.phase("slot")
         waiting.done()
 
+    def test_an_argument_that_is_not_utf8_is_recorded_escaped(self) -> None:
+        # Round 2 of #736: undecodable bytes reach Python as lone surrogates.
+        argument = b"caf\xe9".decode("utf-8", "surrogateescape")
+        waiting = slot.WaitingRecord(self.dir, ["echo", argument], "slot", "gpu")
+        self.addCleanup(waiting.done)
+        with open(os.path.join(self.dir, f"waiting.{os.getpid()}"), encoding="ascii") as f:
+            self.assertEqual(json.load(f)["command"], f"echo {argument}")
+
+    def test_the_heartbeat_is_released_once_the_slot_is_held_or_the_wait_refused(self) -> None:
+        released: list[str] = []
+        with mock.patch.object(slot, "run_command", mock.Mock(side_effect=cli.Exit(0))), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit):
+            slot.take_slot("testbox", self.dir, 1, 0, False, 0, "", ["make"], None, release=lambda: released.append("held"))
+        # The slot just taken stays locked on a descriptor this test cannot reach: a box of its own.
+        busy = os.path.join(self.dir, "busy")
+        os.mkdir(busy)
+        blocker = os.open(os.path.join(busy, "slot.1"), os.O_CREAT | os.O_RDWR, 0o644)
+        self.addCleanup(os.close, blocker)
+        fcntl.flock(blocker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(cli.Exit):
+            slot.take_slot("testbox", busy, 1, 0, False, 0, "", ["make"], None, release=lambda: released.append("refused"))
+        self.assertEqual(released, ["held", "refused"])
+
     def test_a_batch_queued_for_a_slot_is_recorded_and_runs_without_its_record(self) -> None:
         # A held slot 1 makes the batch wait; freed, the batch takes it, and its command sees no record.
         blocker = os.open(os.path.join(self.dir, "slot.1"), os.O_CREAT | os.O_RDWR, 0o644)
@@ -557,6 +581,22 @@ class WindowWait(unittest.TestCase):
             self.assertEqual(waiter is not None, carried, flags)
             if waiter is not None:
                 self.assertEqual((waiter["box"], waiter["command"]), ("testbox", "make"))
+        # A wait refused at its bound releases the heartbeat it registered.
+        listings: list[Any] = []
+
+        def listing(_cfg: object, waiter: Any = None) -> None:
+            listings.append(waiter)
+
+        held = [{"request_id": "win", "state": "launching", "window": True,
+                 "request": {"execution_host": "testbox", "kind": "measurement"}}]
+        with mock.patch.object(slot, "read_registry", mock.Mock(return_value=held)), \
+                mock.patch.object(slot, "registry_source"), \
+                mock.patch.object(slot, "listing", side_effect=listing), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(slot.cmd_slot(cfg, ["--wait-window=0", "--", "make"]), 1)
+        self.assertEqual(len(listings), 1)
+        self.assertEqual(listings[0]["done"], True)
+        self.assertRegex(listings[0]["id"], rf"\Atestbox-{os.getpid()}\Z")
 
     def test_a_late_read_that_answers_clears_an_earlier_failed_one(self) -> None:
         unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))

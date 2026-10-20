@@ -138,7 +138,10 @@ expired, both under the flock `waiters/.lock`, so a removal never deletes a rene
 one is waiting. A waiter's ttl outlasts its poll (the near side sends three polls' worth), so its
 last heartbeat, the one that read the box free, stays fresh while it takes its slot. A new window's
 gap is kept when a waiter on its box (the one-box rule above) has not expired. Fail-closed toward
-the gap: a waiter file that does not parse counts as a waiter on every box. The boundary: a waiter
+the gap: a waiter file that does not parse counts as a waiter on every box. A waiter that no longer
+needs the gap -- it holds its slot, it was refused, or it found nothing to wait for -- sends `wait`
+with `{"waiter": {"id", "done": true}}`, which removes its file (best effort: one that is not sent
+expires). The boundary: a waiter
 the gap sees is a batch that read this registry while waiting; a batch queued for a free SLOT reads
 no registry (the box-local `waiting.<pid>` record is its trace, which `slot --holders` lists, and a
 window's drain takes slots as they free), and a box whose fleet-worker predates #719 waits with
@@ -626,6 +629,19 @@ def record_waiter(directory: Path, waiter: Any, boxes: str, map_spec: str, now: 
     is removed. A waiter named by ``request`` waits for that record's execution host; an unknown
     request records nothing (its caller refuses it on the listing)."""
     data = as_object(waiter)
+    if data is not None and set(data) == {"id", "done"}:
+        # The waiter no longer needs the gap (it holds its slot, or it was refused): its file goes.
+        if data["done"] is not True or not isinstance(data["id"], str) or not WAITER_ID.fullmatch(data["id"]):
+            refuse("a waiter that is done is {id, done: true}")
+        directory.mkdir(exist_ok=True)
+        lock = os.open(directory / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with contextlib.suppress(FileNotFoundError):
+                (directory / (data["id"] + ".json")).unlink()
+        finally:
+            os.close(lock)
+        return
     if (data is None or not WAITER_FIELDS <= set(data) or set(data) - WAITER_FIELDS - {"box", "request"}
             or ("box" in data) == ("request" in data)):
         refuse("a waiter is {box or request, id, command, ttl}")

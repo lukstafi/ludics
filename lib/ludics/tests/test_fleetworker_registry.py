@@ -491,6 +491,18 @@ class Waiters(RegistryCase):
         self.assertEqual(rc, 0, "an unknown request is the leg's to refuse, on the listing")
         self.assertFalse(os.path.exists(os.path.join(self.root, "waiters", "agent-10.json")), "and nobody waits")
 
+    def test_a_waiter_that_is_done_removes_its_heartbeat(self) -> None:
+        # Round 2 of #736: a batch that holds its slot, or was refused, no longer needs the gap.
+        self.call("wait", {"waiter": self.waiter()})
+        self.call("wait", {"waiter": self.waiter(id="other")})
+        rc, out, _ = self.call("wait", {"waiter": {"id": "rog-7", "done": True}})
+        self.assertEqual((rc, out), (0, []))
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "waiters"))), [".lock", "other.json"])
+        self.assertEqual(self.call("wait", {"waiter": {"id": "rog-7", "done": True}})[0], 0, "a repeat is no error")
+        for bad in ({"id": "rog-7", "done": False}, {"id": "../x", "done": True}, {"id": 7, "done": True}):
+            rc, _, err = self.call("wait", {"waiter": bad})
+            self.assertEqual((rc, err), (1, "EXECUTION REFUSED: a waiter that is done is {id, done: true}\n"), bad)
+
     def test_a_long_command_is_cut_to_300_characters(self) -> None:
         self.call("wait", {"waiter": self.waiter(command="x" * 400)})
         self.assertEqual(len(self.read()["command"]), 300)
