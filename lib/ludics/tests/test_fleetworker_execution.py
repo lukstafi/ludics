@@ -288,10 +288,19 @@ class StandingHandback(unittest.TestCase):
         verdict, text = self.clause()
         landed: dict[str, Any] = json.loads(execution.standing_handback("r", "testbox", "/w t", SHA, "ok", verdict, (self.RUN, text)))
         del landed["execution_host"]  # the registry checks it and records the rest
-        rec = {"state": "concluded", "history": [{"action": "conclude", "data": landed}]}
+        rec = {"state": "concluded", "checkout": "/w t", "history": [{"action": "conclude", "data": landed}]}
         again = execution.recorded_handback(rec, "r", "/w t", "testbox", "ok", self.RUN, "")
         self.assertEqual(json.loads(again or "{}"), landed)
         self.assertIsNotNone(execution.recorded_handback(rec, "r", "/w t", "testbox", "ok", self.RUN, "pass"))
+        # THE CHECKOUT's note for a record naming none is part of the lead, so its retry matches too.
+        bare: dict[str, Any] = {"request_id": "r", "state": "concluded"}
+        note = execution.unchecked_clause(bare)
+        landed = json.loads(execution.standing_handback("r", "testbox", "/w t", SHA, "ok", verdict, (self.RUN, text), note))
+        del landed["execution_host"]
+        self.assertIn(", --observed-from unchecked: r records no checkout", landed["evidence"])
+        bare["history"] = [{"action": "conclude", "data": landed}]
+        self.assertEqual(json.loads(execution.recorded_handback(bare, "r", "/w t", "testbox", "ok", self.RUN, "") or "{}"),
+                         landed)
         for call in (("r", "/w t", "testbox", "other words", self.RUN, ""), ("r", "/w t", "testbox", "ok", "/runs/other", ""),
                      ("r", "/w u", "testbox", "ok", self.RUN, ""), ("r", "/w t", "testbox", "ok", self.RUN, "fail"),
                      ("r", "/w t", "testbox", "ok", "", "pass")):
@@ -679,6 +688,115 @@ class RetryRule(unittest.TestCase):
         self.assertEqual(gpu(self.rec(), "other")["evidence"], "other")  # the registry's to refuse
         running = gpu(self.rec(state="running"), "ok")
         self.assertEqual((running["evidence"], running["fresh"]), ("ok; GPU co-tenants on rog (rog:/q): fresh", True))
+
+
+class CheckoutBinding(unittest.TestCase):
+    """#731: THE CHECKOUT -- every ``--observed-from`` form reads only the record's own checkout,
+    refused before anything is read on the box; a record naming none concludes, saying so."""
+
+    OTHER = "c" * 40
+
+    def setUp(self) -> None:
+        self.cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+
+    def rec(self, **over: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {"request_id": "r", "state": "launching", "checkout": "/wt/r",
+                                "request": {"request_id": "r", "kind": "correctness", "execution_host": "testbox",
+                                            "repository": "o/r", "standing": True},
+                                "history": [{"action": "dispatch", "data": {}}]}
+        base.update(over)
+        return {k: v for k, v in base.items() if v is not None}
+
+    def observed(self, record: dict[str, Any], checkout: str) -> tuple[str | Refusal, bool]:
+        with mock.patch.object(execution, "observed_head", return_value=self.OTHER) as read:
+            got = execution.observed_sha_of(self.cfg, record, "testbox", checkout)
+        return got, read.called
+
+    def test_the_recorded_checkout_is_read_whatever_its_trailing_separators(self) -> None:
+        for spelling in ("/wt/r", "/wt/r/", "/wt/r//"):
+            self.assertEqual(self.observed(self.rec(), spelling), (self.OTHER, True), spelling)
+        self.assertEqual(self.observed(self.rec(checkout="C:\\wt\\r"), "C:\\wt\\r\\"), (self.OTHER, True))
+
+    def test_another_checkout_is_refused_before_anything_is_read(self) -> None:
+        # A sibling worktree of the same repository, at the same commit, is still another checkout.
+        for spelling in ("/wt/r2", "/wt", "/WT/r", "/private/wt/r", "/wt/r/.", "wt/r"):
+            got, read = self.observed(self.rec(), spelling)
+            self.assertIsInstance(got, Refusal, spelling)
+            assert isinstance(got, Refusal)
+            self.assertFalse(read, spelling)
+            self.assertEqual(got.rc, 1)
+            self.assertEqual(got.text, f"EXECUTION REFUSED: --observed-from {spelling} is not r's recorded checkout /wt/r"
+                                       " on testbox (ludics-lite#731: a conclusion reads its own worker's checkout);"
+                                       " nothing concluded")
+
+    def test_a_concluded_record_is_checked_too_and_its_retry_needs_no_read(self) -> None:
+        landed = {"request_id": "r", "evidence": "e", "observed_sha": SHA, "remote_checkout": "/wt/r",
+                  "handle": "h", "log": "l", "verdict": "pass"}
+        done = self.rec(state="concluded", history=[{"action": "conclude", "data": landed}])
+        self.assertEqual(self.observed(done, "/wt/r"), (SHA, False))
+        self.assertIsInstance(self.observed(done, "/wt/other")[0], Refusal)
+
+    def test_a_record_naming_no_checkout_is_read_and_says_so(self) -> None:
+        bare = self.rec(checkout=None)
+        self.assertEqual(self.observed(bare, "/anywhere"), (self.OTHER, True))
+        self.assertEqual(execution.unchecked_clause(bare),
+                         ", --observed-from unchecked: r records no checkout (reserved before ludics-lite#731, or none given)")
+        self.assertEqual(execution.unchecked_clause(self.rec()), "")
+
+    def conclude(self, record: dict[str, Any], payload: dict[str, Any], observed_from: str) -> tuple[int, str, str]:
+        out = io.StringIO()
+        with mock.patch.object(execution, "record_to_check", return_value=record), \
+                mock.patch.object(execution, "observed_head", return_value=self.OTHER), \
+                mock.patch.object(revision, "commit_refusal", return_value=None), \
+                contextlib.redirect_stdout(out):
+            try:
+                text = execution.checked_evidence(self.cfg, json.dumps(payload), observed_from, "conclude")
+            except cli.Exit as exc:
+                return exc.rc, "", out.getvalue()
+        return 0, text, out.getvalue()
+
+    def test_a_plain_conclusion_records_the_checkout_it_read_and_no_other(self) -> None:
+        payload: dict[str, Any] = {"request_id": "r", "evidence": "ok", "verdict": "pass", "handle": "h", "log": "l"}
+        rc, text, _ = self.conclude(self.rec(), payload, "/wt/r")
+        data = json.loads(text)
+        self.assertEqual((rc, data["observed_sha"], data["remote_checkout"]), (0, self.OTHER, "/wt/r"))
+        self.assertEqual(data["evidence"], f"ok; observed_sha read as HEAD of /wt/r on testbox")
+        rc, _, said = self.conclude(self.rec(), payload, "/wt/r2")
+        self.assertEqual(rc, 1)
+        self.assertIn("EXECUTION REFUSED: --observed-from /wt/r2 is not r's recorded checkout /wt/r", said)
+        rc, _, said = self.conclude(self.rec(), {**payload, "remote_checkout": "/wt/r2"}, "/wt/r")
+        self.assertEqual(rc, 1)
+        self.assertIn("EXECUTION REFUSED: the payload's remote_checkout /wt/r2 is not --observed-from /wt/r", said)
+        self.assertEqual(self.conclude(self.rec(), {**payload, "remote_checkout": "/wt/r/"}, "/wt/r")[0], 0)
+        rc, text, _ = self.conclude(self.rec(checkout=None), payload, "/anywhere")
+        self.assertEqual((rc, json.loads(text)["evidence"]),
+                         (0, "ok; observed_sha read as HEAD of /anywhere on testbox, --observed-from unchecked:"
+                             " r records no checkout (reserved before ludics-lite#731, or none given)"))
+
+    def handback(self, record: dict[str, Any], observed_from: str) -> tuple[int, str, str]:
+        out = io.StringIO()
+        args = ["conclude", "--standing-handback", "--request", "r", "--observed-from", observed_from,
+                "--evidence", "ok", "--verdict", "pass"]
+        with mock.patch.object(execution, "record_to_check", return_value=record), \
+                mock.patch.object(execution, "check_identity"), \
+                mock.patch.object(execution, "observed_head", return_value=self.OTHER), \
+                mock.patch.object(revision, "commit_refusal", return_value=None), \
+                contextlib.redirect_stdout(out):
+            try:
+                text = execution.standing_handback_payload(self.cfg, args)
+            except cli.Exit as exc:
+                return exc.rc, "", out.getvalue()
+        return 0, text, out.getvalue()
+
+    def test_a_hand_back_reads_its_own_worktree_only(self) -> None:
+        rc, text, _ = self.handback(self.rec(), "/wt/r")
+        self.assertEqual((rc, json.loads(text)["remote_checkout"]), (0, "/wt/r"))
+        rc, _, said = self.handback(self.rec(), "/wt/r2")
+        self.assertEqual(rc, 1)
+        self.assertIn("EXECUTION REFUSED: --observed-from /wt/r2 is not r's recorded checkout /wt/r", said)
+        rc, text, _ = self.handback(self.rec(checkout=None), "/wt/r2")
+        self.assertEqual(rc, 0)
+        self.assertIn("HEAD of /wt/r2 on testbox, --observed-from unchecked: r records no checkout", json.loads(text)["evidence"])
 
 
 class GpuClause(unittest.TestCase):

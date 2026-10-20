@@ -18,7 +18,11 @@ def request(identity: str, **extra: object) -> dict[str, object]:
         purpose="unit", agent_host="mac", execution_host="mac", repository="o/r",
         requested_revision="origin/main", kind="correctness",
     )
+    if extra.get("standing"):
+        base["checkout"] = f"/wt/{identity}"  # THE CHECKOUT, which a new standing request must name
     base.update(extra)
+    if base.get("checkout") is None:
+        base.pop("checkout", None)  # checkout=None: a payload naming none
     return base
 
 
@@ -273,6 +277,78 @@ class Binding(RegistryCase):
         self.assertEqual(rc, 1)
         self.assertIn(f"the recorded observed_sha {self.SHA}, which this conclusion inherits, is not {self.OTHER},"
                       " the commit head-of:topic was resolved to at assignment", err)
+
+
+class Checkout(RegistryCase):
+    """ludics-lite#731: THE CHECKOUT -- beside the request, fixed at reserve, required of a new
+    standing request."""
+
+    def test_a_new_standing_request_must_name_an_absolute_checkout(self) -> None:
+        for action in ("reserve", "run"):
+            rc, out, err = self.call(action, request(f"s{action}", standing=True, checkout=None))
+            self.assertEqual((rc, out), (1, None))
+            self.assertIn("EXECUTION REFUSED: a standing reservation must name its checkout", err)
+            for bad in ("wt/r", "", "  ", 7, "~/wt"):
+                rc, _, err = self.call(action, request(f"b{action}", standing=True, checkout=bad))
+                self.assertEqual(rc, 1, bad)
+                self.assertIn("must be an absolute path on the execution host", err)
+        self.assertEqual(self.call("list", {})[1], [])
+        self.assertEqual(self.call("run", request("ok", standing=True, checkout="C:\\wt\\ok"))[0], 0)
+        self.assertEqual(self.call("run", request("plain"), slots="mac=9")[0], 0, "a non-standing request may name none")
+
+    def test_the_checkout_is_a_top_level_field_never_a_request_field(self) -> None:
+        rc, rec, _ = self.call("run", request("s", standing=True, evidence="go"))
+        self.assertEqual((rc, rec["checkout"]), (0, "/wt/s"))
+        # What an older registry, which refuses an unknown request field, reads of this record.
+        self.assertNotIn("checkout", rec["request"])
+        self.assertLessEqual(set(rec["request"]), registry.REQUEST_FIELDS | registry.OPTIONAL_FIELDS)
+        self.assertEqual(rec["history"][0]["data"]["checkout"], "/wt/s")
+        self.assertEqual(rec["history"][-1]["data"]["evidence"], "go")
+        rc, rec, _ = self.call("reserve", request("n", checkout="/wt/n"), slots="mac=9")
+        self.assertEqual((rc, rec["checkout"], "checkout" in rec["request"]), (0, "/wt/n", False))
+
+    def test_a_retry_names_the_same_checkout_or_is_refused(self) -> None:
+        self.assertEqual(self.call("reserve", request("s", standing=True))[0], 0)
+        self.assertEqual(self.call("reserve", request("s", standing=True))[0], 0, "the identical retry")
+        rc, _, err = self.call("reserve", request("s", standing=True, checkout="/wt/other"))
+        self.assertEqual(rc, 1)
+        self.assertIn('request_id already names a different checkout ("/wt/s")', err)
+        self.assertEqual(self.call("reserve", request("n"), slots="mac=9")[0], 0)
+        rc, _, err = self.call("reserve", request("n", checkout="/wt/n"), slots="mac=9")
+        self.assertEqual(rc, 1)
+        self.assertIn("request_id already names a different checkout (null)", err)
+
+    def test_an_older_record_naming_none_still_validates_and_concludes(self) -> None:
+        self.assertEqual(self.call("run", request("old", standing=True))[0], 0)
+        path = os.path.join(self.root, "executions", "old.json")
+        with open(path) as f:
+            data = json.load(f)
+        del data["checkout"]
+        del data["history"][0]["data"]["checkout"]
+        with open(path, "w") as f:
+            json.dump(data, f)
+        self.assertEqual(self.call("list", {})[0], 0)
+        done = {"request_id": "old", "verdict": "pass", "log": "/l", "evidence": "x", "handle": "h",
+                "remote_checkout": "/w", "observed_sha": "a" * 40}
+        self.assertEqual(self.call("conclude", done)[0], 0)
+
+    def test_a_malformed_checkout_in_the_ledger_is_refused(self) -> None:
+        self.call("run", request("s", standing=True))
+        path = os.path.join(self.root, "executions", "s.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["checkout"] = "relative"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        rc, _, err = self.call("list", {})
+        self.assertEqual(rc, 1)
+        self.assertIn("invalid checkout", err)
+
+    def test_an_evidence_payload_cannot_carry_one(self) -> None:
+        self.call("run", request("s", standing=True))
+        rc, _, err = self.call("record", {"request_id": "s", "state": "running", "evidence": "x", "checkout": "/wt/x"})
+        self.assertEqual(rc, 1)
+        self.assertIn("unknown evidence fields", err)
 
 
 class WindowGap(RegistryCase):
