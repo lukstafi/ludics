@@ -122,8 +122,9 @@
 #                          # then `measurement <id>` inside a live `execution hold --request <id>`
 #   fleet-worker.sh execution slot --holders           # one JSON line per held slot of THIS box:
 #                          # slot, kind gpu|cpu, pid, user, command, cwd (Linux, from /proc/locks;
-#                          # elsewhere null, each named in `unknown`), taking nothing
-#                          # (lib/ludics/fleetworker/holders.py)
+#                          # elsewhere null, each named in `unknown`), and the holder `record`,
+#                          # confirmed|unconfirmed|unknown (lock table, /proc fds or lsof), taking
+#                          # nothing (lib/ludics/fleetworker/holders.py)
 #   fleet-worker.sh execution hold [--why <text>] [--request <id>] [--deadline <seconds>] -- <command...>
 #                          # run under THIS box's OS-level sleep guard alone (a systemd-inhibit
 #                          # block lock; bare where none): the wrapper for an exclusive

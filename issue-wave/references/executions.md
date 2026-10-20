@@ -102,7 +102,14 @@ The probe's sibling read, `execution slot --holders` (ludics-lite#639), says who
 slots now: one JSON line per held slot (`box`, `event`, `at`, `slot`, `slots`, `kind` gpu|cpu,
 `pid`, `user`, `command`, `cwd`, `source`, `unknown`), taking nothing, the holder read from
 `/proc/locks`; where there is none (macOS) the slot is still listed, each field it cannot know
-`null` and named in `unknown`. After them come the batches waiting here (ludics-lite#719), one
+`null` and named in `unknown`. Each line's `record` (ludics-lite#712) is the holder record in the
+slot file and whether the box confirms it is the holder's: `verdict` `confirmed` (the lock table
+names the recorded pid, or, with no holder there, the recorded pid has the slot file open:
+`/proc/<pid>/fd` on Linux, `lsof` elsewhere), `unconfirmed` (it does not; `pids` lists the
+processes that do, without saying which one holds the lock) or `unknown` (`lsof` missing, timed
+out or failed, or the pid is another user's process; never read as confirmed), with `by` naming the
+reader and `why` the reason. Only a confirmed record shows its `command`, `taken`, `deadline` and
+the cap `left` (seconds); a slot with no record has `record` `null`. After them come the batches waiting here (ludics-lite#719), one
 `"event":"waiting"` line each, with `phase` (`window` while it waits out a measurement, `slot`
 while it waits for a free slot), `kind`, `pid`, `command` and `since`, read from the
 `waiting.<pid>` record each keeps flocked in the slot directory while it waits, so a waiter that
@@ -178,7 +185,12 @@ recorded: `EXECUTION HOLD <box>: measurement <id> waits on slot <n>: recorded ho
 slot taken <t> ago, <cap>; for: <command>`, and again every five minutes
 (`FLEET_HOLD_DRAIN_REPEAT`) as `still waits for slot <n> after <t>`. The line judges nothing about
 the pid and advises nothing: look at it before stopping the batch, or stop the hold to give the box
-back (ludics-lite#668). So no batch runs beside the measurement however it was
+back (ludics-lite#668). The line after it says whether the box confirms the record, as
+`--holders`' `record` does: `EXECUTION HOLD <box>: measurement <id> slot <n>: recorded holder,
+confirmed|unconfirmed|unknown (<why>)` (ludics-lite#712). Unconfirmed means the recorded pid does
+not hold the slot (a stale record; or, read from open descriptors, a batch that outlived its
+wrapper, which the lock table still names as its taker): the reason names the processes that have
+the slot file open. So no batch runs beside the measurement however it was
 admitted: a batch waiting for a slot either ends before the measurement starts or starts after it
 ends. While such a hold is live a `FLEET_SLOT_HELD` marker is not trusted, since the slot it names
 is held by the hold, not by an enclosing batch; the measurement's own runs carry its marker

@@ -3850,8 +3850,27 @@ if held "$TMP/slot-w1.log" "slot 1 of 3, GPU token 1 of 1 held" && held "$TMP/sl
     [ "$who" = "flock-test null command,cwd,pid,user " ] && ok "...and with no /proc/locks, each holder's fields null and named in unknown" \
       || ko "--holders without /proc/locks said '$who' -- $out"
   fi
+  # THE CONFIRMATION (ludics-lite#712): each line carries its holder record, confirmed by the lock
+  # table where the box has one, and elsewhere by lsof (the wrapper keeps the slot file open).
+  by=lsof; [ -r /proc/locks ] && by=proc-locks
+  recs=$(jq -r '"\(.slot) \(.record.verdict) \(.record.by) \(.record.pid) \(.record.command) \(.record.deadline) \(.record.taken != null)"' <<<"$out" 2>/dev/null | tr '\n' ' ')
+  [ "$recs" = "1 confirmed $by $w1 sleep 30 null true 3 confirmed $by $w2 sleep 30 null true " ] &&
+    ok "...each with its holder record, confirmed by $by: its pid, command and cap" ||
+    ko "--holders did not confirm the records of $w1 and $w2 by $by: '$recs' -- $out"
 fi
 kill -9 "$w1" "$w2" 2>/dev/null; wait "$w1" 2>/dev/null; wait "$w2" 2>/dev/null
+# ...and a stale record, of a live pid of this user that does not hold the slot (this suite's own
+# shell), reads unconfirmed, naming the holder that has it open and showing nothing of the record.
+"${FWS[@]}" execution slot -- sleep 30 > "$TMP/slot-st.log" 2>&1 &
+st=$!
+if held "$TMP/slot-st.log" "slot 1 of 1 held"; then
+  printf '{"pid": %d, "command": ["stale"], "started": 1, "deadline": null}\n' "$$" > "$HOME/.local/state/fleet-execution-slots/testbox/slot.1"
+  expect "--holders reads a stale record unconfirmed" 0 '"verdict":"unconfirmed"' -- "${FWS[@]}" execution slot --holders
+  rec=$(jq -r '"\(.record.by) \(.record.pid) \(.record.command) \(.record.pids | index('"$st"') != null)"' <<<"$out" 2>/dev/null)
+  [ "$rec" = "$by $$ null true" ] && ok "...by $by, naming the holder $st and not the record's command" ||
+    ko "--holders on a stale record said '$rec', want '$by $$ null true' -- $out"
+fi
+kill -9 "$st" 2>/dev/null; wait "$st" 2>/dev/null
 for wi in $(seq 50); do out=$("${FWT[@]}" execution slot --holders 2>&1); [ -z "$out" ] && break; sleep 0.1; done
 [ -z "$out" ] && ok "--holders lists nothing once the batches are gone" || ko "--holders still lists holders after the kill -- $out"
 expect "--holders takes no other word" 2 "--holders takes no other word" -- "${FWT[@]}" execution slot --holders --cpu
@@ -4240,6 +4259,10 @@ if held "$TMP/win-m.log" "measurement win-measure waits for the batch in slot 1 
   # drain names it after the line above, as its slot record says: its pid, its cap and its command.
   held "$TMP/win-m.log" "measurement win-measure waits on slot 1: recorded holder pid [0-9]*, slot taken [0-9]*s ago, no --deadline recorded; for: sleep 30$" &&
     ok "...naming the batch it waits for, which no --deadline bounds"
+  # THE CONFIRMATION (ludics-lite#712): the next line says the box confirms that record, the
+  # drain's own open descriptor on the slot file excluded.
+  held "$TMP/win-m.log" "measurement win-measure slot 1: recorded holder, confirmed (.*pid $b0 " &&
+    ok "...and that the box confirms the record is its holder's"
   kill -9 "$b0" 2>/dev/null; wait "$b0" 2>/dev/null
   held "$TMP/win-m.log" "^measuring$" && ok "...and starts once it ends"
   expect "...after which a slot marker is not trusted, since the hold is what holds that slot" 1 "does not cover this batch (a measurement's .execution hold --request. holds this box's slots)" -- \

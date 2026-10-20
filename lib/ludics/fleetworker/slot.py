@@ -26,7 +26,9 @@ brief:
 - THE HOLDER RECORD (ludics-lite#668): whoever takes a slot writes into its lock file who it is
   (pid, command, start, ``--deadline``), and a drain waiting on a slot reports that record on
   stderr, as recorded, at once and then every ``FLEET_HOLD_DRAIN_REPEAT`` seconds, so the
-  coordinator can decide without first finding what the drain waits for.
+  coordinator can decide without first finding what the drain waits for; and the line after it
+  says whether this box confirms that record is the holder's (ludics-lite#712, holders.py's THE
+  CONFIRMATION).
 - THE WINDOW WAIT (ludics-lite#557): ``slot --wait-window[=<seconds>]`` turns the refusal beside an
   outstanding measurement on this box (a window or not) into a bounded wait for it to conclude, then
   queues for a slot under ``--wait`` as usual: two waits, each with its own bound and refusal line.
@@ -220,7 +222,10 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # record is written by the holder AFTER its flock, so the content of a held file is its holder's,
 # except across an upgrade: a batch started by a fleet-worker older than #668 writes nothing, and
 # the file then holds an earlier taker's record. That is why the line says "recorded" and judges
-# nothing: the coordinator reads it as the record, and looks before stopping anything. The waiting
+# nothing: the coordinator reads it as the record, and looks before stopping anything. The line
+# after it (ludics-lite#712) says whether the box confirms the record is the holder's: `recorded
+# holder, confirmed`, `unconfirmed` or `unknown`, read from what the kernel reports about the slot
+# file, never from ps (holders.py's THE CONFIRMATION). The waiting
 # itself is still a blocking flock (in a thread, so the main one can speak), so a freed slot still
 # wakes the drain at once, ahead of a batch polling for one each second.
 # Exit: the command's own status; 127 with `EXECUTION HOLD REFUSED` when it cannot be run; 2 usage;
@@ -441,12 +446,34 @@ def holder_line(box: str, request: str, index: int, holder: Holder | None, now: 
                    f" for: {printable(shlex.join(holder.command))}")
 
 
+def confirmation_line(box: str, request: str, index: int, confirmation: holders.Confirmation) -> str:
+    """The line after ``holder_line`` (ludics-lite#712): whether this box confirms the record is the
+    holder's (holders.py's THE CONFIRMATION), on a line of its own, so the record's line stays as
+    it was."""
+    return (f"{HOLD_PREFIX} {box}: measurement {request} slot {index}: recorded holder, {confirmation.verdict}"
+            f" ({printable(confirmation.why)})")
+
+
+def confirmed_line(box: str, request: str, index: int, path: str, pid: int) -> str:
+    """``confirmation_line`` for a record of ``pid`` on slot ``index``, read now, the drain's own
+    pid excluded; a confirmation that fails is said as unknown."""
+    try:
+        confirmation = holders.confirm(path, pid, holders.read_lock_table(holders.PROC_LOCKS),
+                                       cotenants.run_bounded, holders.PROC, os.getpid())
+    except Exception as exc:  # a diagnostic: never the measurement's end
+        confirmation = holders.Confirmation("unknown", "", None, f"the confirmation failed: {exc!r}")
+    return confirmation_line(box, request, index, confirmation)
+
+
 def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, repeat: float) -> None:
     """Take slot ``index`` (its lock file ``path``, open on ``descriptor``) for the measurement,
     waiting for its batch to end: the unchanged ``waits for the batch`` line, then the holder's
-    record (``holder_line``) at once and every ``repeat`` seconds. The wait is a blocking flock in
-    a thread, so a freed slot wakes it at once. Raises OSError (the take's own failure only:
-    naming the holder is a diagnostic, and nothing it raises stops the drain)."""
+    record (``holder_line``) and its confirmation (``confirmation_line``) at once and every
+    ``repeat`` seconds. The wait is a blocking flock in a thread, so a freed slot wakes it at once.
+    The confirmation runs in a thread of its own (``lsof`` may take its whole bound), so neither
+    the record's line nor the take waits for it, and it is said only while the drain still waits.
+    Raises OSError (the take's own failure only: naming the holder is a diagnostic, and nothing it
+    raises stops the drain)."""
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return
@@ -454,25 +481,44 @@ def drain_slot(box: str, request: str, path: str, descriptor: int, index: int, r
         pass
     errline(f"{HOLD_PREFIX} {box}: measurement {request} waits for the batch in slot {index} to end")
     failure: list[OSError] = []
+    saying = threading.Lock()
+    taken: list[bool] = []
 
     def take() -> None:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
         except OSError as exc:
             failure.append(exc)
+            return
+        with saying:  # a line being said finishes first; none is said after this
+            taken.append(True)
 
     waiter = threading.Thread(target=take, name=f"drain-slot-{index}", daemon=True)
     start = time.monotonic()
     waiter.start()
     waiter.join(0.2)  # a batch ending in this instant needs no naming
     waited: float | None = None
+
+    def say(line: str) -> None:
+        with saying:
+            if not taken and waiter.is_alive():
+                errline(line)
+
+    def confirm(pid: int) -> None:
+        say(confirmed_line(box, request, index, path, pid))
+
+    confirming: threading.Thread | None = None
     while waiter.is_alive():
+        holder: Holder | None = None
         try:
-            line = holder_line(box, request, index, read_holder(path), time.time(), time.monotonic(), waited)
+            holder = read_holder(path)
+            line = holder_line(box, request, index, holder, time.time(), time.monotonic(), waited)
         except Exception as exc:  # a diagnostic: never the measurement's end
             line = f"{HOLD_PREFIX} {box}: measurement {request} waits on slot {index}: its record is unread ({exc!r})"
-        if waiter.is_alive():
-            errline(line)
+        say(line)
+        if holder is not None and (confirming is None or not confirming.is_alive()):
+            confirming = threading.Thread(target=confirm, args=(holder.pid,), name=f"drain-confirm-{index}", daemon=True)
+            confirming.start()
         waiter.join(repeat)
         waited = time.monotonic() - start
     if failure:
@@ -1310,7 +1356,9 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     if parsed.holders:
         # THE HOLDERS (ludics-lite#639, ``holders.py``): who holds this box's slots now, one JSON line
         # per held slot; like the probe, it takes nothing and reads no registry.
-        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens) + holders.waiters(box, directory)))
+        # The waiters are read first: the holders' confirmations may each take lsof's bound.
+        waiters = holders.waiters(box, directory)
+        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens) + waiters))
         return 0
     if parsed.probe:
         # THE PROBE: what a slot here would be, taking nothing and reading no registry; inside a
