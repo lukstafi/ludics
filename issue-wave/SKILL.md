@@ -726,11 +726,11 @@ controlled through the tools in your coordinator's file, never through those com
   corners until the boundary was written down). The brief carries the policy, and the worker
   applies it itself from round 3 when round 1 had five or more findings, and from round 5
   otherwise: sent by the coordinator, it landed only when a heartbeat was read (wave-20261018o:
-  lukstafi/ocannl-staging#1200 and #1216 reached rounds 12-13 between heartbeats, and #1281
-  round 8 while the heartbeat's output showed it climbing from round 5). The count is read on
-  every heartbeat with
-  `fleet-worker.sh prs <owner/repo> --wave <id>` for EACH wave repository - the PR repository
-  (`lukstafi/ocannl-staging` for an ahrefs/ocannl wave), not the tracker - and no wake event (a
+  lukstafi/ocannl-staging#1200 and #1216 reached rounds 12-13 between heartbeats, and
+  ahrefs/ocannl#1281's PR round 8 while the heartbeat's output showed it climbing from round 5).
+  The count is read on every heartbeat with `fleet-worker.sh prs <owner/repo> --wave <id>` for
+  EACH wave repository - the PR repository (`lukstafi/ocannl-staging` for an ahrefs/ocannl
+  wave), not the tracker - and no wake event (a
   desktop CI-monitor event, a worker's notification) stands in for that read. It lists each open
   PR's round count, CI and head age and flags the PRs due (ludics-lite#405: one reached 10
   unnoticed; ludics-lite#650: lukstafi/ocannl-staging#1170 ran 12 rounds with no note, its rounds
