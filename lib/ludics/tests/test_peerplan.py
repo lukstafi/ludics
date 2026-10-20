@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import dataclass
 from typing import cast
@@ -30,6 +31,11 @@ argv = sys.argv[1:]
 with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
     log.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": sys.stdin.read()}) + "\\n")
 mode = os.environ.get("FAKE_CODEX_MODE", "ok")
+if mode == "hang":
+    with open(os.path.join(here, "pid"), "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+    import time
+    time.sleep(600)
 if mode == "fail":
     sys.stderr.write("model at capacity\\n")
     sys.exit(5)
@@ -111,7 +117,8 @@ class PeerPlan(unittest.TestCase):
         # The issue body's own fences sit inside a longer one.
         self.assertIn("`````json\n", first.stdin)
 
-        mine = os.path.join(self.tmp, "claude-plan.md")
+        # The documented form: the plan saved at its record path, and that path handed in.
+        mine = os.path.join(self.dir, "claude-plan.md")
         with open(mine, "w", encoding="utf-8") as f:
             f.write("my plan\n")
         done = self.entry("critique", self.dir, "--plan", mine)
@@ -135,6 +142,42 @@ class PeerPlan(unittest.TestCase):
         self.assertFalse(os.path.exists(wt))
         self.assertNotIn(wt, git("-C", self.repo, "worktree", "list"))
         self.assertTrue(os.path.exists(os.path.join(self.dir, "astra-plan.md")))
+
+    def test_a_plan_from_elsewhere_is_copied_to_the_record(self) -> None:
+        self.assertEqual(self.wait(self.start()), "rc=0")
+        mine = os.path.join(self.tmp, "elsewhere.md")
+        with open(mine, "w", encoding="utf-8") as f:
+            f.write("from elsewhere\n")
+        done = self.entry("critique", self.dir, "--plan", mine)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        with open(os.path.join(self.dir, "claude-plan.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "from elsewhere\n")
+
+    def test_bg_run_stop_ends_codex_too(self) -> None:
+        os.environ["FAKE_CODEX_MODE"] = "hang"
+        run = self.start()
+        pidfile = os.path.join(self.codex.dir, "pid")
+        for _ in range(100):
+            if os.path.exists(pidfile) and os.path.getsize(pidfile) > 0:
+                break
+            time.sleep(0.1)
+        with open(pidfile, encoding="utf-8") as f:
+            pid = int(f.read())
+        stop = subprocess.run([BG_RUN, "stop", run], capture_output=True, text=True, check=False)
+        self.assertEqual(stop.returncode, 0, stop.stderr)
+        self.assertTrue(self.wait(run).startswith("STOPPED"))
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("codex outlived bg-run.sh stop")
+        done = self.entry("clean", self.dir)
+        self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_start_refuses_a_used_directory(self) -> None:
         os.makedirs(self.dir)

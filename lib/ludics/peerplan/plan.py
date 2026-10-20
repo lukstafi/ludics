@@ -13,7 +13,8 @@ same worktree (a resumed session runs where it is started, so the run ``cd``s th
 Claude worker's plan, and the critique lands in ``<dir>/critique.md``. Each prints the run's
 bg-run directory, to block on with ``bg-run.sh wait``; ``<dir>/plan-run`` and
 ``<dir>/critique-run`` keep them for a coordinator that lost track. ``clean`` removes the worktree
-once no run is live, and keeps every other file: they are the record of the planning.
+once no run is live, and keeps every other file: they are the record of the planning. A run has
+no deadline of its own: ``bg-run.sh stop <run>`` ends it, codex included.
 
 Exit 0 done, 1 refused or failed (the message says which), 2 a usage error. A run's own status is
 the bg-run verdict's: codex's exit status, or 1 when codex exited 0 and wrote no plan.
@@ -38,9 +39,6 @@ PY = ROOT / "scripts" / "py"
 BG_RUN = ROOT / "issue-wave" / "scripts" / "bg-run.sh"
 DEFAULT_MODEL = "gpt-6-astra"
 DEFAULT_EFFORT = "medium"
-# A planning turn that is still going after an hour is stuck, not thorough: killed, it reads as
-# exit 124 in the run's verdict.
-RUN_TIMEOUT = 3600
 
 USAGE = f"""\
 usage: {PROG} start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref> [--model <m>] [--effort <e>]
@@ -280,7 +278,10 @@ def critique(args: Sequence[str]) -> int:
         raise cli.Exit(1, f"{d} already has a critique: one per plan")
     if not os.path.isdir(meta.worktree):
         raise cli.Exit(1, f"the planner's worktree {meta.worktree} is gone ({PROG} clean ran?)")
-    shutil.copyfile(plan, os.path.join(d, "claude-plan.md"))
+    # The coordinator may have saved the plan at its record path already, and does by default.
+    record = os.path.join(d, "claude-plan.md")
+    if not (os.path.exists(record) and os.path.samefile(plan, record)):
+        shutil.copyfile(plan, record)
     write(
         os.path.join(d, "critique-brief.md"),
         f"{CRITIQUE_BRIEF}\n## The implementer's plan\n\n{fenced(read(plan), 'markdown')}",
@@ -324,9 +325,9 @@ def run_codex(d: str, kind: str) -> int:
         # resume takes no -s and no -C: the sandbox is set by config and the directory by cwd.
         argv = ["exec", "resume", tid, "--json", "-m", meta.model, "-c", effort, "-c", 'sandbox_mode="read-only"']
         brief = read(os.path.join(d, "critique-brief.md"))
-    done = proc.run_tool(
-        "codex", [*argv, "-o", out, "-"], cwd=meta.worktree, stdin=brief.encode("utf-8"), timeout=RUN_TIMEOUT
-    )
+    # No timeout: run_tool would start codex in a session of its own, out of reach of the
+    # `bg-run.sh stop` that bounds an overdue planner. Unbounded, codex stays in the run's group.
+    done = proc.run_tool("codex", [*argv, "-o", out, "-"], cwd=meta.worktree, stdin=brief.encode("utf-8"))
     write(os.path.join(d, f"{kind}.jsonl"), done.stdout)
     sys.stderr.write(done.stderr)
     if kind == "plan":
