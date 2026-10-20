@@ -237,7 +237,7 @@ The prompt names the base itself because `--base` refuses a custom prompt (`cann
 '[PROMPT]'`, codex-cli 0.159), and the no-tests line has to be in it: left to itself the review
 runs suites, in a sandbox that lacks tools (`ps`) and takes no run-time slot, so their failures
 are not real and their load lands on your own runs (ludics-lite#609). Read `verdict.md`, not the
-output: the transcript is the whole agent run, about a thousand lines, and the verdict is only
+output: the transcript is the whole agent run, often thousands of lines, and the verdict is only
 its last message. Open `run.log` only when `verdict.md` is empty. It runs for minutes, so give it
 a long timeout or a background run. Fix the findings you agree with and commit, then run the
 gates above on that commit — they gate the head you push, so they come after the local review, not before it. Name
