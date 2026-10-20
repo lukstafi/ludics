@@ -761,7 +761,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             os.set_inheritable(descriptor, True)
             if waiting is not None:
                 waiting.done()
-            release()   # held: the anchor's heartbeat has done its work (THE WAITERS)
+            release()   # held: the anchor's heartbeat has done its work (THE WAITERS), told without waiting
             # THE HOLDER RECORD, for a drain waiting on it; its deadline's end once that counts.
             taken = record_holder(descriptor, command, bound)
 
@@ -1118,6 +1118,37 @@ def release_waiter(cfg: Config, waiter: dict[str, Any] | None) -> None:
         listing(cfg, {"id": waiter["id"], "done": True})
 
 
+def release_detached(cfg: Config, waiter: dict[str, Any] | None) -> None:
+    """``release_waiter`` without waiting for it: a slot just taken must not sit idle behind an
+    anchor that stopped answering (ssh gives one about two minutes). A double fork, so nothing is
+    left for this process to reap; the grandchild closes every descriptor it inherited before it
+    asks -- the slot's lock among them, which it must never hold past the batch, and the batch's
+    output pipes, whose reader would otherwise wait for it."""
+    if waiter is None:
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        child = os.fork()
+    except OSError:
+        return  # the heartbeat expires
+    if child:
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(child, 0)
+        return
+    try:
+        if os.fork() == 0:
+            os.setsid()
+            os.closerange(3, 65536)  # the slot flock, the batch's pipes: all of it
+            devnull = os.open(os.devnull, os.O_RDWR)
+            for target in (0, 1, 2):
+                os.dup2(devnull, target)
+            release_waiter(cfg, waiter)
+    except BaseException:
+        pass
+    os._exit(0)
+
+
 def waiter_id(cfg: Config) -> str:
     """This waiter's id on the anchor (THE WAITERS): where it runs and its pid, in the registry's
     id alphabet."""
@@ -1397,7 +1428,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     except OSError:
         die(f"execution slot: cannot create the slot directory {directory}")
     take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command, parsed.deadline, waiting,
-              lambda: release_waiter(cfg, waiter))
+              lambda: release_detached(cfg, waiter))
 
 
 def cmd_hold(cfg: Config, args: list[str]) -> int:

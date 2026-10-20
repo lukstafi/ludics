@@ -432,6 +432,35 @@ class Waiting(unittest.TestCase):
             slot.take_slot("testbox", busy, 1, 0, False, 0, "", ["make"], None, release=lambda: released.append("refused"))
         self.assertEqual(released, ["held", "refused"])
 
+    def test_the_release_after_a_slot_is_taken_does_not_wait_and_holds_nothing_inherited(self) -> None:
+        # Round 3 of #736: an anchor that stopped answering must not keep a held slot idle.
+        marker = os.path.join(self.dir, "released")
+
+        def slow_listing(_cfg: object, waiter: Any = None) -> None:
+            time.sleep(2)
+            with open(marker, "w") as f:
+                json.dump(waiter, f)
+
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        read, write = os.pipe()
+        os.set_inheritable(write, True)
+        started = time.monotonic()
+        with mock.patch.object(slot, "listing", slow_listing):
+            slot.release_detached(cfg, {"id": "testbox-1", "box": "testbox", "command": "x", "ttl": 30})
+        self.assertLess(time.monotonic() - started, 1.5, "it does not wait for the anchor")
+        os.close(write)
+        reader = threading.Thread(target=os.read, args=(read, 1))
+        reader.start()
+        reader.join(1.5)
+        self.assertFalse(reader.is_alive(), "the release holds no inherited descriptor (EOF at once)")
+        os.close(read)
+        deadline = time.monotonic() + 10
+        while not os.path.exists(marker) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        with open(marker) as f:
+            self.assertEqual(json.load(f), {"id": "testbox-1", "done": True})
+        slot.release_detached(cfg, None)
+
     def test_a_batch_queued_for_a_slot_is_recorded_and_runs_without_its_record(self) -> None:
         # A held slot 1 makes the batch wait; freed, the batch takes it, and its command sees no record.
         blocker = os.open(os.path.join(self.dir, "slot.1"), os.O_CREAT | os.O_RDWR, 0o644)
