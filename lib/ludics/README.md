@@ -67,6 +67,8 @@ prreview/mergebuild.py     merge's build of the would-be merge commit (.github/s
 prreview/checkruns.py      conclusion_class, newest_first
 prreview/ere.py            the advisory list, asked of grep (is_advisory, ere_valid)
 prreview/gate.py           gate_checks (checks, merge, and base's merged-head source)
+prreview/runners.py        build jobs that never got a runner: NO RUNNER, NEVER STARTED (checks, merge;
+                           merge.py's Recovery reruns once, #560/#728)
 prreview/workflows.py      the workflow-file reads and the paths-ignore walk (checks/merge, base)
 prreview/workflow_yaml.py  the narrow workflow-YAML readers and the glob translation
 ```

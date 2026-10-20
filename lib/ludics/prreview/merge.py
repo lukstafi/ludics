@@ -620,11 +620,10 @@ class Merge:
         """Exit 6: no verdict because a build job never got a runner (runners.py), and the one
         recovery is spent, failed, or -- without --wait -- not made. Names the commands."""
         repo, pr, recovery = self.repo, self.num, self.recovery
-        commands = list(recovery.commands)
-        for orphan in self.gate.orphans:
-            text = recovery_text(orphan, repo)
-            if text not in commands and not any(text.startswith(c) for c in commands):
-                commands.append(text)
+        # The recovery's own commands where it ended on one run; else each orphan's, once a run.
+        commands = list(recovery.commands) or list(
+            dict.fromkeys(recovery_text(orphan, repo) for orphan in self.gate.orphans)
+        )
         if recovery.why:
             why = recovery.why
         elif self.opts.wait_for > 0:

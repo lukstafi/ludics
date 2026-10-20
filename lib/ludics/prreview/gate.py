@@ -5,7 +5,9 @@ the advisory list and the repository's own advisory file (``advisory_policy``, #
 override's waiver (``apply_waiver``/``is_waived``, #392), the check fold (``build_checks``,
 ``summarize_checks``), and the run list that overrules it (``run_signal`` with its job reads,
 #24/#38/#500) -- whose run-less head, inside the grace, asks the paths-ignore recognition
-(``workflows.head_within_paths_ignore``, #176).
+(``workflows.head_within_paths_ignore``, #176). On a round with no verdict, ``checks`` and
+``merge`` also look for jobs that never got a runner (runners.py, #560/#728): named in the report,
+they end the wait, unless ``merge --wait``'s one recovery keeps it.
 
 The shell's comments above each of those functions carry the incident history and every review
 round's reason; read them there before changing a rule here. What changed in the port is the
