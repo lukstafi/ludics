@@ -396,7 +396,7 @@ class Waiting(unittest.TestCase):
         os.utime(old, (time.time() - 120, time.time() - 120))
         waiting = slot.WaitingRecord(self.dir, ["x"], "slot", "gpu")
         self.addCleanup(waiting.done)
-        self.assertEqual(sorted(os.listdir(self.dir)), [".waiting-young", "waiting.2", f"waiting.{os.getpid()}"])
+        self.assertEqual(sorted(os.listdir(self.dir)), sorted([".waiting-young", "waiting.2", f"waiting.{os.getpid()}"]))
 
     def test_a_directory_it_cannot_write_says_so_and_waits_without_a_record(self) -> None:
         open(os.path.join(self.dir, "file"), "w").close()   # a file where its directory would go
@@ -530,6 +530,33 @@ class WindowWait(unittest.TestCase):
         with mock.patch.object(slot, "read_registry", reads), contextlib.redirect_stderr(io.StringIO()):
             await_measurements(cfg, "testbox", [measurement("win")], 600, ["x"])
         self.assertEqual(reads.call_args.args[3]["ttl"], 30, "a short poll still gets 30 s")
+
+    def test_a_wait_whose_caller_registered_it_reads_first_after_a_poll(self) -> None:
+        # Round 1 of #736: the caller's read that found the box held already carried the heartbeat.
+        reads = mock.Mock(return_value=[])
+        sleeps = mock.Mock()
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "20"}, host="testbox")
+        with mock.patch.object(slot, "read_registry", reads), mock.patch.object(slot.time, "sleep", sleeps), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 600, ["x"], registered=True), [])
+        self.assertEqual((sleeps.call_count, reads.call_count), (1, 1))
+
+    def test_the_read_that_may_find_a_window_registers_the_waiter(self) -> None:
+        # cmd_slot with --wait-window: its first read is the heartbeat; without it, a plain list.
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_BOXES": "testbox",
+                           "FLEET_SLOT_STATE": tempfile.mkdtemp(prefix="ludics-slot-state.")}, host="testbox")
+        self.addCleanup(shutil.rmtree, cfg.env["FLEET_SLOT_STATE"])
+        for flags, carried in ((["--wait-window=60"], True), ([], False)):
+            reads = mock.Mock(return_value=slot.Unread(1, ("refused",)))
+            with mock.patch.object(slot, "read_registry", reads), mock.patch.object(slot, "registry_source"), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(slot.cmd_slot(cfg, [*flags, "--", "make"]), 1)
+            waiter = reads.call_args.kwargs.get("waiter")
+            self.assertEqual(waiter is not None, carried, flags)
+            if waiter is not None:
+                self.assertEqual((waiter["box"], waiter["command"]), ("testbox", "make"))
 
     def test_a_late_read_that_answers_clears_an_earlier_failed_one(self) -> None:
         unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))

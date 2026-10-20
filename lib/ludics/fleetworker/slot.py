@@ -1092,6 +1092,22 @@ def describe_measurement(box: str, record: dict[str, Any], prefix: str = SLOT_PR
     )
 
 
+def window_poll(cfg: Config) -> float:
+    """``FLEET_SLOT_WINDOW_POLL``: the seconds between a window wait's reads (15)."""
+    try:
+        return max(float(cfg.env.get("FLEET_SLOT_WINDOW_POLL", "15")), 0.1)
+    except ValueError:
+        return 15.0
+
+
+def waiter_of(cfg: Config, command: Sequence[str], **where: str) -> dict[str, Any]:
+    """The heartbeat a window wait's reads carry (THE WAITERS): ``where`` is ``box=`` or, for a leg
+    that learns its box from the read, ``request=``; fresh for three polls' worth (at least 30 s),
+    so the heartbeat of the read that finds the box free outlasts the moment it takes to get its slot."""
+    return {**where, "id": waiter_id(cfg), "command": " ".join(command)[:300],
+            "ttl": min(max(30, math.ceil(3 * window_poll(cfg))), 3600)}
+
+
 def waiter_id(cfg: Config) -> str:
     """This waiter's id on the anchor (THE WAITERS): where it runs and its pid, in the registry's
     id alphabet."""
@@ -1159,7 +1175,7 @@ class WaitingRecord:
 def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bound: int,
                        command: Sequence[str], voice: Voice = SLOT_VOICE,
                        holders: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
-                       ) -> list[dict[str, Any]] | int:
+                       registered: bool = False) -> list[dict[str, Any]] | int:
     """``--wait-window`` (ludics-lite#557): block until no measurement is outstanding on ``box``,
     re-reading the registry every ``FLEET_SLOT_WINDOW_POLL`` seconds (15), for at most ``bound``
     seconds; the registry it last read, or the refusal's status. A measurement on another box is
@@ -1168,17 +1184,13 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     ``execution leg`` waits here too, on the agent host for its execution host's box, in its own
     ``voice``, with ``holders`` (what holds the box in a registry read; the box's measurements when
     not given) adding the window its record is still suspended by (ludics-lite#666)."""
-    try:
-        poll = max(float(cfg.env.get("FLEET_SLOT_WINDOW_POLL", "15")), 0.1)
-    except ValueError:
-        poll = 15.0
+    poll = window_poll(cfg)
     # THE WAITERS (ludics-lite#719): every read in the wait tells the anchor this batch waits for the
-    # box, fresh for three polls' worth (at least 30 s), so the heartbeat of the read that finds the
-    # box free outlasts the moment it takes to get its slot. The first read is at once, so a window
-    # opened before the first poll would be due sees this waiter too.
-    waiter = {"box": box, "id": waiter_id(cfg), "command": " ".join(command)[:300],
-              "ttl": min(max(30, math.ceil(3 * poll)), 3600)}
-    beat = True
+    # box. ``registered`` says the read that found the box held already did (the caller's, made with
+    # ``waiter_of``); otherwise the first read here is at once, so a window opened before the first
+    # poll would be due sees this waiter too.
+    waiter = waiter_of(cfg, command, box=box)
+    beat = not registered
     start = time.monotonic()
     deadline, progress = start + bound, start + WINDOW_PROGRESS
     named: set[str] = set()
@@ -1308,7 +1320,12 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
             case _:
                 assert_never(verdict)
     registry_source()  # `execution: missing helper` before the registry is asked anything
-    records = read_registry(cfg, box)
+    # THE WAITERS (ludics-lite#719): a batch that may wait out a window registers as a waiter in the
+    # read that may find one, so no window can conclude and the next open between that read and its
+    # first heartbeat; a batch that then finds the box free leaves a heartbeat that only a window
+    # opened in the next half minute reads, and that window's drain waits for the batch anyway.
+    window_wait = parsed.window_wait if not marker_measure else None
+    records = read_registry(cfg, box, waiter=waiter_of(cfg, command, box=box) if window_wait is not None else None)
     if isinstance(records, Unread):
         for line in records.lines:
             cli.say(line)
@@ -1330,9 +1347,9 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     # --wait-window waits here, and never inside a measurement's hold (a batch carrying its
     # marker that the judgement above did not admit): there it would wait for its own measurement.
     waiting: WaitingRecord | None = None
-    if measuring and parsed.window_wait is not None and not marker_measure:
+    if measuring and window_wait is not None:
         waiting = WaitingRecord(directory, command, "window", "cpu" if cpu else "gpu")
-        waited = await_measurements(cfg, box, records, parsed.window_wait, command)
+        waited = await_measurements(cfg, box, records, window_wait, command, registered=True)
         if isinstance(waited, int):
             waiting.done()
             return waited

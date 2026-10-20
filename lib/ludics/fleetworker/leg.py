@@ -419,7 +419,7 @@ def await_window(cfg: Config, request: str, record: dict[str, Any], records: lis
         by = execution.jq_text(own.get("suspended_by"))
         return [execution.record_of(read, by) or {"request_id": by, "window": True}]
 
-    waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE, holders)
+    waited = slot.await_measurements(cfg, host, records, bound, runner, LEG_VOICE, holders, registered=True)
     if isinstance(waited, int):
         return waited
     again = execution.record_of(waited, request)
@@ -493,8 +493,11 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
     if not SECONDS.fullmatch(fetch_timeout):
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
 
-    # The reservation: a dispatched record, whose execution host is the box.
-    done = execution.listing(cfg)
+    # The reservation: a dispatched record, whose execution host is the box. A leg that may wait out a
+    # window registers as its waiter in this same read, by its request (THE WAITERS, ludics-lite#719):
+    # the read that finds its record suspended must not leave a moment unseen before the first heartbeat.
+    waits = window_bound(slot_flags) is not None
+    done = execution.listing(cfg, slot.waiter_of(cfg, runner, request=request) if waits else None)
     if done.unreachable:
         cli.say(f"EXECUTION LEG UNREACHABLE {cfg.anchor}: cannot read request {request}'s record; nothing ran")
         return 4

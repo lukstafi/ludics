@@ -448,7 +448,9 @@ class Waiters(RegistryCase):
     def test_a_waiter_is_validated_whole(self) -> None:
         cases: list[tuple[object, str]] = [
             ({}, "a wait payload is {waiter, ...list options}"),
-            ({"waiter": self.waiter(extra=1)}, "a waiter is {box, id, command, ttl}"),
+            ({"waiter": self.waiter(extra=1)}, "a waiter is {box or request, id, command, ttl}"),
+            ({"waiter": self.waiter(request="s")}, "a waiter is {box or request, id, command, ttl}"),
+            ({"waiter": {"id": "x", "command": "c", "ttl": 9}}, "a waiter is {box or request, id, command, ttl}"),
             ({"waiter": self.waiter(id="../x")}, "invalid waiter id"),
             ({"waiter": self.waiter(command=" ")}, "command must be a nonempty string"),
             ({"waiter": self.waiter(ttl=0)}, "a waiter's ttl must be a whole number of seconds from 1 to 3600"),
@@ -477,6 +479,17 @@ class Waiters(RegistryCase):
         thread.join(10)
         self.assertEqual(results, [0])
         self.assertTrue(os.path.exists(os.path.join(self.root, "waiters", "rog-7.json")))
+
+    def test_a_leg_names_its_request_and_waits_for_that_records_box(self) -> None:
+        # Round 1 of #736: a leg learns its box from the read that finds its record suspended.
+        self.assertEqual(self.call("run", request("s", standing=True, execution_host="rog"), boxes="mac rog")[0], 0)
+        waiter = {"request": "s", "id": "agent-9", "command": "tools/check.sh", "ttl": 45}
+        rc, out, _ = self.call("wait", {"waiter": waiter}, boxes="mac rog")
+        self.assertEqual((rc, [r["request_id"] for r in out]), (0, ["s"]))
+        self.assertEqual(self.read("agent-9")["box"], "rog")
+        rc, out, _ = self.call("wait", {"waiter": {**waiter, "request": "nobody", "id": "agent-10"}}, boxes="mac rog")
+        self.assertEqual(rc, 0, "an unknown request is the leg's to refuse, on the listing")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "waiters", "agent-10.json")), "and nobody waits")
 
     def test_a_long_command_is_cut_to_300_characters(self) -> None:
         self.call("wait", {"waiter": self.waiter(command="x" * 400)})

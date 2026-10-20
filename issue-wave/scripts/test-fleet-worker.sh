@@ -3293,11 +3293,16 @@ grep -q "^EXECUTION LEG testbox: measurement window leg-w1 holds testbox (coordi
 leg_said() { # <pattern>: wait up to 40 s for the waiting leg's output to show it
   local i; for i in $(seq 200); do grep -q "$1" "$TMP/leg-ww.out" 2>/dev/null && return 0; sleep 0.2; done; return 1
 }
+rm -rf "${ISSUE_WAVE_STATE:?}/waiters"   # the bounded legs above left heartbeats; this leg's is the one read below
 env FLEET_SLOT_WINDOW_POLL=5 "${FWL[@]}" execution leg --request leg-s --rev claude/topic --checkout "$lco" --worktree "$lwt" \
   --wait-window=120 -- tools/check.sh > "$TMP/leg-ww.out" 2>&1 &
 lww=$!
 if leg_said "^EXECUTION LEG testbox: waiting up to 120s (--wait-window) for it to conclude, then for a slot, for: tools/check.sh$"; then
   ok "a leg given --wait-window waits for the window that suspended its standing record"
+  # THE WAITERS (ludics-lite#719): its first read, the one that found its record suspended, named
+  # the request, and the anchor resolved the box from it.
+  grep -l '"box": *"testbox".*"command": *"tools/check.sh"' "$ISSUE_WAVE_STATE"/waiters/*.json >/dev/null 2>&1 &&
+    ok "...registered on the anchor as waiting for testbox" || ko "no heartbeat for the leg: $(cat "$ISSUE_WAVE_STATE"/waiters/*.json 2>&1)"
   fixture_done leg-w1; legwin leg-w2
   leg_said "^EXECUTION LEG testbox: measurement window leg-w2 holds testbox" && ok "...and for a window opened mid-wait, which it names" ||
     ko "the waiting leg never named the window opened mid-wait: $(cat "$TMP/leg-ww.out")"

@@ -126,8 +126,12 @@ records it restores, so the gap is measured from the moment a reader sees the bo
 THE WAITERS (ludics-lite#719). The gap first read standing records as "workers there may be
 waiting", so it was paid whether or not anyone waited. A batch waiting out a measurement (`execution
 slot --wait-window` on the box, `execution leg --wait-window` on its agent host) reads this registry
-with `wait` instead of `list`: payload `{"waiter": {"box", "id", "command", "ttl"}}` plus `list`'s own
-options, lease-free like `list`, answered with the listing `list` gives. Before answering it writes
+with `wait` instead of `list`, from the read that first finds the box held on (so no window can
+come and go unseen between that read and the first heartbeat): payload `{"waiter": {"box", "id",
+"command", "ttl"}}` plus `list`'s own options, lease-free like `list`, answered with the listing
+`list` gives. A leg, which learns its box from that same read, names its record instead of a box
+(`"request": <id>` in place of `"box"`): the waiter waits for that record's execution host, and an
+unknown request records nothing. Before answering it writes
 `waiters/<id>.json` under the state root -- `{box, id, command, seen, expires}`, `expires` being
 `ttl` seconds (1 to 3600) from this anchor's clock -- and removes every other waiter file already
 expired, both under the flock `waiters/.lock`, so a removal never deletes a renewal. It writes nothing under `executions/`: a waiter owns nothing, and no lease is needed to say
@@ -577,7 +581,7 @@ def check_gap(host: str, gap: int, records: dict[str, Record], now: datetime, wa
 
 
 WAITER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-WAITER_FIELDS = {"box", "id", "command", "ttl"}
+WAITER_FIELDS = {"id", "command", "ttl"}   # and exactly one of `box` and `request`
 WAITER_TTL_MAX = 3600
 
 
@@ -615,14 +619,22 @@ def fresh_waiters(directory: Path, host: str, map_spec: str, now: datetime) -> l
     return waiting
 
 
-def record_waiter(directory: Path, waiter: Any, boxes: str, map_spec: str, now: datetime) -> None:
+def record_waiter(directory: Path, waiter: Any, boxes: str, map_spec: str, now: datetime,
+                  records: dict[str, Record]) -> None:
     """``wait``'s heartbeat (THE WAITERS in the header): one file per waiter, replaced whole, its
     expiry ``ttl`` seconds from this anchor's clock; and every other waiter file already expired
-    is removed."""
+    is removed. A waiter named by ``request`` waits for that record's execution host; an unknown
+    request records nothing (its caller refuses it on the listing)."""
     data = as_object(waiter)
-    if data is None or set(data) != WAITER_FIELDS:
-        refuse("a waiter is {box, id, command, ttl}")
-    nonempty(data, ["box", "id", "command"])
+    if (data is None or not WAITER_FIELDS <= set(data) or set(data) - WAITER_FIELDS - {"box", "request"}
+            or ("box" in data) == ("request" in data)):
+        refuse("a waiter is {box or request, id, command, ttl}")
+    nonempty(data, ["id", "command", "box" if "box" in data else "request"])
+    if "request" in data:
+        known = records.get(data["request"])
+        if known is None:
+            return
+        data = {**data, "box": known["request"]["execution_host"]}
     if not WAITER_ID.fullmatch(data["id"]):
         refuse("invalid waiter id")
     ttl = data["ttl"]
@@ -713,7 +725,7 @@ def main(argv: list[str]) -> None:
         payload = as_object(json.loads(raw))
         if payload is None or "waiter" not in payload:
             refuse("a wait payload is {waiter, ...list options}")
-        record_waiter(Path(root) / "waiters", payload["waiter"], boxes, map_spec, datetime.now(timezone.utc))
+        record_waiter(Path(root) / "waiters", payload["waiter"], boxes, map_spec, datetime.now(timezone.utc), records)
         raw = json.dumps({key: value for key, value in payload.items() if key != "waiter"})
         action = "list"
     if action == "list":
