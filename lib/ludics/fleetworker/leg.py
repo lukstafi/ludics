@@ -523,8 +523,23 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
             slot.release_waiter(cfg, waiter)
             return waited
         record = waited
-    else:
-        slot.release_waiter(cfg, waiter)
+        try:
+            # Kept through the setup before the slot on the box, and released when the leg ends,
+            # whatever ends it: a heartbeat left to expire would make a window opened just after a
+            # short leg wait out the gap for nobody.
+            return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
+                           fetch_timeout)
+        finally:
+            slot.release_waiter(cfg, waiter)
+    slot.release_waiter(cfg, waiter)
+    return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
+                   fetch_timeout)
+
+
+def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[str], runner: list[str], box: str, checkout: str, worktree: str, remote: str, rev: str, control: str,
+            fetch_timeout: str) -> int:
+    """The leg on its dispatched record: refuse what the registry would not record, then run it on
+    ``box`` (the far side's slot or hold around it) and stream its result."""
     state = execution.jq_text(record.get("state"))
     if state not in DISPATCHED:
         return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")

@@ -39,8 +39,13 @@ class RegistryCase(unittest.TestCase):
              map_spec: str = "") -> tuple[int, Any, str]:
         out, err = io.StringIO(), io.StringIO()
         argv = ["-", self.root, action, "owner", "token", json.dumps(payload), boxes, slots, map_spec]
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = registry.run(argv)
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = registry.run(argv)
+        finally:
+            # A program holds waiters/.lock until it exits; in process, this call is its exit.
+            while registry.WAITER_LOCKS:
+                os.close(registry.WAITER_LOCKS.pop())
         return rc, json.loads(out.getvalue()) if out.getvalue() else None, err.getvalue()
 
 
@@ -527,6 +532,28 @@ class Waiters(RegistryCase):
 
         with mock.patch.object(registry.Path, "read_text", vanishing):
             self.assertEqual(registry.fresh_waiters(directory, "mac", "", datetime.now(timezone.utc)), [])
+
+    def test_a_heartbeat_and_a_windows_admission_cannot_pass_each_other(self) -> None:
+        # Round 6 of #736: both take waiters/.lock -- the window from its waiter check through its
+        # publication, the heartbeat through the listing it answers with, read after it.
+        self.assertEqual(self.call("run", request("m", kind="measurement"))[0], 0)
+        self.assertEqual(self.call("conclude", {"request_id": "m", "verdict": "not-launched", "log": "/dev/null",
+                                                "evidence": "unit"})[0], 0)
+        os.makedirs(os.path.join(self.root, "waiters"), exist_ok=True)
+        lock = os.open(os.path.join(self.root, "waiters", ".lock"), os.O_CREAT | os.O_RDWR, 0o644)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        answers: list[tuple[int, Any, str]] = []
+        window = threading.Thread(target=lambda: answers.append(self.call(
+            "window", {"box": "mac", "request": request("w", kind="measurement"), "gap": 60})))
+        window.start()
+        window.join(0.5)
+        self.assertEqual(answers, [], "the window waits for the lock before it reads the waiters")
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        window.join(10)
+        self.assertEqual(answers[0][0], 0, "nobody was waiting: it opened")
+        rc, out, _ = self.call("wait", {"waiter": self.waiter(), "active": True})
+        self.assertEqual((rc, [r["request_id"] for r in out]), (0, ["w"]), "the heartbeat's listing sees the window")
 
     def test_a_long_command_is_cut_to_300_characters(self) -> None:
         self.call("wait", {"waiter": self.waiter(command="x" * 400)})

@@ -3311,6 +3311,12 @@ if leg_said "^EXECUTION LEG testbox: waiting up to 120s (--wait-window) for it t
   wait "$lww"; lwwrc=$?
   [ "$lwwrc" = 0 ] && [ "$(tail -n 1 "$TMP/leg-ww.out")" = "execution-leg: exit: 0" ] && [ "$(marks)" = $((n + 1)) ] &&
     ok "...and once it concludes inside the bound the leg runs, once, its status the runner's" || ko "the waited leg: rc=$lwwrc runs $(marks) (from $n) -- $(cat "$TMP/leg-ww.out")"
+  # Kept through its setup, the leg's heartbeat is released when the leg ends (round 6 of #736),
+  # by a detached child, so give it a moment.
+  for wi in $(seq 40); do grep -l '"command": *"tools/check.sh"' "$ISSUE_WAVE_STATE"/waiters/*.json >/dev/null 2>&1 || break; sleep 0.25; done
+  grep -l '"command": *"tools/check.sh"' "$ISSUE_WAVE_STATE"/waiters/*.json >/dev/null 2>&1 &&
+    ko "the finished leg's heartbeat is still on the anchor: $(cat "$ISSUE_WAVE_STATE"/waiters/*.json)" ||
+    ok "...and its heartbeat is released once it ends"
   grep -q "^EXECUTION LEG testbox: no measurement holds testbox after [0-9]*s; running the leg$" "$TMP/leg-ww.out" &&
     grep -q "^EXECUTION SLOT testbox: slot [0-9] of 4[^:]* held for: bash" "$TMP/leg-ww.out" && ok "...in a slot on the box, after saying the box is free" || ko "the waited leg's output: $(cat "$TMP/leg-ww.out")"
 else
