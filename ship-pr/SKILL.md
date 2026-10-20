@@ -658,12 +658,12 @@ head SHA, and answers with one of eight:
 | --- | --- | --- |
 | `approved` | 👍 is on the PR and was given for this head, with no newer current-head running review or findings — or, with no 👍, a no-findings verdict comment naming this head, or the summary's Code Review row marking this head Completed after the 👀 with nothing posted since that 👀, or the summary's state record marking this head completed with no unresolved findings, with nothing posted since and no finding about this head — and no review thread left unresolved | merge |
 | `unresolved` | that same 👍, over review threads still open — whatever head they cite | answer each thread and `resolve` it; `merge` refuses until none is open |
-| `reviewing` | the 👀 is newer than the reviewer's last word — a round really is in flight | wait it out |
-| `stalled` | that 👀 has been up longer than a round takes and nothing was posted | `@codex review` |
+| `reviewing` | the 👀 is newer than the reviewer's last word — a round really is in flight; or the summary's newest Code Review row is Running on this head and newer than that 👀, so the round is aged from the row, not from a 👀 an older head's stuck round left up (ludics-lite#586) | wait it out |
+| `stalled` | that 👀 (or that Running row, when it decides) has been up longer than a round takes and nothing was posted | `@codex review` |
 | `failed` | the reviewer's newest word is an initialization failure — "Something went wrong", over "Provided git ref `<sha>` does not exist" — naming this head, or "To use Codex here, create an environment for this repo" newer than the head's commit — or the summary's Code Review row marks this head's run "⚠️ Failed" with no review, no 👍 and nothing said inside the run: the round never ran | `@codex review` once; if the same head fails again, push a new head (an amend is enough) — or, for the environment one, hand it to the maintainer, since no push reaches it. On the Failed row `watch` posts that one request itself |
 | `expected` | no live 👀, and no review of the head SHA: a round is due and has not started — including a 👍 left from before a push, until the app takes it down | wait out the grace, then `@codex review` |
 | `idle` | the reviewer has reviewed this exact head and left no 👍 | the next move is yours: address the round and push — or, at one of the loop's exits (below), close out and merge |
-| `unknown` (exit 3) | a read failed | retry — this is *not* "not approved yet" |
+| `unknown` (exit 3) | a read failed, or a Running Code Review row could not be read where it would decide | retry — this is *not* "not approved yet" |
 
 `unresolved` is the approval over findings nobody closed (ludics-lite#289). On PR #277's round 6
 the reviewer left two findings on the previous head and put its 👍 on the base-merge commit above

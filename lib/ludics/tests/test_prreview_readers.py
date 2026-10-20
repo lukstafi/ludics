@@ -645,6 +645,76 @@ class SummaryStateRecord(unittest.TestCase):
         self.assertEqual(gated(gh, st).tok, "unresolved", "an open thread under it is not a clean approval")
 
 
+def running_summary(cid: int, at: str, row_sha: str = HEAD[:7], stamp: str = "") -> dict[str, Json]:
+    """The reviewer's summary comment while a round runs: its Code Review row Running since ``at``
+    on ``row_sha`` (lukstafi/ludics-lite#581's, 2026-10-12). ``stamp``: the row's datetime cell
+    when it is not ``at``'s."""
+    cell = stamp if stamp else f'<relative-time datetime="{at[:-1]}.484070Z">{at}</relative-time>'
+    return comment(cid, at, (
+        "<!-- codex-pull-request-review-summary -->\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+        f"| 📝 **Code Review** | 🔄 **Running** {cell} | `{row_sha}` | New commits |"))
+
+
+class StaleEyesUnderARunningRow(unittest.TestCase):
+    """ludics-lite#586: a 👀 left up by an older head's stuck round, past STALL with nothing said
+    since, read the CURRENT head as stalled while the summary's newest Code Review row said that
+    head's round was Running (#581: head fb80745, reviewed three minutes later)."""
+
+    old_eyes = reaction("eyes", iso(9999))
+
+    def test_a_running_row_for_the_head_after_the_eyes_is_reviewing(self) -> None:
+        st = run_state(feeds(reactions=[self.old_eyes], comments=[running_summary(1, iso(60))]))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        self.assertIsNotNone(st.age)
+        self.assertLess(st.age or 0, 2400, "aged from the row, not from the 👀")
+        self.assertIn("Code Review Running for head aaaaaaa since", st.detail)
+        self.assertEqual(run_state(feeds(reactions=[self.old_eyes])).tok, "stalled", "control: no row, as before")
+
+    def test_the_row_ages_into_a_stall_of_its_own(self) -> None:
+        st = run_state(feeds(reactions=[self.old_eyes], comments=[running_summary(1, iso(5000))]))
+        self.assertEqual(st.tok, "stalled", st.line())
+        self.assertIn("Code Review Running for head aaaaaaa since", st.detail, "the row's stall, not the 👀's")
+
+    def test_a_row_for_another_head_or_older_than_the_eyes_leaves_the_reactions_to_decide(self) -> None:
+        older_head = running_summary(1, iso(60), row_sha="bbbbbbb")
+        st = run_state(feeds(reactions=[self.old_eyes], comments=[older_head]))
+        self.assertEqual((st.tok, st.detail.startswith("👀 from")), ("stalled", True), st.line())
+        older_row = running_summary(1, iso(5000))
+        st = run_state(feeds(reactions=[reaction("eyes", iso(3000))], comments=[older_row]))
+        self.assertEqual((st.tok, st.detail.startswith("👀 from")), ("stalled", True), st.line())
+        st = run_state(feeds(reactions=[reaction("eyes", iso(60))], comments=[older_row]))
+        self.assertEqual((st.tok, st.detail.startswith("👀 from")), ("reviewing", True), st.line())
+        completed = running_summary(1, iso(60))
+        completed["body"] = str(completed["body"]).replace("🔄 **Running**", "✅ **Completed**")
+        st = run_state(feeds(reactions=[self.old_eyes], comments=[completed, review(5, "b" * 40, iso(9000))]))
+        self.assertNotEqual(st.tok, "reviewing", "only a Running row is a round in flight")
+        older = running_summary(1, iso(120))
+        newest = comment(2, iso(30), "<!-- codex-pull-request-review-summary -->\n| Review | Status |")
+        st = run_state(feeds(reactions=[self.old_eyes], comments=[older, newest]))
+        self.assertEqual(st.tok, "stalled", "only the NEWEST summary is read")
+
+    def test_an_unreadable_running_row_is_unknown(self) -> None:
+        for name, stamp in (("no datetime", "just now"),
+                            ("not a timestamp", '<relative-time datetime="yesterday">x</relative-time>')):
+            with self.subTest(name):
+                st = run_state(feeds(reactions=[self.old_eyes], comments=[running_summary(1, iso(60), stamp=stamp)]))
+                self.assertEqual(st.tok, "unknown", st.line())
+                self.assertIn("matched the Running test", st.detail)
+        unread = running_summary(1, iso(60), stamp="just now")
+        self.assertEqual(run_state(feeds(comments=[unread])).tok, "expected",
+                         "with no 👀 in flight the row is read as before")
+
+    def test_the_read_refuses_when_it_fails(self) -> None:
+        gh = feeds(reactions=[self.old_eyes], comments=[running_summary(1, iso(60))])
+        def broken(*_a: Any) -> tuple[bool, str]:
+            raise jq.JqError("broken on purpose")
+
+        with mock.patch.object(state, "_head_running_row", broken):
+            st = run_state(gh)
+        self.assertEqual((st.tok, st.detail), ("unknown", "the summary's Code Review rows did not parse"))
+
+
 class BrokenReads(unittest.TestCase):
     """A read of status_state that no feed can break on its own -- an earlier read of the same feed
     takes every shape it would -- still refuses rather than answers when it fails (ludics-lite#89):

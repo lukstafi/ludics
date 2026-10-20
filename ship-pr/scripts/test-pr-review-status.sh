@@ -1669,7 +1669,8 @@ test_a_completed_row_outside_the_allowlist_is_not_a_verdict() {
 | 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-09-27T01:10:51.1Z\">x</relative-time> | \`fc6ff6a\` | New commits |
 | 📝 **Code Review** | 🔄 **Running** just now | \`fc6ff6a\` | Comment |")]"
   run_status
-  assert_eq "$(state_tok "$STATE")" stalled "an undatable row beside it leaves no newest row"
+  assert_eq "$(state_tok "$STATE")" unknown \
+    "an undatable row beside it leaves no newest row, and an undatable Running row may be the round (#586)"
   # Only the NEWEST summary comment is read: an older one's Completed row is history.
   COMMENTS_JSON="[$(summary_row 1 Completed fc6ff6a 2026-09-27T01:10:51Z),$(running_row 2 fc6ff6a 2026-09-27T01:11:40Z)]"
   run_status
@@ -1765,6 +1766,68 @@ test_a_state_record_yields_to_what_the_reviewer_posted() {
   COMMENTS_JSON="[$(state_summary 1 2026-10-18T16:31:00Z "$STATE_RECORD")]"
   run_status
   assert_eq "$(state_tok "$STATE")" stalled "a summary edited after the 👀 is not a newer verdict"
+}
+
+# --- a stale 👀 under the head's Running row (ludics-lite#586) -----------------------------------
+# lukstafi/ludics-lite#581, 2026-10-12: the round on head 4960114 hung with its 👀 up for over 40
+# minutes; the worker merged main, moving the head to fb80745, and the summary's Code Review row
+# read "🔄 Running since 16:46:01" on fb80745. `status` and `watch` read STALLED from the old 👀,
+# and the watch exited; fb80745's review landed, with a 👍, three minutes later. Dated on the
+# fixture clock: the 👀 past STALL (2400 s), the row a minute old.
+STALE_EYES_HEAD=fb80745000000000000000000000000000000000
+
+stale_eyes_fixture() {
+  reset_fixture
+  HEAD_SHA="$STALE_EYES_HEAD"
+  HEAD_AT=$(clock_at -300)
+  REVIEWS_JSON="[$(review 5 4960114000000000000000000000000000000000 "$(clock_at -6000)")]"
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -3000)")]"
+  COMMENTS_JSON="[$(running_row 1 fb80745 "$(clock_at -60)")]"
+}
+
+test_a_stale_eyes_under_the_head_s_running_row_is_reviewing() {
+  stale_eyes_fixture
+  run_status
+  assert_eq "$(state_tok "$STATE")" reviewing "the head's Running row after an old 👀 is the round in flight"
+  assert_contains "$(state_detail "$STATE")" "Code Review Running for head fb80745 since" \
+    "the state names the row it rests on"
+  # And `watch` waits it out: no stall verdict, no exit before its window.
+  run_watch 0,0,0 1 3
+  assert_not_contains "$WATCH_OUT$WATCH_ERR" "STALLED" "watch does not read the old 👀 as a stall"
+  assert_contains "$WATCH_ERR" "Code Review Running for head fb80745 since" "it reads the row's round"
+  # The row ages into a stall of its own: a hung round on THIS head is still a stall.
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -6000)")]"
+  COMMENTS_JSON="[$(running_row 1 fb80745 "$(clock_at -3000)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" stalled "a Running row past STALL is a stall, dated by the row"
+  assert_contains "$(state_detail "$STATE")" "Code Review Running for head fb80745 since" \
+    "and the stall names the row"
+}
+
+test_a_stale_eyes_still_decides_without_the_head_s_newer_running_row() {
+  # The row names the OLD head: the reactions decide, as before the row was read.
+  stale_eyes_fixture
+  COMMENTS_JSON="[$(running_row 1 4960114 "$(clock_at -60)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" stalled "a Running row for an older head does not answer this head's 👀"
+  assert_contains "$(state_detail "$STATE")" "with nothing posted since" "the 👀 decides"
+  # A 👀 newer than the row: that 👀 is the newer round, and the reactions decide either way.
+  stale_eyes_fixture
+  COMMENTS_JSON="[$(running_row 1 fb80745 "$(clock_at -4000)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" stalled "a row older than the 👀 does not rescue a stalled 👀"
+  assert_contains "$(state_detail "$STATE")" "with nothing posted since" "the 👀 decides"
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" reviewing "and a live 👀 over an old row reads by the 👀"
+  assert_contains "$(state_detail "$STATE")" "👀 from" "the 👀 decides"
+  # The same Running row with no stamp to read: the round may be this head's, so no verdict.
+  stale_eyes_fixture
+  COMMENTS_JSON="[$(plain_comment 1 "$(clock_at -60)" '<!-- codex-pull-request-review-summary -->
+| 📝 **Code Review** | 🔄 **Running** just now | `fb80745` | New commits |')]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" unknown "an unreadable Running row is no stall"
+  assert_contains "$(state_detail "$STATE")" "matched the Running test but not the" "and says why"
 }
 
 # --- a reviewer run the summary marks Failed (ludics-lite#453) ----------------------------------
@@ -2140,6 +2203,8 @@ tests=(
   test_a_completed_row_approval_passes_the_thread_gate
   test_a_clean_state_record_on_the_head_is_a_verdict
   test_a_state_record_yields_to_what_the_reviewer_posted
+  test_a_stale_eyes_under_the_head_s_running_row_is_reviewing
+  test_a_stale_eyes_still_decides_without_the_head_s_newer_running_row
   test_a_failed_run_on_the_head_is_a_failed_state
   test_a_failed_run_needs_the_head_and_no_approval
   test_a_failed_run_needs_a_silent_reviewer
