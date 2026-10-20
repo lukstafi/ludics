@@ -90,6 +90,15 @@ MERGEABILITY_LATER=""
 STATE_FAIL=""                          # nonempty = the merged-state read after the call does not answer
 DISABLE_AUTO_FAIL=""                   # nonempty = `pr merge --disable-auto` is refused
 MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 503
+# A build job that never got a runner (ludics-lite#560/#728; prreview/runners.py). RUNNER_CASE names
+# the head run's story: `no-runner` (run 100 completed cancelled, its job cancelled with no step
+# and no runner) or `never-started` (run 100 in flight, its job queued since the head was pushed,
+# while run 130 of the same workflow has a job on the same labels running). The recovery's writes
+# (`run cancel`, `run rerun`) are logged and leave a marker; after the cancel the run reads
+# completed with its job no runner took, and after the rerun it reads as attempt 2 -- the same
+# story again, unless RUNNER_RECOVERS is set: then green.
+RUNNER_CASE=""
+RUNNER_RECOVERS=""
 # The "from the SECOND read on" switches above are counted by the lib's fixture_call_count, under
 # the names body, base and default-branch: every call runs the fixture in a fresh bash of its own
 # (the forward's bridge), so a variable it increments dies with that shell, and the count has to travel
@@ -104,7 +113,13 @@ MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 
 # a row with no fifth column has no check suite).
 check_runs_answer() { # <n>
   local rows
-  if [ -n "$CHECK_ROWS_LATER" ] && [ "$1" -ge 2 ]; then
+  if [ -n "$RUNNER_CASE" ]; then
+    case "$(runner_state)" in
+    recovered) rows=$(printf 'green\tbuild\tsuccess\thttps://example/build\t1') ;;
+    norunner) rows=$(printf 'nogo\tbuild\tcancelled\thttps://example/build\t1') ;;
+    *) rows=$(printf 'pending\tbuild\tpending\thttps://example/build\t1') ;;
+    esac
+  elif [ -n "$CHECK_ROWS_LATER" ] && [ "$1" -ge 2 ]; then
     rows="$CHECK_ROWS_LATER"
   elif [ -n "$CHECK_ROWS" ]; then
     rows="$CHECK_ROWS"
@@ -120,11 +135,56 @@ check_runs_answer() { # <n>
       + (if .[4] == null then {} else {check_suite: {id: (.[4] | tonumber)}} end)]}'
 }
 
+# Where RUNNER_CASE's story stands: `queued` (the never-started job waits), `norunner` (the run
+# completed with its job cancelled before any runner took it), or `recovered` (green after the
+# rerun). The attempt is 2 once the rerun was sent.
+runner_state() {
+  if [ -e "$TEST_ROOT/runner-rerun" ] && [ -n "$RUNNER_RECOVERS" ]; then
+    echo recovered
+  elif [ "$RUNNER_CASE" = no-runner ] || { [ -e "$TEST_ROOT/runner-cancel" ] && [ ! -e "$TEST_ROOT/runner-rerun" ]; }; then
+    echo norunner
+  else
+    echo queued
+  fi
+}
+runner_attempt() { if [ -e "$TEST_ROOT/runner-rerun" ]; then echo 2; else echo 1; fi; }
+runner_run() { # <status> <conclusion|null>
+  printf '{"workflow_runs":[{"id":100,"workflow_id":1,"event":"pull_request","name":"ci","status":"%s","conclusion":%s,"created_at":"2026-09-01T00:00:00Z","check_suite_id":1}]}\n' \
+    "$1" "$([ "$2" = null ] && echo null || printf '"%s"' "$2")"
+}
+# The jobs of run <id>: the head run's one job as the story has it, or the newer run's started one.
+runner_jobs() { # <run id>
+  if [ "$1" = 130 ]; then
+    printf '%s\n' '{"jobs":[{"id":601,"name":"build","status":"in_progress","conclusion":null,"created_at":"2026-09-01T00:10:00Z","steps":[{"name":"Set up job"}],"runner_name":"GitHub Actions 7","labels":["macos-14"],"run_attempt":1}]}'
+    return 0
+  fi
+  case "$(runner_state)" in
+  recovered)
+    jq -cn --argjson a "$(runner_attempt)" '{jobs:[{id:501,name:"build",status:"completed",conclusion:"success",
+      created_at:"2026-09-01T00:00:00Z",steps:[{name:"Set up job"}],runner_name:"GitHub Actions 3",labels:["macos-14"],run_attempt:$a}]}'
+    ;;
+  norunner)
+    jq -cn --argjson a "$(runner_attempt)" '{jobs:[{id:501,name:"build",status:"completed",conclusion:"cancelled",
+      created_at:"2026-09-01T00:00:00Z",steps:[],runner_name:null,labels:["macos-14"],run_attempt:$a}]}'
+    ;;
+  *)
+    jq -cn --argjson a "$(runner_attempt)" '{jobs:[{id:501,name:"build",status:"queued",conclusion:null,
+      created_at:"2026-09-01T00:00:00Z",steps:[],runner_name:null,labels:["macos-14"],run_attempt:$a}]}'
+    ;;
+  esac
+}
+
 # The head's workflow runs: one finished green run, unless the head has no checks (no run either),
 # or MOVED_RUN_RC=4 and the merge loop has read a moved base -- then a run is queued on the new base,
 # which no gate read can judge yet.
 runs_answer() {
-  if [ -n "$MOVED_RUN_RC" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
+  if [ -n "$RUNNER_CASE" ]; then
+    case "$(runner_state)" in
+    recovered) runner_run completed success ;;
+    norunner) runner_run completed cancelled ;;
+    *) runner_run in_progress null ;;
+    esac
+  elif [ -n "$MOVED_RUN_RC" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
     printf '%s\n' '{"workflow_runs":[{"id":101,"workflow_id":1,"event":"pull_request","name":"ci","status":"queued","conclusion":null,"created_at":"2026-09-01T00:00:00Z","check_suite_id":1}]}'
   elif [ -n "$NO_CHECKS" ]; then
     printf '%s\n' '{"workflow_runs":[]}'
@@ -322,7 +382,12 @@ gh() {
       ;;
     *"repos/$REPO/actions/runs/"*"/jobs?per_page=100"*)
       gh_fixture_parse "$@"
-      gh_fixture_answer '{"jobs":[]}'
+      if [ -n "$RUNNER_CASE" ]; then
+        reads=${FIXTURE_ENDPOINT#repos/"$REPO"/actions/runs/}
+        gh_fixture_answer "$(runner_jobs "${reads%%/*}")"
+      else
+        gh_fixture_answer '{"jobs":[]}'
+      fi
       ;;
     *"repos/$REPO/pulls/7/commits"*)
       printf 'CALL commits\n' >>"$CALLS_FILE"
@@ -390,6 +455,15 @@ gh() {
       printf 'GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)\n' >&2
       return 1
     fi
+    ;;
+  # The newer runs of the head run's workflow (runners.py's evidence for NEVER STARTED).
+  "api repos/$REPO/actions/workflows/1/runs?"*)
+    gh_fixture_parse "$@"
+    gh_fixture_answer '{"workflow_runs":[{"id":130,"status":"in_progress","created_at":"2026-09-01T00:10:00Z"}]}'
+    ;;
+  "run cancel" | "run rerun")
+    printf 'CALL %s\n' "$*" >>"$CALLS_FILE"
+    : >"$TEST_ROOT/runner-$2"
     ;;
   *) bail "unexpected fixture gh call: $*" ;;
   esac
@@ -481,6 +555,9 @@ reset() {
   STATE_FAIL=""
   DISABLE_AUTO_FAIL=""
   MERGE_QUEUE_FAIL=""
+  RUNNER_CASE=""
+  RUNNER_RECOVERS=""
+  rm -f "$TEST_ROOT/runner-cancel" "$TEST_ROOT/runner-rerun"
 }
 
 # The merge is bound to the head the gate read: a push during a long --wait must not land a head
@@ -2193,6 +2270,56 @@ test_no_verdict_refuses_without_the_flag() {
   assert_no_merge_call
 }
 
+# ludics-lite#728 (and #560): a build job that never gets a runner held `merge --wait` for its whole
+# window (120 min, four times in one OCANNL wave). A job queued while a newer run of its workflow got
+# a runner for the same labels is NEVER STARTED: without --wait the refusal is 6 at once, naming the
+# commands and writing nothing; under --wait the merge recovers ONCE -- cancel, then rerun the
+# failed jobs -- and when the rerun's job never starts either, the wait ends early with 6.
+test_a_never_started_job_ends_the_wait_early_with_its_commands() {
+  local start
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=never-started
+  run_merge
+  assert_eq "$MERGE_RC" 6 "a never-started job is its own refusal ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "NEVER STARTED  build — run 100, attempt 1: queued" "the job is named"
+  assert_contains "$MERGE_OUTPUT" "while run 130 of the same workflow got a runner for them" "with the run that got one"
+  assert_contains "$MERGE_OUTPUT" "gh run cancel 100 --repo $REPO, then once it completes gh run rerun 100 --failed --repo $REPO" \
+    "and the commands that recover it"
+  assert_contains "$MERGE_OUTPUT" "merge reruns a run only under --wait" "saying why nothing was rerun"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "a merge that does not wait writes nothing"
+  assert_no_merge_call
+  start=$SECONDS
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 6 "the rerun's job never started either ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c '^CALL run cancel 100 --repo example/repo$' <<<"$MERGE_CALLS")" 1 "one cancel"
+  assert_eq "$(grep -c '^CALL run rerun 100 --failed --repo example/repo$' <<<"$MERGE_CALLS")" 1 "then one rerun"
+  assert_contains "$MERGE_OUTPUT" "run 100 got no runner again on its rerun (attempt 2)" "the second occurrence ends it"
+  assert_contains "$MERGE_OUTPUT" "gh run rerun 100 --repo $REPO" "naming the full rerun for the next try"
+  [ $((SECONDS - start)) -lt 120 ] || bail "the wait should end early, not at its 600 s ceiling ($((SECONDS - start)) s)"
+  assert_no_merge_call
+}
+
+# The rerun that works: a job no runner took (NO RUNNER) is rerun once, the wait goes on to the
+# rerun's verdict, and the merge lands. --allow-no-verdict still merges a 6 unread, as it merges a 4.
+test_a_job_no_runner_took_is_rerun_once_and_merges() {
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=no-runner
+  RUNNER_RECOVERS=1
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 0 "the rerun's green merges ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c '^CALL run rerun 100 --failed --repo example/repo$' <<<"$MERGE_CALLS")" 1 "after one rerun"
+  assert_not_contains "$MERGE_CALLS" "CALL run cancel" "a completed run needs no cancel"
+  assert_contains "$MERGE_CALLS" "--match-head-commit head-sha " "bound to the gated head"
+  reset
+  RUNNER_CASE=no-runner
+  run_merge --allow-no-verdict
+  assert_eq "$MERGE_RC" 0 "the operator's merge-unread flag still merges it ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "ALLOW-NO-VERDICT:" "announced as unread"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "and nothing was rerun without a wait"
+}
+
 # A gate that could not read the checks is UNKNOWN, and no flag merges past it.
 test_an_unread_build_signal_never_merges() {
   reset
@@ -2751,6 +2878,8 @@ tests=(
   test_an_override_is_a_reason_in_words
   test_an_unknown_merge_option_is_a_usage_error
   test_no_verdict_refuses_without_the_flag
+  test_a_never_started_job_ends_the_wait_early_with_its_commands
+  test_a_job_no_runner_took_is_rerun_once_and_merges
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
   test_a_conflicting_pr_is_refused_before_the_wait

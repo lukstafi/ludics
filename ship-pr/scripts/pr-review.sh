@@ -215,7 +215,12 @@
 #                                          # repository borrowing the objects of the local
 #                                          # clone it runs in, and refuses
 #                                          # (1) when that build fails, with its output
-#                                          # (ludics-lite#611; see prreview/mergebuild.py)
+#                                          # (ludics-lite#611; see prreview/mergebuild.py).
+#                                          # A build job that never got a runner (NO RUNNER,
+#                                          # NEVER STARTED, which `checks` names too) gets ONE
+#                                          # rerun per head run under --wait; then, or without
+#                                          # --wait, it refuses with 6 naming the commands
+#                                          # (ludics-lite#560/#728; see prreview/runners.py)
 #   pr-review.sh base [owner/name] [branch] [--wait[=seconds]] [--interim]
 #                                          # is the branch you are about to work off CI-green?
 #                                          # --wait holds until the CURRENT tip has its verdict —
@@ -294,6 +299,9 @@
 #             From `merge`, 4 means the merge was REFUSED for want of a verdict (see
 #             --allow-no-verdict). `checks` and `merge` add 5: SUPERSEDED — the PR head
 #             moved from the observed SHA. Re-run to judge the successor; no override bypasses 5.
+#             `merge` adds 6: no verdict because a build job never got a runner, and the one
+#             rerun `--wait` makes per head run is spent or failed, or there was no wait to make
+#             it in (`checks` names the same jobs and stays 4). --allow-no-verdict still merges.
 #
 # Env: REPO=owner/name, overridden by a repo spelled out in the <pr> argument or by --repo; those
 #      three are the ONLY sources, for every subcommand including `retry run watch` (`base`, which
@@ -341,6 +349,9 @@
 #      grace to the head before calling a build signal ABSENT rather than not-created-yet
 #      (ludics-lite#24), and settle a run-less head at once on the same paths-ignore recognition,
 #      walking the PR's own commits from its merge base (ludics-lite#176),
+#      SHIP_PR_NEVER_STARTED=seconds a build job may sit queued while a newer run of its
+#      workflow has started a job on the same runner labels, before `checks` and `merge` read it as
+#      NEVER STARTED (1200; `off` reads none),
 #      SHIP_PR_STALE_BASE=commits behind the base at which `merge` warns loudly (20; `off`
 #      silences the commit-count warning). A nonempty file overlap still warns at any count; no
 #      base-drift warning blocks the merge. SHIP_PR_ROUND_THRESHOLD=review rounds with findings
@@ -527,6 +538,13 @@ case "$STALE_BASE" in
 off) ;;
 '' | *[!0-9]*) die "SHIP_PR_STALE_BASE must be a number of commits or 'off', got '$STALE_BASE'" ;;
 esac
+# How long a build job may sit queued, while a newer run's job on the same labels has started,
+# before `checks` and `merge` read it as NEVER STARTED (prreview/runners.py).
+NEVER_STARTED="${SHIP_PR_NEVER_STARTED:-1200}"
+case "$NEVER_STARTED" in
+off) ;;
+'' | *[!0-9]*) die "SHIP_PR_NEVER_STARTED must be whole seconds or 'off', got '$NEVER_STARTED'" ;;
+esac
 
 # --- the forward (ludics-lite#403) ----------------------------------------------------------------
 # Every subcommand is served by lib/ludics/prreview/<name>.py, run through scripts/py (which picks a
@@ -546,6 +564,7 @@ PY_FORWARD_VARS=(REPO=REPO REVIEWER=REVIEWER ROUND_THRESHOLD=SHIP_PR_ROUND_THRES
   GRACE=SHIP_PR_REVIEW_GRACE STALL=SHIP_PR_REVIEW_STALL STALE_BASE=SHIP_PR_STALE_BASE
   CHECKS_INTERVAL=SHIP_PR_CHECKS_INTERVAL CHECKS_WAIT=SHIP_PR_CHECKS_WAIT
   CHECKS_HEARTBEAT=SHIP_PR_CHECKS_HEARTBEAT ABSENT_GRACE=SHIP_PR_BASE_ABSENT_GRACE
+  NEVER_STARTED=SHIP_PR_NEVER_STARTED
   BUILD_ADVISORY=LUDICS_BUILD_ADVISORY ADVISORY_FROM_ENV=LUDICS_PR_ADVISORY_FROM_ENV
   ADVISORY_SETTLE=LUDICS_PR_ADVISORY_SETTLE CONTENTS_DIR_CAP=LUDICS_PR_CONTENTS_DIR_CAP
   IGNORE_MAX_COMMITS=LUDICS_PR_IGNORE_MAX_COMMITS THREADS_PAGE_CAP=LUDICS_THREADS_PAGE_CAP
