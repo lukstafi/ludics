@@ -1,7 +1,7 @@
 # Paired planning
 
 A D3 issue, or one on the D2/D3 border, gets two plans written independently before any code: the
-Claude worker's own, and one from GPT Astra run read-only through `codex exec`. The worker
+worker's own, and one from GPT Astra run read-only through `codex exec`. The worker
 reconciles them, so one implementer, one PR and one review stay as before. What it buys is a
 second model's reading of the design while changing it is still cheap. The first review of a D3
 otherwise does that reading, one round at a time (ludics-lite#547).
@@ -18,10 +18,12 @@ passing:
   resumed with the worker's plan and critiques it against the code and its own plan.
 - No pairing for D1 and plain D2 issues.
 
-The second planner is Astra, so pairing is for Claude workers. Any transport works, because the
-plans travel in messages, never as paths on another box. A D3 the user assigned to a Codex
-worker gets no pairing: its mode is set to none at the gate, and the wave summary says why. A D3 that still has an open "ask" design
-question waits for the user's answer before it launches, as any issue does.
+The second planner is always Astra, whichever provider the worker is. Under a Claude
+coordinator, a Codex worker's issue is paired like any other. Under any other coordinator,
+pairing a Codex worker is the user's call: put it in the decision gate's batched question, and
+the issue plans alone unless the user confirms. Any transport works, because the plans travel
+in messages, never as paths on another box. A D3 that still has an open "ask" design question
+waits for the user's answer before it launches, as any issue does.
 
 ## Coordinator
 
@@ -79,7 +81,9 @@ Add this to the brief of a paired worker, with the mode filled in:
 - **Plan first, alone.** Before any edit beyond the startup check, read the issue and the code and
   write your plan under these headings: Approach (with the alternatives you rejected), Changes,
   Contracts and boundaries, Verification (with negative controls), and Risks and open questions.
-  Do not look for another plan. End your turn with the plan as your final message's last block:
+  Do not look for another plan. End your turn with the plan as your final message's last block
+  (a Codex native worker, which can wait mid-turn, sends it as its message to the coordinator
+  and waits):
 
   ```
   PLAN_READY
