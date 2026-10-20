@@ -112,8 +112,9 @@ script; they are what the coordinator tells its workers.
   `tuf-amd-linux` (HIP, 16 threads; discrete RX 7700S `gfx1102`; cabled but no Wake-on-LAN, manual wake).
   The site's `FLEET_BOXES` and `FLEET_HOSTNAME_MAP` must use the OS endpoint that `kind_of` and
   `wake-lab.sh status` report. The daily plan may still spell the same physical ROG or Minix
-  box with its former `-wsl` suffix: translate only that suffix to the current `-linux` alias
-  in the roster before dispatch, and record the translation in the wave board. Never translate
+  box with its former `-wsl` suffix, and so may a worker's `EXECUTION_REQUEST`: translate only
+  that suffix to the current `-linux` alias in the roster before dispatch and in the request
+  before reserving it, and record the translation in the wave board. Never translate
   to an endpoint that `status` did not reach. A WSL boot uses the `-wsl` alias and the
   [WSL setup](references/wsl-boxes.md). Placement is a lookup, never a re-derivation of
   hardware needs from issue bodies: where the plan's first-wave list carries a box per item,
@@ -437,7 +438,10 @@ requirements for every transport with transport-specific setup and identity, and
   suites queue N x ~200 fresh binaries behind it and every worker's run freezes (2026-08-22: 34
   exes parked in dlopen, logs frozen, load 2.5); `dune -j 4` when more than ~4 workers share
   the box. **On GPU boxes**: name the backend and how to prove the run executed on it (a
-  backend-uniform golden proves nothing), and keep one dune per _build. Add the box kind's
+  backend-uniform golden proves nothing), and keep one dune per _build. A claim gated on several
+  GPU backends gets a leg on each backend it names before merge, recorded in the PR body
+  (wave-20261018o: three tests whose CUDA and HIP arms had run only on CUDA merged three HIP
+  reds); what each backend's leg must enable is the project's agent notes'. Add the box kind's
   durable traps to the brief: [native traps](references/linux-boxes.md) for `linux`, [WSL
   traps](references/wsl-boxes.md) for `wsl`. Say up front where the evidence goes: the PR body,
   the issue's comments and the project's agent notes, never a report file the task did not ask
@@ -567,6 +571,8 @@ requirements for every transport with transport-specific setup and identity, and
   when it truly holds nothing for the current head. The one re-request that is automatic is
   `pr-review.sh watch`'s, once per head, on a summary row marking the run Failed with no review
   and no 👍 (ludics-lite#453): with no approval standing, there is nothing for it to clear.
+- **The convergence policy**, Supervise's *Converge long reviews* whole (the rounds it starts
+  at, silent vs loud, removal, merge-on-substance), for the worker to apply itself.
 - **A scan boundary, for an issue whose natural implementation reads free text.** When the task
   is a rule over a PR body, a commit message, a workflow file or Markdown, the brief says which
   reading the issue's requirement actually needs. Where a best-effort reading satisfies it (a
@@ -632,9 +638,12 @@ controlled through the tools in your coordinator's file, never through those com
 - **Stay alive, but design for dying.** A Claude Desktop coordinator is paused by the app about
   fifteen minutes after its last main-conversation activity, and a background waiter held
   inside a native worker does NOT hold the pause. While workers are working and the user may be
-  away, keep a coordinator-side heartbeat under that threshold - a dynamic /loop or
-  ScheduleWakeup, doing a cheap external check each tick (`fleet-worker.sh ls` is one, and the
-  review-rounds read of *Converge long reviews* is another every tick makes). After
+  away, keep a coordinator-side heartbeat of about ten minutes whose wake is a command the
+  harness tracks, not a timer: a background shell command whose exit re-invokes the coordinator
+  (Claude Code's `run_in_background` on `sleep 600; fleet-worker.sh prs <owner/repo> --wave <id>`,
+  re-armed each tick, so the review-rounds read of *Converge long reviews* arrives with the wake).
+  A /loop or ScheduleWakeup tick is a fallback at most: in desktop waves they fire hours late or
+  never (2026-09-19: of three ScheduleWakeups, two never surfaced and one five hours late). After
   ANY interruption - pause, restart, dropped remote-control connection, a box that slept
   through the night - reconcile from the board, the agent listing and the PRs, never from
   memory: an idle native worker is still there to resume, and a CLI worker kept running
@@ -714,8 +723,12 @@ controlled through the tools in your coordinator's file, never through those com
   has it state its recovery or readiness boundary on its first push ("recovery re-reads by
   content", "`--wait` is a point-in-time check"), and a finding past that boundary is rebutted
   on it or deferred to the one follow-up issue below (ludics-lite#625: five rounds of resume
-  corners until the boundary was written down). Send the policy at round 3 when round 1 had five
-  or more findings, and at round 5 otherwise. The count is read on every heartbeat with
+  corners until the boundary was written down). The brief carries the policy, and the worker
+  applies it itself from round 3 when round 1 had five or more findings, and from round 5
+  otherwise: sent by the coordinator, it landed only when a heartbeat was read (wave-20261018o:
+  lukstafi/ocannl-staging#1200 and #1216 reached rounds 12-13 between heartbeats, and #1281
+  round 8 while the heartbeat's output showed it climbing from round 5). The count is read on
+  every heartbeat with
   `fleet-worker.sh prs <owner/repo> --wave <id>` for EACH wave repository - the PR repository
   (`lukstafi/ocannl-staging` for an ahrefs/ocannl wave), not the tracker - and no wake event (a
   desktop CI-monitor event, a worker's notification) stands in for that read. It lists each open
@@ -972,7 +985,11 @@ controlled through the tools in your coordinator's file, never through those com
   convergence policy after, not before.
 - **Gate later waves** on the merges and out-of-scope closures they wait for, and rebrief
   each next-wave worker with what its predecessors landed (new helpers, reshaped goldens,
-  fresh conventions) so it builds on them instead of colliding.
+  fresh conventions) so it builds on them instead of colliding. Running workers get the same
+  news: when a merge changes a type, signature or format that open sibling PRs use (`gh pr
+  diff` names it), comment on each of them (`pr-review.sh comment`) with the change and the
+  merge SHA, before their CI finds it (lukstafi/ocannl-staging#1274 changed
+  `Scan_attempt.Unparsed` under siblings that matched it).
 - **Relay milestones** to the user as they land - merged PRs with one-line substance, not
   worker-status noise.
 
