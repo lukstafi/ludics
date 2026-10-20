@@ -112,19 +112,43 @@ slot --wait-window`, which re-reads this registry every 15 s) read the second an
 between them, and was refused at its bound: a merge build four times, 30 minutes each. So a NEW
 window's payload may carry `"gap": <seconds>` (a whole number; absent or 0 is none), and when a
 measurement on its box concluded less than that long ago (its record's `updated_at`, this anchor's
-clock) while standing records are outstanding there, the window is not written: `run` exits 3 with
-`{"gap": {"box", "after", "ago", "gap", "wait", "standing"}}` on stdout and an `EXECUTION WINDOW`
-line on stderr naming the measurement it follows and the seconds still to go (`wait`, at most
+clock) while a batch is waiting for the box (THE WAITERS, below), the window is not written: `run`
+exits 3 with `{"gap": {"box", "after", "ago", "gap", "wait", "waiting"}}` on stdout and an
+`EXECUTION WINDOW` line on stderr naming the measurement it follows and the seconds still to go (`wait`, at most
 `gap`). The gap is the last of a new window's admission checks, so a window anything else refuses
 (a halt, a lane lock, an open window) is refused at once. The near side (`execution window`) waits
 those seconds with no lock held and asks again with the gap less what it has waited, so its whole
 wait is the gap at most, a conclusion stamped ahead of this clock included, and a handover stays
 two calls, the second taking up to the gap. A conclusion is stamped when it is published, after the
-records it restores, so the gap is measured from the moment a reader sees the box free. The gap's boundary, a fail-closed
-proxy: standing records are what it reads as "workers there may be waiting" -- every native
-worker's batches and merge builds run under one -- and nothing else; it sees no waiting process,
-so it is paid whether or not one waits, and a batch run under no record (a coordinator's own) is
-not waited for. A retried window (its record exists) never waits.
+records it restores, so the gap is measured from the moment a reader sees the box free. The answer's
+`waiting` names the waiters it is kept for. A retried window (its record exists) never waits.
+
+THE WAITERS (ludics-lite#719). The gap first read standing records as "workers there may be
+waiting", so it was paid whether or not anyone waited. A batch waiting out a measurement (`execution
+slot --wait-window` on the box, `execution leg --wait-window` on its agent host) reads this registry
+with `wait` instead of `list`, from the read that first finds the box held on (so no window can
+come and go unseen between that read and the first heartbeat): payload `{"waiter": {"box", "id",
+"command", "ttl"}}` plus `list`'s own options, lease-free like `list`, answered with the listing
+`list` gives. A leg, which learns its box from that same read, names its record instead of a box
+(`"request": <id>` in place of `"box"`): the waiter waits for that record's execution host, and an
+unknown request records nothing. Before answering it writes
+`waiters/<id>.json` under the state root -- `{box, id, command, seen, expires}`, `expires` being
+`ttl` seconds (1 to 3600) from this anchor's clock -- and removes every other waiter file already
+expired, then reads the executions it answers with. All of that is under the flock `waiters/.lock`,
+which a window with a gap also takes before it reads the waiters and holds until it is published: so
+a removal never deletes a renewal, and a heartbeat and a window cannot pass each other -- either the
+window sees the heartbeat, or the listing sees the window. It writes nothing under `executions/`: a waiter owns nothing, and no lease is needed to say
+one is waiting. A waiter's ttl outlasts its poll (the near side sends three polls' worth), so its
+last heartbeat, the one that read the box free, stays fresh while it takes its slot. A new window's
+gap is kept when a waiter on its box (the one-box rule above) has not expired. Fail-closed toward
+the gap: a waiter file that does not parse counts as a waiter on every box. A waiter that no longer
+needs the gap -- it holds its slot, it was refused, or it found nothing to wait for -- sends `wait`
+with `{"waiter": {"id", "done": true}}`, which removes its file (best effort: one that is not sent
+expires). The boundary: a waiter
+the gap sees is a batch that read this registry while waiting; a batch queued for a free SLOT reads
+no registry (the box-local `waiting.<pid>` record is its trace, which `slot --holders` lists, and a
+window's drain takes slots as they free), and a box whose fleet-worker predates #719 waits with
+`list`, unseen, so its batches get no gap.
 
 A request that follows a branch (ludics-lite#558): `"requested_revision": "head-of:<branch>"` names
 no commit at request time, so a request queued behind a halt or a busy box cannot go stale (three
@@ -176,13 +200,14 @@ names no issue (`owner/name#post-1`, `<repo> integration`) is refused when a req
 run, window). The ledger keeps the free-text spellings recorded before, and a retry of such a request
 still answers with its record: what a record holds is validated only as a nonempty string.
 """
+import contextlib
 import fcntl
 import json
 import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -433,15 +458,15 @@ def on_one_box(selected: list[Record], host: str, boxes: str, map_spec: str) -> 
     by the one-box rule of the header (the endpoint map's rows, then case), so an alias (`rog`)
     selects its roster entry's (`rog-nv-linux`) records. A host that is no roster entry's box is
     refused rather than answered with an empty list a typo would read as an idle box."""
-    aliases = endpoint_boxes(map_spec)
-
-    def box_of(name: str) -> str:
-        return aliases.get(name.casefold(), name).casefold()
-
-    wanted = box_of(host)
-    if wanted not in {box_of(entry) for entry in boxes.split()}:
+    wanted = box_key(host, map_spec)
+    if wanted not in {box_key(entry, map_spec) for entry in boxes.split()}:
         refuse(f"list --host {host}: no FLEET_BOXES entry ({boxes}) is that box, by the endpoint map or by case")
-    return [record for record in selected if box_of(record["request"]["execution_host"]) == wanted]
+    return [record for record in selected if box_key(record["request"]["execution_host"], map_spec) == wanted]
+
+
+def box_key(name: str, map_spec: str) -> str:
+    """Which box ``name`` is, by the one-box rule of the header: its endpoint-map row, then case."""
+    return endpoint_boxes(map_spec).get(name.casefold(), name).casefold()
 
 
 LANE_LOCKS: list[int] = []   # lane-lock descriptors held SHARED until this process exits (see the header)
@@ -558,15 +583,11 @@ class Gap(ValueError):
         self.answer = answer
 
 
-def check_gap(host: str, gap: int, records: dict[str, Record], now: datetime) -> None:
+def check_gap(host: str, gap: int, records: dict[str, Record], now: datetime, waiting: list[str]) -> None:
     """Raise Gap when a measurement on ``host`` concluded less than ``gap`` seconds before ``now``
-    and standing records are outstanding there (see the header)."""
-    if gap <= 0:
-        return
-    standing = sorted(r["request_id"] for r in records.values()
-                      if r["state"] != "concluded" and r["request"]["execution_host"] == host
-                      and r["request"].get("standing"))
-    if not standing:
+    and batches are waiting for the box (``waiting``, the waiter ids ``fresh_waiters`` read; see
+    the header)."""
+    if gap <= 0 or not waiting:
         return
     ended: list[tuple[datetime, str]] = []
     for r in records.values():
@@ -588,10 +609,107 @@ def check_gap(host: str, gap: int, records: dict[str, Record], now: datetime) ->
     # side asks again with the gap less what it has waited, so its whole wait is the gap at most.
     wait = min(gap, max(1, int(gap - ago + 0.999)))
     raise Gap({"gap": {"box": host, "after": after, "ago": max(0, int(ago)), "gap": gap, "wait": wait,
-                       "standing": standing}},
-              f"measurement {after} concluded on {host} {max(0, int(ago))}s ago, and standing reservations"
-              f" are outstanding there ({', '.join(standing)}), whose batches may be waiting: they get {gap}s"
-              f" to take its slots before the next window (ludics-lite#667); {wait}s to go")
+                       "waiting": waiting}},
+              f"measurement {after} concluded on {host} {max(0, int(ago))}s ago, and batches are waiting for"
+              f" {host} ({', '.join(waiting)}): they get {gap}s to take its slots before the next window"
+              f" (ludics-lite#667, #719); {wait}s to go")
+
+
+WAITER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+WAITER_FIELDS = {"id", "command", "ttl"}   # and exactly one of `box` and `request`
+WAITER_TTL_MAX = 3600
+
+
+def waiter_time(value: Any) -> datetime | None:
+    """A waiter file's ISO 8601 time, as UTC when naive; None when it is not one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        at = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc)
+
+
+def fresh_waiters(directory: Path, host: str, map_spec: str, now: datetime) -> list[str]:
+    """The ids of the waiters on ``host``'s box whose heartbeat has not expired at ``now`` (THE
+    WAITERS in the header). Fail-closed toward the gap: a waiter file this cannot read or parse
+    counts as a waiter on every box, named by its file, since the cost of a wrong guess either way
+    is a gap paid (60 s) against a batch starved (its whole --wait-window bound)."""
+    if not directory.is_dir():
+        return []
+    wanted = box_key(host, map_spec)
+    waiting: list[str] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            data = as_object(json.loads(path.read_text()))
+        except FileNotFoundError:
+            continue   # released or expired since the listing: nobody waits there
+        except (OSError, ValueError):
+            data = None
+        expires = waiter_time(data.get("expires")) if data is not None else None
+        box = data.get("box") if data is not None else None
+        if data is None or expires is None or not isinstance(box, str):
+            waiting.append(f"{path.name} (unreadable)")
+        elif expires > now and box_key(box, map_spec) == wanted:
+            waiting.append(path.stem)
+    return waiting
+
+
+def record_waiter(directory: Path, waiter: Any, boxes: str, map_spec: str, now: datetime,
+                  records: dict[str, Record]) -> None:
+    """``wait``'s heartbeat (THE WAITERS in the header): one file per waiter, replaced whole, its
+    expiry ``ttl`` seconds from this anchor's clock; and every other waiter file already expired
+    is removed. A waiter named by ``request`` waits for that record's execution host; an unknown
+    request records nothing (its caller refuses it on the listing)."""
+    data = as_object(waiter)
+    if data is not None and set(data) == {"id", "done"}:
+        # The waiter no longer needs the gap (it holds its slot, or it was refused): its file goes.
+        if data["done"] is not True or not isinstance(data["id"], str) or not WAITER_ID.fullmatch(data["id"]):
+            refuse("a waiter that is done is {id, done: true}")
+        with contextlib.suppress(FileNotFoundError):
+            (directory / (data["id"] + ".json")).unlink()
+        return
+    if (data is None or not WAITER_FIELDS <= set(data) or set(data) - WAITER_FIELDS - {"box", "request"}
+            or ("box" in data) == ("request" in data)):
+        refuse("a waiter is {box or request, id, command, ttl}")
+    nonempty(data, ["id", "command", "box" if "box" in data else "request"])
+    if "request" in data:
+        known = records.get(data["request"])
+        if known is None:
+            return
+        data = {**data, "box": known["request"]["execution_host"]}
+    if not WAITER_ID.fullmatch(data["id"]):
+        refuse("invalid waiter id")
+    ttl = data["ttl"]
+    if type(ttl) is not int or not 0 < ttl <= WAITER_TTL_MAX:
+        refuse(f"a waiter's ttl must be a whole number of seconds from 1 to {WAITER_TTL_MAX}")
+    if box_key(data["box"], map_spec) not in {box_key(entry, map_spec) for entry in boxes.split()}:
+        refuse(f"waiter box {data['box']}: no FLEET_BOXES entry ({boxes}) is that box, by the endpoint map or by case")
+    # Under `waiters/.lock`, which the caller holds (`lock_waiters`): the removal of expired files
+    # and the renewal of one are serialized with each other and with a window's admission. Without
+    # it, one waiter could read another's file expired, the owner renew it, and the first remove
+    # the renewal, unseen until the next poll.
+    for path in directory.glob("*.json"):
+        try:
+            existing = as_object(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            continue   # unreadable: fresh_waiters counts it; a person removes it
+        expires = waiter_time(existing.get("expires")) if existing is not None else None
+        if expires is not None and expires <= now:
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+    record = {"box": data["box"], "id": data["id"], "command": data["command"][:300], "seen": now.isoformat(),
+              "expires": (now + timedelta(seconds=ttl)).isoformat()}
+    fd, temporary = tempfile.mkstemp(prefix=".waiter-", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(record, stream)
+            stream.write("\n")
+        os.replace(temporary, directory / (data["id"] + ".json"))
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def publish(directory: Path, record: Record) -> None:
@@ -628,6 +746,30 @@ def payload_word(word: str) -> str:
     return text
 
 
+def load_records(directory: Path) -> dict[str, Record]:
+    """Every record under ``executions/``, validated: a corrupt record blocks dispatch instead of
+    silently making its box available."""
+    records: dict[str, Record] = {}
+    if directory.exists():
+        for path in sorted(directory.glob("*.json")):
+            records[path.stem] = validate_record(json.loads(path.read_text()), path)
+    return records
+
+
+WAITER_LOCKS: list[int] = []   # `waiters/.lock`, held until this process exits (THE WAITERS)
+
+
+def lock_waiters(directory: Path) -> None:
+    """Take ``waiters/.lock`` exclusively until this process exits: a heartbeat with the listing
+    read after it, and a window from its waiter check through its publication, are serialized, so
+    either the window sees the heartbeat or the listing sees the window (THE WAITERS)."""
+    # parents: on a fresh anchor no lease has created the state root yet, and `wait` takes none.
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(directory / ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    WAITER_LOCKS.append(descriptor)
+
+
 def main(argv: list[str]) -> None:
     root, action, coordinator, token, word, boxes = argv[1:7]
     raw = payload_word(word)
@@ -635,11 +777,18 @@ def main(argv: list[str]) -> None:
     map_spec = argv[8] if len(argv) > 8 else ""
     anchor, lab = (argv[9:11] + ["", ""])[:2]
     directory = Path(root) / "executions"
-    # A corrupt record blocks dispatch instead of silently making its box available.
-    records: dict[str, Record] = {}
-    if directory.exists():
-        for path in sorted(directory.glob("*.json")):
-            records[path.stem] = validate_record(json.loads(path.read_text()), path)
+    if action == "wait":
+        # THE WAITERS (ludics-lite#719): the heartbeat, then -- under the same lock, which an admitted
+        # window holds until it is published -- the listing `list` gives, read after it.
+        payload = as_object(json.loads(raw))
+        if payload is None or "waiter" not in payload:
+            refuse("a wait payload is {waiter, ...list options}")
+        lock_waiters(Path(root) / "waiters")
+        record_waiter(Path(root) / "waiters", payload["waiter"], boxes, map_spec, datetime.now(timezone.utc),
+                      load_records(directory))
+        raw = json.dumps({key: value for key, value in payload.items() if key != "waiter"})
+        action = "list"
+    records = load_records(directory)
     if action == "list":
         options = as_object(json.loads(raw))
         if (options is None or set(options) - {"active", "compact", "host"}
@@ -784,7 +933,12 @@ def main(argv: list[str]) -> None:
             if action == "window":
                 # Last of the admission checks: a gap answer is retried, and only a window every
                 # other check admits may wait for one.
-                check_gap(request["execution_host"], window_gap, records, clock)
+                if window_gap > 0:
+                    # Held from this check through the window's publication (THE WAITERS).
+                    lock_waiters(Path(root) / "waiters")
+                check_gap(request["execution_host"], window_gap, records, clock,
+                          fresh_waiters(Path(root) / "waiters", request["execution_host"], map_spec, clock)
+                          if window_gap > 0 else [])
             record = {"request_id": identity, "request": request, "coordinator": coordinator,
                       "lease_token": token, "state": "reserved", "created_at": now, "history": []}
             if "triage_reason" in request:

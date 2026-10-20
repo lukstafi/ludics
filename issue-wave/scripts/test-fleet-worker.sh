@@ -3368,11 +3368,16 @@ grep -q "^EXECUTION LEG testbox: measurement window leg-w1 holds testbox (coordi
 leg_said() { # <pattern>: wait up to 40 s for the waiting leg's output to show it
   local i; for i in $(seq 200); do grep -q "$1" "$TMP/leg-ww.out" 2>/dev/null && return 0; sleep 0.2; done; return 1
 }
+# The bounded legs above, refused, released their heartbeats; this leg's is the one read below.
 env FLEET_SLOT_WINDOW_POLL=5 "${FWL[@]}" execution leg --request leg-s --rev claude/topic --checkout "$lco" --worktree "$lwt" \
   --wait-window=120 -- tools/check.sh > "$TMP/leg-ww.out" 2>&1 &
 lww=$!
 if leg_said "^EXECUTION LEG testbox: waiting up to 120s (--wait-window) for it to conclude, then for a slot, for: tools/check.sh$"; then
   ok "a leg given --wait-window waits for the window that suspended its standing record"
+  # THE WAITERS (ludics-lite#719): its first read, the one that found its record suspended, named
+  # the request, and the anchor resolved the box from it.
+  grep -l '"box": *"testbox".*"command": *"tools/check.sh"' "$ISSUE_WAVE_STATE"/waiters/*.json >/dev/null 2>&1 &&
+    ok "...registered on the anchor as waiting for testbox" || ko "no heartbeat for the leg: $(cat "$ISSUE_WAVE_STATE"/waiters/*.json 2>&1)"
   fixture_done leg-w1; legwin leg-w2
   leg_said "^EXECUTION LEG testbox: measurement window leg-w2 holds testbox" && ok "...and for a window opened mid-wait, which it names" ||
     ko "the waiting leg never named the window opened mid-wait: $(cat "$TMP/leg-ww.out")"
@@ -3381,6 +3386,12 @@ if leg_said "^EXECUTION LEG testbox: waiting up to 120s (--wait-window) for it t
   wait "$lww"; lwwrc=$?
   [ "$lwwrc" = 0 ] && [ "$(tail -n 1 "$TMP/leg-ww.out")" = "execution-leg: exit: 0" ] && [ "$(marks)" = $((n + 1)) ] &&
     ok "...and once it concludes inside the bound the leg runs, once, its status the runner's" || ko "the waited leg: rc=$lwwrc runs $(marks) (from $n) -- $(cat "$TMP/leg-ww.out")"
+  # Kept through its setup, the leg's heartbeat is released when the leg ends (round 6 of #736),
+  # by a detached child, so give it a moment.
+  for wi in $(seq 40); do grep -l '"command": *"tools/check.sh"' "$ISSUE_WAVE_STATE"/waiters/*.json >/dev/null 2>&1 || break; sleep 0.25; done
+  grep -l '"command": *"tools/check.sh"' "$ISSUE_WAVE_STATE"/waiters/*.json >/dev/null 2>&1 &&
+    ko "the finished leg's heartbeat is still on the anchor: $(cat "$ISSUE_WAVE_STATE"/waiters/*.json)" ||
+    ok "...and its heartbeat is released once it ends"
   grep -q "^EXECUTION LEG testbox: no measurement holds testbox after [0-9]*s; running the leg$" "$TMP/leg-ww.out" &&
     grep -q "^EXECUTION SLOT testbox: slot [0-9] of 4[^:]* held for: bash" "$TMP/leg-ww.out" && ok "...in a slot on the box, after saying the box is free" || ko "the waited leg's output: $(cat "$TMP/leg-ww.out")"
 else
@@ -4280,17 +4291,32 @@ else ko "the --wait-window batch never said it waits: $(cat "$bgd/log" 2>/dev/nu
 bgkill "$bgd"
 # THE GAP (ludics-lite#667): a coordinator's back-to-back windows are two registry calls, and a
 # batch waiting out the first re-reads the registry every FLEET_SLOT_WINDOW_POLL seconds, so it
-# read the second window and never the moment between them. Now the second window, on a box whose
-# workers hold standing reservations, waits out FLEET_WINDOW_GAP after the last measurement there
-# concluded, and says so; the waiting batch takes its slot and runs in that gap.
-"${FWS[@]}" execution window --no-gap testbox "$(slotreq gap-a measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+# read the second window and never the moment between them. Now the second window, on a box a
+# batch is waiting for (THE WAITERS, #719: each of its reads leaves a heartbeat on the anchor),
+# waits out FLEET_WINDOW_GAP after the last measurement there concluded, and says so; the waiting
+# batch takes its slot and runs in that gap. With nobody waiting, a window opens at once.
+# The window waits above released their heartbeats once they held their slots or were refused.
+"${FWS[@]}" execution window --no-gap testbox "$(slotreq gap-0 measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+fixture_done gap-0
+expect "a window right after a measurement, with standing reservations but nobody waiting, opens at once (#719)" 0 \
+  "EXECUTION WINDOW testbox: gap-a open; suspended ww-iterate" -- env FLEET_WINDOW_GAP=5 "${FWS[@]}" execution window testbox "$(slotreq gap-a measurement)"
+grep -q "waiting [0-9]*s, then opening" <<<"$out" && ko "...but it waited out a gap: $out" || ok "...waiting out no gap"
 env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-gap" --wait-window=60 --wait 0 -- echo ran-in-the-gap >/dev/null
 gbd="$TMP/slot-gap/run-1"
 if held "$gbd/log" "waiting up to 60s (--wait-window) for it to conclude, then for a slot, for: echo ran-in-the-gap"; then
+  expect "--holders lists the batch waiting out the window, from its waiting record (#719)" 0 '"event":"waiting"' -- \
+    "${FWS[@]}" execution slot --holders
+  grep -q '"phase":"window".*"command":"echo ran-in-the-gap"' <<<"$out" && ok "...in its window phase, naming its command" ||
+    ko "--holders' waiting line: $out"
+  wpid=$(sed -n 's/.*"event":"waiting","phase":"window","kind":"gpu","pid":\([0-9]*\).*/\1/p' <<<"$out")
+  # The heartbeat is the wait's first read, made just after the line `held` waited for.
+  for wi in $(seq 40); do [ -f "$ISSUE_WAVE_STATE/waiters/testbox-$wpid.json" ] && break; sleep 0.25; done
+  [ -f "$ISSUE_WAVE_STATE/waiters/testbox-$wpid.json" ] && ok "...and the anchor holds its heartbeat" ||
+    ko "no heartbeat for testbox-$wpid: $(ls "$ISSUE_WAVE_STATE/waiters" 2>&1)"
   fixture_done gap-a
-  expect "the next window on a box with standing reservations waits out the gap after the last measurement there" 0 \
+  expect "the next window on a box a batch waits for waits out the gap after the last measurement there" 0 \
     "EXECUTION WINDOW testbox: gap-b open; suspended ww-iterate" -- env FLEET_WINDOW_GAP=5 "${FWS[@]}" execution window testbox "$(slotreq gap-b measurement)"
-  grep -q "^EXECUTION WINDOW testbox: measurement gap-a concluded on testbox [0-9]*s ago, and standing reservations are outstanding there (ww-iterate), whose batches may be waiting: they get 5s to take its slots before the next window (ludics-lite#667); [1-5]s to go$" <<<"$out" &&
+  grep -q "^EXECUTION WINDOW testbox: measurement gap-a concluded on testbox [0-9]*s ago, and batches are waiting for testbox (testbox-$wpid): they get 5s to take its slots before the next window (ludics-lite#667, #719); [1-5]s to go$" <<<"$out" &&
     grep -q "^EXECUTION WINDOW testbox: waiting [1-5]s, then opening the window (FLEET_WINDOW_GAP=5; --no-gap opens it at once)$" <<<"$out" &&
     ok "...saying what it waits for, and for how long" || ko "the gap's lines: $out"
   expect "...in which the batch that waited out the first window ran (rc=0), the second still open" 0 "rc=0" -- "$BGR" wait "$gbd" --within 30

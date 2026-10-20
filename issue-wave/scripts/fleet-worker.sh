@@ -154,7 +154,7 @@
 #   fleet-worker.sh execution window [--no-gap] <box> <json-file> # `run` for a measurement that suspends
 #                          # the box's standing reservations, restored when it concludes; it first
 #                          # waits out FLEET_WINDOW_GAP after the box's last measurement while
-#                          # standing reservations are outstanding there (none with --no-gap)
+#                          # a batch is waiting for the box (none with --no-gap)
 #   fleet-worker.sh execution conclude --from-run <run-dir> --request <id> --sha <sha>
 #                          [--box <box>] [--evidence <text>]   # verdict, log and checkout read from a
 #                                                     # test-run.sh record on the reserved box

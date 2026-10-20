@@ -33,6 +33,11 @@ brief:
   It is a separate flag, so a caller that relies on the immediate refusal (a runner's nested slot)
   is never parked for a whole window, and it does not wait inside a measurement's hold, where it
   would wait for its own measurement.
+- THE WAITERS (ludics-lite#719): a batch waiting out a measurement reads the registry with
+  ``wait``, which records on the anchor that it waits for this box (registry.py's THE WAITERS), so a
+  new window keeps its gap only while someone waits; and a batch waiting here, for a window or for a
+  free slot, keeps a ``waiting.<pid>`` record in the slot directory, flocked for as long as it
+  waits, which ``--holders`` lists (``WaitingRecord``).
 - THE GUARD (ludics-lite#317): a logind ``block`` inhibitor on sleep:idle, held by a HELPER beside
   the command (systemd-inhibit closes the descriptors of the process it runs, SIGTERMs it, and
   rewrites its exit status, so it must never wrap the batch), alive for as long as anything in the
@@ -221,6 +226,7 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # Exit: the command's own status; 127 with `EXECUTION HOLD REFUSED` when it cannot be run; 2 usage;
 # 124 when --deadline ended the command's process group (ludics-lite#566).
 
+import contextlib
 import fcntl
 import json
 import math
@@ -230,7 +236,9 @@ import select
 import shlex
 import shutil
 import signal
+import socket
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -727,8 +735,11 @@ def exec_command(prefix: str, box: str, command: Sequence[str]) -> NoReturn:
 
 
 def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: str,
-              command: Sequence[str], bound: int | None) -> NoReturn:
-    """Wait up to ``wait`` seconds for a slot (a GPU token unless ``cpu``), then run the command in it."""
+              command: Sequence[str], bound: int | None, waiting: "WaitingRecord | None" = None,
+              release: Callable[[], None] = lambda: None) -> NoReturn:
+    """Wait up to ``wait`` seconds for a slot (a GPU token unless ``cpu``), then run the command in it;
+    from the first pass that finds none free, under a WaitingRecord (``waiting``, when the window
+    wait already keeps one)."""
     # The candidate slots, in the order this batch tries them (THE GPU TOKENS).
     if not tokens:
         order = range(1, cap + 1)
@@ -748,6 +759,9 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             # The lock lives on this descriptor, which the command inherits. Nothing releases it
             # afterwards -- the kernel does, when the last process holding it ends.
             os.set_inheritable(descriptor, True)
+            if waiting is not None:
+                waiting.done()
+            release()   # held: the anchor's heartbeat has done its work (THE WAITERS)
             # THE HOLDER RECORD, for a drain waiting on it; its deadline's end once that counts.
             taken = record_holder(descriptor, command, bound)
 
@@ -764,12 +778,19 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             run_command(SLOT_PREFIX, box, command, inhibitor, f"{box} {held}: {' '.join(command)}", bound,
                         on_start=counting)
         if time.monotonic() >= deadline:
+            if waiting is not None:
+                waiting.done()
+            release()
             if tokens and not cpu:
                 cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {tokens} GPU tokens (slots 1-{tokens} of {cap}) busy"
                         f" after {wait}s; a batch that holds no GPU declares --cpu")
             else:
                 cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {cap} run-time correctness slots busy after {wait}s")
             raise cli.Exit(1)
+        if waiting is None:
+            waiting = WaitingRecord(directory, command, "slot", "cpu" if cpu else "gpu")
+        else:
+            waiting.phase("slot")
         time.sleep(1)
 
 
@@ -1035,8 +1056,9 @@ def unreachable_lines(anchor: str, voice: Voice = SLOT_VOICE) -> tuple[str, ...]
     return (f"{voice.prefix} UNREACHABLE {anchor}: registry unread, {voice.refused}", retry)
 
 
-def read_registry(cfg: Config, box: str, voice: Voice = SLOT_VOICE) -> list[dict[str, Any]] | Unread:
-    done = listing(cfg)
+def read_registry(cfg: Config, box: str, voice: Voice = SLOT_VOICE,
+                  waiter: dict[str, Any] | None = None) -> list[dict[str, Any]] | Unread:
+    done = listing(cfg, waiter)
     if done.unreachable:
         # Refused at once, never retried here: later in a box's uptime an anchor that does not
         # answer is the answer. The first minute after a wake is the exception (ludics-lite#617):
@@ -1073,10 +1095,125 @@ def describe_measurement(box: str, record: dict[str, Any], prefix: str = SLOT_PR
     )
 
 
+def window_poll(cfg: Config) -> float:
+    """``FLEET_SLOT_WINDOW_POLL``: the seconds between a window wait's reads (15)."""
+    try:
+        return max(float(cfg.env.get("FLEET_SLOT_WINDOW_POLL", "15")), 0.1)
+    except ValueError:
+        return 15.0
+
+
+def waiter_of(cfg: Config, command: Sequence[str], **where: str) -> dict[str, Any]:
+    """The heartbeat a window wait's reads carry (THE WAITERS): ``where`` is ``box=`` or, for a leg
+    that learns its box from the read, ``request=``; fresh for three polls' worth (at least 30 s),
+    so the heartbeat of the read that finds the box free outlasts the moment it takes to get its slot."""
+    return {**where, "id": waiter_id(cfg), "command": " ".join(command)[:300],
+            "ttl": min(max(30, math.ceil(3 * window_poll(cfg))), 3600)}
+
+
+def release_waiter(cfg: Config, waiter: dict[str, Any] | None) -> None:
+    """Tell the anchor this waiter no longer needs the gap (THE WAITERS), and never wait for the
+    answer: best effort, since a heartbeat that is not released expires, and nothing may wait on an
+    anchor that stopped answering (ssh gives one about two minutes) -- not a slot just taken, which
+    would sit idle, nor a refusal past its bound, nor a leg on its way to its box. A double fork, so
+    nothing is left for this process to reap; the grandchild closes every descriptor it inherited
+    before it asks -- a slot's lock among them, which it must never hold past the batch, and the
+    batch's output pipes, whose reader would otherwise wait for it."""
+    if waiter is None:
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        child = os.fork()
+    except OSError:
+        return  # the heartbeat expires
+    if child:
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(child, 0)
+        return
+    try:
+        if os.fork() == 0:
+            os.setsid()
+            os.closerange(3, 65536)  # the slot flock, the batch's pipes: all of it
+            devnull = os.open(os.devnull, os.O_RDWR)
+            for target in (0, 1, 2):
+                os.dup2(devnull, target)
+            listing(cfg, {"id": waiter["id"], "done": True})
+    except BaseException:
+        pass
+    os._exit(0)
+
+
+def waiter_id(cfg: Config) -> str:
+    """This waiter's id on the anchor (THE WAITERS): where it runs and its pid, in the registry's
+    id alphabet."""
+    origin = re.sub(r"[^A-Za-z0-9._-]", "-", cfg.local_box or socket.gethostname().split(".")[0] or "host")
+    return f"{origin if origin[:1].isalnum() else 'host'}-{os.getpid()}"
+
+
+class WaitingRecord:
+    """THE WAITING RECORD (ludics-lite#719): ``<slot directory>/waiting.<pid>``, one JSON object
+    (``pid``, ``command``, ``since``, ``phase`` -- ``window`` while it waits out a measurement,
+    ``slot`` while it waits for a free slot -- and ``kind``, the slot it asks for), flocked by this
+    process for as long as it waits. ``slot --holders`` lists a record only while its flock is held,
+    so a waiter that died leaves nothing listed, and the kernel is what says so. It is written to a
+    temporary name, locked, and only then renamed into place, so a ``waiting.<pid>`` that is not
+    locked is one whose owner has gone, and the next waiter removes it. ``done`` removes the record
+    and releases it before the batch runs or is refused: the descriptor is not inherited, but this
+    process outlives its command as its parent, and would otherwise hold it for the whole batch."""
+
+    def __init__(self, directory: str, command: Sequence[str], phase: str, kind: str) -> None:
+        self.path = os.path.join(directory, f"waiting.{os.getpid()}")
+        self.fields: dict[str, Any] = {"pid": os.getpid(), "command": " ".join(command)[:300],
+                                       "since": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kind": kind}
+        self.descriptor: int | None = None
+        try:
+            os.makedirs(directory, exist_ok=True)
+            for name in os.listdir(directory):
+                # A record whose owner has gone; or a temporary one a waiter killed between its
+                # creation and its rename left, once it is old enough not to be one about to be locked.
+                path = os.path.join(directory, name)
+                with contextlib.suppress(OSError):
+                    stale = name.startswith("waiting.") or (
+                        name.startswith(".waiting-") and time.time() - os.lstat(path).st_mtime > 60)
+                    if stale and holders.held_now(path) is False:
+                        os.unlink(path)
+            descriptor, temporary = tempfile.mkstemp(prefix=".waiting-", dir=directory)
+            os.fchmod(descriptor, 0o644)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            self.descriptor = descriptor
+            self.phase(phase)
+            os.rename(temporary, self.path)
+        except OSError as exc:
+            # A trace for a person, never a gate: a batch is not refused for want of one.
+            errline(f"{SLOT_PREFIX}: no waiting record in {directory} ({exc.strerror or exc}); --holders will not list"
+                    " this batch while it waits")
+            self.done()
+
+    def phase(self, phase: str) -> None:
+        if self.descriptor is None or phase == self.fields.get("phase"):
+            return
+        self.fields["phase"] = phase
+        # ASCII-escaped, as the holder record is: an argument's undecodable bytes reach Python as lone
+        # surrogates, which a UTF-8 encode would refuse.
+        text = json.dumps(self.fields, separators=(",", ":")).encode("ascii")
+        with contextlib.suppress(OSError):
+            os.ftruncate(self.descriptor, 0)
+            os.pwrite(self.descriptor, text + b"\n", 0)
+
+    def done(self) -> None:
+        if self.descriptor is None:
+            return
+        with contextlib.suppress(OSError):
+            os.unlink(self.path)
+        os.close(self.descriptor)
+        self.descriptor = None
+
+
 def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bound: int,
                        command: Sequence[str], voice: Voice = SLOT_VOICE,
                        holders: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
-                       ) -> list[dict[str, Any]] | int:
+                       registered: bool = False) -> list[dict[str, Any]] | int:
     """``--wait-window`` (ludics-lite#557): block until no measurement is outstanding on ``box``,
     re-reading the registry every ``FLEET_SLOT_WINDOW_POLL`` seconds (15), for at most ``bound``
     seconds; the registry it last read, or the refusal's status. A measurement on another box is
@@ -1085,10 +1222,13 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     ``execution leg`` waits here too, on the agent host for its execution host's box, in its own
     ``voice``, with ``holders`` (what holds the box in a registry read; the box's measurements when
     not given) adding the window its record is still suspended by (ludics-lite#666)."""
-    try:
-        poll = max(float(cfg.env.get("FLEET_SLOT_WINDOW_POLL", "15")), 0.1)
-    except ValueError:
-        poll = 15.0
+    poll = window_poll(cfg)
+    # THE WAITERS (ludics-lite#719): every read in the wait tells the anchor this batch waits for the
+    # box. ``registered`` says the read that found the box held already did (the caller's, made with
+    # ``waiter_of``); otherwise the first read here is at once, so a window opened before the first
+    # poll would be due sees this waiter too.
+    waiter = waiter_of(cfg, command, box=box)
+    beat = not registered
     start = time.monotonic()
     deadline, progress = start + bound, start + WINDOW_PROGRESS
     named: set[str] = set()
@@ -1121,12 +1261,14 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
             errline(f"{voice.prefix} {box}: still waiting for measurement {ids}"
                     f" ({int(now - start)}s of {bound}s, --wait-window)")
             progress += WINDOW_PROGRESS
-        time.sleep(min(poll, deadline - now))
-        if time.monotonic() >= deadline:
-            # The bound is the bound: no read after it, which over a remote anchor could run past
-            # it by the transport's timeout and then admit the batch late.
-            continue
-        read = read_registry(cfg, box, voice)
+        if not beat:
+            time.sleep(min(poll, deadline - now))
+            if time.monotonic() >= deadline:
+                # The bound is the bound: no read after it, which over a remote anchor could run past
+                # it by the transport's timeout and then admit the batch late.
+                continue
+        beat = False
+        read = read_registry(cfg, box, voice, waiter)
         if time.monotonic() >= deadline:
             # Nor a read that came back past it: a slow transport must not admit the batch late
             # either (ludics-lite#683 review). Such a read decides which refusal is said -- its
@@ -1168,7 +1310,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     if parsed.holders:
         # THE HOLDERS (ludics-lite#639, ``holders.py``): who holds this box's slots now, one JSON line
         # per held slot; like the probe, it takes nothing and reads no registry.
-        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens)))
+        sys.stdout.write(holders.render(holders.holders(box, directory, cap, tokens) + holders.waiters(box, directory)))
         return 0
     if parsed.probe:
         # THE PROBE: what a slot here would be, taking nothing and reading no registry; inside a
@@ -1216,7 +1358,13 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
             case _:
                 assert_never(verdict)
     registry_source()  # `execution: missing helper` before the registry is asked anything
-    records = read_registry(cfg, box)
+    # THE WAITERS (ludics-lite#719): a batch that may wait out a window registers as a waiter in the
+    # read that may find one, so no window can conclude and the next open between that read and its
+    # first heartbeat; a batch that then finds the box free leaves a heartbeat that only a window
+    # opened in the next half minute reads, and that window's drain waits for the batch anyway.
+    window_wait = parsed.window_wait if not marker_measure else None
+    waiter = waiter_of(cfg, command, box=box) if window_wait is not None else None
+    records = read_registry(cfg, box, waiter=waiter)
     if isinstance(records, Unread):
         for line in records.lines:
             cli.say(line)
@@ -1237,9 +1385,13 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
                 assert_never(verdict)
     # --wait-window waits here, and never inside a measurement's hold (a batch carrying its
     # marker that the judgement above did not admit): there it would wait for its own measurement.
-    if measuring and parsed.window_wait is not None and not marker_measure:
-        waited = await_measurements(cfg, box, records, parsed.window_wait, command)
+    waiting: WaitingRecord | None = None
+    if measuring and window_wait is not None:
+        waiting = WaitingRecord(directory, command, "window", "cpu" if cpu else "gpu")
+        waited = await_measurements(cfg, box, records, window_wait, command, registered=True)
         if isinstance(waited, int):
+            waiting.done()
+            release_waiter(cfg, waiter)
             return waited
         records = waited
         measuring = outstanding_measurements(records, box, window_only=False)
@@ -1247,6 +1399,10 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     elif measuring and parsed.window_wait is not None:
         errline(f"{SLOT_PREFIX} {box}: --wait-window does not wait inside a measurement's hold, where it would"
                 " wait for its own measurement")
+    if window or measuring:
+        if waiting is not None:
+            waiting.done()
+        release_waiter(cfg, waiter)
     if window:
         cli.say(
             f"{SLOT_PREFIX} REFUSED {box}: measurement window {window} is open on {box}, and holds the box"
@@ -1266,7 +1422,8 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         os.makedirs(directory, exist_ok=True)
     except OSError:
         die(f"execution slot: cannot create the slot directory {directory}")
-    take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command, parsed.deadline)
+    take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command, parsed.deadline, waiting,
+              lambda: release_waiter(cfg, waiter))
 
 
 def cmd_hold(cfg: Config, args: list[str]) -> int:

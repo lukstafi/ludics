@@ -25,10 +25,20 @@ One line per held slot file, its fields:
 - ``unknown``: ``{<field>: <why>}`` for each of ``pid``, ``user``, ``command``, ``cwd`` left
   ``null``; empty when every field is known.
 
+Then one line per batch WAITING here (ludics-lite#719), from its ``waiting.<pid>`` record
+(slot.py's ``WaitingRecord``): ``box``, ``at``, ``event`` ``waiting``, ``phase`` (``window`` while
+it waits out a measurement, ``slot`` while it waits for a free slot), ``kind`` (the slot it asks
+for), ``pid``, ``command``, ``since`` (when it began to wait), ``source`` ``waiting-record``, and
+``unknown`` as above for a record whose text does not parse. Its order is the records' ``since``.
+
 WHAT IT READS, AND WHAT IT DOES NOT (the boundary). It reads the slot directory's ``slot.<n>``
-files (``<n>`` decimal) and nothing else there: not ``measurement.lock`` (a live ``execution hold
---request`` shows as the holder of every slot it drained), not the co-tenant records, not the
-registry. A slot is listed when a non-blocking exclusive flock on a new read-only descriptor of it
+files (``<n>`` decimal) and ``waiting.<pid>`` records, and nothing else there. A waiting record
+is listed only while its flock is held (the same test as a slot's), so a waiter that died is not
+listed; what it says is what the waiter wrote, not read off ``ps``. A batch waiting on another
+machine for this box (``execution leg --wait-window`` on its agent host) has no record here: the
+anchor's heartbeat is its trace (registry.py's THE WAITERS). Not read: ``measurement.lock`` (a
+live ``execution hold --request`` shows as the holder of every slot it drained), the co-tenant
+records, the registry. A slot is listed when a non-blocking exclusive flock on a new read-only descriptor of it
 fails NOW -- the test ``execution slot`` itself makes of a nested marker -- or when the lock table
 names a holder of it; the test takes the lock for an instant when it is free, so a batch taking a
 slot in that instant tries its next one. Who holds it is read, on
@@ -51,7 +61,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from ludics.fleetworker import cotenants
 
@@ -61,6 +71,7 @@ PROC = "/proc"
 # A blocked waiter's line carries `->` after the index and is not a holder, so it never matches.
 LOCK_LINE = re.compile(r"[0-9]+: FLOCK +[A-Z]+ +[A-Z]+ +(-?[0-9]+) +([0-9a-f]+):([0-9a-f]+):([0-9]+) ")
 SLOT_FILE = re.compile(r"slot\.([0-9]+)")
+WAITING_FILE = re.compile(r"waiting\.([0-9]+)")
 
 
 @dataclass(frozen=True)
@@ -195,6 +206,42 @@ def holders(box: str, directory: str, cap: int, tokens: int, run: cotenants.Runn
             lines.append({**base, "pid": pid, "user": user, "command": command, "cwd": cwd, "source": "proc-locks",
                           "unknown": unknown})
     return lines
+
+
+def waiters(box: str, directory: str) -> list[dict[str, Any]]:
+    """The batches waiting here: one line per ``waiting.<pid>`` record whose flock is held now."""
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    lines: list[dict[str, Any]] = []
+    for name in names:
+        match = WAITING_FILE.fullmatch(name)
+        path = os.path.join(directory, name)
+        if not match or not match.group(1).isascii() or held_now(path) is not True:
+            continue
+        line: dict[str, Any] = {"box": box, "at": at, "event": "waiting", "phase": None, "kind": None,
+                                "pid": int(match.group(1)), "command": None, "since": None,
+                                "source": "waiting-record", "unknown": {}}
+        try:
+            with open(path, encoding="utf-8") as record:
+                data: Any = json.loads(record.read())
+        except (OSError, ValueError) as exc:
+            why = f"{path}: {getattr(exc, 'strerror', None) or exc}"
+            line["unknown"] = {key: why for key in ("phase", "kind", "command", "since")}
+            lines.append(line)
+            continue
+        fields = cast(dict[str, Any], data) if isinstance(data, dict) else {}
+        for key in ("phase", "kind", "command", "since"):
+            value = fields.get(key)
+            if isinstance(value, str):
+                # An argument's undecodable bytes come back as lone surrogates: shown escaped.
+                line[key] = value.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+            else:
+                line["unknown"][key] = f"{path}: no {key} recorded"
+        lines.append(line)
+    return sorted(lines, key=lambda line: (line["since"] or "", line["pid"]))
 
 
 def render(lines: list[dict[str, Any]]) -> str:

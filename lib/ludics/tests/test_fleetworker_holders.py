@@ -169,6 +169,58 @@ class Holders(unittest.TestCase):
         self.assertEqual(holders.render([]), "")
 
 
+class Waiters(unittest.TestCase):
+    """ludics-lite#719: ``--holders`` lists the batches waiting here from their ``waiting.<pid>``
+    records, and only while each record's flock is held."""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.mkdtemp(prefix="ludics-holders-waiters.")
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def record(self, pid: int, text: str, locked: bool = True) -> None:
+        path = os.path.join(self.dir, f"waiting.{pid}")
+        with open(path, "w") as f:
+            f.write(text)
+        if locked:
+            descriptor = os.open(path, os.O_RDONLY)
+            self.addCleanup(os.close, descriptor)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+
+    def test_a_locked_record_is_listed_in_order_of_its_wait_and_an_unlocked_one_is_not(self) -> None:
+        self.record(12, json.dumps({"pid": 12, "command": "make b", "since": "2026-10-20T10:00:05Z",
+                                    "phase": "slot", "kind": "cpu"}))
+        self.record(11, json.dumps({"pid": 11, "command": "make a", "since": "2026-10-20T10:00:01Z",
+                                    "phase": "window", "kind": "gpu"}))
+        self.record(13, "{}", locked=False)
+        lines = holders.waiters("testbox", self.dir)
+        self.assertEqual([(line["pid"], line["phase"], line["kind"], line["command"]) for line in lines],
+                         [(11, "window", "gpu", "make a"), (12, "slot", "cpu", "make b")])
+        self.assertEqual({(line["event"], line["source"], line["box"]) for line in lines},
+                         {("waiting", "waiting-record", "testbox")})
+        self.assertEqual([line["unknown"] for line in lines], [{}, {}])
+
+    def test_a_record_that_does_not_parse_is_listed_with_its_fields_unknown(self) -> None:
+        self.record(21, "{")
+        self.record(22, json.dumps({"pid": 22, "since": "2026-10-20T10:00:00Z", "phase": "slot", "kind": "cpu"}))
+        lines = {line["pid"]: line for line in holders.waiters("testbox", self.dir)}
+        self.assertEqual(set(lines[21]["unknown"]), {"phase", "kind", "command", "since"})
+        self.assertEqual(list(lines[22]["unknown"]), ["command"])
+        self.assertIsNone(lines[22]["command"])
+
+    def test_a_command_with_undecodable_bytes_is_shown_escaped(self) -> None:
+        argument = b"caf\xe9".decode("utf-8", "surrogateescape")
+        self.record(31, json.dumps({"pid": 31, "command": f"echo {argument}", "since": "s", "phase": "slot", "kind": "cpu"}))
+        (line,) = holders.waiters("testbox", self.dir)
+        self.assertEqual(line["command"], "echo caf\\xe9")
+        holders.render([line]).encode("utf-8")
+
+    def test_nothing_else_in_the_directory_is_a_waiter(self) -> None:
+        for name in ("slot.1", "waiting.x", ".waiting-abc", "waiting.12.json"):
+            open(os.path.join(self.dir, name), "w").close()
+        self.assertEqual(holders.waiters("testbox", self.dir), [])
+        self.assertEqual(holders.waiters("testbox", os.path.join(self.dir, "missing")), [])
+
+
 class HoldersArguments(unittest.TestCase):
     def refused(self, args: list[str]) -> str:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit) as caught:
