@@ -761,7 +761,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             os.set_inheritable(descriptor, True)
             if waiting is not None:
                 waiting.done()
-            release()   # held: the anchor's heartbeat has done its work (THE WAITERS), told without waiting
+            release()   # held: the anchor's heartbeat has done its work (THE WAITERS)
             # THE HOLDER RECORD, for a drain waiting on it; its deadline's end once that counts.
             taken = record_holder(descriptor, command, bound)
 
@@ -1112,18 +1112,13 @@ def waiter_of(cfg: Config, command: Sequence[str], **where: str) -> dict[str, An
 
 
 def release_waiter(cfg: Config, waiter: dict[str, Any] | None) -> None:
-    """Tell the anchor this waiter no longer needs the gap (THE WAITERS): best effort, unread, since
-    a heartbeat that is not released expires."""
-    if waiter is not None:
-        listing(cfg, {"id": waiter["id"], "done": True})
-
-
-def release_detached(cfg: Config, waiter: dict[str, Any] | None) -> None:
-    """``release_waiter`` without waiting for it: a slot just taken must not sit idle behind an
-    anchor that stopped answering (ssh gives one about two minutes). A double fork, so nothing is
-    left for this process to reap; the grandchild closes every descriptor it inherited before it
-    asks -- the slot's lock among them, which it must never hold past the batch, and the batch's
-    output pipes, whose reader would otherwise wait for it."""
+    """Tell the anchor this waiter no longer needs the gap (THE WAITERS), and never wait for the
+    answer: best effort, since a heartbeat that is not released expires, and nothing may wait on an
+    anchor that stopped answering (ssh gives one about two minutes) -- not a slot just taken, which
+    would sit idle, nor a refusal past its bound, nor a leg on its way to its box. A double fork, so
+    nothing is left for this process to reap; the grandchild closes every descriptor it inherited
+    before it asks -- a slot's lock among them, which it must never hold past the batch, and the
+    batch's output pipes, whose reader would otherwise wait for it."""
     if waiter is None:
         return
     sys.stdout.flush()
@@ -1143,7 +1138,7 @@ def release_detached(cfg: Config, waiter: dict[str, Any] | None) -> None:
             devnull = os.open(os.devnull, os.O_RDWR)
             for target in (0, 1, 2):
                 os.dup2(devnull, target)
-            release_waiter(cfg, waiter)
+            listing(cfg, {"id": waiter["id"], "done": True})
     except BaseException:
         pass
     os._exit(0)
@@ -1428,7 +1423,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
     except OSError:
         die(f"execution slot: cannot create the slot directory {directory}")
     take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command, parsed.deadline, waiting,
-              lambda: release_detached(cfg, waiter))
+              lambda: release_waiter(cfg, waiter))
 
 
 def cmd_hold(cfg: Config, args: list[str]) -> int:

@@ -433,7 +433,8 @@ class Waiting(unittest.TestCase):
         self.assertEqual(released, ["held", "refused"])
 
     def test_the_release_after_a_slot_is_taken_does_not_wait_and_holds_nothing_inherited(self) -> None:
-        # Round 3 of #736: an anchor that stopped answering must not keep a held slot idle.
+        # Rounds 3 and 4 of #736: an anchor that stopped answering keeps nothing waiting, a held slot
+        # nor a refusal past its bound.
         marker = os.path.join(self.dir, "released")
 
         def slow_listing(_cfg: object, waiter: Any = None) -> None:
@@ -446,7 +447,7 @@ class Waiting(unittest.TestCase):
         os.set_inheritable(write, True)
         started = time.monotonic()
         with mock.patch.object(slot, "listing", slow_listing):
-            slot.release_detached(cfg, {"id": "testbox-1", "box": "testbox", "command": "x", "ttl": 30})
+            slot.release_waiter(cfg, {"id": "testbox-1", "box": "testbox", "command": "x", "ttl": 30})
         self.assertLess(time.monotonic() - started, 1.5, "it does not wait for the anchor")
         os.close(write)
         reader = threading.Thread(target=os.read, args=(read, 1))
@@ -459,7 +460,7 @@ class Waiting(unittest.TestCase):
             time.sleep(0.1)
         with open(marker) as f:
             self.assertEqual(json.load(f), {"id": "testbox-1", "done": True})
-        slot.release_detached(cfg, None)
+        slot.release_waiter(cfg, None)
 
     def test_a_batch_queued_for_a_slot_is_recorded_and_runs_without_its_record(self) -> None:
         # A held slot 1 makes the batch wait; freed, the batch takes it, and its command sees no record.
@@ -613,18 +614,18 @@ class WindowWait(unittest.TestCase):
         # A wait refused at its bound releases the heartbeat it registered.
         listings: list[Any] = []
 
-        def listing(_cfg: object, waiter: Any = None) -> None:
+        def release(_cfg: object, waiter: Any = None) -> None:
             listings.append(waiter)
 
         held = [{"request_id": "win", "state": "launching", "window": True,
                  "request": {"execution_host": "testbox", "kind": "measurement"}}]
         with mock.patch.object(slot, "read_registry", mock.Mock(return_value=held)), \
                 mock.patch.object(slot, "registry_source"), \
-                mock.patch.object(slot, "listing", side_effect=listing), \
+                mock.patch.object(slot, "release_waiter", side_effect=release), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(slot.cmd_slot(cfg, ["--wait-window=0", "--", "make"]), 1)
         self.assertEqual(len(listings), 1)
-        self.assertEqual(listings[0]["done"], True)
+        self.assertEqual((listings[0]["box"], listings[0]["command"]), ("testbox", "make"))
         self.assertRegex(listings[0]["id"], rf"\Atestbox-{os.getpid()}\Z")
 
     def test_a_late_read_that_answers_clears_an_earlier_failed_one(self) -> None:
