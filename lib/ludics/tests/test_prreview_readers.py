@@ -712,6 +712,15 @@ class StaleEyesUnderARunningRow(unittest.TestCase):
         st = run_state(feeds(reviews=[findings], comments=[running_summary(1, iso(60)), nudge]), 2)
         self.assertEqual(st.tok, "nudged", "a row older than a pending request does not answer it")
 
+    def test_a_same_head_rerun_after_a_clean_verdict_is_reviewing(self) -> None:
+        # Review of #747, round 2: a verdict on the head approves it until a newer Running row says
+        # a rerun of that head is under way, as a newer Running row outranks a 👍.
+        verdict = comment(5, iso(600), f"Didn't find any major issues.\n\n**Reviewed commit:** `{HEAD[:7]}`")
+        st = run_state(feeds(comments=[verdict, running_summary(1, iso(60))]))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        st = run_state(feeds(comments=[verdict, running_summary(1, iso(900))]))
+        self.assertEqual(st.tok, "approved", "a row older than the verdict is the round that gave it")
+
     def test_an_unreadable_running_row_is_unknown(self) -> None:
         for name, stamp in (("no datetime", "just now"),
                             ("not a timestamp", '<relative-time datetime="yesterday">x</relative-time>')):

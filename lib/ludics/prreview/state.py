@@ -532,6 +532,41 @@ def status_state(ctx: Ctx, pr: str) -> State:
         mstate = head.mstate
     head_sha = head.sha
 
+    # ludics-lite#586: a 👀 is a level, and one left up by an older head's stuck round is no measure
+    # of this head's round. The summary's newest Code Review row, Running on this head, newer than
+    # the reviewer's last word and than any 👀, is the round in flight -- whether that 👀 is live
+    # or spent (review of #747, round 1: a same-head rerun after findings) -- aged from the row,
+    # and it stalls by the row's age. A Running row that does not read may be that round. It is
+    # read before any verdict, as the 👍 path's newer current-head Running row outranks the 👍:
+    # a no-findings verdict on the head is a word of the reviewer's, so a row newer than it is a
+    # rerun that may yet post findings (review of #747, round 2). The summary's Completed, Failed
+    # and record arms below need the newest row to be theirs, so a Running newest row is none of
+    # them.
+    try:
+        running_unread, running_at = _head_running_row(comments, rev, head_sha)
+    except JqError:
+        return unknown(mstate, "the summary's Code Review rows did not parse")
+    if running_unread:
+        return unknown(
+            mstate,
+            f"a {rev} Code Review row matched the Running test but not the"
+            " SUMMARY_ROW_STAMP_RE, so the running round could not be read",
+        )
+    if (
+        running_at and running_at > last_spoke and (not eyes_at or running_at > eyes_at)
+        and _after_nudge(running_at, nudge_at)
+    ):
+        age = age_of(running_at, ctx.clock.time())
+        eyes = f" and its 👀 ({eyes_at})" if eyes_at else ""
+        spoke = f" ({last_spoke})" if last_spoke else ""
+        detail = (
+            f"{rev} Code Review Running for head {_short(head_sha)} since {running_at}, newer than its"
+            f" last word{spoke}{eyes}"
+        )
+        if age is not None and age >= grace_stall:
+            return State("stalled", age, mstate, detail)
+        return State("reviewing", age, mstate, detail)
+
     if verd_sha and head_sha and (not eyes_at or verd_at > eyes_at) and head_sha.startswith(verd_sha):
         return State(
             "approved", None, mstate,
@@ -626,36 +661,6 @@ def status_state(ctx: Ctx, pr: str) -> State:
                 f" Failed at {done_at}, with no review of it, no 👍, and no '@codex review' on it"
                 " since it arrived",
             )
-
-    # ludics-lite#586: a 👀 is a level, and one left up by an older head's stuck round is no measure
-    # of this head's round. The summary's newest Code Review row, Running on this head, newer than
-    # the reviewer's last word and than any 👀, is the round in flight -- whether that 👀 is live
-    # or spent (review of #747, round 1: a same-head rerun after findings) -- aged from the row,
-    # and it stalls by the row's age. A Running row that does not read may be that round.
-    try:
-        running_unread, running_at = _head_running_row(comments, rev, head_sha)
-    except JqError:
-        return unknown(mstate, "the summary's Code Review rows did not parse")
-    if running_unread:
-        return unknown(
-            mstate,
-            f"a {rev} Code Review row matched the Running test but not the"
-            " SUMMARY_ROW_STAMP_RE, so the running round could not be read",
-        )
-    if (
-        running_at and running_at > last_spoke and (not eyes_at or running_at > eyes_at)
-        and _after_nudge(running_at, nudge_at)
-    ):
-        age = age_of(running_at, ctx.clock.time())
-        eyes = f" and its 👀 ({eyes_at})" if eyes_at else ""
-        spoke = f" ({last_spoke})" if last_spoke else ""
-        detail = (
-            f"{rev} Code Review Running for head {_short(head_sha)} since {running_at}, newer than its"
-            f" last word{spoke}{eyes}"
-        )
-        if age is not None and age >= grace_stall:
-            return State("stalled", age, mstate, detail)
-        return State("reviewing", age, mstate, detail)
 
     if eyes_at and eyes_at > last_spoke:
         age = age_of(eyes_at, ctx.clock.time())

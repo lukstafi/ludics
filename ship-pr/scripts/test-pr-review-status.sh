@@ -1844,6 +1844,15 @@ test_a_same_head_rerun_after_findings_is_reviewing() {
   COMMENTS_JSON="[$(running_row 1 fb80745 "$(clock_at -900)")]"
   run_status
   assert_eq "$(state_tok "$STATE")" idle "a row older than the reviewer's last word is that round's"
+  # Review of #747, round 2: the same rerun after a no-findings verdict on the head. The verdict is
+  # the reviewer's last word, and a Running row newer than it outranks it, as one outranks a 👍.
+  stale_eyes_fixture
+  COMMENTS_JSON="[$(verdict_comment 2 fb80745 "$(clock_at -600)"),$(running_row 1 fb80745 "$(clock_at -60)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" reviewing "the head's Running row after its verdict is the rerun"
+  COMMENTS_JSON="[$(verdict_comment 2 fb80745 "$(clock_at -600)"),$(running_row 1 fb80745 "$(clock_at -900)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" approved "a row older than the verdict is the round that gave it"
 }
 
 # --- a reviewer run the summary marks Failed (ludics-lite#453) ----------------------------------
