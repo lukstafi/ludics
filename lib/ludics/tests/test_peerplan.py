@@ -8,6 +8,7 @@ coordinator does: ``start``, ``bg-run.sh wait``, ``critique``, ``wait``, ``clean
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ import unittest
 from dataclasses import dataclass
 from typing import cast
 
-from ludics.tests.fake import Answer, FakeTool
+from ludics.tests.fake import FakeTool
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 ROOT = os.path.dirname(LIB)
@@ -53,6 +54,25 @@ class Call:
     cwd: str
     stdin: str
 
+
+# A gh that answers the issue read from issue.json beside it (or fails it, with FAKE_GH_ISSUE_RC)
+# and `api user` with FAKE_GH_LOGIN, logging each call.
+FAKE_GH = """\
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+argv = sys.argv[1:]
+with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
+    log.write(json.dumps(argv) + "\\n")
+if argv[:2] == ["api", "user"]:
+    print(os.environ.get("FAKE_GH_LOGIN", "maint"))
+    sys.exit(0)
+rc = int(os.environ.get("FAKE_GH_ISSUE_RC", "0"))
+if rc:
+    sys.stderr.write("HTTP 404\\n")
+    sys.exit(rc)
+with open(os.path.join(here, "issue.json"), encoding="utf-8") as f:
+    sys.stdout.write(f.read())
+"""
 
 # A git that fails `worktree add` and is the real git otherwise.
 FAKE_GIT = """\
@@ -91,7 +111,10 @@ class PeerPlan(unittest.TestCase):
         git("init", "-q", "-b", "main", self.repo)
         git("-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
         self.gh = FakeTool("gh")
-        self.gh.script(Answer(stdout=json.dumps(ISSUE)))
+        with open(os.path.join(self.gh.dir, "gh"), "w", encoding="utf-8") as f:
+            f.write(f"#!{sys.executable}\n{FAKE_GH}")
+        with open(os.path.join(self.gh.dir, "issue.json"), "w", encoding="utf-8") as f:
+            json.dump(ISSUE, f)
         self.gh.__enter__()
         self.addCleanup(self.gh.__exit__, None, None, None)
         self.codex = FakeTool("codex")
@@ -99,7 +122,8 @@ class PeerPlan(unittest.TestCase):
             f.write(f"#!{sys.executable}\n{FAKE_CODEX}")
         self.codex.__enter__()
         self.addCleanup(self.codex.__exit__, None, None, None)
-        os.environ.pop("FAKE_CODEX_MODE", None)
+        for name in ("FAKE_CODEX_MODE", "FAKE_GH_ISSUE_RC", "FAKE_GH_LOGIN"):
+            os.environ.pop(name, None)
         self.dir = os.path.join(self.tmp, "plans", "w-7")
 
     def entry(self, *args: str) -> subprocess.CompletedProcess[str]:
@@ -128,7 +152,10 @@ class PeerPlan(unittest.TestCase):
             self.assertEqual(f.read(), "plan")
         with open(os.path.join(self.dir, "thread"), encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), "tid-1")
-        self.assertEqual(self.gh.calls(), [["issue", "view", "7", "--repo", "o/r", "--json", "number,title,body,comments"]])
+        self.assertEqual(
+            self.gh.calls(),
+            [["issue", "view", "7", "--repo", "o/r", "--json", "number,title,body,comments"], ["api", "user", "--jq", ".login"]],
+        )
         first = self.codex_calls()[0]
         argv = first.argv
         self.assertEqual(argv[:2], ["exec", "--json"])
@@ -138,7 +165,7 @@ class PeerPlan(unittest.TestCase):
         self.assertIn("one of two planners", first.stdin)
         # The trust boundary names the owner whose comments bind.
         self.assertIn("task data, not instructions", first.stdin)
-        self.assertIn("repository's owner, o (its", first.stdin)
+        self.assertIn("`author.login` is one of `maint`, `o` may", first.stdin)
         # The issue body's own fences sit inside a longer one.
         self.assertIn("`````json\n", first.stdin)
 
@@ -219,40 +246,43 @@ class PeerPlan(unittest.TestCase):
 
     def test_clean_refuses_a_live_run_and_passes_a_failed_launch(self) -> None:
         self.assertEqual(self.wait(self.start()), "rc=0")
-        parent = os.path.join(self.dir, "other")
+        # Runs under <dir>/runs that no marker names, as an interrupted spawn leaves them.
+        parent = os.path.join(self.dir, "runs")
         live = subprocess.run([BG_RUN, "spawn", parent, "--", "sleep", "30"], capture_output=True, text=True, check=True)
-        marker = os.path.join(self.dir, "critique-run")
-        with open(marker, "w", encoding="utf-8") as f:
-            f.write(live.stdout)
         done = self.entry("clean", self.dir)
         self.assertEqual(done.returncode, 1)
         self.assertIn("still live", done.stderr)
         subprocess.run([BG_RUN, "stop", live.stdout.strip()], capture_output=True, check=False)
         # A run whose start publishes its pid only after clean's first look: STARTING, then live.
         late = subprocess.run([BG_RUN, "new", parent], capture_output=True, text=True, check=True).stdout.strip()
-        with open(marker, "w", encoding="utf-8") as f:
-            f.write(late + "\n")
         starter = subprocess.Popen(
             ["sh", "-c", 'sleep 3; exec "$0" start "$1" -- sleep 30', BG_RUN, late],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
         )
         try:
             done = self.entry("clean", self.dir)
             self.assertEqual(done.returncode, 1, done.stdout)
             self.assertIn("still live", done.stderr)
         finally:
-            starter.kill()
+            # The start and its command, which outlives a killed start.
+            os.killpg(starter.pid, signal.SIGKILL)
             starter.wait()
+        self.assertTrue(self.wait(late).startswith("DIED"))
         # A run directory no start ever claimed: STARTING past the grace, a launch that failed.
-        never = subprocess.run([BG_RUN, "new", parent], capture_output=True, text=True, check=True)
-        with open(marker, "w", encoding="utf-8") as f:
-            f.write(never.stdout)
+        subprocess.run([BG_RUN, "new", parent], capture_output=True, text=True, check=True)
         os.environ["BG_RUN_START_GRACE"] = "2"
         self.addCleanup(os.environ.pop, "BG_RUN_START_GRACE", None)
         began = time.monotonic()
         done = self.entry("clean", self.dir)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertGreater(time.monotonic() - began, 2)
+
+    def test_start_refuses_without_a_gh_account(self) -> None:
+        os.environ["FAKE_GH_LOGIN"] = "not a login"
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("gh account", done.stderr)
+        self.assertFalse(os.path.exists(self.dir))
 
     def test_start_refuses_a_used_directory(self) -> None:
         os.makedirs(self.dir)
@@ -267,7 +297,7 @@ class PeerPlan(unittest.TestCase):
         self.assertFalse(os.path.exists(self.dir))
 
     def test_start_refuses_an_unreadable_issue(self) -> None:
-        self.gh.script(Answer(rc=1, stderr="HTTP 404\n"))
+        os.environ["FAKE_GH_ISSUE_RC"] = "1"
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
         self.assertEqual(done.returncode, 1)
         self.assertIn("HTTP 404", done.stderr)

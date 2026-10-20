@@ -222,7 +222,8 @@ decision they own:
 border gets `paired`. Either way GPT Astra plans the issue read-only next to the Claude worker,
 and the worker reconciles the two plans before it codes
 ([paired-planning.md](references/paired-planning.md)). D1 and plain D2 issues get neither. List
-the mode per issue in the wave summary, where it is veto-able like tier 2.
+the mode per issue in the wave summary, where it is veto-able like tier 2. The second planner is
+Astra, so a D3 the user gives a Codex worker plans alone, and the summary says so.
 
 Most waves should have an empty tier 3. If every question keeps landing in tier 3, the
 triage is wrong, not the backlog. A desktop coordinator with native Claude workers, where the

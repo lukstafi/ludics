@@ -19,7 +19,8 @@ passing:
 - No pairing for D1 and plain D2 issues.
 
 The second planner is Astra, so pairing is for Claude workers. Any transport works, because the
-plans travel in messages, never as paths on another box. A D3 that still has an open "ask" design
+plans travel in messages, never as paths on another box. A D3 the user assigned to a Codex
+worker gets no pairing: its mode is set to none at the gate, and the wave summary says why. A D3 that still has an open "ask" design
 question waits for the user's answer before it launches, as any issue does.
 
 ## Coordinator
@@ -45,8 +46,10 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    <task> planning=<mode> plan_dir=<plan-dir>`). The worker's brief carries the addition below.
 2. **On `PLAN_READY`** (the worker's handoff): save the block's plan to `<plan-dir>/claude-plan.md`,
    from the task notification or, for a CLI worker, `fleet-worker.sh log <box> <name>
-   --last-result`. Block on the planning run with `bg-run.sh wait <run>` until it prints `rc=`.
-   For `paired+critique`, after `rc=0`:
+   --last-result`. Block on the planning run with `bg-run.sh wait <run>`, re-issued while it
+   prints `RUNNING` or a first `STARTING`. Any other verdict is final: `rc=0` is a plan, and every
+   other one (`rc=<n>`, `DIED`, `STOPPED`, a second `STARTING`) makes the plan unavailable (step
+   3). For `paired+critique`, after `rc=0`:
 
    ```bash
    ~/.claude/skills/issue-wave/scripts/peer-plan.sh critique <plan-dir> --plan <plan-dir>/claude-plan.md
@@ -64,8 +67,10 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
 4. **`PLAN_ESCALATION`**: the worker found a disagreement the user owns. Ask it as a tier-3
    question with the worker's recommendation first, and resume the worker with the answer.
 5. **Clean up** once the worker has resumed: `peer-plan.sh clean <plan-dir>` removes the
-   worktree and keeps the plans. After an interruption, `<plan-dir>/plan-run` and
-   `critique-run` name the run directories to wait on again.
+   worktree and keeps the plans. It refuses while any run under `<plan-dir>/runs` is live. After
+   an interruption, `<plan-dir>/plan-run` and `critique-run` name the run directories to wait on
+   again; a run started just before the interruption may have no marker yet, and is the newest
+   `<plan-dir>/runs/run-<N>`.
 
 ## The brief addition
 
