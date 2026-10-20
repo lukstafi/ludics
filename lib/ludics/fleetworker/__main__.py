@@ -9,7 +9,7 @@ Every verb is served here (ludics-lite#403): the coordinator lease (claim, relea
 the halt (halt, resume-launches, halted), the native gate (gate), every ``execution`` action, the
 preflight and refresh (``preflight``), a CLI worker's life (``workers``: launch, attach, status,
 log, unstick, close, ls), the supervision reads (``supervision``: load, prs) and the wave board
-(``board``: set, note, log, show). The one answer
+(``board``: set, note, log, show, takeover). The one answer
 fleet-worker.sh still gives itself is ``execution slot --probe``, which must answer on a box with no
 Python >= 3.12 (THE PROBE WITHOUT PYTHON, in fleet-worker.sh). Under a coordinator's far side,
 every verb first checks the registry pin (``config.pin_refusal``, ludics-lite#632).

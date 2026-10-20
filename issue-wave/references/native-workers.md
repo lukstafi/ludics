@@ -85,11 +85,24 @@ Maintain the board on the anchor with `fleet-worker.sh board`: `board set [--cre
 (the store and its grammar: `lib/ludics/fleetworker/boardstore.py`). A wave whose board predates
 the verb (a markdown file under `FLEET_ANCHOR_STATE`, such as `<wave>-board.md`) keeps that file
 to its close-out, and recovery reads it there: `board show` reads only the structured boards and
-refuses a wave it has none for. Store wave and coordinator identity, the durable brief, runtime
-identity, transport, agent host, intended execution hosts, checkout ownership, branch and base,
-dispatch status, PR/head/merge state, last observation, remaining gates, hand-back, and
-reservation request IDs. The writers check the lease themselves; check it before interventions.
-A board write that fails may or may not have landed: re-read with `board show` before retrying it.
+refuses a wave it has none for. Store wave and coordinator identity as notes, and per worker
+the dispatch status, last observation, remaining gates and hand-back beside the **takeover keys**,
+written at launch (before the spawn, then `agent` after it) and again whenever one changes:
+`worktree`, `branch`, `base`, `agent`, `transport`, `agent_host`, `exec_hosts`, `brief` and
+`brief_host` (the durable brief's absolute path and box), `repository` (`owner/name`), `issue`
+(`owner/name#N`), `worker` (the registry's `request.worker`), `pr` (the number, once opened),
+`runs` (the worker's bg-run parent), `standing` and `requests` (request ids, space-separated, or
+`none`), `farside` (`<box>:<path>` far-side worktrees) and `plan_dir`. Their grammars are
+`lib/ludics/fleetworker/takeover.py`'s. The writers check the lease themselves; check it before
+interventions. A board write that fails may or may not have landed: re-read with `board show`
+before retrying it.
+
+When a worker died with its process (a coordinator restart kills every in-process worker), its
+replacement's brief is `fleet-worker.sh board takeover <wave> <task>`: the stored brief, then a
+generated *State at takeover* from those keys and the live sources (worktree HEAD, the PR, the
+registry's outstanding requests for the worker, its bg-run verdicts), each missing key printed as
+missing. Exit 3 means the brief itself could not be read, so the output is no brief. It reads and
+writes nothing else: establishing that the old writer is gone stays the step below.
 
 Use the runtime's messages and bounded waits, retaining real identities. Follow up in the same
 agent when work is unfinished and observe the response. A returned turn is read by its final

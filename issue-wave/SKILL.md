@@ -648,8 +648,10 @@ controlled through the tools in your coordinator's file, never through those com
   through the night - reconcile from the board, the agent listing and the PRs, never from
   memory: an idle native worker is still there to resume, and a CLI worker kept running
   detached ([cli-claude.md](references/cli-claude.md#supervising) has the CLI recovery). A
-  finisher per stranded branch remains the backstop for a worker that itself died: it
-  re-verifies from scratch and signs for the inherited commits.
+  worker that itself died is replaced with `fleet-worker.sh board takeover <wave> <task>` as its
+  brief ([native-workers.md](references/native-workers.md#supervision-recovery-and-evidence)); a
+  finisher per stranded branch remains the backstop: it re-verifies from scratch and signs for
+  the inherited commits.
 - **Verify externally, not by worker self-report.** `gh pr list/view`, issue states, and for
   CLI workers the `fleet-worker.sh status` stall test ([cli-claude.md](references/cli-claude.md#supervising)).
   Include the machine: `uptime` low while many `dune` processes sit at 0% CPU on mac-studio
