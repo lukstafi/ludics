@@ -826,7 +826,8 @@ test_a_forwarded_merge_is_still_gated() {
 # config an UNKNOWN drift makes merge look for (ludics-lite#611); with a known drift it is the threads.
 test_no_read_after_the_gate_waits_a_hold() {
   reset_fixture
-  READ_HOOK='case "$FIXTURE_FILTER" in *mergeable_state*) plant_hold "$((T0 + 600))" graphql 600 ;; esac'
+  # The drift read's @tsv projection, not the --wait's conflict preflight before the gate (#729).
+  READ_HOOK='case "$FIXTURE_FILTER" in *mergeable_state*@tsv*) plant_hold "$((T0 + 600))" graphql 600 ;; esac'
   run merge cmd_merge "$REPO#7" --wait=1200
   assert_eq "$(rc merge)" 3 "the merge stops ($(err merge))"
   assert_contains "$(err merge)" "could not read $REPO's .github/ship-pr-merge-build" "at the next read"

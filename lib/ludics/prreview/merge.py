@@ -8,7 +8,8 @@ seven merges). The order of the reads is the shell's, and it is load-bearing -- 
 review round:
 
   the body's closing-keyword scan (lead time), the merge queue (a close-out merge), the advisory
-  list, the gate (with the override's waiver), the close-out refusals, the base drift, the build of
+  list, a --wait's conflict preflight (ludics-lite#729, ``conflict_preflight``), the gate (with the
+  override's waiver), the close-out refusals, the base drift, the build of
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue last,
   and an ABSENT verdict's base (ludics-lite#523); then what the merge goes over (an override's
@@ -22,6 +23,7 @@ Exit: 0 merged; 1 refused (red, a moved head, a real conflict, an open thread, a
 
 import os
 import re
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import assert_never
@@ -46,6 +48,7 @@ from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, load_gate_config
 from ludics.prreview.mergebuild import merge_build
+from ludics.prreview.shtext import tab_fields
 from ludics.prreview.threads import merge_threads_gate
 
 USAGE = "usage: merge <pr> [--override <reason>] [--wait[=seconds]] [--allow-no-verdict] [-- <gh pr merge args...>]"
@@ -205,6 +208,67 @@ class Merge:
                 return result.stdout
             sleep(5)
         return "null"
+
+    # The preflight's reads while GitHub has not computed the answer yet: await_mergeable's bound.
+    PREFLIGHT_READS = 8
+    PREFLIGHT_PAUSE = 5
+    _MERGEABILITY_JQ = '"\\(.mergeable)\\t\\(.mergeable_state // "-")\\t\\(.base.ref // "-")"'
+
+    def conflict_preflight(self, sleep: Callable[[float], None]) -> None:
+        """A ``--wait``'s first question (ludics-lite#729): does the PR conflict with its base? A
+        conflict ends no wait in a merge -- on ocannl-staging#1259 it surfaced only at the merge
+        call, after 120 minutes on CI -- so it is refused before the wait, exit 1.
+
+        BOUNDARY (a fail-closed allowlist). One REST read of the PR, two fields: ``mergeable``
+        (true / false / null) and ``mergeable_state``. GitHub computes them lazily, so ``null`` or
+        ``unknown`` in EITHER field is "not computed yet": re-read, at most PREFLIGHT_READS reads
+        PREFLIGHT_PAUSE s apart, and never read as clean or as conflicting. Refused: exactly
+        ``mergeable=false`` or ``mergeable_state=dirty``, read while neither field is still
+        computing. Silent: exactly ``mergeable=true`` with any other state (``behind``,
+        ``blocked``, ``unstable``, ``draft``, ``has_hooks``, ``clean``: the drift read's and the
+        gate's, not this one's). Anything else -- a read that failed, a shape outside those
+        words, or still computing after the last read -- is said on stderr and the wait goes on:
+        this read can only refuse early, so not knowing refuses nothing, and it never says clean.
+        Not read: a conflict that arises DURING the wait. That one is the drift read's warning
+        after the gate and the merge call's own refusal, decided by the mergeable field
+        (``await_mergeable``) as before. A merge with no wait reads nothing here: its gate is one
+        read, and the call's refusal answers a conflict at once."""
+        repo, pr = self.repo, self.num
+        mergeable = state = base = ""
+        for attempt in range(self.PREFLIGHT_READS):
+            if attempt:
+                sleep(self.PREFLIGHT_PAUSE)
+            result = self.session.retry("read", ["api", f"repos/{repo}/pulls/{pr}", "--jq", self._MERGEABILITY_JQ])
+            if not isinstance(result, GhOk):
+                warn(
+                    f"whether {repo}#{pr} conflicts with its base is UNREAD ({self.session.err_line()}),",
+                    "which is not 'no conflict'; waiting for the build signal, and the merge call re-checks it.",
+                )
+                return
+            mergeable, state, base = tab_fields(result.stdout, 3)
+            if mergeable == "null" or state == "unknown":
+                continue
+            if mergeable == "false" or state == "dirty":
+                fail(
+                    1,
+                    f"REFUSING to merge {repo}#{pr} before the wait: it CONFLICTS with its base",
+                    f"{shlex.quote(base)} (mergeable={mergeable}, mergeable_state={state}), so no build verdict",
+                    f"can end in a merge. Merge or rebase {shlex.quote('origin/' + base)} in, resolve, push,",
+                    "then run merge --wait again for the new head.",
+                )
+            if mergeable == "true":
+                return
+            warn(
+                f"{repo}#{pr}'s mergeability read answered a shape this check does not know",
+                f"(mergeable={shlex.quote(mergeable)}, mergeable_state={shlex.quote(state)}): not read as",
+                "clean or as conflicting; waiting for the build signal, and the merge call re-checks it.",
+            )
+            return
+        warn(
+            f"{repo}#{pr}'s mergeability is NOT YET COMPUTED after {self.PREFLIGHT_READS} reads",
+            f"(mergeable={mergeable}, mergeable_state={state}): not read as clean or as conflicting;",
+            "waiting for the build signal, and the merge call re-checks it.",
+        )
 
     def absent_base_holds(self) -> bool:
         """``absent_base_holds``: is the PR's base still the one the ABSENT verdict was read against?
@@ -507,6 +571,8 @@ class Merge:
         policy = self.gate.advisory_policy()
         if policy != 0:
             return policy
+        if self.opts.wait_for > 0:
+            self.conflict_preflight(self.clock.sleep)
         self.judge()
         drift = self.drift()
         # The would-be merge commit's build, where the repository asks for one (mergebuild.py,

@@ -46,6 +46,9 @@ THREADS = json.dumps({"totalCount": 0, "pageInfo": {"hasNextPage": False, "endCu
 # appear in the call answers it): the output each would have printed after its --jq.
 GREEN: list[tuple[list[str], int, str, str]] = [
     (["pr", "merge"], 0, "", ""),
+    # A --wait's conflict preflight (ludics-lite#729), before the drift read its projection shares
+    # a field with.
+    (["\\(.mergeable)"], 0, "true\tclean\tmain\n", ""),
     (["mergeable_state"], 0, "main\theadsha\tclean\n", ""),
     (["merged=\\(.merged)"], 0, "merged=true state=closed\n", ""),
     ([".updated_at"], 0, "headsha\t2026-09-01T00:00:00Z\tbasesha\ttopic\n", ""),
@@ -188,6 +191,29 @@ class Production(unittest.TestCase):
                 self.assertLess(lines.index("base-drift file overlap o/r#7: none"), said, done.stdout)
                 self.assertEqual(lines[said + 1:], ["o/r#7 merged=true state=closed"], "said once, then merged")
                 self.assertEqual(done.stderr.count("OVERRIDE: merging o/r#7 over "), 1, done.stderr)
+
+    def test_a_wait_refuses_a_conflict_before_reading_the_build(self) -> None:
+        # ludics-lite#729: a conflicting PR is refused at the start of `merge --wait`, exit 1, with
+        # the rebase hint; a clean one is read once and merges; a merge with no wait reads nothing.
+        conflict = [(["\\(.mergeable)"], 0, "false\tdirty\tmain\n", ""), *GREEN]
+        for entry in self.entries():
+            with self.subTest(entry=entry[0], pr="conflicting"):
+                self.route(conflict)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("REFUSING to merge o/r#7 before the wait: it CONFLICTS with its base", done.stderr)
+                self.assertIn("Merge or rebase origin/main in", done.stderr)
+                self.assertFalse(any("check-runs" in " ".join(c) for c in self.calls()), "the gate read nothing")
+                self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
+            with self.subTest(entry=entry[0], pr="no wait"):
+                self.route(conflict)
+                self.run_cmd(entry, "merge", "o/r#7")
+                self.assertFalse(any("\\(.mergeable)" in " ".join(c) for c in self.calls()))
+            with self.subTest(entry=entry[0], pr="clean"):
+                self.route(GREEN)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertEqual(sum("\\(.mergeable)" in " ".join(c) for c in self.calls()), 1)
 
 
 if __name__ == "__main__":

@@ -277,8 +277,15 @@ gh() {
   # do NOT overlap (the glob demands the slash), nor do "actions/runs?…" and "actions/runs/"*.
   case "$FIXTURE_ENDPOINT" in
   "repos/$REPO/pulls/7")
-    # The base-drift read (the one projection carrying mergeable_state) runs after the gate and
-    # before the merge loop: the moment a case's base advance lands.
+    # merge --wait's conflict preflight (ludics-lite#729, the one interpolated projection) reads no
+    # head: it is answered clean without taking a HEAD_SEQ entry, which stay the gate's reads.
+    case "$FIXTURE_FILTER" in
+    *'\(.mergeable)'*)
+      response='{"mergeable":true,"mergeable_state":"clean","base":{"ref":"main"}}'
+      ;;
+    *)
+    # The base-drift read (the one other projection carrying mergeable_state) runs after the gate
+    # and before the merge loop: the moment a case's base advance lands.
     case "$FIXTURE_FILTER" in
     *mergeable_state*) [ -z "$BASE_ADVANCED" ] || : >"$TEST_ROOT/base-advanced" ;;
     esac
@@ -299,6 +306,8 @@ gh() {
           mergeable:true, mergeable_state:"clean"}
          + (if $base == "" then {base:{ref:"main"}} else {base:{sha:$base, ref:"main"}} end)')
     fi
+    ;;
+    esac
     ;;
   "repos/$REPO/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100")
     response=$(next_of CHECK_RUNS_SEQ)
