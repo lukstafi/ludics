@@ -1131,6 +1131,7 @@ EOF
   # text the prompt checker's suite reads from the live checkout.
   mkdir -p "$T/lib/ludics/checkprompts"
   printf '# checker\n' >"$T/lib/ludics/checkprompts/tree.py"
+  printf '# checker\n' >"$T/lib/ludics/cli.py"
   printf '#!/usr/bin/env bash\ntrue\n' >"$T/scripts/sync-routines.sh"
   chmod +x "$T/scripts/sync-routines.sh"
   printf '# notes\n' >"$T/notes.txt"
@@ -1221,6 +1222,21 @@ if gtree guards_clean && grep -q -- '^  --base [^ ]* --regenerable ' "$T/ship-pr
     1 "differs from the merge base with origin/main" -- "$PF" --root "$T" --guards changed syntax
 else
   ko "could not build the guard controls' repository: the cases below would prove nothing"
+fi
+
+# A guard's trigger is its suite's import chain too (PR #763, round 1): the prompt suite is a
+# module of the ludics.tests package, whose initializer runs first, and the checker imports
+# ludics.cli, which the checker's file list once left out.
+if gtree guards_imports; then
+  printf '# edited\n' >>"$T/lib/ludics/tests/__init__.py"
+  expect "a change to the test package's initializer runs the prompt guard, whose suite imports it" \
+    0 'ran-prompt-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
+  git -C "$T" checkout -q -- lib/ludics/tests/__init__.py
+  printf '# edited\n' >>"$T/lib/ludics/cli.py"
+  expect "...and a change to ludics.cli runs the routines guard, whose suite runs the checker that imports it" \
+    0 'ran-routines-fixtures' -- "$PF" --root "$T" --guards changed --base main syntax
+else
+  ko "could not build the import-trigger controls' repository: these cases would prove nothing"
 fi
 
 if gtree guards_scope; then

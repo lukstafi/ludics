@@ -142,10 +142,10 @@ STEPS=(
 # runs as the job runs it too: `scripts/py -m unittest <module>`, named from its path. A suite's
 # trigger is every input that can turn it red, not only its subject: its own file, the code it
 # runs, and whatever it reads from the live checkout.
-# CHECKER: what check-prompts.sh runs, which both prompt suites run.
-CHECKER='scripts/check-prompts.sh scripts/py lib/ludics/__init__.py lib/ludics/proc.py lib/ludics/checkprompts/*'
+# CHECKER: what check-prompts.sh runs, which both prompt suites run -- its whole import chain.
+CHECKER='scripts/check-prompts.sh scripts/py lib/ludics/__init__.py lib/ludics/cli.py lib/ludics/proc.py lib/ludics/checkprompts/*'
 GUARDS=(
-  "prompt-fixtures:lib/ludics/tests/test_checkprompts_cli.py:*.md lib/ludics/tests/test_checkprompts_cli.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
+  "prompt-fixtures:lib/ludics/tests/test_checkprompts_cli.py:*.md lib/ludics/tests/test_checkprompts_cli.py lib/ludics/tests/__init__.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
   "routines-fixtures:scripts/test-sync-routines.sh:routines/*.md scripts/test-sync-routines.sh scripts/sync-routines.sh $CHECKER"
   'reporters:scripts/test-workflow-reporters.py:'
   'nudge-fixtures:ship-pr/hooks/test-ship-pr-nudge.py:'
