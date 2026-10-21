@@ -187,18 +187,47 @@ next_of() {
   eval "printf '%s' \"\${${name}[$idx]}\""
 }
 
+# The answer `next_of <name>` served last, without taking the next one (the first entry before any
+# was taken): what a read that does not ask for the sequence's field is answered from.
+current_of() {
+  local name="$1" idx total
+  idx=$(cat "$TEST_ROOT/$1.calls" 2>/dev/null) || idx=0
+  case "$idx" in '' | *[!0-9]*) idx=0 ;; esac
+  [ "$idx" -eq 0 ] || idx=$((idx - 1))
+  eval "total=\${#${name}[@]}"
+  [ "$idx" -lt "$total" ] || idx=$((total - 1))
+  eval "printf '%s' \"\${${name}[$idx]}\""
+}
+
 # The base the PR read answers with: PR_BASE until PR_BASE_NEXT is set, and that from the SECOND
 # call on — how a case retargets the PR, or advances its base, between the round's first read and
 # the recognition's own re-confirm. The count lives in a FILE for the reason every other counter
-# here does: each read is a command substitution, where an incremented variable dies.
+# here does: each read is a command substitution, where an incremented variable dies. With
+# `current`, the base served last, without counting a call: a read that does not ask for the base.
 next_base() {
   local n
   if [ -e "$TEST_ROOT/base-advanced" ]; then printf '%s' "$BASE_ADVANCED"; return 0; fi
   [ -n "$PR_BASE_NEXT" ] || { printf '%s' "$PR_BASE"; return 0; }
   n=$(cat "$TEST_ROOT/pulls.calls" 2>/dev/null) || n=0
   case "$n" in '' | *[!0-9]*) n=0 ;; esac
-  printf '%s' "$((n + 1))" >"$TEST_ROOT/pulls.calls"
+  if [ "${1:-}" = current ]; then
+    [ "$n" -eq 0 ] || n=$((n - 1))
+  else
+    printf '%s' "$((n + 1))" >"$TEST_ROOT/pulls.calls"
+  fi
   if [ "$n" -eq 0 ]; then printf '%s' "$PR_BASE"; else printf '%s' "$PR_BASE_NEXT"; fi
+}
+
+# pr_read_names <object>: whether the PR read being answered asks for <object> (`head`, `base`), so
+# whether it takes the next entry of that object's sequence (HEAD_SEQ; next_base's count).
+# BOUNDARY, fail-closed: a read is exempt ONLY when it carries a jq filter (FIXTURE_FILTER) and that
+# filter never spells the object's name. A read with no filter (the whole PR) or one spelling the
+# name anywhere (`.head.sha`, `.head.ref`, inside a string) takes an entry, as every read did before.
+# A filter reaching the object without spelling it (`..`, `.[]`, `to_entries`, `keys`) is past the
+# boundary and would be answered as a non-head read; no reader of pulls/<n> sends one.
+pr_read_names() {
+  case "$FIXTURE_FILTER" in '' | *"$1"*) return 0 ;; esac
+  return 1
 }
 
 reset_fixture() {
@@ -242,7 +271,7 @@ reset_fixture() {
 }
 
 gh() {
-  local response="" fixture_head wid fixture_wpath merged=false
+  local response="" fixture_head fixture_base wid fixture_wpath merged=false
   # cmd_merge's own call, the one non-api call here: logged, and the PR reads answer merged after.
   if [ "${1:-} ${2:-}" = "pr merge" ]; then
     printf '%s\n' "$*" >>"$MERGE_LOG"
@@ -275,39 +304,41 @@ gh() {
   # Adding an arm: put an exact endpoint above every glob whose pattern it satisfies, and a new
   # glob below every exact arm it would swallow. "actions/workflows?…" and "actions/workflows/"*
   # do NOT overlap (the glob demands the slash), nor do "actions/runs?…" and "actions/runs/"*.
+  # The PR read's projections are not arms: one arm answers them all, pr_read_names classifying each.
   case "$FIXTURE_ENDPOINT" in
   "repos/$REPO/pulls/7")
-    # merge --wait's conflict preflight (ludics-lite#729, the one interpolated projection) reads no
-    # head: it is answered clean without taking a HEAD_SEQ entry, which stay the gate's reads.
-    case "$FIXTURE_FILTER" in
-    *'\(.mergeable)'*)
-      response='{"mergeable":true,"mergeable_state":"clean","base":{"ref":"main"}}'
-      ;;
-    *)
-    # The base-drift read (the one other projection carrying mergeable_state) runs after the gate
-    # and before the merge loop: the moment a case's base advance lands.
-    case "$FIXTURE_FILTER" in
-    *mergeable_state*) [ -z "$BASE_ADVANCED" ] || : >"$TEST_ROOT/base-advanced" ;;
-    esac
-    fixture_head=$(next_of HEAD_SEQ)
-    if [ "$fixture_head" = UNREADABLE ]; then return 1; fi
+    # The PR read. Only a read asking for the head takes the next HEAD_SEQ entry; any other
+    # projection is answered from the head served last, taking none (pr_read_names decides which, and
+    # next_base's count is held to base reads the same way). A case's sequence counts the reads of
+    # its head, so a non-head read added to `merge` or `checks` — merge --wait's conflict preflight
+    # (ludics-lite#729) was one — shifts no case's heads. UNREADABLE fails a head read alone.
+    if pr_read_names head; then
+      # The base-drift read (the one head read here carrying mergeable_state) runs after the gate
+      # and before the merge loop: the moment a case's base advance lands.
+      case "$FIXTURE_FILTER" in
+      *mergeable_state*) [ -z "$BASE_ADVANCED" ] || : >"$TEST_ROOT/base-advanced" ;;
+      esac
+      fixture_head=$(next_of HEAD_SEQ)
+      if [ "$fixture_head" = UNREADABLE ]; then return 1; fi
+    else
+      fixture_head=$(current_of HEAD_SEQ)
+    fi
+    if pr_read_names base; then fixture_base=$(next_base); else fixture_base=$(next_base current); fi
     [ ! -e "$TEST_ROOT/merged" ] || merged=true
     if [ -n "$PR_UPDATED_AGE" ]; then
       response=$(jq -cn --arg sha "$fixture_head" --arg at "$(iso_ago "$PR_UPDATED_AGE")" \
-        --arg base "$(next_base)" --arg ref "$PR_HEAD_REF" \
+        --arg base "$fixture_base" --arg ref "$PR_HEAD_REF" \
         --argjson m "$merged" \
         '{head:({sha:$sha} + (if $ref == "" then {} else {ref:$ref} end)), updated_at:$at,
           merged:$m, state:(if $m then "closed" else "open" end), body:"", commits:1,
           mergeable:true, mergeable_state:"clean"}
          + (if $base == "" then {base:{ref:"main"}} else {base:{sha:$base, ref:"main"}} end)')
     else
-      response=$(jq -cn --arg sha "$fixture_head" --arg base "$(next_base)" --arg ref "$PR_HEAD_REF" \
+      response=$(jq -cn --arg sha "$fixture_head" --arg base "$fixture_base" --arg ref "$PR_HEAD_REF" \
         '{head:({sha:$sha} + (if $ref == "" then {} else {ref:$ref} end)), body:"", commits:1,
           mergeable:true, mergeable_state:"clean"}
          + (if $base == "" then {base:{ref:"main"}} else {base:{sha:$base, ref:"main"}} end)')
     fi
-    ;;
-    esac
     ;;
   "repos/$REPO/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100")
     response=$(next_of CHECK_RUNS_SEQ)
