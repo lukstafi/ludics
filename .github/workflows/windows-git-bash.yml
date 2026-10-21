@@ -15,7 +15,8 @@ name: windows git bash
 # `scripts/check-prompts.sh` holds. KNOWN RED steps (`continue-on-error: true`) still run, fail
 # and annotate, with the issue that removes the line named at the step. Not run here: the Python
 # fixtures (the hostile pass is Ubuntu-only by design) and the repo and fleet suites, which are
-# not ship-pr code (the fleet launcher needs tmux, which Git for Windows does not ship).
+# not ship-pr code (the fleet launcher needs tmux, which Git for Windows does not ship). One
+# exception: the prompt checker's suite, ported off bash under ludics-lite#403, runs last.
 
 on:
   schedule:
@@ -24,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: One ship-pr suite by file name (e.g. test-pr-review-watch.sh); empty runs all
+        description: One ship-pr suite by file name (e.g. test-pr-review-watch.sh), or test_checkprompts_cli.py; empty runs all
         required: false
         default: ''
 
@@ -87,7 +88,7 @@ jobs:
           echo "jq:            $(jq --version), and jq -r ends a line with: $(printf '"x"' | jq -r . | od -An -c | tr -s ' ')"
           # A suite name that matches no step would skip them all and read green.
           case "$SUITE" in
-          '') ;;
+          '' | test_checkprompts_cli.py) ;;
           test-*.sh) [ -f "ship-pr/scripts/$SUITE" ] || { echo "::error title=No such suite::ship-pr/scripts/$SUITE does not exist"; exit 1; } ;;
           *) echo "::error title=No such suite::suite takes a ship-pr/scripts/test-*.sh file name, got '$SUITE'"; exit 1 ;;
           esac
@@ -159,6 +160,16 @@ jobs:
       - name: pr-review fixtures, the live-API contract's own logic
         if: ${{ !cancelled() && steps.platform.outcome == 'success' && (!inputs.suite || inputs.suite == 'test-pr-review-api-contract.sh') }}
         run: ship-pr/scripts/test-pr-review-api-contract.sh || { echo '::error title=Git Bash suite failed::test-pr-review-api-contract.sh'; exit 1; }
+      - name: prompt checker fixtures
+        # A unittest module of the package, run through scripts/py (ludics-lite#403). What the
+        # native Windows interpreter cannot set up -- a symbolic link, a backslash or a tab in a
+        # file name, a mode of 000 -- is a case skipped with that reason, never a case left out.
+        # KNOWN RED until ludics-lite#762: the checker reads its root-relative paths with the
+        # backslashes native Windows Python gives them, and refuses well-formed trees (run
+        # 39594526247: the suite ran whole, and every failure was the checker's own FAIL).
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.platform.outcome == 'success' && (!inputs.suite || inputs.suite == 'test_checkprompts_cli.py') }}
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=Git Bash suite failed::test_checkprompts_cli.py'; exit 1; }
       - name: Keep the cleanup suite's per-case logs
         if: failure() || cancelled() || steps.cleanup.outcome == 'failure'
         uses: actions/upload-artifact@v4

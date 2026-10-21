@@ -21,7 +21,9 @@ porters: where code goes, how a subcommand is forwarded, and how to check it.
 - **The command line is fixed.** Subcommands, flags, stdout lines, stderr wording that a suite
   or a skill reads, and exit codes stay exactly what the script did. The shell suites are the
   conformance suite: a port lands only when the script's existing suites pass unchanged against
-  it, under `bash` 5 and `/bin/bash` 3.2.
+  it, under `bash` 5 and `/bin/bash` 3.2. Once a script has no shell left, its suite ports to a
+  `unittest` module here that still runs the entry point as a subprocess, case for case, in its
+  own PR: `check-prompts.sh`'s first, as `tests/test_checkprompts_cli.py`.
 - **External tools are binaries.** `gh` and `git` run through `ludics.proc.run_tool`, resolved
   on PATH, never replaced by an HTTP client, so the suites' fixtures drive the Python as they
   drove the shell.
@@ -144,10 +146,13 @@ npx --yes pyright@1.1.414 --pythonplatform Darwin                 # (CI runs bot
 scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'     # the package's unit tests
 scripts/test-py.sh                                                # the wrapper
 ship-pr/scripts/test-pr-review-<suite>.sh                         # the conformance suites
+scripts/py -m unittest ludics.tests.test_checkprompts_cli         # ...and the ported ones
 ```
 
 CI runs pyright and the unit tests in the `python` job of `.github/workflows/skill-scripts.yml`,
-and the shell suites where they always ran. `scripts/fleet-peers.py` is not behind `scripts/py`
+and the shell suites where they always ran. A ported conformance suite runs where its shell suite
+did as well, named as a module: `test_checkprompts_cli` in the small-guards job, whatever the diff,
+and in the macOS job. `scripts/fleet-peers.py` is not behind `scripts/py`
 yet: its callers and its tests run it with `python3` and by path.
 
 The execution registry (formerly `issue-wave/scripts/fleet-execution.py`) is

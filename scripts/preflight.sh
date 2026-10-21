@@ -33,8 +33,8 @@
 #
 # THE GUARDS are the other half of a push's verdict: the suites of CI's `small guards (ubuntu)`
 # job (`prompts` in the workflow) that the steps above do not already run. A prose edit to a skill
-# can pass every step here and still fail one of them -- PR #544 dropped a literal that
-# test-check-prompts.sh needs ship-pr/SKILL.md to carry, and went red in CI after a clean
+# can pass every step here and still fail one of them -- PR #544 dropped a literal that the
+# prompt checker's suite needs ship-pr/SKILL.md to carry, and went red in CI after a clean
 # preflight (ludics-lite#553). They are not steps, because they take minutes rather than seconds
 # and most pushes cannot break them; which of them run is --guards MODE:
 #   - changed  (the default when no STEP is named) each guard with a file trigger runs when a
@@ -46,9 +46,10 @@
 #   - none     no guard (the default when a STEP is named, so `preflight.sh syntax` stays one
 #              step and CI's lint job, which names its steps, runs none).
 # A GUARD named on the command line runs whatever the mode. The table (`preflight.sh guards`):
-#   - prompt-fixtures      scripts/test-check-prompts.sh, on any *.md: check-prompts.sh reads
-#                          every SKILL.md, both index READMEs and (its slot count) every *.md, and
-#                          its suite reads the live ship-pr/SKILL.md's shape -- wider than the
+#   - prompt-fixtures      lib/ludics/tests/test_checkprompts_cli.py, run through scripts/py, on any
+#                          *.md: check-prompts.sh reads every SKILL.md, both index READMEs and
+#                          (its slot count) every *.md, and its suite reads the live
+#                          ship-pr/SKILL.md's shape -- wider than the
 #                          ship-pr/, issue-wave/ and routines/ the issue named, which miss the
 #                          root README and the other skills. Also on the checker's code and the
 #                          live scripts the suite reads: fleet-worker.sh's SLOTS, sync-routines.sh's
@@ -137,13 +138,14 @@ STEPS=(
 )
 
 # THE GUARD TABLE: `name:command:trigger`, the trigger space-separated git pathspecs (a `*`
-# crosses `/`) or empty. A `.py` command runs under python3, as the job runs it. A suite's
+# crosses `/`) or empty. A `.py` command runs under python3, as the job runs it, and one under lib/
+# runs as the job runs it too: `scripts/py -m unittest <module>`, named from its path. A suite's
 # trigger is every input that can turn it red, not only its subject: its own file, the code it
 # runs, and whatever it reads from the live checkout.
-# CHECKER: what check-prompts.sh runs, which both prompt suites run.
-CHECKER='scripts/check-prompts.sh scripts/py lib/ludics/__init__.py lib/ludics/proc.py lib/ludics/checkprompts/*'
+# CHECKER: what check-prompts.sh runs, which both prompt suites run -- its whole import chain.
+CHECKER='scripts/check-prompts.sh scripts/py lib/ludics/__init__.py lib/ludics/cli.py lib/ludics/proc.py lib/ludics/checkprompts/*'
 GUARDS=(
-  "prompt-fixtures:scripts/test-check-prompts.sh:*.md scripts/test-check-prompts.sh $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
+  "prompt-fixtures:lib/ludics/tests/test_checkprompts_cli.py:*.md lib/ludics/tests/test_checkprompts_cli.py lib/ludics/tests/__init__.py $CHECKER issue-wave/scripts/fleet-worker.sh scripts/sync-routines.sh ship-pr/scripts/post-merge-cleanup.sh lib/ludics/postmergecleanup/*"
   "routines-fixtures:scripts/test-sync-routines.sh:routines/*.md scripts/test-sync-routines.sh scripts/sync-routines.sh $CHECKER"
   'reporters:scripts/test-workflow-reporters.py:'
   'nudge-fixtures:ship-pr/hooks/test-ship-pr-nudge.py:'
@@ -416,7 +418,8 @@ step_tool() { # step_tool <name>
   shellcheck) printf 'shellcheck' ;;
   powershell) printf 'pwsh' ;;
   jq-version) printf 'jq' ;;
-  *) case "$(guard_field "$1" 2)" in *.py) printf 'python3' ;; esac ;;
+  # A lib/ unit file runs through scripts/py, which finds its own interpreter or fails the step.
+  *) case "$(guard_field "$1" 2)" in lib/*) ;; *.py) printf 'python3' ;; esac ;;
   esac
 }
 
@@ -447,6 +450,15 @@ run_step() { # run_step <name>: 0 pass, 1 fail, 3 skipped, 4 passed with a warni
     # Fail closed on a step whose script is not there: CI's own step would be a red `No such file`,
     # and a local pass over a check that did not run is the failure this script exists to end.
     case "$cmd" in
+    lib/*.py)
+      if [ ! -f "$cmd" ]; then
+        printf 'preflight: %s: FAIL (%s is not there)\n' "$name" "$cmd"
+        return 1
+      fi
+      local module=${cmd#lib/}
+      module=${module%.py}
+      scripts/py -m unittest "$(printf '%s' "$module" | tr / .)"
+      ;;
     *.py)
       if [ ! -f "$cmd" ]; then
         printf 'preflight: %s: FAIL (%s is not there)\n' "$name" "$cmd"

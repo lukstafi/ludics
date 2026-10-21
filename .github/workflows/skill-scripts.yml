@@ -140,8 +140,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: scripts/test-run-against-base.sh || { echo '::error title=suite failed::test-run-against-base.sh'; exit 1; }
       - name: Exercise the hygiene checks against defective scratch trees
+        # A unittest module of the package, named as a module: scripts/py puts lib/ on the path
+        # and finds the Python >= 3.12 (ludics-lite#403). The python job's discovery runs it too,
+        # but that job is conditioned on the diff, and a prompt-only head is what this one judges.
         if: ${{ !cancelled() }}
-        run: scripts/test-check-prompts.sh || { echo '::error title=suite failed::test-check-prompts.sh'; exit 1; }
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=suite failed::test_checkprompts_cli.py'; exit 1; }
       - name: Exercise the Python interpreter wrapper
         # scripts/py, which every Python entry point of the v2 rewrite runs through (ludics-lite
         # #403): seconds, and it is what the other Python steps stand on.
@@ -479,9 +482,10 @@ jobs:
       - name: The package's unit tests
         # The test package's watchdog (lib/ludics/tests/__init__.py) dumps every thread's stack
         # and fails a hung run; its 600 s default outlasts this job's 5-minute cap, which kills a
-        # hang with no trace, so it fires here first: ~100 s of tests plus ~45 s of steps before.
+        # hang with no trace, so it fires here first: ~140 s of tests (the prompt checker's
+        # conformance suite, test_checkprompts_cli, is ~40 s of them) plus ~45 s of steps before.
         env:
-          LUDICS_TEST_WATCHDOG: '210'
+          LUDICS_TEST_WATCHDOG: '240'
         run: scripts/py -m unittest discover -s lib -t lib -p 'test_*.py' -v
 
   # ---- every script suite on macOS, two jobs, two runner assignments -----------------------
@@ -644,7 +648,7 @@ jobs:
         run: scripts/test-sync-routines.sh || { echo '::error title=macOS suite failed::test-sync-routines.sh'; exit 1; }
       - name: prompt checker fixtures
         if: ${{ !cancelled() }}
-        run: scripts/test-check-prompts.sh || { echo '::error title=macOS suite failed::test-check-prompts.sh'; exit 1; }
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=macOS suite failed::test_checkprompts_cli.py'; exit 1; }
       - name: jq shape guard fixtures
         if: ${{ !cancelled() }}
         run: scripts/test-check-jq-shapes.sh || { echo '::error title=macOS suite failed::test-check-jq-shapes.sh'; exit 1; }
