@@ -451,7 +451,9 @@ done
 py_note=
 if [ -n "$module" ]; then
   if [ -f "$WT/scripts/py" ] && [ -x "$WT/scripts/py" ]; then
-    py_probe=$("$WT/scripts/py" -c '' </dev/null 2>&1) \
+    # From the base worktree, as the suite will run, so a relative LUDICS_PY_CANDIDATES entry
+    # resolves for the probe exactly as it will for the run.
+    py_probe=$(cd "$WT" && ./scripts/py -c '' </dev/null 2>&1) \
       || die "the base's scripts/py cannot run $rel; it would never run: $py_probe"
     RUN=(./scripts/py -m unittest "$module")
   else
