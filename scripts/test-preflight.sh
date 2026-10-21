@@ -1018,12 +1018,18 @@ WORKFLOW="$ROOT/.github/workflows/skill-scripts.yml"
 # boundary is the SET: it asks whether `preflight.sh --guards all` runs what the job runs, not
 # whether the job's step can fail -- that job's steps carry a reporting tail by convention, which
 # the bare-invocation pin above refuses to read for exactly that reason, and check-prompts.sh,
-# the job's one bare step, is held by that pin. A `python3 <file>` step is read as <file>.
+# the job's one bare step, is held by that pin. A `python3 <file>` step is read as <file>, and a
+# `scripts/py -m unittest <module>` step as the module's file under lib/, which is how the guard
+# table names it.
 prompts_job_suites() {
   awk "$WORKFLOW_AWK"'
-    function emit(   w) {
+    function emit(   w, m) {
       if (scmd == "" || job != "  prompts:" || !live()) return
-      if (scmd == "python3") { split(sargs, w, / /); print w[1] } else print scmd
+      if (scmd == "python3") { split(sargs, w, / /); print w[1] }
+      else if (scmd == "scripts/py" && sargs ~ /^-m unittest [^ ]/) {
+        split(sargs, w, / /); m = w[3]; gsub(/\./, "/", m); print "lib/" m ".py"
+      }
+      else print scmd
     }
   ' "$WORKFLOW"
 }
@@ -1079,8 +1085,9 @@ WORKFLOW="$ROOT/.github/workflows/skill-scripts.yml"
 
 # THE BEHAVIOUR, on a scratch git repository whose guard suites are stubs that say they ran. The
 # prompt-fixtures stub asserts the one rule PR #544 broke (ludics-lite#553): ship-pr/SKILL.md must
-# carry a `  --base <b> --regenerable <d>` continuation line, which test-check-prompts.sh's cleanup
-# probes need. The SKILL.md is this checkout's own, so the edit below is the prose edit that went
+# carry a `  --base <b> --regenerable <d>` continuation line, which the prompt checker suite's
+# cleanup probes need. That suite is a unittest module under lib/, which the guard runs through
+# scripts/py, so the stub is one too, in a package the copied scripts/py finds. The SKILL.md is this checkout's own, so the edit below is the prose edit that went
 # red in CI after a clean preflight.
 gtree() { # gtree <name>: T is a fresh git repository on `main` with every guard stubbed
   local entry name cmd
@@ -1089,6 +1096,10 @@ gtree() { # gtree <name>: T is a fresh git repository on `main` with every guard
   while IFS=$'\t' read -r name cmd _; do
     mkdir -p "$T/$(dirname "$cmd")"
     case "$cmd" in
+    lib/*.py)
+      printf 'import unittest\n\n\nclass T(unittest.TestCase):\n    def test_ran(self) -> None:\n        print("ran-%s")\n' \
+        "$name" >"$T/$cmd"
+      ;;
     *.py) printf 'print("ran-%s")\n' "$name" >"$T/$cmd" ;;
     *) printf '#!/usr/bin/env bash\necho "ran-%s"\n' "$name" >"$T/$cmd" ;;
     esac
@@ -1096,16 +1107,28 @@ gtree() { # gtree <name>: T is a fresh git repository on `main` with every guard
   done <<EOF
 $("$PF" guards)
 EOF
-  cat >"$T/scripts/test-check-prompts.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "ran-prompt-fixtures"
-grep -q -- '^  --base [^ ]* --regenerable [^ ]*$' ship-pr/SKILL.md \
-  || { echo "FAIL: the cleanup probes need a '  --base <b> --regenerable <d>' continuation line in ship-pr/SKILL.md"; exit 1; }
+  cp "$ROOT/scripts/py" "$T/scripts/py"
+  : >"$T/lib/ludics/__init__.py"
+  : >"$T/lib/ludics/tests/__init__.py"
+  cat >"$T/lib/ludics/tests/test_checkprompts_cli.py" <<'EOF'
+import re
+import unittest
+
+
+class T(unittest.TestCase):
+    def test_ran(self) -> None:
+        print("ran-prompt-fixtures")
+        with open("ship-pr/SKILL.md", encoding="utf-8") as f:
+            lines = f.read().split("\n")
+        self.assertTrue(
+            any(re.fullmatch(r"  --base \S* --regenerable \S*", line) for line in lines),
+            "the cleanup probes need a '  --base <b> --regenerable <d>' continuation line in ship-pr/SKILL.md",
+        )
 EOF
   cp "$ROOT/ship-pr/SKILL.md" "$T/ship-pr/SKILL.md"
   printf '# routines\n' >"$T/routines/README.md"
   # Non-Markdown inputs of the prompt and routines suites: the checker's code, and a script whose
-  # text test-check-prompts.sh reads from the live checkout.
+  # text the prompt checker's suite reads from the live checkout.
   mkdir -p "$T/lib/ludics/checkprompts"
   printf '# checker\n' >"$T/lib/ludics/checkprompts/tree.py"
   printf '#!/usr/bin/env bash\ntrue\n' >"$T/scripts/sync-routines.sh"
@@ -1236,7 +1259,7 @@ expect "a root that is not a git work tree runs the triggered guards rather than
   1 'is not the root of a git work tree; running it rather than guessing' \
   -- "$PF" --root "$T" --guards changed syntax
 expect "an unknown guard mode is a usage error" 2 "--guards takes all, changed or none" -- "$PF" --root "$T" --guards sometimes
-expect "a guard name is no step and no query word, and the table says so" 0 'prompt-fixtures	scripts/test-check-prompts.sh	*.md' -- "$PF" guards
+expect "a guard name is no step and no query word, and the table says so" 0 'prompt-fixtures	lib/ludics/tests/test_checkprompts_cli.py	*.md' -- "$PF" guards
 if patch_table guardclash "  'prompt-fixtures:-'"; then
   expect "a step named like a guard is refused, since either may be named on the command line" \
     2 "names 'prompt-fixtures' twice" -- "$TMP/guardclash/scripts/preflight.sh" steps

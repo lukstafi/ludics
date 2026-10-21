@@ -1,6 +1,6 @@
 """Unit tests for ludics.checkprompts: the readers whose edge cases the review rounds were about.
 
-The conformance suite is scripts/test-check-prompts.sh, which drives the command line over scratch
+The conformance suite is test_checkprompts_cli.py, which drives the command line over scratch
 trees; these pin the readers one at a time, where a regression names the function that moved.
 """
 

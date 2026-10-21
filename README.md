@@ -344,7 +344,7 @@ cannot drift, and `scripts/test-preflight.sh` pins that they have not.
 
 It also runs CI's small-guards suites, as its *guards* (`preflight.sh guards` lists them), because
 a skill-text edit can pass every lint step and still fail one (ludics-lite#553). With no step
-named, the guards a Markdown edit can break — `test-check-prompts.sh` on any `*.md`,
+named, the guards a Markdown edit can break — the prompt checker's suite on any `*.md`,
 `test-sync-routines.sh` on `routines/*.md`, each also on the checker and the live scripts its suite
 reads — run when a tracked file matching them differs from the
 merge base with `origin/main` (`--base <ref>` for another; a base that cannot be resolved runs
@@ -431,7 +431,7 @@ ship-pr/scripts/test-pr-review-budget.sh
 ship-pr/scripts/test-pr-review-api-contract.sh
 scripts/test-wake-lab.sh
 scripts/test-wake-lab-linux.sh
-scripts/test-check-prompts.sh
+scripts/py -m unittest ludics.tests.test_checkprompts_cli
 scripts/test-check-jq-shapes.sh
 scripts/test-check-scratch-dirs.sh
 scripts/test-check-parse-guards.sh
@@ -658,8 +658,9 @@ or of the test runner is attributed to nothing, and an option the prompt only di
 from the listing side alone. ludics-lite#276 added `--regenerable` to the helper and to the prompt
 by hand, in the PR that found the prompt's prose about the base-owner gate had been false through
 two earlier PRs; the name being present is what this pins, and whether the prose around it is true
-stays the review question it was. `test-check-prompts.sh` runs it against scratch trees,
-one per defect, with the well-formed tree as the control, and ends by running it on this checkout.
+stays the review question it was. Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
+against scratch trees, one per defect, with the well-formed tree as the control, and ends by
+running it on this checkout.
 
 `check-jq-shapes.sh` is the jq shape guard, run in the lint job on every head over every
 `*/scripts/*.sh` and `scripts/*.sh` in the checkout — the lint job's own file list, less
@@ -1346,7 +1347,9 @@ answers it, to `ludics.fleetworker`; `check-prompts.sh` forwards
 whole, to `ludics.checkprompts`, `post-merge-cleanup.sh` its whole command line, to
 `ludics.postmergecleanup`, and `issue-wave/scripts/peer-plan.sh` (paired planning's second
 planner, written in Python from the start, ludics-lite#547) its whole command line, to
-`ludics.peerplan`. The shell suites above are the conformance suite for a port, unchanged. The package's own checks are `npx --yes pyright@1.1.414` (strict, `pythonVersion`
+`ludics.peerplan`. The shell suites above are the conformance suite for a port, unchanged; once a
+script has no shell left its suite ports to a `unittest` module that still runs the entry point,
+`check-prompts.sh`'s first (`ludics.tests.test_checkprompts_cli`). The package's own checks are `npx --yes pyright@1.1.414` (strict, `pythonVersion`
 3.12, from `pyrightconfig.json`; run as Linux and again with `--pythonplatform Darwin`) and
 `scripts/py -m unittest discover -s lib -t lib -p 'test_*.py'`, both run by CI's `python` job.
 Where a port's code goes, how forwarding and the suites' shell bridge work, and the rule for

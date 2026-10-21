@@ -6,8 +6,9 @@ other statement of it is English, which does not fail a test when it goes stale 
 read off the script and every statement is required to say the same thing.
 
 WHICH files are held is discovered, not listed: every ``*.md`` and ``*.sh`` under the root, minus the
-mechanism's own two (``SLOT_MECHANISM``), is held exactly when it states the count. The three prompts
-PR #166 quoted it in are also REQUIRED to keep stating it, so the agreement cannot go vacuous.
+mechanism's own entry point (``SLOT_MECHANISM``; its suite is Python, which the scan does not read),
+is held exactly when it states the count. The three prompts PR #166 quoted it in are also REQUIRED
+to keep stating it, so the agreement cannot go vacuous.
 
 WHAT counts as a statement is two shapes: ``mac-studio=<n>`` (the whole token, so ``mac-studio=6oops``
 is refused rather than accepted on its prefix; closing punctuation is punctuation), and the run of
@@ -43,7 +44,7 @@ from ludics.checkprompts.tree import Report, Tree
 
 SLOT_SCRIPT = "issue-wave/scripts/fleet-worker.sh"
 SLOT_PROMPTS = ("README.md", "issue-wave/SKILL.md", "issue-wave/references/executions.md")
-SLOT_MECHANISM = ("scripts/check-prompts.sh", "scripts/test-check-prompts.sh")
+SLOT_MECHANISM = ("scripts/check-prompts.sh",)
 NUMBER_WORDS = (
     "zero one two three four five six seven eight nine ten eleven twelve".split(" ")
 )

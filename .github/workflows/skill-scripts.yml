@@ -140,8 +140,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: scripts/test-run-against-base.sh || { echo '::error title=suite failed::test-run-against-base.sh'; exit 1; }
       - name: Exercise the hygiene checks against defective scratch trees
+        # A unittest module of the package, named as a module: scripts/py puts lib/ on the path
+        # and finds the Python >= 3.12 (ludics-lite#403). The python job's discovery runs it too,
+        # but that job is conditioned on the diff, and a prompt-only head is what this one judges.
         if: ${{ !cancelled() }}
-        run: scripts/test-check-prompts.sh || { echo '::error title=suite failed::test-check-prompts.sh'; exit 1; }
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=suite failed::test_checkprompts_cli.py'; exit 1; }
       - name: Exercise the Python interpreter wrapper
         # scripts/py, which every Python entry point of the v2 rewrite runs through (ludics-lite
         # #403): seconds, and it is what the other Python steps stand on.
@@ -639,7 +642,7 @@ jobs:
         run: scripts/test-sync-routines.sh || { echo '::error title=macOS suite failed::test-sync-routines.sh'; exit 1; }
       - name: prompt checker fixtures
         if: ${{ !cancelled() }}
-        run: scripts/test-check-prompts.sh || { echo '::error title=macOS suite failed::test-check-prompts.sh'; exit 1; }
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=macOS suite failed::test_checkprompts_cli.py'; exit 1; }
       - name: jq shape guard fixtures
         if: ${{ !cancelled() }}
         run: scripts/test-check-jq-shapes.sh || { echo '::error title=macOS suite failed::test-check-jq-shapes.sh'; exit 1; }
