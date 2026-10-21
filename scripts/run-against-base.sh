@@ -43,6 +43,23 @@
 #                    0: none). On expiry its process group gets TERM, then KILL after the grace,
 #                    and the run is reported as the base FAILING, exit 124: a hang is a valid
 #                    negative control for a fix that ends one, not a refusal (ludics-lite#501).
+# A suite that is not a `*.py` file runs as itself (it must be executable). A `*.py` suite is run
+# the way CI runs it, so the base run is the one CI would make:
+#   - a file under lib/ (a `lib/ludics/tests/test_*.py` unit file) runs through the BASE's
+#     scripts/py as `scripts/py -m unittest <module>`, the module named from its path under lib/
+#     (`lib/ludics/tests/test_x.py` is `ludics.tests.test_x`): lib/ is on the path, the >= 3.12
+#     gate applies, and the module is imported under the name CI's `unittest discover -s lib -t
+#     lib` gives it, so its package and relative imports resolve. The suite args follow the module
+#     name on unittest's own command line: `-v`, `-k <pattern>` to pick cases (a bare `Class.test`
+#     is not relative to the module there; spell it `ludics.tests.test_x.Class.test`). A path under
+#     lib/ that is not an importable module name is refused. When scripts/py finds no Python >=
+#     3.12 the suite never runs, and that is this helper's 125, not the base's result;
+#   - a base older than scripts/py (before 2026-10-05) has none: the file then runs under plain
+#     `python3 <file>`, as it did before, and the run says so;
+#   - a `*.py` file outside lib/ (issue-wave/scripts/test-fleet-execution.py, say) runs under plain
+#     `python3 <file>`, as CI's steps run it: its own directory on sys.path and its environment
+#     unchanged, where scripts/py's `-P` would drop the one and its PYTHONPATH reach every program
+#     the suite starts.
 # Exit: the suite's own exit status; 124 when the timeout expired; 125 when the helper could not
 # run it at all, could not start it (exec failed: it never ran), or could not clean up after it
 # (the `git bisect run` convention for "cannot test"), so a refusal is never read as the suite's
@@ -175,11 +192,32 @@ while [ "$i" -lt "${#MUT_ARGS[@]}" ]; do
   MUT_REL+=("$R_REL")
   i=$((i + 1))
 done
+# RUN: the words before the suite's own arguments. A `lib/` module's runner is settled once the
+# base worktree exists (it is the base's scripts/py, when the base has one), so `interp` is left
+# empty for it and its shebang is not read.
+module=
 case "$rel" in
-*.py) runner=python3 ;;
+lib/*.py)
+  module=${rel#lib/}
+  module=${module%.py}
+  # Every dotted component an identifier: anything else is a name `-m unittest` cannot import
+  # (nor `unittest discover` find), and would fail on the base for that reason alone.
+  case "/$module/" in
+  *[!A-Za-z0-9_/]* | *//* | */[0-9]*)
+    die "$rel is not an importable module path under lib/, so unittest cannot run it"
+    ;;
+  esac
+  module=${module//\//.}
+  runner=
+  ;;
+*.py)
+  runner=python3
+  RUN=(python3 "./$rel")
+  ;;
 *)
   [ -x "$suite_abs" ] || die "$rel is not executable (chmod +x it, as the mode rule asks)"
   runner=
+  RUN=("./$rel")
   ;;
 esac
 # An interpreter that is missing means the suite never runs, and its 126/127 must not read as a
@@ -188,7 +226,7 @@ esac
 # env's arguments are walked the way env reads them (options, `-u NAME`, `-S`'s split string,
 # NAME=value assignments) to the first program word, and that is looked up here.
 interp=$runner
-if [ -z "$interp" ]; then
+if [ -z "$interp" ] && [ -z "$module" ]; then
   IFS= read -r shebang <"$suite_abs" || true
   case "$shebang" in
   '#!'*)
@@ -406,6 +444,22 @@ while [ "$i" -lt "${#MUT_REL[@]}" ]; do
   cat "$SCRATCH/mutant" >"$target" || die "cannot write the mutant of ${MUT_REL[$i]}"
   i=$((i + 1))
 done
+# A lib/ module runs through the base's own scripts/py (after the copies and mutations, so one
+# carried with --also or mutated is the one used). scripts/py exits 2 and runs nothing when it
+# finds no Python >= 3.12, which the exec below cannot tell from the suite's own 2: it is asked
+# first, and its refusal is this helper's 125, since the suite would never have run.
+py_note=
+if [ -n "$module" ]; then
+  if [ -f "$WT/scripts/py" ] && [ -x "$WT/scripts/py" ]; then
+    py_probe=$("$WT/scripts/py" -c '' </dev/null 2>&1) \
+      || die "the base's scripts/py cannot run $rel; it would never run: $py_probe"
+    RUN=(./scripts/py -m unittest "$module")
+  else
+    command -v python3 >/dev/null 2>&1 || die "$rel needs python3, which is not on PATH here; it would never run"
+    RUN=(python3 "./$rel")
+    py_note="note: $base has no scripts/py, so $rel runs under plain python3, without lib/ on the path or the >= 3.12 gate"
+  fi
+fi
 
 say "$rel (working tree) against $base ($(git -C "$TOP" rev-parse --short "$sha"))"
 i=0
@@ -419,6 +473,8 @@ while [ "$i" -lt "${#MUT_REL[@]}" ]; do
   i=$((i + 1))
 done
 [ "$TIMEOUT" -eq 0 ] || say "timeout: ${TIMEOUT}s"
+[ -z "$runner$module" ] || say "runs as: ${RUN[*]}"
+[ -z "$py_note" ] || say "$py_note"
 # The suite runs in the background so the INT/TERM traps fire at once rather than after it
 # returns; its output goes through a fifo to tee, which both shows it live and keeps it for the
 # pass/fail line (a `| tee` would hide the suite's exit status behind tee's under `wait`).
@@ -443,7 +499,7 @@ set -m
 # shellcheck disable=SC2016 # expanded by the inner bash
 bash -c 'cd "$1" && shift && shopt -s execfail && exec "$@"
   : >"$0"
-  exit 125' "$SCRATCH/execfail" "$WT" $runner "./$rel" "$@" >"$SCRATCH/fifo" 2>&1 </dev/null &
+  exit 125' "$SCRATCH/execfail" "$WT" "${RUN[@]}" "$@" >"$SCRATCH/fifo" 2>&1 </dev/null &
 child=$!
 set +m
 trap 'exit 130' INT
