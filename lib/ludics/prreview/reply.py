@@ -1,6 +1,7 @@
 """``pr-review.sh reply``: answer a review thread, or a whole folded entry, from one invocation.
 
     reply <pr> <comment-id>[+<comment-id>...] <body> [--allow-mention]
+    reply <pr> <comment-id>[+<comment-id>...] --body-file <path> [--allow-mention]
     reply <pr> <comment-id>[+<comment-id>...] --anchor <comment-id>
 
 Ported from the shell's ``cmd_reply`` and its helpers (``split_ids``, ``ids_from``, ``ids_token``,
@@ -24,12 +25,19 @@ and in ship-pr/scripts/test-pr-review-reply.sh, which pins every one of them.
   (round 2 of #86).
 - A body mentioning '@codex' is refused before any request, unless ``--allow-mention``
   (ludics-lite#472); see ``mention_refusal``.
+- ``--body-file <path>`` is the body read from a file, in place of the positional one: exactly one
+  of the two (both, or neither, is a usage error), and the mention guard reads the file's text as
+  it reads an argument. Wave briefs have workers write a body to a file first, and a long
+  multi-paragraph answer is awkward to quote as one argument (wave-20261020: a ``--body-file`` the
+  command did not take was refused while the thread's ``resolve`` went through). See
+  ``read_body_file`` for what the file is held to.
 
 Stdout: each reply's html_url, one per line, in the order they were posted. Exit: 0 every reply
 posted; 1 the API rejected one (a 4xx); 2 usage; 3 a gateway refusal on every attempt, or an
 ambiguous failure.
 """
 
+import os
 import re
 from typing import NoReturn, assert_never
 
@@ -45,6 +53,7 @@ from ludics.prreview.core import (
     die,
     fail,
     pr_arg,
+    shell_quote,
 )
 
 # Every reply and comment from this script carries it, so a human scanning a thread knows what
@@ -113,6 +122,61 @@ def mention_refusal(command: str, body: str) -> None:
         'without the at-sign ("the codex review nudge"), or pass --allow-mention if the mention is',
         f"meant; {nudge}. Nothing was posted.",
     )
+
+
+def body_file_arg(command: str, args: list[str], i: int, seen: str | None) -> tuple[str, int] | None:
+    """``--body-file <path>`` or ``--body-file=<path>`` at ``args[i]``: (the path, the index of its
+    last word), or None when ``args[i]`` is not the option. Given twice, or with no path, is a
+    usage error (exit 2): the second would silently win."""
+    arg = args[i]
+    if arg == "--body-file":
+        if i + 1 >= len(args):
+            path, end = "", i
+        else:
+            path, end = args[i + 1], i + 1
+    elif arg.startswith("--body-file="):
+        path, end = arg[len("--body-file=") :], i
+    else:
+        return None
+    if not path:
+        die(f"{command}: --body-file takes the path of the file that holds the body")
+    if seen is not None:
+        die(f"{command}: --body-file is given twice; name the one file that holds the body")
+    return path, end
+
+
+def read_body_file(command: str, path: str) -> str:
+    """The body ``--body-file`` names, read whole once, before any request, and posted verbatim
+    (its trailing newline included; the marker follows it as it follows an argument). A retry
+    re-sends the text read here, never re-reads the file.
+
+    Boundary, as a fail-closed allowlist: a regular file this process can read, holding UTF-8 text
+    with no NUL byte (an argument can carry none, and gh's ``-f`` takes the body as one) and
+    something besides whitespace (as ``blank`` classes it). Everything else refuses with exit 2
+    and nothing posted: '-' (stdin is not read: a body goes through a file, as ``body``'s does), a
+    missing, unreadable or non-regular path, bytes that are not UTF-8, a NUL, an empty or blank
+    file. Not read: Markdown, the file's line endings (sent as they stand), or its size."""
+    shown = shell_quote(path)
+    if path == "-":
+        die(f"{command}: --body-file - (stdin) is not read; write the body to a file. Nothing was posted.")
+    if not os.path.exists(path):
+        die(f"{command}: --body-file {shown} does not exist. Nothing was posted.")
+    if not os.path.isfile(path):
+        die(f"{command}: --body-file {shown} is not a regular file. Nothing was posted.")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError as error:
+        die(f"{command}: --body-file {shown} cannot be read ({error.strerror}). Nothing was posted.")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        die(f"{command}: --body-file {shown} is not UTF-8 text. Nothing was posted.")
+    if "\0" in text:
+        die(f"{command}: --body-file {shown} holds a NUL byte, which no body can carry. Nothing was posted.")
+    if blank(text):
+        die(f"{command}: --body-file {shown} is empty; there is nothing to post")
+    return text
 
 
 def thread_url(repo: str, pr: str, comment_id: str) -> str:
@@ -201,6 +265,7 @@ def reply_failed(
 def run(session: GhSession, args: list[str]) -> int:
     anchor = ""
     allow_mention = False
+    body_file: str | None = None
     rest: list[str] = []
     i = 0
     while i < len(args):
@@ -214,6 +279,8 @@ def run(session: GhSession, args: list[str]) -> int:
             anchor = args[i]
         elif arg.startswith("--anchor="):
             anchor = arg[len("--anchor=") :]
+        elif (taken := body_file_arg("reply", args, i, body_file)) is not None:
+            body_file, i = taken
         else:
             rest.append(arg)
         i += 1
@@ -222,6 +289,11 @@ def run(session: GhSession, args: list[str]) -> int:
     # An empty --anchor is no anchor, as it was in the shell.
     body = ""
     if anchor:
+        if body_file is not None:
+            die(
+                "reply: --anchor and --body-file together — with --anchor the answer already stands in",
+                "that thread, so no body is taken.",
+            )
         if len(rest) != 2:
             die(
                 "usage: reply <pr> <comment-id>[+<comment-id>...] --anchor <comment-id> —",
@@ -230,12 +302,23 @@ def run(session: GhSession, args: list[str]) -> int:
             )
         if not _ID.fullmatch(anchor):
             die(f"reply: --anchor takes one comment id, got '{anchor}'")
+    elif body_file is not None:
+        if len(rest) != 2:
+            die(
+                "usage: reply <pr> <comment-id>[+<comment-id>...] --body-file <path> [--allow-mention] —",
+                f"got {len(rest)} positional argument(s). The body is the file's, so none is taken",
+                "after the comment id: give the body as an argument OR as --body-file, not both.",
+            )
+        body = read_body_file("reply", body_file)
+        if not allow_mention:
+            mention_refusal("reply", body)
     else:
         if len(rest) != 3:
             die(
-                "usage: reply <pr> <comment-id>[+<comment-id>...] <body> [--allow-mention] —"
-                f" got {len(rest)} argument(s).",
-                "The body is ONE argument: quote it, including a multi-line one.",
+                "usage: reply <pr> <comment-id>[+<comment-id>...] <body>|--body-file <path>"
+                f" [--allow-mention] — got {len(rest)} argument(s).",
+                "The body is ONE argument: quote it, including a multi-line one, or write it to a",
+                "file and pass --body-file <path>.",
             )
         body = rest[2]
         if blank(body):

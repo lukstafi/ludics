@@ -248,17 +248,22 @@
 #                                          # duplicate gets a one-line pointer to that reply, from
 #                                          # this one invocation. A body mentioning '@codex' is
 #                                          # refused unless --allow-mention (see prreview/reply.py)
+#   pr-review.sh reply <pr> <comment-id>[+...] --body-file <path> [--allow-mention]
+#                                          # the body read from a file instead: exactly one of
+#                                          # the two; the file's text is posted verbatim and
+#                                          # mention-checked as an argument is. An unreadable or
+#                                          # empty file is refused before anything is posted
 #   pr-review.sh reply <pr> <comment-id>[+...] --anchor <comment-id>
 #                                          # no body: the answer already stands in <comment-id>'s
 #                                          # thread, and every id in the token is pointed at it.
 #                                          # What a batch that failed part-way is retried with
 #   pr-review.sh resolve <pr> <comment-id>[+<comment-id>...]
 #                                          # the same token; every thread it names is closed
-#   pr-review.sh comment <pr> <body> [--allow-mention]
+#   pr-review.sh comment <pr> <body>|--body-file <path> [--allow-mention]
 #                                          # a plain PR comment, for what has no thread to reply in:
 #                                          # a review SUMMARY's findings, or a '@codex review' nudge
 #                                          # (the one body that may mention '@codex' without the
-#                                          # flag; see prreview/reply.py)
+#                                          # flag; see prreview/reply.py). --body-file as `reply`'s
 #   pr-review.sh body <pr> <file>          # replace the PR's description with the file's content,
 #                                          # over REST: `gh pr edit --body-file` rides GraphQL and
 #                                          # fails on a repo whose PRs trip the classic-Projects
@@ -639,8 +644,9 @@ py_native_path() {
 }
 
 # <subcommand> <args...>: PY_ARGS, the same words with the ones the Python opens as files in
-# native form -- `body`'s file (but `-`), `base --integration-records` and `--advisory-red` -- which MSYS would have
-# rewritten had py_forward not turned its rewriting off.
+# native form -- `body`'s file (but `-`), `base --integration-records` and `--advisory-red`, and
+# `reply`'s and `comment`'s `--body-file` -- which MSYS would have rewritten had py_forward not
+# turned its rewriting off.
 py_native_args() {
   local sub="$1" a n=0 next=""
   PY_ARGS=("$1")
@@ -656,6 +662,8 @@ py_native_args() {
       base:--integration-records=*) a="--integration-records=$(py_native_path "${a#--integration-records=}")" ;;
       base:--advisory-red) next=1 ;;
       base:--advisory-red=*) a="--advisory-red=$(py_native_path "${a#--advisory-red=}")" ;;
+      reply:--body-file | comment:--body-file) next=1 ;;
+      reply:--body-file=* | comment:--body-file=*) a="--body-file=$(py_native_path "${a#--body-file=}")" ;;
       body:-) ;;
       body:*) [ "$n" -ne 2 ] || a=$(py_native_path "$a") ;;
       esac
@@ -734,6 +742,7 @@ main() {
     ;;
   *) die "usage: pr-review.sh [--repo owner/name] {poll|watch|status|rounds|checks|merge|reply|resolve} <pr> ...
   pr-review.sh comment <pr> <body>           # a plain PR comment (a summary round, a review nudge)
+  pr-review.sh reply|comment ... --body-file <path>  # the body from a file, instead of an argument
   pr-review.sh body <pr> <file>              # replace the PR's description from a file, over REST
   pr-review.sh base [owner/name] [branch] [--wait]  # is the base branch's CI green? (start of
                                              # work; --wait = post-merge integration read;
