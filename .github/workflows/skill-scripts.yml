@@ -477,6 +477,11 @@ jobs:
       - name: Type-check the package's macOS branches (pyright, --pythonplatform Darwin)
         run: npx --yes pyright@1.1.414 --pythonplatform Darwin
       - name: The package's unit tests
+        # The test package's watchdog (lib/ludics/tests/__init__.py) dumps every thread's stack
+        # and fails a hung run; its 600 s default outlasts this job's 5-minute cap, which kills a
+        # hang with no trace, so it fires here first: ~100 s of tests plus ~45 s of steps before.
+        env:
+          LUDICS_TEST_WATCHDOG: '210'
         run: scripts/py -m unittest discover -s lib -t lib -p 'test_*.py' -v
 
   # ---- every script suite on macOS, two jobs, two runner assignments -----------------------
