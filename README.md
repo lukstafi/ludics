@@ -388,6 +388,16 @@ the suite's:
   reports the base as failing, exit 124: a hang is a valid negative control for a fix that ends
   one.
 
+A `*.py` suite runs the way CI runs it. A file under `lib/` (a `lib/ludics/tests/test_*.py` unit
+file) runs through the base's `scripts/py` as `scripts/py -m unittest <module>` (`ludics.tests.test_x`
+for `lib/ludics/tests/test_x.py`, the name CI's discovery gives it), so `lib/` is on the path with
+no `PYTHONPATH` of yours, the >= 3.12 gate applies, and package and relative imports resolve. The
+suite args go to unittest after the module name: `-v`, `-k <pattern>` to pick cases. A `lib/`
+file that discovery never runs (not `test_*.py`, or below a directory with no `__init__.py`) is
+refused, and so is a run whose `scripts/py` never started an interpreter (125, not a base failure). A base older
+than `scripts/py` falls back to plain `python3 <file>` and says so. A `*.py` file outside `lib/`
+(`issue-wave/scripts/test-fleet-execution.py`, say) runs as `python3 <file>`, as CI's steps run it.
+
 The scripts carry their own test suites (Python fixtures use `python3`; PowerShell fixtures run on Windows):
 
 ```sh

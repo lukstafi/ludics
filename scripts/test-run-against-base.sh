@@ -34,7 +34,13 @@
 #     else; --mutate edits a file inside the throwaway worktree only -- by default a snapshot of
 #     the working tree, uncommitted edits included -- and refuses a mutation that changes nothing;
 #   - --timeout / RUN_AGAINST_BASE_TIMEOUT stops a hanging suite's group and reports the base as
-#     failing (124), a suite ignoring TERM included, while one inside the timeout is judged as ever.
+#     failing (124), a suite ignoring TERM included, while one inside the timeout is judged as ever;
+#   - a lib/ unit file runs through the base's scripts/py as `-m unittest <module>` with no
+#     PYTHONPATH from the caller, reaching its own verdict (relative imports included); scripts/py
+#     finding no interpreter, or hanging past --timeout while it looks, is 125, and so is a base
+#     scripts/py that cannot run; a base without one falls back to python3 and says so; a lib/ path CI's discovery never runs (no
+#     module name, not test_*.py, outside a package) is refused; a *.py outside lib/ runs under
+#     python3.
 #
 # Usage: test-run-against-base.sh   (exit 0 all pass, 1 otherwise)
 
@@ -809,6 +815,195 @@ worktrees_clean "after --timeout cases"
 run_rab test-toy.sh --lock
 if [ "$rc" -eq 1 ]; then ok "a locked worktree: the suite's status is still reported"; else ko "lock: rc=$rc -- $out"; fi
 worktrees_clean "after the suite locked its worktree"
+
+# ---- a *.py suite: a lib/ module through the base's scripts/py, any other under python3 --------
+# A second scratch repo shaped like this one: scripts/py (this checkout's own) and a package under
+# lib/ whose unit file imports it by name and relatively. The base's library is buggy, the working
+# tree fixes it and adds the case the base fails. No PYTHONPATH reaches the helper, so the case
+# reaches the test's own verdict only if the helper puts lib/ on the path itself.
+P="$TMP/pyrepo"
+g init -q --bare "$TMP/pyorigin.git"
+g init -q "$P"
+mkdir -p "$P/lib/toy/tests" "$P/scripts"
+: >"$P/lib/toy/__init__.py"
+: >"$P/lib/toy/tests/__init__.py"
+printf '%s\n' 'def add(a, b):' '    return a - b' >"$P/lib/toy/calc.py"
+printf '%s\n' 'ZERO = 0' >"$P/lib/toy/tests/helper.py"
+cat >"$P/lib/toy/tests/test_calc.py" <<'EOF'
+import unittest
+
+from toy.calc import add
+
+from . import helper
+
+
+class TestAdd(unittest.TestCase):
+    def test_add_zero(self):
+        self.assertEqual(add(2, helper.ZERO), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
+EOF
+printf '%s\n' 'OK = True' >"$P/scripts/plainlib.py"
+cat >"$P/scripts/test-plain.py" <<'EOF'
+import os
+import sys
+
+import plainlib  # from the file's own directory, as `python3 <file>` puts it on sys.path
+
+print("PYTHONPATH=" + os.environ.get("PYTHONPATH", "<unset>"))
+print("1 passed, 0 failed" if plainlib.OK else "0 passed, 1 failed")
+sys.exit(0 if plainlib.OK else 1)
+EOF
+g -C "$P" add -A
+g -C "$P" commit -qm old
+g -C "$P" branch old
+cp -p "$HERE/py" "$P/scripts/py"
+g -C "$P" add -A
+g -C "$P" commit -qm 'add scripts/py'
+g -C "$P" remote add origin "$TMP/pyorigin.git"
+g -C "$P" push -q origin main
+g -C "$P" fetch -q origin
+g -C "$P" checkout -qb unrunnable
+chmod -x "$P/scripts/py"
+g -C "$P" -c core.fileMode=true commit -qam 'scripts/py loses its mode'
+g -C "$P" checkout -q main
+chmod +x "$P/scripts/py"
+g -C "$P" checkout -qb fixed
+printf '%s\n' 'def add(a, b):' '    return a + b' >"$P/lib/toy/calc.py"
+g -C "$P" commit -qam fix
+g -C "$P" checkout -q main
+# The working tree: the fix, the new case, and a lib/ file no module name can reach.
+printf '%s\n' 'def add(a, b):' '    return a + b' >"$P/lib/toy/calc.py"
+cat >"$P/lib/toy/tests/test_calc.py" <<'EOF'
+import unittest
+
+from toy.calc import add
+
+from . import helper
+
+
+class TestAdd(unittest.TestCase):
+    def test_add_zero(self):
+        self.assertEqual(add(2, helper.ZERO), 2)
+
+    def test_add_nonzero(self):
+        self.assertEqual(add(2, 3), 5)
+
+
+if __name__ == "__main__":
+    unittest.main()
+EOF
+cp -p "$P/lib/toy/tests/test_calc.py" "$P/lib/toy/tests/test-dash.py"
+mkdir -p "$P/lib/toy/loose"
+cp -p "$P/lib/toy/tests/test_calc.py" "$P/lib/toy/loose/test_loose.py"
+printf '#!/bin/sh\nexec sleep 60\n' >"$TMP/interp-bin/rab-hanging-python"
+chmod +x "$TMP/interp-bin/rab-hanging-python"
+PY_EXTRA=
+# run_py ARGS...: the helper from the root of the Python scratch checkout, PYTHONPATH unset.
+run_py() {
+  out=$(cd "$P" && env -u PYTHONPATH ${PY_EXTRA:+"$PY_EXTRA"} TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" "$@" 2>&1)
+  rc=$?
+}
+py_clean() {
+  local n left
+  n=$(git -C "$P" worktree list --porcelain | grep -c '^worktree ')
+  left=$(ls -A "$HTMP")
+  if [ "$n" -eq 1 ] && [ -z "$left" ]; then
+    ok "$1: no worktree registered, no scratch left"
+  else
+    ko "$1: $n worktrees registered, scratch left: [$left] -- $(git -C "$P" worktree list)"
+  fi
+}
+wt_out=$(cd "$P" && env -u PYTHONPATH scripts/py -m unittest toy.tests.test_calc 2>&1)
+wt_rc=$?
+if [ "$wt_rc" -eq 0 ] && grep -qF 'Ran 2 tests' <<<"$wt_out"; then
+  ok "py control: the new unit file passes in the working tree"
+else
+  ko "py control: the unit file should pass in the working tree (rc=$wt_rc) -- $wt_out"
+fi
+run_py lib/toy/tests/test_calc.py -v
+if [ "$rc" -eq 1 ] && grep -qE '^test_add_nonzero .* FAIL$' <<<"$out" && grep -qE '^test_add_zero .* ok$' <<<"$out" \
+  && ! grep -qE 'ImportError|ModuleNotFoundError' <<<"$out"; then
+  ok "a lib/ unit file reaches its own verdict on the base, no PYTHONPATH set: the new case fails there"
+else
+  ko "lib/ unit file on the base: want rc 1 with test_add_nonzero FAIL and no import error; rc=$rc -- $out"
+fi
+if grep -qF 'run-against-base: runs as: ./scripts/py -m unittest toy.tests.test_calc' <<<"$out" \
+  && grep -qF 'run-against-base: exit 1 on origin/main: FAILED (failures=1)' <<<"$out"; then
+  ok "...run as \`scripts/py -m unittest <module>\`, which the run names, with unittest's verdict reported"
+else
+  ko "want the runs-as line and unittest's verdict -- $out"
+fi
+run_py lib/toy/tests/test_calc.py --base fixed -k test_add_nonzero
+if [ "$rc" -eq 0 ] && grep -qF 'Ran 1 test' <<<"$out" && grep -qF 'exit 0 on fixed: OK' <<<"$out"; then
+  ok "a fixed base passes, and the suite args reach unittest (-k picks the case)"
+else
+  ko "fixed base with -k: rc=$rc -- $out"
+fi
+# scripts/py that finds no Python >= 3.12 runs nothing: the suite never ran, which is not a result.
+PY_EXTRA=LUDICS_PY_CANDIDATES=/nonexistent/run-against-base-python3
+run_py lib/toy/tests/test_calc.py
+PY_EXTRA=
+if [ "$rc" -eq 125 ] && grep -qF 'never started an interpreter for lib/toy/tests/test_calc.py' <<<"$out" \
+  && grep -qF 'no Python >= 3.12 found' <<<"$out"; then
+  ok "scripts/py with no qualifying interpreter exits 125, not scripts/py's 2"
+else
+  ko "no interpreter for scripts/py: rc=$rc -- $out"
+fi
+# A candidate that hangs while scripts/py probes it is inside the run, so --timeout bounds it; the
+# interpreter never started, so that is still 125, not a base that hung.
+PY_EXTRA="LUDICS_PY_CANDIDATES=$TMP/interp-bin/rab-hanging-python"
+run_py lib/toy/tests/test_calc.py --timeout 2
+PY_EXTRA=
+if [ "$rc" -eq 125 ] && grep -qF 'stopped by the 2s timeout); it never ran' <<<"$out"; then
+  ok "...and one whose interpreter search hangs is stopped by --timeout, and exits 125"
+else
+  ko "hanging interpreter search under --timeout: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py --base old
+if [ "$rc" -ne 125 ] && grep -qF 'note: old has no scripts/py, so lib/toy/tests/test_calc.py runs under plain python3' <<<"$out" \
+  && grep -qF 'runs as: python3 ./lib/toy/tests/test_calc.py' <<<"$out"; then
+  ok "a base older than scripts/py falls back to plain python3, and says so"
+else
+  ko "base without scripts/py: rc=$rc -- $out"
+fi
+# A base whose scripts/py is there but cannot run is no base older than it: refused, not python3.
+run_py lib/toy/tests/test_calc.py --base unrunnable
+if [ "$rc" -eq 125 ] && grep -qF "the base's scripts/py is not an executable file" <<<"$out" \
+  && ! grep -qF 'runs as:' <<<"$out"; then
+  ok "a base whose scripts/py is not executable is refused with 125, not run under python3"
+else
+  ko "unrunnable scripts/py: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test-dash.py
+if [ "$rc" -eq 125 ] && grep -qF 'is not an importable module path under lib/' <<<"$out"; then
+  ok "a lib/ path no module name can reach is refused with 125"
+else
+  ko "lib/ dash name: rc=$rc -- $out"
+fi
+# A file CI's discovery never runs is no suite: not named test_*.py, or below a non-package.
+run_py lib/toy/tests/helper.py
+if [ "$rc" -eq 125 ] && grep -qF 'is not named test_*.py' <<<"$out"; then
+  ok "a lib/ file not named test_*.py is refused with 125"
+else
+  ko "lib/ non-test name: rc=$rc -- $out"
+fi
+run_py lib/toy/loose/test_loose.py
+if [ "$rc" -eq 125 ] && grep -qF 'lib/toy/loose has no __init__.py' <<<"$out"; then
+  ok "a lib/ test below a directory with no __init__.py is refused with 125"
+else
+  ko "lib/ test outside a package: rc=$rc -- $out"
+fi
+run_py scripts/test-plain.py
+if [ "$rc" -eq 0 ] && grep -qF 'runs as: python3 ./scripts/test-plain.py' <<<"$out" \
+  && grep -qF 'PYTHONPATH=<unset>' <<<"$out"; then
+  ok "a *.py suite outside lib/ runs under python3 as CI runs it: its own directory on the path, no PYTHONPATH"
+else
+  ko "outside lib/: rc=$rc -- $out"
+fi
+py_clean "after the *.py cases"
 
 printf '\n%s\n' "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
