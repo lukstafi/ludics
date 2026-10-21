@@ -51,9 +51,11 @@
 #     gate applies, and the module is imported under the name CI's `unittest discover -s lib -t
 #     lib` gives it, so its package and relative imports resolve. The suite args follow the module
 #     name on unittest's own command line: `-v`, `-k <pattern>` to pick cases (a bare `Class.test`
-#     is not relative to the module there; spell it `ludics.tests.test_x.Class.test`). A path under
-#     lib/ that is not an importable module name is refused. When scripts/py finds no Python >=
-#     3.12 the suite never runs, and that is this helper's 125, not the base's result;
+#     is not relative to the module there; spell it `ludics.tests.test_x.Class.test`). A path
+#     under lib/ that discovery never runs (not an importable name, not `test_*.py`, or below a
+#     directory with no `__init__.py`) is refused. When scripts/py finds no Python >= 3.12 (or
+#     does not find one inside --timeout) the suite never runs, and that is this helper's 125,
+#     not the base's result;
 #   - a base older than scripts/py (before 2026-10-05) has none: the file then runs under plain
 #     `python3 <file>`, as it did before, and the run says so;
 #   - a `*.py` file outside lib/ (issue-wave/scripts/test-fleet-execution.py, say) runs under plain
@@ -192,10 +194,11 @@ while [ "$i" -lt "${#MUT_ARGS[@]}" ]; do
   MUT_REL+=("$R_REL")
   i=$((i + 1))
 done
-# RUN: the words before the suite's own arguments. A `lib/` module's runner is settled once the
-# base worktree exists (it is the base's scripts/py, when the base has one), so `interp` is left
-# empty for it and its shebang is not read.
+# RUN: the words before the suite's own arguments (RUN_SHOWN, when set, how the run names them).
+# A `lib/` module's runner is settled once the base worktree exists (it is the base's scripts/py,
+# when the base has one), so `interp` is left empty for it and its shebang is not read.
 module=
+RUN_SHOWN=
 case "$rel" in
 lib/*.py)
   module=${rel#lib/}
@@ -207,6 +210,20 @@ lib/*.py)
     die "$rel is not an importable module path under lib/, so unittest cannot run it"
     ;;
   esac
+  # ...and a file CI's `unittest discover -s lib -t lib -p 'test_*.py'` reaches: a `test_*.py`
+  # name, in packages all the way down (discovery does not enter a directory without an
+  # `__init__.py`). A file it never reaches is no CI suite, and its result on the base would be
+  # about a test CI never runs. The shape is the working tree's: that is the tree CI will judge.
+  case "${rel##*/}" in
+  test_*.py) ;;
+  *) die "$rel is not named test_*.py, so CI's unittest discovery never runs it" ;;
+  esac
+  pkg=${rel%/*}
+  while [ "$pkg" != lib ]; do
+    [ -f "$TOP/$pkg/__init__.py" ] \
+      || die "$pkg has no __init__.py, so CI's unittest discovery never reaches $rel"
+    pkg=${pkg%/*}
+  done
   module=${module//\//.}
   runner=
   ;;
@@ -446,16 +463,23 @@ while [ "$i" -lt "${#MUT_REL[@]}" ]; do
 done
 # A lib/ module runs through the base's own scripts/py (after the copies and mutations, so one
 # carried with --also or mutated is the one used). scripts/py exits 2 and runs nothing when it
-# finds no Python >= 3.12, which the exec below cannot tell from the suite's own 2: it is asked
-# first, and its refusal is this helper's 125, since the suite would never have run.
+# finds no Python >= 3.12, which the exit status cannot tell from the suite's own 2; so the
+# interpreter itself marks that it started (the `started` file, written before unittest runs), the
+# way execfail marks an exec that failed. No marker means the suite never ran: this helper's 125,
+# never the base's result. The mark is made inside the suite's own run, so whatever scripts/py's
+# interpreter search does (a candidate that hangs, a relative one) is bounded by --timeout and
+# resolved from the base worktree, exactly as the run is.
 py_note=
+started=
 if [ -n "$module" ]; then
   if [ -f "$WT/scripts/py" ] && [ -x "$WT/scripts/py" ]; then
-    # From the base worktree, as the suite will run, so a relative LUDICS_PY_CANDIDATES entry
-    # resolves for the probe exactly as it will for the run.
-    py_probe=$(cd "$WT" && ./scripts/py -c '' </dev/null 2>&1) \
-      || die "the base's scripts/py cannot run $rel; it would never run: $py_probe"
-    RUN=(./scripts/py -m unittest "$module")
+    started="$SCRATCH/started"
+    # `-m unittest <module>`, spelled through runpy so the mark comes first; unittest's __main__
+    # then reads sys.argv[1:] (the module and the suite args) as `python -m unittest` would.
+    RUN=(./scripts/py -c 'import runpy, sys
+open(sys.argv.pop(1), "w").close()
+runpy.run_module("unittest", run_name="__main__", alter_sys=True)' "$started" "$module")
+    RUN_SHOWN="./scripts/py -m unittest $module"
   else
     command -v python3 >/dev/null 2>&1 || die "$rel needs python3, which is not on PATH here; it would never run"
     RUN=(python3 "./$rel")
@@ -475,7 +499,7 @@ while [ "$i" -lt "${#MUT_REL[@]}" ]; do
   i=$((i + 1))
 done
 [ "$TIMEOUT" -eq 0 ] || say "timeout: ${TIMEOUT}s"
-[ -z "$runner$module" ] || say "runs as: ${RUN[*]}"
+[ -z "$runner$module" ] || say "runs as: ${RUN_SHOWN:-${RUN[*]}}"
 [ -z "$py_note" ] || say "$py_note"
 # The suite runs in the background so the INT/TERM traps fire at once rather than after it
 # returns; its output goes through a fifo to tee, which both shows it live and keeps it for the
@@ -535,6 +559,11 @@ if [ -e "$SCRATCH/execfail" ]; then
   stop_group
   child=
   die "could not start $rel on $base (exec failed, see above); it never ran"
+fi
+if [ -n "$started" ] && [ ! -e "$started" ]; then
+  stop_group
+  child=
+  die "the base's scripts/py never started an interpreter for $rel (see above${timed_out:+; stopped by the ${TIMEOUT}s timeout}); it never ran"
 fi
 # Anything the suite left running still holds the fifo open; stop it so tee sees EOF.
 stop_group

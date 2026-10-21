@@ -37,8 +37,10 @@
 #     failing (124), a suite ignoring TERM included, while one inside the timeout is judged as ever;
 #   - a lib/ unit file runs through the base's scripts/py as `-m unittest <module>` with no
 #     PYTHONPATH from the caller, reaching its own verdict (relative imports included); scripts/py
-#     finding no interpreter is 125; a base without scripts/py falls back to python3 and says so;
-#     a lib/ path that is no module name is refused; a *.py outside lib/ runs under python3.
+#     finding no interpreter, or hanging past --timeout while it looks, is 125; a base without
+#     scripts/py falls back to python3 and says so; a lib/ path CI's discovery never runs (no
+#     module name, not test_*.py, outside a package) is refused; a *.py outside lib/ runs under
+#     python3.
 #
 # Usage: test-run-against-base.sh   (exit 0 all pass, 1 otherwise)
 
@@ -889,6 +891,10 @@ if __name__ == "__main__":
     unittest.main()
 EOF
 cp -p "$P/lib/toy/tests/test_calc.py" "$P/lib/toy/tests/test-dash.py"
+mkdir -p "$P/lib/toy/loose"
+cp -p "$P/lib/toy/tests/test_calc.py" "$P/lib/toy/loose/test_loose.py"
+printf '#!/bin/sh\nexec sleep 60\n' >"$TMP/interp-bin/rab-hanging-python"
+chmod +x "$TMP/interp-bin/rab-hanging-python"
 PY_EXTRA=
 # run_py ARGS...: the helper from the root of the Python scratch checkout, PYTHONPATH unset.
 run_py() {
@@ -935,10 +941,21 @@ fi
 PY_EXTRA=LUDICS_PY_CANDIDATES=/nonexistent/run-against-base-python3
 run_py lib/toy/tests/test_calc.py
 PY_EXTRA=
-if [ "$rc" -eq 125 ] && grep -qF 'it would never run' <<<"$out" && grep -qF 'no Python >= 3.12 found' <<<"$out"; then
+if [ "$rc" -eq 125 ] && grep -qF 'never started an interpreter for lib/toy/tests/test_calc.py' <<<"$out" \
+  && grep -qF 'no Python >= 3.12 found' <<<"$out"; then
   ok "scripts/py with no qualifying interpreter exits 125, not scripts/py's 2"
 else
   ko "no interpreter for scripts/py: rc=$rc -- $out"
+fi
+# A candidate that hangs while scripts/py probes it is inside the run, so --timeout bounds it; the
+# interpreter never started, so that is still 125, not a base that hung.
+PY_EXTRA="LUDICS_PY_CANDIDATES=$TMP/interp-bin/rab-hanging-python"
+run_py lib/toy/tests/test_calc.py --timeout 2
+PY_EXTRA=
+if [ "$rc" -eq 125 ] && grep -qF 'stopped by the 2s timeout); it never ran' <<<"$out"; then
+  ok "...and one whose interpreter search hangs is stopped by --timeout, and exits 125"
+else
+  ko "hanging interpreter search under --timeout: rc=$rc -- $out"
 fi
 run_py lib/toy/tests/test_calc.py --base old
 if [ "$rc" -ne 125 ] && grep -qF 'note: old has no scripts/py, so lib/toy/tests/test_calc.py runs under plain python3' <<<"$out" \
@@ -952,6 +969,19 @@ if [ "$rc" -eq 125 ] && grep -qF 'is not an importable module path under lib/' <
   ok "a lib/ path no module name can reach is refused with 125"
 else
   ko "lib/ dash name: rc=$rc -- $out"
+fi
+# A file CI's discovery never runs is no suite: not named test_*.py, or below a non-package.
+run_py lib/toy/tests/helper.py
+if [ "$rc" -eq 125 ] && grep -qF 'is not named test_*.py' <<<"$out"; then
+  ok "a lib/ file not named test_*.py is refused with 125"
+else
+  ko "lib/ non-test name: rc=$rc -- $out"
+fi
+run_py lib/toy/loose/test_loose.py
+if [ "$rc" -eq 125 ] && grep -qF 'lib/toy/loose has no __init__.py' <<<"$out"; then
+  ok "a lib/ test below a directory with no __init__.py is refused with 125"
+else
+  ko "lib/ test outside a package: rc=$rc -- $out"
 fi
 run_py scripts/test-plain.py
 if [ "$rc" -eq 0 ] && grep -qF 'runs as: python3 ./scripts/test-plain.py' <<<"$out" \
