@@ -1297,6 +1297,42 @@ test_the_posted_bodies_are_exact() {
     "both urls, in the order the replies were posted"
 }
 
+# `--body-file <path>` (wave-20261020, post-1-task-2): the body a worker wrote to a file goes out
+# as written, through the same mention guard, from either writer; it is the body INSTEAD of the
+# argument, so both is an invocation error, and a file that is not there posts nothing -- the
+# round-1 shape on #746 was a `reply` refused while the `resolve` after it went through.
+test_a_body_file_is_the_body() {
+  local text=$'Fixed in round 3.\n\n- `guard` now fires — "quoted", $dollars.\n'
+  reset_fixture
+  body_file "$text"
+  run_cmd cmd_reply 900+901 --body-file "$BODY_FILE"
+  assert_eq "$RC" 0 "a reply from a file posts ($ERR)"
+  assert_eq "$(posted_to 900)" "$text"$'\n\n_🤖 Addressed by an automated coding agent_' \
+    "the anchor gets the file's text exactly, then the marker"
+  assert_contains "$(posted_to 901)" "#discussion_r900" "and the duplicate its pointer"
+  reset_fixture
+  run_cmd cmd_comment "--body-file=$BODY_FILE"
+  assert_eq "$RC" 0 "a comment from a file posts ($ERR)"
+  assert_eq "$(cat "$BODIES/comment")" "$text"$'\n\n_🤖 Addressed by an automated coding agent_' \
+    "the file's text exactly, then the marker"
+  reset_fixture
+  run_cmd cmd_reply 900 "Inline." --body-file "$BODY_FILE"
+  assert_eq "$RC" 2 "a body both inline and from a file is an invocation error ($ERR)"
+  assert_contains "$ERR" "not both" "and says to give one"
+  assert_eq "$(cat "$REQUEST_LOG")" "" "with nothing posted"
+  reset_fixture
+  body_file "Over to @codex for the retry path."
+  run_cmd cmd_comment --body-file "$BODY_FILE"
+  assert_eq "$RC" 2 "a mention in the file refuses as one in an argument does ($ERR)"
+  assert_contains "$ERR" "any mention is an instruction to the connector" "and says why"
+  assert_eq "$(cat "$REQUEST_LOG")" "" "with nothing posted"
+  reset_fixture
+  run_cmd cmd_reply 900 --body-file "$TEST_ROOT/no-such-file"
+  assert_eq "$RC" 2 "a missing file is refused ($ERR)"
+  assert_contains "$ERR" "does not exist" "by name"
+  assert_eq "$(cat "$REQUEST_LOG")" "" "with nothing posted"
+}
+
 # `--anchor` is spelled either way gh's own flags are, and a bare `--anchor` with nothing after it
 # is an invocation error rather than a reply with no anchor (round 3 of #86 added the flag).
 test_the_anchor_flag_takes_both_spellings() {
@@ -1483,6 +1519,7 @@ tests=(
   test_allow_mention_posts_a_meant_mention
   test_the_bare_nudge_is_the_one_comment_that_passes
   test_the_posted_bodies_are_exact
+  test_a_body_file_is_the_body
   test_the_anchor_flag_takes_both_spellings
   test_a_failed_anchored_batch_keeps_its_anchor
   test_an_ambiguous_last_write_leaves_nothing_outstanding

@@ -79,7 +79,8 @@ It reads the build signal and never the 👍 (where a go-ahead is needed, CI run
 waits). It keeps the build gate the direct push skips; the push stays the lighter act where the user names that instead.
 
 The `gh` recipes below are packaged as `~/.claude/skills/ship-pr/scripts/pr-review.sh` (`poll`,
-`watch`, `status`, `checks`, `merge`, `base`, `reply`, `resolve`, `comment`, `body`, `retry`), which
+`watch`, `status`, `checks`, `merge`, `base`, `reply`, `resolve`, `comment`, `body`, `retry`;
+`reply` and `comment` take their body as one argument or as `--body-file <path>`, never both), which
 encodes the traps in code — including the pagination that a PR running to many rounds walks into —
 so prefer it to hand-rolled API calls. The commands below spell that path out in full because they
 are run from a repo checkout, not from the skill directory.
@@ -595,7 +596,7 @@ form, and the workaround it invites (hand-building the PR's URL) is how a releas
 `lukstafi/ocannl-staging#475` spent its retries on argument parsing. `comment` takes the same
 argument as every other subcommand and posts through the same write policy: exit 0 posted (it
 prints the comment's URL), 1 the API rejected it, 2 your invocation is wrong — note the body is
-**one** argument, so quote it — and 3 nothing was posted, or nothing is known, so re-read the PR
+**one** argument, so quote it, or write a long one to a file and pass `--body-file <path>` — and 3 nothing was posted, or nothing is known, so re-read the PR
 before repeating it.
 
 **Never write the connector's handle in a `reply` or `comment` body.** Any `@codex` in a body is an

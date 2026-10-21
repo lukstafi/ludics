@@ -239,6 +239,124 @@ class Comment(unittest.TestCase):
                 self.assertEqual(len(gh.calls), calls)
 
 
+class BodyFile(unittest.TestCase):
+    """``--body-file <path>``: the body read from a file instead of the positional argument, for
+    ``reply`` and ``comment`` alike (wave-20261020, post-1-task-2)."""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.mkdtemp(prefix="body-file-test.")
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    @staticmethod
+    def url(call: list[str]) -> Completed:
+        """A reply's url for a thread, a comment's for the PR conversation."""
+        return ok("https://github.com/a/b/pull/8#issuecomment-1\n") if "/issues/" in call[3] else reply_url(call)
+
+    def file(self, data: bytes, name: str = "body.md") -> str:
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as handle:
+            handle.write(data)
+        return path
+
+    def test_the_file_s_text_is_posted_verbatim(self) -> None:
+        text = "Fixed in round 3.\n\n- `guard` now fires — \"quoted\", $dollars, @-free.\n"
+        path = self.file(text.encode("utf-8"))
+        for spelling in (["--body-file", path], [f"--body-file={path}"]):
+            with self.subTest(spelling=spelling):
+                gh = Gh(self.url)
+                rc, out, errs = invoke(
+                    lambda gh=gh, sp=spelling: reply.run(session(gh), ["7", *sp, "900+901"]))
+                self.assertEqual((rc, errs), (0, ""))
+                self.assertEqual(len(out.splitlines()), 2)
+                self.assertEqual(field(gh.calls[0], "body"), text + reply.MARKER)
+                self.assertTrue(field(gh.calls[1], "body").startswith("Duplicate of the thread"))
+        gh = Gh(lambda call: ok("https://github.com/a/b/pull/8#issuecomment-1\n"))
+        rc, out, errs = invoke(lambda: comment.run(session(gh), ["a/b#8", "--body-file", path]))
+        self.assertEqual((rc, errs), (0, ""))
+        self.assertEqual(gh.calls[0][:4], ["api", "-X", "POST", "repos/a/b/issues/8/comments"])
+        self.assertEqual(field(gh.calls[0], "body"), text + reply.MARKER)
+
+    def test_a_mention_in_the_file_is_refused_as_in_an_argument(self) -> None:
+        mention = self.file(b"Over to @Codex for the retry path.\n", "mention.md")
+        for run, args in (
+            (reply.run, ["7", "900", "--body-file", mention]),
+            (comment.run, ["a/b#8", "--body-file", mention]),
+        ):
+            with self.subTest(args=args):
+                gh = Gh(self.url)
+                rc, _, errs = invoke(lambda gh=gh, run=run, args=args: run(session(gh), args))
+                self.assertEqual(rc, 2)
+                self.assertIn("any mention is an instruction to the connector", errs)
+                self.assertEqual(gh.calls, [])
+                gh = Gh(self.url)
+                rc, _, errs = invoke(
+                    lambda gh=gh, run=run, args=args: run(session(gh), [*args, "--allow-mention"]))
+                self.assertEqual((rc, errs), (0, ""), "--allow-mention lets a meant one through")
+                self.assertEqual(field(gh.calls[0], "body"),
+                                 "Over to @Codex for the retry path.\n" + reply.MARKER)
+        # comment's one allowlisted body passes from a file too, its trailing newline whitespace.
+        nudge = self.file(b"@codex review\n", "nudge.md")
+        gh = Gh(lambda call: ok("u\n"))
+        rc, _, errs = invoke(lambda: comment.run(session(gh), ["a/b#8", "--body-file", nudge]))
+        self.assertEqual((rc, errs), (0, ""))
+        gh = Gh(self.url)
+        rc, _, errs = invoke(lambda: reply.run(session(gh), ["7", "900", "--body-file", nudge]))
+        self.assertEqual(rc, 2, "and refuses in a thread, as an argument does")
+        self.assertIn("a nudge goes through", errs)
+        self.assertEqual(gh.calls, [])
+
+    def test_exactly_one_body_is_given(self) -> None:
+        path = self.file(b"The body.")
+        for run, args, says in (
+            (reply.run, ["7", "900", "Inline.", "--body-file", path], "not both"),
+            (comment.run, ["a/b#8", "Inline.", "--body-file", path], "not both"),
+            (reply.run, ["7", "900"], "got 2 argument(s)"),
+            (comment.run, ["a/b#8"], "got 1 argument(s)"),
+            (reply.run, ["7", "901", "--anchor", "900", "--body-file", path], "no body is taken"),
+            (reply.run, ["7", "900", "--body-file", path, "--body-file", path], "given twice"),
+            (comment.run, ["a/b#8", "--body-file"], "takes the path"),
+            (comment.run, ["a/b#8", "--body-file="], "takes the path"),
+        ):
+            with self.subTest(args=args):
+                gh = Gh(self.url)
+                rc, _, errs = invoke(lambda gh=gh, run=run, args=args: run(session(gh), args))
+                self.assertEqual(rc, 2)
+                self.assertIn(says, errs)
+                self.assertEqual(gh.calls, [])
+
+    def test_a_file_that_is_no_body_is_refused_with_nothing_posted(self) -> None:
+        for data, name, says in (
+            (None, "missing.md", "does not exist"),
+            (None, "", "is not a regular file"),
+            (b" \n\t\n", "blank.md", "is empty"),
+            (b"", "empty.md", "is empty"),
+            (b"caf\xe9\n", "latin1.md", "is not UTF-8 text"),
+            (b"a\x00b", "nul.md", "holds a NUL byte"),
+        ):
+            path = os.path.join(self.dir, name) if data is None else self.file(data, name)
+            for run, pr in ((reply.run, ["7", "900"]), (comment.run, ["a/b#8"])):
+                with self.subTest(name=name, run=run):
+                    gh = Gh(self.url)
+                    rc, _, errs = invoke(
+                        lambda gh=gh, run=run, pr=pr, path=path:
+                            run(session(gh), [*pr, "--body-file", path]))
+                    self.assertEqual(rc, 2)
+                    self.assertIn(says, errs)
+                    self.assertIn("--body-file", errs)
+                    self.assertEqual(gh.calls, [])
+        gh = Gh(self.url)
+        rc, _, errs = invoke(lambda: reply.run(session(gh), ["7", "900", "--body-file", "-"]))
+        self.assertEqual(rc, 2)
+        self.assertIn("(stdin) is not read", errs)
+        self.assertEqual(gh.calls, [])
+
+    def test_the_anchored_form_still_takes_no_body(self) -> None:
+        gh = Gh(self.url)
+        rc, _, errs = invoke(lambda: reply.run(session(gh), ["7", "901", "--anchor", "900"]))
+        self.assertEqual((rc, errs), (0, ""))
+        self.assertTrue(field(gh.calls[0], "body").startswith("Duplicate of the thread answered at"))
+
+
 def unreadable(status: str) -> Completed:
     """An answer gh could not read the body of, as ``gh api --include`` prints it (ludics-lite#612):
     the status line and a blank line on stdout, the decoder's complaint alone on stderr."""

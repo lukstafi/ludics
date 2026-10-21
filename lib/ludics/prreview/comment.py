@@ -1,4 +1,4 @@
-"""``pr-review.sh comment <pr> <body> [--allow-mention]``: a plain PR comment, over REST.
+"""``pr-review.sh comment <pr> <body>|--body-file <path> [--allow-mention]``: a plain PR comment, over REST.
 
 Ported from the shell's ``cmd_comment`` (ludics-lite#403).
 
@@ -14,7 +14,9 @@ line (``core.gh_unreadable_answer``): a gateway's 502/503 posted nothing and is 
 is the quota's, and a 2xx or a 500 stays ambiguous.
 
 A body mentioning '@codex' is refused before any request unless ``--allow-mention``; the bare nudge
-is the one body that passes without it (``reply.mention_refusal``).
+is the one body that passes without it (``reply.mention_refusal``). ``--body-file <path>`` is the
+body read from a file instead of the positional one -- exactly one of the two -- held to what
+``reply.read_body_file`` says, the mention guard reading its text as it reads an argument.
 
 Stdout: the comment's html_url. Exit: 0 posted; 1 the API rejected it (a 4xx); 2 usage; 3 a gateway
 refusal on every attempt (nothing was posted), or an ambiguous failure (it may have been: a POST
@@ -34,27 +36,45 @@ from ludics.prreview.core import (
     fail,
     pr_arg,
 )
-from ludics.prreview.reply import MARKER, blank, mention_refusal
+from ludics.prreview.reply import MARKER, blank, body_file_arg, mention_refusal, read_body_file
 
 
 def run(session: GhSession, args: list[str]) -> int:
     allow_mention = False
+    body_file: str | None = None
     rest: list[str] = []
-    for arg in args:
+    i = 0
+    while i < len(args):
+        arg = args[i]
         if arg == "--allow-mention":
             allow_mention = True
+        elif (taken := body_file_arg("comment", args, i, body_file)) is not None:
+            body_file, i = taken
         else:
             rest.append(arg)
-    # Exactly two, checked: an unquoted body arrives as several arguments, and posting its first
-    # word reads as a posted comment.
-    if len(rest) != 2:
-        die(
-            f"usage: comment <pr> <body> [--allow-mention] — got {len(rest)} argument(s).",
-            "The body is ONE argument: quote it, including a multi-line one.",
-        )
-    pr_ref, body = rest
-    if blank(body):
-        die("comment: the body is empty; there is nothing to post")
+        i += 1
+    # Exactly two (one with --body-file), checked: an unquoted body arrives as several arguments,
+    # and posting its first word reads as a posted comment.
+    if body_file is not None:
+        if len(rest) != 1:
+            die(
+                f"usage: comment <pr> --body-file <path> [--allow-mention] — got {len(rest)} positional",
+                "argument(s). The body is the file's, so none is taken after the PR: give the body as",
+                "an argument OR as --body-file, not both.",
+            )
+        pr_ref = rest[0]
+        body = read_body_file("comment", body_file)
+    else:
+        if len(rest) != 2:
+            die(
+                f"usage: comment <pr> <body>|--body-file <path> [--allow-mention] — got {len(rest)}"
+                " argument(s).",
+                "The body is ONE argument: quote it, including a multi-line one, or write it to a",
+                "file and pass --body-file <path>.",
+            )
+        pr_ref, body = rest
+        if blank(body):
+            die("comment: the body is empty; there is nothing to post")
     if not allow_mention:
         mention_refusal("comment", body)
     target = pr_arg(pr_ref, session.config.repo)
