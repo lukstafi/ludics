@@ -37,8 +37,8 @@
 #     failing (124), a suite ignoring TERM included, while one inside the timeout is judged as ever;
 #   - a lib/ unit file runs through the base's scripts/py as `-m unittest <module>` with no
 #     PYTHONPATH from the caller, reaching its own verdict (relative imports included); scripts/py
-#     finding no interpreter, or hanging past --timeout while it looks, is 125; a base without
-#     scripts/py falls back to python3 and says so; a lib/ path CI's discovery never runs (no
+#     finding no interpreter, or hanging past --timeout while it looks, is 125, and so is a base
+#     scripts/py that cannot run; a base without one falls back to python3 and says so; a lib/ path CI's discovery never runs (no
 #     module name, not test_*.py, outside a package) is refused; a *.py outside lib/ runs under
 #     python3.
 #
@@ -865,6 +865,11 @@ g -C "$P" commit -qm 'add scripts/py'
 g -C "$P" remote add origin "$TMP/pyorigin.git"
 g -C "$P" push -q origin main
 g -C "$P" fetch -q origin
+g -C "$P" checkout -qb unrunnable
+chmod -x "$P/scripts/py"
+g -C "$P" -c core.fileMode=true commit -qam 'scripts/py loses its mode'
+g -C "$P" checkout -q main
+chmod +x "$P/scripts/py"
 g -C "$P" checkout -qb fixed
 printf '%s\n' 'def add(a, b):' '    return a + b' >"$P/lib/toy/calc.py"
 g -C "$P" commit -qam fix
@@ -963,6 +968,14 @@ if [ "$rc" -ne 125 ] && grep -qF 'note: old has no scripts/py, so lib/toy/tests/
   ok "a base older than scripts/py falls back to plain python3, and says so"
 else
   ko "base without scripts/py: rc=$rc -- $out"
+fi
+# A base whose scripts/py is there but cannot run is no base older than it: refused, not python3.
+run_py lib/toy/tests/test_calc.py --base unrunnable
+if [ "$rc" -eq 125 ] && grep -qF "the base's scripts/py is not an executable file" <<<"$out" \
+  && ! grep -qF 'runs as:' <<<"$out"; then
+  ok "a base whose scripts/py is not executable is refused with 125, not run under python3"
+else
+  ko "unrunnable scripts/py: rc=$rc -- $out"
 fi
 run_py lib/toy/tests/test-dash.py
 if [ "$rc" -eq 125 ] && grep -qF 'is not an importable module path under lib/' <<<"$out"; then

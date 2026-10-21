@@ -480,6 +480,11 @@ if [ -n "$module" ]; then
 open(sys.argv.pop(1), "w").close()
 runpy.run_module("unittest", run_name="__main__", alter_sys=True)' "$started" "$module")
     RUN_SHOWN="./scripts/py -m unittest $module"
+  elif [ -e "$WT/scripts/py" ] || [ -L "$WT/scripts/py" ]; then
+    # Only a base with no scripts/py at all predates it. One that is there but cannot run (not
+    # executable, a directory, a broken link) fails CI's own `scripts/py` steps before any test,
+    # so a python3 verdict here would be about a run CI could not make.
+    die "the base's scripts/py is not an executable file, so it cannot run $rel; it would never run"
   else
     command -v python3 >/dev/null 2>&1 || die "$rel needs python3, which is not on PATH here; it would never run"
     RUN=(python3 "./$rel")
