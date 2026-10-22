@@ -214,7 +214,9 @@ class BackendPin(unittest.TestCase):
                           ("1", ["tools/t.sh", "run", "--expect-backend", "cuda"]),
                           ("1", ["tools/t.sh", "run", "--expect-backend=hip", "@runtest"]),
                           ("1", ["env", "OCANNL_BACKEND=cuda", "tools/t.sh", "bisect", "a", "b"]),
-                          ("1", ["env", "X=1", "OCANNL_BACKEND=metal", "tools/t.sh"])]:
+                          ("1", ["env", "X=1", "OCANNL_BACKEND=metal", "tools/t.sh"]),
+                          ("1", ["env", "OTHER=", "OCANNL_BACKEND=cuda", "tools/t.sh"]),
+                          ("1", ["env", "OCANNL_BACKEND=", "OCANNL_BACKEND=hip", "tools/t.sh"])]:
             with self.subTest(gpu=gpu, argv=argv):
                 self.assertEqual(self.pin(self.PINS, gpu, *argv), (0, ""))
 
@@ -223,7 +225,8 @@ class BackendPin(unittest.TestCase):
                      ["tools/t.sh", "run", "--expect-backend="], ["tools/t.sh", "--", "--expect-backend", "cuda"],
                      ["tools/t.sh", "OCANNL_BACKEND=cuda"], ["env", "OCANNL_BACKEND=", "tools/t.sh"],
                      ["sh", "-c", "OCANNL_BACKEND=cuda tools/t.sh run --expect-backend cuda"],
-                     ["env", "tools/t.sh", "OCANNL_BACKEND=cuda"]]:
+                     ["env", "tools/t.sh", "OCANNL_BACKEND=cuda"],
+                     ["env", "OCANNL_BACKEND=cuda", "OCANNL_BACKEND=", "tools/t.sh"]]:
             with self.subTest(argv=argv):
                 rc, why = self.pin(self.PINS, "1", *argv)
                 self.assertEqual(rc, 1)

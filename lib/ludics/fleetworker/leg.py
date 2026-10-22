@@ -233,11 +233,16 @@ $text
 FLEET_LEG_PIN
   [ "$gpu" = 1 ] && [ -n "$flags$envs" ] || return 0
   if [ -n "$envs" ] && [ "${1##*/}" = env ]; then
-    first=1
-    for a in "$@"; do
-      if [ -n "$first" ]; then first=""; continue; fi
-      case "$a" in [A-Za-z_]*=?*) ;; *) break ;; esac
-      for f in $envs; do case "$a" in "$f="?*) return 0 ;; esac; done
+    # Each NAME's value is its LAST assignment among those after `env` (empty ones included), as env
+    # applies them: `NAME=cuda NAME=` leaves it empty.
+    for f in $envs; do
+      first=1; prev=""
+      for a in "$@"; do
+        if [ -n "$first" ]; then first=""; continue; fi
+        case "$a" in [A-Za-z_]*=*) ;; *) break ;; esac
+        case "$a" in "$f="*) prev=${a#*=} ;; esac
+      done
+      [ -z "$prev" ] || return 0
     done
   fi
   first=1; prev=""
