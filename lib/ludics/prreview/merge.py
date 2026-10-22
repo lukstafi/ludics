@@ -1,5 +1,6 @@
-"""``pr-review.sh merge <pr> [--override <reason>] [--wait[=s]] [--allow-no-verdict] [--require-green]
-[-- <gh pr merge args...>]``: read the build signal, then merge the head it was read for.
+"""``pr-review.sh merge <pr> [-C <clone>] [--override <reason>] [--wait[=s]] [--allow-no-verdict]
+[--require-green] [-- <gh pr merge args...>]``: read the build signal, then merge the head it was
+read for. ``-C`` names the clone the merge build uses (mergebuild.py), read first of all.
 
 Ported from the shell's ``cmd_merge`` with ``refuse_merge_queue``, ``await_mergeable`` and
 ``absent_base_holds`` (ludics-lite#403). The gate and the merge are one command on purpose
@@ -50,7 +51,7 @@ from ludics.prreview.core import (
 from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, load_gate_config
-from ludics.prreview.mergebuild import merge_build
+from ludics.prreview.mergebuild import Ceiling, clone_of, merge_build
 from ludics.prreview.runners import (
     HeadRun,
     Idle,
@@ -66,7 +67,10 @@ from ludics.prreview.runners import (
 from ludics.prreview.shtext import tab_fields
 from ludics.prreview.threads import merge_threads_gate
 
-USAGE = "usage: merge <pr> [--override <reason>] [--wait[=seconds]] [--allow-no-verdict] [-- <gh pr merge args...>]"
+USAGE = (
+    "usage: merge <pr> [-C <clone>] [--override <reason>] [--wait[=seconds]] [--allow-no-verdict]"
+    " [-- <gh pr merge args...>]"
+)
 
 _SPACE = " \t\n\r\f\v"
 _REASON = re.compile(f"[^{_SPACE}]+[{_SPACE}]+[^{_SPACE}]+")
@@ -81,6 +85,9 @@ class Options:
     require_green: bool = False
     gh_args: list[str] = field(default_factory=lambda: list[str]())
     forwarded: bool = False
+    # ``-C <dir>``: the clone the merge build uses (mergebuild.py, ludics-lite#730); None is the
+    # working directory. It never names the repository, which comes from the PR argument (#92).
+    checkout: str | None = None
 
 
 def parse(args: list[str], config: GateConfig) -> Options:
@@ -94,6 +101,12 @@ def parse(args: list[str], config: GateConfig) -> Options:
             if len(rest) < 2 or not rest[1]:
                 fail(1, "--override needs a reason")
             opts.override = rest[1]
+            rest = rest[2:]
+            continue
+        if arg == "-C":
+            if len(rest) < 2 or not rest[1]:
+                die("merge: -C needs a directory, a clone of the PR's repository for the merge build")
+            opts.checkout = rest[1]
             rest = rest[2:]
             continue
         if arg.startswith("--override="):
@@ -781,7 +794,35 @@ class Merge:
             f"{self.multi.deferred_note()} {self.series.deferred_note()}",
         )
 
+    def check_checkout(self) -> None:
+        """``-C <dir>`` read before anything else (ludics-lite#730): a directory inside a git checkout
+        with a remote naming the PR's repository, or exit 2 -- so a --wait never ends on it. Whether
+        the build needs a FULL clone is the build's to say, since only a config asks for one."""
+        path = self.opts.checkout
+        if path is None:
+            return
+        root, remote = clone_of(self.repo, path)
+        if root is None:
+            die(
+                f"merge: -C {shlex.quote(path)} is not a directory inside a git checkout; -C names a clone of",
+                f"{self.repo} for the merge build. Nothing was read.",
+            )
+        if remote is None:
+            die(
+                f"merge: -C {shlex.quote(path)}: the checkout {shlex.quote(root)} has no remote naming {self.repo};",
+                "-C names a clone of the PR's repository for the merge build. Nothing was read.",
+            )
+
+    def ceiling(self) -> Ceiling | None:
+        """The wait's deadline as the gate left it (a recovery's extension included), for the merge
+        build's window wait (mergebuild.py's THE WINDOW WAIT); None without --wait."""
+        deadline = self.gate.deadline
+        if self.opts.wait_for <= 0 or deadline is None:
+            return None
+        return Ceiling(self.clock, deadline)
+
     def run(self) -> int:
+        self.check_checkout()
         self.multi.warn(self.num)
         if self.opts.require_green:
             self.refuse_merge_queue()
@@ -791,10 +832,14 @@ class Merge:
         if self.opts.wait_for > 0:
             self.conflict_preflight()
         self.judge()
+        ceiling = self.ceiling()
         drift = self.drift()
         # The would-be merge commit's build, where the repository asks for one (mergebuild.py,
         # ludics-lite#611): after the drift read it is decided on, before the merge call.
-        merge_build(self.session, self.repo, self.num, self.gate.check_sha, drift, self.config.limits.contents_dir_cap)
+        merge_build(
+            self.session, self.repo, self.num, self.gate.check_sha, drift, self.config.limits.contents_dir_cap,
+            checkout=self.opts.checkout, ceiling=ceiling,
+        )
         self.merge_call()
         return self.confirm()
 

@@ -192,7 +192,7 @@
 #                                          # --check judges only the checks the ERE names
 #                                          # (see prreview/checks.py)
 #   pr-review.sh merge <pr> [--override "<why this red is unrelated>"] [--wait]
-#                           [--allow-no-verdict] [--require-green]
+#                           [--allow-no-verdict] [--require-green] [-C <clone>]
 #                                          # checks, then merge; refuses on an open review thread
 #                                          # (no flag bypasses that), on red without --override,
 #                                          # on NO verdict without --allow-no-verdict, and — with
@@ -213,14 +213,26 @@
 #                                          # its build inputs), it first BUILDS
 #                                          # the head merged with the base's tip in a scratch
 #                                          # repository borrowing the objects of the local
-#                                          # clone it runs in, and refuses
+#                                          # clone it runs in (or the one -C names, checked
+#                                          # first: ludics-lite#730), and refuses
 #                                          # (1) when that build fails, with its output
 #                                          # (ludics-lite#611; see prreview/mergebuild.py).
+#                                          # Under --wait it waits behind a measurement on the
+#                                          # box for what is left of its ceiling (at least
+#                                          # 30 min), the slot naming the hold at once
+#                                          # (ludics-lite#764). A PR that changes that config
+#                                          # gets a NOTE: the default branch's copy judged it.
 #                                          # A build job that never got a runner (NO RUNNER,
 #                                          # NEVER STARTED, which `checks` names too) gets ONE
 #                                          # rerun per head run under --wait; then, or without
 #                                          # --wait, it refuses with 6 naming the commands
 #                                          # (ludics-lite#560/#728; see prreview/runners.py)
+#   pr-review.sh merge-build --base <rev> --head <rev> [--config <file>] [-C <dir>]
+#                                          # the merge build alone, a DRY RUN in a local checkout
+#                                          # (no PR read, no fetch, no merge): a config's
+#                                          # negative control, the PR's own copy included
+#                                          # (ludics-lite#751; see prreview/mergedry.py). Exit as
+#                                          # merge's build step: 0 would proceed, 1 refused.
 #   pr-review.sh base [owner/name] [branch] [--wait[=seconds]] [--interim]
 #                                          # is the branch you are about to work off CI-green?
 #                                          # --wait holds until the CURRENT tip has its verdict —
@@ -592,6 +604,7 @@ cmd_status() { py_forward call status "$@"; }
 cmd_rounds() { py_forward call rounds "$@"; }
 cmd_checks() { py_forward call checks "$@"; }
 cmd_merge() { py_forward call merge "$@"; }
+cmd_merge_build() { py_forward call merge-build "$@"; }
 cmd_base() { py_forward call base "$@"; }
 cmd_reply() { py_forward call reply "$@"; }
 cmd_resolve() { py_forward call resolve "$@"; }
@@ -663,6 +676,8 @@ py_native_args() {
       base:--advisory-red) next=1 ;;
       base:--advisory-red=*) a="--advisory-red=$(py_native_path "${a#--advisory-red=}")" ;;
       reply:--body-file | comment:--body-file) next=1 ;;
+      merge:-C | merge-build:-C | merge-build:--config) next=1 ;;
+      merge-build:--config=*) a="--config=$(py_native_path "${a#--config=}")" ;;
       reply:--body-file=* | comment:--body-file=*) a="--body-file=$(py_native_path "${a#--body-file=}")" ;;
       body:-) ;;
       body:*) [ "$n" -ne 2 ] || a=$(py_native_path "$a") ;;
@@ -736,11 +751,14 @@ main() {
   --repo=*) REPO="${1#--repo=}" && shift ;;
   esac
   case "${1:-}" in
-  poll | watch | status | rounds | checks | merge | base | reply | resolve | comment | body | retry)
+  poll | watch | status | rounds | checks | merge | merge-build | base | reply | resolve | comment | body | retry)
     py_usage "$@"
     py_forward exec "$@"
     ;;
   *) die "usage: pr-review.sh [--repo owner/name] {poll|watch|status|rounds|checks|merge|reply|resolve} <pr> ...
+  pr-review.sh [--repo owner/name] merge-build --base <rev> --head <rev> [--config <file>] [-C <dir>]
+                                             # merge's build of the would-be merge commit alone,
+                                             # a dry run: no PR read, no fetch, no merge
   pr-review.sh comment <pr> <body>           # a plain PR comment (a summary round, a review nudge)
   pr-review.sh reply|comment ... --body-file <path>  # the body from a file, instead of an argument
   pr-review.sh body <pr> <file>              # replace the PR's description from a file, over REST

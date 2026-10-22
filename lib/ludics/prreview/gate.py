@@ -158,6 +158,10 @@ class Gate:
     orphans_on: bool = False
     orphans: list[Orphan] = field(default_factory=lambda: list[Orphan]())
     recover: Recover | None = None
+    # The last ``check``'s wait deadline on ``clock``, as the wait left it: its start plus the wait,
+    # moved later by a recovery's Wait (ludics-lite#764: ``merge``'s build waits behind a
+    # measurement window within what is left of it). None before a check.
+    deadline: int | None = None
     _round_runs: list[HeadRun] | None = None
     _advisory: ere.Matcher | None = None
     _selected: ere.Matcher | None = None
@@ -640,6 +644,7 @@ class Gate:
             if budget.wait_from is not None:
                 started = budget.wait_from
         deadline = started + wait_for
+        self.deadline = deadline
         self.gate_base = ""
         self.orphans = []
         self.waived = set()
@@ -792,6 +797,7 @@ class Gate:
                             keep = True
                             if until > deadline:
                                 deadline = until
+                                self.deadline = deadline
                                 if budget is not None:
                                     budget.wait_until = until
                         case Idle():
