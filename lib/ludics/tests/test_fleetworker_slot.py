@@ -398,8 +398,10 @@ def measurement(identity: str, box: str = "testbox", state: str = "launching", w
     if window:
         record["window"] = True
     if due_in is not None:
+        # As a listing gives it: the time left by the anchor's clock beside the recorded deadline.
         record["deadline"] = 1
         record["deadline_at"] = (datetime.now(timezone.utc) + timedelta(seconds=due_in)).isoformat()
+        record["deadline_left"] = max(0, int(due_in))
     return record
 
 
@@ -737,7 +739,7 @@ class WindowDeadline(unittest.TestCase):
 
     def test_a_deadline_past_the_hour_is_waited_to(self) -> None:
         left, said = self.cutoff([measurement("win", due_in=7200)])
-        self.assertAlmostEqual(left, 7200, delta=5)
+        self.assertEqual(left, 7200)
         self.assertRegex(said, r"\A--wait-window, to measurement win's deadline 20[0-9-]+T")
 
     def test_a_deadline_inside_the_hour_is_the_bound_too(self) -> None:
@@ -749,11 +751,19 @@ class WindowDeadline(unittest.TestCase):
         bad["deadline_at"] = "soon"
         naive = measurement("win")
         naive["deadline_at"] = "2099-01-01T00:00:00"
-        for holding in ([measurement("win")], [measurement("m", window=False)], [bad], [naive], []):
+        unlisted = measurement("win", due_in=7200)
+        del unlisted["deadline_left"]   # a deadline the listing gives no time left for
+        for holding in ([measurement("win")], [measurement("m", window=False)], [bad], [naive], [unlisted], []):
             self.assertEqual(self.cutoff(holding), (slot.WINDOW_WAIT, "--wait-window"), holding)
 
     def test_a_deadline_already_past_gives_up_at_once(self) -> None:
         self.assertEqual(self.cutoff([measurement("win", due_in=-30)])[0], 0)
+
+    def test_the_time_left_is_the_anchors_and_no_clock_here_is_compared(self) -> None:
+        # Round 1 of #771: this host's clock 10 minutes off the anchor's moves nothing.
+        skewed = measurement("win", due_in=600)
+        skewed["deadline_at"] = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+        self.assertEqual(self.cutoff([skewed])[0], 600)
 
     def test_the_latest_blocker_wins_one_without_a_deadline_counting_an_hour(self) -> None:
         self.assertAlmostEqual(self.cutoff([measurement("a", due_in=7200), measurement("b", due_in=9000)])[0],
@@ -774,26 +784,26 @@ class WindowDeadline(unittest.TestCase):
         window = measurement("win", due_in=7200)
         result, out, err = self.wait([window], [[window], [measurement("win", state="concluded")]])
         self.assertEqual((result, out), ([measurement("win", state="concluded")], ""))
-        self.assertRegex(err, r"waiting up to 7(19[0-9]|200)s \(--wait-window, to measurement win's deadline \S+\)"
+        self.assertRegex(err, r"waiting up to 7200s \(--wait-window, to measurement win's deadline \S+\)"
                               r" for it to conclude, then for a slot, for: echo x")
         self.assertIn("reserved 2026-10-12T00:00:00+00:00; due to conclude by ", err)
 
     def test_a_bare_wait_is_refused_at_the_deadline_naming_it(self) -> None:
-        window = measurement("win", due_in=0.3)
+        window = measurement("win", due_in=1)
         started = time.monotonic()
         result, out, _ = self.wait([window], [[window]] * 10000)
         self.assertEqual(result, 1)
-        self.assertGreaterEqual(time.monotonic() - started, 0.25)
-        self.assertRegex(out, r"\AEXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 0s"
+        self.assertGreaterEqual(time.monotonic() - started, 0.95)
+        self.assertRegex(out, r"\AEXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 1s"
                               r" \(--wait-window, to measurement win's deadline \S+\); no slot taken\n\Z")
 
     def test_a_later_window_does_not_move_the_cutoff(self) -> None:
         # Frozen at the start: the next window's later deadline is the gap's to let the waiter out of.
-        first, later = measurement("a", due_in=0.3), measurement("b", due_in=7200)
+        first, later = measurement("a", due_in=1), measurement("b", due_in=7200)
         result, out, err = self.wait([first], [[later]] * 10000)
         self.assertEqual(result, 1)
         self.assertIn("measurement window b holds", err)
-        self.assertIn("still holds testbox after 0s (--wait-window, to measurement a's deadline", out)
+        self.assertIn("still holds testbox after 1s (--wait-window, to measurement a's deadline", out)
 
     def test_bg_passes_a_bare_wait_window_on_bare(self) -> None:
         # The detached run works out its window's deadline itself, from its own first read.

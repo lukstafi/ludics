@@ -655,6 +655,13 @@ class WindowDeadline(RegistryCase):
         self.assertNotIn("deadline", out["request"], "beside the request, never in it")
         rc, listed, _ = self.call("list", {"active": True, "compact": True})
         self.assertEqual((rc, listed[0]["deadline_at"]), (0, out["deadline_at"]))
+        # The listing gives the time left by the anchor's clock (round 1 of #771); the record keeps none.
+        self.assertTrue(7190 <= listed[0]["deadline_left"] <= 7200, listed[0]["deadline_left"])
+        self.assertNotIn("deadline_left", out)
+        with open(os.path.join(self.root, "executions", "w.json")) as f:
+            self.assertNotIn("deadline_left", json.load(f))
+        rc, waited, _ = self.call("wait", {"waiter": {"box": "mac", "id": "r-1", "command": "x", "ttl": 30}})
+        self.assertTrue(7190 <= waited[0]["deadline_left"] <= 7200)
         # A window without one records neither field.
         self.assertEqual(self.call("conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null",
                                                 "evidence": "unit"})[0], 0)
@@ -673,11 +680,16 @@ class WindowDeadline(RegistryCase):
         self.assertEqual(self.window("w2")[0], 1, "one window per box, as ever")
 
     def test_a_deadline_is_a_positive_whole_number_and_only_a_windows(self) -> None:
-        for bad in (True, 0, -1, "60", 1.5, None):
+        # A week at most (round 1 of #771): a larger one overflowed the datetime, a traceback.
+        for bad in (True, 0, -1, "60", 1.5, None, 7 * 24 * 3600 + 1, 10**12):
             rc, _, err = self.window(extra={"deadline": bad})
             self.assertEqual(rc, 1, bad)
-            self.assertIn("a window's deadline must be a positive whole number of seconds", err)
-        self.assertEqual(self.call("run", {**request("m", kind="measurement"), "deadline": 60})[0], 1)
+            self.assertRegex(err, r"\AEXECUTION REFUSED: a window's deadline must be a whole number of seconds from 1"
+                                  r" to 604800, not \S+\n\Z")
+        rc, _, err = self.call("run", {**request("m", kind="measurement"), "deadline": 60})
+        self.assertEqual(rc, 1)
+        self.assertEqual(err, "EXECUTION REFUSED: unknown reservation fields or invalid request\n", "only a window's")
+        self.assertEqual(self.window(extra={"deadline": 7 * 24 * 3600})[0], 0)
 
     def test_a_corrupt_deadline_blocks_the_ledger(self) -> None:
         self.window(extra={"deadline": 60})

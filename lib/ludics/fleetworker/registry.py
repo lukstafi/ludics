@@ -151,12 +151,15 @@ window's drain takes slots as they free), and a box whose fleet-worker predates 
 `list`, unseen, so its batches get no gap.
 
 THE WINDOW'S DEADLINE (ludics-lite#737). A window's payload may carry `"deadline": <seconds>` (a
-positive whole number) beside `box`, `request` and `gap`, never in the request: the time from the
+whole number from 1 to a week) beside `box`, `request` and `gap`, never in the request: the time from the
 window's opening by which its coordinator will have CONCLUDED it -- its runner's `--deadline`, the
 setup before it, and the conclusion's own latency. The record keeps `deadline` and `deadline_at`
 (ISO 8601 UTC on this anchor's clock: when this action created the window, after any gap, plus
 `deadline`), fixed for the record's life: a retried window names the same deadline, or none when the
-record has none, or is refused, and never moves `deadline_at`. Only `window` takes one. It bounds
+record has none, or is refused, and never moves `deadline_at`. Only `window` takes one. A listing
+(`list`, `wait`) adds `deadline_left` to such a record: the whole seconds from this anchor's clock
+to `deadline_at`, 0 once past, so a waiter on another host reads the time left without comparing
+its clock with this one (the field is the listing's, never written). It bounds
 the waiters and nothing else: `execution slot --wait-window` with no value (and `execution leg`'s)
 gives up at it, an hour where no measurement holding the box records one; it does not end the
 measurement, conclude its record, or release anything.
@@ -437,10 +440,15 @@ def validate_record(data: Any, path: Path) -> Record:
     return record
 
 
+WINDOW_DEADLINE_MAX = 7 * 24 * 3600   # a week: longer is no window, and any datetime holds it
+
+
 def deadline_ok(value: Any) -> int:
-    """A window's deadline: a positive whole number of seconds, never a boolean (THE WINDOW'S DEADLINE)."""
-    if type(value) is not int or value < 1:
-        refuse(f"a window's deadline must be a positive whole number of seconds, not {json.dumps(value)}")
+    """A window's deadline: a positive whole number of seconds, never a boolean, at most
+    ``WINDOW_DEADLINE_MAX`` (THE WINDOW'S DEADLINE)."""
+    if type(value) is not int or not 1 <= value <= WINDOW_DEADLINE_MAX:
+        refuse(f"a window's deadline must be a whole number of seconds from 1 to {WINDOW_DEADLINE_MAX},"
+               f" not {json.dumps(value)}")
     return value
 
 
@@ -889,6 +897,12 @@ def main(argv: list[str]) -> None:
         if flags.get("compact"):
             selected = [{key: value for key, value in record.items()
                          if key not in {"history", "lease_token"}} for record in selected]
+        # THE WINDOW'S DEADLINE: the time left by THIS clock, so a waiter on another host compares no
+        # clocks (a listing's field only, never written to a record).
+        now = datetime.now(timezone.utc)
+        selected = [record | {"deadline_left": max(0, int((datetime.fromisoformat(record["deadline_at"]) - now)
+                                                          .total_seconds()))}
+                    if "deadline_at" in record else record for record in selected]
         print(json.dumps(selected, indent=None if flags.get("compact") else 2))
         return
     decoded: Any = json.loads(raw)

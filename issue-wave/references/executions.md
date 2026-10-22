@@ -147,8 +147,8 @@ the verdict, restores every reservation it suspended to its former state, with t
 conclusion each write several records, and a listing never sees one half done: every registry
 action takes the anchor's `executions.lock`, a listing shared and a write exclusive (ludics-lite#711;
 the snapshot contract and its boundary, a caller whose checkout predates it, are in `registry.py`'s
-header). `execution window --deadline <seconds>` records when the window will have been concluded,
-counted from its opening: the runner's `--deadline`, its setup, and the time you take to conclude
+header). `execution window --deadline <seconds>` (at most a week) records when the window will have been
+concluded, counted from its opening: the runner's `--deadline`, its setup, and the time you take to conclude
 it (ludics-lite#737). It bounds the waiters, below, and nothing else. While the window is open:
 
 - `execution slot` on the box refuses a batch with `EXECUTION SLOT REFUSED <box>: measurement window

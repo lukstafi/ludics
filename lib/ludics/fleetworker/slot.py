@@ -250,7 +250,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Literal, NoReturn, assert_never, cast
 
 from ludics import cli
@@ -1162,21 +1162,30 @@ def deadline_of(record: dict[str, Any]) -> datetime | None:
     return at if at.tzinfo is not None else None
 
 
+def deadline_left(record: dict[str, Any]) -> int | None:
+    """The seconds the listing says are left to the measurement's deadline, by the anchor's own clock
+    (its ``deadline_left``, ludics-lite#737), so no clock here is compared with the anchor's; None
+    when it gives none, or a record that names no readable deadline."""
+    left = record.get("deadline_left")
+    return left if type(left) is int and left >= 0 and deadline_of(record) is not None else None
+
+
 def window_cutoff(holding: list[dict[str, Any]], start: float) -> tuple[float, str]:
     """A bare ``--wait-window``'s give-up (ludics-lite#737), frozen when the wait starts: on the
-    monotonic clock, the latest of each measurement's recorded deadline (read once against this
-    host's wall clock), or ``start`` + ``WINDOW_WAIT`` for one that records none; and what the
-    lines say it is. A deadline already past gives up at once. Windows that open later do not
-    move it: a waiter's bound runs across back-to-back windows, and the gap is where it gets out."""
-    wall = datetime.now(timezone.utc)
+    monotonic clock, the latest of each measurement's time left to its deadline as the listing that
+    found the box held gave it (``deadline_left``, by the anchor's clock), or ``start`` +
+    ``WINDOW_WAIT`` for one that gives none; and what the lines say it is. A deadline already past
+    gives up at once. Windows that open later do not move it: a waiter's bound runs across
+    back-to-back windows, and the gap is where it gets out. The listing's age when the wait starts
+    (its read's own latency) comes off the wait, never onto it."""
     cutoff, said = start + WINDOW_WAIT, "--wait-window"
     candidates: list[tuple[float, str]] = []
     for record in holding:
-        due = deadline_of(record)
-        if due is None:
+        left = deadline_left(record)
+        if left is None:
             candidates.append((start + WINDOW_WAIT, "--wait-window"))
         else:
-            candidates.append((start + (due - wall).total_seconds(),
+            candidates.append((start + left,
                                f"--wait-window, to measurement {jq_text(record.get('request_id'))}'s deadline"
                                f" {jq_text(record.get('deadline_at'))}"))
     if candidates:
