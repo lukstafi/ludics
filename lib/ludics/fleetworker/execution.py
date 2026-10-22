@@ -29,8 +29,9 @@ once trailing ``/`` or ``\\`` are dropped -- no symlink is resolved, no case fol
 read, so another spelling of the same directory is refused, naming the recorded one. The checkout's
 echoes in the same call must agree with it: a plain payload's ``remote_checkout``, and
 ``--from-bg-run``'s ``--checkout``. What is admitted is written as the record spells it, so a retry
-spelled otherwise composes the same payload. Nothing else is checked: ``--from-run``'s recorded ``wt``,
-``--from-bg-run --checkout`` without ``--observed-from``, ``execution leg --worktree``. A record that
+spelled otherwise composes the same payload. ``execution leg --worktree`` is held to the same rule
+before a leg moves anything (leg.py's THE RECORD'S CHECKOUT, ludics-lite#749). Nothing else is
+checked: ``--from-run``'s recorded ``wt``, ``--from-bg-run --checkout`` without ``--observed-from``. A record that
 names no checkout (reserved before #731, or a non-standing request that gave none) is concluded, its
 evidence saying ``--observed-from unchecked``; so a conclusion that landed before #731 without that
 note, retried after it, composes another payload and meets the registry's "already concluded".

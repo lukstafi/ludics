@@ -224,7 +224,8 @@ worker's hand-back with `--observed-from`, and on 2026-10-18 one was concluded o
 worktree); any other request may. A retried reserve or run names the same checkout, or none if the
 record has none, or is refused. `remote_checkout` is not it: that is the evidence's own field, which
 any record, reconcile or conclude payload rewrites. What reads it is fleet-worker's near side
-(`execution.observed_sha_of`); this module only records it.
+(`execution.observed_sha_of`, and `execution leg`, whose `--worktree` must be it: ludics-lite#749);
+this module only records it.
 
 A request's `issue` is optional (ludics-lite#664): the one issue the work is for, spelled exactly
 `owner/name#N` -- `fleet-worker.sh prs --wave` reads it as one -- or absent, for work with no issue of

@@ -657,7 +657,15 @@ shift
 [ -z "${SHIM_SSH_LOCAL:-}" ] || [ "$host" != "$SHIM_SSH_LOCAL" ] || [ -z "${SHIM_SSH_PY:-}" ] || export LUDICS_PY_CANDIDATES="$SHIM_SSH_PY"
 # shellcheck disable=SC1090  # the box's env.sh, named by the case
 [ -z "${SHIM_SSH_LOCAL:-}" ] || [ "$host" != "$SHIM_SSH_LOCAL" ] || [ -z "${SHIM_SSH_ENV:-}" ] || . "$SHIM_SSH_ENV"
-[ -n "${SHIM_SSH_LOCAL:-}" ] && [ "$host" = "$SHIM_SSH_LOCAL" ] && exec bash -c "$*"
+# SHIM_SSH_SESSION=1 runs that host's far side as sshd runs a command: in a session of its own, this
+# process its client, so a signal to the client's group (bg-run.sh stop) does not reach it, and the
+# client's death leaves it running (ludics-lite#767).
+if [ -n "${SHIM_SSH_LOCAL:-}" ] && [ "$host" = "$SHIM_SSH_LOCAL" ]; then
+  [ -z "${SHIM_SSH_SESSION:-}" ] || exec perl -MPOSIX -e 'my $p = fork; defined $p or die "fork: $!";
+    if (!$p) { POSIX::setsid(); exec { $ARGV[0] } @ARGV; exit 127 }
+    waitpid($p, 0); exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' bash -c "$*"
+  exec bash -c "$*"
+fi
 [ "$*" = "exit 0" ] || { echo "ssh: Could not resolve hostname $host: nodename nor servname provided" >&2; exit 255; }
 [ "$host" = "${SHIM_SSH_HANG:-}" ] && sleep 30
 [ "$host" = "${SHIM_SSH_SLURP:-}" ] && cat > /dev/null
@@ -3278,6 +3286,55 @@ expect "a main run that fails is the leg's status, its control not run (and the 
   leg --request leg-a --rev red --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh
 grep -q "control patch applied" <<<"$out" && ko "the control ran after a red main run: $out" || ok "...the control skipped"
 [ -z "$(find "$ISSUE_WAVE_STATE/leg-control" -type f 2>/dev/null)" ] && ok "...and every copied patch removed from the box" || ko "a patch was left: $(ls "$ISSUE_WAVE_STATE/leg-control")"
+# ludics-lite#749: a run that leaves the worktree dirty says so, beside the HEAD-moved warning; the
+# leg's status stays the runner's.
+expect "a run that leaves the worktree dirty warns, its status the runner's" 0 "^EXECUTION LEG testbox: WARNING: $lwt has 1 uncommitted path(s) after the run (?? leftover;)" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" -- sh -c ': > leftover; exit 0'
+[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...the sentinel still the runner's" || ko "last line: $(last_line)"
+rm -f "$lwt/leftover"
+expect "...a failed main run that leaves it dirty too, its control not run" 2 "WARNING: $lwt has 1 uncommitted path(s) after the run" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- sh -c ': > leftover; exit 2'
+rm -f "$lwt/leftover"
+expect "...and a clean run says nothing of it" 0 "execution-leg: exit: 0" -- leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+grep -q "uncommitted path" <<<"$out" && ko "a clean run warned of dirt: $out" || ok "...no warning"
+# ...and a record that names a checkout refuses a --worktree that is not it, lexically, as conclude
+# --observed-from does, before anything is copied to the box.
+jq -n --arg wt "$lwt" '{request_id:"leg-c", wave:"w", worker:"leg-c", transport:"subagent", issue:"o/r#749", purpose:"leg fixture", agent_host:"testbox",
+  execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true, checkout:$wt}' > "$TMP/leg-c.json"
+"${FWL[@]}" execution run "$TMP/leg-c.json" >/dev/null 2>&1 || ko "could not take the standing reservation leg-c (setup)"
+n=$(marks)
+expect "a leg under a record's checkout refuses another worktree, naming the recorded one" 1 \
+  "^EXECUTION LEG REFUSED: --worktree $TMP/leg wts/w 2 is not leg-c's recorded checkout $lwt on testbox (ludics-lite#749" -- \
+  leg --request leg-c --rev claude/topic --checkout "$lco" --worktree "$TMP/leg wts/w 2" -- tools/check.sh
+[ "$(marks)" = "$n" ] && [ ! -e "$TMP/leg wts/w 2" ] && ok "...nothing made or run" || ko "the refused leg made its worktree or ran"
+expect "...and runs in its own, a trailing / dropped" 0 "execution-leg: exit: 0" -- \
+  leg --request leg-c --rev claude/topic --checkout "$lco" --worktree "$lwt/" -- tools/check.sh
+fixture_done leg-c
+# ludics-lite#766: a repository that commits .github/fleet-leg names how a runner pins its backend;
+# a leg that may hold the GPU (no --cpu) and pins none is refused before the worktree moves.
+git -C "$lsrc" checkout -q -b pinned claude/topic && mkdir -p "$lsrc/.github" &&
+  printf '# the backend pins\n\npin-flag --expect-backend\npin-env LEG_BACKEND\n' > "$lsrc/.github/fleet-leg" &&
+  git -C "$lsrc" add .github && git -C "$lsrc" commit -q -m pins && lpin=$(git -C "$lsrc" rev-parse HEAD) &&
+  git -C "$lsrc" checkout -q -b badpin claude/topic && mkdir -p "$lsrc/.github" && printf 'pin-flagg --expect-backend\n' > "$lsrc/.github/fleet-leg" &&
+  git -C "$lsrc" add .github && git -C "$lsrc" commit -q -m badpin &&
+  git -C "$lsrc" checkout -q -b nulpin claude/topic && mkdir -p "$lsrc/.github" && printf '\000\n' > "$lsrc/.github/fleet-leg" &&
+  git -C "$lsrc" add .github && git -C "$lsrc" commit -q -m nulpin && git -C "$lsrc" push -q "$lremote" pinned badpin nulpin &&
+  git -C "$lsrc" checkout -q main || ko "could not build the pin fixture (setup)"
+n=$(marks); was=$(git -C "$lwt" rev-parse HEAD)
+expect "a GPU leg whose runner pins no backend is refused, naming the pins the repository asks for" 1 \
+  "EXECUTION LEG REFUSED testbox: this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: --expect-backend <backend>, env LEG_BACKEND=<backend>;" -- \
+  leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+[ "$(marks)" = "$n" ] && [ "$(git -C "$lwt" rev-parse HEAD)" = "$was" ] && ok "...the worktree not moved, the runner not run" || ko "the unpinned leg moved the worktree or ran"
+expect "...as is one whose pin follows the runner's --" 1 "its runner pins no backend" -- \
+  leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- tools/check.sh -- --expect-backend cc
+expect "a --cpu leg needs no pin" 0 "execution-leg: exit: 0" -- leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
+expect "a leg pinned by the runner's flag runs" 0 "runner argv: \\[--expect-backend\\] \\[cc\\]" -- \
+  leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- tools/check.sh --expect-backend cc
+expect "...or by its env assignment" 0 "execution-leg: exit: 0" -- leg --request leg-a --rev "$lpin" --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh
+expect "a .github/fleet-leg line the leg cannot read refuses even a --cpu leg" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one this leg reads (pin-flagg --expect-backend)" -- \
+  leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
+expect "...and so does one holding a NUL byte, which a shell variable would drop" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg at [0-9a-f]* holds NUL bytes" -- \
+  leg --request leg-a --rev nulpin --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 # A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
 # control run's, which a runner prints last otherwise.
 lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") || ko "could not allocate a bg-run directory (setup)"
@@ -3306,7 +3363,50 @@ expect "a leg over ssh takes its slot under the coordinator's fleet configuratio
 expect "a fleet-worker.sh under the leg whose anchor was re-set refuses to read another registry" 1 "REFUSED: this box resolves the execution registry as anchor nowhere, .*but the coordinator that started it reads anchor testbox, " -- \
   env SHIM_SSH_LOCAL=other SHIM_SSH_ENV="$TMP/other-env.sh" "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- \
   env FLEET_ANCHOR=nowhere "$FW" execution list
+# THE STOP (ludics-lite#767): bg-run.sh stop on a leg ends its far side too -- the runner, and with
+# it the worktree's lock -- where the far side runs in a session of its own, as over real ssh.
+legstop() { # <label> <pidfile> <leg flags and runner...>: spawn the leg, stop it once the runner's pid is written
+  local label="$1" pidf="$2" i; shift 2; rm -f "$pidf"
+  lst=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" spawn "$TMP/leg runs" -- env SHIM_SSH_LOCAL=other SHIM_SSH_SESSION=1 \
+    "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" "$@")
+  for i in $(seq 150); do [ -s "$pidf" ] && break; sleep 0.2; done
+  [ -s "$pidf" ] || { ko "$label: the runner never wrote its pid -- $(cat "$lst/log")"; return 1; }
+  expect "$label" 0 "^STOPPED $lst: process group" -- bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" stop "$lst"
+  for i in $(seq 200); do grep -q "^EXECUTION LEG STOP other: the leg (pid [0-9]*) has ended$" "$lst/log" && break; sleep 0.2; done
+  grep -q "^EXECUTION LEG STOPPING other: SIGTERM; ending the far side (pid [0-9]*)$" "$lst/log" &&
+    grep -q "^EXECUTION LEG STOP other: the leg (pid [0-9]*) has ended$" "$lst/log" && ok "...the far side ended, said in the run's log" ||
+    ko "the stopped leg did not end its far side: $(cat "$lst/log")"
+  kill -0 "$(cat "$pidf")" 2>/dev/null && { ko "...the far runner $(cat "$pidf") still runs"; kill "$(cat "$pidf")" 2>/dev/null; sleep 1; } ||
+    ok "...the far runner is gone"
+}
+legstop "bg-run.sh stop on a leg whose far side has its own session stops the leg" "$TMP/leg-stop.pid" -- \
+  sh -c 'echo $$ > "$1"; exec sleep 120' x "$TMP/leg-stop.pid"
+expect "...and the worktree's lock is free: the next leg there runs" 0 "execution-leg: exit: 0" -- \
+  env SHIM_SSH_LOCAL=other "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+legstop "a leg stopped in its control run stops too" "$TMP/leg-stop.pid" --control "$TMP/break.patch" -- \
+  sh -c 'if [ -e broken ]; then echo $$ > "$1"; exec sleep 120; fi; exit 0' x "$TMP/leg-stop.pid"
+[ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...the control patch reverted over the connection the stop cut" ||
+  ko "the stopped control left the worktree: $(git -C "$lwt" status --porcelain) -- $(cat "$lst/log")"
 fixture_done leg-o
+# ...and on the caller's own box, where the far shell shares the leg's process group, a hangup to the
+# whole group (a closed terminal) reaches that shell too, which must still revert the control patch.
+lreq leg-l
+rm -f "$TMP/leg-hup.pid"
+lhup=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" spawn "$TMP/leg runs" -- "${FWL[@]}" execution leg --request leg-l --rev claude/topic \
+  --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- sh -c 'if [ -e broken ]; then echo $$ > "$1"; exec sleep 120; fi; exit 0' x "$TMP/leg-hup.pid")
+for i in $(seq 150); do [ -s "$TMP/leg-hup.pid" ] && break; sleep 0.2; done
+if [ -s "$TMP/leg-hup.pid" ]; then
+  kill -HUP -- "-$(head -n 1 "$lhup/pid")"
+  for i in $(seq 200); do grep -q "^EXECUTION LEG STOP testbox: the leg (pid [0-9]*) has ended$" "$lhup/log" && break; sleep 0.2; done
+  grep -q "^EXECUTION LEG STOPPING testbox: SIGHUP; ending the far side" "$lhup/log" && grep -q "^EXECUTION LEG STOP testbox: the leg (pid [0-9]*) has ended$" "$lhup/log" &&
+    ok "a local leg hung up in its control run ends its far side, said in the log" || ko "the hung-up local leg: $(cat "$lhup/log")"
+  kill -0 "$(cat "$TMP/leg-hup.pid")" 2>/dev/null && { ko "...its runner still runs"; kill "$(cat "$TMP/leg-hup.pid")"; sleep 1; } || ok "...its runner is gone"
+  [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...the control patch reverted by the far shell the hangup also reached" ||
+    { ko "the hung-up local leg left the worktree: $(git -C "$lwt" status --porcelain)"; git -C "$lwt" checkout -q -- . ; rm -f "$lwt/broken"; }
+else
+  ko "the local leg's runner never wrote its pid: $(cat "$lhup/log")"
+fi
+fixture_done leg-l
 # A head-of request's leg runs the commit resolved at assignment, not where the branch is now.
 printf 'claude/topic %s\n' "$lb" > "$TMP/leg-heads"
 SHIM_GH_HEADS="$TMP/leg-heads" lreq leg-h testbox correctness head-of:claude/topic
@@ -3345,8 +3445,8 @@ legwin() { # <id> -> open a measurement window on testbox under that id
     agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"measurement"}' > "$TMP/$1.json"
   "${FWL[@]}" execution window --no-gap testbox "$TMP/$1.json" >/dev/null 2>&1 || ko "could not open window $1 (setup)"
 }
-jq -n '{request_id:"leg-s", wave:"w", worker:"leg-s", transport:"subagent", issue:"o/r#666", purpose:"leg fixture", agent_host:"testbox",
-  execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true, checkout:"/wt/fixture"}' > "$TMP/leg-s.json"
+jq -n --arg wt "$lwt" '{request_id:"leg-s", wave:"w", worker:"leg-s", transport:"subagent", issue:"o/r#666", purpose:"leg fixture", agent_host:"testbox",
+  execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true, checkout:$wt}' > "$TMP/leg-s.json"
 "${FWL[@]}" execution run "$TMP/leg-s.json" >/dev/null 2>&1 || ko "could not take the standing reservation leg-s (setup)"
 legwin leg-w1
 n=$(marks)

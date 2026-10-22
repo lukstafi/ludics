@@ -685,7 +685,12 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
 
 - **The reservation.** `--request` must name a dispatched record (`launching`, `running` or
   `uncertain`; a standing one counts), read from the registry with no coordinator identity; its
-  execution host is the box (`--box`, if given, must be it). A correctness record's runs go under
+  execution host is the box (`--box`, if given, must be it). A record that names a `checkout`
+  refuses a `--worktree` that is not it before anything reaches the box (ludics-lite#749: a leg
+  under a standing id must not move another worker's worktree), by the rule `conclude
+  --observed-from` applies to a POSIX path: lexical, trailing `/` dropped (a trailing `\` is part of the name), no symlink resolved and no `~` expanded,
+  so spell the worktree as the record does. So a leg's request names its far-side worktree as
+  `checkout`, not the box's clone. A correctness record's runs go under
   `execution slot` on that box, with the slot flags given here; a measurement's under `execution
   hold --request <id>`, which takes `--deadline` alone. A record holding a `resolved_revision`
   (a [`head-of:` request](#reserve-launch-observe-conclude)), or a non-standing one whose
@@ -716,7 +721,10 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   ref of the checkout and resolved there, never through `FETCH_HEAD`, which a linked worktree
   cannot see (the trap ahrefs/ocannl#1153 hit) and which two legs in one checkout would overwrite.
   `EXECUTION LEG <box>: created|refreshed <worktree> at <sha> ...; observed_sha=<sha>` on stderr is
-  the worktree's `git rev-parse HEAD` before the runner starts. The fetch is bounded by
+  the worktree's `git rev-parse HEAD` before the runner starts. After the run the leg warns when the
+  runner moved HEAD, and when it left changed or untracked paths (`WARNING: <worktree> has N
+  uncommitted path(s) after the run`, ludics-lite#749), which the next leg there refuses: clean
+  them, and ask whether the runner wrote what it should only have read (an auto-promoted golden). The fetch is bounded by
   `FLEET_FETCH_TIMEOUT` (300 s). One leg at a time holds a worktree, from its status check through
   the control's revert: a second leg there is refused, not queued, since a worktree moved under a
   running leg would make it test another commit than the one it reports.
@@ -730,6 +738,31 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   for usage, or the slot's own refusal status when it never started the runner), and `EXECUTION
   LEG UNREACHABLE <box>` (4) is a box that never answered or a connection that dropped, the runner
   perhaps started: look on the box before running it again.
+- **The backend pin.** A repository whose runner selects a GPU backend states how a command pins
+  one, in `.github/fleet-leg` (ludics-lite#766: four CUDA and HIP legs ran on the CPU backend, which
+  nothing selected, and reported green). The leg reads that file on the box at the commit under
+  test, before the worktree moves. Its lines are `# comments`, blanks, `pin-flag <option>` (the
+  runner's words hold `<option> <backend>` or `<option>=<backend>` before any `--` of its own) and
+  `pin-env <NAME>` (the runner is `env NAME=<backend> ... <command>`, a command after the assignments); any other line refuses the
+  leg. A leg that may hold the GPU -- one that does not declare `--cpu`, a measurement's included --
+  whose command satisfies none of the pins is refused before anything runs, saying which it asks
+  for. OCANNL's would be `pin-flag --expect-backend` and `pin-env OCANNL_BACKEND`, so `-- env
+  OCANNL_BACKEND=cuda tools/test-run.sh run --expect-backend cuda <alias>` runs. Only argv words
+  count: a pin inside a `sh -c` string does not, nor does the caller's environment, which does not
+  travel. The pin shows that a backend was named, never that the run held it: that evidence is the
+  runner's own check (`--expect-backend`), and a leg the pin admitted is no GPU evidence. A `--cpu`
+  leg, and a repository without the file, are not checked.
+- **Stopping a leg.** A leg's far side runs in an ssh session of its own, which nothing on the
+  caller's box reaches, so a SIGTERM, SIGINT or SIGHUP the leg gets while it runs (`bg-run.sh stop`
+  on its run, a Ctrl-C) ends the far side as well (ludics-lite#767): `EXECUTION LEG STOPPING <box>:
+  SIGTERM; ending the far side (pid <n>)`, then the box's own `EXECUTION LEG STOP <box>: ...` lines,
+  `the leg (pid <n>) has ended` last. The far stop ends the leg's wrapper there, which ends the
+  runner's process group; the far shell then reverts a control patch and removes its files, so the
+  worktree and its lock are free. The leg waits up to 8 s for that report and then dies of the
+  signal; the stop goes on, and its last line follows in the same log. What it does not reach: a
+  leg killed with SIGKILL, a dropped connection (both leave the runner running: look on the box), a
+  box ssh cannot reach at stop time (`EXECUTION LEG STOP UNREACHABLE <box>`, which prints the
+  command that ends it there), and a process the runner moved out of its group.
 - **The control.** `--control <patch>` (a file on the caller's box) must apply before anything runs.
   After a main run that passed it is applied, the runner runs again in the same slot and must fail,
   and the patch is reverted: the leg exits 0 when the control failed (1-127, but 124), 1 with

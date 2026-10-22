@@ -119,7 +119,7 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    EXECUTION_REQUEST
    {"request_id":"<wave>-<issue>-<host>-<n>","execution_host":"rog-nv-linux","kind":"measurement",
     "requested_revision":"<full 40-hex pushed SHA (git rev-parse), or a ref>",
-    "checkout":"<absolute path on the execution host>",
+    "checkout":"<absolute path on the execution host: for a leg, its --worktree>",
     "command":"<one bounded runner command>","log":"<intended log path, or ->"}
    END_EXECUTION_REQUEST
    ```
@@ -129,7 +129,9 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    as `resolved_revision`), so a request that waits behind a halt or a busy box never goes stale
    and is not re-pinned after a push. A cross-box leg's `command` is usually `fleet-worker.sh
    execution leg --request <id> --rev <sha|branch> --checkout <dir> --worktree <dir> -- <runner
-   args>` ([executions.md](executions.md#a-leg-on-another-box)), run from the worker's own box.
+   args>` ([executions.md](executions.md#a-leg-on-another-box)), run from the worker's own box;
+   its `checkout` is the leg's `--worktree`, not the box's clone, since a leg under a record that
+   names a checkout refuses any other worktree (ludics-lite#749).
 
    The task notification that follows is this handoff, not completion. Several blocks are a
    queue: the coordinator assigns them one at a time, in order, each after the previous one's

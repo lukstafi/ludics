@@ -36,7 +36,10 @@
 # that has not published its pid by the time `spawn` returns is said so on stderr, and `wait` then
 # reads it as STARTING, as for any start. `fleet-worker.sh execution slot --bg <parent>` is this
 # around a slot-held batch; there the command is the slot's wrapper, which runs the batch in a
-# group of its own and ends that group on the TERM `stop` sends it (ludics-lite#566).
+# group of its own and ends that group on the TERM `stop` sends it (ludics-lite#566). A command whose
+# work runs outside the group ends that work itself on the TERM: `fleet-worker.sh execution leg` ends
+# its far side, in an ssh session on another box (ludics-lite#767), and waits up to 8 s, inside the
+# grace, for the box to report it.
 #
 # `stop <dir>` ends a run's whole tree. It reads the run as `wait` does, and a run that is not
 # RUNNING it leaves alone and says so: `NOT RUNNING: <verdict>`, exit 1 -- a run that has

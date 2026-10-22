@@ -6,8 +6,11 @@ import io
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -73,6 +76,230 @@ class Stream(unittest.TestCase):
         filler = "".join(f": {'x' * 70}\n" for _ in range(2000))  # ~150 KB of no-ops after the output
         script = "head -c 200000 /dev/zero | tr '\\0' 'y'; echo\n" + filler + "echo 'execution-leg t0k: exit: 0'\n"
         self.assertEqual(self.run_far(script, local=True)[0], 0)
+
+    def test_the_far_sides_pid_line_is_consumed(self) -> None:
+        # THE STOP (ludics-lite#767): kept by the leg, never output; another token's is output.
+        rc, out, _ = self.run_far("echo 'execution-leg t0k: far: 4242'\necho 'execution-leg f00: far: 1'\n"
+                                  "echo 'execution-leg t0k: exit: 0'\n", local=True)
+        self.assertEqual((rc, out), (0, "execution-leg f00: far: 1\nexecution-leg: exit: 0\n"))
+
+
+class Stop(unittest.TestCase):
+    """THE STOP (ludics-lite#767): a signal to the leg while it streams ends the far side through the
+    far stop, for the pid the far side reported, and the leg then raises LegStopped."""
+
+    bash = shutil.which("bash") or "/bin/bash"
+
+    def stream(self, script: str) -> tuple[int | None, list[str], str]:
+        asked: list[str] = []
+
+        def stop(pid: str) -> tuple[list[str], str]:
+            asked.append(pid)
+            return [self.bash, "-s"], "echo 'far stop ran' >&2\n"
+
+        said, err = io.StringIO(), io.StringIO()
+
+        class Out:
+            buffer = io.BytesIO()
+
+            def write(self, text: str) -> int:
+                return said.write(text)
+
+            def flush(self) -> None:
+                pass
+
+        before = signal.getsignal(signal.SIGTERM)
+        got: int | None = None
+        with contextlib.redirect_stderr(err), mock.patch.object(leg.sys, "stdout", Out()):
+            try:
+                leg.stream([self.bash, "-s"], script, "box", "t0k", local=True, stop=stop)
+            except leg.LegStopped as why:
+                got = why.signum
+        self.assertEqual(signal.getsignal(signal.SIGTERM), before, "the leg's handler outlived the stream")
+        return got, asked, said.getvalue() + err.getvalue()
+
+    def test_a_term_while_streaming_runs_the_far_stop_for_the_reported_pid(self) -> None:
+        got, asked, said = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 0.5\nkill -TERM $PPID\nsleep 2\n")
+        self.assertEqual((got, asked), (signal.SIGTERM, ["4242"]))
+        self.assertIn("EXECUTION LEG STOPPING box: SIGTERM; ending the far side (pid 4242)", said)
+
+    def test_a_signal_before_the_pid_came_is_said_and_stops_nothing(self) -> None:
+        got, asked, said = self.stream("sleep 0.5\nkill -INT $PPID\nsleep 2\n")
+        self.assertEqual((got, asked), (signal.SIGINT, []))
+        self.assertIn("EXECUTION LEG STOPPED box: SIGINT before the far side reported its pid", said)
+
+    def test_a_signal_while_the_far_side_starts_is_caught(self) -> None:
+        # The handlers are in before the far side is spawned: a TERM in that instant is the leg's to
+        # handle, never the default disposition's. It is raised once the child is held and before
+        # the script is fed, so the child is killed having run nothing.
+        real = subprocess.Popen
+
+        def popen(*args: Any, **kwargs: Any) -> Any:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(leg.subprocess, "Popen", popen):
+            got, asked, said = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 2\n")
+        self.assertEqual((got, asked), (signal.SIGTERM, []))
+        self.assertIn("EXECUTION LEG STOPPED box: SIGTERM before the far side reported its pid", said)
+
+    def test_a_signal_inside_popen_after_the_spawn_ends_the_unfed_child(self) -> None:
+        # The child exists, Popen has not returned: the signal is noted, raised once the leg holds the
+        # child, before its script is fed, and the child is killed, never left to run the leg.
+        real = subprocess.Popen
+        spawned: list[Any] = []
+
+        def popen(*args: Any, **kwargs: Any) -> Any:
+            child = real(*args, **kwargs)
+            spawned.append(child)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return child
+
+        with mock.patch.object(leg.subprocess, "Popen", popen):
+            got, asked, _ = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 2\n")
+        self.assertEqual((got, asked), (signal.SIGTERM, []))
+        self.assertEqual(spawned[0].wait(timeout=10), -signal.SIGKILL)
+
+    def test_a_pid_line_still_in_the_pipe_is_read_before_the_stop(self) -> None:
+        # The far side has written its pid and gone on, but the leg has not read the line yet when
+        # the signal lands: the stop still names that pid, never kills the far shell alone.
+        real = threading.Thread
+        fired: list[bool] = []
+
+        class Thread(real):
+            def start(self) -> None:
+                super().start()
+                if not fired:
+                    fired.append(True)
+                    time.sleep(0.5)
+                    os.kill(os.getpid(), signal.SIGTERM)
+
+        with mock.patch.object(leg.threading, "Thread", Thread):
+            got, asked, said = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 2\n")
+        self.assertEqual((got, asked), (signal.SIGTERM, ["4242"]))
+        self.assertIn("ending the far side (pid 4242)", said)
+
+    def far_stop(self, pid: int, token: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([self.bash, "-s", str(pid), token, "10"], input="BOX=box\n" + leg.STOP,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_the_far_stop_ends_the_wrapper_and_the_far_shell_winds_down(self) -> None:
+        # A far shell as LEG runs it: TERM deferred by its trap while its `execution slot` child runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "out")
+            far = ("trap 's=1' TERM\n"
+                   "bash -c 'trap \"exit 143\" TERM; while :; do sleep 0.1; done' wrapper execution slot\n"
+                   'echo "wrapper=$? s=$s" > "$1"\n')
+            proc = subprocess.Popen([self.bash, "-c", far, "far", out, "t0kfar"])
+            try:
+                time.sleep(0.5)
+                done = self.far_stop(proc.pid, "t0kfar")
+                proc.wait(timeout=30)
+            finally:
+                if proc.poll() is None:
+                    subprocess.run(["pkill", "-P", str(proc.pid)], check=False)
+                    proc.kill()
+                    proc.wait()
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("SIGTERM to the leg's wrapper", done.stderr)
+            self.assertIn(f"the leg (pid {proc.pid}) has ended", done.stderr)
+            self.assertEqual(Path(out).read_text(), "wrapper=143 s=1\n")
+
+    def test_a_pid_that_no_longer_carries_the_token_is_left_alone(self) -> None:
+        proc = subprocess.Popen(["sleep", "5"])
+        try:
+            done = self.far_stop(proc.pid, "t0kfar")
+            self.assertEqual(done.returncode, 0)
+            self.assertIn("nothing was signalled", done.stderr)
+            self.assertIsNone(proc.poll())
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+class RecordCheckout(unittest.TestCase):
+    """THE RECORD'S CHECKOUT (ludics-lite#749): a record that names a checkout refuses another
+    --worktree, lexically, before anything reaches the box."""
+
+    def run_leg(self, worktree: str, checkout: str | None) -> tuple[int, str, mock.Mock]:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "agent"}, host="agent")
+        record = standing(state="launching")
+        if checkout is not None:
+            record["checkout"] = checkout
+        out = io.StringIO()
+        streamed = mock.Mock(return_value=0)
+        with mock.patch.object(leg, "stream", streamed), contextlib.redirect_stdout(out):
+            rc = leg.run_leg(cfg, "it", record, [], ["tools/check.sh"], "testbox", "/h/co", worktree, "origin", "main", "", "300")
+        return rc, out.getvalue(), streamed
+
+    def test_another_worktree_is_refused_naming_the_recorded_one(self) -> None:
+        for worktree in ["/h/wts/other", "/h/wts/w1/..", "~/wts/w1", "/h/wts/w1\\"]:
+            with self.subTest(worktree=worktree):
+                rc, said, streamed = self.run_leg(worktree, "/h/wts/w1")
+                self.assertEqual(rc, 1)
+                self.assertEqual(said, f"EXECUTION LEG REFUSED: --worktree {worktree} is not it's recorded checkout /h/wts/w1"
+                                       " on testbox (ludics-lite#749: a leg moves only its own record's worktree); nothing ran\n")
+                streamed.assert_not_called()
+
+    def test_the_recorded_one_or_no_record_checkout_runs(self) -> None:
+        for worktree, checkout in [("/h/wts/w1", "/h/wts/w1"), ("/h/wts/w1/", "/h/wts/w1"), ("/h/wts/w1", "/h/wts/w1//"),
+                                   ("/anywhere", None)]:
+            with self.subTest(worktree=worktree, checkout=checkout):
+                rc, _, streamed = self.run_leg(worktree, checkout)
+                self.assertEqual(rc, 0)
+                streamed.assert_called_once()
+
+
+class BackendPin(unittest.TestCase):
+    """THE BACKEND PIN (ludics-lite#766): .github/fleet-leg's grammar, and which argv pins."""
+
+    bash = shutil.which("bash") or "/bin/bash"
+    PINS = "# pins\n\npin-flag --expect-backend\npin-env OCANNL_BACKEND\n"
+
+    def pin(self, text: str, gpu: str, *argv: str) -> tuple[int, str]:
+        done = subprocess.run([self.bash, "-c", leg.PIN + 'backend_pin "$@"', "x", text, gpu, *argv],
+                              capture_output=True, text=True)
+        return done.returncode, done.stdout
+
+    def test_a_pinned_or_cpu_leg_runs(self) -> None:
+        for gpu, argv in [("0", ["tools/t.sh", "run"]),
+                          ("1", ["tools/t.sh", "run", "--expect-backend", "cuda"]),
+                          ("1", ["tools/t.sh", "run", "--expect-backend=hip", "@runtest"]),
+                          ("1", ["env", "OCANNL_BACKEND=cuda", "tools/t.sh", "bisect", "a", "b"]),
+                          ("1", ["env", "X=1", "OCANNL_BACKEND=metal", "tools/t.sh"]),
+                          ("1", ["env", "OTHER=", "OCANNL_BACKEND=cuda", "tools/t.sh"]),
+                          ("1", ["env", "OCANNL_BACKEND=", "OCANNL_BACKEND=hip", "tools/t.sh"])]:
+            with self.subTest(gpu=gpu, argv=argv):
+                self.assertEqual(self.pin(self.PINS, gpu, *argv), (0, ""))
+
+    def test_an_unpinned_gpu_leg_is_refused_naming_the_pins(self) -> None:
+        for argv in [["tools/t.sh", "run"], ["tools/t.sh", "run", "--expect-backend"],
+                     ["tools/t.sh", "run", "--expect-backend="], ["tools/t.sh", "--", "--expect-backend", "cuda"],
+                     ["tools/t.sh", "OCANNL_BACKEND=cuda"], ["env", "OCANNL_BACKEND=", "tools/t.sh"],
+                     ["sh", "-c", "OCANNL_BACKEND=cuda tools/t.sh run --expect-backend cuda"],
+                     ["env", "tools/t.sh", "OCANNL_BACKEND=cuda"],
+                     ["env", "OCANNL_BACKEND=cuda", "OCANNL_BACKEND=", "tools/t.sh"],
+                     ["env", "OCANNL_BACKEND=cuda"], ["env", "X=1", "OCANNL_BACKEND=cuda"],
+                     ["env", "OCANNL_BACKEND=cuda", "1=x"], ["env", "OCANNL_BACKEND=cuda", "a-b=c", "=d"]]:
+            with self.subTest(argv=argv):
+                rc, why = self.pin(self.PINS, "1", *argv)
+                self.assertEqual(rc, 1)
+                self.assertEqual(why, "this leg may hold the GPU (no --cpu), but its runner pins no backend, and"
+                                      " .github/fleet-leg asks for one of: --expect-backend <backend>,"
+                                      " env OCANNL_BACKEND=<backend>; pin it (as words of the runner's own argv),"
+                                      " or declare --cpu for a leg that holds no GPU")
+
+    def test_a_file_with_no_pin_asks_for_none(self) -> None:
+        self.assertEqual(self.pin("# nothing yet\n", "1", "tools/t.sh"), (0, ""))
+        self.assertEqual(self.pin("", "1", "tools/t.sh"), (0, ""))
+
+    def test_a_line_the_leg_cannot_read_refuses_even_a_cpu_leg(self) -> None:
+        for line in ["pin-flagg --x", "pin-flag", "pin-flag x", "pin-flag --", "pin-flag --x=y", "pin-flag --x # c",
+                     "pin-env 9X", "pin-env A-B", "pin-env"]:
+            with self.subTest(line=line):
+                rc, why = self.pin(f"# ok\n{line}", "0", "tools/t.sh")
+                self.assertEqual(rc, 1)
+                self.assertTrue(why.startswith(f".github/fleet-leg line 2 is not one this leg reads ({line})"), why)
 
 
 

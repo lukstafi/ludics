@@ -96,18 +96,77 @@ runner, the runner was no executable command with the patch applied, or the main
 worktree at another commit than the one the leg reports, or not clean. A main run
 that failed is the leg's status, and the control does not run.
 
+After the run, beside the warning that the runner moved HEAD, a worktree the runner left with
+changed or untracked paths is said (``WARNING: <wt> has N uncommitted path(s) after the run``,
+ludics-lite#749): the next leg refuses that worktree, and the runner that auto-promoted goldens into
+it should be caught by the leg that ran it. It is a warning, never a status. It is not printed when
+the control patch was applied (the after-control check judges that state) or when the main run
+already recorded the dirt as NO CONTROL.
+
 WHAT THE STATUS MEANS. The runner's, when the sentinel line was printed. Without it, nothing ran to
 an end: an ``EXECUTION LEG REFUSED`` line says why (1; 2 usage; the slot's own refusal status when
 the slot never started the runner), or ``EXECUTION LEG UNREACHABLE`` (4) that the box never answered
 or the connection dropped, with the runner perhaps started -- find out on the box before a retry.
+
+THE RECORD'S CHECKOUT (ludics-lite#749). A record that names a ``checkout`` (registry.py's THE
+CHECKOUT: the one checkout its conclusion reads, for a leg the far-side worktree) refuses a
+``--worktree`` that is not it, before anything is copied to the box: a leg under a standing id must
+not move another worker's worktree. The comparison is the rule ``conclude --observed-from`` applies,
+for a POSIX path (a leg's box is one): lexical, byte-equal once trailing ``/`` are dropped -- a
+trailing ``\\`` is a character of the name there, not a separator -- no symlink resolved, no ``~``
+expanded, so another spelling of the same directory is refused, naming the recorded one. A record that names none is not checked; ``--checkout`` is not.
+
+THE BACKEND PIN (ludics-lite#766). Four legs meant for CUDA or HIP ran with no backend selected,
+resolved to the CPU backend, and reported green. The backend's names are the project's, so the
+project states them: ``.github/fleet-leg``, read on the box from the checkout's object store AT THE
+COMMIT under test (``git cat-file blob <sha>:.github/fleet-leg``; one holding a NUL byte is refused), before the worktree is touched. Its
+grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
+  - ``pin-flag <option>``: the runner's argv holds ``<option> <value>`` or ``<option>=<value>``, the
+    value nonempty, among its words after the first and before its first ``--`` (what follows a
+    ``--`` is passed on to something else);
+  - ``pin-env <NAME>``: the runner is ``env NAME=<value> ... <command>``, its first word ``env``, NAME's
+    last assignment among those that directly follow it nonempty, and a command after them.
+Any other line refuses the leg, naming it: a file this leg cannot read is never ignored. A leg that
+may hold the GPU -- one that does not declare ``--cpu``, the slot's own fail-closed definition, so a
+measurement's too -- whose repository's file names a pin and whose argv satisfies none is refused
+before anything runs. The boundary: argv words as given, nothing else -- a pin inside a ``sh -c``
+string, an environment the caller exported (it does not travel to the box), or a project file that
+selects the backend does not count. It establishes that the command NAMES a backend, never that the
+run held it: that is the runner's own check (OCANNL's ``--expect-backend``), and no refusal here is
+GPU evidence. A repository without the file, and a ``--cpu`` leg, are not checked.
+
+THE STOP (ludics-lite#767). The far side reports its shell's pid first, under this invocation's
+token (``execution-leg <token>: far: <pid>``, consumed, never passed through). While the leg streams,
+a SIGTERM, SIGINT or SIGHUP to it (``bg-run.sh stop`` signals the run's whole group; a Ctrl-C) ends
+the far side too, where until #767 it ran on holding the worktree's lock: the leg starts ``STOP`` on
+the box in a session of its own (so the stop's group signals do not cut it), which, once the pid
+still carries the token, sends SIGTERM to the far shell (in its setup this ends it; during the runs
+a trap defers it, as it defers INT and HUP, which reach it directly when the box is the caller's
+own) and, every second for up to 30 s, to the far shell's ``execution slot`` or
+``execution hold`` child, the wrapper, which ends the runner's process group and dies (group.py, THE
+SIGNALLED WRAPPER). The far shell then winds down as after any ended run -- the control reverted,
+its files removed -- even with its connection gone, since it ignores SIGPIPE once the wrapper has
+returned. The leg waits up to 8 s for the stop's report, then dies of the signal it got; a second
+signal ends it at once. The boundary: only a signal the leg receives while it streams reaches the
+far side. A SIGKILL of the leg, a dropped connection, and a box that ssh cannot reach at stop time
+(``EXECUTION LEG STOP UNREACHABLE``, which prints the pid and the command that ends it there) leave
+the runner running, as UNREACHABLE says. A stop in the far side's setup ends its shell, and a git
+command it started finishes on its own; its private ref and staged patch are left. A process the
+runner moved out of its group (``setsid``) is not reached. The stop reads ``ps -o args`` on the box
+(Linux, macOS, WSL).
 """
 
 import os
 import re
 import secrets
+import select
+import signal
 import subprocess
 import sys
 import threading
+import time
+from collections.abc import Callable
+from types import FrameType
 from typing import Any
 
 from ludics import cli
@@ -152,12 +211,69 @@ NOT_HOME = r"""not_home() {
 }
 """
 
+# THE BACKEND PIN (see the header): `backend_pin <file text> <gpu: 0|1> <runner argv...>` exits 0
+# when the leg may run, and otherwise prints why (one line, no prefix) and exits 1. The file is
+# parsed whatever the leg declares, so a line this version cannot read refuses a --cpu leg too.
+# Bash 3.2: no arrays of its own, no case conversion.
+PIN = r"""backend_pin() {
+  local text="$1" gpu="$2" d w extra good n=0 flags="" envs="" a f prev first cmd want=""
+  shift 2
+  while read -r d w extra || [ -n "$d" ]; do
+    n=$((n + 1))
+    case "$d" in ''|'#'*) continue ;; esac
+    good=""
+    case "$d" in
+      pin-flag) case "$w" in -*[!A-Za-z0-9_.-]*|-|--) ;; -*) good=1 ;; esac ;;
+      pin-env) case "$w" in *[!A-Za-z0-9_]*|[0-9]*|'') ;; *) good=1 ;; esac ;;
+    esac
+    if [ -z "$good" ] || [ -n "$extra" ]; then
+      printf '%s' ".github/fleet-leg line $n is not one this leg reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, a # comment or a blank line"
+      return 1
+    fi
+    if [ "$d" = pin-flag ]; then flags="$flags $w"; want="$want, $w <backend>"; else envs="$envs $w"; want="$want, env $w=<backend>"; fi
+  done <<FLEET_LEG_PIN
+$text
+FLEET_LEG_PIN
+  [ "$gpu" = 1 ] && [ -n "$flags$envs" ] || return 0
+  if [ -n "$envs" ] && [ "${1##*/}" = env ]; then
+    # Each NAME's value is its LAST assignment among those after `env` (empty ones included), as env
+    # applies them: `NAME=cuda NAME=` leaves it empty. A command must follow them: a bare `env
+    # NAME=cuda` runs no runner, only prints the environment, and exits 0. Any word holding a `=` is
+    # an assignment to env (GNU env takes `1=x` as one), so the command is the first word without.
+    for f in $envs; do
+      first=1; prev=""; cmd=""
+      for a in "$@"; do
+        if [ -n "$first" ]; then first=""; continue; fi
+        case "$a" in *=*) ;; *) cmd=1; break ;; esac
+        case "$a" in "$f="*) prev=${a#*=} ;; esac
+      done
+      [ -z "$prev" ] || [ -z "$cmd" ] || return 0
+    done
+  fi
+  first=1; prev=""
+  for a in "$@"; do
+    if [ -n "$first" ]; then first=""; continue; fi
+    [ "$a" != -- ] || break
+    [ -z "$prev" ] || [ -z "$a" ] || return 0
+    prev=""
+    for f in $flags; do
+      [ "$a" != "$f" ] || prev=1
+      case "$a" in "$f="?*) return 0 ;; esac
+    done
+  done
+  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: ${want#, }; pin it (as words of the runner's own argv), or declare --cpu for a leg that holds no GPU"
+  return 1
+}
+"""
+
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
 # (FLEET_FETCH_TIMEOUT), the status token (see the header), the wrapper's word count and
 # words (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot
 # flags' count and words, then the runner's argv.
-LEG = NOT_HOME + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" nwrap="${10}"
+LEG = NOT_HOME + PIN + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" nwrap="${10}"
+# THE STOP (see the header): this shell's pid, first, under the token; the leg keeps it.
+printf 'execution-leg %s: far: %s\n' "$token" "$$"
 shift 10
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
@@ -231,6 +347,15 @@ else
 fi
 [ -z "$want" ] || [ "$sha" = "$want" ] ||
   refuse "$rev is $sha, but request $request was assigned $want: run --rev $want"
+# THE BACKEND PIN (see the header): the project's rule at this commit, before the worktree moves.
+if [ "$(git -C "$co" cat-file -t "$sha:.github/fleet-leg" 2>/dev/null)" = blob ]; then
+  pins=$(git -C "$co" cat-file blob "$sha:.github/fleet-leg") || refuse "cannot read .github/fleet-leg at $sha in $co (above)"
+  # A shell variable drops NUL bytes, which would make a binary file read as one with no pins.
+  [ "$(git -C "$co" cat-file blob "$sha:.github/fleet-leg" | tr -d '\000' | wc -c)" -eq "$(git -C "$co" cat-file -s "$sha:.github/fleet-leg")" ] ||
+    refuse ".github/fleet-leg at $sha holds NUL bytes, which this leg does not read; nothing ran"
+  case " ${nest[*]} " in *" --cpu "*) gpu=0 ;; *) gpu=1 ;; esac
+  why=$(backend_pin "$pins" "$gpu" "$@") || refuse "$why (.github/fleet-leg at $sha); nothing ran"
+fi
 # The worktree: a linked worktree of the checkout, made or moved to the commit, never overwritten.
 if [ -e "$wt" ] || [ -L "$wt" ]; then
   [ -d "$wt" ] || refuse "--worktree $wt exists and is not a directory"
@@ -298,11 +423,30 @@ printf "control=%s\n" "$crc" >> "$results"
 git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
 exit 0
 FLEET_LEG_RUNS
+# THE STOP (see the header): a TERM to this shell while the wrapper runs is deferred by the trap,
+# never cutting a run; the stop ends the wrapper instead. INT and HUP too: on the caller's own box
+# this shell shares the leg's process group, so a Ctrl-C or a hangup aimed at the leg reaches it as
+# well as the wrapper, and it must still wind down. A trap with a command is not inherited, so
+# the wrapper and the runner get these signals at their defaults. Once the wrapper has returned this shell ignores
+# SIGPIPE (never before: an ignored signal would be the runner's too), so a connection that is gone
+# does not end it before the control is reverted and its files are removed.
+stop_asked=""
+trap 'stop_asked=1' TERM INT HUP
 fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
+trap '' PIPE
+[ -z "$stop_asked" ] || say "stopped (a signal from the leg's stop, or its group's): the wrapper exit $wrc"
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }
 main=$(fact main)
 now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
 [ "$now" = "$head" ] || say "WARNING: HEAD of $wt is ${now:-unreadable} after the run, not $head (the runner moved it)"
+# A worktree the run left dirty (ludics-lite#749), unless the control's checks below judge it.
+if ! grep -qx applied "$results" && [ -z "$(fact dirty)" ]; then
+  if left=$(dirt "$wt"); then
+    [ -z "$left" ] || say "WARNING: $wt has $(printf '%s\n' "$left" | grep -c '') uncommitted path(s) after the run ($(printf '%s\n' "$left" | head -n 3 | tr '\n' ';')): the runner left them, and the next leg refuses this worktree until it is cleaned"
+  else
+    say "WARNING: cannot read the status of $wt after the run"
+  fi
+fi
 if [ -z "$main" ]; then
   if grep -qx started "$results"; then
     say "the runner was ended before it returned (wrapper exit $wrc)"
@@ -376,6 +520,43 @@ say "control failed as required (exit $crc), patch reverted"
 finish 0
 """
 
+# THE STOP's far side (see the header), after the prelude. Args: the far shell's pid, the leg's token,
+# the bound in seconds. It ignores SIGPIPE so that a connection cut under it does not end it before
+# its signals are sent.
+STOP = r"""pid="$1" token="$2" bound="$3"
+trap '' PIPE
+say() { printf 'EXECUTION LEG STOP %s: %s\n' "$BOX" "$*" >&2; }
+# Still this leg: the pid's command line carries the token (bash -s -- ... <token> ...), which a
+# process the system gave the pid since does not.
+ours() { case " $(ps -ww -o args= -p "$pid" 2>/dev/null) " in *" $token "*) return 0 ;; esac; return 1; }
+ours || { say "no leg with token $token runs as pid $pid: it has ended; nothing was signalled"; exit 0; }
+# In its setup this ends the far shell; while the wrapper runs, its trap defers it.
+kill -TERM "$pid" 2>/dev/null
+sent=" "; t=0
+while ours; do
+  for kid in $(ps -A -ww -o pid=,ppid=,args= 2>/dev/null | awk -v p="$pid" '$2 == p && / execution (slot|hold)( |$)/ { print $1 }'); do
+    case "$sent" in *" $kid "*) continue ;; esac
+    sent="$sent$kid "
+    kill -TERM "$kid" 2>/dev/null && say "SIGTERM to the leg's wrapper (pid $kid), which ends the runner's process group"
+  done
+  [ "$t" -lt "$bound" ] || { say "the leg (pid $pid) still runs after ${bound}s, holding its worktree's lock; look on $BOX"; exit 1; }
+  sleep 1; t=$((t + 1))
+done
+say "the leg (pid $pid) has ended"
+"""
+STOP_BOUND = "30"  # seconds the far stop waits for the far shell to end
+STOP_WAIT = 8.0  # seconds the leg waits for the far stop, under bg-run.sh stop's 10 s grace
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+ANNOUNCED = 1.0  # seconds a stop reads the far side's output for a pid line it has not yet consumed
+
+
+class LegStopped(Exception):
+    """A signal ended the leg while it streamed (THE STOP); the far side was dealt with."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(signum)
+        self.signum = signum
+
 
 def refused(text: str, rc: int = 1) -> int:
     cli.say(f"EXECUTION LEG REFUSED: {text}")
@@ -438,6 +619,16 @@ def box_path(value: str, flag: str) -> str:
 
 
 def cmd_leg(cfg: Config, args: list[str]) -> int:
+    try:
+        return leg_command(cfg, args)
+    except LegStopped as stopped:
+        # THE STOP: die of the signal, as the slot's wrapper does, so a caller reads what it sent.
+        signal.signal(stopped.signum, signal.SIG_DFL)
+        os.kill(os.getpid(), stopped.signum)
+        return 128 + stopped.signum
+
+
+def leg_command(cfg: Config, args: list[str]) -> int:
     values: dict[str, str] = {}
     slot_flags: list[str] = []
     runner: list[str] = []
@@ -544,6 +735,12 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     state = execution.jq_text(record.get("state"))
     if state not in DISPATCHED:
         return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")
+    # THE RECORD'S CHECKOUT (see the header).
+    bound = execution.recorded_checkout(record)
+    if bound and bound.rstrip("/") != worktree.rstrip("/"):
+        host = execution.jq_text(execution.field(record, "request", "execution_host"))
+        return refused(f"--worktree {worktree} is not {request}'s recorded checkout {bound} on {host}"
+                       " (ludics-lite#749: a leg moves only its own record's worktree); nothing ran")
     kind = execution.jq_text(execution.field(record, "request", "kind"))
     if kind == "measurement":
         extra = [flag for flag in slot_flags if flag.startswith("--") and flag != "--deadline"]
@@ -590,42 +787,78 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
         [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, str(len(wrap)), *wrap,
          str(len(nest)), *nest, *runner],
     )
-    return stream(argv, script, box, token, local=is_local(cfg, box))
+
+    def stop(far_pid: str) -> tuple[list[str], str]:
+        return far_argv(cfg, box, [far_pid, token, STOP_BOUND]), prelude(cfg, box) + STOP
+
+    return stream(argv, script, box, token, local=is_local(cfg, box), stop=stop)
 
 
-def stream(argv: list[str], script: str, box: str, token: str, *, local: bool) -> int:
-    """Run the far side with its stdout passed through, watching for its status line under
-    ``token``: the runner's status when it came (printed last, as the plain sentinel), else the far
-    side's own (or UNREACHABLE for ssh's 255)."""
-    # The status line ends the far side's output; after a runner whose output ended with no newline
-    # it ends that line, whose text is kept and ended.
-    reported = re.compile(rb"execution-leg " + re.escape(token.encode()) + rb": exit: ([0-9]{1,3})\r?\n?\Z")
+def end_far(box: str, far_pid: str | None, signum: int, stop: Callable[[str], tuple[list[str], str]], *,
+            local: bool) -> None:
+    """THE STOP (see the header): end the far side whose shell reported ``far_pid``, through a far
+    stop in a session of its own, waiting up to STOP_WAIT for its report."""
+    name = signal.Signals(signum).name
+    if far_pid is None:
+        cli.say(f"EXECUTION LEG STOPPED {box}: {name} before the far side reported its pid; whether the runner"
+                f" started there is unknown -- look on {box} before running the leg again")
+        return
+    cli.say(f"EXECUTION LEG STOPPING {box}: {name}; ending the far side (pid {far_pid})")
+    argv, script = stop(far_pid)
     sys.stdout.flush()
     sys.stderr.flush()
+    remedy = f"ssh {box} pkill -TERM -P {far_pid} -f 'execution (slot|hold)'"
     try:
-        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, start_new_session=True)
     except OSError as exc:
-        sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
-        return 127
-    assert child.stdin is not None and child.stdout is not None
-    stdin = child.stdin
+        cli.say(f"EXECUTION LEG STOP UNREACHABLE {box}: {argv[0]}: {exc.strerror}; the far side (pid {far_pid})"
+                f" may still run and hold its worktree's lock: {remedy}")
+        return
+    stop_in = proc.stdin
+    assert stop_in is not None
 
     def feed() -> None:
-        # From a thread of its own: bash reads a script on stdin as it runs it, so a far side that
-        # writes before it has read the whole script must never wait for this write to finish.
+        # From a thread, so a stop ssh that is slow to read cannot hold this past STOP_WAIT.
         try:
-            stdin.write(script.encode("utf-8", "surrogateescape"))
-            stdin.close()
+            stop_in.write(script.encode("utf-8", "surrogateescape"))
+            stop_in.close()
         except OSError:
             pass
 
-    feeder = threading.Thread(target=feed, daemon=True)
-    feeder.start()
+    threading.Thread(target=feed, daemon=True).start()
+    try:
+        rc = proc.wait(timeout=STOP_WAIT)
+    except subprocess.TimeoutExpired:
+        cli.say(f"EXECUTION LEG STOPPING {box}: the far stop goes on after {STOP_WAIT:g}s; its last line follows on"
+                " this output")
+        return
+    if rc == 255 and not local:
+        cli.say(f"EXECUTION LEG STOP UNREACHABLE {box}: ssh failed; the far side (pid {far_pid}) may still run and"
+                f" hold its worktree's lock: {remedy}")
+    elif rc != 0:
+        cli.say(f"EXECUTION LEG STOPPING {box}: the far stop exit {rc} (above); if the far side still runs: {remedy}")
+
+
+def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
+           stop: Callable[[str], tuple[list[str], str]] | None = None) -> int:
+    """Run the far side with its stdout passed through, watching for its status line under
+    ``token``: the runner's status when it came (printed last, as the plain sentinel), else the far
+    side's own (or UNREACHABLE for ssh's 255). With ``stop``, which builds the far stop's argv and
+    script for a pid, a SIGTERM, SIGINT or SIGHUP while it streams ends the far side too, and raises
+    LegStopped (THE STOP)."""
+    # The status line ends the far side's output; after a runner whose output ended with no newline
+    # it ends that line, whose text is kept and ended.
+    reported = re.compile(rb"execution-leg " + re.escape(token.encode()) + rb": exit: ([0-9]{1,3})\r?\n?\Z")
+    far = re.compile(rb"execution-leg " + re.escape(token.encode()) + rb": far: ([0-9]+)\r?\n")
     sentinel: int | None = None
+    far_pid: str | None = None
     out = sys.stdout.buffer
 
     def line_out(line: bytes) -> None:
-        nonlocal sentinel
+        nonlocal sentinel, far_pid
+        if far_pid is None and (pid := far.fullmatch(line)):
+            far_pid = pid.group(1).decode()
+            return
         found = reported.search(line)
         if found:
             sentinel = int(found.group(1))
@@ -634,12 +867,30 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool) -
         else:
             out.write(line)
 
-    # Bounded reads, not readline: a runner's output with no newline in it (progress bars, binary)
-    # passes through as it comes, and only a short tail of an unfinished line is held back, enough
-    # for a sentinel at its end to be seen.
+    # While the far side is being spawned a signal is only noted, and raised once ``child`` holds
+    # it: raised inside Popen it would leave a started child no stop can reach. ``noted`` is never
+    # cleared, and ``spawning`` turns off in one assignment, so a signal is either noted and raised
+    # below or raised by the handler itself.
+    spawning = False
+    noted = 0
+
+    def stopped(signum: int, frame: FrameType | None) -> None:
+        nonlocal noted
+        if spawning:
+            noted = noted or signum
+            return
+        raise LegStopped(signum)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # The handlers go in before the far side starts, so no moment of it runs unreachable by a stop.
+    previous: dict[signal.Signals, Any] = {}
+    child: "subprocess.Popen[bytes] | None" = None
+    feeder: threading.Thread | None = None
     pending = b""
-    fd = child.stdout.fileno()
-    while chunk := os.read(fd, 65536):
+
+    def take(chunk: bytes) -> None:
+        nonlocal pending
         pending += chunk
         *lines, pending = pending.split(b"\n")
         for line in lines:
@@ -648,10 +899,83 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool) -
             out.write(pending[:-HELD_BACK])
             pending = pending[-HELD_BACK:]
         out.flush()
-    if pending:
-        line_out(pending)
-        out.flush()
-    rc = child.wait()
+
+    def announced(fd: int, within: float) -> None:
+        # The far side's pid line may already sit in the pipe, unread, when the signal lands: read
+        # what comes within ``within`` seconds, until it is seen or the far side's output ends.
+        until = time.monotonic() + within
+        while far_pid is None and (left := until - time.monotonic()) > 0:
+            if not select.select([fd], [], [], left)[0]:
+                return
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return
+            take(chunk)
+
+    try:
+        if stop is not None and threading.current_thread() is threading.main_thread():
+            for sig in STOP_SIGNALS:
+                previous[sig] = signal.signal(sig, stopped)
+        spawning = True
+        try:
+            child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        except OSError as exc:
+            sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
+            return 127
+        finally:
+            spawning = False
+        if noted:
+            raise LegStopped(noted)
+        assert child.stdin is not None and child.stdout is not None
+        stdin = child.stdin
+
+        def feed() -> None:
+            # From a thread of its own: bash reads a script on stdin as it runs it, so a far side
+            # that writes before it has read the whole script must never wait for this write.
+            try:
+                stdin.write(script.encode("utf-8", "surrogateescape"))
+                stdin.close()
+            except OSError:
+                pass
+
+        feeder = threading.Thread(target=feed, daemon=True)
+        feeder.start()
+        # Bounded reads, not readline: a runner's output with no newline in it (progress bars,
+        # binary) passes through as it comes, and only a short tail of an unfinished line is held
+        # back, enough for a sentinel at its end to be seen.
+        fd = child.stdout.fileno()
+        while chunk := os.read(fd, 65536):
+            take(chunk)
+        if pending:
+            line_out(pending)
+            out.flush()
+        rc = child.wait()
+    except LegStopped as why:
+        # A second signal ends this process at once; the far stop runs in a session of its own.
+        for sig in previous:
+            signal.signal(sig, signal.SIG_DFL)
+        try:
+            out.flush()
+        except OSError:
+            pass
+        assert stop is not None
+        if far_pid is None and child is not None and child.stdout is not None:
+            # The far shell's first line is its pid: read it if it is already written (up to
+            # ANNOUNCED seconds). With none, on the caller's box this is the far shell before its
+            # first line, which nothing else has started, and over ssh the client.
+            try:
+                announced(child.stdout.fileno(), ANNOUNCED)
+            except OSError:
+                pass
+            if far_pid is None:
+                child.kill()
+        end_far(box, far_pid, why.signum, stop, local=local)
+        if child is not None and child.stdout is not None:
+            child.stdout.close()
+        raise
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
     feeder.join()
     if sentinel is not None:
         out.write(b"execution-leg: exit: %d\n" % sentinel)
