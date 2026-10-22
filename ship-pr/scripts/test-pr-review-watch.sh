@@ -2100,7 +2100,7 @@ test_a_stalled_round_is_nudged_once_and_watched() {
   # A post that fails is sent once, whatever its error, and the window still runs to its end.
   hung_round_fixture
   FAIL_POST=1
-  run_watch 0,0,0 60 300
+  run_watch 0,0,0 60 900
   assert_eq "$WATCH_RC" 0 "a stall at the window's end is a verdict to act on"
   assert_eq "$(nudges_posted)" 1 "one attempt, never retried"
   assert_contains "$WATCH_OUT" "over the stalled round on head ${H2:0:7} did not go through" \
@@ -2112,6 +2112,13 @@ test_a_stalled_round_is_nudged_once_and_watched() {
   run_watch 0,0,0 60 300
   assert_eq "$WATCH_RC" 3 "a window that saw no poll answer withholds the verdict"
   assert_eq "$(nudges_posted)" 0 "and posts nothing"
+  # A head the watch has seen for less than the pickup margin is not nudged: a push under an old
+  # head's hung 👀 reads STALLED at once (#770's own head), and its own review starts on its own.
+  hung_round_fixture
+  schedule reviews 3 "[$(review 501 "$H2" "$(clock_at)")]"
+  run_watch 0,0,0 60 900
+  assert_contains "$WATCH_OUT" "--- review id=501" "the push's own review ends the wait"
+  assert_eq "$(nudges_posted)" 0 "with no nudge posted inside the pickup margin"
 }
 
 # --no-nudge waits, bounded, where it used to exit at once (#760's decision): to the reviewer's
@@ -2164,7 +2171,7 @@ test_a_stalled_round_with_something_standing_is_never_nudged() {
         jq -cn --arg at "$(clock_at -40)" '{id:700,user:{login:"maintainer"},created_at:$at,updated_at:$at,body:"@codex review"}')]"
       ;;
     esac
-    run_watch 0,700,0 60 300
+    run_watch 0,700,0 60 900
     assert_eq "$WATCH_RC" 0 "$kind: a verdict to act on"
     assert_contains "$WATCH_ERR" "STALLED" "$kind: the state is the stall"
     if [ "$kind" = control ]; then

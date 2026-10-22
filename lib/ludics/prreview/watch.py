@@ -29,7 +29,8 @@ parent commit (``git show 14f2ca7:ship-pr/scripts/pr-review.sh``); read them bef
   (ludics-lite#760). When ``state.stall_nudge_read`` finds nothing standing for the head (no 👍,
   no verdict, no request since it arrived) and the write gate passes, the watch posts its one
   '@codex review' for the head (the same once-per-head record as the ``expected`` nudge) and waits
-  out that request's grace for the new round. Otherwise, and always under ``--no-nudge``, it posts
+  out that request's grace for the new round, once it has seen the head for ``PICKUP`` (a push
+  under an old head's hung 👀 reads stalled at once) and on a round whose poll answered. Otherwise, and always under ``--no-nudge``, it posts
   nothing and keeps waiting, bounded by the window: the reviewer posting ends it as any round does,
   a state that leaves ``stalled`` goes on by that state's rules, and a stall still standing at the
   window's end is answered as a verdict, with the move the final read names.
@@ -919,7 +920,16 @@ class Watch:
                     # Not a verdict yet (ludics-lite#760): nudge once when nothing stands for the
                     # head, else keep waiting; the window's end answers a stall still standing. A
                     # round whose poll did not answer posts nothing: it may have missed a round.
-                    if self.nudge and own is None and self.polled.rc == 0 and self.stall_nudge() is None:
+                    # Nor does a head this watch has seen for less than PICKUP: a 👀 is a level, so
+                    # a push under an old head's hung 👀 reads STALLED at once, before the
+                    # reviewer's own review of the push has had time to start (#770's own head
+                    # 1af99c3, 81 minutes "stalled" on the 👀 its predecessor's round left up).
+                    head = self.polled.head
+                    seen = self.clock.now() - self.first_seen.get(head, self.clock.now())
+                    if (
+                        self.nudge and own is None and self.polled.rc == 0 and head
+                        and seen >= min(PICKUP, cfg.grace) and self.stall_nudge() is None
+                    ):
                         candidate_end = self.clock.now() + cfg.grace
                         candidate_kind = "nudged"
                         if extension_end is not None:

@@ -489,7 +489,9 @@ about 17 minutes, and the hung ones sat 35 minutes to over an hour). When no �
 request clears it, whatever head it was for), no no-findings verdict names the head, the summary
 marks no Completed round on it, and no `@codex review` stands on it since it arrived, `watch` posts
 one `@codex review` — the same once-per-head record as the `expected` nudge — and watches that
-request's grace for the new round. Otherwise, and always under `--no-nudge`, it posts nothing and
+request's grace for the new round. It holds the nudge until it has itself seen the head for five
+minutes, as for `expected`: a 👀 is a level, so a push under an old head's hung 👀 reads STALLED
+at once, before the push's own review has had time to start. Otherwise, and always under `--no-nudge`, it posts nothing and
 keeps waiting to the window's end: the reviewer posting ends the wait as any round does, and a stall
 still standing then exits 0 with the move the final read names — post the one nudge yourself, or,
 when a request already stood on the head, read the feed and push a new head.
