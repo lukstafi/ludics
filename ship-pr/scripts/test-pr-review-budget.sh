@@ -51,6 +51,7 @@ T0=$(command date +%s)
 export SHIP_PR_TEST_CLOCK="$CLOCK"
 
 CHECKS_SEQ=()
+CHECK_DONE_AT=""     # a fake epoch: the check runs (in_progress) until it, then is green (#740)
 QUOTA_UNTIL=0        # fake epoch before which every request answers quota
 QUOTA_RESET=""       # the reset its headers name ("" = the quota's own end)
 QUOTA_ENDPOINT=""    # a glob: only this endpoint answers quota (empty: every endpoint)
@@ -88,17 +89,25 @@ now() { cat "$CLOCK"; }
 
 next_check() {
   local counter="$TEST_ROOT/checks.calls" idx
+  # A clock-driven check (ludics-lite#740): running with a runner until CHECK_DONE_AT, green after.
+  if [ -n "$CHECK_DONE_AT" ]; then
+    printf '%s\n' "$(($(now) - T0))" >>"$TEST_ROOT/check-reads"
+    if [ "$(now)" -lt "$CHECK_DONE_AT" ]; then printf inprog; else printf green; fi
+    return 0
+  fi
   idx=$(cat "$counter" 2>/dev/null) || idx=0
   printf '%s' "$((idx + 1))" >"$counter"
   [ "$idx" -lt "${#CHECKS_SEQ[@]}" ] || idx=$((${#CHECKS_SEQ[@]} - 1))
   printf '%s' "${CHECKS_SEQ[$idx]}"
 }
-# The state the gate reads, one word per read: pending, green or red; or queued and running, a
-# head with no check row yet whose workflow run is queued or in progress.
+# The state the gate reads, one word per read: pending (a check row with no runner yet, the
+# #543 queue), inprog (a check row whose job has its runner), green or red; or queued and running,
+# a head with no check row yet whose workflow run is queued or in progress.
 check_runs() {
   case "$1" in
   queued | running) printf '{"check_runs":[]}' ;;
-  pending) printf '{"check_runs":[{"name":"build","status":"in_progress","conclusion":null,"html_url":"u","check_suite":{"id":1}}]}' ;;
+  pending) printf '{"check_runs":[{"name":"build","status":"queued","conclusion":null,"html_url":"u","check_suite":{"id":1}}]}' ;;
+  inprog) printf '{"check_runs":[{"name":"build","status":"in_progress","conclusion":null,"html_url":"u","check_suite":{"id":1}}]}' ;;
   green) printf '{"check_runs":[{"name":"build","status":"completed","conclusion":"success","html_url":"u","check_suite":{"id":1}}]}' ;;
   red) printf '{"check_runs":[{"name":"build","status":"completed","conclusion":"failure","html_url":"u","check_suite":{"id":1}}]}' ;;
   esac
@@ -106,7 +115,7 @@ check_runs() {
 workflow_runs() {
   local status=completed conclusion=success
   case "$1" in
-  pending | running) status=in_progress conclusion=null ;;
+  pending | inprog | running) status=in_progress conclusion=null ;;
   queued) status=queued conclusion=null ;;
   red) conclusion=failure ;;
   esac
@@ -266,6 +275,8 @@ reset_fixture() {
   rm -f "$TEST_ROOT/checks.calls" "$TEST_ROOT/probes" "$TEST_ROOT/state" "$TEST_ROOT/hooked" \
     "$TEST_ROOT/holder" "$TEST_ROOT/holder-live"
   CHECKS_SEQ=(green)
+  CHECK_DONE_AT=""
+  rm -f "$TEST_ROOT/check-reads"
   QUOTA_UNTIL=0
   QUOTA_RESET=""
   QUOTA_RESETS=()
@@ -1010,6 +1021,25 @@ test_a_still_queue_backs_off_and_a_red_still_ends_the_wait() {
   assert_eq "$(err wait)" "" "and an unchanged poll prints nothing"
 }
 
+# ludics-lite#740: a check that has its runner ends on its own, so while every pending check is
+# running the pause stops doubling at twice the interval, and the completion is read within that
+# of a read that saw it running -- for checks --wait and merge --wait alike. The #543 queue above
+# (a check row with no runner) keeps its back-off to the build cap.
+test_a_running_check_is_read_within_two_intervals() {
+  local cmd last
+  for cmd in checks merge; do
+    reset_fixture
+    CHECK_DONE_AT=$((T0 + 421))
+    run wait "cmd_$cmd" "$REPO#7" --wait
+    assert_eq "$(rc wait)" 0 "$cmd: the green is the verdict ($(err wait))"
+    assert_eq "$(tr '\n' ' ' <"$SLEEP_LOG")" "60 120 120 120 120 " \
+      "$cmd: the pause stops doubling at twice the interval while the check runs"
+    last=$(tail -n 1 "$TEST_ROOT/check-reads")
+    assert_eq "$last" 540 "$cmd: the completion at +421 s is read at +540 s, within 2 x 60 s, not at +900 s"
+  done
+  assert_eq "$(grep -c . "$MERGE_LOG")" 1 "and the merge went out once the green was read"
+}
+
 test_a_moving_signal_is_read_at_the_interval() {
   reset_fixture
   CHECKS_SEQ=(pending pending green)
@@ -1114,6 +1144,7 @@ run_tests \
   test_an_explicit_github_repo_overrides_gh_host \
   test_an_unrecordable_probe_answer_stops_the_gate \
   test_a_still_queue_backs_off_and_a_red_still_ends_the_wait \
+  test_a_running_check_is_read_within_two_intervals \
   test_a_moving_signal_is_read_at_the_interval \
   test_a_hold_inside_a_wait_is_one_line_and_no_exit \
   test_an_unrecordable_first_hold_is_a_state_directory_error \
