@@ -1056,7 +1056,7 @@ class ThreadsByHead(unittest.TestCase):
                           "comments": {"nodes": [{"fullDatabaseId": "9", "author": {"login": "c"}}]}})
         self.assertEqual(tab_fields(bare[0], 5), ["9", "c", "a.sh", "-", "-"], "fields the node lacks")
         with self.assertRaises(jq.JqError):
-            self.rows(thread(1, HEAD, HEAD) | {"comments": {"nodes": [{"originalCommit": "x"}]}})
+            self.rows({"isResolved": False, "path": "a.sh", "comments": {"nodes": [{"originalCommit": "x"}]}})
 
     def test_the_original_commit_decides_and_the_current_one_only_sub_counts(self) -> None:
         rows = self.rows(thread(1, HEAD, HEAD), thread(2, self.old, HEAD), thread(3, self.old, self.old),
