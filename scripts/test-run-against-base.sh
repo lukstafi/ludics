@@ -40,7 +40,20 @@
 #     finding no interpreter, or hanging past --timeout while it looks, is 125, and so is a base
 #     scripts/py that cannot run; a base without one falls back to python3 and says so; a lib/ path CI's discovery never runs (no
 #     module name, not test_*.py, outside a package) is refused; a *.py outside lib/ runs under
-#     python3.
+#     python3;
+#   - --command runs a project's runner (a PATH program, or the run tree's copy of a checkout
+#     file, the working tree's only when --also carries it) from the root of the run's tree, its
+#     argv after the required `--` verbatim; the malformed forms, a program not found or not
+#     startable, and a missing env interpreter exit 125, a hang 124 (#765);
+#   - --revert <commit> <path> undoes that commit's change under the path in the throwaway tree
+#     (the working-tree snapshot without --base): the change's other files and later independent
+#     edits stay, added files go and modes return, overlapping commits revert newest first, and a
+#     revert precedes the mutations; an unknown, merge, root or out-of-history commit, a path it
+#     does not change (paths are literal), a symlink change and an overlapped patch exit 125; the
+#     live tree's files, index and stash are untouched (#765);
+#   - a plain base run that carries every file the branch changes warns that it is the branch's
+#     own run; a mutant run, or a branch with an uncarried change (untracked included), does not
+#     (#501).
 #
 # Usage: test-run-against-base.sh   (exit 0 all pass, 1 otherwise)
 
@@ -1004,6 +1017,425 @@ else
   ko "outside lib/: rc=$rc -- $out"
 fi
 py_clean "after the *.py cases"
+
+# ---- --command: a project's own runner, from the root of the run's tree (ludics-lite#765) -------
+# run_rab runs from scripts/, so a command spelled from the root only resolves if it runs there.
+run_rab --command --also test-toy.sh -- bash scripts/test-toy.sh one
+if [ "$rc" -eq 1 ] && grep -qF 'FAIL: add 2 3' <<<"$out" && grep -qF 'ARGS=[one]' <<<"$out" \
+  && grep -qF 'run-against-base: command: bash scripts/test-toy.sh one (from PATH) against origin/main' <<<"$out" \
+  && grep -qF 'run-against-base: exit 1 on origin/main: 1 passed, 1 failed' <<<"$out"; then
+  ok "--command runs a PATH program from the run tree's root, with the carried suite, against the base library"
+else
+  ko "--command PATH program: rc=$rc -- $out"
+fi
+if ! grep -qF 'warning:' <<<"$out"; then
+  ok "...and a branch that changes more than it carries draws no warning"
+else
+  ko "unexpected warning -- $out"
+fi
+# The argv after the `--` is the command's, verbatim: spaces, an empty word, a glob, leading
+# dashes, another `--`, and the helper's own option names.
+# shellcheck disable=SC2016 # expanded by the inner bash
+run_rab --command -- bash -c 'printf "<%s>" "$@"; echo; echo "PWD=$(pwd -P) TOP=$(git rev-parse --show-toplevel)"' argv0 'a b' '' '*' -x -- --also --base
+want_pwd=$(sed -n 's/^PWD=\([^ ]*\) TOP=.*$/\1/p' <<<"$out")
+want_top=$(sed -n 's/^PWD=[^ ]* TOP=\(.*\)$/\1/p' <<<"$out")
+if [ "$rc" -eq 0 ] && grep -qxF '<a b><><*><-x><--><--also><--base>' <<<"$out" \
+  && [ -n "$want_pwd" ] && [ "$want_pwd" = "$want_top" ] \
+  && case "$want_pwd" in "$HTMP"/*) true ;; *) false ;; esac; then
+  ok "...its argv arrives verbatim, and it runs at the root of the throwaway checkout"
+else
+  ko "--command argv/cwd: rc=$rc -- $out"
+fi
+# A program with a `/` is a file of the checkout, run as the RUN TREE's copy: the base's suite
+# (one case, passing) unless --also carries the working tree's.
+run_rab --command -- ./test-toy.sh
+if [ "$rc" -eq 0 ] && grep -qF 'exit 0 on origin/main: 1 passed, 0 failed' <<<"$out" \
+  && grep -qF 'command: ./scripts/test-toy.sh (the run tree'"'"'s copy)' <<<"$out"; then
+  ok "a command path runs the run tree's copy, not the working tree's"
+else
+  ko "--command path, base copy: rc=$rc -- $out"
+fi
+run_rab --command --also test-toy.sh -- ./test-toy.sh
+if [ "$rc" -eq 1 ] && grep -qF 'exit 1 on origin/main: 1 passed, 1 failed' <<<"$out"; then
+  ok "...and --also carries the working tree's copy of it"
+else
+  ko "--command path carried: rc=$rc -- $out"
+fi
+run_rab --command -- sh -c 'exit 125'
+if [ "$rc" -eq 1 ]; then ok "a command's own 125 exits 1, as a suite's does"; else ko "command 125: rc=$rc -- $out"; fi
+# Refusals, each 125 and before any worktree.
+cmd_refusal() { # LABEL WANT_TEXT ARGS...
+  local label=$1 want=$2
+  shift 2
+  run_rab "$@"
+  if [ "$rc" -eq 125 ] && grep -qF -- "$want" <<<"$out"; then
+    ok "--command refuses $label with 125"
+  else
+    ko "--command $label: rc=$rc -- $out"
+  fi
+}
+cmd_refusal "a word before the --" 'takes its options, then -- and the command' --command test-toy.sh
+cmd_refusal "options with no --" 'needs -- <program> [args...]' --command --also test-toy.sh
+cmd_refusal "a -- with no program" 'needs a program after the --' --command --
+cmd_refusal "a program not on PATH" 'is not a program on PATH here' --command -- run-against-base-no-such-program
+cmd_refusal "a path outside the checkout" 'is not inside this checkout' --command -- "$TMP/outside.sh"
+cmd_refusal "a symlinked program" 'is a symlink' --command -- ./fixlink.sh
+cmd_refusal "a program the base does not hold" 'scripts/test-new.sh is not a regular file in origin/main' --command -- ./test-new.sh
+cmd_refusal "a program whose env interpreter is missing" 'needs run-against-base-no-such-interpreter' --command --also test-envmiss.sh -- ./test-envmiss.sh
+# The base's lib.sh is not executable: the exec fails, which is the helper's 125, not a 126.
+cmd_refusal "a program that cannot be started" 'could not start' --command -- ./lib.sh
+# A base that keeps the program's directory as a symlink out of the checkout would run a file
+# outside the run's tree: one is put there for the while, so only the refusal keeps it from running.
+mkdir -p "$TMP/outdir/deep"
+printf '#!/bin/sh\necho OUTSIDE RAN\n' >"$TMP/outdir/deep/test-deep.sh"
+chmod +x "$TMP/outdir/deep/test-deep.sh"
+cmd_refusal "a program below a symlinked directory of the base" 'is not a directory of the run'"'"'s tree' --command --base linked -- ./lnk/deep/test-deep.sh
+if grep -qF 'OUTSIDE RAN' <<<"$out"; then ko "...the file outside the run's tree ran"; fi
+rm -rf "${TMP:?}/outdir/deep"
+# A script found on PATH whose env interpreter is missing never runs: 125, not env's 127.
+printf '#!/usr/bin/env run-against-base-no-such-interpreter\nexit 0\n' >"$TMP/interp-bin/rab-envmiss-cmd"
+chmod +x "$TMP/interp-bin/rab-envmiss-cmd"
+out=$(cd "$R/scripts" && PATH="$TMP/interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-envmiss-cmd 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'rab-envmiss-cmd needs run-against-base-no-such-interpreter' <<<"$out"; then
+  ok "--command refuses a PATH script whose env interpreter is missing with 125"
+else
+  ko "--command PATH script, missing interpreter: rc=$rc -- $out"
+fi
+# An env shebang whose interpreter is found only through a relative PATH entry (its own PATH=,
+# here) is found from the caller's directory and not from the run tree's root: 125, suite or
+# command alike.
+printf '#!/usr/bin/env -S PATH=../../interp-bin:/usr/bin:/bin rab-private-interp\necho "1 passed, 0 failed"\n' >"$R/scripts/test-envPATHrel.sh"
+chmod +x "$R/scripts/test-envPATHrel.sh"
+run_rab test-envPATHrel.sh
+if [ "$rc" -eq 125 ] && grep -qF 'found only as the relative ../../interp-bin/rab-private-interp' <<<"$out"; then
+  ok "a suite whose env interpreter is found only through a relative shebang PATH is refused with 125"
+else
+  ko "relative shebang PATH, suite: rc=$rc -- $out"
+fi
+cmd_refusal "a program whose env interpreter is found only through a relative PATH" 'found only as the relative' --command --also test-envPATHrel.sh -- ./test-envPATHrel.sh
+rm -f "$R/scripts/test-envPATHrel.sh"
+# ...and one found through a relative PATH entry, which names something else from the run tree.
+out=$(cd "$R/scripts" && PATH="../../interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-envmiss-cmd 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'is found through a relative PATH entry' <<<"$out"; then
+  ok "--command refuses a program found through a relative PATH entry with 125"
+else
+  ko "--command relative PATH entry: rc=$rc -- $out"
+fi
+# A program PATH finds inside the checkout is the live working tree's copy: refused, directly or
+# through a symlink on PATH that leads there.
+mkdir -p "$TMP/link-bin"
+ln -sf "$R/scripts/test-toy.sh" "$TMP/link-bin/rab-linked-toy"
+out=$(cd "$R/scripts" && PATH="$R/scripts:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- test-toy.sh 2>&1)
+rc=$?
+out2=$(cd "$R/scripts" && PATH="$TMP/link-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-linked-toy 2>&1)
+rc2=$?
+if [ "$rc" -eq 125 ] && grep -qF 'is found on PATH inside this checkout' <<<"$out" \
+  && [ "$rc2" -eq 125 ] && grep -qF 'is found on PATH inside this checkout' <<<"$out2" \
+  && ! grep -qF 'passed,' <<<"$out$out2"; then
+  ok "--command refuses a PATH program inside the checkout (the live copy), directly or through a symlink, with 125"
+else
+  ko "--command PATH program in the checkout: rc=$rc rc2=$rc2 -- $out -- $out2"
+fi
+# A name that is also a builtin is checked as the file the exec runs: a PATH script named `test`
+# whose env interpreter is missing is refused, not run to env's 127.
+mkdir -p "$TMP/builtin-bin"
+printf '#!/usr/bin/env run-against-base-no-such-interpreter\nexit 0\n' >"$TMP/builtin-bin/test"
+chmod +x "$TMP/builtin-bin/test"
+out=$(cd "$R/scripts" && PATH="$TMP/builtin-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- test 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'test needs run-against-base-no-such-interpreter' <<<"$out"; then
+  ok "--command checks the PATH file a builtin-named program runs as, and refuses its missing interpreter with 125"
+else
+  ko "--command builtin-named PATH script: rc=$rc -- $out"
+fi
+# ...and an env interpreter that names only a builtin is no program to env: 125, not env's 127.
+printf '#!/usr/bin/env source\nexit 0\n' >"$TMP/builtin-bin/rab-source-cmd"
+chmod +x "$TMP/builtin-bin/rab-source-cmd"
+out=$(cd "$R/scripts" && PATH="$TMP/builtin-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-source-cmd 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'rab-source-cmd needs source, which is not on PATH here' <<<"$out"; then
+  ok "--command refuses a script whose env interpreter is only a builtin's name with 125"
+else
+  ko "--command builtin-named interpreter: rc=$rc -- $out"
+fi
+# A program whose name starts with a dash is the program, never an option of the exec.
+printf '#!/bin/sh\necho "DASH RAN $*"\n' >"$TMP/interp-bin/-rab-dash"
+chmod +x "$TMP/interp-bin/-rab-dash"
+out=$(cd "$R/scripts" && PATH="$TMP/interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- -rab-dash one 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && grep -qxF 'DASH RAN one' <<<"$out"; then
+  ok "--command runs a program named with a leading dash as the program"
+else
+  ko "--command dash-named program: rc=$rc -- $out"
+fi
+SECONDS=0
+run_rab --command --timeout 2 -- sleep 30
+if [ "$rc" -eq 124 ] && [ "$SECONDS" -lt 25 ] && grep -qF 'timed out after 2s' <<<"$out"; then
+  ok "--timeout stops a hanging command: 124"
+else
+  ko "--command timeout: rc=$rc after ${SECONDS}s -- $out"
+fi
+worktrees_clean "after --command cases"
+if [ "$(git -C "$R" status --porcelain)" = "$status_before" ]; then
+  ok "...and the checkout's working tree is untouched"
+else
+  ko "working tree changed: $(git -C "$R" status --porcelain)"
+fi
+
+# ---- --revert: the head with one committed change undone (ludics-lite#765) ---------------------
+# History: B0 (buggy add and mul) -> C1 (the fix: add, mul, a new extra.sh, tools.sh made
+# executable) -> C2 (the cases) -> C3 (a later, independent fix to sub, a far line of lib.sh, and
+# its case; docs.txt). The branch `overlap` adds C4, which rewrites C1's line of lib.sh again.
+V="$TMP/rev"
+g init -q "$V"
+mkdir -p "$V/scripts"
+cat >"$V/scripts/lib.sh" <<'EOF'
+add() { echo $(($1 - $2)); }
+# padding 1
+# padding 2
+# padding 3
+# padding 4
+# padding 5
+sub() { echo $(($1 + $2)); }
+EOF
+printf '%s\n' 'mul() { echo $(($1 + $2)); }' >"$V/scripts/mul.sh"
+printf '%s\n' 'echo tool' >"$V/scripts/tools.sh"
+printf '%s\n' 'docs' >"$V/docs.txt"
+printf '%s\n' 'notes' >"$V/notes.txt"
+cat >"$V/scripts/test-v.sh" <<'EOF'
+#!/usr/bin/env bash
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+. "$HERE/lib.sh"; . "$HERE/mul.sh"
+pass=0; fail=0
+t() { if [ "$2" = "$3" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: $1"; fi; }
+t 'add 2 0' "$(add 2 0)" 2
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]
+EOF
+chmod +x "$V/scripts/test-v.sh"
+g -C "$V" add -A
+g -C "$V" commit -qm B0
+REV_B0=$(git -C "$V" rev-parse HEAD)
+sed -i.bak 's/\$1 - \$2/$1 + $2/' "$V/scripts/lib.sh"
+printf '%s\n' 'mul() { echo $(($1 * $2)); }' >"$V/scripts/mul.sh"
+printf '%s\n' 'EXTRA=1' >"$V/scripts/extra.sh"
+chmod +x "$V/scripts/tools.sh"
+rm -f "$V/scripts/lib.sh.bak"
+g -C "$V" add -A
+g -C "$V" -c core.fileMode=true commit -qm C1
+REV_C1=$(git -C "$V" rev-parse HEAD)
+cat >"$V/scripts/test-v.sh" <<'EOF'
+#!/usr/bin/env bash
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+. "$HERE/lib.sh"; . "$HERE/mul.sh"
+pass=0; fail=0
+t() { if [ "$2" = "$3" ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL: $1"; fi; }
+t 'add 2 0' "$(add 2 0)" 2
+t 'add 2 3' "$(add 2 3)" 5
+t 'mul 2 3' "$(mul 2 3)" 6
+t 'extra' "$( [ -f "$HERE/extra.sh" ] && echo y)" y
+t 'tools-exec' "$( [ -x "$HERE/tools.sh" ] && echo y)" y
+[ -f "$HERE/../C3" ] && t 'sub 5 2' "$(sub 5 2)" 3
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]
+EOF
+g -C "$V" add -A
+g -C "$V" commit -qm C2
+sed -i.bak 's/\$1 + \$2)); }$/$1 - $2)); }/' "$V/scripts/lib.sh"
+sed -i.bak '1s/\$1 - \$2/$1 + $2/' "$V/scripts/lib.sh"
+rm -f "$V/scripts/lib.sh.bak"
+: >"$V/C3"
+printf '%s\n' 'docs, revised' >"$V/docs.txt"
+g -C "$V" add -A
+g -C "$V" commit -qm C3
+REV_C3=$(git -C "$V" rev-parse HEAD)
+g -C "$V" checkout -qb overlap
+sed -i.bak '1s/.*/add() { echo $(( $1 + $2 )); }/' "$V/scripts/lib.sh"
+rm -f "$V/scripts/lib.sh.bak"
+g -C "$V" commit -qam C4
+REV_C4=$(git -C "$V" rev-parse HEAD)
+# A commit off HEAD's history, a merge, and a symlink change, each on a branch of its own.
+g -C "$V" checkout -q -b side "$REV_B0"
+printf '%s\n' side >"$V/side.txt"
+g -C "$V" add -A
+g -C "$V" commit -qm side
+REV_SIDE=$(git -C "$V" rev-parse HEAD)
+g -C "$V" checkout -q -b merged "$REV_C3"
+g -C "$V" merge -q --no-ff -m merge side
+REV_MERGE=$(git -C "$V" rev-parse HEAD)
+g -C "$V" checkout -q -b withlink "$REV_C3"
+ln -s lib.sh "$V/scripts/ln"
+g -C "$V" add -A
+g -C "$V" commit -qm link
+REV_LINK=$(git -C "$V" rev-parse HEAD)
+# A file one commit deletes, in a directory a later commit makes a submodule.
+g -C "$V" checkout -q -b subm "$REV_C3"
+mkdir -p "$V/sub"
+printf '%s\n' old >"$V/sub/file"
+g -C "$V" add -A
+g -C "$V" commit -qm D1
+g -C "$V" rm -q sub/file
+g -C "$V" commit -qm D2
+REV_D2=$(git -C "$V" rev-parse HEAD)
+g -C "$V" update-index --add --cacheinfo "160000,$REV_C3,sub"
+g -C "$V" commit -qm D3
+g -C "$V" checkout -q main
+# The live tree carries a staged and an unstaged edit, which the snapshot holds and no run touches
+# (in a file of their own: a reverse patch's context must still match the files it reverts).
+printf '%s\n' 'staged' >>"$V/notes.txt"
+g -C "$V" add notes.txt
+printf '%s\n' 'unstaged' >>"$V/notes.txt"
+v_state() {
+  printf '%s\n' "$(git -C "$V" status --porcelain)" "$(git -C "$V" diff)" "$(git -C "$V" diff --cached)" \
+    "$(git -C "$V" stash list)" "$(cksum <"$V/scripts/lib.sh")" "$(cksum <"$V/notes.txt")"
+}
+v_before=$(v_state)
+run_v() { # DIR ARGS...: the helper from DIR under the revert checkout
+  local d=$1
+  shift
+  out=$(cd "$V/$d" && TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" "$@" 2>&1)
+  rc=$?
+}
+v_clean() {
+  local n left
+  n=$(git -C "$V" worktree list --porcelain | grep -c '^worktree ')
+  left=$(ls -A "$HTMP")
+  if [ "$n" -eq 1 ] && [ -z "$left" ] && [ "$(v_state)" = "$v_before" ]; then
+    ok "$1: no worktree registered, no scratch left, the live tree's files, index and stash as they were"
+  else
+    ko "$1: $n worktrees, scratch [$left], state changed: $( [ "$(v_state)" = "$v_before" ] && echo no || echo YES)"
+  fi
+}
+c1=$(git -C "$V" rev-parse --short "$REV_C1")
+wt_out=$(cd "$V" && scripts/test-v.sh 2>&1)
+if [ $? -eq 0 ] && grep -qF '6 passed, 0 failed' <<<"$wt_out"; then
+  ok "revert control: the head passes all six cases"
+else
+  ko "revert control: the head should pass -- $wt_out"
+fi
+run_v scripts test-v.sh --revert "$REV_C1" lib.sh
+if [ "$rc" -eq 1 ] && grep -qF 'FAIL: add 2 3' <<<"$out" && ! grep -qF 'FAIL: mul' <<<"$out" \
+  && ! grep -qF 'FAIL: sub' <<<"$out" && grep -qF '5 passed, 1 failed' <<<"$out" \
+  && grep -qF "run-against-base: revert: $c1 under lib.sh" <<<"$out" \
+  && grep -qF 'exit 1 on the working tree' <<<"$out" \
+  && grep -qF 'with uncommitted tracked edits' <<<"$out"; then
+  ok "--revert C1 lib.sh: the add case goes red; C1's other file stays fixed and C3's later edit survives"
+else
+  ko "--revert one file: rc=$rc -- $out"
+fi
+run_v . scripts/test-v.sh --revert "$REV_C1" .
+if [ "$rc" -eq 1 ] && grep -qF 'FAIL: add 2 3' <<<"$out" && grep -qF 'FAIL: mul 2 3' <<<"$out" \
+  && grep -qF 'FAIL: extra' <<<"$out" && grep -qF 'FAIL: tools-exec' <<<"$out" && ! grep -qF 'FAIL: sub' <<<"$out"; then
+  ok "--revert C1 . from the root undoes the whole commit: an added file is deleted, a mode restored"
+else
+  ko "--revert whole commit: rc=$rc -- $out"
+fi
+run_v . scripts/test-v.sh --revert "$REV_C3" docs.txt
+if [ "$rc" -eq 0 ] && grep -qF '6 passed, 0 failed' <<<"$out"; then
+  ok "reverting an irrelevant change still passes"
+else
+  ko "irrelevant revert: rc=$rc -- $out"
+fi
+run_v . --command --revert "$REV_C1" scripts/mul.sh -- scripts/test-v.sh
+if [ "$rc" -eq 1 ] && grep -qF 'FAIL: mul 2 3' <<<"$out" && ! grep -qF 'FAIL: add' <<<"$out"; then
+  ok "--revert works in command mode too"
+else
+  ko "--revert with --command: rc=$rc -- $out"
+fi
+# The order is copies, reverts, mutations: a mutation of the reverted file sees the revert (on
+# C1's own lib.sh the expression would change nothing, and be refused).
+run_v scripts test-v.sh --mutate lib.sh '1s/\$1 - \$2/$1 + $2/' --revert "$REV_C1" lib.sh
+if [ "$rc" -eq 0 ] && grep -qF '6 passed, 0 failed' <<<"$out"; then
+  ok "a mutation applies after the revert, whatever the flags' order"
+else
+  ko "revert then mutate: rc=$rc -- $out"
+fi
+run_v scripts test-v.sh --base overlap --revert "$REV_C4" lib.sh --revert "$REV_C1" lib.sh
+if [ "$rc" -eq 1 ] && grep -qF 'FAIL: add 2 3' <<<"$out" && grep -qF 'exit 1 on overlap' <<<"$out"; then
+  ok "with --base, two overlapping commits revert newest first"
+else
+  ko "newest-first reverts: rc=$rc -- $out"
+fi
+v_refusal() { # LABEL WANT_TEXT ARGS...
+  local label=$1 want=$2
+  shift 2
+  run_v scripts test-v.sh "$@"
+  if [ "$rc" -eq 125 ] && grep -qF -- "$want" <<<"$out" && ! grep -qF 'passed,' <<<"$out"; then
+    ok "--revert refuses $label with 125, running nothing"
+  else
+    ko "--revert $label: rc=$rc -- $out"
+  fi
+}
+v_refusal "a revert that a later change overlaps" 'does not apply to overlap in reverse' --base overlap --revert "$REV_C1" lib.sh
+v_refusal "an unknown commit" '--revert: no such commit: nosuch' --revert nosuch lib.sh
+v_refusal "a merge commit" 'is a merge commit' --revert "$REV_MERGE" .
+v_refusal "a root commit" 'is a root commit' --revert "$REV_B0" lib.sh
+v_refusal "a commit outside the run's history" 'is not in the history of the working tree' --revert "$REV_SIDE" .
+v_refusal "a path the commit does not change" 'changes nothing under test-v.sh' --revert "$REV_C1" test-v.sh
+v_refusal "a symlink change" 'changes a symlink or a submodule' --base withlink --revert "$REV_LINK" .
+v_refusal "a file below a directory a later commit made a submodule" 'is below sub, a submodule in subm' --base subm --revert "$REV_D2" ../sub/file
+v_refusal "a pathspec pattern (paths are literal)" 'changes nothing under' --revert "$REV_C1" '*.sh'
+v_refusal "a --revert with no path" '--revert needs a commit and a path' --revert "$REV_C1"
+v_clean "after --revert cases"
+
+# ---- the carried-everything warning (ludics-lite#501) ---------------------------------------------
+# A base run that carries every file the branch changes is the branch's own run, not a control.
+Wr="$TMP/warn"
+g init -q "$Wr"
+mkdir -p "$Wr/scripts"
+printf '%s\n' 'add() { echo $(($1 - $2)); }' >"$Wr/scripts/lib.sh"
+printf '#!/usr/bin/env bash\necho "1 passed, 0 failed"\n' >"$Wr/scripts/test-w.sh"
+chmod +x "$Wr/scripts/test-w.sh"
+g -C "$Wr" add -A
+g -C "$Wr" commit -qm base
+g -C "$Wr" branch base
+run_w() {
+  out=$(cd "$Wr" && TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" "$@" 2>&1)
+  rc=$?
+}
+printf '%s\n' '# a new case' >>"$Wr/scripts/test-w.sh"
+run_w scripts/test-w.sh --base base
+if [ "$rc" -eq 0 ] && grep -qF 'run-against-base: warning: every file this branch changes' <<<"$out"; then
+  ok "a branch that changes only its suite is warned that the base run is its own run (exit unchanged)"
+else
+  ko "suite-only warning: rc=$rc -- $out"
+fi
+run_w scripts/test-w.sh --base base --mutate scripts/lib.sh 's/-/+/'
+if [ "$rc" -eq 0 ] && ! grep -qF 'warning:' <<<"$out"; then
+  ok "...and a mutant run, which is the control it should take, is not"
+else
+  ko "warning under --mutate: rc=$rc -- $out"
+fi
+printf '%s\n' '# fixed' >>"$Wr/scripts/lib.sh"
+run_w scripts/test-w.sh --base base
+if ! grep -qF 'warning:' <<<"$out"; then
+  ok "a branch that also changes code the run does not carry is not warned"
+else
+  ko "warned with an uncarried change -- $out"
+fi
+run_w scripts/test-w.sh --base base --also scripts/lib.sh
+if grep -qF 'warning:' <<<"$out"; then
+  ok "...but carrying that code too is warned"
+else
+  ko "no warning when everything is carried -- $out"
+fi
+g -C "$Wr" commit -qam 'the change, committed'
+printf '%s\n' 'notes' >"$Wr/notes.md"
+run_w scripts/test-w.sh --base base --also scripts/lib.sh
+if ! grep -qF 'warning:' <<<"$out"; then
+  ok "committed changes count, and so does an untracked file the run does not carry"
+else
+  ko "warned despite an untracked uncarried file -- $out"
+fi
+rm -f "$Wr/notes.md"
+run_w scripts/test-w.sh --base base --also scripts/lib.sh
+if grep -qF 'warning:' <<<"$out"; then
+  ok "...and without it the committed branch is warned"
+else
+  ko "no warning on the committed branch -- $out"
+fi
 
 printf '\n%s\n' "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

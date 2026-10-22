@@ -426,7 +426,9 @@ requirements for every transport with transport-specific setup and identity, and
   [paired-planning.md](references/paired-planning.md#the-brief-addition), with its mode. The
   coordinator starts the second planner on the worker's startup SHA as soon as the launch succeeds.
 - Verification expectations: scoped test runs, negative controls where the work is a checker
-  (new fixtures shown to FAIL on base: `~/ludics-lite/scripts/run-against-base.sh <suite>`, slot-wrapped),
+  (new fixtures shown to FAIL on base: `~/ludics-lite/scripts/run-against-base.sh <suite>`, slot-wrapped;
+  a project runner through `--command ... -- <runner> <args>`, and the head with the fix undone
+  through `--revert <commit> <path>`, both in the README's negative-control paragraph),
   and the box's known environmental traps. **The formatter batch** is the one the project's
   AGENTS.md names, run last, slot-wrapped and read as it says (OCANNL: *Format before the first
   push*). **On mac-studio**:
