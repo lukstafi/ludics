@@ -712,7 +712,7 @@ def measurement_window():
         out, err = window(request('elsewhere', 'rog', kind='measurement'), expected=1)
         assert 'the window is for mac, but the measurement names rog' in err, err
         out, err = run('execution', 'window', 'mac', expected=2)
-        assert 'execution window [--no-gap] <box> <measurement reserve.json>' in err, err
+        assert 'execution window [--no-gap] [--deadline <seconds>] <box> <measurement reserve.json>' in err, err
         change('run', request('assigned'))
         out, err = window(request('blocked', kind='measurement'), expected=1)
         assert 'request=assigned' in err and 'suspends only standing reservations' in err, err

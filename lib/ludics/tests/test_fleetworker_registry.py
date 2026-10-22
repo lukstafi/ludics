@@ -643,12 +643,12 @@ class WindowDeadline(RegistryCase):
     """THE WINDOW'S DEADLINE (ludics-lite#737): a window's payload may carry the seconds by which it will
     be concluded; the record keeps them and the moment they end, fixed for its life."""
 
-    def window(self, identity: str = "w", **extra: object) -> tuple[int, Any, str]:
-        return self.call("window", {"box": "mac", "request": request(identity, kind="measurement"), **extra})
+    def window(self, identity: str = "w", extra: dict[str, object] | None = None) -> tuple[int, Any, str]:
+        return self.call("window", {"box": "mac", "request": request(identity, kind="measurement"), **(extra or {})})
 
     def test_the_window_records_its_deadline_from_its_opening(self) -> None:
         before = datetime.now(timezone.utc)
-        rc, out, _ = self.window(deadline=7200)
+        rc, out, _ = self.window(extra={"deadline": 7200})
         self.assertEqual((rc, out["deadline"]), (0, 7200))
         due = datetime.fromisoformat(out["deadline_at"])
         self.assertLessEqual(abs((due - before).total_seconds() - 7200), 5)
@@ -662,24 +662,25 @@ class WindowDeadline(RegistryCase):
         self.assertEqual((rc, {"deadline", "deadline_at"} & set(out)), (0, set()))
 
     def test_a_retry_names_the_same_deadline_and_never_moves_it(self) -> None:
-        _, first, _ = self.window(deadline=600)
-        rc, again, _ = self.window(deadline=600)
+        _, first, _ = self.window(extra={"deadline": 600})
+        rc, again, _ = self.window(extra={"deadline": 600})
         self.assertEqual((rc, again["deadline_at"]), (0, first["deadline_at"]))
-        for other in ({"deadline": 900}, {}):
-            rc, _, err = self.window(**other)
+        others: tuple[dict[str, object], ...] = ({"deadline": 900}, {})
+        for other in others:
+            rc, _, err = self.window(extra=other)
             self.assertEqual(rc, 1, other)
             self.assertIn("request_id already names a window with a different deadline (600)", err)
         self.assertEqual(self.window("w2")[0], 1, "one window per box, as ever")
 
     def test_a_deadline_is_a_positive_whole_number_and_only_a_windows(self) -> None:
         for bad in (True, 0, -1, "60", 1.5, None):
-            rc, _, err = self.window(deadline=bad)
+            rc, _, err = self.window(extra={"deadline": bad})
             self.assertEqual(rc, 1, bad)
             self.assertIn("a window's deadline must be a positive whole number of seconds", err)
         self.assertEqual(self.call("run", {**request("m", kind="measurement"), "deadline": 60})[0], 1)
 
     def test_a_corrupt_deadline_blocks_the_ledger(self) -> None:
-        self.window(deadline=60)
+        self.window(extra={"deadline": 60})
         path = os.path.join(self.root, "executions", "w.json")
         for corrupt in ({"deadline_at": "soon"}, {"deadline_at": "2099-01-01T00:00:00"}, {"deadline": 0},
                         {"deadline": None}):
@@ -716,11 +717,13 @@ class Snapshot(RegistryCase):
         readers: list[subprocess.Popen[str]] = []
         real = os.replace
 
-        def replace(source: Any, target: Any) -> None:
+        program = os.path.abspath(registry.__file__ or "")
+
+        def replace(source: str, target: str) -> None:
             real(source, target)
-            if readers or os.path.basename(os.path.dirname(os.fspath(target))) != "executions":
+            if readers or os.path.basename(os.path.dirname(str(target))) != "executions":
                 return
-            reader = subprocess.Popen([sys.executable, "-c", READER, registry.__file__, self.root],
+            reader = subprocess.Popen([sys.executable, "-c", READER, program, self.root],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             readers.append(reader)
             assert reader.stdout is not None
