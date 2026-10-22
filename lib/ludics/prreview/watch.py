@@ -618,6 +618,8 @@ class Watch:
             case NudgeBarred(why=why):
                 return why
             case NudgeClear(head=head):
+                if head in self.own_nudges:
+                    return f"this watch already nudged head {head[:7]}"
                 pr_state, now_head = self.write_gate()
                 if pr_state != "open":
                     return f"the PR reads {pr_state or 'UNREAD'}, not open"
@@ -906,8 +908,9 @@ class Watch:
                     return 0
                 case "stalled":
                     # Not a verdict yet (ludics-lite#760): nudge once when nothing stands for the
-                    # head, else keep waiting; the window's end answers a stall still standing.
-                    if self.nudge and own is None and self.stall_nudge() is None:
+                    # head, else keep waiting; the window's end answers a stall still standing. A
+                    # round whose poll did not answer posts nothing: it may have missed a round.
+                    if self.nudge and own is None and self.polled.rc == 0 and self.stall_nudge() is None:
                         candidate_end = self.clock.now() + cfg.grace
                         candidate_kind = "nudged"
                         if extension_end is not None:

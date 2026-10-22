@@ -2105,6 +2105,12 @@ test_a_stalled_round_is_nudged_once_and_watched() {
   assert_eq "$(nudges_posted)" 1 "one attempt, never retried"
   assert_contains "$WATCH_OUT" "over the stalled round on head ${H2:0:7} did not go through" \
     "the failure is the line the caller acts on"
+  # A round whose poll did not answer may have missed the reviewer's word: nothing is posted on it.
+  hung_round_fixture
+  FAIL_FEEDS_FROM=1
+  run_watch 0,0,0 60 300
+  assert_eq "$WATCH_RC" 3 "a window that saw no poll answer withholds the verdict"
+  assert_eq "$(nudges_posted)" 0 "and posts nothing"
 }
 
 # --no-nudge waits, bounded, where it used to exit at once (#760's decision): to the reviewer's
