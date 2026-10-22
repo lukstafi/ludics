@@ -111,10 +111,10 @@ or the connection dropped, with the runner perhaps started -- find out on the bo
 THE RECORD'S CHECKOUT (ludics-lite#749). A record that names a ``checkout`` (registry.py's THE
 CHECKOUT: the one checkout its conclusion reads, for a leg the far-side worktree) refuses a
 ``--worktree`` that is not it, before anything is copied to the box: a leg under a standing id must
-not move another worker's worktree. The comparison is ``execution.same_checkout``, the rule
-``conclude --observed-from`` applies, and its boundary: lexical, byte-equal once trailing ``/`` or
-``\\`` are dropped, no symlink resolved, no ``~`` expanded, so another spelling of the same directory
-is refused, naming the recorded one. A record that names none is not checked; ``--checkout`` is not.
+not move another worker's worktree. The comparison is the rule ``conclude --observed-from`` applies,
+for a POSIX path (a leg's box is one): lexical, byte-equal once trailing ``/`` are dropped -- a
+trailing ``\\`` is a character of the name there, not a separator -- no symlink resolved, no ``~``
+expanded, so another spelling of the same directory is refused, naming the recorded one. A record that names none is not checked; ``--checkout`` is not.
 
 THE BACKEND PIN (ludics-lite#766). Four legs meant for CUDA or HIP ran with no backend selected,
 resolved to the CPU backend, and reported green. The backend's names are the project's, so the
@@ -734,7 +734,7 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
         return refused(f"{request} is {state}, not dispatched (launching, running or uncertain); nothing ran")
     # THE RECORD'S CHECKOUT (see the header).
     bound = execution.recorded_checkout(record)
-    if bound and not execution.same_checkout(bound, worktree):
+    if bound and bound.rstrip("/") != worktree.rstrip("/"):
         host = execution.jq_text(execution.field(record, "request", "execution_host"))
         return refused(f"--worktree {worktree} is not {request}'s recorded checkout {bound} on {host}"
                        " (ludics-lite#749: a leg moves only its own record's worktree); nothing ran")
@@ -864,7 +864,14 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
         else:
             out.write(line)
 
+    # While the far side is being spawned a signal is only noted, and raised once ``child`` holds
+    # it: raised inside Popen it would leave a started child no stop can reach.
+    spawning: list[int] = []
+
     def stopped(signum: int, frame: FrameType | None) -> None:
+        if spawning:
+            spawning.append(signum)
+            return
         raise LegStopped(signum)
 
     sys.stdout.flush()
@@ -902,11 +909,17 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
         if stop is not None and threading.current_thread() is threading.main_thread():
             for sig in STOP_SIGNALS:
                 previous[sig] = signal.signal(sig, stopped)
+        spawning.append(0)
         try:
             child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         except OSError as exc:
             sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
             return 127
+        finally:
+            noted = spawning[1:]
+            spawning.clear()
+        if noted:
+            raise LegStopped(noted[0])
         assert child.stdin is not None and child.stdout is not None
         stdin = child.stdin
 

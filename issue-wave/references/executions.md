@@ -688,7 +688,7 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   execution host is the box (`--box`, if given, must be it). A record that names a `checkout`
   refuses a `--worktree` that is not it before anything reaches the box (ludics-lite#749: a leg
   under a standing id must not move another worker's worktree), by the rule `conclude
-  --observed-from` applies: lexical, trailing `/` dropped, no symlink resolved and no `~` expanded,
+  --observed-from` applies to a POSIX path: lexical, trailing `/` dropped (a trailing `\` is part of the name), no symlink resolved and no `~` expanded,
   so spell the worktree as the record does. So a leg's request names its far-side worktree as
   `checkout`, not the box's clone. A correctness record's runs go under
   `execution slot` on that box, with the slot flags given here; a measurement's under `execution

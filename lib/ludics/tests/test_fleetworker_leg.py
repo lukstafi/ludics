@@ -130,7 +130,8 @@ class Stop(unittest.TestCase):
 
     def test_a_signal_while_the_far_side_starts_is_caught(self) -> None:
         # The handlers are in before the far side is spawned: a TERM in that instant is the leg's to
-        # handle, never the default disposition's.
+        # handle, never the default disposition's. It is raised once the child is held and before
+        # the script is fed, so the child is killed having run nothing.
         real = subprocess.Popen
 
         def popen(*args: Any, **kwargs: Any) -> Any:
@@ -141,6 +142,23 @@ class Stop(unittest.TestCase):
             got, asked, said = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 2\n")
         self.assertEqual((got, asked), (signal.SIGTERM, []))
         self.assertIn("EXECUTION LEG STOPPED box: SIGTERM before the far side reported its pid", said)
+
+    def test_a_signal_inside_popen_after_the_spawn_ends_the_unfed_child(self) -> None:
+        # The child exists, Popen has not returned: the signal is noted, raised once the leg holds the
+        # child, before its script is fed, and the child is killed, never left to run the leg.
+        real = subprocess.Popen
+        spawned: list[Any] = []
+
+        def popen(*args: Any, **kwargs: Any) -> Any:
+            child = real(*args, **kwargs)
+            spawned.append(child)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return child
+
+        with mock.patch.object(leg.subprocess, "Popen", popen):
+            got, asked, _ = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 2\n")
+        self.assertEqual((got, asked), (signal.SIGTERM, []))
+        self.assertEqual(spawned[0].wait(timeout=10), -signal.SIGKILL)
 
     def test_a_pid_line_still_in_the_pipe_is_read_before_the_stop(self) -> None:
         # The far side has written its pid and gone on, but the leg has not read the line yet when
@@ -215,7 +233,7 @@ class RecordCheckout(unittest.TestCase):
         return rc, out.getvalue(), streamed
 
     def test_another_worktree_is_refused_naming_the_recorded_one(self) -> None:
-        for worktree in ["/h/wts/other", "/h/wts/w1/..", "~/wts/w1"]:
+        for worktree in ["/h/wts/other", "/h/wts/w1/..", "~/wts/w1", "/h/wts/w1\\"]:
             with self.subTest(worktree=worktree):
                 rc, said, streamed = self.run_leg(worktree, "/h/wts/w1")
                 self.assertEqual(rc, 1)
