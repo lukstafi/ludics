@@ -25,7 +25,7 @@
 #                                       for one — test_the_guard_survives_a_path_with_spaces
 #                                       hand-rolled its own mktemp and TEST_CLEANUP entry believing
 #                                       it could not ask (ludics-lite#106, undone in #122)
-#   review_thread <id> <resolved> …     one row of the reviewThreads connection, and the paged
+#   review_thread <id> <resolved> …     one row of the reviewThreads connection (its commits too), and the paged
 #   review_threads_answer <nodes> "$@"  GraphQL answer over such rows, for a fixture `gh`'s
 #                                       reviewThreads arm (ludics-lite#289)
 #   inline_comment <id> <orig> <cur> …  one inline finding as the flat listing serves it, and as
@@ -566,16 +566,23 @@ gh_fixture_answer() {
 
 # --- review threads (ludics-lite#289) --------------------------------------------------------
 # One thread as the reviewThreads connection serves it: isResolved, the path, and the first
-# comment's ids and author — the fields pr-review.sh's open-thread read asks for. Both ids, as
-# GitHub serves them: fullDatabaseId a BigInt STRING, databaseId the same value as a number below
-# 2^31 and null from there on — the schema types it a 32-bit Int, and review comment ids already
-# run past that.
-review_thread() { # <first comment id> <true|false> [path] [author]
+# comment's ids, author and commits — the fields pr-review.sh's open-thread read asks for. Both ids,
+# as GitHub serves them: fullDatabaseId a BigInt STRING, databaseId the same value as a number
+# below 2^31 and null from there on — the schema types it a 32-bit Int, and review comment ids
+# already run past that. The commits (ludics-lite#587): originalCommit, the one the reviewer wrote
+# the thread against, and commit, where GitHub moved it since (forward to the newest head whose
+# lines still hold it; the original by default); `null` for either serves it as null.
+REVIEW_THREAD_COMMIT=ffffffffffffffffffffffffffffffffffffffff
+review_thread() { # <first comment id> <true|false> [path] [author] [original commit] [current commit]
+  local orig="${5:-$REVIEW_THREAD_COMMIT}"
   jq -cn --argjson id "$1" --argjson r "$2" --arg p "${3:-a.sh}" --arg a "${4:-codex[bot]}" \
+    --arg o "$orig" --arg c "${6:-$orig}" \
     '{id:("T" + ($id | tostring)), isResolved:$r, path:$p,
       comments:{nodes:[{fullDatabaseId:($id | tostring),
                         databaseId:(if $id < 2147483648 then $id else null end),
-                        author:{login:$a}}]}}'
+                        author:{login:$a},
+                        originalCommit:(if $o == "null" then null else {oid:$o} end),
+                        commit:(if $c == "null" then null else {oid:$c} end)}]}}'
 }
 
 # The GraphQL answer to the open-thread query over <nodes> (a JSON array of review_thread rows),

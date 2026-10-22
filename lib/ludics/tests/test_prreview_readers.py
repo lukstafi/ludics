@@ -742,6 +742,130 @@ class StaleEyesUnderARunningRow(unittest.TestCase):
         self.assertEqual((st.tok, st.detail), ("unknown", "the summary's Code Review rows did not parse"))
 
 
+def summary_rows(cid: int, at: str, *rows: tuple[str, str, str]) -> dict[str, Json]:
+    """A reviewer's summary comment written at ``at`` with one Code Review row per ``(status, at,
+    sha)``: ``Running`` or ``Completed``, the row's own stamp, the commit it names."""
+    shapes = {"Running": "🔄 **Running**", "Completed": "✅ **Completed**"}
+    lines = [
+        f"| 📝 **Code Review** | {shapes[st]} <relative-time datetime=\"{row_at[:-1]}.484070Z\">{row_at}"
+        f"</relative-time> | `{sha}` | New commits |"
+        for st, row_at, sha in rows
+    ]
+    return comment(cid, at, (
+        "<!-- codex-pull-request-review-summary -->\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n" + "\n".join(lines)))
+
+
+class OneSummaryReader(unittest.TestCase):
+    """ludics-lite#752: the 👍 path's ``_evidence`` took Running rows from EVERY summary, while #586's
+    arm read only the newest summary's newest row. Every arm now reads that one row
+    (``_head_running_row``), so a Running row the reviewer has since written past is no round in
+    flight on any path."""
+
+    plus = reaction("+1", iso(3000))
+    short = HEAD[:7]
+
+    def test_an_older_summarys_stale_running_row_does_not_outrank_the_thumbs_up(self) -> None:
+        stale = summary_rows(1, iso(600), ("Running", iso(600), self.short))
+        done = summary_rows(2, iso(300), ("Completed", iso(300), self.short))
+        for order in ([stale, done], [done, stale]):
+            st = run_state(feeds(reactions=[self.plus], comments=order))
+            self.assertEqual(st.line(), f"approved|-|clean|👍 from {REV}", "whatever the feed's order")
+        unread = running_summary(1, iso(600), stamp="just now")
+        st = run_state(feeds(reactions=[self.plus], comments=[unread, done]))
+        self.assertEqual(st.tok, "approved", "nor does an older summary's Running row the stamp cannot read")
+
+    def test_a_running_row_below_a_newer_row_is_a_finished_round(self) -> None:
+        both = summary_rows(1, iso(300), ("Running", iso(600), self.short), ("Completed", iso(300), self.short))
+        self.assertEqual(run_state(feeds(reactions=[self.plus], comments=[both])).tok, "approved")
+        # The order the rows sit in is not their time order: the stamps decide, fractions included.
+        flipped = summary_rows(1, iso(300), ("Completed", iso(300), self.short), ("Running", iso(600), self.short))
+        self.assertEqual(run_state(feeds(reactions=[self.plus], comments=[flipped])).tok, "approved")
+        newer_run = summary_rows(1, iso(300), ("Completed", iso(600), self.short), ("Running", iso(300), self.short))
+        self.assertEqual(run_state(feeds(reactions=[self.plus], comments=[newer_run])).tok, "reviewing",
+                         "control: the newest row Running on the head outranks an older 👍")
+
+    def test_the_newest_running_row_still_outranks_an_older_thumbs_up(self) -> None:
+        st = run_state(feeds(reactions=[self.plus], comments=[running_summary(1, iso(600))]))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        self.assertIn("Code Review Running for head aaaaaaa", st.detail)
+        self.assertLess(st.age or 0, 2400, "aged from the row")
+        st = run_state(feeds(reactions=[reaction("+1", iso(9000))], comments=[running_summary(1, iso(5000))]))
+        self.assertEqual(st.tok, "stalled", "and stalls by the row's age")
+        edited = running_summary(1, iso(600))
+        edited["updated_at"] = iso(10)
+        st = run_state(feeds(reactions=[self.plus], comments=[edited]))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        self.assertGreater(st.age or 0, 500, "an edit selects the summary; the row dates the round")
+        other = running_summary(1, iso(600), row_sha="bbbbbbb")
+        self.assertNotIn(run_state(feeds(reactions=[self.plus], comments=[other])).tok, ("reviewing", "stalled"),
+                         "another head's Running row is no round of this head's")
+
+    def test_a_newest_running_row_with_no_timestamp_is_unknown_under_a_thumbs_up_too(self) -> None:
+        bad = running_summary(1, iso(600), stamp='<relative-time datetime="yesterday">x</relative-time>')
+        st = run_state(feeds(reactions=[self.plus], comments=[bad]))
+        self.assertEqual(st.tok, "unknown", st.line())
+        self.assertIn("matched the Running test", st.detail)
+
+    def test_the_nudge_reads_the_same_row(self) -> None:
+        stale = summary_rows(1, iso(600), ("Running", iso(600), self.short))
+        other = summary_rows(2, iso(300), ("Completed", iso(300), "bbbbbbb"))
+        self.assertEqual(run_nudge(feeds(comments=[stale, other])), state.NudgeClear(HEAD),
+                         "an older summary's Running row bars nothing")
+        mine = summary_rows(2, iso(300), ("Completed", iso(300), self.short))
+        self.assertIsInstance(run_nudge(feeds(comments=[stale, mine])), state.NudgeBarred,
+                              "the newest summary's row naming the head still bars it")
+        unread = running_summary(2, iso(300), stamp="just now")
+        self.assertIsInstance(run_nudge(feeds(comments=[stale, unread])), state.NudgeBarred,
+                              "and so does one of its rows that does not read")
+
+
+class EyesBeforeTheHeadArrived(unittest.TestCase):
+    """The fold-in to ludics-lite#752 from #770's hand-back: a 👀 an earlier head's hung round left
+    up read the next head as STALLED seconds after its push (#770's 1af99c3, "STALLED ... 81m").
+    Inside the head's pickup margin (knobs.PICKUP, the clock watch holds its nudge on) it is read
+    as that head's pickup; after it, as the stall it is, so the watch's 5-minute nudge stands."""
+
+    old_eyes = reaction("eyes", iso(9999))
+
+    def test_a_fresh_push_under_an_old_eyes_is_its_pickup(self) -> None:
+        st = run_state(feeds(reactions=[self.old_eyes], head_at=iso(60)))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        self.assertLess(st.age or 0, 300, "aged from the head's arrival")
+        self.assertIn("predates head aaaaaaa's arrival at", st.detail)
+        st = run_state(feeds(reactions=[self.old_eyes], head_at="2026-09-01T00:00:00Z", created=iso(60)))
+        self.assertEqual(st.tok, "reviewing", "a PR opened since is an arrival too")
+
+    def test_past_the_pickup_the_eyes_is_the_stall_it_is(self) -> None:
+        st = run_state(feeds(reactions=[self.old_eyes], head_at=iso(400)))
+        self.assertEqual(st.tok, "stalled", st.line())
+        self.assertGreater(st.age or 0, 9000, "aged from the 👀 itself, as before")
+        younger = run_state(feeds(reactions=[reaction("eyes", iso(3000))], head_at=iso(9999)))
+        self.assertEqual(younger.tok, "stalled", "a 👀 newer than the head is that head's own")
+
+    def test_an_arrival_that_does_not_read_leaves_the_stall(self) -> None:
+        gh = feeds(reactions=[self.old_eyes], head_at=iso(60))
+        gh.down.add(f"repos/o/r/commits/{HEAD}")
+        self.assertEqual(run_state(gh).tok, "stalled")
+
+    def test_the_head_commits_date_is_read_once_per_context(self) -> None:
+        gh = feeds(reactions=[self.old_eyes], head_at=iso(60))
+        c = ctx(gh)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            first = state.status_state(c, "7")
+            second = state.status_state(c, "7")
+        self.assertEqual((first.tok, second.tok), ("reviewing", "reviewing"))
+        self.assertEqual(gh.calls.count(f"repos/o/r/commits/{HEAD}"), 1)
+        gh = feeds(reactions=[self.old_eyes], head_at=iso(60))
+        gh.down.add(f"repos/o/r/commits/{HEAD}")
+        c = ctx(gh)
+        with contextlib.redirect_stderr(err):
+            state.status_state(c, "7")
+            state.status_state(c, "7")
+        self.assertEqual(gh.calls.count(f"repos/o/r/commits/{HEAD}"), 2, "a failed read is not kept")
+
+
 def run_stall_nudge(gh: FakeGh) -> state.NudgeRead:
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
@@ -899,6 +1023,88 @@ class StatusLine(unittest.TestCase):
         n, shown = threads.threads_named(rows)
         self.assertEqual(n, 12)
         self.assertTrue(shown.endswith("9 by u on p, and 2 more"))
+
+
+
+def thread(cid: int, original: Json, current: Json, resolved: bool = False, path: str = "a.sh") -> Json:
+    """One reviewThreads node: the first comment's ids, author and its two commits as GraphQL
+    serves them (``None`` for a commit it serves as null)."""
+    def commit(oid: Json) -> Json:
+        return None if oid is None else {"oid": oid}
+
+    return {"id": f"T{cid}", "isResolved": resolved, "path": path,
+            "comments": {"nodes": [{"fullDatabaseId": str(cid), "databaseId": cid, "author": {"login": "codex"},
+                                    "originalCommit": commit(original), "commit": commit(current)}]}}
+
+
+class ThreadsByHead(unittest.TestCase):
+    """ludics-lite#587: the open threads counted on the head they were written on and on earlier
+    heads, so a worker sees an earlier head's finding before pushing past it."""
+
+    old = "b" * 40
+
+    def rows(self, *nodes: Json) -> list[str]:
+        return threads.open_rows({"nodes": list(nodes)})
+
+    def test_rows_carry_both_commits_and_an_unread_one_as_a_dash(self) -> None:
+        self.assertEqual(self.rows(thread(1, HEAD, HEAD)), [tsv(["1", "codex", "a.sh", HEAD, HEAD])])
+        for name, oid in (("null", None), ("short", HEAD[:7]), ("upper", HEAD.upper()), ("number", 7)):
+            with self.subTest(name):
+                row = self.rows(thread(1, oid, oid))[0]
+                self.assertEqual(tab_fields(row, 5)[3:], ["-", "-"])
+        bare = self.rows({"isResolved": False, "path": "a.sh",
+                          "comments": {"nodes": [{"fullDatabaseId": "9", "author": {"login": "c"}}]}})
+        self.assertEqual(tab_fields(bare[0], 5), ["9", "c", "a.sh", "-", "-"], "fields the node lacks")
+        with self.assertRaises(jq.JqError):
+            self.rows({"isResolved": False, "path": "a.sh", "comments": {"nodes": [{"originalCommit": "x"}]}})
+
+    def test_the_original_commit_decides_and_the_current_one_only_sub_counts(self) -> None:
+        rows = self.rows(thread(1, HEAD, HEAD), thread(2, self.old, HEAD), thread(3, self.old, self.old),
+                         thread(4, None, HEAD), thread(5, self.old, None))
+        split = threads.threads_by_head(rows, HEAD)
+        self.assertEqual(split.on_head, 1)
+        self.assertEqual([tab_fields(r, 5)[0] for r in split.earlier], ["2", "3", "4", "5"],
+                         "a thread whose origin does not read is an earlier head's, even on the head's lines")
+        self.assertEqual(split.on_lines, 2, "2 and 4 still sit on the head's lines")
+        none = threads.threads_by_head(rows, "")
+        self.assertEqual((none.on_head, len(none.earlier)), (0, 5), "no head, nothing is on it")
+
+    def test_the_line(self) -> None:
+        rows = self.rows(thread(1, HEAD, HEAD), thread(2, self.old, HEAD), thread(3, self.old, self.old, path="b c.sh"))
+        line = threads.threads_line(threads.OpenThreads(rows), HEAD)
+        self.assertEqual(
+            line,
+            "review threads: 1 open on head aaaaaaa, 2 on earlier heads (1 of them on lines head aaaaaaa"
+            " still has): 2 by codex on a.sh, 3 by codex on b\\ c.sh — answer and resolve these before"
+            " pushing past them")
+        self.assertEqual(threads.threads_line(threads.OpenThreads(self.rows(thread(1, HEAD, HEAD))), HEAD),
+                         "review threads: 1 open on head aaaaaaa, 0 on earlier heads")
+        self.assertEqual(threads.threads_line(threads.OpenThreads([]), HEAD), "review threads: none open")
+        self.assertTrue(threads.threads_line(threads.OpenThreads(rows), "").startswith(
+            "review threads: 3 open (the head did not read, so they are not split by head): 1 by codex"))
+        unread = threads.threads_line(threads.WalkUnread("GraphQL did not answer"), HEAD)
+        self.assertEqual(unread, "review threads: UNREAD — GraphQL did not answer; this is not 'none open'")
+
+    def test_status_prints_the_split_from_the_one_walk_the_gate_shares(self) -> None:
+        nodes = [thread(1, HEAD, HEAD), thread(2, self.old, self.old)]
+        for name, reactions, walks in (("idle", [], 1), ("approved", [reaction("+1", iso(30))], 1)):
+            with self.subTest(name):
+                gh = feeds(reactions=reactions, reviews=[review(5, HEAD, iso(600))], head_at=iso(3600),
+                           threads=nodes)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
+                        mock.patch.dict("os.environ", {"SHIP_PR_TEST_CLOCK": ""}):
+                    rc = status.run(session(gh), ["7"])
+                lines = out.getvalue().splitlines()
+                self.assertEqual(rc, 0)
+                self.assertEqual(lines[1], "review threads: 1 open on head aaaaaaa, 1 on earlier heads: 2 by"
+                                 " codex on a.sh — answer and resolve these before pushing past them", lines)
+                self.assertEqual(gh.calls.count("graphql"), walks, "one walk, shared with the gate")
+                self.assertEqual(gh.calls.count("repos/o/r/pulls/7"), 1, "and no second head read for it")
+
+    def test_threads_named_reads_the_longer_row(self) -> None:
+        n, shown = threads.threads_named([tsv(["1", "u", "p", HEAD, "-"])])
+        self.assertEqual((n, shown), (1, "1 by u on p"))
 
 
 if __name__ == "__main__":

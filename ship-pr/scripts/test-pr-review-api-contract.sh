@@ -251,8 +251,9 @@ world_healthy() {
 
   # The reviewThreads anchor is #9 too: three threads, the lib's review_thread rows, their first
   # comments past 2^31 (databaseId null, as the builder serves it), read verbatim and then walked
-  # at the contract's derived page of two.
-  threads="[$(review_thread 4095735684 false),$(review_thread 4095735690 true a.sh),$(review_thread 4095735700 false b.sh)]"
+  # at the contract's derived page of two. Their commits: written on #9's head, one of them now
+  # outdated (commit null, as GraphQL serves a comment whose lines are gone).
+  threads="[$(review_thread 4095735684 false a.sh 'codex[bot]' "$H9"),$(review_thread 4095735690 true a.sh 'codex[bot]' "$H9"),$(review_thread 4095735700 false b.sh 'codex[bot]' "$H9" null)]"
   answer "graphql?pr=9&first=100&after=-" "$(review_threads_answer "$threads")"
   answer "graphql?pr=9&first=2&after=-" "$(THREADS_FIXTURE_PAGE=2 review_threads_answer "$threads")"
   answer "graphql?pr=9&first=2&after=c2" "$(THREADS_FIXTURE_PAGE=2 review_threads_answer "$threads" after=c2)"
@@ -564,6 +565,7 @@ ok    a findings review is submitted before its row flips to Completed: the app'
 ok    the gate's own THREADS_QUERY, sent verbatim, answers #9's reviewThreads as a connection: nodes[], a numeric totalCount and a boolean pageInfo.hasNextPage
 ok    every thread carries a non-empty node id (resolve's threadId) and isResolved as a boolean (closed only when literally true)
 ok    every thread's first comment carries fullDatabaseId as a decimal string (the BigInt threads.thread_id names a thread by, ahead of databaseId)
+ok    every thread's first comment carries originalCommit.oid as a 40-hex SHA, and commit as null or a 40-hex oid (threads.threads_by_head splits the open threads by head on them)
 ok    databaseId is not clamped past 2^31: on #9's 3 thread(s) whose first comment id is past it, databaseId is null or the very number fullDatabaseId spells (threads.thread_id's fallback)
 ok    on a walk of #9 at 2 a page (2 pages), EVERY page states a numeric totalCount, nodes[] and a boolean hasNextPage, with a non-empty endCursor whenever there is a next page (threads_walk reads the last page's count)
 ok    ... and the pages add up: each states the verbatim read's totalCount (3), their rows reach it, and the last says hasNextPage false (threads_walk's whole-read test)
@@ -629,6 +631,8 @@ test_a_doctored_response_moves_its_pin_and_only_it() {
     "graphql?pr=9&first=100&after=-^.data.repository.pullRequest.reviewThreads.nodes[0].isResolved = \"true\"^MOVED every thread carries a non-empty node id (resolve's threadId) and isResolved as a boolean" \
     "graphql?pr=9&first=2&after=c2^.data.repository.pullRequest.reviewThreads.totalCount = 4^MOVED ... and the pages add up: each states the verbatim read's totalCount (3)" \
     "graphql?pr=9&first=100&after=-^.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes[0].databaseId = 2147483647^MOVED databaseId is not clamped past 2^31" \
+    "graphql?pr=9&first=100&after=-^.data.repository.pullRequest.reviewThreads.nodes[1].comments.nodes[0].originalCommit = null^MOVED every thread's first comment carries originalCommit.oid as a 40-hex SHA" \
+    "graphql?pr=9&first=100&after=-^.data.repository.pullRequest.reviewThreads.nodes[2].comments.nodes[0].commit = {oid: \"abc1234\"}^MOVED every thread's first comment carries originalCommit.oid as a 40-hex SHA" \
     "repos/$WIDE_REPO/commits/$WIDE^.files |= .[:30]^MOVED an unpaginated commits/<sha> read answers ONE default page"; do
     IFS='^' read -r endpoint filter belief <<<"$row"
     world_healthy

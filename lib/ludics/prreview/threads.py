@@ -9,8 +9,18 @@ Boundary, as the shell states it: a thread is closed only when ``isResolved`` is
 first comment's id (``fullDatabaseId`` before ``databaseId``), author and path NAME a thread and
 never judge it. The connection is read whole -- the rows reaching the ``totalCount`` its last page
 states -- or the read is refused as unread, never taken for "none are open".
+
+Which head a thread is about (ludics-lite#587) rides the same page: the first comment's
+``originalCommit`` (the commit the reviewer wrote it against) and ``commit`` (where GitHub has
+since moved it: forward to the newest head whose lines still hold it). Boundary of that read
+(``threads_by_head``), a fail-closed allowlist: a thread is ON the head only when its
+``originalCommit.oid`` is exactly the head's SHA; every other open thread is an EARLIER head's,
+one whose origin does not read included, so the doubt lands on the side a worker reads before
+pushing. ``commit.oid`` equal to the head only counts which earlier threads still sit on lines the
+head has; it never puts a thread on the head. Neither field judges whether a thread is open.
 """
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, assert_never
@@ -34,7 +44,8 @@ THREADS_QUERY = """query($owner:String!, $name:String!, $pr:Int!, $after:String)
     reviewThreads(first:100, after:$after) {
       totalCount pageInfo { hasNextPage endCursor }
       nodes { id isResolved path
-        comments(first:1) { nodes { fullDatabaseId databaseId author { login } } } } } } } }"""
+        comments(first:1) { nodes { fullDatabaseId databaseId author { login }
+          commit { oid } originalCommit { oid } } } } } } } }"""
 
 @dataclass(frozen=True)
 class WalkDone:
@@ -189,9 +200,21 @@ def _tsv_field(value: str) -> str:
     return value.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
 
 
+_OID = re.compile(r"[0-9a-f]{40}")
+
+
+def _oid(commit: Json) -> str:
+    """A commit object's ``oid`` when it is 40 lowercase hex, else "-" (never empty: the row is
+    read back with ``tab_fields``, which folds a run of tabs into one). Raises ``JqError`` where jq
+    would err indexing it."""
+    oid = idx(commit, "oid")
+    return oid if isinstance(oid, str) and _OID.fullmatch(oid) else "-"
+
+
 def open_rows(conn: dict[str, Json]) -> list[str]:
-    """``unresolved_page``: ``<first comment id>\\t<author>\\t<path>`` per thread of the page
-    whose isResolved is not literally true. Raises ``JqError`` where jq erred on a node."""
+    """``unresolved_page``: ``<first comment id>\\t<author>\\t<path>\\t<original commit>\\t<commit>``
+    per thread of the page whose isResolved is not literally true, a commit that does not read as
+    "-". Raises ``JqError`` where jq erred on a node."""
     nodes = conn.get("nodes")
     assert isinstance(nodes, list)
     rows: list[str] = []
@@ -201,7 +224,9 @@ def open_rows(conn: dict[str, Json]) -> list[str]:
         first = jpath(node, "comments", "nodes", 0)
         author = jstr(alt(idx(idx(first, "author"), "login"), "-"))
         path = jstr(alt(idx(node, "path"), "-"))
-        rows.append("\t".join(_tsv_field(v) for v in (thread_id(node), author, path)))
+        original = _oid(idx(first, "originalCommit"))
+        current = _oid(idx(first, "commit"))
+        rows.append("\t".join(_tsv_field(v) for v in (thread_id(node), author, path, original, current)))
     return rows
 
 
@@ -243,7 +268,7 @@ def threads_named(rows: list[str]) -> tuple[int, str]:
     n = 0
     shown = ""
     for row in rows:
-        ident, login, path = tab_fields(row, 3)
+        ident, login, path, _original, _current = tab_fields(row, 5)
         if not ident:
             continue
         n += 1
@@ -253,6 +278,62 @@ def threads_named(rows: list[str]) -> tuple[int, str]:
     if n > 10:
         shown += f", and {n - 10} more"
     return n, shown
+
+
+@dataclass(frozen=True)
+class HeadSplit:
+    """``threads_by_head``: how many open threads were written on the head, and the rows of those
+    written on earlier heads, with how many of those still sit on lines the head has."""
+
+    on_head: int
+    earlier: list[str]
+    on_lines: int
+
+
+def threads_by_head(rows: list[str], head: str) -> HeadSplit:
+    """The open threads split by the head they were written on (the boundary is the module's)."""
+    on_head = 0
+    earlier: list[str] = []
+    on_lines = 0
+    for row in rows:
+        ident, _login, _path, original, current = tab_fields(row, 5)
+        if not ident:
+            continue
+        if head and original == head:
+            on_head += 1
+            continue
+        earlier.append(row)
+        if head and current == head:
+            on_lines += 1
+    return HeadSplit(on_head, earlier, on_lines)
+
+
+def threads_line(read: Unresolved, head: str) -> str:
+    """The ``review threads:`` line ``status`` and every ``watch`` exit print (ludics-lite#587):
+    the open threads on the head and on earlier heads, the earlier ones named, so a finding on the
+    head about to be replaced is seen before the push past it. An unread walk is UNREAD, never
+    "none"."""
+    match read:
+        case WalkRejected(line=why) | WalkUnread(line=why):
+            return f"review threads: UNREAD — {why}; this is not 'none open'"
+        case OpenThreads(rows=rows):
+            n, named = threads_named(rows)
+            if n == 0:
+                return "review threads: none open"
+            if not head:
+                return f"review threads: {n} open (the head did not read, so they are not split by head): {named}"
+            split = threads_by_head(rows, head)
+            line = (
+                f"review threads: {split.on_head} open on head {head[:7]},"
+                f" {len(split.earlier)} on earlier heads"
+            )
+            if split.earlier:
+                _, earlier_named = threads_named(split.earlier)
+                lines = f" ({split.on_lines} of them on lines head {head[:7]} still has)" if split.on_lines else ""
+                line += f"{lines}: {earlier_named} — answer and resolve these before pushing past them"
+            return line
+        case _:
+            assert_never(read)
 
 
 def threads_advice(repo: str, num: str) -> str:

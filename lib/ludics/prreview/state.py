@@ -23,6 +23,7 @@ from ludics.prreview.core import GhFailed, GhOk, GhUnanswered, Json
 from ludics.prreview.clock import age_of, age_text, fmt_age, freshest_age, newest
 from ludics.prreview.threads import (
     OpenThreads,
+    Unresolved,
     WalkRejected,
     WalkUnread,
     threads_advice,
@@ -139,12 +140,16 @@ def instant(at: Json) -> str:
 
 
 def _commit_read(ctx: Ctx, sha: str) -> str:
-    """The head commit's committer date, or "" when the read failed."""
+    """The head commit's committer date, or "" when the read failed. A read that answered is
+    kept on the context by SHA (a commit's date never changes); a failed one is read again."""
+    if sha in ctx.commit_dates:
+        return ctx.commit_dates[sha]
     result = ctx.session.retry(
         "read", ["api", f"repos/{ctx.repo}/commits/{sha}", "--jq", ".commit.committer.date"]
     )
     match result:
         case GhOk(stdout=out):
+            ctx.commit_dates[sha] = out
             return out
         case GhFailed() | GhUnanswered():
             return ""
@@ -193,18 +198,22 @@ def _newest_row(body: str) -> tuple[str, str, str] | None:
 
 
 def _head_running_row(comments: list[Json], rev: str, head_sha: str) -> tuple[bool, str]:
-    """``status_state``'s read of a round in flight off the summary (ludics-lite#586): (a Running
-    row could not be read, the stamp of a Running row for this head).
+    """The one read of a round in flight off the summary (ludics-lite#586, #752): (a Running row
+    could not be read, the stamp of a Running row for this head). Every arm takes its Running
+    evidence from here: ``status_state``'s own arm, and the 👍 path and ``nudge_read`` through
+    ``_evidence``.
 
-    Boundary, fail-closed: read only the reviewer's NEWEST summary comment (``_newest_row``'s
+    Boundary, fail-closed: read only the reviewer's NEWEST summary comment (``_newest_summary``'s
     choice, the one ``_done_row`` and ``summary_state`` read), and in it only its newest Code
-    Review row. That row counts only when it passes the ``_RUNNING_ROW`` test, names a prefix of
-    the head's SHA, and its stamp is a GitHub timestamp; it is then this head's round, running
-    since that stamp. A row passing the Running test whose stamp does not read (or does not read
-    as a GitHub timestamp) is the first field, as the 👍 path's ``_evidence`` counts it: it may be
-    this head's round. Any other row, a newest row that is not Running, a row for another head,
-    or no summary is (False, ""): the reactions decide, as before the row was read. Not read:
-    older summaries, the state record, the row's trigger cell, the comment's own timestamps."""
+    Review row (``_newest_row``'s choice). That row counts only when it passes the ``_RUNNING_ROW``
+    test, names a prefix of the head's SHA, and its stamp is a GitHub timestamp; it is then this
+    head's round, running since that stamp. A row of the newest summary passing the Running test
+    whose stamp does not read (or a newest one whose stamp does not read as a GitHub timestamp) is
+    the first field: it may be this head's round. Any other row, a newest row that is not Running,
+    a row for another head, or no summary is (False, ""): the reactions decide, as before the row
+    was read. Not read: older summaries (a Running row there is a round the reviewer has since
+    written past, ludics-lite#752), the state record, the row's trigger cell, the comment's own
+    timestamps."""
     newest = _newest_summary(comments, rev)
     if newest is None:
         return False, ""
@@ -260,12 +269,12 @@ def summary_state(comments: list[Json], rev: str) -> SummaryState | None:
     """The newest summary's ``codex-review-state:v1`` record (ludics-lite#702), or None.
 
     Boundary, as a fail-closed allowlist. Read: only the reviewer's NEWEST summary comment (the
-    one ``_done_row`` and ``_evidence`` read), and in it only the one hidden record, which must
+    one ``_done_row`` and ``_head_running_row`` read), and in it only the one hidden record, which must
     occur exactly once, on one line, as ``<!-- codex-review-state:v1 <JSON> -->``. The JSON is
     parsed whole -- never fished for fields -- and must be an object with no duplicate key whose
     ``code_review`` is an object holding ``commit_sha`` (40 lowercase hex), ``status`` (a
     non-empty string) and ``has_unresolved_findings`` (a boolean, or null). The record is dated by
-    the summary's newest Code Review row (``_evidence``'s choice): every Code Review row's stamp
+    the summary's newest Code Review row (``_newest_row``'s choice): every Code Review row's stamp
     must read, and the newest must name a prefix of ``commit_sha`` and carry a GitHub timestamp.
     Any other shape, a second record, a record that does not parse, a row that disagrees or does
     not read, or no summary at all is None: no reading, which is what every caller had before the
@@ -665,6 +674,24 @@ def status_state(ctx: Ctx, pr: str) -> State:
     if eyes_at and eyes_at > last_spoke:
         age = age_of(eyes_at, ctx.clock.time())
         if age is not None and age >= grace_stall:
+            # A 👀 is a level: one an earlier head's hung round left up stands over a fresh push,
+            # and the reviewer cannot put up another for the new head's round (#770's head 1af99c3
+            # read STALLED for 81m seconds after its push). So a 👀 older than the head's arrival
+            # is read as that head's pickup while the head is younger than the pickup margin
+            # (knobs.PICKUP, the clock watch holds its nudges on), and as the stall it is, aged
+            # from its own date, after that. An arrival that does not read leaves the stall.
+            if head_sha and not head_at_read:
+                head_at = _commit_read(ctx, head_sha)
+                head_at_read = True
+            arrival = _arrival_floor(ctx, head_at, head.created) if head_sha else ""
+            arrived = age_of(arrival, ctx.clock.time()) if arrival else None
+            if arrived is not None and eyes_at < arrival and arrived < ctx.pickup:
+                return State(
+                    "reviewing", arrived, mstate,
+                    f"👀 from {rev} at {eyes_at} predates head {_short(head_sha)}'s arrival at"
+                    f" {arrival}, so it is no measure of this head's round until the head's pickup"
+                    f" ({fmt_age(ctx.pickup)}) is over",
+                )
             return State("stalled", age, mstate, f"👀 from {rev} at {eyes_at} with nothing posted since")
         since = f" ({last_spoke})" if last_spoke else ""
         return State("reviewing", age, mstate, f"👀 from {rev} at {eyes_at}, newer than its last word{since}")
@@ -770,15 +797,17 @@ def nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
     from the same round's snapshot as that state.
 
     Boundary, fail-closed: CLEAR only when every read below answered and none of these is there --
-    the reviewer's evidence for the head that ``_evidence`` reads (a Running row, a review, a
-    comment stamped with the head, verdict or findings); any Code Review row of the newest summary
+    the reviewer's evidence for the head that ``_evidence`` reads (the newest summary's newest
+    row Running on the head, a review, a comment stamped with the head, verdict or findings); any
+    Code Review row of the newest summary
     that names the head, whatever its status, or whose stamp does not read; and a '@codex review'
     request by anyone (a request whose time does not read included), at or after the head's
     arrival (``_arrival_floor``), whatever the watch's watermark. That last one is the record that
     makes the nudge once per head across processes (a re-armed watch, another host) and that
     counts a hand nudge too, as the failed run's re-request counts its own (#453). Not read: the
     reactions (the state read just judged them), a request older than the head's arrival (an
-    earlier head's), and the request's wording beyond the summon itself."""
+    earlier head's), the request's wording beyond the summon itself, and older summaries (a Running
+    row there is a round since written past, ludics-lite#752)."""
     rev = ctx.reviewer
     try:
         comments = state_comments(ctx, pr)
@@ -900,25 +929,22 @@ def _first_stamp(c: Json) -> str:
 def _evidence(
     comments: list[Json], reviews: list[Json], rev: str, head_sha: str
 ) -> tuple[str, str, int, str]:
-    """The 👍 path's read of the current head's newest evidence: (kind, at, the Running rows the
-    stamp pattern could not read, the commit of the newest summary's newest Code Review row)."""
+    """The 👍 path's read of the current head's newest evidence: (kind, at, 1 when the newest
+    summary has a Running row the stamp pattern could not read else 0, the commit of the newest
+    summary's newest Code Review row).
+
+    Its Running evidence is ``_head_running_row``'s and its row is ``_newest_row``'s, the readers
+    every arm shares (ludics-lite#752): at most one Running candidate, the newest summary's newest
+    row. A Running row in an older summary, or below a newer row of the newest one, is a round that
+    already moved on, never evidence against a 👍."""
     mine = [c for c in comments if login_is(c, rev)]
-    summaries = [c for c in mine if _SUMMARY_TAG in body_of(c)]
-    running: list[dict[str, str | None] | None] = []
-    for c in summaries:
-        for row in body_of(c).split("\n"):
-            if _RUNNING_ROW.search(row):
-                running.append(capture_first(row, _SUMMARY_ROW_STAMP))
-    newest_summary = max_by(summaries, lambda c: alt(idx(c, "updated_at"), idx(c, "created_at")))
-    rows = [] if newest_summary is None else _stamp_rows(body_of(newest_summary))
-    row_sha = ""
-    if rows and all(r is not None for r in rows):
-        best = max_by([r for r in rows if r is not None], lambda r: instant(r["at"]))
-        row_sha = jstr(best["sha"]) if best is not None else ""
+    running_unread, running_at = _head_running_row(comments, rev, head_sha)
+    newest_summary = _newest_summary(comments, rev)
+    row = None if newest_summary is None else _newest_row(body_of(newest_summary))
+    row_sha = "" if row is None else row[1]
     candidates: list[tuple[Json, Json, str]] = []
-    for r in running:
-        if r is not None:
-            candidates.append((r["sha"], r["at"], "running"))
+    if running_at:
+        candidates.append((head_sha, running_at, "running"))
     for r in reviews:
         if login_is(r, rev) and idx(r, "submitted_at") is not None:
             candidates.append((alt(idx(r, "commit_id"), ""), idx(r, "submitted_at"), "findings"))
@@ -932,32 +958,25 @@ def _evidence(
         if sha != "" and head_sha != "" and startswith(head_sha, sha):
             current.append((sub_once(at, _FRACTION_Z, "Z"), kind))
     best_ev = max_by(current, lambda e: e[0])
-    unread = sum(1 for r in running if r is None)
+    unread = int(running_unread)
     if best_ev is None:
         return "", "", unread, row_sha
     return best_ev[1], best_ev[0], unread, row_sha
 
 
 def _done_row(comments: list[Json], rev: str) -> tuple[str, str, str]:
-    """The newest summary's newest Code Review row, when it is the allowlisted Completed or Failed
-    shape: (kind, at with its fraction cut, sha), or empty fields."""
+    """The newest summary's newest Code Review row (``_newest_row``'s choice), when it is the
+    allowlisted Completed or Failed shape: (kind, at with its fraction cut, sha), or empty fields."""
     newest_summary = _newest_summary(comments, rev)
     if newest_summary is None:
         return "", "", ""
-    rows: list[tuple[str, str] | None] = []
-    for row in body_of(newest_summary).split("\n"):
-        if not _CODE_REVIEW_ROW.search(row):
-            continue
-        stamp = capture_first(row, _SUMMARY_ROW_STAMP)
-        rows.append(None if stamp is None else (jstr(stamp["at"]), row))
-    if not rows or any(r is None for r in rows):
+    row = _newest_row(body_of(newest_summary))
+    if row is None:
         return "", "", ""
-    best = max_by([r for r in rows if r is not None], lambda r: instant(r[0]))
-    assert best is not None
-    done = capture_first(best[1], _SUMMARY_COMPLETED_ROW)
+    done = capture_first(row[0], _SUMMARY_COMPLETED_ROW)
     if done is not None:
         return "completed", sub_once(done["at"], _FRACTION_Z, "Z"), jstr(done["sha"])
-    failed = capture_first(best[1], _SUMMARY_FAILED_ROW)
+    failed = capture_first(row[0], _SUMMARY_FAILED_ROW)
     if failed is not None:
         return "failed", sub_once(failed["at"], _FRACTION_Z, "Z"), jstr(failed["sha"])
     return "", "", ""
@@ -1104,11 +1123,26 @@ def threads_page_cap() -> int:
     return knobs.threads_page_cap(os.environ)
 
 
-def approval_gate(ctx: Ctx, pr: str, state: State) -> State:
-    """``approval_gate``: an ``approved`` state checked for open review threads (threads.py)."""
+def state_threads(ctx: Ctx, pr: str) -> Unresolved:
+    """The PR's open review threads, walked once per watch round: a walk that answered whole is
+    kept on the armed round snapshot, so the approval gate and the exit's thread count
+    (``threads_line``) share one walk. Outside a watch (never armed) every call walks; ``status``
+    walks once and hands the read to the gate."""
+    snap = ctx.snap
+    if snap.armed and snap.threads is not None and snap.threads_pr == pr:
+        return snap.threads
+    read = unresolved_threads(ctx.session, ctx.repo, pr, threads_page_cap())
+    if snap.armed and isinstance(read, OpenThreads):
+        snap.threads, snap.threads_pr = read, pr
+    return read
+
+
+def approval_gate(ctx: Ctx, pr: str, state: State, threads: Unresolved | None = None) -> State:
+    """``approval_gate``: an ``approved`` state checked for open review threads (threads.py), on
+    ``threads`` when the caller already walked them."""
     if state.tok != "approved":
         return state
-    read = unresolved_threads(ctx.session, ctx.repo, pr, threads_page_cap())
+    read = threads if threads is not None else state_threads(ctx, pr)
     match read:
         case WalkRejected(line=reason) | WalkUnread(line=reason):
             return unknown(

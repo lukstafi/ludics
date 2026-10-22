@@ -87,6 +87,21 @@ def checks_timing(env: Mapping[str, str]) -> Timing:
     return Timing(interval, wait, heartbeat)
 
 
+# How long a head must have been up, with nothing started on it, before its round is judged: the
+# evidence a commit's date cannot give that the push is not simply too new for the reviewer's own
+# automatic review. That 👀 lands seconds after a push (on ludics-lite#583, 18s to the connector's
+# first answer, 12s from a request to its 👀); five minutes is the margin, capped by the grace for
+# a grace set shorter (``pickup``). ``watch`` holds its automatic nudges for it from a head's first
+# sight, and the state reads a 👀 left up from before a head's arrival as that head's pickup for it
+# (ludics-lite#752's fold-in), one clock for both.
+PICKUP = 300
+
+
+def pickup(grace: int) -> int:
+    """The pickup margin under a grace of ``grace`` seconds: ``PICKUP``, capped by the grace."""
+    return min(PICKUP, grace)
+
+
 def review_clocks(env: Mapping[str, str]) -> tuple[int, int]:
     """GRACE (SHIP_PR_REVIEW_GRACE, 1200) and STALL (SHIP_PR_REVIEW_STALL, one and a half times
     the grace: 30 minutes by default). A round on this repository's last 25 merged PRs drew its
