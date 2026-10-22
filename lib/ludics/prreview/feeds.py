@@ -121,6 +121,12 @@ class Ctx:
     stall: int
     snap: Snapshot = field(default_factory=Snapshot)
     nudge_after: int | None = None
+    # The pickup margin (knobs.pickup): how long a head is new enough that a 👀 older than it is
+    # not yet read as its stall.
+    pickup: int = knobs.PICKUP
+    # Head commits' committer dates as they answered, by SHA: a commit's date never changes, so a
+    # watch reads each head's once (state._commit_read).
+    commit_dates: dict[str, str] = field(default_factory=lambda: dict[str, str]())
 
 
 class ReadFailed(Exception):
@@ -131,8 +137,9 @@ def outside_watch(session: GhSession, repo: str, nudge_after: int | None = None)
     """The reads' context for ``status``, ``rounds`` and ``poll``: no round snapshot (never
     armed), the clock SHIP_PR_TEST_CLOCK names, STALL as the shell resolved it."""
     env = os.environ
-    return Ctx(session, repo, session.config.reviewer, clock_from_env(env), knobs.review_clocks(env)[1],
-               nudge_after=nudge_after)
+    grace, stall = knobs.review_clocks(env)
+    return Ctx(session, repo, session.config.reviewer, clock_from_env(env), stall,
+               nudge_after=nudge_after, pickup=knobs.pickup(grace))
 
 
 def feed(ctx: Ctx, path: str) -> list[Json]:

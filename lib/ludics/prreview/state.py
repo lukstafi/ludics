@@ -139,12 +139,16 @@ def instant(at: Json) -> str:
 
 
 def _commit_read(ctx: Ctx, sha: str) -> str:
-    """The head commit's committer date, or "" when the read failed."""
+    """The head commit's committer date, or "" when the read failed. A read that answered is
+    kept on the context by SHA (a commit's date never changes); a failed one is read again."""
+    if sha in ctx.commit_dates:
+        return ctx.commit_dates[sha]
     result = ctx.session.retry(
         "read", ["api", f"repos/{ctx.repo}/commits/{sha}", "--jq", ".commit.committer.date"]
     )
     match result:
         case GhOk(stdout=out):
+            ctx.commit_dates[sha] = out
             return out
         case GhFailed() | GhUnanswered():
             return ""
@@ -669,6 +673,24 @@ def status_state(ctx: Ctx, pr: str) -> State:
     if eyes_at and eyes_at > last_spoke:
         age = age_of(eyes_at, ctx.clock.time())
         if age is not None and age >= grace_stall:
+            # A 👀 is a level: one an earlier head's hung round left up stands over a fresh push,
+            # and the reviewer cannot put up another for the new head's round (#770's head 1af99c3
+            # read STALLED for 81m seconds after its push). So a 👀 older than the head's arrival
+            # is read as that head's pickup while the head is younger than the pickup margin
+            # (knobs.PICKUP, the clock watch holds its nudges on), and as the stall it is, aged
+            # from its own date, after that. An arrival that does not read leaves the stall.
+            if head_sha and not head_at_read:
+                head_at = _commit_read(ctx, head_sha)
+                head_at_read = True
+            arrival = _arrival_floor(ctx, head_at, head.created) if head_sha else ""
+            arrived = age_of(arrival, ctx.clock.time()) if arrival else None
+            if arrived is not None and eyes_at < arrival and arrived < ctx.pickup:
+                return State(
+                    "reviewing", arrived, mstate,
+                    f"👀 from {rev} at {eyes_at} predates head {_short(head_sha)}'s arrival at"
+                    f" {arrival}, so it is no measure of this head's round until the head's pickup"
+                    f" ({fmt_age(ctx.pickup)}) is over",
+                )
             return State("stalled", age, mstate, f"👀 from {rev} at {eyes_at} with nothing posted since")
         since = f" ({last_spoke})" if last_spoke else ""
         return State("reviewing", age, mstate, f"👀 from {rev} at {eyes_at}, newer than its last word{since}")

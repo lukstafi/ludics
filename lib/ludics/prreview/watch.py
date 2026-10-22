@@ -95,12 +95,8 @@ _NUDGED = -1
 # end()'s answer when its final poll read a head the nudge is held for (a new head, or a request
 # younger than its grace): the loop goes on to ``held_until``.
 _HELD = -2
-# How long this watch must itself have seen a head, with nothing started on it, before it nudges:
-# the evidence a commit's date cannot give that the push is not simply too new for the reviewer's
-# own automatic review. That 👀 lands seconds after a push (on ludics-lite#583, 18s to the
-# connector's first answer, 12s from a request to its 👀); five minutes is the margin, capped by the
-# grace for a grace set shorter.
-PICKUP = 300
+# The pickup margin (knobs.PICKUP), held from this watch's own first sight of a head.
+PICKUP = knobs.PICKUP
 
 
 @dataclass(frozen=True)
@@ -620,7 +616,7 @@ class Watch:
         if not head:
             return None
         now = self.clock.now()
-        hold = self.first_seen.get(head, now) + min(PICKUP, self.cfg.grace)
+        hold = self.first_seen.get(head, now) + self.ctx.pickup
         if hold > now:
             return hold
         match read:
@@ -768,7 +764,7 @@ class Watch:
                     if now_head:
                         self.last_head = now_head
                         self.first_seen[now_head] = self.clock.now()
-                    return self.clock.now() + min(PICKUP, self.cfg.grace)
+                    return self.clock.now() + self.ctx.pickup
                 # Recorded before the post: it is sent once whatever its error (it may have landed).
                 self.own_nudges[head] = self.clock.now()
                 posted, post_err = self.post_request()
@@ -829,7 +825,7 @@ class Watch:
         ):
             return None
         now = self.clock.now()
-        hold = self.first_seen.get(head, now) + min(PICKUP, self.cfg.grace)
+        hold = self.first_seen.get(head, now) + self.ctx.pickup
         if hold > now:
             return hold
         read = nudge_read(self.ctx, self.pr)
@@ -1172,5 +1168,6 @@ def run(session: GhSession, args: list[str], env: Mapping[str, str] | None = Non
     target = pr_arg(args[0], session.config.repo)
     cfg = with_window(cfg, e)
     threshold = "off" if session.config.round_threshold is None else str(session.config.round_threshold)
-    ctx = Ctx(session, target.repo, session.config.reviewer, clock_from_env(e), cfg.stall)
+    ctx = Ctx(session, target.repo, session.config.reviewer, clock_from_env(e), cfg.stall,
+              pickup=knobs.pickup(cfg.grace))
     return Watch(ctx, target.num, mark, cfg, session.config.round_gap, threshold, nudge).run()

@@ -820,6 +820,52 @@ class OneSummaryReader(unittest.TestCase):
                               "and so does one of its rows that does not read")
 
 
+class EyesBeforeTheHeadArrived(unittest.TestCase):
+    """The fold-in to ludics-lite#752 from #770's hand-back: a 👀 an earlier head's hung round left
+    up read the next head as STALLED seconds after its push (#770's 1af99c3, "STALLED ... 81m").
+    Inside the head's pickup margin (knobs.PICKUP, the clock watch holds its nudge on) it is read
+    as that head's pickup; after it, as the stall it is, so the watch's 5-minute nudge stands."""
+
+    old_eyes = reaction("eyes", iso(9999))
+
+    def test_a_fresh_push_under_an_old_eyes_is_its_pickup(self) -> None:
+        st = run_state(feeds(reactions=[self.old_eyes], head_at=iso(60)))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        self.assertLess(st.age or 0, 300, "aged from the head's arrival")
+        self.assertIn("predates head aaaaaaa's arrival at", st.detail)
+        st = run_state(feeds(reactions=[self.old_eyes], head_at="2026-09-01T00:00:00Z", created=iso(60)))
+        self.assertEqual(st.tok, "reviewing", "a PR opened since is an arrival too")
+
+    def test_past_the_pickup_the_eyes_is_the_stall_it_is(self) -> None:
+        st = run_state(feeds(reactions=[self.old_eyes], head_at=iso(400)))
+        self.assertEqual(st.tok, "stalled", st.line())
+        self.assertGreater(st.age or 0, 9000, "aged from the 👀 itself, as before")
+        younger = run_state(feeds(reactions=[reaction("eyes", iso(3000))], head_at=iso(9999)))
+        self.assertEqual(younger.tok, "stalled", "a 👀 newer than the head is that head's own")
+
+    def test_an_arrival_that_does_not_read_leaves_the_stall(self) -> None:
+        gh = feeds(reactions=[self.old_eyes], head_at=iso(60))
+        gh.down.add(f"repos/o/r/commits/{HEAD}")
+        self.assertEqual(run_state(gh).tok, "stalled")
+
+    def test_the_head_commits_date_is_read_once_per_context(self) -> None:
+        gh = feeds(reactions=[self.old_eyes], head_at=iso(60))
+        c = ctx(gh)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            first = state.status_state(c, "7")
+            second = state.status_state(c, "7")
+        self.assertEqual((first.tok, second.tok), ("reviewing", "reviewing"))
+        self.assertEqual(gh.calls.count(f"repos/o/r/commits/{HEAD}"), 1)
+        gh = feeds(reactions=[self.old_eyes], head_at=iso(60))
+        gh.down.add(f"repos/o/r/commits/{HEAD}")
+        c = ctx(gh)
+        with contextlib.redirect_stderr(err):
+            state.status_state(c, "7")
+            state.status_state(c, "7")
+        self.assertEqual(gh.calls.count(f"repos/o/r/commits/{HEAD}"), 2, "a failed read is not kept")
+
+
 def run_stall_nudge(gh: FakeGh) -> state.NudgeRead:
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
