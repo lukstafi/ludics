@@ -1220,6 +1220,22 @@ clash at about three times the builds (ludics-lite#635), so it suits a cheap com
 moves again between the build and the call is the integration loop's either way
 (`prreview/mergebuild.py` states both).
 
+**Where the merge build runs, how long it waits, and how to try a config** (ludics-lite#730, #764,
+#751). `merge -C <clone>` names the clone the build uses, for a `merge` started anywhere else (a
+`bg-run.sh spawn`); the PR is still named by `owner/name#<n>`, never by the clone, and `-C` is checked
+before anything is read, so a `--wait` never ends on "not a clone". On a box with run-time slots a
+measurement window holding the box is waited for within what is left of `--wait`'s ceiling (never
+less than 30 min, and 30 min without `--wait`), and the slot's lines naming the measurement (its
+request id, coordinator and worker) appear in `merge`'s stderr as soon as it finds it. The build
+judges by the DEFAULT branch's copy of `.github/ship-pr-merge-build`, so a PR that adds or changes
+that file is not judged by its own copy; `merge` then prints a `NOTE` saying which copy judged it.
+To show a config working, a PR's own copy included, run the dry run in a full clone holding both
+commits: `pr-review.sh merge-build --base <rev> --head <rev> --config <file>` (or `--repo
+owner/name` and no `--config` for the default branch's copy). It merges the two as `merge` would,
+applies the trigger, runs the command, and exits as `merge`'s build step would (0 would proceed, 1
+refused); it reads no PR, fetches nothing and merges nothing. A config change's negative control is
+that run on a pair the config must refuse.
+
 **Standalone use does not watch CI at all** (since 2026-08-31): trailing failures on the merged
 base belong to the repository's **post-merge owner**, the watch or triage routine its agent notes
 name, which claims a red with one issue and may open a fix PR. So after `merge` confirms
