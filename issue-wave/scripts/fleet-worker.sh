@@ -109,8 +109,8 @@
 #                          # hold one of THIS box's run-time correctness slots around a suite or
 #                          # batch (no lease needed), plus a GPU token unless it declares --cpu;
 #                          # inside a slot already held (FLEET_SLOT_HELD) it runs under that one;
-#                          # --wait-window waits out a measurement on this box (default 3600 s)
-#                          # instead of refusing, then waits for a slot as --wait says. The batch
+#                          # --wait-window waits out a measurement on this box (bare: to the
+#                          # window's recorded deadline, else 3600 s) instead of refusing, then waits for a slot as --wait says. The batch
 #                          # leads a process group of its own, ended (exit 124) at --deadline, and
 #                          # when the wrapper is signalled or killed
 #   fleet-worker.sh execution slot --bg <parent> [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] -- <command...>
@@ -152,10 +152,12 @@
 #                          # not clean draws an OBSERVED-FROM WARNING on stderr (every form); every
 #                          # --observed-from must be the record's checkout when it names one, or is refused
 #   fleet-worker.sh execution run <json-file>          # reserve + dispatch in one step
-#   fleet-worker.sh execution window [--no-gap] <box> <json-file> # `run` for a measurement that suspends
-#                          # the box's standing reservations, restored when it concludes; it first
-#                          # waits out FLEET_WINDOW_GAP after the box's last measurement while
-#                          # a batch is waiting for the box (none with --no-gap)
+#   fleet-worker.sh execution window [--no-gap] [--deadline <seconds>] <box> <json-file> # `run` for a
+#                          # measurement that suspends the box's standing reservations, restored
+#                          # when it concludes; it first waits out FLEET_WINDOW_GAP after the box's
+#                          # last measurement while a batch is waiting for the box (none with
+#                          # --no-gap); --deadline: the seconds from its opening by which it will be
+#                          # concluded, which a bare --wait-window waits to (ludics-lite#737)
 #   fleet-worker.sh execution conclude --from-run <run-dir> --request <id> --sha <sha>
 #                          [--box <box>] [--evidence <text>]   # verdict, log and checkout read from a
 #                                                     # test-run.sh record on the reserved box

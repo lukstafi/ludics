@@ -25,7 +25,8 @@ THE WINDOW WAIT (ludics-lite#666). A standing record a measurement window has ``
 refused at once -- unless the leg was given ``--wait-window[=<s>]``, when it waits here, on the
 caller's box, in the slot's own wait (``slot.await_measurements``, in this verb's voice): until no
 measurement is outstanding on the record's box and the record is no longer suspended, re-reading
-the anchor's registry, for at most the bound (an hour when none is given); past it, refused naming
+the anchor's registry, for at most the bound (when none is given, to the window's recorded deadline,
+or an hour where it records none: ludics-lite#737); past it, refused naming
 the measurement, as the slot is. The record counts too, as held by the window it names, because a
 listing is no snapshot: a conclusion restores the records it suspended and then concludes the
 window, file by file, and an opening publishes the window and then suspends, so one read can show
@@ -384,13 +385,13 @@ def refused(text: str, rc: int = 1) -> int:
 LEG_VOICE = slot.Voice("EXECUTION LEG", "running the leg", "nothing ran")
 
 
-def window_bound(slot_flags: list[str]) -> int | None:
-    """The leg's ``--wait-window`` bound in seconds, the last given winning as in the slot; None
-    without one."""
-    bound: int | None = None
+def window_bound(slot_flags: list[str]) -> slot.WindowBound | None:
+    """The leg's ``--wait-window`` bound, the last given winning as in the slot: its seconds, or for a
+    bare one ``slot.BY_DEADLINE`` (the window's own deadline, ludics-lite#737); None without one."""
+    bound: slot.WindowBound | None = None
     for flag in slot_flags:
         if flag == "--wait-window":
-            bound = slot.WINDOW_WAIT
+            bound = slot.BY_DEADLINE
         elif flag.startswith("--wait-window="):
             bound = int(flag[len("--wait-window=") :])
     return bound

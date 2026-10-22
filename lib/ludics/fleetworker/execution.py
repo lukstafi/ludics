@@ -929,7 +929,7 @@ def execution_refresh(cfg: Config, record_text: str) -> None:
 LIST_USAGE = "execution list: expected --active, --compact or --host <box>"
 USAGE = (
     "execution: list, slot -- <command>, hold -- <command>, leg --request <id> ... -- <runner>,"
-    " run|reserve|dispatch|record|reconcile|conclude <json-file>, window [--no-gap] <box> <json-file>,"
+    " run|reserve|dispatch|record|reconcile|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
     " or tip-run <json-file> [--tip <branch>] --checkout <dir> -- <command>, tip-run --wait <id>"
 )
@@ -1362,7 +1362,7 @@ def _nonempty(path: str) -> bool:
         return False
 
 
-WINDOW_USAGE = "execution window [--no-gap] <box> <measurement reserve.json>"
+WINDOW_USAGE = "execution window [--no-gap] [--deadline <seconds>] <box> <measurement reserve.json>"
 WINDOW_GAP = 60  # FLEET_WINDOW_GAP's default, in seconds (ludics-lite#667)
 
 
@@ -1378,6 +1378,17 @@ def window_gap(cfg: Config, args: list[str]) -> tuple[list[str], int]:
     return args, int(text)
 
 
+def window_deadline(args: list[str]) -> tuple[list[str], int | None]:
+    """THE WINDOW'S DEADLINE (ludics-lite#737, the registry's header): the window's words without
+    ``--deadline <seconds>``, which may only come right after ``window`` (and its ``--no-gap``), and
+    the seconds from the window's opening by which its coordinator will have concluded it, or None."""
+    if len(args) > 1 and args[1] == "--deadline":
+        if len(args) < 3 or not re.fullmatch(r"[0-9]+", args[2]) or int(args[2]) < 1:
+            die("execution window: --deadline takes a positive whole number of seconds")
+        return [args[0], *args[3:]], int(args[2])
+    return args, None
+
+
 def gap_wait(done: Done) -> int | None:
     """The seconds the registry's gap answer (exit 3, ``{"gap": {..., "wait": <n>}}``) says to wait,
     or None for any other outcome, which is said and returned as it stands."""
@@ -1391,8 +1402,8 @@ def gap_wait(done: Done) -> int | None:
     return wait if type(wait) is int and wait > 0 else None
 
 
-def window_payload(args: list[str], gap: int = 0) -> str:
-    return with_gap(window_lines(args), gap)
+def window_payload(args: list[str], gap: int = 0, deadline: int | None = None) -> str:
+    return with_gap(window_lines(args, deadline), gap)
 
 
 def with_gap(lines: list[dict[str, Any]], gap: int) -> str:
@@ -1401,7 +1412,7 @@ def with_gap(lines: list[dict[str, Any]], gap: int) -> str:
                      for line in lines)
 
 
-def window_lines(args: list[str]) -> list[dict[str, Any]]:
+def window_lines(args: list[str], deadline: int | None = None) -> list[dict[str, Any]]:
     if len(args) != 3 or not args[1] or not os.access(args[2], os.R_OK):
         die(f"{WINDOW_USAGE}: a box and a readable JSON file required")
     try:
@@ -1424,7 +1435,7 @@ def window_lines(args: list[str]) -> list[dict[str, Any]]:
             request, position = decoder.raw_decode(text, position)
         except ValueError:
             die(f"execution window: {args[2]} is not a JSON reservation")
-        lines.append({"box": args[1], "request": request})
+        lines.append({"box": args[1], "request": request} | ({} if deadline is None else {"deadline": deadline}))
     return lines
 
 
@@ -1496,7 +1507,8 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             # the call says which box's standing reservations it suspends, and the registry refuses
             # a payload measuring on any other. THE GAP (ludics-lite#667): see the loop below.
             args, gap = window_gap(cfg, args)
-            requests = window_lines(args)
+            args, deadline = window_deadline(args)
+            requests = window_lines(args, deadline)
             payload = with_gap(requests, gap)
             check_identity(cfg)
             checked_request(cfg, payload, action)

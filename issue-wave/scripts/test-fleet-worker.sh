@@ -4279,8 +4279,8 @@ expect "...while the measurement's own run is admitted inside its hold" 0 "insid
 grep -q "^window-own-run$" <<<"$out" && ok "...and runs" || ko "the window's own run did not run: $out"
 expect "a second window on the box is refused while one is open" 1 "measurement window win-measure is already open on testbox" -- \
   "${FWS[@]}" execution window testbox "$(slotreq win-second measurement)"
-expect "execution window takes a box and a reservation" 2 "execution window \[--no-gap\] <box> <measurement reserve.json>" -- "${FWS[@]}" execution window testbox
-expect "...and --no-gap only right after window" 2 "execution window \[--no-gap\] <box> <measurement reserve.json>" -- \
+expect "execution window takes a box and a reservation" 2 "execution window \[--no-gap\] \[--deadline <seconds>\] <box> <measurement reserve.json>" -- "${FWS[@]}" execution window testbox
+expect "...and --no-gap only right after window" 2 "execution window \[--no-gap\] \[--deadline <seconds>\] <box> <measurement reserve.json>" -- \
   "${FWS[@]}" execution window testbox --no-gap "$(slotreq win-second measurement)"
 expect "...and a gap of whole seconds" 2 "FLEET_WINDOW_GAP must be a whole number of seconds" -- \
   env FLEET_WINDOW_GAP=soon "${FWS[@]}" execution window testbox "$(slotreq win-second measurement)"
@@ -4312,6 +4312,44 @@ if held "$bgd/log" "waiting up to 60s (--wait-window) for it to conclude, then f
     ok "...in its slot, with its output in the run's log" || ko "the waited batch's log: $(cat "$bgd/log")"
 else ko "the --wait-window batch never said it waits: $(cat "$bgd/log" 2>/dev/null)"; fixture_done ww-measure; fi
 bgkill "$bgd"
+# THE WINDOW'S DEADLINE (ludics-lite#737): a bare --wait-window gave up after a fixed 3600 s, and a
+# CUDA leg was refused an hour into a longer window. Now a window may record when it will have been
+# concluded (`execution window --deadline <seconds>`), and a bare --wait-window waits to that, past
+# the hour or short of it; 3600 s is only the bound behind a measurement that records none.
+"${FWS[@]}" execution window --no-gap --deadline 7200 testbox "$(slotreq dl-long measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+expect "a bare --wait-window batch returns its run directory at once behind a window due in two hours" 0 "^$TMP/slot-dl/run-1$" -- \
+  env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-dl" --wait-window --wait 0 -- echo after-the-long-window
+dbd="$TMP/slot-dl/run-1"
+if held "$dbd/log" "waiting up to 7[12][0-9][0-9]s (--wait-window, to measurement dl-long's deadline [^ ]*) for it to conclude, then for a slot, for: echo after-the-long-window$"; then
+  ok "...which waits to the window's own deadline, past the hour (#737)"
+  grep -q "measurement window dl-long holds testbox (.*; due to conclude by [^ ]*)$" "$dbd/log" &&
+    ok "...naming when the window is due" || ko "the waiting batch did not name the window's deadline: $(cat "$dbd/log")"
+  fixture_done dl-long
+  expect "...and once the window concludes the waiting batch takes a slot and runs (rc=0)" 0 "rc=0" -- "$BGR" wait "$dbd" --within 30
+  grep -q "^after-the-long-window$" "$dbd/log" && ok "...with its output in the run's log" || ko "the waited batch's log: $(cat "$dbd/log")"
+else ko "the bare --wait-window batch never said it waits to the deadline: $(cat "$dbd/log" 2>/dev/null)"; fixture_done dl-long; fi
+bgkill "$dbd"
+"${FWS[@]}" execution window --no-gap --deadline 2 testbox "$(slotreq dl-short measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+expect "a bare --wait-window batch behind a window still open at its deadline is refused at it, naming it" 1 \
+  "^EXECUTION SLOT REFUSED testbox: measurement dl-short still holds testbox after [0-2]s (--wait-window, to measurement dl-short's deadline [^ ]*); no slot taken$" -- \
+  env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --wait-window -- echo past-the-deadline
+grep -q "^past-the-deadline$" <<<"$out" && ko "the batch ran beside the window: $out" || ok "...running nothing"
+expect "...while an explicit --wait-window=<seconds> keeps its own bound" 1 \
+  "^EXECUTION SLOT REFUSED testbox: measurement dl-short still holds testbox after 1s (--wait-window); no slot taken$" -- \
+  env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --wait-window=1 -- echo explicit
+fixture_done dl-short
+"${FWS[@]}" execution window --no-gap testbox "$(slotreq dl-none measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-dn" --wait-window --wait 0 -- echo after-no-deadline >/dev/null
+dnd="$TMP/slot-dn/run-1"
+held "$dnd/log" "waiting up to 3600s (--wait-window) for it to conclude, then for a slot, for: echo after-no-deadline$" &&
+  ok "a bare --wait-window behind a window that records no deadline waits the hour, as before"
+fixture_done dl-none
+expect "...and runs once it concludes (rc=0)" 0 "rc=0" -- "$BGR" wait "$dnd" --within 30
+bgkill "$dnd"
+expect "execution window --deadline takes a positive whole number of seconds" 2 "--deadline takes a positive whole number of seconds" -- \
+  "${FWS[@]}" execution window --deadline 0 testbox "$(slotreq dl-bad measurement)"
+expect "...only right after window (and its --no-gap)" 2 "execution window \[--no-gap\] \[--deadline <seconds>\] <box> <measurement reserve.json>" -- \
+  "${FWS[@]}" execution window testbox --deadline 60 "$(slotreq dl-bad measurement)"
 # THE GAP (ludics-lite#667): a coordinator's back-to-back windows are two registry calls, and a
 # batch waiting out the first re-reads the registry every FLEET_SLOT_WINDOW_POLL seconds, so it
 # read the second window and never the moment between them. Now the second window, on a box a

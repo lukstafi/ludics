@@ -143,17 +143,27 @@ and moves each standing reservation there to state `suspended`, naming the measu
 `suspended_by` and the state it left in `suspended_from`. It prints the measurement's record, and
 on stderr `EXECUTION WINDOW <box>: <id> open; suspended <ids>`. Concluding the measurement, whatever
 the verdict, restores every reservation it suspended to its former state, with the same request ids
-(`EXECUTION WINDOW <box>: <id> concluded; restored <id> (<state>), ...` on stderr). While the window is open:
+(`EXECUTION WINDOW <box>: <id> concluded; restored <id> (<state>), ...` on stderr). An opening and a
+conclusion each write several records, and a listing never sees one half done: every registry
+action takes the anchor's `executions.lock`, a listing shared and a write exclusive (ludics-lite#711;
+the snapshot contract and its boundary, a caller whose checkout predates it, are in `registry.py`'s
+header). `execution window --deadline <seconds>` (at most a week) records when the window will have been
+concluded, counted from its opening: the runner's `--deadline`, its setup, and the time you take to conclude
+it (ludics-lite#737). It bounds the waiters, below, and nothing else. While the window is open:
 
 - `execution slot` on the box refuses a batch with `EXECUTION SLOT REFUSED <box>: measurement window
   <id> is open on <box> ...`, so a caller knows to retry after it closes rather than to debug or to
   request; the measurement's own run is admitted inside its `hold --request`, as
   [above](#exclusivity-and-the-run-time-slots). `execution slot --wait-window[=<seconds>]`
-  (ludics-lite#557; an hour when no bound is given) waits for the measurement instead, a window
+  (ludics-lite#557) waits for the measurement instead, a window
   or not: it names the measurement, its box and its coordinator once (`EXECUTION SLOT <box>:
   measurement window <id> holds <box> (coordinator ...)`), says it is still waiting every 60
   seconds, re-reads the registry every `FLEET_SLOT_WINDOW_POLL` seconds (15), and refuses at
-  its bound with `... still holds <box> after <n>s (--wait-window)`; once nothing is outstanding
+  its bound with `... still holds <box> after <n>s (--wait-window)`. A bare `--wait-window` waits
+  to the deadline of the window it finds (`(--wait-window, to measurement <id>'s deadline <time>)`),
+  short of an hour or past it, and an hour behind a measurement that records none; the latest of
+  those it finds when it starts, fixed then (ludics-lite#737). `--wait-window=<seconds>` waits
+  exactly that. Once nothing is outstanding
   it waits for a slot as `--wait` says, each wait with its own bound. A measurement on another
   box never makes it wait, and it does not wait inside a measurement's hold (it would wait for
   its own measurement). It is a flag of its own rather than a wider `--wait`, so a runner's
@@ -298,11 +308,12 @@ So:
   `--no-gap` to model exactly that); with the gap it reads the box free and goes for its slot.
 - A window's bound is 30 minutes from open to conclusion: 1800 s is the shortest wait a batch gives
   a window (a merge build's without `--wait`; under `--wait` it waits for what is left of that
-  ceiling, never less, ludics-lite#764; a brief's `--wait-window` waits an hour), and a waiter's
-  bound runs on across back-to-back windows, so the gap is where it gets out. Plan each window's
-  measurement to fit (its runner under `--deadline`), and give a longer one a window of its own. A
-  measurement sequence that cannot fit (tuned before/after cells at about 10 min a cell ran 50+
-  min per window in wave-20261021) belongs in an off-hours window, not split across daytime ones. When a window
+  ceiling, never less, ludics-lite#764), and a waiter's bound runs on across back-to-back windows,
+  so the gap is where it gets out. Plan each window's measurement to fit (its runner under
+  `--deadline`), and give a longer one a window of its own, opened with `--deadline`, which a
+  brief's bare `--wait-window` waits to; one opened without waits only the hour. A measurement
+  sequence that cannot fit (tuned before/after cells at about 10 min a cell ran 50+ min per window
+  in wave-20261021) belongs in an off-hours window, not split across daytime ones. When a window
   passes the bound with no result line, look at its run: a live one runs on (concluding its window
   frees nothing while its hold holds the slots), a hung one is stopped and concluded `timeout`,
   and its request queues again behind a gap.

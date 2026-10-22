@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 import unittest
 
 from typing import Any
@@ -375,7 +376,10 @@ class SlotArguments(unittest.TestCase):
 
     def test_wait_window(self) -> None:
         self.assertIsNone(parse_slot(["--", "true"]).window_wait)
-        self.assertEqual(parse_slot(["--wait-window", "--", "true"]).window_wait, slot.WINDOW_WAIT)
+        # Bare: the window's own deadline (ludics-lite#737); explicit: exactly that, the last one winning.
+        self.assertEqual(parse_slot(["--wait-window", "--", "true"]).window_wait, slot.BY_DEADLINE)
+        self.assertEqual(parse_slot(["--wait-window", "--wait-window=3600", "--", "true"]).window_wait, 3600)
+        self.assertEqual(parse_slot(["--wait-window=0", "--wait-window", "--", "true"]).window_wait, slot.BY_DEADLINE)
         parsed = parse_slot(["--wait-window=90", "--wait", "5", "--", "true"])
         self.assertEqual((parsed.window_wait, parsed.wait), (90, 5))
         # The bound only after `=`: a bare flag never takes the next word for one.
@@ -384,13 +388,20 @@ class SlotArguments(unittest.TestCase):
             self.assertIn("--wait-window takes a whole number of seconds", self.refused([bad, "--", "true"]), bad)
 
 
-def measurement(identity: str, box: str = "testbox", state: str = "launching", window: bool = True) -> dict[str, Any]:
+def measurement(identity: str, box: str = "testbox", state: str = "launching", window: bool = True,
+                due_in: float | None = None) -> dict[str, Any]:
+    """A measurement record; ``due_in``: its window's deadline, that many seconds from now (#737)."""
     record: dict[str, Any] = {
         "request_id": identity, "coordinator": "coord", "state": state, "created_at": "2026-10-12T00:00:00+00:00",
         "request": {"execution_host": box, "kind": "measurement", "worker": "w", "issue": "o/r#1"},
     }
     if window:
         record["window"] = True
+    if due_in is not None:
+        # As a listing gives it: the time left by the anchor's clock beside the recorded deadline.
+        record["deadline"] = 1
+        record["deadline_at"] = (datetime.now(timezone.utc) + timedelta(seconds=due_in)).isoformat()
+        record["deadline_left"] = max(0, int(due_in))
     return record
 
 
@@ -538,7 +549,7 @@ class Waiting(unittest.TestCase):
 class WindowWait(unittest.TestCase):
     """``--wait-window`` (ludics-lite#557), the registry re-reads stubbed in order."""
 
-    def wait(self, first: list[dict[str, Any]], reads: list[Any], bound: int = 30) -> tuple[object, str, str]:
+    def wait(self, first: list[dict[str, Any]], reads: list[Any], bound: slot.WindowBound = 30) -> tuple[object, str, str]:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
                           {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.01"}, host="testbox")
         out, err = io.StringIO(), io.StringIO()
@@ -715,6 +726,95 @@ class WindowWait(unittest.TestCase):
         self.assertIn("the registry could not be read while waiting", err)
         result, out, _ = self.wait([measurement("win")], [unread] * 10000, bound=1)
         self.assertEqual((result, out), (4, "EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken\n"))
+
+
+class WindowDeadline(unittest.TestCase):
+    """THE WINDOW'S DEADLINE (ludics-lite#737): a bare --wait-window gives up at the window's own
+    deadline, frozen when the wait starts, and at WINDOW_WAIT only where none is recorded."""
+
+    def cutoff(self, holding: list[dict[str, Any]]) -> tuple[int, str]:
+        return slot.window_cutoff(holding)
+
+    def test_a_deadline_past_the_hour_is_waited_to(self) -> None:
+        left, said = self.cutoff([measurement("win", due_in=7200)])
+        self.assertEqual(left, 7200)
+        self.assertRegex(said, r"\A--wait-window, to measurement win's deadline 20[0-9-]+T")
+
+    def test_a_deadline_inside_the_hour_is_the_bound_too(self) -> None:
+        # The fallback is only a fallback: no floor of an hour under a recorded deadline.
+        self.assertEqual(self.cutoff([measurement("win", due_in=600)])[0], 600)
+
+    def test_no_deadline_or_an_unreadable_one_is_the_hour(self) -> None:
+        bad = measurement("win")
+        bad["deadline_at"] = "soon"
+        naive = measurement("win")
+        naive["deadline_at"] = "2099-01-01T00:00:00"
+        unlisted = measurement("win", due_in=7200)
+        del unlisted["deadline_left"]   # a deadline the listing gives no time left for
+        for holding in ([measurement("win")], [measurement("m", window=False)], [bad], [naive], [unlisted], []):
+            self.assertEqual(self.cutoff(holding), (slot.WINDOW_WAIT, "--wait-window"), holding)
+
+    def test_a_deadline_already_past_gives_up_at_once(self) -> None:
+        self.assertEqual(self.cutoff([measurement("win", due_in=-30)])[0], 0)
+
+    def test_the_time_left_is_the_anchors_and_no_clock_here_is_compared(self) -> None:
+        # Round 1 of #771: this host's clock 10 minutes off the anchor's moves nothing.
+        skewed = measurement("win", due_in=600)
+        skewed["deadline_at"] = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+        self.assertEqual(self.cutoff([skewed])[0], 600)
+
+    def test_the_latest_blocker_wins_one_without_a_deadline_counting_an_hour(self) -> None:
+        self.assertEqual(self.cutoff([measurement("a", due_in=7200), measurement("b", due_in=9000)])[0], 9000)
+        self.assertEqual(self.cutoff([measurement("a", due_in=60), measurement("b")]),
+                         (slot.WINDOW_WAIT, "--wait-window"))
+
+    def wait(self, first: list[dict[str, Any]], reads: list[Any]) -> tuple[object, str, str]:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.01"}, host="testbox")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(slot, "read_registry", side_effect=reads), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result = await_measurements(cfg, "testbox", first, slot.BY_DEADLINE, ["echo", "x"])
+        return result, out.getvalue(), err.getvalue()
+
+    def test_a_bare_wait_behind_a_long_window_announces_its_deadline_and_proceeds_once_it_concludes(self) -> None:
+        window = measurement("win", due_in=7200)
+        result, out, err = self.wait([window], [[window], [measurement("win", state="concluded")]])
+        self.assertEqual((result, out), ([measurement("win", state="concluded")], ""))
+        self.assertRegex(err, r"waiting up to 7200s \(--wait-window, to measurement win's deadline \S+\)"
+                              r" for it to conclude, then for a slot, for: echo x")
+        self.assertIn("reserved 2026-10-12T00:00:00+00:00; due to conclude by ", err)
+
+    def test_a_bare_wait_is_refused_at_the_deadline_naming_it(self) -> None:
+        window = measurement("win", due_in=1)
+        started = time.monotonic()
+        result, out, _ = self.wait([window], [[window]] * 10000)
+        self.assertEqual(result, 1)
+        self.assertGreaterEqual(time.monotonic() - started, 0.95)
+        self.assertRegex(out, r"\AEXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 1s"
+                              r" \(--wait-window, to measurement win's deadline \S+\); no slot taken\n\Z")
+
+    def test_a_later_window_does_not_move_the_cutoff(self) -> None:
+        # Frozen at the start: the next window's later deadline is the gap's to let the waiter out of.
+        first, later = measurement("a", due_in=1), measurement("b", due_in=7200)
+        result, out, err = self.wait([first], [[later]] * 10000)
+        self.assertEqual(result, 1)
+        self.assertIn("measurement window b holds", err)
+        self.assertIn("still holds testbox after 1s (--wait-window, to measurement a's deadline", out)
+
+    def test_bg_passes_a_bare_wait_window_on_bare(self) -> None:
+        # The detached run works out its window's deadline itself, from its own first read.
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_BOXES": "testbox"}, host="testbox")
+        for flags, carried in ((["--wait-window"], "--wait-window"), (["--wait-window=90"], "--wait-window=90")):
+            execv = mock.Mock(side_effect=OSError(2, "stopped here"))
+            with mock.patch.object(slot.os, "execv", execv), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(slot.cmd_slot(cfg, ["--bg", "/p", *flags, "--", "make"]), 126)
+            argv: list[str] = execv.call_args.args[1]
+            self.assertEqual([word for word in argv if word.startswith("--wait-window")], [carried], flags)
+
+    def test_a_record_without_a_deadline_is_described_as_before(self) -> None:
+        self.assertTrue(slot.describe_measurement("testbox", measurement("win")).endswith("no expected end is recorded)"))
 
 
 class RegistryUnread(unittest.TestCase):

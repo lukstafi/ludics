@@ -150,6 +150,39 @@ no registry (the box-local `waiting.<pid>` record is its trace, which `slot --ho
 window's drain takes slots as they free), and a box whose fleet-worker predates #719 waits with
 `list`, unseen, so its batches get no gap.
 
+THE WINDOW'S DEADLINE (ludics-lite#737). A window's payload may carry `"deadline": <seconds>` (a
+whole number from 1 to a week) beside `box`, `request` and `gap`, never in the request: the time from the
+window's opening by which its coordinator will have CONCLUDED it -- its runner's `--deadline`, the
+setup before it, and the conclusion's own latency. The record keeps `deadline` and `deadline_at`
+(ISO 8601 UTC on this anchor's clock: when this action created the window, after any gap, plus
+`deadline`, which the ledger's validation holds it to), fixed for the record's life: a retried window names the same deadline, or none when the
+record has none, or is refused, and never moves `deadline_at`. Only `window` takes one. A listing
+(`list`, `wait`) adds `deadline_left` to such a record: the whole seconds from this anchor's clock
+to `deadline_at`, 0 once past, so a waiter on another host reads the time left without comparing
+its clock with this one (the field is the listing's, never written). It bounds
+the waiters and nothing else: `execution slot --wait-window` with no value (and `execution leg`'s)
+gives up at it, an hour where no measurement holding the box records one; it does not end the
+measurement, conclude its record, or release anything.
+
+THE SNAPSHOT (ludics-lite#711). A window's opening publishes the measurement and then suspends the
+box's standing records, and its conclusion restores them and then concludes it: several files, one
+`os.replace` each (the order above covers a crash). A reader between two of them, or one whose own
+read of the files a write overtook, saw the window open beside records not suspended, or concluded
+beside records still suspended. So every action takes the flock `executions.lock` under the state
+root -- `list` and `wait` SHARED, every other action EXCLUSIVE -- from before it reads the records
+until `run` returns; a listing is then the ledger between two whole actions. What it covers, and
+nothing else: writers and readers that ship this module with the lock. A copy that predates it (a
+caller whose checkout lags) writes unlocked, so a torn read stays possible until every caller's
+checkout carries it, and `execution leg`'s re-read tolerance stays. The lock order, fail-closed: the
+lease lock (fleet-worker's mkdir lock, taken by the shell before this program starts), then
+`executions.lock`, then `waiters/.lock`, then a lane lock (never waited for); `wait` takes the
+snapshot before its heartbeat's `waiters/.lock`, as a window with a gap does, so the two never
+cross. Nothing an action says is written while it holds either (`run` buffers it, and releases both
+first), so a caller that stops reading stalls only its own action; a lane lock is still held to
+the process's exit, as above. The wait for it is bounded (`LOCK_WAIT`, polled): past it the action is refused, the
+registry busy, rather than a reader hanging behind a wedged writer. The anchor is POSIX: this
+module already flocks, and no anchor runs under Git Bash.
+
 A request that follows a branch (ludics-lite#558): `"requested_revision": "head-of:<branch>"` names
 no commit at request time, so a request queued behind a halt or a busy box cannot go stale (three
 SHA-keyed requests of the 2026-10-05 wave did, one twice). The branch is resolved when the work is
@@ -202,11 +235,14 @@ still answers with its record: what a record holds is validated only as a nonemp
 """
 import contextlib
 import fcntl
+import io
 import json
+import math
 import os
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -390,6 +426,17 @@ def validate_record(data: Any, path: Path) -> Record:
         refuse(f"suspension fields on a record that is not suspended: {path}")
     if "window" in record and (record["window"] is not True or record["request"]["kind"] != "measurement"):
         refuse(f"invalid measurement window: {path}")
+    if {"deadline", "deadline_at"} & set(record):
+        # THE WINDOW'S DEADLINE: both or neither, only on a window, and `deadline_at` exactly its
+        # creation plus `deadline`, so the listing's time left is never past the cap.
+        try:
+            seconds = deadline_ok(record.get("deadline"))
+            at = datetime.fromisoformat(record["deadline_at"]) if isinstance(record.get("deadline_at"), str) else None
+            due = datetime.fromisoformat(record["created_at"]) + timedelta(seconds=seconds)
+        except (ValueError, OverflowError):
+            at = due = None
+        if at is None or at.tzinfo is None or at != due or record.get("window") is not True:
+            refuse(f"invalid window deadline: {path}")
     if record["state"] == "concluded":
         nonempty(record, ["verdict", "log"])
         if record["verdict"] not in {"pass", "fail", "timeout", "cancelled", "not-launched"}:
@@ -397,6 +444,18 @@ def validate_record(data: Any, path: Path) -> Record:
         if record["verdict"] != "not-launched":
             nonempty(record, ["observed_sha", "remote_checkout", "handle"])
     return record
+
+
+WINDOW_DEADLINE_MAX = 7 * 24 * 3600   # a week: longer is no window, and any datetime holds it
+
+
+def deadline_ok(value: Any) -> int:
+    """A window's deadline: a positive whole number of seconds, never a boolean, at most
+    ``WINDOW_DEADLINE_MAX`` (THE WINDOW'S DEADLINE)."""
+    if type(value) is not int or not 1 <= value <= WINDOW_DEADLINE_MAX:
+        refuse(f"a window's deadline must be a whole number of seconds from 1 to {WINDOW_DEADLINE_MAX},"
+               f" not {json.dumps(value)}")
+    return value
 
 
 def sync_directory(path: Path) -> None:
@@ -756,11 +815,11 @@ def load_records(directory: Path) -> dict[str, Record]:
     return records
 
 
-WAITER_LOCKS: list[int] = []   # `waiters/.lock`, held until this process exits (THE WAITERS)
+WAITER_LOCKS: list[int] = []   # `waiters/.lock`, held until `run` returns (THE WAITERS)
 
 
 def lock_waiters(directory: Path) -> None:
-    """Take ``waiters/.lock`` exclusively until this process exits: a heartbeat with the listing
+    """Take ``waiters/.lock`` exclusively until `run` returns: a heartbeat with the listing
     read after it, and a window from its waiter check through its publication, are serialized, so
     either the window sees the heartbeat or the listing sees the window (THE WAITERS)."""
     # parents: on a fresh anchor no lease has created the state root yet, and `wait` takes none.
@@ -770,6 +829,50 @@ def lock_waiters(directory: Path) -> None:
     WAITER_LOCKS.append(descriptor)
 
 
+LOCK_WAIT = 120   # seconds an action waits for `executions.lock` before it is refused (THE SNAPSHOT)
+SNAPSHOT_LOCKS: list[int] = []   # `executions.lock`, held until `run` returns (THE SNAPSHOT)
+READERS = {"list", "wait"}   # the actions that take it SHARED; every other one takes it EXCLUSIVE
+
+
+def lock_snapshot(root: Path, shared: bool) -> None:
+    """Take ``executions.lock`` under the state root, SHARED for a listing and EXCLUSIVE for any
+    other action, polling for at most ``LOCK_WAIT`` seconds (THE SNAPSHOT in the header)."""
+    # parents: on a fresh anchor no lease has created the state root yet, and `list` takes none.
+    root.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(root / "executions.lock", os.O_CREAT | os.O_RDWR, 0o644)
+    mode = (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB
+    give_up, pause = time.monotonic() + LOCK_WAIT, 0.01
+    while True:
+        try:
+            fcntl.flock(descriptor, mode)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= give_up:
+                os.close(descriptor)
+                refuse(f"the registry is busy: another action has held {root / 'executions.lock'} for {LOCK_WAIT}s"
+                       " (ludics-lite#711); retry, and if it persists find the registry process holding it")
+            time.sleep(pause)
+            pause = min(pause * 2, 0.25)
+        except OSError:
+            os.close(descriptor)
+            raise
+    SNAPSHOT_LOCKS.append(descriptor)
+
+
+def unlock_snapshot() -> None:
+    """Release `executions.lock`, and `waiters/.lock` with it: `run` does, before it says anything."""
+    while SNAPSHOT_LOCKS:
+        os.close(SNAPSHOT_LOCKS.pop())
+    while WAITER_LOCKS:
+        os.close(WAITER_LOCKS.pop())
+
+
+def time_left(deadline_at: str, now: datetime) -> int:
+    """A listing's `deadline_left`: whole seconds to `deadline_at` by this clock, rounded UP while any
+    time is left, so a waiter never gives up before the deadline; 0 once it has passed."""
+    return max(0, math.ceil((datetime.fromisoformat(deadline_at) - now).total_seconds()))
+
+
 def main(argv: list[str]) -> None:
     root, action, coordinator, token, word, boxes = argv[1:7]
     raw = payload_word(word)
@@ -777,6 +880,9 @@ def main(argv: list[str]) -> None:
     map_spec = argv[8] if len(argv) > 8 else ""
     anchor, lab = (argv[9:11] + ["", ""])[:2]
     directory = Path(root) / "executions"
+    # THE SNAPSHOT (ludics-lite#711): before anything reads the records, and before `wait`'s
+    # `waiters/.lock` (the lock order in the header).
+    lock_snapshot(Path(root), shared=action in READERS)
     if action == "wait":
         # THE WAITERS (ludics-lite#719): the heartbeat, then -- under the same lock, which an admitted
         # window holds until it is published -- the listing `list` gives, read after it.
@@ -806,19 +912,27 @@ def main(argv: list[str]) -> None:
         if flags.get("compact"):
             selected = [{key: value for key, value in record.items()
                          if key not in {"history", "lease_token"}} for record in selected]
+        # THE WINDOW'S DEADLINE: the time left by THIS clock, so a waiter on another host compares no
+        # clocks (a listing's field only, never written to a record).
+        now = datetime.now(timezone.utc)
+        selected = [record | {"deadline_left": time_left(record["deadline_at"], now)} if "deadline_at" in record
+                    else record for record in selected]
         print(json.dumps(selected, indent=None if flags.get("compact") else 2))
         return
     decoded: Any = json.loads(raw)
     window_box: str | None = None
     window_gap = 0
+    window_deadline: int | None = None   # THE WINDOW'S DEADLINE (see the header)
     if action == "window":
         payload = as_object(decoded)
-        if payload is None or set(payload) - {"gap"} != {"box", "request"}:
-            refuse("window payload must be {box, request} or {box, request, gap}")
+        if payload is None or set(payload) - {"gap", "deadline"} != {"box", "request"}:
+            refuse("window payload must be {box, request}, with an optional gap and deadline")
         nonempty(payload, ["box"])
         gap_value = payload.get("gap", 0)
         if type(gap_value) is not int or gap_value < 0:
             refuse("a window's gap must be a whole number of seconds")
+        if "deadline" in payload:
+            window_deadline = deadline_ok(payload["deadline"])
         window_box, window_gap, decoded = cast(str, payload["box"]), gap_value, payload["request"]
     request_data = as_object(decoded)
     if request_data is None:
@@ -896,6 +1010,9 @@ def main(argv: list[str]) -> None:
                 # A retried window never dispatches again: it finishes the suspensions below.
                 if not record.get("window"):
                     refuse("request_id already names a measurement that opened no window")
+                if record.get("deadline") != window_deadline:
+                    refuse(f"request_id already names a window with a different deadline"
+                           f" ({json.dumps(record.get('deadline'))}); a window's deadline is fixed when it opens")
                 if record["state"] == "concluded":
                     sync_directory(directory.parent)
                     sync_directory(directory)
@@ -945,6 +1062,10 @@ def main(argv: list[str]) -> None:
                 record["halt_identity"] = halt_identity
             if action == "window":
                 record["window"] = True
+                if window_deadline is not None:
+                    # From this action's own clock, read after any gap: the window opens now.
+                    record["deadline"] = window_deadline
+                    record["deadline_at"] = (clock + timedelta(seconds=window_deadline)).isoformat()
             if checkout is not None:
                 record["checkout"] = checkout
             events.append(("reserve", request if checkout is None else {**request, "checkout": checkout}))
@@ -1103,7 +1224,25 @@ def main(argv: list[str]) -> None:
 
 def run(argv: list[str]) -> int:
     """`main` with the registry's refusal contract: one `EXECUTION REFUSED: <why>` line on stderr, exit 1;
-    a window inside the gap (see the header) is exit 3, its answer on stdout."""
+    a window inside the gap (see the header) is exit 3, its answer on stdout. Everything an action
+    says is buffered and written only once the snapshot lock is released (THE SNAPSHOT): a caller
+    that stops reading its pipe then stalls this process alone, never every other action behind
+    the lock. The lock is released whatever the outcome, so an in-process caller's next action
+    does not wait on it either."""
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            return outcome(argv)
+    finally:
+        unlock_snapshot()
+        sys.stdout.write(out.getvalue())
+        sys.stderr.write(err.getvalue())
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+
+def outcome(argv: list[str]) -> int:
+    """`main`, its refusals and its gap answer said, and its status (`run`'s contract)."""
     try:
         main(argv)
     except Gap as gap:
