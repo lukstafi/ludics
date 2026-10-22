@@ -1170,29 +1170,29 @@ def deadline_left(record: dict[str, Any]) -> int | None:
     return left if type(left) is int and left >= 0 and deadline_of(record) is not None else None
 
 
-def window_cutoff(holding: list[dict[str, Any]], start: float) -> tuple[float, str]:
-    """A bare ``--wait-window``'s give-up (ludics-lite#737), frozen when the wait starts: on the
-    monotonic clock, the latest of each measurement's time left to its deadline as the listing that
-    found the box held gave it (``deadline_left``, by the anchor's clock), or ``start`` +
-    ``WINDOW_WAIT`` for one that gives none; and what the lines say it is. A deadline already past
+def window_cutoff(holding: list[dict[str, Any]]) -> tuple[int, str]:
+    """A bare ``--wait-window``'s give-up (ludics-lite#737), frozen when the wait starts, in whole
+    seconds from then: the latest of each measurement's time left to its deadline as the listing
+    that found the box held gave it (``deadline_left``, by the anchor's clock), or ``WINDOW_WAIT``
+    for one that gives none; and what the lines say it is. A deadline already past
     gives up at once. Windows that open later do not move it: a waiter's bound runs across
     back-to-back windows, and the gap is where it gets out. The boundary: the time left is counted
     from when that listing reached this process, so the cutoff falls after the recorded deadline by
     the read's return latency (seconds over ssh). That errs only toward waiting longer for the
     window's conclusion: the batch is still admitted only on a read that finds the box free."""
-    cutoff, said = start + WINDOW_WAIT, "--wait-window"
-    candidates: list[tuple[float, str]] = []
+    cutoff, said = WINDOW_WAIT, "--wait-window"
+    candidates: list[tuple[int, str]] = []
     for record in holding:
         left = deadline_left(record)
         if left is None:
-            candidates.append((start + WINDOW_WAIT, "--wait-window"))
+            candidates.append((WINDOW_WAIT, "--wait-window"))
         else:
-            candidates.append((start + left,
+            candidates.append((left,
                                f"--wait-window, to measurement {jq_text(record.get('request_id'))}'s deadline"
                                f" {jq_text(record.get('deadline_at'))}"))
     if candidates:
         cutoff, said = max(candidates, key=lambda candidate: candidate[0])
-    return max(cutoff, start), said
+    return cutoff, said
 
 
 def window_poll(cfg: Config) -> float:
@@ -1331,12 +1331,13 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     waiter = waiter_of(cfg, command, box=box)
     beat = not registered
     start = time.monotonic()
+    # The bound in whole seconds, said as it is: never read back off the monotonic clock, where
+    # (start + 30) - start can come to 29.99... (round 4 of #771's CI).
     if bound == BY_DEADLINE:
-        deadline, said = window_cutoff(holders(records) if holders is not None else measurement_records(records, box),
-                                       start)
+        shown, said = window_cutoff(holders(records) if holders is not None else measurement_records(records, box))
     else:
-        deadline, said = start + bound, "--wait-window"
-    shown = int(deadline - start)
+        shown, said = bound, "--wait-window"
+    deadline = start + shown
     progress = start + WINDOW_PROGRESS
     named: set[str] = set()
     unread: Unread | None = None

@@ -732,10 +732,8 @@ class WindowDeadline(unittest.TestCase):
     """THE WINDOW'S DEADLINE (ludics-lite#737): a bare --wait-window gives up at the window's own
     deadline, frozen when the wait starts, and at WINDOW_WAIT only where none is recorded."""
 
-    def cutoff(self, holding: list[dict[str, Any]]) -> tuple[float, str]:
-        start = time.monotonic()
-        cutoff, said = slot.window_cutoff(holding, start)
-        return cutoff - start, said
+    def cutoff(self, holding: list[dict[str, Any]]) -> tuple[int, str]:
+        return slot.window_cutoff(holding)
 
     def test_a_deadline_past_the_hour_is_waited_to(self) -> None:
         left, said = self.cutoff([measurement("win", due_in=7200)])
@@ -744,7 +742,7 @@ class WindowDeadline(unittest.TestCase):
 
     def test_a_deadline_inside_the_hour_is_the_bound_too(self) -> None:
         # The fallback is only a fallback: no floor of an hour under a recorded deadline.
-        self.assertAlmostEqual(self.cutoff([measurement("win", due_in=600)])[0], 600, delta=5)
+        self.assertEqual(self.cutoff([measurement("win", due_in=600)])[0], 600)
 
     def test_no_deadline_or_an_unreadable_one_is_the_hour(self) -> None:
         bad = measurement("win")
@@ -766,8 +764,7 @@ class WindowDeadline(unittest.TestCase):
         self.assertEqual(self.cutoff([skewed])[0], 600)
 
     def test_the_latest_blocker_wins_one_without_a_deadline_counting_an_hour(self) -> None:
-        self.assertAlmostEqual(self.cutoff([measurement("a", due_in=7200), measurement("b", due_in=9000)])[0],
-                               9000, delta=5)
+        self.assertEqual(self.cutoff([measurement("a", due_in=7200), measurement("b", due_in=9000)])[0], 9000)
         self.assertEqual(self.cutoff([measurement("a", due_in=60), measurement("b")]),
                          (slot.WINDOW_WAIT, "--wait-window"))
 
