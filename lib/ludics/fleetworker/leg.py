@@ -124,8 +124,8 @@ grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
   - ``pin-flag <option>``: the runner's argv holds ``<option> <value>`` or ``<option>=<value>``, the
     value nonempty, among its words after the first and before its first ``--`` (what follows a
     ``--`` is passed on to something else);
-  - ``pin-env <NAME>``: the runner is ``env NAME=<value> ... <command>``, its first word ``env`` and
-    NAME among the assignments that directly follow it.
+  - ``pin-env <NAME>``: the runner is ``env NAME=<value> ... <command>``, its first word ``env``, NAME's
+    last assignment among those that directly follow it nonempty, and a command after them.
 Any other line refuses the leg, naming it: a file this leg cannot read is never ignored. A leg that
 may hold the GPU -- one that does not declare ``--cpu``, the slot's own fail-closed definition, so a
 measurement's too -- whose repository's file names a pin and whose argv satisfies none is refused
@@ -141,7 +141,8 @@ a SIGTERM, SIGINT or SIGHUP to it (``bg-run.sh stop`` signals the run's whole gr
 the far side too, where until #767 it ran on holding the worktree's lock: the leg starts ``STOP`` on
 the box in a session of its own (so the stop's group signals do not cut it), which, once the pid
 still carries the token, sends SIGTERM to the far shell (in its setup this ends it; during the runs
-a trap defers it) and, every second for up to 30 s, to the far shell's ``execution slot`` or
+a trap defers it, as it defers INT and HUP, which reach it directly when the box is the caller's
+own) and, every second for up to 30 s, to the far shell's ``execution slot`` or
 ``execution hold`` child, the wrapper, which ends the runner's process group and dies (group.py, THE
 SIGNALLED WRAPPER). The far shell then winds down as after any ended run -- the control reverted,
 its files removed -- even with its connection gone, since it ignores SIGPIPE once the wrapper has
@@ -213,7 +214,7 @@ NOT_HOME = r"""not_home() {
 # parsed whatever the leg declares, so a line this version cannot read refuses a --cpu leg too.
 # Bash 3.2: no arrays of its own, no case conversion.
 PIN = r"""backend_pin() {
-  local text="$1" gpu="$2" d w extra good n=0 flags="" envs="" a f prev first want=""
+  local text="$1" gpu="$2" d w extra good n=0 flags="" envs="" a f prev first cmd want=""
   shift 2
   while read -r d w extra || [ -n "$d" ]; do
     n=$((n + 1))
@@ -234,15 +235,16 @@ FLEET_LEG_PIN
   [ "$gpu" = 1 ] && [ -n "$flags$envs" ] || return 0
   if [ -n "$envs" ] && [ "${1##*/}" = env ]; then
     # Each NAME's value is its LAST assignment among those after `env` (empty ones included), as env
-    # applies them: `NAME=cuda NAME=` leaves it empty.
+    # applies them: `NAME=cuda NAME=` leaves it empty. A command must follow them: a bare `env
+    # NAME=cuda` runs no runner, only prints the environment, and exits 0.
     for f in $envs; do
-      first=1; prev=""
+      first=1; prev=""; cmd=""
       for a in "$@"; do
         if [ -n "$first" ]; then first=""; continue; fi
-        case "$a" in [A-Za-z_]*=*) ;; *) break ;; esac
+        case "$a" in [A-Za-z_]*=*) ;; *) cmd=1; break ;; esac
         case "$a" in "$f="*) prev=${a#*=} ;; esac
       done
-      [ -z "$prev" ] || return 0
+      [ -z "$prev" ] || [ -z "$cmd" ] || return 0
     done
   fi
   first=1; prev=""
@@ -416,15 +418,17 @@ git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
 exit 0
 FLEET_LEG_RUNS
 # THE STOP (see the header): a TERM to this shell while the wrapper runs is deferred by the trap,
-# never cutting a run; the stop ends the wrapper instead. A trap with a command is not inherited, so
-# the wrapper and the runner get TERM at its default. Once the wrapper has returned this shell ignores
+# never cutting a run; the stop ends the wrapper instead. INT and HUP too: on the caller's own box
+# this shell shares the leg's process group, so a Ctrl-C or a hangup aimed at the leg reaches it as
+# well as the wrapper, and it must still wind down. A trap with a command is not inherited, so
+# the wrapper and the runner get these signals at their defaults. Once the wrapper has returned this shell ignores
 # SIGPIPE (never before: an ignored signal would be the runner's too), so a connection that is gone
 # does not end it before the control is reverted and its files are removed.
 stop_asked=""
-trap 'stop_asked=1' TERM
+trap 'stop_asked=1' TERM INT HUP
 fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
 trap '' PIPE
-[ -z "$stop_asked" ] || say "stopped (SIGTERM from the leg's stop): the wrapper exit $wrc"
+[ -z "$stop_asked" ] || say "stopped (a signal from the leg's stop, or its group's): the wrapper exit $wrc"
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }
 main=$(fact main)
 now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)

@@ -3384,6 +3384,25 @@ legstop "a leg stopped in its control run stops too" "$TMP/leg-stop.pid" --contr
 [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...the control patch reverted over the connection the stop cut" ||
   ko "the stopped control left the worktree: $(git -C "$lwt" status --porcelain) -- $(cat "$lst/log")"
 fixture_done leg-o
+# ...and on the caller's own box, where the far shell shares the leg's process group, a hangup to the
+# whole group (a closed terminal) reaches that shell too, which must still revert the control patch.
+lreq leg-l
+rm -f "$TMP/leg-hup.pid"
+lhup=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" spawn "$TMP/leg runs" -- "${FWL[@]}" execution leg --request leg-l --rev claude/topic \
+  --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- sh -c 'if [ -e broken ]; then echo $$ > "$1"; exec sleep 120; fi; exit 0' x "$TMP/leg-hup.pid")
+for i in $(seq 150); do [ -s "$TMP/leg-hup.pid" ] && break; sleep 0.2; done
+if [ -s "$TMP/leg-hup.pid" ]; then
+  kill -HUP -- "-$(head -n 1 "$lhup/pid")"
+  for i in $(seq 200); do grep -q "^EXECUTION LEG STOP testbox: the leg (pid [0-9]*) has ended$" "$lhup/log" && break; sleep 0.2; done
+  grep -q "^EXECUTION LEG STOPPING testbox: SIGHUP; ending the far side" "$lhup/log" && grep -q "^EXECUTION LEG STOP testbox: the leg (pid [0-9]*) has ended$" "$lhup/log" &&
+    ok "a local leg hung up in its control run ends its far side, said in the log" || ko "the hung-up local leg: $(cat "$lhup/log")"
+  kill -0 "$(cat "$TMP/leg-hup.pid")" 2>/dev/null && { ko "...its runner still runs"; kill "$(cat "$TMP/leg-hup.pid")"; sleep 1; } || ok "...its runner is gone"
+  [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...the control patch reverted by the far shell the hangup also reached" ||
+    { ko "the hung-up local leg left the worktree: $(git -C "$lwt" status --porcelain)"; git -C "$lwt" checkout -q -- . ; rm -f "$lwt/broken"; }
+else
+  ko "the local leg's runner never wrote its pid: $(cat "$lhup/log")"
+fi
+fixture_done leg-l
 # A head-of request's leg runs the commit resolved at assignment, not where the branch is now.
 printf 'claude/topic %s\n' "$lb" > "$TMP/leg-heads"
 SHIM_GH_HEADS="$TMP/leg-heads" lreq leg-h testbox correctness head-of:claude/topic

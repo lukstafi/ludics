@@ -743,7 +743,7 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   nothing selected, and reported green). The leg reads that file on the box at the commit under
   test, before the worktree moves. Its lines are `# comments`, blanks, `pin-flag <option>` (the
   runner's words hold `<option> <backend>` or `<option>=<backend>` before any `--` of its own) and
-  `pin-env <NAME>` (the runner is `env NAME=<backend> ... <command>`); any other line refuses the
+  `pin-env <NAME>` (the runner is `env NAME=<backend> ... <command>`, a command after the assignments); any other line refuses the
   leg. A leg that may hold the GPU -- one that does not declare `--cpu`, a measurement's included --
   whose command satisfies none of the pins is refused before anything runs, saying which it asks
   for. OCANNL's would be `pin-flag --expect-backend` and `pin-env OCANNL_BACKEND`, so `-- env
