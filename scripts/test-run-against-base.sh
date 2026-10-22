@@ -22,7 +22,10 @@
 #     directory on the suite's path installs; a working-tree suite that is a symlink is refused
 #     rather than followed;
 #   - a path inside .git is refused, and a suite that cannot be started (a missing interpreter,
-#     directly or behind `#!/usr/bin/env`) exits 125 rather than its exec error's 126/127;
+#     directly or behind `#!/usr/bin/env <prog>` or `env -S <prog> ...`, a bare or absolute
+#     name) exits 125 rather than its exec error's 126/127; every other env form (PATH=, a quoted
+#     or relative program, --split-string=) runs unchecked, and its 126/127 is marked (#459);
+#   - a NUL byte in the suite's output leaves its tally on the result line (#459);
 #   - an unreadable directory the suite leaves behind does not leak the scratch;
 #   - git's repository-local variables exported by the caller (GIT_DIR, GIT_WORK_TREE,
 #     GIT_INDEX_FILE) reach neither the suite nor the helper's own git commands;
@@ -189,6 +192,18 @@ chmod +x "$TMP/interp-bin/rab-private-interp"
 printf '#!/usr/bin/env -S PATH=/definitely/no/such/path bash\nexit 0\n' >"$R/scripts/test-envPATHbad.sh"
 printf '#!/usr/bin/env -S PATH=%s:/usr/bin:/bin rab-private-interp\necho "1 passed, 0 failed"\n' "$TMP/interp-bin" >"$R/scripts/test-envPATHok.sh"
 chmod +x "$R/scripts/test-envPATHbad.sh" "$R/scripts/test-envPATHok.sh"
+# The env forms outside the checked allowlist (#459): a quoted -S program, present and missing, and
+# a relative program; plus the allowlist's absolute program, missing, in both shapes.
+printf '%s\n' "#!/usr/bin/env -S 'bash' -e" 'echo "1 passed, 0 failed"' >"$R/scripts/test-envSq.sh"
+printf '%s\n' "#!/usr/bin/env -S 'run-against-base-no-such-interpreter' -e" 'exit 0' >"$R/scripts/test-envSqmiss.sh"
+printf '#!/usr/bin/env ./run-against-base-no-such-interpreter\nexit 0\n' >"$R/scripts/test-envrel.sh"
+printf '#!/usr/bin/env /run-against-base/no/such/interpreter\nexit 0\n' >"$R/scripts/test-envabs.sh"
+printf '#!/usr/bin/env -S /run-against-base/no/such/interpreter -e\nexit 0\n' >"$R/scripts/test-envSabs.sh"
+printf '#!/usr/bin/env --split-string=run-against-base-no-such-interpreter\nexit 0\n' >"$R/scripts/test-envlong.sh"
+# A NUL byte in the suite's output, before its tally (#459).
+printf '#!/usr/bin/env bash\nprintf "a\\000b\\n"\necho "1 passed, 0 failed"\n' >"$R/scripts/test-nul.sh"
+chmod +x "$R/scripts/test-envSq.sh" "$R/scripts/test-envSqmiss.sh" "$R/scripts/test-envrel.sh" \
+  "$R/scripts/test-envabs.sh" "$R/scripts/test-envSabs.sh" "$R/scripts/test-envlong.sh" "$R/scripts/test-nul.sh"
 mkdir -p "$R/scripts/--"
 cp -p "$R/scripts/test-link.sh" "$R/scripts/--/test-dash.sh"
 # An executable suite outside git, so only the symlink refusal can stop it running.
@@ -527,21 +542,74 @@ if [ "$(uname)" = Darwin ] || env -S true 2>/dev/null; then
     ko "env -S present: rc=$rc -- $out"
   fi
 fi
-# A PATH= in the shebang is the PATH env searches: bash is on ours and not on that one, and a
-# private interpreter is on that one and not on ours.
+# An absolute program is checked as the executable file it names, in either checked shape.
+run_rab test-envabs.sh
+if [ "$rc" -eq 125 ] && grep -qF 'needs /run-against-base/no/such/interpreter, which is not an executable file here' <<<"$out"; then
+  ok "an env shebang naming a missing absolute interpreter exits 125"
+else
+  ko "env absolute missing: rc=$rc -- $out"
+fi
+run_rab test-envSabs.sh
+if [ "$rc" -eq 125 ] && grep -qF 'not an executable file here' <<<"$out"; then
+  ok "...and so does its env -S form"
+else
+  ko "env -S absolute missing: rc=$rc -- $out"
+fi
+# Every env form outside the two checked shapes is left to the exec (#459): it runs, and a 126 or
+# 127 is marked on the result as possibly env not finding its program. A PATH= assignment is one:
+# bash is on our PATH and not on that one, so env's 127 is the run's, with the note; a private
+# interpreter found only on that PATH runs, and a passing run carries no note. A quoted -S
+# program is env's own splitting: a present one runs (it was refused when the walk looked up the
+# literal `'bash'`), and a missing one is env's 127 with the note. A relative program would have
+# been looked up from the caller's cwd: the same.
+note="is an env form this helper does not check"
 if [ "$(uname)" = Darwin ] || env -S true 2>/dev/null; then
   run_rab test-envPATHbad.sh
-  if [ "$rc" -eq 125 ] && grep -qF 'not on the PATH its shebang sets' <<<"$out"; then
-    ok "a program missing from the shebang's own PATH= exits 125"
+  if [ "$rc" -eq 127 ] && grep -qF "$note" <<<"$out" && grep -qF 'exit 127 on origin/main' <<<"$out"; then
+    ok "a shebang's PATH= is not read: env's 127 is the run's, marked as possibly env's"
   else
     ko "env PATH= bad: rc=$rc -- $out"
   fi
   run_rab test-envPATHok.sh
-  if [ "$rc" -eq 0 ]; then
-    ok "a program found only on the shebang's own PATH= runs"
+  if [ "$rc" -eq 0 ] && ! grep -qF "$note" <<<"$out"; then
+    ok "a program found only on the shebang's own PATH= runs, with no note on a pass"
   else
     ko "env PATH= ok: rc=$rc -- $out"
   fi
+  run_rab test-envSq.sh
+  if [ "$rc" -eq 0 ] && grep -qF 'exit 0 on origin/main: 1 passed, 0 failed' <<<"$out"; then
+    ok "a quoted env -S program that is present runs, not refused"
+  else
+    ko "env -S quoted present: rc=$rc -- $out"
+  fi
+  run_rab test-envSqmiss.sh
+  if [ "$rc" -eq 127 ] && grep -qF "$note" <<<"$out"; then
+    ok "a quoted env -S program that is missing is env's 127, marked"
+  else
+    ko "env -S quoted missing: rc=$rc -- $out"
+  fi
+fi
+run_rab test-envrel.sh
+if [ "$rc" -eq 127 ] && grep -qF "$note" <<<"$out"; then
+  ok "a relative env program is not looked up from the caller's cwd: env's 127, marked"
+else
+  ko "env relative program: rc=$rc -- $out"
+fi
+# GNU env's long spelling of -S, where env has it.
+if env --split-string=true 2>/dev/null; then
+  run_rab test-envlong.sh
+  if [ "$rc" -eq 127 ] && grep -qF "$note" <<<"$out"; then
+    ok "env --split-string= is not read: env's 127, marked"
+  else
+    ko "env --split-string=: rc=$rc -- $out"
+  fi
+fi
+# A NUL byte in the output does not make the log binary to the tally's grep.
+run_rab test-nul.sh
+if [ "$rc" -eq 0 ] && grep -qF 'exit 0 on origin/main: 1 passed, 0 failed' <<<"$out"; then
+  ok "a NUL byte in the suite's output still leaves its tally on the result"
+else
+  ko "NUL in output: rc=$rc -- $(tr '\000' '@' <<<"$out")"
 fi
 # A suite whose interpreter is missing never ran: that is the helper's 125, not a base failure.
 run_rab test-noexec.sh
@@ -1102,18 +1170,24 @@ if [ "$rc" -eq 125 ] && grep -qF 'rab-envmiss-cmd needs run-against-base-no-such
 else
   ko "--command PATH script, missing interpreter: rc=$rc -- $out"
 fi
-# An env shebang whose interpreter is found only through a relative PATH entry (its own PATH=,
-# here) is found from the caller's directory and not from the run tree's root: 125, suite or
-# command alike.
-printf '#!/usr/bin/env -S PATH=../../interp-bin:/usr/bin:/bin rab-private-interp\necho "1 passed, 0 failed"\n' >"$R/scripts/test-envPATHrel.sh"
+# An env interpreter found only through a relative PATH entry of the caller is found from the
+# caller's directory and not from the run tree's root: 125, suite or command alike.
+printf '#!/usr/bin/env rab-private-interp\necho "1 passed, 0 failed"\n' >"$R/scripts/test-envPATHrel.sh"
 chmod +x "$R/scripts/test-envPATHrel.sh"
-run_rab test-envPATHrel.sh
+out=$(cd "$R/scripts" && PATH="../../interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" test-envPATHrel.sh 2>&1)
+rc=$?
 if [ "$rc" -eq 125 ] && grep -qF 'found only as the relative ../../interp-bin/rab-private-interp' <<<"$out"; then
-  ok "a suite whose env interpreter is found only through a relative shebang PATH is refused with 125"
+  ok "a suite whose env interpreter is found only through a relative PATH entry is refused with 125"
 else
-  ko "relative shebang PATH, suite: rc=$rc -- $out"
+  ko "relative PATH entry, suite: rc=$rc -- $out"
 fi
-cmd_refusal "a program whose env interpreter is found only through a relative PATH" 'found only as the relative' --command --also test-envPATHrel.sh -- ./test-envPATHrel.sh
+out=$(cd "$R/scripts" && PATH="../../interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command --also test-envPATHrel.sh -- ./test-envPATHrel.sh 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'found only as the relative' <<<"$out"; then
+  ok "--command refuses a program whose env interpreter is found only through a relative PATH entry with 125"
+else
+  ko "--command relative PATH entry, interpreter: rc=$rc -- $out"
+fi
 rm -f "$R/scripts/test-envPATHrel.sh"
 # ...and one found through a relative PATH entry, which names something else from the run tree.
 out=$(cd "$R/scripts" && PATH="../../interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-envmiss-cmd 2>&1)

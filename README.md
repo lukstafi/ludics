@@ -411,6 +411,13 @@ OCANNL worktree:
 The helper cannot tell a runner's own refusal or a build failure from a failing test, so read the
 output, and show the same command passing on the head.
 
+A suite (or script program) that cannot start never ran, so a missing interpreter is a 125, not
+the base's 126/127. Behind an env shebang the helper looks the program up only in two shapes,
+`#!/usr/bin/env <prog>` and `#!/usr/bin/env -S <prog> [args...]`, with `<prog>` a bare name or an
+absolute path (ludics-lite#459). Every other env form (`-i`, `-u`, `PATH=`, a quoted or relative
+program, `--split-string=`) runs unchecked, and a 126 or 127 from it carries a note on the result
+line that env may not have found its program.
+
 A `*.py` suite runs the way CI runs it. A file under `lib/` (a `lib/ludics/tests/test_*.py` unit
 file) runs through the base's `scripts/py` as `scripts/py -m unittest <module>` (`ludics.tests.test_x`
 for `lib/ludics/tests/test_x.py`, the name CI's discovery gives it), so `lib/` is on the path with
