@@ -1102,6 +1102,19 @@ if [ "$rc" -eq 125 ] && grep -qF 'rab-envmiss-cmd needs run-against-base-no-such
 else
   ko "--command PATH script, missing interpreter: rc=$rc -- $out"
 fi
+# An env shebang whose interpreter is found only through a relative PATH entry (its own PATH=,
+# here) is found from the caller's directory and not from the run tree's root: 125, suite or
+# command alike.
+printf '#!/usr/bin/env -S PATH=../../interp-bin:/usr/bin:/bin rab-private-interp\necho "1 passed, 0 failed"\n' >"$R/scripts/test-envPATHrel.sh"
+chmod +x "$R/scripts/test-envPATHrel.sh"
+run_rab test-envPATHrel.sh
+if [ "$rc" -eq 125 ] && grep -qF 'found only as the relative ../../interp-bin/rab-private-interp' <<<"$out"; then
+  ok "a suite whose env interpreter is found only through a relative shebang PATH is refused with 125"
+else
+  ko "relative shebang PATH, suite: rc=$rc -- $out"
+fi
+cmd_refusal "a program whose env interpreter is found only through a relative PATH" 'found only as the relative' --command --also test-envPATHrel.sh -- ./test-envPATHrel.sh
+rm -f "$R/scripts/test-envPATHrel.sh"
 # ...and one found through a relative PATH entry, which names something else from the run tree.
 out=$(cd "$R/scripts" && PATH="../../interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-envmiss-cmd 2>&1)
 rc=$?

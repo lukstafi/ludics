@@ -304,12 +304,20 @@ check_interp() {
   # The lookup uses the PATH env will use: the shebang's own PATH= when it sets one; with the
   # environment cleared (-i) and no PATH= the search path is env's built-in default, which is not
   # ours to guess, so that one is left to the exec.
+  # The hit must be absolute: the lookup runs from the caller's cwd and the run from the root of
+  # the run's tree, so a relative PATH entry (the caller's or the shebang's, an empty one
+  # included) or a relative program path names something else there, or nothing. A builtin's name
+  # comes back bare, and env runs the program PATH holds for it.
+  local hit=
   if [ -n "$interp" ] && [ -z "${sb_clear-}${sb_path+set}" ]; then
-    command -v "$interp" >/dev/null 2>&1 || die "$name needs $interp, which is not on PATH here; it would never run"
+    hit=$(command -v "$interp" 2>/dev/null) || die "$name needs $interp, which is not on PATH here; it would never run"
   elif [ -n "$interp" ] && [ -n "${sb_path+set}" ]; then
-    PATH=$sb_path command -v "$interp" >/dev/null 2>&1 \
+    hit=$(PATH=$sb_path command -v "$interp" 2>/dev/null) \
       || die "$name needs $interp, which is not on the PATH its shebang sets ($sb_path); it would never run"
   fi
+  case "$hit" in
+  */*) [ "${hit#/}" != "$hit" ] || die "$name needs $interp, found only as the relative $hit, which names something else from the run tree's root; it would not run as checked" ;;
+  esac
 }
 # RUN: the words before the suite's own arguments (RUN_SHOWN, when set, how the run names them).
 # A `lib/` module's runner is settled once the base worktree exists (it is the base's scripts/py,
