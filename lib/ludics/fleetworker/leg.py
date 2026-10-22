@@ -519,7 +519,7 @@ ours || { say "no leg with token $token runs as pid $pid: it has ended; nothing 
 kill -TERM "$pid" 2>/dev/null
 sent=" "; t=0
 while ours; do
-  for kid in $(ps -A -ww -o pid=,ppid=,args= 2>/dev/null | awk -v p="$pid" '$2 == p && / execution (slot|hold) / { print $1 }'); do
+  for kid in $(ps -A -ww -o pid=,ppid=,args= 2>/dev/null | awk -v p="$pid" '$2 == p && / execution (slot|hold)( |$)/ { print $1 }'); do
     case "$sent" in *" $kid "*) continue ;; esac
     sent="$sent$kid "
     kill -TERM "$kid" 2>/dev/null && say "SIGTERM to the leg's wrapper (pid $kid), which ends the runner's process group"
@@ -902,6 +902,7 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
             pass
         assert stop is not None
         end_far(box, far_pid, why.signum, stop, local=local)
+        child.stdout.close()
         raise
     finally:
         for sig, handler in previous.items():
