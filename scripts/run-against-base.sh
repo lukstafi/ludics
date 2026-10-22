@@ -338,20 +338,37 @@ if [ -n "$CMD_MODE" ]; then
     ;;
   '') die "--command: the program is an empty word" ;;
   *)
-    found=$(command -v -- "$cmd_word" 2>/dev/null) \
+    # The exec runs the file PATH holds for the name -- never a builtin, whatever the name -- so
+    # that file is what is checked (`type -P`: the disk search even for a builtin's name). It must
+    # be found through an absolute entry: the command runs from the run tree's root, where a
+    # relative one names something else, or nothing. It must not be in this checkout: that is the
+    # live working tree's copy, which a base control must never run (name it by its path, and the
+    # run tree's copy runs). A script then gets the suite's interpreter check: an env shebang
+    # whose program is missing starts env fine, and its 127 would read as the base failing.
+    found=$(type -P -- "$cmd_word" 2>/dev/null) && [ -n "$found" ] \
       || die "--command: $(printf '%q' "$cmd_word") is not a program on PATH here; it would never run"
+    case "$found" in
+    /*) ;;
+    *) die "--command: $(printf '%q' "$cmd_word") is found through a relative PATH entry ($(printf '%q' "$found")), which names something else from the run tree's root; name the program by a path" ;;
+    esac
+    # Where it really is: a symlink on PATH is followed to its file (bounded), whose directory is
+    # resolved physically.
+    f=$found
+    n=0
+    while [ -L "$f" ]; do
+      [ "$n" -lt 40 ] || die "--command: $(printf '%q' "$found") is a symlink loop"
+      t=$(readlink "$f") || die "--command: cannot read the symlink $(printf '%q' "$f")"
+      case "$t" in /*) f=$t ;; *) f="${f%/*}/$t" ;; esac
+      n=$((n + 1))
+    done
+    fdir=$(CDPATH= cd "${f%/*}/" && pwd -P) \
+      || die "--command: cannot resolve the directory of $(printf '%q' "$found")"
+    case "$fdir/" in
+    "$TOP"/*) die "--command: $(printf '%q' "$cmd_word") is found on PATH inside this checkout ($(printf '%q' "$found")), so it would run the live working tree's copy, not the run tree's; name it by its path" ;;
+    esac
     rel=$cmd_word
     RUN=("$cmd_word")
-    # A script found on PATH gets the suite's interpreter check: an env shebang whose program is
-    # missing starts env fine, and its 127 would read as the base failing. A program found through
-    # a relative PATH entry is refused: the command runs from the run tree's root, where that entry
-    # names something else, or nothing. A builtin's name runs as the program PATH holds for it.
-    if [ "$(type -t -- "$cmd_word")" = file ]; then
-      case "$found" in
-      /*) [ ! -f "$found" ] || check_interp "$found" "$cmd_word" "" ;;
-      *) die "--command: $(printf '%q' "$cmd_word") is found through a relative PATH entry ($(printf '%q' "$found")), which names something else from the run tree's root; name the program by a path" ;;
-      esac
-    fi
+    [ ! -f "$found" ] || check_interp "$found" "$cmd_word" ""
     ;;
   esac
 else

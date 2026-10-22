@@ -1123,6 +1123,33 @@ if [ "$rc" -eq 125 ] && grep -qF 'is found through a relative PATH entry' <<<"$o
 else
   ko "--command relative PATH entry: rc=$rc -- $out"
 fi
+# A program PATH finds inside the checkout is the live working tree's copy: refused, directly or
+# through a symlink on PATH that leads there.
+mkdir -p "$TMP/link-bin"
+ln -sf "$R/scripts/test-toy.sh" "$TMP/link-bin/rab-linked-toy"
+out=$(cd "$R/scripts" && PATH="$R/scripts:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- test-toy.sh 2>&1)
+rc=$?
+out2=$(cd "$R/scripts" && PATH="$TMP/link-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-linked-toy 2>&1)
+rc2=$?
+if [ "$rc" -eq 125 ] && grep -qF 'is found on PATH inside this checkout' <<<"$out" \
+  && [ "$rc2" -eq 125 ] && grep -qF 'is found on PATH inside this checkout' <<<"$out2" \
+  && ! grep -qF 'passed,' <<<"$out$out2"; then
+  ok "--command refuses a PATH program inside the checkout (the live copy), directly or through a symlink, with 125"
+else
+  ko "--command PATH program in the checkout: rc=$rc rc2=$rc2 -- $out -- $out2"
+fi
+# A name that is also a builtin is checked as the file the exec runs: a PATH script named `test`
+# whose env interpreter is missing is refused, not run to env's 127.
+mkdir -p "$TMP/builtin-bin"
+printf '#!/usr/bin/env run-against-base-no-such-interpreter\nexit 0\n' >"$TMP/builtin-bin/test"
+chmod +x "$TMP/builtin-bin/test"
+out=$(cd "$R/scripts" && PATH="$TMP/builtin-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- test 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'test needs run-against-base-no-such-interpreter' <<<"$out"; then
+  ok "--command checks the PATH file a builtin-named program runs as, and refuses its missing interpreter with 125"
+else
+  ko "--command builtin-named PATH script: rc=$rc -- $out"
+fi
 # A program whose name starts with a dash is the program, never an option of the exec.
 printf '#!/bin/sh\necho "DASH RAN $*"\n' >"$TMP/interp-bin/-rab-dash"
 chmod +x "$TMP/interp-bin/-rab-dash"
