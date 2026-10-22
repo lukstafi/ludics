@@ -29,6 +29,7 @@ from ludics.prreview.core import (
 from ludics.prreview import knobs
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.shtext import tab_fields
+from ludics.prreview.threads import OpenThreads
 from ludics.prreview.jqsem import (
     JqError,
     as_list,
@@ -64,6 +65,10 @@ class Snapshot:
     head_pr: str = ""
     head: Head | None = None
     review_cache: dict[str, list[Json]] = field(default_factory=lambda: dict[str, list[Json]]())
+    # The round's review-threads walk, once one answered whole (state.state_threads): the approval
+    # gate and the exit's thread count share it.
+    threads_pr: str = ""
+    threads: OpenThreads | None = None
 
     def clear(self) -> None:
         self.feeds_pr = ""
@@ -72,6 +77,8 @@ class Snapshot:
         self.head_pr = ""
         self.head = None
         self.review_cache = {}
+        self.threads_pr = ""
+        self.threads = None
 
     def arm(self) -> None:
         """``snapshot_arm``: a new round, nothing observed before it readable as part of it."""
@@ -127,6 +134,8 @@ class Ctx:
     # Head commits' committer dates as they answered, by SHA: a commit's date never changes, so a
     # watch reads each head's once (state._commit_read).
     commit_dates: dict[str, str] = field(default_factory=lambda: dict[str, str]())
+    # The head the state was last read against (state_head_read), for ``status``'s thread count.
+    head_seen: Head | None = None
 
 
 class ReadFailed(Exception):
@@ -190,8 +199,11 @@ def pr_head_read(ctx: Ctx, pr: str) -> Head:
 def state_head_read(ctx: Ctx, pr: str) -> Head:
     if ctx.snap.has_head(pr) and ctx.snap.head is not None:
         h = ctx.snap.head
-        return Head(h.sha, h.mstate or "-", h.created, h.err)
-    return pr_head_read(ctx, pr)
+        head = Head(h.sha, h.mstate or "-", h.created, h.err)
+    else:
+        head = pr_head_read(ctx, pr)
+    ctx.head_seen = head
+    return head
 
 
 def review_comments(ctx: Ctx, pr: str, review_id: str) -> list[Json]:

@@ -23,6 +23,7 @@ from ludics.prreview.core import GhFailed, GhOk, GhUnanswered, Json
 from ludics.prreview.clock import age_of, age_text, fmt_age, freshest_age, newest
 from ludics.prreview.threads import (
     OpenThreads,
+    Unresolved,
     WalkRejected,
     WalkUnread,
     threads_advice,
@@ -1122,11 +1123,26 @@ def threads_page_cap() -> int:
     return knobs.threads_page_cap(os.environ)
 
 
-def approval_gate(ctx: Ctx, pr: str, state: State) -> State:
-    """``approval_gate``: an ``approved`` state checked for open review threads (threads.py)."""
+def state_threads(ctx: Ctx, pr: str) -> Unresolved:
+    """The PR's open review threads, walked once per watch round: a walk that answered whole is
+    kept on the armed round snapshot, so the approval gate and the exit's thread count
+    (``threads_line``) share one walk. Outside a watch (never armed) every call walks; ``status``
+    walks once and hands the read to the gate."""
+    snap = ctx.snap
+    if snap.armed and snap.threads is not None and snap.threads_pr == pr:
+        return snap.threads
+    read = unresolved_threads(ctx.session, ctx.repo, pr, threads_page_cap())
+    if snap.armed and isinstance(read, OpenThreads):
+        snap.threads, snap.threads_pr = read, pr
+    return read
+
+
+def approval_gate(ctx: Ctx, pr: str, state: State, threads: Unresolved | None = None) -> State:
+    """``approval_gate``: an ``approved`` state checked for open review threads (threads.py), on
+    ``threads`` when the caller already walked them."""
     if state.tok != "approved":
         return state
-    read = unresolved_threads(ctx.session, ctx.repo, pr, threads_page_cap())
+    read = threads if threads is not None else state_threads(ctx, pr)
     match read:
         case WalkRejected(line=reason) | WalkUnread(line=reason):
             return unknown(

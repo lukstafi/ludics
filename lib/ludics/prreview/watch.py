@@ -35,6 +35,12 @@ parent commit (``git show 14f2ca7:ship-pr/scripts/pr-review.sh``); read them bef
   a state that leaves ``stalled`` goes on by that state's rules, and a stall still standing at the
   window's end is answered as a verdict, with the move the final read names.
 
+Every exit that reports a state (0 or 1) prints, before its watermark (and in a round, before the
+rounds trailer), a ``review threads:`` line: the open review threads written on the head and on
+earlier heads, the earlier ones named (ludics-lite#587, ``threads.threads_line``). It costs at most
+one GraphQL walk per exit, the one the round's approval gate already made when it made one; a
+polling round still reads no threads unless it is reporting an approval.
+
 Exit: 0 something to act on (a round, an approval, a verdict); 1 a quiet window; 3 the window, its
 tail or the verdict's re-reads were not observed. The last stdout line is always the watermark.
 """
@@ -77,9 +83,11 @@ from ludics.prreview.state import (
     nudge_read,
     review_rounds,
     stall_nudge_read,
+    state_threads,
     status_line,
     status_state,
 )
+from ludics.prreview.threads import threads_line
 
 _NUMBER = re.compile(r"[0-9]+")
 _WATERMARK = re.compile(r"[0-9].*,[0-9].*,[0-9].*", re.DOTALL)
@@ -497,12 +505,24 @@ class Watch:
             f"PR {self.repo}#{self.pr}: ending the wait on {p.on or 'reviewer activity'}{extra}"
             f"{self.round_note()}"
         )
+        threads = self.threads_line()
         last = _last_line(p.out)
         if last.startswith("watermark: "):
-            p.out = f"{_drop_last_line(p.out)}\n{self.rounds_trailer()}\n{last}"
+            p.out = f"{_drop_last_line(p.out)}\n{threads}\n{self.rounds_trailer()}\n{last}"
         else:
-            p.out = f"{p.out}\n{self.rounds_trailer()}"
+            p.out = f"{p.out}\n{threads}\n{self.rounds_trailer()}"
         _say(p.out)
+
+    def threads_line(self) -> str:
+        """The open review threads on the round's head and on earlier heads (ludics-lite#587), from
+        the round's walk when its approval gate made one, else from one walk here."""
+        return threads_line(state_threads(self.ctx, self.pr), self.polled.head)
+
+    def finish(self) -> None:
+        """The last two lines of an exit that reports a state: the thread count, then the
+        watermark. An exit that read nothing (exit 3) prints the watermark alone."""
+        _say(self.threads_line())
+        _say(f"watermark: {self.mark}")
 
     def settle(self) -> int:
         """``watch_settle``: 0 nothing new; 1 a round about the head arrived; 3 no answer."""
@@ -558,14 +578,14 @@ class Watch:
                 f"the '{verdict}' verdict on {where} was dropped: the 👍 landed while it was being"
                 f" read — {self.line(state)}"
             )
-            _say(f"watermark: {self.mark}")
+            self.finish()
             return 0
         if tok == "nudged" and before_state.tok == "nudged" and before_state.detail != state.detail:
             _say(
                 f"the '{verdict}' verdict on {where} was dropped: a newer nudge still needs its"
                 " grace; re-arm"
             )
-            _say(f"watermark: {self.mark}")
+            self.finish()
             return 1
         if tok != verdict:
             _say(
@@ -573,7 +593,7 @@ class Watch:
                 f" it was being read — {self.line(state)}; nothing here says the reviewer is done,"
                 " re-arm"
             )
-            _say(f"watermark: {self.mark}")
+            self.finish()
             return 1
         if remedy == "due":
             # Again on the final poll's own read: a head it read first, or a request it read, holds
@@ -604,7 +624,7 @@ class Watch:
         if message:
             _say(message)
         _say(f"{self.quiet_line('-')}; status: {self.line(state)}")
-        _say(f"watermark: {self.mark}")
+        self.finish()
         return 0
 
     def stall_hold(self, read: NudgeRead) -> int | None:
@@ -950,7 +970,7 @@ class Watch:
                     warn(f"state unreadable this round on {where}; holding '{was}'")
                 case "approved" | "unresolved":
                     _say(self.line(state))
-                    _say(f"watermark: {self.mark}")
+                    self.finish()
                     return 0
                 case "stalled":
                     # Not a verdict yet (ludics-lite#760): nudge once when nothing stands for the
@@ -1006,7 +1026,7 @@ class Watch:
                                 " ambiguously may have landed"
                             )
                             _say(f"status: {self.line(state)}")
-                            _say(f"watermark: {self.mark}")
+                            self.finish()
                             return 0
                         was = tok
                         quiet = 0
@@ -1143,7 +1163,7 @@ class Watch:
             return 3
         elapsed = timeout if extension_end is None else self.clock.now() - start
         _say(f"{self.quiet_line(str(elapsed))}; status: {self.line(self.state)}")
-        _say(f"watermark: {self.mark}")
+        self.finish()
         return 1
 
 

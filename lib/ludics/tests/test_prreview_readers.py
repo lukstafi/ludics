@@ -1025,5 +1025,87 @@ class StatusLine(unittest.TestCase):
         self.assertTrue(shown.endswith("9 by u on p, and 2 more"))
 
 
+
+def thread(cid: int, original: Json, current: Json, resolved: bool = False, path: str = "a.sh") -> Json:
+    """One reviewThreads node: the first comment's ids, author and its two commits as GraphQL
+    serves them (``None`` for a commit it serves as null)."""
+    def commit(oid: Json) -> Json:
+        return None if oid is None else {"oid": oid}
+
+    return {"id": f"T{cid}", "isResolved": resolved, "path": path,
+            "comments": {"nodes": [{"fullDatabaseId": str(cid), "databaseId": cid, "author": {"login": "codex"},
+                                    "originalCommit": commit(original), "commit": commit(current)}]}}
+
+
+class ThreadsByHead(unittest.TestCase):
+    """ludics-lite#587: the open threads counted on the head they were written on and on earlier
+    heads, so a worker sees an earlier head's finding before pushing past it."""
+
+    old = "b" * 40
+
+    def rows(self, *nodes: Json) -> list[str]:
+        return threads.open_rows({"nodes": list(nodes)})
+
+    def test_rows_carry_both_commits_and_an_unread_one_as_a_dash(self) -> None:
+        self.assertEqual(self.rows(thread(1, HEAD, HEAD)), [tsv(["1", "codex", "a.sh", HEAD, HEAD])])
+        for name, oid in (("null", None), ("short", HEAD[:7]), ("upper", HEAD.upper()), ("number", 7)):
+            with self.subTest(name):
+                row = self.rows(thread(1, oid, oid))[0]
+                self.assertEqual(tab_fields(row, 5)[3:], ["-", "-"])
+        bare = self.rows({"isResolved": False, "path": "a.sh",
+                          "comments": {"nodes": [{"fullDatabaseId": "9", "author": {"login": "c"}}]}})
+        self.assertEqual(tab_fields(bare[0], 5), ["9", "c", "a.sh", "-", "-"], "fields the node lacks")
+        with self.assertRaises(jq.JqError):
+            self.rows(thread(1, HEAD, HEAD) | {"comments": {"nodes": [{"originalCommit": "x"}]}})
+
+    def test_the_original_commit_decides_and_the_current_one_only_sub_counts(self) -> None:
+        rows = self.rows(thread(1, HEAD, HEAD), thread(2, self.old, HEAD), thread(3, self.old, self.old),
+                         thread(4, None, HEAD), thread(5, self.old, None))
+        split = threads.threads_by_head(rows, HEAD)
+        self.assertEqual(split.on_head, 1)
+        self.assertEqual([tab_fields(r, 5)[0] for r in split.earlier], ["2", "3", "4", "5"],
+                         "a thread whose origin does not read is an earlier head's, even on the head's lines")
+        self.assertEqual(split.on_lines, 2, "2 and 4 still sit on the head's lines")
+        none = threads.threads_by_head(rows, "")
+        self.assertEqual((none.on_head, len(none.earlier)), (0, 5), "no head, nothing is on it")
+
+    def test_the_line(self) -> None:
+        rows = self.rows(thread(1, HEAD, HEAD), thread(2, self.old, HEAD), thread(3, self.old, self.old, path="b c.sh"))
+        line = threads.threads_line(threads.OpenThreads(rows), HEAD)
+        self.assertEqual(
+            line,
+            "review threads: 1 open on head aaaaaaa, 2 on earlier heads (1 of them on lines head aaaaaaa"
+            " still has): 2 by codex on a.sh, 3 by codex on b\\ c.sh — answer and resolve these before"
+            " pushing past them")
+        self.assertEqual(threads.threads_line(threads.OpenThreads(self.rows(thread(1, HEAD, HEAD))), HEAD),
+                         "review threads: 1 open on head aaaaaaa, 0 on earlier heads")
+        self.assertEqual(threads.threads_line(threads.OpenThreads([]), HEAD), "review threads: none open")
+        self.assertTrue(threads.threads_line(threads.OpenThreads(rows), "").startswith(
+            "review threads: 3 open (the head did not read, so they are not split by head): 1 by codex"))
+        unread = threads.threads_line(threads.WalkUnread("GraphQL did not answer"), HEAD)
+        self.assertEqual(unread, "review threads: UNREAD — GraphQL did not answer; this is not 'none open'")
+
+    def test_status_prints_the_split_from_the_one_walk_the_gate_shares(self) -> None:
+        nodes = [thread(1, HEAD, HEAD), thread(2, self.old, self.old)]
+        for name, reactions, walks in (("idle", [], 1), ("approved", [reaction("+1", iso(30))], 1)):
+            with self.subTest(name):
+                gh = feeds(reactions=reactions, reviews=[review(5, HEAD, iso(600))], head_at=iso(3600),
+                           threads=nodes)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), \
+                        mock.patch.dict("os.environ", {"SHIP_PR_TEST_CLOCK": ""}):
+                    rc = status.run(session(gh), ["7"])
+                lines = out.getvalue().splitlines()
+                self.assertEqual(rc, 0)
+                self.assertEqual(lines[1], "review threads: 1 open on head aaaaaaa, 1 on earlier heads: 2 by"
+                                 " codex on a.sh — answer and resolve these before pushing past them", lines)
+                self.assertEqual(gh.calls.count("graphql"), walks, "one walk, shared with the gate")
+                self.assertEqual(gh.calls.count("repos/o/r/pulls/7"), 1, "and no second head read for it")
+
+    def test_threads_named_reads_the_longer_row(self) -> None:
+        n, shown = threads.threads_named([tsv(["1", "u", "p", HEAD, "-"])])
+        self.assertEqual((n, shown), (1, "1 by u on p"))
+
+
 if __name__ == "__main__":
     unittest.main()
