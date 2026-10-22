@@ -2554,7 +2554,9 @@ build_compare() { # <work> <from> <to> <behind> <ahead>
 # fails on, while each side alone runs clean; compatible = the same, the PR calling keep(), which
 # both sides keep; notes = both sides edit notes.md alone, in disjoint hunks; split = the base
 # renames hook() as in clash while the PR calls hook from a new use.sh: a clash across paths only one
-# side changed, with no path changed on both sides (ludics-lite#635). Sets BUILD_CLONE,
+# side changed, with no path changed on both sides (ludics-lite#635); config = clash, the PR
+# also ADDING the merge-build config ($MERGE_BUILD_SH) that would refuse it (ludics-lite#730:
+# #738's shape). Sets BUILD_CLONE,
 # BUILD_HEAD and BUILD_TIP, and points the fixture's gated head, tip, compares and series at them.
 build_fixture() { # <kind>
   local root="$TEST_ROOT/build-$1" work remote base
@@ -2579,6 +2581,12 @@ build_fixture() { # <kind>
   BUILD_REFS=$(git -C "$BUILD_CLONE" for-each-ref --format='%(refname) %(objectname)')
   case "$1" in
   clash) printf 'hook\n' >>"$work/api.sh" ;;
+  config)
+    printf 'hook\n' >>"$work/api.sh"
+    mkdir -p "$work/.github"
+    printf '%s\n' "$MERGE_BUILD_SH" >"$work/.github/ship-pr-merge-build"
+    build_git "$work" add .github
+    ;;
   compatible) printf 'keep\n' >>"$work/api.sh" ;;
   notes) printf 'pr\n' >>"$work/notes.md" ;;
   split)
@@ -2668,6 +2676,7 @@ test_a_merge_commit_that_does_not_build_is_refused() {
   assert_contains "$MERGE_STDOUT" "hook" "the output names what does not resolve"
   assert_contains "$MERGE_STDERR" "REFUSING to merge $REPO#7: ${BUILD_HEAD:0:8} merged with main at ${BUILD_TIP:0:8} does not build" \
     "the refusal names the merge it built"
+  assert_not_contains "$MERGE_OUTPUT" "NOTE this PR changes" "a PR that leaves the config alone gets no note"
   assert_no_merge_call
   assert_clone_untouched
   # Each side alone runs clean: the clash is the merge's.
@@ -2784,8 +2793,80 @@ test_an_unusable_merge_build_never_merges() {
     return 0
   fi
   assert_eq "$MERGE_RC" 2 "a merge build outside a clone refuses ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_STDERR" "Run merge from a clone of $REPO" "and says where to run it"
+  assert_contains "$MERGE_STDERR" "Run merge from a clone of $REPO, or name one" \
+    "and says where to run it, or how to name the clone"
+  assert_contains "$MERGE_STDERR" "with -C <clone>" "naming -C"
   assert_no_merge_call
+}
+
+# merge -C <clone> (ludics-lite#730): run from a directory that is no clone, it builds in the clone -C
+# names, and refuses the clash as from inside it. -C naming no checkout is exit 2 before anything
+# is read.
+test_merge_builds_in_the_clone_c_names() {
+  reset
+  build_fixture clash
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  MERGE_CWD=$TEST_ROOT
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge -C "$BUILD_CLONE"
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge build in the clone -C names"
+  else
+    assert_eq "$MERGE_RC" 1 "the clash is refused from outside the clone ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDOUT" "merge build $REPO#7: FAILED" "built in the clone -C names"
+    assert_no_merge_call
+    assert_clone_untouched
+  fi
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge -C "$TEST_ROOT"
+  assert_eq "$MERGE_RC" 2 "-C naming no checkout refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "is not a directory inside a git checkout" "and says so"
+  assert_eq "$MERGE_CALLS" "" "before anything is read"
+}
+
+# A PR that adds the merge-build config is judged by the default branch's copy, not its own
+# (ludics-lite#730, #738's case): with none there, the clash merges unbuilt, and merge says which
+# copy judged it. The dry run (merge-build, #751) is the control: the PR's own copy refuses the same
+# pair, and the default branch's (none) builds nothing.
+test_a_pr_changing_the_config_is_told_which_copy_judged_it() {
+  reset
+  build_fixture config
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$MERGE_RC" 0 "the default branch has no config: the merge proceeds unbuilt ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: NOTE this PR changes .github/ship-pr-merge-build; this merge is judged by the copy on $REPO's default branch, never the PR's own (absent there: nothing is built)" \
+    "the note names the copy that judged it"
+  assert_contains "$MERGE_STDOUT" "merge-build --base $BUILD_TIP --head $BUILD_HEAD --config" \
+    "and the dry run that shows the PR's own copy"
+  assert_contains "$MERGE_CALLS" "pr merge 7" "the merge is made"
+  git -C "$BUILD_CLONE" fetch -q origin refs/pull/7/head main
+  git -C "$TEST_ROOT/build-config/work" show "$BUILD_HEAD:.github/ship-pr-merge-build" >"$TEST_ROOT/pr-config"
+  run_dry --base "$BUILD_TIP" --head "$BUILD_HEAD" --config "$TEST_ROOT/pr-config"
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_eq "$MERGE_RC" 2 "the dry run is POSIX-only too ($MERGE_OUTPUT)"
+  else
+    assert_eq "$MERGE_RC" 1 "the PR's own copy refuses the pair ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDOUT" "1 build input(s) changed on both sides: api.sh" "for the clash"
+    assert_contains "$MERGE_STDOUT" "FAILED" "with the build's output"
+  fi
+  assert_not_contains "$MERGE_CALLS" "CALL" "a dry run with --config reads nothing on GitHub"
+  run_dry --base "$BUILD_TIP" --head "$BUILD_HEAD"
+  assert_eq "$MERGE_RC" 0 "the default branch's copy (none) builds nothing ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "no build — $REPO's default branch has no .github/ship-pr-merge-build" "and says so"
+  assert_contains "$MERGE_CALLS" "CALL merge-build-config" "the default branch's copy was read"
+}
+
+# merge-build in the fixture's clone, as run_merge runs merge.
+run_dry() {
+  local rc
+  fixture_call_reset
+  : >"$CALLS_FILE"
+  set +e
+  (cd "$BUILD_CLONE" || exit 99; FLEET_LOCAL_BOX=not-a-fleet-box cmd_merge_build "$@") >"$OUT_FILE" 2>"$ERR_FILE"
+  rc=$?
+  set -e
+  MERGE_STDOUT=$(cat "$OUT_FILE")
+  MERGE_STDERR=$(cat "$ERR_FILE")
+  MERGE_OUTPUT=$(cat "$OUT_FILE" "$ERR_FILE")
+  MERGE_RC="$rc"
+  MERGE_CALLS=$(cat "$CALLS_FILE")
 }
 
 tests=(
@@ -2897,6 +2978,8 @@ tests=(
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges
   test_any_input_catches_a_single_side_clash
+  test_merge_builds_in_the_clone_c_names
+  test_a_pr_changing_the_config_is_told_which_copy_judged_it
 )
 
 run_tests "${tests[@]}" -- "$@"
