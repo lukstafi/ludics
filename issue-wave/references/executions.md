@@ -297,9 +297,12 @@ So:
   read the second window and never the gap (#666's fixture, which now opens its windows
   `--no-gap` to model exactly that); with the gap it reads the box free and goes for its slot.
 - A window's bound is 30 minutes from open to conclusion: 1800 s is the shortest wait a batch gives
-  a window (the merge build's; a brief's `--wait-window` waits an hour), and a waiter's bound runs
-  on across back-to-back windows, so the gap is where it gets out. Plan each window's measurement
-  to fit (its runner under `--deadline`), and give a longer one a window of its own. When a window
+  a window (a merge build's without `--wait`; under `--wait` it waits for what is left of that
+  ceiling, never less, ludics-lite#764; a brief's `--wait-window` waits an hour), and a waiter's
+  bound runs on across back-to-back windows, so the gap is where it gets out. Plan each window's
+  measurement to fit (its runner under `--deadline`), and give a longer one a window of its own. A
+  measurement sequence that cannot fit (tuned before/after cells at about 10 min a cell ran 50+
+  min per window in wave-20261021) belongs in an off-hours window, not split across daytime ones. When a window
   passes the bound with no result line, look at its run: a live one runs on (concluding its window
   frees nothing while its hold holds the slots), a hung one is stopped and concluded `timeout`,
   and its request queues again behind a gap.

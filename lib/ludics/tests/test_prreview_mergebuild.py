@@ -184,8 +184,8 @@ def git(cwd: str, *args: str) -> str:
 API = ["hook() { :; }", "# one", "# two", "# three", "keep() { :; }", "# four", "# five", "# six"]
 
 
-class Build(unittest.TestCase):
-    """``_build`` in a clone of a scratch remote whose path ends in owner/repo."""
+class Repo(unittest.TestCase):
+    """A clone of a scratch remote whose path ends in owner/repo, and its helpers (no cases)."""
 
     def setUp(self) -> None:
         self.dir = os.path.realpath(tempfile.mkdtemp(prefix="ludics-mergebuild-test."))
@@ -252,6 +252,11 @@ class Build(unittest.TestCase):
                 out.write(exc.message + "\n")
         self.assert_untouched(refs)
         return rc, out.getvalue()
+
+
+
+class Build(Repo):
+    """``_build`` in a clone of a scratch remote whose path ends in owner/repo."""
 
     def test_a_clash_is_refused_with_the_build_output(self) -> None:
         head, _ = self.sides("hook", "seam() { :; }")
@@ -526,6 +531,282 @@ class Interrupts(unittest.TestCase):
                 os.kill(os.getpid(), signal.SIGHUP)
                 time.sleep(1)
         self.assertEqual(signal.getsignal(signal.SIGTERM), before, "the handlers are put back")
+
+
+class _Clock:
+    def __init__(self, now: int) -> None:
+        self.at = now
+
+    def time(self) -> float:
+        return float(self.at)
+
+    def now(self) -> int:
+        return self.at
+
+    def sleep(self, seconds: float, /) -> None:
+        self.at += int(seconds)
+
+
+class WindowAndNote(unittest.TestCase):
+    """THE WINDOW WAIT's bound (ludics-lite#764) and THE CONFIG NOTE's reading (#730)."""
+
+    def test_the_window_bound_is_what_is_left_of_the_ceiling_never_under_the_slot_wait(self) -> None:
+        bound = mergebuild.window_bound
+        self.assertEqual(bound(None), mergebuild.SLOT_WAIT, "no --wait: as before")
+        clock = _Clock(1000)
+        self.assertEqual(bound(mergebuild.Ceiling(clock, 1000 + 7200)), 7200)
+        clock.sleep(2000)  # the gate's wait used some of it
+        self.assertEqual(bound(mergebuild.Ceiling(clock, 1000 + 7200)), 5200)
+        self.assertEqual(bound(mergebuild.Ceiling(clock, 1000 + 7200 + 600)), 5800, "a recovery's extension counts")
+        clock.sleep(5000)
+        self.assertEqual(bound(mergebuild.Ceiling(clock, 1000 + 7200)), mergebuild.SLOT_WAIT, "the floor")
+        clock.sleep(5000)
+        self.assertEqual(bound(mergebuild.Ceiling(clock, 1000 + 7200)), mergebuild.SLOT_WAIT, "past the ceiling too")
+
+    def test_merge_hands_the_gates_own_deadline_to_the_build(self) -> None:
+        """``Merge.ceiling``: the gate's deadline as it left it (a recovery's extension included),
+        under --wait only."""
+        from ludics.prreview import merge
+        from ludics.prreview.core import GhSession, load_config
+        from ludics.prreview.gate import load_gate_config
+
+        env = {k: v for k, v in os.environ.items() if not k.startswith("SHIP_PR_")}
+        clock = _Clock(1000)
+        for wait, expected in ((0, None), (7200, 9000)):
+            opts = merge.Options(pr="7", wait_for=wait)
+            m = merge.Merge(GhSession(load_config(env)), "o/r", "7", load_gate_config(env), clock, opts)
+            m.gate.deadline = 9000
+            ceiling = m.ceiling()
+            self.assertEqual(None if ceiling is None else ceiling.deadline, expected)
+
+    def test_the_note_reads_the_pr_side_by_either_name(self) -> None:
+        touched = mergebuild.config_touched
+        cfg = mergebuild.CONFIG_FILE
+        self.assertTrue(touched(drift.Drift(0, pr_paths=["a.ml", cfg], base_paths=[])))
+        self.assertTrue(touched(drift.Drift(0, pr_paths=["ci/build.cfg"], base_paths=[], renamed={"ci/build.cfg": [cfg]})))
+        self.assertFalse(touched(drift.Drift(0, pr_paths=["a.ml"], base_paths=[cfg])), "the base's change is not the PR's")
+        self.assertFalse(touched(drift.Drift(0)), "an UNKNOWN side says nothing")
+
+
+# A stand-in for `fleet-worker.sh execution slot`: it records its arguments, names a measurement the
+# way the slot's window wait does, and holds until the test releases it (or refuses, with REFUSE).
+_FAKE_SLOT = """#!/bin/bash
+printf '%s\n' "$@" >"$FAKE_DIR/argv"
+printf '%s\n' "EXECUTION SLOT box: measurement window wave-x-m1 holds box (coordinator c; w for #1; reserved t)" >&2
+printf '%s\n' "EXECUTION SLOT box: waiting up to 9s (--wait-window) for it to conclude, then for a slot" >&2
+if [ -n "${REFUSE:-}" ]; then
+  printf '%s\n' "EXECUTION SLOT REFUSED box: measurement wave-x-m1 still holds box after 9s (--wait-window)"
+  exit 1
+fi
+for _ in $(seq 1 200); do [ -e "$FAKE_DIR/release" ] && break; sleep 0.05; done
+while [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+"""
+
+
+class Forwarded(Repo):
+    """The slot's lines reach the caller while it waits, not after (#764)."""
+
+    def run_build(self, head: str, ceiling: str, refuse: bool = False) -> tuple[subprocess.Popen[bytes], str, str]:
+        fake = os.path.join(self.dir, "fake-slot.sh")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write(_FAKE_SLOT)
+        err = os.path.join(self.dir, "stderr")
+        out = os.path.join(self.dir, "stdout")
+        code = (
+            "import sys\n"
+            "from ludics.prreview import mergebuild\n"
+            "from ludics import cli\n"
+            f"mergebuild._slot_runner = lambda: {fake!r}\n"
+            "class C:\n"
+            "    def now(self): return 1000\n"
+            "    def sleep(self, s): pass\n"
+            f"ceiling = {ceiling}\n"
+            "try:\n"
+            f"    mergebuild._build('owner/repo', '7', {head!r}, 'main', {self.tip!r}, mergebuild.BuildConfig('sh ./api.sh', ('*.sh',), 60), 'test', ceiling=ceiling)\n"
+            "except cli.Exit as exc:\n"
+            "    sys.stdout.write(exc.message + '\\n')\n"
+            "    raise SystemExit(exc.rc)\n"
+        )
+        lib = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+        env = {**os.environ, "PYTHONPATH": lib, "FAKE_DIR": self.dir}
+        if refuse:
+            env["REFUSE"] = "1"
+        with open(out, "wb") as o, open(err, "wb") as e:
+            child = subprocess.Popen([sys.executable, "-B", "-c", code], cwd=self.clone, env=env, stdout=o, stderr=e)
+        return child, out, err
+
+    def read(self, path: str) -> str:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_the_hold_is_named_before_the_build_runs(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        child, out, err = self.run_build(head, "mergebuild.Ceiling(C(), 1000 + 5000)")
+        try:
+            named = False
+            for _ in range(200):
+                if "measurement window wave-x-m1 holds box" in self.read(err):
+                    named = True
+                    break
+                time.sleep(0.05)
+            self.assertTrue(named, "the hold is named while the slot still waits")
+            self.assertIsNone(child.poll(), "and the build has not run yet")
+            open(os.path.join(self.dir, "release"), "w").close()
+            rc = child.wait(timeout=60)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+        self.assertEqual(rc, 0, self.read(out) + self.read(err))
+        self.assertIn("PASSED", self.read(out))
+        self.assertIn("waited for up to 5000s", self.read(out))
+        argv = self.read(os.path.join(self.dir, "argv")).split("\n")
+        self.assertIn("--wait-window=5000", argv, "the rest of the ceiling")
+        self.assertIn("--wait", argv)
+        self.assertEqual(argv[argv.index("--wait") + 1], "1800", "the free-slot wait is unchanged")
+
+    def test_no_wait_keeps_the_slot_wait_and_a_refusal_is_said_once(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        child, out, err = self.run_build(head, "None", refuse=True)
+        rc = child.wait(timeout=60)
+        self.assertEqual(rc, 3, self.read(out) + self.read(err))
+        argv = self.read(os.path.join(self.dir, "argv")).split("\n")
+        self.assertIn("--wait-window=1800", argv, "no --wait: as before")
+        both = self.read(out) + self.read(err)
+        self.assertEqual(both.count("still holds box after 9s"), 1, both)
+        self.assertIn("could not run", self.read(out))
+
+
+
+_GH_FAIL = """#!/bin/sh
+printf '%s\n' "$*" >>"$(dirname "$0")/gh-calls"
+echo "gh: no network in this test" >&2
+exit 1
+"""
+
+
+class DryRun(Repo):
+    """``merge-build`` (#751): the build alone, for two revisions in a checkout."""
+
+    def dry(self, *args: str, repo: str = "", cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+        bindir = os.path.join(self.dir, "bin")
+        os.makedirs(bindir, exist_ok=True)
+        gh = os.path.join(bindir, "gh")
+        with open(gh, "w", encoding="utf-8") as f:
+            f.write(_GH_FAIL)
+        os.chmod(gh, 0o755)
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SHIP_PR_", "LUDICS_"))}
+        env.update({"PATH": bindir + os.pathsep + os.environ.get("PATH", ""), "REPO": repo,
+                    "SHIP_PR_API_ATTEMPTS": "1", "SHIP_PR_API_BACKOFF": "0",
+                    "SHIP_PR_STATE_DIR": os.path.join(self.dir, "state")})
+        return subprocess.run([os.path.join(root, "ship-pr", "scripts", "pr-review.sh"), "merge-build", *args],
+                              capture_output=True, text=True, env=env, cwd=cwd or self.clone, check=False)
+
+    def gh_calls(self) -> str:
+        path = os.path.join(self.dir, "bin", "gh-calls")
+        return self.read(path) if os.path.exists(path) else ""
+
+    def read(self, path: str) -> str:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def config(self, text: str) -> str:
+        path = os.path.join(self.dir, "merge-build.cfg")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def fetched(self) -> None:
+        git(self.clone, "fetch", "-q", "origin", "refs/pull/7/head:refs/remotes/origin/pr7", "main:refs/remotes/origin/main")
+
+    def test_a_clash_is_refused_and_a_compatible_pair_passes(self) -> None:
+        head, tip = self.sides("hook", "seam() { :; }")
+        self.fetched()
+        cfg = self.config("command sh ./api.sh\ninput *.sh\ntimeout 60\n")
+        refs = self.refs()
+        done = self.dry("--base", "origin/main", "--head", head, "--config", cfg)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn(f"base origin/main = {tip}", done.stdout)
+        self.assertIn("1 build input(s) changed on both sides: api.sh", done.stdout)
+        self.assertIn("FAILED", done.stdout)
+        self.assertIn("merge would REFUSE it", done.stderr)
+        self.assertEqual(self.gh_calls(), "", "no gh call: no PR, no config read")
+        self.assert_untouched(refs)
+        compatible = self.config("command true\ninput *.sh\n")
+        done = self.dry("--base", tip, "--head", head, "--config", compatible)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("PASSED", done.stdout)
+
+    def test_no_build_when_the_trigger_does_not_hold(self) -> None:
+        head, tip = self.sides("hook", "seam() { :; }")
+        self.fetched()
+        cfg = self.config("command false\ninput *.ml\n")
+        done = self.dry("--base", tip, "--head", head, "--config", cfg)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("no build — none of the 1 path(s) changed on both sides is a build input (*.ml)", done.stdout)
+        done = self.dry("--base", tip, "--head", tip, "--config", cfg)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("no build — the head changed no path since their merge base", done.stdout)
+
+    def test_a_rename_counts_by_its_other_name(self) -> None:
+        git(self.work, "mv", "api.sh", "lib.sh")
+        git(self.work, "commit", "-q", "-m", "rename")
+        renamed = git(self.work, "rev-parse", "HEAD")
+        sides = mergedry_sides(self.work, git(self.work, "rev-parse", "HEAD~1"), renamed)
+        assert sides is not None
+        self.assertEqual(sides[0], ["api.sh", "lib.sh"])
+        self.assertEqual(sides[1], {"lib.sh": ["api.sh"], "api.sh": ["lib.sh"]})
+
+    def test_refusals_before_anything_is_built(self) -> None:
+        head, tip = self.sides("hook", "seam() { :; }")
+        self.fetched()
+        done = self.dry("--base", tip, "--head", head)
+        self.assertEqual(done.returncode, 2, "no config and no repository")
+        self.assertIn("Pass --config <file>", done.stderr)
+        cfg = self.config("command true\ninput *\n")
+        done = self.dry("--base", "no-such-rev", "--head", head, "--config", cfg)
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn("is not a commit", done.stderr)
+        done = self.dry("--base", tip, "--head", head, "--config", cfg, repo="other/name")
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn("has no remote naming other/name", done.stderr)
+        done = self.dry("--base", tip, "--config", cfg)
+        self.assertEqual(done.returncode, 2, done.stderr)
+        done = self.dry("--base", tip, "--head", head, "--config", cfg, "-C", self.dir)
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn("not a directory inside a git checkout", done.stderr)
+        self.assertEqual(self.gh_calls(), "")
+        git(self.clone, "config", "remote.origin.promisor", "true")
+        done = self.dry("--base", tip, "--head", head, "--config", cfg)
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn("is a shallow or partial clone", done.stderr)
+        git(self.clone, "config", "--unset", "remote.origin.promisor")
+
+    def test_a_side_that_changed_nothing_reads_no_config(self) -> None:
+        _, tip = self.sides("hook", "seam() { :; }")
+        self.fetched()
+        done = self.dry("--base", tip, "--head", tip, repo="owner/repo")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("no build — the head changed no path since their merge base", done.stdout)
+        self.assertEqual(self.gh_calls(), "", "as merge: no config is read")
+
+    def test_the_default_branch_copy_is_read_when_no_config_is_given(self) -> None:
+        head, tip = self.sides("hook", "seam() { :; }")
+        self.fetched()
+        done = self.dry("--base", tip, "--head", head, repo="owner/repo")
+        self.assertIn(done.returncode, (2, 3), done.stdout + done.stderr)
+        self.assertIn("contents/.github/ship-pr-merge-build", self.gh_calls())
+        self.assertIn("merge-build: could not read owner/repo's .github/ship-pr-merge-build", done.stderr)
+
+
+
+def mergedry_sides(root: str, base: str, side: str) -> tuple[list[str], dict[str, list[str]]] | None:
+    from ludics.prreview import mergedry
+
+    return mergedry.local_sides(root, base, side)
 
 
 if __name__ == "__main__":

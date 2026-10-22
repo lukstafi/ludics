@@ -49,10 +49,11 @@ makes the build redundant, never wrong. Under ``same-input``, a semantic conflic
 ONE side changed is outside this boundary, and stays the integration loop's to catch on the merged
 tip.
 
-HOW IT BUILDS. From a local clone of the repository: the git checkout the merge runs in, whose
-remote (``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional,
-case ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2, and so
-is a SHALLOW clone, which may lack the merge base (run from a full clone, or ``git fetch
+HOW IT BUILDS. From a local clone of the repository: the git checkout the merge runs in, or the one
+``merge -C <dir>`` names (ludics-lite#730; checked before anything is read, so a wait never ends on
+it), whose remote (``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional,
+case ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2 (the refusal names
+``-C``), and so is a SHALLOW clone, which may lack the merge base (run from a full clone, or ``git fetch
 --unshallow``). The clone fetches ``refs/pull/<n>/head`` and the base branch as OBJECTS only -- no
 destination ref, ``--refmap=`` (no remote-tracking ref moves), no FETCH_HEAD -- and the remote's
 ``refs/pull/<n>/head``, read back with ``ls-remote``, must be the gated head (else exit 5:
@@ -64,11 +65,37 @@ the build's, and nothing is registered in the clone. There the merge commit is m
 merge-tree --write-tree``, ``commit-tree``; a textual conflict is exit 1) and checked out in full,
 and the command runs at its root, its output to a log beside it, inside this box's run-time slot
 when it has slots (``fleet-worker.sh execution slot --probe`` answers the PROBE line; ``--cpu``,
-waiting up to 30 min for a slot and 30 min for a measurement, under ``--deadline`` = the timeout)
-and bare otherwise, bounded either way. The scratch directory is the whole of the build's state:
+waiting up to 30 min for a slot and, for a measurement, THE WINDOW WAIT below, under ``--deadline``
+= the timeout) and bare otherwise, bounded either way. The scratch directory is the whole of the build's state:
 it is removed whatever the outcome, and one a SIGKILLed merge leaves is in pr-review's swept
 temporary family (``pr-review-build.<pid>.*``). What the clone keeps is the fetched objects, which
 nothing names, as after any fetch.
+
+THE WINDOW WAIT (ludics-lite#764). A measurement holding the box (a window) is waited for by the
+slot (``--wait-window=<n>``, fleetworker/slot.py), never by this module, for ``n`` =
+``SLOT_WAIT`` (30 min) without ``--wait``, and under ``--wait`` what is left of its ceiling when the
+build starts -- the gate's own deadline, a recovery's extension included -- but never less than
+``SLOT_WAIT``, so a merge whose CI wait used its ceiling up waits as long as before. The ceiling
+bounds that wait only: the free-slot wait (30 min) and the build's timeout stay their own, so it is
+no deadline for the whole command. The slot names each measurement it waits for (its request id,
+coordinator, worker and issue) the moment it finds it: the wrapper's two streams are this
+process's stderr, not captured, so those lines reach the caller as said, not after the wait. Nothing
+is parsed from them; the verdict is the status file's, as below.
+
+THE CONFIG NOTE (ludics-lite#730). The config is the DEFAULT BRANCH's copy, so a PR that adds or
+changes it is never judged by its own copy (#738 added the file and printed no merge-build line at
+all). When the drift read's PR side names ``CONFIG_FILE`` (by either name of a rename), merge says
+so in one ``NOTE`` line naming the copy that judged it -- absent there, read below, or not read
+because one side changed nothing -- and the dry run (below) that shows the PR's own copy judging
+the same pair. The boundary is that PR side: an UNKNOWN one (a compare that did not answer,
+GitHub's 300-file cap) says nothing, and no read is made for the note.
+
+THE DRY RUN (ludics-lite#751, ``pr-review.sh merge-build``, prreview/mergedry.py): this build
+alone, for a base and a head revision in a local checkout, under a config file given or the default
+branch's. It reads no PR and fetches nothing; its two sides are git's diff from their merge base
+(mergedry.py states how that stands in for the drift read), and the trigger, the scratch build and
+the verdicts are this module's. Its exit is the one merge's build step would make: 0 the merge
+would proceed (PASSED, or no build), 1 refused, 2, 3 and 4 as below.
 
 THE COMMAND'S CONTRACT. The command runs with its cwd at the root of the merged tree, which is the
 work tree of a git repository whose ``HEAD`` is the merge commit, detached. Its FIRST parent is the
@@ -127,6 +154,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Generator
@@ -136,6 +164,7 @@ from types import FrameType
 from typing import Literal, assert_never
 
 from ludics import cli, proc
+from ludics.prreview.clock import Clock
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
 from ludics.prreview.drift import Drift
 from ludics.prreview.gate import github_file_absent
@@ -144,7 +173,7 @@ CONFIG_LEAF = "ship-pr-merge-build"
 CONFIG_FILE = f".github/{CONFIG_LEAF}"
 DEFAULT_TIMEOUT = 1200
 MAX_TIMEOUT = 86400  # a day: a larger `timeout` is a config error, refused before anything is built
-SLOT_WAIT = 1800  # seconds a slot is waited for, and (separately) a measurement holding the box
+SLOT_WAIT = 1800  # seconds a slot is waited for, and the least a measurement holding the box is (WINDOW WAIT)
 FETCH_TIMEOUT = 600
 GIT_TIMEOUT = 300
 PROBE_TIMEOUT = 60
@@ -264,9 +293,9 @@ def build_reason(drift: Drift, config: BuildConfig) -> tuple[str | None, str]:
     )
 
 
-def read_config(session: GhSession, repo: str, cap: int) -> BuildConfig | None:
+def read_config(session: GhSession, repo: str, cap: int, stop: str = "NOT merging") -> BuildConfig | None:
     """The repository's config from its default branch, None when it has none; refuses (2 or 3)
-    as ``advisory_policy`` does for the advisory list."""
+    as ``advisory_policy`` does for the advisory list, each refusal led by ``stop``."""
     where = f"{repo}'s {CONFIG_FILE}"
     result = session.retry(
         "read", ["api", "-H", "Accept: application/vnd.github.raw", f"repos/{repo}/contents/{CONFIG_FILE}"]
@@ -275,7 +304,7 @@ def read_config(session: GhSession, repo: str, cap: int) -> BuildConfig | None:
         case GhOk(stdout=body):
             parsed = parse_config(body, where)
             if parsed is None:
-                fail(2, f"NOT merging: {where} is not a merge-build config (above); fix the file on the default branch.")
+                fail(2, f"{stop}: {where} is not a merge-build config (above); fix the file on the default branch.")
             return parsed
         case GhFailed():
             if "HTTP 404" in session.err_line():
@@ -285,24 +314,24 @@ def read_config(session: GhSession, repo: str, cap: int) -> BuildConfig | None:
                 if absent == 3:
                     fail(
                         3,
-                        f"NOT merging: {where} read as 404, and the listing that would establish its absence",
+                        f"{stop}: {where} read as 404, and the listing that would establish its absence",
                         f"did not answer ({session.err_line()}). Whether the merge needs a build is UNKNOWN. Retry.",
                     )
                 fail(
                     2,
-                    f"NOT merging: {where} read as 404, and its absence could not be established from the",
+                    f"{stop}: {where} read as 404, and its absence could not be established from the",
                     "directory listing (a 404 is also how GitHub answers a token without Contents access to a",
                     "private repository). Give the token Contents read access.",
                 )
             fail(
                 2,
-                f"NOT merging: could not read {where} on its default branch ({session.err_line()});",
+                f"{stop}: could not read {where} on its default branch ({session.err_line()});",
                 "the API refused the read, so whether the merge needs a build is unknown.",
             )
         case GhUnanswered():
             fail(
                 3,
-                f"NOT merging: could not read {where} on its default branch ({session.err_line()}).",
+                f"{stop}: could not read {where} on its default branch ({session.err_line()}).",
                 "Whether the merge needs a build is UNKNOWN. Retry.",
             )
         case _:
@@ -344,17 +373,17 @@ def _remote_matches(url: str, repo: str) -> bool:
     return len(parts) >= 2 and "/".join(parts[-2:]).lower() == repo.lower()
 
 
-def find_clone(repo: str, cwd: str, hooks: str) -> tuple[str, str]:
-    """The checkout ``cwd`` is in and its remote naming ``repo``; exit 2 when there is none."""
-    top = _git(["rev-parse", "--show-toplevel"], cwd)
+def clone_of(repo: str, where: str, hooks: str | None = None) -> tuple[str | None, str | None]:
+    """The git checkout ``where`` is in (None: not a directory inside one) and its remote naming
+    ``repo`` (None: no such remote) -- ``origin`` first, else the first by name."""
+    if not os.path.isdir(where):
+        return None, None
+    top = _git(["rev-parse", "--show-toplevel"], where)
     if top.rc != 0 or not top.stdout.strip():
-        fail(
-            2,
-            f"NOT merging: {repo}'s {CONFIG_FILE} asks for a build of the merge commit, and this merge",
-            f"does not run inside a git checkout ({cwd}). Run merge from a clone of {repo}.",
-        )
+        return None, None
     root = top.stdout.strip()
-    listed = _git(["-c", f"core.hooksPath={hooks}", "config", "--get-regexp", r"^remote\..*\.url$"], root)
+    quiet = ["-c", f"core.hooksPath={hooks}"] if hooks else []
+    listed = _git([*quiet, "config", "--get-regexp", r"^remote\..*\.url$"], root)
     remotes: list[str] = []
     for line in listed.stdout.splitlines():
         key, _, url = line.partition(" ")
@@ -362,12 +391,28 @@ def find_clone(repo: str, cwd: str, hooks: str) -> tuple[str, str]:
         if name and _remote_matches(url, repo):
             remotes.append(name)
     if not remotes:
+        return root, None
+    return root, ("origin" if "origin" in remotes else sorted(remotes)[0])
+
+
+def find_clone(repo: str, where: str, hooks: str, stop: str = "NOT merging") -> tuple[str, str]:
+    """The checkout ``where`` is in and its remote naming ``repo``; exit 2 when there is none."""
+    root, remote = clone_of(repo, where, hooks)
+    if root is None:
         fail(
             2,
-            f"NOT merging: {repo}'s {CONFIG_FILE} asks for a build of the merge commit, and the checkout",
-            f"this merge runs in ({root}) has no remote naming {repo}. Run merge from a clone of it.",
+            f"{stop}: {repo}'s {CONFIG_FILE} asks for a build of the merge commit, and this merge",
+            f"does not run inside a git checkout ({where}). Run merge from a clone of {repo}, or name one",
+            "with -C <clone>.",
         )
-    return root, ("origin" if "origin" in remotes else sorted(remotes)[0])
+    if remote is None:
+        fail(
+            2,
+            f"{stop}: {repo}'s {CONFIG_FILE} asks for a build of the merge commit, and the checkout",
+            f"this merge runs in ({root}) has no remote naming {repo}. Run merge from a clone of it, or",
+            "name one with -C <clone>.",
+        )
+    return root, remote
 
 
 def _slot_runner() -> str | None:
@@ -501,10 +546,14 @@ def _end_group_held(child: subprocess.Popen[bytes]) -> None:
 
 
 def _supervised(
-    argv: list[str], cwd: str, bound: float, env: dict[str, str], *, merged: bool = False, end_group: bool = False
+    argv: list[str], cwd: str, bound: float, env: dict[str, str], *, merged: bool = False, end_group: bool = False,
+    forward: bool = False,
 ) -> proc.Completed:
     """``argv`` in a session of its own under ``bound`` (124 past it, as ``proc.run_tool`` reports
-    a timeout), stdin ``/dev/null``, its output captured (stderr into stdout when ``merged``). Its
+    a timeout), stdin ``/dev/null``, its output captured (stderr into stdout when ``merged``) -- or,
+    when ``forward``, not captured at all: both its streams are this process's stderr descriptor,
+    so what it says reaches the caller as it says it (THE WINDOW WAIT), and the result's output is
+    empty but for this function's own timeout line. Its
     group is ended when the wait for it ends any way but its own exit -- the bound, an exception,
     an INTERRUPT -- and after its own exit too when ``end_group`` (the build: a process it left
     behind). A child that cannot be spawned raises the ``OSError``/``ValueError`` to the caller.
@@ -517,6 +566,10 @@ def _supervised(
             return proc.Completed(127, "", f"{argv[0]}: command not found\n")
         full = [*prefix, *argv[1:]]
     child: subprocess.Popen[bytes] | None = None
+    if forward:
+        # What this process said before goes first: the child writes past these buffers.
+        sys.stdout.flush()
+        sys.stderr.flush()
     try:
         with _INTERRUPTS.held():
             child = subprocess.Popen(
@@ -524,8 +577,8 @@ def _supervised(
                 cwd=cwd,
                 env=env,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT if merged else subprocess.PIPE,
+                stdout=2 if forward else subprocess.PIPE,
+                stderr=subprocess.STDOUT if merged or forward else subprocess.PIPE,
                 start_new_session=True,
             )
         _INTERRUPTS.check()
@@ -537,10 +590,12 @@ def _supervised(
                 out, err = child.communicate(timeout=5)
             except (subprocess.TimeoutExpired, ValueError):
                 out, err = b"", b""
-            return proc.Completed(124, proc.decode(out), proc.decode(err or b"") + f"{argv[0]}: no answer in {bound:g}s\n")
+            return proc.Completed(
+                124, proc.decode(out or b""), proc.decode(err or b"") + f"{argv[0]}: no answer in {bound:g}s\n"
+            )
         if end_group:
             _end_group(child)
-        return proc.Completed(child.returncode, proc.decode(out), proc.decode(err or b""))
+        return proc.Completed(child.returncode, proc.decode(out or b""), proc.decode(err or b""))
     except BaseException:
         # The hold first, before any call: CPython runs a signal handler only at a call or a
         # backward jump, so no second signal cuts in between the exception and the hold.
@@ -553,14 +608,58 @@ def _supervised(
         raise
 
 
-def merge_build(session: GhSession, repo: str, pr: str, gated: str, drift: Drift, cap: int) -> None:
+@dataclass(frozen=True)
+class Ceiling:
+    """``merge --wait``'s deadline on its clock: the gate's own, a recovery's extension included
+    (gate.py's ``Gate.deadline``). THE WINDOW WAIT runs within what is left of it."""
+
+    clock: Clock
+    deadline: int
+
+
+def window_bound(ceiling: Ceiling | None) -> int:
+    """THE WINDOW WAIT's bound: ``SLOT_WAIT`` without a ceiling (a merge with no --wait, a dry
+    run), else what is left of the ceiling, never less than ``SLOT_WAIT``."""
+    if ceiling is None:
+        return SLOT_WAIT
+    return max(SLOT_WAIT, ceiling.deadline - ceiling.clock.now())
+
+
+def config_touched(drift: Drift) -> bool:
+    """THE CONFIG NOTE's reading: the drift read's PR side holds ``CONFIG_FILE`` by either name of
+    a rename. An UNKNOWN side is False: the note is never guessed."""
+    if drift.pr_paths is None:
+        return False
+    return any(n == CONFIG_FILE for p in drift.pr_paths for n in (p, *drift.renamed.get(p, [])))
+
+
+def merge_build(
+    session: GhSession, repo: str, pr: str, gated: str, drift: Drift, cap: int, *,
+    checkout: str | None = None, ceiling: Ceiling | None = None,
+) -> None:
     """Build the would-be merge commit when the config and the drift read ask for it (the module
-    docstring); return to merge, or end the command with its refusal."""
+    docstring); return to merge, or end the command with its refusal. ``checkout`` is ``merge
+    -C``'s clone (None: the working directory)."""
+    touched = config_touched(drift)
+
+    def note(state: str) -> None:
+        if touched:
+            cli.say(
+                f"merge build {repo}#{pr}: NOTE this PR changes {CONFIG_FILE}; this merge is judged by the copy on"
+                f" {repo}'s default branch, never the PR's own ({state}). To see the PR's copy judge this pair:"
+                f" pr-review.sh --repo {repo} merge-build --base {drift.base_sha or '<the base tip>'} --head {gated}"
+                f" --config <the PR's copy of {CONFIG_FILE}>"
+            )
+
     if drift.pr_paths is not None and drift.base_paths is not None and not (drift.pr_paths and drift.base_paths):
-        return  # a side that changed nothing: no build is possible under either trigger, and the config is not read
+        # A side that changed nothing: no build is possible under either trigger, and the config is not read.
+        note("not read: one side changed nothing, so no build is possible")
+        return
     config = read_config(session, repo, cap)
     if config is None:
+        note("absent there: nothing is built")
         return
+    note("read below")
     why, why_not = build_reason(drift, config)
     if why is None:
         cli.say(f"merge build {repo}#{pr}: no build — {why_not}")
@@ -583,16 +682,41 @@ def merge_build(session: GhSession, repo: str, pr: str, gated: str, drift: Drift
             f"NOT merging {repo}#{pr}: {why}, and the tip of {drift.base_ref} could not be read (above),",
             "so the merge commit cannot be built. Retry.",
         )
-    _build(repo, pr, gated, drift.base_ref, drift.base_sha, config, why)
+    _build(repo, pr, gated, drift.base_ref, drift.base_sha, config, why, checkout=checkout, ceiling=ceiling)
 
 
-def _build(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str) -> None:
-    """The build under the INTERRUPTS boundary (module docstring)."""
+@dataclass(frozen=True)
+class _Subject:
+    """Whose build it is, in its lines: ``label`` after ``merge build``, ``stop`` leading a
+    refusal before a verdict, ``refuse`` leading a failed build's; ``pr`` is the PR whose head is
+    fetched, and empty for a dry run (THE DRY RUN), which fetches nothing."""
+
+    label: str
+    stop: str
+    refuse: str
+    pr: str
+
+
+def _build(
+    repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str, *,
+    checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False,
+) -> None:
+    """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
+    clone ``checkout`` names as it is, with nothing fetched."""
+    if dry:
+        what = f"{gated[:8]} into {base_ref}"
+        subject = _Subject(f"{what} (dry run)", f"merge-build {what}: NOT built", f"merge-build {what}: merge would REFUSE it", "")
+    else:
+        subject = _Subject(f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr)
     with _INTERRUPTS.installed():
-        _build_in_scratch(repo, pr, gated, base_ref, tip, config, why)
+        _build_in_scratch(subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling)
 
 
-def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str) -> None:
+def _build_in_scratch(
+    subject: _Subject, repo: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str,
+    where: str, ceiling: Ceiling | None,
+) -> None:
+    stop, pr = subject.stop, subject.pr
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
     # (a whole build tree, and the repository it is in) is swept by the next `watch`
     # (watch.tmp_sweep_stale): nothing of the build lives anywhere else. It is made and removed
@@ -606,12 +730,18 @@ def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, c
         os.mkdir(hooks)
         tree = os.path.join(scratch, "tree")
         quiet = ["-c", f"core.hooksPath={hooks}"]
-        root, remote = find_clone(repo, os.getcwd(), hooks)
+        if pr:
+            root, remote = find_clone(repo, where, hooks)
+        else:
+            root, _ = clone_of(repo, where, hooks)
+            if root is None:
+                fail(2, f"{stop}: {where} is not inside a git checkout.")
+            remote = ""
         shallow = _git([*quiet, "rev-parse", "--is-shallow-repository"], root)
         if shallow.stdout.strip() != "false":
             fail(
                 2,
-                f"NOT merging {repo}#{pr}: {why}, and the clone this merge runs in ({root}) is shallow",
+                f"{stop}: {why}, and the clone this merge runs in ({root}) is shallow",
                 f"(or its depth could not be read: {_first_line(shallow)}): the merge build needs the merge base.",
                 "Run merge from a full clone, or `git fetch --unshallow` this one first.",
             )
@@ -619,58 +749,29 @@ def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, c
         if partial.stdout.strip():
             fail(
                 2,
-                f"NOT merging {repo}#{pr}: {why}, and the clone this merge runs in ({root}) is a partial clone",
+                f"{stop}: {why}, and the clone this merge runs in ({root}) is a partial clone",
                 "(a promisor remote), whose missing objects the build's repository cannot fetch. Run merge",
                 "from a full clone.",
             )
-        # Objects only: no destination, --refmap= (so no remote-tracking ref of the caller's moves
-        # opportunistically) and no FETCH_HEAD. Nothing in the clone names what was fetched; the
-        # two commits are named by the SHAs the gate and the drift read already hold.
-        fetched = _git(
-            [*quiet, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", remote,
-             f"refs/pull/{pr}/head", f"refs/heads/{base_ref}"],
-            root,
-            timeout=FETCH_TIMEOUT,
-        )
-        if fetched.rc != 0:
-            fail(
-                3,
-                f"NOT merging {repo}#{pr}: {why}, and fetching its head and {base_ref} from {remote} in",
-                f"{root} failed ({_first_line(fetched)}), so the merge commit was not built. Retry.",
-            )
-        # The remote's head now, not the object's presence: a clone that already holds the gated
-        # commit would pass a presence check after a force-push replaced it.
-        listed = _git([*quiet, "ls-remote", "--quiet", remote, f"refs/pull/{pr}/head"], root, timeout=FETCH_TIMEOUT)
-        now = listed.stdout.split()[0] if listed.rc == 0 and listed.stdout.split() else ""
-        if not _SHA.fullmatch(now):
-            fail(
-                3,
-                f"NOT merging {repo}#{pr}: its head on {remote} could not be read back after the fetch",
-                f"({_first_line(listed)}). Retry.",
-            )
-        if now != gated:
-            fail(
-                5,
-                f"NOT merging {repo}#{pr}: its head on {remote} is {now[:8]}, not {gated[:8]}, the commit the",
-                "build signal was read for: SUPERSEDED. Re-run merge to judge the new head.",
-            )
+        if pr:
+            _fetch_gated(subject, root, remote, quiet, gated, base_ref, why)
         for sha, what in ((gated, "its gated head"), (tip, f"{base_ref}'s tip as the drift read it")):
             if _git([*quiet, "cat-file", "-e", f"{sha}^{{commit}}"], root).rc != 0:
                 fail(
                     3,
-                    f"NOT merging {repo}#{pr}: {what}, {sha[:8]}, is not in {root} after the fetch",
+                    f"{stop}: {what}, {sha[:8]}, is not in {root} after the fetch",
                     "(a force-push may have moved it); re-run merge to read it again.",
                 )
         common = _git([*quiet, "rev-parse", "--path-format=absolute", "--git-common-dir"], root).stdout.strip()
         objects = os.path.join(common, "objects")
         if not common or not os.path.isdir(objects):
-            fail(3, f"NOT merging {repo}#{pr}: the object store of {root} could not be found ({common or 'no answer'}).")
+            fail(3, f"{stop}: the object store of {root} could not be found ({common or 'no answer'}).")
         # The build's own repository: it borrows the clone's objects (alternates, read only) and
         # has its own config, refs and index, so the clone's sparse-checkout, hooks and refs are
         # not the build's, and a git write the build makes lands here and goes with the scratch.
         made = _git(["init", "--quiet", "--template=", tree], scratch)
         if made.rc != 0:
-            fail(3, f"NOT merging {repo}#{pr}: the build's repository could not be made ({_first_line(made)}).")
+            fail(3, f"{stop}: the build's repository could not be made ({_first_line(made)}).")
         info = os.path.join(tree, ".git", "objects", "info")
         os.makedirs(info, exist_ok=True)
         with open(os.path.join(info, "alternates"), "w", encoding="utf-8") as handle:
@@ -679,14 +780,14 @@ def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, c
         if merged.rc == 1:
             fail(
                 1,
-                f"NOT merging {repo}#{pr}: {gated[:8]} does not merge cleanly with {base_ref} at {tip[:8]}:",
+                f"{stop}: {gated[:8]} does not merge cleanly with {base_ref} at {tip[:8]}:",
                 f"merge or rebase {base_ref} in, resolve, push, then merge again.",
             )
         written = merged.stdout.split("\n", 1)[0].strip()
         if merged.rc != 0 or not _SHA.fullmatch(written):
             fail(
                 3,
-                f"NOT merging {repo}#{pr}: {why}, and git could not compute the merge of {gated[:8]} into",
+                f"{stop}: {why}, and git could not compute the merge of {gated[:8]} into",
                 f"{base_ref} at {tip[:8]} ({_first_line(merged)}; `git merge-tree --write-tree` needs git >= 2.38).",
             )
         ident = dict(os.environ)
@@ -694,39 +795,47 @@ def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, c
             ident[f"GIT_{role}_NAME"] = "ship-pr merge build"
             ident[f"GIT_{role}_EMAIL"] = "ship-pr@localhost"
         commit = _git(
-            [*quiet, "commit-tree", written, "-p", tip, "-p", gated, "-m", f"ship-pr merge build of {repo}#{pr}"],
+            [*quiet, "commit-tree", written, "-p", tip, "-p", gated, "-m", f"ship-pr merge build of {subject.label}"],
             tree,
             env=ident,
         )
         merge_sha = commit.stdout.strip()
         if commit.rc != 0 or not _SHA.fullmatch(merge_sha):
-            fail(3, f"NOT merging {repo}#{pr}: the merge commit could not be written ({_first_line(commit)}).")
+            fail(3, f"{stop}: the merge commit could not be written ({_first_line(commit)}).")
         out = _git([*quiet, "-c", "core.sparseCheckout=false", "checkout", "--quiet", "--detach", merge_sha], tree)
         if out.rc != 0:
-            fail(3, f"NOT merging {repo}#{pr}: the merge commit could not be checked out ({_first_line(out)}).")
+            fail(3, f"{stop}: the merge commit could not be checked out ({_first_line(out)}).")
         head = gated
         runner = _slot_runner()
-        where = "in a run-time slot" if runner else "bare (this box has no run-time slots)"
-        cli.say(
-            f"merge build {repo}#{pr}: {why}; building {head[:8]} merged with {base_ref} at {tip[:8]}"
-            f" ({merge_sha[:8]}) {where}, bound {config.timeout}s: {config.command}"
-        )
         log = os.path.join(scratch, "build.log")
         status = os.path.join(scratch, "build.status")
         wrapped = ["sh", "-c", _WRAPPER, "merge-build", config.command, log, status]
         bound = float(config.timeout)
         if runner:
+            # THE WINDOW WAIT: its bound read now, after the setup, from what is left of the ceiling.
+            window = window_bound(ceiling)
+            where_run = f"in a run-time slot (a measurement on this box waited for up to {window}s)"
             wrapped = ["bash", runner, "execution", "slot", "--cpu", "--wait", str(SLOT_WAIT),
-                       f"--wait-window={SLOT_WAIT}", "--deadline", str(config.timeout), "--", *wrapped]
-            bound += 2 * SLOT_WAIT + 120
+                       f"--wait-window={window}", "--deadline", str(config.timeout), "--", *wrapped]
+            bound += SLOT_WAIT + window + 120
+        else:
+            where_run = "bare (this box has no run-time slots)"
+        cli.say(
+            f"merge build {subject.label}: {why}; building {head[:8]} merged with {base_ref} at {tip[:8]}"
+            f" ({merge_sha[:8]}) {where_run}, bound {config.timeout}s: {config.command}"
+        )
         # THE COMMAND'S CONTRACT: the merge commit's parents, by name.
         env = {**_clean_env(), BASE_SHA_VAR: tip, HEAD_SHA_VAR: gated}
         started = time.monotonic()
         try:
-            done = _supervised(wrapped, tree, bound, env, merged=True, end_group=True)
+            # Forwarded, not captured: the slot's lines (the measurement it waits for, by request id)
+            # reach the caller as the slot says them (THE WINDOW WAIT); the command's own output
+            # goes to the log.
+            done = _supervised(wrapped, tree, bound, env, end_group=True, forward=True)
         except (ValueError, OSError) as exc:
             # A command no exec can take (a NUL in it, past the argument limit): the config's fault.
-            fail(2, f"NOT merging: {CONFIG_FILE}'s command cannot be run ({exc}); fix the file on the default branch.")
+            where_fix = "the file on the default branch" if pr else "the config"
+            fail(2, f"{stop}: {CONFIG_FILE}'s command cannot be run ({exc}); fix {where_fix}.")
         took = int(time.monotonic() - started)
         try:
             with open(status, encoding="utf-8") as handle:
@@ -734,15 +843,15 @@ def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, c
         except OSError:
             rc_text = ""
         if rc_text == "0":
-            cli.say(f"merge build {repo}#{pr}: PASSED in {took}s ({config.command})")
+            cli.say(f"merge build {subject.label}: PASSED in {took}s ({config.command})")
             return
         if rc_text:
-            cli.say(f"merge build {repo}#{pr}: FAILED (exit {rc_text}) after {took}s; its output:")
+            cli.say(f"merge build {subject.label}: FAILED (exit {rc_text}) after {took}s; its output:")
             for line in _shown(log):
                 cli.say(f"  | {line}")
             fail(
                 1,
-                f"REFUSING to merge {repo}#{pr}: {head[:8]} merged with {base_ref} at {tip[:8]} does not build",
+                f"{subject.refuse}: {head[:8]} merged with {base_ref} at {tip[:8]} does not build",
                 f"({config.command}: exit {rc_text}, output above), though each side is green on its own. Merge",
                 f"{base_ref} in, fix the clash, push, and merge again.",
             )
@@ -751,13 +860,13 @@ def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, c
         if done.rc == 124:
             fail(
                 4,
-                f"NOT merging {repo}#{pr}: the build of its merge commit did not finish within",
+                f"{stop}: the build of its merge commit did not finish within",
                 f"{config.timeout}s ({CONFIG_FILE}'s timeout); no verdict. Re-run merge, or raise the timeout.",
             )
         fail(
             3,
-            f"NOT merging {repo}#{pr}: the build of its merge commit could not run (the wrapper exited",
-            f"{done.rc} before the command did, output above). Retry.",
+            f"{stop}: the build of its merge commit could not run (the wrapper exited",
+            f"{done.rc} before the command did; what it said is above, on stderr). Retry.",
         )
     finally:
         # Held from its first instruction (as in _supervised), so no signal skips the removal.
@@ -768,3 +877,55 @@ def _build_in_scratch(repo: str, pr: str, gated: str, base_ref: str, tip: str, c
         finally:
             _INTERRUPTS.holding = was
         _INTERRUPTS.check()
+
+
+def _fetch_gated(subject: _Subject, root: str, remote: str, quiet: list[str], gated: str, base_ref: str, why: str) -> None:
+    """Merge's fetch of the PR's head and its base, objects only, and the remote's head read back:
+    the gated head, or SUPERSEDED (5). A dry run makes none of it."""
+    stop, pr = subject.stop, subject.pr
+    # Objects only: no destination, --refmap= (so no remote-tracking ref of the caller's moves
+    # opportunistically) and no FETCH_HEAD. Nothing in the clone names what was fetched; the
+    # two commits are named by the SHAs the gate and the drift read already hold.
+    fetched = _git(
+        [*quiet, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--refmap=", remote,
+         f"refs/pull/{pr}/head", f"refs/heads/{base_ref}"],
+        root,
+        timeout=FETCH_TIMEOUT,
+    )
+    if fetched.rc != 0:
+        fail(
+            3,
+            f"{stop}: {why}, and fetching its head and {base_ref} from {remote} in",
+            f"{root} failed ({_first_line(fetched)}), so the merge commit was not built. Retry.",
+        )
+    # The remote's head now, not the object's presence: a clone that already holds the gated
+    # commit would pass a presence check after a force-push replaced it.
+    listed = _git([*quiet, "ls-remote", "--quiet", remote, f"refs/pull/{pr}/head"], root, timeout=FETCH_TIMEOUT)
+    now = listed.stdout.split()[0] if listed.rc == 0 and listed.stdout.split() else ""
+    if not _SHA.fullmatch(now):
+        fail(
+            3,
+            f"{stop}: its head on {remote} could not be read back after the fetch",
+            f"({_first_line(listed)}). Retry.",
+        )
+    if now != gated:
+        fail(
+            5,
+            f"{stop}: its head on {remote} is {now[:8]}, not {gated[:8]}, the commit the",
+            "build signal was read for: SUPERSEDED. Re-run merge to judge the new head.",
+        )
+
+
+def dry_build(repo: str, head: str, base_ref: str, base: str, config: BuildConfig, why: str, checkout: str) -> None:
+    """THE DRY RUN's build (mergedry.py): ``head`` merged into ``base`` in ``checkout`` as it is."""
+    _build(repo, "", head, base_ref, base, config, why, checkout=checkout, dry=True)
+
+
+def run_git(args: list[str], cwd: str) -> proc.Completed:
+    """A bounded, supervised git call, with git's repository-selection variables cleared."""
+    return _git(args, cwd)
+
+
+def first_line(done: proc.Completed) -> str:
+    """The first nonblank line a call said (stderr first), or its exit status."""
+    return _first_line(done)

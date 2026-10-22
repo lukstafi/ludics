@@ -66,6 +66,7 @@ prreview/poll.py           cmd_poll (poll, and every watch round)
 prreview/threads.py        the review-threads walk and the open-thread gate (resolve, status, merge)
 prreview/drift.py          warn_base_drift (merge, watch), and read_base_drift's Drift for the merge build
 prreview/mergebuild.py     merge's build of the would-be merge commit (.github/ship-pr-merge-build, #611)
+prreview/mergedry.py       merge-build, that build alone as a dry run for two revisions (#751)
 prreview/checkruns.py      conclusion_class, newest_first
 prreview/ere.py            the advisory list, asked of grep (is_advisory, ere_valid)
 prreview/gate.py           gate_checks (checks, merge, and base's merged-head source)
