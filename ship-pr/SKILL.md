@@ -459,7 +459,8 @@ An exit 0 is not always a round: `watch` also returns when it can tell that **no
 the 👀 went spent without a review of the head, or never landed, or a push has been sitting
 unreviewed past the grace (20 min, `SHIP_PR_REVIEW_GRACE`), or the reviewer said outright that it
 could not start (`failed`, below, which exits at once rather than holding the grace — except on a
-first Failed summary row, which `watch` re-requests itself and waits on).
+first Failed summary row, which `watch` re-requests itself and waits on). A stalled round is not
+one of these: it does not end the wait (below).
 
 **The watch nudges for you, once per head** (ludics-lite#570). When the head is `expected` — a 👀
 round ended without reviewing it (a push landed during the round, so the round was the old head's),
@@ -480,6 +481,21 @@ included: the line then names the remedy, a plain `pr-review.sh comment <owner>/
 paragraph when the two differ: on `failed` the nudge is the first move and not the only one — if
 the SAME head fails to initialize again, the next move is a new head, because the reviewer's clone
 is what is behind.
+
+**A stalled round is nudged the same way, once per head, and never ends the wait at once**
+(ludics-lite#760). `stalled` is a 👀 or a Running row on the head up longer than a round takes
+(`SHIP_PR_REVIEW_STALL`, 30 minutes by default: rounds on this repository draw their review within
+about 17 minutes, and the hung ones sat 35 minutes to over an hour). When no 👍 is on the PR (a
+request clears it, whatever head it was for), no no-findings verdict names the head, the summary
+marks no Completed round on it, and no `@codex review` stands on it since it arrived, `watch` posts
+one `@codex review` — the same once-per-head record as the `expected` nudge — and watches that
+request's grace for the new round. It holds the nudge until it has itself seen the head for five
+minutes, and while a request on the head is younger than its grace, as for `expected` (a 👀 is a
+level, so a push under an old head's hung 👀 reads STALLED at once), and its advice at a window's
+end keeps those holds and the write gate. Otherwise, and always under `--no-nudge`, it posts nothing and
+keeps waiting to the window's end: the reviewer posting ends the wait as any round does, and a stall
+still standing then exits 0 with the move the final read names — post the one nudge yourself, or,
+when a request already stood on the head, read the feed and push a new head.
 
 Every one of those verdicts polls once more before it prints, and re-reads the state behind that
 poll. A round found by the last look wins; a 👍 that landed in the same gap is reported as the
@@ -666,7 +682,7 @@ head SHA, and answers with one of eight:
 | `approved` | 👍 is on the PR and was given for this head, with no newer current-head running review or findings — or, with no 👍, a no-findings verdict comment naming this head, or the summary's Code Review row marking this head Completed after the 👀 with nothing posted since that 👀, or the summary's state record marking this head completed with no unresolved findings, with nothing posted since and no finding about this head — and no review thread left unresolved | merge |
 | `unresolved` | that same 👍, over review threads still open — whatever head they cite | answer each thread and `resolve` it; `merge` refuses until none is open |
 | `reviewing` | the 👀 is newer than the reviewer's last word — a round really is in flight; or the summary's newest Code Review row is Running on this head, newer than the reviewer's last word and than any 👀: the round is aged from the row, not from a 👀 an older head's stuck round left up (ludics-lite#586), and a same-head rerun after findings or a no-findings verdict is not `idle` or `approved` | wait it out |
-| `stalled` | that 👀 (or that Running row, when it decides) has been up longer than a round takes and nothing was posted | `@codex review` |
+| `stalled` | that 👀 (or that Running row, when it decides) has been up longer than a round takes and nothing was posted | `watch` nudges it itself, once per head, when nothing stands for the head. Outside a watch: read the feed first, then one `@codex review` if it holds no verdict and no 👍 for the head — never while a 👍 may stand |
 | `failed` | the reviewer's newest word is an initialization failure — "Something went wrong", over "Provided git ref `<sha>` does not exist" — naming this head, or "To use Codex here, create an environment for this repo" newer than the head's commit — or the summary's Code Review row marks this head's run "⚠️ Failed" with no review, no 👍 and nothing said inside the run: the round never ran | `@codex review` once; if the same head fails again, push a new head (an amend is enough) — or, for the environment one, hand it to the maintainer, since no push reaches it. On the Failed row `watch` posts that one request itself |
 | `expected` | no live 👀, and no review of the head SHA: a round is due and has not started — including a 👍 left from before a push, until the app takes it down | wait out the grace, then `@codex review` |
 | `idle` | the reviewer has reviewed this exact head and left no 👍 | the next move is yours: address the round and push — or, at one of the loop's exits (below), close out and merge |
@@ -704,8 +720,7 @@ The third shape is a run the app started and could not finish (ludics-lite#453):
 Code Review row reads "⚠️ **Failed**" on the head (once in 621 rows, ocannl-staging#633), with no
 review and no 👍. A re-request cannot cost an approval there, so `watch`
 makes it — it posts `@codex review` and keeps watching the request's grace — as it does for an
-`expected` head with nothing standing (above); the rule against re-requesting as stall recovery
-stands everywhere else. The reading is fail-closed: only the
+`expected` head and a stalled round with nothing standing (above). The reading is fail-closed: only the
 observed row shape, only on the head, with no 👍 on the PR, nothing from the reviewer inside the
 run (since its 👀, or about this head at all once the 👀 is down), and no request since the row.
 It fires once per head (two watches on one PR at the same moment could each post one, which is a

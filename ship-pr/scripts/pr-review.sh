@@ -332,9 +332,10 @@
 #      SHIP_PR_API_ATTEMPTS=tries per gh call (4), SHIP_PR_API_BACKOFF=first pause in seconds (5,
 #      doubling to a 20s cap: ~35s of retrying before a call is declared dead),
 #      SHIP_PR_REVIEW_GRACE=seconds a due-but-unstarted review is waited for before `watch` returns
-#      saying so (1200), SHIP_PR_REVIEW_STALL=seconds a live 👀 may run before it gets the same
-#      verdict (2×GRACE). Both are measured from the PR's own timestamps, not from when the watch
-#      started, so they are reached ACROSS windows — a 900s window cannot outrun a 1200s grace.
+#      saying so (1200), SHIP_PR_REVIEW_STALL=seconds a live 👀 or Running row may run before it
+#      reads STALLED, which `watch` nudges once per head (1.5×GRACE; prreview/knobs.py says
+#      why). Both are measured from the PR's own timestamps, not from when the watch started, so
+#      they are reached ACROSS windows — a 900s window cannot outrun a 1200s grace.
 #      SHIP_PR_ADVISORY_CHECKS=ERE of check, job and workflow names the build gate ignores
 #      (default: the review app's check and the github-pages deploys) — a run whose red is
 #      explained entirely by advisory JOBS is not a red build signal either, and a run still in
@@ -494,13 +495,13 @@ else
   BUDGET_DIR="${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/ship-pr"
 fi
 
-# The review clock (prreview/state.py): how long a due-but-unstarted review, and a live 👀, are
-# waited for before `watch` returns a verdict to nudge.
+# The review clock (prreview/state.py): how long a due-but-unstarted review, and a live 👀 or
+# Running row, are waited for before `watch` nudges (prreview/watch.py).
 GRACE="${SHIP_PR_REVIEW_GRACE:-1200}"
 case "$GRACE" in
 '' | *[!0-9]*) die "SHIP_PR_REVIEW_GRACE must be a number of seconds, got '$GRACE'" ;;
 esac
-STALL="${SHIP_PR_REVIEW_STALL:-$((GRACE * 2))}"
+STALL="${SHIP_PR_REVIEW_STALL:-$((GRACE * 3 / 2))}"
 case "$STALL" in
 '' | *[!0-9]*) die "SHIP_PR_REVIEW_STALL must be a number of seconds, got '$STALL'" ;;
 esac

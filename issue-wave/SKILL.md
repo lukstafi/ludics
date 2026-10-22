@@ -431,7 +431,9 @@ requirements for every transport with transport-specific setup and identity, and
   through `--revert <commit> <path>`, both in the README's negative-control paragraph),
   and the box's known environmental traps. **The formatter batch** is the one the project's
   AGENTS.md names, run last, slot-wrapped and read as it says (OCANNL: *Format before the first
-  push*). **On mac-studio**:
+  push*), and the commit is gated on that batch's own exit status in the same command
+  (`<formatter batch> && git commit ...`), never chained after it with `;` or behind a pipe whose
+  last stage's status replaces it (ahrefs/ocannl#1442 pushed after a FAILED check). **On mac-studio**:
   Gatekeeper/XProtect stalls fresh executables for minutes - sample the pid before assuming a
   hang; never start a second dune against a running _build; and **targeted test aliases only**
   (`dune build @<dir>/runtest-<name>` for the tests the change reaches, plus the scanners), never a full
@@ -480,8 +482,12 @@ requirements for every transport with transport-specific setup and identity, and
   hold a slot past about 20 minutes (a cold tuned search) is requested too, never run under the
   standing reservation: a window's drain waits for it with the box's other slots idle
   (ludics-lite#668). A resumed worker
-  runs only the assigned command, reports runner evidence and yields again; neither the
-  returned turn nor its report releases the box. The brief's measurement forms are the ones
+  runs only the assigned command, at the exact revision `EXECUTION_ASSIGNED` names (a leg at a
+  newer SHA is refused, ahrefs/ocannl#1278), and reports `EXECUTION_RESULT` as soon as the run
+  ends, before any other work: the coordinator concludes a run only from that line, so an
+  unreported finished run holds the box's reservation and blocks a sibling's window
+  (ahrefs/ocannl#1314 held two boxes for about 2.5 h). Neither the returned turn nor its report
+  releases the box; the conclusion does. The brief's measurement forms are the ones
   the verbs accept: on the worker's own box `fleet-worker.sh execution hold --request <id> --
   <runner>`, on another box an [`execution leg`](references/executions.md#a-leg-on-another-box)
   with no slot flag (`--deadline` alone: a measurement leg refuses `--cpu`, `--gpu`, `--wait`
@@ -574,15 +580,18 @@ requirements for every transport with transport-specific setup and identity, and
   are what survives every failure mode below - and park work in progress as WIP commits, never
   `git stash`: the stash stack is shared by every worktree of the repository, and a worker's
   `stash pop` applied a stranger's (ahrefs/ocannl#1161).
-- **Never re-request review as stall recovery** (2026-08-29): the Codex GitHub reviewer's
-  no-findings verdict can arrive as a PR COMMENT ("Didn't find any major issues... Reviewed
-  commit: <sha>") rather than only the 👍 reaction, and an `@codex review` re-request CLEARS
-  the existing 👍 - a worker that re-requests before reading the feed destroys the approval
-  it failed to see. `pr-review.sh status` recognizes the comment-shaped verdict since
-  ludics-lite 254facf; the brief still says: read the full feed first, re-request only
-  when it truly holds nothing for the current head. The one re-request that is automatic is
-  `pr-review.sh watch`'s, once per head, on a summary row marking the run Failed with no review
-  and no 👍 (ludics-lite#453): with no approval standing, there is nothing for it to clear.
+- **Stall recovery: read the feed, then nudge once; never while an approval may stand**
+  (ludics-lite#760, as ship-pr's `stalled` row states it). `pr-review.sh watch` nudges a
+  STALLED round itself, once per head, when no 👍, no verdict and no request stands for the
+  head, and keeps watching; under `--no-nudge` it waits the window out and prints the advice.
+  When `status` or a watch's exit reads STALLED, the worker reads the full PR feed first: the
+  Codex reviewer's no-findings verdict can arrive as a PR COMMENT ("Didn't find any major
+  issues... Reviewed commit: <sha>") rather than the 👍. If the feed holds no verdict and no 👍
+  for the current head, the worker posts ONE `@codex review` (`pr-review.sh comment`) without
+  asking the coordinator. Never while an approval may stand: a re-request CLEARS the existing
+  👍, destroying the approval the worker failed to see (2026-08-29). The watch's other automatic
+  requests keep the same rule, once per head: a summary row marking the run Failed
+  (ludics-lite#453) and a head no round started on (#570).
 - **The convergence policy**, Supervise's *Converge long reviews* whole (the rounds it starts
   at, silent vs loud, removal, merge-on-substance), for the worker to apply itself.
 - **A scan boundary, for an issue whose natural implementation reads free text.** When the task

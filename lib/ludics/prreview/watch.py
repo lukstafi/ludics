@@ -24,7 +24,16 @@ parent commit (``git show 14f2ca7:ship-pr/scripts/pr-review.sh``); read them bef
   has seen the head for less than ``PICKUP`` (a commit's date is not its push, so an old-dated
   push reads as overdue the moment it lands), while a request on the head is younger than its
   grace, and for a draft or a PR that conflicts with its base. ``--no-nudge`` posts nothing, here
-  or for a failed run, and prints the advice instead.
+  or for a failed run, and prints the advice instead;
+- a ``stalled`` round -- a 👀 or Running row up longer than a round takes -- does not end the wait
+  (ludics-lite#760). When ``state.stall_nudge_read`` finds nothing standing for the head (no 👍,
+  no verdict, no request since it arrived) and the write gate passes, the watch posts its one
+  '@codex review' for the head (the same once-per-head record as the ``expected`` nudge) and waits
+  out that request's grace for the new round, once it has seen the head for ``PICKUP`` (a push
+  under an old head's hung 👀 reads stalled at once) and on a round whose poll answered. Otherwise, and always under ``--no-nudge``, it posts
+  nothing and keeps waiting, bounded by the window: the reviewer posting ends it as any round does,
+  a state that leaves ``stalled`` goes on by that state's rules, and a stall still standing at the
+  window's end is answered as a verdict, with the move the final read names.
 
 Exit: 0 something to act on (a round, an approval, a verdict); 1 a quiet window; 3 the window, its
 tail or the verdict's re-reads were not observed. The last stdout line is always the watermark.
@@ -60,12 +69,14 @@ from ludics.prreview.poll import poll
 from ludics.prreview.state import (
     NudgeBarred,
     NudgeClear,
+    NudgeRead,
     Rounds,
     State,
     approval_gate,
     gated_state,
     nudge_read,
     review_rounds,
+    stall_nudge_read,
     status_line,
     status_state,
 )
@@ -307,6 +318,10 @@ class Watch:
         self.first_seen: dict[str, int] = {}
         self.last_head = ""
         self.held_until = 0
+        # The heads whose automatic nudge over a stalled round was attempted and did not go
+        # through, with the failure line the window's end prints: an attempt is once per head as a
+        # post is, but it buys no request grace (review of #770, round 1).
+        self.stall_failed: dict[str, str] = {}
 
     # --- the pieces of a round -------------------------------------------------------------------
 
@@ -578,6 +593,8 @@ class Watch:
                 self.held_until = move
                 return _HELD
             message += move
+        elif remedy == "stalled":
+            message = self.stall_remedy()
         elif remedy == "failed-run":
             # --no-nudge on a failed run: the remedy is the FINAL read's, since a request landing
             # in the final poll turns `run` into `run-again`, whose line names the move itself.
@@ -594,6 +611,113 @@ class Watch:
         _say(f"watermark: {self.mark}")
         return 0
 
+    def stall_hold(self, read: NudgeRead) -> int | None:
+        """Until when a stalled round's nudge is held rather than posted or advised (review of
+        #770, round 2), as ``nudge_hold`` holds the ``expected`` one: while this watch has seen the
+        head for less than ``PICKUP`` (a push under an old head's hung 👀 reads stalled at once),
+        and while a request standing on the head is younger than its grace."""
+        head = self.polled.head
+        if not head:
+            return None
+        now = self.clock.now()
+        hold = self.first_seen.get(head, now) + min(PICKUP, self.cfg.grace)
+        if hold > now:
+            return hold
+        match read:
+            case NudgeBarred(asked=asked) if asked:
+                age = age_of(asked, self.clock.time())
+                if age is not None and age < self.cfg.grace:
+                    return now + self.cfg.grace - age
+                return None
+            case NudgeBarred() | NudgeClear():
+                return None
+            case _:
+                assert_never(read)
+
+    def stall_nudge(self, read: NudgeRead) -> str | None:
+        """The automatic '@codex review' over a stalled round (ludics-lite#760): None when it was
+        posted, else why not. Posted only when ``stall_nudge_read`` finds nothing standing for the
+        head and the write gate reads the PR open, on that same head. It is sent once whatever its
+        error (it may have landed): a post is recorded in ``own_nudges``, a failed one in
+        ``stall_failed``, and a head in either is never attempted again."""
+        match read:
+            case NudgeBarred(why=why):
+                return why
+            case NudgeClear(head=head):
+                if head in self.own_nudges or head in self.stall_failed:
+                    return f"this watch already nudged head {head[:7]}"
+                pr_state, now_head = self.write_gate()
+                if pr_state != "open":
+                    return f"the PR reads {pr_state or 'UNREAD'}, not open"
+                if now_head != head:
+                    return "the head moved while the nudge was being read"
+                posted, post_err = self.post_request()
+                if not posted:
+                    self.stall_failed[head] = (
+                        f"the automatic '@codex review' over the stalled round on head {head[:7]} did"
+                        f" not go through ({post_err}): read the PR's comments before posting it by"
+                        " hand, since a request that failed ambiguously may have landed"
+                    )
+                    return self.stall_failed[head]
+                self.own_nudges[head] = self.clock.now()
+                warn(
+                    f"PR {self.repo}#{self.pr}: posted '@codex review' on head {head[:7]} — the round"
+                    " on it STALLED, with no 👍, no verdict and no request on the head; one automatic"
+                    " nudge per head (--no-nudge turns it off), watching for the round it asks for"
+                )
+                return None
+            case _:
+                assert_never(read)
+
+    def stall_remedy(self) -> str:
+        """What a stall still standing at the window's end says to do, from the final read."""
+        failed = self.stall_failed.get(self.polled.head)
+        if failed is not None:
+            return failed
+        own = self.own_nudge()
+        if own is not None:
+            return (
+                f"this watch's own '@codex review' on head {self.polled.head[:7]},"
+                f" {fmt_age(self.clock.now() - own)} ago, drew no finished round, and a second is"
+                f" never posted automatically: {_NEW_HEAD}"
+            )
+        flag = "" if self.nudge else "--no-nudge: "
+        read = stall_nudge_read(self.ctx, self.pr)
+        if self.stall_hold(read) is not None:
+            # Inside the pickup margin or a standing request's grace: what holds the automatic
+            # nudge holds the advice too (review of #770, round 2).
+            return (
+                f"{flag}not nudged yet — head {self.polled.head[:7]} is new to this watch, or a"
+                " request on it is still inside its grace, and the round it may draw has not had"
+                " its time: re-arm the watch before any nudge"
+            )
+        match read:
+            case NudgeBarred(why=why, asked=asked) if asked:
+                return f"{flag}not nudged — {why}, so no second one: {_NEW_HEAD}"
+            case NudgeBarred(why=why):
+                return (
+                    f"{flag}not nudged — {why}. Read the PR feed (retry --read pr view <pr>"
+                    " --comments) before any move; never re-request while a 👍 may stand"
+                )
+            case NudgeClear(head=head):
+                pr_state, now_head = self.write_gate()
+                if pr_state != "open" or now_head != head:
+                    # The automatic write's own gate, so the advice never asks for a post the
+                    # watch would have refused (review of #770, round 2).
+                    moved = "the head moved" if pr_state == "open" else f"the PR reads {pr_state or 'UNREAD'}"
+                    return (
+                        f"{flag}not nudged — {moved}, not an open PR on head {head[:7]}: deal with"
+                        " that first, then re-arm the watch"
+                    )
+                return (
+                    f"{flag}the watch did not nudge the stalled round on head {head[:7]}; nothing"
+                    " stands for it (no 👍, no verdict, no request since it arrived), so post it"
+                    f" once (pr-review.sh comment {self.repo}#{self.pr} '@codex review') and re-arm"
+                    " the watch"
+                )
+            case _:
+                assert_never(read)
+
     def own_nudge(self) -> int | None:
         """When this process nudged the head the last round read, if it did."""
         head = self.polled.head
@@ -604,6 +728,10 @@ class Watch:
         (on an ``expected`` head only: a ``nudged`` one has a request pending, and an ``idle`` one
         the reviewer's word), or the time to hold to when the head moved under the write gate."""
         where = f"PR {self.repo}#{self.pr}"
+        failed = self.stall_failed.get(self.polled.head)
+        if failed is not None:
+            # This process already attempted the head's one request, over its stall.
+            return f" — {failed}"
         own = self.own_nudge()
         if own is not None:
             return (
@@ -697,7 +825,7 @@ class Watch:
         head = self.polled.head
         if (
             not self.nudge or state.tok != "expected" or state.merge in ("dirty", "draft")
-            or not head or self.own_nudge() is not None
+            or not head or self.own_nudge() is not None or head in self.stall_failed
         ):
             return None
         now = self.clock.now()
@@ -829,7 +957,32 @@ class Watch:
                     _say(f"watermark: {self.mark}")
                     return 0
                 case "stalled":
-                    return self.end(tok, "")
+                    # Not a verdict yet (ludics-lite#760): nudge once when nothing stands for the
+                    # head, else keep waiting; the window's end answers a stall still standing. A
+                    # round whose poll did not answer posts nothing: it may have missed a round.
+                    # Nor does a head this watch has seen for less than PICKUP: a 👀 is a level, so
+                    # a push under an old head's hung 👀 reads STALLED at once, before the
+                    # reviewer's own review of the push has had time to start (#770's own head
+                    # 1af99c3, 81 minutes "stalled" on the 👀 its predecessor's round left up).
+                    # Held, the window stays open to the hold, as for the expected nudge.
+                    if self.nudge and own is None and self.polled.rc == 0 and self.polled.head:
+                        read = stall_nudge_read(ctx, pr)
+                        hold = self.stall_hold(read)
+                        if hold is not None:
+                            if candidate_end is None or candidate_end < hold:
+                                candidate_end = hold
+                                candidate_kind = "nudged"
+                            if extension_end is not None and extension_end < hold:
+                                extension_end = hold
+                                extension_kind = "nudged"
+                        elif self.stall_nudge(read) is None:
+                            candidate_end = self.clock.now() + cfg.grace
+                            candidate_kind = "nudged"
+                            if extension_end is not None:
+                                extension_end = candidate_end
+                                extension_kind = "nudged"
+                            was = "nudged"
+                            quiet = 0
                 case "failed":
                     detail = state.detail
                     fsha = _upto(detail, "|")
@@ -965,6 +1118,8 @@ class Watch:
                     pause = remaining
             self.clock.sleep(pause)
 
+        if self.state.tok == "stalled":
+            return self.end("stalled", "", remedy="stalled")
         if self.settle() == 1:
             self.act(gated_state(ctx, pr))
             return 0

@@ -88,9 +88,13 @@ def checks_timing(env: Mapping[str, str]) -> Timing:
 
 
 def review_clocks(env: Mapping[str, str]) -> tuple[int, int]:
-    """GRACE (SHIP_PR_REVIEW_GRACE, 1200) and STALL (SHIP_PR_REVIEW_STALL, twice the grace)."""
+    """GRACE (SHIP_PR_REVIEW_GRACE, 1200) and STALL (SHIP_PR_REVIEW_STALL, one and a half times
+    the grace: 30 minutes by default). A round on this repository's last 25 merged PRs drew its
+    review within 17 minutes of its commit, the hung ones (#759, ahrefs/ocannl#1406, #1429, #1453)
+    sat 35 minutes to over an hour, and since ludics-lite#760 a stall is what ``watch`` nudges on,
+    so it is read at half again the grace rather than at twice it (ludics-lite#769)."""
     grace = _whole(env, "SHIP_PR_REVIEW_GRACE", "1200", "a number of seconds")
-    stall = _whole(env, "SHIP_PR_REVIEW_STALL", str(grace * 2), "a number of seconds")
+    stall = _whole(env, "SHIP_PR_REVIEW_STALL", str(grace * 3 // 2), "a number of seconds")
     return grace, stall
 
 

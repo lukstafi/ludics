@@ -2051,17 +2051,170 @@ test_a_live_round_that_reads_ended_twice_ends_on_the_nudge_advice() {
   assert_eq "$(nudges_posted)" 0 "and --no-nudge posts nothing"
 }
 
-# A 👀 older than any round takes is `stalled`, and the watch answers it like the other
-# nothing-is-coming verdicts: one final poll, the state re-read, then the line (b6b09ee, 71f2862).
-test_a_stalled_round_ends_the_wait_with_its_verdict() {
+# --- a stalled round (ludics-lite#760) ------------------------------------------------------------
+# lukstafi/ludics-lite#759: the reviewer's first round hung, "🔄 Running" on the head for over an
+# hour with no verdict and no 👍, and one '@codex review' brought it back. `watch --no-nudge` exited
+# at once on STALLED, leaving the worker no verb to wait with, and the plain watch exited too. Now a
+# stall is not a verdict: with nothing standing for the head the watch nudges once and watches the
+# round it asks for; otherwise, and under --no-nudge, it keeps waiting to the window's end.
+
+# The reviewer's summary while a round runs on <short sha>, Running since <datetime>.
+running_summary() { # <id> <datetime> <short sha>
+  summary_comment "$1" "$2" "<!-- codex-pull-request-review-summary -->
+| Review | Status | Commit | Review trigger |
+| --- | --- | --- | --- |
+| 📝 **Code Review** | 🔄 **Running** <relative-time datetime=\"${2%Z}.484070Z\">$2</relative-time> | \`$3\` | New commits |"
+}
+
+# The hung round on the head, as #759 saw it: its Running row and its 👀, both past STALL.
+hung_round_fixture() {
   reset_fixture
   retune STALL=30
   schedule reactions 1 "[$(reaction eyes "$(clock_at -60)")]"
-  run_watch 0,0,0 1 5
-  assert_eq "$WATCH_RC" 0 "a stall is something to act on"
-  assert_contains "$WATCH_OUT" "no reviewer activity about head ${H2:0:7}; status: STALLED — 👀 from" \
-    "the verdict is the stall, said beside the head it is about"
-  assert_eq "$(poll_rounds)" 2 "one loop read reaches it, and the final poll precedes the verdict"
+  schedule comments 1 "[$(running_summary 100 "$(clock_at -55)" "${H2:0:7}")]"
+}
+
+test_a_stalled_round_is_nudged_once_and_watched() {
+  hung_round_fixture
+  NUDGE_ANSWER=502
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "the round the nudge drew is something to act on"
+  assert_contains "$WATCH_ERR" "STALLED — ${REVIEWER} Code Review Running for head ${H2:0:7}" \
+    "the stall is the hung round's row"
+  assert_contains "$WATCH_ERR" "posted '@codex review' on head ${H2:0:7} — the round on it STALLED" \
+    "the watch says why it posted"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" \
+    "and ends on the round the request asked for"
+  assert_eq "$(nudges_posted)" 1 "after exactly one automatic nudge"
+  # No answer to the request: the watch waits out its grace and never posts a second one.
+  local start
+  hung_round_fixture
+  start=$(cat "$SHIP_PR_TEST_CLOCK")
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "the unanswered request is a verdict to act on"
+  assert_eq "$(nudges_posted)" 1 "still one nudge for the head, never a second"
+  assert_contains "$WATCH_OUT" "this watch's own '@codex review' on head ${H2:0:7}" \
+    "the move after it is the once-per-head remedy"
+  [ "$(($(cat "$SHIP_PR_TEST_CLOCK") - start))" -ge "$GRACE" ] ||
+    bail "the request's grace was not waited out ($(($(cat "$SHIP_PR_TEST_CLOCK") - start))s)"
+  # A post that fails is sent once, whatever its error, and the window still runs to its end.
+  hung_round_fixture
+  FAIL_POST=1
+  run_watch 0,0,0 60 900
+  assert_eq "$WATCH_RC" 0 "a stall at the window's end is a verdict to act on"
+  assert_eq "$(nudges_posted)" 1 "one attempt, never retried"
+  assert_contains "$WATCH_OUT" "over the stalled round on head ${H2:0:7} did not go through" \
+    "the failure is the line the caller acts on"
+  assert_not_contains "$WATCH_ERR" "extending watch" "a failed post buys no request grace (review of #770)"
+  # A round whose poll did not answer may have missed the reviewer's word: nothing is posted on it.
+  hung_round_fixture
+  FAIL_FEEDS_FROM=1
+  run_watch 0,0,0 60 300
+  assert_eq "$WATCH_RC" 3 "a window that saw no poll answer withholds the verdict"
+  assert_eq "$(nudges_posted)" 0 "and posts nothing"
+  # A head the watch has seen for less than the pickup margin is not nudged: a push under an old
+  # head's hung 👀 reads STALLED at once (#770's own head), and its own review starts on its own.
+  hung_round_fixture
+  schedule reviews 3 "[$(review 501 "$H2" "$(clock_at)")]"
+  run_watch 0,0,0 60 900
+  assert_contains "$WATCH_OUT" "--- review id=501" "the push's own review ends the wait"
+  assert_eq "$(nudges_posted)" 0 "with no nudge posted inside the pickup margin"
+  # A window shorter than the margin is held open to it, and the nudge goes out after it (review
+  # of #770, round 2: the window's end used to advise a hand nudge inside the margin instead).
+  hung_round_fixture
+  NUDGE_ANSWER=502
+  run_watch 0,0,0 60 120
+  assert_contains "$WATCH_ERR" "extending watch" "the window is held open through the margin"
+  assert_contains "$WATCH_OUT" "--- review id=502" "and ends on the round the nudge drew"
+  assert_eq "$(nudges_posted)" 1 "one nudge, after the margin"
+}
+
+# --no-nudge waits, bounded, where it used to exit at once (#760's decision): to the reviewer's
+# post, or to the window's end, where it prints the advice the nudge would have acted on.
+test_no_nudge_waits_out_a_stalled_round() {
+  hung_round_fixture
+  WATCH_FLAG=--no-nudge
+  run_watch 0,0,0 60 300
+  assert_eq "$WATCH_RC" 0 "a stall still standing at the window's end is a verdict to act on"
+  assert_eq "$(nudges_posted)" 0 "--no-nudge posts nothing"
+  [ "$(poll_rounds)" -ge 5 ] || bail "the stall ended the wait before the window did ($(poll_rounds) rounds)"
+  assert_contains "$WATCH_OUT" \
+    "--no-nudge: the watch did not nudge the stalled round on head ${H2:0:7}; nothing stands for it" \
+    "the advice names the nudge it did not post"
+  assert_contains "$WATCH_OUT" "pr-review.sh comment $REPO#7 '@codex review'" "and how to post it"
+  assert_contains "$WATCH_OUT" "no reviewer activity about head ${H2:0:7}; status: STALLED" \
+    "beside the stall it read last"
+  # The reviewer posting inside the window ends it there, as any round does.
+  hung_round_fixture
+  WATCH_FLAG=--no-nudge
+  schedule reviews 3 "[$(review 501 "$H2" "$(clock_at)")]"
+  run_watch 0,0,0 60 300
+  assert_eq "$WATCH_RC" 0 "the round is something to act on"
+  assert_contains "$WATCH_OUT" "--- review id=501 state=COMMENTED commit=${H2:0:7}" "the wait ends on it"
+  assert_eq "$(poll_rounds)" 3 "on the poll that read it"
+  assert_eq "$(nudges_posted)" 0 "and nothing was posted"
+  # The advice keeps the automatic write's own holds and gate (review of #770, round 2): inside
+  # the pickup margin it says to re-arm, and on a PR that is not open it names that first.
+  hung_round_fixture
+  WATCH_FLAG=--no-nudge
+  run_watch 0,0,0 60 120
+  assert_contains "$WATCH_OUT" "--no-nudge: not nudged yet — head ${H2:0:7} is new to this watch" \
+    "no hand nudge is advised inside the margin"
+  hung_round_fixture
+  WATCH_FLAG=--no-nudge
+  PR_STATE=closed
+  run_watch 0,0,0 60 900
+  assert_contains "$WATCH_OUT" "--no-nudge: not nudged — the PR reads closed" \
+    "nor on a PR the write gate would refuse"
+  assert_not_contains "$WATCH_OUT" "so post it once" "and the post is not advised"
+}
+
+# Never while an approval may stand, and once per head: a 👍 on the PR (a request clears it), a
+# no-findings verdict for the head, the summary's Completed row for it, or a request already made on
+# it bars the nudge, and the watch waits instead. The control is the same stall with none of them.
+test_a_stalled_round_with_something_standing_is_never_nudged() {
+  local kind
+  for kind in thumb verdict completed-row request control; do
+    hung_round_fixture
+    case "$kind" in
+    thumb) schedule reactions 1 "[$(reaction +1 "$(clock_at -58)"),$(reaction eyes "$(clock_at -60)")]" ;;
+    verdict)
+      schedule comments 1 "[$(stamped_summary 99 "$(clock_at -58)" "$H2" "Codex Review: Didn't find any major issues."),$(
+        running_summary 100 "$(clock_at -55)" "${H2:0:7}")]"
+      ;;
+    completed-row)
+      schedule comments 1 "[$(summary_comment 100 "$(clock_at -58)" "<!-- codex-pull-request-review-summary -->
+| Review | Status | Commit | Review trigger |
+| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"$(clock_at -58)\">x</relative-time> | \`${H2:0:7}\` | New commits |")]"
+      schedule reactions 1 "[$(reaction eyes "$(clock_at -50)")]"
+      ;;
+    request)
+      schedule comments 1 "[$(running_summary 100 "$(clock_at -55)" "${H2:0:7}"),$(
+        jq -cn --arg at "$(clock_at -40)" '{id:700,user:{login:"maintainer"},created_at:$at,updated_at:$at,body:"@codex review"}')]"
+      ;;
+    esac
+    run_watch 0,700,0 60 900
+    assert_eq "$WATCH_RC" 0 "$kind: a verdict to act on"
+    assert_contains "$WATCH_ERR" "STALLED" "$kind: the state is the stall"
+    if [ "$kind" = control ]; then
+      assert_eq "$(nudges_posted)" 1 "control: the same stall with nothing standing is nudged"
+      continue
+    fi
+    assert_eq "$(nudges_posted)" 0 "$kind: nothing is posted"
+    [ "$(poll_rounds)" -ge 5 ] || bail "$kind: the stall ended the wait before the window did"
+    assert_contains "$WATCH_OUT" "not nudged — " "$kind: the line says it was not nudged, and why"
+    case "$kind" in
+    thumb) assert_contains "$WATCH_OUT" "a 👍 from ${REVIEWER} is on the PR" "thumb: the 👍 is named" ;;
+    verdict) assert_contains "$WATCH_OUT" "no-findings verdict for head ${H2:0:7}" "verdict: it is named" ;;
+    completed-row) assert_contains "$WATCH_OUT" "Code Review Completed" "completed-row: it is named" ;;
+    request)
+      assert_contains "$WATCH_OUT" "already stands on head ${H2:0:7}, so no second one" \
+        "request: the once-per-head record, and the move after it"
+      assert_contains "$WATCH_ERR" "extending watch" \
+        "request: only after the request's own grace, which the window waits out (review of #770, round 2)"
+      ;;
+    esac
+  done
 }
 
 # A window in which no poll answered is not a quiet window, and one whose LAST polls did not answer
@@ -2546,7 +2699,9 @@ tests=(
   test_an_approval_landing_in_the_final_poll_is_checked_too
   test_an_approval_beside_a_final_poll_round_is_checked_too
   test_a_live_round_that_reads_ended_twice_ends_on_the_nudge_advice
-  test_a_stalled_round_ends_the_wait_with_its_verdict
+  test_a_stalled_round_is_nudged_once_and_watched
+  test_no_nudge_waits_out_a_stalled_round
+  test_a_stalled_round_with_something_standing_is_never_nudged
   test_a_blind_window_is_not_a_quiet_one
   test_an_unread_head_is_named_unread_in_the_quiet_exit
 )
