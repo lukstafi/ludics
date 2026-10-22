@@ -549,9 +549,11 @@ if ! is_list "$checks"; then
 elif [ "$(jq length <<<"$checks")" -eq 0 ]; then
   skip "the row-level claims on the tip's check runs" "the tip has no check run (nothing ran on it, or nothing has created its checks yet)"
 else
-# `.status` is not pinned here either, for the same reason as on jobs[]: build_checks projects
-# `.name`, `.conclusion` and `.html_url`, and the pending/finished distinction it needs it reads
-# off the null conclusion, never off the status. `.app.slug` is pinned because the correlation
+# The pending/finished distinction build_checks reads off the null conclusion, never off `.status`.
+# `.status` is projected too, but only for the build wait's pause (ludics-lite#740): `in_progress`
+# alone reads as a running check, polled at twice the interval, and any other value backs off to
+# the build cap. So its vocabulary is not pinned closed (a new value is safe); that it is a string,
+# and never `completed` beside a null conclusion, is. `.app.slug` is pinned because the correlation
 # below selects on it — and because providers_are_actions_only now decides a GATE on it: it answers
 # "does this repository have a check provider the workflow filters cannot speak for", and a slug
 # for Actions that moved would make every check look like a third party's and cost the
@@ -559,6 +561,8 @@ else
 pin "every check run carries a non-empty name (build_checks skips a row with none), conclusion (present, null while unfinished), html_url and app.slug" \
   'all(.[]; (.name | type == "string" and length > 0) and has("conclusion") and (.conclusion == null or (.conclusion | type == "string"))
              and (.html_url | type == "string") and (.app.slug | type == "string"))' "$checks"
+pin "every check run carries a status string, never \"completed\" while its conclusion is null (the build wait's pause reads \"in_progress\" as running)" \
+  'all(.[]; (.status | type == "string" and length > 0) and (.conclusion != null or .status != "completed"))' "$checks"
 pin "check-run conclusions are in the vocabulary conclusion_class classifies" \
   "all(.[]; .conclusion == null or (.conclusion as \$c | $CONCLUSION_VOCAB | index(\$c)))" "$checks"
 pin "every check run carries a check_suite.id (build_checks reads by name across every suite and provider)" \

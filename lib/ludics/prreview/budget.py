@@ -14,7 +14,10 @@ pr-review.sh, so its waves use it too:
    (WATCH_INTERVAL, SHIP_PR_CHECKS_INTERVAL) up to its kind's cap: SHIP_PR_REVIEW_POLL_CAP (300)
    for a review, SHIP_PR_BUILD_POLL_CAP (600) for a build. Those are the 10-04 recovery's
    intervals, reached only by a queue that is not moving. A cap at or below the interval keeps the
-   interval fixed.
+   interval fixed. The build gate's wait (gate.py, ``checks --wait`` and ``merge --wait``) caps a
+   round at twice its interval while every check it waits for is ``in_progress``: a job with a
+   runner ends on its own, and its completion is then read within 2 x SHIP_PR_CHECKS_INTERVAL
+   (ludics-lite#740). Any check row still without a runner keeps the build cap.
 2. THE HOLD. A call GitHub refuses on QUOTA sets one hold for every pr-review.sh process that
    shares this state directory (the user's, on this host), and no call is made while it stands.
    When it ends is read from the FAILING ENDPOINT's own response headers, by one ``gh api -i``

@@ -858,8 +858,11 @@ the reviewer never 👍'd defensible:
   (over a coordinated wave's owned base red, with `--override` too, *The override*);
 - every thread is answered with its disposition — fixed / removed / deferred / rebutted — and
   resolved;
-- the PR body carries a review-record paragraph (edited in with `body`, above): how many rounds,
-  each rebuttal in one line, and — when anything was deferred — the follow-up issue's number;
+- the PR body carries a review-record paragraph (edited in with `body`, above): the rounds with
+  findings, copied from the `rounds: n=<N>` trailer read after the last disposition, just before
+  `merge` (never a count you kept: an approving round is not a round, and an `n=unknown` is read
+  again, never written as a number); each rebuttal in one line; and — when anything was deferred —
+  the follow-up issue's number;
 - the residuals, when there are any, are filed as one issue before the merge rather than after
   it. A round rebutted in full leaves none, and no empty issue is filed to say so.
 
@@ -964,7 +967,9 @@ conflict that arises during the wait is the merge call's to refuse (*What `merge
 **The polling budget** (ludics-lite#543) is shared by every observer: `watch`, `checks --wait`,
 `merge --wait` and `base --wait`. Each one reads at once, then pauses for its interval (`WATCH_INTERVAL`,
 `SHIP_PR_CHECKS_INTERVAL`). While nothing moves, the pause doubles up to 300 s for a review and
-600 s for a build (`SHIP_PR_REVIEW_POLL_CAP`, `SHIP_PR_BUILD_POLL_CAP`). A PR has ONE observer of each
+600 s for a build (`SHIP_PR_REVIEW_POLL_CAP`, `SHIP_PR_BUILD_POLL_CAP`), except that `checks --wait`
+and `merge --wait` stop at twice the interval while every check they wait for has its runner
+(`in_progress`), so a finished check is read within two intervals (ludics-lite#740). A PR has ONE observer of each
 kind (and `base --wait` one per branch): a second `watch`, or a second `--wait` on a PR, exits 2
 naming the first's pid, so wait on that one rather than arming another. A call GitHub refuses on quota is exit 3, never a verdict, and
 it sets a hold for every `pr-review.sh` on the host. The hold ends where the failing endpoint's own

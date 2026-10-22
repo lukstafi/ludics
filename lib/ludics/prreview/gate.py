@@ -137,6 +137,9 @@ class Gate:
     check_pending: int = 0
     check_total: int = 0
     check_green: int = 0
+    # The pending checks with no runner yet: a pending row whose status is not ``in_progress``
+    # (ludics-lite#740). Zero on a pending round is the wait the pause reads faster.
+    check_queued: int = 0
     check_lines: str = ""
     # The names of the checks the fold left running, for the wait's progress line (#569).
     pending_names: list[str] = field(default_factory=lambda: list[str]())
@@ -249,8 +252,10 @@ class Gate:
         return self._selected(name)
 
     def build_checks(self, sha: str) -> list[str] | None:
-        """``build_checks``: one "class\\tname\\tconclusion\\turl\\tsuite" line per non-advisory check
-        run of ``sha``; None when the read failed (an outage is not a commit with no checks)."""
+        """``build_checks``: one "class\\tname\\tconclusion\\turl\\tsuite\\tstatus" line per non-advisory
+        check run of ``sha``; None when the read failed (an outage is not a commit with no checks).
+        The status (queued, in_progress, ...) sets only the wait's pause (ludics-lite#740), never a
+        verdict: the verdict is the conclusion's."""
         result = self.session.retry(
             "read",
             [
@@ -259,17 +264,17 @@ class Gate:
                 f"repos/{self.repo}/commits/{sha}/check-runs?filter=latest&per_page=100",
                 "--jq",
                 '.check_runs[] | [.name, (.conclusion // "pending"), (.html_url // "-"),\n'
-                '          ((.check_suite.id // "-") | tostring)] | @tsv',
+                '          ((.check_suite.id // "-") | tostring), (.status // "-")] | @tsv',
             ],
         )
         if not isinstance(result, GhOk):
             return None
         rows: list[str] = []
         for line in herestring_lines(result.stdout):
-            name, concl, url, suite = tab_fields(line, 4)
+            name, concl, url, suite, status = tab_fields(line, 5)
             if not name or self.is_advisory(name):
                 continue
-            rows.append(f"{conclusion_class(concl)}\t{name}\t{concl}\t{url}\t{suite or '-'}")
+            rows.append(f"{conclusion_class(concl)}\t{name}\t{concl}\t{url}\t{suite or '-'}\t{status or '-'}")
         return rows
 
     def apply_waiver(self, rows: list[str]) -> list[str]:
@@ -277,12 +282,12 @@ class Gate:
         recording read -- and only while their key names exactly ONE row."""
         keys: list[str] = []
         for row in rows:
-            cls, name, _concl, _url, suite = tab_fields(row, 5)
+            cls, name, _concl, _url, suite, _status = tab_fields(row, 6)
             if cls:
                 keys.append(f"check:{suite}/{name}")
         out: list[str] = []
         for row in rows:
-            cls, name, concl, url, suite = tab_fields(row, 5)
+            cls, name, concl, url, suite, status = tab_fields(row, 6)
             if not cls:
                 continue
             key = f"check:{suite}/{name}"
@@ -291,16 +296,16 @@ class Gate:
                     self.waived.add(key)
                 if key in self.waived:
                     cls = "waived"
-            out.append(f"{cls}\t{name}\t{concl}\t{url}\t{suite}")
+            out.append(f"{cls}\t{name}\t{concl}\t{url}\t{suite}\t{status}")
         return out
 
     def summarize(self, rows: list[str]) -> None:
         """``summarize_checks``: the per-check classes folded into ``verdict`` and the report lines."""
-        red = waived = pending = nogo = green = passed = 0
+        red = waived = pending = queued = nogo = green = passed = 0
         lines: list[str] = []
         running: list[str] = []
         for row in rows:
-            cls, name, concl, url, _suite = tab_fields(row, 5)
+            cls, name, concl, url, _suite, status = tab_fields(row, 6)
             if not cls:
                 continue
             match cls:
@@ -312,6 +317,8 @@ class Gate:
                     lines.append(f"  RED      {name} ({concl} — WAIVED: red when --override was given)  {url}\n")
                 case "pending":
                     pending += 1
+                    if status != "in_progress":
+                        queued += 1
                     running.append(name)
                     lines.append(f"  running  {name} (no verdict yet)  {url}\n")
                 case "nogo":
@@ -327,6 +334,7 @@ class Gate:
         self.check_waived = waived
         self.check_passed = passed
         self.check_pending = pending
+        self.check_queued = queued
         self.check_total = red + waived + pending + nogo + green
         if red:
             self.verdict = "red"
@@ -680,7 +688,7 @@ class Gate:
             if self.waive_mode:
                 rows = self.apply_waiver(rows)
             if self.select:
-                rows = [row for row in rows if self.selects(tab_fields(row, 5)[1])]
+                rows = [row for row in rows if self.selects(tab_fields(row, 6)[1])]
             self.summarize(rows)
             self.run_waived = 0
             self.gate_base = base_sha
@@ -826,11 +834,22 @@ class Gate:
             # deadline. The signal's state alone, with its runs' (ludics-lite#551): run_why is prose
             # for a person, and it carries the head's age during the run-creation grace, which moves
             # on every read.
+            #
+            # While every check the round waits for has a runner (a ``pending`` fold with no row
+            # short of ``in_progress``; ludics-lite#740), the cap is twice the interval: a running
+            # job ends on its own, and its completion is then read within 2 x SHIP_PR_CHECKS_INTERVAL
+            # of a read that saw it running, not up to a build cap late. ``in_progress`` is the one
+            # status read as running: queued, waiting, a missing status or any other value, a mix
+            # of them with running rows, and a round with no pending row (``unjudged``) keep the
+            # build cap, which #543's queue without a runner needs. The pause already slept is not
+            # cut short, and a lower build cap still bounds this one.
             sig = (
                 f"{self.verdict}|{self.check_pending}|{self.check_green}|{self.check_total}"
                 f"|{self.run_state}"
             )
             cap = budget.build_cap if budget is not None else self.config.checks_interval
+            if self.verdict == "pending" and self.check_queued == 0:
+                cap = min(cap, 2 * self.config.checks_interval)
             sleep_for = pause(self.config.checks_interval, cap, last_pause, sig != last_sig)
             last_sig = sig
             last_pause = sleep_for
