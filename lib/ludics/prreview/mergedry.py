@@ -14,7 +14,10 @@ revisions resolve there to commits (``rev-parse --verify <rev>^{commit}``), or t
 exit 2 (fetch them first). The config is ``--config <file>`` (the merge-build grammar, mergebuild.py)
 or, without it, the copy on the default branch of the repository ``--repo``/``REPO`` names, read
 exactly as merge reads it; with neither, exit 2. When a repository is named, the checkout must have
-a remote naming it, as merge's clone must; with ``--config`` alone any checkout serves.
+a remote naming it, as merge's clone must; with ``--config`` alone any checkout serves. It must be a
+FULL clone (neither shallow nor partial), checked before any diff: rename detection in a partial
+clone would fetch the blobs it lacks. As in merge, a side that changed nothing is ``no build``
+before any config is read.
 
 THE TWO SIDES stand in for merge's drift read: ``git diff --name-status -M`` from the two
 revisions' merge base to the head (the PR's side) and to the base (the base's advance), each with
@@ -143,6 +146,15 @@ def run(session: GhSession, args: list[str]) -> int:
             f"merge-build: the checkout {root} has no remote naming {repo}, so it is not the clone merge would",
             "build in. Run it in a clone of that repository (or pass --config and no repository).",
         )
+    # A full clone first, as the build needs one: before any diff, since rename detection in a
+    # partial clone would fetch the blobs it lacks -- a network call this run never makes.
+    shallow = run_git(["rev-parse", "--is-shallow-repository"], root)
+    partial = run_git(["config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$"], root)
+    if shallow.stdout.strip() != "false" or partial.stdout.strip():
+        die(
+            f"merge-build: {root} is a shallow or partial clone (or its depth could not be read), and the",
+            "merge build needs a full one, holding the merge base and every object. Run it in a full clone.",
+        )
     shas: list[str] = []
     for flag, rev in (("--base", base_arg), ("--head", head_arg)):
         done = run_git(["rev-parse", "--verify", "--quiet", "--end-of-options", f"{rev}^{{commit}}"], root)
@@ -162,6 +174,11 @@ def run(session: GhSession, args: list[str]) -> int:
         f"merge build {label}: base {base_arg} = {base}, head {head_arg} = {head}, merge base {merge_base[:8]};"
         f" the head changed {len(drift.pr_paths)} path(s), the base {len(drift.base_paths)}, both {len(drift.overlap or [])}"
     )
+    if not (drift.pr_paths and drift.base_paths):
+        # As merge: a side that changed nothing builds under no trigger, and no config is read.
+        side = "the head" if not drift.pr_paths else "the base"
+        cli.say(f"merge build {label}: no build — {side} changed no path since their merge base")
+        return 0
     if os.name == "nt":
         fail(2, "merge-build: the merge build runs on POSIX hosts only (the fleet's macOS and Linux boxes).")
     config: BuildConfig | None
@@ -181,10 +198,6 @@ def run(session: GhSession, args: list[str]) -> int:
             cli.say(f"merge build {label}: no build — {repo}'s default branch has no {CONFIG_FILE}")
             return 0
         source = f"{repo}'s default branch's {CONFIG_FILE}"
-    if not (drift.pr_paths and drift.base_paths):
-        side = "the head" if not drift.pr_paths else "the base"
-        cli.say(f"merge build {label}: no build — {side} changed no path since their merge base ({source})")
-        return 0
     why, why_not = build_reason(drift, config)
     if why is None:
         cli.say(f"merge build {label}: no build — {why_not} ({source})")

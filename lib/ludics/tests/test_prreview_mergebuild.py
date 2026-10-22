@@ -779,6 +779,19 @@ class DryRun(Repo):
         self.assertEqual(done.returncode, 2, done.stderr)
         self.assertIn("not a directory inside a git checkout", done.stderr)
         self.assertEqual(self.gh_calls(), "")
+        git(self.clone, "config", "remote.origin.promisor", "true")
+        done = self.dry("--base", tip, "--head", head, "--config", cfg)
+        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertIn("is a shallow or partial clone", done.stderr)
+        git(self.clone, "config", "--unset", "remote.origin.promisor")
+
+    def test_a_side_that_changed_nothing_reads_no_config(self) -> None:
+        _, tip = self.sides("hook", "seam() { :; }")
+        self.fetched()
+        done = self.dry("--base", tip, "--head", tip, repo="owner/repo")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("no build — the head changed no path since their merge base", done.stdout)
+        self.assertEqual(self.gh_calls(), "", "as merge: no config is read")
 
     def test_the_default_branch_copy_is_read_when_no_config_is_given(self) -> None:
         head, tip = self.sides("hook", "seam() { :; }")
