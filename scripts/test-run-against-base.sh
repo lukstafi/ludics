@@ -1085,8 +1085,13 @@ cmd_refusal "a program whose env interpreter is missing" 'needs run-against-base
 # The base's lib.sh is not executable: the exec fails, which is the helper's 125, not a 126.
 cmd_refusal "a program that cannot be started" 'could not start' --command -- ./lib.sh
 # A base that keeps the program's directory as a symlink out of the checkout would run a file
-# outside the run's tree.
+# outside the run's tree: one is put there for the while, so only the refusal keeps it from running.
+mkdir -p "$TMP/outdir/deep"
+printf '#!/bin/sh\necho OUTSIDE RAN\n' >"$TMP/outdir/deep/test-deep.sh"
+chmod +x "$TMP/outdir/deep/test-deep.sh"
 cmd_refusal "a program below a symlinked directory of the base" 'is not a directory of the run'"'"'s tree' --command --base linked -- ./lnk/deep/test-deep.sh
+if grep -qF 'OUTSIDE RAN' <<<"$out"; then ko "...the file outside the run's tree ran"; fi
+rm -rf "${TMP:?}/outdir/deep"
 # A script found on PATH whose env interpreter is missing never runs: 125, not env's 127.
 printf '#!/usr/bin/env run-against-base-no-such-interpreter\nexit 0\n' >"$TMP/interp-bin/rab-envmiss-cmd"
 chmod +x "$TMP/interp-bin/rab-envmiss-cmd"
