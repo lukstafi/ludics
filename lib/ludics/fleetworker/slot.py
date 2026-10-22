@@ -34,7 +34,9 @@ brief:
   queues for a slot under ``--wait`` as usual: two waits, each with its own bound and refusal line.
   It is a separate flag, so a caller that relies on the immediate refusal (a runner's nested slot)
   is never parked for a whole window, and it does not wait inside a measurement's hold, where it
-  would wait for its own measurement.
+  would wait for its own measurement. A bare ``--wait-window`` waits to the window's own deadline
+  where its record holds one (ludics-lite#737, ``window_cutoff``), an hour where it does not; an
+  explicit ``--wait-window=<seconds>`` waits exactly that.
 - THE WAITERS (ludics-lite#719): a batch waiting out a measurement reads the registry with
   ``wait``, which records on the anchor that it waits for this box (registry.py's THE WAITERS), so a
   new window keeps its gap only while someone waits; and a batch waiting here, for a window or for a
@@ -248,7 +250,8 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, NoReturn, assert_never, cast
+from datetime import datetime, timezone
+from typing import Any, Literal, NoReturn, assert_never, cast
 
 from ludics import cli
 from ludics.fleetworker.config import (
@@ -956,7 +959,9 @@ SLOT_USAGE = (
     " | execution slot --probe"
     " | execution slot --holders"
 )
-WINDOW_WAIT = 3600  # --wait-window's bound when it names none: an hour of measuring
+WINDOW_WAIT = 3600  # a bare --wait-window's bound behind a measurement that records no deadline
+BY_DEADLINE: Literal["deadline"] = "deadline"  # a bare --wait-window: the window's own deadline (#737)
+type WindowBound = int | Literal["deadline"]  # --wait-window=<seconds>, or bare
 WINDOW_PROGRESS = 60  # seconds between the lines that say a waiting batch is still waiting
 HOLD_USAGE = "execution hold [--why <text>] [--request <id>] [--deadline <seconds>] -- <command> [args...]"
 
@@ -968,7 +973,7 @@ class SlotArgs:
     probe: bool
     bg: str
     command: list[str]
-    window_wait: int | None = None  # --wait-window's bound; None: refuse at once under a measurement
+    window_wait: WindowBound | None = None  # --wait-window's bound; None: refuse at once under a measurement
     deadline: int | None = None
     holders: bool = False  # --holders (ludics-lite#639): list who holds this box's slots, take nothing
 
@@ -989,7 +994,7 @@ def parse_slot(args: list[str]) -> SlotArgs:
         return SlotArgs(600, "", False, "", [], holders=True)
     wait, kind, probe, bg = 600, "", False, ""
     deadline: int | None = None
-    window_wait: int | None = None
+    window_wait: WindowBound | None = None
     wait_text = "600"
     i = 0
     command: list[str] = []
@@ -1016,7 +1021,7 @@ def parse_slot(args: list[str]) -> SlotArgs:
             deadline = parse_deadline("slot", args, i)
             i += 1
         elif arg == "--wait-window":
-            window_wait = WINDOW_WAIT
+            window_wait = BY_DEADLINE
         elif arg.startswith("--wait-window="):
             # Its value only after `=`: a bare `--wait-window` is the flag, so the next word is never
             # taken for a bound it was not meant as.
@@ -1135,10 +1140,48 @@ def describe_measurement(box: str, record: dict[str, Any], prefix: str = SLOT_PR
     # A request without an issue (ludics-lite#664: a post-wave task, an integration run) is named by its purpose.
     issue = jq_text(field(record, "request", "issue") or field(record, "request", "purpose"))
     since = jq_text(record.get("created_at"))
+    due = deadline_of(record)
+    end = "no expected end is recorded" if due is None else f"due to conclude by {jq_text(record.get('deadline_at'))}"
     return (
         f"{prefix} {box}: {what} {jq_text(record.get('request_id'))} holds {box} (coordinator {owner};"
-        f" {worker} for {issue}; reserved {since}; no expected end is recorded)"
+        f" {worker} for {issue}; reserved {since}; {end})"
     )
+
+
+def deadline_of(record: dict[str, Any]) -> datetime | None:
+    """THE WINDOW'S DEADLINE (ludics-lite#737, the registry's header): when the measurement is due to
+    be concluded, as its record's ``deadline_at`` says on the anchor's clock; None when it records
+    none, or none that is an ISO 8601 time with a zone."""
+    text = record.get("deadline_at")
+    if not isinstance(text, str):
+        return None
+    try:
+        at = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return at if at.tzinfo is not None else None
+
+
+def window_cutoff(holding: list[dict[str, Any]], start: float) -> tuple[float, str]:
+    """A bare ``--wait-window``'s give-up (ludics-lite#737), frozen when the wait starts: on the
+    monotonic clock, the latest of each measurement's recorded deadline (read once against this
+    host's wall clock), or ``start`` + ``WINDOW_WAIT`` for one that records none; and what the
+    lines say it is. A deadline already past gives up at once. Windows that open later do not
+    move it: a waiter's bound runs across back-to-back windows, and the gap is where it gets out."""
+    wall = datetime.now(timezone.utc)
+    cutoff, said = start + WINDOW_WAIT, "--wait-window"
+    candidates: list[tuple[float, str]] = []
+    for record in holding:
+        due = deadline_of(record)
+        if due is None:
+            candidates.append((start + WINDOW_WAIT, "--wait-window"))
+        else:
+            candidates.append((start + (due - wall).total_seconds(),
+                               f"--wait-window, to measurement {jq_text(record.get('request_id'))}'s deadline"
+                               f" {jq_text(record.get('deadline_at'))}"))
+    if candidates:
+        cutoff, said = max(candidates, key=lambda candidate: candidate[0])
+    return max(cutoff, start), said
 
 
 def window_poll(cfg: Config) -> float:
@@ -1256,13 +1299,14 @@ class WaitingRecord:
         self.descriptor = None
 
 
-def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bound: int,
+def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bound: WindowBound,
                        command: Sequence[str], voice: Voice = SLOT_VOICE,
                        holders: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
                        registered: bool = False) -> list[dict[str, Any]] | int:
     """``--wait-window`` (ludics-lite#557): block until no measurement is outstanding on ``box``,
     re-reading the registry every ``FLEET_SLOT_WINDOW_POLL`` seconds (15), for at most ``bound``
-    seconds; the registry it last read, or the refusal's status. A measurement on another box is
+    seconds -- or, for a bare ``--wait-window`` (``BY_DEADLINE``), until ``window_cutoff`` -- the
+    registry it last read, or the refusal's status. A measurement on another box is
     not this box's (``measurement_records``), so it never blocks. Each measurement waited for is
     named once, and a line every ``WINDOW_PROGRESS`` seconds says the batch is still waiting.
     ``execution leg`` waits here too, on the agent host for its execution host's box, in its own
@@ -1276,7 +1320,13 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     waiter = waiter_of(cfg, command, box=box)
     beat = not registered
     start = time.monotonic()
-    deadline, progress = start + bound, start + WINDOW_PROGRESS
+    if bound == BY_DEADLINE:
+        deadline, said = window_cutoff(holders(records) if holders is not None else measurement_records(records, box),
+                                       start)
+    else:
+        deadline, said = start + bound, "--wait-window"
+    shown = int(deadline - start)
+    progress = start + WINDOW_PROGRESS
     named: set[str] = set()
     unread: Unread | None = None
     while True:
@@ -1291,7 +1341,7 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
             if identity not in named:
                 named.add(identity)
                 errline(describe_measurement(box, record, voice.prefix))
-                errline(f"{voice.prefix} {box}: waiting up to {bound}s (--wait-window) for it to conclude, then for a"
+                errline(f"{voice.prefix} {box}: waiting up to {shown}s ({said}) for it to conclude, then for a"
                         f" slot, for: {' '.join(command)}")
         now = time.monotonic()
         ids = ", ".join(jq_text(r.get("request_id")) for r in holding)
@@ -1300,12 +1350,12 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                 for line in unread.lines:
                     cli.say(line)
                 return unread.rc
-            cli.say(f"{voice.prefix} REFUSED {box}: measurement {ids} still holds {box} after {bound}s"
-                    f" (--wait-window); {voice.refused}")
+            cli.say(f"{voice.prefix} REFUSED {box}: measurement {ids} still holds {box} after {shown}s"
+                    f" ({said}); {voice.refused}")
             return 1
         if now >= progress:
             errline(f"{voice.prefix} {box}: still waiting for measurement {ids}"
-                    f" ({int(now - start)}s of {bound}s, --wait-window)")
+                    f" ({int(now - start)}s of {shown}s, {said})")
             progress += WINDOW_PROGRESS
         if not beat:
             time.sleep(min(poll, deadline - now))
@@ -1378,7 +1428,9 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         bgrun = os.path.join(cfg.here, "bg-run.sh")
         again = os.path.join(cfg.here, os.path.basename(cfg.script))
         argv = [bgrun, "spawn", parsed.bg, "--", again, "execution", "slot", "--wait", str(parsed.wait)]
-        if parsed.window_wait is not None:
+        if parsed.window_wait == BY_DEADLINE:
+            argv.append("--wait-window")  # bare: the run works out its window's deadline itself
+        elif parsed.window_wait is not None:
             argv.append(f"--wait-window={parsed.window_wait}")
         if parsed.kind:
             argv.append(parsed.kind)
