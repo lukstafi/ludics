@@ -815,6 +815,72 @@ def nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
         return NudgeBarred(f"a {rev} Code Review row could not be read")
     if any(r is not None and head.sha.startswith(jstr(r["sha"])) for r in rows):
         return NudgeBarred(f"{rev}'s summary has a Code Review row naming head {short}")
+    return _request_record(ctx, asked, head)
+
+
+def stall_nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
+    """May ``watch`` post its one '@codex review' over a STALLED round on the head
+    (ludics-lite#760)? Asked only after a fresh state read said ``stalled``: a 👀 or a Running row
+    up longer than a round takes, newer than the reviewer's last word. ``nudge_read`` cannot answer
+    it, since the stalled round's own Running row is evidence for the head there.
+
+    Boundary, fail-closed: CLEAR only when every read below answered and none of these is there --
+    a 👍 from the reviewer on the PR, whatever head it is for (a request clears it); a no-findings
+    verdict comment from the reviewer stamped with the head, or carrying no stamp to say which
+    head it is for; a Code Review row of the newest summary that names the head as Completed, or
+    whose stamp does not read; the summary's state record of a completed round on the head with
+    no unresolved findings; and a '@codex review' request by anyone at or after the head's arrival
+    (``_arrival_floor``), a request whose time does not read included -- the once-per-head record
+    across processes, as ``nudge_read`` and the failed run's (#453) keep it. Not read: the 👀 and
+    the Running row (they are the stall), findings reviews (no approval for a request to clear),
+    and a request older than the head's arrival (an earlier head's)."""
+    rev = ctx.reviewer
+    try:
+        reactions = feed(ctx, f"issues/{pr}/reactions?per_page=100")
+    except ReadFailed:
+        return NudgeBarred(f"the reactions API did not answer ({ctx.session.err_line()})")
+    try:
+        comments = state_comments(ctx, pr)
+    except ReadFailed:
+        return NudgeBarred(f"the comments API did not answer ({ctx.session.err_line()})")
+    head = state_head_read(ctx, pr)
+    if not head.sha:
+        return NudgeBarred(f"the pulls API did not answer for the head SHA ({head.err})")
+    short = _short(head.sha)
+    try:
+        if any(login_is(r, rev) and idx(r, "content") == "+1" for r in reactions):
+            return NudgeBarred(f"a 👍 from {rev} is on the PR, and a request would clear it")
+        for c in comments:
+            if not login_is(c, rev) or not _NO_FINDINGS.search(body_of(c)):
+                continue
+            stamps = capture_all(body_of(c), REVIEWED_COMMIT_RE)
+            sha = jstr(alt(stamps[-1]["s"] if stamps else None, ""))
+            if not sha or startswith(head.sha, sha):
+                return NudgeBarred(f"{rev} posted a no-findings verdict for head {short} (or for no named head)")
+        newest_summary = _newest_summary(comments, rev)
+        lines = [] if newest_summary is None else body_of(newest_summary).split("\n")
+        for line in lines:
+            if not _CODE_REVIEW_ROW.search(line):
+                continue
+            stamp = capture_first(line, _SUMMARY_ROW_STAMP)
+            if stamp is None:
+                return NudgeBarred(f"a {rev} Code Review row could not be read")
+            done = capture_first(line, _SUMMARY_COMPLETED_ROW)
+            if done is not None and head.sha.startswith(jstr(done["sha"])):
+                return NudgeBarred(f"{rev}'s summary marks head {short}'s Code Review Completed")
+        record = head_summary_state(comments, rev, head.sha)
+        if record is not None and record.status == "completed" and record.unresolved is False:
+            return NudgeBarred(f"{rev}'s summary records head {short}'s Code Review completed clean")
+        asked = _requests(comments, rev)
+    except JqError:
+        return NudgeBarred("the reviewer's verdicts for the head did not parse")
+    return _request_record(ctx, asked, head)
+
+
+def _request_record(ctx: Ctx, asked: list[Json], head: Head) -> NudgeRead:
+    """The once-per-head record both automatic requests keep in the feed: barred by a
+    '@codex review' request at or after the head's arrival, CLEAR otherwise."""
+    short = _short(head.sha)
     if any(not isinstance(a, str) or not _ISO_STAMP.fullmatch(a) for a in asked):
         # A request whose time does not read is a request: it may be this head's (review of #583,
         # rounds 4 and 6), and the string order would put it below any floor.
@@ -978,11 +1044,13 @@ def status_line(state: State, repo: str, pr: str) -> str:
             return f"reviewing — {detail}, running {age} — wait it out{c}"
         case "stalled":
             return (
-                f"STALLED — {detail} for {age}, longer than a round takes. FIRST read the PR feed"
-                " yourself (retry --read pr view <pr> --comments): a verdict may have landed as a"
-                " comment or a 👍 this state machine missed. Only if the feed truly has nothing for"
-                " the current head, nudge with a '@codex review' comment — knowing a re-request"
-                f" CLEARS the reviewer's existing 👍{c}"
+                f"STALLED — {detail} for {age}, longer than a round takes. `watch` nudges it"
+                " itself, once per head, when no 👍, verdict or request stands for the head, and"
+                " keeps watching. Outside a watch, FIRST read the PR feed yourself (retry --read pr"
+                " view <pr> --comments): a verdict may have landed as a comment or a 👍 this state"
+                " machine missed. If the feed holds nothing for the current head, nudge once"
+                f" (pr-review.sh comment {repo}#{p} '@codex review'); never while a 👍 may stand,"
+                f" since a re-request CLEARS it{c}"
             )
         case "failed":
             fsha, _, frest = detail.partition("|") if "|" in detail else (detail, "", detail)

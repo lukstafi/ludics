@@ -1773,7 +1773,7 @@ test_a_state_record_yields_to_what_the_reviewer_posted() {
 # minutes; the worker merged main, moving the head to fb80745, and the summary's Code Review row
 # read "🔄 Running since 16:46:01" on fb80745. `status` and `watch` read STALLED from the old 👀,
 # and the watch exited; fb80745's review landed, with a 👍, three minutes later. Dated on the
-# fixture clock: the 👀 past STALL (2400 s), the row a minute old.
+# fixture clock: the 👀 past STALL (1800 s), the row a minute old.
 STALE_EYES_HEAD=fb80745000000000000000000000000000000000
 
 stale_eyes_fixture() {
