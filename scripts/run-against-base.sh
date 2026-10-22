@@ -115,7 +115,9 @@
 # (the `git bisect run` convention for "cannot test"), so a refusal is never read as the suite's
 # failure -- and a suite's own 125 is reported as 1, as is its own 124 when a timeout is armed.
 # Whatever the suite left running is stopped with it: its process group gets TERM, then KILL
-# after RUN_AGAINST_BASE_GRACE whole seconds (default 5).
+# after RUN_AGAINST_BASE_GRACE whole seconds (default 5). A capture of its output that never ends
+# (something outside the group holding it, RUN_AGAINST_BASE_TEE_DRAIN whole seconds, default 30,
+# after the group is stopped) is 125 too, naming what still holds it.
 
 set -uo pipefail
 
@@ -270,15 +272,26 @@ while [ "$i" -lt "${#MUT_ARGS[@]}" ]; do
   i=$((i + 1))
 done
 # An interpreter that is missing means the suite (or command) never runs, and its 126/127 must not
-# read as a base result. A missing first program is caught at the exec (execfail, below); what the exec
-# cannot see is an env shebang whose program is not on PATH, since env itself starts fine -- so
-# env's arguments are walked the way env reads them (options, `-u NAME`, `-S`'s split string,
-# NAME=value assignments) to the first program word, and that is looked up here.
+# read as a base result. A missing first program is caught at the exec (execfail, below); what the
+# exec cannot see is an env shebang whose program is not on PATH, since env itself starts fine.
+# BOUNDARY (ludics-lite#459): the env forms read here are a fail-closed allowlist of two shapes,
+#   #!<dir>/env <prog>                 (nothing after the program)
+#   #!<dir>/env -S <prog> [args...]    (or -S<prog>: the split string's first word)
+# where <prog> is a bare name or an absolute path, of the characters [A-Za-z0-9._+/-] only and not
+# starting with `-`. Each is looked up below. Every other env form is NOT read and is left to the
+# exec: another option before the program (-i, -u NAME, -v, --split-string=...), an assignment
+# (PATH=... included: its search path is not this one), a relative program (it would be looked up
+# from the caller's cwd, not the run's), a word with a quote, backslash, `$` or any other character
+# (env -S's own quoting, escapes and ${VAR} expansion), and arguments after a plain `env <prog>`
+# (Linux hands env "<prog> <args>" as ONE word). Such a suite runs; when it then exits 126 or 127
+# the result line says its shebang was not checked, since that status may be env not finding its
+# program rather than the base failing. (Before #459 the forms were walked one at a time, and each
+# review round found one more.)
 # check_interp <file> <name> <interp>: <interp> is the runner the file is started with (python3), or
 # empty to read the file's own shebang.
+ENV_UNCHECKED=
 check_interp() {
-  local file=$1 name=$2 interp=$3 shebang w i
-  unset sb_clear sb_path
+  local file=$1 name=$2 interp=$3 shebang w where
   if [ -z "$interp" ]; then
     IFS= read -r shebang <"$file" || true
     case "$shebang" in
@@ -288,40 +301,38 @@ check_interp() {
       read -r -a sb <<<"${shebang#??}"
       set +f
       if [ "${#sb[@]}" -gt 0 ] && [ "${sb[0]##*/}" = env ]; then
-        i=1
-        while [ "$i" -lt "${#sb[@]}" ]; do
-          w=${sb[$i]}
-          case "$w" in
-          -u | --unset) i=$((i + 1)) ;;
-          -i | --ignore-environment | -) sb_clear=1 ;;
-          -S?*) w=${w#-S}; interp=$w; break ;;
-          PATH=*) sb_path=${w#PATH=} ;;
-          -* | *=*) ;;
-          *) interp=$w; break ;;
-          esac
-          i=$((i + 1))
-        done
+        w=
+        if [ "${#sb[@]}" -eq 2 ]; then
+          case "${sb[1]}" in -S?*) w=${sb[1]#-S} ;; -*) ;; *) w=${sb[1]} ;; esac
+        elif [ "${#sb[@]}" -ge 3 ]; then
+          case "${sb[1]}" in -S) w=${sb[2]} ;; -S?*) w=${sb[1]#-S} ;; esac
+        fi
+        case "$w" in
+        '' | -* | *[!A-Za-z0-9._+/-]*) w= ;;
+        /*) ;;
+        */*) w= ;;
+        esac
+        interp=$w
+        [ -n "$w" ] || ENV_UNCHECKED="$name's shebang $(printf '%q' "$shebang") is an env form this helper does not check (run-against-base.sh, BOUNDARY), so a 126 or 127 may be env not finding its program -- the suite never ran -- rather than the base failing; read the output above"
       fi
       ;;
     esac
   fi
-  # The lookup uses the PATH env will use: the shebang's own PATH= when it sets one; with the
-  # environment cleared (-i) and no PATH= the search path is env's built-in default, which is not
-  # ours to guess, so that one is left to the exec.
   # The hit must be absolute: the lookup runs from the caller's cwd and the run from the root of
-  # the run's tree, so a relative PATH entry (the caller's or the shebang's, an empty one
-  # included) or a relative program path names something else there, or nothing. The search is
-  # `type -P`, the disk search env makes: a builtin's or function's name is no program to env.
+  # the run's tree, so a relative PATH entry (an empty one included) names something else there,
+  # or nothing. The search is `type -P`, the disk search env makes: a builtin's or function's name
+  # is no program to env, and an absolute <prog> is found only as an executable file.
   # The interpreter is the environment's, not the code under test, so one on PATH inside this
   # checkout (a project's virtualenv, a local switch) is accepted: the live-checkout refusal is
   # the named program's (command mode, below), not its interpreter's.
   local hit=
-  if [ -n "$interp" ] && [ -z "${sb_clear-}${sb_path+set}" ]; then
+  if [ -n "$interp" ]; then
+    case "$interp" in
+    /*) where="an executable file" ;;
+    *) where="on PATH" ;;
+    esac
     hit=$(type -P -- "$interp" 2>/dev/null) && [ -n "$hit" ] \
-      || die "$name needs $interp, which is not on PATH here; it would never run"
-  elif [ -n "$interp" ] && [ -n "${sb_path+set}" ]; then
-    hit=$(PATH=$sb_path type -P -- "$interp" 2>/dev/null) && [ -n "$hit" ] \
-      || die "$name needs $interp, which is not on the PATH its shebang sets ($sb_path); it would never run"
+      || die "$name needs $interp, which is not $where here; it would never run"
   fi
   case "$hit" in
   */*) [ "${hit#/}" != "$hit" ] || die "$name needs $interp, found only as the relative $hit, which names something else from the run tree's root; it would not run as checked" ;;
@@ -534,6 +545,11 @@ fi
 GRACE=${RUN_AGAINST_BASE_GRACE:-5}
 case "$GRACE" in '' | *[!0-9]*) die "RUN_AGAINST_BASE_GRACE must be whole seconds: $GRACE" ;; esac
 GRACE=$((10#$GRACE))
+# TEE_DRAIN: how long tee gets to see EOF once the suite's group is stopped (below), validated here
+# with the grace. RUN_AGAINST_BASE_TEE_DRAIN overrides the 30s; a test lowers it.
+TEE_DRAIN=${RUN_AGAINST_BASE_TEE_DRAIN:-30}
+case "$TEE_DRAIN" in '' | *[!0-9]*) die "RUN_AGAINST_BASE_TEE_DRAIN must be whole seconds: $TEE_DRAIN" ;; esac
+TEE_DRAIN=$((10#$TEE_DRAIN))
 
 # The cleanup is armed before the scratch directory exists, so no signal can land between the
 # allocation and the trap; until SCRATCH is set it has nothing to do.
@@ -562,11 +578,37 @@ gone() {
     i=$((i + 1))
   done
 }
-# TEE_DRAIN: how long tee gets to see EOF once the suite's group is stopped. Not the suite's
-# grace, which may be 0 or 1: a tee that needs a moment on a loaded box is not a failed capture
-# (a macOS CI runner took over a second), and past this only a process that escaped the group can
-# still be holding the fifo.
-TEE_DRAIN=30
+# TEE_DRAIN (default 30s): how long tee gets to see EOF once the suite's group is stopped. Not the
+# suite's grace, which may be 0 or 1: a tee that needs a moment on a loaded box is not a failed
+# capture (a macOS CI runner took over a second). Past it, either a process that escaped the group
+# still holds the fifo, or tee itself is stuck; macOS CI has hit it with suites that start nothing
+# (ludics-lite#479, cause not yet found), so the refusal names what tee was waiting on.
+# fifo_holders: what a tee that never saw EOF was waiting on, for the line that reports it
+# (ludics-lite#479): tee's own state, then every other process that still has the fifo open, with
+# its parent and process group. BOUNDARY: the holders are this user's processes whose open files
+# `lsof` lists by the fifo's path (macOS lsof cannot search for a fifo by path, so the user's open
+# files are listed and matched by name; another user's are not readable without root), else, with
+# no lsof, `fuser` on the path (pids only), else nobody, and the line says so. Each holder is then
+# one `ps` line, so one that exits in between is simply missing. It is a diagnostic only: the run
+# is refused either way, and nothing here decides anything.
+fifo_holders() {
+  local f="$SCRATCH/fifo" pids= p line out= none=
+  if command -v lsof >/dev/null 2>&1; then
+    pids=$(lsof -w -n -P -a -u "$(id -u)" -F pn 2>/dev/null \
+      | awk -v f="$f" '/^p/ { p = substr($0, 2) } /^n/ && substr($0, 2) == f { print p }' | sort -u)
+  elif command -v fuser >/dev/null 2>&1; then
+    pids=$(fuser "$f" 2>/dev/null)
+  else
+    none="no lsof or fuser here to name them"
+  fi
+  for p in $pids; do
+    p=${p%%[!0-9]*}
+    [ -n "$p" ] && [ "$p" != "$teepid" ] || continue
+    line=$(ps -o pid=,ppid=,pgid=,stat=,command= -p "$p" 2>/dev/null) || continue
+    out="$out${out:+; }${line#"${line%%[! ]*}"}"
+  done
+  printf '%s' "tee is [$(ps -o pid=,stat=,command= -p "$teepid" 2>/dev/null | sed 's/^ *//')]; the fifo is also open in [${none:-${out:-nothing else}}]"
+}
 # stop_group: the suite runs as the leader of its own process group, so this reaches whatever it
 # left behind in that group as well -- a background child that outlived it, one that ignores
 # TERM -- and none of it keeps running in (or writing to) a worktree about to be removed. The
@@ -585,7 +627,10 @@ cleanup() {
   trap '' INT TERM HUP
   [ -n "$SCRATCH" ] || return 0
   [ -n "$child" ] && stop_group
-  if [ -n "$teepid" ] && ! gone "$teepid" "$TEE_DRAIN"; then kill "$teepid" 2>/dev/null; fi
+  if [ -n "$teepid" ] && ! gone "$teepid" "$TEE_DRAIN"; then
+    printf '%s\n' "run-against-base: the output capture never saw its end ($(fifo_holders))" >&2
+    kill "$teepid" 2>/dev/null
+  fi
   if [ -d "$WT" ]; then
     # --force twice: once for the copied suite (the checkout is dirty), again for a worktree the
     # suite locked, which a single --force refuses.
@@ -860,19 +905,23 @@ if gone "$teepid" "$TEE_DRAIN"; then
   wait "$teepid"
   tee_rc=$?
 else
+  tee_rc="timeout: $(fifo_holders)"
   kill "$teepid" 2>/dev/null
   wait "$teepid" 2>/dev/null
-  tee_rc=timeout
 fi
 teepid=
 [ "$tee_rc" = 0 ] || die "capturing the suite's output failed (tee: $tee_rc); its exit $rc is not a result"
 
-tally=$(grep -E '[0-9]+ passed, [0-9]+ failed' "$LOG" | tail -n 1)
-[ -n "$tally" ] || tally=$(grep -v '^[[:space:]]*$' "$LOG" | tail -n 1)
+# -a: a NUL byte in the output would otherwise make grep call the log binary and print no line.
+tally=$(grep -a -E '[0-9]+ passed, [0-9]+ failed' "$LOG" | tail -n 1)
+[ -n "$tally" ] || tally=$(grep -a -v '^[[:space:]]*$' "$LOG" | tail -n 1)
 if [ -n "$timed_out" ]; then
   say "exit 124 on $base: timed out after ${TIMEOUT}s, and its process group was stopped -- a hang is a failing run, not a refusal${tally:+ (last tally: $tally)}"
 else
   say "exit $rc on $base: ${tally:-(no output)}"
+fi
+if [ -z "$timed_out" ] && [ -n "$ENV_UNCHECKED" ]; then
+  case "$rc" in 126 | 127) say "note: $ENV_UNCHECKED" ;; esac
 fi
 [ "$uninit_subs" -eq 0 ] \
   || say "note: $base has $uninit_subs submodule(s), not checked out here; a failure that reaches into one is not the base's"
