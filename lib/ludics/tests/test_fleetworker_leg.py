@@ -261,7 +261,8 @@ class BackendPin(unittest.TestCase):
                      ["sh", "-c", "OCANNL_BACKEND=cuda tools/t.sh run --expect-backend cuda"],
                      ["env", "tools/t.sh", "OCANNL_BACKEND=cuda"],
                      ["env", "OCANNL_BACKEND=cuda", "OCANNL_BACKEND=", "tools/t.sh"],
-                     ["env", "OCANNL_BACKEND=cuda"], ["env", "X=1", "OCANNL_BACKEND=cuda"]]:
+                     ["env", "OCANNL_BACKEND=cuda"], ["env", "X=1", "OCANNL_BACKEND=cuda"],
+                     ["env", "OCANNL_BACKEND=cuda", "1=x"], ["env", "OCANNL_BACKEND=cuda", "a-b=c", "=d"]]:
             with self.subTest(argv=argv):
                 rc, why = self.pin(self.PINS, "1", *argv)
                 self.assertEqual(rc, 1)

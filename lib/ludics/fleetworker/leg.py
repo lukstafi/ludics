@@ -238,12 +238,13 @@ FLEET_LEG_PIN
   if [ -n "$envs" ] && [ "${1##*/}" = env ]; then
     # Each NAME's value is its LAST assignment among those after `env` (empty ones included), as env
     # applies them: `NAME=cuda NAME=` leaves it empty. A command must follow them: a bare `env
-    # NAME=cuda` runs no runner, only prints the environment, and exits 0.
+    # NAME=cuda` runs no runner, only prints the environment, and exits 0. Any word holding a `=` is
+    # an assignment to env (GNU env takes `1=x` as one), so the command is the first word without.
     for f in $envs; do
       first=1; prev=""; cmd=""
       for a in "$@"; do
         if [ -n "$first" ]; then first=""; continue; fi
-        case "$a" in [A-Za-z_]*=*) ;; *) cmd=1; break ;; esac
+        case "$a" in *=*) ;; *) cmd=1; break ;; esac
         case "$a" in "$f="*) prev=${a#*=} ;; esac
       done
       [ -z "$prev" ] || [ -z "$cmd" ] || return 0
