@@ -511,6 +511,7 @@ ok    jobs[] rows carry an ISO created_at, and every finished job an ISO complet
 ok    a red run's jobs carry the red: at least one job concluded failure, timed_out or startup_failure, or no jobs at all (the startup_failure shape)
 ok    the feed is check_runs[]
 ok    every check run carries a non-empty name (build_checks skips a row with none), conclusion (present, null while unfinished), html_url and app.slug
+ok    every check run carries a status string, never "completed" while its conclusion is null (the build wait's pause reads "in_progress" as running)
 ok    check-run conclusions are in the vocabulary conclusion_class classifies
 ok    every check run carries a check_suite.id (build_checks reads by name across every suite and provider)
 ok    GitHub Actions' own check runs carry app.slug == "github-actions" (providers_are_actions_only's literal)
@@ -619,6 +620,7 @@ test_a_doctored_response_moves_its_pin_and_only_it() {
     "$R/actions/workflows?per_page=100^.workflows[0].state = \"paused\"^MOVED every workflow carries a state drawn from the vocabulary" \
     "$R/actions/runs/201/jobs?per_page=100^.jobs[0] |= del(.completed_at)^MOVED jobs[] rows carry an ISO created_at, and every finished job an ISO completed_at" \
     "$R/commits/$TIP/check-runs?filter=latest&per_page=100^.check_runs[0].conclusion = \"surprise\"^MOVED check-run conclusions are in the vocabulary" \
+    "$R/commits/$TIP/check-runs?filter=latest&per_page=100^.check_runs[1].conclusion = null^MOVED every check run carries a status string, never \"completed\" while its conclusion is null" \
     "$R/commits/$M7^.commit.verification.verified = false^MOVED GitHub's merge commit is committed by noreply@github.com" \
     "$R/pulls/12^.mergeable_state = \"surprise\"^MOVED ... and a mergeable_state in the vocabulary" \
     "$R/pulls/9/reviews?per_page=100^.[2].state = \"surprise\"^MOVED the app's review states are in the vocabulary" \
