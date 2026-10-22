@@ -1302,6 +1302,43 @@ test_a_running_row_the_stamp_pattern_misses_is_unknown() {
     "the detail should name the two patterns that stopped agreeing"
 }
 
+# --- one reader of the summary's Running row (ludics-lite#752) -----------------------------------
+# The 👍 path read Running rows from EVERY summary of the reviewer's; #586's arm, only the newest
+# summary's newest row. Every arm reads that one row now, so a Running row in an older summary --
+# a round the reviewer has since written past -- no longer holds a 👍 back.
+test_an_older_summarys_running_row_does_not_outrank_the_thumbs_up() {
+  reset_fixture
+  HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  REACTIONS_JSON="[$(reaction +1 2026-09-01T00:01:00Z)]"
+  COMMENTS_JSON="[$(plain_comment 1 2026-09-01T00:02:00Z '<!-- codex-pull-request-review-summary -->
+| Code Review | Running <relative-time datetime="2026-09-01T00:02:00Z"> | `aaaaaaa` |'),$(plain_comment 2 2026-09-01T00:09:00Z '<!-- codex-pull-request-review-summary -->
+| Code Review | ✅ **Completed** <relative-time datetime="2026-09-01T00:09:00Z"> | `aaaaaaa` |')]"
+  run_status
+  assert_eq "$STATE" "approved|-|clean|👍 from $REVIEWER" "the newest summary's row is the one read"
+  # The control: the same Running row in the NEWEST summary is a round in flight on the head.
+  COMMENTS_JSON="[$(plain_comment 1 2026-09-01T00:02:00Z '<!-- codex-pull-request-review-summary -->
+| Code Review | Running <relative-time datetime="2026-09-01T00:02:00Z"> | `aaaaaaa` |')]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" stalled "a newest Running row outranks the older 👍"
+}
+
+# --- a 👀 older than the head's arrival (#770's hand-back, folded into ludics-lite#752) -----------
+# #770's head 1af99c3 read "STALLED ... 81m" seconds after its push: the 👀 its predecessor's hung
+# round left up. Inside the head's pickup margin (knobs.PICKUP, the one watch holds its nudge for)
+# that 👀 reads as the head's pickup; after it, as the stall it is, so watch's nudge stands.
+test_an_old_eyes_over_a_fresh_push_is_its_pickup_then_its_stall() {
+  reset_fixture
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -5000)")]"
+  HEAD_AT=$(clock_at -60)
+  run_status
+  assert_eq "$(state_tok "$STATE")" reviewing "a push a minute old is inside its pickup"
+  assert_contains "$LINE" "predates head ${HEAD_SHA:0:7}'s arrival at $HEAD_AT" "and the line says why"
+  HEAD_AT=$(clock_at -400)
+  run_status
+  assert_eq "$(state_tok "$STATE")" stalled "past the pickup the 👀 is the stall it is"
+  assert_contains "$(state_detail "$STATE")" "with nothing posted since" "aged from the 👀, as before"
+}
+
 # --- an approval over open review threads (ludics-lite#289) -----------------------------------
 # PR #277, round 6: two findings written against the previous head, the 👍 on the base-merge commit
 # above it, and a `status` that said `approved` over both. An open thread is a finding nobody
@@ -1338,14 +1375,53 @@ test_an_approval_with_every_thread_resolved_stays_approved() {
   assert_not_contains "$CMD_OUT" UNRESOLVED "with nothing open under it"
 }
 
-test_only_an_approval_reads_the_threads() {
-  # The read budget: every other state is reported without the GraphQL read, so a status (and a
-  # watch round, which gates the same way) that is not about to report an approval costs nothing.
+test_status_walks_the_threads_once_whatever_the_state() {
+  # The read budget since ludics-lite#587: `status` counts the open threads whatever the state, in
+  # ONE walk the approval gate shares (a watch round that reports no approval still reads none:
+  # test-pr-review-watch.sh's test_the_exit_counts_threads_by_head).
   idle_fixture
   THREADS_JSON="[$(review_thread 4053098120 false)]"
   run_cmd_status
   assert_contains "$CMD_OUT" "the next move is yours" "an idle head is reported as idle"
-  assert_eq "$(graphql_reads)" 0 "and the threads are never read for it"
+  assert_eq "$(graphql_reads)" 1 "and its threads are walked once, for the count"
+  approved_fixture
+  THREADS_JSON="[$(review_thread 4053098120 false)]"
+  run_cmd_status
+  assert_contains "$CMD_OUT" "BUT 1 review thread(s) still UNRESOLVED" "an approval is gated"
+  assert_eq "$(graphql_reads)" 1 "on the same one walk the count reads"
+}
+
+# --- the open threads counted by head (ludics-lite#587) ---------------------------------------
+# lukstafi/ocannl-staging#1063 read the first head's findings only after pushing a second fix:
+# nothing said which head the open threads were written on. `status` now prints, after the state
+# line, the threads written on the head and those on earlier heads, the earlier ones named.
+test_status_counts_open_threads_on_the_head_and_on_earlier_heads() {
+  local old=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  reset_fixture
+  HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  REVIEWS_JSON="[$(review 5 "$HEAD_SHA" "$PAST")]"
+  THREADS_JSON="[$(review_thread 4095735684 false a.sh 'codex[bot]' "$HEAD_SHA"),$(review_thread 4053098120 false b.sh 'codex[bot]' "$old" "$HEAD_SHA"),$(review_thread 4053098001 true c.sh 'codex[bot]' "$old")]"
+  run_cmd_status
+  assert_eq "$CMD_RC" 0 "the count never changes the exit"
+  assert_contains "$CMD_OUT" "nothing in flight" "the state line is as before"
+  assert_contains "$CMD_OUT" "review threads: 1 open on head aaaaaaa, 1 on earlier heads (1 of them on lines head aaaaaaa still has): 4053098120 by codex[bot] on b.sh — answer and resolve these before pushing past them" \
+    "the current head's open thread and the earlier head's are counted apart, the earlier one named"
+  assert_not_contains "$CMD_OUT" 4053098001 "a resolved thread is not counted"
+  assert_eq "$(sed -n 2p <<<"$CMD_OUT" | cut -c1-15)" "review threads:" "on the line after the state"
+  # The same open threads under an approval: the gate's line and the count, from one walk.
+  REACTIONS_JSON="[$(reaction +1 "$PAST")]"
+  REVIEWS_JSON='[]'
+  : >"$REQUEST_LOG"
+  run_cmd_status
+  assert_contains "$CMD_OUT" "BUT 2 review thread(s) still UNRESOLVED" "the gate names both"
+  assert_contains "$CMD_OUT" "review threads: 1 open on head aaaaaaa, 1 on earlier heads" "and the count splits them"
+  assert_eq "$(graphql_reads)" 1 "one walk for both"
+  FAIL_GRAPHQL=1
+  REACTIONS_JSON='[]'
+  REVIEWS_JSON="[$(review 5 "$HEAD_SHA" "$PAST")]"
+  run_cmd_status
+  assert_eq "$CMD_RC" 0 "an unread count is not an unread state"
+  assert_contains "$CMD_OUT" "review threads: UNREAD — GraphQL did not answer" "and it is never 'none open'"
 }
 
 test_an_unread_thread_connection_is_unknown_not_approved() {
@@ -2205,9 +2281,12 @@ tests=(
   test_a_broken_jq_program_is_unknown_on_the_pending_request_read
   test_a_broken_jq_program_is_unknown_on_the_current_head_evidence
   test_a_running_row_the_stamp_pattern_misses_is_unknown
+  test_an_older_summarys_running_row_does_not_outrank_the_thumbs_up
+  test_an_old_eyes_over_a_fresh_push_is_its_pickup_then_its_stall
   test_an_approval_over_open_threads_is_unresolved
   test_an_approval_with_every_thread_resolved_stays_approved
-  test_only_an_approval_reads_the_threads
+  test_status_walks_the_threads_once_whatever_the_state
+  test_status_counts_open_threads_on_the_head_and_on_earlier_heads
   test_an_unread_thread_connection_is_unknown_not_approved
   test_the_thread_read_pages_to_the_end
   test_a_count_that_leads_the_rows_is_unread

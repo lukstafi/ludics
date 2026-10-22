@@ -1034,7 +1034,11 @@ fi
 #   - the first comment's `fullDatabaseId` a decimal string, which threads.thread_id names a thread by
 #     ahead of `databaseId` — the schema types databaseId as a 32-bit Int while review-comment ids
 #     run past 2^31, and the reply fixture assumes it null there. What GitHub serves past 2^31 is
-#     printed, and the claim is the one the fallback needs: null or the same number, never clamped.
+#     printed, and the claim is the one the fallback needs: null or the same number, never clamped;
+#   - the first comment's `originalCommit.oid` a 40-hex SHA and its `commit` null or one
+#     (ludics-lite#587): threads.threads_by_head puts a thread on the head only when its original
+#     commit IS the head, so an origin that stopped reading as a SHA would quietly move every
+#     current-head finding to "earlier heads", and the fixtures make both up.
 # Reads: one verbatim page of 100, then the same query on a page small enough to make the anchor
 # span several pages, since one page shows nothing about "every page".
 section "reviewThreads on #${THREADS_PR:-?} (GraphQL) — the open-thread gate's and resolve's read"
@@ -1060,6 +1064,9 @@ else
       'all(.[]; (.id | type == "string" and length > 0) and (.isResolved | type == "boolean"))' "$tnodes"
     pin "every thread's first comment carries fullDatabaseId as a decimal string (the BigInt threads.thread_id names a thread by, ahead of databaseId)" \
       'all(.[]; .comments.nodes[0].fullDatabaseId | type == "string" and test("^[1-9][0-9]*$"))' "$tnodes"
+    pin "every thread's first comment carries originalCommit.oid as a 40-hex SHA, and commit as null or a 40-hex oid (threads.threads_by_head splits the open threads by head on them)" \
+      'all(.[]; .comments.nodes[0] | (.originalCommit.oid | type == "string" and test("^[0-9a-f]{40}$"))
+                and (.commit == null or (.commit.oid | type == "string" and test("^[0-9a-f]{40}$"))))' "$tnodes"
     # Past 2^31 is selected on the decimal string, so the claim is about exactly the threads whose
     # 32-bit databaseId the schema cannot hold; jq's numbers are doubles, exact far past these ids.
     BIG='.comments.nodes[0] | select((.fullDatabaseId | type == "string" and test("^[1-9][0-9]*$")) and (.fullDatabaseId | tonumber) > 2147483647)'

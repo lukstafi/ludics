@@ -681,7 +681,7 @@ head SHA, and answers with one of eight:
 | --- | --- | --- |
 | `approved` | 👍 is on the PR and was given for this head, with no newer current-head running review or findings — or, with no 👍, a no-findings verdict comment naming this head, or the summary's Code Review row marking this head Completed after the 👀 with nothing posted since that 👀, or the summary's state record marking this head completed with no unresolved findings, with nothing posted since and no finding about this head — and no review thread left unresolved | merge |
 | `unresolved` | that same 👍, over review threads still open — whatever head they cite | answer each thread and `resolve` it; `merge` refuses until none is open |
-| `reviewing` | the 👀 is newer than the reviewer's last word — a round really is in flight; or the summary's newest Code Review row is Running on this head, newer than the reviewer's last word and than any 👀: the round is aged from the row, not from a 👀 an older head's stuck round left up (ludics-lite#586), and a same-head rerun after findings or a no-findings verdict is not `idle` or `approved` | wait it out |
+| `reviewing` | the 👀 is newer than the reviewer's last word — a round really is in flight; or the summary's newest Code Review row is Running on this head, newer than the reviewer's last word and than any 👀: the round is aged from the row, not from a 👀 an older head's stuck round left up (ludics-lite#586), and a same-head rerun after findings or a no-findings verdict is not `idle` or `approved`. Only the newest summary's newest row is read, on every path: a Running row the reviewer has since written past holds no 👍 back (ludics-lite#752). A 👀 older than the head's arrival reads as the head's pickup while the head is younger than `watch`'s pickup margin (5 min), and as `stalled` after it | wait it out |
 | `stalled` | that 👀 (or that Running row, when it decides) has been up longer than a round takes and nothing was posted | `watch` nudges it itself, once per head, when nothing stands for the head. Outside a watch: read the feed first, then one `@codex review` if it holds no verdict and no 👍 for the head — never while a 👍 may stand |
 | `failed` | the reviewer's newest word is an initialization failure — "Something went wrong", over "Provided git ref `<sha>` does not exist" — naming this head, or "To use Codex here, create an environment for this repo" newer than the head's commit — or the summary's Code Review row marks this head's run "⚠️ Failed" with no review, no 👍 and nothing said inside the run: the round never ran | `@codex review` once; if the same head fails again, push a new head (an amend is enough) — or, for the environment one, hand it to the maintainer, since no push reaches it. On the Failed row `watch` posts that one request itself |
 | `expected` | no live 👀, and no review of the head SHA: a round is due and has not started — including a 👍 left from before a push, until the app takes it down | wait out the grace, then `@codex review` |
@@ -698,6 +698,15 @@ approval ends its wait, read every review thread (GraphQL, paged to the end) bef
 answer each thread named on the line (a fix or a rebuttal, `reply`) and close it (`resolve`). A
 thread read that fails is `unknown`, never a clean approval. Whether the head changed a finding's
 lines is not checked: every open thread counts, an outdated one or a human's included.
+
+Under every state, `status` (on the line after the state) and every `watch` exit that reports one
+(the line above the watermark, or above the rounds trailer in a round) count the open threads by
+the head they were written on (ludics-lite#587): `review threads: 1 open on head abc1234, 2 on
+earlier heads (1 of them on lines head abc1234 still has): <id> by <author> on <path>, …`. The
+earlier heads' threads are named because they are the ones a push walks past: answer them before
+pushing, not after the next round. A thread whose origin does not read counts as an earlier
+head's, and `UNREAD` is never "none open". It costs one thread walk per `status` and per `watch`
+exit, shared with the approval check; a polling round still reads no threads.
 
 `failed` is the reviewer telling you its own clone is behind: the ref it says does not exist is
 one the PR's `head.sha` and `git ls-remote` both serve, so nothing about your push is wrong and

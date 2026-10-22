@@ -1970,7 +1970,7 @@ two_head_fixture() { # <resolved: true|false>
   schedule reviews 1 "[$(review 4053090000 "$H1" 2026-09-01T00:01:00Z)]"
   schedule inline 1 "[$(inline_comment 4053098120 "$H1" "$H2" 'P2: a live defect'),$(inline_comment 4053098122 "$H1" "$H2" 'P2: another' b.sh 9)]"
   schedule reactions 1 "[$(head_thumb)]"
-  schedule threads 1 "[$(review_thread 4053098120 "$1"),$(review_thread 4053098122 "$1" b.sh)]"
+  schedule threads 1 "[$(review_thread 4053098120 "$1" a.sh 'codex[bot]' "$H1" "$H2"),$(review_thread 4053098122 "$1" b.sh 'codex[bot]' "$H1" "$H2")]"
 }
 
 test_an_approval_over_findings_scrolled_past_is_not_clean() {
@@ -1982,19 +1982,50 @@ test_an_approval_over_findings_scrolled_past_is_not_clean() {
   assert_contains "$WATCH_ERR" "a thread among them left unresolved still holds an approval back" \
     "and the record of them says an open one still counts"
   local last
-  last=$(grep -v '^watermark: ' <<<"$WATCH_OUT" | tail -1)
+  last=$(grep -v -e '^watermark: ' -e '^review threads: ' <<<"$WATCH_OUT" | tail -1)
   assert_contains "$last" "BUT 2 review thread(s) still UNRESOLVED — NOT a clean approval" \
     "the approval is reported over the open threads, not as a clean approval"
   assert_contains "$last" "4053098120 by codex[bot] on a.sh, 4053098122 by codex[bot] on b.sh" \
     "naming both findings the watch moved past"
+  assert_eq "$(tail -2 <<<"$WATCH_OUT" | head -1)" \
+    "review threads: 0 open on head ${H2:0:7}, 2 on earlier heads (2 of them on lines head ${H2:0:7} still has): 4053098120 by codex[bot] on a.sh, 4053098122 by codex[bot] on b.sh — answer and resolve these before pushing past them" \
+    "the exit counts them as the previous head's, still on this head's lines (ludics-lite#587)"
   assert_eq "$(grep -c -x graphql "$REQUEST_LOG" || true)" 1 \
-    "one thread read, on the round the approval ends"
+    "one thread read, on the round the approval ends, which the count shares"
   # The control: the same two heads with both threads answered and closed is a clean approval.
   two_head_fixture true
   run_watch 0,0,0
   assert_eq "$WATCH_RC" 0 "the approval ends the wait"
-  last=$(grep -v '^watermark: ' <<<"$WATCH_OUT" | tail -1)
+  last=$(grep -v -e '^watermark: ' -e '^review threads: ' <<<"$WATCH_OUT" | tail -1)
   assert_eq "$last" "approved (👍 from $REVIEWER)" "with every thread resolved it is clean"
+  assert_contains "$WATCH_OUT" "review threads: none open" "and the count says so"
+}
+
+# ludics-lite#587: every exit that reports a state counts the open threads written on the head and
+# on earlier heads, so an earlier head's finding is seen before the push past it (p1t13,
+# lukstafi/ocannl-staging#1063, read the first head's findings only after a second push). The walk
+# is made once, at the exit: a round that reports no approval reads no threads.
+test_the_exit_counts_threads_by_head() {
+  local threads
+  threads="[$(review_thread 4095735684 false a.sh 'codex[bot]' "$H2"),$(review_thread 4053098120 false b.sh 'codex[bot]' "$H1" "$H1")]"
+  local want="review threads: 1 open on head ${H2:0:7}, 1 on earlier heads: 4053098120 by codex[bot] on b.sh — answer and resolve these before pushing past them"
+  # A round about the head: the count sits above the rounds trailer, the watermark stays last.
+  reset_fixture
+  schedule inline 1 "[$(inline_comment 4095735684 "$H2" "$H2" 'a finding on this head')]"
+  schedule threads 1 "$threads"
+  run_watch
+  assert_eq "$WATCH_RC" 0 "a round about the head ends the wait"
+  assert_contains "$WATCH_OUT" "$want" "the round's exit counts the head's thread and the earlier head's apart"
+  assert_eq "$(tail -3 <<<"$WATCH_OUT" | head -1)" "$want" "above the rounds trailer"
+  assert_contains "$(tail -1 <<<"$WATCH_OUT")" "watermark: " "the watermark is still the last line"
+  assert_eq "$(grep -c -x graphql "$REQUEST_LOG" || true)" 1 "one walk, at the exit"
+  # A quiet window: two polling rounds and the final one read no threads; the exit reads them once.
+  reset_fixture
+  schedule threads 1 "$threads"
+  run_watch 0,0,0 1 2
+  assert_eq "$WATCH_RC" 1 "a quiet window"
+  assert_eq "$(tail -2 <<<"$WATCH_OUT" | head -1)" "$want" "its exit counts them too"
+  assert_eq "$(grep -c -x graphql "$REQUEST_LOG" || true)" 1 "the polling rounds walked nothing"
 }
 
 test_an_approval_landing_in_the_final_poll_is_checked_too() {
@@ -2696,6 +2727,7 @@ tests=(
   test_a_future_commit_date_does_not_blind_the_clock
   test_a_clockless_expected_state_says_so_rather_than_guessing
   test_an_approval_over_findings_scrolled_past_is_not_clean
+  test_the_exit_counts_threads_by_head
   test_an_approval_landing_in_the_final_poll_is_checked_too
   test_an_approval_beside_a_final_poll_round_is_checked_too
   test_a_live_round_that_reads_ended_twice_ends_on_the_nudge_advice
