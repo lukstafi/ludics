@@ -592,15 +592,14 @@ gone() {
 # one `ps` line, so one that exits in between is simply missing. It is a diagnostic only: the run
 # is refused either way, and nothing here decides anything.
 fifo_holders() {
-  local f="$SCRATCH/fifo" pids p line out=
+  local f="$SCRATCH/fifo" pids= p line out= none=
   if command -v lsof >/dev/null 2>&1; then
     pids=$(lsof -w -n -P -a -u "$(id -u)" -F pn 2>/dev/null \
       | awk -v f="$f" '/^p/ { p = substr($0, 2) } /^n/ && substr($0, 2) == f { print p }' | sort -u)
   elif command -v fuser >/dev/null 2>&1; then
     pids=$(fuser "$f" 2>/dev/null)
   else
-    printf '%s' "no lsof or fuser here to name the fifo's holders"
-    return 0
+    none="no lsof or fuser here to name them"
   fi
   for p in $pids; do
     p=${p%%[!0-9]*}
@@ -608,7 +607,7 @@ fifo_holders() {
     line=$(ps -o pid=,ppid=,pgid=,stat=,command= -p "$p" 2>/dev/null) || continue
     out="$out${out:+; }${line#"${line%%[! ]*}"}"
   done
-  printf '%s' "tee is [$(ps -o pid=,stat=,command= -p "$teepid" 2>/dev/null | sed 's/^ *//')]; the fifo is also open in [${out:-nothing else}]"
+  printf '%s' "tee is [$(ps -o pid=,stat=,command= -p "$teepid" 2>/dev/null | sed 's/^ *//')]; the fifo is also open in [${none:-${out:-nothing else}}]"
 }
 # stop_group: the suite runs as the leader of its own process group, so this reaches whatever it
 # left behind in that group as well -- a background child that outlived it, one that ignores

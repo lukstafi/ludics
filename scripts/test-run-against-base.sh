@@ -640,7 +640,7 @@ epid=$(cat "$TMP/escape.pid" 2>/dev/null)
 if command -v lsof >/dev/null 2>&1 || command -v fuser >/dev/null 2>&1; then
   want="the fifo is also open in [$epid "
 else
-  want="no lsof or fuser here"
+  want="the fifo is also open in [no lsof or fuser here"
 fi
 if [ "$rc" -eq 125 ] && [ -n "$epid" ] && grep -qF "capturing the suite's output failed (tee: timeout: tee is [" <<<"$out" \
   && grep -qF -- "$want" <<<"$out"; then
