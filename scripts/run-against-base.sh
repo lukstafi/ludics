@@ -335,8 +335,15 @@ if [ -n "$CMD_MODE" ]; then
     rel=$cmd_word
     RUN=("$cmd_word")
     # A script found on PATH gets the suite's interpreter check: an env shebang whose program is
-    # missing starts env fine, and its 127 would read as the base failing.
-    case "$found" in /*) [ ! -f "$found" ] || check_interp "$found" "$cmd_word" "" ;; esac
+    # missing starts env fine, and its 127 would read as the base failing. A program found through
+    # a relative PATH entry is refused: the command runs from the run tree's root, where that entry
+    # names something else, or nothing. A builtin's name runs as the program PATH holds for it.
+    if [ "$(type -t -- "$cmd_word")" = file ]; then
+      case "$found" in
+      /*) [ ! -f "$found" ] || check_interp "$found" "$cmd_word" "" ;;
+      *) die "--command: $(printf '%q' "$cmd_word") is found through a relative PATH entry ($(printf '%q' "$found")), which names something else from the run tree's root; name the program by a path" ;;
+      esac
+    fi
     ;;
   esac
 else
@@ -753,9 +760,10 @@ set -m
 # so it must not read as the suite's 126/127 failure on the base; the marker tells the two apart.
 # A top-level `bash -c` and not a `( ... )` subshell, because bash 3.2 exits a subshell on a
 # failed exec whatever execfail says. Its $0 is the marker path; the exec keeps the pid, so the
-# suite is still the group leader.
+# suite is still the group leader. The `--` keeps a command-mode program named with a leading
+# dash from being read as exec's own option.
 # shellcheck disable=SC2016 # expanded by the inner bash
-bash -c 'cd "$1" && shift && shopt -s execfail && exec "$@"
+bash -c 'cd "$1" && shift && shopt -s execfail && exec -- "$@"
   : >"$0"
   exit 125' "$SCRATCH/execfail" "$WT" "${RUN[@]}" "$@" >"$SCRATCH/fifo" 2>&1 </dev/null &
 child=$!

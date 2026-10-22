@@ -1102,6 +1102,24 @@ if [ "$rc" -eq 125 ] && grep -qF 'rab-envmiss-cmd needs run-against-base-no-such
 else
   ko "--command PATH script, missing interpreter: rc=$rc -- $out"
 fi
+# ...and one found through a relative PATH entry, which names something else from the run tree.
+out=$(cd "$R/scripts" && PATH="../../interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-envmiss-cmd 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'is found through a relative PATH entry' <<<"$out"; then
+  ok "--command refuses a program found through a relative PATH entry with 125"
+else
+  ko "--command relative PATH entry: rc=$rc -- $out"
+fi
+# A program whose name starts with a dash is the program, never an option of the exec.
+printf '#!/bin/sh\necho "DASH RAN $*"\n' >"$TMP/interp-bin/-rab-dash"
+chmod +x "$TMP/interp-bin/-rab-dash"
+out=$(cd "$R/scripts" && PATH="$TMP/interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- -rab-dash one 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && grep -qxF 'DASH RAN one' <<<"$out"; then
+  ok "--command runs a program named with a leading dash as the program"
+else
+  ko "--command dash-named program: rc=$rc -- $out"
+fi
 SECONDS=0
 run_rab --command --timeout 2 -- sleep 30
 if [ "$rc" -eq 124 ] && [ "$SECONDS" -lt 25 ] && grep -qF 'timed out after 2s' <<<"$out"; then
