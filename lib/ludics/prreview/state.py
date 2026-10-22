@@ -827,8 +827,9 @@ def stall_nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
     Boundary, fail-closed: CLEAR only when every read below answered and none of these is there --
     a 👍 from the reviewer on the PR, whatever head it is for (a request clears it); a no-findings
     verdict comment from the reviewer stamped with the head, or carrying no stamp to say which
-    head it is for; a Code Review row of the newest summary that names the head as Completed, or
-    whose stamp does not read; and a '@codex review' request by anyone at or after the head's
+    head it is for; the newest summary's NEWEST Code Review row naming the head as Completed (an
+    older Completed row under a newer Running one is a finished round, not the one that stalled),
+    or any of its rows whose stamp does not read; and a '@codex review' request by anyone at or after the head's
     arrival (``_arrival_floor``), a request whose time does not read included -- the once-per-head
     record across processes, as ``nudge_read`` and the failed run's (#453) keep it. Not read: the
     👀 and the Running row (they are the stall), findings reviews (no approval for a request to
@@ -857,17 +858,11 @@ def stall_nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
             sha = jstr(alt(stamps[-1]["s"] if stamps else None, ""))
             if not sha or startswith(head.sha, sha):
                 return NudgeBarred(f"{rev} posted a no-findings verdict for head {short} (or for no named head)")
-        newest_summary = _newest_summary(comments, rev)
-        lines = [] if newest_summary is None else body_of(newest_summary).split("\n")
-        for line in lines:
-            if not _CODE_REVIEW_ROW.search(line):
-                continue
-            stamp = capture_first(line, _SUMMARY_ROW_STAMP)
-            if stamp is None:
-                return NudgeBarred(f"a {rev} Code Review row could not be read")
-            done = capture_first(line, _SUMMARY_COMPLETED_ROW)
-            if done is not None and head.sha.startswith(jstr(done["sha"])):
-                return NudgeBarred(f"{rev}'s summary marks head {short}'s Code Review Completed")
+        if any(r is None for r in _stamp_rows(body_of(_newest_summary(comments, rev)))):
+            return NudgeBarred(f"a {rev} Code Review row could not be read")
+        done_kind, _done_at, done_sha = _done_row(comments, rev)
+        if done_kind == "completed" and done_sha and head.sha.startswith(done_sha):
+            return NudgeBarred(f"{rev}'s summary marks head {short}'s Code Review Completed")
         asked = _requests(comments, rev)
     except JqError:
         return NudgeBarred("the reviewer's verdicts for the head did not parse")

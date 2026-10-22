@@ -787,6 +787,12 @@ class StallNudgeRead(unittest.TestCase):
                 read = self.barred(gh)
                 self.assertIn(why, read.why)
                 self.assertFalse(read.asked, "an approval is not a request")
+        rerun = running_summary(1, iso(5000))
+        rerun["body"] = str(rerun["body"]) + (
+            f"\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"{iso(7000)}\">x</relative-time>"
+            f" | `{HEAD[:7]}` | New commits |")
+        self.assertEqual(run_stall_nudge(feeds(comments=[rerun])), state.NudgeClear(HEAD),
+                         "an older Completed row under the newer Running one is a finished round (review of #770)")
         other = "Didn't find any major issues.\n\n**Reviewed commit:** `bbbbbbb`"
         self.assertEqual(run_stall_nudge(feeds(comments=[comment(5, iso(6000), other), self.hung])),
                          state.NudgeClear(HEAD), "a verdict for another head stands for nothing here")
