@@ -149,6 +149,39 @@ class Production(unittest.TestCase):
                 self.assertEqual(done.returncode, 2, "a bare number with no repo is refused")
                 self.assertEqual(self.calls(), [], "and nothing is read")
 
+    def test_a_checkout_is_checked_before_anything_is_read(self) -> None:
+        """``merge -C <dir>`` (ludics-lite#730): the merge build's clone, read first -- a directory
+        inside a git checkout with a remote naming the PR's repository, or exit 2 with nothing read."""
+        remote = os.path.join(self.dir, "remotes", "o", "r.git")
+        other = os.path.join(self.dir, "remotes", "o", "other.git")
+        for bare in (remote, other):
+            subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
+        clone = os.path.join(self.dir, "clone")
+        stranger = os.path.join(self.dir, "stranger")
+        subprocess.run(["git", "clone", "-q", remote, clone], check=True, capture_output=True)
+        subprocess.run(["git", "clone", "-q", other, stranger], check=True, capture_output=True)
+        plain = os.path.join(self.dir, "plain")
+        os.mkdir(plain)
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]):
+                for where, says in (
+                    (os.path.join(self.dir, "missing"), "is not a directory inside a git checkout"),
+                    (plain, "is not a directory inside a git checkout"),
+                    (stranger, "has no remote naming o/r"),
+                ):
+                    self.route(GREEN)
+                    done = self.run_cmd(entry, "merge", "o/r#7", "-C", where, "--wait=60")
+                    self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                    self.assertIn(says, done.stderr)
+                    self.assertEqual(self.calls(), [], "nothing was read")
+                self.route(GREEN)
+                done = self.run_cmd(entry, "merge", "o/r#7", "-C")
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("-C needs a directory", done.stderr)
+                done = self.run_cmd(entry, "merge", "o/r#7", "-C", os.path.join(clone, "."))
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertTrue(done.stdout.endswith("o/r#7 merged=true state=closed\n"), done.stdout)
+
     def test_an_empty_wait_is_no_wait(self) -> None:
         # The shell's `--wait=` set wait_for to '' and its arithmetic read that as 0.
         self.route(GREEN)
