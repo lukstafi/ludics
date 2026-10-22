@@ -3316,7 +3316,9 @@ git -C "$lsrc" checkout -q -b pinned claude/topic && mkdir -p "$lsrc/.github" &&
   printf '# the backend pins\n\npin-flag --expect-backend\npin-env LEG_BACKEND\n' > "$lsrc/.github/fleet-leg" &&
   git -C "$lsrc" add .github && git -C "$lsrc" commit -q -m pins && lpin=$(git -C "$lsrc" rev-parse HEAD) &&
   git -C "$lsrc" checkout -q -b badpin claude/topic && mkdir -p "$lsrc/.github" && printf 'pin-flagg --expect-backend\n' > "$lsrc/.github/fleet-leg" &&
-  git -C "$lsrc" add .github && git -C "$lsrc" commit -q -m badpin && git -C "$lsrc" push -q "$lremote" pinned badpin &&
+  git -C "$lsrc" add .github && git -C "$lsrc" commit -q -m badpin &&
+  git -C "$lsrc" checkout -q -b nulpin claude/topic && mkdir -p "$lsrc/.github" && printf '\000\n' > "$lsrc/.github/fleet-leg" &&
+  git -C "$lsrc" add .github && git -C "$lsrc" commit -q -m nulpin && git -C "$lsrc" push -q "$lremote" pinned badpin nulpin &&
   git -C "$lsrc" checkout -q main || ko "could not build the pin fixture (setup)"
 n=$(marks); was=$(git -C "$lwt" rev-parse HEAD)
 expect "a GPU leg whose runner pins no backend is refused, naming the pins the repository asks for" 1 \
@@ -3331,6 +3333,8 @@ expect "a leg pinned by the runner's flag runs" 0 "runner argv: \\[--expect-back
 expect "...or by its env assignment" 0 "execution-leg: exit: 0" -- leg --request leg-a --rev "$lpin" --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh
 expect "a .github/fleet-leg line the leg cannot read refuses even a --cpu leg" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one this leg reads (pin-flagg --expect-backend)" -- \
   leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
+expect "...and so does one holding a NUL byte, which a shell variable would drop" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg at [0-9a-f]* holds NUL bytes" -- \
+  leg --request leg-a --rev nulpin --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 # A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
 # control run's, which a runner prints last otherwise.
 lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") || ko "could not allocate a bg-run directory (setup)"

@@ -119,7 +119,7 @@ expanded, so another spelling of the same directory is refused, naming the recor
 THE BACKEND PIN (ludics-lite#766). Four legs meant for CUDA or HIP ran with no backend selected,
 resolved to the CPU backend, and reported green. The backend's names are the project's, so the
 project states them: ``.github/fleet-leg``, read on the box from the checkout's object store AT THE
-COMMIT under test (``git show <sha>:.github/fleet-leg``), before the worktree is touched. Its
+COMMIT under test (``git cat-file blob <sha>:.github/fleet-leg``; one holding a NUL byte is refused), before the worktree is touched. Its
 grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
   - ``pin-flag <option>``: the runner's argv holds ``<option> <value>`` or ``<option>=<value>``, the
     value nonempty, among its words after the first and before its first ``--`` (what follows a
@@ -349,7 +349,10 @@ fi
   refuse "$rev is $sha, but request $request was assigned $want: run --rev $want"
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the worktree moves.
 if [ "$(git -C "$co" cat-file -t "$sha:.github/fleet-leg" 2>/dev/null)" = blob ]; then
-  pins=$(git -C "$co" show "$sha:.github/fleet-leg") || refuse "cannot read .github/fleet-leg at $sha in $co (above)"
+  pins=$(git -C "$co" cat-file blob "$sha:.github/fleet-leg") || refuse "cannot read .github/fleet-leg at $sha in $co (above)"
+  # A shell variable drops NUL bytes, which would make a binary file read as one with no pins.
+  [ "$(git -C "$co" cat-file blob "$sha:.github/fleet-leg" | tr -d '\000' | wc -c)" -eq "$(git -C "$co" cat-file -s "$sha:.github/fleet-leg")" ] ||
+    refuse ".github/fleet-leg at $sha holds NUL bytes, which this leg does not read; nothing ran"
   case " ${nest[*]} " in *" --cpu "*) gpu=0 ;; *) gpu=1 ;; esac
   why=$(backend_pin "$pins" "$gpu" "$@") || refuse "$why (.github/fleet-leg at $sha); nothing ran"
 fi
@@ -865,12 +868,16 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
             out.write(line)
 
     # While the far side is being spawned a signal is only noted, and raised once ``child`` holds
-    # it: raised inside Popen it would leave a started child no stop can reach.
-    spawning: list[int] = []
+    # it: raised inside Popen it would leave a started child no stop can reach. ``noted`` is never
+    # cleared, and ``spawning`` turns off in one assignment, so a signal is either noted and raised
+    # below or raised by the handler itself.
+    spawning = False
+    noted = 0
 
     def stopped(signum: int, frame: FrameType | None) -> None:
+        nonlocal noted
         if spawning:
-            spawning.append(signum)
+            noted = noted or signum
             return
         raise LegStopped(signum)
 
@@ -909,17 +916,16 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
         if stop is not None and threading.current_thread() is threading.main_thread():
             for sig in STOP_SIGNALS:
                 previous[sig] = signal.signal(sig, stopped)
-        spawning.append(0)
+        spawning = True
         try:
             child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         except OSError as exc:
             sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
             return 127
         finally:
-            noted = spawning[1:]
-            spawning.clear()
+            spawning = False
         if noted:
-            raise LegStopped(noted[0])
+            raise LegStopped(noted)
         assert child.stdin is not None and child.stdout is not None
         stdin = child.stdin
 
