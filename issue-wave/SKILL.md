@@ -1072,9 +1072,10 @@ batches on its agent host, and one on its GPU home box (executions.md, *The GPU 
 taken at launch and concluded at hand-back, with `execution slot` around each batch
 bounding the box's load; an integration-loop run is `execution tip-run`, concluded by its
 `--wait <id>` (*Supervise*). A measurement on a box where those are outstanding opens with
-`execution window <box> <reserve.json>` in place of `run`, which suspends them until it concludes
-(executions.md, *The measurement window*, which also says how to batch a box's pending
-measurements). `load` is an observation, not ownership, and neither it nor these
+`execution window --deadline <seconds> <box> <reserve.json>` in place of `run`, which suspends
+them until it concludes (executions.md, *The measurement window*, which also says how to batch a
+box's pending measurements); the deadline is the window's expected end, and without it the
+briefs' waiters give up after an hour. `load` is an observation, not ownership, and neither it nor these
 cooperative reservations stops unrelated processes from using a machine; OCANNL's daily sweep
 defers to an outstanding `measurement` reservation, and to nothing else, while a `measurement`
 refuses a box a sweep lane holds and `wake-lab.sh`'s destroyers refuse a measured box

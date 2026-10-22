@@ -15,8 +15,9 @@ GPU home box's where the coordinator took one), the worker messages the
 coordinator with revision, execution host, workload kind, the bounded command, checkout and
 intended log path, then waits for dispatch. The coordinator completes the reservation (the
 worker's checkout as the payload's `checkout`), runs
-`fleet-worker.sh execution run <reserve.json>` (`execution window <box> <reserve.json>` for a
-measurement on a box where workers hold standing reservations, [executions.md](executions.md#exclusivity-and-the-run-time-slots)),
+`fleet-worker.sh execution run <reserve.json>` (`execution window --deadline <seconds> <box>
+<reserve.json>` for a measurement on a box where workers hold standing reservations, its
+deadline as [executions.md](executions.md#exclusivity-and-the-run-time-slots) says),
 and answers the same agent with the
 assignment; the worker runs only that, blocks on it to completion, and reports the run
 directory, observed SHA and exit in its reply, which `execution conclude --from-run <run>
