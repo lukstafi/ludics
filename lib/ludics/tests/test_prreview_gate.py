@@ -21,6 +21,7 @@ from ludics.prreview import clock, closekw, shtext, workflow_yaml
 from ludics.prreview.core import Config, GhSession, Json
 from ludics.prreview.drift import compare_file_set, compare_hunks
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
+from ludics.prreview.budget import Budget
 from ludics.prreview.clock import FuncClock
 from ludics.prreview.gate import Gate, advisory_parse, load_gate_config, running_list
 
@@ -345,6 +346,133 @@ class GateLoop(unittest.TestCase):
         gate = make_gate(gh, FakeClock())
         self.assertEqual(gate.check("7", 600, waive=True), 1)
         self.assertEqual((gate.verdict, gate.waived), ("red", {"check:1/ubuntu"}))
+
+
+T0 = 1767225600
+
+
+@dataclass
+class TimedGh(FakeGh):
+    """A FakeGh whose check-runs answer is the test clock's: ``checks(t)`` gives the projected
+    rows at ``t`` seconds after T0, and every read time is kept."""
+
+    clock: FakeClock = field(default_factory=FakeClock)
+    checks: object = None
+    reads: list[int] = field(default_factory=lambda: list[int]())
+
+    def __call__(self, name: str, args: Sequence[str]) -> proc.Completed:
+        joined = " ".join(args)
+        if "check-runs" in joined:
+            self.calls.append(list(args))
+            at = int(self.clock.t) - T0
+            self.reads.append(at)
+            assert callable(self.checks)
+            rows = str(self.checks(at))
+            return proc.Completed(0, rows + "\n" if rows else "", "")
+        if "actions/runs?head_sha=" in joined:
+            # The run is in flight while a selected-or-not check row of it is: its own state.
+            rows = str(self.checks(int(self.clock.t) - T0)) if callable(self.checks) else ""
+            state = "in_progress\tpending" if "\tpending\t" in rows else "completed\tsuccess"
+            return proc.Completed(0, f"2026-01-01T00:00:00Z\t100\t1\tpush\tci\t{state}\t1\n", "")
+        return super().__call__(name, args)
+
+
+class RunningPause(unittest.TestCase):
+    """ludics-lite#740: while every pending check has a runner, a wait reads its completion within
+    2 x SHIP_PR_CHECKS_INTERVAL; any check without one keeps #543's back-off to the build cap. On
+    the test clock, with a real (directory-less) Budget, so the build cap is the one in force."""
+
+    def setUp(self) -> None:
+        self.out = io.StringIO()
+        stack = contextlib.ExitStack()
+        stack.enter_context(contextlib.redirect_stdout(self.out))
+        stack.enter_context(contextlib.redirect_stderr(self.out))
+        self.addCleanup(stack.close)
+
+    def wait(self, checks: object, select: str = "", build_cap: int = 600, wait_for: int = 1800,
+             jobs: str = "", **env: str) -> tuple[int, Gate, FakeClock, TimedGh]:
+        clk = FakeClock()
+        gh = TimedGh(clock=clk, checks=checks)
+        gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+        gh.on("pulls/7", out="h1\tb1\ttopic")
+        gh.on("actions/runs/100/jobs", out=jobs)
+        config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=1, api_backoff=0)
+        fclock = FuncClock(time=clk.now, sleep=clk.sleep)
+        session = GhSession(config, run=gh, sleep=lambda _s: None, budget=Budget("", fclock, build_cap=build_cap))
+        gate = Gate(session, "o/r", load_gate_config({"SHIP_PR_CHECKS_INTERVAL": "60", **env}), fclock)
+        gate.select = select
+        return gate.check("7", wait_for), gate, clk, gh
+
+    def test_a_running_check_is_read_within_two_intervals_of_its_completion(self) -> None:
+        def checks(at: int) -> str:
+            return "build\tpending\tu\t1\tin_progress" if at < 421 else "build\tsuccess\tu\t1\tcompleted"
+        rc, gate, clk, gh = self.wait(checks)
+        self.assertEqual((rc, gate.verdict), (0, "green"))
+        self.assertEqual(clk.sleeps, [60, 120, 120, 120, 120], "the pause stops doubling at twice the interval")
+        self.assertEqual(gh.reads[-1], 540, "the completion at 421 is read 119 s later, not at 900")
+        self.assertLessEqual(gh.reads[-1] - 421, 2 * 60)
+
+    def test_a_queued_check_still_backs_off_to_the_build_cap(self) -> None:
+        for status in ("queued", "waiting", "-", ""):
+            def checks(at: int, status: str = status) -> str:
+                row = "build\tpending\tu\t1" + (f"\t{status}" if status else "")
+                return row if at < 1500 else "build\tsuccess\tu\t1\tcompleted"
+            with self.subTest(status=status or "no column"):
+                rc, _gate, clk, _gh = self.wait(checks)
+                self.assertEqual(rc, 0)
+                self.assertEqual(clk.sleeps, [60, 120, 240, 480, 600], "#543's queue keeps its back-off")
+
+    def test_one_queued_check_beside_running_ones_keeps_the_back_off(self) -> None:
+        def checks(at: int) -> str:
+            if at >= 1500:
+                return "linux\tsuccess\tu\t1\tcompleted\nmacos\tsuccess\tm\t1\tcompleted"
+            return "linux\tpending\tu\t1\tin_progress\nmacos\tpending\tm\t1\tqueued"
+        rc, _gate, clk, _gh = self.wait(checks)
+        self.assertEqual((rc, clk.sleeps), (0, [60, 120, 240, 480, 600]))
+
+    def test_a_queue_that_gets_a_runner_is_read_at_the_lower_cap_from_then_on(self) -> None:
+        def checks(at: int) -> str:
+            if at < 500:
+                return "build\tpending\tu\t1\tqueued"
+            return "build\tpending\tu\t1\tin_progress" if at < 1000 else "build\tsuccess\tu\t1\tcompleted"
+        rc, _gate, clk, gh = self.wait(checks)
+        self.assertEqual(rc, 0)
+        self.assertEqual(clk.sleeps[:4], [60, 120, 240, 480], "queued: the back-off")
+        self.assertTrue(all(s <= 120 for s in clk.sleeps[5:]), clk.sleeps)
+        self.assertLessEqual(gh.reads[-1] - 1000, 2 * 60, gh.reads)
+
+    def test_an_advisory_or_unselected_queued_check_does_not_hold_the_cadence(self) -> None:
+        def checks(at: int) -> str:
+            build = "build\tpending\tu\t1\tin_progress" if at < 421 else "build\tsuccess\tu\t1\tcompleted"
+            return build + "\nslow\tpending\tv\t1\tqueued"
+        # The advisory job is the run's last one in flight, as the run's jobs show it once build ends.
+        jobs = ("build\tsuccess\t2026-01-01T00:00:00Z\t2026-01-01T00:00:00Z\n"
+                "slow\tpending\t2026-01-01T00:00:00Z\t-")
+        for select, env in (("", {"SHIP_PR_ADVISORY_CHECKS": "^slow$"}), ("^build$", {})):
+            with self.subTest(select=select, env=env):
+                rc, _gate, clk, gh = self.wait(checks, select=select, jobs=jobs, **env)
+                self.assertEqual(rc, 0)
+                self.assertEqual((clk.sleeps, gh.reads[-1]), ([60, 120, 120, 120, 120], 540))
+
+    def test_a_build_cap_below_twice_the_interval_still_bounds_it(self) -> None:
+        def checks(at: int) -> str:
+            return "build\tpending\tu\t1\tin_progress" if at < 421 else "build\tsuccess\tu\t1\tcompleted"
+        rc, _gate, clk, _gh = self.wait(checks, build_cap=90)
+        self.assertEqual(rc, 0)
+        self.assertEqual(set(clk.sleeps[1:]), {90})
+
+    def test_the_last_pause_is_still_clipped_at_the_deadline(self) -> None:
+        rc, _gate, clk, _gh = self.wait(lambda _at: "build\tpending\tu\t1\tin_progress", wait_for=250)
+        self.assertEqual((rc, clk.sleeps), (4, [60, 120, 70]))
+
+    def test_a_waived_row_keeps_its_status_and_its_key(self) -> None:
+        gate = make_gate(FakeGh(), FakeClock())
+        gate.waive_mode = "record"
+        rows = gate.apply_waiver(["red\tubuntu\tfailure\tu\t1\tcompleted", "pending\tmacos\tpending\tm\t1\tin_progress"])
+        self.assertEqual(gate.waived, {"check:1/ubuntu"})
+        self.assertEqual(rows, ["waived\tubuntu\tfailure\tu\t1\tcompleted", "pending\tmacos\tpending\tm\t1\tin_progress"])
+        gate.summarize(rows)
+        self.assertEqual((gate.verdict, gate.check_pending, gate.check_queued), ("pending", 1, 0))
 
 
 class Selection(unittest.TestCase):
