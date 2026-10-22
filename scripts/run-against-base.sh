@@ -34,7 +34,11 @@
 # --also. The options follow `--command`, and a `--` is required to end them: every word after it
 # is the command's argv, verbatim (an option name or another `--` included); any other word
 # before it is refused. The program is one of two forms, and nothing else is accepted:
-#   - a word with no `/`: a program on PATH (`sh`, `dune`), which must be found here;
+#   - a word with no `/`: a program on PATH (`sh`, `dune`), which must be found here as a file
+#     (`type -P`, the search the exec makes), through an absolute PATH entry, and outside this
+#     checkout -- one inside it is the live working tree's copy, so name it by its path instead.
+#     That rule is the named program's: the interpreter an env shebang names is the environment's
+#     and may live in the checkout (a project's virtualenv);
 #   - a word with a `/`: a file of this checkout, named relative to the cwd or absolute and refused
 #     the ways a suite path is (outside the checkout, a symlink, inside .git or a nested
 #     repository). It runs as the RUN TREE's copy at that path -- the base's, not the working
@@ -306,13 +310,17 @@ check_interp() {
   # ours to guess, so that one is left to the exec.
   # The hit must be absolute: the lookup runs from the caller's cwd and the run from the root of
   # the run's tree, so a relative PATH entry (the caller's or the shebang's, an empty one
-  # included) or a relative program path names something else there, or nothing. A builtin's name
-  # comes back bare, and env runs the program PATH holds for it.
+  # included) or a relative program path names something else there, or nothing. The search is
+  # `type -P`, the disk search env makes: a builtin's or function's name is no program to env.
+  # The interpreter is the environment's, not the code under test, so one on PATH inside this
+  # checkout (a project's virtualenv, a local switch) is accepted: the live-checkout refusal is
+  # the named program's (command mode, below), not its interpreter's.
   local hit=
   if [ -n "$interp" ] && [ -z "${sb_clear-}${sb_path+set}" ]; then
-    hit=$(command -v "$interp" 2>/dev/null) || die "$name needs $interp, which is not on PATH here; it would never run"
+    hit=$(type -P -- "$interp" 2>/dev/null) && [ -n "$hit" ] \
+      || die "$name needs $interp, which is not on PATH here; it would never run"
   elif [ -n "$interp" ] && [ -n "${sb_path+set}" ]; then
-    hit=$(PATH=$sb_path command -v "$interp" 2>/dev/null) \
+    hit=$(PATH=$sb_path type -P -- "$interp" 2>/dev/null) && [ -n "$hit" ] \
       || die "$name needs $interp, which is not on the PATH its shebang sets ($sb_path); it would never run"
   fi
   case "$hit" in
@@ -473,6 +481,18 @@ while [ "$i" -lt "${#REV_ARGS[@]}" ]; do
   # submodule entry is not something `git apply` writes into a checkout the way it was.
   printf '%s\n' "$raw" | awk '$1 !~ /^:(000000|100644|100755)$/ || $2 !~ /^(000000|100644|100755)$/ { bad = 1 } END { exit bad }' \
     || die "--revert: $(printf '%q' "$r") changes a symlink or a submodule under $(printf '%q' "$rp"); only regular files are reverted"
+  # A later commit may have made a directory above a reverted file a submodule: the worktree holds
+  # it as an empty directory, and the reverse patch would write the old file into it -- a tree
+  # that is neither the change nor its undoing. Each file's ancestors are read in the run's tree.
+  while IFS= read -r -d '' f; do
+    anc=$f
+    while case "$anc" in */*) true ;; *) false ;; esac do
+      anc=${anc%/*}
+      case "$(GIT_LITERAL_PATHSPECS=1 git -C "$TOP" ls-tree "$sha" -- "$anc" 2>/dev/null)" in
+      160000\ *) die "--revert: $(printf '%q' "$f") is below $(printf '%q' "$anc"), a submodule in $base; the revert would write into it" ;;
+      esac
+    done
+  done < <(revert_diff "$p" "$c" "$rp" --name-only -z)
   REV_SHA+=("$c")
   REV_PARENT+=("$p")
   i=$((i + 1))

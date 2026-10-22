@@ -1150,6 +1150,16 @@ if [ "$rc" -eq 125 ] && grep -qF 'test needs run-against-base-no-such-interprete
 else
   ko "--command builtin-named PATH script: rc=$rc -- $out"
 fi
+# ...and an env interpreter that names only a builtin is no program to env: 125, not env's 127.
+printf '#!/usr/bin/env source\nexit 0\n' >"$TMP/builtin-bin/rab-source-cmd"
+chmod +x "$TMP/builtin-bin/rab-source-cmd"
+out=$(cd "$R/scripts" && PATH="$TMP/builtin-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-source-cmd 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'rab-source-cmd needs source, which is not on PATH here' <<<"$out"; then
+  ok "--command refuses a script whose env interpreter is only a builtin's name with 125"
+else
+  ko "--command builtin-named interpreter: rc=$rc -- $out"
+fi
 # A program whose name starts with a dash is the program, never an option of the exec.
 printf '#!/bin/sh\necho "DASH RAN $*"\n' >"$TMP/interp-bin/-rab-dash"
 chmod +x "$TMP/interp-bin/-rab-dash"
@@ -1260,6 +1270,17 @@ ln -s lib.sh "$V/scripts/ln"
 g -C "$V" add -A
 g -C "$V" commit -qm link
 REV_LINK=$(git -C "$V" rev-parse HEAD)
+# A file one commit deletes, in a directory a later commit makes a submodule.
+g -C "$V" checkout -q -b subm "$REV_C3"
+mkdir -p "$V/sub"
+printf '%s\n' old >"$V/sub/file"
+g -C "$V" add -A
+g -C "$V" commit -qm D1
+g -C "$V" rm -q sub/file
+g -C "$V" commit -qm D2
+REV_D2=$(git -C "$V" rev-parse HEAD)
+g -C "$V" update-index --add --cacheinfo "160000,$REV_C3,sub"
+g -C "$V" commit -qm D3
 g -C "$V" checkout -q main
 # The live tree carries a staged and an unstaged edit, which the snapshot holds and no run touches
 # (in a file of their own: a reverse patch's context must still match the files it reverts).
@@ -1354,6 +1375,7 @@ v_refusal "a root commit" 'is a root commit' --revert "$REV_B0" lib.sh
 v_refusal "a commit outside the run's history" 'is not in the history of the working tree' --revert "$REV_SIDE" .
 v_refusal "a path the commit does not change" 'changes nothing under test-v.sh' --revert "$REV_C1" test-v.sh
 v_refusal "a symlink change" 'changes a symlink or a submodule' --base withlink --revert "$REV_LINK" .
+v_refusal "a file below a directory a later commit made a submodule" 'is below sub, a submodule in subm' --base subm --revert "$REV_D2" ../sub/file
 v_refusal "a pathspec pattern (paths are literal)" 'changes nothing under' --revert "$REV_C1" '*.sh'
 v_refusal "a --revert with no path" '--revert needs a commit and a path' --revert "$REV_C1"
 v_clean "after --revert cases"
