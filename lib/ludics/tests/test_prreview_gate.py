@@ -13,7 +13,7 @@ import os
 import subprocess
 import unittest
 from unittest import mock
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from ludics import proc
@@ -357,7 +357,7 @@ class TimedGh(FakeGh):
     rows at ``t`` seconds after T0, and every read time is kept."""
 
     clock: FakeClock = field(default_factory=FakeClock)
-    checks: object = None
+    checks: Callable[[int], str] = field(default=lambda _at: "")
     reads: list[int] = field(default_factory=lambda: list[int]())
 
     def __call__(self, name: str, args: Sequence[str]) -> proc.Completed:
@@ -366,12 +366,11 @@ class TimedGh(FakeGh):
             self.calls.append(list(args))
             at = int(self.clock.t) - T0
             self.reads.append(at)
-            assert callable(self.checks)
-            rows = str(self.checks(at))
+            rows = self.checks(at)
             return proc.Completed(0, rows + "\n" if rows else "", "")
         if "actions/runs?head_sha=" in joined:
             # The run is in flight while a selected-or-not check row of it is: its own state.
-            rows = str(self.checks(int(self.clock.t) - T0)) if callable(self.checks) else ""
+            rows = self.checks(int(self.clock.t) - T0)
             state = "in_progress\tpending" if "\tpending\t" in rows else "completed\tsuccess"
             return proc.Completed(0, f"2026-01-01T00:00:00Z\t100\t1\tpush\tci\t{state}\t1\n", "")
         return super().__call__(name, args)
@@ -389,8 +388,8 @@ class RunningPause(unittest.TestCase):
         stack.enter_context(contextlib.redirect_stderr(self.out))
         self.addCleanup(stack.close)
 
-    def wait(self, checks: object, select: str = "", build_cap: int = 600, wait_for: int = 1800,
-             jobs: str = "", **env: str) -> tuple[int, Gate, FakeClock, TimedGh]:
+    def wait(self, checks: Callable[[int], str], select: str = "", build_cap: int = 600, wait_for: int = 1800,
+             jobs: str = "", env: dict[str, str] | None = None) -> tuple[int, Gate, FakeClock, TimedGh]:
         clk = FakeClock()
         gh = TimedGh(clock=clk, checks=checks)
         gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
@@ -399,7 +398,7 @@ class RunningPause(unittest.TestCase):
         config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=1, api_backoff=0)
         fclock = FuncClock(time=clk.now, sleep=clk.sleep)
         session = GhSession(config, run=gh, sleep=lambda _s: None, budget=Budget("", fclock, build_cap=build_cap))
-        gate = Gate(session, "o/r", load_gate_config({"SHIP_PR_CHECKS_INTERVAL": "60", **env}), fclock)
+        gate = Gate(session, "o/r", load_gate_config({"SHIP_PR_CHECKS_INTERVAL": "60", **(env or {})}), fclock)
         gate.select = select
         return gate.check("7", wait_for), gate, clk, gh
 
@@ -448,9 +447,10 @@ class RunningPause(unittest.TestCase):
         # The advisory job is the run's last one in flight, as the run's jobs show it once build ends.
         jobs = ("build\tsuccess\t2026-01-01T00:00:00Z\t2026-01-01T00:00:00Z\n"
                 "slow\tpending\t2026-01-01T00:00:00Z\t-")
-        for select, env in (("", {"SHIP_PR_ADVISORY_CHECKS": "^slow$"}), ("^build$", {})):
+        cases: list[tuple[str, dict[str, str]]] = [("", {"SHIP_PR_ADVISORY_CHECKS": "^slow$"}), ("^build$", {})]
+        for select, env in cases:
             with self.subTest(select=select, env=env):
-                rc, _gate, clk, gh = self.wait(checks, select=select, jobs=jobs, **env)
+                rc, _gate, clk, gh = self.wait(checks, select=select, jobs=jobs, env=env)
                 self.assertEqual(rc, 0)
                 self.assertEqual((clk.sleeps, gh.reads[-1]), ([60, 120, 120, 120, 120], 540))
 
