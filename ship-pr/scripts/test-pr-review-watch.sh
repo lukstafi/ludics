@@ -2119,6 +2119,14 @@ test_a_stalled_round_is_nudged_once_and_watched() {
   run_watch 0,0,0 60 900
   assert_contains "$WATCH_OUT" "--- review id=501" "the push's own review ends the wait"
   assert_eq "$(nudges_posted)" 0 "with no nudge posted inside the pickup margin"
+  # A window shorter than the margin is held open to it, and the nudge goes out after it (review
+  # of #770, round 2: the window's end used to advise a hand nudge inside the margin instead).
+  hung_round_fixture
+  NUDGE_ANSWER=502
+  run_watch 0,0,0 60 120
+  assert_contains "$WATCH_ERR" "extending watch" "the window is held open through the margin"
+  assert_contains "$WATCH_OUT" "--- review id=502" "and ends on the round the nudge drew"
+  assert_eq "$(nudges_posted)" 1 "one nudge, after the margin"
 }
 
 # --no-nudge waits, bounded, where it used to exit at once (#760's decision): to the reviewer's
@@ -2145,6 +2153,20 @@ test_no_nudge_waits_out_a_stalled_round() {
   assert_contains "$WATCH_OUT" "--- review id=501 state=COMMENTED commit=${H2:0:7}" "the wait ends on it"
   assert_eq "$(poll_rounds)" 3 "on the poll that read it"
   assert_eq "$(nudges_posted)" 0 "and nothing was posted"
+  # The advice keeps the automatic write's own holds and gate (review of #770, round 2): inside
+  # the pickup margin it says to re-arm, and on a PR that is not open it names that first.
+  hung_round_fixture
+  WATCH_FLAG=--no-nudge
+  run_watch 0,0,0 60 120
+  assert_contains "$WATCH_OUT" "--no-nudge: not nudged yet — head ${H2:0:7} is new to this watch" \
+    "no hand nudge is advised inside the margin"
+  hung_round_fixture
+  WATCH_FLAG=--no-nudge
+  PR_STATE=closed
+  run_watch 0,0,0 60 900
+  assert_contains "$WATCH_OUT" "--no-nudge: not nudged — the PR reads closed" \
+    "nor on a PR the write gate would refuse"
+  assert_not_contains "$WATCH_OUT" "so post it once" "and the post is not advised"
 }
 
 # Never while an approval may stand, and once per head: a 👍 on the PR (a request clears it), a
@@ -2188,6 +2210,8 @@ test_a_stalled_round_with_something_standing_is_never_nudged() {
     request)
       assert_contains "$WATCH_OUT" "already stands on head ${H2:0:7}, so no second one" \
         "request: the once-per-head record, and the move after it"
+      assert_contains "$WATCH_ERR" "extending watch" \
+        "request: only after the request's own grace, which the window waits out (review of #770, round 2)"
       ;;
     esac
   done

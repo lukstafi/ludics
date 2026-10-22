@@ -69,6 +69,7 @@ from ludics.prreview.poll import poll
 from ludics.prreview.state import (
     NudgeBarred,
     NudgeClear,
+    NudgeRead,
     Rounds,
     State,
     approval_gate,
@@ -610,13 +611,35 @@ class Watch:
         _say(f"watermark: {self.mark}")
         return 0
 
-    def stall_nudge(self) -> str | None:
+    def stall_hold(self, read: NudgeRead) -> int | None:
+        """Until when a stalled round's nudge is held rather than posted or advised (review of
+        #770, round 2), as ``nudge_hold`` holds the ``expected`` one: while this watch has seen the
+        head for less than ``PICKUP`` (a push under an old head's hung 👀 reads stalled at once),
+        and while a request standing on the head is younger than its grace."""
+        head = self.polled.head
+        if not head:
+            return None
+        now = self.clock.now()
+        hold = self.first_seen.get(head, now) + min(PICKUP, self.cfg.grace)
+        if hold > now:
+            return hold
+        match read:
+            case NudgeBarred(asked=asked) if asked:
+                age = age_of(asked, self.clock.time())
+                if age is not None and age < self.cfg.grace:
+                    return now + self.cfg.grace - age
+                return None
+            case NudgeBarred() | NudgeClear():
+                return None
+            case _:
+                assert_never(read)
+
+    def stall_nudge(self, read: NudgeRead) -> str | None:
         """The automatic '@codex review' over a stalled round (ludics-lite#760): None when it was
         posted, else why not. Posted only when ``stall_nudge_read`` finds nothing standing for the
         head and the write gate reads the PR open, on that same head. It is sent once whatever its
         error (it may have landed): a post is recorded in ``own_nudges``, a failed one in
         ``stall_failed``, and a head in either is never attempted again."""
-        read = stall_nudge_read(self.ctx, self.pr)
         match read:
             case NudgeBarred(why=why):
                 return why
@@ -660,6 +683,14 @@ class Watch:
             )
         flag = "" if self.nudge else "--no-nudge: "
         read = stall_nudge_read(self.ctx, self.pr)
+        if self.stall_hold(read) is not None:
+            # Inside the pickup margin or a standing request's grace: what holds the automatic
+            # nudge holds the advice too (review of #770, round 2).
+            return (
+                f"{flag}not nudged yet — head {self.polled.head[:7]} is new to this watch, or a"
+                " request on it is still inside its grace, and the round it may draw has not had"
+                " its time: re-arm the watch before any nudge"
+            )
         match read:
             case NudgeBarred(why=why, asked=asked) if asked:
                 return f"{flag}not nudged — {why}, so no second one: {_NEW_HEAD}"
@@ -669,6 +700,15 @@ class Watch:
                     " --comments) before any move; never re-request while a 👍 may stand"
                 )
             case NudgeClear(head=head):
+                pr_state, now_head = self.write_gate()
+                if pr_state != "open" or now_head != head:
+                    # The automatic write's own gate, so the advice never asks for a post the
+                    # watch would have refused (review of #770, round 2).
+                    moved = "the head moved" if pr_state == "open" else f"the PR reads {pr_state or 'UNREAD'}"
+                    return (
+                        f"{flag}not nudged — {moved}, not an open PR on head {head[:7]}: deal with"
+                        " that first, then re-arm the watch"
+                    )
                 return (
                     f"{flag}the watch did not nudge the stalled round on head {head[:7]}; nothing"
                     " stands for it (no 👍, no verdict, no request since it arrived), so post it"
@@ -924,19 +964,25 @@ class Watch:
                     # a push under an old head's hung 👀 reads STALLED at once, before the
                     # reviewer's own review of the push has had time to start (#770's own head
                     # 1af99c3, 81 minutes "stalled" on the 👀 its predecessor's round left up).
-                    head = self.polled.head
-                    seen = self.clock.now() - self.first_seen.get(head, self.clock.now())
-                    if (
-                        self.nudge and own is None and self.polled.rc == 0 and head
-                        and seen >= min(PICKUP, cfg.grace) and self.stall_nudge() is None
-                    ):
-                        candidate_end = self.clock.now() + cfg.grace
-                        candidate_kind = "nudged"
-                        if extension_end is not None:
-                            extension_end = candidate_end
-                            extension_kind = "nudged"
-                        was = "nudged"
-                        quiet = 0
+                    # Held, the window stays open to the hold, as for the expected nudge.
+                    if self.nudge and own is None and self.polled.rc == 0 and self.polled.head:
+                        read = stall_nudge_read(ctx, pr)
+                        hold = self.stall_hold(read)
+                        if hold is not None:
+                            if candidate_end is None or candidate_end < hold:
+                                candidate_end = hold
+                                candidate_kind = "nudged"
+                            if extension_end is not None and extension_end < hold:
+                                extension_end = hold
+                                extension_kind = "nudged"
+                        elif self.stall_nudge(read) is None:
+                            candidate_end = self.clock.now() + cfg.grace
+                            candidate_kind = "nudged"
+                            if extension_end is not None:
+                                extension_end = candidate_end
+                                extension_kind = "nudged"
+                            was = "nudged"
+                            quiet = 0
                 case "failed":
                     detail = state.detail
                     fsha = _upto(detail, "|")
