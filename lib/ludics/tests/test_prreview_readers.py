@@ -742,6 +742,84 @@ class StaleEyesUnderARunningRow(unittest.TestCase):
         self.assertEqual((st.tok, st.detail), ("unknown", "the summary's Code Review rows did not parse"))
 
 
+def summary_rows(cid: int, at: str, *rows: tuple[str, str, str]) -> dict[str, Json]:
+    """A reviewer's summary comment written at ``at`` with one Code Review row per ``(status, at,
+    sha)``: ``Running`` or ``Completed``, the row's own stamp, the commit it names."""
+    shapes = {"Running": "🔄 **Running**", "Completed": "✅ **Completed**"}
+    lines = [
+        f"| 📝 **Code Review** | {shapes[st]} <relative-time datetime=\"{row_at[:-1]}.484070Z\">{row_at}"
+        f"</relative-time> | `{sha}` | New commits |"
+        for st, row_at, sha in rows
+    ]
+    return comment(cid, at, (
+        "<!-- codex-pull-request-review-summary -->\n"
+        "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n" + "\n".join(lines)))
+
+
+class OneSummaryReader(unittest.TestCase):
+    """ludics-lite#752: the 👍 path's ``_evidence`` took Running rows from EVERY summary, while #586's
+    arm read only the newest summary's newest row. Every arm now reads that one row
+    (``_head_running_row``), so a Running row the reviewer has since written past is no round in
+    flight on any path."""
+
+    plus = reaction("+1", iso(3000))
+    short = HEAD[:7]
+
+    def test_an_older_summarys_stale_running_row_does_not_outrank_the_thumbs_up(self) -> None:
+        stale = summary_rows(1, iso(600), ("Running", iso(600), self.short))
+        done = summary_rows(2, iso(300), ("Completed", iso(300), self.short))
+        for order in ([stale, done], [done, stale]):
+            st = run_state(feeds(reactions=[self.plus], comments=order))
+            self.assertEqual(st.line(), f"approved|-|clean|👍 from {REV}", "whatever the feed's order")
+        unread = running_summary(1, iso(600), stamp="just now")
+        st = run_state(feeds(reactions=[self.plus], comments=[unread, done]))
+        self.assertEqual(st.tok, "approved", "nor does an older summary's Running row the stamp cannot read")
+
+    def test_a_running_row_below_a_newer_row_is_a_finished_round(self) -> None:
+        both = summary_rows(1, iso(300), ("Running", iso(600), self.short), ("Completed", iso(300), self.short))
+        self.assertEqual(run_state(feeds(reactions=[self.plus], comments=[both])).tok, "approved")
+        # The order the rows sit in is not their time order: the stamps decide, fractions included.
+        flipped = summary_rows(1, iso(300), ("Completed", iso(300), self.short), ("Running", iso(600), self.short))
+        self.assertEqual(run_state(feeds(reactions=[self.plus], comments=[flipped])).tok, "approved")
+        newer_run = summary_rows(1, iso(300), ("Completed", iso(600), self.short), ("Running", iso(300), self.short))
+        self.assertEqual(run_state(feeds(reactions=[self.plus], comments=[newer_run])).tok, "reviewing",
+                         "control: the newest row Running on the head outranks an older 👍")
+
+    def test_the_newest_running_row_still_outranks_an_older_thumbs_up(self) -> None:
+        st = run_state(feeds(reactions=[self.plus], comments=[running_summary(1, iso(600))]))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        self.assertIn("Code Review Running for head aaaaaaa", st.detail)
+        self.assertLess(st.age or 0, 2400, "aged from the row")
+        st = run_state(feeds(reactions=[reaction("+1", iso(9000))], comments=[running_summary(1, iso(5000))]))
+        self.assertEqual(st.tok, "stalled", "and stalls by the row's age")
+        edited = running_summary(1, iso(600))
+        edited["updated_at"] = iso(10)
+        st = run_state(feeds(reactions=[self.plus], comments=[edited]))
+        self.assertEqual(st.tok, "reviewing", st.line())
+        self.assertGreater(st.age or 0, 500, "an edit selects the summary; the row dates the round")
+        other = running_summary(1, iso(600), row_sha="bbbbbbb")
+        self.assertNotIn(run_state(feeds(reactions=[self.plus], comments=[other])).tok, ("reviewing", "stalled"),
+                         "another head's Running row is no round of this head's")
+
+    def test_a_newest_running_row_with_no_timestamp_is_unknown_under_a_thumbs_up_too(self) -> None:
+        bad = running_summary(1, iso(600), stamp='<relative-time datetime="yesterday">x</relative-time>')
+        st = run_state(feeds(reactions=[self.plus], comments=[bad]))
+        self.assertEqual(st.tok, "unknown", st.line())
+        self.assertIn("matched the Running test", st.detail)
+
+    def test_the_nudge_reads_the_same_row(self) -> None:
+        stale = summary_rows(1, iso(600), ("Running", iso(600), self.short))
+        other = summary_rows(2, iso(300), ("Completed", iso(300), "bbbbbbb"))
+        self.assertEqual(run_nudge(feeds(comments=[stale, other])), state.NudgeClear(HEAD),
+                         "an older summary's Running row bars nothing")
+        mine = summary_rows(2, iso(300), ("Completed", iso(300), self.short))
+        self.assertIsInstance(run_nudge(feeds(comments=[stale, mine])), state.NudgeBarred,
+                              "the newest summary's row naming the head still bars it")
+        unread = running_summary(2, iso(300), stamp="just now")
+        self.assertIsInstance(run_nudge(feeds(comments=[stale, unread])), state.NudgeBarred,
+                              "and so does one of its rows that does not read")
+
+
 def run_stall_nudge(gh: FakeGh) -> state.NudgeRead:
     err = io.StringIO()
     with contextlib.redirect_stderr(err):
