@@ -159,10 +159,12 @@ runner moved out of its group (``setsid``) is not reached. The stop reads ``ps -
 import os
 import re
 import secrets
+import select
 import signal
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from types import FrameType
 from typing import Any
@@ -541,6 +543,7 @@ say "the leg (pid $pid) has ended"
 STOP_BOUND = "30"  # seconds the far stop waits for the far shell to end
 STOP_WAIT = 8.0  # seconds the leg waits for the far stop, under bg-run.sh stop's 10 s grace
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+ANNOUNCED = 1.0  # seconds a stop reads the far side's output for a pid line it has not yet consumed
 
 
 class LegStopped(Exception):
@@ -807,12 +810,18 @@ def end_far(box: str, far_pid: str | None, signum: int, stop: Callable[[str], tu
         cli.say(f"EXECUTION LEG STOP UNREACHABLE {box}: {argv[0]}: {exc.strerror}; the far side (pid {far_pid})"
                 f" may still run and hold its worktree's lock: {remedy}")
         return
-    assert proc.stdin is not None
-    try:
-        proc.stdin.write(script.encode("utf-8", "surrogateescape"))
-        proc.stdin.close()
-    except OSError:
-        pass
+    stop_in = proc.stdin
+    assert stop_in is not None
+
+    def feed() -> None:
+        # From a thread, so a stop ssh that is slow to read cannot hold this past STOP_WAIT.
+        try:
+            stop_in.write(script.encode("utf-8", "surrogateescape"))
+            stop_in.close()
+        except OSError:
+            pass
+
+    threading.Thread(target=feed, daemon=True).start()
     try:
         rc = proc.wait(timeout=STOP_WAIT)
     except subprocess.TimeoutExpired:
@@ -863,6 +872,31 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
     previous: dict[signal.Signals, Any] = {}
     child: "subprocess.Popen[bytes] | None" = None
     feeder: threading.Thread | None = None
+    pending = b""
+
+    def take(chunk: bytes) -> None:
+        nonlocal pending
+        pending += chunk
+        *lines, pending = pending.split(b"\n")
+        for line in lines:
+            line_out(line + b"\n")
+        if len(pending) > HELD_BACK:
+            out.write(pending[:-HELD_BACK])
+            pending = pending[-HELD_BACK:]
+        out.flush()
+
+    def announced(fd: int, within: float) -> None:
+        # The far side's pid line may already sit in the pipe, unread, when the signal lands: read
+        # what comes within ``within`` seconds, until it is seen or the far side's output ends.
+        until = time.monotonic() + within
+        while far_pid is None and (left := until - time.monotonic()) > 0:
+            if not select.select([fd], [], [], left)[0]:
+                return
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return
+            take(chunk)
+
     try:
         if stop is not None and threading.current_thread() is threading.main_thread():
             for sig in STOP_SIGNALS:
@@ -889,17 +923,9 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
         # Bounded reads, not readline: a runner's output with no newline in it (progress bars,
         # binary) passes through as it comes, and only a short tail of an unfinished line is held
         # back, enough for a sentinel at its end to be seen.
-        pending = b""
         fd = child.stdout.fileno()
         while chunk := os.read(fd, 65536):
-            pending += chunk
-            *lines, pending = pending.split(b"\n")
-            for line in lines:
-                line_out(line + b"\n")
-            if len(pending) > HELD_BACK:
-                out.write(pending[:-HELD_BACK])
-                pending = pending[-HELD_BACK:]
-            out.flush()
+            take(chunk)
         if pending:
             line_out(pending)
             out.flush()
@@ -913,10 +939,16 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
         except OSError:
             pass
         assert stop is not None
-        if far_pid is None and child is not None:
-            # No pid yet: on the caller's box this is the far shell before its first line, and over
-            # ssh the client; either way nothing is left that a stop could name.
-            child.kill()
+        if far_pid is None and child is not None and child.stdout is not None:
+            # The far shell's first line is its pid: read it if it is already written (up to
+            # ANNOUNCED seconds). With none, on the caller's box this is the far shell before its
+            # first line, which nothing else has started, and over ssh the client.
+            try:
+                announced(child.stdout.fileno(), ANNOUNCED)
+            except OSError:
+                pass
+            if far_pid is None:
+                child.kill()
         end_far(box, far_pid, why.signum, stop, local=local)
         if child is not None and child.stdout is not None:
             child.stdout.close()

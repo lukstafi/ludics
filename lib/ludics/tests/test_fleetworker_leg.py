@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -140,6 +141,25 @@ class Stop(unittest.TestCase):
             got, asked, said = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 2\n")
         self.assertEqual((got, asked), (signal.SIGTERM, []))
         self.assertIn("EXECUTION LEG STOPPED box: SIGTERM before the far side reported its pid", said)
+
+    def test_a_pid_line_still_in_the_pipe_is_read_before_the_stop(self) -> None:
+        # The far side has written its pid and gone on, but the leg has not read the line yet when
+        # the signal lands: the stop still names that pid, never kills the far shell alone.
+        real = threading.Thread
+        fired: list[bool] = []
+
+        class Thread(real):
+            def start(self) -> None:
+                super().start()
+                if not fired:
+                    fired.append(True)
+                    time.sleep(0.5)
+                    os.kill(os.getpid(), signal.SIGTERM)
+
+        with mock.patch.object(leg.threading, "Thread", Thread):
+            got, asked, said = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 2\n")
+        self.assertEqual((got, asked), (signal.SIGTERM, ["4242"]))
+        self.assertIn("ending the far side (pid 4242)", said)
 
     def far_stop(self, pid: int, token: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run([self.bash, "-s", str(pid), token, "10"], input="BOX=box\n" + leg.STOP,
