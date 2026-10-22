@@ -742,6 +742,74 @@ class StaleEyesUnderARunningRow(unittest.TestCase):
         self.assertEqual((st.tok, st.detail), ("unknown", "the summary's Code Review rows did not parse"))
 
 
+def run_stall_nudge(gh: FakeGh) -> state.NudgeRead:
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        return state.stall_nudge_read(ctx(gh), "7")
+
+
+class StallNudgeRead(unittest.TestCase):
+    """``stall_nudge_read``: what bars the watch's one request over a STALLED round
+    (ludics-lite#760). The stalled round's own Running row and 👀 bar nothing here, where
+    ``nudge_read`` would read the row as the reviewer's evidence for the head."""
+
+    hung = running_summary(1, iso(5000))
+
+    def barred(self, gh: FakeGh) -> state.NudgeBarred:
+        read = run_stall_nudge(gh)
+        self.assertIsInstance(read, state.NudgeBarred)
+        assert isinstance(read, state.NudgeBarred)
+        return read
+
+    def test_a_hung_round_with_nothing_standing_is_clear(self) -> None:
+        gh = feeds(reactions=[reaction("eyes", iso(9999))], comments=[self.hung],
+                   reviews=[review(5, HEAD, iso(9000))], head_at=iso(9500), created=iso(9500))
+        self.assertEqual(run_state(gh).tok, "stalled", "control: the state is the stall")
+        self.assertEqual(run_stall_nudge(gh), state.NudgeClear(HEAD),
+                         "a findings review of the head is no approval for a request to clear")
+        self.assertIsInstance(run_nudge(gh), state.NudgeBarred,
+                              "where the expected nudge's read takes the Running row as evidence")
+
+    def test_an_approval_that_may_stand_bars_it(self) -> None:
+        stamped = f"Didn't find any major issues.\n\n**Reviewed commit:** `{HEAD[:7]}`"
+        completed = running_summary(1, iso(6000))
+        completed["body"] = str(completed["body"]).replace("🔄 **Running**", "✅ **Completed**")
+        for name, gh, why in (
+            ("thumb", feeds(reactions=[reaction("+1", iso(9000)), reaction("eyes", iso(9999))],
+                            comments=[self.hung]), "a 👍 from"),
+            ("verdict", feeds(comments=[comment(5, iso(6000), stamped), self.hung]), "no-findings verdict"),
+            ("unstamped verdict", feeds(comments=[comment(5, iso(6000), "Didn't find any major issues."),
+                                                 self.hung]), "no-findings verdict"),
+            ("completed row", feeds(reactions=[reaction("eyes", iso(5000))], comments=[completed]),
+             "Code Review Completed"),
+        ):
+            with self.subTest(name):
+                read = self.barred(gh)
+                self.assertIn(why, read.why)
+                self.assertFalse(read.asked, "an approval is not a request")
+        other = "Didn't find any major issues.\n\n**Reviewed commit:** `bbbbbbb`"
+        self.assertEqual(run_stall_nudge(feeds(comments=[comment(5, iso(6000), other), self.hung])),
+                         state.NudgeClear(HEAD), "a verdict for another head stands for nothing here")
+
+    def test_a_request_since_the_head_arrived_is_the_once_per_head_record(self) -> None:
+        asked = comment(9, iso(4000), "@codex review", login="me")
+        read = self.barred(feeds(comments=[self.hung, asked], head_at=iso(6000), created=iso(9000)))
+        self.assertTrue(read.asked, read.why)
+        self.assertIn("already stands on head aaaaaaa", read.why)
+        self.assertEqual(run_stall_nudge(feeds(comments=[self.hung, asked], head_at=iso(3000), created=iso(9000))),
+                         state.NudgeClear(HEAD), "a request older than the head's commit was an earlier head's")
+
+    def test_a_read_that_did_not_answer_or_a_row_that_does_not_read_bars_it(self) -> None:
+        for endpoint in ("repos/o/r/issues/7/reactions?per_page=100", "repos/o/r/issues/7/comments?per_page=100",
+                         "repos/o/r/pulls/7"):
+            with self.subTest(endpoint):
+                gh = feeds(comments=[self.hung])
+                gh.down.add(endpoint)
+                self.assertIn("did not answer", self.barred(gh).why)
+        unread = running_summary(1, iso(5000), stamp="just now")
+        self.assertIn("could not be read", self.barred(feeds(comments=[unread])).why)
+
+
 class BrokenReads(unittest.TestCase):
     """A read of status_state that no feed can break on its own -- an earlier read of the same feed
     takes every shape it would -- still refuses rather than answers when it fails (ludics-lite#89):

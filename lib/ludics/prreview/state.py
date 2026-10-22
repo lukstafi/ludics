@@ -828,12 +828,12 @@ def stall_nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
     a 👍 from the reviewer on the PR, whatever head it is for (a request clears it); a no-findings
     verdict comment from the reviewer stamped with the head, or carrying no stamp to say which
     head it is for; a Code Review row of the newest summary that names the head as Completed, or
-    whose stamp does not read; the summary's state record of a completed round on the head with
-    no unresolved findings; and a '@codex review' request by anyone at or after the head's arrival
-    (``_arrival_floor``), a request whose time does not read included -- the once-per-head record
-    across processes, as ``nudge_read`` and the failed run's (#453) keep it. Not read: the 👀 and
-    the Running row (they are the stall), findings reviews (no approval for a request to clear),
-    and a request older than the head's arrival (an earlier head's)."""
+    whose stamp does not read; and a '@codex review' request by anyone at or after the head's
+    arrival (``_arrival_floor``), a request whose time does not read included -- the once-per-head
+    record across processes, as ``nudge_read`` and the failed run's (#453) keep it. Not read: the
+    👀 and the Running row (they are the stall), findings reviews (no approval for a request to
+    clear), the summary's state record (written with the Completed row read here), and a request
+    older than the head's arrival (an earlier head's)."""
     rev = ctx.reviewer
     try:
         reactions = feed(ctx, f"issues/{pr}/reactions?per_page=100")
@@ -868,9 +868,6 @@ def stall_nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
             done = capture_first(line, _SUMMARY_COMPLETED_ROW)
             if done is not None and head.sha.startswith(jstr(done["sha"])):
                 return NudgeBarred(f"{rev}'s summary marks head {short}'s Code Review Completed")
-        record = head_summary_state(comments, rev, head.sha)
-        if record is not None and record.status == "completed" and record.unresolved is False:
-            return NudgeBarred(f"{rev}'s summary records head {short}'s Code Review completed clean")
         asked = _requests(comments, rev)
     except JqError:
         return NudgeBarred("the reviewer's verdicts for the head did not parse")
