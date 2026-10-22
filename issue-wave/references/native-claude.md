@@ -140,8 +140,9 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    "subagent"`, agent host, repository, issue, purpose - the request supplies the rest, its
    `checkout` kept beside the request as the record's), runs
    `execution run <reserve.json>` - or, for a measurement on a box where workers hold standing
-   reservations, `execution window <box> <reserve.json>`, batching the box's pending
-   measurements as [executions.md](executions.md#exclusivity-and-the-run-time-slots) says - and
+   reservations, `execution window --deadline <seconds> <box> <reserve.json>`, batching the
+   box's pending measurements and setting the deadline as
+   [executions.md](executions.md#exclusivity-and-the-run-time-slots) says - and
    on exit 0 resumes the worker by its agent ID (the
    runtime's continue-an-agent form: SendMessage to the agent's name or ID, never a fresh
    Agent call) with one line, `EXECUTION_ASSIGNED <request_id>`, followed by the exact

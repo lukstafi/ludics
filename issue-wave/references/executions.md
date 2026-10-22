@@ -135,7 +135,8 @@ first Metal measurement on mac-studio waited about five hours, and the coordinat
 "Metal window" by hand - concluding every standing reservation `cancelled` (a conclusion describing
 no run), messaging the workers, measuring, and taking fresh reservations under invented ids. Now a
 measurement on a box where standing reservations are outstanding is reserved with
-`fleet-worker.sh execution window <box> <reserve.json>` in place of `execution run`. Under one
+`fleet-worker.sh execution window --deadline <seconds> <box> <reserve.json>` in place of
+`execution run` (the deadline below). Under one
 registry lock it refuses unless everything outstanding on the box is standing (an assigned
 correctness run or another measurement still refuses it, naming the owners; an open window by
 name), reserves and dispatches the measurement as `run` does (its record carries `"window": true`),
