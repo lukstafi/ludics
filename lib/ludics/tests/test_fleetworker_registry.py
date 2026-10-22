@@ -794,6 +794,14 @@ class Snapshot(RegistryCase):
         self.assertIn("the registry is busy", err)
         self.assertEqual(registry.SNAPSHOT_LOCKS, [])
 
+    def test_the_time_left_rounds_up_until_the_deadline_passes(self) -> None:
+        # Round 3 of #771: truncation let a waiter give up up to a second before the deadline.
+        now = datetime(2026, 10, 22, 12, 0, 0, tzinfo=timezone.utc)
+        for at, left in (("2026-10-22T12:00:00.100000+00:00", 1), ("2026-10-22T12:00:01+00:00", 1),
+                         ("2026-10-22T12:00:01.000001+00:00", 2), ("2026-10-22T12:00:00+00:00", 0),
+                         ("2026-10-22T11:59:00+00:00", 0)):
+            self.assertEqual(registry.time_left(at, now), left, at)
+
     def test_nothing_is_said_while_the_lock_is_held(self) -> None:
         # Round 2 of #771: a caller that stops reading its pipe must stall only its own action, so
         # every line -- a listing, a written record, a refusal -- is written once the lock is free.
@@ -801,11 +809,14 @@ class Snapshot(RegistryCase):
 
         class Watching(io.StringIO):
             def write(self, text: str) -> int:
-                held_at_write.append(bool(registry.SNAPSHOT_LOCKS))
+                # Round 3 of #771: the heartbeat's waiters/.lock is released before anything is said too.
+                held_at_write.append(bool(registry.SNAPSHOT_LOCKS) or bool(registry.WAITER_LOCKS))
                 return super().write(text)
 
         argv = ["-", self.root, "", "owner", "token", "", "mac", "", ""]
         for action, payload in (("run", request("s", standing=True)), ("list", {}),
+                                ("wait", {"waiter": {"box": "mac", "id": "r-1", "command": "x", "ttl": 30}}),
+                                ("window", {"box": "mac", "request": request("w", kind="measurement"), "gap": 60}),
                                 ("reserve", request("bad", kind="other"))):
             argv[2], argv[5] = action, json.dumps(payload)
             with contextlib.redirect_stdout(Watching()), contextlib.redirect_stderr(Watching()):

@@ -177,8 +177,9 @@ checkout carries it, and `execution leg`'s re-read tolerance stays. The lock ord
 lease lock (fleet-worker's mkdir lock, taken by the shell before this program starts), then
 `executions.lock`, then `waiters/.lock`, then a lane lock (never waited for); `wait` takes the
 snapshot before its heartbeat's `waiters/.lock`, as a window with a gap does, so the two never
-cross. Nothing an action says is written while it holds the lock (`run` buffers it), so a caller
-that stops reading stalls only its own action. The wait for it is bounded (`LOCK_WAIT`, polled): past it the action is refused, the
+cross. Nothing an action says is written while it holds either (`run` buffers it, and releases both
+first), so a caller that stops reading stalls only its own action; a lane lock is still held to
+the process's exit, as above. The wait for it is bounded (`LOCK_WAIT`, polled): past it the action is refused, the
 registry busy, rather than a reader hanging behind a wedged writer. The anchor is POSIX: this
 module already flocks, and no anchor runs under Git Bash.
 
@@ -236,6 +237,7 @@ import contextlib
 import fcntl
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -813,11 +815,11 @@ def load_records(directory: Path) -> dict[str, Record]:
     return records
 
 
-WAITER_LOCKS: list[int] = []   # `waiters/.lock`, held until this process exits (THE WAITERS)
+WAITER_LOCKS: list[int] = []   # `waiters/.lock`, held until `run` returns (THE WAITERS)
 
 
 def lock_waiters(directory: Path) -> None:
-    """Take ``waiters/.lock`` exclusively until this process exits: a heartbeat with the listing
+    """Take ``waiters/.lock`` exclusively until `run` returns: a heartbeat with the listing
     read after it, and a window from its waiter check through its publication, are serialized, so
     either the window sees the heartbeat or the listing sees the window (THE WAITERS)."""
     # parents: on a fresh anchor no lease has created the state root yet, and `wait` takes none.
@@ -858,8 +860,17 @@ def lock_snapshot(root: Path, shared: bool) -> None:
 
 
 def unlock_snapshot() -> None:
+    """Release `executions.lock`, and `waiters/.lock` with it: `run` does, before it says anything."""
     while SNAPSHOT_LOCKS:
         os.close(SNAPSHOT_LOCKS.pop())
+    while WAITER_LOCKS:
+        os.close(WAITER_LOCKS.pop())
+
+
+def time_left(deadline_at: str, now: datetime) -> int:
+    """A listing's `deadline_left`: whole seconds to `deadline_at` by this clock, rounded UP while any
+    time is left, so a waiter never gives up before the deadline; 0 once it has passed."""
+    return max(0, math.ceil((datetime.fromisoformat(deadline_at) - now).total_seconds()))
 
 
 def main(argv: list[str]) -> None:
@@ -904,9 +915,8 @@ def main(argv: list[str]) -> None:
         # THE WINDOW'S DEADLINE: the time left by THIS clock, so a waiter on another host compares no
         # clocks (a listing's field only, never written to a record).
         now = datetime.now(timezone.utc)
-        selected = [record | {"deadline_left": max(0, int((datetime.fromisoformat(record["deadline_at"]) - now)
-                                                          .total_seconds()))}
-                    if "deadline_at" in record else record for record in selected]
+        selected = [record | {"deadline_left": time_left(record["deadline_at"], now)} if "deadline_at" in record
+                    else record for record in selected]
         print(json.dumps(selected, indent=None if flags.get("compact") else 2))
         return
     decoded: Any = json.loads(raw)
