@@ -6,6 +6,8 @@ import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -482,7 +484,8 @@ class WindowGap(RegistryCase):
             rc, _, err = self.window("w", gap=bad)  # type: ignore[arg-type]
             self.assertEqual((rc, err), (1, "EXECUTION REFUSED: a window's gap must be a whole number of seconds\n"), bad)
         rc, _, err = self.call("window", {"box": "mac", "request": request("w", kind="measurement"), "wait": 1})
-        self.assertEqual((rc, err), (1, "EXECUTION REFUSED: window payload must be {box, request} or {box, request, gap}\n"))
+        self.assertEqual((rc, err), (1, "EXECUTION REFUSED: window payload must be {box, request}, with an optional gap"
+                                        " and deadline\n"))
         self.beat()
         self.window("w1", gap=0)
         self.conclude("w1")
@@ -634,6 +637,173 @@ class Waiters(RegistryCase):
     def test_a_long_command_is_cut_to_300_characters(self) -> None:
         self.call("wait", {"waiter": self.waiter(command="x" * 400)})
         self.assertEqual(len(self.read()["command"]), 300)
+
+
+class WindowDeadline(RegistryCase):
+    """THE WINDOW'S DEADLINE (ludics-lite#737): a window's payload may carry the seconds by which it will
+    be concluded; the record keeps them and the moment they end, fixed for its life."""
+
+    def window(self, identity: str = "w", **extra: object) -> tuple[int, Any, str]:
+        return self.call("window", {"box": "mac", "request": request(identity, kind="measurement"), **extra})
+
+    def test_the_window_records_its_deadline_from_its_opening(self) -> None:
+        before = datetime.now(timezone.utc)
+        rc, out, _ = self.window(deadline=7200)
+        self.assertEqual((rc, out["deadline"]), (0, 7200))
+        due = datetime.fromisoformat(out["deadline_at"])
+        self.assertLessEqual(abs((due - before).total_seconds() - 7200), 5)
+        self.assertNotIn("deadline", out["request"], "beside the request, never in it")
+        rc, listed, _ = self.call("list", {"active": True, "compact": True})
+        self.assertEqual((rc, listed[0]["deadline_at"]), (0, out["deadline_at"]))
+        # A window without one records neither field.
+        self.assertEqual(self.call("conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null",
+                                                "evidence": "unit"})[0], 0)
+        rc, out, _ = self.window("w2")
+        self.assertEqual((rc, {"deadline", "deadline_at"} & set(out)), (0, set()))
+
+    def test_a_retry_names_the_same_deadline_and_never_moves_it(self) -> None:
+        _, first, _ = self.window(deadline=600)
+        rc, again, _ = self.window(deadline=600)
+        self.assertEqual((rc, again["deadline_at"]), (0, first["deadline_at"]))
+        for other in ({"deadline": 900}, {}):
+            rc, _, err = self.window(**other)
+            self.assertEqual(rc, 1, other)
+            self.assertIn("request_id already names a window with a different deadline (600)", err)
+        self.assertEqual(self.window("w2")[0], 1, "one window per box, as ever")
+
+    def test_a_deadline_is_a_positive_whole_number_and_only_a_windows(self) -> None:
+        for bad in (True, 0, -1, "60", 1.5, None):
+            rc, _, err = self.window(deadline=bad)
+            self.assertEqual(rc, 1, bad)
+            self.assertIn("a window's deadline must be a positive whole number of seconds", err)
+        self.assertEqual(self.call("run", {**request("m", kind="measurement"), "deadline": 60})[0], 1)
+
+    def test_a_corrupt_deadline_blocks_the_ledger(self) -> None:
+        self.window(deadline=60)
+        path = os.path.join(self.root, "executions", "w.json")
+        for corrupt in ({"deadline_at": "soon"}, {"deadline_at": "2099-01-01T00:00:00"}, {"deadline": 0},
+                        {"deadline": None}):
+            with open(path) as f:
+                data = json.load(f)
+            good = dict(data)
+            data.update(corrupt)
+            data = {key: value for key, value in data.items() if value is not None}
+            with open(path, "w") as f:
+                json.dump(data, f)
+            rc, _, err = self.call("list", {})
+            self.assertEqual(rc, 1, corrupt)
+            self.assertIn("invalid window deadline", err)
+            with open(path, "w") as f:
+                json.dump(good, f)
+        self.assertEqual(self.call("list", {})[0], 0)
+
+
+READER = """import runpy, sys
+print("started", flush=True)
+path, root = sys.argv[1], sys.argv[2]
+sys.argv = ["registry", root, "list", "x", "x", '{"compact": true}', "mac"]
+runpy.run_path(path)
+"""
+
+
+class Snapshot(RegistryCase):
+    """THE SNAPSHOT (ludics-lite#711): a listing never sees a window's opening or conclusion half done.
+    The writer runs here, in process, and pauses after the first record it publishes; a reader
+    PROGRAM started there gets two seconds to answer. Without the lock it answers mid-write, and its
+    listing shows the window open beside the standing record not suspended."""
+
+    def write_and_read_between(self, action: str, payload: object) -> list[dict[str, Any]]:
+        readers: list[subprocess.Popen[str]] = []
+        real = os.replace
+
+        def replace(source: Any, target: Any) -> None:
+            real(source, target)
+            if readers or os.path.basename(os.path.dirname(os.fspath(target))) != "executions":
+                return
+            reader = subprocess.Popen([sys.executable, "-c", READER, registry.__file__, self.root],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            readers.append(reader)
+            assert reader.stdout is not None
+            self.assertEqual(reader.stdout.readline(), "started\n")
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                reader.wait(2)   # the torn moment: a reader that does not wait for the write answers now
+
+        with mock.patch("os.replace", side_effect=replace):
+            self.assertEqual(self.call(action, payload)[0], 0)
+        self.assertEqual(len(readers), 1, "the write published a record")
+        out, err = readers[0].communicate(timeout=60)
+        self.assertEqual(readers[0].returncode, 0, err)
+        return json.loads(out)
+
+    def assert_whole(self, listed: list[dict[str, Any]]) -> None:
+        records = {record["request_id"]: record for record in listed}
+        window_open = records["w"]["state"] != "concluded"
+        suspended = records["s"]["state"] == "suspended" and records["s"].get("suspended_by") == "w"
+        self.assertEqual(window_open, suspended,
+                         f"a torn listing: window w {records['w']['state']}, standing record s {records['s']['state']}")
+
+    def test_a_listing_never_sees_a_window_half_open(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.assert_whole(self.write_and_read_between(
+            "window", {"box": "mac", "request": request("w", kind="measurement")}))
+
+    def test_a_listing_never_sees_a_window_half_concluded(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.assertEqual(self.call("window", {"box": "mac", "request": request("w", kind="measurement")})[0], 0)
+        self.assert_whole(self.write_and_read_between(
+            "conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null", "evidence": "unit"}))
+
+    def hold(self, mode: int) -> None:
+        descriptor = os.open(os.path.join(self.root, "executions.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, mode)
+
+    def test_readers_share_it_and_a_writer_waits_for_them_boundedly(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.hold(fcntl.LOCK_SH)
+        with mock.patch.object(registry, "LOCK_WAIT", 0.2):
+            self.assertEqual(self.call("list", {})[0], 0, "a listing shares it with another")
+            self.assertEqual(self.call("wait", {"waiter": {"box": "mac", "id": "r-1", "command": "x", "ttl": 30}})[0], 0)
+            rc, _, err = self.call("run", request("t", standing=True))
+        self.assertEqual(rc, 1)
+        self.assertRegex(err, r"\AEXECUTION REFUSED: the registry is busy: another action has held \S+executions.lock"
+                              r" for 0.2s \(ludics-lite#711\)")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "executions", "t.json")), "nothing written")
+
+    def test_a_writer_keeps_readers_out_and_releases_on_every_outcome(self) -> None:
+        self.hold(fcntl.LOCK_EX)
+        with mock.patch.object(registry, "LOCK_WAIT", 0.2):
+            rc, _, err = self.call("list", {})
+        self.assertEqual(rc, 1)
+        self.assertIn("the registry is busy", err)
+        self.assertEqual(registry.SNAPSHOT_LOCKS, [])
+
+    def test_the_lock_is_released_after_a_refusal(self) -> None:
+        self.assertEqual(self.call("reserve", request("bad", kind="other"))[0], 1)
+        self.assertEqual(registry.SNAPSHOT_LOCKS, [])
+        probe = os.open(os.path.join(self.root, "executions.lock"), os.O_RDWR)
+        self.addCleanup(os.close, probe)
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)   # raises if anything still held it
+        fcntl.flock(probe, fcntl.LOCK_UN)
+
+    def test_the_snapshot_is_taken_before_the_waiters_lock(self) -> None:
+        # The lock order (the header): `wait` and a window with a gap both take executions.lock first.
+        order: list[str] = []
+        snapshot, waiters = registry.lock_snapshot, registry.lock_waiters
+
+        def take_snapshot(root: Any, shared: bool) -> None:
+            order.append("snapshot shared" if shared else "snapshot exclusive")
+            snapshot(root, shared)
+
+        def take_waiters(directory: Any) -> None:
+            order.append("waiters")
+            waiters(directory)
+
+        with mock.patch.object(registry, "lock_snapshot", take_snapshot), \
+                mock.patch.object(registry, "lock_waiters", take_waiters):
+            self.call("wait", {"waiter": {"box": "mac", "id": "r-1", "command": "x", "ttl": 30}})
+            self.call("window", {"box": "mac", "request": request("w", kind="measurement"), "gap": 60})
+        self.assertEqual(order, ["snapshot shared", "waiters", "snapshot exclusive", "waiters"])
 
 
 if __name__ == "__main__":

@@ -203,9 +203,11 @@ class WindowWait(unittest.TestCase):
 
     def test_the_bound_is_the_last_wait_window_given(self) -> None:
         self.assertIsNone(leg.window_bound(["--cpu", "--wait", "5"]))
-        self.assertEqual(leg.window_bound(["--wait-window"]), slot.WINDOW_WAIT)
+        # A bare flag is the window's own deadline (ludics-lite#737), never a fixed hour.
+        self.assertEqual(leg.window_bound(["--wait-window"]), slot.BY_DEADLINE)
         self.assertEqual(leg.window_bound(["--wait-window=90", "--wait-window=7"]), 7)
-        self.assertEqual(leg.window_bound(["--wait-window=7", "--wait-window"]), slot.WINDOW_WAIT)
+        self.assertEqual(leg.window_bound(["--wait-window=7", "--wait-window"]), slot.BY_DEADLINE)
+        self.assertEqual(leg.window_bound(["--wait-window", "--wait-window=3600"]), 3600)
 
 
 HINT = ": a ~ expanded by the caller's shell? spell far-side paths absolutely, or quote '~/...'"

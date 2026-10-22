@@ -525,6 +525,23 @@ class WindowGap(unittest.TestCase):
         self.assertEqual(window_payload(["window", "tbox", self.file], 60), '{"box":"tbox","request":{"request_id":"w2"},"gap":60}')
         self.assertEqual(window_payload(["window", "tbox", self.file], 0), '{"box":"tbox","request":{"request_id":"w2"}}')
 
+    def test_the_deadline_comes_right_after_window_and_rides_beside_the_request(self) -> None:
+        # ludics-lite#737: --deadline <seconds>, after --no-gap when both are given.
+        cfg = self.cfg()
+        args, gap = execution.window_gap(cfg, ["window", "--no-gap", "--deadline", "7200", "tbox", self.file])
+        self.assertEqual(execution.window_deadline(args), (["window", "tbox", self.file], 7200))
+        self.assertEqual(execution.window_deadline(["window", "tbox", self.file]), (["window", "tbox", self.file], None))
+        self.assertEqual(window_payload(["window", "tbox", self.file], gap, 7200),
+                         '{"box":"tbox","request":{"request_id":"w2"},"deadline":7200}')
+        self.assertEqual(window_payload(["window", "tbox", self.file], 60, 90),
+                         '{"box":"tbox","request":{"request_id":"w2"},"deadline":90,"gap":60}')
+        for bad in (["window", "--deadline"], ["window", "--deadline", "0", "b", "f"], ["window", "--deadline", "1.5", "b", "f"],
+                    ["window", "--deadline", "-1", "b", "f"], ["window", "--deadline", "soon", "b", "f"]):
+            with self.assertRaises(cli.Exit) as caught:
+                execution.window_deadline(bad)
+            self.assertEqual(caught.exception.rc, 2, bad)
+            self.assertIn("--deadline takes a positive whole number of seconds", caught.exception.message)
+
     def test_only_the_registrys_gap_answer_is_waited_out(self) -> None:
         answer = '{"gap":{"box":"b","after":"w1","ago":3,"gap":60,"wait":57,"standing":["s"]}}'
         self.assertEqual(execution.gap_wait(execution.Done(3, answer)), 57)
