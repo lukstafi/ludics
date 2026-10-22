@@ -20,13 +20,33 @@
 # The base ref is used as it stands locally: fetch first if origin/main may be stale.
 #
 # Usage: run-against-base.sh <suite-path> [options] [suite args...]
+#        run-against-base.sh --command [options] -- <program> [args...]
 #   <suite-path>     a file in the current checkout's working tree (relative to the cwd, or
 #                    absolute)
 # The options come right after the suite path, in any order; the first word that is not one of
 # them, and every word after it, goes to the suite (`--` included: it is the suite's), so a suite
 # whose own first argument is one of these names cannot take it through the helper. A repeated
 # --base or --timeout: the later one wins.
-#   --base <ref>     the base to run against (default origin/main; with --mutate, the working tree)
+#
+# COMMAND MODE (ludics-lite#765): `--command`, as the FIRST argument, runs a project's own runner
+# instead of one suite file -- OCANNL's `tools/test-run.sh run @dir/runtest-x`, say -- from the
+# root of the run's tree, with nothing of the working tree carried in but the files named with
+# --also. The options follow `--command`, and a `--` is required to end them: every word after it
+# is the command's argv, verbatim (an option name or another `--` included); any other word
+# before it is refused. The program is one of two forms, and nothing else is accepted:
+#   - a word with no `/`: a program on PATH (`sh`, `dune`), which must be found here;
+#   - a word with a `/`: a file of this checkout, named relative to the cwd or absolute and refused
+#     the ways a suite path is (outside the checkout, a symlink, inside .git or a nested
+#     repository). It runs as the RUN TREE's copy at that path -- the base's, not the working
+#     tree's, unless --also carries it -- since the runner of the base is what runs the base.
+# Path arguments of the command are spelled from the root of the checkout, where it runs. The
+# helper does not read or interpret the command or its output beyond the result line: it cannot
+# tell a runner's own refusal or a build failure from a failing test (the output says), so the
+# caller reads the output and shows the head passing too. The *.py rules below are the suite
+# form's only.
+#
+#   --base <ref>     the base to run against (default origin/main; with --mutate or --revert, the
+#                    working tree)
 #   --also <path>    carry this working-tree file into the base too, at the same path: a fixture
 #                    library the suite changed with (ludics-lite#501). Repeatable. Everything not
 #                    named is still the base's.
@@ -39,6 +59,30 @@
 #                    mutant is of the change, not of the base. An expression that changes nothing
 #                    is refused: that is not a mutant. Repeatable, applied in order. A tests-only change takes this control instead of the
 #                    base's: its new cases pass on the base too (ludics-lite#501).
+#   --revert <commit> <path>
+#                    an A/B or necessity control (ludics-lite#765): undo <commit>'s own change
+#                    under <path> inside the throwaway worktree -- `git diff <commit>^ <commit> --
+#                    <path>` applied in reverse (`git apply -R`: all or nothing, no three-way
+#                    merge, no conflict markers, the worktree's index untouched). Like --mutate,
+#                    without --base the worktree is the working-tree snapshot, so the run is the
+#                    head with only that change undone. <path> is literal (no glob), relative to
+#                    the cwd or absolute; a directory selects its subtree, and `.` at the root the
+#                    whole commit. One path per flag; repeatable, applied in the order given, so a
+#                    fix spread over several commits is undone newest first. Refused (125) before
+#                    any worktree is made: a commit that is unknown, a merge, a root, or not an
+#                    ancestor of the run's starting commit (HEAD, or --base); a <path> the commit
+#                    does not change; a change to anything but a regular file there (a symlink, a
+#                    submodule). Refused after: a reverse patch that does not apply, because a
+#                    later change overlaps it.
+# In the run's tree the files are copied first (the suite, --also), then the reverts are applied,
+# then the mutations, whatever the flags' order: a revert of a carried file applies to the carried
+# copy (so a copy can never silently undo a revert), and a mutation may name either.
+# A plain base run (no --mutate, no --revert) warns when every path the branch changes -- the
+# working tree against its merge base with the base, tracked or untracked-and-not-ignored -- is
+# carried into the run: it is then the branch's own run, not a control (a tests-only change, or a
+# fix that lives inside the suite; ludics-lite#501). The warning compares path sets only, never
+# the changes' contents; a branch that changes anything not carried gets none. The exit status is
+# not affected.
 #   --timeout <s>    stop the suite after <s> whole seconds (default RUN_AGAINST_BASE_TIMEOUT, or
 #                    0: none). On expiry its process group gets TERM, then KILL after the grace,
 #                    and the run is reported as the base FAILING, exit 124: a hang is a valid
@@ -62,7 +106,7 @@
 #     `python3 <file>`, as CI's steps run it: its own directory on sys.path and its environment
 #     unchanged, where scripts/py's `-P` would drop the one and its PYTHONPATH reach every program
 #     the suite starts.
-# Exit: the suite's own exit status; 124 when the timeout expired; 125 when the helper could not
+# Exit: the suite's (or command's) own exit status; 124 when the timeout expired; 125 when the helper could not
 # run it at all, could not start it (exec failed: it never ran), or could not clean up after it
 # (the `git bisect run` convention for "cannot test"), so a refusal is never read as the suite's
 # failure -- and a suite's own 125 is reported as 1, as is its own 124 when a timeout is armed.
@@ -81,7 +125,8 @@ die() {
   exit 125
 }
 
-[ $# -ge 1 ] || die "usage: run-against-base.sh <suite-path> [--base <ref>] [--also <path>]... [--mutate <file> <sed-expr>]... [--timeout <s>] [suite args...]"
+[ $# -ge 1 ] || die "usage: run-against-base.sh <suite-path> [--base <ref>] [--also <path>]... [--mutate <file> <sed-expr>]... [--revert <commit> <path>]... [--timeout <s>] [suite args...]
+       run-against-base.sh --command [the same options] -- <program> [args...]"
 case "$1" in -h | --help)
   sed -n '2,/^$/s/^# \{0,1\}//p' "$0"
   exit 0
@@ -94,17 +139,32 @@ esac
 # be overwritten by `git worktree add`, losing whatever was staged in it.
 # shellcheck disable=SC2046 # one variable name per word
 unset $(git rev-parse --local-env-vars)
-suite_arg=$1
+CMD_MODE=
+suite_arg=
+case "$1" in
+--command) CMD_MODE=1 ;;
+*) suite_arg=$1 ;;
+esac
 shift
 base=
 TIMEOUT=${RUN_AGAINST_BASE_TIMEOUT:-0}
 ALSO_ARGS=()
 MUT_ARGS=()
 MUT_EXPRS=()
+REV_ARGS=()
+REV_PATHS=()
+ended=
 # The helper's options, up to the first word that is not one: that word and the rest are the
-# suite's. No `--` terminator, because a suite may take `--` itself and always could.
+# suite's. No `--` terminator, because a suite may take `--` itself and always could. In command
+# mode the `--` is required, and nothing else may end the options.
 while [ $# -gt 0 ]; do
   case "$1" in
+  --)
+    [ -n "$CMD_MODE" ] || break
+    shift
+    ended=1
+    break
+    ;;
   --base)
     [ $# -ge 2 ] || die "--base needs a ref"
     base=$2
@@ -121,23 +181,41 @@ while [ $# -gt 0 ]; do
     MUT_EXPRS+=("$3")
     shift 3
     ;;
+  --revert)
+    [ $# -ge 3 ] || die "--revert needs a commit and a path"
+    REV_ARGS+=("$2")
+    REV_PATHS+=("$3")
+    shift 3
+    ;;
   --timeout)
     [ $# -ge 2 ] || die "--timeout needs whole seconds"
     TIMEOUT=$2
     shift 2
     ;;
-  *) break ;;
+  *)
+    [ -z "$CMD_MODE" ] || die "--command takes its options, then -- and the command; got $(printf '%q' "$1") before any --"
+    break
+    ;;
   esac
 done
+if [ -n "$CMD_MODE" ]; then
+  [ -n "$ended" ] || die "--command needs -- <program> [args...] after its options"
+  [ $# -ge 1 ] || die "--command needs a program after the --"
+  cmd_word=$1
+  shift
+fi
 
 # Whole seconds, checked before anything is allocated, like the grace below; 0 is no timeout.
 case "$TIMEOUT" in '' | *[!0-9]*) die "the timeout must be whole seconds (--timeout, RUN_AGAINST_BASE_TIMEOUT): $TIMEOUT" ;; esac
 TIMEOUT=$((10#$TIMEOUT))
 
-TOP=
+# The checkout is the cwd's: every path option is named relative to the cwd or absolute, and must
+# be inside it.
+TOP=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git checkout: $PWD"
+TOP=$(CDPATH= cd "$TOP" && pwd -P) || die "cannot resolve the checkout root: $TOP"
 # resolve <path>: sets R_ABS and R_REL for a regular working-tree file of this checkout, or dies.
-# The suite, an --also file and a --mutate file are all named this way, and all refused the same
-# ways.
+# The suite, an --also file, a --mutate file and a command-mode program with a `/` are all named
+# this way, and all refused the same ways.
 resolve() {
   local arg=$1 dir top
   # A relative path gets a `./`, so a name like `-check.sh` is never read as an option by
@@ -148,10 +226,6 @@ resolve() {
   # negative control must be the working tree's committed-or-edited file, not something it
   # reaches.
   [ -L "$arg" ] && die "$arg is a symlink; name the file it points at"
-  if [ -z "$TOP" ]; then
-    TOP=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git checkout: $PWD"
-    TOP=$(CDPATH= cd "$TOP" && pwd -P) || die "cannot resolve the checkout root: $TOP"
-  fi
   # Split with parameter expansion, and read the resolved directory back through a trailing `x`:
   # a command substitution strips trailing newlines, which a git filename may end in, and would
   # then name a different file than the one checked above.
@@ -175,9 +249,6 @@ resolve() {
   # the base worktree's `.git` file and leave a checkout git no longer recognizes.
   case "/$R_REL/" in */.git/*) die "$R_REL is inside a .git directory, not the working tree" ;; esac
 }
-resolve "$suite_arg"
-suite_abs=$R_ABS
-rel=$R_REL
 ALSO_ABS=()
 ALSO_REL=()
 i=0
@@ -194,105 +265,212 @@ while [ "$i" -lt "${#MUT_ARGS[@]}" ]; do
   MUT_REL+=("$R_REL")
   i=$((i + 1))
 done
+# An interpreter that is missing means the suite (or command) never runs, and its 126/127 must not
+# read as a base result. A missing first program is caught at the exec (execfail, below); what the exec
+# cannot see is an env shebang whose program is not on PATH, since env itself starts fine -- so
+# env's arguments are walked the way env reads them (options, `-u NAME`, `-S`'s split string,
+# NAME=value assignments) to the first program word, and that is looked up here.
+# check_interp <file> <name> <interp>: <interp> is the runner the file is started with (python3), or
+# empty to read the file's own shebang.
+check_interp() {
+  local file=$1 name=$2 interp=$3 shebang w i
+  unset sb_clear sb_path
+  if [ -z "$interp" ]; then
+    IFS= read -r shebang <"$file" || true
+    case "$shebang" in
+    '#!'*)
+      # An array, not the positional parameters: those are the suite's arguments.
+      set -f
+      read -r -a sb <<<"${shebang#??}"
+      set +f
+      if [ "${#sb[@]}" -gt 0 ] && [ "${sb[0]##*/}" = env ]; then
+        i=1
+        while [ "$i" -lt "${#sb[@]}" ]; do
+          w=${sb[$i]}
+          case "$w" in
+          -u | --unset) i=$((i + 1)) ;;
+          -i | --ignore-environment | -) sb_clear=1 ;;
+          -S?*) w=${w#-S}; interp=$w; break ;;
+          PATH=*) sb_path=${w#PATH=} ;;
+          -* | *=*) ;;
+          *) interp=$w; break ;;
+          esac
+          i=$((i + 1))
+        done
+      fi
+      ;;
+    esac
+  fi
+  # The lookup uses the PATH env will use: the shebang's own PATH= when it sets one; with the
+  # environment cleared (-i) and no PATH= the search path is env's built-in default, which is not
+  # ours to guess, so that one is left to the exec.
+  if [ -n "$interp" ] && [ -z "${sb_clear-}${sb_path+set}" ]; then
+    command -v "$interp" >/dev/null 2>&1 || die "$name needs $interp, which is not on PATH here; it would never run"
+  elif [ -n "$interp" ] && [ -n "${sb_path+set}" ]; then
+    PATH=$sb_path command -v "$interp" >/dev/null 2>&1 \
+      || die "$name needs $interp, which is not on the PATH its shebang sets ($sb_path); it would never run"
+  fi
+}
 # RUN: the words before the suite's own arguments (RUN_SHOWN, when set, how the run names them).
 # A `lib/` module's runner is settled once the base worktree exists (it is the base's scripts/py,
 # when the base has one), so `interp` is left empty for it and its shebang is not read.
 module=
 RUN_SHOWN=
-case "$rel" in
-lib/*.py)
-  module=${rel#lib/}
-  module=${module%.py}
-  # Every dotted component an identifier: anything else is a name `-m unittest` cannot import
-  # (nor `unittest discover` find), and would fail on the base for that reason alone.
-  case "/$module/" in
-  *[!A-Za-z0-9_/]* | *//* | */[0-9]*)
-    die "$rel is not an importable module path under lib/, so unittest cannot run it"
+runner=
+CMD_PATH=
+if [ -n "$CMD_MODE" ]; then
+  # The program's two forms (see the header); its file, when it has one, is checked once the run's
+  # tree exists, since that copy is the one that runs.
+  case "$cmd_word" in
+  */*)
+    resolve "$cmd_word"
+    rel=$R_REL
+    CMD_PATH=1
+    RUN=("./$rel")
+    ;;
+  '') die "--command: the program is an empty word" ;;
+  *)
+    command -v -- "$cmd_word" >/dev/null 2>&1 || die "--command: $(printf '%q' "$cmd_word") is not a program on PATH here; it would never run"
+    rel=$cmd_word
+    RUN=("$cmd_word")
     ;;
   esac
-  # ...and a file CI's `unittest discover -s lib -t lib -p 'test_*.py'` reaches: a `test_*.py`
-  # name, in packages all the way down (discovery does not enter a directory without an
-  # `__init__.py`). A file it never reaches is no CI suite, and its result on the base would be
-  # about a test CI never runs. The shape is the working tree's: that is the tree CI will judge.
-  case "${rel##*/}" in
-  test_*.py) ;;
-  *) die "$rel is not named test_*.py, so CI's unittest discovery never runs it" ;;
-  esac
-  pkg=${rel%/*}
-  while [ "$pkg" != lib ]; do
-    [ -f "$TOP/$pkg/__init__.py" ] \
-      || die "$pkg has no __init__.py, so CI's unittest discovery never reaches $rel"
-    pkg=${pkg%/*}
-  done
-  module=${module//\//.}
-  runner=
-  ;;
-*.py)
-  runner=python3
-  RUN=(python3 "./$rel")
-  ;;
-*)
-  [ -x "$suite_abs" ] || die "$rel is not executable (chmod +x it, as the mode rule asks)"
-  runner=
-  RUN=("./$rel")
-  ;;
-esac
-# An interpreter that is missing means the suite never runs, and its 126/127 must not read as a
-# base result. A missing first program is caught at the exec (execfail, below); what the exec
-# cannot see is an env shebang whose program is not on PATH, since env itself starts fine -- so
-# env's arguments are walked the way env reads them (options, `-u NAME`, `-S`'s split string,
-# NAME=value assignments) to the first program word, and that is looked up here.
-interp=$runner
-if [ -z "$interp" ] && [ -z "$module" ]; then
-  IFS= read -r shebang <"$suite_abs" || true
-  case "$shebang" in
-  '#!'*)
-    # An array, not the positional parameters: those are the suite's arguments.
-    set -f
-    read -r -a sb <<<"${shebang#??}"
-    set +f
-    if [ "${#sb[@]}" -gt 0 ] && [ "${sb[0]##*/}" = env ]; then
-      i=1
-      while [ "$i" -lt "${#sb[@]}" ]; do
-        w=${sb[$i]}
-        case "$w" in
-        -u | --unset) i=$((i + 1)) ;;
-        -i | --ignore-environment | -) sb_clear=1 ;;
-        -S?*) w=${w#-S}; interp=$w; break ;;
-        PATH=*) sb_path=${w#PATH=} ;;
-        -* | *=*) ;;
-        *) interp=$w; break ;;
-        esac
-        i=$((i + 1))
-      done
-    fi
+else
+  resolve "$suite_arg"
+  suite_abs=$R_ABS
+  rel=$R_REL
+  case "$rel" in
+  lib/*.py)
+    module=${rel#lib/}
+    module=${module%.py}
+    # Every dotted component an identifier: anything else is a name `-m unittest` cannot import
+    # (nor `unittest discover` find), and would fail on the base for that reason alone.
+    case "/$module/" in
+    *[!A-Za-z0-9_/]* | *//* | */[0-9]*)
+      die "$rel is not an importable module path under lib/, so unittest cannot run it"
+      ;;
+    esac
+    # ...and a file CI's `unittest discover -s lib -t lib -p 'test_*.py'` reaches: a `test_*.py`
+    # name, in packages all the way down (discovery does not enter a directory without an
+    # `__init__.py`). A file it never reaches is no CI suite, and its result on the base would be
+    # about a test CI never runs. The shape is the working tree's: that is the tree CI will judge.
+    case "${rel##*/}" in
+    test_*.py) ;;
+    *) die "$rel is not named test_*.py, so CI's unittest discovery never runs it" ;;
+    esac
+    pkg=${rel%/*}
+    while [ "$pkg" != lib ]; do
+      [ -f "$TOP/$pkg/__init__.py" ] \
+        || die "$pkg has no __init__.py, so CI's unittest discovery never reaches $rel"
+      pkg=${pkg%/*}
+    done
+    module=${module//\//.}
+    ;;
+  *.py)
+    runner=python3
+    RUN=(python3 "./$rel")
+    ;;
+  *)
+    [ -x "$suite_abs" ] || die "$rel is not executable (chmod +x it, as the mode rule asks)"
+    RUN=("./$rel")
     ;;
   esac
-fi
-# The lookup uses the PATH env will use: the shebang's own PATH= when it sets one; with the
-# environment cleared (-i) and no PATH= the search path is env's built-in default, which is not
-# ours to guess, so that one is left to the exec.
-if [ -n "$interp" ] && [ -z "${sb_clear-}${sb_path+set}" ]; then
-  command -v "$interp" >/dev/null 2>&1 || die "$rel needs $interp, which is not on PATH here; it would never run"
-elif [ -n "$interp" ] && [ -n "${sb_path+set}" ]; then
-  PATH=$sb_path command -v "$interp" >/dev/null 2>&1 \
-    || die "$rel needs $interp, which is not on the PATH its shebang sets ($sb_path); it would never run"
+  [ -n "$module" ] || check_interp "$suite_abs" "$rel" "$runner"
 fi
 SNAPSHOT=
-if [ -z "$base" ] && [ "${#MUT_REL[@]}" -gt 0 ]; then
+SNAP_NOTE=
+if [ -z "$base" ] && [ $((${#MUT_REL[@]} + ${#REV_ARGS[@]})) -gt 0 ]; then
   SNAPSHOT=1
-  # A mutant is of the change: the throwaway worktree is the working tree as it stands, tracked
-  # files staged or not, and HEAD when nothing differs from it. `git stash create` writes the
+  # A mutant (or a revert) is of the change: the throwaway worktree is the working tree as it
+  # stands, tracked files staged or not, and HEAD when nothing differs from it. `git stash create` writes the
   # commit object and nothing else -- no ref, no reflog, no change to the tree -- and is given an
   # identity of its own, since a runner with no user.name would otherwise refuse to write it.
   sha=$(git -C "$TOP" -c user.name=run-against-base -c user.email=run-against-base@invalid \
     stash create 2>/dev/null) || die "could not snapshot the working tree"
-  [ -n "$sha" ] || sha=$(git -C "$TOP" rev-parse --verify --quiet 'HEAD^{commit}') \
+  head=$(git -C "$TOP" rev-parse --verify --quiet 'HEAD^{commit}') \
     || die "the working tree has no commit to snapshot"
+  if [ -n "$sha" ]; then
+    SNAP_NOTE="the working tree is HEAD $(git -C "$TOP" rev-parse --short "$head") with uncommitted tracked edits"
+  else
+    sha=$head
+    SNAP_NOTE="the working tree is HEAD $(git -C "$TOP" rev-parse --short "$head"), with no uncommitted tracked edits"
+  fi
+  # A revert's commit must be in the history the run starts from: HEAD's, since the snapshot
+  # commit's first parent is HEAD.
+  start=$head
   base="the working tree"
 else
   base=${base:-origin/main}
   sha=$(git -C "$TOP" rev-parse --verify --quiet "$base^{commit}") || die "no such commit: $base"
+  start=$sha
+fi
+
+# --revert, checked whole before anything is allocated (the patches are written once the scratch
+# exists). The diff is the commit's own, against its only parent, with every setting that could
+# change its text pinned: no external diff or textconv, no colour, no renames (an add and a delete
+# reverse exactly), paths from the root with the usual a/ b/ prefixes, three lines of context, full
+# blob names for binary hunks. It runs from the caller's cwd, so <path> is cwd-relative as every
+# path option is, and literal (GIT_LITERAL_PATHSPECS), so no glob or pathspec magic selects more.
+REV_SHA=()
+REV_PARENT=()
+revert_diff() { # <parent> <commit> <path> [diff options...]
+  local p=$1 c=$2 path=$3
+  shift 3
+  GIT_LITERAL_PATHSPECS=1 git diff --no-ext-diff --no-textconv --no-color --no-renames --no-relative \
+    "$@" "$p" "$c" -- "$path"
+}
+i=0
+while [ "$i" -lt "${#REV_ARGS[@]}" ]; do
+  r=${REV_ARGS[$i]}
+  rp=${REV_PATHS[$i]}
+  c=$(git -C "$TOP" rev-parse --verify --quiet "$r^{commit}") || die "--revert: no such commit: $(printf '%q' "$r")"
+  git -C "$TOP" rev-parse --verify --quiet "$c^2" >/dev/null \
+    && die "--revert: $(printf '%q' "$r") is a merge commit; name the commit that made the change"
+  p=$(git -C "$TOP" rev-parse --verify --quiet "$c^1") \
+    || die "--revert: $(printf '%q' "$r") is a root commit, with no parent to revert to"
+  git -C "$TOP" merge-base --is-ancestor "$c" "$start" \
+    || die "--revert: $(printf '%q' "$r") is not in the history of $base, so there is nothing of it to undo there"
+  [ -n "$rp" ] || die "--revert: the path is an empty word (\`.\` at the root names the whole commit)"
+  raw=$(revert_diff "$p" "$c" "$rp" --raw) || die "--revert: git diff refused $(printf '%q' "$rp")"
+  [ -n "$raw" ] || die "--revert: $(printf '%q' "$r") changes nothing under $(printf '%q' "$rp")"
+  # Regular files only, on both sides (000000 is the side where the file is absent): a symlink or a
+  # submodule entry is not something `git apply` writes into a checkout the way it was.
+  printf '%s\n' "$raw" | awk '$1 !~ /^:(000000|100644|100755)$/ || $2 !~ /^(000000|100644|100755)$/ { bad = 1 } END { exit bad }' \
+    || die "--revert: $(printf '%q' "$r") changes a symlink or a submodule under $(printf '%q' "$rp"); only regular files are reverted"
+  REV_SHA+=("$c")
+  REV_PARENT+=("$p")
+  i=$((i + 1))
+done
+
+# The warning (ludics-lite#501): a plain base run whose carried files are every file the branch
+# changes is the branch's own run. Path sets only, read NUL-delimited: tracked changes of the
+# working tree against the merge base, and untracked files that are not ignored. The first change
+# not carried ends the check; no merge base, or no change at all, warns of nothing.
+CARRIED_WARN=
+if [ -z "$SNAPSHOT" ] && [ $((${#MUT_REL[@]} + ${#REV_ARGS[@]})) -eq 0 ] \
+  && mb=$(git -C "$TOP" merge-base "$sha" HEAD 2>/dev/null); then
+  carried() { # <path>: is it the suite or an --also file?
+    local j=0
+    [ -z "$CMD_MODE" ] && [ "$1" = "$rel" ] && return 0
+    while [ "$j" -lt "${#ALSO_REL[@]}" ]; do
+      [ "$1" = "${ALSO_REL[$j]}" ] && return 0
+      j=$((j + 1))
+    done
+    return 1
+  }
+  any=
+  CARRIED_WARN=1
+  while IFS= read -r -d '' f; do
+    any=1
+    carried "$f" || {
+      CARRIED_WARN=
+      break
+    }
+  done < <(
+    git -C "$TOP" diff --name-only -z --no-renames --no-relative "$mb" -- 2>/dev/null
+    git -C "$TOP" ls-files -z -o --exclude-standard --full-name 2>/dev/null
+  )
+  [ -n "$any" ] || CARRIED_WARN=
 fi
 
 # Whole seconds, checked before anything is allocated: the cleanup does integer arithmetic on it,
@@ -431,13 +609,27 @@ install() {
   if [ -L "$dest" ] || [ -e "$dest" ]; then rm -rf "$dest" || die "cannot replace $2 in the base worktree"; fi
   cp -p "$1" "$dest" || die "cannot copy $2 into the base worktree"
 }
-install "$suite_abs" "$rel"
+[ -n "$CMD_MODE" ] || install "$suite_abs" "$rel"
 i=0
 while [ "$i" -lt "${#ALSO_REL[@]}" ]; do
   install "${ALSO_ABS[$i]}" "${ALSO_REL[$i]}"
   i=$((i + 1))
 done
-# The mutations, after every copy, so one may name a carried file. Each rewrites the file through
+# The reverts, after every copy (a carried file is reverted as carried, so no copy can silently
+# undo a revert) and before the mutations. `git apply` is all or nothing: a reverse patch that
+# does not apply leaves the tree as it was, and the run is refused rather than made on a tree
+# that is neither the change nor its undoing.
+i=0
+while [ "$i" -lt "${#REV_SHA[@]}" ]; do
+  patch="$SCRATCH/revert.$i.patch"
+  revert_diff "${REV_PARENT[$i]}" "${REV_SHA[$i]}" "${REV_PATHS[$i]}" -p -U3 --binary --full-index \
+    --src-prefix=a/ --dst-prefix=b/ >"$patch" \
+    || die "--revert: could not write the patch of $(printf '%q' "${REV_ARGS[$i]}") under $(printf '%q' "${REV_PATHS[$i]}")"
+  git -C "$WT" apply -R --whitespace=nowarn "$patch" \
+    || die "--revert: $(printf '%q' "${REV_ARGS[$i]}") under $(printf '%q' "${REV_PATHS[$i]}") does not apply to $base in reverse (see above): a later change overlaps it -- revert the newer commit first"
+  i=$((i + 1))
+done
+# The mutations, after every copy and revert, so one may name a carried or reverted file. Each rewrites the file through
 # its own inode (mode kept) and must change it: an expression that matched nothing would leave a
 # "mutant" identical to the code it claims to break, and its passing suite would read as the
 # cases being blind to the mutation -- a verdict about nothing.
@@ -461,6 +653,14 @@ while [ "$i" -lt "${#MUT_REL[@]}" ]; do
   cat "$SCRATCH/mutant" >"$target" || die "cannot write the mutant of ${MUT_REL[$i]}"
   i=$((i + 1))
 done
+# A command-mode program with a `/` runs as the run tree's copy, which is checked here, after the
+# copies, reverts and mutations that made it: present, and its interpreter found (an exec failure
+# is still caught at the exec).
+if [ -n "$CMD_PATH" ]; then
+  { [ -f "$WT/$rel" ] && [ ! -L "$WT/$rel" ]; } \
+    || die "--command: $rel is not a regular file in $base, and the command runs as the run tree's copy (--also $rel carries the working tree's); it would never run"
+  check_interp "$WT/$rel" "$rel" ""
+fi
 # A lib/ module runs through the base's own scripts/py (after the copies and mutations, so one
 # carried with --also or mutated is the one used). scripts/py exits 2 and runs nothing when it
 # finds no Python >= 3.12, which the exit status cannot tell from the suite's own 2; so the
@@ -492,7 +692,15 @@ runpy.run_module("unittest", run_name="__main__", alter_sys=True)' "$started" "$
   fi
 fi
 
-say "$rel (working tree) against $base ($(git -C "$TOP" rev-parse --short "$sha"))"
+if [ -n "$CMD_MODE" ]; then
+  shown=$(printf '%q ' "${RUN[@]}" "$@")
+  where="from PATH"
+  [ -z "$CMD_PATH" ] || where="the run tree's copy"
+  say "command: ${shown% } ($where) against $base ($(git -C "$TOP" rev-parse --short "$sha"))"
+else
+  say "$rel (working tree) against $base ($(git -C "$TOP" rev-parse --short "$sha"))"
+fi
+[ -z "$SNAP_NOTE" ] || say "$SNAP_NOTE"
 i=0
 while [ "$i" -lt "${#ALSO_REL[@]}" ]; do
   say "also: ${ALSO_REL[$i]} (working tree)"
@@ -503,7 +711,14 @@ while [ "$i" -lt "${#MUT_REL[@]}" ]; do
   say "mutant: ${MUT_REL[$i]}: ${MUT_EXPRS[$i]}"
   i=$((i + 1))
 done
+i=0
+while [ "$i" -lt "${#REV_SHA[@]}" ]; do
+  say "revert: $(git -C "$TOP" rev-parse --short "${REV_SHA[$i]}") under $(printf '%q' "${REV_PATHS[$i]}")"
+  i=$((i + 1))
+done
 [ "$TIMEOUT" -eq 0 ] || say "timeout: ${TIMEOUT}s"
+[ -z "$CARRIED_WARN" ] \
+  || say "warning: every file this branch changes (against its merge base with $base) is carried into this run, so it is the branch's own run, not a control -- a tests-only change, or a fix that lives in the suite, passes here too; take --mutate or --revert on the code under test instead"
 [ -z "$runner$module" ] || say "runs as: ${RUN_SHOWN:-${RUN[*]}}"
 [ -z "$py_note" ] || say "$py_note"
 # The suite runs in the background so the INT/TERM traps fire at once rather than after it
