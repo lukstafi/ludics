@@ -115,7 +115,9 @@
 # (the `git bisect run` convention for "cannot test"), so a refusal is never read as the suite's
 # failure -- and a suite's own 125 is reported as 1, as is its own 124 when a timeout is armed.
 # Whatever the suite left running is stopped with it: its process group gets TERM, then KILL
-# after RUN_AGAINST_BASE_GRACE whole seconds (default 5).
+# after RUN_AGAINST_BASE_GRACE whole seconds (default 5). A capture of its output that never ends
+# (something outside the group holding it, RUN_AGAINST_BASE_TEE_DRAIN whole seconds, default 30,
+# after the group is stopped) is 125 too, naming what still holds it.
 
 set -uo pipefail
 
@@ -543,6 +545,11 @@ fi
 GRACE=${RUN_AGAINST_BASE_GRACE:-5}
 case "$GRACE" in '' | *[!0-9]*) die "RUN_AGAINST_BASE_GRACE must be whole seconds: $GRACE" ;; esac
 GRACE=$((10#$GRACE))
+# TEE_DRAIN: how long tee gets to see EOF once the suite's group is stopped (below), validated here
+# with the grace. RUN_AGAINST_BASE_TEE_DRAIN overrides the 30s; a test lowers it.
+TEE_DRAIN=${RUN_AGAINST_BASE_TEE_DRAIN:-30}
+case "$TEE_DRAIN" in '' | *[!0-9]*) die "RUN_AGAINST_BASE_TEE_DRAIN must be whole seconds: $TEE_DRAIN" ;; esac
+TEE_DRAIN=$((10#$TEE_DRAIN))
 
 # The cleanup is armed before the scratch directory exists, so no signal can land between the
 # allocation and the trap; until SCRATCH is set it has nothing to do.
@@ -571,21 +578,24 @@ gone() {
     i=$((i + 1))
   done
 }
-# TEE_DRAIN: how long tee gets to see EOF once the suite's group is stopped. Not the suite's
-# grace, which may be 0 or 1: a tee that needs a moment on a loaded box is not a failed capture
-# (a macOS CI runner took over a second), and past this only a process that escaped the group can
-# still be holding the fifo.
-TEE_DRAIN=30
+# TEE_DRAIN (default 30s): how long tee gets to see EOF once the suite's group is stopped. Not the
+# suite's grace, which may be 0 or 1: a tee that needs a moment on a loaded box is not a failed
+# capture (a macOS CI runner took over a second). Past it, either a process that escaped the group
+# still holds the fifo, or tee itself is stuck; macOS CI has hit it with suites that start nothing
+# (ludics-lite#479, cause not yet found), so the refusal names what tee was waiting on.
 # fifo_holders: what a tee that never saw EOF was waiting on, for the line that reports it
 # (ludics-lite#479): tee's own state, then every other process that still has the fifo open, with
-# its parent and process group. BOUNDARY: the holders are read with `lsof -t` where it is
-# installed, else `fuser` (pids only), else not at all, and the line says which; each is then one
-# `ps` line, so a holder that exits in between is simply missing. It is a diagnostic only: the
-# run is refused either way, and nothing here decides anything.
+# its parent and process group. BOUNDARY: the holders are this user's processes whose open files
+# `lsof` lists by the fifo's path (macOS lsof cannot search for a fifo by path, so the user's open
+# files are listed and matched by name; another user's are not readable without root), else, with
+# no lsof, `fuser` on the path (pids only), else nobody, and the line says so. Each holder is then
+# one `ps` line, so one that exits in between is simply missing. It is a diagnostic only: the run
+# is refused either way, and nothing here decides anything.
 fifo_holders() {
   local f="$SCRATCH/fifo" pids p line out=
   if command -v lsof >/dev/null 2>&1; then
-    pids=$(lsof -t -w -- "$f" 2>/dev/null)
+    pids=$(lsof -w -n -P -a -u "$(id -u)" -F pn 2>/dev/null \
+      | awk -v f="$f" '/^p/ { p = substr($0, 2) } /^n/ && substr($0, 2) == f { print p }' | sort -u)
   elif command -v fuser >/dev/null 2>&1; then
     pids=$(fuser "$f" 2>/dev/null)
   else

@@ -200,6 +200,15 @@ printf '#!/usr/bin/env ./run-against-base-no-such-interpreter\nexit 0\n' >"$R/sc
 printf '#!/usr/bin/env /run-against-base/no/such/interpreter\nexit 0\n' >"$R/scripts/test-envabs.sh"
 printf '#!/usr/bin/env -S /run-against-base/no/such/interpreter -e\nexit 0\n' >"$R/scripts/test-envSabs.sh"
 printf '#!/usr/bin/env --split-string=run-against-base-no-such-interpreter\nexit 0\n' >"$R/scripts/test-envlong.sh"
+# A suite that leaves a holder of its output in a session of its own, outside the group the helper
+# stops: the capture never ends (#479).
+cat >"$R/scripts/test-escape.sh" <<'EOF2'
+#!/usr/bin/env bash
+perl -MPOSIX -e 'POSIX::setsid(); open(my $f, ">", $ARGV[0]) or die; print $f "$$\n"; close $f; exec "sleep", "30"' "$1" &
+for i in $(seq 1 100); do [ -s "$1" ] && break; sleep 0.1; done
+echo "1 passed, 0 failed"
+EOF2
+chmod +x "$R/scripts/test-escape.sh"
 # A NUL byte in the suite's output, before its tally (#459).
 printf '#!/usr/bin/env bash\nprintf "a\\000b\\n"\necho "1 passed, 0 failed"\n' >"$R/scripts/test-nul.sh"
 chmod +x "$R/scripts/test-envSq.sh" "$R/scripts/test-envSqmiss.sh" "$R/scripts/test-envrel.sh" \
@@ -365,17 +374,19 @@ signal_case() {
   # Bounded: a helper that waits forever on a suite ignoring TERM is the regression this case is
   # for, and it must fail here rather than hang the run. An exited helper is a zombie until
   # waited for, and kill -0 reaches a zombie, so the state is read instead.
-  for i in $(seq 1 300); do
+  # Past the helper's own 30s output drain, so a drain that times out (#479) is reported by the
+  # helper, naming what it waited on, rather than cut off here.
+  for i in $(seq 1 450); do
     case $(ps -o stat= -p "$hpid" 2>/dev/null) in '' | Z*) break ;; esac
     sleep 0.1
   done
   if case $(ps -o stat= -p "$hpid" 2>/dev/null) in '' | Z*) false ;; *) true ;; esac then
-    ko "$sig: the helper was still running 30s after $sig"
+    ko "$sig: the helper was still running 45s after $sig -- $(cat "$TMP/sig.$sig.out"; ps -eo pid=,ppid=,pgid=,stat=,command= | awk -v h="$hpid" -v s="$spid" '$3 == h || $3 == s')"
     kill -KILL -- "-$hpid" "-$spid" 2>/dev/null
   fi
   wait "$hpid"
   rc_s=$?
-  if [ "$rc_s" -eq "$want" ]; then ok "$sig: helper exits $want"; else ko "$sig: helper rc=$rc_s want $want"; fi
+  if [ "$rc_s" -eq "$want" ]; then ok "$sig: helper exits $want"; else ko "$sig: helper rc=$rc_s want $want -- $(cat "$TMP/sig.$sig.out")"; fi
   for i in $(seq 1 50); do
     kill -0 "$spid" 2>/dev/null || break
     sleep 0.1
@@ -619,6 +630,33 @@ else
   ko "exec failure: rc=$rc -- $out"
 fi
 worktrees_clean "after path-shape cases"
+
+# A capture that never ends is the helper's 125, and the refusal names what holds it (#479): here
+# a process the suite moved to a session of its own, which the group stop cannot reach.
+rm -f "$TMP/escape.pid"
+out=$(cd "$R/scripts" && TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 RUN_AGAINST_BASE_TEE_DRAIN=2 "$RAB" test-escape.sh "$TMP/escape.pid" 2>&1)
+rc=$?
+epid=$(cat "$TMP/escape.pid" 2>/dev/null)
+if command -v lsof >/dev/null 2>&1 || command -v fuser >/dev/null 2>&1; then
+  want="the fifo is also open in [$epid "
+else
+  want="no lsof or fuser here"
+fi
+if [ "$rc" -eq 125 ] && [ -n "$epid" ] && grep -qF "capturing the suite's output failed (tee: timeout: tee is [" <<<"$out" \
+  && grep -qF -- "$want" <<<"$out"; then
+  ok "a capture held open past the drain exits 125 and names the holder"
+else
+  ko "escaped holder: rc=$rc holder=$epid -- $out"
+fi
+[ -z "$epid" ] || kill "$epid" 2>/dev/null
+worktrees_clean "after an escaped holder"
+out=$(cd "$R/scripts" && TMPDIR="$HTMP" RUN_AGAINST_BASE_TEE_DRAIN=x "$RAB" test-toy.sh 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'RUN_AGAINST_BASE_TEE_DRAIN must be whole seconds' <<<"$out"; then
+  ok "a malformed drain is refused up front"
+else
+  ko "drain x: rc=$rc -- $out"
+fi
 
 # The grace is validated before anything is allocated; a suite's own 125 is not the helper's.
 out=$(cd "$R/scripts" && TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=0.5 "$RAB" test-toy.sh 2>&1)
