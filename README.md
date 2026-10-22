@@ -384,9 +384,32 @@ the suite's:
   and an interrupted run leaves nothing to restore. A
   PR whose change is entirely in tests uses mutants of the code under test, not the base, as its
   negative control.
+- `--revert <commit> <path>` (repeatable; ludics-lite#765) is the A/B or necessity control: in
+  the throwaway worktree (without `--base`, the same working-tree snapshot), `<commit>`'s own
+  change under `<path>` is undone with `git apply -R`, so the run is the head with only that change
+  undone. `<path>` is literal; a directory takes its subtree, and `.` at the root the whole
+  commit. A fix spread over several commits is undone by naming each, newest first. A merge, a root
+  commit, a commit outside the run's history, a path the commit does not change, a symlink or
+  submodule change, and a reverse patch that a later change overlaps are each refused (125).
+  `--revert` is for a committed change; `--mutate` for a mutant that is no commit.
 - `--timeout <s>` (or `RUN_AGAINST_BASE_TIMEOUT`) stops a hanging suite's process group and
   reports the base as failing, exit 124: a hang is a valid negative control for a fix that ends
   one.
+
+In the run's tree the copies come first, then the reverts, then the mutations, whatever the
+flags' order. A plain base run warns when every file the branch changes is carried into it (#501):
+it is then the branch's own run, not a control, and takes `--mutate` or `--revert` instead.
+
+A project whose tests are not one executable file takes the **command form**,
+`scripts/run-against-base.sh --command [options] -- <program> [args...]` (ludics-lite#765). The
+same options come before a required `--`, and everything after it is the command's argv, run from
+the root of the run's tree with only the `--also` files carried. A bare `<program>` is looked up on
+PATH. One with a `/` is a file of the checkout, and runs as the run tree's copy (the base's runner
+runs the base). The project names its own runner, so none is built in here. OCANNL, from a worker's
+OCANNL worktree:
+`~/ludics-lite/scripts/run-against-base.sh --command --revert <fix-commit> <src-path> --timeout 3600 -- tools/test-run.sh run @test/<dir>/runtest-<name>`.
+The helper cannot tell a runner's own refusal or a build failure from a failing test, so read the
+output, and show the same command passing on the head.
 
 A `*.py` suite runs the way CI runs it. A file under `lib/` (a `lib/ludics/tests/test_*.py` unit
 file) runs through the base's `scripts/py` as `scripts/py -m unittest <module>` (`ludics.tests.test_x`

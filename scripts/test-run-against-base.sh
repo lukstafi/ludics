@@ -40,7 +40,20 @@
 #     finding no interpreter, or hanging past --timeout while it looks, is 125, and so is a base
 #     scripts/py that cannot run; a base without one falls back to python3 and says so; a lib/ path CI's discovery never runs (no
 #     module name, not test_*.py, outside a package) is refused; a *.py outside lib/ runs under
-#     python3.
+#     python3;
+#   - --command runs a project's runner (a PATH program, or the run tree's copy of a checkout
+#     file, the working tree's only when --also carries it) from the root of the run's tree, its
+#     argv after the required `--` verbatim; the malformed forms, a program not found or not
+#     startable, and a missing env interpreter exit 125, a hang 124 (#765);
+#   - --revert <commit> <path> undoes that commit's change under the path in the throwaway tree
+#     (the working-tree snapshot without --base): the change's other files and later independent
+#     edits stay, added files go and modes return, overlapping commits revert newest first, and a
+#     revert precedes the mutations; an unknown, merge, root or out-of-history commit, a path it
+#     does not change (paths are literal), a symlink change and an overlapped patch exit 125; the
+#     live tree's files, index and stash are untouched (#765);
+#   - a plain base run that carries every file the branch changes warns that it is the branch's
+#     own run; a mutant run, or a branch with an uncarried change (untracked included), does not
+#     (#501).
 #
 # Usage: test-run-against-base.sh   (exit 0 all pass, 1 otherwise)
 
