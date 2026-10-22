@@ -694,8 +694,9 @@ class WindowDeadline(RegistryCase):
     def test_a_corrupt_deadline_blocks_the_ledger(self) -> None:
         self.window(extra={"deadline": 60})
         path = os.path.join(self.root, "executions", "w.json")
+        # Round 2 of #771: deadline_at is exactly created_at + deadline, so no ledger edit lists past the cap.
         for corrupt in ({"deadline_at": "soon"}, {"deadline_at": "2099-01-01T00:00:00"}, {"deadline": 0},
-                        {"deadline": None}):
+                        {"deadline": None}, {"deadline_at": "9999-12-31T23:59:59+00:00"}, {"deadline": 61}):
             with open(path) as f:
                 data = json.load(f)
             good = dict(data)
@@ -792,6 +793,25 @@ class Snapshot(RegistryCase):
         self.assertEqual(rc, 1)
         self.assertIn("the registry is busy", err)
         self.assertEqual(registry.SNAPSHOT_LOCKS, [])
+
+    def test_nothing_is_said_while_the_lock_is_held(self) -> None:
+        # Round 2 of #771: a caller that stops reading its pipe must stall only its own action, so
+        # every line -- a listing, a written record, a refusal -- is written once the lock is free.
+        held_at_write: list[bool] = []
+
+        class Watching(io.StringIO):
+            def write(self, text: str) -> int:
+                held_at_write.append(bool(registry.SNAPSHOT_LOCKS))
+                return super().write(text)
+
+        argv = ["-", self.root, "", "owner", "token", "", "mac", "", ""]
+        for action, payload in (("run", request("s", standing=True)), ("list", {}),
+                                ("reserve", request("bad", kind="other"))):
+            argv[2], argv[5] = action, json.dumps(payload)
+            with contextlib.redirect_stdout(Watching()), contextlib.redirect_stderr(Watching()):
+                registry.run(argv)
+        self.assertTrue(held_at_write, "something was said")
+        self.assertNotIn(True, held_at_write)
 
     def test_the_lock_is_released_after_a_refusal(self) -> None:
         self.assertEqual(self.call("reserve", request("bad", kind="other"))[0], 1)

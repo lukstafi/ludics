@@ -155,7 +155,7 @@ whole number from 1 to a week) beside `box`, `request` and `gap`, never in the r
 window's opening by which its coordinator will have CONCLUDED it -- its runner's `--deadline`, the
 setup before it, and the conclusion's own latency. The record keeps `deadline` and `deadline_at`
 (ISO 8601 UTC on this anchor's clock: when this action created the window, after any gap, plus
-`deadline`), fixed for the record's life: a retried window names the same deadline, or none when the
+`deadline`, which the ledger's validation holds it to), fixed for the record's life: a retried window names the same deadline, or none when the
 record has none, or is refused, and never moves `deadline_at`. Only `window` takes one. A listing
 (`list`, `wait`) adds `deadline_left` to such a record: the whole seconds from this anchor's clock
 to `deadline_at`, 0 once past, so a waiter on another host reads the time left without comparing
@@ -177,7 +177,8 @@ checkout carries it, and `execution leg`'s re-read tolerance stays. The lock ord
 lease lock (fleet-worker's mkdir lock, taken by the shell before this program starts), then
 `executions.lock`, then `waiters/.lock`, then a lane lock (never waited for); `wait` takes the
 snapshot before its heartbeat's `waiters/.lock`, as a window with a gap does, so the two never
-cross. The wait for it is bounded (`LOCK_WAIT`, polled): past it the action is refused, the
+cross. Nothing an action says is written while it holds the lock (`run` buffers it), so a caller
+that stops reading stalls only its own action. The wait for it is bounded (`LOCK_WAIT`, polled): past it the action is refused, the
 registry busy, rather than a reader hanging behind a wedged writer. The anchor is POSIX: this
 module already flocks, and no anchor runs under Git Bash.
 
@@ -233,6 +234,7 @@ still answers with its record: what a record holds is validated only as a nonemp
 """
 import contextlib
 import fcntl
+import io
 import json
 import os
 import re
@@ -423,13 +425,15 @@ def validate_record(data: Any, path: Path) -> Record:
     if "window" in record and (record["window"] is not True or record["request"]["kind"] != "measurement"):
         refuse(f"invalid measurement window: {path}")
     if {"deadline", "deadline_at"} & set(record):
-        # THE WINDOW'S DEADLINE: both or neither, and only on a window.
+        # THE WINDOW'S DEADLINE: both or neither, only on a window, and `deadline_at` exactly its
+        # creation plus `deadline`, so the listing's time left is never past the cap.
         try:
-            deadline_ok(record.get("deadline"))
+            seconds = deadline_ok(record.get("deadline"))
             at = datetime.fromisoformat(record["deadline_at"]) if isinstance(record.get("deadline_at"), str) else None
-        except ValueError:
-            at = None
-        if at is None or at.tzinfo is None or record.get("window") is not True:
+            due = datetime.fromisoformat(record["created_at"]) + timedelta(seconds=seconds)
+        except (ValueError, OverflowError):
+            at = due = None
+        if at is None or at.tzinfo is None or at != due or record.get("window") is not True:
             refuse(f"invalid window deadline: {path}")
     if record["state"] == "concluded":
         nonempty(record, ["verdict", "log"])
@@ -1210,8 +1214,25 @@ def main(argv: list[str]) -> None:
 
 def run(argv: list[str]) -> int:
     """`main` with the registry's refusal contract: one `EXECUTION REFUSED: <why>` line on stderr, exit 1;
-    a window inside the gap (see the header) is exit 3, its answer on stdout. The snapshot lock is
-    released here, whatever the outcome, so an in-process caller's next action does not wait on it."""
+    a window inside the gap (see the header) is exit 3, its answer on stdout. Everything an action
+    says is buffered and written only once the snapshot lock is released (THE SNAPSHOT): a caller
+    that stops reading its pipe then stalls this process alone, never every other action behind
+    the lock. The lock is released whatever the outcome, so an in-process caller's next action
+    does not wait on it either."""
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            return outcome(argv)
+    finally:
+        unlock_snapshot()
+        sys.stdout.write(out.getvalue())
+        sys.stderr.write(err.getvalue())
+        sys.stdout.flush()
+        sys.stderr.flush()
+
+
+def outcome(argv: list[str]) -> int:
+    """`main`, its refusals and its gap answer said, and its status (`run`'s contract)."""
     try:
         main(argv)
     except Gap as gap:
@@ -1221,8 +1242,6 @@ def run(argv: list[str]) -> int:
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"EXECUTION REFUSED: {exc}", file=sys.stderr)
         return 1
-    finally:
-        unlock_snapshot()
     return 0
 
 

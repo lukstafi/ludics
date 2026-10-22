@@ -1176,8 +1176,10 @@ def window_cutoff(holding: list[dict[str, Any]], start: float) -> tuple[float, s
     found the box held gave it (``deadline_left``, by the anchor's clock), or ``start`` +
     ``WINDOW_WAIT`` for one that gives none; and what the lines say it is. A deadline already past
     gives up at once. Windows that open later do not move it: a waiter's bound runs across
-    back-to-back windows, and the gap is where it gets out. The listing's age when the wait starts
-    (its read's own latency) comes off the wait, never onto it."""
+    back-to-back windows, and the gap is where it gets out. The boundary: the time left is counted
+    from when that listing reached this process, so the cutoff falls after the recorded deadline by
+    the read's return latency (seconds over ssh). That errs only toward waiting longer for the
+    window's conclusion: the batch is still admitted only on a read that finds the box free."""
     cutoff, said = start + WINDOW_WAIT, "--wait-window"
     candidates: list[tuple[float, str]] = []
     for record in holding:
