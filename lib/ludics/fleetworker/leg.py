@@ -837,27 +837,6 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
     # it ends that line, whose text is kept and ended.
     reported = re.compile(rb"execution-leg " + re.escape(token.encode()) + rb": exit: ([0-9]{1,3})\r?\n?\Z")
     far = re.compile(rb"execution-leg " + re.escape(token.encode()) + rb": far: ([0-9]+)\r?\n")
-    sys.stdout.flush()
-    sys.stderr.flush()
-    try:
-        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
-    except OSError as exc:
-        sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
-        return 127
-    assert child.stdin is not None and child.stdout is not None
-    stdin = child.stdin
-
-    def feed() -> None:
-        # From a thread of its own: bash reads a script on stdin as it runs it, so a far side that
-        # writes before it has read the whole script must never wait for this write to finish.
-        try:
-            stdin.write(script.encode("utf-8", "surrogateescape"))
-            stdin.close()
-        except OSError:
-            pass
-
-    feeder = threading.Thread(target=feed, daemon=True)
-    feeder.start()
     sentinel: int | None = None
     far_pid: str | None = None
     out = sys.stdout.buffer
@@ -878,11 +857,35 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
     def stopped(signum: int, frame: FrameType | None) -> None:
         raise LegStopped(signum)
 
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # The handlers go in before the far side starts, so no moment of it runs unreachable by a stop.
     previous: dict[signal.Signals, Any] = {}
+    child: "subprocess.Popen[bytes] | None" = None
+    feeder: threading.Thread | None = None
     try:
         if stop is not None and threading.current_thread() is threading.main_thread():
             for sig in STOP_SIGNALS:
                 previous[sig] = signal.signal(sig, stopped)
+        try:
+            child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        except OSError as exc:
+            sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
+            return 127
+        assert child.stdin is not None and child.stdout is not None
+        stdin = child.stdin
+
+        def feed() -> None:
+            # From a thread of its own: bash reads a script on stdin as it runs it, so a far side
+            # that writes before it has read the whole script must never wait for this write.
+            try:
+                stdin.write(script.encode("utf-8", "surrogateescape"))
+                stdin.close()
+            except OSError:
+                pass
+
+        feeder = threading.Thread(target=feed, daemon=True)
+        feeder.start()
         # Bounded reads, not readline: a runner's output with no newline in it (progress bars,
         # binary) passes through as it comes, and only a short tail of an unfinished line is held
         # back, enough for a sentinel at its end to be seen.
@@ -910,8 +913,13 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
         except OSError:
             pass
         assert stop is not None
+        if far_pid is None and child is not None:
+            # No pid yet: on the caller's box this is the far shell before its first line, and over
+            # ssh the client; either way nothing is left that a stop could name.
+            child.kill()
         end_far(box, far_pid, why.signum, stop, local=local)
-        child.stdout.close()
+        if child is not None and child.stdout is not None:
+            child.stdout.close()
         raise
     finally:
         for sig, handler in previous.items():

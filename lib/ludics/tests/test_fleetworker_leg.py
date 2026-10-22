@@ -127,6 +127,20 @@ class Stop(unittest.TestCase):
         self.assertEqual((got, asked), (signal.SIGINT, []))
         self.assertIn("EXECUTION LEG STOPPED box: SIGINT before the far side reported its pid", said)
 
+    def test_a_signal_while_the_far_side_starts_is_caught(self) -> None:
+        # The handlers are in before the far side is spawned: a TERM in that instant is the leg's to
+        # handle, never the default disposition's.
+        real = subprocess.Popen
+
+        def popen(*args: Any, **kwargs: Any) -> Any:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(leg.subprocess, "Popen", popen):
+            got, asked, said = self.stream("echo 'execution-leg t0k: far: 4242'\nsleep 2\n")
+        self.assertEqual((got, asked), (signal.SIGTERM, []))
+        self.assertIn("EXECUTION LEG STOPPED box: SIGTERM before the far side reported its pid", said)
+
     def far_stop(self, pid: int, token: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run([self.bash, "-s", str(pid), token, "10"], input="BOX=box\n" + leg.STOP,
                               capture_output=True, text=True, timeout=60)
