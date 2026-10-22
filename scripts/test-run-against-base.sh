@@ -1084,6 +1084,19 @@ cmd_refusal "a program the base does not hold" 'scripts/test-new.sh is not a reg
 cmd_refusal "a program whose env interpreter is missing" 'needs run-against-base-no-such-interpreter' --command --also test-envmiss.sh -- ./test-envmiss.sh
 # The base's lib.sh is not executable: the exec fails, which is the helper's 125, not a 126.
 cmd_refusal "a program that cannot be started" 'could not start' --command -- ./lib.sh
+# A base that keeps the program's directory as a symlink out of the checkout would run a file
+# outside the run's tree.
+cmd_refusal "a program below a symlinked directory of the base" 'is not a directory of the run'"'"'s tree' --command --base linked -- ./lnk/deep/test-deep.sh
+# A script found on PATH whose env interpreter is missing never runs: 125, not env's 127.
+printf '#!/usr/bin/env run-against-base-no-such-interpreter\nexit 0\n' >"$TMP/interp-bin/rab-envmiss-cmd"
+chmod +x "$TMP/interp-bin/rab-envmiss-cmd"
+out=$(cd "$R/scripts" && PATH="$TMP/interp-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command -- rab-envmiss-cmd 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] && grep -qF 'rab-envmiss-cmd needs run-against-base-no-such-interpreter' <<<"$out"; then
+  ok "--command refuses a PATH script whose env interpreter is missing with 125"
+else
+  ko "--command PATH script, missing interpreter: rc=$rc -- $out"
+fi
 SECONDS=0
 run_rab --command --timeout 2 -- sleep 30
 if [ "$rc" -eq 124 ] && [ "$SECONDS" -lt 25 ] && grep -qF 'timed out after 2s' <<<"$out"; then

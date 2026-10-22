@@ -330,9 +330,13 @@ if [ -n "$CMD_MODE" ]; then
     ;;
   '') die "--command: the program is an empty word" ;;
   *)
-    command -v -- "$cmd_word" >/dev/null 2>&1 || die "--command: $(printf '%q' "$cmd_word") is not a program on PATH here; it would never run"
+    found=$(command -v -- "$cmd_word" 2>/dev/null) \
+      || die "--command: $(printf '%q' "$cmd_word") is not a program on PATH here; it would never run"
     rel=$cmd_word
     RUN=("$cmd_word")
+    # A script found on PATH gets the suite's interpreter check: an env shebang whose program is
+    # missing starts env fine, and its 127 would read as the base failing.
+    case "$found" in /*) [ ! -f "$found" ] || check_interp "$found" "$cmd_word" "" ;; esac
     ;;
   esac
 else
@@ -657,6 +661,14 @@ done
 # copies, reverts and mutations that made it: present, and its interpreter found (an exec failure
 # is still caught at the exec).
 if [ -n "$CMD_PATH" ]; then
+  # Every directory above it must be a real directory of the worktree: a symlinked parent in the
+  # base (where the working tree has a directory) would run a file outside the run's tree.
+  case "$rel" in */*) pdir="/${rel%/*}" ;; *) pdir= ;; esac
+  phys=$(CDPATH= cd "$WT$pdir/" 2>/dev/null && pwd -P && printf x) || phys=
+  phys=${phys%x}
+  phys=${phys%$'\n'}
+  [ "$phys" = "$WT$pdir" ] \
+    || die "--command: the directory of $rel in $base is not a directory of the run's tree (a symlink, or missing); it would not run the run tree's copy"
   { [ -f "$WT/$rel" ] && [ ! -L "$WT/$rel" ]; } \
     || die "--command: $rel is not a regular file in $base, and the command runs as the run tree's copy (--also $rel carries the working tree's); it would never run"
   check_interp "$WT/$rel" "$rel" ""
