@@ -3286,15 +3286,6 @@ expect "a main run that fails is the leg's status, its control not run (and the 
   leg --request leg-a --rev red --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh
 grep -q "control patch applied" <<<"$out" && ko "the control ran after a red main run: $out" || ok "...the control skipped"
 [ -z "$(find "$ISSUE_WAVE_STATE/leg-control" -type f 2>/dev/null)" ] && ok "...and every copied patch removed from the box" || ko "a patch was left: $(ls "$ISSUE_WAVE_STATE/leg-control")"
-# A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
-# control run's, which a runner prints last otherwise.
-lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") || ko "could not allocate a bg-run directory (setup)"
-bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" start "$lbg" -- "${FWL[@]}" execution leg --request leg-a --rev claude/topic \
-  --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh >/dev/null 2>&1
-expect "a controlled leg under bg-run concludes pass from its directory" 0 '"verdict": "pass"' -- \
-  "${FWL[@]}" execution conclude --from-bg-run "$lbg" --request leg-a --sha "$(sed -n 's/.*; observed_sha=//p' "$lbg/log")"
-grep -Fq "runner sentinel 'execution-leg: exit: 0'" <<<"$out" && grep -Fq "\"observed_sha\": \"$lb\"" <<<"$out" &&
-  ok "...reading the leg's sentinel, at the observed_sha it printed" || ko "the conclusion read another sentinel or SHA: $out"
 # ludics-lite#749: a run that leaves the worktree dirty says so, beside the HEAD-moved warning; the
 # leg's status stays the runner's.
 expect "a run that leaves the worktree dirty warns, its status the runner's" 0 "^EXECUTION LEG testbox: WARNING: $lwt has 1 uncommitted path(s) after the run (?? leftover;)" -- \
@@ -3340,6 +3331,15 @@ expect "a leg pinned by the runner's flag runs" 0 "runner argv: \\[--expect-back
 expect "...or by its env assignment" 0 "execution-leg: exit: 0" -- leg --request leg-a --rev "$lpin" --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh
 expect "a .github/fleet-leg line the leg cannot read refuses even a --cpu leg" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one this leg reads (pin-flagg --expect-backend)" -- \
   leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
+# A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
+# control run's, which a runner prints last otherwise.
+lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") || ko "could not allocate a bg-run directory (setup)"
+bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" start "$lbg" -- "${FWL[@]}" execution leg --request leg-a --rev claude/topic \
+  --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh >/dev/null 2>&1
+expect "a controlled leg under bg-run concludes pass from its directory" 0 '"verdict": "pass"' -- \
+  "${FWL[@]}" execution conclude --from-bg-run "$lbg" --request leg-a --sha "$(sed -n 's/.*; observed_sha=//p' "$lbg/log")"
+grep -Fq "runner sentinel 'execution-leg: exit: 0'" <<<"$out" && grep -Fq "\"observed_sha\": \"$lb\"" <<<"$out" &&
+  ok "...reading the leg's sentinel, at the observed_sha it printed" || ko "the conclusion read another sentinel or SHA: $out"
 # Over ssh (the shim runs "other" here): every runner word crosses the remote shell intact.
 expect "a leg over ssh passes the runner's words through the remote shell untouched" 0 "runner argv: \\[a b\\] \\['q'\\] \\[\$HOME\\] \\[;\\]" -- \
   env SHIM_SSH_LOCAL=other "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh "a b" "'q'" '$HOME' ';'
