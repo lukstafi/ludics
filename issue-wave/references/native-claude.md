@@ -14,7 +14,8 @@ The runtime runs at most `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` subagents at onc
 raised it from 20 to 40 under `env`; read the effective value in the coordinator's own shell,
 `printenv CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Raising it is the operator's settings edit, never
 the coordinator's. Whether a worker's own subagents count against the same limit is unverified, so
-a sprint (SKILL.md, *Wave mode*) leaves them headroom. Peer plans run as Codex CLI processes and
+a sprint (SKILL.md, *Wave mode*) launches no more workers than three quarters of it (30 of this
+site's 40), leaving the rest to the workers' delegated reads until that is measured. Peer plans run as Codex CLI processes and
 take none.
 
 ## Blocking on a run
@@ -102,8 +103,8 @@ coordinator's message ends that wait. `cache-misses.py --session <coordinator se
 40` lists each one past 40 minutes as `idle <m>m <agent id> context=<tokens> <description>`, the
 ID `SendMessage` takes; the session id is the coordinator's
 `$CLAUDE_CODE_SESSION_ID`. Workers that have handed back are listed too, and are no longer
-live: a final hand-back's board row is done, and an early hand-back's agent ID is the row's
-`retired_agent`.
+live: a final hand-back's board row is done, and an early hand-back's agent ID is listed in the
+row's `retired_agents`.
 
 There are three ways off the clock, chosen by when the wait will end:
 
@@ -120,8 +121,10 @@ There are three ways off the clock, chosen by when the wait will end:
   and merge wait (as for a pause, SKILL.md *A pause is not a halt*), and ends with its last turn:
   a status block giving head, PR, the pending `EXECUTION_REQUEST` verbatim, what its result
   decides, and the step after it. The coordinator concludes the worker's standing reservations
-  and puts the status block on its board row with `state=handed-back-early
-  retired_agent=<agent id>`, which stays on the row when a replacement's ID is recorded there. Once the request
+  and puts the status block on its board row with `state=handed-back-early` and the worker's agent
+  ID appended to `retired_agents`: read the row with `board show <wave> --json` and write the old
+  list plus the new ID, space-separated, so a replacement's own early hand-back keeps its
+  predecessors' IDs. Once the request
   can run, the coordinator either runs it itself (transport `coordinator`) and posts the result
   where the status block says, or launches a fresh worker with the status block as its brief.
   That worker starts with a context of tens of thousands of tokens, not hundreds, and owns the

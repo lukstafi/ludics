@@ -194,20 +194,24 @@ context lean:
   request that cannot be assigned within the hour, or a long deferred measurement, takes the
   hand-back: the remaining work goes to a fresh short-lived worker or to the coordinator, rather
   than a large context staying parked. The forms are [native-claude.md](references/native-claude.md#keeping-workers-warm).
-- **Measurement windows keep the requester's wait under the TTL.** When the home box is contended,
-  prefer another box that runs the same backend to a window that leaves the requester idle past the
-  hour (wave-20261023: ahrefs/ocannl#1482's cc measurement went from mac-studio, held by the wave's
-  workers, to minix-amd-linux); never for a leg whose box is its point (TUF's discrete memory, a
-  backend only one box has).
+- **Measurement windows keep the requester's wait under the TTL.** When the home box is contended
+  and its window will not open within the hour, the coordinator refuses the request with an offer:
+  `EXECUTION_REFUSED <request_id>` naming another box that runs the same backend and when it is free
+  (wave-20261023: ahrefs/ocannl#1482's cc measurement, offered minix-amd-linux in place of a
+  mac-studio held by the wave's workers). The box is a variable of the measurement, so only the
+  worker can accept: it sends a new `EXECUTION_REQUEST` built for that box (its request id,
+  `execution_host` and checkout), or keeps the home box and takes the early hand-back. The coordinator
+  makes no offer for a leg whose box is its point (TUF's discrete memory, a backend only one box
+  has).
 - **After each returned turn, first:** every `EXECUTION_RESULT` is concluded and its worker resumed
   in the same coordinator turn, with `EXECUTION_CONCLUDED` or its next assignment (the first miss
   above was a conclusion with no resume); every `EXECUTION_REQUEST` is assigned, refused, or
   answered with one of the forms above.
 - **Every heartbeat reads the cache**, beside `prs`: `cache-misses.py --since <wave start>
   --session <coordinator session id> --idle 40`, then each `idle` line of a live worker gets one
-  of the resumes above. A worker is not live once its board row is done or names its agent ID as
-  `retired_agent` (an early hand-back's, kept when a replacement takes the row): that one is never
-  resumed. A `resume` miss is a worker the coordinator left idle too long; a
+  of the resumes above. A worker is not live once its board row is done or lists its agent ID in
+  `retired_agents` (every early hand-back's on that row, appended and never overwritten): that one
+  is never resumed. A `resume` miss is a worker the coordinator left idle too long; a
   miss after a block is a host without the 1-hour TTL.
 - **Context discipline, carried by the brief.** Workers keep the full model and context (no cutoff:
   the maintainer's call) and keep what they re-read small: wide reads, log digests and review-thread
@@ -219,14 +223,16 @@ The idle rule and the heartbeat's cache read are for native Claude workers, whos
 numbers measure; for other workers regular mode is the adaptive count, the checklist and the
 context discipline.
 
-**Sprint mode** is the maximum-throughput wave and accepts the misses. It fills agent capacity
+**Sprint mode** is the maximum-throughput wave and accepts the misses. It fills agent capacity, less
+the headroom workers' own subagents need
 ([native-workers.md](references/native-workers.md#placement-and-launch), step 2; a Claude
-coordinator's limit is [native-claude.md](references/native-claude.md#agent-capacity)). More
+coordinator's limit and headroom are [native-claude.md](references/native-claude.md#agent-capacity)). More
 workers stop adding throughput where the shared resources bind: mac-studio's six correctness slots
 and its XProtect queue, GitHub's macOS runner queue, the reviewer's turnaround, the coordinator's
-own latency. So a sprint places the workers beyond what its agent host's slots carry as CLI workers
-on their GPU home boxes ([cli-claude.md](references/cli-claude.md)), where they count against no
-native limit and their batches take that box's slots. It drops the adaptive count, the idle rule
+own latency. So where the user left transport open, a sprint places the workers beyond what its
+agent host's slots carry as CLI workers on their GPU home boxes ([cli-claude.md](references/cli-claude.md)),
+where they count against no native limit and their batches take that box's slots, and the wave
+summary says which. Under an explicit native choice the sprint stops at the native limit (*Launch*). It drops the adaptive count, the idle rule
 and the heartbeat's cache read. It keeps the after-each-turn checklist, since a concluded run whose
 worker waits is lost throughput too, and close-out reports `cache-misses.py` as before.
 
@@ -1121,7 +1127,8 @@ app in [separate-codex.md](references/separate-codex.md#close-out) or
 [app-claude.md](references/app-claude.md#intervention-and-close-out), CLI in
 [cli-claude.md](references/cli-claude.md#close-out); no checkout is removed while an
 outstanding reservation refers to it. For a wave with native Claude workers, put the summary of
-`~/.claude/skills/issue-wave/scripts/cache-misses.py --since <the wave's start date>` in the
+`~/.claude/skills/issue-wave/scripts/cache-misses.py --since <the wave's start date> --session
+<coordinator session id>` in the
 report: its exit 1 means a worker turn after a block rewrote the worker's whole context, which a
 coordinator host without the 1-hour subagent cache does after any wait past 5 minutes ([Blocking on a
 run](references/native-claude.md#blocking-on-a-run)), and its `--list` lines name the transcript

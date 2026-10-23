@@ -34,7 +34,8 @@ Residence does not preclude checks on other boxes; each execution is reserved se
    fetch it, and verify the intended base ref and exact SHA. Never infer it from a stale local
    default branch.
 2. Discover effective agent capacity from the runtime's stated limit and the agents already
-   active, the coordinator and other children included. A sprint fills it; a regular wave launches
+   active, the coordinator and other children included. A sprint fills it, less the headroom the coordinator's file names for workers' own
+   subagents; a regular wave launches
    only as many as SKILL.md's *Wave mode* lets its coordinator answer promptly. Queue dependency-ready issues when
    slots are occupied and launch as capacity frees. If capacity is unknown, establish it from
    tool evidence; do not invent a fixed limit. Dependency readiness, agent capacity and
