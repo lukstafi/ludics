@@ -269,7 +269,9 @@ the next window suspends them again, two registry calls with no message to the w
 batches and legs under `--wait-window` wait through both (without it, each is refused naming
 whichever window is open). A request arriving while a window is open
 joins the queue. The last conclusion leaves the standing reservations restored, and the workers'
-batches are admitted again.
+batches are admitted again. In a regular wave a requester whose window will not open within the
+hour is not left idle in that queue: it takes a keep-warm or an early hand-back, or its request
+moves to another box that runs the same backend (SKILL.md, *Wave mode*).
 
 **The gap between windows, and a window's bound** (ludics-lite#667). Back to back is not gapless.
 In wave-20261016-ocannl the windows on rog ran with no moment between them and starved the box's
