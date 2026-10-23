@@ -99,8 +99,8 @@ lives one TTL from its last request, and every request renews it, a cache read i
 blocked inside its turn makes a request at least every 540 s (`bg-run.sh wait`), so it never
 misses. A worker whose turn has ended is on the clock from its last reply, and only the
 coordinator's message ends that wait. `cache-misses.py --session <coordinator session id> --idle
-40` lists each one past 40 minutes as `idle <m>m agent-<id> context=<tokens> <description>`: the
-`<id>` is its agent ID for `SendMessage`, and the session id is the coordinator's
+40` lists each one past 40 minutes as `idle <m>m <agent id> context=<tokens> <description>`, the
+ID `SendMessage` takes; the session id is the coordinator's
 `$CLAUDE_CODE_SESSION_ID`. Workers that have handed back are listed too, and are no longer
 live: a final hand-back's board row is done, and an early hand-back's agent ID is the row's
 `retired_agent`.

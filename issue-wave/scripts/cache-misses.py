@@ -28,15 +28,17 @@ Output: one summary line, `cache-misses: <m> miss turns of <t> in <n> subagent t
 <tokens> tokens, gaps <min>-<max> s`, the gap being the time from the turn before to the result
 that started this one. A second line is what the transcripts' requests cost, by kind:
 `cost: reads <r>, writes <w>, uncached <u>, output <o> tokens; reads <x>%, writes <y>%, uncached
-<v>%, output <z>%`, the shares weighted by the input price's multiples (cache read 0.1, cache
+<v>%, output <z>%`, each message's usage taken from its latest record, the shares weighted by the input price's multiples (cache read 0.1, cache
 write 2 at the 1-hour TTL and 1.25 at 5 minutes, uncached input 1, output 5); a write whose usage
 does not split it by TTL is weighed at 2. Reads are each request re-reading the whole context, so
 their share says how much context size times requests is costing (native-claude.md, *Keeping
 workers warm*). --list adds one line per miss: `<transcript> <timestamp> gap=<s> written=<tokens>
 <cause>`. --idle MINUTES adds one line per worker whose turn ended at least MINUTES ago and has
 not been resumed since -- its transcript's last entry is an assistant reply that ended the turn
--- `idle <m>m <agent> context=<tokens> <description>`, the description off the transcript's
-`.meta.json`; a subagent a worker spawned itself (`spawnDepth` above 1) is not listed. A worker
+-- `idle <m>m <agent id> context=<tokens> <description>`: the id is the transcript's name
+`agent-<id>.jsonl` without its prefix, the address SendMessage takes, and the description is off
+the transcript's `.meta.json`. Only a user entry (a message or a tool result) ends an idle spell,
+so a trailing bookkeeping record leaves the worker listed; a subagent a worker spawned itself (`spawnDepth` above 1) is not listed. A worker
 that has handed back is listed too: the board says which are done. Exit 0 when no miss followed a
 block, 1 when one did (a wave's close-out reports it), 2 on a usage error.
 """
@@ -89,7 +91,7 @@ def scan(path):
     seen = set()
     turns = 0
     misses = []
-    cost = dict.fromkeys(WEIGHTS, 0)
+    usages = {}         # message id -> its latest usage: a streamed message's records repeat it
     last = None
     last_reply = None   # timestamp of the latest assistant entry
     last_other = None   # timestamp of the latest other entry, the result that starts a turn
@@ -106,22 +108,19 @@ def scan(path):
         stamp = entry['timestamp']
         if entry.get('type') != 'assistant':
             last_other = when(stamp)
-            last = None
+            if entry.get('type') == 'user':  # a message or a tool result: the worker is working again
+                last = None
             if entry.get('type') == 'user' and started_by_user(entry):
                 resumed = True
             continue
         message = entry.get('message', {})
         usage = message.get('usage') or {}
+        if usage and message.get('model') != '<synthetic>':
+            usages[message.get('id')] = usage
         if message.get('id') not in seen and usage and message.get('model') != '<synthetic>':
             seen.add(message.get('id'))
             written = usage.get('cache_creation_input_tokens') or 0
             read = usage.get('cache_read_input_tokens') or 0
-            short = (usage.get('cache_creation') or {}).get('ephemeral_5m_input_tokens') or 0
-            cost['reads'] += read
-            cost['writes_5m'] += min(short, written)
-            cost['writes_1h'] += written - min(short, written)
-            cost['uncached'] += usage.get('input_tokens') or 0
-            cost['output'] += usage.get('output_tokens') or 0
             if turns and written > MIN_WRITE and written > read:
                 gap = None
                 if last_reply is not None and last_other is not None and last_other >= last_reply:
@@ -140,6 +139,15 @@ def scan(path):
                                      ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')))
         elif message.get('stop_reason'):
             last = None
+    cost = dict.fromkeys(WEIGHTS, 0)
+    for usage in usages.values():
+        written = usage.get('cache_creation_input_tokens') or 0
+        short = min((usage.get('cache_creation') or {}).get('ephemeral_5m_input_tokens') or 0, written)
+        cost['reads'] += usage.get('cache_read_input_tokens') or 0
+        cost['writes_5m'] += short
+        cost['writes_1h'] += written - short
+        cost['uncached'] += usage.get('input_tokens') or 0
+        cost['output'] += usage.get('output_tokens') or 0
     return turns, misses, cost, last
 
 
@@ -189,7 +197,8 @@ def main(argv):
             meta = worker_meta(path)
             depth = meta.get('spawnDepth')
             if not (isinstance(depth, int) and depth > 1):
-                idle.append((now - last[0], path.stem, last[1], str(meta.get('description') or '-')))
+                agent = path.stem.removeprefix('agent-')  # the file is agent-<id>.jsonl; SendMessage takes <id>
+                idle.append((now - last[0], agent, last[1], str(meta.get('description') or '-')))
     blocks = [r for r in rows if r[4] != 'resume']
     print(f'cache-misses: {len(rows)} miss turns of {total_turns} in {len(paths)} subagent transcripts, '
           f'{sum(r[3] for r in rows)} tokens written; {len(blocks)} after a block')

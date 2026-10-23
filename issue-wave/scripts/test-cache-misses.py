@@ -166,7 +166,8 @@ class CacheMisses(unittest.TestCase):
             message(0, 'brief'),
             reply(1, 'm1', 500000, 40000, 'Bash', 'ls', output=1000, short=40000),
             result(2),
-            reply(3, 'm2', 500000, 20000, output=1000),
+            reply(3, 'm2', 500000, 20000, output=400),
+            reply(4, 'm2', 500000, 20000, output=1000),  # the same message streamed: its latest record counts
         ])
         rc, out = self.run_report()
         self.assertEqual(out.splitlines()[1], 'cost: reads 1000000, writes 60000, uncached 4, output 2000 tokens; '
@@ -186,13 +187,17 @@ class CacheMisses(unittest.TestCase):
                         meta={'description': 'w-1 old', 'spawnDepth': 1})
         self.transcript('agent-new', [message(0, 'brief'), reply(iso(60), 'm1', 0, 40000, stop='end_turn')],
                         meta={'description': 'w-2 new'})
+        trailing = {'type': 'attachment', 'timestamp': iso(3500)}
+        self.transcript('agent-trail', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 40000, stop='end_turn'),
+                                        trailing], meta={'description': 'w-3 trail'})
         self.transcript('agent-busy', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 40000, 'Bash', 'x',
                                                                   stop='tool_use')])
         self.transcript('agent-sub', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 9000, stop='end_turn')],
                         meta={'description': 'a worker\'s own helper', 'spawnDepth': 2})
         rc, out = self.run_report('--idle', '40')
         idle = [line for line in out.splitlines() if line.startswith('idle ')]
-        self.assertEqual(idle, ['idle 60m agent-old context=40002 w-1 old'], out)
+        self.assertEqual(sorted(idle), ['idle 60m old context=40002 w-1 old',
+                                'idle 60m trail context=40002 w-3 trail'], out)
         rc, out = self.run_report()
         self.assertNotIn('idle ', out)
 
