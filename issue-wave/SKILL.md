@@ -187,7 +187,7 @@ context lean:
 
 - **An adaptive worker count, not a fixed cap.** Start with up to about 12 workers. Launch the next
   queued one only while every returned turn has been answered within a few minutes and the
-  heartbeat's idle list (below) shows no unfinished worker past 40 minutes; while any returned turn has waited
+  heartbeat's idle list (below) shows no live worker past 40 minutes; while any returned turn has waited
   more than 10 minutes for its answer, launch nothing.
 - **No worker idles past the cache TTL.** Within about 50 minutes of a worker's turn ending, resume
   it: with its next step, with a keep-warm `EXECUTION_PENDING`, or with an early hand-back. A
@@ -204,8 +204,10 @@ context lean:
   above was a conclusion with no resume); every `EXECUTION_REQUEST` is assigned, refused, or
   answered with one of the forms above.
 - **Every heartbeat reads the cache**, beside `prs`: `cache-misses.py --since <wave start>
-  --session <coordinator session id> --idle 40`, then each `idle` line whose board row is not done
-  gets one of the resumes above. A `resume` miss is a worker the coordinator left idle too long; a
+  --session <coordinator session id> --idle 40`, then each `idle` line of a live worker gets one
+  of the resumes above. A worker is not live once its board row is done or names its agent ID as
+  `retired_agent` (an early hand-back's, kept when a replacement takes the row): that one is never
+  resumed. A `resume` miss is a worker the coordinator left idle too long; a
   miss after a block is a host without the 1-hour TTL.
 - **Context discipline, carried by the brief.** Workers keep the full model and context (no cutoff:
   the maintainer's call) and keep what they re-read small: wide reads, log digests and review-thread
