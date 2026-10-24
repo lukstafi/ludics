@@ -1179,15 +1179,17 @@ test_checkless_red_run_outranks_a_green_check() {
   assert_contains "$GATE_OUTPUT" "b (startup_failure)" "the red sibling should be named"
 }
 
-# A red in the check list is a verdict the fold already has; the run list adds nothing to it.
-test_red_checks_never_consult_the_run_list() {
+# A red in the check list is a verdict the fold already has; the run list is read once, only to
+# learn which workflow each check belongs to (ludics-lite#785: an advisory workflow's job is
+# dropped), and never asked for a run signal or a run's jobs.
+test_red_checks_read_the_run_list_once() {
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ci","conclusion":"failure","html_url":"u"}]')")
   run_gate
   assert_eq "$GATE_RC" 1 "a failed check is red"
   assert_contains "$GATE_OUTPUT" "RED" "red should headline RED"
-  assert_not_contains "$(cat "$REQUEST_LOG")" "actions/runs" \
-    "a red check list should not need the run list"
+  assert_eq "$(grep -c 'actions/runs' "$REQUEST_LOG")" 1 \
+    "a red check list should read the run list once, for its workflows"
 }
 
 # Round 3 of the review, P1: a pending or cancelled check on one workflow while a sibling has
@@ -2317,7 +2319,7 @@ tests=(
   test_green_over_a_queued_sibling_is_not_green
   test_checkless_red_run_is_red
   test_checkless_red_run_outranks_a_green_check
-  test_red_checks_never_consult_the_run_list
+  test_red_checks_read_the_run_list_once
   test_run_lookup_is_paginated
   test_checkless_red_run_outranks_a_pending_check
   test_checkless_red_run_outranks_a_stopped_check

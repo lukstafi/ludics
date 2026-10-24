@@ -166,6 +166,9 @@ class Gate:
     # measurement window within what is left of it). None before a check.
     deadline: int | None = None
     _round_runs: list[HeadRun] | None = None
+    # The round's run read as ``read_runs`` returned it, so the check fold's workflow lookup and
+    # ``run_signal`` ask the API once a round.
+    _round_raw: str | None = None
     _advisory: ere.Matcher | None = None
     _selected: ere.Matcher | None = None
 
@@ -276,6 +279,26 @@ class Gate:
                 continue
             rows.append(f"{conclusion_class(concl)}\t{name}\t{concl}\t{url}\t{suite or '-'}\t{status or '-'}")
         return rows
+
+    def drop_advisory_workflows(self, sha: str, rows: list[str]) -> list[str]:
+        """The fold's rows less those whose check suite is a run of an advisory WORKFLOW
+        (ludics-lite#785): a check run is named for its job, not its workflow, so a list naming the
+        workflow (OCANNL's ``github pages docs``, whose job is ``build``) matched only the run, and
+        a cancelled job of it read as a stopped build check -- no verdict, the gate held. The
+        suites come from the round's run read; an unread run list drops nothing, and
+        ``run_signal`` then reads it again and says so. Under a selection nothing is advisory, and
+        the run read is not made."""
+        if self.select or not rows:
+            return rows
+        raw = self.read_runs(sha)
+        if raw is None:
+            return rows
+        suites: set[str] = set()
+        for line in herestring_lines(raw):
+            _created, rid, _wid, _event, name, _status, _concl, suite = tab_fields(line, 8)
+            if rid and suite and suite != "-" and self.is_advisory(name):
+                suites.add(suite)
+        return [row for row in rows if tab_fields(row, 6)[4] not in suites]
 
     def apply_waiver(self, rows: list[str]) -> list[str]:
         """``apply_waiver``: the red rows the waiver covers marked ``waived`` -- recorded first on the
@@ -452,6 +475,7 @@ class Gate:
             if rid:
                 runs.append(HeadRun(rid, wid, event, name, status, concl, created))
         self._round_runs = runs
+        self._round_raw = raw
         return raw
 
     def find_orphans(self, sha: str) -> list[Orphan]:
@@ -473,7 +497,7 @@ class Gate:
         wait for, and able to overrule it (see the shell's comment for every round)."""
         repo = self.repo
         waived_runs = ""
-        raw = self.read_runs(sha)
+        raw = self._round_raw if self._round_raw is not None else self.read_runs(sha)
         if raw is None:
             return RunSignal(
                 3, 0, waived_runs, f"the workflow runs for this head could not be read ({self.session.err_line()})"
@@ -677,6 +701,7 @@ class Gate:
                 budget.waited = False
             self.run_state = ""
             self._round_runs = None
+            self._round_raw = None
             rows = self.build_checks(sha)
             if rows is None:
                 self.verdict = "unknown"
@@ -685,6 +710,7 @@ class Gate:
                     "the build signal is UNKNOWN, which is NOT 'nothing is red'.",
                 )
                 return 3
+            rows = self.drop_advisory_workflows(sha, rows)
             if self.waive_mode:
                 rows = self.apply_waiver(rows)
             if self.select:
