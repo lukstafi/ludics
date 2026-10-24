@@ -337,7 +337,9 @@
 #      why). Both are measured from the PR's own timestamps, not from when the watch started, so
 #      they are reached ACROSS windows — a 900s window cannot outrun a 1200s grace.
 #      SHIP_PR_ADVISORY_CHECKS=ERE of check, job and workflow names the build gate ignores
-#      (default: the review app's check and the github-pages deploys) — a run whose red is
+#      (default: the review app's check and the github-pages deploys) — a check run is ignored
+#      when its own name or its workflow's matches, so a workflow named covers every job of it,
+#      a cancelled one included (ludics-lite#785) — a run whose red is
 #      explained entirely by advisory JOBS is not a red build signal either, and a run still in
 #      flight whose every unfinished job is advisory does not hold a `--wait` once its finished
 #      non-advisory jobs are all green and its job list has been still for a minute

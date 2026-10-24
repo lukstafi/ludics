@@ -335,6 +335,23 @@ class GateLoop(unittest.TestCase):
                 gate = make_gate(gh, clock)
                 self.assertEqual((gate.check("7", 0), gate.verdict), (want, verdict))
 
+    def test_a_cancelled_job_of_an_advisory_workflow_does_not_hold_the_gate(self) -> None:
+        # ludics-lite#785: the check is named for its job (build), the list for its workflow; the
+        # run's check suite (2) ties the two together. Without the workflow named, it holds.
+        for env, want, verdict in (({}, 0, "green"), ({"SHIP_PR_ADVISORY_CHECKS": "^claude$"}, 4, "unjudged")):
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h1\tb1\ttopic")
+            gh.on("check-runs", out="ci\tsuccess\tu\t1\tcompleted\nbuild\tcancelled\tv\t2\tcompleted")
+            gh.on("actions/runs?head_sha=h1", out=(
+                "2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1\n"
+                "2026-01-01T00:00:00Z\t101\t2\tpull_request\tgithub pages docs\tcompleted\tcancelled\t2"))
+            with self.subTest(env=env):
+                gate = make_gate(gh, FakeClock(), **env)
+                self.assertEqual((gate.check("7", 0), gate.verdict), (want, verdict))
+                runs = [c for c in gh.calls if any("actions/runs?head_sha" in a for a in c)]
+                self.assertEqual(len(runs), 1, "the fold and the run signal share the round's run read")
+
     def test_the_waiver_records_the_first_read_only(self) -> None:
         gh = FakeGh()
         gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")

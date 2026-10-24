@@ -899,7 +899,10 @@ folded away as superseded, per workflow and event, so a re-triggered invocation 
 gate on its cancelled predecessor while one file's `push` and `pull_request` runs still count
 separately and a queued invocation is never hidden behind a finished twin; and a run whose red is
 explained entirely by advisory jobs is not a red build signal, since those checks were dropped on
-purpose. Nor does a run still in flight hold the gate once its every unfinished job is advisory
+purpose. A check run is named for its job, not its workflow, so the fold drops one by its run's
+workflow name too, matched through the round's run read by check suite (ludics-lite#785: a
+cancelled `build` job of ocannl's advisory `github pages docs` held the gate as no verdict); that
+is the one run read a red check list makes. Nor does a run still in flight hold the gate once its every unfinished job is advisory
 (ludics-lite#500), and the cases pin each way that release fails closed: a required job still
 listed as running, a run with no jobs yet, a jobs read that failed, a run with nothing unfinished
 (between jobs), a required job that finished red or stopped, a job with no timestamp, and a job
