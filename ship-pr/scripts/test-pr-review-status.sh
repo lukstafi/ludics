@@ -102,6 +102,7 @@ reset_fixture() {
   HEAD_SHA=head-sha
   MERGEABLE_STATE=clean
   HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT=""
   FAIL_PULLS=""
   PUSH_ON_REVIEWS_READ=""
   PUSH_AFTER_PULLS_READ=""
@@ -250,8 +251,9 @@ gh() {
     fi
     # base.sha is a stale snapshot on purpose, as on a conflicted PR (see the base-drift suite).
     [ ! -e "$TEST_ROOT/pushed" ] || HEAD_SHA="$PUSHED_HEAD"
-    response=$(jq -cn --arg h "$HEAD_SHA" --arg m "$MERGEABLE_STATE" \
-      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, state:"open", draft:false}')
+    response=$(jq -cn --arg h "$HEAD_SHA" --arg m "$MERGEABLE_STATE" --arg c "${PR_CREATED_AT:-}" \
+      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, state:"open", draft:false}
+       + (if $c == "" then {} else {created_at:$c} end)')
     # Armed AFTER the answer, so THIS read still sees the old head and the next one does not.
     fixture_nth pulls
     [ "$PUSH_AFTER_PULLS_READ" != "$FIXTURE_NTH" ] || : >"$TEST_ROOT/pushed"
@@ -2213,6 +2215,13 @@ test_a_commitless_completed_row_needs_the_head_and_a_silent_reviewer() {
   HEAD_AT=""
   run_status
   assert_not_contains "$(state_tok "$STATE")" failed "an arrival that does not read binds the row to no head"
+  # ...even with the PR's creation readable: a push long after it would inherit an earlier head's row.
+  PR_CREATED_AT=2026-10-23T09:47:16Z
+  run_status
+  assert_not_contains "$(state_tok "$STATE")" failed "the PR's creation alone does not bind the row to the head"
+  HEAD_AT=2026-10-23T09:45:45Z
+  run_status
+  assert_eq "$(state_tok "$STATE")" failed "with the commit date read, the creation is only a later floor"
   commitless_fixture
   REACTIONS_JSON="[$(reaction +1 2026-10-23T09:50:00Z)]"
   run_status

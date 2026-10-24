@@ -732,8 +732,11 @@ def status_state(ctx: Ctx, pr: str) -> State:
     # carries an em dash for the commit and its record a null commit_sha, with nothing posted and
     # no 👍 -- a run that ended without a verdict, re-requested as a Failed one is (`watch` posts
     # its one '@codex review' per head). The row names no head, so it counts only when it is
-    # newer than this head's arrival and the reviewer has posted nothing about the head; an
-    # arrival that does not read leaves it unread.
+    # newer than this head's arrival -- the commit's date, which must read (the PR's creation
+    # alone would hand an earlier head's row to every later push), or the creation where that is
+    # newer -- and the reviewer has posted nothing about the head. BOUNDARY: a commit dated before
+    # the row but pushed after it reads the row as its own; what that costs is one request for a
+    # head the reviewer had not reached, never a cleared 👍 (none may be up).
     try:
         bare_at = _commitless_done(comments, rev)
     except JqError:
@@ -745,7 +748,7 @@ def status_state(ctx: Ctx, pr: str) -> State:
         if not head_at_read:
             head_at = _commit_read(ctx, head_sha)
             head_at_read = True
-        floor = _arrival_floor(ctx, head_at, head.created)
+        floor = _arrival_floor(ctx, head_at, head.created) if age_of(head_at, ctx.clock.time()) is not None else ""
         try:
             head_findings = _head_findings(comments, reviews, rev, head_sha)
             asked = _requests(comments, rev)
