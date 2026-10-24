@@ -938,9 +938,9 @@ fi
 # head, with nothing posted since the 👀, is a clean round (#439); Failed on the head, with no
 # review and no 👍, is a run to re-request (#453). Two beliefs carry those readings and no anchor
 # PR can: they are about what the app writes NOW, so they are asked of the newest merged PRs.
-#   - The vocabulary: every Code Review row is one of the three shapes status_state reads —
-#     SUMMARY_COMPLETED_ROW_RE, SUMMARY_FAILED_ROW_RE, or a Running row (the test the 👍 path's
-#     Running read makes) — each dated by a well-formed UTC datetime not in the future, since
+#   - The vocabulary: every Code Review row is one of the four shapes status_state reads —
+#     SUMMARY_COMPLETED_ROW_RE, SUMMARY_FAILED_ROW_RE, SUMMARY_COMMITLESS_ROW_RE (Completed naming
+#     no commit, #787), or a Running row (the test the 👍 path's Running read makes) — each dated by a well-formed UTC datetime not in the future, since
 #     status_state orders these stamps as strings. A row outside them keeps the pre-#439
 #     reading, which is safe but silent: a new failure word would read as a stall rather than as
 #     a failed run.
@@ -964,6 +964,7 @@ is_num "$SUMMARY_SAMPLE" || { echo "pr-review-api-contract.sh: CONTRACT_SUMMARY_
 SUMMARY_COMPLETED_ROW_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_COMPLETED_ROW_RE as r; print(r)')
 SUMMARY_FAILED_ROW_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_FAILED_ROW_RE as r; print(r)')
 SUMMARY_ROW_STAMP_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_ROW_STAMP_RE as r; print(r)')
+SUMMARY_COMMITLESS_ROW_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_COMMITLESS_ROW_RE as r; print(r)')
 : >"$SCRATCH/summary_rows.jsonl"
 for n in $(jq -r --argjson k "$SUMMARY_SAMPLE" '[.[] | select(.merged_at != null) | .number | select(type == "number")] | .[:$k] | .[]' <<<"$closed"); do
   # Through files, not the argument vector: a long-reviewed PR's feed is over Linux's
@@ -975,12 +976,14 @@ for n in $(jq -r --argjson k "$SUMMARY_SAMPLE" '[.[] | select(.merged_at != null
   # it — beside the app's last submitted review. The Running test is the 👍 path's.
   jq -cn --argjson pr "$n" --arg rev "$REVIEWER" --arg done "$SUMMARY_COMPLETED_ROW_RE" \
     --arg failed "$SUMMARY_FAILED_ROW_RE" --arg stamp "$SUMMARY_ROW_STAMP_RE" \
+    --arg bare "$SUMMARY_COMMITLESS_ROW_RE" \
     --slurpfile comments "$SCRATCH/s_comments.json" --slurpfile reviews "$SCRATCH/s_reviews.json" "
     def app: $APP; $SUMMARY_ROW_INSTANT_DEF"'
     def kind: if test($done) then "completed" elif test($failed) then "failed"
+              elif test($bare) then "commitless"
               elif test("^\\|[^|]*Code Review[^|]*\\|[^|]*Running") then "running" else "other" end;
     def rows: (.body // "") | split("\n")[] | select(test("^\\|[^|]*Code Review[^|]*\\|"));
-    def dated: [capture($stamp)] | first
+    def dated: (([capture($stamp)] | first) // ([capture($bare)] | first))
       | if . == null then false
         else (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
           and ((try (.at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null) as $t
@@ -1005,7 +1008,7 @@ if [ "$n_rows" -eq 0 ]; then
   skip "every Code Review row is a shape status_state reads" "the $(jq length <<<"$summary_rows") sampled merged PRs carry no Code Review row"
 else
   # Failing rows first, so the MOVED line's 400 characters show them.
-  pin "every Code Review row of the sampled PRs' summaries is Completed or Failed in the allowlisted shape, or Running, dated by an ISO 8601 UTC datetime not in the future ($n_rows rows on $(jq length <<<"$summary_rows") PRs; $(jq '[.[].rows[] | select(.kind == "failed")] | length' <<<"$summary_rows") Failed)" \
+  pin "every Code Review row of the sampled PRs' summaries is Completed or Failed in the allowlisted shape, Completed naming no commit, or Running, dated by an ISO 8601 UTC datetime not in the future ($n_rows rows on $(jq length <<<"$summary_rows") PRs; $(jq '[.[].rows[] | select(.kind == "failed")] | length' <<<"$summary_rows") Failed)" \
     'all(.[]; .kind != "other" and .dated)' "$(jq -c '[.[] | .pr as $pr | .rows[] | {pr: $pr} + .] | sort_by(.kind != "other" and .dated)' <<<"$summary_rows")"
 fi
 ordered=$(jq -c '[.[] | select(.newest != null and .newest.kind == "completed" and .review != null)

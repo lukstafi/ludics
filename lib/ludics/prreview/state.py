@@ -114,7 +114,14 @@ SUMMARY_FAILED_ROW_RE = (
     "[^<|]*</relative-time> *\\| *`(?<sha>[0-9a-f]{7,40})` *\\|"
 )
 SUMMARY_ROW_STAMP_RE = 'datetime="(?<at>[^"]+)"[^|]*\\| *`(?<sha>[0-9a-f]{7,40})` *\\|'
+# A Completed row whose Commit cell is an em dash (ludics-lite#787): a round the app closed with no
+# commit, no review and no 👍 (staging#1347's first round, its state record's commit_sha null).
+SUMMARY_COMMITLESS_ROW_RE = (
+    '^\\|[^|]*Code Review[^|]*\\| *\u2705 \\*\\*Completed\\*\\* <relative-time datetime="(?<at>[^"]+)">'
+    "[^<|]*</relative-time> *\\| *\u2014 *\\|"
+)
 _SUMMARY_COMPLETED_ROW = onig(SUMMARY_COMPLETED_ROW_RE)
+_SUMMARY_COMMITLESS_ROW = onig(SUMMARY_COMMITLESS_ROW_RE)
 _SUMMARY_FAILED_ROW = onig(SUMMARY_FAILED_ROW_RE)
 _SUMMARY_ROW_STAMP = onig(SUMMARY_ROW_STAMP_RE)
 _CODE_REVIEW_ROW = onig(r"^\|[^|]*Code Review[^|]*\|")
@@ -286,22 +293,8 @@ def summary_state(comments: list[Json], rev: str) -> SummaryState | None:
     if newest_summary is None:
         return None
     body = body_of(newest_summary)
-    if body.count(_STATE_MARK) != 1:
-        return None
-    m = _STATE_RECORD.search(body)
-    if m is None:
-        return None
-    try:
-        record = json.loads(m.group(1), object_pairs_hook=_no_duplicates)
-    except (ValueError, RecursionError):  # JSONDecodeError and _Duplicate are ValueErrors
-        return None
-    if not isinstance(record, dict):
-        return None
-    code = cast(dict[str, object], record).get("code_review")
-    if not isinstance(code, dict):
-        return None
-    fields = cast(dict[str, object], code)
-    if "has_unresolved_findings" not in fields:
+    fields = _code_review_record(body)
+    if fields is None or "has_unresolved_findings" not in fields:
         return None
     sha = fields.get("commit_sha")
     status = fields.get("status")
@@ -319,6 +312,70 @@ def summary_state(comments: list[Json], rev: str) -> SummaryState | None:
     if not _ISO_STAMP.fullmatch(at):
         return None
     return SummaryState(sha, status, unresolved, at)
+
+
+def _code_review_record(body: str) -> dict[str, object] | None:
+    """The ``code_review`` object of a summary body's one ``codex-review-state:v1`` record (the
+    record ``summary_state`` and ``_commitless_done`` read), or None: no record, a second one, one
+    that does not parse whole, a duplicate key, or no ``code_review`` object."""
+    if body.count(_STATE_MARK) != 1:
+        return None
+    m = _STATE_RECORD.search(body)
+    if m is None:
+        return None
+    try:
+        record = json.loads(m.group(1), object_pairs_hook=_no_duplicates)
+    except (ValueError, RecursionError):  # JSONDecodeError and _Duplicate are ValueErrors
+        return None
+    if not isinstance(record, dict):
+        return None
+    code = cast(dict[str, object], record).get("code_review")
+    if not isinstance(code, dict):
+        return None
+    return cast(dict[str, object], code)
+
+
+def _commitless_done(comments: list[Json], rev: str) -> str:
+    """When the reviewer's newest summary marks its newest Code Review row Completed naming no
+    commit (ludics-lite#787), that row's stamp with its fraction cut; else "".
+
+    Boundary, as a fail-closed allowlist. Read: only the reviewer's NEWEST summary comment, and in
+    it every Code Review row, each of which must read either as ``SUMMARY_ROW_STAMP_RE`` (a row
+    naming a commit) or as ``SUMMARY_COMMITLESS_ROW_RE``; the newest of them by its stamp's instant
+    must be the commit-less one, stamped as a GitHub timestamp, and the summary's one state record
+    (``_code_review_record``) must say the same: ``commit_sha`` present and null, ``status``
+    "completed". A row that reads neither way, a tie between rows, a record that disagrees or does
+    not read, or no summary is "". Not read: the row's trigger cell, the record's other keys, the
+    comment's own timestamps. Which head the row is about is not in it: ``status_state`` bounds it
+    by the head's arrival."""
+    newest_summary = _newest_summary(comments, rev)
+    if newest_summary is None:
+        return ""
+    body = body_of(newest_summary)
+    rows: list[tuple[str, bool]] = []
+    for line in body.split("\n"):
+        if not _CODE_REVIEW_ROW.search(line):
+            continue
+        stamp = capture_first(line, _SUMMARY_ROW_STAMP)
+        bare = capture_first(line, _SUMMARY_COMMITLESS_ROW)
+        if stamp is not None:
+            rows.append((jstr(stamp["at"]), False))
+        elif bare is not None:
+            rows.append((jstr(bare["at"]), True))
+        else:
+            return ""
+    best = max_by(rows, lambda r: instant(r[0]))
+    if best is None or not best[1] or sum(instant(r[0]) == instant(best[0]) for r in rows) != 1:
+        return ""
+    at = sub_once(best[0], _FRACTION_Z, "Z")
+    if not _ISO_STAMP.fullmatch(at):
+        return ""
+    fields = _code_review_record(body)
+    if fields is None or "commit_sha" not in fields or fields["commit_sha"] is not None:
+        return ""
+    if fields.get("status") != "completed":
+        return ""
+    return at
 
 
 def head_summary_state(comments: list[Json], rev: str, head_sha: str) -> SummaryState | None:
@@ -669,6 +726,48 @@ def status_state(ctx: Ctx, pr: str) -> State:
                 f"{_short(head_sha)}|run|{rev}'s summary marks head {_short(head_sha)}'s Code Review"
                 f" Failed at {done_at}, with no review of it, no 👍, and no '@codex review' on it"
                 " since it arrived",
+            )
+
+    # A round the summary closed with no commit named (ludics-lite#787): the app's Completed row
+    # carries an em dash for the commit and its record a null commit_sha, with nothing posted and
+    # no 👍 -- a run that ended without a verdict, re-requested as a Failed one is (`watch` posts
+    # its one '@codex review' per head). The row names no head, so it counts only when it is
+    # newer than this head's arrival and the reviewer has posted nothing about the head; an
+    # arrival that does not read leaves it unread.
+    try:
+        bare_at = _commitless_done(comments, rev)
+    except JqError:
+        return unknown(mstate, "the summary's Code Review rows did not parse")
+    if (
+        bare_at and head_sha and not plus and _after_nudge(bare_at, nudge_at)
+        and (not eyes_at or eyes_at < bare_at) and (not last_spoke or last_spoke < bare_at)
+    ):
+        if not head_at_read:
+            head_at = _commit_read(ctx, head_sha)
+            head_at_read = True
+        floor = _arrival_floor(ctx, head_at, head.created)
+        try:
+            head_findings = _head_findings(comments, reviews, rev, head_sha)
+            asked = _requests(comments, rev)
+        except JqError:
+            return unknown(mstate, "the reviewer's findings or the requests for the head did not parse")
+        if floor and floor < bare_at and not head_findings and not any(ge(a, bare_at) for a in asked):
+            req_before = jstr(alt(jmax([a for a in asked if ge(a, floor) and lt(a, bare_at)]), ""))
+            age = age_of(bare_at, ctx.clock.time())
+            marks = (
+                f"{rev}'s summary marks a Code Review Completed at {bare_at} naming no commit (its"
+                f" state record's commit_sha is null), after head {_short(head_sha)} arrived at {floor},"
+                " with no review of it and no 👍"
+            )
+            if req_before:
+                return State(
+                    "failed", age, mstate,
+                    f"{_short(head_sha)}|run-again|{marks}, after the '@codex review' request at"
+                    f" {req_before} on this head",
+                )
+            return State(
+                "failed", age, mstate,
+                f"{_short(head_sha)}|run|{marks}, and no '@codex review' on it since it arrived",
             )
 
     if eyes_at and eyes_at > last_spoke:

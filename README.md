@@ -1050,7 +1050,11 @@ said inside the run, reads `failed` (kind `run`) where it read `expected`, and `
 `@codex review` and waits out its grace; a `@codex review` already on the head makes it
 `run-again`, which `watch` surfaces unposted, as it does a request that did not post. Its controls
 keep the old reading: another head's row, any 👍, a review of the head or one inside the 👀, a 👀
-above the row, a request after it, and a row outside the observed shape. `test-pr-review-watch.sh` runs PR #277's two-head shape through a watch
+above the row, a request after it, and a row outside the observed shape. ocannl-staging#1347's
+Completed row naming no commit (an em dash, its record's `commit_sha` null; ludics-lite#787) reads
+the same `failed` run, and `watch` posts the one request for it; since the row names no head, its
+controls add a row older than the head's arrival, an arrival that does not read, a record that
+names a commit or another status, and a newer row naming one. `test-pr-review-watch.sh` runs PR #277's two-head shape through a watch
 (findings on the previous head scrolled past as NOT about head, the 👍 on the head above it), and
 `test-pr-review-merge.sh` pins `merge` refusing on an open thread (exit 1, no flag bypassing it)
 and on an unread connection (exit 3), with one read per merge attempt, so a thread opened
