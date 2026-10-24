@@ -102,6 +102,7 @@ reset_fixture() {
   HEAD_SHA=head-sha
   MERGEABLE_STATE=clean
   HEAD_AT=2026-09-01T00:00:00Z
+  PR_CREATED_AT=""
   FAIL_PULLS=""
   PUSH_ON_REVIEWS_READ=""
   PUSH_AFTER_PULLS_READ=""
@@ -250,8 +251,9 @@ gh() {
     fi
     # base.sha is a stale snapshot on purpose, as on a conflicted PR (see the base-drift suite).
     [ ! -e "$TEST_ROOT/pushed" ] || HEAD_SHA="$PUSHED_HEAD"
-    response=$(jq -cn --arg h "$HEAD_SHA" --arg m "$MERGEABLE_STATE" \
-      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, state:"open", draft:false}')
+    response=$(jq -cn --arg h "$HEAD_SHA" --arg m "$MERGEABLE_STATE" --arg c "${PR_CREATED_AT:-}" \
+      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, state:"open", draft:false}
+       + (if $c == "" then {} else {created_at:$c} end)')
     # Armed AFTER the answer, so THIS read still sees the old head and the next one does not.
     fixture_nth pulls
     [ "$PUSH_AFTER_PULLS_READ" != "$FIXTURE_NTH" ] || : >"$TEST_ROOT/pushed"
@@ -2152,6 +2154,120 @@ _🤖 Addressed by an automated coding agent_" "the plain request the pending-nu
   rm -f "$TEST_ROOT/posted.keep"
 }
 
+# lukstafi/ocannl-staging#1347 (ludics-lite#787), 2026-10-23: head ee97b22 committed 09:45:45Z,
+# the PR opened 09:47:16Z, and its first round's summary row flipped to Completed at 09:52:39Z with
+# an em dash for the commit and a null commit_sha in its record — no review, no 👍, no verdict. The
+# worker posted the '@codex review' by hand at 09:59:02Z. Row and record are that comment's, read
+# back from its edit history.
+COMMITLESS_HEAD=ee97b22531d19e1537dcc0736d5812c783ab2ba9
+COMMITLESS_ROW='| 📝 **Code Review** | ✅ **Completed** <relative-time datetime="2026-10-23T09:52:39.550684Z">2026-10-23T09:52:39.550684Z</relative-time> | — | PR opened |'
+COMMITLESS_RECORD='{"code_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":"completed"},"security_review":{"commit_sha":null,"has_any_findings":null,"has_unresolved_findings":null,"status":null}}'
+
+commitless_summary() { # <id> <row> [record]
+  plain_comment "$1" 2026-10-23T09:52:40Z "<!-- codex-pull-request-review-summary -->
+<!-- codex-review-state:v1 ${3:-$COMMITLESS_RECORD} -->
+
+## Codex Review Summary
+
+This comment shows the latest Codex review activity on this pull request.
+
+| Review | Status | Commit | Review trigger |
+| --- | --- | --- | --- |
+$2"
+}
+
+commitless_fixture() {
+  reset_fixture
+  HEAD_SHA="$COMMITLESS_HEAD"
+  HEAD_AT=2026-10-23T09:45:45Z
+  COMMENTS_JSON="[$(commitless_summary 1 "$COMMITLESS_ROW")]"
+}
+
+test_a_commitless_completed_row_is_a_failed_run() {
+  commitless_fixture
+  run_status
+  assert_eq "$(state_tok "$STATE")" failed "a round closed naming no commit, with nothing posted, is not a round that is due"
+  assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" run "and nobody has re-requested it on this head"
+  assert_contains "$LINE" "reviewer's run FAILED on head ee97b22" "the line names the state and the head"
+  assert_contains "$LINE" "Completed at 2026-10-23T09:52:39Z naming no commit" "and the row it rests on"
+  assert_not_contains "$LINE" "review EXPECTED" "the reading staging#1347 had before"
+  # The hand request the worker posted, before the row: the same run, answered by that request.
+  COMMENTS_JSON="[$(commitless_summary 1 "$COMMITLESS_ROW"),$(request_comment 2 2026-10-23T09:50:00Z)]"
+  run_status
+  assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" run-again "a commit-less close answering a request on this head"
+  # ...and after it: pending, so the round it asked for is due.
+  COMMENTS_JSON="[$(commitless_summary 1 "$COMMITLESS_ROW"),$(request_comment 2 2026-10-23T09:59:02Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a commit-less close already re-requested is not re-requested again"
+  # A 👀 older than the row, silent since, bounds the same run.
+  commitless_fixture
+  REACTIONS_JSON="[$(reaction eyes 2026-10-23T09:47:20Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" failed "a 👀 under the row is the round it closed"
+}
+
+# Each control keeps the reading status gave before the row was read.
+test_a_commitless_completed_row_needs_the_head_and_a_silent_reviewer() {
+  commitless_fixture
+  HEAD_AT=2026-10-23T09:55:00Z
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a row older than the head's arrival is an earlier head's"
+  HEAD_AT=""
+  run_status
+  assert_not_contains "$(state_tok "$STATE")" failed "an arrival that does not read binds the row to no head"
+  # ...even with the PR's creation readable: a push long after it would inherit an earlier head's row.
+  PR_CREATED_AT=2026-10-23T09:47:16Z
+  run_status
+  assert_not_contains "$(state_tok "$STATE")" failed "the PR's creation alone does not bind the row to the head"
+  HEAD_AT=2026-10-23T09:45:45Z
+  run_status
+  assert_eq "$(state_tok "$STATE")" failed "with the commit date read, the creation is only a later floor"
+  commitless_fixture
+  REACTIONS_JSON="[$(reaction +1 2026-10-23T09:50:00Z)]"
+  run_status
+  assert_not_contains "$(state_tok "$STATE")" failed "with a 👍 on the PR the re-request could clear it"
+  commitless_fixture
+  REVIEWS_JSON="[$(review 6 "$COMMITLESS_HEAD" 2026-10-23T09:52:37Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" idle "a review of the head is the reviewer speaking"
+  commitless_fixture
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" reviewing "a 👀 above the row is a round to wait out"
+}
+
+test_a_commitless_row_outside_the_allowlist_is_not_read() {
+  local rec
+  for rec in "$(jq -c '.code_review.commit_sha = "ee97b22531d19e1537dcc0736d5812c783ab2ba9"' <<<"$COMMITLESS_RECORD")" \
+             "$(jq -c '.code_review.status = "running"' <<<"$COMMITLESS_RECORD")" \
+             "$(jq -c 'del(.code_review.commit_sha)' <<<"$COMMITLESS_RECORD")"; do
+    commitless_fixture
+    COMMENTS_JSON="[$(commitless_summary 1 "$COMMITLESS_ROW" "$rec")]"
+    run_status
+    assert_eq "$(state_tok "$STATE")" expected "a record that does not say no commit leaves the row unread: $rec"
+  done
+  commitless_fixture
+  COMMENTS_JSON="[$(commitless_summary 1 "${COMMITLESS_ROW//— |/- |}")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a commit cell other than the em dash is not the shape"
+  # A newer row naming a commit is the newest row: the commit-less one is history.
+  commitless_fixture
+  COMMENTS_JSON="[$(commitless_summary 1 "$COMMITLESS_ROW
+| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-10-23T09:53:00Z\">x</relative-time> | \`ee97b22\` | Manual request |")]"
+  run_status
+  assert_not_contains "$(state_tok "$STATE")" failed "an older commit-less row under a newer one is not read"
+}
+
+test_watch_re_requests_a_commitless_completed_row_once() {
+  retune GRACE=2
+  commitless_fixture
+  run_watch 0,1,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 1 \
+    "one request posted for the commit-less round (staging#1347's worker posted it by hand)"
+  assert_contains "$WATCH_ERR" "re-requested the review with '@codex review'" "the watch says it did"
+  assert_not_contains "$WATCH_OUT" "FAILED" "the close it answered is not the verdict"
+}
+
 # Review of #465, round 1: a failure first seen on the window's LAST regular poll still gets the
 # request's grace — the deadline is set by the post, not by the round's `failed` read, which has
 # none — so the watch goes on to read the request back instead of ending on it.
@@ -2317,8 +2433,12 @@ tests=(
   test_a_failed_run_counts_the_requests_on_its_head
   test_a_failed_run_posted_with_an_initialization_failure
   test_a_failed_row_outside_the_allowlist_is_not_read
+  test_a_commitless_completed_row_is_a_failed_run
+  test_a_commitless_completed_row_needs_the_head_and_a_silent_reviewer
+  test_a_commitless_row_outside_the_allowlist_is_not_read
   test_a_broken_jq_program_is_unknown_on_the_request_read
   test_watch_re_requests_a_failed_run_once
+  test_watch_re_requests_a_commitless_completed_row_once
   test_watch_surfaces_a_re_request_that_did_not_post
   test_watch_waits_out_a_re_request_posted_on_its_last_poll
   test_watch_does_not_post_over_an_approval_that_landed_since_the_round

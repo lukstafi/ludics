@@ -560,7 +560,7 @@ ok    a reply to an inline comment is a COMMENTED review by the replier in the s
 skip  the flat listing paginates at 30 by default — #9 has 3 inline comments, not more than a page; a larger anchor shows it
 ok    a review's own comments endpoint answers with exactly the flat listing's rows for that review, by id (the merge-by-id read; review 31)
 ok    the per-review rows carry what poll renders and folds from this feed alone while the flat listing lags: numeric id and pull_request_review_id, commit_id, the original_commit_id the head stamp needs, the position pair the fold keys on, user.login, a non-empty path, body
-ok    every Code Review row of the sampled PRs' summaries is Completed or Failed in the allowlisted shape, or Running, dated by an ISO 8601 UTC datetime not in the future (1 rows on 1 PRs; 0 Failed)
+ok    every Code Review row of the sampled PRs' summaries is Completed or Failed in the allowlisted shape, Completed naming no commit, or Running, dated by an ISO 8601 UTC datetime not in the future (1 rows on 1 PRs; 0 Failed)
 ok    a findings review is submitted before its row flips to Completed: the app's last review naming the newest Completed row's commit is not after that row, on 1 sampled PRs (status_state's 'nothing since the 👀' rests on it, #453)
 ok    the gate's own THREADS_QUERY, sent verbatim, answers #9's reviewThreads as a connection: nodes[], a numeric totalCount and a boolean pageInfo.hasNextPage
 ok    every thread carries a non-empty node id (resolve's threadId) and isResolved as a boolean (closed only when literally true)

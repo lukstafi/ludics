@@ -736,7 +736,9 @@ It fires once per head (two watches on one PR at the same moment could each post
 duplicate request and never a cleared 👍): the request is its own record, so a second Failed row
 on a head that already had a `@codex review` reads `reviewer's run FAILED AGAIN`, and `watch` exits on it for
 you — read the feed, then push a new head or hand it over. `status` states the same move and
-posts nothing.
+posts nothing. A row marked "✅ **Completed**" whose Commit cell is "—", its state record's
+`commit_sha` null, is the same run (ocannl-staging#1347, ludics-lite#787): it names no head, so
+it counts only when newer than the head's arrival and with nothing from the reviewer about the head.
 
 An empty `COMMENTED` review counts as no completed review unless its own inline-comments
 endpoint contains findings. This also excludes it from the convergence count; comments on another

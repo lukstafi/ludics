@@ -14,8 +14,8 @@ parent commit (``git show 14f2ca7:ship-pr/scripts/pr-review.sh``); read them bef
   the 👍 it was about to get;
 - "keep waiting" is said only while something runs: a live round or a fresh nudge extends the
   window ONCE, to a frozen deadline (handed off once from a nudge's pickup to its review);
-- a `failed` run is re-requested by the watch itself, once per head per process, on a state read
-  fresh after the round, and the request is sent ONCE whatever its error (it may have landed);
+- a `failed` run (a Failed summary row, or a Completed one naming no commit, #787) is
+  re-requested by the watch itself, once per head per process, on a state read fresh after the round, and the request is sent ONCE whatever its error (it may have landed);
 - an `expected` verdict -- a 👀 round that ended without a review of the head (a push landed
   during it), or a head with no 👀 past its grace -- is answered with the watch's own
   '@codex review' (ludics-lite#570), once per head, when the verdict's re-reads stand and
