@@ -332,6 +332,31 @@ class Session(Scratch):
         self.assertEqual(read, GhOk("sha"))
         self.assertEqual(self.clock.slept, [600])
 
+    def test_a_hold_waited_out_then_transport_is_not_quota_stopped(self) -> None:
+        # ludics-lite#795: the gate reads quota_stopped() to tell a read the budget stopped (3 at
+        # once) from transport (read again within the wait). A read refused on quota, whose hold an
+        # observer then waits out, and whose later attempts all fail on a 503, is transport.
+        fail = proc.Completed(1, "", "gh: HTTP 503\n")
+        self.gh = Gh(proc.Completed(1, "", "gh: API rate limit exceeded for user\n"),
+                     headers("HTTP/2.0 403 Forbidden", "X-Ratelimit-Remaining: 0", f"X-Ratelimit-Reset: {T0 + 300}"),
+                     headers("HTTP/2.0 200 OK", "X-Ratelimit-Remaining: 9"),
+                     fail, fail, fail, fail)
+        b = self.budget()
+        b.wait_until = T0 + 7200
+        s = self.session(b)
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = s.retry("read", ["api", "repos/o/r/pulls/7", "--jq", ".head.sha"])
+        self.assertEqual(result, GhUnanswered())
+        self.assertEqual(len(self.gh.calls), 7, "the refusal, its probe, the lifting probe, four attempts")
+        self.assertFalse(s.quota_stopped())
+        # The same refusal with no observer's wait to hold it out in is the budget's.
+        self.gh = Gh(proc.Completed(1, "", "gh: API rate limit exceeded for user\n"),
+                     headers("HTTP/2.0 403 Forbidden", "X-Ratelimit-Remaining: 0", f"X-Ratelimit-Reset: {T0 + 300}"))
+        s = self.session(self.budget())
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(s.retry("read", ["api", "repos/o/r/pulls/8", "--jq", ".head.sha"]), GhUnanswered())
+        self.assertTrue(s.quota_stopped())
+
     def test_an_empty_bodied_403_sets_the_hold_from_the_endpoint_s_headers(self) -> None:
         # ludics-lite#612: a write gh could not read the answer to, whose --include status line
         # says 403, is the quota's: not re-sent, and the hold is the probed endpoint's.
