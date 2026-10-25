@@ -907,6 +907,117 @@ class NamedSources(unittest.TestCase):
 
 # --- end to end: a fake gh binary that answers by endpoint and applies --jq ----------------------
 
+# --last-green (ludics-lite#602). The red tip R is a merge: first parent P1, second parent X (a PR
+# head, an ancestor OFF the first-parent chain); P1 -> P2 -> P3 -> root. D is a merge that landed
+# during the rerun, a DESCENDANT of R whose push run went green -- the newest successful push run,
+# which the old recipe (`gh run list --status success --limit 1`) took as the last green.
+R, P1, P2, P3, X, D = ("1" * 40, "2" * 40, "3" * 40, "4" * 40, "5" * 40, "6" * 40)
+RED_AT = "2026-09-10T01:00:00Z"
+RED_PAGE = f"repos/o/r/actions/workflows/1/runs?branch=main&event=push&head_sha={R}&per_page=100"
+GREEN_PAGE = ("repos/o/r/actions/workflows/1/runs?branch=main&event=push&status=success"
+              f"&created=%3C{RED_AT}&per_page=100")
+
+
+def commit(*parents: str) -> str:
+    return json.dumps({"parents": [{"sha": p} for p in parents]})
+
+
+def chain_world(**more: Answer) -> dict[str, Answer]:
+    answers: dict[str, Answer] = {
+        "repos/o/r/actions/workflows?per_page=100": json.dumps({"workflows": [{"id": 1, "name": "ci"}]}),
+        RED_PAGE: runs({"id": 2000, "conclusion": "failure", "head_sha": R, "created_at": RED_AT}),
+        # The server's created filter is checked, not trusted: D is answered anyway.
+        GREEN_PAGE: runs({"id": 2001, "conclusion": "success", "head_sha": D, "created_at": "2026-09-10T01:30:00Z"},
+                         {"id": 1999, "conclusion": "success", "head_sha": X, "created_at": "2026-09-10T00:50:00Z"},
+                         {"id": 1998, "conclusion": "success", "head_sha": P2, "created_at": "2026-09-10T00:40:00Z"},
+                         {"id": 1997, "conclusion": "success", "head_sha": P3, "created_at": "2026-09-10T00:30:00Z"}),
+        f"repos/o/r/git/commits/{R}": commit(P1, X),
+        f"repos/o/r/git/commits/{P1}": commit(P2),
+        f"repos/o/r/git/commits/{P2}": commit(P3),
+        f"repos/o/r/git/commits/{P3}": commit(),
+    }
+    answers.update(more)
+    return answers
+
+
+class LastGreen(unittest.TestCase):
+    def test_the_nearest_first_parent_green_not_the_newest_green(self) -> None:
+        rc, out, err, gh = base_run(chain_world(), ["main", "--last-green", R])
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertEqual(out, f"o/r main: last green for ci: {P2} (run 1998, created 2026-09-10T00:40:00Z),"
+                              f" 2 first-parent commit(s) below the red tip {R[:8]} (red run 2000, created"
+                              f" {RED_AT})\n")
+        self.assertNotIn(D, out, "a descendant of the red tip is never its last green")
+        self.assertNotIn(X, out, "an ancestor off the first-parent chain is not on bisect's line")
+        self.assertNotIn(f"repos/o/r/git/commits/{P2}", gh.asked, "the walk stops at the first hit")
+
+    def test_the_default_branch_is_read_when_none_is_named(self) -> None:
+        answers = chain_world(**{"repos/o/r": json.dumps({"default_branch": "main"})})
+        rc, out, _, _ = base_run(answers, ["--last-green", R])
+        self.assertEqual(rc, 0)
+        self.assertIn(f"last green for ci: {P2}", out)
+
+    def test_no_red_run_at_the_sha_is_nothing_to_attribute(self) -> None:
+        answers = chain_world(**{RED_PAGE: runs({"id": 2000, "conclusion": "success", "head_sha": R,
+                                                 "created_at": RED_AT, "run_attempt": 2})})
+        rc, out, _, _ = base_run(answers, ["main", "--last-green", R])
+        self.assertEqual(rc, 4)
+        self.assertIn("nothing to attribute", out)
+
+    def test_a_chain_with_no_green_on_it_is_four_never_the_newest_green(self) -> None:
+        answers = chain_world(**{GREEN_PAGE: runs(
+            {"id": 2001, "conclusion": "success", "head_sha": D, "created_at": "2026-09-10T00:59:00Z"},
+            {"id": 1999, "conclusion": "success", "head_sha": X, "created_at": "2026-09-10T00:50:00Z"})})
+        rc, out, _, _ = base_run(answers, ["main", "--last-green", R])
+        self.assertEqual(rc, 4)
+        self.assertIn("among 2 successful push run(s) created before it: the chain reached its root", out)
+
+    def test_the_walk_is_bounded(self) -> None:
+        answers = chain_world()
+        answers[f"repos/o/r/git/commits/{P1}"] = commit(P1)  # a self-loop stands for a long chain
+        rc, out, _, gh = base_run(answers, ["main", "--last-green", R])
+        self.assertEqual(rc, 4)
+        self.assertIn(f"none within {base.LAST_GREEN_DEPTH} first-parent commits", out)
+        self.assertEqual(len(gh.asked), 3 + base.LAST_GREEN_DEPTH, "workflows, red page, green page, then the walk")
+
+    def test_a_failed_read_is_unknown_not_absent(self) -> None:
+        for broken in (f"repos/o/r/git/commits/{P1}", GREEN_PAGE, RED_PAGE,
+                       "repos/o/r/actions/workflows?per_page=100"):
+            with self.subTest(broken=broken):
+                answers = chain_world(**{broken: (1, "HTTP 502\n")})
+                rc, out, err, _ = base_run(answers, ["main", "--last-green", R])
+                self.assertEqual(rc, 3, out + err)
+                self.assertIn("UNKNOWN", err)
+                self.assertEqual(out, "")
+
+    def test_greens_name_the_candidates(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write(f"{D}\n\n{X}\n{P3}\n{R}\n")
+        try:
+            rc, out, err, gh = base_run(chain_world(), ["--last-green", R, "--greens", f.name])
+            self.assertEqual((rc, err), (0, ""), out)
+            self.assertEqual(out, f"o/r: last green {P3}, 3 first-parent commit(s) below the red tip"
+                                  f" {R[:8]} (of the 4 SHA(s) given)\n")
+            self.assertFalse(any("actions" in e for e in gh.asked), "no run is read for --greens")
+            with open(f.name, "a", encoding="utf-8") as more:
+                more.write("abc123\n")
+            rc, _, err, _ = base_run(chain_world(), ["--last-green", R, "--greens", f.name])
+            self.assertEqual(rc, 2)
+            self.assertIn("not a full lowercase SHA: abc123", err)
+        finally:
+            os.unlink(f.name)
+
+    def test_usage_refusals(self) -> None:
+        for args in (["--last-green", R[:12]], ["--last-green", R, "--wait"],
+                     ["--last-green", R, "--interim"], ["--last-green", R, "--advisory-red", "f"],
+                     ["--last-green", R, "--integration-records", "f"], ["--greens", "f"],
+                     ["--last-green"], ["--last-green", R, "--greens="]):
+            with self.subTest(args=args):
+                rc, _, err, gh = base_run(chain_world(), ["main", *args])
+                self.assertEqual(rc, 2, err)
+                self.assertEqual(gh.asked, [])
+
+
 _FAKE_GH = r'''
 import json, os, subprocess, sys
 here = os.path.dirname(os.path.abspath(__file__))
@@ -973,6 +1084,14 @@ class EndToEnd(unittest.TestCase):
                 done = self.run_cmd(entry, "main")
                 self.assertEqual((done.returncode, done.stderr), (0, ""))
                 self.assertEqual(done.stdout.splitlines()[0], f"o/r main: green (tip {C[:8]})")
+
+    def test_last_green_through_both_entries(self) -> None:
+        self.answer(chain_world())
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]):
+                done = self.run_cmd(entry, "main", "--last-green", R)
+                self.assertEqual((done.returncode, done.stderr), (0, ""), done.stdout)
+                self.assertIn(f"last green for ci: {P2} (run 1998,", done.stdout)
 
     def test_source_a_runs_the_checks_gate_through_the_gh_on_path(self) -> None:
         answers = pushless_world()
