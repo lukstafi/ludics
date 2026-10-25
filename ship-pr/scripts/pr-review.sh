@@ -261,6 +261,13 @@
 #                                          # green by a NAMED source meanwhile (the merged PR's
 #                                          # head run), never the tip's own verdict; opt-in, for
 #                                          # the gate and the base watch (ludics-lite#308)
+#   pr-review.sh base [owner/name] [branch] --last-green <red sha> [--greens <file>|-]
+#                                          # the integration loop's attribution lookup, not a
+#                                          # verdict: per workflow red at <red sha>, the nearest
+#                                          # first-parent ancestor with a successful push run
+#                                          # created before the red run (--greens: of the SHAs
+#                                          # listed, a local loop's pass records). Exit 0 found,
+#                                          # 3 a read failed, 4 none (ludics-lite#602)
 #   pr-review.sh reply <pr> <comment-id>[+<comment-id>...] <body> [--allow-mention]
 #                                          # the id token poll rendered. A FOLDED entry names
 #                                          # several: the body goes to the first thread and each

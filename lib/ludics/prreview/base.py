@@ -1,4 +1,5 @@
 """``pr-review.sh base [owner/name] [branch] [--wait[=s]] [--interim] [--integration-records f]``
+``pr-review.sh base [owner/name] [branch] --last-green <red sha> [--greens <file>|-]``
 
 Is the base branch's CI green? Ported from the shell's ``cmd_base`` and the helpers only it uses
 (ludics-lite#403): ``base_red_detail``, ``base_page_judged``, ``base_push_trigger``, the
@@ -51,6 +52,13 @@ interim); a run with no job yet, or any job the list does not name unfinished or
 flight. The file records the branch's own push runs' advisory reds only: a merged head's are
 the ones ``merge`` admitted. Without the flag every reading here is BUILD_ADVISORY's, as before,
 so ``base --wait`` (the integration loop's) and the base watch's ``--interim`` are unchanged.
+
+``--last-green <red sha>`` is not a verdict but the integration loop's attribution lookup
+(ludics-lite#602): for each workflow whose push run at that SHA concluded red, the nearest commit
+below it on its first-parent chain with a successful push run created before the red run -- the
+``<last green>`` of ``git log --first-parent <last green>..<red tip>`` and ``git bisect``.
+``--greens <file>`` (``-``: stdin) gives the candidates instead, a local loop's ``pass`` records'
+SHAs. Exit 0 found, 3 a read failed, 4 none. Its boundary is at ``last_green`` below.
 
 The merged PR head's build signal (source (a)) is ``gate_checks``, the ``checks`` subcommand's
 gate (gate.Gate), run as ``tip_pr_head_verdict`` ran it: no wait, under this command's advisory
@@ -1051,6 +1059,169 @@ def _jq_order(value: Json) -> tuple[int, float | str]:
     return (5 if isinstance(value, list) else 6, _json_text(value))
 
 
+# --- --last-green: the attribution step's lower end (ludics-lite#602) ------------------------------
+# The integration loop's attribute step reads `git log --first-parent <last green>..<red tip>`
+# and, when that is ambiguous, bisects the same endpoints. "The newest successful push run" is
+# the wrong last green once a merge lands during the rerun and goes green: that run is a
+# DESCENDANT of the red tip, the range comes out empty, and `git bisect` refuses the endpoints.
+# So the last green is the NEAREST commit below the red tip on its first-parent chain that a
+# green judged, and this computes it rather than leaving it to a pasted pipeline.
+#
+# BOUNDARY, fail closed. It reads, and believes, only these: in runs mode, each workflow's push
+# runs on the branch AT the red SHA (a workflow none of whose runs there concluded red -- failure,
+# timed_out, startup_failure -- is not attributed), and that workflow's push runs on the branch
+# that concluded `success` and were created before the earliest such red run (one page of 100,
+# the issue's "created before the red run"); with --greens, the 40-hex SHAs the file lists, every
+# line validated before any is believed; and the red SHA's first parents, one Git-database
+# commit read per step, at most LAST_GREEN_DEPTH steps. It does not read job lines, the advisory
+# list (a red run is a red run here: the coordinator is attributing it, not gating on it), the
+# workflow files, merged PR heads or the integration records file. A read that fails is exit 3
+# with nothing on stdout, never a shorter walk; no candidate on the chain within the bound is exit
+# 4, never the newest candidate off it (a SHA is printed only for a workflow it was found for).
+LAST_GREEN_DEPTH = 300
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+_ISO_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+
+def load_greens(path: str) -> list[str]:
+    """The ``--greens`` file (``-`` is stdin): one full SHA per line, blank lines skipped. Any
+    other line refuses the whole file (exit 2), never skipped."""
+    try:
+        if path == "-":
+            text = sys.stdin.read()
+        else:
+            with open(path, "rb") as handle:
+                text = proc.decode(handle.read())
+    except OSError:
+        die(f"base: --greens: cannot read '{path}'")
+    shas: list[str] = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if not _FULL_SHA.fullmatch(line):
+            die(f"base: --greens: a line is not a full lowercase SHA: {shell_quote(line)}")
+        shas.append(line)
+    return shas
+
+
+class FirstParents:
+    """The red SHA's first-parent chain below it, read lazily and shared by every workflow."""
+
+    def __init__(self, base: Base, red: str) -> None:
+        self.b = base
+        self.chain: list[str] = []
+        self.cur = red
+        self.root = False
+
+    def _parent(self, sha: str) -> str:
+        """The first parent, "" at a root commit; a failed or malformed read is exit 3."""
+        doc = self.b.gh_json(["api", f"repos/{self.b.repo}/git/commits/{sha}"])
+        parents = None if isinstance(doc, (GhFailed, GhUnanswered)) else _items(get(doc, "parents"))
+        if parents is None:
+            fail(3, f"base: --last-green: could not read the parents of {sha[:8]}"
+                 f" ({self.b.err_line()}) -- the last green is UNKNOWN, not absent.")
+        if not parents:
+            return ""
+        first = jq_raw(get(parents[0], "sha"))
+        if not _FULL_SHA.fullmatch(first):
+            fail(3, f"base: --last-green: the first parent of {sha[:8]} is not a SHA -- the last"
+                 " green is UNKNOWN.")
+        return first
+
+    def nearest(self, candidates: set[str]) -> tuple[str, int] | None:
+        """The nearest chain commit in ``candidates`` and how many first-parent steps below the
+        red SHA it is, or None when the chain ended or the bound was reached first."""
+        for depth, sha in enumerate(self.chain, 1):
+            if sha in candidates:
+                return sha, depth
+        while not self.root and len(self.chain) < LAST_GREEN_DEPTH:
+            parent = self._parent(self.cur)
+            if not parent:
+                self.root = True
+                break
+            self.chain.append(parent)
+            self.cur = parent
+            if parent in candidates:
+                return parent, len(self.chain)
+        return None
+
+    def why_none(self) -> str:
+        return ("the chain reached its root commit" if self.root
+                else f"none within {LAST_GREEN_DEPTH} first-parent commits")
+
+
+def last_green(b: Base, branch: str, red: str, greens: Sequence[str] | None) -> int:
+    """``base --last-green <red sha>``: 0 every red workflow's last green found, 4 one has none."""
+    chain = FirstParents(b, red)
+    if greens is not None:
+        found = chain.nearest(set(greens) - {red})
+        if found is None:
+            print(f"{b.repo}: no last green below {red[:8]} among the {len(greens)} SHA(s) given:"
+                  f" {chain.why_none()}")
+            return 4
+        sha, depth = found
+        print(f"{b.repo}: last green {sha}, {depth} first-parent commit(s) below the red tip"
+              f" {red[:8]} (of the {len(greens)} SHA(s) given)")
+        return 0
+    ebranch = encode_ref(branch)
+    wants = b.workflow_list()
+    if wants is None:
+        fail(3, f"base: --last-green: could not list {b.repo}'s workflows ({b.err_line()}) -- the"
+             " last green is UNKNOWN.")
+    reds: list[tuple[str, str, RunRow]] = []
+    for wid, name in wants:
+        page = b.gh_json(["api", f"repos/{b.repo}/actions/workflows/{wid}/runs"
+                          f"?branch={ebranch}&event=push&head_sha={red}&per_page=100"])
+        items = None if isinstance(page, (GhFailed, GhUnanswered)) else _items(get(page, "workflow_runs"))
+        if items is None:
+            fail(3, f"base: --last-green: could not read {name}'s push runs at {red[:8]}"
+                 f" ({b.err_line()}) -- the last green is UNKNOWN.")
+        red_rows = [r for r in map(_run_row, items)
+                    if r.head_sha == red and r.status == "completed" and conclusion_class(r.conclusion) == "red"]
+        if red_rows:
+            reds.append((wid, name, min(red_rows, key=lambda r: r.created_at)))
+    if not reds:
+        print(f"{b.repo} {branch}: no push run at {red[:8]} concluded red, so there is nothing to"
+              " attribute (a rerun that passed was a flake; or check the SHA)")
+        return 4
+    # Buffered: a later workflow's failed read ends the command with 3 and NO line (Codex review).
+    rc = 0
+    lines: list[str] = []
+    for wid, name, red_run in reds:
+        if not _ISO_UTC.fullmatch(red_run.created_at):
+            fail(3, f"base: --last-green: {name}'s red run {red_run.run_id} has no readable creation"
+                 f" time ({shell_quote(red_run.created_at)}) -- the last green is UNKNOWN.")
+        page = b.gh_json(["api", f"repos/{b.repo}/actions/workflows/{wid}/runs?branch={ebranch}"
+                          f"&event=push&status=success&created=%3C{red_run.created_at}&per_page=100"])
+        items = None if isinstance(page, (GhFailed, GhUnanswered)) else _items(get(page, "workflow_runs"))
+        if items is None:
+            fail(3, f"base: --last-green: could not read {name}'s successful push runs"
+                 f" ({b.err_line()}) -- the last green is UNKNOWN.")
+        greens_of: dict[str, RunRow] = {}
+        for r in map(_run_row, items):
+            # The page is the server's filter; what it answered is checked, not trusted.
+            if (r.conclusion == "success" and _ISO_UTC.fullmatch(r.created_at)
+                    and r.created_at < red_run.created_at and r.head_sha != red
+                    and r.head_sha not in greens_of):
+                greens_of[r.head_sha] = r
+        found = chain.nearest(set(greens_of))
+        if found is None:
+            lines.append(f"{b.repo} {branch}: no last green for {name} below {red[:8]} (red run"
+                         f" {red_run.run_id}, created {red_run.created_at}) among {len(greens_of)}"
+                         f" successful push run(s) created before it: {chain.why_none()}")
+            rc = 4
+            continue
+        sha, depth = found
+        green = greens_of[sha]
+        lines.append(f"{b.repo} {branch}: last green for {name}: {sha} (run {green.run_id}, created"
+                     f" {green.created_at}), {depth} first-parent commit(s) below the red tip {red[:8]}"
+                     f" (red run {red_run.run_id}, created {red_run.created_at})")
+    for line in lines:
+        print(line)
+    return rc
+
+
 # --- the command ------------------------------------------------------------------------------------
 
 
@@ -1062,6 +1233,8 @@ class Args:
     interim: bool
     records: str
     advisory_red: str = ""
+    last_green: str = ""
+    greens: str = ""
 
 
 def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
@@ -1070,6 +1243,9 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
     interim = False
     records = ""
     advisory_red = ""
+    last_green_red = ""
+    greens = ""
+    waited = False
     branch = ""
     wait_text = "0"
     i = 0
@@ -1093,6 +1269,21 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
             advisory_red = arg[len("--advisory-red="):]
             if not advisory_red:
                 die("base: --advisory-red takes a file")
+        elif arg in ("--last-green", "--greens") or arg.startswith(("--last-green=", "--greens=")):
+            name, eq, value = arg.partition("=")
+            if not eq:
+                if i + 1 >= len(args):
+                    die(f"base: {name} takes a value")
+                value = args[i + 1]
+                i += 1
+            if name == "--last-green":
+                if not _FULL_SHA.fullmatch(value):
+                    die(f"base: --last-green takes the red tip's full lowercase SHA, got {shell_quote(value)}")
+                last_green_red = value
+            else:
+                if not value:
+                    die("base: --greens takes a file, or - for stdin")
+                greens = value
         elif "/" in arg:
             if not repo:
                 repo = arg
@@ -1100,8 +1291,10 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
                 branch = arg
         elif arg == "--wait":
             wait_text = str(knobs.checks_wait)
+            waited = True
         elif arg.startswith("--wait="):
             wait_text = arg[len("--wait="):]
+            waited = True
         elif arg.startswith("-"):
             die(f"base: unknown option '{arg}'")
         else:
@@ -1109,7 +1302,12 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
         i += 1
     if not _DIGITS.fullmatch(wait_text):
         die(f"base: --wait takes seconds, got '{wait_text}'")
-    return Args(repo, branch, int(wait_text), interim, records, advisory_red)
+    if greens and not last_green_red:
+        die("base: --greens is --last-green's candidate list; name the red tip with --last-green <sha>")
+    if last_green_red and (waited or interim or records or advisory_red):
+        die("base: --last-green is a lookup, not a verdict: it takes none of --wait, --interim,"
+            " --integration-records, --advisory-red (a local loop's pass records go in as --greens)")
+    return Args(repo, branch, int(wait_text), interim, records, advisory_red, last_green_red, greens)
 
 
 def run(session: GhSession, args: list[str], *, clock: Clock | FuncClock | None = None,
@@ -1137,6 +1335,16 @@ def run(session: GhSession, args: list[str], *, clock: Clock | FuncClock | None 
             "cwd inference only works from a checkout, and not from a background shell.")
     base = Base(session, knobs, repo, clock=clock, gate_config=load_gate_config(environ), gate=gate,
                 records=records, repo_advisory=bool(parsed.advisory_red))
+    if parsed.last_green:
+        greens = load_greens(parsed.greens) if parsed.greens else None
+        branch = parsed.branch
+        if greens is None and not branch:
+            doc = base.gh_json(["api", f"repos/{repo}"])
+            branch = "" if isinstance(doc, (GhFailed, GhUnanswered)) else jq_raw(get(doc, "default_branch"))
+            if not branch:
+                fail(3, f"could not read {repo}'s default branch ({base.err_line()}) -- the last green"
+                     " is UNKNOWN.")
+        return last_green(base, branch, parsed.last_green, greens)
     return Wait(base, parsed, records).run()
 
 
