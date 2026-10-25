@@ -604,7 +604,8 @@ test_the_round_label_costs_no_request() (
 # The missing-environment answer (ludics-lite#421), as #420 saw it: the connector's first word on
 # the head. The first window ends on the comment — it is new activity — but with the state beside
 # it saying what it is, and the round count saying it is not one; the next window, already past
-# it, exits on the nudge remedy at once instead of holding the grace.
+# it, posts the one request at once instead of holding the grace (ludics-lite#792; it used to hand
+# the post back) and ends on the round the request draws.
 test_the_missing_environment_ends_the_wait_with_the_nudge() {
   local now
   reset_fixture
@@ -620,13 +621,16 @@ test_the_missing_environment_ends_the_wait_with_the_nudge() {
   assert_contains "$WATCH_ERR" \
     "ending the wait on summary id=100 commit=- by ${REVIEWER}[bot] — this window opened no round; rounds with findings: 0 of 12" \
     "the exit line must not number the failure as a round"
-  run_watch 0,100,0
-  assert_eq "$WATCH_RC" 0 "the failure is a verdict to act on, as a stall is"
-  assert_contains "$WATCH_OUT" "reviewer FAILED at initialization on head ${H2:0:7}" \
-    "the verdict is on stdout, where the caller reads it"
-  assert_contains "$WATCH_OUT" "the environment is the maintainer's to set up" \
-    "with the remedy for this failure, not the git-ref one"
-  assert_not_contains "$WATCH_OUT" "no review materialized" "and without waiting out the grace"
+  NUDGE_ANSWER=502
+  run_watch 0,100,0 60 900
+  assert_eq "$WATCH_RC" 0 "the round the request drew is something to act on"
+  assert_eq "$(nudges_posted)" 1 "after exactly one request, posted by the watch"
+  assert_contains "$WATCH_ERR" "re-requested the review with '@codex review' — the initialization on head ${H2:0:7} failed" \
+    "the watch says it posted it"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" \
+    "and ends on the round it asked for"
+  assert_not_contains "$WATCH_OUT" "no review materialized" "without waiting out a grace first"
+  NUDGE_ANSWER=""
   # Unattributed — a head commit dated in the future attributes nothing, so the state is
   # `expected` — the comment still ends the first window, and still is not numbered as a round.
   reset_fixture
