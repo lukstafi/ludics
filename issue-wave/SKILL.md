@@ -937,7 +937,7 @@ controlled through the tools in your coordinator's file, never through those com
   ship-pr's *The override* says (ludics-lite#623). Then, in order:
   1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed --repo <owner/repo>`,
      without `--failed` when the report names no failed job, a startup failure; a local run,
-     once more at the same SHA under the halt's one triage reservation, references/executions.md
+     once more at the same SHA under the halt's triage reservation, references/executions.md
      *Adoption and halt*) to rule out a flake: #479-class tee timeouts happen on the macOS
      runner. The rerun is a new attempt, so judge that attempt and not the red already read:
      once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
@@ -1035,7 +1035,7 @@ controlled through the tools in your coordinator's file, never through those com
     it. The cc loop's local run may take the same calls, its request carrying `"integration":
     true`: yielding is how it finds a quiet box too.
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
-    rerun pending"`; one rerun at the same SHA on a box of that backend under the halt's one
+    rerun pending"`; one rerun at the same SHA on a box of that backend under the halt's
     triage reservation (the same `tip-run` and pinned command, its request carrying
     `triage_reason`); green, a
     flake, `resume-launches`; red, attribution by `git log --first-parent <last green on that
@@ -1068,7 +1068,11 @@ controlled through the tools in your coordinator's file, never through those com
   --allow-red-base "<triage reason>"` followed by the runtime's spawn tool, recorded on the
   board; the only launch the halt admits): fix directly when the fix is straightforward, file
   an issue when it involves a trade-off with no clearly better option. The attribution and any
-  bisect are that owner's, done once; one owner for the fix-forward. `resume-launches` when
+  bisect are that owner's, done once; one owner for the fix-forward. The owner's reservations
+  (`triage_reason`) may cover every box the red reproduces on, its own agent host included when
+  it iterates there: one record per box, each naming that worker and the same `triage_boxes`, the
+  full list named at the first (references/executions.md *Adoption and halt*); everyone else's
+  are refused. `resume-launches` when
   master is verified again, and the wave
   resumes with its remaining tasks. `fleet-worker.sh halted` is the check for a coordinator
   resuming after an interruption.

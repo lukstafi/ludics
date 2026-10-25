@@ -135,6 +135,11 @@ selects the backend does not count. It establishes that the command NAMES a back
 run held it: that is the runner's own check (OCANNL's ``--expect-backend``), and no refusal here is
 GPU evidence. A repository without the file, and a ``--cpu`` leg, are not checked.
 
+THE HALT (ludics-lite#796). A leg reads no halt: the registry refuses new reservations and dispatch
+under one, so the only records a leg can find newly dispatched there are the halt's triage owner's,
+one on each box its triage names (registry.py's THE HALT'S TRIAGE). A record dispatched before the
+halt keeps its legs, as it keeps its slot batches: a halt launches nothing new, and is no pause.
+
 THE STOP (ludics-lite#767). The far side reports its shell's pid first, under this invocation's
 token (``execution-leg <token>: far: <pid>``, consumed, never passed through). While the leg streams,
 a SIGTERM, SIGINT or SIGHUP to it (``bg-run.sh stop`` signals the run's whole group; a Ctrl-C) ends
