@@ -71,6 +71,9 @@ HEAD_AFTER_MOVE=""                     # nonempty = the head the gate reads once
 MOVED_RUN_RC=""                        # 4 = once the base has moved, a run is queued on it (no verdict)
 BASE_KEEPS_MOVING=""                   # nonempty = every base read answers a base no read gave before
 CHECKS_FAIL=""                         # nonempty = the head's check-run read does not answer
+# The gate's per-round head re-read (ludics-lite#795): a number = that many of them answer a 503
+# before the rest answer; `always` = none ever does; `refused` = every one answers a 404.
+HEAD_REREAD_FAIL=""
 # The merge build (ludics-lite#611): the head the gate reads, the base branch's tip the drift read
 # anchors on, the drift's two compares, the repository's .github/ship-pr-merge-build, and the
 # directory merge runs in (a clone of the fixture remote; build_fixture below).
@@ -262,7 +265,27 @@ gh() {
       fi
       fixture_base
       ;;
-    *'.head.sha'*) printf '%s\t%s\tclaude/topic\n' "$(fixture_head "$CURRENT_HEAD")" "$(fixture_base)" ;;
+    *'.head.sha'*)
+      reads=$(fixture_call_count head-reread) || return 1
+      case "$HEAD_REREAD_FAIL" in
+      refused)
+        printf 'gh: Not Found (HTTP 404)\n' >&2
+        return 1
+        ;;
+      always)
+        printf 'gh: 503 No server is currently available to service your request\n' >&2
+        return 1
+        ;;
+      '') ;;
+      *)
+        if [ "$reads" -le "$HEAD_REREAD_FAIL" ]; then
+          printf 'gh: 503 No server is currently available to service your request\n' >&2
+          return 1
+        fi
+        ;;
+      esac
+      printf '%s\t%s\tclaude/topic\n' "$(fixture_head "$CURRENT_HEAD")" "$(fixture_base)"
+      ;;
     *'.base.ref'*)
       reads=$(fixture_call_count base) || return 1
       if [ -n "$BASE_LATER" ] && [ "$reads" -ge 2 ]; then
@@ -542,6 +565,7 @@ reset() {
   MOVED_RUN_RC=""
   BASE_KEEPS_MOVING=""
   CHECKS_FAIL=""
+  HEAD_REREAD_FAIL=""
   GATED_HEAD=head-sha
   BASE_TIP=base-tip
   COMPARE_FORWARD=""
@@ -2462,6 +2486,59 @@ test_an_unread_mergeability_neither_refuses_nor_clears() {
   assert_contains "$MERGE_STDERR" "(mergeable=maybe, mergeable_state=clean)" "with what was read"
 }
 
+# ludics-lite#795: on ocannl-staging#1388 `merge --wait` ended with 3 on the gate's head re-read,
+# its four attempts spent, with most of the wait still to go. Under a wait a head re-read that
+# did not answer is one failed poll: the round is read again after a pause, and the wait ends with
+# 3 only once its budget is spent, or at once on a refusal no retry changes. Without --wait there
+# is no budget to ride anything out in. On the test clock, so the pauses are logged.
+test_a_wait_rides_out_failed_head_rereads() (
+  export SHIP_PR_TEST_CLOCK="$TEST_ROOT/clock"
+  date +%s >"$SHIP_PR_TEST_CLOCK"
+  sleep() {
+    printf '%s\n' "$1" >>"$TEST_ROOT/sleeps"
+    printf '%s\n' "$(($(cat "$SHIP_PR_TEST_CLOCK") + $1))" >"$SHIP_PR_TEST_CLOCK"
+  }
+  retune API_ATTEMPTS=4
+  reset
+  : >"$TEST_ROOT/sleeps"
+  HEAD_REREAD_FAIL=24
+  run_merge --wait=3600
+  assert_eq "$MERGE_RC" 0 "six head re-reads that never answered end no wait ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total head-reread)" 25 "the seventh read answered, after 6 x 4 failed attempts"
+  assert_contains "$MERGE_STDERR" "failed head read 6 of this wait, reading it again within the wait" \
+    "each failure is said as it happens"
+  assert_contains "$MERGE_STDERR" "6 head read(s) failed during this wait and were read again within it" \
+    "and the final word names them"
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "and the head was merged"
+  reset
+  : >"$TEST_ROOT/sleeps"
+  HEAD_REREAD_FAIL=always
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 3 "a head that never re-reads ends the wait with 3 ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "head reads failed during this wait, and its budget is spent" \
+    "once the budget is spent, naming the failures"
+  assert_contains "$MERGE_STDERR" "No server is currently available" "with the failure's own line"
+  [ "$(awk '{ s += $1 } END { print s + 0 }' "$TEST_ROOT/sleeps")" -ge 600 ] ||
+    bail "the wait should have ended only after its 600 s ($(tr '\n' ' ' <"$TEST_ROOT/sleeps"))"
+  assert_no_merge_call
+  reset
+  : >"$TEST_ROOT/sleeps"
+  HEAD_REREAD_FAIL=refused
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 3 "a refused head re-read is 3 at once ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "GitHub refused the read, which no retry changes" "and says why"
+  assert_eq "$(fixture_call_total head-reread)" 1 "after one read"
+  assert_no_merge_call
+  # The negative control: without --wait there is no budget, so the first failure is the end.
+  reset
+  HEAD_REREAD_FAIL=always
+  run_merge
+  assert_eq "$MERGE_RC" 3 "without --wait a failed head re-read is 3 at once ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total head-reread)" 4 "after one read's attempts"
+  assert_contains "$MERGE_STDERR" "with no wait left to read it again in" "and says so"
+  assert_no_merge_call
+)
+
 # A base that moves during every call is retried twice and then refused, never looped on.
 test_a_base_that_moves_during_every_call_stops_after_three() {
   reset
@@ -2966,6 +3043,7 @@ tests=(
   test_a_conflicting_pr_is_refused_before_the_wait
   test_an_uncomputed_mergeability_is_read_again_never_judged
   test_an_unread_mergeability_neither_refuses_nor_clears
+  test_a_wait_rides_out_failed_head_rereads
   test_a_base_that_moves_during_every_call_stops_after_three
   test_an_absent_base_that_keeps_moving_stops_after_three_reads
   test_a_rejected_merge_call_and_an_unconfirmed_state

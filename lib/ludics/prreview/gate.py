@@ -165,6 +165,9 @@ class Gate:
     # moved later by a recovery's Wait (ludics-lite#764: ``merge``'s build waits behind a
     # measurement window within what is left of it). None before a check.
     deadline: int | None = None
+    # The head reads of the last ``check`` that gave no SHA and were read past within its wait
+    # (ludics-lite#795), each the failure's line: the report names them, as merge's final line does.
+    head_unread: list[str] = field(default_factory=lambda: list[str]())
     _round_runs: list[HeadRun] | None = None
     # The round's run read as ``read_runs`` returned it, so the check fold's workflow lookup and
     # ``run_signal`` ask the API once a round.
@@ -641,7 +644,10 @@ class Gate:
 
     # --- the gate -------------------------------------------------------------------------------------
 
-    def _pr_fields(self, pr: str, with_updated: bool) -> tuple[bool, list[str]]:
+    def _pr_fields(self, pr: str, with_updated: bool) -> tuple[Literal["ok", "refused", "unanswered"], list[str]]:
+        """The head read: ``ok`` with its fields; ``refused`` when GitHub answered it with a refusal no
+        retry changes (the READ policy's ``GhFailed``: a 4xx, a fixed GraphQL answer); ``unanswered``
+        when the session's attempts ran out (or a quota hold stood)."""
         if with_updated:
             jq = (
                 '[(.head.sha // "-"), (.updated_at // "-"), (.base.sha // "-"), (.head.ref // "-")]\n'
@@ -655,7 +661,70 @@ class Gate:
         result = self.session.retry("read", ["api", f"repos/{self.repo}/pulls/{pr}", "--jq", jq])
         text = result.stdout if isinstance(result, GhOk) else ""
         fields = [placeholder(f) for f in tab_fields(text, 4 if with_updated else 3)]
-        return isinstance(result, GhOk), fields
+        match result:
+            case GhOk():
+                return "ok", fields
+            case GhFailed():
+                return "refused", fields
+            case GhUnanswered():
+                return "unanswered", fields
+
+    def _head_unread(self, pr: str, kind: str, deadline: int, again: bool) -> bool:
+        """A head read that gave no SHA (ludics-lite#795). Under a wait with budget left, and unless
+        GitHub refused the read outright, it is one failed poll, not the end of the wait: recorded,
+        warned, and True -- pause and read again. Otherwise False, the verdict ``unknown`` and the
+        warning naming every failure: the caller's 3.
+
+        BOUNDARY, a fail-closed allowlist: what rides out is the gate's OWN head reads -- the first
+        one and each round's re-read -- and only an unanswered read (the session's attempts spent, a
+        quota hold past the wait) or one that answered without a SHA. Not ridden out: a refused read
+        (a 4xx, which no retry changes), a round's check-run and workflow-run reads (3 at once, as
+        before), and merge's own head reads beside a write (the recovery's before its rerun, the
+        re-read after a call lost a race to the base), which fail closed because a write follows."""
+        repo = self.repo
+        verb = "re-read" if again else "read"
+        failure = self.session.err_line() or "it answered no SHA"
+        self.head_unread.append(failure)
+        now = self.clock.now()
+        if kind != "refused" and now < deadline:
+            warn(
+                f"could not {verb} {repo}#{pr}'s head SHA ({failure}); failed head read"
+                f" {len(self.head_unread)} of this wait, reading it again within the wait"
+                f" ({fmt_age(deadline - now)} left). Nothing is judged from this round.",
+            )
+            return True
+        self.verdict = "unknown"
+        if kind == "refused":
+            why = "GitHub refused the read, which no retry changes"
+        elif len(self.head_unread) > 1:
+            why = f"{len(self.head_unread)} head reads failed during this wait, and its budget is spent"
+        else:
+            why = "with no wait left to read it again in"
+        warn(
+            f"could not {verb} {repo}#{pr}'s head SHA ({failure}); {why}. The build signal is UNKNOWN,",
+            "which is NOT 'nothing is red'.",
+        )
+        return False
+
+    def head_unread_note(self) -> str:
+        """The failed head reads the last wait read past, for a report's last word; "" for none."""
+        n = len(self.head_unread)
+        if n == 0:
+            return ""
+        return (
+            f"{self.repo}: {n} head read(s) failed during this wait and were read again within it"
+            f" (last: {self.head_unread[-1]})"
+        )
+
+    def _pause(self, deadline: int, last_pause: int | None, changed: bool) -> int:
+        """Sleep the budget's next pause (``pause``), clipped at the deadline; the pause taken."""
+        budget = self.session.budget
+        cap = budget.build_cap if budget is not None else self.config.checks_interval
+        if self.verdict == "pending" and self.check_queued == 0:
+            cap = min(cap, 2 * self.config.checks_interval)
+        sleep_for = pause(self.config.checks_interval, cap, last_pause, changed)
+        self.clock.sleep(min(sleep_for, max(0, deadline - int(self.clock.now()))))
+        return sleep_for
 
     def check(self, pr: str, wait_for: int, waive: bool = False) -> int:
         """``gate_checks <pr> <wait> [waive]``: read the head and judge its build signal, printing the
@@ -683,19 +752,19 @@ class Gate:
         self.run_waived = 0
         self.check_waived = 0
         self.waive_mode = "record" if waive else ""
-        ok, (sha, pr_at, base_sha, head_ref) = self._pr_fields(pr, with_updated=True)
-        if not ok or not sha:
-            self.verdict = "unknown"
-            warn(
-                f"could not read {repo}#{pr}'s head SHA ({self.session.err_line()}); the build signal is UNKNOWN,",
-                "which is NOT 'nothing is red'.",
-            )
-            return 3
+        self.head_unread = []
+        last_pause: int | None = None
+        while True:
+            kind, (sha, pr_at, base_sha, head_ref) = self._pr_fields(pr, with_updated=True)
+            if kind == "ok" and sha:
+                break
+            if not self._head_unread(pr, kind, deadline, again=False):
+                return 3
+            last_pause = self._pause(deadline, last_pause, False)
         self.check_sha = sha
         beat = started
         run_why = ""
         last_sig = ""
-        last_pause: int | None = None
         while True:
             if budget is not None:
                 budget.waited = False
@@ -788,11 +857,16 @@ class Gate:
                             self.check_lines += f"  running  {run_why} — not waited for\n"
             if self.waive_mode == "record":
                 self.waive_mode = "apply"
-            ok, (current, base_sha, head_ref) = self._pr_fields(pr, with_updated=False)
-            if not ok or not current or current == "null":
-                self.verdict = "unknown"
-                warn(f"could not re-read {repo}#{pr}'s head SHA; the build signal is UNKNOWN.")
-                return 3
+            kind, (current, reread_base, reread_ref) = self._pr_fields(pr, with_updated=False)
+            if kind != "ok" or not current or current == "null":
+                # A round whose head could not be confirmed judges nothing: under a wait with budget
+                # left it is one failed poll (ludics-lite#795), and the whole round is read again,
+                # against the base and ref the last read that answered gave.
+                if not self._head_unread(pr, kind, deadline, again=True):
+                    return 3
+                last_pause = self._pause(deadline, last_pause, False)
+                continue
+            base_sha, head_ref = reread_base, reread_ref
             if current != sha:
                 self.verdict = "superseded"
                 cli.say(
@@ -873,13 +947,8 @@ class Gate:
                 f"{self.verdict}|{self.check_pending}|{self.check_green}|{self.check_total}"
                 f"|{self.run_state}"
             )
-            cap = budget.build_cap if budget is not None else self.config.checks_interval
-            if self.verdict == "pending" and self.check_queued == 0:
-                cap = min(cap, 2 * self.config.checks_interval)
-            sleep_for = pause(self.config.checks_interval, cap, last_pause, sig != last_sig)
+            last_pause = self._pause(deadline, last_pause, sig != last_sig)
             last_sig = sig
-            last_pause = sleep_for
-            self.clock.sleep(min(sleep_for, deadline - now))
         note = f" ({self.check_green} build check(s) have passed so far)" if self.check_green > 0 else ""
         head = f"build signal {repo}#{pr} @{sha[:8]}"
         if self.select:
@@ -913,6 +982,8 @@ class Gate:
                 assert_never(self.verdict)
         if self.check_lines:
             sys.stdout.write(self.check_lines)
+        if self.head_unread:
+            warn(self.head_unread_note())
         match self.verdict:
             case "red" | "runred" | "waived":
                 return 1

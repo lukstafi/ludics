@@ -769,6 +769,8 @@ class Merge:
                 f"({self.session.err_line()}) — do NOT re-merge; re-read repos/{repo}/pulls/{pr} first.",
             )
         cli.say(f"{repo}#{pr} {state.stdout}")
+        if self.gate.head_unread:
+            warn(self.gate.head_unread_note())
         if "merged=true" in state.stdout:
             return 0
         if self.opts.require_green:

@@ -282,8 +282,10 @@ class FakeClock:
         self.t += seconds
 
 
-def make_gate(gh: FakeGh, clock: FakeClock, select: str = "", **env: str) -> Gate:
-    config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=1, api_backoff=0)
+def make_gate(gh: FakeGh, clock: FakeClock, select: str = "", attempts: int = 1, **env: str) -> Gate:
+    config = Config(
+        repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=attempts, api_backoff=0
+    )
     session = GhSession(config, run=gh, sleep=lambda _s: None)
     gate_config = load_gate_config({"SHIP_PR_CHECKS_INTERVAL": "60", **env})
     gate = Gate(session, "o/r", gate_config, FuncClock(time=clock.now, sleep=clock.sleep))
@@ -314,6 +316,7 @@ class GateLoop(unittest.TestCase):
 
     def test_a_superseded_head_is_five_and_an_unread_reread_is_three(self) -> None:
         for second, want in (("h2\tb1\ttopic", 5), ("", 3)):
+            # The unread re-read under a wait (600) is read again until the wait is spent: 3.
             gh = FakeGh()
             gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
             gh.on("pulls/7", out=second, rc=0 if second else 1, err="" if second else "gh: HTTP 503")
@@ -321,6 +324,66 @@ class GateLoop(unittest.TestCase):
             gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1")
             with self.subTest(second=second):
                 self.assertEqual(make_gate(gh, FakeClock()).check("7", 600), want)
+
+    def test_a_wait_rides_out_failed_head_reads_and_merges_on_the_first_answer(self) -> None:
+        # ludics-lite#795: each head read's four attempts spent, five times over (twenty calls),
+        # then an answer -- the wait goes on, and the round after the answer is judged.
+        for again in (False, True):
+            gh = FakeGh()
+            fail = proc.Completed(1, "", "gh: HTTP 503")
+            first = proc.Completed(0, "h1\t2026-01-01T00:00:00Z\tb1\ttopic\n", "")
+            reread = proc.Completed(0, "h1\tb1\ttopic\n", "")
+            gh.routes.append(Route(("pulls/7", ".updated_at"), [fail] * 20 + [first] if not again else [first]))
+            gh.routes.append(Route(("pulls/7",), [fail] * 20 + [reread] if again else [reread]))
+            gh.on("check-runs", out="ci\tsuccess\tu\t1")
+            gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1")
+            clock = FakeClock()
+            gate = make_gate(gh, clock, attempts=4)
+            with self.subTest(again=again):
+                self.assertEqual((gate.check("7", 3600), gate.verdict, gate.gate_base), (0, "green", "b1"))
+                self.assertEqual(len(gate.head_unread), 5, "five failed reads, each recorded")
+                self.assertIn("5 head read(s) failed during this wait", gate.head_unread_note())
+                self.assertEqual(clock.sleeps, [60] * 5, "a pause between them (no budget: its cap is the interval)")
+
+    def test_a_head_that_never_reads_is_three_once_the_budget_is_spent(self) -> None:
+        for again in (False, True):
+            gh = FakeGh()
+            if again:
+                gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", rc=1, err="gh: HTTP 503")
+            gh.on("check-runs", out="ci\tsuccess\tu\t1")
+            gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1")
+            clock = FakeClock()
+            gate = make_gate(gh, clock)
+            with self.subTest(again=again):
+                self.assertEqual((gate.check("7", 900), gate.verdict), (3, "unknown"))
+                self.assertGreaterEqual(clock.t - FakeClock().t, 900, "only once the wait is spent")
+                self.assertIn("head reads failed during this wait, and its budget is spent", self.out.getvalue())
+
+    def test_a_refused_or_unwaited_head_read_is_three_at_once(self) -> None:
+        # The negative controls: a 404 no retry changes, and a read with no wait to ride it out in.
+        for err, wait, why in (("gh: Not Found (HTTP 404)", 3600, "GitHub refused the read"),
+                               ("gh: HTTP 503", 0, "with no wait left to read it again in")):
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", rc=1, err=err)
+            gh.on("check-runs", out="ci\tsuccess\tu\t1")
+            gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1")
+            clock = FakeClock()
+            with self.subTest(err=err):
+                self.assertEqual(make_gate(gh, clock).check("7", wait), 3)
+                self.assertEqual((clock.sleeps, len(gh.routes[1].answers), gh.routes[1].served), ([], 1, 1))
+                self.assertIn(why, self.out.getvalue())
+
+    def test_an_answer_without_a_sha_is_read_again_and_a_moved_head_is_still_five(self) -> None:
+        gh = FakeGh()
+        gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+        gh.on("pulls/7", out=["-\t-\t-", "h2\tb1\ttopic"])
+        gh.on("check-runs", out="ci\tsuccess\tu\t1")
+        gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1")
+        gate = make_gate(gh, FakeClock())
+        self.assertEqual((gate.check("7", 600), gate.verdict), (5, "superseded"))
+        self.assertEqual(gate.head_unread, ["it answered no SHA"])
 
     def test_a_checkless_head_inside_the_grace_holds_and_past_it_is_absent(self) -> None:
         for commit, want, verdict in (("2026-01-01T00:00:00Z", 0, "absent"), ("2025-12-31T23:59:00Z", 4, "unjudged")):
