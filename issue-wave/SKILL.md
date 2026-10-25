@@ -954,9 +954,10 @@ controlled through the tools in your coordinator's file, never through those com
 
          fleet-worker.sh execution list --compact | jq -r '.[] | select(.verdict == "pass" and .request.integration == true and .request.repository == "<owner/repo>") | .observed_sha' | pr-review.sh base <owner/repo> --last-green <red tip> --greens -
 
-     Exit 4 (no green on the chain within 300 first parents, or nothing red at that SHA) and 3 (a
-     read failed) print no SHA, never a guess. A merge in that range whose diff reaches the failing
-     suite, alone, owns it.
+     It never guesses: exit 3 (a read failed) prints nothing, and exit 4 (nothing red at that
+     SHA, or a red workflow with no green on the chain within 300 first parents) prints a SHA only
+     for a workflow it found one for. A merge in that range whose diff reaches the failing suite,
+     alone, owns it.
   3. **Bisect only when that is still ambiguous**: run the failing suite at the range's
      intermediate merges (`git bisect start --first-parent <red tip> <last green>`) in a detached
      worktree, locally, on a box of the failing job's OS - mac-studio under `/bin/bash` 3.2 for

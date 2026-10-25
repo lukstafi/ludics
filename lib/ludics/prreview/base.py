@@ -1075,9 +1075,9 @@ def _jq_order(value: Json) -> tuple[int, float | str]:
 # line validated before any is believed; and the red SHA's first parents, one Git-database
 # commit read per step, at most LAST_GREEN_DEPTH steps. It does not read job lines, the advisory
 # list (a red run is a red run here: the coordinator is attributing it, not gating on it), the
-# workflow files, merged PR heads or the integration records file. A read that fails is exit 3,
-# never a shorter walk; no candidate on the chain within the bound is exit 4, never the newest
-# candidate off it.
+# workflow files, merged PR heads or the integration records file. A read that fails is exit 3
+# with nothing on stdout, never a shorter walk; no candidate on the chain within the bound is exit
+# 4, never the newest candidate off it (a SHA is printed only for a workflow it was found for).
 LAST_GREEN_DEPTH = 300
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _ISO_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
@@ -1185,7 +1185,9 @@ def last_green(b: Base, branch: str, red: str, greens: Sequence[str] | None) -> 
         print(f"{b.repo} {branch}: no push run at {red[:8]} concluded red, so there is nothing to"
               " attribute (a rerun that passed was a flake; or check the SHA)")
         return 4
+    # Buffered: a later workflow's failed read ends the command with 3 and NO line (Codex review).
     rc = 0
+    lines: list[str] = []
     for wid, name, red_run in reds:
         if not _ISO_UTC.fullmatch(red_run.created_at):
             fail(3, f"base: --last-green: {name}'s red run {red_run.run_id} has no readable creation"
@@ -1205,16 +1207,18 @@ def last_green(b: Base, branch: str, red: str, greens: Sequence[str] | None) -> 
                 greens_of[r.head_sha] = r
         found = chain.nearest(set(greens_of))
         if found is None:
-            print(f"{b.repo} {branch}: no last green for {name} below {red[:8]} (red run"
-                  f" {red_run.run_id}, created {red_run.created_at}) among {len(greens_of)}"
-                  f" successful push run(s) created before it: {chain.why_none()}")
+            lines.append(f"{b.repo} {branch}: no last green for {name} below {red[:8]} (red run"
+                         f" {red_run.run_id}, created {red_run.created_at}) among {len(greens_of)}"
+                         f" successful push run(s) created before it: {chain.why_none()}")
             rc = 4
             continue
         sha, depth = found
         green = greens_of[sha]
-        print(f"{b.repo} {branch}: last green for {name}: {sha} (run {green.run_id}, created"
-              f" {green.created_at}), {depth} first-parent commit(s) below the red tip {red[:8]}"
-              f" (red run {red_run.run_id}, created {red_run.created_at})")
+        lines.append(f"{b.repo} {branch}: last green for {name}: {sha} (run {green.run_id}, created"
+                     f" {green.created_at}), {depth} first-parent commit(s) below the red tip {red[:8]}"
+                     f" (red run {red_run.run_id}, created {red_run.created_at})")
+    for line in lines:
+        print(line)
     return rc
 
 

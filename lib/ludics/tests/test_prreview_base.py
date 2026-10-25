@@ -990,6 +990,24 @@ class LastGreen(unittest.TestCase):
                 self.assertIn("UNKNOWN", err)
                 self.assertEqual(out, "")
 
+    def test_two_red_workflows_print_only_once_both_are_read(self) -> None:
+        answers = chain_world(**{
+            "repos/o/r/actions/workflows?per_page=100": json.dumps(
+                {"workflows": [{"id": 1, "name": "ci"}, {"id": 2, "name": "lint"}]}),
+            RED_PAGE.replace("workflows/1/", "workflows/2/"): runs(
+                {"workflow_id": 2, "id": 2002, "conclusion": "failure", "head_sha": R, "created_at": RED_AT}),
+            GREEN_PAGE.replace("workflows/1/", "workflows/2/"): runs(
+                {"workflow_id": 2, "id": 1996, "conclusion": "success", "head_sha": P3,
+                 "created_at": "2026-09-10T00:20:00Z"})})
+        rc, out, _, _ = base_run(answers, ["main", "--last-green", R])
+        self.assertEqual(rc, 0)
+        self.assertIn(f"last green for ci: {P2}", out)
+        self.assertIn(f"last green for lint: {P3} (run 1996,", out)
+        answers[f"repos/o/r/git/commits/{P2}"] = (1, "HTTP 502\n")
+        rc, out, err, _ = base_run(answers, ["main", "--last-green", R])
+        self.assertEqual((rc, out), (3, ""), "ci's SHA is not printed when lint's walk failed")
+        self.assertIn("UNKNOWN", err)
+
     def test_greens_name_the_candidates(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write(f"{D}\n\n{X}\n{P3}\n{R}\n")
