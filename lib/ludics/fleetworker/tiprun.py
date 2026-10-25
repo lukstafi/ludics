@@ -78,7 +78,10 @@ pin, an unpinned command and one pinning another backend are each refused, concl
 words as given, so a pin inside ``sh -c`` or in an exported environment does not count -- and it
 shows the command NAMES the backend, never that the run held it (the runner's own check, OCANNL's
 ``--expect-backend``). Only a GPU-loop purpose is checked: the cc loop's requests, and any other,
-run as before, ``--cpu`` or not.
+run as before, ``--cpu`` or not. A GPU-loop run that started says the check was made: its running
+record carries ``"pinned_backend": "<backend>"`` (registry.py, THE BACKEND MARK), which the loop's
+last-green read selects on, since the records before #793 carry the same purpose and were cc runs.
+No other record carries it.
 
 THE REQUEST ID (ludics-lite#714). With ``--id-prefix <prefix>`` the payload names no
 ``request_id`` (one source, as for ``--tip``'s revision): the run takes ``<prefix>-<n>``, ``<n>``
@@ -460,7 +463,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         return not_started(cfg, request_id, f"the skills checkout on {box} was not refreshed (above), so its fleet-worker.sh may be stale", nothing)
     fw = os.path.join(cfg.here, os.path.basename(cfg.script)) if is_local(cfg, box) else ""
     kind = "cpu" if parsed.cpu else "gpu"
-    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), loop_backend(fields), *parsed.command]
+    backend = loop_backend(fields)
+    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, *parsed.command]
     done = run_on(cfg, box, prelude(cfg, box) + FAR, far, capture=True)
     text = done.out.rstrip("\n")
     if done.unreachable:
@@ -491,6 +495,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
                            + (f" (the tip of {parsed.tip} on GitHub when the run started)" if parsed.tip else ""),
                "observed_sha": sha, "remote_checkout": parsed.checkout,
                "handle": f"bg-run:{box}:{run_dir}", "log": f"{box}:{run_dir}/log"}
+    if backend:
+        running["pinned_backend"] = backend  # the far side started it only past THE BACKEND PIN
     if fleet_worker(cfg, ["execution", "record"], running) != 0:
         cli.say(f"TIP-RUN UNKNOWN {request_id}: the run started in {run_dir} on {box} at {sha}, but the registry did not"
                 " take its running record (above); the record stays dispatched, record it by hand")

@@ -257,6 +257,20 @@ dispatch, never running work, so their slot batches and legs go on (`execution l
 halt). Once every record of the triage is concluded, the next triage request founds a new one; a
 later halt's triage ignores this one's records (another generation), which stay outstanding until
 concluded like any record.
+
+THE BACKEND MARK (after ludics-lite#793). `pinned_backend` is a top-level record field saying that
+the run's starter checked its command pins that backend: `execution tip-run` writes it on the
+running record of a GPU-loop run, which starts only once the command's pin is checked (tiprun.py,
+THE BACKEND PIN). The GPU integration loop's last-green read selects on it (issue-wave SKILL.md):
+every GPU-loop record before #793 carries the same purpose and was a cc run, and lacks it. A
+`record` payload alone may carry it, a backend name (`[A-Za-z0-9][A-Za-z0-9_.-]*`) that is exactly
+the one the request's purpose names as `GPU integration loop, <backend>: ...`; the purpose is fixed,
+so the mark can only be written again as it was. It is never a request field, for THE CHECKOUT's
+reason. The boundary, and nothing else: this module checks the mark's shape, the one action that
+writes it, and its agreement with the purpose. That
+a pin was in fact checked is the writer's statement, as all evidence is, and that the run held the
+backend it named is the project runner's own check; a record without the mark is no candidate for
+the read, whatever its purpose says.
 """
 import contextlib
 import fcntl
@@ -403,6 +417,21 @@ def checkout_ok(value: Any) -> str:
     return value
 
 
+BACKEND = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+LOOP_PURPOSE = re.compile(r"GPU integration loop, ([A-Za-z0-9][A-Za-z0-9_.-]*):")   # tiprun.py's
+
+
+def pinned_backend_ok(value: Any, request: Record) -> str:
+    """THE BACKEND MARK's shape (see the header): a backend name, the one the purpose names."""
+    if not isinstance(value, str) or not BACKEND.fullmatch(value):
+        refuse(f"pinned_backend {json.dumps(value)} must be a backend name ([A-Za-z0-9][A-Za-z0-9_.-]*)")
+    found = LOOP_PURPOSE.match(request["purpose"])
+    if found is None or found.group(1) != value:
+        refuse(f"pinned_backend {value} is not the backend this request's purpose names"
+               " ('GPU integration loop, <backend>: ...')")
+    return value
+
+
 def triage_boxes_ok(value: Any, request: Record) -> list[str]:
     """THE HALT'S TRIAGE's box list (see the header), by its shape: only beside a `triage_reason`
     request, a nonempty list of distinct nonempty strings naming the request's execution host."""
@@ -486,6 +515,11 @@ def validate_record(data: Any, path: Path) -> Record:
             triage_boxes_ok(record["triage_boxes"], record["request"])
         except ValueError:
             refuse(f"invalid triage boxes: {path}")
+    if "pinned_backend" in record:
+        try:
+            pinned_backend_ok(record["pinned_backend"], record["request"])
+        except ValueError:
+            refuse(f"invalid pinned backend: {path}")
     if "observed_sha" in record and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", record["observed_sha"]):
         refuse(f"invalid observed SHA: {path}")
     if "resolved_revision" in record and not (isinstance(record["resolved_revision"], str)
@@ -1186,7 +1220,7 @@ def main(argv: list[str]) -> None:
         if record is None:
             refuse("unknown request_id")
         if set(data) - {"request_id", "state", "evidence", "observed_sha", "remote_checkout", "handle", "log", "verdict",
-                        "execution_host", "resolved_revision"}:
+                        "execution_host", "resolved_revision", "pinned_backend"}:
             refuse("unknown evidence fields")
         if "resolved_revision" in data and action != "dispatch":
             refuse("resolved_revision is only valid for dispatch")
@@ -1202,6 +1236,11 @@ def main(argv: list[str]) -> None:
             refuse("verdict is only valid for conclude")
         if "state" in data and action not in {"record", "reconcile"}:
             refuse("state is only valid for record or reconcile")
+        if "pinned_backend" in data:
+            # THE BACKEND MARK (see the header): written by a record, as the purpose names it.
+            if action != "record":
+                refuse("pinned_backend is only valid for record")
+            pinned_backend_ok(data["pinned_backend"], record["request"])
         if record["state"] == "concluded":
             # Terminal records are immutable; retries of the final payload are harmless.
             if action == "conclude" and record["history"][-1]["data"] == data:
@@ -1274,7 +1313,7 @@ def main(argv: list[str]) -> None:
         if "observed_sha" in data and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", data["observed_sha"]):
             refuse("observed_sha must be an exact Git object ID")
         check_binding(record, data, action)
-        for key in ("observed_sha", "remote_checkout", "handle", "log", "verdict"):
+        for key in ("observed_sha", "remote_checkout", "handle", "log", "verdict", "pinned_backend"):
             if key in data:
                 nonempty(data, [key])
                 record[key] = data[key]

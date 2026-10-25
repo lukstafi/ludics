@@ -1025,6 +1025,18 @@ class LastGreen(unittest.TestCase):
         finally:
             os.unlink(f.name)
 
+    def test_no_candidate_is_four_with_nothing_read(self) -> None:
+        for given in ("", "\n", f"{R}\n"):
+            with self.subTest(given=given):
+                with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+                    f.write(given)
+                try:
+                    rc, out, err, gh = base_run(chain_world(), ["--last-green", R, "--greens", f.name])
+                    self.assertEqual((rc, err, gh.asked), (4, "", []), out)
+                    self.assertEqual(out, f"o/r: no last green below {R[:8]}: no SHA was given but the red tip's own\n")
+                finally:
+                    os.unlink(f.name)
+
     def test_usage_refusals(self) -> None:
         for args in (["--last-green", R[:12]], ["--last-green", R, "--wait"],
                      ["--last-green", R, "--interim"], ["--last-green", R, "--advisory-red", "f"],

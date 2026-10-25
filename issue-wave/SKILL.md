@@ -1040,10 +1040,17 @@ controlled through the tools in your coordinator's file, never through those com
     `triage_reason`); green, a
     flake, `resume-launches`; red, attribution by `git log --first-parent <last green on that
     backend>..<red tip>` with one triage owner, as in the order above. The last green on a
-    backend is the newest `pass` among its loop records, or with none in the registry, the
-    daily sweep's last green there:
+    backend is the nearest commit below the red tip on its first-parent chain that a pass of
+    that backend's loop judged, never just the newest pass (ludics-lite#602, above). Its
+    candidates are the passes `tip-run` marked `pinned_backend` (it marks only a run it started
+    past the backend pin): the GPU-loop records before #793 carry the same purpose and were cc
+    runs, so an unmarked pass is no green on any backend:
 
-        fleet-worker.sh execution list --compact | jq -r '[.[] | select(.verdict == "pass" and (.request.purpose | startswith("GPU integration loop, hip:")))] | sort_by(.updated_at) | last | .observed_sha // empty'
+        fleet-worker.sh execution list --compact | jq -r '.[] | select(.verdict == "pass" and .pinned_backend == "hip" and .request.repository == "<owner/repo>") | .observed_sha' | pr-review.sh base <owner/repo> --last-green <red tip> --greens -
+
+    Exit 4 (no marked pass, or none on the chain within 300 first parents) falls back to the
+    daily sweep's last green on that backend, checked the same way (its SHA the one candidate);
+    exit 3 (a read failed) is unknown, not absent: read again rather than fall back.
 
   The daily cross-machine sweep stays the thorough check: every backend on every box, where the
   loop covers one backend per run and only shortens the time to detection. The two are both

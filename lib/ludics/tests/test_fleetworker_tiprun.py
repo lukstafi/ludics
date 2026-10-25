@@ -350,6 +350,60 @@ class Allocate(unittest.TestCase):
         self.assertIn("TIP-RUN UNKNOWN w-gpu-rog-?: the anchor's registry could not be read", out.getvalue())
 
 
+class Mark(unittest.TestCase):
+    """THE BACKEND PIN's mark: a started GPU-loop run's running record carries ``pinned_backend``,
+    the backend the far side checked; no other record does, and nothing not started is marked."""
+
+    def start(self, req: dict[str, Any], far: str) -> tuple[int, list[tuple[list[str], dict[str, Any] | None]], list[str]]:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
+        calls: list[tuple[list[str], dict[str, Any] | None]] = []
+        far_args: list[str] = []
+
+        def listing(_cfg: object) -> Done:
+            return Done(0, json.dumps([outstanding(req["request_id"])]) if calls else "[]")
+
+        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+            calls.append((args, body))
+            return 0
+
+        def on_box(_cfg: object, _box: str, _script: str, args: list[str], capture: bool = False) -> Done:
+            far_args.extend(args)
+            return Done(1 if far.startswith("TIP-RUN REFUSED") else 0, far)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(req, f)
+            with mock.patch.object(tiprun, "listing", side_effect=listing), \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                    mock.patch.object(tiprun, "refresh_box", return_value=0), \
+                    mock.patch.object(tiprun, "run_on", side_effect=on_box), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "env", "OCANNL_BACKEND=hip", "true"])
+        return rc, calls, far_args
+
+    def test_a_started_gpu_loop_run_is_marked_with_the_backend_the_far_side_checked(self) -> None:
+        rc, calls, far = self.start(request(purpose="GPU integration loop, hip: tip"), "dir=/s/run-1\nslot=held\n")
+        self.assertEqual(rc, 0)
+        self.assertEqual(far[6], "hip", "the far side checks the pin of the backend the mark names")
+        self.assertEqual([c[0] for c in calls], [["execution", "run", calls[0][0][2]], ["execution", "record"]])
+        self.assertEqual((calls[1][1] or {}).get("pinned_backend"), "hip")
+
+    def test_a_cc_loop_run_is_not_marked(self) -> None:
+        rc, calls, far = self.start(request(purpose="integration loop, cc: tip", integration=True), "dir=/s/run-1\nslot=held\n")
+        self.assertEqual(rc, 0)
+        self.assertEqual(far[6], "", "nothing is checked")
+        self.assertNotIn("pinned_backend", calls[1][1] or {})
+
+    def test_a_run_refused_on_its_pin_is_concluded_unmarked(self) -> None:
+        rc, calls, _ = self.start(request(purpose="GPU integration loop, hip: tip"),
+                                  "TIP-RUN REFUSED: this run is the hip backend's, but its command pins no backend\n")
+        self.assertEqual(rc, 1)
+        self.assertEqual([c[0] for c in calls][1:], [["execution", "conclude"]])
+        self.assertEqual((calls[1][1] or {}).get("verdict"), "not-launched")
+        self.assertNotIn("pinned_backend", calls[1][1] or {})
+
+
 def running(**fields: object) -> dict[str, Any]:
     record: dict[str, Any] = {"request_id": "w-gpu-rog-1", "state": "running", "observed_sha": SHA,
                               "handle": "bg-run:rog-nv-linux:/s/tip-runs/run-3", "request": {"execution_host": "rog-nv-linux"}}

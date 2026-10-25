@@ -362,6 +362,68 @@ class Checkout(RegistryCase):
         self.assertIn("unknown evidence fields", err)
 
 
+class BackendMark(RegistryCase):
+    """THE BACKEND MARK: `pinned_backend`, top-level, written by a record alone, the backend the
+    purpose names."""
+
+    SHA = "a" * 40
+    GPU = "GPU integration loop, hip: tip"
+
+    def start(self, identity: str, purpose: str = GPU) -> None:
+        self.assertEqual(self.call("run", request(identity, purpose=purpose, requested_revision=self.SHA), slots="mac=9")[0], 0)
+
+    def running(self, identity: str, **extra: object) -> tuple[int, Any, str]:
+        return self.call("record", {"request_id": identity, "state": "running", "evidence": "started",
+                                    "observed_sha": self.SHA, "handle": "h", "remote_checkout": "/co", **extra})
+
+    def test_a_record_writes_it_beside_the_request_and_a_conclusion_keeps_it(self) -> None:
+        self.start("g")
+        rc, rec, _ = self.running("g", pinned_backend="hip")
+        self.assertEqual((rc, rec["pinned_backend"], "pinned_backend" in rec["request"]), (0, "hip", False))
+        self.assertEqual(rec["history"][-1]["data"]["pinned_backend"], "hip")
+        self.assertEqual(self.running("g", pinned_backend="hip")[0], 0, "the same mark again")
+        rc, rec, _ = self.call("conclude", {"request_id": "g", "verdict": "pass", "log": "/l", "evidence": "x"})
+        self.assertEqual((rc, rec["pinned_backend"]), (0, "hip"))
+        self.assertEqual(self.call("list", {})[0], 0)
+
+    def test_only_the_purposes_backend_by_a_record(self) -> None:
+        self.start("g")
+        self.start("cc", purpose="integration loop, cc: tip")
+        for identity, value, why in (("g", "cuda", "is not the backend this request's purpose names"),
+                                     ("g", "", "must be a backend name"), ("g", ["hip"], "must be a backend name"),
+                                     ("g", "hip ", "must be a backend name"),
+                                     ("cc", "cc", "is not the backend this request's purpose names")):
+            with self.subTest(identity=identity, value=value):
+                rc, _, err = self.running(identity, pinned_backend=value)
+                self.assertEqual(rc, 1)
+                self.assertIn(why, err)
+        rc, _, err = self.call("dispatch", {"request_id": "g", "evidence": "x", "pinned_backend": "hip"})
+        self.assertEqual(rc, 1)
+        self.assertIn("pinned_backend is only valid for record", err)
+        rc, _, err = self.call("conclude", {"request_id": "g", "verdict": "pass", "log": "/l", "evidence": "x",
+                                            "observed_sha": self.SHA, "handle": "h", "remote_checkout": "/co",
+                                            "pinned_backend": "hip"})
+        self.assertEqual(rc, 1)
+        self.assertIn("pinned_backend is only valid for record", err)
+        self.assertEqual(self.running("g")[0], 0)
+        listed = {r["request_id"]: r for r in self.call("list", {})[1]}
+        self.assertNotIn("pinned_backend", listed["g"], "neither a refusal nor a record naming none writes one")
+        self.assertNotIn("pinned_backend", listed["cc"])
+
+    def test_a_malformed_mark_in_the_ledger_is_refused(self) -> None:
+        self.start("g")
+        self.running("g", pinned_backend="hip")
+        path = os.path.join(self.root, "executions", "g.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["pinned_backend"] = "cuda"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        rc, _, err = self.call("list", {})
+        self.assertEqual(rc, 1)
+        self.assertIn("invalid pinned backend", err)
+
+
 class WindowGap(RegistryCase):
     """ludics-lite#667, #719: a new window inside the gap after its box's last measurement, while a
     batch is waiting for the box, is answered exit 3 with the seconds to wait, and nothing written."""
