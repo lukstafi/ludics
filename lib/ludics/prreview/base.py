@@ -58,7 +58,8 @@ so ``base --wait`` (the integration loop's) and the base watch's ``--interim`` a
 below it on its first-parent chain with a successful push run created before the red run -- the
 ``<last green>`` of ``git log --first-parent <last green>..<red tip>`` and ``git bisect``.
 ``--greens <file>`` (``-``: stdin) gives the candidates instead, a local loop's ``pass`` records'
-SHAs. Exit 0 found, 3 a read failed, 4 none. Its boundary is at ``last_green`` below.
+SHAs; an empty list (or one naming only the red tip) is exit 4 with nothing read. Exit 0 found,
+3 a read failed, 4 none. Its boundary is at ``last_green`` below.
 
 The merged PR head's build signal (source (a)) is ``gate_checks``, the ``checks`` subcommand's
 gate (gate.Gate), run as ``tip_pr_head_verdict`` ran it: no wait, under this command's advisory
@@ -1155,6 +1156,11 @@ def last_green(b: Base, branch: str, red: str, greens: Sequence[str] | None) -> 
     """``base --last-green <red sha>``: 0 every red workflow's last green found, 4 one has none."""
     chain = FirstParents(b, red)
     if greens is not None:
+        if not set(greens) - {red}:
+            # Nothing to look for: the walk would read 300 parents to find nothing (a GPU loop with
+            # no marked pass yet), and a failed read on the way would say UNKNOWN for a known none.
+            print(f"{b.repo}: no last green below {red[:8]}: no SHA was given but the red tip's own")
+            return 4
         found = chain.nearest(set(greens) - {red})
         if found is None:
             print(f"{b.repo}: no last green below {red[:8]} among the {len(greens)} SHA(s) given:"

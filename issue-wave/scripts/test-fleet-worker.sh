@@ -2722,6 +2722,11 @@ grep -q "^TIP-RUN ID w-gpu-testbox-4: allocated under w-gpu-testbox-" <<<"$out" 
 expect "...which --wait concludes under that id" 0 "^TIP-RUN CONCLUDED w-gpu-testbox-4 pass testbox $pinned /" -- \
   "${FWT[@]}" execution tip-run --wait w-gpu-testbox-4 --within 60
 grep -Fxq "backend cuda" "$(sed -n "s/^TIP-RUN CONCLUDED w-gpu-testbox-4 pass testbox $pinned //p" <<<"$out")/log" && ok "...having run the command as given" || ko "w-gpu-testbox-4's log lacks the backend line"
+# The backend mark (registry.py, THE BACKEND MARK): the started GPU-loop run's record says which
+# pin was checked; the refused ones and a cc-loop run (tip-i) carry none, so the last-green read
+# (issue-wave SKILL.md) takes only the first.
+marks=$("$FW" execution list | jq -r '[.[] | select(.request_id | test("^(w-gpu-testbox-[0-9]+|tip-i|tip-k)$")) | "\(.request_id)=\(.pinned_backend // "-")"] | sort | join(" ")')
+[ "$marks" = "tip-i=- tip-k=- w-gpu-testbox-1=- w-gpu-testbox-3=- w-gpu-testbox-4=cuda" ] && ok "...marked pinned_backend cuda, and no run not started or not a GPU loop's is" || ko "the backend marks: $marks"
 expect "--id-prefix beside a named request id is refused" 2 "--id-prefix allocates the request id, so the payload names no request_id" -- \
   "${FWT[@]}" execution tip-run "$(loopreq tip-l "$pinned" cuda)" --checkout "$tco" --id-prefix w-gpu-testbox -- echo never
 expect "a GPU-loop purpose that does not name its backend is refused" 2 "names its backend, as 'GPU integration loop, <backend>: ...'" -- \
