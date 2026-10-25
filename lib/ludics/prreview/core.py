@@ -585,6 +585,7 @@ class GhSession:
         self._err_line = ""
         self._unclear_attempts = 0
         self._status: int | None = None
+        self._quota = False
         # The polling budget (budget.py): every own call passes its hold's gate. None in the unit
         # tests that drive the retry policy alone.
         self.budget = budget
@@ -601,6 +602,12 @@ class GhSession:
         must not say nothing changed if one of them may have. The last call's count; each call
         starts it again."""
         return self._unclear_attempts
+
+    def quota_stopped(self) -> bool:
+        """The last call's ``GhUnanswered`` was the polling budget's (a quota hold that stood, a
+        quota refusal, or a hold the state directory could not record), not transport: no call, or
+        no further call, was made, so reading again at once changes nothing (ludics-lite#795)."""
+        return self._quota
 
     def recovered_status(self) -> int | None:
         """The HTTP status of the last FAILED attempt's answer when gh could not read its body and
@@ -645,6 +652,7 @@ class GhSession:
     ) -> GhCallerResult:
         self._unclear_attempts = 0
         self._status = None
+        self._quota = False
         attempts = self.config.api_attempts
         delay = self.config.api_backoff
         attempt = 1
@@ -658,6 +666,7 @@ class GhSession:
                 held = budget.gate(mode)
                 if held is not None:
                     self._err_line = held
+                    self._quota = True
                     return GhUnanswered()
             done = self._run("gh", args)
             err = proc.substitution(done.stderr)
@@ -691,6 +700,7 @@ class GhSession:
             # waits that hold out at the gate above and repeats; a read the probe found no hold for
             # gets one more try, and a write is never repeated.
             if quota_failure(first) or (self._status is not None and bodiless_quota(self._status)):
+                self._quota = True
                 if budget is not None:
                     unrecorded = budget.quota_hit(args)
                     if unrecorded is not None:

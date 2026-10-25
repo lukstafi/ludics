@@ -361,7 +361,9 @@ class GateLoop(unittest.TestCase):
 
     def test_a_refused_or_unwaited_head_read_is_three_at_once(self) -> None:
         # The negative controls: a 404 no retry changes, and a read with no wait to ride it out in.
+        # And a read the polling budget stopped (a quota refusal; with no budget, not waited out).
         for err, wait, why in (("gh: Not Found (HTTP 404)", 3600, "GitHub refused the read"),
+                               ("gh: API rate limit exceeded for user", 3600, "the polling budget made no call"),
                                ("gh: HTTP 503", 0, "with no wait left to read it again in")):
             gh = FakeGh()
             gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")

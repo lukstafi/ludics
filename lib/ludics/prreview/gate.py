@@ -646,10 +646,14 @@ class Gate:
 
     # --- the gate -------------------------------------------------------------------------------------
 
-    def _pr_fields(self, pr: str, with_updated: bool) -> tuple[Literal["ok", "refused", "unanswered"], list[str]]:
+    def _pr_fields(
+        self, pr: str, with_updated: bool
+    ) -> tuple[Literal["ok", "refused", "held", "unanswered"], list[str]]:
         """The head read: ``ok`` with its fields; ``refused`` when GitHub answered it with a refusal no
-        retry changes (the READ policy's ``GhFailed``: a 4xx, a fixed GraphQL answer); ``unanswered``
-        when the session's attempts ran out (or a quota hold stood)."""
+        retry changes (the READ policy's ``GhFailed``: a 4xx, a fixed GraphQL answer); ``held`` when
+        the polling budget stopped it (``quota_stopped``: a quota hold past the wait's ceiling, which
+        the budget already waits out within it, or one the state directory could not record);
+        ``unanswered`` when the session's attempts ran out."""
         if with_updated:
             jq = (
                 '[(.head.sha // "-"), (.updated_at // "-"), (.base.sha // "-"), (.head.ref // "-")]\n'
@@ -669,26 +673,28 @@ class Gate:
             case GhFailed():
                 return "refused", fields
             case GhUnanswered():
-                return "unanswered", fields
+                return ("held" if self.session.quota_stopped() else "unanswered"), fields
 
     def _head_unread(self, pr: str, kind: str, deadline: int, again: bool) -> bool:
-        """A head read that gave no SHA (ludics-lite#795). Under a wait with budget left, and unless
-        GitHub refused the read outright, it is one failed poll, not the end of the wait: recorded,
-        warned, and True -- pause and read again. Otherwise False, the verdict ``unknown`` and the
-        warning naming every failure: the caller's 3.
+        """A head read that gave no SHA (ludics-lite#795). Under a wait with budget left, an
+        unanswered read is one failed poll, not the end of the wait: recorded, warned, and True --
+        pause and read again. Otherwise False, the verdict ``unknown`` and the warning naming every
+        failure: the caller's 3.
 
-        BOUNDARY, a fail-closed allowlist: what rides out is the gate's OWN head reads -- the first
-        one and each round's re-read -- and only an unanswered read (the session's attempts spent, a
-        quota hold past the wait) or one that answered without a SHA. Not ridden out: a refused read
-        (a 4xx, which no retry changes), a round's check-run and workflow-run reads (3 at once, as
-        before), and merge's own head reads beside a write (the recovery's before its rerun, the
-        re-read after a call lost a race to the base), which fail closed because a write follows."""
+        BOUNDARY, a fail-closed allowlist. What rides out: the gate's OWN head reads -- the first one
+        and each round's re-read -- when the session's attempts ran out on transport, or the read
+        answered without a SHA. Not ridden out: a refused read (a 4xx, which no retry changes); one
+        the polling budget stopped (budget.py already waits a quota hold out within the wait, so
+        what reaches here outlasts it, or is a state-directory error); a round's check-run and
+        workflow-run reads (3 at once, as before); and merge's own head reads beside a write (the
+        recovery's before its rerun, the re-read after a call lost a race to the base), which fail
+        closed because a write follows."""
         repo = self.repo
         verb = "re-read" if again else "read"
         failure = self.session.err_line() or "it answered no SHA"
         self.head_unread.append(failure)
         now = self.clock.now()
-        if kind != "refused" and now < deadline:
+        if kind not in ("refused", "held") and now < deadline:
             warn(
                 f"could not {verb} {repo}#{pr}'s head SHA ({failure}); failed head read"
                 f" {len(self.head_unread)} of this wait, reading it again within the wait"
@@ -698,6 +704,8 @@ class Gate:
         self.verdict = "unknown"
         if kind == "refused":
             why = "GitHub refused the read, which no retry changes"
+        elif kind == "held":
+            why = "the polling budget made no call for it, which no read inside this wait changes"
         elif len(self.head_unread) > 1:
             why = f"{len(self.head_unread)} head reads failed during this wait, and its budget is spent"
         else:
