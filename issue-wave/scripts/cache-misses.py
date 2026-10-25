@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Report the turns of native workers (Claude Code subagents) that missed the prompt cache.
 
-    cache-misses.py [--since YYYY-MM-DD] [--projects DIR] [--session ID] [--list] [--idle MINUTES]
+    cache-misses.py [--since YYYY-MM-DD] [--projects DIR] [--session ID] [--list] [--idle MINUTES
+                    [--board FILE]]
 
 A subagent's requests cache for 5 minutes from its last request, where a main session's cache for
 an hour, unless the host sets `subagentPromptCacheTtl` to `1h`; without it a worker whose blocking
@@ -38,19 +39,48 @@ not been resumed since -- its transcript's last entry is an assistant reply that
 -- `idle <m>m <agent id> context=<tokens> <description>`: the id is the transcript's name
 `agent-<id>.jsonl` without its prefix, the address SendMessage takes, and the description is off
 the transcript's `.meta.json`. Only a user entry (a message or a tool result) ends an idle spell,
-so a trailing bookkeeping record leaves the worker listed; a subagent a worker spawned itself (`spawnDepth` above 1) is not listed. A worker
-that has handed back is listed too: the board says which are done. Exit 0 when no miss followed a
-block, 1 when one did (a wave's close-out reports it), 2 on a usage error.
+so a trailing bookkeeping record leaves the worker listed; a subagent a worker spawned itself (`spawnDepth` above 1) is not listed. Without
+--board a worker that has handed back is listed too.
+
+--board FILE (`-` for stdin; needs --idle) joins the idle lines with the wave's board, the JSON
+document `fleet-worker.sh board show <wave> --json` prints, so a heartbeat lists only the workers
+it should resume (ludics-lite#789). What it reads, and nothing else (the boundary): each
+`tasks[]` row's `task` and three of its `fields` -- `agent`, `retired_agents` (agent ids,
+space-separated, appended at each early hand-back) and `state` (or `status` on a row with no
+`state`: boards before #789 used either); never the notes, the log, the registry or GitHub. An idle
+agent is
+  dropped, retired   when any row's `retired_agents` names it, whatever any row's state says: one
+                     writer per branch, so a retired worker is never resumed;
+  dropped, done      when every row whose `agent` it is is done: its state's first word, compared
+                     without case and with a trailing `;:,.` stripped, is one of DONE_WORDS
+                     (`done`, `merged`, `closed`, `handed-back-early`) -- an allowlist, so any
+                     other state, an empty one included, is live;
+  live               when a row whose `agent` it is is not done:
+                     `idle <m>m <agent id> context=<tokens> task=<task>[,<task>...] state=<state,
+                     shell-quoted> <description>`;
+  unknown            when no row names it (fail closed: printed, never dropped):
+                     `idle <m>m <agent id> context=<tokens> UNKNOWN-TO-BOARD <description>`.
+One line `board: dropped <d> done, <r> retired idle workers` follows the idle lines. A board that
+is not that document (unreadable, not JSON, a row without its `task` or with a non-string field),
+or a `retired_agents` word outside `[A-Za-z0-9._:-]+` (a comma-separated list, say), is refused
+with exit 3 before anything is printed: a misread list must not resume a retired writer.
+
+Exit 0 when no miss followed a block, 1 when one did (a wave's close-out reports it), 2 on a usage
+error, 3 on a refused board.
 """
 import argparse
 from datetime import date, datetime
 import json
 from pathlib import Path
 import re
+import shlex
 import sys
 import time
 
 MIN_WRITE = 2000
+# A board row's state whose first word is one of these is done: its worker is never resumed.
+DONE_WORDS = {'done', 'merged', 'closed', 'handed-back-early'}
+AGENT_ID = re.compile(r'[A-Za-z0-9._:-]+')
 # Multiples of the input price: a cache read, a cache write at each TTL, uncached input, output.
 WEIGHTS = {'reads': 0.1, 'writes_1h': 2.0, 'writes_5m': 1.25, 'uncached': 1.0, 'output': 5.0}
 
@@ -160,6 +190,65 @@ def worker_meta(path):
     return meta if isinstance(meta, dict) else {}
 
 
+class BoardError(Exception):
+    """The --board document is not one `board show --json` prints, or a value is outside its grammar."""
+
+
+def read_board(source):
+    """{'retired': set of agent ids, 'rows': {agent id: [(task, state, done)]}} from the board
+    document at source (`-`: stdin); BoardError when it is not that document."""
+    try:
+        text = sys.stdin.read() if source == '-' else Path(source).read_text()
+        doc = json.loads(text)
+    except (OSError, ValueError) as error:
+        raise BoardError(f'cannot read the board {shlex.quote(source)}: {error}') from None
+    tasks = doc.get('tasks') if isinstance(doc, dict) else None
+    if not isinstance(tasks, list):
+        raise BoardError(f'{shlex.quote(source)} is not a board document (no tasks list)')
+    retired = set()
+    rows = {}
+    for row in tasks:
+        task = row.get('task') if isinstance(row, dict) else None
+        fields = row.get('fields', {}) if isinstance(row, dict) else None
+        if not isinstance(task, str) or not task or not isinstance(fields, dict) \
+                or not all(isinstance(v, str) for v in fields.values()):
+            raise BoardError(f'{shlex.quote(source)} has a row that is not a board row: {row!r}')
+        for word in fields.get('retired_agents', '').split():
+            if not AGENT_ID.fullmatch(word):
+                raise BoardError(f'task {shlex.quote(task)}: retired_agents word {shlex.quote(word)} is not '
+                                 'an agent id (the list is space-separated)')
+            retired.add(word)
+        agent = fields.get('agent', '').strip()
+        if agent:
+            state = fields['state'] if 'state' in fields else fields.get('status', '')
+            words = state.split()
+            done = bool(words) and words[0].rstrip(';:,.').lower() in DONE_WORDS
+            rows.setdefault(agent, []).append((task, state, done))
+    return {'retired': retired, 'rows': rows}
+
+
+def join_board(idle, board):
+    """(lines to print, done count, retired count) for the idle workers against the board."""
+    lines = []
+    done = retired = 0
+    for age, agent, context, description in sorted(idle, reverse=True):
+        head = f'idle {round(age / 60)}m {agent} context={context}'
+        if agent in board['retired']:
+            retired += 1
+            continue
+        mine = board['rows'].get(agent)
+        if mine is None:
+            lines.append(f'{head} UNKNOWN-TO-BOARD {description}')
+            continue
+        live = [(task, state) for task, state, is_done in mine if not is_done]
+        if not live:
+            done += 1
+            continue
+        tasks = ','.join(task for task, _ in live)
+        lines.append(f'{head} task={tasks} state={shlex.quote(live[0][1])} {description}')
+    return lines, done, retired
+
+
 def cost_line(cost):
     weighed = {'reads': cost['reads'] * WEIGHTS['reads'],
                'writes': cost['writes_1h'] * WEIGHTS['writes_1h'] + cost['writes_5m'] * WEIGHTS['writes_5m'],
@@ -179,7 +268,17 @@ def main(argv):
                         else parser.error(f'--session: not a session id: {v!r}'))
     parser.add_argument('--list', action='store_true')
     parser.add_argument('--idle', type=int, metavar='MINUTES')
+    parser.add_argument('--board', metavar='FILE')
     args = parser.parse_args(argv)
+    if args.board is not None and args.idle is None:
+        parser.error('--board joins the --idle lines: give --idle MINUTES too')
+    board = None
+    if args.board is not None:
+        try:
+            board = read_board(args.board)
+        except BoardError as error:
+            print(f'cache-misses: {error}', file=sys.stderr)
+            return 3
     floor = datetime.combine(args.since, datetime.min.time()).timestamp()
     paths = sorted(p for p in args.projects.glob(f'*/{args.session or "*"}/subagents/*.jsonl') if p.stat().st_mtime >= floor)
     total_turns = 0
@@ -212,8 +311,14 @@ def main(argv):
         for path, stamp, gap, written, cause in rows:
             shown = 'unknown' if gap is None else round(gap)
             print(f'{path} {stamp} gap={shown} written={written} {cause}')
-    for age, agent, context, description in sorted(idle, reverse=True):
-        print(f'idle {round(age / 60)}m {agent} context={context} {description}')
+    if board is None:
+        for age, agent, context, description in sorted(idle, reverse=True):
+            print(f'idle {round(age / 60)}m {agent} context={context} {description}')
+    else:
+        lines, done, retired = join_board(idle, board)
+        for line in lines:
+            print(line)
+        print(f'board: dropped {done} done, {retired} retired idle workers')
     return 1 if blocks else 0
 
 

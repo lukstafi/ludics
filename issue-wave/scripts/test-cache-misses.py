@@ -201,6 +201,68 @@ class CacheMisses(unittest.TestCase):
         rc, out = self.run_report()
         self.assertNotIn('idle ', out)
 
+    def board(self, *rows):
+        path = self.root / 'board.json'
+        path.write_text(json.dumps({'board': 1, 'wave': 'w', 'tasks': [
+            {'task': task, 'fields': fields, 'updated_at': '2026-10-25T00:00:00Z'} for task, fields in rows]}))
+        return str(path)
+
+    def idle_workers(self, *agents):
+        for agent in agents:
+            self.transcript(f'agent-{agent}', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 40000, stop='end_turn')],
+                            meta={'description': f'{agent} worker'})
+
+    def test_board_drops_done_and_retired_workers_and_flags_unknown_ones(self):
+        self.idle_workers('live', 'merged', 'legacy', 'first', 'second', 'stranger', 'early')
+        board = self.board(
+            ('t1', {'agent': 'live', 'state': 'launched; PR 12 in review'}),
+            ('t2', {'agent': 'merged', 'state': 'MERGED 8aab017d; #760 closed; handed back'}),
+            ('t3', {'agent': 'legacy', 'status': 'done'}),
+            # Two early hand-backs on one row: the retired id listed second is dropped as surely as the first.
+            ('t4', {'agent': 'replacement', 'state': 'handed-back-early', 'retired_agents': 'first second'}),
+            ('t5', {'agent': 'early', 'state': 'handed-back-early'}),
+            # A retired id is dropped whatever its own row says.
+            ('t6', {'agent': 'second', 'state': 'launched'}))
+        rc, out = self.run_report('--idle', '40', '--board', board)
+        idle = sorted(line for line in out.splitlines() if line.startswith('idle '))
+        self.assertEqual(idle, ["idle 60m live context=40002 task=t1 state='launched; PR 12 in review' live worker",
+                                'idle 60m stranger context=40002 UNKNOWN-TO-BOARD stranger worker'], out)
+        self.assertEqual(out.splitlines()[-1], 'board: dropped 3 done, 2 retired idle workers', out)
+
+    def test_a_row_not_done_keeps_its_agent_listed_and_empty_state_is_live(self):
+        self.idle_workers('twice', 'blank')
+        board = self.board(('t1', {'agent': 'twice', 'state': 'merged'}), ('t2', {'agent': 'twice', 'state': ''}),
+                           ('t3', {'agent': 'blank'}))
+        rc, out = self.run_report('--idle', '40', '--board', board)
+        idle = sorted(line for line in out.splitlines() if line.startswith('idle '))
+        self.assertEqual(idle, ["idle 60m blank context=40002 task=t3 state='' blank worker",
+                                "idle 60m twice context=40002 task=t2 state='' twice worker"], out)
+
+    def test_board_on_stdin(self):
+        self.idle_workers('live')
+        board = Path(self.board(('t1', {'agent': 'live', 'state': 'launched'}))).read_text()
+        done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--projects', str(self.root), '--since', '2000-01-01',
+                               '--idle', '40', '--board', '-'], input=board, capture_output=True, text=True)
+        self.assertIn('idle 60m live context=40002 task=t1 state=launched live worker\n', done.stdout)
+
+    def test_a_board_outside_its_grammar_is_refused_before_any_output(self):
+        self.idle_workers('first')
+        for rows in ([('t1', {'agent': 'x', 'retired_agents': 'first,second'})],
+                     [('t1', {'agent': 'x', 'retired_agents': 7})],
+                     [('', {'agent': 'x'})]):
+            done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--projects', str(self.root),
+                                   '--since', '2000-01-01', '--idle', '40', '--board', self.board(*rows)],
+                                  capture_output=True, text=True)
+            self.assertEqual((done.returncode, done.stdout), (3, ''), done.stderr)
+        for text in ('', '{"tasks": {}}', '[]'):
+            done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--projects', str(self.root),
+                                   '--since', '2000-01-01', '--idle', '40', '--board', '-'],
+                                  input=text, capture_output=True, text=True)
+            self.assertEqual((done.returncode, done.stdout), (3, ''), (text, done.stderr))
+        done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--projects', str(self.root),
+                               '--board', str(self.root / 'absent.json')], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 2, done.stderr)
+
     def test_a_bad_date_is_a_usage_error(self):
         done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--since', 'yesterday'],
                               capture_output=True, text=True)

@@ -207,11 +207,14 @@ context lean:
   in the same coordinator turn, with `EXECUTION_CONCLUDED` or its next assignment (the first miss
   above was a conclusion with no resume); every `EXECUTION_REQUEST` is assigned, refused, or
   answered with one of the forms above.
-- **Every heartbeat reads the cache**, beside `prs`: `cache-misses.py --since <wave start>
-  --session <coordinator session id> --idle 40`, then each `idle` line of a live worker gets one
-  of the resumes above. A worker is not live once its board row is done or lists its agent ID in
-  `retired_agents` (every early hand-back's on that row, appended and never overwritten): that one
-  is never resumed. A `resume` miss is a worker the coordinator left idle too long; a
+- **Every heartbeat reads the cache**, beside `prs`: `fleet-worker.sh board show <wave> --json |
+  cache-misses.py --since <wave start> --session <coordinator session id> --idle 40 --board -`,
+  then each `idle` line gets one of the resumes above. The join with the board is the script's
+  (ludics-lite#789): it drops a done row's worker and every agent ID in any row's `retired_agents`
+  (every early hand-back's on that row, appended and never overwritten), which is never resumed,
+  and prints each live worker beside its task row. A done row's `state` starts with `done`,
+  `merged` or `closed`. An `UNKNOWN-TO-BOARD` line is an agent no row names: fix its row before
+  resuming it. A `resume` miss is a worker the coordinator left idle too long; a
   miss after a block is a host without the 1-hour TTL.
 - **Context discipline, carried by the brief.** Workers keep the full model and context (no cutoff:
   the maintainer's call) and keep what they re-read small: wide reads, log digests and review-thread

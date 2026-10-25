@@ -99,12 +99,13 @@ Regular mode's rules are SKILL.md's (*Wave mode*); this is their mechanism here.
 lives one TTL from its last request, and every request renews it, a cache read included. A worker
 blocked inside its turn makes a request at least every 540 s (`bg-run.sh wait`), so it never
 misses. A worker whose turn has ended is on the clock from its last reply, and only the
-coordinator's message ends that wait. `cache-misses.py --session <coordinator session id> --idle
-40` lists each one past 40 minutes as `idle <m>m <agent id> context=<tokens> <description>`, the
-ID `SendMessage` takes; the session id is the coordinator's
-`$CLAUDE_CODE_SESSION_ID`. Workers that have handed back are listed too, and are no longer
-live: a final hand-back's board row is done, and an early hand-back's agent ID is listed in the
-row's `retired_agents`.
+coordinator's message ends that wait. `fleet-worker.sh board show <wave> --json | cache-misses.py
+--session <coordinator session id> --idle 40 --board -` lists each live one past 40 minutes as
+`idle <m>m <agent id> context=<tokens> task=<task> state=<state> <description>`, the ID
+`SendMessage` takes; the session id is the coordinator's
+`$CLAUDE_CODE_SESSION_ID`. Workers that have handed back are not listed: a final hand-back's
+board row is done, and an early hand-back's agent ID is listed in the row's `retired_agents`
+(the script's header states the join and its refusals).
 
 There are three ways off the clock, chosen by when the wait will end:
 
