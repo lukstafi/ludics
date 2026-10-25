@@ -3527,6 +3527,35 @@ else
   ko "the leg never said it waits for the window: $(cat "$TMP/leg-ww.out")"; kill "$lww" 2>/dev/null; wait "$lww" 2>/dev/null; fixture_done leg-w1
 fi
 fixture_done leg-s
+# ludics-lite#796: under a halt, the triage owner holds one record on each box its triage names, and
+# its legs run on each; nobody else gets a record to run a leg under.
+trq() { # <id> <host> <worker> <boxes JSON> [triage reason] -> a payload path
+  jq -n --arg id "$1" --arg host "$2" --arg worker "$3" --argjson boxes "$4" --arg why "${5-}" --arg wt "$lwt" '{request_id:$id,
+    wave:"w", worker:$worker, transport:"subagent", issue:"o/r#796", purpose:"leg fixture", agent_host:"testbox",
+    execution_host:$host, repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true, checkout:$wt}
+    + (if $why == "" then {} else {triage_reason:$why, triage_boxes:$boxes} end)' > "$TMP/$1.json"
+  printf '%s\n' "$TMP/$1.json"
+}
+"$FW" halt "red on two backends, owner: triage" >/dev/null || ko "could not halt (setup)"
+for lbox in testbox other; do
+  "${FWL[@]}" execution run "$(trq "leg-tr-$lbox" "$lbox" triage '["testbox","other"]' "red on two backends")" >/dev/null 2>&1 ||
+    ko "could not run leg-tr-$lbox under the halt (setup)"
+done
+n=$(marks)
+expect "under a halt, the triage owner's leg runs on a box its triage names" 0 "execution-leg: exit: 0" -- \
+  leg --request leg-tr-testbox --rev main --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+expect "...and on its other box" 0 "execution-leg: exit: 0" -- \
+  env SHIM_SSH_LOCAL=other "${FWL[@]}" execution leg --request leg-tr-other --rev main --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+[ "$(marks)" = $((n + 2)) ] && ok "...each runner run once" || ko "the triage legs ran $(marks) times (from $n)"
+expect "another worker's triage record is refused under the halt" 1 "the halt's triage has one owner, so worker rival is refused" -- \
+  "${FWL[@]}" execution run "$(trq leg-rival other rival '["other"]' "a second owner")"
+expect "an ordinary run is refused under the halt" 1 "fleet halted; ordinary reservations refused" -- \
+  "${FWL[@]}" execution run "$(trq leg-ord testbox ord null)"
+expect "...so it has no record to run a leg under" 1 "unknown request_id leg-ord" -- \
+  leg --request leg-ord --rev main --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+[ "$(marks)" = $((n + 2)) ] && ok "...and the refused ran nothing" || ko "a refused leg ran: $(marks) (from $n)"
+"$FW" resume-launches >/dev/null || ko "could not resume launches (setup)"
+fixture_done leg-tr-testbox; fixture_done leg-tr-other
 unset LEG_MARK
 }
 

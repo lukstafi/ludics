@@ -233,6 +233,30 @@ its own (a post-wave task, an integration run), whose label goes in `purpose`. A
 names no issue (`owner/name#post-1`, `<repo> integration`) is refused when a request is NEW (reserve,
 run, window). The ledger keeps the free-text spellings recorded before, and a retry of such a request
 still answers with its record: what a record holds is validated only as a nonempty string.
+
+THE HALT'S TRIAGE (ludics-lite#796). While a HALT marker stands under the state root, a new
+reservation (reserve, run, window) is admitted only when its request carries `triage_reason`, and
+the record keeps the halt's generation as `halt_identity`; a dispatch of a triage record from
+another or an ended halt is refused. The halt's TRIAGE is every record not concluded whose
+`halt_identity` is the current generation. One owner holds it, on several boxes: a payload may
+carry `"triage_boxes": [<box>, ...]` BESIDE the request (as THE CHECKOUT is, and for its reason:
+an older copy of this module refuses a request field it does not know, and would refuse the whole
+ledger), only with `triage_reason` -- a nonempty list of distinct canonical FLEET_BOXES entries
+naming the request's own execution host -- and the record keeps it as a top-level field, fixed for
+the record's life (a retry names the same list or is refused). A record without one is a triage of
+its own host alone (every triage record before #796). With the triage empty, a triage request
+founds it. Otherwise it is admitted only when it names the triage's one `worker`, the same SET of
+boxes as every record in the triage (the list is fixed by the triage's first record for as long as
+any of its records is outstanding), and a host no record of the triage is outstanding on: one
+triage record per box. Every other request is refused, naming the owner, the boxes and the records.
+The boundary, and nothing else: it holds one owner (the exact `worker` string) per halt generation,
+one record per box, and boxes drawn from the coordinator's own list. It does not verify that the red
+reproduces on those boxes (the coordinator's statement), that `worker` is the board's triage worker,
+or anything about records dispatched before the halt: the halt refuses new reservations and
+dispatch, never running work, so their slot batches and legs go on (`execution leg` reads no
+halt). Once every record of the triage is concluded, the next triage request founds a new one; a
+later halt's triage ignores this one's records (another generation), which stay outstanding until
+concluded like any record.
 """
 import contextlib
 import fcntl
@@ -379,6 +403,51 @@ def checkout_ok(value: Any) -> str:
     return value
 
 
+def triage_boxes_ok(value: Any, request: Record) -> list[str]:
+    """THE HALT'S TRIAGE's box list (see the header), by its shape: only beside a `triage_reason`
+    request, a nonempty list of distinct nonempty strings naming the request's execution host."""
+    if "triage_reason" not in request:
+        refuse("triage_boxes is only for a triage_reason reservation (under a halt)")
+    if (not isinstance(value, list) or not value
+            or not all(isinstance(box, str) and box.strip() for box in cast(list[Any], value))):
+        refuse(f"triage_boxes {json.dumps(value)} must be a nonempty list of box names")
+    boxes = cast(list[str], value)
+    if len(set(boxes)) != len(boxes):
+        refuse(f"triage_boxes {json.dumps(boxes)} names a box twice")
+    if request["execution_host"] not in boxes:
+        refuse(f"execution_host {request['execution_host']} is not one of its triage_boxes {', '.join(boxes)}")
+    return boxes
+
+
+def triage_boxes_of(record: Record) -> list[str]:
+    """The boxes a triage record's triage spans: its list, else its own host (THE HALT'S TRIAGE)."""
+    return cast(list[str], record.get("triage_boxes") or [record["request"]["execution_host"]])
+
+
+def check_triage(request: Record, boxes: list[str] | None, records: dict[str, Record], halt_identity: str) -> None:
+    """Admit a new triage request into the current halt's triage, or refuse (THE HALT'S TRIAGE)."""
+    members = sorted((r for r in records.values()
+                      if r["state"] != "concluded" and halt_generation(r.get("halt_identity")) == halt_identity),
+                     key=lambda r: r["request_id"])
+    if not members:
+        return
+    owners = sorted({r["request"]["worker"] for r in members})
+    spans = {frozenset(triage_boxes_of(r)) for r in members}
+    held = ", ".join(f"{r['request_id']} on {r['request']['execution_host']}" for r in members)
+    span = ", ".join(sorted({box for boxes_ in spans for box in boxes_}))
+    exists = f"an outstanding triage assignment already exists (owner {', '.join(owners)}; boxes {span}; {held})"
+    if owners != [request["worker"]]:
+        refuse(f"{exists}: the halt's triage has one owner, so worker {request['worker']} is refused "
+               f"until those records conclude")
+    wanted = frozenset(boxes or [request["execution_host"]])
+    if spans != {wanted}:
+        refuse(f"{exists}: a record of the triage names the same triage_boxes, fixed by its first record "
+               f"while any of its records is outstanding, not {', '.join(sorted(wanted))}")
+    here = [r["request_id"] for r in members if r["request"]["execution_host"] == request["execution_host"]]
+    if here:
+        refuse(f"{exists}: the triage already holds {here[0]} on {request['execution_host']} (one triage record per box)")
+
+
 def check_issue(request: Record) -> None:
     """A NEW request's `issue` (see the header): absent, or one issue spelled `owner/name#N`."""
     if "issue" in request and not ISSUE.fullmatch(request["issue"]):
@@ -412,6 +481,11 @@ def validate_record(data: Any, path: Path) -> Record:
             checkout_ok(record["checkout"])
         except ValueError:
             refuse(f"invalid checkout: {path}")
+    if "triage_boxes" in record:
+        try:
+            triage_boxes_ok(record["triage_boxes"], record["request"])
+        except ValueError:
+            refuse(f"invalid triage boxes: {path}")
     if "observed_sha" in record and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", record["observed_sha"]):
         refuse(f"invalid observed SHA: {path}")
     if "resolved_revision" in record and not (isinstance(record["resolved_revision"], str)
@@ -978,7 +1052,9 @@ def main(argv: list[str]) -> None:
         checkout = data.get("checkout")
         if "checkout" in data:
             checkout_ok(checkout)
-        request = {k: v for k, v in data.items() if k != "checkout"}
+        # THE HALT'S TRIAGE's box list rides beside the request as the checkout does (see the header).
+        triage_boxes: list[str] | None = data.get("triage_boxes")
+        request = {k: v for k, v in data.items() if k not in {"checkout", "triage_boxes"}}
         dispatch_evidence = ("measurement window opened: reserved and dispatched in one step (execution window)"
                              if action == "window" else "reserved and dispatched in one step (execution run)")
         if action in {"run", "window"}:
@@ -994,6 +1070,11 @@ def main(argv: list[str]) -> None:
                 refuse("a window opens for a measurement: kind must be measurement")
             if request["execution_host"] != window_box:
                 refuse(f"the window is for {window_box}, but the measurement names {request['execution_host']}")
+        if "triage_boxes" in data:
+            triage_boxes = triage_boxes_ok(triage_boxes, request)
+            for box in triage_boxes:
+                if box not in canonical_hosts:
+                    refuse(f"triage_boxes entry {box} must exactly match a canonical FLEET_BOXES entry")
         queued: str | None = None      # the open window a standing request is admitted suspended by
         dispatch = action in {"run", "window"}
         if record:
@@ -1002,6 +1083,9 @@ def main(argv: list[str]) -> None:
             if record.get("checkout") != checkout:
                 refuse(f"request_id already names a different checkout ({json.dumps(record.get('checkout'))});"
                        f" a reservation's checkout is fixed when it is taken")
+            if record.get("triage_boxes") != triage_boxes:
+                refuse(f"request_id already names different triage_boxes ({json.dumps(record.get('triage_boxes'))});"
+                       f" a triage record's boxes are fixed when it is taken")
             if action == "reserve":
                 sync_directory(directory.parent)
                 sync_directory(directory)
@@ -1045,9 +1129,8 @@ def main(argv: list[str]) -> None:
                 if "triage_reason" not in request:
                     refuse("fleet halted; ordinary reservations refused (only the named triage_reason reservation is admitted)")
                 nonempty(request, ["triage_reason"])
-                # One explicitly named exception, not an unrestricted force flag.
-                if any(r["state"] != "concluded" and halt_generation(r.get("halt_identity")) == halt_identity for r in records.values()):
-                    refuse("an outstanding triage assignment already exists")
+                # One explicitly named owner, not an unrestricted force flag (THE HALT'S TRIAGE).
+                check_triage(request, triage_boxes, records, halt_identity)
             if action == "window":
                 # Last of the admission checks: a gap answer is retried, and only a window every
                 # other check admits may wait for one.
@@ -1069,7 +1152,10 @@ def main(argv: list[str]) -> None:
                     record["deadline_at"] = (clock + timedelta(seconds=window_deadline)).isoformat()
             if checkout is not None:
                 record["checkout"] = checkout
-            events.append(("reserve", request if checkout is None else {**request, "checkout": checkout}))
+            if triage_boxes is not None:
+                record["triage_boxes"] = triage_boxes
+            beside = {k: v for k, v in (("checkout", checkout), ("triage_boxes", triage_boxes)) if v is not None}
+            events.append(("reserve", {**request, **beside}))
         if dispatch:
             triage = record["request"].get("triage_reason")
             if triage and (halt_identity is None or halt_generation(record.get("halt_identity")) != halt_identity):

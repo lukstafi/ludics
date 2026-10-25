@@ -957,15 +957,25 @@ record, and its conclusion restores the suspended reservations, during a halt to
 reservation itself is not reconciled - the window owns its state until then - though it may be
 concluded.
 
-A halt refuses ordinary reservations and dispatch. The one named regression-triage reservation
-may include a nonempty `triage_reason` only while a halt is active; its dispatch is allowed
-during the halt. Premarking ordinary reservations as future triage is refused. Each new halt
+A halt refuses ordinary reservations and dispatch. The named regression-triage owner's
+reservations may include a nonempty `triage_reason` only while a halt is active; their dispatch
+is allowed during the halt. Premarking ordinary reservations as future triage is refused. Each new halt
 receives a unique ID. Repeating `halt` to update its reason preserves that ID, including after
 coordinator adoption; only resume followed by a new halt changes it. A triage reservation is
 bound to that halt and cannot dispatch after it ends or during a later halt; its box stays
-reserved until reconciled. Only an outstanding triage reservation for the current halt blocks
-its next triage reservation. This exception must correspond to the board's named triage worker,
-not a general bypass for ordinary work.
+reserved until reconciled. The halt's triage is its outstanding triage records, held by one owner
+on several boxes (ludics-lite#796): a payload carries `"triage_boxes": ["<box>", ...]` beside the
+request, as it carries `checkout` - the canonical boxes the red reproduces on, the record's own
+execution host among them, its owner's agent host too when it iterates there. The first record
+fixes the owner (`worker`) and the box list; another is admitted only with the same worker, the
+same set of boxes and a box the triage holds no outstanding record on, and every other request is
+refused. A request without the list is a triage of its own box alone. Reserve one record per box
+(the owner's legs run under them, `execution leg --request <that box's id>`); when one box is
+refused after another was admitted, keep the first and retry the second, never roll it back. To
+change the list, conclude the triage's records: once none is outstanding, the next triage request
+founds a new one. The halt refuses new work only: records dispatched before it keep their slot
+batches and legs. This exception must correspond to the board's named triage worker, not a
+general bypass for ordinary work.
 
 Fixtures: `python3 issue-wave/scripts/test-fleet-execution.py` exercises actual temporary anchor
 state and concurrent processes without ssh, accounts or hardware. For live validation reserve
