@@ -912,7 +912,10 @@ controlled through the tools in your coordinator's file, never through those com
   its AGENTS.md says, and on a GPU box it also runs that box's backend, which
   GitHub CI never covers (a bonus, not the reason for the pick); for a repo whose CI already is
   its fullest suite (ludics, flotilla, this one), the merged tip's CI run is the verdict,
-  awaited with `pr-review.sh base owner/repo --wait` rather than re-run locally. Where the
+  awaited with `pr-review.sh base owner/repo --wait` rather than re-run locally. Either way the
+  loop's verdict is the tip's own run, or an integration record at it: a `base --wait` that
+  settled on absence (a tip with no run of its own, past the grace, ludics-lite#156) reports an
+  older commit's verdict, which judges no merge the tip added. Where the
   default branch's workflow no longer runs on push (its file at the tip names no `push`) there is
   no tip run to await: the integration run's own record, concluded at the merged SHA, is that
   tip's verdict, and it is what the base gate reads before the next launch. Reserve it as transport
@@ -937,15 +940,23 @@ controlled through the tools in your coordinator's file, never through those com
      once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
      await it with `pr-review.sh retry run watch <owner/repo>#<run id>`. Green, it was a flake:
      `resume-launches` on the integration loop's next green verdict, which is about the
-     CURRENT tip by the rule above (its own push run, or an integration record at it), so every
+     CURRENT tip by the rule above (the tip's own run, or an integration record at it), so every
      merge landed meanwhile is in it. Red, it is a regression: the rest of stop-the-world
      (below) follows, and the next two steps are its owner's.
   2. **Attribute** by the failing job (`pr-review.sh base` names it, and `red since` where its
-     streak starts) against `git log --first-parent <last green>..<red tip>`: the last green is
-     the workflow's newest successful push run (`gh run list --repo <owner/repo> --branch <base>
-     --workflow <file> --status success --limit 1 --json headSha`), or, for a local integration
-     run, the newest `pass` integration record (`fleet-worker.sh execution list`). A merge in
-     that range whose diff reaches the failing suite, alone, owns it.
+     streak starts) against `git log --first-parent <last green>..<red tip>`. The last green is
+     the nearest commit below the red tip on its first-parent chain that a green judged, never
+     just the newest green: a merge that lands during the rerun and goes green descends from the
+     red tip, so the range comes out empty and `git bisect` refuses the endpoints
+     (ludics-lite#602). `pr-review.sh base <owner/repo> <base> --last-green <red tip>` prints it
+     for each workflow red there, from the successful push runs created before the red run. For
+     a local integration run, the `pass` integration records' SHAs are its candidates:
+
+         fleet-worker.sh execution list --compact | jq -r '.[] | select(.verdict == "pass" and .request.integration == true and .request.repository == "<owner/repo>") | .observed_sha' | pr-review.sh base <owner/repo> --last-green <red tip> --greens -
+
+     Exit 4 (no green on the chain within 300 first parents, or nothing red at that SHA) and 3 (a
+     read failed) print no SHA, never a guess. A merge in that range whose diff reaches the failing
+     suite, alone, owns it.
   3. **Bisect only when that is still ambiguous**: run the failing suite at the range's
      intermediate merges (`git bisect start --first-parent <red tip> <last green>`) in a detached
      worktree, locally, on a box of the failing job's OS - mac-studio under `/bin/bash` 3.2 for

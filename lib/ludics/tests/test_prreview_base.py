@@ -1065,14 +1065,14 @@ class EndToEnd(unittest.TestCase):
         with open(os.path.join(self.dir, "answers.json"), "w", encoding="utf-8") as f:
             json.dump(plain, f)
 
-    def run_cmd(self, entry: list[str], *args: str) -> subprocess.CompletedProcess[str]:
+    def run_cmd(self, entry: list[str], *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("LUDICS_BRIDGE", "SHIP_PR_"))}
         env.update({"PATH": self.dir + os.pathsep + env.get("PATH", ""), "REPO": "o/r",
                     "SHIP_PR_API_ATTEMPTS": "1", "SHIP_PR_API_BACKOFF": "0",
                     "SHIP_PR_STATE_DIR": os.path.join(self.dir, "state")})
         return subprocess.run([*entry, "base", *args], capture_output=True, text=True, env=env,
-                              cwd=self.dir, check=False)
+                              cwd=self.dir, check=False, input=stdin)
 
     def entries(self) -> list[list[str]]:
         return [[PY, "-m", "ludics.prreview"], [PR_REVIEW]]
@@ -1092,6 +1092,9 @@ class EndToEnd(unittest.TestCase):
                 done = self.run_cmd(entry, "main", "--last-green", R)
                 self.assertEqual((done.returncode, done.stderr), (0, ""), done.stdout)
                 self.assertIn(f"last green for ci: {P2} (run 1998,", done.stdout)
+                done = self.run_cmd(entry, "--last-green", R, "--greens", "-", stdin=f"{D}\n{P3}\n")
+                self.assertEqual((done.returncode, done.stderr), (0, ""), done.stdout)
+                self.assertIn(f"last green {P3}, 3 first-parent commit(s)", done.stdout)
 
     def test_source_a_runs_the_checks_gate_through_the_gh_on_path(self) -> None:
         answers = pushless_world()
