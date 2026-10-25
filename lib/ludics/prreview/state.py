@@ -820,11 +820,33 @@ def status_state(ctx: Ctx, pr: str) -> State:
         except JqError:
             return unknown(mstate, "the reviews feed did not parse for the failed head")
         if not rev_head_at or fail_at > rev_head_at:
-            return State(
-                "failed", age_of(fail_at, ctx.clock.time()), mstate,
-                f"{_short(head_sha)}|{fail_kind}|{rev} reported an initialization failure at"
-                f" {fail_at} {fail_head}",
-            )
+            # ludics-lite#792: split as the Failed row is. A request at or after the failure
+            # answers it (the round it asks for is due, as `run` reads it); one on this head before
+            # it makes this a failure AGAIN (`env-again`, `git-again`), which `watch` hands back
+            # rather than re-requesting; neither is a first failure (`env`, `git`), which it posts
+            # its one request over.
+            if not head_at_read:
+                head_at = _commit_read(ctx, head_sha)
+                head_at_read = True
+            floor = _arrival_floor(ctx, head_at, head.created)
+            try:
+                asked = _requests(comments, rev)
+                req_after = any(ge(a, fail_at) for a in asked)
+                req_before = jstr(alt(jmax([a for a in asked if ge(a, floor) and lt(a, fail_at)]), ""))
+            except JqError:
+                return unknown(mstate, "the review-request comments feed did not parse")
+            if not req_after:
+                again = (
+                    f"-again|{rev} reported an initialization failure at {fail_at} {fail_head}, after"
+                    f" the '@codex review' request at {req_before} on this head"
+                ) if req_before else (
+                    f"|{rev} reported an initialization failure at {fail_at} {fail_head}, with no"
+                    " '@codex review' on this head before it"
+                )
+                return State(
+                    "failed", age_of(fail_at, ctx.clock.time()), mstate,
+                    f"{_short(head_sha)}|{fail_kind}{again}",
+                )
 
     if verd_sha and not verd_at < last_spoke and head_sha.startswith(verd_sha):
         return State(
@@ -953,7 +975,9 @@ def stall_nudge_read(ctx: Ctx, pr: str) -> NudgeRead:
     """May ``watch`` post its one '@codex review' over a STALLED round on the head
     (ludics-lite#760)? Asked only after a fresh state read said ``stalled``: a 👀 or a Running row
     up longer than a round takes, newer than the reviewer's last word. ``nudge_read`` cannot answer
-    it, since the stalled round's own Running row is evidence for the head there.
+    it, since the stalled round's own Running row is evidence for the head there. Asked too after a
+    fresh read said ``failed`` with a first initialization failure (``env``, ``git``; ludics-lite#792),
+    whose request it gates the same way.
 
     Boundary, fail-closed: CLEAR only when every read below answered and none of these is there --
     a 👍 from the reviewer on the PR, whatever head it is for (a request clears it); a no-findings
@@ -1186,25 +1210,50 @@ def status_line(state: State, repo: str, pr: str) -> str:
                         " push --force-with-lease) or hand it to the maintainer. This is not a"
                         f" round — {frest}, standing for {age}{c}"
                     )
-                case "env":
+                case "env" | "env-again":
+                    env = (
+                        'the connector answered "To use Codex here, create an environment for this'
+                        ' repo"'
+                    )
+                    maintainer = (
+                        "the environment is the maintainer's to set up"
+                        " (https://chatgpt.com/codex/cloud/settings/environments) — no push of yours"
+                        " fixes it"
+                    )
+                    if fkind == "env-again":
+                        return (
+                            f"reviewer FAILED at initialization AGAIN on head {fsha} after a"
+                            f" '@codex review' request on it — not re-requested a second time: {env},"
+                            f" and {maintainer}; hand it over. This is not a round — {frest},"
+                            f" standing for {age}{c}"
+                        )
                     return (
                         f"reviewer FAILED at initialization on head {fsha} — nudge it once with a"
-                        f" '@codex review' comment (pr-review.sh comment {repo}#{p} '@codex"
-                        ' review\'); the connector answered "To use Codex here, create an'
-                        ' environment for this repo", which has cleared on one nudge before. If'
-                        " the nudge draws the same answer, the environment is the maintainer's to"
-                        " set up (https://chatgpt.com/codex/cloud/settings/environments) — no push"
-                        f" of yours fixes it. This is not a round — {frest}, standing for {age}{c}"
+                        f" '@codex review' comment (`watch` posts it itself, once per head, when no"
+                        " 👍 stands, and keeps watching; outside a watch, pr-review.sh comment"
+                        f" {repo}#{p} '@codex review'); {env}, which has cleared on one nudge before."
+                        f" If the nudge draws the same answer, {maintainer}. This is not a round —"
+                        f" {frest}, standing for {age}{c}"
                     )
                 case _:
+                    behind = (
+                        " (an amend suffices: git commit --amend --no-edit && git push"
+                        " --force-with-lease), since the reviewer's clone is behind, not your push —"
+                        " the ref it could not fetch is one the PR and git ls-remote both serve"
+                    )
+                    if fkind == "git-again":
+                        return (
+                            f"reviewer FAILED at initialization AGAIN on head {fsha} after a"
+                            f" '@codex review' request on it — not re-requested a second time:"
+                            f" push a new head{behind}. This is not a round — {frest}, standing for"
+                            f" {age}{c}"
+                        )
                     return (
                         f"reviewer FAILED at initialization on head {fsha} — nudge it once with a"
-                        f" '@codex review' comment (pr-review.sh comment {repo}#{p} '@codex"
-                        " review'); if the SAME head fails again, push a new head instead (an"
-                        " amend suffices: git commit --amend --no-edit && git push"
-                        " --force-with-lease), since the reviewer's clone is behind, not your push"
-                        " — the ref it could not fetch is one the PR and git ls-remote both serve."
-                        f" This is not a round — {frest}, standing for {age}{c}"
+                        f" '@codex review' comment (`watch` posts it itself, once per head, when no"
+                        " 👍 stands, and keeps watching; outside a watch, pr-review.sh comment"
+                        f" {repo}#{p} '@codex review'); if the SAME head fails again, push a new head"
+                        f" instead{behind}. This is not a round — {frest}, standing for {age}{c}"
                     )
         case "expected" | "nudged":
             return f"review EXPECTED but not started — {detail}; due for {age}{c}"

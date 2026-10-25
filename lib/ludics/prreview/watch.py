@@ -16,6 +16,8 @@ parent commit (``git show 14f2ca7:ship-pr/scripts/pr-review.sh``); read them bef
   window ONCE, to a frozen deadline (handed off once from a nudge's pickup to its review);
 - a `failed` run (a Failed summary row, or a Completed one naming no commit, #787) is
   re-requested by the watch itself, once per head per process, on a state read fresh after the round, and the request is sent ONCE whatever its error (it may have landed);
+  so is a first initialization failure (#792), when ``state.stall_nudge_read`` also finds nothing
+  standing for the head; a failure after a request on the head (``-again``) is handed back;
 - an `expected` verdict -- a 👀 round that ended without a review of the head (a push landed
   during it), or a head with no 👀 past its grace -- is answered with the watch's own
   '@codex review' (ludics-lite#570), once per head, when the verdict's re-reads stand and
@@ -175,6 +177,12 @@ def _upto(text: str, sep: str) -> str:
 def _after(text: str, sep: str) -> str:
     """``${text#*<sep>}``: everything after the first separator, or all of it when there is none."""
     return text.split(sep, 1)[1] if sep in text else text
+
+
+# The `failed` kinds whose first move is the one '@codex review' the watch posts itself: the run
+# the summary marks Failed (or Completed naming no commit, #787), and the initialization failures
+# (#792). Their `-again` kinds, after a request on the head, are handed back.
+_FIRST_FAILURES = ("run", "env", "git")
 
 
 def _cut_f12(text: str) -> str:
@@ -615,10 +623,11 @@ class Watch:
             # --no-nudge on a failed run: the remedy is the FINAL read's, since a request landing
             # in the final poll turns `run` into `run-again`, whose line names the move itself.
             fsha, _, rest = state.detail.partition("|")
+            what = "the failed run" if rest.startswith("run|") else "the initialization failure"
             message = (
-                f"--no-nudge: the watch did not re-request the failed run on head {fsha}; post it"
+                f"--no-nudge: the watch did not re-request {what} on head {fsha}; post it"
                 f" yourself (pr-review.sh comment {self.repo}#{self.pr} '@codex review')"
-                if rest.startswith("run|") else ""
+                if _upto(rest, "|") in _FIRST_FAILURES else ""
             )
         self.drift_note()
         if message:
@@ -803,6 +812,30 @@ class Watch:
             case _:
                 assert_never(read)
 
+    def init_failure_gate(self, fsha: str) -> str | None:
+        """Why the one request over a first initialization failure (ludics-lite#792) is not
+        posted, or None to post it. The state read said no request on the head before the
+        failure; the stall's read (``stall_nudge_read``) re-reads the rest -- a 👍 on the PR
+        whatever head it is for, a verdict for the head, the request record across processes --
+        and the write gate, as the stall nudge's does, an open non-draft PR without conflicts
+        still on the head that read cleared, which must be the failed head ``fsha`` (review of
+        #805, round 1: a push between the state read and this one is a head that has not failed)."""
+        read = stall_nudge_read(self.ctx, self.pr)
+        match read:
+            case NudgeBarred(why=why):
+                return why
+            case NudgeClear(head=head):
+                if not fsha or not head.startswith(fsha):
+                    return f"the head moved to {head[:7]} since the failure was read"
+                pr_state, now_head = self.write_gate()
+                if pr_state != "open":
+                    return f"the PR reads {pr_state or 'UNREAD'}, not open"
+                if now_head != head:
+                    return "the head moved while the request was being read"
+                return None
+            case _:
+                assert_never(read)
+
     def write_gate(self) -> tuple[str, str]:
         """The PR's state as the automatic write's last gate reads it fresh, and its head (review
         of #583, rounds 3 to 5: a PR closed, merged, made a draft or conflicted mid-watch is still
@@ -937,13 +970,14 @@ class Watch:
             tok = state.tok
             if tok == "failed":
                 fkind = _cut_f12(state.detail)
-                if _after(fkind, "|") == "run" and rerequested != _upto(fkind, "|"):
+                if _after(fkind, "|") in _FIRST_FAILURES and rerequested != _upto(fkind, "|"):
                     ctx.snap.drop()
                     state = gated_state(ctx, pr)
                     tok = state.tok
                     if _cut_f12(state.detail) != fkind:
+                        what = "run" if _after(fkind, "|") == "run" else "initialization"
                         warn(
-                            f"{where}: not re-requesting the failed run on {_upto(fkind, '|')} — a"
+                            f"{where}: not re-requesting the failed {what} on {_upto(fkind, '|')} — a"
                             f" fresh read says: {self.line(state)}"
                         )
             self.state = state
@@ -1003,24 +1037,35 @@ class Watch:
                     detail = state.detail
                     fsha = _upto(detail, "|")
                     fkind = _upto(_after(detail, "|"), "|")
-                    if fkind == "run" and rerequested != fsha and not self.nudge:
+                    first = fkind in _FIRST_FAILURES
+                    if first and rerequested != fsha and not self.nudge:
                         return self.end(tok, "", remedy="failed-run")
-                    if fkind == "run" and rerequested != fsha:
+                    if first and rerequested != fsha and fkind != "run":
+                        barred = self.init_failure_gate(fsha)
+                        if barred is not None:
+                            return self.end(
+                                tok,
+                                "the watch did not post the '@codex review' over the initialization"
+                                f" failure on head {fsha}: {barred}",
+                            )
+                    if first and rerequested != fsha:
                         posted, post_err = self.post_request()
                         if posted:
                             rerequested = fsha
                             rerequest_end = self.clock.now() + cfg.grace
                             candidate_end = rerequest_end
                             candidate_kind = "nudged"
+                            what = "run" if fkind == "run" else "initialization"
                             warn(
-                                f"{where}: re-requested the review with '@codex review' — the run"
-                                f" on head {fsha} failed with no review and no 👍 to clear;"
+                                f"{where}: re-requested the review with '@codex review' — the"
+                                f" {what} on head {fsha} failed with no review and no 👍 to clear;"
                                 " watching for the new round"
                             )
                         else:
                             self.drift_note()
                             _say(
-                                f"the '@codex review' re-request for the failed run on head {fsha}"
+                                f"the '@codex review' re-request for the failed"
+                                f" {'run' if fkind == 'run' else 'initialization'} on head {fsha}"
                                 f" did not go through ({post_err}) — read the PR's"
                                 " comments before posting it by hand, since a request that failed"
                                 " ambiguously may have landed"
@@ -1030,7 +1075,7 @@ class Watch:
                             return 0
                         was = tok
                         quiet = 0
-                    elif fkind == "run":
+                    elif first:
                         candidate_end = rerequest_end
                         candidate_kind = "nudged"
                         was = tok

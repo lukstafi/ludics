@@ -1060,7 +1060,12 @@ above the row, a request after it, and a row outside the observed shape. ocannl-
 Completed row naming no commit (an em dash, its record's `commit_sha` null; ludics-lite#787) reads
 the same `failed` run, and `watch` posts the one request for it; since the row names no head, its
 controls add a row older than the head's arrival, an arrival that does not read, a record that
-names a commit or another status, and a newer row naming one. `test-pr-review-watch.sh` runs PR #277's two-head shape through a watch
+names a commit or another status, and a newer row naming one. An initialization failure
+(ludics-lite#792), the git-ref shape or the missing environment, is split the same way: kind `git`
+or `env` draws the watch's one request, gated as the stall's is (any 👍, a verdict for the head,
+the request record, the write gate) and by `--no-nudge`, and a request on the head before it makes it `git-again`
+or `env-again`, handed back with its move (a new head, the maintainer); a request after it is the
+round it asked for, due. `test-pr-review-watch.sh` runs PR #277's two-head shape through a watch
 (findings on the previous head scrolled past as NOT about head, the 👍 on the head above it), and
 `test-pr-review-merge.sh` pins `merge` refusing on an open thread (exit 1, no flag bypassing it)
 and on an unread connection (exit 3), with one read per merge attempt, so a thread opened

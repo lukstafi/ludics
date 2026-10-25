@@ -935,26 +935,98 @@ test_a_quoted_failure_is_not_a_failure() {
     "a failure quoted below the first line is a quotation, not the reviewer failing"
 }
 
-test_watch_exits_on_the_initialization_failure() {
+# ludics-lite#792: the first move over an initialization failure is the one '@codex review',
+# which clears nothing while no 👍 stands, so `watch` posts it itself as it does for a Failed row
+# (#791's opening drew the missing-environment answer 27 seconds after its head's commit, and the
+# worker posted that request by hand), then waits out its grace.
+test_watch_requests_over_the_initialization_failure_once() {
+  retune GRACE=2
   failed_fixture "$FAILED_HEAD"
   # The watermark is already past the comment: this is the SECOND window, the one that used to
-  # report "review EXPECTED but not started" and wait the grace out.
-  run_watch 0,200,0
-  assert_eq "$WATCH_RC" 0 "the failure is something to act on, as a stall is"
-  assert_contains "$WATCH_OUT" "reviewer FAILED at initialization on head ${FAILED_HEAD:0:7}" \
-    "the verdict is on stdout, where the caller reads it"
-  assert_contains "$WATCH_OUT" "watermark: 0,200,0" "the watch still ends on a watermark"
-  assert_not_contains "$WATCH_OUT" "no review materialized" \
-    "the grace is for a round that has not started, not for one the reviewer said it could not"
-  assert_contains "$WATCH_ERR" "base freshness $REPO#7:" \
-    "the drift read rides along, as it does on the other exits"
+  # report "review EXPECTED but not started" and wait the grace out, then handed the post back.
+  run_watch 0,200,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 1 \
+    "one request posted over the initialization failure"
+  assert_contains "$WATCH_ERR" "re-requested the review with '@codex review' — the initialization on head ${FAILED_HEAD:0:7} failed" \
+    "the watch says it did"
+  assert_contains "$WATCH_ERR" "fresh review nudge; waiting for pickup" "and then waits out the request's grace"
+  assert_not_contains "$WATCH_OUT" "FAILED" "the failure it answered is not the verdict"
+  assert_contains "$WATCH_OUT" "watermark: " "the watch still ends on a watermark"
   # The first window, where the comment is itself the new activity: the round prints, and the
   # status context beside it already says what the comment means.
+  failed_fixture "$FAILED_HEAD"
   run_watch 0,0,0
   assert_eq "$WATCH_RC" 0 "a new comment is a round to return on"
   assert_contains "$WATCH_OUT" "--- summary id=100" "the failure comment is what poll saw"
   assert_contains "$WATCH_ERR" "status: reviewer FAILED at initialization" \
     "the context should name the state, not leave the caller to read the body"
+}
+
+# The same head failing again after a request on it keeps the exit, with the move that is left:
+# a new head for the git-ref shape (the next is the maintainer's, for the environment one).
+test_watch_hands_back_an_initialization_failure_after_a_request() {
+  failed_fixture "$FAILED_HEAD"
+  COMMENTS_JSON="[$(request_comment 99 2026-09-01T00:01:00Z),$(failure_comment 100 "$FAILED_HEAD" 2026-09-01T00:03:00Z)]"
+  run_status
+  assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" git-again "a failure answering a request on this head"
+  assert_contains "$LINE" "request at 2026-09-01T00:01:00Z" "naming the request it answers"
+  run_watch 0,200,0 1 3
+  assert_eq "$WATCH_RC" 0 "a second failure is something to act on"
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "and nothing is posted"
+  assert_contains "$WATCH_OUT" "reviewer FAILED at initialization AGAIN on head ${FAILED_HEAD:0:7}" \
+    "the verdict is on stdout"
+  assert_contains "$WATCH_OUT" "not re-requested a second time: push a new head" "with the git-ref shape's move"
+  assert_contains "$WATCH_ERR" "base freshness $REPO#7:" \
+    "the drift read rides along, as it does on the other exits"
+  # A request from before the head arrived was an earlier head's: still the first failure.
+  HEAD_AT=2026-09-01T00:02:00Z
+  run_status
+  assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" git "a request before the head arrived is not on it"
+  # A request after the failure has answered it: the round it asked for is due, not a failure.
+  failed_fixture "$FAILED_HEAD"
+  COMMENTS_JSON="[$(failure_comment 100 "$FAILED_HEAD" 2026-09-01T00:03:00Z),$(request_comment 101 2026-09-01T00:04:00Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a failure already re-requested is not re-requested again"
+}
+
+# The request's gates beyond the state read: a 👍 on the PR, whatever head it is for (a request
+# clears it), or a PR that is not open and clean bars the post, and `--no-nudge` leaves it to the
+# caller; each exits with the advice.
+test_watch_does_not_request_over_an_initialization_failure_when_barred() {
+  failed_fixture "$FAILED_HEAD"
+  REACTIONS_JSON="[$(reaction +1 2026-08-31T23:00:00Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" failed "control: a 👍 older than the head leaves the failure standing"
+  run_watch 0,200,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "nothing is posted"
+  assert_eq "$WATCH_RC" 0 "the failure is the caller's to act on"
+  assert_contains "$WATCH_OUT" "the watch did not post the '@codex review' over the initialization failure on head ${FAILED_HEAD:0:7}: a 👍 from" \
+    "the verdict says why"
+  # Review of #805, round 1: a push landing after the failed state's fresh read is a head that has
+  # not failed, and the gate's read clearing that new head does not license a request for it. The
+  # third PR read is that fresh read's; the gate's own reads see the new head.
+  failed_fixture "$FAILED_HEAD"
+  PUSH_AFTER_PULLS_READ=3
+  run_watch 0,200,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 \
+    "nothing is posted for a head that has not failed"
+  assert_eq "$WATCH_RC" 1 "the final read finds the new head due, so the caller re-arms"
+  assert_contains "$WATCH_OUT" "the state moved to 'expected' while it was being read" "and says so"
+  # The write gate, as the stall nudge's: a PR that conflicts with its base is not nudged.
+  failed_fixture "$FAILED_HEAD"
+  MERGEABLE_STATE=dirty
+  run_watch 0,200,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "nothing is posted"
+  assert_contains "$WATCH_OUT" "failure on head ${FAILED_HEAD:0:7}: the PR reads open but mergeable_state=dirty, not open" \
+    "the verdict says why"
+  failed_fixture "$FAILED_HEAD"
+  WATCH_FLAG=--no-nudge
+  run_watch 0,200,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "nothing is posted"
+  assert_eq "$WATCH_RC" 0 "the failure is the caller's to act on"
+  assert_contains "$WATCH_OUT" "--no-nudge: the watch did not re-request the initialization failure on head ${FAILED_HEAD:0:7}" \
+    "the verdict says the request is the caller's"
+  assert_contains "$WATCH_OUT" "reviewer FAILED at initialization on head ${FAILED_HEAD:0:7}" "beside the state it is about"
 }
 
 # --- the missing environment (ludics-lite#421) -------------------------------------------------
@@ -1009,6 +1081,29 @@ test_the_missing_environment_is_attributed_by_the_clock() {
   REVIEWS_JSON="[$(review 5 head-sha 2026-09-01T01:00:00Z)]"
   run_status
   assert_eq "$(state_tok "$STATE")" idle "the round the nudge got supersedes the failure"
+}
+
+# ludics-lite#792 on the environment shape, #791's own: the first answer draws the watch's one
+# request; the same answer after a request on the head is the maintainer's, handed back unposted.
+test_watch_requests_over_the_missing_environment_once() {
+  retune GRACE=2
+  env_failed_fixture
+  run_watch 0,200,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 1 \
+    "one request posted over the missing environment"
+  assert_contains "$WATCH_ERR" "re-requested the review with '@codex review' — the initialization on head head-sh failed" \
+    "the watch says it did"
+  assert_not_contains "$WATCH_OUT" "FAILED" "the failure it answered is not the verdict"
+  env_failed_fixture
+  COMMENTS_JSON="[$(request_comment 99 2026-09-01T00:02:00Z),$(plain_comment 100 "$ENV_FAILED_AT" "$ENV_FAILURE_BODY")]"
+  run_status
+  assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" env-again "the same answer after a request on this head"
+  run_watch 0,200,0 1 3
+  assert_eq "$WATCH_RC" 0 "a second failure is something to act on"
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "and nothing is posted"
+  assert_contains "$WATCH_OUT" "reviewer FAILED at initialization AGAIN on head head-sh" "the verdict is on stdout"
+  assert_contains "$WATCH_OUT" "the environment is the maintainer's to set up" "with the maintainer as the move"
+  assert_not_contains "$WATCH_OUT" "push a new head" "no push reaches it"
 }
 
 # Anchored like the git-ref shape: the sentence has to OPEN the body, so a finding that quotes it
@@ -2380,7 +2475,10 @@ tests=(
   test_a_round_of_the_head_after_the_failure_wins
   test_a_newer_reviewer_word_supersedes_the_failure
   test_a_quoted_failure_is_not_a_failure
-  test_watch_exits_on_the_initialization_failure
+  test_watch_requests_over_the_initialization_failure_once
+  test_watch_hands_back_an_initialization_failure_after_a_request
+  test_watch_does_not_request_over_an_initialization_failure_when_barred
+  test_watch_requests_over_the_missing_environment_once
   test_the_missing_environment_is_a_failed_state
   test_the_missing_environment_is_attributed_by_the_clock
   test_a_quoted_missing_environment_is_not_a_failure

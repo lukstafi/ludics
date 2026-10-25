@@ -430,6 +430,34 @@ class StatusState(unittest.TestCase):
         self.assertEqual(st.tok, "failed", st.line())
         self.assertEqual(st.detail.split("|")[:2], ["aaaaaaa", "git"])
 
+    def test_the_initialization_failure_after_a_request_on_the_head_is_again(self) -> None:
+        """ludics-lite#792: a request on the head before the failure makes it ``-again`` (handed
+        back by ``watch``); one after it has answered it; one before the head arrived is not on it."""
+        git = ("Codex Review: Something went wrong. Try again later by commenting “@codex review”.\n\n"
+               f"```\nProvided git ref {HEAD} does not exist\n```")
+        env = ("To use Codex here, [create an environment for this repo]"
+               "(https://chatgpt.com/codex/cloud/settings/environments).")
+        for body, kind in ((git, "git"), (env, "env")):
+            with self.subTest(kind):
+                fail = comment(2, "2026-09-01T01:00:00Z", body)
+                first = run_state(feeds(comments=[fail]))
+                self.assertEqual(first.detail.split("|")[1], kind, first.line())
+                self.assertIn("`watch` posts it itself", state.status_line(first, "o/r", "7"))
+                asked = comment(1, "2026-09-01T00:30:00Z", "@codex review", login="me")
+                again = run_state(feeds(comments=[asked, fail]))
+                self.assertEqual(again.tok, "failed", again.line())
+                self.assertEqual(again.detail.split("|")[1], f"{kind}-again", again.line())
+                line = state.status_line(again, "o/r", "7")
+                self.assertIn("AGAIN", line)
+                self.assertNotIn("`watch` posts it itself", line)
+                self.assertEqual("push a new head" in line, kind == "git", line)
+                self.assertEqual("maintainer's to set up" in line, kind == "env", line)
+                early = run_state(feeds(comments=[asked, fail], head_at="2026-09-01T00:45:00Z"))
+                self.assertEqual(early.detail.split("|")[1], kind, "a request before the head arrived")
+                later = comment(3, "2026-09-01T01:30:00Z", "@codex review", login="me")
+                answered = run_state(feeds(comments=[fail, later]))
+                self.assertEqual(answered.tok, "expected", answered.line())
+
 
 def run_nudge(gh: FakeGh) -> state.NudgeRead:
     err = io.StringIO()
