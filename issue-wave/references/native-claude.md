@@ -13,9 +13,12 @@ The runtime runs at most `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` subagents at onc
 `Agent` call past it with "Concurrent subagent limit reached". This site's `~/.claude/settings.json`
 raised it from 20 to 40 under `env`; read the effective value in the coordinator's own shell,
 `printenv CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Raising it is the operator's settings edit, never
-the coordinator's. Whether a worker's own subagents count against the same limit is unverified, so
-a sprint (SKILL.md, *Wave mode*) launches no more workers than three quarters of it (30 of this
-site's 40), leaving the rest to the workers' delegated reads until that is measured. Peer plans run as Codex CLI processes and
+the coordinator's. A worker's own subagents count against the same limit: it is one counter per
+session, which every `Agent` launch takes at any depth (read from the Claude Code 2.1.306 source on
+2026-10-25, #788; the headless live run could not log in, so it is not yet measured). So a sprint
+(SKILL.md, *Wave mode*) launches no more workers than three quarters of it (30 of this site's 40),
+leaving the rest to the workers' delegated reads; that fraction is a sizing choice, not a
+measurement. A worker refused there does the read itself. Peer plans run as Codex CLI processes and
 take none.
 
 ## Blocking on a run
