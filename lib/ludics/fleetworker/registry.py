@@ -434,7 +434,7 @@ def check_triage(request: Record, boxes: list[str] | None, records: dict[str, Re
     owners = sorted({r["request"]["worker"] for r in members})
     spans = {frozenset(triage_boxes_of(r)) for r in members}
     held = ", ".join(f"{r['request_id']} on {r['request']['execution_host']}" for r in members)
-    span = ", ".join(sorted(set().union(*spans)))
+    span = ", ".join(sorted({box for boxes_ in spans for box in boxes_}))
     exists = f"an outstanding triage assignment already exists (owner {', '.join(owners)}; boxes {span}; {held})"
     if owners != [request["worker"]]:
         refuse(f"{exists}: the halt's triage has one owner, so worker {request['worker']} is refused "
@@ -1130,7 +1130,7 @@ def main(argv: list[str]) -> None:
                     refuse("fleet halted; ordinary reservations refused (only the named triage_reason reservation is admitted)")
                 nonempty(request, ["triage_reason"])
                 # One explicitly named owner, not an unrestricted force flag (THE HALT'S TRIAGE).
-                check_triage(request, triage_boxes, records, cast(str, halt_identity))
+                check_triage(request, triage_boxes, records, halt_identity)
             if action == "window":
                 # Last of the admission checks: a gap answer is retried, and only a window every
                 # other check admits may wait for one.

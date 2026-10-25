@@ -12,7 +12,7 @@ import tempfile
 import threading
 import unittest
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 from ludics.fleetworker import registry
@@ -869,7 +869,7 @@ class HaltTriage(RegistryCase):
         payload = request(identity, worker=worker, execution_host=host, triage_reason="red at abc", standing=True,
                           **extra)
         if boxes is not None:
-            payload["triage_boxes"] = list(boxes) if isinstance(boxes, tuple) else boxes
+            payload["triage_boxes"] = list(cast(tuple[str, ...], boxes)) if isinstance(boxes, tuple) else boxes
         return self.call(action, payload, boxes=self.BOXES)
 
     def records(self) -> dict[str, Any]:
