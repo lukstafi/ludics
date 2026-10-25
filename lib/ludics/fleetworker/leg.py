@@ -211,13 +211,30 @@ NOT_HOME = r"""not_home() {
 }
 """
 
-# THE BACKEND PIN (see the header): `backend_pin <file text> <gpu: 0|1> <runner argv...>` exits 0
-# when the leg may run, and otherwise prints why (one line, no prefix) and exits 1. The file is
-# parsed whatever the leg declares, so a line this version cannot read refuses a --cpu leg too.
-# Bash 3.2: no arrays of its own, no case conversion.
-PIN = r"""backend_pin() {
-  local text="$1" gpu="$2" d w extra good n=0 flags="" envs="" a f prev first cmd want=""
-  shift 2
+# THE BACKEND PIN (see the header), one parser for every reader of .github/fleet-leg (the leg here,
+# `execution tip-run`'s GPU-loop check, ludics-lite#793). Bash 3.2: no arrays of its own, no case
+# conversion. Each function prints why (one line, no prefix) and returns 1 when it refuses.
+#   fleet_leg_read <checkout> <sha>: prints the file's text at <sha> (exit 0), nothing (exit 2) when
+#     <sha> has none, or why it is unreadable (exit 1: git failed, or a NUL byte, which a shell
+#     variable would drop, making a binary file read as one with no pins).
+#   backend_pin <file text> <gpu: 0|1> <runner argv...>: exit 0 when the leg may run. The file is
+#     parsed whatever the leg declares, so a line this version cannot read refuses a --cpu leg too.
+#   backend_pin_to <file text> <backend> <runner argv...>: exit 0 only when the argv pins <backend>
+#     and nothing else -- every pin it satisfies names exactly <backend> -- and the file names a pin.
+# pin_grammar and pin_scan set the caller's locals (bash scopes dynamically): pin_flags, pin_envs and
+# pin_asks (the file's pins, the asks with `<backend>` for the value), and pin_any (a pin the argv
+# satisfies) and pin_other (the first one naming another backend than pin_target, as `<how>`).
+PIN = r"""fleet_leg_read() {
+  local co="$1" sha="$2" text
+  [ "$(git -C "$co" cat-file -t "$sha:.github/fleet-leg" 2>/dev/null)" = blob ] || return 2
+  text=$(git -C "$co" cat-file blob "$sha:.github/fleet-leg") || { printf '%s' "cannot read .github/fleet-leg at $sha in $co (above)"; return 1; }
+  [ "$(git -C "$co" cat-file blob "$sha:.github/fleet-leg" | tr -d '\000' | wc -c)" -eq "$(git -C "$co" cat-file -s "$sha:.github/fleet-leg")" ] ||
+    { printf '%s' ".github/fleet-leg at $sha holds NUL bytes, which this leg does not read"; return 1; }
+  printf '%s' "$text"
+}
+pin_grammar() {
+  local text="$1" d w extra good n=0
+  pin_flags="" pin_envs="" pin_asks=""
   while read -r d w extra || [ -n "$d" ]; do
     n=$((n + 1))
     case "$d" in ''|'#'*) continue ;; esac
@@ -230,39 +247,70 @@ PIN = r"""backend_pin() {
       printf '%s' ".github/fleet-leg line $n is not one this leg reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, a # comment or a blank line"
       return 1
     fi
-    if [ "$d" = pin-flag ]; then flags="$flags $w"; want="$want, $w <backend>"; else envs="$envs $w"; want="$want, env $w=<backend>"; fi
+    if [ "$d" = pin-flag ]; then pin_flags="$pin_flags $w"; pin_asks="$pin_asks, $w <backend>"; else pin_envs="$pin_envs $w"; pin_asks="$pin_asks, env $w=<backend>"; fi
   done <<FLEET_LEG_PIN
 $text
 FLEET_LEG_PIN
-  [ "$gpu" = 1 ] && [ -n "$flags$envs" ] || return 0
-  if [ -n "$envs" ] && [ "${1##*/}" = env ]; then
+  pin_asks=${pin_asks#, }
+}
+# A value the argv pins: counted, and compared with pin_target when there is one.
+pin_seen() {
+  pin_any=1
+  [ -z "$pin_target" ] || [ -n "$pin_other" ] || [ "$1" = "$pin_target" ] || pin_other="$2"
+}
+pin_scan() {
+  local a f prev first cmd
+  if [ -n "$pin_envs" ] && [ "${1##*/}" = env ]; then
     # Each NAME's value is its LAST assignment among those after `env` (empty ones included), as env
     # applies them: `NAME=cuda NAME=` leaves it empty. A command must follow them: a bare `env
     # NAME=cuda` runs no runner, only prints the environment, and exits 0. Any word holding a `=` is
     # an assignment to env (GNU env takes `1=x` as one), so the command is the first word without.
-    for f in $envs; do
+    for f in $pin_envs; do
       first=1; prev=""; cmd=""
       for a in "$@"; do
         if [ -n "$first" ]; then first=""; continue; fi
         case "$a" in *=*) ;; *) cmd=1; break ;; esac
         case "$a" in "$f="*) prev=${a#*=} ;; esac
       done
-      [ -z "$prev" ] || [ -z "$cmd" ] || return 0
+      [ -z "$prev" ] || [ -z "$cmd" ] || pin_seen "$prev" "$f=$prev"
     done
   fi
   first=1; prev=""
   for a in "$@"; do
     if [ -n "$first" ]; then first=""; continue; fi
     [ "$a" != -- ] || break
-    [ -z "$prev" ] || [ -z "$a" ] || return 0
+    [ -z "$prev" ] || [ -z "$a" ] || pin_seen "$a" "$prev $a"
     prev=""
-    for f in $flags; do
-      [ "$a" != "$f" ] || prev=1
-      case "$a" in "$f="?*) return 0 ;; esac
+    for f in $pin_flags; do
+      [ "$a" != "$f" ] || prev=$f
+      case "$a" in "$f="?*) pin_seen "${a#*=}" "$a" ;; esac
     done
   done
-  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: ${want#, }; pin it (as words of the runner's own argv), or declare --cpu for a leg that holds no GPU"
+}
+backend_pin() {
+  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_any="" pin_other="" pin_target=""
+  shift 2
+  pin_grammar "$text" || return 1
+  [ "$gpu" = 1 ] && [ -n "$pin_flags$pin_envs" ] || return 0
+  pin_scan "$@"
+  [ -z "$pin_any" ] || return 0
+  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin it (as words of the runner's own argv), or declare --cpu for a leg that holds no GPU"
   return 1
+}
+backend_pin_to() {
+  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_any="" pin_other=""
+  shift 2
+  pin_grammar "$text" || return 1
+  if [ -z "$pin_flags$pin_envs" ]; then
+    printf '%s' "this run is the $pin_target backend's, but .github/fleet-leg names no pin-flag or pin-env, so whether its command selects $pin_target cannot be checked"
+    return 1
+  fi
+  pin_scan "$@"
+  if [ -z "$pin_any" ]; then
+    printf '%s' "this run is the $pin_target backend's, but its command pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin $pin_target (as words of the command's own argv)"
+    return 1
+  fi
+  [ -z "$pin_other" ] || { printf '%s' "this run is the $pin_target backend's, but its command pins another ($pin_other)"; return 1; }
 }
 """
 
@@ -348,11 +396,9 @@ fi
 [ -z "$want" ] || [ "$sha" = "$want" ] ||
   refuse "$rev is $sha, but request $request was assigned $want: run --rev $want"
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the worktree moves.
-if [ "$(git -C "$co" cat-file -t "$sha:.github/fleet-leg" 2>/dev/null)" = blob ]; then
-  pins=$(git -C "$co" cat-file blob "$sha:.github/fleet-leg") || refuse "cannot read .github/fleet-leg at $sha in $co (above)"
-  # A shell variable drops NUL bytes, which would make a binary file read as one with no pins.
-  [ "$(git -C "$co" cat-file blob "$sha:.github/fleet-leg" | tr -d '\000' | wc -c)" -eq "$(git -C "$co" cat-file -s "$sha:.github/fleet-leg")" ] ||
-    refuse ".github/fleet-leg at $sha holds NUL bytes, which this leg does not read; nothing ran"
+pins=$(fleet_leg_read "$co" "$sha"); prc=$?
+[ "$prc" -ne 1 ] || refuse "$pins; nothing ran"
+if [ "$prc" -eq 0 ]; then
   case " ${nest[*]} " in *" --cpu "*) gpu=0 ;; *) gpu=1 ;; esac
   why=$(backend_pin "$pins" "$gpu" "$@") || refuse "$why (.github/fleet-leg at $sha); nothing ran"
 fi

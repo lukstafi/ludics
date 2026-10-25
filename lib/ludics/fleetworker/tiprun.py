@@ -63,6 +63,35 @@ unknown, ``TIP-RUN UNKNOWN <id>: <why>`` (a run started but not recorded among t
 named; the record is left for the coordinator to reconcile). What the steps print themselves (the
 dispatched record, the refresh line) goes to stderr.
 
+THE BACKEND PIN (ludics-lite#793). Two waves of GPU-loop records were cc runs: the loop's command
+named no backend, the boxes' environments set none, and OCANNL's test config pins cc, so "cuda" and
+"hip" passes ran the CPU backend. A request whose ``purpose`` begins ``GPU integration loop,
+<backend>:`` (the prefix the loop's reads select on; a purpose beginning ``GPU integration loop``
+in any other shape is a usage refusal) is checked on the box, after the commit is there and before
+the checkout moves, against the project's ``.github/fleet-leg`` AT THAT COMMIT -- the file, its
+reading and its grammar are ``execution leg``'s (leg.py, THE BACKEND PIN; one parser,
+``backend_pin_to``). The run starts only when the command's argv pins that backend and nothing else:
+some pin the file names is satisfied, and every satisfied pin's value is exactly ``<backend>`` (an
+``env NAME=`` pin's value is NAME's last assignment). A commit without the file, a file naming no
+pin, an unpinned command and one pinning another backend are each refused, concluded
+``not-launched``: a GPU-loop record must never again be a cc run. The boundary is the leg's -- argv
+words as given, so a pin inside ``sh -c`` or in an exported environment does not count -- and it
+shows the command NAMES the backend, never that the run held it (the runner's own check, OCANNL's
+``--expect-backend``). Only a GPU-loop purpose is checked: the cc loop's requests, and any other,
+run as before, ``--cpu`` or not.
+
+THE REQUEST ID (ludics-lite#714). With ``--id-prefix <prefix>`` the payload names no
+``request_id`` (one source, as for ``--tip``'s revision): the run takes ``<prefix>-<n>``, ``<n>``
+one past the highest number the registry holds under ``<prefix>-`` (ignoring case, as the registry
+compares ids), 1 with none, so a gap is never filled and ids keep their runs' order. It is chosen
+off the first registry read, and every line after that names it (``TIP-RUN STARTED <id> ...``);
+before it, a line names the run ``<prefix>-?``. The race boundary: the allocation is a read, not a
+claim -- two tip-runs racing under one prefix could pick the same ``<n>``. One coordinator drives
+the loops, the lease fencing every other out of ``execution run``, and it runs one loop run per box
+at a time (the loop's own rule), so no second allocator exists to race. Outside the boundary, as
+for a hand-kept id: a different request reserved under the pick meanwhile is refused by ``execution
+run`` ("already names a different assignment"), but an identical one is handed back as this run's, and both would start.
+
 THE END: ``execution tip-run --wait <id> [--within <s>]`` (ludics-lite#616) blocks on a started run
 inside one foreground tool call and concludes it. It takes the request id alone: the box, the run
 directory and the SHA are read off the record the start wrote, so the id and the directory a
@@ -101,24 +130,29 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker import revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.leg import PIN
 from ludics.fleetworker.preflight import refresh_box
 from ludics.fleetworker.transport import err, is_local, prelude, run, run_on
 
 USAGE = (
-    "execution tip-run <json-file> [--tip <branch>] --checkout <dir> [--runs <dir>] [--cpu] -- <command> [args...],"
+    "execution tip-run <json-file> [--tip <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command> [args...],"
     " or tip-run --wait <id> [--within <s>] [--tip <branch>]"
 )
 SHA40 = re.compile(r"[0-9a-f]{40}")
+IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # the registry's request_id grammar
+LOOP = "GPU integration loop"
+LOOP_PURPOSE = re.compile(r"GPU integration loop, ([A-Za-z0-9][A-Za-z0-9_.-]*):")
 SETTLE = 60  # seconds the far side waits for the slot's answer; `--wait 0` answers in about one registry read
 WITHIN = 480  # --wait's default bound on the box: under the 600 s tool cap with the calls around it
 HANDLE = re.compile(r"bg-run:([^:]+):(/.*)", re.DOTALL)
 
 # Far side, on the execution host, read by `bash -s` from stdin: so every child that could read
 # stdin is given /dev/null, or it would eat the rest of this script. Args: checkout, sha, runs parent (empty: $STATE/tip-runs), the
-# fleet-worker.sh to run there (empty: the box's skills checkout's), cpu|gpu, the settle bound, then
-# the command. Prints `dir=` and `slot=held|ended|unsettled` (and `said=` for ended), or one
-# TIP-RUN REFUSED line, exit 1, when nothing was started.
-FAR = r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6"; shift 6
+# fleet-worker.sh to run there (empty: the box's skills checkout's), cpu|gpu, the settle bound, the
+# backend a GPU-loop purpose names (empty: none, nothing checked), then the command. Prints `dir=`
+# and `slot=held|ended|unsettled` (and `said=` for ended), or one TIP-RUN REFUSED line, exit 1, when
+# nothing was started.
+FAR = PIN + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7"; shift 7
 refuse() { echo "TIP-RUN REFUSED: $*"; exit 1; }
 [ -n "$runs" ] || runs="$(expand_tilde "$STATE")/tip-runs"
 [ -n "$fw" ] || fw="$(expand_tilde "$SKILLS_REPO")/issue-wave/scripts/fleet-worker.sh"
@@ -130,6 +164,13 @@ if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
   bounded 300 git fetch -q origin >/dev/null; frc=$?
   [ "$frc" -eq 0 ] || refuse "git fetch origin in $co on $BOX failed (exit $frc)"
   git cat-file -e "$sha^{commit}" 2>/dev/null || refuse "$co on $BOX does not have $sha even after fetching origin"
+fi
+# THE BACKEND PIN (see the header): the project's rule at this commit, before the checkout moves.
+if [ -n "$backend" ]; then
+  pins=$(fleet_leg_read "$co" "$sha"); prc=$?
+  [ "$prc" -ne 2 ] || refuse "this run is the $backend backend's (its purpose), but $sha has no .github/fleet-leg, so whether its command selects $backend cannot be checked: the project states how its runner pins a backend there (pin-env <NAME>, pin-flag <option>)"
+  [ "$prc" -eq 0 ] || refuse "$pins"
+  why=$(backend_pin_to "$pins" "$backend" "$@") || refuse "$why (.github/fleet-leg at $sha)"
 fi
 git -c advice.detachedHead=false checkout -q --detach "$sha" </dev/null 2>/dev/null || refuse "cannot check out $sha in $co on $BOX"
 head=$(git rev-parse HEAD 2>/dev/null)
@@ -163,6 +204,7 @@ class TipRunArgs:
     cpu: bool
     command: list[str]
     tip: str = ""
+    id_prefix: str = ""
 
 
 @dataclass(frozen=True)
@@ -194,7 +236,7 @@ def parse_wait(args: list[str]) -> WaitArgs:
 
 
 def parse(args: list[str]) -> TipRunArgs:
-    payload, checkout, runs, cpu, tip = "", "", "", False, ""
+    payload, checkout, runs, cpu, tip, id_prefix = "", "", "", False, "", ""
     i = 0
     while i < len(args):
         arg = args[i]
@@ -202,6 +244,12 @@ def parse(args: list[str]) -> TipRunArgs:
             if i + 1 >= len(args) or not args[i + 1] or args[i + 1].startswith("-"):
                 die("execution tip-run: expected a branch for --tip")
             tip = args[i + 1]
+            i += 2
+            continue
+        if arg == "--id-prefix":
+            if i + 1 >= len(args) or not IDENTITY.fullmatch(args[i + 1]):
+                die("execution tip-run: --id-prefix takes a request id's leading part ([A-Za-z0-9][A-Za-z0-9._-]*), e.g. <wave>-gpu-<box>")
+            id_prefix = args[i + 1]
             i += 2
             continue
         if arg in ("--checkout", "--runs"):
@@ -223,7 +271,7 @@ def parse(args: list[str]) -> TipRunArgs:
                 die("execution tip-run: a command to run is required, after --")
             if not payload or not checkout:
                 die(USAGE)
-            return TipRunArgs(payload, checkout, runs, cpu, command, tip)
+            return TipRunArgs(payload, checkout, runs, cpu, command, tip, id_prefix)
         elif not payload and not arg.startswith("-"):
             payload = arg
         else:
@@ -232,15 +280,21 @@ def parse(args: list[str]) -> TipRunArgs:
     die(USAGE)
 
 
-def request_problem(request: Any, tip: bool = False) -> str | None:
+def request_problem(request: Any, tip: bool = False, allocate: bool = False) -> str | None:
     """Why the payload cannot be a loop run's request, or None (the registry checks the rest).
-    With ``tip`` (``--tip``) the revision is the run's to read, so the payload names none."""
+    With ``tip`` (``--tip``) the revision is the run's to read, so the payload names none; with
+    ``allocate`` (``--id-prefix``) so is the request id."""
     if not isinstance(request, dict):
         return "the payload is not a JSON object"
     fields = cast(dict[str, Any], request)
-    for key in ("request_id", "execution_host", "repository"):
+    if allocate and "request_id" in fields:
+        return "--id-prefix allocates the request id, so the payload names no request_id: give one or the other"
+    for key in ("execution_host", "repository") if allocate else ("request_id", "execution_host", "repository"):
         if not isinstance(fields.get(key), str) or not fields[key].strip():
             return f"{key} must be a nonempty string"
+    purpose = fields.get("purpose")
+    if isinstance(purpose, str) and purpose.startswith(LOOP) and not LOOP_PURPOSE.match(purpose):
+        return f"a purpose beginning {LOOP!r} names its backend, as 'GPU integration loop, <backend>: ...' (the prefix the loop's reads select on)"
     if fields.get("kind") != "correctness":
         return "kind must be correctness: a loop run shares the box (a measurement is reserved with `execution run` or `window`)"
     if fields.get("transport") != "coordinator":
@@ -255,6 +309,24 @@ def request_problem(request: Any, tip: bool = False) -> str | None:
     if not (isinstance(named, str) and SHA40.fullmatch(named)):
         return "requested_revision must be exactly one full 40-hex commit SHA, the revision the run checks out, or --tip <branch>"
     return None
+
+
+def loop_backend(fields: dict[str, Any]) -> str:
+    """The backend a GPU-loop request's purpose names (``GPU integration loop, <backend>:``), or ""
+    for any other request (request_problem refuses a malformed one)."""
+    purpose = fields.get("purpose")
+    found = LOOP_PURPOSE.match(purpose) if isinstance(purpose, str) else None
+    return found.group(1) if found else ""
+
+
+def next_id(records: list[dict[str, Any]], prefix: str) -> str:
+    """``<prefix>-<n>``, ``<n>`` one past the highest the registry holds under ``<prefix>-`` (1 with
+    none): never a gap's number, so ids stay in the order their runs started. Compared ignoring
+    case, as the registry refuses an id that differs from one it holds only by case."""
+    pattern = re.compile(re.escape(prefix) + r"-([0-9]+)", re.IGNORECASE)
+    numbers = [int(found.group(1)) for r in records
+               if isinstance(rid := r.get("request_id"), str) and (found := pattern.fullmatch(rid))]
+    return f"{prefix}-{max(numbers, default=0) + 1}"
 
 
 def yielding_to(records: list[dict[str, Any]], box: str, request_id: str) -> list[str]:
@@ -322,28 +394,35 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
             request: Any = json.loads(f.read())
     except (OSError, ValueError) as exc:
         die(f"execution tip-run: {parsed.payload} is not a readable JSON request ({exc})")
-    problem = request_problem(request, bool(parsed.tip))
+    problem = request_problem(request, bool(parsed.tip), bool(parsed.id_prefix))
     if problem:
         die(f"execution tip-run: {problem}")
     fields = cast(dict[str, Any], request)
+    # Until --id-prefix's number is allocated (THE REQUEST ID), a line names the run `<prefix>-?`.
+    label = f"{parsed.id_prefix}-?" if parsed.id_prefix else str(fields["request_id"])
     resolved: dict[str, Any] | None = None
     if parsed.tip:
         repo = str(fields["repository"])
         read = revision.branch_head(repo, parsed.tip, gh_timeout(cfg))
         if not isinstance(read, str):
             cli.say(read[0])
-            cli.say(f"TIP-RUN NOT STARTED {fields['request_id']}: the tip of {parsed.tip} in {repo} could not be read (above); nothing reserved")
+            cli.say(f"TIP-RUN NOT STARTED {label}: the tip of {parsed.tip} in {repo} could not be read (above); nothing reserved")
             return 1
         resolved = {**fields, "requested_revision": read}
         fields = resolved
-        err(f"TIP-RUN TIP {fields['request_id']}: {parsed.tip} is {read} in {repo} on GitHub now; the run checks out that commit")
-    request_id, box, sha = fields["request_id"], fields["execution_host"], fields["requested_revision"]
+        err(f"TIP-RUN TIP {label}: {parsed.tip} is {read} in {repo} on GitHub now; the run checks out that commit")
+    box, sha = fields["execution_host"], fields["requested_revision"]
 
     listed = listing(cfg)
     records = records_of(listed.out) if listed.rc == 0 else None
     if records is None:
-        cli.say(f"TIP-RUN UNKNOWN {request_id}: the anchor's registry could not be read, so whether {box} is free is unknown; nothing reserved")
+        cli.say(f"TIP-RUN UNKNOWN {label}: the anchor's registry could not be read, so whether {box} is free is unknown; nothing reserved")
         return 4
+    if parsed.id_prefix:
+        resolved = {**fields, "request_id": next_id(records, parsed.id_prefix)}
+        fields = resolved
+        err(f"TIP-RUN ID {fields['request_id']}: allocated under {parsed.id_prefix}-, one past the highest number the registry holds there")
+    request_id = str(fields["request_id"])
     # A request id the registry holds is never run again (step 3).
     held = record_of(records, request_id)
     if held is not None:
@@ -354,7 +433,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         cli.say(f"TIP-RUN NOT STARTED {request_id}: {box} has {', '.join(busy)} outstanding; a loop run yields to it; nothing reserved")
         return 1
 
-    # A resolved request is staged anew: the file names no revision.
+    # A resolved request is staged anew: the file names no revision, or no request id.
     rc = fleet_worker(cfg, ["execution", "run"], resolved) if resolved else fleet_worker(cfg, ["execution", "run", parsed.payload])
     if rc != 0:
         if rc == 4:
@@ -381,7 +460,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         return not_started(cfg, request_id, f"the skills checkout on {box} was not refreshed (above), so its fleet-worker.sh may be stale", nothing)
     fw = os.path.join(cfg.here, os.path.basename(cfg.script)) if is_local(cfg, box) else ""
     kind = "cpu" if parsed.cpu else "gpu"
-    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), *parsed.command]
+    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), loop_backend(fields), *parsed.command]
     done = run_on(cfg, box, prelude(cfg, box) + FAR, far, capture=True)
     text = done.out.rstrip("\n")
     if done.unreachable:

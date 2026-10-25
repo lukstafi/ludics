@@ -302,6 +302,62 @@ class BackendPin(unittest.TestCase):
                 self.assertTrue(why.startswith(f".github/fleet-leg line 2 is not one this leg reads ({line})"), why)
 
 
+class BackendPinTo(unittest.TestCase):
+    """backend_pin_to (ludics-lite#793, tip-run's GPU-loop check): the same file and argv reading as
+    backend_pin, but the command must pin the named backend and nothing else."""
+
+    bash = shutil.which("bash") or "/bin/bash"
+    PINS = BackendPin.PINS
+
+    def pin(self, text: str, backend: str, *argv: str) -> tuple[int, str]:
+        done = subprocess.run([self.bash, "-c", leg.PIN + 'backend_pin_to "$@"', "x", text, backend, *argv],
+                              capture_output=True, text=True)
+        return done.returncode, done.stdout
+
+    def test_a_command_pinning_the_backend_runs(self) -> None:
+        for argv in [["env", "OCANNL_BACKEND=cuda", "tools/t.sh", "run", "build", "@runtest"],
+                     ["tools/t.sh", "run", "--expect-backend", "cuda"],
+                     ["tools/t.sh", "run", "--expect-backend=cuda"],
+                     ["env", "OCANNL_BACKEND=cuda", "tools/t.sh", "run", "--expect-backend", "cuda"],
+                     ["env", "OCANNL_BACKEND=hip", "OCANNL_BACKEND=cuda", "tools/t.sh"],
+                     ["tools/t.sh", "--expect-backend", "cuda", "--", "--expect-backend", "hip"]]:
+            with self.subTest(argv=argv):
+                self.assertEqual(self.pin(self.PINS, "cuda", *argv), (0, ""))
+
+    def test_an_unpinned_command_is_refused_naming_the_pins(self) -> None:
+        for argv in [["tools/t.sh", "run", "--test-cap", "0", "build", "@runtest", "@train"],
+                     ["sh", "-c", "OCANNL_BACKEND=cuda tools/t.sh"], ["env", "OCANNL_BACKEND=cuda"],
+                     ["env", "OCANNL_BACKEND=cuda", "OCANNL_BACKEND=", "tools/t.sh"]]:
+            with self.subTest(argv=argv):
+                self.assertEqual(self.pin(self.PINS, "cuda", *argv),
+                                 (1, "this run is the cuda backend's, but its command pins no backend, and .github/fleet-leg"
+                                     " asks for one of: --expect-backend <backend>, env OCANNL_BACKEND=<backend>; pin cuda"
+                                     " (as words of the command's own argv)"))
+
+    def test_a_command_pinning_another_backend_is_refused_naming_it(self) -> None:
+        for argv, how in [(["env", "OCANNL_BACKEND=hip", "tools/t.sh"], "OCANNL_BACKEND=hip"),
+                          (["env", "OCANNL_BACKEND=cc", "tools/t.sh"], "OCANNL_BACKEND=cc"),
+                          (["env", "OCANNL_BACKEND=CUDA", "tools/t.sh"], "OCANNL_BACKEND=CUDA"),
+                          (["tools/t.sh", "--expect-backend", "hip"], "--expect-backend hip"),
+                          (["env", "OCANNL_BACKEND=cuda", "tools/t.sh", "--expect-backend=hip"], "--expect-backend=hip"),
+                          (["tools/t.sh", "--expect-backend", "cuda", "--expect-backend", "cc"], "--expect-backend cc")]:
+            with self.subTest(argv=argv):
+                self.assertEqual(self.pin(self.PINS, "cuda", *argv),
+                                 (1, f"this run is the cuda backend's, but its command pins another ({how})"))
+
+    def test_a_file_with_no_pin_cannot_check_it(self) -> None:
+        for text in ["", "# nothing yet\n"]:
+            with self.subTest(text=text):
+                rc, why = self.pin(text, "hip", "env", "OCANNL_BACKEND=hip", "tools/t.sh")
+                self.assertEqual(rc, 1)
+                self.assertIn("names no pin-flag or pin-env, so whether its command selects hip cannot be checked", why)
+
+    def test_a_line_it_cannot_read_refuses(self) -> None:
+        rc, why = self.pin("pin-env 9X", "cuda", "env", "OCANNL_BACKEND=cuda", "tools/t.sh")
+        self.assertEqual(rc, 1)
+        self.assertTrue(why.startswith(".github/fleet-leg line 1 is not one this leg reads (pin-env 9X)"), why)
+
+
 
 def standing(state: str = "suspended", by: str = "w1") -> dict[str, Any]:
     record: dict[str, Any] = {

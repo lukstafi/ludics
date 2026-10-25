@@ -653,10 +653,15 @@ field on any other shape. Concluded `pass` or `fail` at an exact `observed_sha`,
 (ludics-lite#401); a correctness run without the field is a targeted batch and is never offered.
 
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
-`fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] --checkout <dir> [--runs <dir>]
-[--cpu] -- <command...>`. Its request is the coordinator's non-standing `correctness` request whose
-`requested_revision` is exactly one full SHA, or names none under `--tip`, which writes the branch's
-head on GitHub into it. It yields, reserving nothing, to anything
+`fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] --checkout <dir> [--id-prefix
+<prefix>] [--runs <dir>] [--cpu] -- <command...>`. Its request is the coordinator's non-standing
+`correctness` request whose `requested_revision` is exactly one full SHA, or names none under
+`--tip`, which writes the branch's head on GitHub into it; under `--id-prefix` it names no
+`request_id` either, and the run takes `<prefix>-<n>`, one past the highest `<n>` the registry holds
+under the prefix (ludics-lite#714). A request whose `purpose` begins `GPU integration loop,
+<backend>:` runs only a command pinning exactly that backend, by the project's `.github/fleet-leg`
+at the commit (the leg's backend pin, below; ludics-lite#793): an unpinned command, one pinning
+another backend, and a commit without the file are refused. It yields, reserving nothing, to anything
 outstanding on the box but standing reservations (read again once its own is published); then it
 runs `execution run`, starts nothing on a remote box whose skills checkout the refresh did not
 bring current, checks the SHA out
