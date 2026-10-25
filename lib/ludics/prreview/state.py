@@ -1229,15 +1229,15 @@ def status_line(state: State, repo: str, pr: str) -> str:
                         )
                     return (
                         f"reviewer FAILED at initialization on head {fsha} — nudge it once with a"
-                        f" '@codex review' comment: `watch` posts it itself, once per head, when no"
-                        " 👍 stands, and keeps watching; outside a watch, post it (pr-review.sh"
-                        f" comment {repo}#{p} '@codex review'). {env[0].upper()}{env[1:]}, which has"
-                        f" cleared on one nudge before. If the nudge draws the same answer, {maintainer}."
-                        f" This is not a round — {frest}, standing for {age}{c}"
+                        f" '@codex review' comment (`watch` posts it itself, once per head, when no"
+                        " 👍 stands, and keeps watching; outside a watch, pr-review.sh comment"
+                        f" {repo}#{p} '@codex review'); {env}, which has cleared on one nudge before."
+                        f" If the nudge draws the same answer, {maintainer}. This is not a round —"
+                        f" {frest}, standing for {age}{c}"
                     )
                 case _:
                     behind = (
-                        "push a new head (an amend suffices: git commit --amend --no-edit && git push"
+                        " (an amend suffices: git commit --amend --no-edit && git push"
                         " --force-with-lease), since the reviewer's clone is behind, not your push —"
                         " the ref it could not fetch is one the PR and git ls-remote both serve"
                     )
@@ -1245,14 +1245,15 @@ def status_line(state: State, repo: str, pr: str) -> str:
                         return (
                             f"reviewer FAILED at initialization AGAIN on head {fsha} after a"
                             f" '@codex review' request on it — not re-requested a second time:"
-                            f" {behind}. This is not a round — {frest}, standing for {age}{c}"
+                            f" push a new head{behind}. This is not a round — {frest}, standing for"
+                            f" {age}{c}"
                         )
                     return (
                         f"reviewer FAILED at initialization on head {fsha} — nudge it once with a"
-                        f" '@codex review' comment: `watch` posts it itself, once per head, when no"
-                        " 👍 stands, and keeps watching; outside a watch, post it (pr-review.sh"
-                        f" comment {repo}#{p} '@codex review'). If the SAME head fails again,"
-                        f" {behind}. This is not a round — {frest}, standing for {age}{c}"
+                        f" '@codex review' comment (`watch` posts it itself, once per head, when no"
+                        " 👍 stands, and keeps watching; outside a watch, pr-review.sh comment"
+                        f" {repo}#{p} '@codex review'); if the SAME head fails again, push a new head"
+                        f" instead{behind}. This is not a round — {frest}, standing for {age}{c}"
                     )
         case "expected" | "nudged":
             return f"review EXPECTED but not started — {detail}; due for {age}{c}"
