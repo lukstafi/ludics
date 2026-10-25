@@ -731,7 +731,11 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   them, and ask whether the runner wrote what it should only have read (an auto-promoted golden). The fetch is bounded by
   `FLEET_FETCH_TIMEOUT` (300 s). One leg at a time holds a worktree, from its status check through
   the control's revert: a second leg there is refused, not queued, since a worktree moved under a
-  running leg would make it test another commit than the one it reports.
+  running leg would make it test another commit than the one it reports. A worktree the leg
+  creates has none of the checkout's ignored setup (a virtualenv, a build directory, a local
+  config), so its command reaches the box's shared copy as the project's notes say, never a path
+  inside the checkout (OCANNL: `python3 benchmarks/<driver>.py`, not `benchmarks/.venv/bin/python`;
+  ludics-lite#794).
 - **The runner.** The command after `--` runs in the worktree with its words passed through
   untouched, stdin closed, each run a nested `execution slot --deadline` (the leg's, or a day, per run: the enclosing
   slot or hold takes none), so
@@ -755,7 +759,11 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   count: a pin inside a `sh -c` string does not, nor does the caller's environment, which does not
   travel. The pin shows that a backend was named, never that the run held it: that evidence is the
   runner's own check (`--expect-backend`), and a leg the pin admitted is no GPU evidence. A `--cpu`
-  leg, and a repository without the file, are not checked.
+  leg, and a repository without the file, are not checked, but a brief pins the backend on every
+  leg, a CPU one included: a project default that names the CPU backend hides the missing pin on a
+  CPU leg and silently takes over a GPU one, and a measurement, which cannot declare `--cpu`, is
+  refused unpinned (OCANNL's test config pins cc, so a cc measurement on rog runs `env
+  OCANNL_BACKEND=cc ...`; ludics-lite#794).
 - **Stopping a leg.** A leg's far side runs in an ssh session of its own, which nothing on the
   caller's box reaches, so a SIGTERM, SIGINT or SIGHUP the leg gets while it runs (`bg-run.sh stop`
   on its run, a Ctrl-C) ends the far side as well (ludics-lite#767): `EXECUTION LEG STOPPING <box>:
