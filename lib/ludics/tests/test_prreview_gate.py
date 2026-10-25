@@ -14,7 +14,7 @@ import subprocess
 import unittest
 from unittest import mock
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ludics import proc
 from ludics.prreview import clock, closekw, shtext, workflow_yaml
@@ -282,10 +282,8 @@ class FakeClock:
         self.t += seconds
 
 
-def make_gate(gh: FakeGh, clock: FakeClock, select: str = "", attempts: int = 1, **env: str) -> Gate:
-    config = Config(
-        repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=attempts, api_backoff=0
-    )
+def make_gate(gh: FakeGh, clock: FakeClock, select: str = "", **env: str) -> Gate:
+    config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=1, api_backoff=0)
     session = GhSession(config, run=gh, sleep=lambda _s: None)
     gate_config = load_gate_config({"SHIP_PR_CHECKS_INTERVAL": "60", **env})
     gate = Gate(session, "o/r", gate_config, FuncClock(time=clock.now, sleep=clock.sleep))
@@ -338,7 +336,8 @@ class GateLoop(unittest.TestCase):
             gh.on("check-runs", out="ci\tsuccess\tu\t1")
             gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1")
             clock = FakeClock()
-            gate = make_gate(gh, clock, attempts=4)
+            gate = make_gate(gh, clock)
+            gate.session.config = replace(gate.session.config, api_attempts=4)
             with self.subTest(again=again):
                 self.assertEqual((gate.check("7", 3600), gate.verdict, gate.gate_base), (0, "green", "b1"))
                 self.assertEqual(len(gate.head_unread), 5, "five failed reads, each recorded")
