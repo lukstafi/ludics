@@ -7,7 +7,9 @@ override's waiver (``apply_waiver``/``is_waived``, #392), the check fold (``buil
 #24/#38/#500) -- whose run-less head, inside the grace, asks the paths-ignore recognition
 (``workflows.head_within_paths_ignore``, #176). On a round with no verdict, ``checks`` and
 ``merge`` also look for jobs that never got a runner (runners.py, #560/#728): named in the report,
-they end the wait, unless ``merge --wait``'s one recovery keeps it.
+they end the wait, unless ``merge --wait``'s one recovery keeps it. Under a wait, a head read
+that did not answer is one failed poll, read again within the wait's budget (``_head_unread``,
+ludics-lite#795, which states what rides out and what does not).
 
 The shell's comments above each of those functions carry the incident history and every review
 round's reason; read them there before changing a rule here. What changed in the port is the

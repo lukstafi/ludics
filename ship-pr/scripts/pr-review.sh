@@ -306,7 +306,10 @@
 #             refused); 2
 #             usage/configuration error; 3 TRANSPORT failure — nothing was learned, so retry rather
 #             than concluding anything, which for `watch` includes a verdict WITHHELD because the
-#             final poll or the state re-read behind it did not answer. 1 and 3 are kept apart
+#             final poll or the state re-read behind it did not answer. Under `checks`/`merge`
+#             --wait, a PR head read that did not answer is retried within the wait, so 3 there
+#             means the wait was spent with none answering, or GitHub refused the read outright
+#             (ludics-lite#795); the message names the failed reads. 1 and 3 are kept apart
 #             everywhere. `checks`, `base` and
 #             `merge` add 4: no verdict yet — the build has not finished, every finished job was
 #             cancelled, or a workflow run for the head is queued, running, stopped without a

@@ -19,7 +19,10 @@ review round:
   over REST.
 
 Exit: 0 merged; 1 refused (red, a moved head, a real conflict, an open thread, a deferred merge);
-2 usage; 3 something that decides it could not be read; 4 no verdict; 5 the head was superseded;
+2 usage; 3 something that decides it could not be read -- under ``--wait``, a head read of the
+gate's that did not answer is read again after a pause instead (ludics-lite#795), so there 3 means
+the wait's budget was spent with none answering, or GitHub refused the read, and the message names
+the failures; 4 no verdict; 5 the head was superseded;
 6 no verdict because a build job never got a runner (runners.py: NO RUNNER, NEVER STARTED), and the
 one recovery ``--wait`` makes per head run (``Recovery``) is spent or failed, or there was no wait
 to make it in -- the refusal names the commands. ``--allow-no-verdict`` still merges it unread.
