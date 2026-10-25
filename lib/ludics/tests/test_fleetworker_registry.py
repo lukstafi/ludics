@@ -852,5 +852,124 @@ class Snapshot(RegistryCase):
         self.assertEqual(order, ["snapshot shared", "waiters", "snapshot exclusive", "waiters"])
 
 
+class HaltTriage(RegistryCase):
+    """THE HALT'S TRIAGE (ludics-lite#796): one owner's records on several boxes under a halt."""
+
+    BOXES = "mac rog tuf"
+
+    def halt(self, generation: str = "h1") -> None:
+        with open(os.path.join(self.root, "HALT"), "w") as f:
+            f.write(f"2026-10-25T00:00:00Z id={generation} unit red\n")
+
+    def resume(self) -> None:
+        os.remove(os.path.join(self.root, "HALT"))
+
+    def triage(self, identity: str, host: str, worker: str = "t1", boxes: object = ("rog", "tuf"),
+               action: str = "run", **extra: object) -> tuple[int, Any, str]:
+        payload = request(identity, worker=worker, execution_host=host, triage_reason="red at abc", standing=True,
+                          **extra)
+        if boxes is not None:
+            payload["triage_boxes"] = list(boxes) if isinstance(boxes, tuple) else boxes
+        return self.call(action, payload, boxes=self.BOXES)
+
+    def records(self) -> dict[str, Any]:
+        return {r["request_id"]: r for r in self.call("list", {})[1]}
+
+    def test_one_owner_holds_a_record_on_each_named_box(self) -> None:
+        self.halt()
+        self.assertEqual(self.triage("t-rog", "rog")[0], 0)
+        rc, out, err = self.triage("t-tuf", "tuf")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((out["state"], out["halt_identity"], out["triage_boxes"]), ("launching", "h1", ["rog", "tuf"]))
+        self.assertNotIn("triage_boxes", out["request"], "beside the request, never in it")
+        self.assertEqual(out["history"][0]["data"]["triage_boxes"], ["rog", "tuf"])
+        # A retry answers with its record; the same list in another order is the same set for a sibling.
+        self.assertEqual(self.triage("t-tuf", "tuf", action="reserve")[0], 0)
+
+    def test_everyone_else_is_refused(self) -> None:
+        self.halt()
+        self.assertEqual(self.triage("t-rog", "rog")[0], 0)
+        cases = {
+            "an ordinary request": (self.call("run", request("o", execution_host="tuf"), boxes=self.BOXES),
+                                    "fleet halted; ordinary reservations refused"),
+            "another worker": (self.triage("x-tuf", "tuf", worker="t2"),
+                               "the halt's triage has one owner, so worker t2 is refused"),
+            "a third box, outside the list": (self.triage("t-mac", "mac"),
+                                              "execution_host mac is not one of its triage_boxes rog, tuf"),
+            "a third box, by a wider list": (self.triage("t-mac2", "mac", boxes=("rog", "tuf", "mac")),
+                                             "fixed by its first record"),
+            "a narrower list": (self.triage("t-tuf", "tuf", boxes=("tuf",)), "fixed by its first record"),
+            "a second record on one box": (self.triage("t-rog2", "rog"), "already holds t-rog on rog"),
+            "a list with no request host": (self.triage("t-tuf", "tuf", boxes=("rog",)), "not one of its triage_boxes"),
+            "a box twice": (self.triage("t-tuf", "tuf", boxes=("tuf", "tuf")), "names a box twice"),
+            "a non-canonical box": (self.triage("t-tuf", "tuf", boxes=("tuf", "rog-nv")),
+                                    "triage_boxes entry rog-nv must exactly match a canonical FLEET_BOXES entry"),
+            "a non-list": (self.triage("t-tuf", "tuf", boxes="rog tuf"), "must be a nonempty list of box names"),
+            "an empty list": (self.triage("t-tuf", "tuf", boxes=[]), "must be a nonempty list of box names"),
+        }
+        for name, ((rc, _, err), why) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(rc, 1)
+                self.assertIn(why, err)
+        self.assertEqual(sorted(self.records()), ["t-rog"], "a refusal writes nothing")
+
+    def test_a_list_without_a_triage_reason_is_refused(self) -> None:
+        self.halt()
+        payload = request("pre", execution_host="rog") | {"triage_boxes": ["rog"]}
+        rc, _, err = self.call("reserve", payload, boxes=self.BOXES)
+        self.assertEqual(rc, 1)
+        self.assertIn("triage_boxes is only for a triage_reason reservation", err)
+
+    def test_a_record_without_a_list_is_a_triage_of_its_own_host(self) -> None:
+        self.halt()
+        self.assertEqual(self.triage("legacy", "rog", boxes=None)[0], 0)
+        rc, _, err = self.triage("t-tuf", "tuf")
+        self.assertEqual(rc, 1)
+        self.assertIn("boxes rog;", err)
+        self.assertIn("fixed by its first record", err)
+
+    def test_concluding_one_member_keeps_the_owner_and_list(self) -> None:
+        self.halt()
+        self.triage("t-rog", "rog")
+        self.triage("t-tuf", "tuf")
+        self.assertEqual(self.call("conclude", dict(request_id="t-rog", verdict="not-launched", log="-",
+                                                    evidence="unit"), boxes=self.BOXES)[0], 0)
+        self.assertIn("one owner", self.triage("x-rog", "rog", worker="t2")[2])
+        self.assertEqual(self.triage("t-rog2", "rog")[0], 0, "the freed box takes the owner's next record")
+        for name in ("t-rog2", "t-tuf"):
+            self.call("conclude", dict(request_id=name, verdict="not-launched", log="-", evidence="unit"), boxes=self.BOXES)
+        self.assertEqual(self.triage("x-mac", "mac", worker="t2", boxes=("mac",))[0], 0,
+                         "with every record concluded, the next triage request founds a new triage")
+
+    def test_the_halts_end_releases_the_triage(self) -> None:
+        self.halt()
+        self.triage("t-rog", "rog")
+        self.triage("t-tuf", "tuf", action="reserve")
+        self.resume()
+        rc, _, err = self.triage("t-mac", "mac", boxes=("mac", "rog", "tuf"))
+        self.assertEqual((rc, "triage reservations require an active halt" in err), (1, True))
+        rc, _, err = self.call("dispatch", dict(request_id="t-tuf", evidence="unit"), boxes=self.BOXES)
+        self.assertEqual((rc, "different or ended halt" in err), (1, True))
+        self.assertEqual(self.call("run", request("o", execution_host="rog"), boxes=self.BOXES)[0], 0,
+                         "an ordinary run beside the standing triage record")
+        self.halt("h2")
+        rc, out, err = self.triage("y-rog", "rog", worker="t2")
+        self.assertEqual(rc, 0, "a later halt's triage ignores the old one's records: " + err)
+        self.assertEqual(out["halt_identity"], "h2")
+
+    def test_an_adopter_dispatches_the_triage_under_the_same_halt(self) -> None:
+        self.halt()
+        self.triage("t-rog", "rog", action="reserve")
+        argv = ["-", self.root, "reconcile", "adopter", "token2",
+                json.dumps(dict(request_id="t-rog", state="reserved", evidence="unit: no launch")), self.BOXES]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(registry.run(argv), 0)
+            argv[2:5] = ["dispatch", "adopter", "token2"]
+            argv[5] = json.dumps(dict(request_id="t-rog", evidence="unit: adopted"))
+            self.assertEqual(registry.run(argv), 0)
+        rc, _, err = self.triage("t-tuf", "tuf")
+        self.assertEqual(rc, 0, err)
+
+
 if __name__ == "__main__":
     unittest.main()
