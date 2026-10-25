@@ -27,6 +27,9 @@ with open(os.path.join(here, "calls.jsonl"), encoding="utf-8") as log:
 with open(os.path.join(here, "script.json"), encoding="utf-8") as f:
     answers = json.load(f)
 a = answers[min(n, len(answers) - 1)]
+if a["file_flag"] and a["file_flag"] in sys.argv[1:-1]:
+    with open(sys.argv[sys.argv.index(a["file_flag"]) + 1], "w", encoding="utf-8") as out:
+        out.write(a["file_text"])
 sys.stdout.write(a["stdout"])
 sys.stderr.write(a["stderr"])
 sys.exit(a["rc"])
@@ -35,9 +38,14 @@ sys.exit(a["rc"])
 
 @dataclass(frozen=True)
 class Answer:
+    """One run's answer. With ``file_flag``, the run also writes ``file_text`` to the file named
+    by the argument after that flag, when the flag is passed (a fake ``codex``'s ``-o``)."""
+
     rc: int = 0
     stdout: str = ""
     stderr: str = ""
+    file_flag: str = ""
+    file_text: str = ""
 
 
 class FakeTool:
@@ -54,7 +62,8 @@ class FakeTool:
     def script(self, *answers: Answer) -> None:
         """Answer the next calls with ``answers`` in order; the last repeats. Resets the log."""
         with open(os.path.join(self.dir, "script.json"), "w", encoding="utf-8") as f:
-            json.dump([{"rc": a.rc, "stdout": a.stdout, "stderr": a.stderr} for a in answers], f)
+            json.dump([{"rc": a.rc, "stdout": a.stdout, "stderr": a.stderr, "file_flag": a.file_flag,
+                       "file_text": a.file_text} for a in answers], f)
         log = os.path.join(self.dir, "calls.jsonl")
         if os.path.exists(log):
             os.remove(log)

@@ -233,6 +233,13 @@
 #                                          # negative control, the PR's own copy included
 #                                          # (ludics-lite#751; see prreview/mergedry.py). Exit as
 #                                          # merge's build step: 0 would proceed, 1 refused.
+#   pr-review.sh local-review <base> [--out <dir>] [-C <dir>]
+#                                          # the local Codex review before the PR opens: HEAD
+#                                          # against its merge base with origin/<base>, the
+#                                          # transcript to <dir>/run.log, the verdict alone to
+#                                          # <dir>/verdict.md (ludics-lite#750; see
+#                                          # prreview/localreview.py). Reads no PR, fetches
+#                                          # nothing; exit 2 = refused, nothing launched.
 #   pr-review.sh base [owner/name] [branch] [--wait[=seconds]] [--interim]
 #                                          # is the branch you are about to work off CI-green?
 #                                          # --wait holds until the CURRENT tip has its verdict —
@@ -614,6 +621,7 @@ cmd_resolve() { py_forward call resolve "$@"; }
 cmd_comment() { py_forward call comment "$@"; }
 cmd_body() { py_forward call body "$@"; }
 cmd_retry() { py_forward call retry "$@"; }
+cmd_local_review() { py_forward call local-review "$@"; }
 # In a subshell, unlike the other stubs: `watch` RETURNS its status (1 is a quiet window, not a
 # failure), and `py_forward call` exits on any nonzero one, which would end a sourcing caller.
 cmd_watch() { (py_forward call watch "$@"); }
@@ -660,8 +668,8 @@ py_native_path() {
 }
 
 # <subcommand> <args...>: PY_ARGS, the same words with the ones the Python opens as files in
-# native form -- `body`'s file (but `-`), `base --integration-records` and `--advisory-red`, and
-# `reply`'s and `comment`'s `--body-file` -- which MSYS would have rewritten had py_forward not
+# native form -- `body`'s file (but `-`), `base --integration-records` and `--advisory-red`,
+# `reply`'s and `comment`'s `--body-file`, and `local-review`'s `--out` and `-C` -- which MSYS would have rewritten had py_forward not
 # turned its rewriting off.
 py_native_args() {
   local sub="$1" a n=0 next=""
@@ -679,7 +687,8 @@ py_native_args() {
       base:--advisory-red) next=1 ;;
       base:--advisory-red=*) a="--advisory-red=$(py_native_path "${a#--advisory-red=}")" ;;
       reply:--body-file | comment:--body-file) next=1 ;;
-      merge:-C | merge-build:-C | merge-build:--config) next=1 ;;
+      merge:-C | merge-build:-C | merge-build:--config | local-review:-C | local-review:--out) next=1 ;;
+      local-review:--out=*) a="--out=$(py_native_path "${a#--out=}")" ;;
       merge-build:--config=*) a="--config=$(py_native_path "${a#--config=}")" ;;
       reply:--body-file=* | comment:--body-file=*) a="--body-file=$(py_native_path "${a#--body-file=}")" ;;
       body:-) ;;
@@ -754,7 +763,7 @@ main() {
   --repo=*) REPO="${1#--repo=}" && shift ;;
   esac
   case "${1:-}" in
-  poll | watch | status | rounds | checks | merge | merge-build | base | reply | resolve | comment | body | retry)
+  poll | watch | status | rounds | checks | merge | merge-build | base | reply | resolve | comment | body | retry | local-review)
     py_usage "$@"
     py_forward exec "$@"
     ;;
@@ -762,6 +771,10 @@ main() {
   pr-review.sh [--repo owner/name] merge-build --base <rev> --head <rev> [--config <file>] [-C <dir>]
                                              # merge's build of the would-be merge commit alone,
                                              # a dry run: no PR read, no fetch, no merge
+  pr-review.sh local-review <base> [--out <dir>] [-C <dir>]  # the local Codex review before the
+                                             # PR opens: HEAD against origin/<base>'s merge base,
+                                             # the transcript to <dir>/run.log, the verdict alone
+                                             # to <dir>/verdict.md (ship-pr's Open)
   pr-review.sh comment <pr> <body>           # a plain PR comment (a summary round, a review nudge)
   pr-review.sh reply|comment ... --body-file <path>  # the body from a file, instead of an argument
   pr-review.sh body <pr> <file>              # replace the PR's description from a file, over REST

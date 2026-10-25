@@ -67,6 +67,7 @@ prreview/threads.py        the review-threads walk and the open-thread gate (res
 prreview/drift.py          warn_base_drift (merge, watch), and read_base_drift's Drift for the merge build
 prreview/mergebuild.py     merge's build of the would-be merge commit (.github/ship-pr-merge-build, #611)
 prreview/mergedry.py       merge-build, that build alone as a dry run for two revisions (#751)
+prreview/localreview.py    local-review, the local Codex review before a PR opens (#750)
 prreview/checkruns.py      conclusion_class, newest_first
 prreview/ere.py            the advisory list, asked of grep (is_advisory, ere_valid)
 prreview/gate.py           gate_checks (checks, merge, and base's merged-head source)
