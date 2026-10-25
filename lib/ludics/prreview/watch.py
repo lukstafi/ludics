@@ -819,7 +819,8 @@ class Watch:
         whatever head it is for, a verdict for the head, the request record across processes --
         and the write gate, as the stall nudge's does, an open non-draft PR without conflicts
         still on the head that read cleared."""
-        match stall_nudge_read(self.ctx, self.pr):
+        read = stall_nudge_read(self.ctx, self.pr)
+        match read:
             case NudgeBarred(why=why):
                 return why
             case NudgeClear(head=head):
@@ -829,7 +830,7 @@ class Watch:
                 if now_head != head:
                     return "the head moved while the request was being read"
                 return None
-            case read:
+            case _:
                 assert_never(read)
 
     def write_gate(self) -> tuple[str, str]:
