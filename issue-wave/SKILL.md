@@ -242,7 +242,10 @@ Propose a wave to the user in one exchange: the issues, each with its box, the p
 and what is deferred to a later wave and why. Take the plan's Parallelism and Dependencies
 sections as the starting truth, then adjust for churn surfaces the plan does not model: two
 issues editing the same file or golden serialize even if logically independent, and an issue
-that adds test stanzas sequences after one that reshapes the affected goldens or scanners. GPU
+that adds test stanzas sequences after one that reshapes the affected goldens or scanners. Size
+golden work by grepping the goldens for the literal output text the change alters, not by the tests
+that run the code (ahrefs/ocannl#1369's brief expected many re-promotions; one golden pinned the
+text, lukstafi/ocannl-staging#1398). GPU
 boxes serialize per box for measurement work (the plan's Parallelism section orders each box's
 queue). Three limits are separate and none bounds another: agent capacity (the runtime's), the
 execution registry (a measurement reservation is exclusive on its box), and the correctness
@@ -573,7 +576,13 @@ requirements for every transport with transport-specific setup and identity, and
   boxes*; two rog windows measured nothing on a session script that predated it,
   ahrefs/ocannl#1324 and #1326). Every leg spells its far-side paths absolutely: an unquoted
   `~` is expanded by the caller's shell to the caller's home (a leg from rog reached mac-studio
-  as `/home/lukstafi/...` and was refused).
+  as `/home/lukstafi/...` and was refused). Every leg's command names its backend, a CPU leg's
+  included, and leans on none of the checkout's ignored setup, which a leg's fresh worktree lacks
+  ([*The backend pin* and *The worktree*](references/executions.md#a-leg-on-another-box)). A
+  base-against-head A/B goes through the project's two-revision tooling where it has one, never
+  two checkouts paired by hand, and the brief points to that tooling's own constraints as it does
+  to the gate (OCANNL: `benchmarks/ab.py` and `bin_cells.py --arm-exe`; ludics-lite#794: three
+  wave-20261024 workers lost windows to these traps).
 - **Block on every run before yielding**, the review watch and the merge wait included: a
   Claude worker as [Blocking on a run](references/native-claude.md#blocking-on-a-run) says, a
   Codex worker by keeping its turn open, because a returned turn says only that the turn ended
@@ -655,7 +664,10 @@ requirements for every transport with transport-specific setup and identity, and
   the watch (reactions persist across rounds and strand it); commit early and often - commits
   are what survives every failure mode below - and park work in progress as WIP commits, never
   `git stash`: the stash stack is shared by every worktree of the repository, and a worker's
-  `stash pop` applied a stranger's (ahrefs/ocannl#1161).
+  `stash pop` applied a stranger's (ahrefs/ocannl#1161). Squash them onto the merge base
+  (`git reset --soft "$(git merge-base HEAD origin/<main>)"`) or after a rebase, never with
+  `git reset --soft origin/<main>` once main has moved: that squash records main's newer changes
+  reverted (lukstafi/ocannl-staging#1417).
 - **Stall recovery: read the feed, then nudge once; never while an approval may stand**
   (ludics-lite#760, as ship-pr's `stalled` row states it). `pr-review.sh watch` nudges a
   STALLED round itself, once per head, when no 👍, no verdict and no request stands for the
