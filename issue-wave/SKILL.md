@@ -992,19 +992,27 @@ controlled through the tools in your coordinator's file, never through those com
   - **One call per run**, in a checkout on the box that is the coordinator's own (never a
     worker's):
 
-        fleet-worker.sh execution tip-run <reserve.json> --tip <base> --checkout <dir> -- <command...>
+        fleet-worker.sh execution tip-run <reserve.json> --tip <base> --id-prefix <wave>-gpu-<box> --checkout <dir> -- <command...>
         fleet-worker.sh execution tip-run --wait <id> --tip <base>
 
     The request is an ordinary non-standing `correctness` request of transport `coordinator`
-    with no `requested_revision`: `--tip` reads `<base>`'s head on GitHub and runs exactly that
-    SHA (a rerun names the red SHA as `requested_revision` instead, without `--tip`). It yields
+    with no `requested_revision` and no `request_id`: `--tip` reads `<base>`'s head on GitHub and
+    runs exactly that SHA (a rerun names the red SHA as `requested_revision` instead, without
+    `--tip`), and `--id-prefix` takes the next `<n>`, one past the highest the registry holds under
+    the prefix, so no counter is kept by hand (ludics-lite#714). It yields
     as above, reserves and dispatches (`execution run`, with every check that makes, a halt's
     included), checks the SHA out detached in the clean checkout, starts the command under
     `execution slot --bg` on a GPU token (`--cpu` for a CPU backend), records it running, and
     prints `TIP-RUN STARTED <id> <box> <sha> <dir>`; or `TIP-RUN NOT STARTED <id>: <why>` (exit
     1), with anything it reserved concluded `not-launched`. For OCANNL the command is
-    `tools/test-run.sh run --test-cap 0 build @runtest @train`, which runs the box's own backend
-    by default. `--wait <id>` is the rest of the run, in one foreground call: it reads the box,
+    `env OCANNL_BACKEND=<backend> tools/test-run.sh run --test-cap 0 build @runtest @train`, with
+    `<backend>` the loop's own (`cuda` on rog, `hip` on tuf and minix): the runner takes its
+    backend from `OCANNL_BACKEND` or else OCANNL's test config, which pins cc, so an unpinned
+    command runs cc on a GPU box (two waves' GPU-loop records were cc runs, ludics-lite#793).
+    `tip-run` refuses a run whose purpose names a backend unless its command pins exactly that
+    one, by the project's `.github/fleet-leg` at the commit (`execution leg`'s pin). `--wait
+    <id>` (the id `TIP-RUN STARTED` printed) is the rest of the run, in one foreground call: it
+    reads the box,
     directory and SHA off the record (nothing copied by hand, so the id and the directory cannot
     drift apart), blocks up to 480 s, and concludes it `--from-bg-run`, printing `TIP-RUN
     CONCLUDED <id> <verdict> <box> <sha> <dir>`, then `TIP-RUN TIP <base> <sha> moved` when the
@@ -1013,7 +1021,8 @@ controlled through the tools in your coordinator's file, never through those com
     true`: yielding is how it finds a quiet box too.
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
     rerun pending"`; one rerun at the same SHA on a box of that backend under the halt's one
-    triage reservation (the same `tip-run`, its request carrying `triage_reason`); green, a
+    triage reservation (the same `tip-run` and pinned command, its request carrying
+    `triage_reason`); green, a
     flake, `resume-launches`; red, attribution by `git log --first-parent <last green on that
     backend>..<red tip>` with one triage owner, as in the order above. The last green on a
     backend is the newest `pass` among its loop records, or with none in the registry, the
