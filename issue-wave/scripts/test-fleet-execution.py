@@ -366,6 +366,20 @@ with tempfile.TemporaryDirectory(prefix='fleet-slots-') as temporary:
     triage = records()['triage-run']
     assert triage['state'] == 'launching' and triage['halt_identity'], triage
     run('resume-launches')
+    # ludics-lite#796: under a halt, its triage owner holds one record on each box it names, and
+    # nobody else holds any; the list rides beside the request, fixed by the triage's first record.
+    run('halt', 'red on two backends')
+    duo = dict(triage_reason='red on two backends', triage_boxes=['mac', 'rog'], standing=True, worker='duo')
+    for box in duo['triage_boxes']:
+        change('run', {**request('duo-' + box, box), **duo, 'checkout': '/wt/duo-' + box})
+    wider = {**request('duo-minix', 'minix'), **duo, 'triage_boxes': ['mac', 'rog', 'minix'], 'checkout': '/wt/o'}
+    change('run', wider, expected=1)
+    change('run', {**request('rival', 'minix'), 'triage_reason': 'a second owner'}, expected=1)
+    change('run', request('halted-ordinary', 'minix'), expected=1)
+    duo_records = records()
+    assert duo_records['duo-rog']['triage_boxes'] == ['mac', 'rog'], duo_records['duo-rog']
+    assert not {'duo-minix', 'rival', 'halted-ordinary'} & set(duo_records), sorted(duo_records)
+    run('resume-launches')
     print('PASS: execution run, correctness slots, standing records, exclusive measurement, halt')
 
 # One roster entry per physical box (ludics-lite#395): wake-lab.sh's endpoint map says which ssh
