@@ -700,11 +700,13 @@ class GhSession:
             # waits that hold out at the gate above and repeats; a read the probe found no hold for
             # gets one more try, and a write is never repeated.
             if quota_failure(first) or (self._status is not None and bodiless_quota(self._status)):
-                self._quota = True
+                # Set on the returns alone: a hold waited out above and a later attempt that fails
+                # on transport is transport (``quota_stopped``).
                 if budget is not None:
                     unrecorded = budget.quota_hit(args)
                     if unrecorded is not None:
                         self._err_line = unrecorded
+                        self._quota = True
                         return GhUnanswered()
                     if mode == "read" and budget.waiting():
                         if budget.hold_read() is not None:
@@ -712,6 +714,7 @@ class GhSession:
                         quota_unheld += 1
                         if quota_unheld < 2:
                             continue
+                self._quota = True
                 return GhUnanswered()
             # A fixed GraphQL answer is read FIRST, under both policies: the substring scans
             # below would match a marker the message only quotes. A NOT_FOUND is as fixed, but
