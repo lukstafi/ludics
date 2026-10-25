@@ -2698,6 +2698,35 @@ jq 'del(.requested_revision)' "$TMP/tip-j.json" > "$TMP/tip-j-tip.json"
 expect "a branch GitHub does not have starts nothing" 1 "^TIP-RUN NOT STARTED tip-j: the tip of gone in o/r could not be read (above); nothing reserved$" -- \
   env SHIM_GH_HEADS="$TMP/tip-heads" "${FWT[@]}" execution tip-run "$TMP/tip-j-tip.json" --tip gone --checkout "$tco" -- echo never
 [ -z "$(state_of tip-j)" ] && ok "...reserving nothing" || ko "tip-j was reserved: $(state_of tip-j)"
+# ludics-lite#793: a GPU-loop request (its purpose `GPU integration loop, <backend>:`) runs only a
+# command pinning that backend, by the project's .github/fleet-leg at the commit, read on the box
+# (one commit on a side branch, which the run fetches). #714: --id-prefix allocates the id, one past
+# the highest number the registry holds under it (2 is left a gap).
+git -C "$tsrc" checkout -q -b pins && mkdir -p "$tsrc/.github" && printf '# fixture\npin-env OCANNL_BACKEND\npin-flag --expect-backend\n' > "$tsrc/.github/fleet-leg" &&
+  git -C "$tsrc" add .github/fleet-leg && git -C "$tsrc" commit -q -m pins && git -C "$tsrc" push -q origin pins &&
+  git -C "$tsrc" checkout -q main || ko "could not stage the pins commit (setup)"
+pinned=$(git -C "$tsrc" rev-parse pins)
+loopreq() { tipreq "$1" "$2" "{\"purpose\":\"GPU integration loop, $3: fixture\"}"; } # <id> <sha> <backend>
+expect "a GPU-loop run whose command pins no backend is refused" 1 "^TIP-RUN NOT STARTED w-gpu-testbox-1: this run is the cuda backend's, but its command pins no backend, and .github/fleet-leg asks for one of: env OCANNL_BACKEND=<backend>, --expect-backend <backend>; pin cuda" -- \
+  "${FWT[@]}" execution tip-run "$(loopreq w-gpu-testbox-1 "$pinned" cuda)" --checkout "$tco" -- sh -c 'echo never'
+[ "$(state_of w-gpu-testbox-1)" = "concluded not-launched" ] && ok "...concluding what it reserved not-launched" || ko "w-gpu-testbox-1: $(state_of w-gpu-testbox-1)"
+expect "...and so is one pinning another backend" 1 "^TIP-RUN NOT STARTED w-gpu-testbox-3: this run is the cuda backend's, but its command pins another (OCANNL_BACKEND=hip) (.github/fleet-leg at $pinned)$" -- \
+  "${FWT[@]}" execution tip-run "$(loopreq w-gpu-testbox-3 "$pinned" cuda)" --checkout "$tco" -- env OCANNL_BACKEND=hip sh -c 'echo never'
+expect "...and one at a commit whose project states no pin" 1 "^TIP-RUN NOT STARTED tip-k: this run is the cuda backend's (its purpose), but $tip has no .github/fleet-leg" -- \
+  "${FWT[@]}" execution tip-run "$(loopreq tip-k "$tip" cuda)" --checkout "$tco" -- env OCANNL_BACKEND=cuda sh -c 'echo never'
+[ "$(git -C "$tco" rev-parse HEAD)" != "$pinned" ] && ok "...each before the checkout moved to the commit" || ko "the checkout moved to $pinned"
+jq 'del(.request_id)' "$(loopreq w-gpu-testbox-x "$pinned" cuda)" > "$TMP/tip-alloc.json"
+expect "--id-prefix allocates one past the highest id held, and a pinned GPU-loop run starts" 0 "^TIP-RUN STARTED w-gpu-testbox-4 testbox $pinned /" -- \
+  "${FWT[@]}" execution tip-run "$TMP/tip-alloc.json" --checkout "$tco" --id-prefix w-gpu-testbox -- env OCANNL_BACKEND=cuda sh -c 'echo "backend $OCANNL_BACKEND"; echo "exit: 0"'
+grep -q "^TIP-RUN ID w-gpu-testbox-4: allocated under w-gpu-testbox-" <<<"$out" && ok "...saying which id it took" || ko "no ID line: $out"
+expect "...which --wait concludes under that id" 0 "^TIP-RUN CONCLUDED w-gpu-testbox-4 pass testbox $pinned /" -- \
+  "${FWT[@]}" execution tip-run --wait w-gpu-testbox-4 --within 60
+grep -Fxq "backend cuda" "$(sed -n "s/^TIP-RUN CONCLUDED w-gpu-testbox-4 pass testbox $pinned //p" <<<"$out")/log" && ok "...having run the command as given" || ko "w-gpu-testbox-4's log lacks the backend line"
+expect "--id-prefix beside a named request id is refused" 2 "--id-prefix allocates the request id, so the payload names no request_id" -- \
+  "${FWT[@]}" execution tip-run "$(loopreq tip-l "$pinned" cuda)" --checkout "$tco" --id-prefix w-gpu-testbox -- echo never
+expect "a GPU-loop purpose that does not name its backend is refused" 2 "names its backend, as 'GPU integration loop, <backend>: ...'" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-l "$pinned" '{"purpose":"GPU integration loop: cuda"}')" --checkout "$tco" -- echo never
+[ -z "$(state_of tip-l)" ] && ok "...each before anything is reserved" || ko "tip-l was reserved: $(state_of tip-l)"
 # THE YIELD: a worker's assigned leg (any non-standing record) on the box, and nothing is reserved.
 jq -n '{request_id:"tip-leg", wave:"w", worker:"w1", transport:"subagent", issue:"o/r#1", purpose:"cuda leg",
   agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness"}' > "$TMP/tip-leg.json"

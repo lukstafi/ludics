@@ -13,7 +13,8 @@ from unittest import mock
 from ludics import cli
 from ludics.fleetworker import tiprun
 from ludics.fleetworker.config import load_config
-from ludics.fleetworker.tiprun import concluded_line, far_facts, parse, parse_wait, request_problem, started_run, yielding_to
+from ludics.fleetworker.tiprun import (concluded_line, far_facts, loop_backend, next_id, parse, parse_wait, request_problem,
+                                       started_run, yielding_to)
 from ludics.fleetworker.transport import Done
 
 SHA = "a" * 40
@@ -72,6 +73,15 @@ class ParseTipAndWait(unittest.TestCase):
         for args in (["/p.json", "--tip", "--checkout", "/co", "--", "true"], ["/p.json", "--checkout", "/co", "--tip"]):
             self.assertIn("expected a branch for --tip", self.refused(parse, args), args)
 
+    def test_id_prefix_names_the_ids_leading_part(self) -> None:
+        self.assertEqual(parse(["/p.json", "--id-prefix", "w-gpu-rog", "--checkout", "/co", "--", "true"]).id_prefix, "w-gpu-rog")
+        self.assertEqual(parse(["/p.json", "--checkout", "/co", "--", "true"]).id_prefix, "")
+        for args in (["/p.json", "--id-prefix", "--checkout", "/co", "--", "true"], ["/p.json", "--checkout", "/co", "--id-prefix"],
+                     ["/p.json", "--id-prefix", "", "--checkout", "/co", "--", "true"],
+                     ["/p.json", "--id-prefix", "w gpu", "--checkout", "/co", "--", "true"],
+                     ["/p.json", "--id-prefix", "-w", "--checkout", "/co", "--", "true"]):
+            self.assertIn("--id-prefix takes a request id's leading part", self.refused(parse, args), args)
+
     def test_wait_takes_the_id_and_a_bound(self) -> None:
         self.assertEqual(parse_wait(["--wait", "w-gpu-rog-1"]), tiprun.WaitArgs("w-gpu-rog-1", tiprun.WITHIN))
         self.assertEqual(parse_wait(["--wait", "w-gpu-rog-1", "--within", "0"]), tiprun.WaitArgs("w-gpu-rog-1", 0))
@@ -117,6 +127,47 @@ class RequestShape(unittest.TestCase):
         self.assertIn("transport must be coordinator", request_problem({**bare, "transport": "cli"}, tip=True) or "",
                       "the rest of the shape is checked as without --tip")
         self.assertIn("or --tip <branch>", request_problem(bare) or "", "without --tip a revision is required")
+
+    def test_id_prefix_allocates_the_id_so_the_payload_names_none(self) -> None:
+        bare = request()
+        del bare["request_id"]
+        self.assertIsNone(request_problem(bare, allocate=True))
+        self.assertIn("names no request_id", request_problem(request(), allocate=True) or "")
+        self.assertIn("names no request_id", request_problem(request(request_id=None), allocate=True) or "")
+        self.assertIn("request_id must be a nonempty string", request_problem(bare) or "", "without --id-prefix an id is required")
+
+    def test_a_gpu_loop_purpose_names_its_backend(self) -> None:
+        self.assertEqual(loop_backend(request(purpose="GPU integration loop, cuda: tip of main")), "cuda")
+        self.assertEqual(loop_backend(request(purpose="GPU integration loop, hip: rerun")), "hip")
+        for purpose in ("o/r integration, GPU integration loop, cuda: x", "cc integration loop", None, 7):
+            self.assertEqual(loop_backend(request(purpose=purpose)), "", purpose)
+            self.assertIsNone(request_problem(request(purpose=purpose)), purpose)
+        for purpose in ("GPU integration loop: cuda", "GPU integration loop, cuda tip", "GPU integration loop,cuda:",
+                        "GPU integration loop, : x", "GPU integration loops, cuda: x"):
+            self.assertIn("names its backend, as 'GPU integration loop, <backend>: ...'", request_problem(request(purpose=purpose)) or "", purpose)
+
+
+class NextId(unittest.TestCase):
+    """--id-prefix (ludics-lite#714): one past the highest number the registry holds under the prefix."""
+
+    def ids(self, *ids: str) -> list[dict[str, Any]]:
+        return [outstanding(i, "concluded") for i in ids]
+
+    def test_the_first_is_one(self) -> None:
+        self.assertEqual(next_id([], "w-gpu-rog"), "w-gpu-rog-1")
+        self.assertEqual(next_id(self.ids("w-gpu-tuf-4", "w-gpu-rog-nv-2", "w-gpu-rog-x", "w-gpu-rog-", "xw-gpu-rog-5"), "w-gpu-rog"),
+                         "w-gpu-rog-1", "only <prefix>-<digits> counts")
+
+    def test_one_past_the_highest_held_never_a_gap(self) -> None:
+        self.assertEqual(next_id(self.ids("w-gpu-rog-1", "w-gpu-rog-3"), "w-gpu-rog"), "w-gpu-rog-4")
+        self.assertEqual(next_id(self.ids("w-gpu-rog-10", "w-gpu-rog-9"), "w-gpu-rog"), "w-gpu-rog-11", "numbers, not strings")
+        self.assertEqual(next_id(self.ids("w-gpu-rog-007"), "w-gpu-rog"), "w-gpu-rog-8")
+
+    def test_an_id_held_by_another_case_is_held(self) -> None:
+        self.assertEqual(next_id(self.ids("W-GPU-ROG-2"), "w-gpu-rog"), "w-gpu-rog-3")
+
+    def test_the_prefix_is_literal(self) -> None:
+        self.assertEqual(next_id(self.ids("w.gpu.rog-5", "wxgpu-rog-6"), "w.gpu.rog"), "w.gpu.rog-6")
 
 
 class Yield(unittest.TestCase):
@@ -252,6 +303,51 @@ class Tip(unittest.TestCase):
         self.assertEqual(rc, 1, "nothing was reserved, so nothing is left to reconcile")
         self.assertIn("EXECUTION UNVERIFIED github.com: x", out.getvalue())
         self.assertIn("TIP-RUN NOT STARTED w-gpu-rog-1: the tip of main in o/r could not be read (above); nothing reserved", out.getvalue())
+
+
+class Allocate(unittest.TestCase):
+    """--id-prefix through cmd_tip_run: the allocated id is the one reserved, chosen off the registry read."""
+
+    def test_the_allocated_id_is_the_one_reserved(self) -> None:
+        cfg = load_config(SCRIPT, {}, host="h")
+        calls: list[tuple[list[str], dict[str, Any] | None]] = []
+
+        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+            calls.append((args, body))
+            return 1  # refused: the test stops at the reservation
+
+        held = [outstanding("w-gpu-rog-1", "concluded"), outstanding("w-gpu-rog-3", "concluded")]
+        with tempfile.TemporaryDirectory() as tmp:
+            bare = request()
+            del bare["request_id"]
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(bare, f)
+            out = io.StringIO()
+            with mock.patch.object(tiprun, "listing", return_value=Done(0, json.dumps(held))), \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = tiprun.cmd_tip_run(cfg, [payload, "--id-prefix", "w-gpu-rog", "--checkout", "/co", "--", "true"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(calls, [(["execution", "run"], {**bare, "request_id": "w-gpu-rog-4"})])
+        self.assertIn("TIP-RUN ID w-gpu-rog-4: allocated under w-gpu-rog-", err.getvalue())
+        self.assertIn("TIP-RUN NOT STARTED w-gpu-rog-4: the reservation was refused", out.getvalue())
+
+    def test_before_the_allocation_the_run_is_prefix_question_mark(self) -> None:
+        cfg = load_config(SCRIPT, {}, host="h")
+        with tempfile.TemporaryDirectory() as tmp:
+            bare = request()
+            del bare["request_id"]
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(bare, f)
+            out = io.StringIO()
+            with mock.patch.object(tiprun, "listing", return_value=Done(1, "")), \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=AssertionError("something was reserved")), \
+                    contextlib.redirect_stdout(out):
+                rc = tiprun.cmd_tip_run(cfg, [payload, "--id-prefix", "w-gpu-rog", "--checkout", "/co", "--", "true"])
+        self.assertEqual(rc, 4)
+        self.assertIn("TIP-RUN UNKNOWN w-gpu-rog-?: the anchor's registry could not be read", out.getvalue())
 
 
 def running(**fields: object) -> dict[str, Any]:
