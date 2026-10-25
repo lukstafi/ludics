@@ -812,18 +812,21 @@ class Watch:
             case _:
                 assert_never(read)
 
-    def init_failure_gate(self) -> str | None:
+    def init_failure_gate(self, fsha: str) -> str | None:
         """Why the one request over a first initialization failure (ludics-lite#792) is not
         posted, or None to post it. The state read said no request on the head before the
         failure; the stall's read (``stall_nudge_read``) re-reads the rest -- a 👍 on the PR
         whatever head it is for, a verdict for the head, the request record across processes --
         and the write gate, as the stall nudge's does, an open non-draft PR without conflicts
-        still on the head that read cleared."""
+        still on the head that read cleared, which must be the failed head ``fsha`` (review of
+        #805, round 1: a push between the state read and this one is a head that has not failed)."""
         read = stall_nudge_read(self.ctx, self.pr)
         match read:
             case NudgeBarred(why=why):
                 return why
             case NudgeClear(head=head):
+                if not fsha or not head.startswith(fsha):
+                    return f"the head moved to {head[:7]} since the failure was read"
                 pr_state, now_head = self.write_gate()
                 if pr_state != "open":
                     return f"the PR reads {pr_state or 'UNREAD'}, not open"
@@ -1038,7 +1041,7 @@ class Watch:
                     if first and rerequested != fsha and not self.nudge:
                         return self.end(tok, "", remedy="failed-run")
                     if first and rerequested != fsha and fkind != "run":
-                        barred = self.init_failure_gate()
+                        barred = self.init_failure_gate(fsha)
                         if barred is not None:
                             return self.end(
                                 tok,

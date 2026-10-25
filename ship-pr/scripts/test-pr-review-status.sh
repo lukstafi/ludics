@@ -1002,6 +1002,16 @@ test_watch_does_not_request_over_an_initialization_failure_when_barred() {
   assert_eq "$WATCH_RC" 0 "the failure is the caller's to act on"
   assert_contains "$WATCH_OUT" "the watch did not post the '@codex review' over the initialization failure on head ${FAILED_HEAD:0:7}: a 👍 from" \
     "the verdict says why"
+  # Review of #805, round 1: a push landing after the failed state's fresh read is a head that has
+  # not failed, and the gate's read clearing that new head does not license a request for it. The
+  # third PR read is that fresh read's; the gate's own reads see the new head.
+  failed_fixture "$FAILED_HEAD"
+  PUSH_AFTER_PULLS_READ=3
+  run_watch 0,200,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 \
+    "nothing is posted for a head that has not failed"
+  assert_eq "$WATCH_RC" 1 "the final read finds the new head due, so the caller re-arms"
+  assert_contains "$WATCH_OUT" "the state moved to 'expected' while it was being read" "and says so"
   # The write gate, as the stall nudge's: a PR that conflicts with its base is not nudged.
   failed_fixture "$FAILED_HEAD"
   MERGEABLE_STATE=dirty
