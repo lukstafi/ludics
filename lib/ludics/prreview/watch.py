@@ -812,6 +812,26 @@ class Watch:
             case _:
                 assert_never(read)
 
+    def init_failure_gate(self) -> str | None:
+        """Why the one request over a first initialization failure (ludics-lite#792) is not
+        posted, or None to post it. The state read said no request on the head before the
+        failure; the stall's read (``stall_nudge_read``) re-reads the rest -- a 👍 on the PR
+        whatever head it is for, a verdict for the head, the request record across processes --
+        and the write gate, as the stall nudge's does, an open non-draft PR without conflicts
+        still on the head that read cleared."""
+        match stall_nudge_read(self.ctx, self.pr):
+            case NudgeBarred(why=why):
+                return why
+            case NudgeClear(head=head):
+                pr_state, now_head = self.write_gate()
+                if pr_state != "open":
+                    return f"the PR reads {pr_state or 'UNREAD'}, not open"
+                if now_head != head:
+                    return "the head moved while the request was being read"
+                return None
+            case read:
+                assert_never(read)
+
     def write_gate(self) -> tuple[str, str]:
         """The PR's state as the automatic write's last gate reads it fresh, and its head (review
         of #583, rounds 3 to 5: a PR closed, merged, made a draft or conflicted mid-watch is still
@@ -1017,16 +1037,12 @@ class Watch:
                     if first and rerequested != fsha and not self.nudge:
                         return self.end(tok, "", remedy="failed-run")
                     if first and rerequested != fsha and fkind != "run":
-                        # An initialization failure (ludics-lite#792): the state read says no
-                        # request on the head before it; the stall's gate reads the rest fresh --
-                        # a 👍 on the PR whatever head it is for, a verdict for the head, and the
-                        # request record across processes -- and bars the post on any of them.
-                        read = stall_nudge_read(ctx, pr)
-                        if isinstance(read, NudgeBarred):
+                        barred = self.init_failure_gate()
+                        if barred is not None:
                             return self.end(
                                 tok,
                                 "the watch did not post the '@codex review' over the initialization"
-                                f" failure on head {fsha}: {read.why}",
+                                f" failure on head {fsha}: {barred}",
                             )
                     if first and rerequested != fsha:
                         posted, post_err = self.post_request()

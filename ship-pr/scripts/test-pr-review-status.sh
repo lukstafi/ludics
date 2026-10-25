@@ -990,7 +990,8 @@ test_watch_hands_back_an_initialization_failure_after_a_request() {
 }
 
 # The request's gates beyond the state read: a 👍 on the PR, whatever head it is for (a request
-# clears it), bars the post, and `--no-nudge` leaves it to the caller; both exit with the advice.
+# clears it), or a PR that is not open and clean bars the post, and `--no-nudge` leaves it to the
+# caller; each exits with the advice.
 test_watch_does_not_request_over_an_initialization_failure_when_barred() {
   failed_fixture "$FAILED_HEAD"
   REACTIONS_JSON="[$(reaction +1 2026-08-31T23:00:00Z)]"
@@ -1000,6 +1001,13 @@ test_watch_does_not_request_over_an_initialization_failure_when_barred() {
   assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "nothing is posted"
   assert_eq "$WATCH_RC" 0 "the failure is the caller's to act on"
   assert_contains "$WATCH_OUT" "the watch did not post the '@codex review' over the initialization failure on head ${FAILED_HEAD:0:7}: a 👍 from" \
+    "the verdict says why"
+  # The write gate, as the stall nudge's: a PR that conflicts with its base is not nudged.
+  failed_fixture "$FAILED_HEAD"
+  MERGEABLE_STATE=dirty
+  run_watch 0,200,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "nothing is posted"
+  assert_contains "$WATCH_OUT" "failure on head ${FAILED_HEAD:0:7}: the PR reads open but mergeable_state=dirty, not open" \
     "the verdict says why"
   failed_fixture "$FAILED_HEAD"
   WATCH_FLAG=--no-nudge

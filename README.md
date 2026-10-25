@@ -1060,7 +1060,7 @@ controls add a row older than the head's arrival, an arrival that does not read,
 names a commit or another status, and a newer row naming one. An initialization failure
 (ludics-lite#792), the git-ref shape or the missing environment, is split the same way: kind `git`
 or `env` draws the watch's one request, gated as the stall's is (any 👍, a verdict for the head,
-the request record) and by `--no-nudge`, and a request on the head before it makes it `git-again`
+the request record, the write gate) and by `--no-nudge`, and a request on the head before it makes it `git-again`
 or `env-again`, handed back with its move (a new head, the maintainer); a request after it is the
 round it asked for, due. `test-pr-review-watch.sh` runs PR #277's two-head shape through a watch
 (findings on the previous head scrolled past as NOT about head, the 👍 on the head above it), and
