@@ -227,28 +227,28 @@ exactly as able to break a gate as the first commit was, so the habit belongs on
 on the branch.
 
 Before the push that opens the PR, and only that one, review the branch locally: commit, then run
-`codex exec review` once, with the transcript going to a log and only the verdict to a file:
+the review verb once, from the checkout:
 
 ```bash
-d=$(mktemp -d) && mb=$(git merge-base HEAD origin/<base>) &&
-codex exec review -o "$d/verdict.md" "Review the code changes against the base branch origin/<base>, merge base $mb: inspect them with git diff $mb and give prioritized, actionable findings. Do not run tests, builds or suites: the author runs them, and a run in this sandbox proves nothing." >"$d/run.log" 2>&1; echo "$d"
+~/.claude/skills/ship-pr/scripts/pr-review.sh local-review <base>   # [--out <dir>] [-C <dir>]
 ```
 
-The prompt names the base itself because `--base` refuses a custom prompt (`cannot be used with
-'[PROMPT]'`, codex-cli 0.159), and the no-tests line has to be in it: left to itself the review
-runs suites, in a sandbox that lacks tools (`ps`) and takes no run-time slot, so their failures are
-not real and their load lands on your own runs (ludics-lite#609). The `&&` chain stops, with git's
-error, on a base `merge-base` cannot resolve: an empty `$mb` would leave a bare `git diff`, the
-working tree only, and a clean verdict on none of the branch's commits. Read `verdict.md`, not the
-output: the transcript is the whole agent run, often thousands of lines, and the verdict is only
-its last message. Open `run.log` only when `verdict.md` is empty. It runs for minutes, so give it a
-long timeout or a background run. Fix the findings you agree with and commit, then run the gates
-above on that commit — they gate the head you push, so they come after the local review, not before
-it. Name each finding you dismiss, with the reason, in the PR body so the reviewer's first round
-does not raise it again. Do not re-run it to a clean pass, and do not run it on later rounds: it
-gates nothing, the reviewer's 👍 stays the review gate, and its job is to spend the first round's
-findings before the reviewer sees the code. Where `codex` is missing or not logged in, skip it and
-say so in the body.
+It reviews `HEAD` against its merge base with `origin/<base>` through `codex exec review`, the
+transcript to `<dir>/run.log` and only the verdict to `<dir>/verdict.md` (a fresh `mktemp -d`
+without `--out`), and prints both paths before it launches. It owns what the pasted command it
+replaces kept getting wrong (ludics-lite#750): the merge base goes in the prompt, since `--base`
+refuses one; the prompt says not to run tests, or the review runs suites in a sandbox that takes no
+run-time slot (ludics-lite#609); and it launches nothing, exit 2, on a base ref it cannot resolve,
+no merge base, no commit past it, or an uncommitted change to a tracked file. It fetches nothing,
+so fetch first. Exit 0 means a verdict was written; codex's own failure is propagated, and 1 means
+it ended without a verdict. Read `verdict.md`, not the transcript, which is the whole agent run;
+open `run.log` only on a failure. It runs for minutes, so give it a long timeout or a background
+run. Fix the findings you agree with and commit, then run the gates above on that commit — they
+gate the head you push, so they come after the local review, not before it. Name each finding you
+dismiss, with the reason, in the PR body so the reviewer's first round does not raise it again. Do
+not re-run it to a clean pass, and do not run it on later rounds: it gates nothing, the reviewer's
+👍 stays the review gate, and its job is to spend the first round's findings before the reviewer
+sees the code. Where `codex` is missing (exit 127) or not logged in, skip it and say so in the body.
 
 Write the body as the reviewer's map, not a changelog: what is now true that was not, what the
 tests pin, what changes for existing users, and where the risky corner is. Reviewers — human and
