@@ -333,7 +333,9 @@ as it runs (ludics-lite#317): `execution slot` runs its command inside
 which takes no slot of its own, is invoked as `fleet-worker.sh execution hold --request
 <request_id> -- <runner command>` (a slot its runner takes inside runs under that one guard:
 [the measurement's own run](#exclusivity-and-the-run-time-slots)).
-`hold` takes nothing else - no slot, no registry read, no lease - and where there is no
+`hold` takes nothing else - no slot, no registry read, no lease (but `hold --request <id>
+--worktree <dir> --rev <sha>`, which is an [`execution leg`](#a-leg-on-another-box) on the box
+itself, the worktree made or moved to the commit, ludics-lite#816) - and where there is no
 `systemd-inhibit` (macOS, a Linux host without systemd) it runs the command bare and silently.
 The inhibitor is held by a helper BESIDE the command, not by systemd-inhibit wrapped around it:
 the command inherits the slot flock and the helper's lifetime pipe with its exit status

@@ -131,7 +131,8 @@ class PeerPlan(unittest.TestCase):
 
     def wait(self, run: str) -> str:
         done = subprocess.run([BG_RUN, "wait", run, "--within", "60"], capture_output=True, text=True, check=False)
-        return done.stdout.strip()
+        # The verdict word: a run that finished before the wait reads `rc=0 (finished earlier, ...)`.
+        return done.stdout.split(" ", 1)[0].strip()
 
     def codex_calls(self) -> list[Call]:
         path = os.path.join(self.codex.dir, "calls.jsonl")

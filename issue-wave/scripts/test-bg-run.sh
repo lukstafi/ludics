@@ -6,6 +6,8 @@
 # What it pins:
 #   - a finished run reads rc=<its exit status> with exit 0, whatever that status is, and the
 #     background `start` itself exits with it too, its directory left holding cpid, log, pid and rc;
+#     a wait whose first read finds the rc already there says `(finished earlier, at <time>)` after
+#     it, and one that saw the run live does not (ludics-lite#816);
 #   - `new` allocates: it creates the parent and prints <parent>/run-<N>, holding only its `.new`
 #     token, one past the highest run-<N> there (other names not counted); two `new`s racing for the same N each get
 #     a directory of their own, and a copy without the exclusive mkdir is the control that
@@ -135,6 +137,21 @@ fresh finished0
 fin0=$d
 bg_start "$d" true
 expect "a run exiting 0 reads rc=0" 0 'rc=0' -- "$BG" wait "$d" --within 20
+# ludics-lite#816: a wait whose first read already finds the rc says the run finished before it,
+# with the rc's publication time, and exits 0 as ever; a wait that saw the run live prints the
+# bare line.
+fresh earlier
+bg_start "$d" sh -c 'sleep 2; exit 4'
+"$BG" wait "$d" --within 20 > "$TMP/fresh.out" 2>/dev/null; frc=$?
+[ "$frc" -eq 0 ] && [ "$(cat "$TMP/fresh.out")" = 'rc=4' ] && ok "a wait that saw the run live prints the bare rc=4" \
+  || ko "the live-run wait printed /$(cat "$TMP/fresh.out")/ (exit $frc), want rc=4"
+"$BG" wait "$d" --within 20 > "$TMP/earlier.out" 2>/dev/null; erc=$?
+case "$(cat "$TMP/earlier.out")" in
+  'rc=4 (finished earlier, at '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z')')
+    [ "$erc" -eq 0 ] && ok "...and a wait re-issued on the finished run says it finished earlier, and when, exit 0" \
+      || ko "the re-issued wait exited $erc, want 0" ;;
+  *) ko "the re-issued wait printed /$(cat "$TMP/earlier.out")/, want 'rc=4 (finished earlier, at <UTC time>)'" ;;
+esac
 
 # --- new: the run directory allocated for the caller ----------------------------------------------
 p="$TMP/runs"

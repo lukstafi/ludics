@@ -11,6 +11,9 @@ is that script, once, inside the reservation:
                   [--remote <name>] [--control <patch>] [--cpu|--gpu] [--wait <s>]
                   [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
 
+``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>]`` is this verb on
+the box it runs on, for a measurement (``hold_in_worktree``, ludics-lite#816).
+
 THE RESERVATION. ``--request`` names a dispatched record (``launching``, ``running`` or
 ``uncertain``; a standing iteration record counts), read from the anchor's registry, which needs no
 coordinator identity. The box is the record's execution host (``--box``, when given, must be it);
@@ -146,19 +149,35 @@ a SIGTERM, SIGINT or SIGHUP to it (``bg-run.sh stop`` signals the run's whole gr
 the far side too, where until #767 it ran on holding the worktree's lock: the leg starts ``STOP`` on
 the box in a session of its own (so the stop's group signals do not cut it), which, once the pid
 still carries the token, sends SIGTERM to the far shell (in its setup this ends it; during the runs
-a trap defers it, as it defers INT and HUP, which reach it directly when the box is the caller's
-own) and, every second for up to 30 s, to the far shell's ``execution slot`` or
+a trap defers it, and INT and HUP) and, every second for up to 30 s, to the far shell's ``execution slot`` or
 ``execution hold`` child, the wrapper, which ends the runner's process group and dies (group.py, THE
 SIGNALLED WRAPPER). The far shell then winds down as after any ended run -- the control reverted,
 its files removed -- even with its connection gone, since it ignores SIGPIPE once the wrapper has
 returned. The leg waits up to 8 s for the stop's report, then dies of the signal it got; a second
 signal ends it at once. The boundary: only a signal the leg receives while it streams reaches the
-far side. A SIGKILL of the leg, a dropped connection, and a box that ssh cannot reach at stop time
+far side. On the caller's own box the far shell runs in a session of its own, as over ssh, so a
+signal aimed at the leg's group reaches it only through the stop (ludics-lite#816: until then the
+group signal reached the wrapper before the far stop could see its tree, THE ESCAPED). A SIGKILL of
+the leg, a dropped connection, and a box that ssh cannot reach at stop time
 (``EXECUTION LEG STOP UNREACHABLE``, which prints the pid and the command that ends it there) leave
 the runner running, as UNREACHABLE says. A stop in the far side's setup ends its shell, and a git
-command it started finishes on its own; its private ref and staged patch are left. A process the
-runner moved out of its group (``setsid``) is not reached. The stop reads ``ps -o args`` on the box
-(Linux, macOS, WSL).
+command it started finishes on its own; its private ref and staged patch are left. The stop reads
+``ps`` on the box (Linux, macOS, WSL).
+
+THE ESCAPED (ludics-lite#816). The wrapper's group kill reaches only its group, and a runner may
+leave it: OCANNL's ``tools/test-run.sh`` runs dune in a group of its own, holding the runner's
+worktree lock, which its supervisor reaps on a TERM -- when the supervisor is ended first (the
+wrappers escalate to SIGKILL after their 10 s grace), dune runs on and the next run there is
+refused, "another test-run is active", until ``tools/test-run.sh stop`` reaps the group it
+recorded (a stopped leg of wave-20261026, ahrefs/ocannl#1638's hand-back). So the far stop records
+the wrapper's whole process tree (pid, group and ``ps -o lstart`` start time), before its SIGTERM
+and every second after while the wrapper runs, and once the far shell has ended it ends what of
+those trees still runs with the start time it was seen with: SIGTERM to each, and to the group it
+leads (members it started since), then SIGKILL after 10 s, said on the far stop's output. What it
+does not reach: a process that left the tree before the stop (a daemon that double-forked away),
+one born after the last look at the tree, and a tree whose far shell still runs at the 30 s bound
+(said, as before). The far shell's own processes outside the wrapper (its setup's git, the
+control's revert) are not in it.
 """
 
 import os
@@ -475,9 +494,9 @@ git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
 exit 0
 FLEET_LEG_RUNS
 # THE STOP (see the header): a TERM to this shell while the wrapper runs is deferred by the trap,
-# never cutting a run; the stop ends the wrapper instead. INT and HUP too: on the caller's own box
-# this shell shares the leg's process group, so a Ctrl-C or a hangup aimed at the leg reaches it as
-# well as the wrapper, and it must still wind down. A trap with a command is not inherited, so
+# never cutting a run; the stop ends the wrapper instead. INT and HUP too: a Ctrl-C or a hangup
+# that reaches this shell directly (a far side started without the leg's stop armed, sharing its
+# caller's group) must still let it wind down. A trap with a command is not inherited, so
 # the wrapper and the runner get these signals at their defaults. Once the wrapper has returned this shell ignores
 # SIGPIPE (never before: an ignored signal would be the runner's too), so a connection that is gone
 # does not end it before the control is reverted and its files are removed.
@@ -581,11 +600,27 @@ say() { printf 'EXECUTION LEG STOP %s: %s\n' "$BOX" "$*" >&2; }
 # process the system gave the pid since does not.
 ours() { case " $(ps -ww -o args= -p "$pid" 2>/dev/null) " in *" $token "*) return 0 ;; esac; return 1; }
 ours || { say "no leg with token $token runs as pid $pid: it has ended; nothing was signalled"; exit 0; }
+# THE ESCAPED (ludics-lite#816): every process under the wrapper, as `<pid> <pgid> <start time>`, the
+# start time as `ps -o lstart=` gives it in one locale and zone, blanks as `_`; zombies left out.
+procs() { TZ=UTC LC_ALL=C ps -A -ww -o pid=,ppid=,pgid=,stat=,lstart= 2>/dev/null; }
+tree() {
+  procs | awk -v root="$1" '
+    { n++; id[n] = $1; up[n] = $2; grp[n] = $3; st[n] = $4; t = $5; for (i = 6; i <= NF; i++) t = t "_" $i; at[n] = t }
+    END {
+      want[root] = 1
+      do { more = 0; for (i = 1; i <= n; i++) if (!(id[i] in want) && (up[i] in want)) { want[id[i]] = 1; more = 1 } } while (more)
+      for (i = 1; i <= n; i++) if ((id[i] in want) && st[i] !~ /^[ZX]/) print id[i], grp[i], at[i]
+    }'
+}
+seen=""
 # In its setup this ends the far shell; while the wrapper runs, its trap defers it.
 kill -TERM "$pid" 2>/dev/null
 sent=" "; t=0
 while ours; do
   for kid in $(ps -A -ww -o pid=,ppid=,args= 2>/dev/null | awk -v p="$pid" '$2 == p && / execution (slot|hold)( |$)/ { print $1 }'); do
+    # The wrapper's tree, every second while it runs: what a member that leaves the group leaves.
+    seen="$seen$(tree "$kid")
+"
     case "$sent" in *" $kid "*) continue ;; esac
     sent="$sent$kid "
     kill -TERM "$kid" 2>/dev/null && say "SIGTERM to the leg's wrapper (pid $kid), which ends the runner's process group"
@@ -593,6 +628,45 @@ while ours; do
   [ "$t" -lt "$bound" ] || { say "the leg (pid $pid) still runs after ${bound}s, holding its worktree's lock; look on $BOX"; exit 1; }
   sleep 1; t=$((t + 1))
 done
+# THE ESCAPED: what the wrapper's group kill did not reach -- a process of its tree that had left
+# the group (a group or a session of its own) -- still running once the far shell has ended: each
+# `<pid> <pgid>` of the trees seen whose pid is live with the start time it was seen with.
+left() {
+  { printf '%s\n' "$seen"; echo --; procs; } | awk '
+    $0 == "--" { now = 1; next }
+    !now { if ($1 != "") was[$1 " " $3] = $2; next }
+    $4 !~ /^[ZX]/ {
+      t = $5; for (i = 6; i <= NF; i++) t = t "_" $i
+      k = $1 " " t; if ((k in was) && !(k in done)) { done[k] = 1; print $1, was[k] }
+    }'
+}
+pids() { left | awk '{ printf "%s%s", (NR > 1 ? " " : ""), $1 }'; }
+# signal_left <signal>: to each such process, and to the group it leads (a member it started since).
+signal_left() {
+  local p g
+  left | while read -r p g; do
+    kill "-$1" "$p" 2>/dev/null
+    [ "$g" != "$p" ] || kill "-$1" -- "-$g" 2>/dev/null
+  done
+}
+esc=$(pids)
+if [ -n "$esc" ]; then
+  say "the leg (pid $pid) has ended, but its run left process(es) $esc running, which the wrapper's group kill did not reach: SIGTERM"
+  signal_left TERM
+  t=0
+  while [ -n "$(left)" ] && [ "$t" -lt 50 ]; do sleep 0.2; t=$((t + 1)); done
+  how=TERM
+  if [ -n "$(left)" ]; then
+    signal_left KILL
+    how="TERM, then KILL after 10 s"
+    t=0
+    while [ -n "$(left)" ] && [ "$t" -lt 10 ]; do sleep 0.2; t=$((t + 1)); done
+    still=$(pids)
+    [ -z "$still" ] || { say "process(es) $still of the leg's run still run after SIGKILL; look on $BOX"; exit 1; }
+  fi
+  say "the leg's run has ended: process(es) $esc too ($how)"
+  exit 0
+fi
 say "the leg (pid $pid) has ended"
 """
 STOP_BOUND = "30"  # seconds the far stop waits for the far shell to end
@@ -669,9 +743,9 @@ def box_path(value: str, flag: str) -> str:
     return value
 
 
-def cmd_leg(cfg: Config, args: list[str]) -> int:
+def cmd_leg(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     try:
-        return leg_command(cfg, args)
+        return leg_command(cfg, args, hold=hold)
     except LegStopped as stopped:
         # THE STOP: die of the signal, as the slot's wrapper does, so a caller reads what it sent.
         signal.signal(stopped.signum, signal.SIG_DFL)
@@ -679,7 +753,7 @@ def cmd_leg(cfg: Config, args: list[str]) -> int:
         return 128 + stopped.signum
 
 
-def leg_command(cfg: Config, args: list[str]) -> int:
+def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     values: dict[str, str] = {}
     slot_flags: list[str] = []
     runner: list[str] = []
@@ -771,16 +845,16 @@ def leg_command(cfg: Config, args: list[str]) -> int:
             # whatever ends it: a heartbeat left to expire would make a window opened just after a
             # short leg wait out the gap for nobody.
             return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
-                           fetch_timeout)
+                           fetch_timeout, hold=hold)
         finally:
             slot.release_waiter(cfg, waiter)
     slot.release_waiter(cfg, waiter)
     return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
-                   fetch_timeout)
+                   fetch_timeout, hold=hold)
 
 
 def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[str], runner: list[str], box: str, checkout: str, worktree: str, remote: str, rev: str, control: str,
-            fetch_timeout: str) -> int:
+            fetch_timeout: str, *, hold: bool = False) -> int:
     """The leg on its dispatched record: refuse what the registry would not record, then run it on
     ``box`` (the far side's slot or hold around it) and stream its result."""
     state = execution.jq_text(record.get("state"))
@@ -793,6 +867,9 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
         return refused(f"--worktree {worktree} is not {request}'s recorded checkout {bound} on {host}"
                        " (ludics-lite#749: a leg moves only its own record's worktree); nothing ran")
     kind = execution.jq_text(execution.field(record, "request", "kind"))
+    if hold and kind != "measurement":
+        return refused(f"{request} is a {kind or 'kindless'} request, not a measurement: `execution hold --worktree` runs a"
+                       " measurement's command; a correctness run in a worktree is an `execution leg`; nothing ran")
     if kind == "measurement":
         extra = [flag for flag in slot_flags if flag.startswith("--") and flag != "--deadline"]
         if extra:
@@ -843,6 +920,29 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
         return far_argv(cfg, box, [far_pid, token, STOP_BOUND]), prelude(cfg, box) + STOP
 
     return stream(argv, script, box, token, local=is_local(cfg, box), stop=stop)
+
+
+def hold_in_worktree(cfg: Config, request: str, rev: str, checkout: str, worktree: str, deadline: int | None,
+                     command: list[str]) -> int:
+    """``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>]`` (ludics-lite#816):
+    the measurement's command in a worktree of THIS box, made or moved to the commit, as a leg on this
+    box -- THE CHECKOUT AND THE REVISION, THE RECORD'S CHECKOUT, THE BACKEND PIN and THE STOP as above,
+    under the ``execution hold --request`` a measurement's leg runs in, its status line the leg's. The
+    record must be a measurement dispatched on this box. ``--checkout`` defaults to the checkout the
+    hold is run from (the top of the current directory's worktree), which is where a hold without
+    ``--worktree`` runs its command."""
+    if not cfg.local_box:
+        die("execution hold: --request needs this host's fleet name; set FLEET_LOCAL_BOX")
+    if not checkout:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+        checkout = top.stdout.strip()
+        if top.returncode != 0 or not checkout:
+            die("execution hold: --worktree needs a checkout of the project to make the worktree from: run it from"
+                " one, or name it with --checkout")
+    args = ["--request", request, "--box", cfg.local_box, "--rev", rev, "--checkout", checkout, "--worktree", worktree]
+    if deadline is not None:
+        args += ["--deadline", str(deadline)]
+    return cmd_leg(cfg, [*args, "--", *command], hold=True)
 
 
 def end_far(box: str, far_pid: str | None, signum: int, stop: Callable[[str], tuple[list[str], str]], *,
@@ -969,7 +1069,11 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
                 previous[sig] = signal.signal(sig, stopped)
         spawning = True
         try:
-            child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+            # On the caller's own box the far shell gets a session of its own, as ssh's far side has
+            # (THE ESCAPED): a group signal aimed at the leg must not reach the wrapper before the far
+            # stop has seen its tree. Only where the stop is armed, which then reaches it.
+            child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
+                                     start_new_session=local and bool(previous))
         except OSError as exc:
             sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
             return 127
@@ -1013,7 +1117,8 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
         if far_pid is None and child is not None and child.stdout is not None:
             # The far shell's first line is its pid: read it if it is already written (up to
             # ANNOUNCED seconds). With none, on the caller's box this is the far shell before its
-            # first line, which nothing else has started, and over ssh the client.
+            # first line, which nothing else has started (in its own session, so a group signal did
+            # not reach it), and over ssh the client.
             try:
                 announced(child.stdout.fileno(), ANNOUNCED)
             except OSError:

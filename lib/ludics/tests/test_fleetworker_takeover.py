@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -101,9 +102,11 @@ class Takeover(unittest.TestCase):
                      f"- on local: HEAD {self.head}, branch claude/w-7, 0 uncommitted path(s)",
                      f"- #42 OPEN, head claude/w-7 at {self.head}, https://github.com/o/r/pull/42",
                      f"- w-7-iterate: launching, correctness, standing, on local, checkout {self.wt}; outstanding for"
-                     " worker w-7, named on the row",
-                     f"- {runs}/run-2: rc=0\n- {runs}/run-10: rc=1"):
+                     " worker w-7, named on the row"):
             self.assertIn(want, out)
+        # Each run's verdict line as bg-run.sh wait prints it: a run already finished says so, and when.
+        stamp = r" \(finished earlier, at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\)"
+        self.assertRegex(out, f"- {re.escape(runs)}/run-2: rc=0{stamp}\n- {re.escape(runs)}/run-10: rc=1{stamp}\n")
         self.assertNotIn("missing", out.split("### Board keys")[1].split("###")[0])
         self.assertNotIn("CONFLICT", out)
         self.assertEqual(self.gh, [["pr", "view", "42", "--repo", "o/r", "--json", takeover.PR_FIELDS]])

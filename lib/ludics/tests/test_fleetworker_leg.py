@@ -205,6 +205,43 @@ class Stop(unittest.TestCase):
             self.assertIn(f"the leg (pid {proc.pid}) has ended", done.stderr)
             self.assertEqual(Path(out).read_text(), "wrapper=143 s=1\n")
 
+    def test_the_far_stop_ends_what_left_the_wrappers_group(self) -> None:
+        # THE ESCAPED (ludics-lite#816): the runner's child in a group of its own, as test-run.sh
+        # runs dune, survives the wrapper's end; the far stop ends it once the far shell has ended.
+        with tempfile.TemporaryDirectory() as tmp:
+            esc = os.path.join(tmp, "esc")
+            wrapper = ("perl -e 'setpgrp(0, 0); exec qw(sleep 120)' & echo $! > \"$0\"; "
+                       "trap 'exit 143' TERM; while :; do sleep 0.1; done")
+            far = ("trap 's=1' TERM\n"
+                   f"bash -c {shlex.quote(wrapper)} {shlex.quote(esc)} execution slot\n"
+                   "echo \"wrapper=$?\"\n")
+            proc = subprocess.Popen([self.bash, "-c", far, "far", "t0kesc"])
+            pid = 0
+            try:
+                for _ in range(100):
+                    if os.path.exists(esc) and os.path.getsize(esc):
+                        break
+                    time.sleep(0.1)
+                pid = int(Path(esc).read_text())
+                time.sleep(0.3)
+                done = self.far_stop(proc.pid, "t0kesc")
+                proc.wait(timeout=30)
+                gone = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(f"its run left process(es) {pid} running, which the wrapper's group kill did not reach",
+                              done.stderr)
+                self.assertIn(f"the leg's run has ended: process(es) {pid} too (TERM)", done.stderr)
+                self.assertFalse(gone.stdout.strip() and not gone.stdout.strip().startswith("Z"),
+                                 f"the escaped {pid} still runs: {done.stderr}")
+            finally:
+                if proc.poll() is None:
+                    subprocess.run(["pkill", "-P", str(proc.pid)], check=False)
+                    proc.kill()
+                    proc.wait()
+                if pid:
+                    with contextlib.suppress(OSError):
+                        os.kill(pid, signal.SIGKILL)
+
     def test_a_pid_that_no_longer_carries_the_token_is_left_alone(self) -> None:
         proc = subprocess.Popen(["sleep", "5"])
         try:
