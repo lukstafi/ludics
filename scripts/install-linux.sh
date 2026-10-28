@@ -140,6 +140,9 @@ clone_if_missing() {
 link_skill() {
   local src=$1 dest=$2
   if [[ -L $dest && $(readlink "$dest") == "$src" ]]; then return; fi
+  # A link made through a since-moved checkout's compatibility symlink (~/ludics-lite -> ~/ludics)
+  # names a different string for the same directory, and is just as installed.
+  if [[ -L $dest && -d $dest && -d $src && $(cd -P -- "$dest" && pwd) == "$(cd -P -- "$src" && pwd)" ]]; then return; fi
   [[ ! -e $dest && ! -L $dest ]] || fail "Skill conflict: $dest. Compare/move it yourself, then rerun."
   ln -s "$src" "$dest"
 }

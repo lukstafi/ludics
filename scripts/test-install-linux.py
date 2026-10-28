@@ -33,6 +33,14 @@ class BootstrapSafety(unittest.TestCase):
         self.assertTrue((self.root / 'link').is_symlink())
         self.assertEqual(list((self.root / 'src').iterdir()), [])
 
+    def test_skill_link_through_compat_symlink_accepted(self):
+        self.run_shell('mkdir -p new/skill; ln -s new old; ln -s "$PWD/old/skill" link; link_skill "$PWD/new/skill" "$PWD/link"')
+        self.assertEqual(os.readlink(self.root / 'link'), str(self.root / 'old/skill'))
+
+    def test_skill_link_to_other_directory_refused(self):
+        self.run_shell('mkdir -p new/skill other; ln -s "$PWD/other" link; link_skill "$PWD/new/skill" "$PWD/link"', False)
+        self.assertEqual(os.readlink(self.root / 'link'), str(self.root / 'other'))
+
     def test_real_skill_directory_preserved(self):
         self.run_shell('mkdir src link; echo KEEP > link/local; link_skill "$PWD/src" "$PWD/link"', False)
         self.assertEqual((self.root / 'link/local').read_text(), 'KEEP\n')
