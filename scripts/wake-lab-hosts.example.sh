@@ -8,7 +8,7 @@
 #
 # This is the only part of the lab's wiring that is site data rather than reviewable logic: the
 # fleet's MAC addresses, LAN IPs, and booted operating-system kinds. Everything else — the lore, the router endpoints, the ssh
-# aliases, the logic — is tracked in ludics-lite, so an in-place edit shows up in `git status`
+# aliases, the logic — is tracked in ludics, so an in-place edit shows up in `git status`
 # (ludics-lite#31). The MACs below are 00:00:00 placeholders on purpose; a real one in this file
 # is a leak, and scripts/test-wake-lab.sh fails the repository if one appears. The IPs are
 # likewise fictitious, from RFC 5737's documentation range (192.0.2.0/24) rather than from any

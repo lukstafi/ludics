@@ -64,7 +64,7 @@ goes through the full loop below.
 **Under Claude Code's auto permission mode, a landing needs the user's cover.** The classifier's
 `Merge Without Review` rule blocks merging before a human has approved (a bot's 👍 is not one),
 and a refusal is dead time. The user's `autoMode.allow` settings cover one path, standing:
-`pr-review.sh merge` (bare, `--wait[=<s>]` or `--require-green`) in lukstafi/ludics-lite and
+`pr-review.sh merge` (bare, `--wait[=<s>]` or `--require-green`) in lukstafi/ludics and
 lukstafi/ocannl-staging, for a PR whose head this session pushed — run it as in any mode.
 Anything else — a direct push, `--override` or `--allow-no-verdict`, a bare `gh pr merge`, any
 other repository — needs the user's go-ahead naming it: ask once, in the message that proposes
@@ -149,7 +149,7 @@ is the case that costs the most, and reporting it is worth more than the task yo
 start). What you must not do is spend the session bisecting a break you inherited.
 
 A repository can give that third case an owner: a post-merge watch or triage routine that turns
-a red into one claimed issue, named in the repository's agent notes. ludics-lite's
+a red into one claimed issue, named in the repository's agent notes. ludics's
 `.github/workflows/base-watch.yml` is one, running this same read after the base's push CI
 completes and daily as a backstop, and other repositories call it as `base-watch-reusable.yml`.
 Where an owner exists, a red found here is often already filed — check the open issues before

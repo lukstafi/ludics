@@ -5,13 +5,13 @@ description: Sequence open issues for execution with focus on what and where to 
 
 ## 0. Check you are running the current prompt
 
-Before anything else, run the drift check in the ludics-lite checkout:
+Before anything else, run the drift check in the ludics checkout:
 
-    git -C ~/ludics-lite fetch --quiet origin \
-      && git -C ~/ludics-lite rev-parse --abbrev-ref HEAD \
-      && git -C ~/ludics-lite rev-list --left-right --count HEAD...origin/main \
-      && git -C ~/ludics-lite status --porcelain -- routines scripts/sync-routines.sh
-    ~/ludics-lite/scripts/sync-routines.sh
+    git -C ~/ludics fetch --quiet origin \
+      && git -C ~/ludics rev-parse --abbrev-ref HEAD \
+      && git -C ~/ludics rev-list --left-right --count HEAD...origin/main \
+      && git -C ~/ludics status --porcelain -- routines scripts/sync-routines.sh
+    ~/ludics/scripts/sync-routines.sh
 
 `scripts/sync-routines.sh` with no argument is status mode: one line per local scheduled task, and exit 1 on any drift. Read your own line first — `daily-issue-planning: DRIFT` means the prompt the scheduler dispatched, the one you are reading now, is not the one the checkout holds, so the instructions below may be a superseded revision and the diff it prints says in what. Which side is the newer one it does NOT say — its orientation is argument order, and step 2 says how to read that from provenance instead. Then read the other lines: this is the only run on this box that looks at them (ludics-lite#199, where the cross-machine sweep ran a week on a prompt predating `--hold`).
 
@@ -23,7 +23,7 @@ Do NOT run `sync-routines.sh push`. The installed copies are live scheduler stat
 
 Do not start editing until `git -C ~/self-improve pull --rebase` has actually succeeded — the plan is edited from other boxes too, and every recovery below ends by running it again, since nothing else fetches what they pushed. If it does not succeed, a previous run may have left a conflicted rebase behind: finish it (`git -C ~/self-improve rebase --continue`, or `--abort` for a clean tree), pull again, and if you still cannot get a clean pull, stop and report that the plan was not updated at all and why.
 
-Update ~/self-improve/ClaudeDesktop/sequencing_plan.md with the account of all currently open issues across my active GitHub repositories: ahrefs/ocannl (PRs at lukstafi/ocannl-staging), lukstafi/flotilla, lukstafi/ocaml-cudajit, lukstafi/ocaml-metal, lukstafi/ocaml-hipjit, lukstafi/ocaml-dataprep, lukstafi/lukstafi.github.io, lukstafi/ludics-lite.
+Update ~/self-improve/ClaudeDesktop/sequencing_plan.md with the account of all currently open issues across my active GitHub repositories: ahrefs/ocannl (PRs at lukstafi/ocannl-staging), lukstafi/flotilla, lukstafi/ocaml-cudajit, lukstafi/ocaml-metal, lukstafi/ocaml-hipjit, lukstafi/ocaml-dataprep, lukstafi/lukstafi.github.io, lukstafi/ludics.
 
 Arrange the material without unhelpful redundancy, the following are needs, not steps.
 
@@ -64,9 +64,9 @@ Close the report with the routine-drift finding from step 0 — below step 1's "
 2. **What step 0 read about the checkout**, whenever it was not canonical: the branch, the `rev-list` counts, and every path the `status --porcelain` line printed — the sync script's own path included, which no sync diff would show. Or the fetch's error, when the remote comparison could not be made at all.
 3. **The diff**, for each routine that drifted.
 4. **The repair a PERSON runs**, and which direction it is:
-   - The direction is NOT readable off the diff. `sync-routines.sh` always diffs the checkout against the installed copy in that order, so the checkout is the `-` side whether it is the stale one, the current one, or the one holding text nobody installed. Take it from PROVENANCE: `git -C ~/ludics-lite log -1 --format='%h %ad %s' -- routines/<name>/SKILL.md` says when the checkout's prompt last landed. Text that is in the checkout's history and missing from the installed copy is a merged prompt that was never installed; text in the installed copy that appears nowhere in that history is an in-place edit.
+   - The direction is NOT readable off the diff. `sync-routines.sh` always diffs the checkout against the installed copy in that order, so the checkout is the `-` side whether it is the stale one, the current one, or the one holding text nobody installed. Take it from PROVENANCE: `git -C ~/ludics log -1 --format='%h %ad %s' -- routines/<name>/SKILL.md` says when the checkout's prompt last landed. Text that is in the checkout's history and missing from the installed copy is a merged prompt that was never installed; text in the installed copy that appears nowhere in that history is an in-place edit.
    - `pull` when the INSTALLED copy holds the newer text — a routine editing its own prompt in place is a supported workflow (`routines/README.md`), and a `push` over it destroys the only copy of that edit. It needs no canonical checkout: a pull writes into the checkout, where `git diff` shows it and review still stands between it and the scheduler; it does need a checkout clean enough to receive it.
    - `push` when the CHECKOUT holds the newer text and step 0 found it canonical.
-   - **Neither**, saying why, in every remaining case: the checkout holds the newer text but is not canonical (a nonzero BEHIND wants `git -C ~/ludics-lite checkout main && git -C ~/ludics-lite merge --ff-only origin/main` first, by name — not a bare `git pull --ff-only`, which follows whatever the CURRENT branch tracks and would fast-forward a topic; a nonzero AHEAD, another branch, or a dirty path wants that text landed through review); provenance that does not read clearly, which is not a direction; both sides having moved; or two routines pointing opposite ways — `push` and `pull` take no routine argument and apply their mode to every local routine at once, so the installed-only edit has to be copied into the checkout and committed by hand first, leaving every remaining difference pointing one way.
+   - **Neither**, saying why, in every remaining case: the checkout holds the newer text but is not canonical (a nonzero BEHIND wants `git -C ~/ludics checkout main && git -C ~/ludics merge --ff-only origin/main` first, by name — not a bare `git pull --ff-only`, which follows whatever the CURRENT branch tracks and would fast-forward a topic; a nonzero AHEAD, another branch, or a dirty path wants that text landed through review); provenance that does not read clearly, which is not a direction; both sides having moved; or two routines pointing opposite ways — `push` and `pull` take no routine argument and apply their mode to every local routine at once, so the installed-only edit has to be copied into the checkout and committed by hand first, leaving every remaining difference pointing one way.
 
 Re-run the script before writing any of this if something this run did could have moved either side.

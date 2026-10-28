@@ -718,7 +718,7 @@ py_forward() { # <exec|call> <subcommand> <args...>
   # of the link into ~/.claude/skills instead of into the checkout.
   py="$(CDPATH= cd -P "$(dirname "${BASH_SOURCE[0]}")" && cd -P ../.. && pwd -P)/scripts/py"
   [ -x "$py" ] || die "$1 is served by Python since ludics-lite#403, and its runner $py is missing" \
-    "or not executable: this copy of pr-review.sh is not inside a ludics-lite checkout. Run the" \
+    "or not executable: this copy of pr-review.sh is not inside a ludics checkout. Run the" \
     "checkout's ship-pr/scripts/pr-review.sh. Nothing was read or written."
   for pair in "${PY_FORWARD_VARS[@]}"; do
     name=${pair%%=*}

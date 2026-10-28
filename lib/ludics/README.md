@@ -2,7 +2,7 @@
 
 The core scripts are being ported to type-checked, standard-library-only Python 3.12, one script
 (and for `pr-review.sh`, one subcommand) at a time, behind the command lines the skills already
-call ([ludics-lite#403](https://github.com/lukstafi/ludics-lite/issues/403)). This file is for
+call ([ludics-lite#403](https://github.com/lukstafi/ludics/issues/403)). This file is for
 porters: where code goes, how a subcommand is forwarded, and how to check it.
 
 ## The rules that do not bend

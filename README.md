@@ -1,9 +1,15 @@
-# ludics-lite
+# ludics
 
 A small collection of agent skills for landing work through review and running
 delegation waves over an issue backlog across a fleet of machines. They are the lightweight,
-skill-only companion to [ludics](https://github.com/lukstafi/ludics): no binary, no daemon,
-just Markdown and shell loaded by compatible agent harnesses from their skill directories.
+skill-only successor to [ludics-classic](https://github.com/lukstafi/ludics-classic): no binary,
+no daemon, just Markdown and shell loaded by compatible agent harnesses from their skill
+directories.
+
+This repository was named `ludics-lite` until 2026-10-28, when it took the `ludics` name and the
+original project became `ludics-classic`. A `ludics-lite#N` reference anywhere here, in the
+skills, the code or the history, is this repository's issue or pull request `#N`; a reference to
+the original project's `ludics#N` or `gh-ludics-N` from before that date is `ludics-classic#N`.
 
 | Skill | What it does |
 | --- | --- |
@@ -28,9 +34,9 @@ mean a skill edited mid-session lands in this working tree and shows up as a nor
 so there is no separate sync step to forget.
 
 ```sh
-git clone https://github.com/lukstafi/ludics-lite.git ~/ludics-lite
+git clone https://github.com/lukstafi/ludics.git ~/ludics
 mkdir -p "$HOME/.claude/skills"
-for s in "$HOME"/ludics-lite/*/; do
+for s in "$HOME"/ludics/*/; do
   case "$s" in */.git/|*/lib/|*/routines/|*/scripts/) continue ;; esac
   ln -sfn "${s%/}" "$HOME/.claude/skills/$(basename "$s")"
 done
@@ -60,7 +66,7 @@ Codex worker on a box where these links are missing:
 ```sh
 mkdir -p "$HOME/.codex/skills"
 for s in ship-pr wait-and-proceed after-merge; do
-  ln -sfn "$HOME/ludics-lite/$s" "$HOME/.codex/skills/$s"
+  ln -sfn "$HOME/ludics/$s" "$HOME/.codex/skills/$s"
 done
 ```
 
@@ -68,7 +74,7 @@ A box that runs the `issue-wave` coordinator itself under Codex needs that skill
 
 ```sh
 mkdir -p "$HOME/.codex/skills"
-ln -sfn "$HOME/ludics-lite/issue-wave" "$HOME/.codex/skills/issue-wave"
+ln -sfn "$HOME/ludics/issue-wave" "$HOME/.codex/skills/issue-wave"
 ```
 
 An optional [stop nudge](ship-pr/hooks/README.md) works with Claude Code and Codex to
@@ -89,7 +95,7 @@ list. The ones you will need to set for your own fleet:
 | `FLEET_LOCAL_BOX` | This box's fleet name, if hostname detection does not recognise it. |
 | `FLEET_HOSTNAME_MAP` | How hostname detection reads: space-separated `<glob>=<box>` pairs, first match wins. |
 | `FLEET_BASE_REF` | The ref a worker's worktree starts from when a launch names no `--base` (`origin/master` by default). |
-| `FLEET_SKILLS_REPO` | Path of this checkout on each box, `~/ludics-lite` by default (the preflight fast-forwards it). |
+| `FLEET_SKILLS_REPO` | Path of this checkout on each box, `~/ludics` by default (the preflight fast-forwards it). |
 | `FLEET_FLOTILLA` | URL of the flotilla status service, if you run one. |
 | `ISSUE_WAVE_STATE` | Local state directory for each coordinator. |
 | `FLEET_ANCHOR_STATE` | State directory on the anchor for the lease and fleet-wide halt; every coordinator must resolve it to the same directory there. |
@@ -184,7 +190,7 @@ checkout as a normal `git status` (ludics-lite#31):
 
 ```sh
 mkdir -p "$HOME/bin"
-ln -sfn "$HOME/ludics-lite/scripts/wake-lab.sh" "$HOME/bin/wake-lab.sh"
+ln -sfn "$HOME/ludics/scripts/wake-lab.sh" "$HOME/bin/wake-lab.sh"
 ```
 
 The fleet's MAC and LAN IP addresses and each box's current `kind_of` are the site facts that are
@@ -194,7 +200,7 @@ so instead of reporting every machine as unknown:
 
 ```sh
 mkdir -p "$HOME/.config/wake-lab"
-cp "$HOME/ludics-lite/scripts/wake-lab-hosts.example.sh" "$HOME/.config/wake-lab/hosts.sh"
+cp "$HOME/ludics/scripts/wake-lab-hosts.example.sh" "$HOME/.config/wake-lab/hosts.sh"
 chmod 600 "$HOME/.config/wake-lab/hosts.sh"   # then fill in mac_of, eth_mac_of, ip_of and kind_of
 ```
 
@@ -407,7 +413,7 @@ the root of the run's tree with only the `--also` files carried. A bare `<progra
 PATH. One with a `/` is a file of the checkout, and runs as the run tree's copy (the base's runner
 runs the base). The project names its own runner, so none is built in here. OCANNL, from a worker's
 OCANNL worktree:
-`~/ludics-lite/scripts/run-against-base.sh --command --revert <fix-commit> <src-path> --timeout 3600 -- tools/test-run.sh run @test/<dir>/runtest-<name>`.
+`~/ludics/scripts/run-against-base.sh --command --revert <fix-commit> <src-path> --timeout 3600 -- tools/test-run.sh run @test/<dir>/runtest-<name>`.
 The helper cannot tell a runner's own refusal or a build failure from a failing test, so read the
 output, and show the same command passing on the head.
 
@@ -1350,12 +1356,12 @@ failing silently, from a second job that checks nothing out, so the job that run
 version of the script holds a read-only token. A belief that needs a state this repository does not
 have, or a fact the API does not carry — a dirty PR pushed to under observation, a 300-file
 compare, the push time behind `updated_at` — prints as `skip`, so the unpinned set is visible in
-every run. Run it locally with `gh` auth: `ship-pr/scripts/pr-review-api-contract.sh lukstafi/ludics-lite`.
+every run. Run it locally with `gh` auth: `ship-pr/scripts/pr-review-api-contract.sh lukstafi/ludics`.
 
 `.github/workflows/base-watch.yml` gives main's own CI verdict an owner (ludics-lite#73). Every
 worker's session starts by branching off main, and nothing read main's verdict between waves: main
 was once red for a day, unnamed, until a pull request tripped over it. So the read a worker does at
-session start, `pr-review.sh base lukstafi/ludics-lite main`, runs after `skill scripts` completes a
+session start, `pr-review.sh base lukstafi/ludics main`, runs after `skill scripts` completes a
 push run on main, daily (06:47 UTC, away from the contract's slot), and on demand. An unattended
 run that finds a red — or a tip with no verdict at all, or a check that broke — opens one issue
 naming the workflow, the failing job and where the red starts, from a second job that checks nothing out and holds the only writing token. One issue per
@@ -1364,7 +1370,7 @@ green is what lets the next red open a fresh one. On a pull request it reads and
 filing, and a red main does not redden the pull request: that verdict is about main, and a PR
 carrying it as a failed check could not merge the fix. The two jobs live in
 `base-watch-reusable.yml`, a `workflow_call` workflow that base-watch.yml calls with `branch: main`
-and that another repository calls the same way from its own triggers, running ludics-lite's
+and that another repository calls the same way from its own triggers, running ludics's
 `pr-review.sh` against its own branch and filing in its own tracker (ludics-lite#349).
 
 `test-post-merge-cleanup.sh` runs its cases concurrently, each in its own process group with a

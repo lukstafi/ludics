@@ -6,13 +6,13 @@ This does not install an OS, reconfigure Tailscale, or change the bootloader.
 
 ## Get it onto a fresh machine
 
-The normal installer is self-contained (it clones `~/ludics-lite` itself); no checkout is
+The normal installer is self-contained (it clones `~/ludics` itself); no checkout is
 required on workers. The optional `--setup-peers` mode uses the sibling
 `fleet-peers.py` helper on Mac Studio. From this Mac, copy `scripts/install-linux.sh` to the machine using a USB
 stick, or SCP if SSH already works:
 
 ```sh
-scp ~/ludics-lite/scripts/install-linux.sh USER@NATIVE-ENDPOINT:~/install-linux.sh
+scp ~/ludics/scripts/install-linux.sh USER@NATIVE-ENDPOINT:~/install-linux.sh
 ssh -t USER@NATIVE-ENDPOINT 'bash ~/install-linux.sh'
 ```
 
@@ -42,8 +42,8 @@ does not tell us the target Unix username.
   the pinned binary in place downloads nothing. On a box where something prepends `/usr/bin` to
   PATH -- the `hipjit` opam package's setenv does, on minix and tuf -- apt's jq still wins, and the
   step says so. A box bootstrapped before this step existed, or a WSL box (which the full
-  installer refuses), takes jq alone, from the Mac: `git -C ~/ludics-lite fetch -q origin && ssh
-  -t <box> "bash <(printf %s $(git -C ~/ludics-lite show origin/main:scripts/install-linux.sh |
+  installer refuses), takes jq alone, from the Mac: `git -C ~/ludics fetch -q origin && ssh
+  -t <box> "bash <(printf %s $(git -C ~/ludics show origin/main:scripts/install-linux.sh |
   base64 | tr -d '\n') | base64 -d) --jq"`. Check: `command -v jq` is `/usr/local/bin/jq`, `jq
   --version` prints `jq-1.8.2`, and `jq -nc '[true and ("x") as $b | ($b == "x")]'` prints
   `[false]`. The macs take Homebrew's: `brew install jq`, which shadows Apple's 1.7.1 wherever
@@ -51,7 +51,7 @@ does not tell us the target Unix username.
 - User-local Codex, Claude Code and Bun using their official installers.
   Existing commands are kept. Installers fetch current releases; this is a
   bootstrap, not a version-locked environment reproduction.
-- `~/ludics-lite` and all four fleet skills linked into both agent skill directories.
+- `~/ludics` and all four fleet skills linked into both agent skill directories.
 - `~/.config/fleet/env.sh`, sourced before Ubuntu's `.bashrc` interactive guard and
   from Bash login startup files. This makes the tools and native endpoint identity
   visible to SSH-launched workers. Other login shells need equivalent setup.
@@ -70,7 +70,7 @@ does not tell us the target Unix username.
   cross-machine sweep (ahrefs/ocannl#1035). The default, 06:55, is ten minutes before the sweep
   routine fires (the Mac scheduler's `5 7 * * *`, plus up to 699 s of jitter); change both
   together. A box bootstrapped before this step existed can install the timer alone, from the Mac:
-  `git -C ~/ludics-lite fetch -q origin && ssh -t <box> "bash <(printf %s $(git -C ~/ludics-lite
+  `git -C ~/ludics fetch -q origin && ssh -t <box> "bash <(printf %s $(git -C ~/ludics
   show origin/main:scripts/install-linux.sh | base64 | tr -d '\n') | base64 -d) --wake-timer"`
   (append a `HH:MM` after `--wake-timer` for another time). The sweep's lane on the box ends with
   `wake-lab.sh sleep`, so the box does not stay up all day. It wakes from suspend or hibernate,
@@ -121,7 +121,7 @@ does not tell us the target Unix username.
   `DIGESTS.txt` (a box's shared checkout can lag main); an existing fixture is never replaced. `python3-dev` (for `torch.compile` and tinygrad's GPU
   backends) is installed by the shared setup; the standalone mode installs it when sudo can run,
   and otherwise ends with a WARNING naming the command. The standalone mode, from the Mac:
-  `git -C ~/ludics-lite fetch -q origin && ssh <box> "bash <(printf %s $(git -C ~/ludics-lite show
+  `git -C ~/ludics fetch -q origin && ssh <box> "bash <(printf %s $(git -C ~/ludics show
   origin/main:scripts/install-linux.sh | base64 | tr -d '\n') | base64 -d) --bench-venv"`
   (append `nvidia`, `amd` or `cpu` to override the detection; `ssh -t` lets sudo prompt). Run it
   in the box's execution slot when other sessions may be measuring; a GPU slot (no `--cpu`), since
@@ -214,9 +214,9 @@ login, and development setup prompts:
 
 ```sh
 # Read-only discovery and plan:
-bash ~/ludics-lite/scripts/install-linux.sh --setup-peers
+bash ~/ludics/scripts/install-linux.sh --setup-peers
 # Generate missing worker keys, exchange public metadata, and verify every pair:
-bash ~/ludics-lite/scripts/install-linux.sh --setup-peers --apply
+bash ~/ludics/scripts/install-linux.sh --setup-peers --apply
 ```
 
 When traveling, SSH from MacBook Air to Mac Studio and run those same commands
@@ -232,7 +232,7 @@ and OpenSSH are required on every member. For differing initial login usernames,
 replace the default roster with repeated `--peer` arguments, including Mac Studio:
 
 ```sh
-bash ~/ludics-lite/scripts/install-linux.sh --setup-peers --apply \
+bash ~/ludics/scripts/install-linux.sh --setup-peers --apply \
   --peer mac-studio --peer alice@rog-nv-linux \
   --peer bob@minix-amd-linux --peer carol@tuf-amd-linux
 ```
@@ -341,7 +341,7 @@ Installation sources checked while writing the script:
 [NVIDIA CUDA](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/),
 [Ubuntu 26.04 HIP packages](https://packages.ubuntu.com/en/resolute/devel/hipcc),
 [AMD ROCm documentation](https://rocm.docs.amd.com/en/latest/).
-Local fleet conventions come from ludics-lite's README and fleet-worker.sh,
+Local fleet conventions come from ludics's README and fleet-worker.sh,
 Flotilla's README/configuration, and OCANNL's AGENTS.md and opam files.
 
 ```sh

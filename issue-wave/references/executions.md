@@ -531,7 +531,7 @@ command. Direct invocation still uses the project's time limits, logs and
 process ownership; it does not skip the reservation, dispatch or external-activity check.
 
 **The execution host's skills checkout** (ludics-lite#362). Only `launch` and `preflight` ever
-fast-forwarded a box's `~/ludics-lite`, so a box the fleet only executes on kept a stale one:
+fast-forwarded a box's `~/ludics`, so a box the fleet only executes on kept a stale one:
 tuf-amd-linux sat at `0f7de3d`, without `execution hold`, where a lane wrapped in it would have
 exited 2. So every successful `run` or `dispatch` ends with `fleet-worker.sh refresh <execution
 host>`, the preflight's own freshness check alone, and prints its one line on stderr: `REFRESH OK
@@ -1002,7 +1002,7 @@ Use `issue-wave/scripts/windows-driver.ps1` for a foreground Git Bash verifier o
 Windows. It extracts the corrected driver from the #671 verification evidence. For example:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/tools/ludics-lite/issue-wave/scripts/windows-driver.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/tools/ludics/issue-wave/scripts/windows-driver.ps1 `
   -ScriptPath C:/work/verify.sh -LogPath C:/evidence/run-123.log `
   -ErrorPath C:/evidence/run-123.err -CapSeconds 120
 ```

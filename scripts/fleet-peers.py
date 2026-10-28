@@ -190,7 +190,7 @@ def install_mesh(own, roster, sshdir=None):
         # Our include must precede broad Host * defaults (OpenSSH uses first values).
         previous = '\n'.join(line for line in previous.splitlines() if line.strip() != INCLUDE)
         new_config = INCLUDE + '\n' + previous + ('\n' if previous else '')
-        lines = ['# Managed by ludics-lite/scripts/fleet-peers.py.']
+        lines = ['# Managed by ludics/scripts/fleet-peers.py.']
         hosts = []
         for peer in peers:
             lines.extend([f'Host {peer["host"]}', f'  HostName {peer["host"]}',

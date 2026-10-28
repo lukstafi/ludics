@@ -2,13 +2,13 @@ name: base watch (reusable)
 
 # The body of base-watch.yml, callable from any repository (lukstafi/ludics-lite#349): read the
 # branch's standing CI verdict with `pr-review.sh base`, and give a red an owner, one issue per red
-# episode, in the calling repository. ludics-lite's own base-watch.yml is one caller; another
+# episode, in the calling repository. ludics's own base-watch.yml is one caller; another
 # repository calls it with a file of the same shape: its own triggers (the CI workflow completing
 # on the branch, a daily backstop, workflow_dispatch) and one job,
 #
 #   jobs:
 #     watch:
-#       uses: lukstafi/ludics-lite/.github/workflows/base-watch-reusable.yml@main
+#       uses: lukstafi/ludics/.github/workflows/base-watch-reusable.yml@main
 #       with: { branch: main }
 #       permissions: { contents: read, actions: read, issues: write }
 #
@@ -47,15 +47,15 @@ jobs:
       # The report verbatim, so the issue carries the evidence and the reporter parses nothing.
       report: ${{ steps.base.outputs.report }}
     steps:
-      # pr-review.sh is ludics-lite's. Called from another repository this checks out ludics-lite's
-      # main; called from ludics-lite itself the ref is left to the event, so a pull request that
+      # pr-review.sh is ludics's. Called from another repository this checks out ludics's
+      # main; called from ludics itself the ref is left to the event, so a pull request that
       # changes the script runs its own copy, as it did before the workflow was split.
       - uses: actions/checkout@v4
         with:
-          repository: lukstafi/ludics-lite
-          ref: ${{ github.repository != 'lukstafi/ludics-lite' && 'main' || '' }}
+          repository: lukstafi/ludics
+          ref: ${{ github.repository != 'lukstafi/ludics' && 'main' || '' }}
       # The fleet's pinned jq, ahead of the image's own (ludics-lite#508); it prints which jq runs.
-      # A local action resolves in the workspace, which holds the ludics-lite checkout above.
+      # A local action resolves in the workspace, which holds the ludics checkout above.
       - uses: ./.github/actions/setup-jq
       - name: Read the branch's standing CI verdict
         id: base

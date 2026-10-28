@@ -48,13 +48,13 @@ set the latency of the whole per-PR matrix.
 
 ## 0. Check you are running the current prompt
 
-Before waking anything, run the drift check in the ludics-lite checkout, which is where this prompt is canonical:
+Before waking anything, run the drift check in the ludics checkout, which is where this prompt is canonical:
 
-    git -C ~/ludics-lite fetch --quiet origin \
-      && git -C ~/ludics-lite rev-parse --abbrev-ref HEAD \
-      && git -C ~/ludics-lite rev-list --left-right --count HEAD...origin/main \
-      && git -C ~/ludics-lite status --porcelain -- routines scripts/sync-routines.sh
-    ~/ludics-lite/scripts/sync-routines.sh
+    git -C ~/ludics fetch --quiet origin \
+      && git -C ~/ludics rev-parse --abbrev-ref HEAD \
+      && git -C ~/ludics rev-list --left-right --count HEAD...origin/main \
+      && git -C ~/ludics status --porcelain -- routines scripts/sync-routines.sh
+    ~/ludics/scripts/sync-routines.sh
 
 `scripts/sync-routines.sh` with no argument is status mode: one line per local scheduled task, and exit 1 on any drift. Read your own line. `ocannl-cross-machine-sweep: DRIFT` means the prompt the scheduler dispatched — the one you are reading now — is not the one the checkout holds, so the steps below may be a superseded revision; the diff it prints says in what, though not which side is the newer one — its orientation is argument order, and step 6 says how to read that from provenance instead. It is not hypothetical: on 2026-09-17 the installed copy was found nineteen lines of superseded prose behind, still telling the run to wake the lab without `--hold`, and it had been that way for about a week (ludics-lite#199).
 
@@ -64,7 +64,7 @@ Carry on with the sweep either way — a drifted prompt still runs a useful swee
 
 ## 1. Wake the GPU boxes
 
-Read the execution registry first: `~/ludics-lite/issue-wave/scripts/fleet-worker.sh execution list
+Read the execution registry first: `~/ludics/issue-wave/scripts/fleet-worker.sh execution list
 --active --compact`. A box that an outstanding `measurement` reservation names, on any of its
 endpoints (its row of `~/bin/wake-lab.sh endpoint-map`), is someone's exclusive timing run: leave
 it out of this step entirely — drop it from the `for box in rog minix` loop, and from the checkout
@@ -111,7 +111,7 @@ sessions' sleep inhibitors: the sweep's own units hold one each while they run.
 Then refresh the skills checkout on each GPU box (ludics-lite#362), at the endpoint `kind_of`
 selects, since that is the system the lanes run on (`ENDPOINT_MAP` in `wake-lab.sh` names them). A
 box the fleet only executes on never hosts a worker launch, the one other place its
-`~/ludics-lite` is fast-forwarded, so this daily wake is where it is kept current (tuf was found
+`~/ludics` is fast-forwarded, so this daily wake is where it is kept current (tuf was found
 without `execution hold`):
 
     refresh_targets=()
@@ -119,7 +119,7 @@ without `execution hold`):
       case "$box" in rog) stem=rog-nv ;; minix) stem=minix-amd ;; tuf) stem=tuf-amd ;; esac
       refresh_targets+=("$stem-$(kind_of "$box")")
     done
-    ~/ludics-lite/issue-wave/scripts/fleet-worker.sh refresh "${refresh_targets[@]}"
+    ~/ludics/issue-wave/scripts/fleet-worker.sh refresh "${refresh_targets[@]}"
 
 One line per box, and its exit status does not change anything below. `REFRESH OK` (already current,
 or fast-forwarded) needs nothing.
@@ -229,7 +229,7 @@ Read its last lines. Interpret WSL lines only for boxes in `wsl_boxes`; for Linu
   never woke.
 - `no host table at ~/.config/wake-lab/hosts.sh`: nothing was woken and nothing will be. That
   file is this box's untracked site configuration for the script (the top-level README of
-  ludics-lite says how to install it); report the missing setup as the finding rather than the
+  ludics says how to install it); report the missing setup as the finding rather than the
   boxes as unreachable.
 - `all up`, `wsl up` and `wsl holder observed on <box>` for a WSL box: start the sweep promptly. A VM kicked on a
   cold-booted box does not stay up on its own, and a session inside it does not hold it — the
@@ -304,7 +304,7 @@ inspect `os=` and `linux=` instead; a Windows boot or lost sshd cannot be repair
 
 Everything else about these boxes — WoL over Ethernet only, waking from a full shutdown, and
 what `router-active=1` means — is recorded in the header comment of `scripts/wake-lab.sh` in
-ludics-lite. WSL holder and Windows details are in `scripts/wake-lab-wsl.sh`. The installed
+ludics. WSL holder and Windows details are in `scripts/wake-lab-wsl.sh`. The installed
 `~/bin/wake-lab.sh` links to that core script; do not spend the run rediscovering this setup.
 
 Do not power the boxes back down afterwards — the user may want them for the day's work, and the

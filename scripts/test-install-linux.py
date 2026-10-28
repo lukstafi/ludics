@@ -141,11 +141,11 @@ class BootstrapSafety(unittest.TestCase):
         self.assertFalse((self.root / 'missing').exists())
 
     def test_wrong_repository_preserved(self):
-        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/other/repo.git; clone_if_missing lukstafi/ludics-lite "$PWD/repo"', False)
+        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/other/repo.git; clone_if_missing lukstafi/ludics "$PWD/repo"', False)
         self.assertTrue((self.root / 'repo/.git').is_dir())
 
     def test_dirty_repository_preserved(self):
-        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/lukstafi/ludics-lite.git; echo KEEP > repo/local; clone_if_missing lukstafi/ludics-lite "$PWD/repo"')
+        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/lukstafi/ludics.git; echo KEEP > repo/local; clone_if_missing lukstafi/ludics "$PWD/repo"')
         self.assertEqual((self.root / 'repo/local').read_text(), 'KEEP\n')
 
     def test_download_failure_does_not_execute(self):

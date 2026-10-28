@@ -90,7 +90,7 @@ encode_ref() { gate_py 'from ludics.prreview.shtext import encode_ref; print(enc
 # test-pr-review-api-contract.sh holds the two spellings to the same answers.
 SUMMARY_ROW_INSTANT_DEF='def instant: sub("Z$"; "") | (if test("\\.") then . else . + "." end) + "000000000" | .[0:29];'
 
-REPO="${1:-${GITHUB_REPOSITORY:-lukstafi/ludics-lite}}"
+REPO="${1:-${GITHUB_REPOSITORY:-lukstafi/ludics}}"
 REVIEWER="${REVIEWER:-chatgpt-codex-connector}"
 BOT="${REVIEWER}[bot]" # how an app's login reads in every feed: matched by prefix in the gate
 STALE_BASE_PR="${CONTRACT_STALE_BASE_PR:-}"
@@ -98,7 +98,7 @@ REVIEWED_PR="${CONTRACT_REVIEWED_PR:-}"
 THREADS_PR="${CONTRACT_THREADS_PR:-}"
 WIDE_COMMIT="${CONTRACT_WIDE_COMMIT:-}"
 WIDE_COMMIT_FILES="${CONTRACT_WIDE_COMMIT_FILES:-}"
-if [ "$REPO" = lukstafi/ludics-lite ]; then
+if [ "$REPO" = lukstafi/ludics ]; then
   : "${STALE_BASE_PR:=53}"
   : "${REVIEWED_PR:=39}"
   # #370: five threads, their first comments 4095735684 and up, all past 2^31.

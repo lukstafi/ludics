@@ -342,7 +342,7 @@ and `fleet-worker.sh preflight <box>` (`--codex` for a Codex CLI worker) runs it
 diagnosis. Native workers use `preflight <box> --native-codex` or `--native-claude` for their
 provider: the same freshness, skill-link and cross-box checks, without CLI login, a headless
 model probe, or tmux; native startup is verified through the runtime's own tools instead. Both
-modes bring that box's `~/ludics-lite` to upstream main and refuse on anything short of it: any
+modes bring that box's `~/ludics` to upstream main and refuse on anything short of it: any
 local change, tracked or untracked, anywhere in the checkout (the whole tree is served; the one
 exception, a stray `.claude/` left by running claude inside it, is reported, not refused, and
 still refuses if it blocks the fast-forward), a branch other than main, a HEAD that is not
@@ -372,7 +372,7 @@ noted on the OK line, not refused, as a sleeping sibling is. A refusal names its
 stale, and never reset a dirty checkout silently - a divergent local edit may be a fix worth
 keeping. Every launch, not just the first: upstream main advancing mid-wave is normal,
 after-merge's push-side fast-forward is best-effort, and the deployed skills are symlinks into
-that checkout, so a stale checkout runs stale skill text silently (the ludics gh-609 failure
+that checkout, so a stale checkout runs stale skill text silently (the ludics-classic gh-609 failure
 class; two consecutive merge cycles once stranded three boxes). Three refusals are user-side
 repairs: an expired Claude login on a box needs an interactive `claude auth login` there, a
 refused GitHub token needs the fleet PAT in the box's `~/.config/fleet/gh-token.sh` replaced from
@@ -508,7 +508,7 @@ requirements for every transport with transport-specific setup and identity, and
   [paired-planning.md](references/paired-planning.md#the-brief-addition), with its mode. The
   coordinator starts the second planner on the worker's startup SHA as soon as the launch succeeds.
 - Verification expectations: scoped test runs, negative controls where the work is a checker
-  (new fixtures shown to FAIL on base: `~/ludics-lite/scripts/run-against-base.sh <suite>`, slot-wrapped;
+  (new fixtures shown to FAIL on base: `~/ludics/scripts/run-against-base.sh <suite>`, slot-wrapped;
   a project runner through `--command ... -- <runner> <args>`, and the head with the fix undone
   through `--revert <commit> <path>`, both in the README's negative-control paragraph),
   and the box's known environmental traps. **The formatter batch** is the one the project's
@@ -640,7 +640,7 @@ requirements for every transport with transport-specific setup and identity, and
   worker's shell sits inside it (removing your own cwd is the "Unable to read current working
   directory" failure ship-pr warns about), and the coordinator may still resume the session
   there for the hand-back. The coordinator removes worktrees at close-out.
-- **In a ludics-lite wave, workers merge with the two macOS jobs advisory** (the maintainer's
+- **In a ludics wave, workers merge with the two macOS jobs advisory** (the maintainer's
   decision), and since ludics-lite#727 those jobs do not run on PR heads at all. Before
   merging, the worker runs every suite it touched under `/bin/bash` (3.2, the macOS jobs'
   shell), slot-wrapped, and merges with the plain
@@ -780,15 +780,15 @@ controlled through the tools in your coordinator's file, never through those com
   a harness restart those claims are unreliable in both directions (2026-08-23: observed three
   times; commits proved durable every time).
 - **The main checkout is read, never moved.** A project's main checkout (`~/ocannl-staging`,
-  this repository's `~/ludics-lite`) is shared: the user and peer sessions work in it, and
-  `~/ludics-lite` serves every box its skills. Read the tree through `git -C <main> show
+  this repository's `~/ludics`) is shared: the user and peer sessions work in it, and
+  `~/ludics` serves every box its skills. Read the tree through `git -C <main> show
   origin/<base>:<path>`, `git -C <main> grep <pattern> origin/<base>`, or a scratch worktree
   added `--detach` at `origin/<base>` and removed after, and never run what moves its HEAD,
   index or working tree there (`checkout`, `switch`, `reset`, `merge`, `rebase`, `stash`); the
   fast-forwards the preflight and ship-pr prescribe are its only moves
   (2026-10-14: a coordinator checking post-wave chip premises ran `git checkout --detach
   origin/master` in OCANNL's; ludics-lite#622). This is the one statement of the rule; every
-  brief names the main checkout's path and carries it for the worker. For `~/ludics-lite` the
+  brief names the main checkout's path and carries it for the worker. For `~/ludics` the
   *Skill-freshness preflight* already refuses a detached HEAD, another branch or a staged
   change at every launch on the agent box (a native wave's is the coordinator's own); a
   project's main checkout has no such guard.
@@ -914,7 +914,7 @@ controlled through the tools in your coordinator's file, never through those com
   OCANNL that is the `@runtest @train` aliases, run over ssh through its `tools/test-run.sh` as
   its AGENTS.md says, and on a GPU box it also runs that box's backend, which
   GitHub CI never covers (a bonus, not the reason for the pick); for a repo whose CI already is
-  its fullest suite (ludics, flotilla, this one), the merged tip's CI run is the verdict,
+  its fullest suite (ludics-classic, flotilla, this one), the merged tip's CI run is the verdict,
   awaited with `pr-review.sh base owner/repo --wait` rather than re-run locally. Either way the
   loop's verdict is the tip's own run, or an integration record at it: a `base --wait` that
   settled on absence (a tip with no run of its own, past the grace, ludics-lite#156) reports an
@@ -999,7 +999,7 @@ controlled through the tools in your coordinator's file, never through those com
     worker's leg reserved on the box after that meets the run as a batch meets another's,
     waiting at most that run for a token, unless the coordinator, which reserved it, ends the
     run for it. A measurement asked for while a loop run holds its box always ends that run -
-    `ssh <box> '~/ludics-lite/issue-wave/scripts/bg-run.sh stop <dir>'`, which ends
+    `ssh <box> '~/ludics/issue-wave/scripts/bg-run.sh stop <dir>'`, which ends
     its whole tree; the run then reads `STOPPED`, which `--from-bg-run` concludes `cancelled`
     (ludics-lite#638) - then open the window.
   - **Informative, never a gate.** Its records never carry `"integration": true`, so the base
