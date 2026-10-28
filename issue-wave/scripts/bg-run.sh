@@ -112,6 +112,10 @@
 #   rc=<n>     0  the command finished; <n> is its exit status (also in <dir>/rc). Exit 0 means
 #                 FINISHED, not succeeded: a command may exit with any status, so no exit code
 #                 of this script can both carry it and stay distinct from the verdicts below.
+#                 When the rc was already there at this wait's first read -- a re-issued wait,
+#                 or one on a run long done -- the line is `rc=<n> (finished earlier, at
+#                 <UTC time the rc was published>)` (ludics-lite#816), so it is not read as a
+#                 fresh result; the word, the status and the exit code are the same.
 #   RUNNING    3  the pid or the cpid is alive and there is no rc yet: re-issue the wait. The line
 #                 is `RUNNING after <e> s of --within <w>`, so a return at the bound (e >= w) can
 #                 be told from an early one, which would be a bug (ludics-lite#571).
@@ -376,6 +380,14 @@ verdict() {
   fi
 }
 
+# finished_at <rc file>: when the rc was published (its mtime: written once, by rename), in UTC as
+# 2026-10-28T13:37:12Z; empty where perl, which reads it alike on BSD and GNU, is missing.
+finished_at() {
+  # shellcheck disable=SC2016 # perl's own variables
+  perl -MPOSIX -e 'my @s = stat $ARGV[0] or exit 1; print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime $s[9])' \
+    -- "$1" 2>/dev/null
+}
+
 # running <pid>: a live process holds the pid; a zombie, which has exited, does not.
 running() {
   kill -0 "$1" 2>/dev/null || return 1
@@ -406,8 +418,12 @@ cmd_wait() {
   need_absolute "$dir"
   t0=$SECONDS
   next_beat=$beat
+  first=1 earlier=
   while :; do
     verdict "$dir"
+    # A run whose rc was already there at this wait's first read finished before it (header).
+    [ -z "$first" ] || [ "$V" != rc ] || earlier=1
+    first=
     elapsed=$((SECONDS - t0))
     case $V in
       RUNNING) ;;
@@ -431,7 +447,14 @@ cmd_wait() {
     sleep "$nap"
   done
   case $V in
-    rc) printf 'rc=%s\n' "$(cat "$dir/rc")"; exit 0 ;;
+    rc)
+      if [ -n "$earlier" ]; then
+        at=$(finished_at "$dir/rc")
+        printf 'rc=%s (finished earlier%s)\n' "$(cat "$dir/rc")" "${at:+, at $at}"
+      else
+        printf 'rc=%s\n' "$(cat "$dir/rc")"
+      fi
+      exit 0 ;;
     RUNNING) printf 'RUNNING after %s s of --within %s\n' "$elapsed" "$within"; exit 3 ;;
     STARTING) printf 'STARTING after %s s of --within %s\n' "$elapsed" "$within"; exit 4 ;;
     DIED) echo DIED; exit 5 ;;

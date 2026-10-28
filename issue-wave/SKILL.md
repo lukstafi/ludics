@@ -571,7 +571,8 @@ requirements for every transport with transport-specific setup and identity, and
   (ahrefs/ocannl#1314 held two boxes for about 2.5 h). Neither the returned turn nor its report
   releases the box; the conclusion does. The brief's measurement forms are the ones
   the verbs accept: on the worker's own box `fleet-worker.sh execution hold --request <id> --
-  <runner>`, on another box an [`execution leg`](references/executions.md#a-leg-on-another-box)
+  <runner>` (with `--worktree <dir> --rev <sha>` it first makes or moves that worktree to the
+  commit and runs there, as a leg does, ludics-lite#816), on another box an [`execution leg`](references/executions.md#a-leg-on-another-box)
   with no slot flag (`--deadline` alone: a measurement leg refuses `--cpu`, `--gpu`, `--wait`
   and `--wait-window`, and four workers of wave-20261016-ocannl copied them from the brief).
   The session fails fast on its first cell, behind the project's own measurement gate, which

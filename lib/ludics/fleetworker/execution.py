@@ -249,7 +249,9 @@ case "$wrc" in
      refuse "bg-run.sh wait exit 7 printed '$said', not STOPPED" ;;
   *) refuse "bg-run.sh wait exit $wrc: $said" ;;
 esac
-code=${said#rc=}
+# The verdict is the line's first word (bg-run.sh's header): a run long finished reads
+# `rc=<n> (finished earlier, at ...)`.
+code=${said#rc=}; code=${code%% *}
 case "$said" in rc=*) ;; *) refuse "bg-run.sh wait printed '$said', not rc=<status>" ;; esac
 case "$code" in ''|*[!0-9]*) refuse "$dir/rc holds '$code', not a status" ;; esac
 [ -f "$dir/log" ] || refuse "$dir has an rc but no log"

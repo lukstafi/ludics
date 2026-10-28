@@ -53,9 +53,12 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   `wait` blocks for its whole bound, `--within`, default 540 s so it ends under the 600 s cap,
   unless the run settles first, and prints one line led by its verdict; its exit code says the
   same. Give the Bash call `timeout: 600000`: the tool's default of 120 s cuts the wait short.
+  One `wait` per Bash call: each may take its whole 540 s, so two in one call (`wait <a>; wait
+  <b>`, or chained with `&&`) can pass the 600 s cap, which cuts the call (ludics-lite#816).
   While it blocks it writes a `bg-run: still waiting after <e> s ...` line to stderr every 120 s.
   `rc=<n>` (exit 0): the command finished with status `<n>`, and its output is `<dir>/log`. The status is a file of its own, so a review body quoting `rc=` cannot
-  end the wait. `RUNNING after <e> s of --within <w>` (3): the bound was spent with the run still
+  end the wait. A wait whose first look finds the run already finished prints `rc=<n> (finished
+  earlier, at <UTC time>)`: the same status, not a fresh result. `RUNNING after <e> s of --within <w>` (3): the bound was spent with the run still
   live, the designed return: re-issue it (an `<e>` under `<w>` is a bug worth reporting). A
   slow CI takes several of these. `STARTING` (4): no pid within a minute of the wait:
   re-issue it once, and a second one means the launch itself failed, so spawn again. `DIED` (5):

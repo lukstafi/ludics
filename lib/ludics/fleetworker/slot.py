@@ -963,7 +963,10 @@ WINDOW_WAIT = 3600  # a bare --wait-window's bound behind a measurement that rec
 BY_DEADLINE: Literal["deadline"] = "deadline"  # a bare --wait-window: the window's own deadline (#737)
 type WindowBound = int | Literal["deadline"]  # --wait-window=<seconds>, or bare
 WINDOW_PROGRESS = 60  # seconds between the lines that say a waiting batch is still waiting
-HOLD_USAGE = "execution hold [--why <text>] [--request <id>] [--deadline <seconds>] -- <command> [args...]"
+HOLD_USAGE = (
+    "execution hold [--why <text>] [--request <id> [--worktree <dir> --rev <sha|branch> [--checkout <dir>]]]"
+    " [--deadline <seconds>] -- <command> [args...]"
+)
 
 
 @dataclass(frozen=True)
@@ -1542,10 +1545,16 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
     why, request = "", ""
     deadline: int | None = None
     command: list[str] = []
+    place: dict[str, str] = {}  # --worktree, --rev, --checkout (THE WORKTREE, leg.hold_in_worktree)
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg == "--why":
+        if arg in ("--worktree", "--rev", "--checkout"):
+            if i + 1 >= len(args) or not args[i + 1]:
+                die(f"execution hold: expected a value for {arg}")
+            place[arg] = args[i + 1]
+            i += 1
+        elif arg == "--why":
             if i + 1 >= len(args) or not args[i + 1]:
                 die("execution hold: expected text for --why")
             why = args[i + 1]
@@ -1566,6 +1575,18 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
         i += 1
     if not command:
         die("execution hold: a command to hold the box around is required, after --")
+    if place:
+        if "--worktree" not in place:
+            die(f"execution hold: --rev and --checkout go with --worktree ({HOLD_USAGE})")
+        if "--rev" not in place or not request:
+            die("execution hold: --worktree takes --rev and --request: the measurement's command runs in a worktree"
+                f" of this box made or moved to that commit ({HOLD_USAGE})")
+        if why:
+            die("execution hold: --why does not go with --worktree, which runs the hold as a leg on this box")
+        from ludics.fleetworker import leg
+
+        return leg.hold_in_worktree(cfg, request, place["--rev"], place.get("--checkout", ""), place["--worktree"],
+                                    deadline, command)
     box = cfg.local_box or short_hostname()
     hold_lock, marker, cap = "", "", 0
     if request:

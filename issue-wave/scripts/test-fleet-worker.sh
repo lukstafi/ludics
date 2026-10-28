@@ -3417,6 +3417,25 @@ legstop "bg-run.sh stop on a leg whose far side has its own session stops the le
   sh -c 'echo $$ > "$1"; exec sleep 120' x "$TMP/leg-stop.pid"
 expect "...and the worktree's lock is free: the next leg there runs" 0 "execution-leg: exit: 0" -- \
   env SHIM_SSH_LOCAL=other "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+# THE ESCAPED (ludics-lite#816): a runner's child in a group of its own, as tools/test-run.sh runs
+# dune, outlives the wrapper's group kill; the far stop ends it once the far shell has ended.
+rm -f "$TMP/leg-esc.pid" "$TMP/leg-esc.done"
+lst=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" spawn "$TMP/leg runs" -- env SHIM_SSH_LOCAL=other SHIM_SSH_SESSION=1 \
+  "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- \
+  sh -c 'perl -e "setpgrp(0, 0); exec qw(sleep 120)" & echo $! > "$1"; exec sleep 120' x "$TMP/leg-esc.pid")
+for i in $(seq 150); do [ -s "$TMP/leg-esc.pid" ] && break; sleep 0.2; done
+if [ -s "$TMP/leg-esc.pid" ]; then
+  esc=$(cat "$TMP/leg-esc.pid")
+  expect "bg-run.sh stop on a leg whose runner left a process in a group of its own stops the leg" 0 "^STOPPED $lst: process group" -- \
+    bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" stop "$lst"
+  for i in $(seq 200); do grep -q "^EXECUTION LEG STOP other: the leg's run has ended: process(es) $esc too (TERM)$" "$lst/log" && break; sleep 0.2; done
+  grep -q "^EXECUTION LEG STOP other: the leg (pid [0-9]*) has ended, but its run left process(es) $esc running, which the wrapper's group kill did not reach: SIGTERM$" "$lst/log" &&
+    grep -q "^EXECUTION LEG STOP other: the leg's run has ended: process(es) $esc too (TERM)$" "$lst/log" &&
+    ok "...the far stop ended the escaped process, said in the run's log" || ko "the stopped leg left its escaped process: $(cat "$lst/log")"
+  case "$(ps -o stat= -p "$esc" 2>/dev/null)" in ''|Z*) ok "...the escaped process is gone" ;; *) ko "...the escaped process $esc still runs"; kill "$esc" 2>/dev/null ;; esac
+else
+  ko "the escaping runner never wrote its child's pid: $(cat "$lst/log")"
+fi
 legstop "a leg stopped in its control run stops too" "$TMP/leg-stop.pid" --control "$TMP/break.patch" -- \
   sh -c 'if [ -e broken ]; then echo $$ > "$1"; exec sleep 120; fi; exit 0' x "$TMP/leg-stop.pid"
 [ -z "$(git -C "$lwt" status --porcelain)" ] && ok "...the control patch reverted over the connection the stop cut" ||
@@ -3470,7 +3489,31 @@ expect "a measurement's leg takes no slot flags" 2 "is a measurement, run under 
   leg --request leg-m --rev main --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
 expect "a measurement's leg runs under execution hold --request" 0 "^runner hold: testbox leg-m$" -- \
   leg --request leg-m --rev main --checkout "$lco" --worktree "$lwt" --deadline 600 -- tools/check.sh
+# THE HOLD'S WORKTREE (ludics-lite#816): `execution hold --worktree` is that leg on this box, its
+# checkout by default the one it is run from; a worktree that does not exist yet is made.
+hwt="$TMP/leg wts/hold 1"
+expect "execution hold --worktree makes the worktree at the commit and runs the measurement there, under its hold" 0 "^runner hold: testbox leg-m$" -- \
+  sh -c 'cd "$1" && shift && exec "$@"' x "$lco" "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" --rev "$lb" --deadline 600 -- tools/check.sh
+grep -q "^EXECUTION LEG testbox: created $hwt at $lb " <<<"$out" && grep -q "^execution-leg: exit: 0$" <<<"$out" && [ "$(git -C "$hwt" rev-parse HEAD)" = "$lb" ] &&
+  ok "...created from the checkout it was run from, at $lb, with the leg's status line" || ko "the hold's worktree: $out"
+expect "...and moves an existing one to another commit, the --checkout named" 0 "^EXECUTION LEG testbox: refreshed $hwt at $la " -- \
+  "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" --rev "$la" --checkout "$lco" -- git rev-parse HEAD
+grep -qx "$la" <<<"$out" && ok "...where the command runs (git rev-parse HEAD reads $la)" || ko "the moved hold's command: $out"
+expect "execution hold --worktree needs --rev" 2 "execution hold: --worktree takes --rev and --request" -- \
+  "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" -- true
+expect "...and --request" 2 "execution hold: --worktree takes --rev and --request" -- \
+  "${FWL[@]}" execution hold --worktree "$hwt" --rev "$la" -- true
+expect "...and --rev alone is refused" 2 "execution hold: --rev and --checkout go with --worktree" -- \
+  "${FWL[@]}" execution hold --request leg-m --rev "$la" -- true
+expect "...and takes no --why" 2 "execution hold: --why does not go with --worktree" -- \
+  "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" --rev "$la" --why x -- true
+expect "...and outside a checkout without --checkout is refused" 2 "execution hold: --worktree needs a checkout of the project" -- \
+  sh -c 'cd / && exec "$@"' x "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" --rev "$la" -- true
 fixture_done leg-m
+lreq leg-hc
+expect "execution hold --worktree refuses a correctness request, whose worktree run is a leg" 1 "leg-hc is a correctness request, not a measurement: .execution hold --worktree. runs a measurement's command" -- \
+  "${FWL[@]}" execution hold --request leg-hc --worktree "$hwt" --rev "$la" --checkout "$lco" -- true
+fixture_done leg-hc
 # THE WINDOW WAIT (ludics-lite#666): a standing record a measurement window suspended is refused
 # at once without --wait-window; with it the leg waits in the slot's own wait, on this side, for
 # its record's box, under the one bound, and runs once nothing holds the box.
