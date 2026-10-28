@@ -47,7 +47,7 @@ session ID, run directory, log path and observed revision in the board or worker
 Verification still uses its assigned correctness slot or measurement hold, as above.
 
 This shape recovered local runs in the 2026-10-04 mac-studio wave
-([ludics-lite#540](https://github.com/lukstafi/ludics-lite/issues/540)). Local `bg-run.sh spawn`
+([ludics-lite#540](https://github.com/lukstafi/ludics/issues/540)). Local `bg-run.sh spawn`
 calls returned directories but later reported `DIED`, with vanished pid/cpid, empty logs and
 no `rc`: the coordinator's integration command and a worker's review/checks watchers both
 hit it. Managed foreground `start` sessions stayed running and reached actual command

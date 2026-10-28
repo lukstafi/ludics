@@ -515,21 +515,21 @@ class ForeignHome(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state:
             script = f"STATE={shlex.quote(state)}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
             done = subprocess.run(
-                [self.bash, "-s", "/home/leg669/ludics-lite", "/home/leg669/wt", "origin", "main", "", "", "req", "5",
+                [self.bash, "-s", "/home/leg669/ludics", "/home/leg669/wt", "origin", "main", "", "", "req", "5",
                  "t0k", "0", "0", "true"],
                 input=script, env={**os.environ, "HOME": "/Users/leg669"}, capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
-        self.assertEqual(done.stderr, "EXECUTION LEG REFUSED box: --checkout /home/leg669/ludics-lite is not a git checkout"
+        self.assertEqual(done.stderr, "EXECUTION LEG REFUSED box: --checkout /home/leg669/ludics is not a git checkout"
                                       " on box; /home/leg669 is not box's home directory (/Users/leg669)" + HINT + "\n")
 
     def test_another_boxs_home_either_way_round_gets_the_hint(self) -> None:
-        self.assertEqual(self.hint("/Users/u", "/home/u/ludics-lite"), "; /home/u is not box's home directory (/Users/u)" + HINT)
+        self.assertEqual(self.hint("/Users/u", "/home/u/ludics"), "; /home/u is not box's home directory (/Users/u)" + HINT)
         self.assertEqual(self.hint("/home/u", "/Users/u/wts/w 1"), "; /Users/u is not box's home directory (/home/u)" + HINT)
         self.assertEqual(self.hint("/home/u", "/home/v"), "; /home/v is not box's home directory (/home/u)" + HINT)
 
     def test_a_path_under_the_boxs_own_home_or_outside_any_home_gets_none(self) -> None:
-        for home, path in [("/home/u", "/home/u/ludics-lite"), ("/home/u/", "/home/u"), ("/Users/u/deep", "/Users/u/deep/x"),
-                           ("/home/u", "/opt/ludics-lite"), ("/home/u", "/home/"), ("", "/home/u/x")]:
+        for home, path in [("/home/u", "/home/u/ludics"), ("/home/u/", "/home/u"), ("/Users/u/deep", "/Users/u/deep/x"),
+                           ("/home/u", "/opt/ludics"), ("/home/u", "/home/"), ("", "/home/u/x")]:
             with self.subTest(home=home, path=path):
                 self.assertEqual(self.hint(home, path), "")
 

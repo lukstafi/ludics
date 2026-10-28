@@ -7,7 +7,7 @@ continue once. It does not decide that a goal is finished or perform any landing
 
 ## Install
 
-Point the hook directly at your persistent ludics-lite checkout. Merge this entry into
+Point the hook directly at your persistent ludics checkout. Merge this entry into
 `hooks.Stop` in `~/.claude/settings.json` for Claude Code or `~/.codex/hooks.json`
 for Codex, preserving any existing hooks:
 
@@ -19,7 +19,7 @@ for Codex, preserving any existing hooks:
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/ludics-lite/ship-pr/hooks/ship-pr-nudge.sh\"",
+            "command": "\"$HOME/ludics/ship-pr/hooks/ship-pr-nudge.sh\"",
             "timeout": 20
           }
         ]
@@ -29,7 +29,7 @@ for Codex, preserving any existing hooks:
 }
 ```
 
-The example assumes the checkout is at `~/ludics-lite`; substitute its actual path
+The example assumes the checkout is at `~/ludics`; substitute its actual path
 on each machine, keeping the shell quotes for paths containing spaces. Both clients
 can use the same script directly. Use a persistent checkout, not a temporary task
 worktree. The hook reads the repository to inspect from the event's `cwd`, so its

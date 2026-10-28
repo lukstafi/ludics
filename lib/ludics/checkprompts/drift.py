@@ -21,7 +21,7 @@ from ludics.checkprompts.tree import Report, Tree
 
 SYNC_SCRIPT = "scripts/sync-routines.sh"
 CLONE_LINE = re.compile(
-    r"git clone [^ ]*ludics-lite\.git (~/[A-Za-z0-9_.\-]+)" + WS_CLASS + "*"
+    r"git clone [^ ]*ludics\.git (~/[A-Za-z0-9_.\-]+)" + WS_CLASS + "*"
 )
 LOCAL_ROUTINES = re.compile(r'LOCAL_ROUTINES="([^"]*)"' + WS_CLASS + "*")
 

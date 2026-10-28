@@ -65,7 +65,7 @@ class Forwarded(unittest.TestCase):
         pairs = dict(forwarded(cfg, "far"))
         self.assertEqual(list(pairs), [*FORWARDED, REGISTRY_PIN])
         self.assertEqual(pairs["FLEET_ANCHOR_STATE"], "$HOME/.local/state/issue-wave")
-        self.assertEqual(pairs["FLEET_SKILLS_REPO"], "$HOME/ludics-lite")
+        self.assertEqual(pairs["FLEET_SKILLS_REPO"], "$HOME/ludics")
         far = far_config(cfg, "far", BOX_ENV)
         self.assertEqual((far.slots, far.gpu_tokens, far.anchor_state), (cfg.slots, cfg.gpu_tokens, cfg.anchor_state))
         self.assertEqual(pin_refusal(far), "")

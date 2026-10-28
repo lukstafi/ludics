@@ -486,45 +486,45 @@ test_a_near_miss_still_retries() {
 test_a_client_refusal_is_a_usage_error() {
   local body mode
   local -a bodies=(
-    # gh pr view 1 --repo lukstafi/ludics-lite --json nosuchfield
+    # gh pr view 1 --repo lukstafi/ludics --json nosuchfield
     $'Unknown JSON field: "nosuchfield"\nAvailable fields:\n  additions'
-    # gh pr view 1 --repo lukstafi/ludics-lite --json 'a b'
+    # gh pr view 1 --repo lukstafi/ludics --json 'a b'
     $'Unknown JSON field: "a b"\nAvailable fields:\n  additions'
-    # gh pr list --repo lukstafi/ludics-lite --json
+    # gh pr list --repo lukstafi/ludics --json
     $'Specify one or more comma-separated fields for `--json`:\n  additions'
-    # gh pr view 1 --repo lukstafi/ludics-lite --nosuchflag
+    # gh pr view 1 --repo lukstafi/ludics --nosuchflag
     $'unknown flag: --nosuchflag\n\nDisplay the title, body, and other information about a pull request.'
-    # gh pr list --repo lukstafi/ludics-lite --foo_bar (review round 1: punctuation in the name)
+    # gh pr list --repo lukstafi/ludics --foo_bar (review round 1: punctuation in the name)
     'unknown flag: --foo_bar'
-    # gh pr list --repo lukstafi/ludics-lite --foo.bar
+    # gh pr list --repo lukstafi/ludics --foo.bar
     'unknown flag: --foo.bar'
-    # gh pr list --repo lukstafi/ludics-lite -_
+    # gh pr list --repo lukstafi/ludics -_
     "unknown shorthand flag: '_' in -_"
-    # gh pr view 1 --repo lukstafi/ludics-lite -z
+    # gh pr view 1 --repo lukstafi/ludics -z
     $'unknown shorthand flag: \'z\' in -z\n\nDisplay the title, body, and other information about a pull request.'
-    # gh pr view 1 --repo lukstafi/ludics-lite --jq
+    # gh pr view 1 --repo lukstafi/ludics --jq
     $'flag needs an argument: --jq\n'
     # gh api -X
     $'flag needs an argument: \'X\' in -X\n\nMakes an authenticated HTTP request to the GitHub API and prints the response.'
-    # gh pr list --repo lukstafi/ludics-lite -L abc
+    # gh pr list --repo lukstafi/ludics -L abc
     $'invalid argument "abc" for "-L, --limit" flag: strconv.ParseInt: parsing "abc": invalid syntax\n'
-    # gh pr list --repo lukstafi/ludics-lite --state bogus
+    # gh pr list --repo lukstafi/ludics --state bogus
     $'invalid argument "bogus" for "-s, --state" flag: valid values are {open|closed|merged|all}\n'
     # gh issue close
     'accepts 1 arg(s), received 0'
-    # gh pr view 1 2 --repo lukstafi/ludics-lite
+    # gh pr view 1 2 --repo lukstafi/ludics
     'accepts at most 1 arg(s), received 2'
     # gh pr nosuchcmd
     $'unknown command "nosuchcmd" for "gh pr"\n\nUsage:  gh pr <command> [flags]'
     # gh label nosuchcmd
     'unknown command "nosuchcmd" for "gh label"'
-    # gh pr list --repo lukstafi/ludics-lite --=x (ludics-lite#468: Cobra's flag-syntax refusal)
+    # gh pr list --repo lukstafi/ludics --=x (ludics-lite#468: Cobra's flag-syntax refusal)
     $'bad flag syntax: --=x\n\nList pull requests in a GitHub repository. By default, this only lists open PRs.'
-    # gh pr list --repo lukstafi/ludics-lite ---x
+    # gh pr list --repo lukstafi/ludics ---x
     'bad flag syntax: ---x'
-    # gh release upload --repo lukstafi/ludics-lite (Cobra's minimum-count refusal)
+    # gh release upload --repo lukstafi/ludics (Cobra's minimum-count refusal)
     'requires at least 2 arg(s), only received 0'
-    # gh release upload v0 --repo lukstafi/ludics-lite
+    # gh release upload v0 --repo lukstafi/ludics
     'requires at least 2 arg(s), only received 1'
   )
   retune API_ATTEMPTS=3

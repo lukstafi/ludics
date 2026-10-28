@@ -33,6 +33,14 @@ class BootstrapSafety(unittest.TestCase):
         self.assertTrue((self.root / 'link').is_symlink())
         self.assertEqual(list((self.root / 'src').iterdir()), [])
 
+    def test_skill_link_through_compat_symlink_accepted(self):
+        self.run_shell('mkdir -p new/skill; ln -s new old; ln -s "$PWD/old/skill" link; link_skill "$PWD/new/skill" "$PWD/link"')
+        self.assertEqual(os.readlink(self.root / 'link'), str(self.root / 'old/skill'))
+
+    def test_skill_link_to_other_directory_refused(self):
+        self.run_shell('mkdir -p new/skill other; ln -s "$PWD/other" link; link_skill "$PWD/new/skill" "$PWD/link"', False)
+        self.assertEqual(os.readlink(self.root / 'link'), str(self.root / 'other'))
+
     def test_real_skill_directory_preserved(self):
         self.run_shell('mkdir src link; echo KEEP > link/local; link_skill "$PWD/src" "$PWD/link"', False)
         self.assertEqual((self.root / 'link/local').read_text(), 'KEEP\n')
@@ -141,11 +149,15 @@ class BootstrapSafety(unittest.TestCase):
         self.assertFalse((self.root / 'missing').exists())
 
     def test_wrong_repository_preserved(self):
-        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/other/repo.git; clone_if_missing lukstafi/ludics-lite "$PWD/repo"', False)
+        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/other/repo.git; clone_if_missing lukstafi/ludics "$PWD/repo"', False)
         self.assertTrue((self.root / 'repo/.git').is_dir())
 
+    def test_former_repository_name_accepted(self):
+        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/lukstafi/ludics-lite.git; clone_if_missing lukstafi/ludics "$PWD/repo" lukstafi/ludics-lite')
+        self.run_shell('git init -q repo2; git -C repo2 remote add origin https://github.com/lukstafi/ludics-lite.git; clone_if_missing lukstafi/ludics "$PWD/repo2"', False)
+
     def test_dirty_repository_preserved(self):
-        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/lukstafi/ludics-lite.git; echo KEEP > repo/local; clone_if_missing lukstafi/ludics-lite "$PWD/repo"')
+        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/lukstafi/ludics.git; echo KEEP > repo/local; clone_if_missing lukstafi/ludics "$PWD/repo"')
         self.assertEqual((self.root / 'repo/local').read_text(), 'KEEP\n')
 
     def test_download_failure_does_not_execute(self):

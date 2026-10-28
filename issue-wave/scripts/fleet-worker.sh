@@ -260,7 +260,7 @@
 #     one; set, even to empty, it overrides that. Fail-closed: every batch takes a token except
 #     one that declares `execution slot --cpu`, so a GPU batch whose caller forgot to say so is
 #     still counted. `preflight` prints the tokens beside the slots wherever they are fewer.
-#   FLEET_SKILLS_REPO: skills checkout on each box; ~/ludics-lite.
+#   FLEET_SKILLS_REPO: skills checkout on each box; ~/ludics.
 #   ISSUE_WAVE_STATE: local worker-state directory; ~/.local/state/issue-wave.
 #   FLEET_SLOT_STATE: where `execution slot` keeps a box's run-time slot locks;
 #     ~/.local/state/fleet-execution-slots. Deliberately NOT under ISSUE_WAVE_STATE, which is

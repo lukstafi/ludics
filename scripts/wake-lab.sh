@@ -50,7 +50,7 @@
 # lock. `--as=<request_id>` spares the caller's own measurement, an unreadable registry refuses,
 # and `--force` skips this check with the locks (measured_box_clear, below the lock lore).
 #
-# Tracked in the ludics-lite repository as scripts/wake-lab.sh and meant to be reached through a
+# Tracked in the ludics repository as scripts/wake-lab.sh and meant to be reached through a
 # ~/bin/wake-lab.sh symlink, so an edit made mid-run lands as a normal `git status`. One part is
 # deliberately NOT tracked: the fleet's MAC and LAN IP addresses, which live in a site file this
 # script sources at startup — ~/.config/wake-lab/hosts.sh, or wherever WAKE_LAB_HOSTS points. It
@@ -119,7 +119,7 @@ load_hosts() {
   local f
   if [ ! -r "$HOSTS_FILE" ]; then
     echo "wake-lab.sh: no host table at $HOSTS_FILE" >&2
-    echo "  copy scripts/wake-lab-hosts.example.sh from the ludics-lite checkout there and fill" >&2
+    echo "  copy scripts/wake-lab-hosts.example.sh from the ludics checkout there and fill" >&2
     echo "  in this fleet's MACs and IPs, or point WAKE_LAB_HOSTS at your own copy." >&2
     exit 1
   fi

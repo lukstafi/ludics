@@ -15,7 +15,7 @@ set -uo pipefail
 # Physically, BEFORE going up: the skills call this file through a symlinked skill directory.
 py="$(CDPATH= cd -P "$(dirname "$0")" && cd -P ../.. && pwd -P)/scripts/py"
 if [ ! -x "$py" ]; then
-  printf '%s\n' "peer-plan.sh: the helper is served by Python, and its runner $py is missing or not executable: this copy is not inside a ludics-lite checkout" >&2
+  printf '%s\n' "peer-plan.sh: the helper is served by Python, and its runner $py is missing or not executable: this copy is not inside a ludics checkout" >&2
   exit 1
 fi
 exec "$py" -m ludics.peerplan "$@"

@@ -129,12 +129,12 @@ checkout and nothing else; the scheduler keeps dispatching the copy it already h
 runs, on the box that fires them (`mac-studio`):
 
 ```sh
-git -C ~/ludics-lite fetch origin \
-  && git -C ~/ludics-lite checkout main \
-  && git -C ~/ludics-lite merge --ff-only origin/main \
-  && git -C ~/ludics-lite rev-list --left-right --count HEAD...origin/main \
-  && git -C ~/ludics-lite status --porcelain -- routines scripts/sync-routines.sh \
-  && ~/ludics-lite/scripts/sync-routines.sh
+git -C ~/ludics fetch origin \
+  && git -C ~/ludics checkout main \
+  && git -C ~/ludics merge --ff-only origin/main \
+  && git -C ~/ludics rev-list --left-right --count HEAD...origin/main \
+  && git -C ~/ludics status --porcelain -- routines scripts/sync-routines.sh \
+  && ~/ludics/scripts/sync-routines.sh
 ```
 
 Chained, not five separate lines: a fetch that fails on auth, DNS or the network leaves a stale
@@ -237,7 +237,7 @@ Its non-prompt configuration, for re-creating it:
 
 Like the skills, these prompts name the author's setup in prose and are edited in place:
 `~/self-improve/ClaudeDesktop/sequencing_plan.md` and the repository list in
-`daily-issue-planning`; `~/ludics-lite`, the checkout both prompts run their step-0 drift check in
+`daily-issue-planning`; `~/ludics`, the checkout both prompts run their step-0 drift check in
 (the clone path the top-level README installs); `~/ocannl-staging`, `~/.ocannl-sweep`, `~/bin/wake-lab.sh` and the box
 names `rog`/`minix` (native Linux or WSL aliases, selected by `kind_of`) in the cross-machine sweep; the two OCANNL
 repositories in the triage routine. `~/bin/wake-lab.sh` is a symlink to `scripts/wake-lab.sh` in

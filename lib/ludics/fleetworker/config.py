@@ -135,7 +135,7 @@ def load_config(script: str, env: Mapping[str, str], host: str | None = None) ->
         gpu_tokens=_unset_default(
             env, "FLEET_BOX_GPU_TOKENS", GPU_TOKENS_DEFAULT if default_roster else ""
         ),
-        skills_repo=_or_default(env, "FLEET_SKILLS_REPO", "$HOME/ludics-lite"),
+        skills_repo=_or_default(env, "FLEET_SKILLS_REPO", "$HOME/ludics"),
         state=state,
         slot_state=_or_default(env, "FLEET_SLOT_STATE", "$HOME/.local/state/fleet-execution-slots"),
         inhibit=_or_default(env, "FLEET_SYSTEMD_INHIBIT", "systemd-inhibit"),

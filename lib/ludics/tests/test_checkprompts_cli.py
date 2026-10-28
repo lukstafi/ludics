@@ -1611,7 +1611,7 @@ def drift() -> Drift:
     homes = [
         m.group(1)
         for line in src_lines("README.md")
-        if (m := re.fullmatch(r"git clone \S*ludics-lite\.git (~/\S*)\s*", line))
+        if (m := re.fullmatch(r"git clone \S*ludics\.git (~/\S*)\s*", line))
     ]
     if not homes:
         raise AssertionError("the drift probes need a 'git clone ... ~/<dir>' line in README.md")
@@ -1696,12 +1696,12 @@ class DriftGuardTest(Case):
         rewrite(
             R,
             "README.md",
-            pattern=r"^git clone .*ludics-lite\.git ~/.*$",
+            pattern=r"^git clone .*ludics\.git ~/.*$",
             repl="git clone https://example.invalid/x.git",
         )
         self.expect("a README with no clone destination is refused, not passed", 1, "no ")
         drift_tree(R)
-        rewrite(R, "README.md", pattern=r"^(git clone .*ludics-lite\.git )~/ludics-lite$", repl=r"\1~/elsewhere")
+        rewrite(R, "README.md", pattern=r"^(git clone .*ludics\.git )~/ludics$", repl=r"\1~/elsewhere")
         self.expect(
             "the checkout path comes from the README, so moving it refuses the old invocation",
             1,
