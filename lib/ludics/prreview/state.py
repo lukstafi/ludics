@@ -66,7 +66,7 @@ from ludics.prreview.jqsem import (
     sub_once,
     unique,
 )
-from ludics.prreview.poll import REVIEWED_COMMIT_RE
+from ludics.prreview.poll import CODEX_ABOUT_OPEN, REVIEWED_COMMIT_RE
 
 type Token = Literal[
     "approved", "unresolved", "reviewing", "stalled", "failed", "expected", "idle", "nudged",
@@ -124,6 +124,23 @@ _SUMMARY_COMPLETED_ROW = onig(SUMMARY_COMPLETED_ROW_RE)
 _SUMMARY_COMMITLESS_ROW = onig(SUMMARY_COMMITLESS_ROW_RE)
 _SUMMARY_FAILED_ROW = onig(SUMMARY_FAILED_ROW_RE)
 _SUMMARY_ROW_STAMP = onig(SUMMARY_ROW_STAMP_RE)
+# A Code Review row's last cell, its Review trigger ("Manual request", "PR opened", "New commits").
+_TRIGGER_CELL = onig(r"\|[ \t]*(?<t>[^|]*?)[ \t]*\|[ \t]*$")
+# A no-findings receipt that names no commit (ludics#815): the reviewer's WHOLE comment body, as a
+# fail-closed allowlist of the two shapes seen (ocannl-staging#1424's, 2026-10-26, under the
+# receipt marker; and five from 2026-04..06 without it): the optional marker and a blank line, the
+# verdict line -- "Codex Review: Didn't find any major issues." and an optional flourish
+# (":+1:", "Swish!", "Chef's kiss.") -- a blank line, the connector's "About Codex in GitHub"
+# block opened by its exact tag, and nothing after that block's one closing tag but whitespace.
+# Nowhere a "Reviewed commit" (a stamped receipt is a verdict for its commit, read elsewhere).
+# Not read: the block's prose (the connector's boilerplate, which poll folds the same way).
+COMMITLESS_RECEIPT_RE = (
+    r"\A(?![\s\S]*[Rr]eviewed commit)(?:<!-- codex-review-receipt:v1 -->\n\n)?"
+    r"Codex Review: Didn['’]t find any major issues\.(?: [^\n]{1,80})?\n\n"
+    + re.escape(CODEX_ABOUT_OPEN)
+    + r"\n(?:(?!</details>|<details)[\s\S])*</details>[ \t\n]*\z"
+)
+_COMMITLESS_RECEIPT = onig(COMMITLESS_RECEIPT_RE)
 _CODE_REVIEW_ROW = onig(r"^\|[^|]*Code Review[^|]*\|")
 _RUNNING_ROW = onig(r"^\|[^|]*Code Review[^|]*\|[^|]*Running")
 _NO_FINDINGS = onig("[Dd]idn.t find any major issues")
@@ -335,9 +352,10 @@ def _code_review_record(body: str) -> dict[str, object] | None:
     return cast(dict[str, object], code)
 
 
-def _commitless_done(comments: list[Json], rev: str) -> str:
+def _commitless_done(comments: list[Json], rev: str) -> tuple[str, str]:
     """When the reviewer's newest summary marks its newest Code Review row Completed naming no
-    commit (ludics-lite#787), that row's stamp with its fraction cut; else "".
+    commit (ludics-lite#787): that row's stamp with its fraction cut, and its Review trigger cell
+    as written ("" when the row has none); else ("", "").
 
     Boundary, as a fail-closed allowlist. Read: only the reviewer's NEWEST summary comment, and in
     it every Code Review row, each of which must read either as ``SUMMARY_ROW_STAMP_RE`` (a row
@@ -345,37 +363,115 @@ def _commitless_done(comments: list[Json], rev: str) -> str:
     must be the commit-less one, stamped as a GitHub timestamp, and the summary's one state record
     (``_code_review_record``) must say the same: ``commit_sha`` present and null, ``status``
     "completed". A row that reads neither way, a tie between rows, a record that disagrees or does
-    not read, or no summary is "". Not read: the row's trigger cell, the record's other keys, the
+    not read, or no summary is ("", ""). The trigger is read only for the commit-less receipt
+    (ludics#815), which names the request kind by it. Not read: the record's other keys, the
     comment's own timestamps. Which head the row is about is not in it: ``status_state`` bounds it
     by the head's arrival."""
     newest_summary = _newest_summary(comments, rev)
     if newest_summary is None:
-        return ""
+        return "", ""
     body = body_of(newest_summary)
-    rows: list[tuple[str, bool]] = []
+    rows: list[tuple[str, bool, str]] = []
     for line in body.split("\n"):
         if not _CODE_REVIEW_ROW.search(line):
             continue
         stamp = capture_first(line, _SUMMARY_ROW_STAMP)
         bare = capture_first(line, _SUMMARY_COMMITLESS_ROW)
         if stamp is not None:
-            rows.append((jstr(stamp["at"]), False))
+            rows.append((jstr(stamp["at"]), False, ""))
         elif bare is not None:
-            rows.append((jstr(bare["at"]), True))
+            trigger = capture_first(line, _TRIGGER_CELL)
+            rows.append((jstr(bare["at"]), True, jstr(alt(trigger["t"] if trigger else None, ""))))
         else:
-            return ""
+            return "", ""
     best = max_by(rows, lambda r: instant(r[0]))
     if best is None or not best[1] or sum(instant(r[0]) == instant(best[0]) for r in rows) != 1:
-        return ""
+        return "", ""
     at = sub_once(best[0], _FRACTION_Z, "Z")
     if not _ISO_STAMP.fullmatch(at):
-        return ""
+        return "", ""
     fields = _code_review_record(body)
     if fields is None or "commit_sha" not in fields or fields["commit_sha"] is not None:
-        return ""
+        return "", ""
     if fields.get("status") != "completed":
+        return "", ""
+    return at, best[2]
+
+
+def _commitless_receipt(comments: list[Json], rev: str) -> str:
+    """When the reviewer's newest word -- its newest comment that is not the summary, by
+    ``created_at`` -- is a no-findings receipt naming no commit (``COMMITLESS_RECEIPT_RE``, the whole
+    body), that comment's ``created_at``, a GitHub timestamp; else "". An older receipt under a
+    newer word of the reviewer's is history, and is not read."""
+    words = sort_by(
+        [c for c in comments if login_is(c, rev) and not _is_summary(c)],
+        lambda c: idx(c, "created_at"),
+    )
+    if not words or not _COMMITLESS_RECEIPT.search(body_of(words[-1])):
         return ""
-    return at
+    at = idx(words[-1], "created_at")
+    return at if isinstance(at, str) and _ISO_STAMP.fullmatch(at) else ""
+
+
+type ReceiptBinding = Literal["approves", "unbound", ""]
+
+
+def _receipt_binding(
+    ctx: Ctx, comments: list[Json], rev: str, head: Head, head_at: str, receipt_at: str,
+    bare_at: str, trigger: str,
+) -> tuple[ReceiptBinding, str]:
+    """Which head a no-findings receipt naming no commit (ludics#815) is a verdict for: the head
+    that was current when the review it answers was REQUESTED, and only that head.
+
+    Boundary, fail-closed. The request is what the summary's newest Code Review row -- Completed
+    naming no commit (``_commitless_done``), stamped at or after the receipt -- names in its
+    trigger cell: "Manual request" is the newest '@codex review' comment before the receipt
+    (``_requests``), "PR opened" is the PR's creation when no such comment precedes the receipt.
+    The head at that request is the current head when its arrival (``_arrival_floor``, with the
+    commit date read) is at or before the request: then no other head stood from the request to
+    now. That reading APPROVES the head. "approves" is never given for a head that arrived after
+    the request, nor without that row. A request since the receipt, or a receipt older than the
+    head's arrival (an earlier head's verdict), is "": no reading here. Any other case -- the
+    commit date unread, a request time that does not read, the head arriving between the request
+    and the receipt (which head the round reviewed is not in the feeds), no summary row, another
+    trigger ("New commits": which push is not recorded), a row older than the receipt -- is
+    "unbound": a verdict for an unknown head, neither approval nor a failed run. Not read: the 👀
+    (a level an earlier round can leave up, so it dates no request), the receipt's prose beyond
+    its allowlisted shape. Residual, stated: the arrival is the commit date or the PR's creation,
+    so a commit dated before the request but pushed after it reads as the request's head (the
+    ludics-lite#787 boundary); and a round asked for on an earlier head that answers only after a
+    later '@codex review' on this head reads as the later request's."""
+    short = _short(head.sha)
+    now = ctx.clock.time()
+    asked = _requests(comments, rev)
+    if any(not isinstance(a, str) or not _ISO_STAMP.fullmatch(a) for a in asked):
+        return "unbound", "a '@codex review' request on the PR has no readable time"
+    if any(ge(a, receipt_at) for a in asked):
+        return "", ""
+    if age_of(head_at, now) is None:
+        return "unbound", f"head {short}'s commit date does not read"
+    floor = _arrival_floor(ctx, head_at, head.created)
+    if lt(receipt_at, floor):
+        return "", ""
+    before = [a for a in asked if lt(a, receipt_at)]
+    if before:
+        req, kind = jstr(jmax(before)), "Manual request"
+    elif head.created and age_of(head.created, now) is not None and lt(head.created, receipt_at):
+        req, kind = head.created, "PR opened"
+    else:
+        return "unbound", "no request before it reads"
+    what = "the '@codex review' request" if kind == "Manual request" else "the PR's opening"
+    if gt(floor, req):
+        return "unbound", (
+            f"head {short} arrived at {floor}, after {what} at {req} it may answer, so which head"
+            " it reviewed is not recorded"
+        )
+    if not bare_at or trigger != kind or lt(bare_at, receipt_at):
+        return "unbound", (
+            f"{rev}'s summary does not mark the round Completed naming no commit at or after it,"
+            f" triggered by '{kind}' ({what} at {req})"
+        )
+    return "approves", f"answering {what} at {req}, after head {short} arrived at {floor}"
 
 
 def head_summary_state(comments: list[Json], rev: str, head_sha: str) -> SummaryState | None:
@@ -728,6 +824,40 @@ def status_state(ctx: Ctx, pr: str) -> State:
                 " since it arrived",
             )
 
+    # A no-findings receipt naming no commit (ludics#815; ocannl-staging#1424, where the arm below
+    # read it as a failed run and advised a new head): the reviewer's newest word, with no 👀 and
+    # no request since, is a verdict for the head current at the request it answers
+    # (``_receipt_binding`` states the boundary), and for no other head. Where that head does not
+    # read, it is a verdict for an unknown head: neither approval nor the failed run below, and a
+    # round for this head is due.
+    try:
+        receipt_at = _commitless_receipt(comments, rev)
+        bare_at, bare_trigger = _commitless_done(comments, rev)
+    except JqError:
+        return unknown(mstate, "the reviewer's comments or the summary's Code Review rows did not parse")
+    if (
+        receipt_at and head_sha and _after_nudge(receipt_at, nudge_at)
+        and (not eyes_at or eyes_at < receipt_at) and (not last_spoke or last_spoke <= receipt_at)
+    ):
+        if not head_at_read:
+            head_at = _commit_read(ctx, head_sha)
+            head_at_read = True
+        try:
+            binding, why = _receipt_binding(
+                ctx, comments, rev, head, head_at, receipt_at, bare_at, bare_trigger
+            )
+        except JqError:
+            return unknown(mstate, "the review-request comments feed did not parse")
+        receipt = f"{rev} posted a no-findings receipt naming no commit at {receipt_at}"
+        if binding == "approves":
+            return State("approved", None, mstate, f"{receipt}, {why}")
+        if binding == "unbound":
+            return State(
+                "expected", freshest_age(head_at, head.created, receipt_at, now=ctx.clock.time()), mstate,
+                f"no 👀 in flight and no review naming head {_short(head_sha)}: {receipt}, and {why} —"
+                " a verdict for an unknown head, neither an approval of this one nor a failed run",
+            )
+
     # A round the summary closed with no commit named (ludics-lite#787): the app's Completed row
     # carries an em dash for the commit and its record a null commit_sha, with nothing posted and
     # no 👍 -- a run that ended without a verdict, re-requested as a Failed one is (`watch` posts
@@ -737,10 +867,6 @@ def status_state(ctx: Ctx, pr: str) -> State:
     # newer -- and the reviewer has posted nothing about the head. BOUNDARY: a commit dated before
     # the row but pushed after it reads the row as its own; what that costs is one request for a
     # head the reviewer had not reached, never a cleared 👍 (none may be up).
-    try:
-        bare_at = _commitless_done(comments, rev)
-    except JqError:
-        return unknown(mstate, "the summary's Code Review rows did not parse")
     if (
         bare_at and head_sha and not plus and _after_nudge(bare_at, nudge_at)
         and (not eyes_at or eyes_at < bare_at) and (not last_spoke or last_spoke < bare_at)

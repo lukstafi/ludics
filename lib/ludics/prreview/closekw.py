@@ -13,7 +13,22 @@ shaped; this is the same filter, rule for rule, in the same order:
     whitelisted boundary before it and no identifier character after it, deduplicated
     case-insensitively with this repository's own qualified spelling folded into the bare one;
   * a unit is reported when its keyword binds two or more references (``sentence``), or any
-    reference inside a quoted, fenced or (in a commit message) indented line (``quoted``).
+    reference inside a quoted, fenced or (in a commit message) indented line (``quoted``);
+  * and, in a unit of an unquoted line, a closing keyword NEGATED right before it and a reference
+    right after it (``negated``, ludics#815): GitHub's parser does not read negation, so "The PR
+    does not close #1647:" in ocannl-staging#1463's body closed ahrefs/ocannl#1647.
+
+The negated reading is the README's ludics-lite#75 line-shaped scan, and its boundary is a
+fail-closed allowlist (``_NEGATION``): within ONE sentence unit of ONE line, a negation word --
+``not``, ``never``, ``cannot``, or the contractions don't, doesn't, didn't, won't, wouldn't, can't,
+couldn't, shouldn't, mustn't, isn't, aren't, with a straight or a curly apostrophe -- then blanks
+only, then a closing keyword the scan already knows (close, closes, closed, fix, fixes, fixed,
+resolve, resolves, resolved, any case), an optional colon, blanks, and a reference of ``_REF``'s
+shape at once. Deliberately not read: a negation across a line break or a sentence end, a word
+between the negation and the keyword ("does not yet close #N", "not to close #N"), a quoted, fenced
+or indented line (reported as ``quoted`` already, whatever its wording), and paraphrase ("leaves #N
+open", "#N stays open"). A form outside that list is a follow-up, never a reason to read prose. It
+warns; it never refuses.
 
 awk's regex matching is leftmost-longest and Python's is leftmost-first; every pattern below was
 checked to choose the same match under both (each is either fixed-width at its end or has a
@@ -44,6 +59,13 @@ _KEYWORD = re.compile(
     r"(^|[ \t(\[{<\"'`*,;:>])(close[sd]?|fix(e[sd])?|resolve[sd]?)"
     r"([ \t)\]}>\"'`*,;:!?]|\.[^a-z0-9_]|\.$|$)"
 )
+# The negations a closing keyword may follow (the module docstring states the boundary), matched
+# on the ASCII-lowercased unit, ending where the reference must begin.
+_NEGATION = re.compile(
+    r"(^|[ \t(\[{<\"'`*,;:>])(not|never|cannot|(do|does|did|wo|would|ca|could|should|must|is|are)n['\u2019]t)"
+    r"[ \t]+(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]*:?[ \t]*"
+)
+_IDENT_CHAR = re.compile(r"[0-9a-zA-Z_-]")
 _SENTENCE_END = re.compile(r"[.!?]([^ \ta-zA-Z0-9][^ \t]*)?[ \t]+")
 _CONTROL = re.compile(r"[\x01-\x08\x0b-\x1f\x7f]")
 
@@ -89,7 +111,7 @@ def refs_of(unit: str, repo: str) -> list[str]:
     return out
 
 
-type FindingClass = Literal["sentence", "quoted"]
+type FindingClass = Literal["sentence", "quoted", "negated"]
 
 
 @dataclass(frozen=True)
@@ -100,7 +122,50 @@ class Finding:
     sentence: str
 
 
-def _scan_unit(unit: str, quoted: bool, repo: str) -> Finding | None:
+def negated_refs(unit: str, repo: str) -> list[str]:
+    """The distinct references a NEGATED closing keyword in ``unit`` names (``_NEGATION``, the
+    module docstring's boundary): each the reference right after the keyword, with a boundary owed
+    after its digits as ``refs_of`` owes one. ``unit`` is URL-scrubbed by the caller."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _NEGATION.finditer(_lower(unit)):
+        rest = unit[m.end() :]
+        r = _REF.match(rest)
+        if r is None or _IDENT_CHAR.fullmatch(rest[r.end() : r.end() + 1] or "."):
+            continue
+        for ref in refs_of(rest[: r.end()], repo):
+            if _lower(ref) not in seen:
+                seen.add(_lower(ref))
+                out.append(ref)
+    return out
+
+
+def _shown(unit: str) -> str:
+    # The sentence is contributor-controlled text on its way to a terminal: a control byte could
+    # erase or forge the warning it appears in (round 13), so it is shown as `?`.
+    shown = re.sub(r"^[ \t>*+-]+", "", unit, count=1)
+    shown = re.sub(r"[ \t]+$", "", shown, count=1)
+    shown = _CONTROL.sub("?", shown)
+    if len(shown) > 200:
+        shown = shown[:197] + "..."
+    return shown
+
+
+def _scan_unit(unit: str, quoted: bool, repo: str) -> list[Finding]:
+    """The unit's findings: the keyword's (``sentence`` or ``quoted``), then a ``negated`` one."""
+    unit = scrub_urls(unit)
+    out: list[Finding] = []
+    found = _keyword_finding(unit, quoted, repo)
+    if found is not None:
+        out.append(found)
+    if not quoted:
+        neg = negated_refs(unit, repo)
+        if neg:
+            out.append(Finding("negated", len(neg), " ".join(neg), _shown(unit)))
+    return out
+
+
+def _keyword_finding(unit: str, quoted: bool, repo: str) -> Finding | None:
     # URLs go BEFORE the keyword is located, so the keyword and the references are read off the
     # same text: a keyword in a URL path was a directive until round 16. The keyword's boundaries
     # are whitelists on both sides: `close-out` and `closed/tracker#10` bind nothing (round 6), a
@@ -108,7 +173,6 @@ def _scan_unit(unit: str, quoted: bool, repo: str) -> Finding | None:
     # (`auto_closes_items`, round 13), and a dot is one only when no identifier character follows
     # (`fixes.md`, `fix._config`, rounds 14 and 15). The references are read FORWARD from the
     # keyword: GitHub's syntax is the keyword followed by the reference (round 15).
-    unit = scrub_urls(unit)
     m = _KEYWORD.search(_lower(unit))
     if m is None:
         return None
@@ -117,14 +181,7 @@ def _scan_unit(unit: str, quoted: bool, repo: str) -> Finding | None:
         return None
     if len(refs) < 2 and not quoted:
         return None
-    # The sentence is contributor-controlled text on its way to a terminal: a control byte could
-    # erase or forge the warning it appears in (round 13), so it is shown as `?`.
-    shown = re.sub(r"^[ \t>*+-]+", "", unit, count=1)
-    shown = re.sub(r"[ \t]+$", "", shown, count=1)
-    shown = _CONTROL.sub("?", shown)
-    if len(shown) > 200:
-        shown = shown[:197] + "..."
-    return Finding("quoted" if quoted else "sentence", len(refs), " ".join(refs), shown)
+    return Finding("quoted" if quoted else "sentence", len(refs), " ".join(refs), _shown(unit))
 
 
 def _columns(text: str) -> int:
@@ -203,9 +260,7 @@ def scan(text: str, repo: str, plain: bool) -> list[Finding]:
         # Markdown link form (rounds 3, 7, 8, 9) while a version number does not split.
         marked = _SENTENCE_END.sub(lambda mm: mm.group(0) + "\x01", line)
         for unit in marked.split("\x01"):
-            found = _scan_unit(unit, quoted, repo)
-            if found is not None:
-                findings.append(found)
+            findings.extend(_scan_unit(unit, quoted, repo))
     return findings
 
 
@@ -293,7 +348,9 @@ class MultiClose:
         body = result.stdout
         found = scan(body, repo, plain=False) if body else []
         n_sentence = sum(1 for f in found if f.cls == "sentence")
+        n_negated = sum(1 for f in found if f.cls == "negated")
         n_quoted = sum(1 for f in found if f.cls == "quoted")
+        strong = n_sentence + n_negated > 0
         if again and self.have:
             if body == self.body:
                 if found:
@@ -332,7 +389,7 @@ class MultiClose:
                 self.strong = False
                 self.body = body
                 return
-            if n_sentence > 0:
+            if strong:
                 _say(
                     f"CLOSING-KEYWORD WARNING: {repo}#{pr}'s body was EDITED since the scan above;",
                     "what this merge closes is below, not there.",
@@ -345,12 +402,12 @@ class MultiClose:
         self.last = found
         self.body = body
         self.have = True
-        self.strong = n_sentence > 0
+        self.strong = strong
         if not found:
             return
         for i, f in enumerate(found):
             if i == 0:
-                if n_sentence > 0:
+                if strong:
                     _say(f"CLOSING-KEYWORD WARNING: {repo}#{pr}'s body closes issues it does not look", "like it closes:")
                 else:
                     _say(
@@ -359,9 +416,16 @@ class MultiClose:
                     )
             if f.cls == "quoted":
                 _say(f"  reads as a QUOTED or FENCED example, {f.count} reference(s): {f.refs}")
+            elif f.cls == "negated":
+                _say(f"  a NEGATED mention, which GitHub closes all the same, {f.count} issue(s): {f.refs}")
             else:
                 _say(f"  ONE sentence, {f.count} issues: {f.refs}")
             _say(f"      {f.sentence}")
+        if n_negated > 0:
+            _say(
+                "  GitHub's closing keywords do not read negation: \"does not close #N\" closes #N",
+                "(ahrefs/ocannl#1647 was closed that way); say \"Refs #N\" or \"leaves #N open\" instead.",
+            )
         _say(
             "  A closing keyword binds to EVERY #N in its sentence, and a quoted or",
             "fenced copy of an example binds the same way:",
@@ -376,7 +440,7 @@ class MultiClose:
                 "by a parser, so one flagged above",
             )
             _say("  may be ordinary prose. Read it; nothing is claimed about what it closes.")
-        if n_sentence == 0:
+        if not strong:
             return
         _say(
             "  If an issue listed above must stay OPEN, EDIT THE BODY now -- nothing has",
@@ -393,6 +457,9 @@ class MultiClose:
                 "merge into the repository default",
             )
             _say(f"  branch, and {self.err}. Unread is not inert.")
+        if n_sentence == 0:
+            _say("  This is a WARNING and not a gate: the scan reads the line's words, not what it means.")
+            return
         _say(
             "  This is a WARNING and not a gate: one sentence closing two issues is",
             "sometimes exactly what was meant,",
@@ -506,6 +573,11 @@ class SeriesClose:
                         f"  commit {sha[:8]}: a QUOTED, FENCED or INDENTED line, and it closes all the same,"
                         f" {f.count} issue(s): {f.refs}\n"
                     )
+                elif f.cls == "negated":
+                    findings += (
+                        f"  commit {sha[:8]}: a NEGATED mention, and it closes all the same,"
+                        f" {f.count} issue(s): {f.refs}\n"
+                    )
                 else:
                     findings += f"  commit {sha[:8]}: ONE sentence, {f.count} issues: {f.refs}\n"
                 findings += f"      {f.sentence}\n"
@@ -527,7 +599,8 @@ class SeriesClose:
                 _say(row)
         _say(
             "  A commit message is plain text: GitHub applies every keyword in it, a quoted or",
-            "indented copy included, once the commit reaches the default branch, and editing the PR body",
+            "indented copy and a negated one (\"does not close #N\") included, once the commit reaches the",
+            "default branch, and editing the PR body",
             "does not change it.",
         )
         _say(

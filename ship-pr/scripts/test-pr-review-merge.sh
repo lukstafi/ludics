@@ -847,6 +847,58 @@ The scanner lands. Closes #401 and #402
   assert_not_contains "$MERGE_STDOUT" "The scanner lands." "the unit is the sentence, not the line"
 }
 
+# ludics#815. GitHub's closing keywords do not read negation: lukstafi/ocannl-staging#1463's body
+# said "The PR does not close #1647" and its merge closed ahrefs/ocannl#1647. The negated mention
+# warns -- in the WARNING register, since it closes -- and never refuses; the line is its own. The
+# controls are the forms outside the allowlist the scan states (closekw.py's header): a word
+# between the negation and the keyword, a negation on the line above, and plain prose.
+test_a_negated_closing_mention_warns() {
+  reset
+  PR_BODY='Turns the GPU red green.
+
+The PR does not close #1647: its items 1 and 2 (find and fix, or state a boundary) remain open. Refs ahrefs/ocannl#1647.
+'
+  run_merge
+  assert_eq "$MERGE_RC" 0 "the warning is not a gate: the merge still lands ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_CALLS" "pr merge" "the merge call is still made"
+  assert_contains "$MERGE_STDOUT" "CLOSING-KEYWORD WARNING: $REPO#7's body closes issues it does not look" \
+    "warned on stdout, as a closing claim"
+  assert_contains "$MERGE_STDERR" "CLOSING-KEYWORD WARNING" "and on stderr"
+  assert_contains "$MERGE_STDOUT" "a NEGATED mention, which GitHub closes all the same, 1 issue(s): #1647" \
+    "naming the issue it closes"
+  assert_contains "$MERGE_STDOUT" "The PR does not close #1647: its items 1 and 2" "and the sentence"
+  assert_contains "$MERGE_STDOUT" "EDIT THE BODY now" "with the remedy"
+  reset
+  PR_BODY="This doesn't fix #31, won't resolve #32 and can’t close #33 either."
+  run_merge
+  assert_contains "$MERGE_STDOUT" "a NEGATED mention, which GitHub closes all the same, 3 issue(s): #31 #32 #33" \
+    "every allowlisted negation, the curly apostrophe included"
+  reset
+  PR_BODY='This does not yet close #41.
+
+It does not
+close #42.
+
+Leaves #43 open, and the fix for #44 is not here.
+'
+  run_merge
+  assert_eq "$MERGE_RC" 0 "the controls merge ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_OUTPUT" "CLOSING-KEYWORD" "a form outside the allowlist is not read"
+}
+
+# The same mention in a commit message closes once the commit reaches the default branch.
+test_a_negated_closing_mention_in_a_commit_warns() {
+  reset
+  SERIES_JSON="[$(commit_row head-sha 'Gate the divergences
+
+This does not close #1647.')]"
+  run_merge
+  assert_eq "$MERGE_RC" 0 "a commit finding is not a gate ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "commit head-sha: a NEGATED mention, and it closes all the same, 1 issue(s): #1647" \
+    "the series names the commit and the issue"
+  assert_contains "$MERGE_STDOUT" "reword the commit" "with the remedy a commit needs"
+}
+
 # The other half of #227, and the shape that closed #205 a SECOND time: a keyword inside a `> `
 # quote or a fenced block closes exactly as a statement does, so there ONE reference is already one
 # nobody meant to close. The single plain `Closes` line in the same body stays out of the report.
@@ -2961,6 +3013,8 @@ tests=(
   test_a_check_that_turns_red_during_the_wait_is_not_waived
   test_one_sentence_closing_two_issues_warns
   test_a_closing_keyword_in_a_quoted_or_fenced_line_warns
+  test_a_negated_closing_mention_warns
+  test_a_negated_closing_mention_in_a_commit_warns
   test_the_prescribed_shape_stays_silent
   test_an_unread_body_is_not_a_clean_body
   test_a_longer_fence_is_not_closed_by_an_inner_one

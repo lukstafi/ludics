@@ -260,12 +260,17 @@ use a non-closing reference (`Refs #N` or `Refs owner/repo#N`); reserve the clos
 the final PR that completes the issue. A closing keyword binds to every `#N` in the same
 sentence, so "Resolves #194 and #205 §1" closed #205 too (PR #210, 2026-09-17; #205 had to be
 reopened). A PR that only partially addresses a second issue references it in a separate
-sentence with no keyword: "Addresses part 1 of #205". `pr-review.sh merge` reads the body
+sentence with no keyword: "Addresses part 1 of #205". GitHub does not read negation either: "The
+PR does not close #1647" closed ahrefs/ocannl#1647 (ludics#815) — write "Refs #N" or "leaves #N
+open". `pr-review.sh merge` reads the body
 twice — once up front for lead time and once more immediately before the merge call, since a
 body stays editable through a `--wait` and editing it moves no head — and warns on both streams, naming the sentence and every issue, when one
 sentence carries a closing keyword and more than one `#N` or when a closing keyword sits in a
 quoted (`> …`) or fenced line, where an example closes exactly as a statement does (that is how
-#226's own body closed #205 a second time) — a warning and not a refusal, because one sentence
+#226's own body closed #205 a second time), or when a negation stands right before a keyword with
+a `#N` right after it — a line-shaped allowlist (`not`, `never`, `cannot` and the `n't`
+contractions, blanks only between; `closekw.py`'s header lists it and what it leaves unread: a word
+between, a line break, a quoted line, paraphrase) — a warning and not a refusal, because one sentence
 closing two issues is sometimes what was meant. Its two findings carry different weight on
 purpose. A sentence where two or more `#N` FOLLOW the keyword is read off the text alone and says
 outright what the merge closes — GitHub binds a keyword forward, to the references after it, so
@@ -679,7 +684,7 @@ head SHA, and answers with one of eight:
 
 | state | means | what to do |
 | --- | --- | --- |
-| `approved` | 👍 is on the PR and was given for this head, with no newer current-head running review or findings — or, with no 👍, a no-findings verdict comment naming this head, or the summary's Code Review row marking this head Completed after the 👀 with nothing posted since that 👀, or the summary's state record marking this head completed with no unresolved findings, with nothing posted since and no finding about this head — and no review thread left unresolved | merge |
+| `approved` | 👍 is on the PR and was given for this head, with no newer current-head running review or findings — or, with no 👍, a no-findings verdict comment naming this head, or a no-findings receipt naming no commit for the head that stood at the request it answers (below), or the summary's Code Review row marking this head Completed after the 👀 with nothing posted since that 👀, or the summary's state record marking this head completed with no unresolved findings, with nothing posted since and no finding about this head — and no review thread left unresolved | merge |
 | `unresolved` | that same 👍, over review threads still open — whatever head they cite | answer each thread and `resolve` it; `merge` refuses until none is open |
 | `reviewing` | the 👀 is newer than the reviewer's last word — a round really is in flight; or the summary's newest Code Review row is Running on this head, newer than the reviewer's last word and than any 👀: the round is aged from the row, not from a 👀 an older head's stuck round left up (ludics-lite#586), and a same-head rerun after findings or a no-findings verdict is not `idle` or `approved`. Only the newest summary's newest row is read, on every path: a Running row the reviewer has since written past holds no 👍 back (ludics-lite#752). A 👀 older than the head's arrival reads as the head's pickup while the head is younger than `watch`'s pickup margin (5 min), and as `stalled` after it | wait it out |
 | `stalled` | that 👀 (or that Running row, when it decides) has been up longer than a round takes and nothing was posted | `watch` nudges it itself, once per head, when nothing stands for the head. Outside a watch: read the feed first, then one `@codex review` if it holds no verdict and no 👍 for the head — never while a 👍 may stand |
@@ -739,6 +744,14 @@ you — read the feed, then push a new head or hand it over. `status` states the
 posts nothing. A row marked "✅ **Completed**" whose Commit cell is "—", its state record's
 `commit_sha` null, is the same run (ocannl-staging#1347, ludics-lite#787): it names no head, so
 it counts only when newer than the head's arrival and with nothing from the reviewer about the head.
+Unless the round closed WITH a verdict: a "Didn't find any major issues" receipt naming no commit
+(ocannl-staging#1424, ludics#815), the reviewer's newest word, is the verdict for the head current
+at the request it answers, and for no later head. The request is the one the summary's commit-less
+row names as its trigger — "Manual request", the newest `@codex review` before the receipt; "PR
+opened", the PR's creation — and the head is bound to it when it arrived (commit date read) at or
+before it. A head pushed between request and receipt, a "New commits" trigger, no summary row, or
+an unread commit date reads `expected`: a verdict for an unknown head, neither approval nor a failed
+run, so a round for the head is due.
 
 An empty `COMMENTED` review counts as no completed review unless its own inline-comments
 endpoint contains findings. This also excludes it from the convergence count; comments on another
