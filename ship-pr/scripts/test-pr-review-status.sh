@@ -2353,6 +2353,146 @@ test_a_commitless_row_outside_the_allowlist_is_not_read() {
   assert_not_contains "$(state_tok "$STATE")" failed "an older commit-less row under a newer one is not read"
 }
 
+# lukstafi/ocannl-staging#1424 (ludics#815), 2026-10-26: one head, 5f3a033, committed 09:44:19Z;
+# the PR opened 09:46:15Z; the worker asked '@codex review' at 10:21:23Z; at 10:24:02Z the reviewer
+# posted a no-findings receipt naming no commit, and its summary row flipped to Completed at
+# 10:24:03Z with an em dash for the commit and "Manual request" for the trigger. No 👀, no 👍.
+# `status` read the ludics-lite#787 failed run AGAIN, and `watch` advised a pointless new head.
+# Both bodies are the comments' own, read back from the API.
+RECEIPT_HEAD=5f3a0330fbc04d081dd84ed2bee493b9eabcff59
+RECEIPT_BODY=$(jq -r . <<'EOF'
+"<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues. :+1:\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n<br/>\n\n[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment \"@codex review\".\n\nIf Codex has suggestions, it will comment; otherwise it will react with 👍.\n\n\n\n\nCodex can also answer questions or update the PR. Try commenting \"@codex address that feedback\".\n            \n</details>"
+EOF
+)
+RECEIPT_SUMMARY_BODY=$(jq -r . <<'EOF'
+"<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"code_review\":{\"commit_sha\":null,\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":\"completed\"},\"security_review\":{\"commit_sha\":null,\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":null}} -->\n\n## Codex Review Summary\n\nThis comment shows the latest Codex review activity on this pull request.\n\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-10-26T10:24:03.723881Z\">2026-10-26T10:24:03.723881Z</relative-time> | — | Manual request |\n\n\n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n<br/>\n\n[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment \"@codex review\" or \"@codex security review\".\n\nCodex reacts with 👀 while any review is running, comments if it has suggestions, and reacts with 👍 once all reviews finish with no findings.\n\n</details>"
+EOF
+)
+
+receipt_summary() { # [summary body]
+  jq -cn --arg b "${1:-$RECEIPT_SUMMARY_BODY}" --arg rev "$REVIEWER" \
+    '{id:6412989521, user:{login:($rev + "[bot]")}, created_at:"2026-10-26T09:46:29Z",
+      updated_at:"2026-10-26T10:24:04Z", body:$b}'
+}
+
+receipt_fixture() { # [receipt body]
+  reset_fixture
+  HEAD_SHA="$RECEIPT_HEAD"
+  HEAD_AT=2026-10-26T09:44:19Z
+  PR_CREATED_AT=2026-10-26T09:46:15Z
+  COMMENTS_JSON="[$(receipt_summary),$(request_comment 6413661149 2026-10-26T10:21:23Z),$(
+    plain_comment 6413711632 2026-10-26T10:24:02Z "${1:-$RECEIPT_BODY}")]"
+}
+
+test_a_commitless_receipt_approves_the_head_at_its_request() {
+  receipt_fixture
+  run_status
+  assert_eq "$(state_tok "$STATE")" approved "staging#1424's receipt is the verdict for the head it was asked on"
+  assert_contains "$STATE" "no-findings receipt naming no commit at 2026-10-26T10:24:02Z" "the line names the receipt"
+  assert_contains "$STATE" "answering the '@codex review' request at 2026-10-26T10:21:23Z, after head 5f3a033 arrived at 2026-10-26T09:46:15Z" \
+    "and the request and arrival that bind it to the head"
+  assert_not_contains "$LINE" "FAILED" "the reading staging#1424 had before"
+  # The shape from before the receipt marker (ocannl-staging#27, 2026-06-05), another flourish.
+  receipt_fixture "${RECEIPT_BODY#<!-- codex-review-receipt:v1 -->$'\n\n'}"
+  run_status
+  assert_eq "$(state_tok "$STATE")" approved "the marker-less receipt is the same receipt"
+  receipt_fixture "${RECEIPT_BODY/:+1:/Already looking forward to the next diff.}"
+  run_status
+  assert_eq "$(state_tok "$STATE")" approved "a flourish is not read"
+  # The PR's opening is the request when no '@codex review' precedes the receipt: "PR opened".
+  receipt_fixture
+  COMMENTS_JSON="[$(receipt_summary "${RECEIPT_SUMMARY_BODY/Manual request/PR opened}"),$(
+    plain_comment 6413711632 2026-10-26T10:24:02Z "$RECEIPT_BODY")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" approved "the opening round's receipt is the opening head's verdict"
+  assert_contains "$STATE" "answering the PR's opening at 2026-10-26T09:46:15Z" "named as the opening"
+  # A 👀 the round left up under the receipt is that round.
+  receipt_fixture
+  REACTIONS_JSON="[$(reaction eyes 2026-10-26T10:21:30Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" approved "a 👀 older than the receipt does not outrank it"
+}
+
+# Every way out of the binding: never approved, and never the failed run it was read as.
+test_a_commitless_receipt_approves_no_other_head() {
+  receipt_fixture
+  HEAD_AT=2026-10-26T10:22:00Z
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a head pushed after the request is not approved by its receipt"
+  assert_contains "$STATE" "arrived at 2026-10-26T10:22:00Z, after the '@codex review' request at 2026-10-26T10:21:23Z" \
+    "the line says why the head does not read"
+  assert_contains "$STATE" "a verdict for an unknown head" "and what the receipt is then"
+  assert_not_contains "$LINE" "FAILED" "never the failed run"
+  HEAD_AT=""
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a commit date that does not read binds the receipt to no head"
+  assert_contains "$STATE" "commit date does not read" "and says so"
+  receipt_fixture
+  COMMENTS_JSON="[$(request_comment 6413661149 2026-10-26T10:21:23Z),$(
+    plain_comment 6413711632 2026-10-26T10:24:02Z "$RECEIPT_BODY")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "with no summary row, the request it answers is not recorded"
+  receipt_fixture
+  COMMENTS_JSON="[$(receipt_summary "${RECEIPT_SUMMARY_BODY/Manual request/New commits}"),$(
+    request_comment 6413661149 2026-10-26T10:21:23Z),$(plain_comment 6413711632 2026-10-26T10:24:02Z "$RECEIPT_BODY")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a push-triggered round names no head it reviewed"
+  receipt_fixture
+  COMMENTS_JSON="[$(receipt_summary "${RECEIPT_SUMMARY_BODY//10:24:03.723881Z/10:24:01.5Z}"),$(
+    request_comment 6413661149 2026-10-26T10:21:23Z),$(plain_comment 6413711632 2026-10-26T10:24:02Z "$RECEIPT_BODY")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a row older than the receipt is not the round it closed"
+  # A head that arrived after the receipt: an earlier head's verdict, read as before.
+  receipt_fixture
+  HEAD_AT=2026-10-26T10:30:00Z
+  run_status
+  assert_not_contains "$(state_tok "$STATE")" approved "a receipt older than the head is an earlier head's"
+  assert_not_contains "$STATE" "unknown head" "and not this head's at all"
+  # Anything newer than the receipt outranks it.
+  receipt_fixture
+  COMMENTS_JSON="${COMMENTS_JSON%]},$(request_comment 6413800000 2026-10-26T10:25:00Z)]"
+  run_status
+  assert_not_contains "$(state_tok "$STATE")" approved "a request since the receipt asks for a round still due"
+  receipt_fixture
+  REACTIONS_JSON="[$(reaction eyes "$(clock_at -60)")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" reviewing "a 👀 since the receipt is a round to wait out"
+  receipt_fixture
+  REVIEWS_JSON="[$(review 6 "$RECEIPT_HEAD" 2026-10-26T10:25:00Z)]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" idle "a review since the receipt is the reviewer's newer word"
+}
+
+test_a_commitless_receipt_outside_the_allowlist_is_not_read() {
+  local body
+  for body in "$RECEIPT_BODY
+P.S. one more thing" \
+              "${RECEIPT_BODY/:+1:/:+1:
+
+A paragraph the receipt does not carry.}" \
+              "${RECEIPT_BODY/Codex Review: /}" \
+              "${RECEIPT_BODY/<br\/>/<details>a second block</details>}"; do
+    receipt_fixture "$body"
+    run_status
+    assert_not_contains "$(state_tok "$STATE")" approved "a body outside the receipt's shape is no receipt: ${body:0:60}"
+  done
+  # A receipt stamped with another commit is that commit's verdict, never this head's.
+  receipt_fixture "${RECEIPT_BODY/:+1:/:+1:
+
+**Reviewed commit:** \`777a7f5\`}"
+  run_status
+  assert_not_contains "$(state_tok "$STATE")" approved "a stamp naming another commit is not read as commit-less"
+}
+
+test_watch_reads_a_commitless_receipt_as_the_approval_it_is() {
+  receipt_fixture
+  run_watch 0,1,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "nothing is posted"
+  assert_contains "$WATCH_OUT$WATCH_ERR" "approved" "the watch reports the approval"
+  assert_not_contains "$WATCH_OUT$WATCH_ERR" "FAILED" "not the failed run staging#1424's worker was told of"
+  assert_not_contains "$WATCH_OUT$WATCH_ERR" "push a new head" "and no new head is advised"
+}
+
 test_watch_re_requests_a_commitless_completed_row_once() {
   retune GRACE=2
   commitless_fixture
@@ -2534,6 +2674,10 @@ tests=(
   test_a_commitless_completed_row_is_a_failed_run
   test_a_commitless_completed_row_needs_the_head_and_a_silent_reviewer
   test_a_commitless_row_outside_the_allowlist_is_not_read
+  test_a_commitless_receipt_approves_the_head_at_its_request
+  test_a_commitless_receipt_approves_no_other_head
+  test_a_commitless_receipt_outside_the_allowlist_is_not_read
+  test_watch_reads_a_commitless_receipt_as_the_approval_it_is
   test_a_broken_jq_program_is_unknown_on_the_request_read
   test_watch_re_requests_a_failed_run_once
   test_watch_re_requests_a_commitless_completed_row_once

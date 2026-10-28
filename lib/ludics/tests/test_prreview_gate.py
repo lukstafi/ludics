@@ -213,6 +213,23 @@ class ClosingKeywords(unittest.TestCase):
         self.assertEqual(self.found("Ceci fix\u00e9s #665 et #666."), [])
         self.assertEqual(self.found("Closes #650 and #651 in release 3.5 of the tool"), [("sentence", 2, "#650 #651")])
 
+    def test_a_negated_mention_and_its_boundary(self) -> None:
+        # ocannl-staging#1463's sentence, which closed ahrefs/ocannl#1647 (ludics#815).
+        self.assertEqual(self.found("The PR does not close #1647: its items 1 and 2 remain open."),
+                         [("negated", 1, "#1647")])
+        self.assertEqual(self.found("Doesn't fix #5. NEVER resolves: #6. Cannot close other/x#7."),
+                         [("negated", 1, "#5"), ("negated", 1, "#6"), ("negated", 1, "other/x#7")])
+        self.assertEqual(self.found("It isn\u2019t closing #8 and won\u2019t close #9"), [("negated", 1, "#9")])
+        # The keyword's own finding stands beside it.
+        self.assertEqual(self.found("does not close #10 and #11"),
+                         [("sentence", 2, "#10 #11"), ("negated", 1, "#10")])
+        # Outside the allowlist: a word between, a line break, no reference at once, quoting.
+        self.assertEqual(self.found("does not yet close #12. Not to close #13. Not\nclose #14"), [])
+        self.assertEqual(self.found("does not close the #15 thread; does not close #16abc"), [])
+        self.assertEqual(self.found("> does not close #17"), [("quoted", 1, "#17")])
+        self.assertEqual(self.found("    does not close #18", plain=True), [("quoted", 1, "#18")])
+        self.assertEqual(self.found("knot close #19. Cannotfix #20."), [])
+
     def test_control_bytes_are_shown_not_run(self) -> None:
         [finding] = closekw.scan("Closes #709 and #710\x1b[2K\rFORGED", "example/repo", False)
         self.assertEqual(finding.sentence, "Closes #709 and #710?[2K?FORGED")
