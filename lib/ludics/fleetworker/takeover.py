@@ -131,7 +131,8 @@ fi
 printf 'head=%s\nbranch=%s\ndirty=%s\n' "$head" "$branch" "$dirty"
 """
 
-# Far side, on agent_host: each run under the parent, tab, bg-run's verdict line.
+# Far side, on agent_host: each run under the parent, tab, bg-run's verdict line, shown as wait prints
+# it (a finished run's `rc=<n> (finished earlier, at <time>)`, ludics-lite#816, says when it ended).
 RUNS = r"""
 d=$(expand_tilde "$1")
 [ -d "$d" ] || { printf 'none\t%s\n' "$d"; exit 0; }
