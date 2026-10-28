@@ -149,14 +149,16 @@ a SIGTERM, SIGINT or SIGHUP to it (``bg-run.sh stop`` signals the run's whole gr
 the far side too, where until #767 it ran on holding the worktree's lock: the leg starts ``STOP`` on
 the box in a session of its own (so the stop's group signals do not cut it), which, once the pid
 still carries the token, sends SIGTERM to the far shell (in its setup this ends it; during the runs
-a trap defers it, as it defers INT and HUP, which reach it directly when the box is the caller's
-own) and, every second for up to 30 s, to the far shell's ``execution slot`` or
+a trap defers it, and INT and HUP) and, every second for up to 30 s, to the far shell's ``execution slot`` or
 ``execution hold`` child, the wrapper, which ends the runner's process group and dies (group.py, THE
 SIGNALLED WRAPPER). The far shell then winds down as after any ended run -- the control reverted,
 its files removed -- even with its connection gone, since it ignores SIGPIPE once the wrapper has
 returned. The leg waits up to 8 s for the stop's report, then dies of the signal it got; a second
 signal ends it at once. The boundary: only a signal the leg receives while it streams reaches the
-far side. A SIGKILL of the leg, a dropped connection, and a box that ssh cannot reach at stop time
+far side. On the caller's own box the far shell runs in a session of its own, as over ssh, so a
+signal aimed at the leg's group reaches it only through the stop (ludics-lite#816: until then the
+group signal reached the wrapper before the far stop could see its tree, THE ESCAPED). A SIGKILL of
+the leg, a dropped connection, and a box that ssh cannot reach at stop time
 (``EXECUTION LEG STOP UNREACHABLE``, which prints the pid and the command that ends it there) leave
 the runner running, as UNREACHABLE says. A stop in the far side's setup ends its shell, and a git
 command it started finishes on its own; its private ref and staged patch are left. The stop reads
@@ -492,9 +494,9 @@ git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
 exit 0
 FLEET_LEG_RUNS
 # THE STOP (see the header): a TERM to this shell while the wrapper runs is deferred by the trap,
-# never cutting a run; the stop ends the wrapper instead. INT and HUP too: on the caller's own box
-# this shell shares the leg's process group, so a Ctrl-C or a hangup aimed at the leg reaches it as
-# well as the wrapper, and it must still wind down. A trap with a command is not inherited, so
+# never cutting a run; the stop ends the wrapper instead. INT and HUP too: a Ctrl-C or a hangup
+# that reaches this shell directly (a far side started without the leg's stop armed, sharing its
+# caller's group) must still let it wind down. A trap with a command is not inherited, so
 # the wrapper and the runner get these signals at their defaults. Once the wrapper has returned this shell ignores
 # SIGPIPE (never before: an ignored signal would be the runner's too), so a connection that is gone
 # does not end it before the control is reverted and its files are removed.
@@ -1067,7 +1069,11 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
                 previous[sig] = signal.signal(sig, stopped)
         spawning = True
         try:
-            child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+            # On the caller's own box the far shell gets a session of its own, as ssh's far side has
+            # (THE ESCAPED): a group signal aimed at the leg must not reach the wrapper before the far
+            # stop has seen its tree. Only where the stop is armed, which then reaches it.
+            child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
+                                     start_new_session=local and bool(previous))
         except OSError as exc:
             sys.stderr.write(f"{argv[0]}: {exc.strerror}\n")
             return 127
@@ -1111,7 +1117,8 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
         if far_pid is None and child is not None and child.stdout is not None:
             # The far shell's first line is its pid: read it if it is already written (up to
             # ANNOUNCED seconds). With none, on the caller's box this is the far shell before its
-            # first line, which nothing else has started, and over ssh the client.
+            # first line, which nothing else has started (in its own session, so a group signal did
+            # not reach it), and over ssh the client.
             try:
                 announced(child.stdout.fileno(), ANNOUNCED)
             except OSError:

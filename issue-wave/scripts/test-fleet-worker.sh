@@ -3499,6 +3499,24 @@ grep -q "^EXECUTION LEG testbox: created $hwt at $lb " <<<"$out" && grep -q "^ex
 expect "...and moves an existing one to another commit, the --checkout named" 0 "^EXECUTION LEG testbox: refreshed $hwt at $la " -- \
   "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" --rev "$la" --checkout "$lco" -- git rev-parse HEAD
 grep -qx "$la" <<<"$out" && ok "...where the command runs (git rev-parse HEAD reads $la)" || ko "the moved hold's command: $out"
+# ...and stopped, it ends what its command left in a group of its own: on the caller's own box the
+# far shell has a session of its own, so the group stop does not tear the wrapper down before the
+# far stop has seen its tree (THE ESCAPED).
+rm -f "$TMP/hold-esc.pid"
+hst=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" spawn "$TMP/leg runs" -- "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" \
+  --rev "$la" --checkout "$lco" -- sh -c 'perl -e "setpgrp(0, 0); exec qw(sleep 120)" & echo $! > "$1"; exec sleep 120' x "$TMP/hold-esc.pid")
+for i in $(seq 150); do [ -s "$TMP/hold-esc.pid" ] && break; sleep 0.2; done
+if [ -s "$TMP/hold-esc.pid" ]; then
+  hesc=$(cat "$TMP/hold-esc.pid")
+  expect "bg-run.sh stop on a hold --worktree whose command left a process in a group of its own stops it" 0 "^STOPPED $hst: process group" -- \
+    bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" stop "$hst"
+  for i in $(seq 200); do grep -q "^EXECUTION LEG STOP testbox: the leg's run has ended: process(es) $hesc too (TERM)$" "$hst/log" && break; sleep 0.2; done
+  grep -q "^EXECUTION LEG STOP testbox: the leg's run has ended: process(es) $hesc too (TERM)$" "$hst/log" &&
+    ok "...the far stop ended the escaped process, said in the run's log" || ko "the stopped hold left its escaped process: $(cat "$hst/log")"
+  case "$(ps -o stat= -p "$hesc" 2>/dev/null)" in ''|Z*) ok "...the escaped process is gone" ;; *) ko "...the escaped process $hesc still runs"; kill "$hesc" 2>/dev/null ;; esac
+else
+  ko "the escaping hold never wrote its child's pid: $(cat "$hst/log")"
+fi
 expect "execution hold --worktree needs --rev" 2 "execution hold: --worktree takes --rev and --request" -- \
   "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" -- true
 expect "...and --request" 2 "execution hold: --worktree takes --rev and --request" -- \
