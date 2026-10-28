@@ -653,8 +653,19 @@ if [ -n "$STALE_BASE_PR" ]; then
   pr=$(api "repos/$REPO/pulls/$STALE_BASE_PR")
   pin "the anchor PR #$STALE_BASE_PR is merged, with a merge_commit_sha, a base.sha, a head.sha and a base.ref" \
     "(.merged == true) and (.merge_commit_sha | test(\"$HEX40\")) and (.base.sha | test(\"$HEX40\")) and (.head.sha | test(\"$HEX40\")) and (.base.ref | type == \"string\" and length > 0)" "$pr"
-  pin "a merged PR's mergeability is not computed: mergeable present and null, mergeable_state 'unknown'" \
-    'has("mergeable") and .mergeable == null and .mergeable_state == "unknown"' "$pr"
+  # What a merged PR's mergeability must not say, rather than what it says (ludics#818). Until
+  # 2026-10-27 GitHub left it uncomputed (null, 'unknown'); since then it computes it (#53 and
+  # every merged PR sampled: true with 'clean', or 'unstable'). The gate reads mergeability to
+  # REFUSE, and reads it on PRs that can merge under it: conflict_preflight refuses on false or
+  # dirty, await_mergeable (a merge call refused as "not mergeable", then re-read) exits 1 on
+  # false, and status's CONFLICTS line renders dirty. On a PR that merged meanwhile a false or a
+  # dirty would be a false refusal; true sends await_mergeable's caller to retry the call, which gh,
+  # finding the PR merged, ends 0 without a merge request, and confirm() reads merged=true; null
+  # ends it 3, "still computing". So both shapes GitHub has served are safe, and the claim is the
+  # one the readers rest on: present, never false, and a state in the vocabulary other than dirty.
+  pin "a merged PR's mergeability never reads as a conflict: mergeable present, true or null, and mergeable_state in the vocabulary, not 'dirty' (what conflict_preflight, await_mergeable and status refuse on)" \
+    'has("mergeable") and (.mergeable == true or .mergeable == null) and (.mergeable_state as $s | $v | index([$s])) != null and .mergeable_state != "dirty"' \
+    "$pr" --argjson v "$MERGEABLE_STATE_VOCAB"
   base_sha=$(jq -r '.base.sha // empty' <<<"$pr")
   merge_sha=$(jq -r '.merge_commit_sha // empty' <<<"$pr")
   head_sha=$(jq -r '.head.sha // empty' <<<"$pr")

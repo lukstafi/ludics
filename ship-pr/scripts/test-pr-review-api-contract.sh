@@ -214,9 +214,11 @@ world_healthy() {
   answer "$R/commits/$TIP/check-runs?filter=all&per_page=100" \
     "{\"total_count\":3,\"check_runs\":[$(check_run 502 test 402 success),$(check_run 501 test 401 failure),$(check_run 500 test 401 cancelled)]}"
 
-  # The stale-base anchor #7, merge-merged behind a sibling.
+  # The stale-base anchor #7, merge-merged behind a sibling. Its mergeability is the computed
+  # shape GitHub serves for a merged PR since 2026-10-27 (ludics#818); the uncomputed one it served
+  # before is a case of its own below.
   answer "$R/pulls/7" "{\"number\":7,\"merged\":true,\"merged_at\":\"2026-09-20T10:00:00Z\",\"merge_commit_sha\":\"$M7\",
-    \"base\":{\"sha\":\"$B7\",\"ref\":\"main\"},\"head\":{\"sha\":\"$H7\"},\"mergeable\":null,\"mergeable_state\":\"unknown\",\"commits\":2}"
+    \"base\":{\"sha\":\"$B7\",\"ref\":\"main\"},\"head\":{\"sha\":\"$H7\"},\"mergeable\":true,\"mergeable_state\":\"clean\",\"commits\":2}"
   answer "$R/pulls/7/commits?per_page=100" \
     "[{\"sha\":\"$C7\",\"commit\":{\"message\":\"first\"}},{\"sha\":\"$H7\",\"commit\":{\"message\":\"second\"}}]"
   answer "$R/commits/$M7" "{\"sha\":\"$M7\",\"parents\":[{\"sha\":\"$P1\"},{\"sha\":\"$H7\"}],
@@ -521,7 +523,7 @@ ok    every check run filter=all has that filter=latest lacks (1, with 0 created
 ok    every run row carries a numeric check_suite_id (the join to a check run's check_suite.id)
 ok    every github-actions check run of the tip's newest 10 runs is named after a job of ITS run (the advisory deny-list matches JOB names), on 2 check runs
 ok    the anchor PR #7 is merged, with a merge_commit_sha, a base.sha, a head.sha and a base.ref
-ok    a merged PR's mergeability is not computed: mergeable present and null, mergeable_state 'unknown'
+ok    a merged PR's mergeability never reads as a conflict: mergeable present, true or null, and mergeable_state in the vocabulary, not 'dirty' (what conflict_preflight, await_mergeable and status refuse on)
 ok    pulls/<n>/commits serves as many rows as the PR's .commits, oldest first, each with a sha and a string commit.message, the last one the PR's head (warn_series_close's shape)
 ok    the merge commit's second parent is the PR's head
 ok    GitHub's merge commit is committed by noreply@github.com with a verified signature (tip_pr_head_verdict's clean-merge test)
@@ -609,6 +611,18 @@ test_a_squash_merged_anchor_skips_the_second_parent_claims() {
   assert_nothing_left "a squash-anchor run"
 }
 
+# The uncomputed shape GitHub served for a merged PR until 2026-10-27 (null, 'unknown') holds the
+# merged-mergeability claim as the computed one does (ludics#818): no reader refuses on it, so a
+# return to it is not drift. The claim moves on what they refuse on, the doctored rows below.
+test_a_merged_anchor_s_uncomputed_mergeability_still_holds() {
+  world_healthy
+  doctor "repos/$REPO/pulls/7" '.mergeable = null | .mergeable_state = "unknown"'
+  run_contract
+  assert_eq "$CONTRACT_RC" 0 "a merged anchor answering null/'unknown' should move no belief ($CONTRACT_ERR)"
+  assert_contains "$(verdicts)" "ok    a merged PR's mergeability never reads as a conflict" "the merged-mergeability claim should pin"
+  assert_nothing_left "an uncomputed-anchor run"
+}
+
 # One response moved at a time, each a field or a word some projection reads: the pin that names
 # it must say MOVED, and it alone, and the run must end 1 with every other claim still made.
 # The review-state row is the #278 shape: a vocabulary pin that cannot fail passed {state:
@@ -624,6 +638,10 @@ test_a_doctored_response_moves_its_pin_and_only_it() {
     "$R/commits/$TIP/check-runs?filter=latest&per_page=100^.check_runs[0].conclusion = \"surprise\"^MOVED check-run conclusions are in the vocabulary" \
     "$R/commits/$TIP/check-runs?filter=latest&per_page=100^.check_runs[1].conclusion = null^MOVED every check run carries a status string, never \"completed\" while its conclusion is null" \
     "$R/commits/$M7^.commit.verification.verified = false^MOVED GitHub's merge commit is committed by noreply@github.com" \
+    "$R/pulls/7^.mergeable = false^MOVED a merged PR's mergeability never reads as a conflict" \
+    "$R/pulls/7^.mergeable_state = \"dirty\"^MOVED a merged PR's mergeability never reads as a conflict" \
+    "$R/pulls/7^del(.mergeable)^MOVED a merged PR's mergeability never reads as a conflict" \
+    "$R/pulls/7^.mergeable_state = \"surprise\"^MOVED a merged PR's mergeability never reads as a conflict" \
     "$R/pulls/12^.mergeable_state = \"surprise\"^MOVED ... and a mergeable_state in the vocabulary" \
     "$R/pulls/9/reviews?per_page=100^.[2].state = \"surprise\"^MOVED the app's review states are in the vocabulary" \
     "$R/pulls/9/comments?per_page=100^.[1] |= del(.original_line)^MOVED inline comments carry numeric id" \
@@ -727,6 +745,7 @@ tests=(
   test_the_exit_trap_cleans_up_and_names_an_unchosen_exit
   test_a_healthy_world_pins_what_it_can_and_skips_the_rest
   test_a_squash_merged_anchor_skips_the_second_parent_claims
+  test_a_merged_anchor_s_uncomputed_mergeability_still_holds
   test_a_doctored_response_moves_its_pin_and_only_it
   test_a_moved_wrapper_is_one_moved_and_its_rows_skip
   test_an_unanswered_api_exits_3_and_leaves_nothing_behind
