@@ -122,16 +122,21 @@ key_pair_matches() {
   [[ -n $priv && $priv == "$pub" ]]
 }
 
+# clone_if_missing <repo> <dest> [<former name of repo>...]: a checkout whose origin still names
+# a former name (GitHub redirects it) is the same repository.
 clone_if_missing() {
-  local repo=$1 dest=$2
+  local repo=$1 dest=$2 slug
   if [[ -e $dest || -L $dest ]]; then
     [[ -d $dest/.git || -f $dest/.git ]] || fail "$dest exists but is not a checkout. Move it aside yourself."
     local origin
     origin=$(git -C "$dest" remote get-url origin)
-    case "$origin" in
-      "https://github.com/$repo"|"https://github.com/$repo.git"|"git@github.com:$repo.git") ;;
-      *) fail "Unexpected origin at $dest: $origin" ;;
-    esac
+    for slug in "$repo" "${@:3}"; do
+      case "$origin" in
+        "https://github.com/$slug"|"https://github.com/$slug.git"|"git@github.com:$slug.git") break ;;
+      esac
+      slug=
+    done
+    [[ -n $slug ]] || fail "Unexpected origin at $dest: $origin"
     printf 'Keeping existing checkout: %s (no reset/pull)\n' "$dest"
   else
     git clone "https://github.com/$repo.git" "$dest"
@@ -771,7 +776,7 @@ main() {
   installer codex https://chatgpt.com/codex/install.sh sh
   installer claude https://claude.ai/install.sh bash
   installer bun https://bun.com/install bash
-  clone_if_missing lukstafi/ludics "$HOME/ludics"
+  clone_if_missing lukstafi/ludics "$HOME/ludics" lukstafi/ludics-lite
   local skill
   for skill in ship-pr wait-and-proceed after-merge issue-wave; do
     [[ -f $HOME/ludics/$skill/SKILL.md ]] || fail "Missing skill: $skill"

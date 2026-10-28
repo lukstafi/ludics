@@ -152,6 +152,10 @@ class BootstrapSafety(unittest.TestCase):
         self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/other/repo.git; clone_if_missing lukstafi/ludics "$PWD/repo"', False)
         self.assertTrue((self.root / 'repo/.git').is_dir())
 
+    def test_former_repository_name_accepted(self):
+        self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/lukstafi/ludics-lite.git; clone_if_missing lukstafi/ludics "$PWD/repo" lukstafi/ludics-lite')
+        self.run_shell('git init -q repo2; git -C repo2 remote add origin https://github.com/lukstafi/ludics-lite.git; clone_if_missing lukstafi/ludics "$PWD/repo2"', False)
+
     def test_dirty_repository_preserved(self):
         self.run_shell('git init -q repo; git -C repo remote add origin https://github.com/lukstafi/ludics.git; echo KEEP > repo/local; clone_if_missing lukstafi/ludics "$PWD/repo"')
         self.assertEqual((self.root / 'repo/local').read_text(), 'KEEP\n')
