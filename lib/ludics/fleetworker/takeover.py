@@ -29,7 +29,9 @@ What it reads, and nothing else (the boundary): the board (``board show --json``
 lock, no lease); the brief, a file on brief_host; on agent_host, the worktree's HEAD, branch and
 uncommitted-path count (``git --no-optional-locks``, so no index refresh is written under a live
 worker; a status that fails reads unreadable, never clean), and ``bg-run.sh wait <dir> --within 0`` for each ``run-<N>`` under ``runs``
-(the box's own skills checkout's bg-run.sh); GitHub, ``gh pr view`` of ``pr``, or with no ``pr`` a
+-- the coordinator's own bg-run.sh, carried in the script as ``conclude --from-bg-run``'s and
+``tip-run --wait``'s far sides carry it, never agent_host's skills checkout's copy, so the line
+every run prints is the one ``ludics.bgrun`` reads; GitHub, ``gh pr view`` of ``pr``, or with no ``pr`` a
 ``gh pr list --head <branch>`` printed as a lookup by branch, never as the row's; and the execution
 registry's records for this wave and ``worker``, every state but ``concluded``, beside the ids the row
 names. A live reading that disagrees with the row (another branch) is printed as a conflict; it never
@@ -55,7 +57,16 @@ from typing import Any, cast
 from ludics import bgrun, cli, proc
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.transport import PAYLOAD_ON_FD, err, fleet_name, prelude, run_on
+from ludics.fleetworker.transport import (
+    BG_RUN_TAG,
+    PAYLOAD_ON_FD,
+    bg_run_path,
+    carried_bg_run,
+    err,
+    fleet_name,
+    prelude,
+    run_on,
+)
 
 USAGE = "board takeover <wave> <task>"
 
@@ -134,14 +145,21 @@ printf 'head=%s\nbranch=%s\ndirty=%s\n' "$head" "$branch" "$dirty"
 # Far side, on agent_host: each run under the parent, tab, wait's exit, tab, bg-run's verdict line.
 # The line is shown as wait prints it (a finished run's `rc=<n> (finished earlier, at <time>)`,
 # ludics-lite#816, says when it ended) once ludics.bgrun reads a verdict in it that is the exit's.
-RUNS = r"""
+# The bg-run.sh that waits is the coordinator's, carried in the script (transport's THE CARRIED
+# BG-RUN.SH) and written once to a scratch file for the loop, never the box's own checkout's: so the
+# line is printed by the version ludics.bgrun reads. RUNS_HEAD + ``carried_bg_run`` + RUNS_TAIL.
+RUNS_HEAD = r"""
 d=$(expand_tilde "$1")
 [ -d "$d" ] || { printf 'none\t%s\n' "$d"; exit 0; }
-bg="$(expand_tilde "$SKILLS_REPO")/issue-wave/scripts/bg-run.sh"
-[ -r "$bg" ] || { printf 'nobg\t%s\n' "$bg"; exit 0; }
+scratch="${TMPDIR:-/tmp}"
+bg=$(mktemp "$scratch/fw-takeover-bg-run.XXXXXX") || { printf 'noscratch\t%s\n' "$scratch"; exit 0; }
+trap 'rm -f "$bg"' EXIT
+cat > "$bg" <<'""" + BG_RUN_TAG + """' || { printf 'noscratch\t%s\n' "$scratch"; exit 0; }
+"""
+RUNS_TAIL = r"""
 for r in "$d"/run-*; do
   [ -d "$r" ] || continue
-  v=$(BG_RUN_HEARTBEAT=0 bash "$bg" wait "$r" --within 0 2>/dev/null); e=$?
+  v=$(BG_RUN_HEARTBEAT=0 bash "$bg" wait "$r" --within 0 2>/dev/null </dev/null); e=$?
   printf '%s\t%s\t%s\n' "$r" "$e" "$(printf '%s\n' "$v" | head -n 1)"
 done
 """
@@ -353,7 +371,12 @@ def run_lines(cfg: Config, keys: dict[str, str]) -> list[str]:
     if "runs" not in keys or "agent_host" not in keys:
         return ["- not read: the row lacks a valid runs or agent_host"]
     host = keys["agent_host"]
-    done = run_on(cfg, host, prelude(cfg, host) + RUNS, [keys["runs"]], capture=True)
+    bg = bg_run_path(cfg)
+    try:
+        carried = carried_bg_run(bg)
+    except OSError as exc:
+        return [f"- not read: the coordinator's {bg} could not be read ({exc.strerror})"]
+    done = run_on(cfg, host, prelude(cfg, host) + RUNS_HEAD + carried + RUNS_TAIL, [keys["runs"]], capture=True)
     if done.unreachable:
         return [f"- {host} did not answer"]
     rows = [line.split("\t", 2) for line in done.out.splitlines() if "\t" in line]
@@ -361,8 +384,8 @@ def run_lines(cfg: Config, keys: dict[str, str]) -> list[str]:
         return [f"- unreadable on {host} (exit {done.rc})"]
     if rows and rows[0][0] == "none":
         return [f"- no directory {rows[0][1]} on {host}"]
-    if rows and rows[0][0] == "nobg":
-        return [f"- not read: no {rows[0][1]} on {host}"]
+    if rows and rows[0][0] == "noscratch":
+        return [f"- not read: no scratch file for bg-run.sh could be made under {rows[0][1]} on {host}"]
     if not rows:
         return [f"- no run-<N> under {keys['runs']} on {host}"]
 

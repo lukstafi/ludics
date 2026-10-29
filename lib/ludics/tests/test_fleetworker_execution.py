@@ -27,7 +27,7 @@ from ludics.fleetworker.execution import (
     window_payload,
 )
 from ludics.fleetworker.gate import integration_rows
-from ludics.fleetworker.transport import PAYLOAD_ON_FD
+from ludics.fleetworker.transport import PAYLOAD_ON_FD, carried_bg_run
 from ludics.tests.fake import Answer, FakeTool
 
 SHA = "a" * 40
@@ -152,8 +152,7 @@ class FromBgRunFarSide(unittest.TestCase):
         for name, text in files.items():
             with open(os.path.join(root, name), "w") as f:
                 f.write(text)
-        with open(self.BG_RUN, encoding="utf-8") as f:
-            script = "BOX=testbox\n" + execution.FROM_BG_RUN_HEAD + f.read() + execution.FROM_BG_RUN_TAIL
+        script = "BOX=testbox\n" + execution.FROM_BG_RUN_HEAD + carried_bg_run(self.BG_RUN) + execution.FROM_BG_RUN_TAIL
         done = subprocess.run(["bash", "-c", script, "far", root], capture_output=True, text=True, check=False,
                               env={**os.environ, "BG_RUN_HEARTBEAT": "0"})
         return done.stdout
