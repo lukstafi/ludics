@@ -23,7 +23,9 @@ followed by the end of the line, a blank, ``]``, ``)``, ``;``, ``&``, ``|``, a b
      operand; or any ``grep`` with a quoted ``^<token>$``;
   4. a ``case`` arm (after ``in``, after the ``;;``, ``;&`` or ``;;&`` ending the arm before it, or
      at a line's start; optionally opened by ``(``) one of whose
-     ``|``-separated patterns is that operand, closed by ``)``.
+     ``|``-separated patterns is that operand, closed by ``)`` -- the patterns before it read as
+     quoted runs (blanks inside them included) and unquoted characters other than a blank, ``|``
+     or a parenthesis.
 
 A form is flagged whatever the other operand is, an already-cut first word (``${said%% *}``)
 included: the scanner reads shapes, not values, so such a read is spelled as a prefix pattern
@@ -78,6 +80,9 @@ _OPERAND = _PREFIX + r"(?P<q>[\"']?)" + _TOKEN + r"(?P=q)"
 # On the left of the operator: a quoted operand wherever it stands, a bare one not inside a longer
 # word (``x.RUNNING``, ``$RUNNING``, ``my-RUNNING``).
 _LEFT = r"(?:" + _PREFIX + r"(?P<q>[\"'])" + _TOKEN + r"(?P=q)|(?<![\w$.\-])" + _TOKEN + r")"
+# One case pattern before the operand: quoted runs (blanks and all) and unquoted characters other
+# than a blank, ``|`` or a parenthesis.
+_PATTERN = r"""(?:"[^"]*"|'[^']*'|[^\s|()"'])+"""
 _END = r"(?=$|[\s\]);&|`:,])"
 
 FORMS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -94,7 +99,7 @@ FORMS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     ("an anchored grep match", re.compile(r"\bgrep\b[^|;&]*\s(?P<q>[\"'])\^" + _TOKEN + r"\$(?P=q)")),
-    ("a case arm", re.compile(r"(?:\bin\s+\(?|;[;&]&?\s*\(?|^\s*\(?)(?:[^\s|()]+\s*\|\s*)*" + _OPERAND + r"\s*[|)]")),
+    ("a case arm", re.compile(r"(?:\bin\s+\(?|;[;&]&?\s*\(?|^\s*\(?)(?:" + _PATTERN + r"\s*\|\s*)*" + _OPERAND + r"\s*[|)]")),
 )
 
 
