@@ -339,6 +339,21 @@ run_status() {
   LINE=$(py_forward call status-line "$STATE")
 }
 
+# --- the fixture itself -------------------------------------------------------------------------
+
+# A schedule holds until the case schedules a later round (the #824 worker's trap): a case that
+# schedules round 0 only is served that answer by every poll too. reset_fixture used to schedule
+# every feed's round 1 as '[]', which overrode such a case in silence -- the opening state read
+# the comment, the first poll read an empty feed, and the window ended quiet on a fixture that
+# never served what the case said it did.
+test_a_round_zero_schedule_holds_through_the_polls() {
+  reset_fixture
+  schedule comments 0 "[$(summary_comment 700 2026-09-01T00:01:00Z 'Codex Review: no commit named here')]"
+  run_watch 0,0,0
+  assert_eq "$WATCH_RC" 0 "the comment scheduled from round 0 reaches the first poll, and ends the wait"
+  assert_contains "$WATCH_OUT" "--- summary id=700 commit=-" "the poll renders the round-0 comment"
+}
+
 # --- what ends the wait -------------------------------------------------------------------------
 
 # The shape the issue was filed on: the reviewer's summary review for the PREVIOUS head, sitting
@@ -2713,6 +2728,7 @@ test_a_draft_or_conflicted_pr_is_not_nudged() {
 }
 
 tests=(
+  test_a_round_zero_schedule_holds_through_the_polls
   test_a_pr_made_a_draft_at_the_write_gate_is_not_nudged
   test_a_push_at_the_write_gate_is_held
   test_a_head_read_after_an_outage_gets_the_pickup_margin_again
