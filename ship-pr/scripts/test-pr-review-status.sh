@@ -952,14 +952,17 @@ test_watch_requests_over_the_initialization_failure_once() {
   assert_contains "$WATCH_ERR" "fresh review nudge; waiting for pickup" "and then waits out the request's grace"
   assert_not_contains "$WATCH_OUT" "FAILED" "the failure it answered is not the verdict"
   assert_contains "$WATCH_OUT" "watermark: " "the watch still ends on a watermark"
-  # The first window, where the comment is itself the new activity: the round prints, and the
-  # status context beside it already says what the comment means.
+  # The first window, where the comment is itself the new activity (ludics#824): it is not a
+  # round, so the window prints it for the record and posts the same one request instead of
+  # ending on it with "`watch` posts it itself" and no post.
   failed_fixture "$FAILED_HEAD"
-  run_watch 0,0,0
-  assert_eq "$WATCH_RC" 0 "a new comment is a round to return on"
-  assert_contains "$WATCH_OUT" "--- summary id=100" "the failure comment is what poll saw"
-  assert_contains "$WATCH_ERR" "status: reviewer FAILED at initialization" \
-    "the context should name the state, not leave the caller to read the body"
+  run_watch 0,0,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 1 \
+    "the window that sees the failure comment posts the request"
+  assert_contains "$WATCH_ERR" "are the reviewer's initialization failure (first: summary id=100" \
+    "the comment is named as the failure, not a round"
+  assert_contains "$WATCH_ERR" "--- summary id=100" "and printed for the record"
+  assert_not_contains "$WATCH_OUT" "--- summary id=100" "stdout is not ended on it"
 }
 
 # The same head failing again after a request on it keeps the exit, with the move that is left:

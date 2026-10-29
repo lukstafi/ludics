@@ -1241,6 +1241,13 @@ def _done_row(comments: list[Json], rev: str) -> tuple[str, str, str]:
     return "", "", ""
 
 
+def is_init_failure(comment: Json) -> bool:
+    """Is this comment, not a summary, one ``_init_failure`` reads as the initialization failure
+    (either shape, opening its body)? ``watch`` reads its new items with it (ludics#824): such an
+    item is the failure the state names, not a round."""
+    return not _is_summary(comment) and bool(_INIT_FAILURE.search(body_of(comment)))
+
+
 def _init_failure(comments: list[Json], rev: str) -> tuple[str, str, str]:
     """The reviewer's newest non-placeholder comment, when it is the initialization failure:
     (created_at, the ref it names or "", "env" | "git")."""
@@ -1252,7 +1259,7 @@ def _init_failure(comments: list[Json], rev: str) -> tuple[str, str, str]:
         return "", "", ""
     last = words[-1]
     body = body_of(last)
-    if not _INIT_FAILURE.search(body):
+    if not is_init_failure(last):
         return "", "", ""
     ref = capture_first(body, _INIT_FAILURE_REF)
     kind = "env" if _INIT_FAILURE_ENV.search(body) else "git"

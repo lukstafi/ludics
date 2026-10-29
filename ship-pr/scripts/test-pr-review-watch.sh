@@ -389,7 +389,8 @@ test_an_inline_finding_is_bound_by_the_commit_it_was_written_against() {
 # A comment's only head association is the "Reviewed commit:" stamp. One naming another commit is
 # a previous round's summary; one naming NOTHING is not evidence about any head, and is acted on
 # — the reviewer's initialization failure is exactly that shape, and swallowing it would leave a
-# watch waiting on a round that will never start.
+# watch waiting on a round that will never start. (One the state reads as a first failure is
+# passed over only because the watch then posts the request itself: ludics#824, below.)
 test_a_summary_is_bound_by_the_commit_it_names() {
   reset_fixture
   schedule comments 1 "[$(stamped_summary 700 2026-09-01T00:01:00Z "$H1" 'Codex Review: the previous head')]"
@@ -602,46 +603,108 @@ test_the_round_label_costs_no_request() (
 )
 
 # The missing-environment answer (ludics-lite#421), as #420 saw it: the connector's first word on
-# the head. The first window ends on the comment — it is new activity — but with the state beside
-# it saying what it is, and the round count saying it is not one; the next window, already past
-# it, posts the one request at once instead of holding the grace (ludics-lite#792; it used to hand
-# the post back) and ends on the round the request draws.
-test_the_missing_environment_ends_the_wait_with_the_nudge() {
+# the head, and as ludics#821 saw it, the state the watch OPENS on. The window used to end on the
+# comment at its first poll -- new activity about the head -- with a status line saying "`watch`
+# posts it itself" and no post (ludics#824): only a re-armed watch, already past the comment,
+# posted the one request (ludics-lite#792). The comment is not a round: the window prints it for
+# the record, posts the request over the first failure the state reads, and ends on the round
+# the request draws.
+ENV_FAILURE_BODY='To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments).'
+
+test_the_missing_environment_draws_the_nudge_in_the_window_that_sees_it() {
   local now
   reset_fixture
   now=$(clock_at)
-  schedule comments 1 "[$(summary_comment 100 "$now" \
-    'To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments).')]"
-  run_watch 0,0,0
-  assert_eq "$WATCH_RC" 0 "a new comment is something to act on"
-  assert_contains "$WATCH_OUT" "--- summary id=100 commit=-" "the comment is what poll saw"
-  assert_contains "$WATCH_ERR" "status: reviewer FAILED at initialization on head ${H2:0:7}" \
-    "the state beside it is the failure, not a round"
-  assert_contains "$WATCH_ERR" "nudge it once with a '@codex review' comment" "and it names the nudge"
-  assert_contains "$WATCH_ERR" \
-    "ending the wait on summary id=100 commit=- by ${REVIEWER}[bot] — this window opened no round; rounds with findings: 0 of 12" \
-    "the exit line must not number the failure as a round"
+  # Round 0 is the opening state's read, and the feeds answer from round 1 on as reset_fixture
+  # set them unless a case schedules that round too.
+  schedule comments 0 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
+  schedule comments 1 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
   NUDGE_ANSWER=502
-  run_watch 0,100,0 60 900
+  run_watch 0,0,0 60 900
+  NUDGE_ANSWER=""
+  assert_contains "$WATCH_ERR" "from: reviewer FAILED at initialization on head ${H2:0:7}" \
+    "the watch opens on the failure, as #821's did"
   assert_eq "$WATCH_RC" 0 "the round the request drew is something to act on"
-  assert_eq "$(nudges_posted)" 1 "after exactly one request, posted by the watch"
+  assert_eq "$(nudges_posted)" 1 "the window that sees the failure posts its one request"
   assert_contains "$WATCH_ERR" "re-requested the review with '@codex review' — the initialization on head ${H2:0:7} failed" \
     "the watch says it posted it"
+  assert_not_contains "$WATCH_ERR" "ending the wait on summary id=100" "the failure comment does not end the wait"
+  assert_contains "$WATCH_ERR" "--- summary id=100 commit=-" "it is printed for the record"
+  assert_contains "$WATCH_ERR" "1 item(s) about head ${H2:0:7} are the reviewer's initialization failure" \
+    "and named as what it is"
+  assert_not_contains "$WATCH_OUT" "--- summary id=100" "stdout is the round to act on, and the failure is not it"
   assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" \
-    "and ends on the round it asked for"
+    "the wait ends on the round the request asked for"
   assert_not_contains "$WATCH_OUT" "no review materialized" "without waiting out a grace first"
+  # The same with the comment landing mid-window, the opening state still due: the poll that sees
+  # it posts.
+  reset_fixture
+  schedule comments 2 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
+  NUDGE_ANSWER=502
+  run_watch 0,0,0 60 900
   NUDGE_ANSWER=""
-  # Unattributed — a head commit dated in the future attributes nothing, so the state is
-  # `expected` — the comment still ends the first window, and still is not numbered as a round.
+  assert_eq "$(nudges_posted)" 1 "a failure arriving mid-window draws the request too"
+  assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the round it asks for"
+  # Unattributed -- a head commit dated in the future attributes nothing, so the state is
+  # `expected` -- the comment is no failure the watch answers: it ends the window as any comment
+  # with no stamp does, and is not numbered as a round.
   reset_fixture
   HEAD_AT=2099-01-01T00:00:00Z
-  schedule comments 1 "[$(summary_comment 100 "$now" \
-    'To use Codex here, [create an environment for this repo](https://chatgpt.com/codex/cloud/settings/environments).')]"
+  schedule comments 1 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
   run_watch 0,0,0
+  assert_eq "$(nudges_posted)" 0 "nothing is posted over a failure the state does not read"
+  assert_contains "$WATCH_OUT" "--- summary id=100 commit=-" "the comment is the activity the wait ends on"
   assert_contains "$WATCH_ERR" "status: review EXPECTED" "unattributed, the state is the ordinary one"
   assert_contains "$WATCH_ERR" "— this window opened no round; rounds with findings: 0 of 12" \
     "and the count, not the state, decides that no round was opened"
   assert_not_contains "$WATCH_ERR" "— round 0" "never an impossible round zero"
+}
+
+# Once per head (ludics#824's other half): a watch re-armed on the head after the first window's
+# request -- from that window's watermark, or from one still below the failure comment -- posts no
+# second request, and the request's own answer, the same failure again, is handed back unposted.
+test_a_rearmed_watch_does_not_nudge_the_missing_environment_twice() {
+  local now mark
+  reset_fixture
+  now=$(clock_at)
+  schedule comments 0 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
+  schedule comments 1 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 1 "the first window posts the request"
+  mark=$(tail -n 1 <<<"$WATCH_OUT")
+  mark=${mark#watermark: }
+  run_watch "$mark" 60 900
+  assert_eq "$(nudges_posted)" 1 "a re-armed watch from the first window's watermark posts none"
+  run_watch 0,0,0 60 900
+  assert_eq "$(nudges_posted)" 1 "nor one re-armed below the failure comment"
+  assert_not_contains "$WATCH_ERR" "re-requested the review" "and neither says it did"
+  # The request answered by the same failure: `env-again`, the maintainer's, posted over by no
+  # watch. The comment is new activity the wait ends on, with the hand-back beside it.
+  schedule comments 1 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY"),$(summary_comment 9100 "$(clock_at 1)" "$ENV_FAILURE_BODY")]"
+  echo 0 >"$FEEDS/round"
+  run_watch "$mark" 60 900
+  assert_eq "$(nudges_posted)" 1 "a failure answering the request draws no second one"
+  assert_contains "$WATCH_ERR" "reviewer FAILED at initialization AGAIN on head ${H2:0:7}" \
+    "the state hands it back"
+}
+
+# The never-while-an-approval-may-stand rule over the same opening: a 👍 on the PR, whatever head
+# it is for (a request clears it), bars the request, and the window ends with why.
+test_the_missing_environment_under_a_standing_thumb_posts_nothing() {
+  local now
+  reset_fixture
+  now=$(clock_at)
+  schedule reactions 0 "[$(reaction +1 "$(clock_at -120)")]"
+  schedule reactions 1 "[$(reaction +1 "$(clock_at -120)")]"
+  schedule comments 0 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
+  schedule comments 1 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
+  run_watch 0,0,0 60 900
+  assert_contains "$WATCH_ERR" "from: reviewer FAILED at initialization on head ${H2:0:7}" \
+    "control: a 👍 older than the head leaves the failure standing"
+  assert_eq "$(nudges_posted)" 0 "nothing is posted while a 👍 may stand"
+  assert_eq "$WATCH_RC" 0 "the failure is the caller's to act on"
+  assert_contains "$WATCH_OUT" "the watch did not post the '@codex review' over the initialization failure on head ${H2:0:7}: a 👍 from" \
+    "the verdict says why"
 }
 
 # The same reply posted INTO a review thread (ludics-lite#472), as #465 saw it: a thread reply that
@@ -2696,7 +2759,9 @@ tests=(
   test_the_round_span_is_the_whole_watch
   test_an_unmoving_window_backs_off_to_the_review_cap
   test_a_new_head_in_one_state_resets_the_pause
-  test_the_missing_environment_ends_the_wait_with_the_nudge
+  test_the_missing_environment_draws_the_nudge_in_the_window_that_sees_it
+  test_a_rearmed_watch_does_not_nudge_the_missing_environment_twice
+  test_the_missing_environment_under_a_standing_thumb_posts_nothing
   test_the_connector_thread_reply_opens_no_round
   test_an_extension_holds_through_unknown_status
   test_a_nudge_buys_exactly_one_window

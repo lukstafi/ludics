@@ -17,7 +17,10 @@ parent commit (``git show 14f2ca7:ship-pr/scripts/pr-review.sh``); read them bef
 - a `failed` run (a Failed summary row, or a Completed one naming no commit, #787) is
   re-requested by the watch itself, once per head per process, on a state read fresh after the round, and the request is sent ONCE whatever its error (it may have landed);
   so is a first initialization failure (#792), when ``state.stall_nudge_read`` also finds nothing
-  standing for the head; a failure after a request on the head (``-again``) is handed back;
+  standing for the head; a failure after a request on the head (``-again``) is handed back. The
+  failure comment is not a round (ludics#824, ``only_init_failure``): a round whose only items
+  about the head are that comment, over such a first failure, prints it for the record and goes on
+  to the request rather than ending on it;
 - an `expected` verdict -- a 👀 round that ended without a review of the head (a push landed
   during it), or a head with no 👀 past its grace -- is answered with the watch's own
   '@codex review' (ludics-lite#570), once per head, when the verdict's re-reads stand and
@@ -73,6 +76,7 @@ from ludics.prreview.core import (
 from ludics.prreview.clock import Clock, age_of, clock_from_env, fmt_age
 from ludics.prreview.drift import warn_base_drift
 from ludics.prreview.feeds import Ctx, pr_head_read
+from ludics.prreview.jqsem import JqError, idx, jstr, login_is
 from ludics.prreview.poll import poll
 from ludics.prreview.state import (
     NudgeBarred,
@@ -82,6 +86,7 @@ from ludics.prreview.state import (
     State,
     approval_gate,
     gated_state,
+    is_init_failure,
     nudge_read,
     review_rounds,
     stall_nudge_read,
@@ -291,6 +296,10 @@ class Polled:
     on_n: int = 0
     past: str = ""
     past_n: int = 0
+    # The items about the head that are the reviewer's initialization failure (ludics#824), counted
+    # in on_n too: the loop hands them to the state's `failed` move instead of ending on them.
+    init: str = ""
+    init_n: int = 0
 
 
 class Watch:
@@ -369,6 +378,14 @@ class Watch:
             self.last_head = head.sha
         elif not head.sha:
             self.last_head = ""
+        try:
+            failures = {
+                jstr(idx(c, "id")) for c in self.ctx.snap.comments
+                if login_is(c, self.ctx.reviewer) and is_init_failure(c)
+            }
+        except JqError:
+            # Unread, an item is what it always was: activity the wait ends on.
+            failures = set[str]()
         for entry in result.items.split():
             kind = _upto(entry, ":")
             rest = _after(entry, ":")
@@ -385,6 +402,9 @@ class Watch:
             if item_about_head(commit, p.head):
                 p.on_n += 1
                 p.on = p.on or desc
+                if kind == "summary" and ident in failures:
+                    p.init_n += 1
+                    p.init = p.init or desc
             else:
                 p.past_n += 1
                 p.past = p.past or desc
@@ -401,6 +421,39 @@ class Watch:
             " wait continues, but a thread among them left unresolved still holds an approval back"
             " from `merge`"
         )
+        self.record()
+
+    def only_init_failure(self, state: State, rerequested: str) -> bool:
+        """Is everything this round saw about the head the reviewer's initialization failure, over
+        a state that reads it as a FIRST failure the loop answers itself (ludics#824)? Then it is
+        not a round: on ludics#821 the window opened on that state, said "`watch` posts it itself",
+        and ended at its first poll on the failure comment, unposted, so only a re-armed watch
+        already past the comment posted the request. Boundary, fail-closed: only items
+        ``is_init_failure`` reads in the round's own comments feed, all of the round's items about
+        the head, and only while the state is ``failed`` with a first kind (``run``, ``env``,
+        ``git``) on a head this process has not re-requested. Anything else about the head -- a
+        review, an inline finding, any other comment -- and a failure the state reads otherwise
+        (``-again``, unattributed, unread) end the wait as before, the failure comment with them."""
+        p = self.polled
+        if p.init_n == 0 or p.init_n != p.on_n or state.tok != "failed":
+            return False
+        fsha = _upto(state.detail, "|")
+        return _upto(_after(state.detail, "|"), "|") in _FIRST_FAILURES and rerequested != fsha
+
+    def note_init_failure(self) -> None:
+        p = self.polled
+        warn(
+            f"PR {self.repo}#{self.pr}: {p.init_n} item(s) about head {p.head[:7]} are the"
+            f" reviewer's initialization failure (first: {p.init}) — not a round: printed below for"
+            " the record, the watermark advances past them, and the failed state's move answers"
+            " them"
+        )
+        if p.past_n <= 0:
+            self.record()
+
+    def record(self) -> None:
+        """The round's rendered items on stderr, for the record, without its trailer lines."""
+        p = self.polled
         kept = [
             ln for ln in p.out.split("\n")
             if not ln.startswith("watermark: ") and not ln.startswith("items: ")
@@ -993,9 +1046,12 @@ class Watch:
                 candidate_end = own + cfg.grace
                 candidate_kind = "nudged"
 
-            if self.polled.on_n > 0:
+            if self.polled.on_n > 0 and not self.only_init_failure(state, rerequested):
                 self.act(state)
                 return 0
+            if self.polled.on_n > 0:
+                # Only the failure, which the `failed` move below answers.
+                self.note_init_failure()
             self.note_past()
             warn(f"{where}: {self.line(state)}")
 
