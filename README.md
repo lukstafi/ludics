@@ -1335,10 +1335,14 @@ eight fields the fold projects, `.id` among them since #81, that the `branch=` a
 really filter, and the newest-first order that makes `per_page=10` the newest TEN runs and not ten
 arbitrary ones); the status,
 conclusion, mergeable-state and review-state vocabularies; that a merged PR's `.base.sha` is a
-snapshot standing behind the merge's first parent (anchored on #53); and the reviewer feeds' shapes
+snapshot standing behind the merge's first parent (anchored on #53); an open PR's mergeability and
+clock fields, read on every open PR of the list's first page and on the long-lived draft #832
+(`CONTRACT_OPEN_PR`, never merged), so they are checked on a day nothing else is open, and a closed
+or ready anchor is a MOVED naming it (#825); and the reviewer feeds' shapes
 (the `[bot]` suffix, the `+1` approval, `COMMENTED` rounds, the summary tag, 30-per-page
 pagination) anchored on #39; and, over the newest 60 merged PRs, that every summary Code Review row
-is a shape `status_state` reads (Completed, Failed, Running) and that a findings review is
+is a shape `status_state` reads (Completed, Failed, Running), that its Review trigger cell is a
+word of the gate's `REVIEW_TRIGGERS` (the cell `_receipt_binding` reads, #825), and that a findings review is
 submitted before its row flips to Completed, the order the #439 reading rests on (#453); the
 `reviewThreads` connection the open-thread gate and `resolve` page through, asked with the
 library's own `THREADS_QUERY` on #370, whose first-comment ids run past 2^31 (totalCount on every

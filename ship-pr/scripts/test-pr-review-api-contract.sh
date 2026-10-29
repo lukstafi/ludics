@@ -59,7 +59,8 @@ H7=$(sha40 d)   # its head
 M7=$(sha40 e)   # its merge commit
 C7=$(sha40 f)   # its first commit
 H9=$(sha40 1)   # the reviewed anchor #9's head
-H12=$(sha40 2)  # the open PR #12's head
+H12=$(sha40 2)  # the open PR #12's head, the open-PR anchor
+H13=$(sha40 4)  # another open PR's head, for the cases where the anchor is not the only one
 WIDE=$(sha40 3)  # the wide commit, past one default page of files
 WIDE_REPO=example/wide
 BOT="${REVIEWER}[bot]"
@@ -232,7 +233,7 @@ world_healthy() {
   answer "$R/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
     '[{"number":7,"merged_at":"2026-09-20T10:00:00Z"},{"number":8,"merged_at":null}]'
   answer "$R/pulls?state=open&per_page=10" '[{"number":12}]'
-  answer "$R/pulls/12" "{\"number\":12,\"head\":{\"sha\":\"$H12\"},\"base\":{\"ref\":\"main\"},\"created_at\":\"2026-09-30T09:00:00Z\",
+  answer "$R/pulls/12" "{\"number\":12,\"state\":\"open\",\"draft\":true,\"head\":{\"sha\":\"$H12\"},\"base\":{\"ref\":\"main\"},\"created_at\":\"2026-09-30T09:00:00Z\",
     \"updated_at\":\"2026-09-30T09:30:00Z\",\"mergeable\":true,\"mergeable_state\":\"clean\"}"
 
   # The reviewed anchor #9: the inline rows are the shared builders', a migrated anchor on each feed.
@@ -265,10 +266,14 @@ world_healthy() {
   answer "repos/$WIDE_REPO/commits/$WIDE" "$(wide_files 0 300)"
   answer "repos/$WIDE_REPO/commits/$WIDE?per_page=100" "$(wide_files 0 100)" "$(wide_files 100 100)" "$(wide_files 200 100)" "$(wide_files 300 1)"
 
-  # The summary-row sample: #7, the one merged PR, ended on a findings round.
+  # The summary-row sample: #7, the one merged PR, ended on a findings round. An older summary
+  # comment of its carries a Completed row naming no commit, the row whose Review trigger
+  # _receipt_binding reads (ludics#825); only the newest summary is read for the order claim.
   answer "$R/issues/7/comments?per_page=100" "$(jq -cn --arg bot "$BOT" --arg s "${H7:0:7}" \
     '[{id:71, user:{login:$bot}, created_at:"2026-09-20T09:00:00Z", updated_at:"2026-09-20T09:10:10Z",
-       body:("<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-09-20T09:10:10.510504Z\">x</relative-time> | `" + $s + "` | New commits |")}]')"
+       body:("<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-09-20T09:10:10.510504Z\">x</relative-time> | `" + $s + "` | New commits |")},
+      {id:69, user:{login:$bot}, created_at:"2026-09-19T09:00:00Z", updated_at:"2026-09-19T09:05:00Z",
+       body:"<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-09-19T09:05:00.25Z\">x</relative-time> | — | PR opened |"}]')"
   answer "$R/pulls/7/reviews?per_page=100" "$(jq -cn --arg bot "$BOT" --arg h "$H7" \
     '[{id:72, user:{login:$bot}, state:"COMMENTED", commit_id:$h, submitted_at:"2026-09-20T09:10:08Z", body:"findings"}]')"
 }
@@ -301,7 +306,7 @@ run_contract() { # [VAR=value...]: extra environment for this run
     exec env -u GITHUB_RUN_ID -u CONTRACT_OWN_HEAD -u CONTRACT_BASE -u GITHUB_REPOSITORY -u GITHUB_EVENT_NAME \
       -u CONTRACT_SUMMARY_SAMPLE -u CONTRACT_TEST_SOURCE_ONLY -u CONTRACT_FIXTURE_FAIL \
       PATH="$BIN:$PATH" TMPDIR="$tmp" REVIEWER="$REVIEWER" \
-      CONTRACT_STALE_BASE_PR=7 CONTRACT_REVIEWED_PR=9 CONTRACT_THREADS_PR=9 \
+      CONTRACT_STALE_BASE_PR=7 CONTRACT_REVIEWED_PR=9 CONTRACT_THREADS_PR=9 CONTRACT_OPEN_PR=12 \
       CONTRACT_WIDE_COMMIT="$WIDE_REPO@$WIDE" CONTRACT_WIDE_COMMIT_FILES=301 \
       CONTRACT_FIXTURE_REPO="$REPO" CONTRACT_FIXTURE_THREADS_QUERY="$GATE_THREADS_QUERY" \
       CONTRACT_FIXTURE_WORLD="$WORLD" CONTRACT_FIXTURE_CALLS="$TEST_ROOT/calls" \
@@ -539,6 +544,7 @@ ok    pulls?state=closed is a list whose rows carry merged_at (present, null whe
 ok    on the 1 most recently merged PRs (of the latest 100 closed), base.sha is the merge's first parent or an ancestor of it — never off the base line
 ok    pulls?state=open is a list
 ok    every row of the open-PR list carries a numeric number
+ok    the open-PR anchor #12 is open and a draft (reopen it, or make a new one as the header says and point CONTRACT_OPEN_PR at it)
 ok    an open PR's pulls/<n> read carries head.sha, base.ref, updated_at, and mergeable (present) in {true,false,null}
 ok    ... and created_at, the review clock's floor, no later than updated_at
 ok    ... and a mergeable_state in the vocabulary status_state renders (dirty is CONFLICTS, unknown is not yet computed)
@@ -562,7 +568,8 @@ ok    a reply to an inline comment is a COMMENTED review by the replier in the s
 skip  the flat listing paginates at 30 by default — #9 has 3 inline comments, not more than a page; a larger anchor shows it
 ok    a review's own comments endpoint answers with exactly the flat listing's rows for that review, by id (the merge-by-id read; review 31)
 ok    the per-review rows carry what poll renders and folds from this feed alone while the flat listing lags: numeric id and pull_request_review_id, commit_id, the original_commit_id the head stamp needs, the position pair the fold keys on, user.login, a non-empty path, body
-ok    every Code Review row of the sampled PRs' summaries is Completed or Failed in the allowlisted shape, Completed naming no commit, or Running, dated by an ISO 8601 UTC datetime not in the future (1 rows on 1 PRs; 0 Failed)
+ok    every Code Review row of the sampled PRs' summaries is Completed or Failed in the allowlisted shape, Completed naming no commit, or Running, dated by an ISO 8601 UTC datetime not in the future (2 rows on 1 PRs; 0 Failed)
+ok    every Code Review row's Review trigger cell is a word the gate knows, Manual request, PR opened, New commits (_receipt_binding approves a commit-less receipt only on the first two; 2 rows, 1 of them Completed naming no commit)
 ok    a findings review is submitted before its row flips to Completed: the app's last review naming the newest Completed row's commit is not after that row, on 1 sampled PRs (status_state's 'nothing since the 👀' rests on it, #453)
 ok    the gate's own THREADS_QUERY, sent verbatim, answers #9's reviewThreads as a connection: nodes[], a numeric totalCount and a boolean pageInfo.hasNextPage
 ok    every thread carries a non-empty node id (resolve's threadId) and isResolved as a boolean (closed only when literally true)
@@ -623,6 +630,85 @@ test_a_merged_anchor_s_uncomputed_mergeability_still_holds() {
   assert_nothing_left "an uncomputed-anchor run"
 }
 
+# The open-PR anchor (ludics#825): the open-PR claims are made on it when nothing else is open,
+# and an anchor that stopped being an open draft is a MOVED that names it -- never a quiet skip.
+test_the_open_pr_anchor_keeps_the_open_pr_claims_made() {
+  local R="repos/$REPO"
+  # The anchor alone: the open list's page is empty, and the claims are still made, on it.
+  world_healthy
+  answer "$R/pulls?state=open&per_page=10" '[]'
+  run_contract
+  assert_eq "$CONTRACT_RC" 0 "an open anchor with nothing else open should move no belief ($CONTRACT_ERR)"
+  assert_contains "$(verdicts)" "ok    an open PR's pulls/<n> read carries head.sha, base.ref, updated_at, and mergeable" \
+    "the open-PR claims should be made on the anchor"
+  assert_contains "$(verdicts)" "ok    the open-PR anchor #12 is open and a draft" "the anchor claim should pin"
+  assert_not_contains "$(verdicts)" "skip  open PRs' mergeability and clock fields" "nothing should skip while the anchor is open"
+  assert_contains "$(cat "$TEST_ROOT/asked")" "$R/pulls/12" "the anchor should be read though the list does not hold it"
+  assert_nothing_left "an anchor-only run"
+
+  # The anchor closed, nothing else open: the one MOVED names it, and the claims skip saying why.
+  world_healthy
+  answer "$R/pulls?state=open&per_page=10" '[]'
+  doctor "$R/pulls/12" '.state = "closed"'
+  run_contract
+  assert_eq "$CONTRACT_RC" 1 "a closed anchor should end the run 1 ($CONTRACT_ERR)"
+  assert_contains "$(verdicts)" "MOVED the open-PR anchor #12 is open and a draft" "a closed anchor should be a MOVED that names it"
+  assert_eq "$(verdicts | grep -c '^MOVED ' || true)" 1 "the closed anchor should be the one MOVED"
+  assert_contains "$(verdicts)" "skip  open PRs' mergeability and clock fields — no open PR right now, and the anchor #12 is not open — see the MOVED above" \
+    "the open-PR claims should skip, pointing at the anchor"
+  assert_nothing_left "a closed-anchor run"
+
+  # The anchor closed, another PR open: the claims are made on that one, and the closed anchor's
+  # row is not among them.
+  world_healthy
+  answer "$R/pulls?state=open&per_page=10" '[{"number":13}]'
+  answer "$R/pulls/13" "{\"number\":13,\"state\":\"open\",\"draft\":false,\"head\":{\"sha\":\"$H13\"},\"base\":{\"ref\":\"main\"},\"created_at\":\"2026-09-30T09:00:00Z\",
+    \"updated_at\":\"2026-09-30T09:30:00Z\",\"mergeable\":true,\"mergeable_state\":\"clean\"}"
+  doctor "$R/pulls/12" '.state = "closed" | .mergeable_state = "surprise"'
+  run_contract
+  assert_eq "$CONTRACT_RC" 1 "a closed anchor beside an open PR should end the run 1 ($CONTRACT_ERR)"
+  assert_contains "$(verdicts)" "MOVED the open-PR anchor #12 is open and a draft" "the closed anchor should be the MOVED"
+  assert_eq "$(verdicts | grep -c '^MOVED ' || true)" 1 "a closed anchor's own fields should not be judged as an open PR's"
+  assert_contains "$(verdicts)" "ok    ... and a mergeable_state in the vocabulary status_state renders" "the open PR's claims should be made"
+  assert_contains "$CONTRACT_OUT" "open PRs: #13 clean" "only the open PR should be among the open PRs read"
+  assert_nothing_left "a closed-anchor run beside an open PR"
+
+  # No anchor named (another repository's run): a skip that says what to set, and the open list's
+  # own PRs judged as before.
+  world_healthy
+  run_contract CONTRACT_OPEN_PR=
+  assert_eq "$CONTRACT_RC" 0 "a run naming no anchor should move no belief ($CONTRACT_ERR)"
+  assert_contains "$(verdicts)" "skip  the open-PR anchor is an open draft — set CONTRACT_OPEN_PR to a long-lived draft PR" \
+    "a run naming no anchor should say so"
+  assert_contains "$(verdicts)" "ok    an open PR's pulls/<n> read carries" "the listed open PR should still be judged"
+  run_contract CONTRACT_OPEN_PR=12x
+  assert_eq "$CONTRACT_RC" 2 "an anchor that is not a PR number should be refused ($CONTRACT_ERR)"
+  assert_contains "$CONTRACT_ERR" "CONTRACT_OPEN_PR must be a PR number, got '12x'" "the refusal should name the value"
+  assert_nothing_left "a refused-anchor run"
+}
+
+# The Review-trigger belief names the gate's own vocabulary (state.REVIEW_TRIGGERS, read from the
+# gate rather than restated), and a sample with no commit-less Completed row says so as a skip
+# beside the claim rather than as a pass about rows it never saw (ludics#825).
+test_the_review_trigger_claim_is_the_gate_s_vocabulary() {
+  local R="repos/$REPO" words
+  words=$("$GATE_PY" -c 'import sys; sys.stdout.reconfigure(newline="\n")
+from ludics.prreview.state import REVIEW_TRIGGERS; print(", ".join(REVIEW_TRIGGERS))')
+  world_healthy
+  run_contract
+  assert_contains "$(verdicts)" "ok    every Code Review row's Review trigger cell is a word the gate knows, $words (" \
+    "the claim should name the gate's vocabulary"
+  world_healthy
+  doctor "$R/issues/7/comments?per_page=100" '.[0:1]'
+  run_contract
+  assert_eq "$CONTRACT_RC" 0 "a sample with no commit-less row should move no belief ($CONTRACT_ERR)"
+  assert_contains "$(verdicts)" "ok    every Code Review row's Review trigger cell is a word the gate knows, $words (_receipt_binding approves a commit-less receipt only on the first two; 1 rows, 0 of them Completed naming no commit)" \
+    "the claim should still be made on the stamped rows"
+  assert_contains "$(verdicts)" "skip  a Completed row naming no commit carries a known Review trigger, live — none among the sampled 1 rows" \
+    "a sample with no commit-less row should say so"
+  assert_nothing_left "a run with no commit-less row"
+}
+
 # One response moved at a time, each a field or a word some projection reads: the pin that names
 # it must say MOVED, and it alone, and the run must end 1 with every other claim still made.
 # The review-state row is the #278 shape: a vocabulary pin that cannot fail passed {state:
@@ -643,6 +729,9 @@ test_a_doctored_response_moves_its_pin_and_only_it() {
     "$R/pulls/7^del(.mergeable)^MOVED a merged PR's mergeability never reads as a conflict" \
     "$R/pulls/7^.mergeable_state = \"surprise\"^MOVED a merged PR's mergeability never reads as a conflict" \
     "$R/pulls/12^.mergeable_state = \"surprise\"^MOVED ... and a mergeable_state in the vocabulary" \
+    "$R/pulls/12^.draft = false^MOVED the open-PR anchor #12 is open and a draft" \
+    "$R/issues/7/comments?per_page=100^.[0].body |= sub(\"New commits\"; \"Ready for review\")^MOVED every Code Review row's Review trigger cell is a word the gate knows" \
+    "$R/issues/7/comments?per_page=100^.[1].body |= sub(\" [|] PR opened [|]\"; \" |\")^MOVED every Code Review row's Review trigger cell is a word the gate knows" \
     "$R/pulls/9/reviews?per_page=100^.[2].state = \"surprise\"^MOVED the app's review states are in the vocabulary" \
     "$R/pulls/9/comments?per_page=100^.[1] |= del(.original_line)^MOVED inline comments carry numeric id" \
     "$R/pulls/9/reviews/31/comments?per_page=100^.[1] |= del(.original_position)^MOVED the per-review rows carry what poll renders" \
@@ -746,6 +835,8 @@ tests=(
   test_a_healthy_world_pins_what_it_can_and_skips_the_rest
   test_a_squash_merged_anchor_skips_the_second_parent_claims
   test_a_merged_anchor_s_uncomputed_mergeability_still_holds
+  test_the_open_pr_anchor_keeps_the_open_pr_claims_made
+  test_the_review_trigger_claim_is_the_gate_s_vocabulary
   test_a_doctored_response_moves_its_pin_and_only_it
   test_a_moved_wrapper_is_one_moved_and_its_rows_skip
   test_an_unanswered_api_exits_3_and_leaves_nothing_behind
