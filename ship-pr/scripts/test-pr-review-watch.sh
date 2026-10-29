@@ -103,7 +103,11 @@ PR_CREATED_AT=""
 # that round on, and a round with no schedule of its own answers the newest one below it. So a
 # feed set once holds for the whole window, and one set at round 2 is invisible to round 1. Round
 # 0 is the reads a watch makes before its first poll (its opening state), which answer nothing
-# unless a case schedules round 0 itself.
+# unless a case schedules round 0 itself; a feed no round has a schedule for answers '[]'.
+# reset_fixture schedules NO round: a default round-1 file would override a case that schedules
+# round 0 only, in silence -- its answer would reach the opening state and no poll (the #824
+# worker's trap) -- so the empty feed is feed_answer's fallback instead, and nothing but the
+# case's own schedules ever decides what a round reads.
 # The round counter lives in a file because the fixture runs inside the command substitution each
 # poll is made in, where a variable would not survive to the next call.
 
@@ -111,11 +115,6 @@ reset_fixture() {
   rm -rf "$FEEDS"
   mkdir -p "$FEEDS"
   echo 0 >"$FEEDS/round"
-  schedule reactions 1 '[]'
-  schedule reviews 1 '[]'
-  schedule comments 1 '[]'
-  schedule inline 1 '[]'
-  schedule review_comments 1 '[]'
   HEAD_SHA="$H2"
   MERGEABLE_STATE=clean
   PR_STATE=open
@@ -630,10 +629,8 @@ test_the_missing_environment_draws_the_nudge_in_the_window_that_sees_it() {
   local now
   reset_fixture
   now=$(clock_at)
-  # Round 0 is the opening state's read, and the feeds answer from round 1 on as reset_fixture
-  # set them unless a case schedules that round too.
+  # From round 0, the opening state's read, on.
   schedule comments 0 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
-  schedule comments 1 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
   NUDGE_ANSWER=502
   run_watch 0,0,0 60 900
   NUDGE_ANSWER=""
@@ -683,7 +680,6 @@ test_a_rearmed_watch_does_not_nudge_the_missing_environment_twice() {
   reset_fixture
   now=$(clock_at)
   schedule comments 0 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
-  schedule comments 1 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
   run_watch 0,0,0 60 900
   assert_eq "$(nudges_posted)" 1 "the first window posts the request"
   mark=$(tail -n 1 <<<"$WATCH_OUT")
@@ -710,9 +706,7 @@ test_the_missing_environment_under_a_standing_thumb_posts_nothing() {
   reset_fixture
   now=$(clock_at)
   schedule reactions 0 "[$(reaction +1 "$(clock_at -120)")]"
-  schedule reactions 1 "[$(reaction +1 "$(clock_at -120)")]"
   schedule comments 0 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
-  schedule comments 1 "[$(summary_comment 100 "$now" "$ENV_FAILURE_BODY")]"
   run_watch 0,0,0 60 900
   assert_contains "$WATCH_ERR" "from: reviewer FAILED at initialization on head ${H2:0:7}" \
     "control: a 👍 older than the head leaves the failure standing"
@@ -1545,7 +1539,6 @@ test_initial_grace_cannot_renew_indefinitely_after_unknown_reads() {
   fresh_at=$(clock_at)
   nudge=$(jq -cn --arg at "$fresh_at"     '[{id:700,user:{login:"maintainer"},created_at:$at,body:"@codex review"}]')
   schedule comments 0 "$nudge"
-  schedule comments 1 "$nudge"
   # Keep the head older too, so recovery cannot inherit an unrelated fresh-head clock.
   HEAD_AT=2026-09-01T00:00:00Z
   PR_CREATED_AT="$HEAD_AT"
