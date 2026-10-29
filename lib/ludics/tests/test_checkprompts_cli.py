@@ -3093,6 +3093,11 @@ VERDICT_FORMS = (
     ("lib/ludics/x/y.py", "    ok = line != 'DIED'", "an ==/!= comparison"),
     ("lib/ludics/x/y.py", '    if "rc=0"==said:', "an ==/!= comparison"),
     ("lib/ludics/x/y.py", '    ok = said=="DIED"', "an ==/!= comparison"),
+    ("lib/ludics/x/y.py", '    ok="RUNNING"==said', "an ==/!= comparison"),
+    ("lib/ludics/x/y.py", "    ok='rc=0'!=said", "an ==/!= comparison"),
+    ("lib/ludics/x/y.py", '    if said == f"rc={want}":', "an ==/!= comparison"),
+    ("scripts/a.sh", "grep 'rc=0' -x out", "a grep -x match"),
+    ("scripts/a.sh", "v=$(grep rc=0 out -x)", "a grep -x match"),
     ("issue-wave/scripts/other.sh", "case $v in (DIED) x ;; esac", "a case arm"),
 )
 
@@ -3106,6 +3111,7 @@ VERDICT_CONTROLS = (
     'if said.startswith("rc="):',
     'state = "RUNNING"',
     "if len(names) == RUNNING_SHOWN:",
+    "if word is Word.RUNNING or cfg.RUNNING==x:",
     "A wait prints `rc=0` and exits 0; `RUNNING` (3) means re-issue it.",
     "  3) refuse \"bg-run.sh wait: RUNNING -- live\" ;;",
 )

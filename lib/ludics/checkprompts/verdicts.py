@@ -12,12 +12,15 @@ a verdict token -- ``rc=`` followed by no blank, quote, backtick, bracket, paren
 followed by the end of the line, a blank, ``]``, ``)``, ``;``, ``&``, ``|``, a backtick, ``:`` or
 ``,``:
 
-  1. an ``==`` or ``!=`` with that operand on either side (shell ``[[ ]]`` and ``[ ]``, Python);
+  1. an ``==`` or ``!=`` with that operand on either side (shell ``[[ ]]`` and ``[ ]``, Python),
+     blanks around the operator or none; a quoted operand may carry a Python string prefix
+     (``f"rc={n}"``), and a bare one on the left must not end a longer word (``x.RUNNING``);
   2. a blank-surrounded ``=`` with that operand on either side, on a line where a ``[`` or
      ``test`` and a blank come before it (the ``test`` builtin's comparison; a spaced Python
      assignment has neither);
-  3. a ``grep`` that carries ``-x`` (alone or in a bundle of letters) or ``--line-regexp`` before
-     the next ``|``, ``;`` or ``&``, with that operand; or any ``grep`` with a quoted ``^<token>$``;
+  3. a ``grep`` that carries ``-x`` (alone or in a bundle of letters) or ``--line-regexp`` anywhere
+     before the next ``|``, ``;`` or ``&`` (after its pattern too, as GNU grep takes it), with that
+     operand; or any ``grep`` with a quoted ``^<token>$``;
   4. a ``case`` arm (after ``in`` or at a line's start, optionally opened by ``(``) one of whose
      ``|``-separated patterns is that operand, closed by ``)``.
 
@@ -69,18 +72,22 @@ EXCLUDED = frozenset(
 )
 
 _TOKEN = r"(?:rc=[^\s\"'`\[\]()|;&*?]*|RUNNING|STARTING|DIED|STOPPED)"
-_OPERAND = r"(?P<q>[\"']?)" + _TOKEN + r"(?P=q)"
+_PREFIX = r"(?:[bBfFrRuU]{1,2}(?=[\"']))?"  # a Python string's prefix letters, before its quote
+_OPERAND = _PREFIX + r"(?P<q>[\"']?)" + _TOKEN + r"(?P=q)"
+# On the left of the operator: a quoted operand wherever it stands, a bare one not inside a longer
+# word (``x.RUNNING``, ``$RUNNING``, ``my-RUNNING``).
+_LEFT = r"(?:" + _PREFIX + r"(?P<q>[\"'])" + _TOKEN + r"(?P=q)|(?<![\w$.\-])" + _TOKEN + r")"
 _END = r"(?=$|[\s\]);&|`:,])"
 
 FORMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("an ==/!= comparison", re.compile(r"(?:==|!=)\s*" + _OPERAND + _END)),
-    ("an ==/!= comparison", re.compile(r"(?:^|[\s(\[])" + _OPERAND + r"\s*(?:==|!=)")),
+    ("an ==/!= comparison", re.compile(_LEFT + r"\s*(?:==|!=)")),
     ("a test = comparison", re.compile(r"(?:\[|\btest)\s(?:[^\]]*?\s)?!?=\s+" + _OPERAND + _END)),
     ("a test = comparison", re.compile(r"(?:\[|\btest)\s+" + _OPERAND + r"\s+!?=\s")),
     (
         "a grep -x match",
         re.compile(
-            r"\bgrep\b(?=[^|;&]*\s(?:-[A-Za-z]*x[A-Za-z]*|--line-regexp)(?=\s))[^|;&]*\s(?:-e\s+)?"
+            r"\bgrep\b(?=[^|;&]*\s(?:-[A-Za-z]*x[A-Za-z]*|--line-regexp)(?=$|[\s|;&)`]))[^|;&]*\s(?:-e\s+)?"
             + _OPERAND
             + _END
         ),
