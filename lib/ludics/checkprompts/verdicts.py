@@ -21,7 +21,8 @@ followed by the end of the line, a blank, ``]``, ``)``, ``;``, ``&``, ``|``, a b
   3. a ``grep`` that carries ``-x`` (alone or in a bundle of letters) or ``--line-regexp`` anywhere
      before the next ``|``, ``;`` or ``&`` (after its pattern too, as GNU grep takes it), with that
      operand; or any ``grep`` with a quoted ``^<token>$``;
-  4. a ``case`` arm (after ``in`` or at a line's start, optionally opened by ``(``) one of whose
+  4. a ``case`` arm (after ``in``, after the ``;;``, ``;&`` or ``;;&`` ending the arm before it, or
+     at a line's start; optionally opened by ``(``) one of whose
      ``|``-separated patterns is that operand, closed by ``)``.
 
 A form is flagged whatever the other operand is, an already-cut first word (``${said%% *}``)
@@ -93,7 +94,7 @@ FORMS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     ("an anchored grep match", re.compile(r"\bgrep\b[^|;&]*\s(?P<q>[\"'])\^" + _TOKEN + r"\$(?P=q)")),
-    ("a case arm", re.compile(r"(?:\bin\s+\(?|^\s*\(?)(?:[^\s|()]+\s*\|\s*)*" + _OPERAND + r"\s*[|)]")),
+    ("a case arm", re.compile(r"(?:\bin\s+\(?|;[;&]&?\s*\(?|^\s*\(?)(?:[^\s|()]+\s*\|\s*)*" + _OPERAND + r"\s*[|)]")),
 )
 
 

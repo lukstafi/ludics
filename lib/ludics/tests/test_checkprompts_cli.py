@@ -3090,6 +3090,7 @@ VERDICT_FORMS = (
     ("scripts/a.sh", "grep -q '^rc=0$' out", "an anchored grep match"),
     ("scripts/a.sh", 'case "$said" in rc=0) ok ;; esac', "a case arm"),
     ("scripts/a.sh", "  STARTING|RUNNING) again ;;", "a case arm"),
+    ("scripts/a.sh", 'case "$v" in rc=*) done ;; DIED) again ;; esac', "a case arm"),
     ("alpha/SKILL.md", '    [ "$(bg-run.sh wait "$d")" = "rc=0" ] && echo passed', "a test = comparison"),
     ("alpha/references/x.md", "- `grep -x STOPPED` on the wait's output", "a grep -x match"),
     ("lib/ludics/x/y.py", '    if said == "rc=0":', "an ==/!= comparison"),
