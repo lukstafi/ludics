@@ -28,6 +28,15 @@
 #   CONTRACT_OWN_HEAD        under Actions: the head this job's own run is attached to
 #                            (github.event.pull_request.head.sha, else github.sha); with
 #                            GITHUB_RUN_ID it pins the job's own row as the newest for that head
+#   CONTRACT_OPEN_PR         a long-lived DRAFT PR that is never merged (ludics#832, ludics#825) —
+#                            the open-PR beliefs' anchor, read beside whatever else is open, so
+#                            the mergeability and clock fields the merge gate reads are checked
+#                            on every run rather than only while some PR happens to be open. The
+#                            anchor is itself a claim: closed, or marked ready, is a MOVED that
+#                            names it. One is made as a branch off the base adding one inert file
+#                            that no workflow's `paths` match, committed with `[skip ci]` (so no
+#                            pull_request workflow runs on it), opened with `gh pr create --draft`
+#                            and a body naming no issue (so no wave reads it as its PR)
 #   CONTRACT_SUMMARY_SAMPLE  how many of the newest merged PRs the summary-row beliefs read
 #                            (default 60; two paginated reads each)
 #   CONTRACT_THREADS_PR      a PR with at least three review threads whose first comments' ids
@@ -96,6 +105,7 @@ BOT="${REVIEWER}[bot]" # how an app's login reads in every feed: matched by pref
 STALE_BASE_PR="${CONTRACT_STALE_BASE_PR:-}"
 REVIEWED_PR="${CONTRACT_REVIEWED_PR:-}"
 THREADS_PR="${CONTRACT_THREADS_PR:-}"
+OPEN_PR="${CONTRACT_OPEN_PR:-}"
 WIDE_COMMIT="${CONTRACT_WIDE_COMMIT:-}"
 WIDE_COMMIT_FILES="${CONTRACT_WIDE_COMMIT_FILES:-}"
 if [ "$REPO" = lukstafi/ludics ]; then
@@ -103,6 +113,8 @@ if [ "$REPO" = lukstafi/ludics ]; then
   : "${REVIEWED_PR:=39}"
   # #370: five threads, their first comments 4095735684 and up, all past 2^31.
   : "${THREADS_PR:=370}"
+  # #832: "api-contract anchor: do not merge", a draft adding .github/api-contract-anchor.txt.
+  : "${OPEN_PR:=832}"
   # The merge of origin/master into a branch, 353 files against its first parent, one a rename.
   if [ -z "$WIDE_COMMIT" ]; then
     WIDE_COMMIT=lukstafi/ocannl@eaa6313d983cbb2c698e23507a7094dde99e79bb
@@ -791,21 +803,43 @@ else
 fi
 
 # Mergeability is on the single-PR read only — the list endpoint omits mergeable and
-# mergeable_state — which is why pr_head_read reads pulls/<n> per PR. So does this.
+# mergeable_state — which is why pr_head_read reads pulls/<n> per PR. So does this, on every PR of
+# the list's first page and on the open-PR anchor (CONTRACT_OPEN_PR) whether the page holds it or
+# not: the anchor is what keeps these claims from skipping on a day when nothing else is open.
 open_list=$(api "repos/$REPO/pulls?state=open&per_page=10")
 pin "pulls?state=open is a list" 'type == "array"' "$open_list"
 is_list "$open_list" || open_list='[]'
+if [ -n "$OPEN_PR" ]; then
+  is_num "$OPEN_PR" || { echo "pr-review-api-contract.sh: CONTRACT_OPEN_PR must be a PR number, got '$OPEN_PR'" >&2; exit 2; }
+fi
 if [ "$(jq length <<<"$open_list")" -ge 1 ]; then
   pin "every row of the open-PR list carries a numeric number" 'all(.[]; .number | type == "number")' "$open_list"
-  # One projected row per PR, accumulated in a file: mergeable is nullable, so an absent key is
-  # projected as "absent" rather than read as null, and fails the {true,false,null} claim.
-  : >"$SCRATCH/open_prs"
-  for n in $(jq -r '.[].number // "-"' <<<"$open_list"); do
-    is_num "$n" || continue # recorded MOVED just above; no request is built from it
-    api "repos/$REPO/pulls/$n" | jq -c '{number, head_sha: .head.sha, base_ref: .base.ref, updated_at,
-      created_at, mergeable: (if has("mergeable") then .mergeable else "absent" end), mergeable_state}' >>"$SCRATCH/open_prs"
-  done
-  open_prs=$(jq -s . "$SCRATCH/open_prs")
+fi
+# One projected row per PR, accumulated in a file: mergeable is nullable, so an absent key is
+# projected as "absent" rather than read as null, and fails the {true,false,null} claim. The
+# anchor's own state and draft ride along, for the anchor claim; no reader of the gate's needs them.
+: >"$SCRATCH/open_prs"
+for n in $(jq -r --arg a "$OPEN_PR" '[.[].number // "-"] + (if $a == "" then [] else [$a | tonumber] end) | map(tostring) | unique | .[]' <<<"$open_list"); do
+  is_num "$n" || continue # recorded MOVED just above; no request is built from it
+  api "repos/$REPO/pulls/$n" | jq -c '{number, state, draft, head_sha: .head.sha, base_ref: .base.ref, updated_at,
+    created_at, mergeable: (if has("mergeable") then .mergeable else "absent" end), mergeable_state}' >>"$SCRATCH/open_prs"
+done
+read_prs=$(jq -s . "$SCRATCH/open_prs")
+anchor_gone=""
+if [ -n "$OPEN_PR" ]; then
+  # Like the merged anchor's "is merged" claim above: the anchor is an input this file names, and
+  # one that stopped being an open draft says so here, by number, rather than turning the claims
+  # below into a skip on a quiet day. Marked ready is a MOVED too: the review app reviews a ready
+  # PR, and a ready PR can be merged.
+  pin "the open-PR anchor #$OPEN_PR is open and a draft (reopen it, or make a new one as the header says and point CONTRACT_OPEN_PR at it)" \
+    'any(.[]; .number == $a and .state == "open" and .draft == true)' "$read_prs" --argjson a "$OPEN_PR"
+  jq -e --argjson a "$OPEN_PR" 'any(.[]; .number == $a and .state == "open")' <<<"$read_prs" >/dev/null || anchor_gone=1
+else
+  skip "the open-PR anchor is an open draft" "set CONTRACT_OPEN_PR to a long-lived draft PR, so the open-PR claims below are made on a day when nothing else is open"
+fi
+# The claims are made on what is open: an anchor that is not is the MOVED above, not a row here.
+open_prs=$(jq -c --arg a "$OPEN_PR" '[.[] | select(($a != "" and .number == ($a | tonumber) and .state != "open") | not) | del(.state, .draft)]' <<<"$read_prs")
+if [ "$(jq length <<<"$open_prs")" -ge 1 ]; then
   pin "an open PR's pulls/<n> read carries head.sha, base.ref, updated_at, and mergeable (present) in {true,false,null}" \
     "all(.[]; (.head_sha | test(\"$HEX40\")) and (.base_ref | type == \"string\" and length > 0) and (.updated_at | test(\"$ISO\")) and (.mergeable == true or .mergeable == false or .mergeable == null))" "$open_prs"
   # created_at is the floor the review clock starts at (status_state's `expected`), and unlike
@@ -819,6 +853,8 @@ if [ "$(jq length <<<"$open_list")" -ge 1 ]; then
   if jq -e 'any(.[]; .mergeable_state == "dirty")' <<<"$open_prs" >/dev/null; then
     echo "      a dirty PR is open: that no pull_request run is created for a push made while dirty can be checked on it by hand"
   fi
+elif [ -n "$anchor_gone" ]; then
+  skip "open PRs' mergeability and clock fields" "no open PR right now, and the anchor #$OPEN_PR is not open — see the MOVED above"
 else
   skip "open PRs' mergeability and clock fields" "no open PR right now"
 fi
@@ -955,6 +991,15 @@ fi
 #     status_state orders these stamps as strings. A row outside them keeps the pre-#439
 #     reading, which is safe but silent: a new failure word would read as a stall rather than as
 #     a failed run.
+#   - The Review trigger: every Code Review row's last cell, as SUMMARY_TRIGGER_CELL_RE reads it,
+#     is a word of REVIEW_TRIGGERS (ludics#825). _receipt_binding reads the cell of a commit-less
+#     Completed row (#815) and approves only on "Manual request" or "PR opened"; any other word is
+#     "unbound", which costs a nudge per head and says nothing about why. The claim is made on
+#     every row, not only the commit-less ones: the cell is the same column on all of them, and
+#     those rows are rare (none among ludics's 60 newest merged PRs when this was written), so a
+#     new word shows up on the next stamped row rather than on the next receipt. Only the cell's
+#     text is read, never what it implies about the round; a sample with no commit-less row says
+#     so as a skip beside the claim.
 #   - The ORDER the Completed reading rests on (#453): the app submits a round's findings review
 #     BEFORE it flips the row to Completed (9 of 9 findings rounds sampled on 2026-09-28, 2-4 s
 #     apart), which is why "nothing since the 👀" is the test and "nothing after the row" would
@@ -976,6 +1021,8 @@ SUMMARY_COMPLETED_ROW_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_CO
 SUMMARY_FAILED_ROW_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_FAILED_ROW_RE as r; print(r)')
 SUMMARY_ROW_STAMP_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_ROW_STAMP_RE as r; print(r)')
 SUMMARY_COMMITLESS_ROW_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_COMMITLESS_ROW_RE as r; print(r)')
+SUMMARY_TRIGGER_CELL_RE=$(gate_py 'from ludics.prreview.state import SUMMARY_TRIGGER_CELL_RE as r; print(r)')
+REVIEW_TRIGGERS=$(gate_py 'import json; from ludics.prreview.state import REVIEW_TRIGGERS as t; print(json.dumps(list(t)))')
 : >"$SCRATCH/summary_rows.jsonl"
 for n in $(jq -r --argjson k "$SUMMARY_SAMPLE" '[.[] | select(.merged_at != null) | .number | select(type == "number")] | .[:$k] | .[]' <<<"$closed"); do
   # Through files, not the argument vector: a long-reviewed PR's feed is over Linux's
@@ -987,13 +1034,14 @@ for n in $(jq -r --argjson k "$SUMMARY_SAMPLE" '[.[] | select(.merged_at != null
   # it — beside the app's last submitted review. The Running test is the 👍 path's.
   jq -cn --argjson pr "$n" --arg rev "$REVIEWER" --arg done "$SUMMARY_COMPLETED_ROW_RE" \
     --arg failed "$SUMMARY_FAILED_ROW_RE" --arg stamp "$SUMMARY_ROW_STAMP_RE" \
-    --arg bare "$SUMMARY_COMMITLESS_ROW_RE" \
+    --arg bare "$SUMMARY_COMMITLESS_ROW_RE" --arg trig "$SUMMARY_TRIGGER_CELL_RE" \
     --slurpfile comments "$SCRATCH/s_comments.json" --slurpfile reviews "$SCRATCH/s_reviews.json" "
     def app: $APP; $SUMMARY_ROW_INSTANT_DEF"'
     def kind: if test($done) then "completed" elif test($failed) then "failed"
               elif test($bare) then "commitless"
               elif test("^\\|[^|]*Code Review[^|]*\\|[^|]*Running") then "running" else "other" end;
     def rows: (.body // "") | split("\n")[] | select(test("^\\|[^|]*Code Review[^|]*\\|"));
+    def trigger: [capture($trig)] | first | .t;
     def dated: (([capture($stamp)] | first) // ([capture($bare)] | first))
       | if . == null then false
         else (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
@@ -1009,7 +1057,7 @@ for n in $(jq -r --argjson k "$SUMMARY_SAMPLE" '[.[] | select(.merged_at != null
            | if length == 0 or any(.[]; . == null) then null else max_by(.key) end
          end) as $newest
     | ([$reviews[0][] | select(app) | select(.submitted_at != null)] | max_by(.submitted_at)) as $last
-    | {pr: $pr, rows: [$sums[] | rows | {kind: kind, dated: dated, row: .}], newest: $newest,
+    | {pr: $pr, rows: [$sums[] | rows | {kind: kind, dated: dated, trigger: trigger, row: .}], newest: $newest,
        review: (if $last == null then null else {at: $last.submitted_at, sha: ($last.commit_id // "")} end)}' \
     >>"$SCRATCH/summary_rows.jsonl"
 done
@@ -1017,10 +1065,19 @@ summary_rows=$(jq -s . "$SCRATCH/summary_rows.jsonl")
 n_rows=$(jq '[.[].rows[]] | length' <<<"$summary_rows")
 if [ "$n_rows" -eq 0 ]; then
   skip "every Code Review row is a shape status_state reads" "the $(jq length <<<"$summary_rows") sampled merged PRs carry no Code Review row"
+  skip "every Code Review row's Review trigger cell is a word the gate knows" "the sampled merged PRs carry no Code Review row"
 else
   # Failing rows first, so the MOVED line's 400 characters show them.
   pin "every Code Review row of the sampled PRs' summaries is Completed or Failed in the allowlisted shape, Completed naming no commit, or Running, dated by an ISO 8601 UTC datetime not in the future ($n_rows rows on $(jq length <<<"$summary_rows") PRs; $(jq '[.[].rows[] | select(.kind == "failed")] | length' <<<"$summary_rows") Failed)" \
     'all(.[]; .kind != "other" and .dated)' "$(jq -c '[.[] | .pr as $pr | .rows[] | {pr: $pr} + .] | sort_by(.kind != "other" and .dated)' <<<"$summary_rows")"
+  n_bare=$(jq '[.[].rows[] | select(.kind == "commitless")] | length' <<<"$summary_rows")
+  pin "every Code Review row's Review trigger cell is a word the gate knows, $(jq -r 'join(", ")' <<<"$REVIEW_TRIGGERS") (_receipt_binding approves a commit-less receipt only on the first two; $n_rows rows, $n_bare of them Completed naming no commit)" \
+    'all(.[]; .trigger as $t | $t | type == "string" and ($v | index([$t])) != null)' \
+    "$(jq -c '[.[] | .pr as $pr | .rows[] | {pr: $pr, trigger, row}] | sort_by(.trigger as $t | $v | index([$t]) != null)' --argjson v "$REVIEW_TRIGGERS" <<<"$summary_rows")" \
+    --argjson v "$REVIEW_TRIGGERS"
+  if [ "$n_bare" -eq 0 ]; then
+    skip "a Completed row naming no commit carries a known Review trigger, live" "none among the sampled $n_rows rows; the cell is the same column on every row, pinned above"
+  fi
 fi
 ordered=$(jq -c '[.[] | select(.newest != null and .newest.kind == "completed" and .review != null)
                  | select(.newest.sha as $s | $s != "" and (.review.sha | startswith($s)))

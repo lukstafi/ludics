@@ -124,8 +124,15 @@ _SUMMARY_COMPLETED_ROW = onig(SUMMARY_COMPLETED_ROW_RE)
 _SUMMARY_COMMITLESS_ROW = onig(SUMMARY_COMMITLESS_ROW_RE)
 _SUMMARY_FAILED_ROW = onig(SUMMARY_FAILED_ROW_RE)
 _SUMMARY_ROW_STAMP = onig(SUMMARY_ROW_STAMP_RE)
-# A Code Review row's last cell, its Review trigger ("Manual request", "PR opened", "New commits").
-_TRIGGER_CELL = onig(r"\|[ \t]*(?<t>[^|]*?)[ \t]*\|[ \t]*$")
+# A Code Review row's last cell, its Review trigger, and the words the gate knows there: "Manual
+# request" and "PR opened" each name the request a commit-less receipt answers (_receipt_binding),
+# "New commits" a push whose head the row does not record. pr-review-api-contract.sh asks for both
+# verbatim and pins every live row's cell against the tuple (ludics#825).
+SUMMARY_TRIGGER_CELL_RE = r"\|[ \t]*(?<t>[^|]*?)[ \t]*\|[ \t]*$"
+REVIEW_TRIGGER_MANUAL = "Manual request"
+REVIEW_TRIGGER_OPENED = "PR opened"
+REVIEW_TRIGGERS = (REVIEW_TRIGGER_MANUAL, REVIEW_TRIGGER_OPENED, "New commits")
+_TRIGGER_CELL = onig(SUMMARY_TRIGGER_CELL_RE)
 # A no-findings receipt that names no commit (ludics#815): the reviewer's WHOLE comment body, as a
 # fail-closed allowlist of the two shapes seen (ocannl-staging#1424's, 2026-10-26, under the
 # receipt marker; and five from 2026-04..06 without it): the optional marker and a blank line, the
@@ -455,12 +462,12 @@ def _receipt_binding(
         return "", ""
     before = [a for a in asked if lt(a, receipt_at)]
     if before:
-        req, kind = jstr(jmax(before)), "Manual request"
+        req, kind = jstr(jmax(before)), REVIEW_TRIGGER_MANUAL
     elif head.created and age_of(head.created, now) is not None and lt(head.created, receipt_at):
-        req, kind = head.created, "PR opened"
+        req, kind = head.created, REVIEW_TRIGGER_OPENED
     else:
         return "unbound", "no request before it reads"
-    what = "the '@codex review' request" if kind == "Manual request" else "the PR's opening"
+    what = "the '@codex review' request" if kind == REVIEW_TRIGGER_MANUAL else "the PR's opening"
     if gt(floor, req):
         return "unbound", (
             f"head {short} arrived at {floor}, after {what} at {req} it may answer, so which head"
