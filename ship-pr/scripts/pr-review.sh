@@ -226,7 +226,11 @@
 #                                          # NEVER STARTED, which `checks` names too) gets ONE
 #                                          # rerun per head run under --wait; then, or without
 #                                          # --wait, it refuses with 6 naming the commands
-#                                          # (ludics-lite#560/#728; see prreview/runners.py)
+#                                          # (ludics-lite#560/#728; see prreview/runners.py).
+#                                          # A PR found merged at another head than the
+#                                          # gated one (gh makes no merge request for a
+#                                          # merged PR) is exit 1, "MERGED at an UNJUDGED
+#                                          # head" (ludics#823; see prreview/merge.py)
 #   pr-review.sh merge-build --base <rev> --head <rev> [--config <file>] [-C <dir>]
 #                                          # the merge build alone, a DRY RUN in a local checkout
 #                                          # (no PR read, no fetch, no merge): a config's
