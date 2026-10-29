@@ -41,6 +41,10 @@ NO_CHECKS=""                           # the head carries no build check and no 
                                        # commit is older than the run-creation grace, so the gate
                                        # reads that as ABSENT
 MERGE_STATE="merged=true state=MERGED" # what REST says after the merge call
+MERGED_HEAD=""                         # nonempty = the head that read answers (`-` = none); empty = CURRENT_HEAD
+# nonempty = the PR is already merged when a merge call is made -- from the first call, or, with
+# MERGE_NOT_MERGEABLE, from the retry (merged meanwhile): `pr merge` then answers as gh does.
+ALREADY_MERGED=""
 MERGE_QUEUE=""                         # nonempty = the base has a merge queue
 MERGE_NOT_MERGEABLE=""                 # nonempty = the FIRST pr merge call fails as not mergeable
 MERGE_BASE_MODIFIED=""                 # nonempty = the FIRST pr merge call loses a race to the base
@@ -239,6 +243,16 @@ gh() {
       fi
       printf '%s\t%s\n' "$reads" "$PR_BASE"
       ;;
+    # The merged-state read after the call: the state, a tab, the head the PR stands at (ludics#823:
+    # a merged PR's head is the head it was merged at). Above the head reads, whose `.head.sha`
+    # its projection carries too.
+    *merged=*)
+      if [ -n "$STATE_FAIL" ]; then
+        printf 'gh: 503 No server is currently available to service your request\n' >&2
+        return 1
+      fi
+      printf '%s\t%s\n' "$MERGE_STATE" "${MERGED_HEAD:-$CURRENT_HEAD}"
+      ;;
     *'.commits|tostring'*)
       printf 'CALL commits-count\n' >>"$CALLS_FILE"
       reads=$(fixture_call_count series-count) || return 1
@@ -305,13 +319,6 @@ gh() {
       else
         printf '%s\n' "$PR_BODY"
       fi
-      ;;
-    *merged=*)
-      if [ -n "$STATE_FAIL" ]; then
-        printf 'gh: 503 No server is currently available to service your request\n' >&2
-        return 1
-      fi
-      echo "$MERGE_STATE"
       ;;
     *'.mergeable'*)
       if [ "$MERGEABLE" = FAIL ]; then
@@ -478,6 +485,16 @@ gh() {
       printf 'GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)\n' >&2
       return 1
     fi
+    # A STATED ASSUMPTION about gh, not a fixture choice (ludics#823): gh v2.101.0
+    # (pkg/cmd/pr/merge/merge.go) sets `merged` from pr.State == MERGED, and then canMerge() and
+    # merge() return nil with no API call -- so no merge request is made and --match-head-commit is
+    # never sent -- deleteLocalBranch() warns "! Pull request <repo>#<n> was already merged" on
+    # stderr off a TTY, and gh exits 0. The merged-head check in confirm() is what binds this call.
+    if [ -n "$ALREADY_MERGED" ]; then
+      printf 'CALL no merge request: already merged\n' >>"$CALLS_FILE"
+      printf '! Pull request %s#7 was already merged\n' "$REPO" >&2
+      return 0
+    fi
     ;;
   # The newer runs of the head run's workflow (runners.py's evidence for NEVER STARTED).
   "api repos/$REPO/actions/workflows/1/runs?"*)
@@ -537,6 +554,8 @@ reset() {
   CHECK_ROWS_LATER=""
   NO_CHECKS=""
   MERGE_STATE="merged=true state=MERGED"
+  MERGED_HEAD=""
+  ALREADY_MERGED=""
   MERGE_QUEUE=""
   MERGE_NOT_MERGEABLE=""
   MERGE_BASE_MODIFIED=""
@@ -2432,6 +2451,56 @@ test_not_mergeable_is_decided_by_the_mergeable_field() {
   assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 3 "after three calls"
 }
 
+# ludics#823. `gh pr merge` on a PR it finds already merged makes no merge request (the fixture
+# gh's stated assumption above), so --match-head-commit binds nothing and merged=true alone does
+# not say the gated head landed. confirm() reads the head the PR merged at: another head than the
+# gated one is exit 1, "MERGED at an UNJUDGED head", on both routes that reach the call with the
+# PR merged -- a first call, and the retry after a "not mergeable" on a PR merged meanwhile (a
+# merged PR's mergeability reads true, #818).
+merged_at_an_unjudged_head() { # <first-call|retry>
+  reset
+  ALREADY_MERGED=1
+  [ "$1" = first-call ] || MERGE_NOT_MERGEABLE=1
+  MERGED_HEAD=landed-sha
+  run_merge
+  assert_eq "$MERGE_RC" 1 "merged at another head is not this merge ($1: $MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "example/repo#7 is MERGED at an UNJUDGED head landed-s (the gate judged head-sha)" \
+    "naming both heads ($1)"
+  assert_contains "$MERGE_STDERR" "do NOT re-merge" "and that it has landed ($1)"
+  assert_contains "$MERGE_CALLS" "CALL no merge request: already merged" "the call made no merge request ($1)"
+}
+test_a_pr_merged_elsewhere_at_an_unjudged_head_is_not_this_merge() {
+  merged_at_an_unjudged_head first-call
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "on the first call"
+}
+test_a_retry_onto_a_pr_merged_meanwhile_at_an_unjudged_head_is_not_this_merge() {
+  merged_at_an_unjudged_head retry
+  assert_contains "$MERGE_STDERR" "'not mergeable' was the stale pre-recompute verdict" "through the #820 retry"
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 2 "on the second call"
+}
+
+# The benign race: a PR merged elsewhere AT the judged head is `merged`, exit 0, on both routes.
+test_a_pr_merged_elsewhere_at_the_judged_head_is_merged() {
+  local route
+  for route in first-call retry; do
+    reset
+    ALREADY_MERGED=1
+    [ "$route" = first-call ] || MERGE_NOT_MERGEABLE=1
+    run_merge
+    assert_eq "$MERGE_RC" 0 "merged at the judged head is merged ($route: $MERGE_OUTPUT)"
+    assert_eq "$(tail -n 1 "$OUT_FILE")" "example/repo#7 merged=true state=MERGED" "the state line, as before ($route)"
+  done
+}
+
+# A merged state whose head did not read is never `merged`: whether it is the judged head is unknown.
+test_a_merged_head_that_did_not_read_is_unknown() {
+  reset
+  MERGED_HEAD=-
+  run_merge
+  assert_eq "$MERGE_RC" 3 "a merged head that did not read is unknown ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "the head it was merged at could not be read" "and says so"
+}
+
 # ludics-lite#729. A conflict ends no wait in a merge: on ocannl-staging#1259 `merge --wait` found
 # one only at the merge call, after 120 minutes on CI. A --wait reads the PR's mergeability FIRST
 # and refuses a conflict before the gate reads anything. The base leg of each case is realistic:
@@ -3094,6 +3163,10 @@ tests=(
   test_a_job_no_runner_took_is_rerun_once_and_merges
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
+  test_a_pr_merged_elsewhere_at_an_unjudged_head_is_not_this_merge
+  test_a_retry_onto_a_pr_merged_meanwhile_at_an_unjudged_head_is_not_this_merge
+  test_a_pr_merged_elsewhere_at_the_judged_head_is_merged
+  test_a_merged_head_that_did_not_read_is_unknown
   test_a_conflicting_pr_is_refused_before_the_wait
   test_an_uncomputed_mergeability_is_read_again_never_judged
   test_an_unread_mergeability_neither_refuses_nor_clears

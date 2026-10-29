@@ -1375,7 +1375,10 @@ it is fixed, take it back off the list.
 
 `gh pr merge` exits 0 having only *enabled* auto-merge when the base carries required checks or a
 merge queue, so the exit code is not the answer; `merge` confirms `merged` over REST and reports
-`merged=false` as a failure to land. REST, not `gh pr view --json` — those ride GraphQL, and a
+`merged=false` as a failure to land. It also reads the head the PR merged at: `gh pr merge` on a
+PR already merged makes no merge request, so `--match-head-commit` binds nothing, and a PR merged
+at another head than the gated one is exit 1, "MERGED at an UNJUDGED head" — landed, but not this
+merge; do not re-merge. REST, not `gh pr view --json` — those ride GraphQL, and a
 nonzero merge whose state query then 503s is exactly the shape of a merge that DID land.
 
 A merge failing with "Pull request is not mergeable: the merge commit cannot be cleanly created" is

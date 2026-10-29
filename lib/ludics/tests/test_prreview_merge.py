@@ -50,7 +50,7 @@ GREEN: list[tuple[list[str], int, str, str]] = [
     # a field with.
     (["\\(.mergeable)"], 0, "true\tclean\tmain\n", ""),
     (["mergeable_state"], 0, "main\theadsha\tclean\n", ""),
-    (["merged=\\(.merged)"], 0, "merged=true state=closed\n", ""),
+    (["merged=\\(.merged)"], 0, "merged=true state=closed\theadsha\n", ""),
     ([".updated_at"], 0, "headsha\t2026-09-01T00:00:00Z\tbasesha\ttopic\n", ""),
     (['.base.ref // ""'], 0, "main\n", ""),
     ([".default_branch"], 0, "main\n", ""),
@@ -114,6 +114,22 @@ class Production(unittest.TestCase):
                 self.assertTrue(done.stdout.endswith("o/r#7 merged=true state=closed\n"), done.stdout)
                 merges = [c for c in self.calls() if c[:2] == ["pr", "merge"]]
                 self.assertEqual(merges, [["pr", "merge", "7", "--repo", "o/r", "--match-head-commit", "headsha", "--merge"]])
+
+    def test_a_pr_merged_at_another_head_is_not_this_merge(self) -> None:
+        """ludics#823: gh finds the PR already merged, makes no merge request and exits 0 with its
+        warning on stderr (gh v2.101.0); the merged head decides, not gh's exit."""
+        merged_elsewhere = [(["pr", "merge"], 0, "", "! Pull request o/r#7 was already merged\n"), *GREEN]
+        at_another = [(["merged=\\(.merged)"], 0, "merged=true state=closed\tlandedsha\n", ""), *merged_elsewhere]
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]):
+                self.route(at_another)
+                done = self.run_cmd(entry, "merge", "o/r#7")
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("o/r#7 is MERGED at an UNJUDGED head landedsh (the gate judged headsha)", done.stderr)
+                self.route(merged_elsewhere)
+                done = self.run_cmd(entry, "merge", "o/r#7")
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertTrue(done.stdout.endswith("o/r#7 merged=true state=closed\n"), done.stdout)
 
     def test_checks_ends_with_its_trailer_and_a_red_is_one(self) -> None:
         red = [(["check-runs"], 0, "ci\tfailure\thttps://u\t1\n", ""), *GREEN]

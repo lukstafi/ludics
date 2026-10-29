@@ -16,9 +16,10 @@ review round:
   and an ABSENT verdict's base (ludics-lite#523); then what the merge goes over (an override's
   waived red, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
-  over REST.
+  over REST, with the head it merged at (``confirm``, ludics#823).
 
-Exit: 0 merged; 1 refused (red, a moved head, a real conflict, an open thread, a deferred merge);
+Exit: 0 merged at the gated head; 1 refused (red, a moved head, a real conflict, an open thread, a
+deferred merge) or merged at a head the gate did not judge;
 2 usage; 3 something that decides it could not be read -- under ``--wait``, a head read of the
 gate's that did not answer is read again after a pause instead (ludics-lite#795), so there 3 means
 the wait's budget was spent with none answering, or GitHub refused the read, and the message names
@@ -758,30 +759,61 @@ class Merge:
                 f"REST (api repos/{repo}/pulls/{pr} --jq .merged) before retrying.",
             )
 
+    # The state line, then a tab and the head (ludics#823). A merged PR's REST ``.head.sha`` is the
+    # head it was merged at, frozen by the merge (lukstafi/ludics#822 after its merge: head.sha
+    # 3ee60da3 = the second parent of its merge commit 8119d447; the api contract pins a merged
+    # anchor's head.sha as 40-hex).
+    _STATE_JQ = '"merged=\\(.merged) state=\\(.state)\\t\\(.head.sha // "-")"'
+
     def confirm(self) -> int:
         """The merged state over REST: ``gh pr merge`` returns 0 having only ENABLED auto-merge when
-        the base defers merges, so its status is not the answer."""
+        the base defers merges, so its status is not the answer.
+
+        And the head it merged at (ludics#823). ``gh pr merge`` on a PR it finds already merged
+        makes no merge request and exits 0 (gh v2.101.0, ``pkg/cmd/pr/merge/merge.go``: ``merge()``
+        returns nil when ``pr.State`` is MERGED, so ``--match-head-commit`` is never sent): a first
+        call on a PR merged elsewhere, or the retry after a "not mergeable" on a PR merged
+        meanwhile (a merged PR's mergeability reads ``true``, #818). So ``merged=true`` alone does
+        not say the gated head landed. The merged head equal to ``gate.check_sha`` is ``merged``,
+        exit 0, whoever merged it -- a race at the judged head is normal in a wave. Another head is
+        exit 1, the fact (this gate's head landed) does not hold: it HAS landed, so the message
+        says not to re-merge. A merged state whose head did not read (no tab, empty, ``-``) is
+        exit 3, never ``merged``."""
         repo, pr = self.repo, self.num
-        state = self.session.retry(
-            "read", ["api", f"repos/{repo}/pulls/{pr}", "--jq", '"merged=\\(.merged) state=\\(.state)"']
-        )
+        state = self.session.retry("read", ["api", f"repos/{repo}/pulls/{pr}", "--jq", self._STATE_JQ])
         if not isinstance(state, GhOk):
             fail(
                 3,
                 "merge command returned but the state could not be confirmed",
                 f"({self.session.err_line()}) — do NOT re-merge; re-read repos/{repo}/pulls/{pr} first.",
             )
-        cli.say(f"{repo}#{pr} {state.stdout}")
+        line, _, head = state.stdout.partition("\t")
+        cli.say(f"{repo}#{pr} {line}")
         if self.gate.head_unread:
             warn(self.gate.head_unread_note())
-        if "merged=true" in state.stdout:
+        if "merged=true" in line:
+            judged = self.gate.check_sha
+            if head in ("", "-"):
+                fail(
+                    3,
+                    f"{repo}#{pr} is merged, but the head it was merged at could not be read, so whether it",
+                    f"is the head the gate judged ({judged[:8]}) is unknown — do NOT re-merge; read",
+                    f"repos/{repo}/pulls/{pr} --jq .head.sha first.",
+                )
+            if head != judged:
+                fail(
+                    1,
+                    f"{repo}#{pr} is MERGED at an UNJUDGED head {head[:8]} (the gate judged {judged[:8]}):",
+                    "it was merged by another call, at a head this merge never read a build signal for —",
+                    "not this merge. It has landed, so do NOT re-merge; judge what landed on the base.",
+                )
             return 0
         if self.opts.require_green:
             disable = self.session.retry("write", ["pr", "merge", pr, "--repo", repo, "--disable-auto"])
             if isinstance(disable, GhOk):
                 fail(
                     1,
-                    f"NOT merged, and auto-merge DISABLED again: {repo}#{pr} ({state.stdout}) — the base defers",
+                    f"NOT merged, and auto-merge DISABLED again: {repo}#{pr} ({line}) — the base defers",
                     "merges to its required checks or a merge queue, and a close-out merge is never",
                     "deferred. Merge it when the base allows a direct merge, or hand it to the maintainer",
                     "with the record on the PR.",
@@ -789,12 +821,12 @@ class Merge:
             fail(
                 3,
                 f"NOT merged, and auto-merge could NOT be disabled ({self.session.err_line()}): {repo}#{pr}",
-                f"({state.stdout}) is armed to land a LATER head ungated. Disable it by hand (gh pr merge",
+                f"({line}) is armed to land a LATER head ungated. Disable it by hand (gh pr merge",
                 "--disable-auto) before anything else.",
             )
         fail(
             1,
-            f"{repo}#{pr} is not merged ({state.stdout}) — `gh pr merge` returned having only enabled",
+            f"{repo}#{pr} is not merged ({line}) — `gh pr merge` returned having only enabled",
             "auto-merge. It will land when the base's required checks pass; do not treat it as landed.",
             f"{self.multi.deferred_note()} {self.series.deferred_note()}",
         )
