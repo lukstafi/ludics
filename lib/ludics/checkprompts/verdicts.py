@@ -37,7 +37,13 @@ named one path at a time, never by a glob a new file could fall under -- are not
 deliberately NOT read: a comparison against a longer literal (``= "rc=0 (finished"``), a regex
 anchored other than ``^...$`` in a quoted grep operand, ``awk``/``sed``/``expr`` and other tools'
 matches, a comparison split across lines, a Python ``match``, prose saying "prints rc=0", and the
-files outside ``SWEEP`` (the workflows among them). Those are follow-ups, not rounds of this one.
+files outside ``SWEEP`` (the workflows among them). More generally, a spelling the shell or Python
+accepts as equivalent to one of the four forms but that the regexes below do not match as written
+is OUTSIDE this boundary: the list above is the whole claim, and a green scan says no line of
+exactly these shapes is there, never that no reader compares the whole line. Such spellings are
+follow-ups, not rounds of this one (ludics-lite#826's review, rounds 1-4, widened the forms to
+the ones here and stopped). Narrowing the scan to comparisons of a variable that holds wait's
+output was weighed and not taken: it is a data-flow reading, which a line scan cannot make.
 A root without ``issue-wave/scripts/bg-run.sh`` writes no verdict line and carries no obligation.
 """
 
