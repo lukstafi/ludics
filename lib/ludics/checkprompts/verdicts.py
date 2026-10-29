@@ -16,8 +16,8 @@ followed by the end of the line, a blank, ``]``, ``)``, ``;``, ``&``, ``|``, a b
      blanks around the operator or none; a quoted operand may carry a Python string prefix
      (``f"rc={n}"``), and a bare one on the left must not end a longer word (``x.RUNNING``);
   2. a blank-surrounded ``=`` with that operand on either side, on a line where a ``[`` or
-     ``test`` and a blank come before it (the ``test`` builtin's comparison; a spaced Python
-     assignment has neither);
+     ``test`` and a blank come before it with no ``]`` between (the ``test`` builtin's comparison,
+     negated or within ``-a``/``-o`` too; a spaced Python assignment has neither);
   3. a ``grep`` that carries ``-x`` (alone or in a bundle of letters) or ``--line-regexp`` anywhere
      before the next ``|``, ``;`` or ``&`` (after its pattern too, as GNU grep takes it), with that
      operand; or any ``grep`` with a quoted ``^<token>$``;
@@ -83,7 +83,7 @@ FORMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("an ==/!= comparison", re.compile(r"(?:==|!=)\s*" + _OPERAND + _END)),
     ("an ==/!= comparison", re.compile(_LEFT + r"\s*(?:==|!=)")),
     ("a test = comparison", re.compile(r"(?:\[|\btest)\s(?:[^\]]*?\s)?!?=\s+" + _OPERAND + _END)),
-    ("a test = comparison", re.compile(r"(?:\[|\btest)\s+" + _OPERAND + r"\s+!?=\s")),
+    ("a test = comparison", re.compile(r"(?:\[|\btest)\s(?:[^\]]*?\s)?" + _OPERAND + r"\s+!?=\s")),
     (
         "a grep -x match",
         re.compile(
