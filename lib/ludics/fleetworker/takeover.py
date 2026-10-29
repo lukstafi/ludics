@@ -52,7 +52,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from ludics import cli, proc
+from ludics import bgrun, cli, proc
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import PAYLOAD_ON_FD, err, fleet_name, prelude, run_on
@@ -131,8 +131,9 @@ fi
 printf 'head=%s\nbranch=%s\ndirty=%s\n' "$head" "$branch" "$dirty"
 """
 
-# Far side, on agent_host: each run under the parent, tab, bg-run's verdict line, shown as wait prints
-# it (a finished run's `rc=<n> (finished earlier, at <time>)`, ludics-lite#816, says when it ended).
+# Far side, on agent_host: each run under the parent, tab, wait's exit, tab, bg-run's verdict line.
+# The line is shown as wait prints it (a finished run's `rc=<n> (finished earlier, at <time>)`,
+# ludics-lite#816, says when it ended) once ludics.bgrun reads a verdict in it that is the exit's.
 RUNS = r"""
 d=$(expand_tilde "$1")
 [ -d "$d" ] || { printf 'none\t%s\n' "$d"; exit 0; }
@@ -140,8 +141,8 @@ bg="$(expand_tilde "$SKILLS_REPO")/issue-wave/scripts/bg-run.sh"
 [ -r "$bg" ] || { printf 'nobg\t%s\n' "$bg"; exit 0; }
 for r in "$d"/run-*; do
   [ -d "$r" ] || continue
-  v=$(BG_RUN_HEARTBEAT=0 bash "$bg" wait "$r" --within 0 2>/dev/null | head -n 1)
-  printf '%s\t%s\n' "$r" "${v:-unreadable}"
+  v=$(BG_RUN_HEARTBEAT=0 bash "$bg" wait "$r" --within 0 2>/dev/null); e=$?
+  printf '%s\t%s\t%s\n' "$r" "$e" "$(printf '%s\n' "$v" | head -n 1)"
 done
 """
 
@@ -355,7 +356,7 @@ def run_lines(cfg: Config, keys: dict[str, str]) -> list[str]:
     done = run_on(cfg, host, prelude(cfg, host) + RUNS, [keys["runs"]], capture=True)
     if done.unreachable:
         return [f"- {host} did not answer"]
-    rows = [line.split("\t", 1) for line in done.out.splitlines() if "\t" in line]
+    rows = [line.split("\t", 2) for line in done.out.splitlines() if "\t" in line]
     if done.rc != 0:
         return [f"- unreadable on {host} (exit {done.rc})"]
     if rows and rows[0][0] == "none":
@@ -369,7 +370,13 @@ def run_lines(cfg: Config, keys: dict[str, str]) -> list[str]:
         tail = row[0].rsplit("run-", 1)[-1]
         return int(tail) if tail.isdecimal() else -1
 
-    return [f"- {path}: {verdict}" for path, verdict in sorted(rows, key=number)]
+    def shown(row: list[str]) -> str:
+        path, code, said = (row + ["", ""])[:3]
+        if code.isdecimal() and bgrun.parse(said, int(code)) is not None:
+            return f"- {path}: {said}"
+        return f"- {path}: unreadable (bg-run.sh wait printed {said!r}, exit {code or '?'})"
+
+    return [shown(row) for row in sorted(rows, key=number)]
 
 
 def cmd_takeover(cfg: Config, args: list[str]) -> int:

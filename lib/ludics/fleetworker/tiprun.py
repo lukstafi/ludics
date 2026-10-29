@@ -108,7 +108,8 @@ What it reads, a fail-closed allowlist:
     or handle is refused (exit 1), naming it, and left to the coordinator.
 On the box, the coordinator's own ``bg-run.sh`` (carried in the script, as ``--from-bg-run``'s far
 side does) waits on the directory for up to ``--within`` seconds (``WITHIN``, 480: the tool call's
-600 s cap less the registry and GitHub calls around it). Its verdict decides, and nothing else:
+600 s cap less the registry and GitHub calls around it). Its verdict, the line's word as
+``ludics.bgrun.parse`` reads it and only when it is wait's exit's, decides, and nothing else:
 ``rc=`` or ``STOPPED`` concludes the record with ``execution conclude --from-bg-run <dir> --request
 <id> --sha <sha>`` (its verdict mapping is that one's) and reports the record's verdict as above,
 exit 0; ``RUNNING`` prints ``TIP-RUN RUNNING <id> <box> <dir>: <wait's line>``, exit 3, to be
@@ -128,7 +129,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any, cast
 
-from ludics import cli
+from ludics import bgrun, cli
 from ludics.fleetworker.config import Config
 from ludics.fleetworker import revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
@@ -568,12 +569,12 @@ def cmd_wait(cfg: Config, parsed: WaitArgs) -> int:
         cli.say(f"TIP-RUN REFUSED {request_id}: {run_facts}; conclude it by hand")
         return 1
     box, run_dir, sha = run_facts
-    bgrun = os.path.join(cfg.here, "bg-run.sh")
+    bg_script = os.path.join(cfg.here, "bg-run.sh")
     try:
-        with open(bgrun, encoding="utf-8", errors="surrogateescape") as f:
+        with open(bg_script, encoding="utf-8", errors="surrogateescape") as f:
             bg_source = f.read()
     except OSError as exc:
-        die(f"execution tip-run --wait: cannot read {bgrun} ({exc.strerror})")
+        die(f"execution tip-run --wait: cannot read {bg_script} ({exc.strerror})")
     script = prelude(cfg, box) + WAIT_HEAD + bg_source + WAIT_TAIL
     done = run_on(cfg, box, script, [run_dir, str(parsed.within)], capture=True)
     lines = done.out.rstrip("\n").split("\n")
@@ -584,10 +585,12 @@ def cmd_wait(cfg: Config, parsed: WaitArgs) -> int:
     if done.rc == 1 and said.startswith("TIP-RUN REFUSED: "):
         cli.say(f"TIP-RUN UNKNOWN {request_id}: {said[len('TIP-RUN REFUSED: '):]}; nothing concluded, reconcile it")
         return 4
-    if done.rc == 3 and said.startswith("RUNNING"):
+    verdict = bgrun.parse(said, done.rc)  # the line's word, and only when it is the exit's
+    word = verdict.word if verdict is not None else None
+    if word is bgrun.Word.RUNNING:
         cli.say(f"TIP-RUN RUNNING {request_id} {box} {run_dir}: {said}")
         return 3
-    if not ((done.rc == 0 and said.startswith("rc=")) or (done.rc == 7 and said.startswith("STOPPED"))):
+    if word is not bgrun.Word.RC and word is not bgrun.Word.STOPPED:
         cli.say(f"TIP-RUN UNKNOWN {request_id}: bg-run.sh wait on {run_dir} on {box} said {said!r} (exit {done.rc});"
                 " nothing concluded, reconcile it (bg-run.sh's header reads the verdict)")
         return 4

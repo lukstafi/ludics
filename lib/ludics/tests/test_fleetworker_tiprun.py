@@ -469,6 +469,13 @@ class Wait(unittest.TestCase):
                                    "--sha", SHA, "--box", "rog-nv-linux"]])
         self.assertEqual(out, f"TIP-RUN CONCLUDED w-gpu-rog-1 pass rog-nv-linux {SHA} /s/tip-runs/run-3\n")
 
+    def test_a_run_that_finished_earlier_is_concluded_too(self) -> None:
+        # A re-issued wait on a run long done says so after the word (ludics-lite#816); the word decides.
+        rc, out, _, worker = self.wait([[running()], [running(state="concluded", verdict="pass")]],
+                                       Done(0, "rc=0 (finished earlier, at 2026-10-28T15:04:05Z)\n"))
+        self.assertEqual((rc, len(worker)), (0, 1))
+        self.assertIn("TIP-RUN CONCLUDED w-gpu-rog-1 pass", out)
+
     def test_a_stopped_run_is_concluded_too(self) -> None:
         rc, out, _, worker = self.wait([[running()], [running(state="concluded", verdict="cancelled")]],
                                        Done(7, "STOPPED /s/tip-runs/run-3\n"))
@@ -482,7 +489,10 @@ class Wait(unittest.TestCase):
         self.assertEqual(out, "TIP-RUN RUNNING w-gpu-rog-1 rog-nv-linux /s/tip-runs/run-3: RUNNING after 480 s of --within 480\n")
 
     def test_any_other_answer_concludes_nothing(self) -> None:
+        # A line whose first word is no verdict, or not the exit's, is read by ludics.bgrun as none
+        # (ludics-lite#826): an `rc=` with no status, a word that only starts like one.
         for far in (Done(5, "DIED: pid 4 gone\n"), Done(4, "STARTING after 0 s\n"), Done(255, ""), Done(0, "RUNNING\n"),
+                    Done(0, "rc=x\n"), Done(0, "rc=\n"), Done(3, "RUNNING: after 1 s\n"), Done(7, "STOPPEDX\n"),
                     Done(1, "TIP-RUN REFUSED: no run directory /s/tip-runs/run-3 on rog-nv-linux\n")):
             rc, out, _, worker = self.wait([[running()]], far)
             self.assertEqual((rc, worker), (4, []), far)

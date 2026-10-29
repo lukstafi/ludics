@@ -23,6 +23,8 @@ The checks, each in its own module:
   drift        each routine sync-routines.sh installs runs it (ludics-lite#199);
   cleanup      ship-pr/SKILL.md against post-merge-cleanup.sh's usage text (ludics-lite#276);
   links        relative Markdown links and their anchors (ludics-lite#260).
+  verdicts     no shell or skill-text reader compares bg-run.sh wait's whole verdict line
+               (ludics-lite#826).
 
 Every reader works on the C-locale (byte) view of the files, as the shell's did under
 ``LC_ALL=C``; ``bytes_view`` says why that is part of the contract. Every scanner here reads LINE

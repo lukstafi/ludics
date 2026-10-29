@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from ludics import cli, proc
+from ludics import bgrun, cli, proc
 
 PROG = "peer-plan.sh"
 ROOT = Path(__file__).resolve().parents[3]
@@ -217,7 +217,8 @@ def spawn(d: str, kind: str, managed: bool) -> str:
 
 
 def live(run: str) -> bool:
-    """Whether the bg-run run may still be going, read as ``bg-run.sh wait`` reads it. Only a
+    """Whether the bg-run run may still be going, read as ``bg-run.sh wait`` reads it (its line by
+    ``ludics.bgrun.parse``, word and exit agreeing). Only a
     final verdict says it is not: ``rc=`` (exit 0), DIED (5), STOPPED (7), or STARTING (4) past
     bg-run's start grace with no pid, a launch that failed (bg-run.sh's header). RUNNING (3) is
     live, and a wait that gives no verdict (a usage error, a timeout, no bg-run.sh) is refused,
@@ -229,12 +230,15 @@ def live(run: str) -> bool:
     deadline = time.monotonic() + (int(grace) if grace.isdigit() else 60) + 5
     while True:
         done = proc.run_tool(str(BG_RUN), ["wait", run, "--within", "1"], stdin=subprocess.DEVNULL, timeout=60)
-        if done.rc == 4 and time.monotonic() <= deadline:
+        # The line's word, read by the one grammar (ludics.bgrun) and only when it is the exit's.
+        verdict = bgrun.parse(done.stdout.split("\n", 1)[0], done.rc)
+        word = verdict.word if verdict is not None else None
+        if word is bgrun.Word.STARTING and time.monotonic() <= deadline:
             continue
-        if done.rc in (0, 4, 5, 7):
-            return False
-        if done.rc == 3:
+        if word is bgrun.Word.RUNNING:
             return True
+        if word is not None:
+            return False
         raise cli.Exit(1, f"cannot read the run {run} (bg-run.sh wait exit {done.rc}): {last_line(done.stderr)}")
 
 

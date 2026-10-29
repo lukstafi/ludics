@@ -3068,6 +3068,97 @@ class ShellReadingsTest(Case):
         )
 
 
+# --- whole-line reads of bg-run.sh wait's verdict line (ludics-lite#826) -------------------------
+# Each form the verdicts module's boundary lists, in each kind of file it sweeps, is refused; the
+# first-word reads beside them pass, as do the four files it names as excluded and a root without
+# the writer.
+
+VERDICT_FORMS = (
+    ("scripts/a.sh", 'if [ "$said" = "rc=0" ]; then', "a test = comparison"),
+    ("scripts/a.sh", "[ \"$(head -n1 log)\" = 'rc=0' ] && echo ok", "a test = comparison"),
+    ("scripts/a.sh", '[ "$v" != DIED ] || exit 1', "an ==/!= comparison"),
+    ("scripts/a.sh", 'test "$v" = "rc=$want"', "a test = comparison"),
+    ("scripts/a.sh", '[ "rc=0" = "$said" ]', "a test = comparison"),
+    ("scripts/a.sh", '[[ $said == "RUNNING" ]] && continue', "an ==/!= comparison"),
+    ("scripts/a.sh", "[[ rc=0 == $said ]]", "an ==/!= comparison"),
+    ("scripts/a.sh", "grep -x 'rc=0' out", "a grep -x match"),
+    ("scripts/a.sh", 'printf "%s\\n" "$v" | grep -qxF STOPPED', "a grep -x match"),
+    ("scripts/a.sh", "grep --line-regexp -e 'rc=0' out", "a grep -x match"),
+    ("scripts/a.sh", "grep -q '^rc=0$' out", "an anchored grep match"),
+    ("scripts/a.sh", 'case "$said" in rc=0) ok ;; esac', "a case arm"),
+    ("scripts/a.sh", "  STARTING|RUNNING) again ;;", "a case arm"),
+    ("alpha/SKILL.md", '    [ "$(bg-run.sh wait "$d")" = "rc=0" ] && echo passed', "a test = comparison"),
+    ("alpha/references/x.md", "- `grep -x STOPPED` on the wait's output", "a grep -x match"),
+    ("lib/ludics/x/y.py", '    if said == "rc=0":', "an ==/!= comparison"),
+    ("lib/ludics/x/y.py", "    ok = line != 'DIED'", "an ==/!= comparison"),
+    ("issue-wave/scripts/other.sh", "case $v in (DIED) x ;; esac", "a case arm"),
+)
+
+VERDICT_CONTROLS = (
+    'case "$said" in rc=*) ;; *) refuse ;; esac',
+    '[[ $said == rc=* ]] && done=1',
+    'case "${said%% *}" in STOPPED*) stopped ;; esac',
+    "grep -q '^rc=' out",
+    "grep -x 'rc=0 (finished earlier' out",
+    '[ "$wrc" -eq 0 ] || exit 1',
+    'if said.startswith("rc="):',
+    'state = "RUNNING"',
+    "if len(names) == RUNNING_SHOWN:",
+    "A wait prints `rc=0` and exits 0; `RUNNING` (3) means re-issue it.",
+    "  3) refuse \"bg-run.sh wait: RUNNING -- live\" ;;",
+)
+
+
+class VerdictReadsTest(Case):
+    OK = "ok: no whole-line read of bg-run.sh wait's verdict line in"
+
+    def setUp(self) -> None:
+        super().setUp()
+        fresh(self.root)
+        write(os.path.join(self.root, "issue-wave", "scripts", "bg-run.sh"), "#!/bin/sh\n")
+
+    def test_a_tree_of_first_word_reads_passes(self) -> None:
+        write(os.path.join(self.root, "scripts", "a.sh"), "".join(f"{line}\n" for line in VERDICT_CONTROLS))
+        write(os.path.join(self.root, "lib", "ludics", "x", "y.py"), "".join(f"{line}\n" for line in VERDICT_CONTROLS))
+        append(os.path.join(self.root, "alpha", "SKILL.md"), "".join(f"    {line}\n" for line in VERDICT_CONTROLS))
+        self.expect("first-word reads of the verdict line pass", 0, self.OK)
+
+    def test_each_whole_line_read_is_refused(self) -> None:
+        for rel, line, form in VERDICT_FORMS:
+            with self.subTest(line=line):
+                fresh(self.root)
+                write(os.path.join(self.root, "issue-wave", "scripts", "bg-run.sh"), "#!/bin/sh\n")
+                path = os.path.join(self.root, rel)
+                if os.path.exists(path):
+                    append(path, f"{line}\n")
+                    n = len(read(path).split("\n")) - 1
+                else:
+                    write(path, f"#!/bin/sh\n{line}\n")
+                    n = 2
+                result = self.expect(f"{line!r} is refused", 1, f"FAIL: {rel}: line {n}: {form} reads bg-run.sh wait's whole")
+                self.lacks(f"{line!r}", self.OK, result)
+
+    def test_the_excluded_files_and_only_they_are_not_read(self) -> None:
+        bad = '[ "$said" = "rc=0" ]\n'
+        excluded = ("issue-wave/scripts/bg-run.sh", "issue-wave/scripts/test-bg-run.sh",
+                    "lib/ludics/checkprompts/verdicts.py", "lib/ludics/tests/test_checkprompts_cli.py")
+        for rel in excluded:
+            write(os.path.join(self.root, rel), bad)
+        # The tree's own suite file draws the fixture register's refusals, which are not this check's.
+        result = run(CP, self.root)
+        self.check("the writer, its suite, the scanner and its fixtures are not read", 1, result, self.OK)
+        self.lacks("an excluded file", "reads bg-run.sh wait's whole", result)
+        write(os.path.join(self.root, "issue-wave", "scripts", "test-bg-run-2.sh"), bad)
+        self.expect("a name beside an excluded one is read", 1,
+                    "FAIL: issue-wave/scripts/test-bg-run-2.sh: line 1: a test = comparison")
+
+    def test_no_writer_no_obligation(self) -> None:
+        os.remove(os.path.join(self.root, "issue-wave", "scripts", "bg-run.sh"))
+        write(os.path.join(self.root, "scripts", "a.sh"), '[ "$said" = "rc=0" ]\n')
+        result = self.expect("a root without bg-run.sh carries no obligation", 0, clean(self.root))
+        self.lacks("no writer", "verdict line", result)
+
+
 # --- this checkout -------------------------------------------------------------------------------
 
 

@@ -111,6 +111,22 @@ class Takeover(unittest.TestCase):
         self.assertNotIn("CONFLICT", out)
         self.assertEqual(self.gh, [["pr", "view", "42", "--repo", "o/r", "--json", takeover.PR_FIELDS]])
 
+    def test_a_run_whose_line_states_no_verdict_reads_unreadable(self) -> None:
+        # ludics.bgrun reads each run's line (ludics-lite#826): `rc=x` (an rc file that is not a
+        # status) and an empty line state no verdict, and are not shown as one.
+        self.board("t7", **self.full())
+        runs = os.path.join(self.root, "runs")
+        for n, text in ((3, "x\n"), (4, "0\n")):
+            os.makedirs(os.path.join(runs, f"run-{n}"))
+            with open(os.path.join(runs, f"run-{n}", "rc"), "w") as f:
+                f.write(text)
+        os.makedirs(os.path.join(runs, "run-5"))  # no pid yet: STARTING, a verdict
+        rc, out, err = self.takeover()
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"- {runs}/run-3: unreadable (bg-run.sh wait printed 'rc=x (finished earlier", out)
+        self.assertRegex(out, f"- {re.escape(runs)}/run-4: rc=0 \\(finished earlier, at [^)]*\\)\n")
+        self.assertIn(f"- {runs}/run-5: STARTING after 0 s of --within 0\n", out)
+
     def test_a_missing_key_is_printed_missing_and_nothing_is_guessed(self) -> None:
         self.board("t7", **self.full(pr="-", runs="-", worker="-", brief_host="-", requests="-"))
         rc, out, _ = self.takeover()
