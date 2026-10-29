@@ -694,7 +694,14 @@ or of the test runner is attributed to nothing, and an option the prompt only di
 from the listing side alone. ludics-lite#276 added `--regenerable` to the helper and to the prompt
 by hand, in the PR that found the prompt's prose about the base-owner gate had been false through
 two earlier PRs; the name being present is what this pins, and whether the prose around it is true
-stays the review question it was. Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
+stays the review question it was. And it refuses a shell, Python or skill-text reader that compares
+`bg-run.sh wait`'s WHOLE verdict line (ludics-lite#826): the verdict is the line's first word, and
+#816's finished-earlier marker turned a whole-line reader red in CI. The Python readers go through
+`lib/ludics/bgrun.py`, one parser with a shell form generated from the same table; the scan holds the
+rest to that, over a fail-closed allowlist of comparison shapes its `verdicts` module's header lists
+(an `==`/`!=`, a `test` `=`, a `grep -x`, an anchored grep, a `case` arm, each against an exact
+verdict token). A green scan says no line of those shapes is there, not that every reader reads the
+first word: a comparison of another shape is outside it. Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
 against scratch trees, one per defect, with the well-formed tree as the control, and ends by
 running it on this checkout.
 

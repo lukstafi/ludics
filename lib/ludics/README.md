@@ -41,6 +41,7 @@ lib/ludics/cli.py                shared by every entry point: Exit, main (the ca
                                  and status; a closed stdout ends the command by SIGPIPE, 141, as
                                  it ended the shell's printf), say/emit/note
 lib/ludics/proc.py               run_tool, the shell bridge, and Git Bash's PATH lookup and quoting
+lib/ludics/bgrun.py              bg-run.sh wait's verdict line: parse, and its shell form SHELL_VERDICT
 lib/ludics/prreview/core.py      pr-review.sh's prelude: fail/die/warn, Config, GhSession
                                  (gh_retry and its classification), parse_ref/pr_arg,
                                  repo_from_cwd, api_list, mark_of

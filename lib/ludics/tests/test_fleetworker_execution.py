@@ -4,6 +4,8 @@ import contextlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -134,6 +136,41 @@ def run_record(**over: str) -> dict[str, str]:
     facts = execution.run_facts(run_text(**over))
     assert facts is not None, over
     return facts
+
+
+class FromBgRunFarSide(unittest.TestCase):
+    """``conclude --from-bg-run``'s far side over the real bg-run.sh: its line read by ludics.bgrun's
+    shell form, so a run long finished, whose wait prints ``rc=<n> (finished earlier, at ...)``,
+    concludes on its status (ludics-lite#816, #826)."""
+
+    BG_RUN = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+                          "issue-wave", "scripts", "bg-run.sh")
+
+    def far(self, **files: str) -> str:
+        root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-from-bg-run."))
+        self.addCleanup(shutil.rmtree, root)
+        for name, text in files.items():
+            with open(os.path.join(root, name), "w") as f:
+                f.write(text)
+        with open(self.BG_RUN, encoding="utf-8") as f:
+            script = "BOX=testbox\n" + execution.FROM_BG_RUN_HEAD + f.read() + execution.FROM_BG_RUN_TAIL
+        done = subprocess.run(["bash", "-c", script, "far", root], capture_output=True, text=True, check=False,
+                              env={**os.environ, "BG_RUN_HEARTBEAT": "0"})
+        return done.stdout
+
+    def test_a_run_that_finished_earlier_reads_its_status(self) -> None:
+        self.assertEqual(self.far(rc="3\n", log="tests: exit: 3\n"), "status=rc\nrc=3\nsentinel=tests: exit: 3\n")
+        self.assertEqual(self.far(rc="0\n", log=""), "status=rc\nrc=0\nsentinel=\n")
+
+    def test_every_other_verdict(self) -> None:
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        self.assertEqual(self.far(pid=f"{dead.pid}\n", stopped="process group 1\n"), "status=stopped\n")
+        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: DIED", self.far(pid=f"{dead.pid}\n"))
+        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING", self.far(pid=f"{os.getpid()}\n"))
+        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: STARTING", self.far())
+        # An rc that is no status states no verdict: refused on the line, never read as a status.
+        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait exit 0: rc=x", self.far(rc="x\n", log=""))
 
 
 class RunFacts(unittest.TestCase):

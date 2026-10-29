@@ -14,6 +14,7 @@ from ludics.checkprompts.links import check_links
 from ludics.checkprompts.registers import check_fixtures, check_index
 from ludics.checkprompts.slots import check_slots
 from ludics.checkprompts.tree import Report, Tree
+from ludics.checkprompts.verdicts import check_verdict_reads
 
 PROG = "check-prompts"
 USAGE = "usage: check-prompts.sh [root] | --one <dir>"
@@ -124,6 +125,7 @@ def run(argv: list[str]) -> int:
     check_drift_guard(report, tree)
     check_cleanup_options(report, tree)
     check_links(report, tree)
+    check_verdict_reads(report, tree)
     cli.say("")
     cli.say(f"{PROG}: {report.passed} passed, {report.failed} failed")
     return 0 if report.failed == 0 else 1

@@ -54,7 +54,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, assert_never, cast
 
-from ludics import cli
+from ludics import bgrun, cli
 from ludics.fleetworker import cotenants, revision
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.farside import FLEET_PYTHON
@@ -217,7 +217,8 @@ printf 'launched=%s\n' "$rhead"
 """
 
 # Far side of `conclude --from-bg-run`, on the box that holds the directory: bg-run.sh's own `wait
-# <dir> --within 0` gives the verdict, so the directory contract keeps one reader. The
+# <dir> --within 0` gives the verdict, so the directory contract keeps one reader, and its line is
+# read by ludics.bgrun's shell form (`bg_verdict`), so the line's grammar keeps one too. The
 # coordinator's copy of bg-run.sh travels in this script, so the far box's skills checkout cannot
 # read the directory with another version. The one thing read past `wait` is the runner's own exit
 # sentinel in `log`, a fail-closed allowlist: a whole line `exit: <status>` or `<name>: exit:
@@ -234,6 +235,10 @@ bash -s -- wait "$dir" --within 0 > "$tmp" 2>&1 <<'FLEET_BG_RUN_SH'
 FROM_BG_RUN_TAIL = r"""FLEET_BG_RUN_SH
 wrc=$?
 said=$(head -n1 "$tmp"); rm -f "$tmp"
+""" + bgrun.SHELL_VERDICT + r"""# The line is read by the one grammar (ludics.bgrun): its first word, which must be the exit's, so
+# a run long finished reads `rc=<n> (finished earlier, at ...)` as rc=<n>. The exit picks the arm
+# once the two agree.
+bg_verdict "$said" "$wrc" || refuse "bg-run.sh wait exit $wrc: $said"
 case "$wrc" in
   0) ;;
   3) refuse "bg-run.sh wait: RUNNING -- $dir has no rc and its task or command is alive; conclude once it finishes" ;;
@@ -245,18 +250,11 @@ case "$wrc" in
   # STOPPED is a conclusion: the stop signalled the run's whole group, a command that had not yet
   # published cpid included, and wait reads it only once no member of that group is left. What it
   # cannot see is a process that left the group itself (bg-run.sh's header, on stop).
-  7) case "$said" in STOPPED*) printf 'status=stopped\n'; exit 0 ;; esac
-     refuse "bg-run.sh wait exit 7 printed '$said', not STOPPED" ;;
-  *) refuse "bg-run.sh wait exit $wrc: $said" ;;
+  7) printf 'status=stopped\n'; exit 0 ;;
 esac
-# The verdict is the line's first word (bg-run.sh's header): a run long finished reads
-# `rc=<n> (finished earlier, at ...)`.
-code=${said#rc=}; code=${code%% *}
-case "$said" in rc=*) ;; *) refuse "bg-run.sh wait printed '$said', not rc=<status>" ;; esac
-case "$code" in ''|*[!0-9]*) refuse "$dir/rc holds '$code', not a status" ;; esac
 [ -f "$dir/log" ] || refuse "$dir has an rc but no log"
 sentinel=$(LC_ALL=C grep -a -E '^([A-Za-z0-9._-]+: )?exit: (0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$' "$dir/log" | tail -n 1)
-printf 'status=rc\nrc=%s\nsentinel=%s\n' "$code" "$sentinel"
+printf 'status=rc\nrc=%s\nsentinel=%s\n' "$bg_status" "$sentinel"
 """
 
 
