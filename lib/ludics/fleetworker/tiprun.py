@@ -136,7 +136,16 @@ from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, 
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.leg import PIN
 from ludics.fleetworker.preflight import refresh_box
-from ludics.fleetworker.transport import err, is_local, prelude, run, run_on
+from ludics.fleetworker.transport import (
+    BG_RUN_TAG,
+    bg_run_path,
+    carried_bg_run,
+    err,
+    is_local,
+    prelude,
+    run,
+    run_on,
+)
 
 USAGE = (
     "execution tip-run <json-file> [--tip <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command> [args...],"
@@ -512,9 +521,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
 # directory that is not there.
 WAIT_HEAD = r"""dir="$1" within="$2"
 [ -d "$dir" ] || { echo "TIP-RUN REFUSED: no run directory $dir on $BOX"; exit 1; }
-bash -s -- wait "$dir" --within "$within" <<'FLEET_BG_RUN_SH'
+bash -s -- wait "$dir" --within "$within" <<'""" + BG_RUN_TAG + """'
 """
-WAIT_TAIL = "FLEET_BG_RUN_SH\n"
 
 
 def started_run(record: dict[str, Any]) -> tuple[str, str, str] | str:
@@ -569,13 +577,12 @@ def cmd_wait(cfg: Config, parsed: WaitArgs) -> int:
         cli.say(f"TIP-RUN REFUSED {request_id}: {run_facts}; conclude it by hand")
         return 1
     box, run_dir, sha = run_facts
-    bg_script = os.path.join(cfg.here, "bg-run.sh")
+    bg_script = bg_run_path(cfg)
     try:
-        with open(bg_script, encoding="utf-8", errors="surrogateescape") as f:
-            bg_source = f.read()
+        carried = carried_bg_run(bg_script)
     except OSError as exc:
         die(f"execution tip-run --wait: cannot read {bg_script} ({exc.strerror})")
-    script = prelude(cfg, box) + WAIT_HEAD + bg_source + WAIT_TAIL
+    script = prelude(cfg, box) + WAIT_HEAD + carried
     done = run_on(cfg, box, script, [run_dir, str(parsed.within)], capture=True)
     lines = done.out.rstrip("\n").split("\n")
     said = lines[-1] if lines else ""

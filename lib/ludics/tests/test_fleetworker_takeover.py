@@ -3,6 +3,7 @@ the anchor ``local`` over a scratch state root, the board and the registry writt
 modules, the far sides run by bash -- with only GitHub faked."""
 
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -126,6 +127,38 @@ class Takeover(unittest.TestCase):
         self.assertIn(f"- {runs}/run-3: unreadable (bg-run.sh wait printed 'rc=x (finished earlier", out)
         self.assertRegex(out, f"- {re.escape(runs)}/run-4: rc=0 \\(finished earlier, at [^)]*\\)\n")
         self.assertIn(f"- {runs}/run-5: STARTING after 0 s of --within 0\n", out)
+
+    def test_runs_are_read_by_the_coordinators_bg_run_never_the_boxs_own(self) -> None:
+        # The agent host's skills checkout carries a bg-run.sh of another version (here, one that
+        # prints a line of its own). The far side runs the coordinator's copy, carried in the script,
+        # so every run's line is printed by the version ludics.bgrun reads (#826).
+        far = os.path.join(self.root, "far-skills")
+        os.makedirs(os.path.join(far, "issue-wave", "scripts"))
+        with open(os.path.join(far, "issue-wave", "scripts", "bg-run.sh"), "w") as f:
+            f.write("#!/bin/bash\necho \"rc=99 (the far box's own bg-run.sh)\"\nexit 0\n")
+        self.cfg = dataclasses.replace(self.cfg, skills_repo=far)
+        self.board("t7", **self.full())
+        runs = os.path.join(self.root, "runs")
+        os.makedirs(os.path.join(runs, "run-1"))
+        with open(os.path.join(runs, "run-1", "rc"), "w") as f:
+            f.write("0\n")
+        scratch = os.path.join(self.root, "scratch")
+        os.mkdir(scratch)
+        with mock.patch.dict(os.environ, {"TMPDIR": scratch}):
+            rc, out, err = self.takeover()
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("far box's own", out)
+        self.assertRegex(out, f"- {re.escape(runs)}/run-1: rc=0 \\(finished earlier, at [^)]*\\)\n")
+        self.assertEqual(os.listdir(scratch), [], "the far side's copy of bg-run.sh is removed")
+
+    def test_a_coordinator_bg_run_that_cannot_be_read_reads_no_runs(self) -> None:
+        self.cfg = dataclasses.replace(self.cfg, here=os.path.join(self.root, "no-scripts"))
+        self.board("t7", **self.full())
+        os.makedirs(os.path.join(self.root, "runs", "run-1"))
+        rc, out, err = self.takeover()
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"- not read: the coordinator's {self.root}/no-scripts/bg-run.sh could not be read (", out)
+        self.assertIn("### Worktree", out)
 
     def test_a_missing_key_is_printed_missing_and_nothing_is_guessed(self) -> None:
         self.board("t7", **self.full(pr="-", runs="-", worker="-", brief_host="-", requests="-"))

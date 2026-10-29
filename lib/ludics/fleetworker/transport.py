@@ -15,6 +15,7 @@ does not offer.
 """
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -203,6 +204,31 @@ def shipped_python(find_python: str, source: str, tag: str, payload: str) -> str
         + source
         + f"\n{tag}\n"
     )
+
+
+# THE CARRIED BG-RUN.SH. A far side that reads a bg-run directory runs the coordinator's own
+# bg-run.sh -- the one beside this fleet-worker.sh -- never the far box's skills checkout's copy, so
+# every run's `wait` line is printed by the version whose grammar ludics.bgrun reads, however far
+# that box's checkout lags or leads (ludics#826's one parser). The source travels inside the far-side
+# script, the far shell's stdin, as a here-document: a script opens it with ``<<'BG_RUN_TAG'``
+# (quoted, so nothing in it is expanded) and ``carried_bg_run`` is its body and closing line. Its
+# readers: ``conclude --from-bg-run`` and ``tip-run --wait`` (each `bash -s` of it once) and
+# ``board takeover`` (it writes it to a scratch file, once, for its loop over the runs).
+BG_RUN_TAG = "FLEET_BG_RUN_SH"
+
+
+def bg_run_path(cfg: Config) -> str:
+    """The coordinator's bg-run.sh: the one beside this fleet-worker.sh."""
+    return os.path.join(cfg.here, "bg-run.sh")
+
+
+def carried_bg_run(path: str) -> str:
+    """bg-run.sh at ``path`` (``bg_run_path``'s, but for a suite) as a here-document's body and
+    closing ``BG_RUN_TAG`` line. Raises OSError when it cannot be read; each caller says so in its
+    own words."""
+    with open(path, encoding="utf-8", errors="surrogateescape") as f:
+        source = f.read()
+    return source + ("" if source.endswith("\n") else "\n") + BG_RUN_TAG + "\n"
 
 
 def run(

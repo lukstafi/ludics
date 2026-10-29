@@ -62,8 +62,11 @@ from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_
 from ludics.fleetworker.lease import LEASE_MUTATION
 from ludics.fleetworker.preflight import knob, refresh_box
 from ludics.fleetworker.transport import (
+    BG_RUN_TAG,
     PAYLOAD_ON_FD,
     Done,
+    bg_run_path,
+    carried_bg_run,
     emit_var,
     err,
     fleet_name,
@@ -219,8 +222,8 @@ printf 'launched=%s\n' "$rhead"
 # Far side of `conclude --from-bg-run`, on the box that holds the directory: bg-run.sh's own `wait
 # <dir> --within 0` gives the verdict, so the directory contract keeps one reader, and its line is
 # read by ludics.bgrun's shell form (`bg_verdict`), so the line's grammar keeps one too. The
-# coordinator's copy of bg-run.sh travels in this script, so the far box's skills checkout cannot
-# read the directory with another version. The one thing read past `wait` is the runner's own exit
+# coordinator's copy of bg-run.sh travels in this script (transport's THE CARRIED BG-RUN.SH), so the
+# far box's skills checkout cannot read the directory with another version. The one thing read past `wait` is the runner's own exit
 # sentinel in `log`, a fail-closed allowlist: a whole line `exit: <status>` or `<name>: exit:
 # <status>`, the name [A-Za-z0-9._-]+ and the status 0-255 without leading zeros; the LAST such
 # line wins. Prints `status=rc`, `rc=` and `sentinel=` lines; `status=stopped` alone for wait's
@@ -230,10 +233,9 @@ FROM_BG_RUN_HEAD = r"""dir="$1"
 refuse() { echo "FROM-BG-RUN REFUSED: $*"; exit 1; }
 [ -d "$dir" ] || refuse "no run directory $dir on $BOX"
 tmp=$(mktemp "${TMPDIR:-/tmp}/fw-bg-run.XXXXXX") || refuse "cannot create a scratch file on $BOX"
-bash -s -- wait "$dir" --within 0 > "$tmp" 2>&1 <<'FLEET_BG_RUN_SH'
+bash -s -- wait "$dir" --within 0 > "$tmp" 2>&1 <<'""" + BG_RUN_TAG + """'
 """
-FROM_BG_RUN_TAIL = r"""FLEET_BG_RUN_SH
-wrc=$?
+FROM_BG_RUN_TAIL = r"""wrc=$?
 said=$(head -n1 "$tmp"); rm -f "$tmp"
 """ + bgrun.SHELL_VERDICT + r"""# The line is read by the one grammar (ludics.bgrun): its first word, which must be the exit's, so
 # a run long finished reads `rc=<n> (finished earlier, at ...)` as rc=<n>. The exit picks the arm
@@ -511,9 +513,7 @@ def conclude_from_bg_run(
     The read box need not be the execution host (a trip driven over ssh leaves its directory on
     the box that drove it), so the payload carries no ``execution_host`` binding, and the log and
     handle name the box read, ``<box>:<path>``."""
-    with open(bgrun, encoding="utf-8", errors="surrogateescape") as f:
-        bg_source = f.read()
-    script = prelude(cfg, box) + FROM_BG_RUN_HEAD + bg_source + FROM_BG_RUN_TAIL
+    script = prelude(cfg, box) + FROM_BG_RUN_HEAD + carried_bg_run(bgrun) + FROM_BG_RUN_TAIL
     done = run_on(cfg, box, script, [run_dir], capture=True)
     if done.unreachable:
         return Refusal(f"FROM-BG-RUN UNREACHABLE {box}: nothing concluded", 4)
@@ -1213,7 +1213,7 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
             "execution conclude --from-bg-run: --sha <full commit SHA> required, or --observed-from <checkout>"
             " (a bg-run directory records none; the worker's result line names it)"
         )
-    bgrun = os.path.join(cfg.here, "bg-run.sh")
+    bgrun = bg_run_path(cfg)
     if not (_nonempty(bgrun) and os.access(bgrun, os.R_OK)):
         die(f"execution conclude --from-bg-run: missing {bgrun}")
     check_identity(cfg)
