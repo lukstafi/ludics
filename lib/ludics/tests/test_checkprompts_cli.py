@@ -3091,6 +3091,8 @@ VERDICT_FORMS = (
     ("alpha/references/x.md", "- `grep -x STOPPED` on the wait's output", "a grep -x match"),
     ("lib/ludics/x/y.py", '    if said == "rc=0":', "an ==/!= comparison"),
     ("lib/ludics/x/y.py", "    ok = line != 'DIED'", "an ==/!= comparison"),
+    ("lib/ludics/x/y.py", '    if "rc=0"==said:', "an ==/!= comparison"),
+    ("lib/ludics/x/y.py", '    ok = said=="DIED"', "an ==/!= comparison"),
     ("issue-wave/scripts/other.sh", "case $v in (DIED) x ;; esac", "a case arm"),
 )
 

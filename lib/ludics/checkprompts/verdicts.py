@@ -74,7 +74,7 @@ _END = r"(?=$|[\s\]);&|`:,])"
 
 FORMS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("an ==/!= comparison", re.compile(r"(?:==|!=)\s*" + _OPERAND + _END)),
-    ("an ==/!= comparison", re.compile(r"(?:^|[\s(\[])" + _OPERAND + r"\s*(?:==|!=)(?=\s)")),
+    ("an ==/!= comparison", re.compile(r"(?:^|[\s(\[])" + _OPERAND + r"\s*(?:==|!=)")),
     ("a test = comparison", re.compile(r"(?:\[|\btest)\s(?:[^\]]*?\s)?!?=\s+" + _OPERAND + _END)),
     ("a test = comparison", re.compile(r"(?:\[|\btest)\s+" + _OPERAND + r"\s+!?=\s")),
     (
