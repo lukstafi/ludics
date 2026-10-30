@@ -99,43 +99,19 @@ price, and the price is a cache write at twice the input price instead of 1.25 t
 misses dwarf. [`scripts/cache-misses.py`](../scripts/cache-misses.py) counts such turns (SKILL.md,
 *Close out*).
 
-## Keeping workers warm
+## Idle workers
 
-Regular mode's rules are SKILL.md's (*Wave mode*); this is their mechanism here. A worker's cache
-lives one TTL from its last request, and every request renews it, a cache read included. A worker
+A worker's cache lives one TTL from its last request, and every request renews it. A worker
 blocked inside its turn makes a request at least every 540 s (`bg-run.sh wait`), so it never
-misses. A worker whose turn has ended is on the clock from its last reply, and only the
-coordinator's message ends that wait. `fleet-worker.sh board show <wave> --json | cache-misses.py
---session <coordinator session id> --idle 40 --board -` lists each live one past 40 minutes as
-`idle <m>m <agent id> context=<tokens> task=<task> state=<state> <description>`, the ID
-`SendMessage` takes; the session id is the coordinator's
-`$CLAUDE_CODE_SESSION_ID`. Workers that have handed back are not listed: a final hand-back's
-board row is done, and an early hand-back's agent ID is listed in the row's `retired_agents`
-(the script's header states the join and its refusals).
-
-There are three ways off the clock, chosen by when the wait will end:
-
-- **Resume with work**, the usual case.
-- **Keep-warm**, for a wait expected to end within the hour: `EXECUTION_PENDING <request_id>
-  <what it waits for, and until about when>`. The brief has the worker answer with the one line
-  `PENDING <request_id>` and end its turn, starting nothing. It costs one request that re-reads
-  the context at a tenth of the input price, about 33k input-price tokens for a 330k-token
-  worker, where the miss costs 660k (a 1-hour cache write is twice the input price). A wait that
-  outlives a second keep-warm takes the hand-back.
-- **Early hand-back**, for a wait with no end within the hour (a request that cannot be assigned
-  soon, a long measurement deferred until a box is quiet): `EXECUTION_DEFERRED <request_id>
-  <reason>`. The worker commits and pushes what has passed its tests, stops its own review watch
-  and merge wait (as for a pause, SKILL.md *A pause is not a halt*), and ends with its last turn:
-  a status block giving head, PR, the pending `EXECUTION_REQUEST` verbatim, what its result
-  decides, and the step after it. The coordinator concludes the worker's standing reservations
-  and puts the status block on its board row with `state=handed-back-early` and the worker's agent
-  ID appended to `retired_agents`: read the row with `board show <wave> --json` and write the old
-  list plus the new ID, space-separated, so a replacement's own early hand-back keeps its
-  predecessors' IDs. Once the request
-  can run, the coordinator either runs it itself (transport `coordinator`) and posts the result
-  where the status block says, or launches a fresh worker with the status block as its brief.
-  That worker starts with a context of tens of thousands of tokens, not hundreds, and owns the
-  branch from then on. The old worker is never resumed again: one writer per branch.
+misses; a worker whose turn has ended is on the clock from its last reply until the coordinator's
+message. Claude Code 2.1.309 does not let that clock run out on a large context: about 55 minutes
+into an idle spell, while the 1-hour cache is still warm, it writes a compaction summary in the
+background, and the next turn swaps it in in milliseconds (`compact_boundary` with `"trigger":
+"auto", "precomputed": true`; three main sessions of 230-260k tokens on 2026-10-30, each resuming
+on a 30-40k cache write). The worker carries on from the summary and its latest turns, and
+re-derives the rest from git and the PR. That subagents are compacted the same way is not yet
+observed: `cache-misses.py` shows it as a `compactions:` count, and its absence as `resume`
+misses with gaps past an hour.
 
 ## Worker channel
 
@@ -202,9 +178,8 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    runtime's continue-an-agent form: SendMessage to the agent's name or ID, never a fresh
    Agent call) with one line, `EXECUTION_ASSIGNED <request_id>`, followed by the exact
    command, revision, checkout and log to use. For a `head-of:` request the revision is the
-   record's `resolved_revision` (the `EXECUTION RESOLVED` line), never the branch. On a refusal, hold the worker - idle, it keeps
-   its context, in a regular wave for no longer than [Keeping workers warm](#keeping-workers-warm)
-   allows - or answer `EXECUTION_REFUSED <reason>` so it keeps implementing.
+   record's `resolved_revision` (the `EXECUTION RESOLVED` line), never the branch. On a refusal, hold the worker idle
+   ([Idle workers](#idle-workers)) or answer `EXECUTION_REFUSED <reason>` so it keeps implementing.
 4. **Result.** The resumed worker runs only the assigned command. Correctness uses
    `fleet-worker.sh execution slot -- <command>`, which is what bounds the box's
    concurrent load. An exclusively reserved measurement runs the bounded project runner directly,
