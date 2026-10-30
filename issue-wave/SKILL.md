@@ -107,7 +107,8 @@ script; they are what the coordinator tells its workers.
   copy; it turns over fast. It supplies difficulty classes (D1/D2/D3), a dependency graph,
   a parallelism analysis, machine placement, and a ready-now first wave. If it has a design
   questions section (see Decision gate), that too.
-- **The fleet**: `mac-studio` (Metal + cc, the reference dev box), `rog-nv-linux` (CUDA, 24
+- **The fleet**: `mac-studio` (Metal + cc, the reference dev box), `macbook-pro` (Metal, M4 Pro;
+  wakes over Wi-Fi), `rog-nv-linux` (CUDA, 24
   cores), `minix-amd-linux` (HIP, 32 cores; Radeon 8060S `gfx1151`, unified memory), and
   `tuf-amd-linux` (HIP, 16 threads; discrete RX 7700S `gfx1102`; cabled but no Wake-on-LAN, manual wake).
   The site's `FLEET_BOXES` and `FLEET_HOSTNAME_MAP` must use the OS endpoint that `kind_of` and
