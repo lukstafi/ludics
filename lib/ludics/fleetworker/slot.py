@@ -45,7 +45,8 @@ brief:
 - THE GUARD (ludics-lite#317): a logind ``block`` inhibitor on sleep:idle, held by a HELPER beside
   the command (systemd-inhibit closes the descriptors of the process it runs, SIGTERMs it, and
   rewrites its exit status, so it must never wrap the batch), alive for as long as anything in the
-  command's tree holds the lifetime pipe. Fail-open, and loudly.
+  command's tree holds the lifetime pipe. Fail-open, and loudly. On macOS, where no
+  systemd-inhibit resolves, the helper is ``caffeinate -i -s`` instead (ludics#538).
 - THE GROUP (ludics-lite#566, ``group.py``): the command leads a process group of its own, this
   process its parent, and ``--deadline``, a signal to this process, or a SIGKILL of it (through a
   guardian) ends the whole group; a deadline exits 124. A nested batch is exec'd in its enclosing
@@ -177,6 +178,17 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # review, round 1). It is not needed either: the helper's stdio are pipes, so systemd-inhibit has
 # no terminal to start a polkit agent on, and a denial comes back at once.
 #
+# macOS (ludics#538). A Mac has no logind, and since wake-lab.sh can put the MacBook to sleep from
+# the coordinator, a run there needs the same guard. Where no systemd-inhibit resolves, the helper
+# is `caffeinate -i -s -- sh -c '<wait for the assertion>; echo HELD; exec cat'` (MAC_HELPER) in the
+# same double-forked shape: caffeinate holds PreventUserIdleSystemSleep and PreventSystemSleep for
+# as long as the shell it runs is alive, which is as long as the lifetime pipe is open. A requested `pmset sleepnow` overrides both
+# assertions, so they are not what refuses wake-lab's sleep: wake-lab.sh reads them first and
+# refuses while a caffeinate holds one. PreventSystemSleep does keep a box that a network wake left
+# in DarkWake from drifting back to sleep under the run. caffeinate takes no reason, so its
+# assertion names no run; the HELD line here does. Which tool was found travels with it (Guard): a
+# FLEET_SYSTEMD_INHIBIT that resolves always wins, so a Linux host never takes this arm.
+#
 # ===============================================================================================
 # From fleet-worker.sh, above the shell's `cmd_execution_hold`:
 #
@@ -251,7 +263,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, NoReturn, assert_never, cast
+from typing import Any, Literal, NamedTuple, NoReturn, assert_never, cast
 
 from ludics import cli
 from ludics.fleetworker.config import (
@@ -268,6 +280,15 @@ from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
 
 HOLD_WAIT = 30  # seconds for systemd-inhibit to answer HELD or refuse; it answers at once
+# caffeinate starts its utility BEFORE it takes the assertions (measured on mac-studio, 2026-10-30:
+# an assertion read at the utility's start found none), so the macOS helper says HELD only once
+# `pmset -g assertions` lists one taken on behalf of its own pid, for 5 s at most; a caffeinate that
+# never takes one is the WARNING path, as a refused systemd-inhibit is.
+MAC_HELPER = (
+    'i=0; until pmset -g assertions 2>/dev/null | grep -q "on behalf of .*(pid $$)"; do'
+    ' i=$((i + 1)); [ "$i" -lt 50 ] || { echo "caffeinate took no sleep assertion within 5s"; exit 1; };'
+    " sleep 0.1; done; echo HELD; exec cat >/dev/null"
+)
 SLOT_PREFIX = "EXECUTION SLOT"
 HOLD_PREFIX = "EXECUTION HOLD"
 
@@ -646,13 +667,29 @@ def refuse_unrunnable(prefix: str, box: str, command: Sequence[str], reason: obj
     raise cli.Exit(127)
 
 
-def start_guard(box: str, inhibitor: str, why: str) -> None:
-    """Take the sleep:idle block inhibitor in a double-forked helper reading a lifetime pipe whose
-    write end the command inherits; report HELD, or run bare under a WARNING."""
+class Guard(NamedTuple):
+    """The binary a run's sleep guard is taken with, and which interface it speaks: caffeinate's
+    (``mac``) or systemd-inhibit's. Carried from ``inhibitor_path``, never read off the file name, so
+    a FLEET_CAFFEINATE wrapper of any name is still called as caffeinate."""
+
+    path: str
+    mac: bool
+
+
+def start_guard(box: str, guard: Guard, why: str) -> None:
+    """Take the sleep:idle block inhibitor (on macOS, caffeinate's sleep assertions) in a
+    double-forked helper reading a lifetime pipe whose write end the command inherits; report HELD,
+    or run bare under a WARNING."""
+    inhibitor, mac = guard
+    if len(why) > 160:  # one line of `systemd-inhibit --list` and of `wake-lab.sh status`
+        why = why[:157] + "..."  # before --why is built: a long command must not overflow its argv
+    if mac:
+        argv = [inhibitor, "-i", "-s", "--", "sh", "-c", MAC_HELPER]
+    else:
+        argv = [inhibitor, "--what=sleep:idle", "--mode=block", "--who=fleet-worker", "--why=" + why,
+                "--", "sh", "-c", "echo HELD; exec cat >/dev/null"]
     sys.stdout.flush()
     sys.stderr.flush()  # nothing buffered may be written twice by a fork
-    if len(why) > 160:  # one line of `systemd-inhibit --list` and of `wake-lab.sh status`
-        why = why[:157] + "..."
     life_r, life_w = os.pipe()
     ready_r, ready_w = os.pipe()
     middle = os.fork()
@@ -665,8 +702,7 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
                 os.dup2(ready_w, 2)
                 os.closerange(3, 65536)  # the slot flock, the lifetime pipe's write end, all of it
                 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-                os.execv(inhibitor, [inhibitor, "--what=sleep:idle", "--mode=block", "--who=fleet-worker",
-                                     "--why=" + why, "--", "sh", "-c", "echo HELD; exec cat >/dev/null"])
+                os.execv(inhibitor, argv)
             finally:
                 os._exit(127)
         os.write(ready_w, b"PID %d\n" % helper)
@@ -679,7 +715,7 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
     while not held:
         left = deadline - time.monotonic()
         if left <= 0 or not select.select([ready_r], [], [], left)[0]:
-            text += b"no answer from systemd-inhibit after %ds" % HOLD_WAIT
+            text += b"no answer from %s after %ds" % (os.path.basename(inhibitor).encode(), HOLD_WAIT)
             break
         chunk = os.read(ready_r, 4096)
         if not chunk:
@@ -692,7 +728,8 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
                 helper_pid = int(line[4:])
     os.close(ready_r)
     if held:
-        errline(f"{HOLD_PREFIX} {box}: sleep:idle block inhibitor held for: {why}")
+        what = "sleep assertions (caffeinate -i -s)" if mac else "sleep:idle block inhibitor"
+        errline(f"{HOLD_PREFIX} {box}: {what} held for: {why}")
         os.set_inheritable(life_w, True)
         return
     if helper_pid is not None:
@@ -705,11 +742,12 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
     errline(
         f"{HOLD_PREFIX} {box}: WARNING: running WITHOUT a sleep inhibitor, so nothing at the OS level"
         f" stops a suspend under it -- {inhibitor} refused: {detail.decode('utf-8', 'replace')[:200]}"
-        " (the one-time polkit grant: issue-wave/references/executions.md, \"The OS-level sleep guard\")"
+        + ("" if mac else
+           " (the one-time polkit grant: issue-wave/references/executions.md, \"The OS-level sleep guard\")")
     )
 
 
-def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, why: str,
+def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: Guard | None, why: str,
                 deadline: int | None, nested: bool = False,
                 recorder: "Recorder | None" = None, on_start: Callable[[], None] | None = None) -> NoReturn:
     """Run the command: resolved before the guard (a command that cannot be found takes no
@@ -783,7 +821,7 @@ def exec_command(prefix: str, box: str, command: Sequence[str]) -> NoReturn:
         refuse_unrunnable(prefix, box, command, exc)
 
 
-def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: str,
+def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: Guard | None,
               command: Sequence[str], bound: int | None, waiting: "WaitingRecord | None" = None,
               release: Callable[[], None] = lambda: None) -> NoReturn:
     """Wait up to ``wait`` seconds for a slot (a GPU token unless ``cpu``), then run the command in it;
@@ -843,7 +881,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
         time.sleep(1)
 
 
-def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: int,
+def hold(box: str, inhibitor: Guard | None, why: str, hold_lock: str, marker: str, cap: int,
          command: Sequence[str], deadline: int | None, repeat: float = HOLDER_REPEAT) -> NoReturn:
     """``execution hold``: with a measurement (``hold_lock``), THE DRAIN and the marker's shared lock
     first, then the command under the guard, THE CO-TENANTS recorded before and after it."""
@@ -946,9 +984,14 @@ class Recorder:
             errline(f"{self.label}: {cotenants.closed_line(line)}")
 
 
-def inhibitor_path(cfg: Config) -> str:
-    """The systemd-inhibit this box would take the guard with, or empty for none."""
-    return shutil.which(cfg.inhibit) or ""
+def inhibitor_path(cfg: Config) -> Guard | None:
+    """The systemd-inhibit this box would take the guard with, else its caffeinate (macOS), or
+    None for none."""
+    if found := shutil.which(cfg.inhibit):
+        return Guard(found, mac=False)
+    if found := shutil.which(cfg.caffeinate):
+        return Guard(found, mac=True)
+    return None
 
 
 # --- the commands ---------------------------------------------------------------------------------
@@ -1467,7 +1510,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
                 cli.say(line)
                 return 1
             case Inside():
-                run_command(SLOT_PREFIX, box, command, "", "", parsed.deadline, nested=True)
+                run_command(SLOT_PREFIX, box, command, None, "", parsed.deadline, nested=True)
             case Take():
                 del os.environ["FLEET_SLOT_HELD"]
             case _:
@@ -1490,7 +1533,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         verdict = measured_verdict(box, marker_measure, judge_measurement(box, directory, marker_measure, measuring), command)
         match verdict:
             case Inside():
-                run_command(SLOT_PREFIX, box, command, "", "", parsed.deadline, nested=True)
+                run_command(SLOT_PREFIX, box, command, None, "", parsed.deadline, nested=True)
             case Take():
                 del os.environ["FLEET_MEASUREMENT_HELD"]
             case Refused(line=line):

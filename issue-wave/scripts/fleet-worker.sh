@@ -285,6 +285,8 @@
 #   FLEET_SYSTEMD_INHIBIT: the systemd-inhibit that `execution hold` (and so `execution slot`)
 #     wraps a run in; systemd-inhibit on PATH. A name that resolves to no executable runs the
 #     command bare, as on macOS; the suites pin it to a stub or to nothing, never to the runner's.
+#   FLEET_CAFFEINATE: the caffeinate the guard takes instead where FLEET_SYSTEMD_INHIBIT resolves to
+#     nothing (macOS, ludics#538); caffeinate on PATH, so a Linux host without systemd runs bare.
 #   FLEET_TMUX_SOCKET: tmux -L name; tests isolate with it.
 #   FLEET_FLOTILLA: status service; http://mac-studio:7799.
 #   FLEET_PRS_LIMIT: how many open PRs `prs` fetches; 1000. A list that reaches it says so.

@@ -21,24 +21,25 @@
 # Sourced by a `set -u` script under bash 3.2: no associative arrays.
 
 # Every MAC of a box, Wi-Fi and Ethernet. wake() sends a magic packet to each — the Wi-Fi ones
-# never wake anything (see the lore in wake-lab.sh) but cost nothing and keep this table readable
-# against the router's own host list. A box none of whose NICs wakes on LAN can never be woken,
+# never wake a PC (see the lore in wake-lab.sh) but cost nothing and keep this table readable
+# against the router's own host list; a sleeping Mac's Wi-Fi is the exception. A box none of whose NICs wakes on LAN can never be woken,
 # cabled or not: list its MACs here, and leave it out of eth_mac_of.
 mac_of() { case "$1" in
   rog)   echo 00:00:00:00:00:01 00:00:00:00:00:02 ;;  # Wi-Fi, Ethernet
   minix) echo 00:00:00:00:00:03 00:00:00:00:00:04 ;;  # Wi-Fi, Ethernet
   tuf)   echo 00:00:00:00:00:05 00:00:00:00:00:06 ;;  # Wi-Fi, Ethernet (no WoL): manual wake
-  macbook) echo 00:00:00:00:00:07 ;;                  # Wi-Fi only: manual wake
+  macbook) echo 00:00:00:00:00:07 ;;                  # Wi-Fi (its hardware MAC, Private Wi-Fi Address off)
   *) return 1 ;; esac; }
 
-# The Ethernet MAC alone — the one whose lease says anything about the wake path. router_active()
-# asks the router about this MAC, and `status` prints the router's NewActive bit for it as
-# router-active. A box with no cabled NIC, or whose cabled NIC cannot wake it, belongs in neither
-# branch: returning 1 is what makes its router-active read `?` and makes wake and the reboots
-# refuse it.
+# The MAC of the NIC that wakes the box — the Ethernet one on a PC, the Wi-Fi one on a Mac, which
+# wakes from sleep on AC (ludics#538). router_active() asks the router about this MAC, and `status`
+# prints the router's NewActive bit for it as router-active. A box none of whose NICs wakes it
+# belongs in neither branch: returning 1 is what makes its router-active read `?` and makes wake
+# and the reboots refuse it.
 eth_mac_of() { case "$1" in
   rog)   echo 00:00:00:00:00:02 ;;
   minix) echo 00:00:00:00:00:04 ;;
+  macbook) echo 00:00:00:00:00:07 ;;  # Wi-Fi: from sleep only, never from a shutdown
   *) return 1 ;; esac; }
 
 # The LAN IP of each box's cabled NIC. Nothing in wake-lab.sh calls this today — the -lan ssh

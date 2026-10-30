@@ -303,9 +303,10 @@ export PATH="$TMP/bin:$PATH"
 # `execution slot` runs its command under `execution hold`, which wraps it in systemd-inhibit when
 # one resolves (ludics-lite#317). The CI runner is Ubuntu, whose real systemd-inhibit would make
 # every slot case below a probe of that runner's polkit, so the suite pins it to a name that
-# resolves to nothing -- the bare arm, as on macOS -- and the cases that exercise the inhibitor
-# point it at a stub instead.
-export FLEET_SYSTEMD_INHIBIT="fleet-test-no-systemd-inhibit"
+# resolves to nothing -- the bare arm -- and the cases that exercise the inhibitor point it at a
+# stub instead. caffeinate, macOS's guard where no systemd-inhibit resolves, is pinned the same
+# way, or every slot case run on a Mac would take a real sleep assertion.
+export FLEET_SYSTEMD_INHIBIT="fleet-test-no-systemd-inhibit" FLEET_CAFFEINATE="fleet-test-no-caffeinate"
 # A scratch git identity, so worktree/commit steps work on a bare runner.
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
@@ -4330,7 +4331,7 @@ if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
   gone "$INHIBIT_PID" && ok "...until it exits" || ko "the inhibitor outlived the last descendant"
 else ko "no surviving descendant to test with: $(cat "$TMP/slot-i1.log")"; fi
 : > "$INHIBIT_LOG"
-expect "without systemd-inhibit (macOS) the batch runs bare, and says nothing about it" 0 "slot 1 of 1 held for: echo bare" -- "${FWS[@]}" execution slot -- echo bare
+expect "without systemd-inhibit or caffeinate the batch runs bare, and says nothing about it" 0 "slot 1 of 1 held for: echo bare" -- "${FWS[@]}" execution slot -- echo bare
 grep -q "EXECUTION HOLD" <<<"$out" && ko "the bare arm announced an inhibitor: $out" || ok "...with no hold line"
 [ -s "$INHIBIT_LOG" ] && ko "the bare arm called systemd-inhibit: $(cat "$INHIBIT_LOG")" || ok "...and no systemd-inhibit call"
 expect "a polkit refusal of the block runs the batch anyway, under a WARNING" 0 "WARNING: running WITHOUT a sleep inhibitor" -- \
@@ -4340,6 +4341,37 @@ grep -q "^denied-but-ran$" <<<"$out" && grep -q "Access denied (stub)" <<<"$out"
 expect "a command that cannot be run is still the slot's own refusal under the inhibitor" 127 "EXECUTION SLOT REFUSED testbox: cannot run /nonexistent/runner" -- \
   "${FWI[@]}" execution slot -- /nonexistent/runner
 [ -s "$INHIBIT_LOG" ] && ko "an unrunnable command took an inhibitor: $(cat "$INHIBIT_LOG")" || ok "...refused before any inhibitor is taken"
+# macOS (ludics#538): no systemd-inhibit resolves, so the guard is caffeinate's sleep assertions,
+# in the same helper shape. The stub logs its arguments and runs the command after `--`, as the
+# real one runs its utility while it holds the assertions; the pmset stub lists the assertion the
+# helper waits for, taken on behalf of its caller's pid, unless PMSET_NONE says none was taken.
+mkdir -p "$TMP/mac"
+# Named otherwise on purpose: the interface comes from which variable found it, not the file name.
+sed 's/--\*) shift ;;/-*) shift ;;/' "$TMP/inhibit/systemd-inhibit" > "$TMP/mac/fleet-test-caffeinate"   # its options are short
+cat > "$TMP/mac/pmset" <<'PMSET'
+#!/bin/sh
+[ "$*" = "-g assertions" ] && [ -z "${PMSET_NONE:-}" ] || exit 0
+printf '   pid 1(caffeinate): [0x0] 00:00:00 PreventSystemSleep named: "caffeinate command-line tool"\n'
+printf "\tDetails: caffeinate asserting on behalf of 'sh' (pid %s)\n" "$PPID"
+PMSET
+chmod +x "$TMP/mac/fleet-test-caffeinate" "$TMP/mac/pmset"
+FWM=(env PATH="$TMP/mac:$PATH" FLEET_CAFFEINATE="$TMP/mac/fleet-test-caffeinate" "${FWS[@]}")
+: > "$INHIBIT_LOG"
+expect "on macOS (no systemd-inhibit) a slot's batch runs under caffeinate's sleep assertions" 0 "EXECUTION HOLD testbox: sleep assertions (caffeinate -i -s) held for: testbox slot 1 of 1: echo mac" -- \
+  "${FWM[@]}" execution slot -- echo mac
+grep -q -- "^-i -s -- sh -c i=0; until pmset -g assertions" "$INHIBIT_LOG" && ok "...as caffeinate -i -s, idle and system sleep both" || ko "the batch did not run under caffeinate -i -s: $(cat "$INHIBIT_LOG")"
+gone "$INHIBIT_PID" && ok "...released when the batch ends" || ko "the caffeinate helper outlived the batch"
+: > "$INHIBIT_LOG"
+expect "...and a systemd-inhibit that resolves wins over caffeinate" 0 "sleep:idle block inhibitor held for: testbox slot 1 of 1: echo linux" -- \
+  env PATH="$TMP/mac:$PATH" FLEET_CAFFEINATE="$TMP/mac/fleet-test-caffeinate" "${FWI[@]}" execution slot -- echo linux
+grep -q -- "^--what=sleep:idle" "$INHIBIT_LOG" && ok "...called as systemd-inhibit" || ko "caffeinate was taken beside systemd-inhibit: $(cat "$INHIBIT_LOG")"
+expect "a caffeinate that fails runs the batch anyway, under a WARNING with no polkit hint" 0 "WARNING: running WITHOUT a sleep inhibitor" -- \
+  env INHIBIT_DENY=1 "${FWM[@]}" execution slot -- echo mac-denied-but-ran
+grep -q "^mac-denied-but-ran$" <<<"$out" && ! grep -q polkit <<<"$out" && ok "...the batch ran, and no polkit grant is named" || ko "a failed caffeinate stopped the batch or named polkit: $out"
+expect "a caffeinate whose assertion never shows is no guard: the batch runs under a WARNING" 0 "caffeinate took no sleep assertion within 5s" -- \
+  env PMSET_NONE=1 "${FWM[@]}" execution slot -- echo mac-unasserted-but-ran
+grep -q "^mac-unasserted-but-ran$" <<<"$out" && ! grep -q "sleep assertions (caffeinate -i -s) held" <<<"$out" && ok "...the batch ran, and no HELD line claims a guard" || ko "an unasserted caffeinate claimed the guard or stopped the batch: $out"
+gone "$INHIBIT_PID" && ok "...and its helper is gone" || ko "the unasserted caffeinate helper lingered"
 # `hold` is the measurement's wrapper: the slot refuses while a measurement is outstanding, the
 # measurement's own included, so the guard has to come without the slot.
 "${FWS[@]}" execution run "$(slotreq hold-measure measurement)" >/dev/null || ko "could not reserve the measurement (setup)"

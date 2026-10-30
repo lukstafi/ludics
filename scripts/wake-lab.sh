@@ -15,7 +15,8 @@
 #   wake-lab.sh status [box...]           per-box reachability and reached OS, whether each lab lock
 #                                         is really held, and the box's execution reservations
 #                                         (default: every box)
-#   wake-lab.sh sleep|hibernate|down box  suspend / hibernate / full shutdown
+#   wake-lab.sh sleep|hibernate|down box  suspend / hibernate / full shutdown (a macOS box: sleep
+#                                         alone, as `pmset sleepnow`)
 #                                         (a destroyer's --as=ID spares only the caller's own
 #                                         measurement reservation; see the next paragraph)
 #   wake-lab.sh kick-wsl box              start the WSL VM (it never autostarts at boot)
@@ -92,9 +93,21 @@ HOSTS_SVC=urn:dslforum-org:service:Hosts:1
 #   ASUS laptop whose onboard r8169 loses power in sleep, and whose USB AX88179B adapter cannot
 #   arm WoL under cdc_ncm and gets no link under ax88179_178a (all tested 2026-10-12). Its
 #   Ethernet MAC is therefore left out of eth_mac_of in the site file.
-# * macbook (the M4 Pro MacBook Pro, fleet box macbook-pro; ludics#538) is a macOS laptop on Wi-Fi
-#   with no wired NIC, so no magic packet reaches it: manual wake, like tuf. It is kept awake on
-#   AC by its own pmset settings, not from here, and this script drives no power verb on it.
+# * macbook (the M4 Pro MacBook Pro, fleet box macbook-pro; ludics#538) is a macOS laptop on Wi-Fi,
+#   and the exception to the rule above: a SLEEPING Mac keeps its Wi-Fi associated, and on AC
+#   ("Wake for network access", womp 1) a magic packet to its Wi-Fi MAC wakes it -- verified
+#   2026-10-30 from real sleep, the power log naming `wifibt` as the wake reason in the second the
+#   packets went out. So its eth_mac_of row is its Wi-Fi MAC: that table names the NIC that wakes
+#   a box, which on every other box is the cabled one. It does not wake on battery, nor from a
+#   shutdown, and its USB Ethernet adapter never woke it; with Private Wi-Fi Address on, the router
+#   knows a different MAC. Its own settings never idle-sleep it on AC (sleep 0), so it sleeps
+#   only when `sleep` asks: `pmset sleepnow`, no sudo. From a full wake it slept 5 s later
+#   (2026-10-30), but a request that leaves it in DarkWake has taken 7-20 min to reach real sleep,
+#   with ssh answering until then, so the confirmation waits up to MAC_DOWN_WAIT_SECONDS.
+#   ssh is its only up-probe: asleep, its Wi-Fi still answers ping (offload). A network wake is a
+#   DarkWake too, and goes back to sleep within a minute, so `--wait` declares user activity once
+#   it answers (mac_full_wake: the power log then reads "DarkWake to FullWake ... due to HID
+#   Activity"); `hibernate` and `down` stay refused, since nothing wakes it back.
 # * Both boxes wake from a full shutdown (S5), not just from sleep — verified 2026-08-15 on both,
 #   after enabling the `Wake Up` item on minix's BIOS SECOND setup screen (not under Advanced).
 #   "Powered off" is a normal starting state for a wake, not a reason to expect failure.
@@ -193,7 +206,7 @@ ENDPOINT_MAP=(
   "rog   linux=rog-nv-linux    win=rog-nv-win    wsl=rog-nv-wsl    lan=rog-lan"
   "minix linux=minix-amd-linux win=minix-amd-win wsl=minix-amd-wsl lan=minix-lan"
   "tuf   linux=tuf-amd-linux   win=tuf-amd-win   wsl=tuf-amd-wsl"    # cabled, no WoL: manual wake
-  "macbook mac=macbook-pro"                                            # Wi-Fi only: manual wake
+  "macbook mac=macbook-pro"                                            # Wi-Fi: wakes from sleep on AC
 )
 
 endpoints_of() { # endpoints_of <box> -- that box's row, less its name; 1 when the map has none
@@ -479,15 +492,41 @@ sleep_blocks() { # sleep_blocks <ssh-host>
   return 0
 }
 
+# A Mac's counterpart: the caffeinate sleep assertions on the box, one per line, from `pmset -g
+# assertions` (ludics#538). fleet-worker's hold takes `caffeinate -i -s` there, the way it takes a
+# logind block on Linux, and a requested `pmset sleepnow` overrides any assertion, so these are what
+# `sleep` refuses on. Boundary, an allowlist of holders: an assertion held by a process named
+# caffeinate, of the two kinds caffeinate takes for a run. Every other holder is ignored -- the
+# Electron apps a desktop session runs (Claude, ChatGPT) hold PreventUserIdleSystemSleep for as
+# long as they are open, and counting them would refuse every sleep. A fleet run's guard is always
+# a caffeinate, and so is anyone's who means to keep the box up by hand.
+MAC_GUARD_ERE='^[[:space:]]*pid [0-9]+\(caffeinate\):.*(PreventSystemSleep|PreventUserIdleSystemSleep)'
+mac_sleep_guards() { # mac_sleep_guards <ssh-host>
+  local listing
+  listing=$(capped "$PROBE_CAP" ssh -o BatchMode=yes -o ConnectTimeout=5 "$1" 'pmset -g assertions' 2>/dev/null) || return 1
+  printf '%s\n' "$listing" | grep -E "$MAC_GUARD_ERE" | sed 's/^[[:space:]]*//'
+  return 0
+}
+
 status_one() { # status_one <box>
-  local l host win guest blocks="" n
+  local l host win guest blocks="" n label=block
   l=$(router_active "$1")
   printf '%-6s router-active=%-1s' "$1" "$l"
   if [ "$(box_kind "$1")" = wsl ]; then
     wsl_status_fields "$1"
   elif [ "$(box_kind "$1")" = macos ]; then
-    # No sleep-blocks column: macOS has no logind, and no verb here suspends a Mac.
-    if ssh_probe "$(endpoint_of "$1" mac)"; then printf '  os=macos  mac=UP'; else printf '  os=--  mac=--'; fi
+    # The sleep-guards column is macOS's sleep-blocks: the caffeinate assertions that refuse `sleep`.
+    host=$(endpoint_of "$1" mac) || return 1
+    if ssh_probe "$host"; then
+      printf '  os=macos  mac=UP'
+      label=guard
+      if blocks=$(mac_sleep_guards "$host"); then
+        n=0; [ -z "$blocks" ] || n=$(printf '%s\n' "$blocks" | wc -l | tr -d ' ')
+        printf '  sleep-guards=%s' "$n"
+      else
+        printf '  sleep-guards=?'
+      fi
+    else printf '  os=--  mac=--'; fi
   else
     host=$(endpoint_of "$1" linux) || return 1
     if ssh_probe "$host"; then
@@ -512,7 +551,7 @@ status_one() { # status_one <box>
   lab_locks_fields "$1"
   reservations_fields "$1"
   printf '\n'
-  [ -z "$blocks" ] || printf '%s\n' "$blocks" | sed 's/^/         block: /'
+  [ -z "$blocks" ] || printf '%s\n' "$blocks" | sed "s/^/         $label: /"
   printf '%s' "$LOCK_DETAILS" "$RES_DETAILS"
 }
 
@@ -526,6 +565,8 @@ do_status() {
   [ ${#wsl_boxes[@]} -gt 0 ] && wsl_status_extra "${wsl_boxes[@]}"
   echo "sleep-blocks counts a native Linux box's logind block inhibitors on sleep (listed under it):"
   echo "while one is held, 'sleep' and 'hibernate' there are refused by the OS, whatever the lab locks say."
+  echo "sleep-guards is a macOS box's counterpart: the caffeinate sleep assertions there (a fleet run's"
+  echo "guard among them), on which 'sleep' is refused; apps' standing assertions are not counted."
   echo "lane-lock and hold-lock ask each lab lock's flock on THIS machine, not its text: 'held' means a"
   echo "destroyer would be refused now; a 'free' lock's leftover line is shown as stale text. reservations"
   echo "counts the active 'fleet-worker.sh execution list' records naming the box (? = registry unread)."
@@ -542,6 +583,11 @@ do_status() {
 # only coverage those backends get. The env overrides exist for the test suite.
 WAIT_SECONDS=${WAKE_LAB_WAIT_SECONDS:-240}
 DOWN_WAIT_SECONDS=${WAKE_LAB_DOWN_WAIT_SECONDS:-120}
+# A Mac's requested sleep can go through DarkWake, where ssh still answers, for 7-20 min (the
+# macbook lore above), so a confirmation with a macOS box in it waits this long instead, and polls slowly:
+# a 30 s ssh probe let it reach real sleep on 2026-10-30, and a faster one is untested.
+MAC_DOWN_WAIT_SECONDS=${WAKE_LAB_MAC_DOWN_WAIT_SECONDS:-1800}
+MAC_DOWN_POLL_SECONDS=${WAKE_LAB_MAC_DOWN_POLL_SECONDS:-30}
 
 # ---------------------------------------------------------------- the lab locks
 # `wsl.exe --shutdown` is HOST-GLOBAL: it destroys the whole WSL2 VM, so every session on that box
@@ -744,7 +790,8 @@ lab_locks_fields() { # lab_locks_fields <box>
 # asks the anchor box over ssh from anywhere else. A registry that cannot be read or does not parse
 # is `?`, never 0: "nothing reserved" and "could not look" call for opposite conclusions.
 # A record names its box by an ssh identity, and a box has one per endpoint in its row of the
-# endpoint map -- native Linux, the WSL guest, the Windows host and its LAN route. Any one counts,
+# endpoint map -- native Linux, the WSL guest, the Windows host and its LAN route, or a Mac's one
+# endpoint (before ludics#538's sleep it was missed, and a Mac's column read ?). Any one counts,
 # whatever the box's configured kind: a reservation on a box's guest holds that box.
 RESERVATIONS=""   # the listing as JSON; empty means it could not be read
 RES_DETAILS=""
@@ -786,7 +833,7 @@ capped_tree() { # capped_tree <seconds> <cmd...>
 # only reservations of that kind. 1 when the registry was unread.
 box_reservations() {
   local os e names=""
-  for os in linux wsl win lan; do
+  for os in linux wsl win lan mac; do
     e=$(endpoint_of "$1" "$os") && names="$names$e"$'\n'
   done
   [ -n "$RESERVATIONS" ] && [ -n "$names" ] || return 1
@@ -900,10 +947,16 @@ power_phase() { # power_phase <verb> <box...> — nonzero if any box was refused
   local verb=$1; shift
   local box fd=$LOCK_FD_BASE rc=0 i acted=() fds=() kept=() confirming=() refused=() measured=()
   for box in "$@"; do
-    # A macOS box (ludics#538) wakes only by hand, and its sleep is its own pmset's: a suspend from
-    # here would strand it until a person opens the lid, so even --force does not send one.
-    if [ "$(box_kind "$box")" = macos ]; then
-      echo "  $verb REFUSED on $box: a macOS box's power is not driven from here (manual wake; it sleeps by its own pmset settings)"
+    # A macOS box (ludics#538) wakes over the LAN from sleep alone: a hibernate or a shutdown would
+    # strand it until a person opens the lid, so even --force does not send one.
+    if [ "$(box_kind "$box")" = macos ] && [ "$verb" != sleep ]; then
+      echo "  $verb REFUSED on $box: a macOS box wakes over the LAN only from sleep, so only sleep is driven from here"
+      rc=1; continue
+    fi
+    # ...and only one whose waking NIC is in the site file: `wake` refuses a box without one, so a
+    # sleep sent to it would strand it until a person opens the lid.
+    if [ "$(box_kind "$box")" = macos ] && ! eth_mac_of "$box" >/dev/null 2>&1; then
+      echo "  $verb REFUSED on $box: no waking NIC (eth_mac_of) in the site file, so nothing here could wake it back"
       rc=1; continue
     fi
     if [ "$FORCE" = 1 ]; then acted+=("$box"); continue; fi
@@ -964,7 +1017,7 @@ wake() { # wake <box>
   local name=$1 macs mac err ok=1
   macs=$(mac_of "$name") || { echo "unknown machine: $name" >&2; return 1; }
   if ! eth_mac_of "$name" >/dev/null 2>&1; then
-    echo "  $name has no wired NIC in the site file; wake it manually (none of its NICs wakes on LAN)"
+    echo "  $name has no waking NIC (eth_mac_of) in the site file; wake it manually (none of its NICs wakes on LAN)"
     return 1
   fi
   for mac in $macs; do
@@ -990,12 +1043,39 @@ wake() { # wake <box>
 # The remote prefix of every command that acts on a native Linux box: a stale alias that now lands
 # somewhere else -- the other OS, or a WSL guest -- exits 2 before anything is done there.
 NATIVE_LINUX_GUARD='[ "$(uname -s)" = Linux ] || { echo "OS changed; refresh before requesting power action" >&2; exit 2; }; if grep -qi microsoft /proc/sys/kernel/osrelease; then echo "Refusing to power off WSL; use its Windows host" >&2; exit 2; fi'
+# A Mac's sleep (ludics#538): refused while a caffeinate guard is held (mac_sleep_guards), or when
+# the assertions cannot be read, and otherwise `pmset sleepnow`, which needs no sudo and returns at
+# once: the box may go on answering through DarkWake, and confirm_down waits for real sleep.
+MAC_SLEEP_CMD='[ "$(uname -s)" = Darwin ] || { echo "OS changed; refresh before requesting power action" >&2; exit 2; }; a=$(pmset -g assertions) || { echo "cannot read the sleep assertions" >&2; exit 2; }; g=$(printf "%s\n" "$a" | grep -E '"'$MAC_GUARD_ERE'"'); if [ -n "$g" ]; then echo WAKE_LAB_MAC_GUARDED; printf "%s\n" "$g"; exit 3; fi; echo WAKE_LAB_POWER_STARTED; exec pmset sleepnow'
 power_action() {
   if [ "$(box_kind "$2")" = wsl ]; then
     wsl_power_action "$@"
     return
   fi
   local cmd host output action_rc
+  if [ "$(box_kind "$2")" = macos ]; then
+    host=$(endpoint_of "$2" mac) || return 1
+    echo "$2: $1"
+    output=$(capped 30 ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "$MAC_SLEEP_CMD" 2>&1); action_rc=$?
+    if [ "$action_rc" = 0 ]; then
+      printf '  %s\n' "$(printf '%s\n' "$output" | tail -1)"
+      echo "  $1 requested on $2; a Mac reaches real sleep through DarkWake, up to $((MAC_DOWN_WAIT_SECONDS / 60)) min"
+      return 0
+    fi
+    # As on Linux: a connection that dropped or ran out its cap after the start marker may be a
+    # sleep under way, so it goes on to confirmation, the reservation still held.
+    if { [ "$action_rc" = 255 ] || [ "$action_rc" = 124 ]; } && grep -Fxq WAKE_LAB_POWER_STARTED <<<"$output"; then
+      echo "  $1 on $2 unconfirmed (connection dropped or timed out); checking reachability"
+      return 0
+    fi
+    if [ "$action_rc" = 3 ] && grep -Fxq WAKE_LAB_MAC_GUARDED <<<"$output"; then
+      grep -Fxv WAKE_LAB_MAC_GUARDED <<<"$output" | sed 's/^[[:space:]]*/  guard: /'
+      echo "  $1 REFUSED on $2 by a caffeinate sleep assertion (a run there holds one; see 'status')"
+      return 1
+    fi
+    [ -z "$output" ] || printf '  %s\n' "$(printf '%s\n' "$output" | tail -1)"
+    echo "  $1 FAILED on $2 (command exited $action_rc)"; return 1
+  fi
   host=$(endpoint_of "$2" linux) || return 1
   case "$1" in
     sleep) cmd="systemctl --no-ask-password --check-inhibitors=yes suspend" ;;
@@ -1032,7 +1112,11 @@ power_action() {
 }
 
 confirm_down() { # confirm_down <box...> — poll until ssh stops answering, to a deadline
-  local names=("$@") n any deadline=$((SECONDS + DOWN_WAIT_SECONDS))
+  local names=("$@") n any wait=$DOWN_WAIT_SECONDS poll=5 deadline
+  for n in "${names[@]}"; do
+    [ "$(box_kind "$n")" = macos ] && { wait=$MAC_DOWN_WAIT_SECONDS; poll=$MAC_DOWN_POLL_SECONDS; }
+  done
+  deadline=$((SECONDS + wait))
   while :; do
     any=0
     for n in "${names[@]}"; do
@@ -1041,25 +1125,48 @@ confirm_down() { # confirm_down <box...> — poll until ssh stops answering, to 
     printf '(%s)\n' "$(date +%H:%M:%S)"
     [ "$any" = 0 ] && return 0
     [ "$SECONDS" -ge "$deadline" ] && break
-    sleep 5
+    sleep "$poll"
   done
-  echo "still reachable after $((DOWN_WAIT_SECONDS / 60)) min — the suspend may not have taken"
+  echo "still reachable after $((wait / 60)) min — the suspend may not have taken"
   return 1
 }
 
+# A macOS box is promoted to a full wake (mac_full_wake) on the first poll that finds it up, not
+# after every box answers: a DarkWake lasts about 45 s, and the rest of the wait can run for
+# minutes. MAC_FAILED is left naming each Mac that answered and was never promoted.
+MAC_FAILED=""
 wait_for() { # wait_for <box...> — poll until every box answers, for up to WAIT_SECONDS
-  local names=("$@") n up all deadline=$((SECONDS + WAIT_SECONDS))
+  local names=("$@") n up all promoted=" " deadline=$((SECONDS + WAIT_SECONDS))
+  MAC_FAILED=""
   while :; do
     all=1
     for n in "${names[@]}"; do
       if is_up "$n"; then up=UP; else up=down; all=0; fi
+      if [ "$up" = UP ] && [ "$(box_kind "$n")" = macos ] && [[ "$promoted" != *" $n "* ]] && mac_full_wake "$n"; then
+        promoted="$promoted$n "; up="UP(full wake)"
+      fi
       printf '%s=%s ' "$n" "$up"
     done
     printf '(%s)\n' "$(date +%H:%M:%S)"
-    [ "$all" = 1 ] && return 0
-    [ "$SECONDS" -ge "$deadline" ] && return 1
+    if [ "$all" = 1 ] || [ "$SECONDS" -ge "$deadline" ]; then
+      for n in "${names[@]}"; do
+        if [ "$(box_kind "$n")" = macos ] && [[ "$promoted" != *" $n "* ]] && is_up "$n"; then
+          MAC_FAILED="${MAC_FAILED:+$MAC_FAILED }$n"
+        fi
+      done
+      [ "$all" = 1 ]; return
+    fi
     sleep 5
   done
+}
+
+# A network wake leaves a Mac in DarkWake, and on 2026-10-30 one went back to sleep 45 s after it
+# woke. A declared user activity (`caffeinate -u`) makes it a full wake, which
+# its AC settings (sleep 0) then keep until the next requested sleep, so `--wait` declares one on
+# each macOS box as soon as it answers (wait_for). The display comes on with it, and goes off by its own displaysleep.
+mac_full_wake() { # mac_full_wake <box> -- nonzero when the activity could not be declared
+  capped "$PROBE_CAP" ssh -o BatchMode=yes -o ConnectTimeout=5 "$(endpoint_of "$1" mac)" 'caffeinate -u -t 1' \
+    >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- the anchor leg
@@ -1779,6 +1886,7 @@ case "$VERB" in
     if [ "$WAIT" = 1 ]; then
       echo "waiting for boot..."
       wait_for "${TARGETS[@]}"; rc=$?
+      mac_rc=0; [ -z "$MAC_FAILED" ] || mac_rc=1
       # Partial success still deserves the WSL kick: one box failing to wake must not suppress
       # starting WSL on the box that did come up, or an unrelated dead machine silently costs a
       # backend's coverage.
@@ -1809,7 +1917,7 @@ case "$VERB" in
       # hand the sweep the degraded VM the restart exists to replace, so the WSL failure is
       # restated as the LAST line, where the sweep routine reads its verdict, and the exit
       # status says so too.
-      if [ "$rc" = 0 ] && [ "$wsl_rc" = 0 ] && [ "$anchor_rc" = 0 ] && [ -z "$gone" ]; then
+      if [ "$rc" = 0 ] && [ "$wsl_rc" = 0 ] && [ "$anchor_rc" = 0 ] && [ "$mac_rc" = 0 ] && [ -z "$gone" ]; then
         echo "all up"
       else
         if [ "$rc" != 0 ]; then
@@ -1817,10 +1925,12 @@ case "$VERB" in
           echo "Check BIOS Wake-on-LAN / 'Power Up' (minix needed the SECOND setup screen, not"
           echo "Advanced), then run scripts/enable-wol-windows.ps1 from an elevated Windows"
           echo "PowerShell to disable Fast Startup and re-arm the NIC. Check '$0 status' after the"
-          echo "router lease settles; tuf and macbook (no Wake-on-LAN) need manual wake."
+          echo "router lease settles; tuf (no Wake-on-LAN) needs manual wake, and macbook wakes"
+          echo "only from sleep and on AC, never from a shutdown."
         fi
         [ -n "$gone" ] && echo "NOT all up: stopped answering during the anchor wait: $gone"
         [ "$anchor_rc" != 0 ] && echo "NOT all up: no ssh to $ANCHOR yet from: $ANCHOR_FAILED (see above)"
+        [ "$mac_rc" != 0 ] && echo "NOT all up: could not declare user activity on: $MAC_FAILED (a DarkWake drifts back to sleep)"
         [ "$wsl_rc" != 0 ] && echo "NOT all up: $WSL_FAILED (see above)"
         exit 1
       fi

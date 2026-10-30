@@ -22,6 +22,21 @@ printf '%s\n' "$*" >>"$SSH_LOG"
 if [ -n "${SSH_GONE_AFTER_ASKS:-}" ] && [ "${*: -2:1}" = "${SSH_GONE_AFTER_ASKS%%:*}" ] &&
    [ "$(grep -c -- ' true || exit ' "$SSH_LOG")" -ge "${SSH_GONE_AFTER_ASKS##*:}" ]; then exit 255; fi
 case "$*" in
+  *'exec pmset sleepnow'*)
+    # A Mac's sleep (ludics#538): the real remote command, run under a fake pmset and uname
+    # ($MAC_BIN). A sleep that started leaves the box dark to every later ask, unless
+    # SSH_MAC_STAYS_UP says it never got past DarkWake.
+    [[ " ${SSH_UP:-} " == *" macbook-pro "* ]] && [ ! -e "$SSH_LOG.asleep" ] || exit 255
+    PATH="$MAC_BIN:$PATH" sh -c "${*: -1}"; st=$?
+    [ "$st" = 0 ] && [ "${SSH_MAC_STAYS_UP:-0}" != 1 ] && : >"$SSH_LOG.asleep"
+    # SSH_MAC_DROP: the connection dies after the command started, as when the box sleeps under it.
+    [ "$st" = 0 ] && [ "${SSH_MAC_DROP:-0}" = 1 ] && exit 255
+    exit "$st" ;;
+  *'pmset -g assertions'*)
+    [[ " ${SSH_UP:-} " == *" macbook-pro "* ]] || exit 255
+    printf '%s' "${SSH_MAC_ASSERTIONS:-}"; exit 0 ;;
+  *'caffeinate -u'*)
+    [ "${SSH_MAC_NO_ACTIVITY:-0}" = 1 ] && exit 1; exit 0 ;;
   *systemctl*)
     [ "${SSH_POWER_FAIL:-0}" = 1 ] && { echo 'Access denied' >&2; exit 2; }
     # systemd 259's refusal under --check-inhibitors=yes: the holder is NOT on the last line.
@@ -59,6 +74,7 @@ case "$*" in
     [ "$asks" -gt "${SSH_ANCHOR_AFTER:-0}" ] && exit 0
     all=$*; exit "${all##* }" ;;
 esac
+[ -e "$SSH_LOG.asleep" ] && [[ " $* " == *" macbook-pro "* ]] && exit 255
 case " $* " in
   *' tuf-amd-linux '*) [ "${SSH_UP:-0}" = 1 ] ;;
   *' tuf-amd-win '*) [ "${SSH_UP:-0}" = tuf-amd-win ] ;;
@@ -101,6 +117,17 @@ esac
 printf '%s' "${FW_LISTING-[]}"; exit "${FW_RC:-0}"
 FW
 chmod +x "$tmp/fleet-worker.sh"
+mkdir -p "$tmp/macbin"
+cat >"$tmp/macbin/pmset" <<'PMSET'
+case "$*" in
+  "-g assertions") printf '%s' "${SSH_MAC_ASSERTIONS:-}" ;;
+  sleepnow) echo "Sleeping now..." ;;
+  *) exit 1 ;;
+esac
+PMSET
+printf 'echo Darwin\n' >"$tmp/macbin/uname"
+chmod +x "$tmp/macbin"/*
+export MAC_BIN="$tmp/macbin"
 # WAKE_LAB_FLEET_WORKER: status and every destroyer read the execution registry (#445), and this
 # suite must not read the real one; the stub's default is an empty registry.
 export PATH="$tmp/bin:$PATH" SSH_LOG="$tmp/ssh.log" WAKE_LAB_HOSTS="$tmp/hosts.sh" WAKE_LAB_LOCK_DIR="$tmp/locks" \
@@ -714,34 +741,99 @@ boot_run linux boot-windows
 check 'boot-windows with no box reboots no default' '[ "$rc" = 2 ] && [[ "$out" == *"boot-windows needs a box"* ]] && [ ! -s "$SSH_LOG" ]'
 BOOT_HOSTS="$tmp/lab-hosts.sh" boot_run linux boot-windows rog minix
 check '...and two boxes are refused too' '[ "$rc" = 1 ] && [[ "$out" == *"takes exactly one box (got 2)"* ]] && [ ! -s "$SSH_LOG" ]'
-# A macOS box (ludics#538): a mac endpoint alone on its row, manual wake, status and the waits over
-# its own sshd, and no power verb sent from here, --force included.
+# A macOS box (ludics#538): a mac endpoint alone on its row, woken through its Wi-Fi MAC (its
+# eth_mac_of row), status and the waits over its own sshd, and `sleep` alone of the power verbs, as
+# `pmset sleepnow` behind the caffeinate guard check.
 cat >"$tmp/mac-hosts.sh" <<'HOSTS'
 mac_of() { [ "$1" = macbook ] && echo aa:bb:cc:00:00:07; }
-eth_mac_of() { return 1; } # Wi-Fi only: no magic packet reaches it
+eth_mac_of() { [ "$1" = macbook ] && echo aa:bb:cc:00:00:07; } # its Wi-Fi: wakes from sleep on AC
 ip_of() { [ "$1" = macbook ] && echo 192.0.2.36; }
 kind_of() { [ "$1" = macbook ] && echo macos; }
 HOSTS
-: >"$SSH_LOG"
-out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro "$tmp/wake-lab.sh" status macbook 2>&1); rc=$?
+sed 's/^eth_mac_of.*/eth_mac_of() { return 1; }/' "$tmp/mac-hosts.sh" >"$tmp/mac-nowake-hosts.sh"
+cat >"$tmp/mixed-hosts.sh" <<'HOSTS'
+mac_of() { case "$1" in macbook) echo aa:bb:cc:00:00:07 ;; tuf) echo aa:bb:cc:00:00:06 ;; *) return 1 ;; esac; }
+eth_mac_of() { [ "$1" = macbook ] && echo aa:bb:cc:00:00:07; }
+ip_of() { case "$1" in macbook) echo 192.0.2.36 ;; tuf) echo 192.0.2.32 ;; *) return 1 ;; esac; }
+kind_of() { case "$1" in macbook) echo macos ;; tuf) echo linux ;; *) return 1 ;; esac; }
+HOSTS
+# What `pmset -g assertions` lists on a desktop session with a fleet run going: the Electron apps'
+# standing assertions, a system daemon's, and the run's caffeinate guard.
+mac_assertions='Listed by owning process:
+   pid 549(Claude): [0x000000db000181d4] 03:03:22 NoIdleSleepAssertion named: "Electron"
+   pid 172(runningboardd): [0x00000803000186d4] 00:00:11 PreventUserIdleSystemSleep named: "app<net.whatsapp.WhatsApp>(FinishTask)"
+   pid 29051(caffeinate): [0x0000080f000786f6] 00:00:01 PreventSystemSleep named: "caffeinate command-line tool"
+	Details: caffeinate asserting on behalf of '"'"'sh'"'"' (pid 29049)
+'
+mac_idle='Listed by owning process:
+   pid 549(Claude): [0x000000db000181d4] 03:03:22 NoIdleSleepAssertion named: "Electron"
+'
+rm -f "$SSH_LOG.asleep"; : >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_idle" "$tmp/wake-lab.sh" status macbook 2>&1); rc=$?
 check 'macOS status reaches the box through its mac endpoint, with no logind read' \
-  '[ "$rc" = 0 ] && [[ "$out" == *"os=macos  mac=UP"* ]] && [[ "$out" != *"sleep-blocks="* ]] && ! grep -q systemd-inhibit "$SSH_LOG"'
+  '[ "$rc" = 0 ] && [[ "$out" == *"os=macos  mac=UP  sleep-guards=0"* ]] && [[ "$out" != *"sleep-blocks="* ]] && ! grep -q systemd-inhibit "$SSH_LOG"'
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_assertions" "$tmp/wake-lab.sh" status macbook 2>&1); rc=$?
+check '...counts a caffeinate guard as a sleep guard, and names it' \
+  '[ "$rc" = 0 ] && [[ "$out" == *"sleep-guards=1"* ]] && [[ "$out" == *"guard: pid 29051(caffeinate): "*"PreventSystemSleep"* ]]'
+check '...and not the apps'"'"' or daemons'"'"' standing assertions' '[[ "$out" != *"Electron"* ]] && [[ "$out" != *"runningboardd"* ]]'
+listing='[{"request_id":"w-538-mac","request":{"execution_host":"macbook-pro","kind":"correctness"},"state":"running"}]'
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro FW_LISTING="$listing" "$tmp/wake-lab.sh" status macbook 2>&1); rc=$?
+check '...and counts the reservations naming its mac endpoint' '[ "$rc" = 0 ] && [[ "$out" == *"reservations=1"* ]] && [[ "$out" == *"reservation: w-538-mac (running)"* ]]'
 out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=0 "$tmp/wake-lab.sh" status macbook 2>&1); rc=$?
 check '...and says so when it does not answer' '[ "$rc" = 0 ] && [[ "$out" == *"os=--  mac=--"* ]]'
 : >"$SSH_LOG"
 out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" "$tmp/wake-lab.sh" macbook 2>&1); rc=$?
-check 'a macOS box with no wired NIC is a manual wake, and no packet is sent' \
+check 'a macOS box is woken through its Wi-Fi MAC, by the router and directly' \
+  '[ "$rc" = 0 ] && [[ "$out" == *"fritzbox WoL sent      -> macbook (aa:bb:cc:00:00:07)"* ]] && [[ "$out" == *"direct magic packet    -> macbook (aa:bb:cc:00:00:07)"* ]]'
+: >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-nowake-hosts.sh" "$tmp/wake-lab.sh" macbook 2>&1); rc=$?
+check '...and one with no waking NIC in the site file is a manual wake, with no packet sent' \
   '[ "$rc" = 1 ] && [[ "$out" == *"wake it manually"* ]] && ! grep -q "^curl\|^python3" "$SSH_LOG"'
 : >"$SSH_LOG"
 out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro WAKE_LAB_WAIT_SECONDS=5 "$tmp/wake-lab.sh" --wait macbook 2>&1); rc=$?
-check '--wait on an awake macOS box asks its own ssh to the anchor and reads all up' \
-  '[ "$rc" = 0 ] && [[ "$out" == *"all up"* ]] && grep -q "macbook-pro ssh -o BatchMode=yes -o ConnectTimeout=10 mac-studio true" "$SSH_LOG"'
-for verb in sleep hibernate down; do
+check '--wait on a macOS box declares user activity, so the DarkWake becomes a full wake' \
+  '[ "$rc" = 0 ] && [[ "$out" == *"macbook=UP(full wake)"* ]] && [ "$(grep -c "^-o BatchMode=yes -o ConnectTimeout=5 macbook-pro caffeinate -u -t 1$" "$SSH_LOG")" = 1 ]'
+check '...asks its own ssh to the anchor and reads all up' \
+  '[[ "$out" == *"all up"* ]] && grep -q "macbook-pro ssh -o BatchMode=yes -o ConnectTimeout=10 mac-studio true" "$SSH_LOG"'
+out=$(WAKE_LAB_HOSTS="$tmp/mixed-hosts.sh" SSH_UP=macbook-pro WAKE_LAB_WAIT_SECONDS=6 "$tmp/wake-lab.sh" --wait macbook tuf 2>&1); rc=$?
+check '...on the first poll that finds it up, while another box is still coming' \
+  '[ "$rc" = 1 ] && [[ "$(grep -m1 "macbook=" <<<"$out")" == *"macbook=UP(full wake) tuf=down"* ]] && [[ "$out" != *"could not declare"* ]]'
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_NO_ACTIVITY=1 WAKE_LAB_WAIT_SECONDS=5 "$tmp/wake-lab.sh" --wait macbook 2>&1); rc=$?
+check '...and a box where it cannot be declared is not all up' \
+  '[ "$rc" = 1 ] && [ "$(tail -1 <<<"$out")" != "all up" ] && [[ "$out" == *"NOT all up: could not declare user activity on: macbook"* ]]'
+: >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_idle" WAKE_LAB_MAC_DOWN_POLL_SECONDS=1 "$tmp/wake-lab.sh" sleep macbook 2>&1); rc=$?
+check 'sleep on a macOS box runs pmset sleepnow past the apps'"'"' standing assertions, and confirms it dark' \
+  '[ "$rc" = 0 ] && [[ "$out" == *"Sleeping now..."* ]] && [[ "$out" == *"sleep requested on macbook"* ]] && [[ "$out" == *"macbook=DOWN"* ]] && grep -q "exec pmset sleepnow" "$SSH_LOG"'
+check '...through its mac endpoint, with no systemctl' 'grep -q "macbook-pro .*pmset sleepnow" "$SSH_LOG" && ! grep -q systemctl "$SSH_LOG"'
+rm -f "$SSH_LOG.asleep"; : >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_assertions" "$tmp/wake-lab.sh" sleep macbook 2>&1); rc=$?
+check 'a caffeinate guard on the box refuses sleep, naming it' \
+  '[ "$rc" = 1 ] && [[ "$out" == *"sleep REFUSED on macbook by a caffeinate sleep assertion"* ]] && [[ "$out" == *"guard: pid 29051(caffeinate)"* ]] && [ ! -e "$SSH_LOG.asleep" ]'
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_assertions" "$tmp/wake-lab.sh" sleep --force macbook 2>&1); rc=$?
+check '...--force included, which skips the lab locks and not the box'"'"'s own guard' \
+  '[ "$rc" = 1 ] && [[ "$out" == *"REFUSED on macbook by a caffeinate sleep assertion"* ]] && [ ! -e "$SSH_LOG.asleep" ]'
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_idle" SSH_MAC_STAYS_UP=1 \
+  WAKE_LAB_MAC_DOWN_WAIT_SECONDS=2 WAKE_LAB_MAC_DOWN_POLL_SECONDS=1 "$tmp/wake-lab.sh" sleep macbook 2>&1); rc=$?
+check 'a Mac still answering at the macOS deadline is a sleep that may not have taken' \
+  '[ "$rc" = 1 ] && [[ "$out" == *"macbook=up"* ]] && [[ "$out" == *"still reachable after 0 min"* ]]'
+rm -f "$SSH_LOG.asleep"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_idle" SSH_MAC_DROP=1 WAKE_LAB_MAC_DOWN_POLL_SECONDS=1 "$tmp/wake-lab.sh" sleep macbook 2>&1); rc=$?
+check 'a connection dropped after the sleep started goes on to confirmation, as on Linux' \
+  '[ "$rc" = 0 ] && [[ "$out" == *"sleep on macbook unconfirmed (connection dropped or timed out)"* ]] && [[ "$out" == *"macbook=DOWN"* ]]'
+rm -f "$SSH_LOG.asleep"
+for force in "" --force; do
+  : >"$SSH_LOG"
+  out=$(WAKE_LAB_HOSTS="$tmp/mac-nowake-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_idle" "$tmp/wake-lab.sh" sleep $force macbook 2>&1); rc=$?
+  check "sleep ${force:+$force }on a Mac with no waking NIC in the site file is refused with nothing sent" \
+    '[ "$rc" = 1 ] && [[ "$out" == *"sleep REFUSED on macbook: no waking NIC (eth_mac_of)"* ]] && [ ! -s "$SSH_LOG" ]'
+done
+for verb in hibernate down; do
   for force in "" --force; do
     : >"$SSH_LOG"
     out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro "$tmp/wake-lab.sh" $verb $force macbook 2>&1); rc=$?
     check "$verb ${force:+$force }on a macOS box is refused with nothing sent" \
-      '[ "$rc" = 1 ] && [[ "$out" == *"$verb REFUSED on macbook: a macOS box"* ]] && [ ! -s "$SSH_LOG" ]'
+      '[ "$rc" = 1 ] && [[ "$out" == *"$verb REFUSED on macbook: a macOS box wakes over the LAN only from sleep"* ]] && [ ! -s "$SSH_LOG" ]'
   done
 done
 out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" "$tmp/wake-lab.sh" unhold macbook 2>&1); rc=$?

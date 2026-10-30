@@ -318,7 +318,7 @@ class HolderRecord(Locks):
                 mock.patch.object(slot, "run_command", side_effect=started), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Started):
             os.environ.pop("FLEET_MEASUREMENT_HELD", None)
-            slot.hold("testbox", "", "why", lock, "testbox m1", 2, ["measure"], 900, 0.2)
+            slot.hold("testbox", None, "why", lock, "testbox m1", 2, ["measure"], 900, 0.2)
         self.assertEqual([(h.command, h.deadline, h.expires) if h else None for h in during], [(("measure",), None, None)])
         after = read_holder(self.path())
         assert after is not None and during[0] is not None
@@ -330,7 +330,7 @@ class HolderRecord(Locks):
         with mock.patch.dict(os.environ, {}, clear=False), \
                 mock.patch.object(slot, "run_command", side_effect=started), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Started):
-            slot.take_slot("testbox", self.dir, 1, 0, True, 0, "", ["suite"], 1200)
+            slot.take_slot("testbox", self.dir, 1, 0, True, 0, None, ["suite"], 1200)
         after = read_holder(self.path())
         self.assertEqual((after.command, after.deadline, after.pid) if after else None, (("suite",), 1200, os.getpid()))
         self.assertAlmostEqual(after.expires if after and after.expires else 0.0, time.monotonic() + 1200, delta=5)
@@ -476,7 +476,7 @@ class Waiting(unittest.TestCase):
         released: list[str] = []
         with mock.patch.object(slot, "run_command", mock.Mock(side_effect=cli.Exit(0))), \
                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit):
-            slot.take_slot("testbox", self.dir, 1, 0, False, 0, "", ["make"], None, release=lambda: released.append("held"))
+            slot.take_slot("testbox", self.dir, 1, 0, False, 0, None, ["make"], None, release=lambda: released.append("held"))
         # The slot just taken stays locked on a descriptor this test cannot reach: a box of its own.
         busy = os.path.join(self.dir, "busy")
         os.mkdir(busy)
@@ -485,7 +485,7 @@ class Waiting(unittest.TestCase):
         fcntl.flock(blocker, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
                 self.assertRaises(cli.Exit):
-            slot.take_slot("testbox", busy, 1, 0, False, 0, "", ["make"], None, release=lambda: released.append("refused"))
+            slot.take_slot("testbox", busy, 1, 0, False, 0, None, ["make"], None, release=lambda: released.append("refused"))
         self.assertEqual(released, ["held", "refused"])
 
     def test_the_release_after_a_slot_is_taken_does_not_wait_and_holds_nothing_inherited(self) -> None:
@@ -540,7 +540,7 @@ class Waiting(unittest.TestCase):
         thread.start()
         with mock.patch.object(slot, "run_command", run), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(cli.Exit):
-                slot.take_slot("testbox", self.dir, 1, 0, False, 30, "", ["make"], None)
+                slot.take_slot("testbox", self.dir, 1, 0, False, 30, None, ["make"], None)
         thread.join()
         self.assertIn(f"waiting.{os.getpid()}", seen[0], "recorded while it waited")
         self.assertEqual(seen[1], ["slot.1"], "and gone once it held the slot")

@@ -77,10 +77,10 @@ class Forwarded(unittest.TestCase):
 
     def test_the_boxes_own_knobs_never_travel(self) -> None:
         cfg = coordinator(FLEET_SLOT_STATE="/hub/slots", ISSUE_WAVE_STATE="/hub/state", FLEET_SYSTEMD_INHIBIT="x",
-                          FLEET_TMUX_SOCKET="s", FLEET_COORDINATOR="c", FLEET_FETCH_TIMEOUT="1")
+                          FLEET_CAFFEINATE="y", FLEET_TMUX_SOCKET="s", FLEET_COORDINATOR="c", FLEET_FETCH_TIMEOUT="1")
         names = {name for name, _ in forwarded(cfg, "far")}
         for own in ("FLEET_LOCAL_BOX", "FLEET_SLOT_STATE", "ISSUE_WAVE_STATE", "FLEET_SYSTEMD_INHIBIT",
-                    "FLEET_TMUX_SOCKET", "FLEET_COORDINATOR", "FLEET_FETCH_TIMEOUT"):
+                    "FLEET_CAFFEINATE", "FLEET_TMUX_SOCKET", "FLEET_COORDINATOR", "FLEET_FETCH_TIMEOUT"):
             self.assertNotIn(own, names)
         # ISSUE_WAVE_STATE reaches the far side only as the anchor state it defaults.
         self.assertEqual(dict(forwarded(cfg, "far"))["FLEET_ANCHOR_STATE"], "/hub/state")
