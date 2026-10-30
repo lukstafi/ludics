@@ -176,7 +176,10 @@ What the modes trade, from wave-20261023 (OCANNL, 30 native Claude workers, the 
 subagent cache TTL): the workers' 4,106 requests missed the cache twice, rewriting 943k tokens,
 about 1.4% of their token cost. Both misses were idle gaps of 2.0-2.3 h on the coordinator's side:
 a concluded measurement whose worker was resumed two hours late, and a worker held idle on a
-deferred two-hour measurement. No wait inside a worker's turn missed. Cache reads were 74% of the
+deferred two-hour measurement. Claude Code 2.1.309 compacts such a worker instead of rewriting its
+context: it writes the summary once a session has sat idle about 55 minutes, before the 1-hour
+cache expires ([Idle workers](references/native-claude.md#idle-workers); seen on main sessions,
+for workers ludics#850). No wait inside a worker's turn missed. Cache reads were 74% of the
 cost: every request re-reads the worker's whole context (the median worker peaked at 330k tokens),
 so the bill grows with context size times requests, roughly with the square of a worker's length.
 `cache-misses.py` prints both (*Close out*).
@@ -187,12 +190,6 @@ context lean:
 - **An adaptive worker count, not a fixed cap.** Start with up to about 12 workers. Launch the next
   queued one only while every returned turn has been answered within a few minutes; while any
   returned turn has waited more than 10 minutes for its answer, launch nothing.
-- **An idle worker is left idle.** Claude Code compacts a session about 55 minutes into an idle
-  spell, while its 1-hour cache is still warm, and swaps the summary in at the next turn
-  ([native-claude.md](references/native-claude.md#idle-workers); seen on main sessions, for
-  workers close-out's `compactions:` line confirms it), so a resume after the hour is no longer a
-  whole-context rewrite. Nothing keeps a waiting worker warm or hands its work to a
-  fresh one: resume it when its wait ends.
 - **A measurement window does not strand its requester.** When the home box is contended
   and its window will not open within the hour, the coordinator refuses the request with an offer:
   `EXECUTION_REFUSED <request_id>` naming another box that runs the same backend and when it is free
