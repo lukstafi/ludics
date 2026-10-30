@@ -1119,17 +1119,31 @@ confirm_down() { # confirm_down <box...> — poll until ssh stops answering, to 
   return 1
 }
 
+# A macOS box is promoted to a full wake (mac_full_wake) on the first poll that finds it up, not
+# after every box answers: a DarkWake lasts about 45 s, and the rest of the wait can run for
+# minutes. MAC_FAILED is left naming each Mac that answered and was never promoted.
+MAC_FAILED=""
 wait_for() { # wait_for <box...> — poll until every box answers, for up to WAIT_SECONDS
-  local names=("$@") n up all deadline=$((SECONDS + WAIT_SECONDS))
+  local names=("$@") n up all promoted=" " deadline=$((SECONDS + WAIT_SECONDS))
+  MAC_FAILED=""
   while :; do
     all=1
     for n in "${names[@]}"; do
       if is_up "$n"; then up=UP; else up=down; all=0; fi
+      if [ "$up" = UP ] && [ "$(box_kind "$n")" = macos ] && [[ "$promoted" != *" $n "* ]] && mac_full_wake "$n"; then
+        promoted="$promoted$n "; up="UP(full wake)"
+      fi
       printf '%s=%s ' "$n" "$up"
     done
     printf '(%s)\n' "$(date +%H:%M:%S)"
-    [ "$all" = 1 ] && return 0
-    [ "$SECONDS" -ge "$deadline" ] && return 1
+    if [ "$all" = 1 ] || [ "$SECONDS" -ge "$deadline" ]; then
+      for n in "${names[@]}"; do
+        if [ "$(box_kind "$n")" = macos ] && [[ "$promoted" != *" $n "* ]] && is_up "$n"; then
+          MAC_FAILED="${MAC_FAILED:+$MAC_FAILED }$n"
+        fi
+      done
+      [ "$all" = 1 ]; return
+    fi
     sleep 5
   done
 }
@@ -1137,7 +1151,7 @@ wait_for() { # wait_for <box...> — poll until every box answers, for up to WAI
 # A network wake leaves a Mac in DarkWake, and on 2026-10-30 one went back to sleep 45 s after it
 # woke. A declared user activity (`caffeinate -u`) makes it a full wake, which
 # its AC settings (sleep 0) then keep until the next requested sleep, so `--wait` declares one on
-# each macOS box that answers. The display comes on with it, and goes off by its own displaysleep.
+# each macOS box as soon as it answers (wait_for). The display comes on with it, and goes off by its own displaysleep.
 mac_full_wake() { # mac_full_wake <box> -- nonzero when the activity could not be declared
   capped "$PROBE_CAP" ssh -o BatchMode=yes -o ConnectTimeout=5 "$(endpoint_of "$1" mac)" 'caffeinate -u -t 1' \
     >/dev/null 2>&1
@@ -1860,13 +1874,7 @@ case "$VERB" in
     if [ "$WAIT" = 1 ]; then
       echo "waiting for boot..."
       wait_for "${TARGETS[@]}"; rc=$?
-      mac_rc=0; MAC_FAILED=""
-      for t in "${TARGETS[@]}"; do
-        if [ "$(box_kind "$t")" = macos ] && is_up "$t"; then
-          if mac_full_wake "$t"; then echo "$t: user activity declared, a full wake (not a DarkWake that drifts back to sleep)"
-          else mac_rc=1; MAC_FAILED="${MAC_FAILED:+$MAC_FAILED }$t"; fi
-        fi
-      done
+      mac_rc=0; [ -z "$MAC_FAILED" ] || mac_rc=1
       # Partial success still deserves the WSL kick: one box failing to wake must not suppress
       # starting WSL on the box that did come up, or an unrelated dead machine silently costs a
       # backend's coverage.

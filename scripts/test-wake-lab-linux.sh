@@ -749,6 +749,12 @@ ip_of() { [ "$1" = macbook ] && echo 192.0.2.36; }
 kind_of() { [ "$1" = macbook ] && echo macos; }
 HOSTS
 sed 's/^eth_mac_of.*/eth_mac_of() { return 1; }/' "$tmp/mac-hosts.sh" >"$tmp/mac-nowake-hosts.sh"
+cat >"$tmp/mixed-hosts.sh" <<'HOSTS'
+mac_of() { case "$1" in macbook) echo aa:bb:cc:00:00:07 ;; tuf) echo aa:bb:cc:00:00:06 ;; *) return 1 ;; esac; }
+eth_mac_of() { [ "$1" = macbook ] && echo aa:bb:cc:00:00:07; }
+ip_of() { case "$1" in macbook) echo 192.0.2.36 ;; tuf) echo 192.0.2.32 ;; *) return 1 ;; esac; }
+kind_of() { case "$1" in macbook) echo macos ;; tuf) echo linux ;; *) return 1 ;; esac; }
+HOSTS
 # What `pmset -g assertions` lists on a desktop session with a fleet run going: the Electron apps'
 # standing assertions, a system daemon's, and the run's caffeinate guard.
 mac_assertions='Listed by owning process:
@@ -784,9 +790,12 @@ check '...and one with no waking NIC in the site file is a manual wake, with no 
 : >"$SSH_LOG"
 out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro WAKE_LAB_WAIT_SECONDS=5 "$tmp/wake-lab.sh" --wait macbook 2>&1); rc=$?
 check '--wait on a macOS box declares user activity, so the DarkWake becomes a full wake' \
-  '[ "$rc" = 0 ] && [[ "$out" == *"macbook: user activity declared"* ]] && grep -q "^-o BatchMode=yes -o ConnectTimeout=5 macbook-pro caffeinate -u -t 1$" "$SSH_LOG"'
+  '[ "$rc" = 0 ] && [[ "$out" == *"macbook=UP(full wake)"* ]] && [ "$(grep -c "^-o BatchMode=yes -o ConnectTimeout=5 macbook-pro caffeinate -u -t 1$" "$SSH_LOG")" = 1 ]'
 check '...asks its own ssh to the anchor and reads all up' \
   '[[ "$out" == *"all up"* ]] && grep -q "macbook-pro ssh -o BatchMode=yes -o ConnectTimeout=10 mac-studio true" "$SSH_LOG"'
+out=$(WAKE_LAB_HOSTS="$tmp/mixed-hosts.sh" SSH_UP=macbook-pro WAKE_LAB_WAIT_SECONDS=6 "$tmp/wake-lab.sh" --wait macbook tuf 2>&1); rc=$?
+check '...on the first poll that finds it up, while another box is still coming' \
+  '[ "$rc" = 1 ] && [[ "$(grep -m1 "macbook=" <<<"$out")" == *"macbook=UP(full wake) tuf=down"* ]] && [[ "$out" != *"could not declare"* ]]'
 out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_NO_ACTIVITY=1 WAKE_LAB_WAIT_SECONDS=5 "$tmp/wake-lab.sh" --wait macbook 2>&1); rc=$?
 check '...and a box where it cannot be declared is not all up' \
   '[ "$rc" = 1 ] && [ "$(tail -1 <<<"$out")" != "all up" ] && [[ "$out" == *"NOT all up: could not declare user activity on: macbook"* ]]'
