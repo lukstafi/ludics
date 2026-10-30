@@ -25,8 +25,10 @@ OpenSSH or Tailscale SSH is enabled. Existing Tailscale SSH policy is left alone
 The script asks for the native endpoint and full roster. Use names from
 `tailscale status`, not the WSL names. Use the same complete roster on each
 machine and on the coordinator. The default roster, verified with Tailscale status,
-is `mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux`. An unlisted current
-endpoint is appended automatically. You can edit the roster at the prompt.
+is `mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro`. An unlisted current
+endpoint is appended automatically. You can edit the roster at the prompt. The
+generated `env.sh` exports `FLEET_BOXES` only for a roster other than that default,
+so a box joining the fleet later changes the roster with the code alone.
 These are the native Linux endpoints, distinct from the existing `*-wsl` and
 `*-win` names. SSH usernames are prompted separately: Tailscale account ownership
 does not tell us the target Unix username.
@@ -222,8 +224,8 @@ bash ~/ludics/scripts/install-linux.sh --setup-peers --apply
 When traveling, SSH from MacBook Air to Mac Studio and run those same commands
 there. The Air is your communication window. It is not contacted, configured,
 or granted incoming fleet access by this mode. It is explicitly refused as a mesh
-member. The mesh is `mac-studio`, `rog-nv-linux`, `minix-amd-linux`, `tuf-amd-linux`;
-Mac Studio participates in both directions, so workers can call back to it.
+member. The mesh is `mac-studio`, `rog-nv-linux`, `minix-amd-linux`, `tuf-amd-linux`,
+`macbook-pro`; Mac Studio participates in both directions, so workers can call back to it.
 
 The coordinator must already authenticate to each member with trusted host keys.
 If necessary, make one ordinary `ssh USER@HOST` connection from Mac Studio first.

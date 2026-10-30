@@ -423,7 +423,7 @@ def one_entry_per_box():
         out, err = change('reserve', request('measure-rog', 'rog-nv-linux'))
         assert 'WARNING' not in err, err
         out, err = change('reserve', request('measure-minix', 'minix-amd-linux'),
-                          FLEET_BOXES='mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux')
+                          FLEET_BOXES='mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro')
         assert 'WARNING' not in err, err
         # Two aliases of rog: the refusal names both entries and the box, whichever alias is asked for,
         # for reserve, run and dispatch alike, and nothing is written.

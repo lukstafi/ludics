@@ -39,7 +39,7 @@ from ludics.prreview.jqsem import JqError, jstr, tojson
 
 SCRIPT = "/repo/issue-wave/scripts/fleet-worker.sh"
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-ROSTER = "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux"
+ROSTER = "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro"
 
 
 class Names(unittest.TestCase):
@@ -95,7 +95,7 @@ def report(env: dict[str, str]) -> tuple[str, str]:
 class SlotsReport(unittest.TestCase):
     def test_the_site_default_is_printed_with_its_tokens_and_no_warning(self) -> None:
         out, err = report({"FLEET_BOXES": ROSTER})
-        self.assertEqual(out, "PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4(gpu=2) minix-amd-linux=4 tuf-amd-linux=3 (site default)\n")
+        self.assertEqual(out, "PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4(gpu=2) minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4 (site default)\n")
         self.assertEqual(err, "")
 
     def test_an_empty_spec_under_the_default_roster_warns_box_by_box(self) -> None:

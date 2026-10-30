@@ -14,7 +14,7 @@
 # likewise fictitious, from RFC 5737's documentation range (192.0.2.0/24) rather than from any
 # real LAN: a template carrying the author's leases would be site data by another name.
 #
-# The box names must be the ones the script knows: rog, minix, tuf -- each needs a row in the
+# The box names must be the ones the script knows: rog, minix, tuf, macbook -- each needs a row in the
 # endpoint map (ENDPOINT_MAP in wake-lab.sh), which holds the box's ssh aliases, so this file
 # never names one. Each function echoes the value(s) for a known box and returns 1 for anything
 # else; all four are required.
@@ -28,6 +28,7 @@ mac_of() { case "$1" in
   rog)   echo 00:00:00:00:00:01 00:00:00:00:00:02 ;;  # Wi-Fi, Ethernet
   minix) echo 00:00:00:00:00:03 00:00:00:00:00:04 ;;  # Wi-Fi, Ethernet
   tuf)   echo 00:00:00:00:00:05 00:00:00:00:00:06 ;;  # Wi-Fi, Ethernet (no WoL): manual wake
+  macbook) echo 00:00:00:00:00:07 ;;                  # Wi-Fi only: manual wake
   *) return 1 ;; esac; }
 
 # The Ethernet MAC alone — the one whose lease says anything about the wake path. router_active()
@@ -47,6 +48,7 @@ ip_of() { case "$1" in
   rog)   echo 192.0.2.30 ;;  # Ethernet; its Wi-Fi lease is a different address
   minix) echo 192.0.2.31 ;;  # Ethernet
   tuf)   echo 192.0.2.35 ;;  # Ethernet, no WoL; its Wi-Fi lease is a different address
+  macbook) echo 192.0.2.36 ;;  # Wi-Fi
   *) return 1 ;; esac; }
 
 # The OS reached after a magic packet depends on the box's boot selection. Set this to the
@@ -55,4 +57,5 @@ ip_of() { case "$1" in
 kind_of() { case "$1" in
   rog|minix) echo linux ;;  # set to wsl if the box boots Windows/WSL instead
   tuf)       echo linux ;;
+  macbook)   echo macos ;;  # a Mac boots nothing else
   *) return 1 ;; esac; }

@@ -25,7 +25,7 @@ measurement is exclusive: it is refused while anything is outstanding on its hos
 everything is refused while it is outstanding (standing reservations are suspended for it by a
 [measurement window](#exclusivity-and-the-run-time-slots), not refused). A `correctness` reservation shares its
 host with other correctness reservations up to the box's slots - `FLEET_BOX_CORRECTNESS_SLOTS`,
-`<box>=<n>` pairs, `mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3` with the
+`<box>=<n>` pairs, `mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4` with the
 default roster and one slot for any box it does not name. The default roster is the default set of boxes, whether
 `FLEET_BOXES` is unset or exports those same boxes (ludics-lite#329), and `fleet-worker.sh
 preflight` prints the count for every roster box (ludics-lite#157: the exclusivity was written for

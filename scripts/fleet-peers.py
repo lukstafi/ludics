@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 
-DEFAULT_PEERS = ['mac-studio', 'rog-nv-linux', 'minix-amd-linux', 'tuf-amd-linux']
+DEFAULT_PEERS = ['mac-studio', 'rog-nv-linux', 'minix-amd-linux', 'tuf-amd-linux', 'macbook-pro']
 NAME = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9.-]*\Z')
 USER = re.compile(r'[a-zA-Z_][a-zA-Z0-9_-]*\Z')
 INCLUDE = 'Include ~/.ssh/fleet.conf'

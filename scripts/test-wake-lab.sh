@@ -2466,15 +2466,18 @@ mac_of() { case "$1" in
   rog)   echo aa:bb:cc:00:00:01 ;;
   minix) echo aa:bb:cc:00:00:03 ;;
   tuf)  echo aa:bb:cc:00:00:05 ;;
+  macbook) echo aa:bb:cc:00:00:07 ;;
   *) return 1 ;; esac; }
-eth_mac_of() { mac_of "$1"; }
+eth_mac_of() { [ "$1" != macbook ] && mac_of "$1"; }
 ip_of() { case "$1" in
   rog)   echo 10.0.0.1 ;;
   minix) echo 10.0.0.2 ;;
   tuf)  echo 10.0.0.3 ;;
+  macbook) echo 10.0.0.4 ;;
   *) return 1 ;; esac; }
 kind_of() { case "$1" in
   rog|minix|tuf) echo wsl ;;
+  macbook) echo macos ;;
   *) return 1 ;; esac; }
 HOSTS3
 out=$(env WAKE_LAB_HOSTS="$TMP/hosts3.sh" "$WL" status all 2>&1); rc=$?

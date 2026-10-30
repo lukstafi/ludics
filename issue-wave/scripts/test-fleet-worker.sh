@@ -1179,9 +1179,9 @@ expect "mac-studio with the default roster notes a sleeping TUF and still passes
 # case sets or unsets both variables itself.
 # A one-slot count is matched as `mac-studio[=]1`: check-prompts reads the bare pair anywhere in
 # this file as a statement of the site default, and this is a count the fixture configured.
-PFROSTER="mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux"
+PFROSTER="mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro"
 PFM=(env FLEET_LOCAL_BOX=mac-studio "$FW" preflight mac-studio --no-probe --no-cross)
-expect "preflight prints the site default's slot counts under an exported default roster" 0 "^PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4(gpu=2) minix-amd-linux=4 tuf-amd-linux=3 (site default)$" -- \
+expect "preflight prints the site default's slot counts under an exported default roster" 0 "^PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4(gpu=2) minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4 (site default)$" -- \
   env -u FLEET_BOX_CORRECTNESS_SLOTS FLEET_BOXES="$PFROSTER" "${PFM[@]}"
 grep -q "WARNING" <<<"$out" && ko "...and warns about a configuration that is the site default -- $out" || ok "...and warns about nothing"
 # The other direction of that pairing: the boxes the site default widens, read off its own line,
@@ -1197,23 +1197,24 @@ expect "...the same under an unset roster" 0 "^PREFLIGHT SLOTS mac-studio=6 .*(s
   env -u FLEET_BOX_CORRECTNESS_SLOTS -u FLEET_BOXES "${PFM[@]}"
 expect "a spec that leaves mac-studio out under the default roster is a loud warning, not a refusal" 0 "PREFLIGHT SLOTS WARNING: the default roster, but FLEET_BOX_CORRECTNESS_SLOTS=\"rog-nv-linux=2\" does not name mac-studio, which falls to one slot" -- \
   env FLEET_BOX_CORRECTNESS_SLOTS="rog-nv-linux=2" FLEET_BOXES="$PFROSTER" "${PFM[@]}"
-grep -q "^PREFLIGHT OK mac-studio" <<<"$out" && grep -q "^PREFLIGHT SLOTS mac-studio[=]1 rog-nv-linux=2 minix-amd-linux=1 tuf-amd-linux=1 (FLEET_BOX_CORRECTNESS_SLOTS)$" <<<"$out" \
+grep -q "^PREFLIGHT OK mac-studio" <<<"$out" && grep -q "^PREFLIGHT SLOTS mac-studio[=]1 rog-nv-linux=2 minix-amd-linux=1 tuf-amd-linux=1 macbook-pro=1 (FLEET_BOX_CORRECTNESS_SLOTS)$" <<<"$out" \
   && ok "...beside the OK line and the counts it names" || ko "the collapse warning lost the OK line or the counts -- $out"
 expect "...as is an explicitly empty spec" 0 "PREFLIGHT SLOTS WARNING: .* does not name mac-studio" -- \
   env FLEET_BOX_CORRECTNESS_SLOTS="" FLEET_BOXES="$PFROSTER" "${PFM[@]}"
-expect "a spec naming every widened box at one slot is a choice, printed without a warning" 0 "^PREFLIGHT SLOTS mac-studio[=]1 rog-nv-linux[=]1 minix-amd-linux[=]1 tuf-amd-linux[=]1 (FLEET_BOX_CORRECTNESS_SLOTS)$" -- \
-  env FLEET_BOX_CORRECTNESS_SLOTS="mac-studio=1 rog-nv-linux=1 minix-amd-linux=1 tuf-amd-linux=1" FLEET_BOXES="$PFROSTER" "${PFM[@]}"
+expect "a spec naming every widened box at one slot is a choice, printed without a warning" 0 "^PREFLIGHT SLOTS mac-studio[=]1 rog-nv-linux[=]1 minix-amd-linux[=]1 tuf-amd-linux[=]1 macbook-pro[=]1 (FLEET_BOX_CORRECTNESS_SLOTS)$" -- \
+  env FLEET_BOX_CORRECTNESS_SLOTS="mac-studio=1 rog-nv-linux=1 minix-amd-linux=1 tuf-amd-linux=1 macbook-pro=1" FLEET_BOXES="$PFROSTER" "${PFM[@]}"
 grep -q "WARNING" <<<"$out" && ko "a spec naming every widened box at one slot drew a collapse warning -- $out" || ok "...and no warning"
 # The hub's 2026-09-23 mitigation shape: a spec naming only the Mac collapses the native GPU boxes
-# (ludics-lite#316), so it warns about each of them and not about mac-studio.
+# (ludics-lite#316) and the MacBook (ludics#538), so it warns about each of them and not about mac-studio.
 expect "a spec naming only mac-studio warns about each native GPU box it leaves at one slot" 0 "does not name rog-nv-linux, which falls to one slot" -- \
   env FLEET_BOX_CORRECTNESS_SLOTS="mac-studio=4" FLEET_BOXES="$PFROSTER" "${PFM[@]}"
 grep -q "does not name minix-amd-linux, which falls" <<<"$out" && grep -q "does not name tuf-amd-linux, which falls" <<<"$out" \
-  && ! grep -q "does not name mac-studio" <<<"$out" \
-  && ok "...minix-amd-linux and tuf-amd-linux too, and not the Mac it names" || ko "the per-box collapse warnings are wrong -- $out"
-expect "a roster over several lines prints every box" 0 "^PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4(gpu=2) minix-amd-linux=4 tuf-amd-linux=3 (site default)$" -- \
+  && grep -q "does not name macbook-pro, which falls" <<<"$out" && ! grep -q "does not name mac-studio" <<<"$out" \
+  && ok "...minix-amd-linux, tuf-amd-linux and macbook-pro too, and not the Mac it names" || ko "the per-box collapse warnings are wrong -- $out"
+expect "a roster over several lines prints every box" 0 "^PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4(gpu=2) minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4 (site default)$" -- \
   env -u FLEET_BOX_CORRECTNESS_SLOTS FLEET_BOXES="mac-studio rog-nv-linux
-minix-amd-linux tuf-amd-linux" "${PFM[@]}"
+minix-amd-linux tuf-amd-linux
+macbook-pro" "${PFM[@]}"
 expect "a custom roster prints one slot each, without a warning" 0 "^PREFLIGHT SLOTS testbox=1 otherbox=1 (custom roster: one slot each)$" -- \
   env -u FLEET_BOX_CORRECTNESS_SLOTS FLEET_BOXES="testbox otherbox" "$FW" preflight testbox --no-probe --no-cross
 grep -q "WARNING" <<<"$out" && ko "a custom roster drew a collapse warning -- $out" || ok "...and no warning"
@@ -1229,13 +1230,13 @@ expect "an empty GPU-token spec under the default roster warns about the box it 
 pf_twarned=$(sed -n 's/^PREFLIGHT SLOTS WARNING: .*FLEET_BOX_GPU_TOKENS=.* does not name \([^,]*\), so all.*/\1/p' <<<"$out" | sort | tr '\n' ' ')
 [ -n "$pf_tokened" ] && [ "$pf_tokened" = "$pf_twarned" ] && ok "...about exactly the boxes the site default narrows: $pf_twarned" \
   || ko "the token warning names '$pf_twarned', the site default narrows '$pf_tokened'"
-grep -q "^PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3 (site default; FLEET_BOX_GPU_TOKENS)$" <<<"$out" \
+grep -q "^PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4 (site default; FLEET_BOX_GPU_TOKENS)$" <<<"$out" \
   && ok "...beside a slots line with no tokens and the override named" || ko "the un-narrowed slots line is wrong -- $out"
 expect "a token spec naming rog-nv-linux at every slot is a choice, printed without a warning" 0 "^PREFLIGHT SLOTS mac-studio=6 rog-nv-linux=4 minix" -- \
   env -u FLEET_BOX_CORRECTNESS_SLOTS FLEET_BOX_GPU_TOKENS="rog-nv-linux=4" FLEET_BOXES="$PFROSTER" "${PFM[@]}"
 grep -q "WARNING" <<<"$out" && ko "a token spec naming rog-nv-linux drew a warning -- $out" || ok "...and no warning"
 expect "...and so is a slot spec that leaves rog-nv-linux no more slots than the token default" 0 "rog-nv-linux=2 minix" -- \
-  env FLEET_BOX_CORRECTNESS_SLOTS="mac-studio=6 rog-nv-linux=2 minix-amd-linux=4 tuf-amd-linux=3" FLEET_BOX_GPU_TOKENS="" FLEET_BOXES="$PFROSTER" "${PFM[@]}"
+  env FLEET_BOX_CORRECTNESS_SLOTS="mac-studio=6 rog-nv-linux=2 minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4" FLEET_BOX_GPU_TOKENS="" FLEET_BOXES="$PFROSTER" "${PFM[@]}"
 grep -q "WARNING" <<<"$out" && ko "a two-slot rog-nv-linux drew a token warning -- $out" || ok "...with no warning"
 expect "a malformed token spec is a warning on the preflight, which still passes" 0 "PREFLIGHT SLOTS WARNING: FLEET_BOX_GPU_TOKENS names stale-box, which is not in FLEET_BOXES" -- \
   env FLEET_BOX_GPU_TOKENS="stale-box=1" FLEET_BOXES="testbox otherbox" "$FW" preflight testbox --no-probe --no-cross
@@ -3964,14 +3965,14 @@ grep -q "Broken pipe" <<<"$out" && ko "the wrapped pipeline reported a broken pi
 # box's env.sh began exporting FLEET_BOXES with exactly the default boxes, and a test on the
 # variable's presence dropped mac-studio to one slot for a day. Each case sets or unsets both
 # variables itself.
-DEFROSTER="mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux"
+DEFROSTER="mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro"
 FWM=(env FLEET_LOCAL_BOX=mac-studio FLEET_ANCHOR=mac-studio)
 expect "the site default gives mac-studio six run-time slots" 0 "slot 1 of 6" -- \
   env -u FLEET_BOX_CORRECTNESS_SLOTS -u FLEET_BOXES "${FWM[@]}" "$FW" execution slot --wait 0 -- echo default-cap
 # The native GPU boxes' measured counts (ludics-lite#316, #344, #391): four on rog-nv-linux, of
-# which two hold a GPU token, four on minix-amd-linux, three on tuf-amd-linux. Each box is its own
-# anchor here, so the registry read stays local.
-for pair in rog-nv-linux:4 minix-amd-linux:4 tuf-amd-linux:3; do
+# which two hold a GPU token, four on minix-amd-linux, three on tuf-amd-linux, and the MacBook's
+# provisional four (ludics#538). Each box is its own anchor here, so the registry read stays local.
+for pair in rog-nv-linux:4 minix-amd-linux:4 tuf-amd-linux:3 macbook-pro:4; do
   box=${pair%%:*} n=${pair#*:}
   expect "...and $box $n" 0 "slot 1 of $n" -- \
     env -u FLEET_BOX_CORRECTNESS_SLOTS -u FLEET_BOXES FLEET_LOCAL_BOX=$box FLEET_ANCHOR=$box "$FW" execution slot --wait 0 -- echo default-cap
@@ -3979,15 +3980,19 @@ done
 expect "...and so does an exported roster equal to the default (the 2026-09-22 shape)" 0 "slot 1 of 6" -- \
   env -u FLEET_BOX_CORRECTNESS_SLOTS "${FWM[@]}" FLEET_BOXES="$DEFROSTER" "$FW" execution slot --wait 0 -- echo exported-default
 expect "...or the default boxes in another order and spacing (a word set, not a string)" 0 "slot 1 of 6" -- \
-  env -u FLEET_BOX_CORRECTNESS_SLOTS "${FWM[@]}" FLEET_BOXES="  tuf-amd-linux mac-studio   minix-amd-linux rog-nv-linux " "$FW" execution slot --wait 0 -- echo reordered-default
+  env -u FLEET_BOX_CORRECTNESS_SLOTS "${FWM[@]}" FLEET_BOXES="  tuf-amd-linux mac-studio   macbook-pro minix-amd-linux rog-nv-linux " "$FW" execution slot --wait 0 -- echo reordered-default
 expect "...or the default boxes over several lines (every line is read, not the first)" 0 "slot 1 of 6" -- \
   env -u FLEET_BOX_CORRECTNESS_SLOTS "${FWM[@]}" FLEET_BOXES="mac-studio rog-nv-linux
 minix-amd-linux
-tuf-amd-linux" "$FW" execution slot --wait 0 -- echo multiline-default
+tuf-amd-linux macbook-pro" "$FW" execution slot --wait 0 -- echo multiline-default
 expect "a box on a later line of the roster is in it, and a spec may name it" 0 "slot 1 of 2" -- \
   env FLEET_LOCAL_BOX=testbox FLEET_BOXES="other
 testbox" FLEET_BOX_CORRECTNESS_SLOTS="other=1
 testbox=2" "$FW" execution slot --wait 0 -- echo multiline-roster
+# The roster before the MacBook joined (ludics#538), still exported by an env.sh nobody edited, is
+# a custom roster now: the collapse that the rollout drops every env.sh's FLEET_BOXES to avoid.
+expect "the pre-MacBook four-box roster is a custom one, one slot on mac-studio" 0 "slot 1 of 1" -- \
+  env -u FLEET_BOX_CORRECTNESS_SLOTS "${FWM[@]}" FLEET_BOXES="mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux" "$FW" execution slot --wait 0 -- echo legacy-roster
 expect "a custom roster still gives mac-studio one slot" 0 "slot 1 of 1" -- \
   env -u FLEET_BOX_CORRECTNESS_SLOTS "${FWM[@]}" FLEET_BOXES="mac-studio rog-nv-linux" "$FW" execution slot --wait 0 -- echo custom-roster
 expect "an explicit spec overrides the default under an unset roster" 0 "slot 1 of 2" -- \

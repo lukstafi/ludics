@@ -90,7 +90,7 @@ author's fleet (the header of `scripts/fleet-worker.sh` is the authoritative lis
 | Local state directory for each coordinator | `ISSUE_WAVE_STATE` |
 | State directory on the anchor for the lease and fleet-wide halt | `FLEET_ANCHOR_STATE`; every coordinator must resolve it to the same directory on the anchor |
 | Where a box keeps its run-time correctness slot locks (`execution slot`) | `FLEET_SLOT_STATE`; box-wide, deliberately not under the per-coordinator `ISSUE_WAVE_STATE`, and every agent on the box must resolve it to the same directory |
-| How many correctness executions may share a box AT RUN TIME (measurement is always exclusive) | `FLEET_BOX_CORRECTNESS_SLOTS` (`<box>=<n>` pairs; `mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3` with the default roster, one slot otherwise) |
+| How many correctness executions may share a box AT RUN TIME (measurement is always exclusive) | `FLEET_BOX_CORRECTNESS_SLOTS` (`<box>=<n>` pairs; `mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4` with the default roster, one slot otherwise) |
 | The operator's standing word to switch the desktop app's Auto-fix off on wave PRs | `FLEET_AUTOFIX_OFF=standing` in the operator's site file (`~/.config/fleet/env.sh` here); read by the coordinator, not the script, and unset by default, so a copy of this skill carries no one's consent ([native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs)) |
 | How many of those may hold the box's GPU at once | `FLEET_BOX_GPU_TOKENS` (`<box>=<n>` pairs; `rog-nv-linux=2` with the default roster, one per slot otherwise; a batch declared `execution slot --cpu` takes none) |
 

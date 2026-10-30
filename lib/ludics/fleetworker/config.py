@@ -33,12 +33,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
-DEFAULT_BOXES = "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux"
+DEFAULT_BOXES = "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro"
 DEFAULT_HOSTNAME_MAP = (
     "*mac-studio*=mac-studio lukaszsacstudio*=mac-studio rog-nv*=rog-nv-linux rog=rog-nv-linux "
-    "minix*=minix-amd-linux tuf*=tuf-amd-linux"
+    "minix*=minix-amd-linux tuf*=tuf-amd-linux *macbook-pro*=macbook-pro"
 )
-DEFAULT_SLOTS = "mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3"
+DEFAULT_SLOTS = "mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4"
 GPU_TOKENS_DEFAULT = "rog-nv-linux=2"
 
 
