@@ -68,8 +68,7 @@ One term per concept, used in this file and in every reference it links:
   worker's request or result message, after which the work continues once the coordinator
   acts; it ends the worker's turn on Claude Code and CLI, while a Codex worker sends it
   mid-turn and waits. **Hand-back**: the worker's final report after its merge and after-merge
-  brainstorm, which ends its lifecycle; an **early hand-back** ends it before the merge, leaving
-  the remaining work to a fresh worker or the coordinator (*Wave mode*).
+  brainstorm, which ends its lifecycle.
 - **Finisher**: a fresh worker launched on a stalled worker's branch after that worker is
   proven stopped.
 
@@ -186,45 +185,31 @@ so the bill grows with context size times requests, roughly with the square of a
 context lean:
 
 - **An adaptive worker count, not a fixed cap.** Start with up to about 12 workers. Launch the next
-  queued one only while every returned turn has been answered within a few minutes and the
-  heartbeat's idle list (below) shows no live worker past 40 minutes; while any returned turn has waited
-  more than 10 minutes for its answer, launch nothing.
-- **No worker idles past the cache TTL.** Within about 50 minutes of a worker's turn ending, resume
-  it: with its next step, with a keep-warm `EXECUTION_PENDING`, or with an early hand-back. A
-  request that cannot be assigned within the hour, or a long deferred measurement, takes the
-  hand-back: the remaining work goes to a fresh short-lived worker or to the coordinator, rather
-  than a large context staying parked. The forms are [native-claude.md](references/native-claude.md#keeping-workers-warm).
-- **Measurement windows keep the requester's wait under the TTL.** When the home box is contended
+  queued one only while every returned turn has been answered within a few minutes; while any
+  returned turn has waited more than 10 minutes for its answer, launch nothing.
+- **An idle worker is left idle.** Claude Code compacts a session about 55 minutes into an idle
+  spell, while its 1-hour cache is still warm, and swaps the summary in at the next turn
+  ([native-claude.md](references/native-claude.md#idle-workers); seen on main sessions, for
+  workers close-out's `compactions:` line confirms it), so a resume after the hour is no longer a
+  whole-context rewrite. Nothing keeps a waiting worker warm or hands its work to a
+  fresh one: resume it when its wait ends.
+- **A measurement window does not strand its requester.** When the home box is contended
   and its window will not open within the hour, the coordinator refuses the request with an offer:
   `EXECUTION_REFUSED <request_id>` naming another box that runs the same backend and when it is free
   (wave-20261023: ahrefs/ocannl#1482's cc measurement, offered minix-amd-linux in place of a
   mac-studio held by the wave's workers). The box is a variable of the measurement, so only the
   worker can accept: it sends a new `EXECUTION_REQUEST` built for that box (its request id,
-  `execution_host` and checkout), or keeps the home box and takes the early hand-back. The coordinator
+  `execution_host` and checkout), or keeps the home box and waits. The coordinator
   makes no offer for a leg whose box is its point (TUF's discrete memory, a backend only one box
   has).
 - **After each returned turn, first:** every `EXECUTION_RESULT` is concluded and its worker resumed
   in the same coordinator turn, with `EXECUTION_CONCLUDED` or its next assignment (the first miss
-  above was a conclusion with no resume); every `EXECUTION_REQUEST` is assigned, refused, or
-  answered with one of the forms above.
-- **Every heartbeat reads the cache**, beside `prs`: `fleet-worker.sh board show <wave> --json |
-  cache-misses.py --since <wave start> --session <coordinator session id> --idle 40 --board -`,
-  then each `idle` line gets one of the resumes above. The join with the board is the script's
-  (ludics-lite#789): it drops a done row's worker and every agent ID in any row's `retired_agents`
-  (every early hand-back's on that row, appended and never overwritten), which is never resumed,
-  and prints each live worker beside its task row. A done row's `state` starts with `done`,
-  `merged` or `closed`. An `UNKNOWN-TO-BOARD` line is an agent no row names: fix its row before
-  resuming it. A `resume` miss is a worker the coordinator left idle too long; a
-  miss after a block is a host without the 1-hour TTL.
+  above was a conclusion with no resume); every `EXECUTION_REQUEST` is assigned or refused.
 - **Context discipline, carried by the brief.** Workers keep the full model and context (no cutoff:
   the maintainer's call) and keep what they re-read small: wide reads, log digests and review-thread
   sweeps go to their own subagents, which return conclusions; logs are read by `tail` or `grep`,
   never whole; independent tool calls go in one message; and the hand-back follows the merge and
   after-merge at once.
-
-The idle rule and the heartbeat's cache read are for native Claude workers, whose cache these
-numbers measure; for other workers regular mode is the adaptive count, the checklist and the
-context discipline.
 
 **Sprint mode** is the maximum-throughput wave and accepts the misses. It fills agent capacity, less
 the headroom workers' own subagents need
@@ -235,8 +220,7 @@ and its XProtect queue, GitHub's macOS runner queue, the reviewer's turnaround, 
 own latency. So where the user left transport open, a sprint places the workers beyond what its
 agent host's slots carry as CLI workers on their GPU home boxes ([cli-claude.md](references/cli-claude.md)),
 where they count against no native limit and their batches take that box's slots, and the wave
-summary says which. Under an explicit native choice the sprint stops at the native limit (*Launch*). It drops the adaptive count, the idle rule
-and the heartbeat's cache read. It keeps the after-each-turn checklist, since a concluded run whose
+summary says which. Under an explicit native choice the sprint stops at the native limit (*Launch*). It drops the adaptive count. It keeps the after-each-turn checklist, since a concluded run whose
 worker waits is lost throughput too, and close-out reports `cache-misses.py` as before.
 
 ## Scope and sequencing
@@ -704,9 +688,7 @@ requirements for every transport with transport-specific setup and identity, and
   requirement is a decision-gate item, never the brief's alone. Left to the review, an unbounded reader draws one corner per round for as long as
   it exists (2026-09-19: PR #274 went 17 rounds and 1,800 lines for a warning, and the reduction
   had to be filed afterwards as ludics-lite#295).
-- Wave mode: a regular wave's brief carries the context-discipline lines of *Wave mode* and the
-  worker's side of the keep-warm and early hand-back forms
-  ([native-claude.md](references/native-claude.md#keeping-workers-warm)).
+- Wave mode: a regular wave's brief carries the context-discipline lines of *Wave mode*.
 - Encouragement. It is cheap and the user asked for it: name why the issue matters and
   express confidence. Workers visibly do their best work when the brief treats them as
   trusted colleagues.
@@ -757,8 +739,7 @@ controlled through the tools in your coordinator's file, never through those com
   away, keep a coordinator-side heartbeat of about ten minutes whose wake is a command the
   harness tracks, not a timer: a background shell command whose exit re-invokes the coordinator
   (Claude Code's `run_in_background` on `sleep 600; fleet-worker.sh prs <owner/repo> --wave <id>`,
-  re-armed each tick, so the review-rounds read of *Converge long reviews* arrives with the wake;
-  a regular wave adds its cache read, *Wave mode*).
+  re-armed each tick, so the review-rounds read of *Converge long reviews* arrives with the wake).
   A /loop or ScheduleWakeup tick is a fallback at most: in desktop waves they fire hours late or
   never (2026-09-19: of three ScheduleWakeups, two never surfaced and one five hours late). After
   ANY interruption - pause, restart, dropped remote-control connection, a box that slept
@@ -1185,7 +1166,8 @@ outstanding reservation refers to it. For a wave with native Claude workers, put
 report: its exit 1 means a worker turn after a block rewrote the worker's whole context, which a
 coordinator host without the 1-hour subagent cache does after any wait past 5 minutes ([Blocking on a
 run](references/native-claude.md#blocking-on-a-run)), and its `--list` lines name the transcript
-and the command. Its `resume` line counts the misses the coordinator's own timing caused, and its
+and the command. Its `resume` line counts the misses after a worker sat idle, its `compactions:`
+line the workers the harness compacted instead ([Idle workers](references/native-claude.md#idle-workers)), and its
 `cost:` line splits the workers' bill into reads, writes and output (*Wave mode*). Notify any sessions the user asked to be told. If the wave surfaced a new
 coordination trap, add it to the project's agent-notes or this skill -
 whichever the trap belongs to.

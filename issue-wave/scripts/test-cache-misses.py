@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """cache-misses.py over fixture transcripts: what counts as a miss, its cause, and the exit code."""
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 
 SCRIPT = Path(__file__).with_name('cache-misses.py')
 
 
 def stamp(seconds):
-    return f'2026-10-17T12:{seconds // 60:02d}:{seconds % 60:02d}.000Z'
+    return f'2026-10-17T{12 + seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}.000Z'
 
 
 def reply(at, mid, read, written, tool=None, command='', stop=None, output=0, short=None):
@@ -43,8 +41,11 @@ def message(at, text, meta=False):
     return entry
 
 
-def iso(seconds_ago):
-    return datetime.fromtimestamp(time.time() - seconds_ago, timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+def boundary(at, precomputed, before=250000, after=13000):
+    meta = {'trigger': 'auto', 'preTokens': before, 'postTokens': after}
+    if precomputed:
+        meta['precomputed'] = True
+    return {'type': 'system', 'subtype': 'compact_boundary', 'timestamp': stamp(at), 'compactMetadata': meta}
 
 
 class CacheMisses(unittest.TestCase):
@@ -53,12 +54,10 @@ class CacheMisses(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def transcript(self, name, entries, subdir='subagents', session='session', meta=None):
+    def transcript(self, name, entries, subdir='subagents', session='session'):
         path = self.root / 'proj' / session / subdir / f'{name}.jsonl'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(''.join(json.dumps(e) + '\n' for e in entries))
-        if meta is not None:
-            path.with_suffix('.meta.json').write_text(json.dumps(meta))
         return path
 
     def run_report(self, *extra):
@@ -142,7 +141,8 @@ class CacheMisses(unittest.TestCase):
         self.assertEqual((done.returncode, done.stdout),
                          (0, 'cache-misses: 0 miss turns of 0 in 0 subagent transcripts, 0 tokens written; '
                              '0 after a block\ncost: reads 0, writes 0, uncached 0, output 0 tokens; '
-                             'reads 0%, writes 0%, uncached 0%, output 0%\n'))
+                             'reads 0%, writes 0%, uncached 0%, output 0%\n'
+                             'compactions: 0 (0 precomputed), 0 tokens before, 0 after\n'))
 
     def test_a_message_to_a_worker_whose_turn_ended_is_a_resume(self):
         # The runtime delivers SendMessage as a meta entry; the worker's last tool was a Bash wait.
@@ -182,86 +182,46 @@ class CacheMisses(unittest.TestCase):
         done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--session', '../x'], capture_output=True, text=True)
         self.assertEqual(done.returncode, 2, done.stderr)
 
-    def test_idle_lists_workers_whose_turn_ended_long_enough_ago(self):
-        self.transcript('agent-old', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 40000, stop='end_turn')],
-                        meta={'description': 'w-1 old', 'spawnDepth': 1})
-        self.transcript('agent-new', [message(0, 'brief'), reply(iso(60), 'm1', 0, 40000, stop='end_turn')],
-                        meta={'description': 'w-2 new'})
-        trailing = {'type': 'attachment', 'timestamp': iso(3500)}
-        self.transcript('agent-trail', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 40000, stop='end_turn'),
-                                        trailing], meta={'description': 'w-3 trail'})
-        self.transcript('agent-busy', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 40000, 'Bash', 'x',
-                                                                  stop='tool_use')])
-        self.transcript('agent-sub', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 9000, stop='end_turn')],
-                        meta={'description': 'a worker\'s own helper', 'spawnDepth': 2})
-        rc, out = self.run_report('--idle', '40')
-        idle = [line for line in out.splitlines() if line.startswith('idle ')]
-        self.assertEqual(sorted(idle), ['idle 60m old context=40002 w-1 old',
-                                'idle 60m trail context=40002 w-3 trail'], out)
+    def test_a_compaction_is_counted_and_the_turn_after_it_is_no_miss(self):
+        # The precomputed summary's own entry is stamped when it was written, before the boundary.
+        summary = message(3300, 'This session is being continued from a previous conversation.')
+        self.transcript('agent-i', [
+            message(0, 'brief'),
+            reply(1, 'm1', 0, 250000, 'Bash', 'ls'),
+            result(2),
+            reply(3, 'm2', 250000, 500, stop='end_turn'),
+            message(4000, 'The coordinator sent a message while you were working:\nEXECUTION_CONCLUDED w-1 pass',
+                    meta=True),
+            boundary(4000, precomputed=True), summary,
+            reply(4002, 'm3', 0, 13500, 'Bash', 'ls'),
+            result(4003),
+            reply(4004, 'm4', 13500, 200),
+        ])
+        self.transcript('agent-j', [message(0, 'brief'), reply(1, 'm1', 0, 900000, 'Read'), result(2),
+                                    boundary(3, precomputed=False, before=960000, after=9000),
+                                    reply(4, 'm2', 0, 9500)])
+        rc, out = self.run_report('--list')
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.splitlines()[0], 'cache-misses: 0 miss turns of 6 in 2 subagent transcripts, '
+                                              '0 tokens written; 0 after a block')
+        self.assertEqual(out.splitlines()[2], 'compactions: 2 (1 precomputed), 1210000 tokens before, 22000 after')
+        self.assertRegex(out, r'agent-i\.jsonl 2026-10-17T13:06:40\.000Z compaction trigger=auto precomputed=yes '
+                              r'before=250000 after=13000')
+        self.assertRegex(out, r'agent-j\.jsonl \S+ compaction trigger=auto precomputed=no before=960000 after=9000')
+
+    def test_a_resume_past_the_hour_without_a_compaction_is_a_miss(self):
+        self.transcript('agent-k', [
+            message(0, 'brief'),
+            reply(1, 'm1', 0, 250000, 'Bash', 'ls'),
+            result(2),
+            reply(3, 'm2', 250000, 500, stop='end_turn'),
+            message(3900, 'go on'),
+            reply(3901, 'm3', 0, 250600),
+        ])
         rc, out = self.run_report()
-        self.assertNotIn('idle ', out)
-
-    def board(self, *rows):
-        path = self.root / 'board.json'
-        path.write_text(json.dumps({'board': 1, 'wave': 'w', 'tasks': [
-            {'task': task, 'fields': fields, 'updated_at': '2026-10-25T00:00:00Z'} for task, fields in rows]}))
-        return str(path)
-
-    def idle_workers(self, *agents):
-        for agent in agents:
-            self.transcript(f'agent-{agent}', [message(0, 'brief'), reply(iso(3600), 'm1', 0, 40000, stop='end_turn')],
-                            meta={'description': f'{agent} worker'})
-
-    def test_board_drops_done_and_retired_workers_and_flags_unknown_ones(self):
-        self.idle_workers('live', 'merged', 'legacy', 'first', 'second', 'stranger', 'early')
-        board = self.board(
-            ('t1', {'agent': 'live', 'state': 'launched; PR 12 in review'}),
-            ('t2', {'agent': 'merged', 'state': 'MERGED 8aab017d; #760 closed; handed back'}),
-            ('t3', {'agent': 'legacy', 'status': 'done'}),
-            # Two early hand-backs on one row: the retired id listed second is dropped as surely as the first.
-            ('t4', {'agent': 'replacement', 'state': 'handed-back-early', 'retired_agents': 'first second'}),
-            ('t5', {'agent': 'early', 'state': 'handed-back-early'}),
-            # A retired id is dropped whatever its own row says.
-            ('t6', {'agent': 'second', 'state': 'launched'}))
-        rc, out = self.run_report('--idle', '40', '--board', board)
-        idle = sorted(line for line in out.splitlines() if line.startswith('idle '))
-        self.assertEqual(idle, ["idle 60m live context=40002 task=t1 state='launched; PR 12 in review' live worker",
-                                'idle 60m stranger context=40002 UNKNOWN-TO-BOARD stranger worker'], out)
-        self.assertEqual(out.splitlines()[-1], 'board: dropped 3 done, 2 retired idle workers', out)
-
-    def test_a_row_not_done_keeps_its_agent_listed_and_empty_state_is_live(self):
-        self.idle_workers('twice', 'blank')
-        board = self.board(('t1', {'agent': 'twice', 'state': 'merged'}), ('t2', {'agent': 'twice', 'state': ''}),
-                           ('t3', {'agent': 'blank'}))
-        rc, out = self.run_report('--idle', '40', '--board', board)
-        idle = sorted(line for line in out.splitlines() if line.startswith('idle '))
-        self.assertEqual(idle, ["idle 60m blank context=40002 task=t3 state='' blank worker",
-                                "idle 60m twice context=40002 task=t2 state='' twice worker"], out)
-
-    def test_board_on_stdin(self):
-        self.idle_workers('live')
-        board = Path(self.board(('t1', {'agent': 'live', 'state': 'launched'}))).read_text()
-        done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--projects', str(self.root), '--since', '2000-01-01',
-                               '--idle', '40', '--board', '-'], input=board, capture_output=True, text=True)
-        self.assertIn('idle 60m live context=40002 task=t1 state=launched live worker\n', done.stdout)
-
-    def test_a_board_outside_its_grammar_is_refused_before_any_output(self):
-        self.idle_workers('first')
-        for rows in ([('t1', {'agent': 'x', 'retired_agents': 'first,second'})],
-                     [('t1', {'agent': 'x', 'retired_agents': 7})],
-                     [('', {'agent': 'x'})]):
-            done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--projects', str(self.root),
-                                   '--since', '2000-01-01', '--idle', '40', '--board', self.board(*rows)],
-                                  capture_output=True, text=True)
-            self.assertEqual((done.returncode, done.stdout), (3, ''), done.stderr)
-        for text in ('', '{"tasks": {}}', '[]'):
-            done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--projects', str(self.root),
-                                   '--since', '2000-01-01', '--idle', '40', '--board', '-'],
-                                  input=text, capture_output=True, text=True)
-            self.assertEqual((done.returncode, done.stdout), (3, ''), (text, done.stderr))
-        done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--projects', str(self.root),
-                               '--board', str(self.root / 'absent.json')], capture_output=True, text=True)
-        self.assertEqual(done.returncode, 2, done.stderr)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('  resume: 1 turns, 250600 tokens, gaps 3897-3897 s', out)
+        self.assertIn('compactions: 0 (0 precomputed)', out)
 
     def test_a_bad_date_is_a_usage_error(self):
         done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--since', 'yesterday'],
