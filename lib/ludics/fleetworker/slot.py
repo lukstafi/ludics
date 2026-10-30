@@ -186,7 +186,7 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # assertions, so they are not what refuses wake-lab's sleep: wake-lab.sh reads them first and
 # refuses while a caffeinate holds one. PreventSystemSleep does keep a box that a network wake left
 # in DarkWake from drifting back to sleep under the run. caffeinate takes no reason, so its
-# assertion names no run; the HELD line here does. The tool is told apart by its name: a
+# assertion names no run; the HELD line here does. Which tool was found travels with it (Guard): a
 # FLEET_SYSTEMD_INHIBIT that resolves always wins, so a Linux host never takes this arm.
 #
 # ===============================================================================================
@@ -263,7 +263,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, NoReturn, assert_never, cast
+from typing import Any, Literal, NamedTuple, NoReturn, assert_never, cast
 
 from ludics import cli
 from ludics.fleetworker.config import (
@@ -667,11 +667,20 @@ def refuse_unrunnable(prefix: str, box: str, command: Sequence[str], reason: obj
     raise cli.Exit(127)
 
 
-def start_guard(box: str, inhibitor: str, why: str) -> None:
+class Guard(NamedTuple):
+    """The binary a run's sleep guard is taken with, and which interface it speaks: caffeinate's
+    (``mac``) or systemd-inhibit's. Carried from ``inhibitor_path``, never read off the file name, so
+    a FLEET_CAFFEINATE wrapper of any name is still called as caffeinate."""
+
+    path: str
+    mac: bool
+
+
+def start_guard(box: str, guard: Guard, why: str) -> None:
     """Take the sleep:idle block inhibitor (on macOS, caffeinate's sleep assertions) in a
     double-forked helper reading a lifetime pipe whose write end the command inherits; report HELD,
     or run bare under a WARNING."""
-    mac = os.path.basename(inhibitor) == "caffeinate"
+    inhibitor, mac = guard
     if mac:
         argv = [inhibitor, "-i", "-s", "--", "sh", "-c", MAC_HELPER]
     else:
@@ -738,7 +747,7 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
     )
 
 
-def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: str, why: str,
+def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: Guard | None, why: str,
                 deadline: int | None, nested: bool = False,
                 recorder: "Recorder | None" = None, on_start: Callable[[], None] | None = None) -> NoReturn:
     """Run the command: resolved before the guard (a command that cannot be found takes no
@@ -812,7 +821,7 @@ def exec_command(prefix: str, box: str, command: Sequence[str]) -> NoReturn:
         refuse_unrunnable(prefix, box, command, exc)
 
 
-def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: str,
+def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: Guard | None,
               command: Sequence[str], bound: int | None, waiting: "WaitingRecord | None" = None,
               release: Callable[[], None] = lambda: None) -> NoReturn:
     """Wait up to ``wait`` seconds for a slot (a GPU token unless ``cpu``), then run the command in it;
@@ -872,7 +881,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
         time.sleep(1)
 
 
-def hold(box: str, inhibitor: str, why: str, hold_lock: str, marker: str, cap: int,
+def hold(box: str, inhibitor: Guard | None, why: str, hold_lock: str, marker: str, cap: int,
          command: Sequence[str], deadline: int | None, repeat: float = HOLDER_REPEAT) -> NoReturn:
     """``execution hold``: with a measurement (``hold_lock``), THE DRAIN and the marker's shared lock
     first, then the command under the guard, THE CO-TENANTS recorded before and after it."""
@@ -975,10 +984,14 @@ class Recorder:
             errline(f"{self.label}: {cotenants.closed_line(line)}")
 
 
-def inhibitor_path(cfg: Config) -> str:
+def inhibitor_path(cfg: Config) -> Guard | None:
     """The systemd-inhibit this box would take the guard with, else its caffeinate (macOS), or
-    empty for none."""
-    return shutil.which(cfg.inhibit) or shutil.which(cfg.caffeinate) or ""
+    None for none."""
+    if found := shutil.which(cfg.inhibit):
+        return Guard(found, mac=False)
+    if found := shutil.which(cfg.caffeinate):
+        return Guard(found, mac=True)
+    return None
 
 
 # --- the commands ---------------------------------------------------------------------------------

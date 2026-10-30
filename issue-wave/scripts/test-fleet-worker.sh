@@ -4346,15 +4346,16 @@ expect "a command that cannot be run is still the slot's own refusal under the i
 # real one runs its utility while it holds the assertions; the pmset stub lists the assertion the
 # helper waits for, taken on behalf of its caller's pid, unless PMSET_NONE says none was taken.
 mkdir -p "$TMP/mac"
-sed 's/--\*) shift ;;/-*) shift ;;/' "$TMP/inhibit/systemd-inhibit" > "$TMP/mac/caffeinate"   # its options are short
+# Named otherwise on purpose: the interface comes from which variable found it, not the file name.
+sed 's/--\*) shift ;;/-*) shift ;;/' "$TMP/inhibit/systemd-inhibit" > "$TMP/mac/fleet-test-caffeinate"   # its options are short
 cat > "$TMP/mac/pmset" <<'PMSET'
 #!/bin/sh
 [ "$*" = "-g assertions" ] && [ -z "${PMSET_NONE:-}" ] || exit 0
 printf '   pid 1(caffeinate): [0x0] 00:00:00 PreventSystemSleep named: "caffeinate command-line tool"\n'
 printf "\tDetails: caffeinate asserting on behalf of 'sh' (pid %s)\n" "$PPID"
 PMSET
-chmod +x "$TMP/mac/caffeinate" "$TMP/mac/pmset"
-FWM=(env PATH="$TMP/mac:$PATH" FLEET_CAFFEINATE="$TMP/mac/caffeinate" "${FWS[@]}")
+chmod +x "$TMP/mac/fleet-test-caffeinate" "$TMP/mac/pmset"
+FWM=(env PATH="$TMP/mac:$PATH" FLEET_CAFFEINATE="$TMP/mac/fleet-test-caffeinate" "${FWS[@]}")
 : > "$INHIBIT_LOG"
 expect "on macOS (no systemd-inhibit) a slot's batch runs under caffeinate's sleep assertions" 0 "EXECUTION HOLD testbox: sleep assertions (caffeinate -i -s) held for: testbox slot 1 of 1: echo mac" -- \
   "${FWM[@]}" execution slot -- echo mac
@@ -4362,7 +4363,7 @@ grep -q -- "^-i -s -- sh -c i=0; until pmset -g assertions" "$INHIBIT_LOG" && ok
 gone "$INHIBIT_PID" && ok "...released when the batch ends" || ko "the caffeinate helper outlived the batch"
 : > "$INHIBIT_LOG"
 expect "...and a systemd-inhibit that resolves wins over caffeinate" 0 "sleep:idle block inhibitor held for: testbox slot 1 of 1: echo linux" -- \
-  env PATH="$TMP/mac:$PATH" FLEET_CAFFEINATE="$TMP/mac/caffeinate" "${FWI[@]}" execution slot -- echo linux
+  env PATH="$TMP/mac:$PATH" FLEET_CAFFEINATE="$TMP/mac/fleet-test-caffeinate" "${FWI[@]}" execution slot -- echo linux
 grep -q -- "^--what=sleep:idle" "$INHIBIT_LOG" && ok "...called as systemd-inhibit" || ko "caffeinate was taken beside systemd-inhibit: $(cat "$INHIBIT_LOG")"
 expect "a caffeinate that fails runs the batch anyway, under a WARNING with no polkit hint" 0 "WARNING: running WITHOUT a sleep inhibitor" -- \
   env INHIBIT_DENY=1 "${FWM[@]}" execution slot -- echo mac-denied-but-ran
