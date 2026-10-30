@@ -45,7 +45,8 @@ brief:
 - THE GUARD (ludics-lite#317): a logind ``block`` inhibitor on sleep:idle, held by a HELPER beside
   the command (systemd-inhibit closes the descriptors of the process it runs, SIGTERMs it, and
   rewrites its exit status, so it must never wrap the batch), alive for as long as anything in the
-  command's tree holds the lifetime pipe. Fail-open, and loudly.
+  command's tree holds the lifetime pipe. Fail-open, and loudly. On macOS, where no
+  systemd-inhibit resolves, the helper is ``caffeinate -i -s`` instead (ludics#538).
 - THE GROUP (ludics-lite#566, ``group.py``): the command leads a process group of its own, this
   process its parent, and ``--deadline``, a signal to this process, or a SIGKILL of it (through a
   guardian) ends the whole group; a deadline exits 124. A nested batch is exec'd in its enclosing
@@ -177,6 +178,17 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # review, round 1). It is not needed either: the helper's stdio are pipes, so systemd-inhibit has
 # no terminal to start a polkit agent on, and a denial comes back at once.
 #
+# macOS (ludics#538). A Mac has no logind, and since wake-lab.sh can put the MacBook to sleep from
+# the coordinator, a run there needs the same guard. Where no systemd-inhibit resolves, the helper
+# is `caffeinate -i -s -- sh -c '<wait for the assertion>; echo HELD; exec cat'` (MAC_HELPER) in the
+# same double-forked shape: caffeinate holds PreventUserIdleSystemSleep and PreventSystemSleep for
+# as long as the shell it runs is alive, which is as long as the lifetime pipe is open. A requested `pmset sleepnow` overrides both
+# assertions, so they are not what refuses wake-lab's sleep: wake-lab.sh reads them first and
+# refuses while a caffeinate holds one. PreventSystemSleep does keep a box that a network wake left
+# in DarkWake from drifting back to sleep under the run. caffeinate takes no reason, so its
+# assertion names no run; the HELD line here does. The tool is told apart by its name: a
+# FLEET_SYSTEMD_INHIBIT that resolves always wins, so a Linux host never takes this arm.
+#
 # ===============================================================================================
 # From fleet-worker.sh, above the shell's `cmd_execution_hold`:
 #
@@ -268,6 +280,15 @@ from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
 
 HOLD_WAIT = 30  # seconds for systemd-inhibit to answer HELD or refuse; it answers at once
+# caffeinate starts its utility BEFORE it takes the assertions (measured on mac-studio, 2026-10-30:
+# an assertion read at the utility's start found none), so the macOS helper says HELD only once
+# `pmset -g assertions` lists one taken on behalf of its own pid, for 5 s at most; a caffeinate that
+# never takes one is the WARNING path, as a refused systemd-inhibit is.
+MAC_HELPER = (
+    'i=0; until pmset -g assertions 2>/dev/null | grep -q "on behalf of .*(pid $$)"; do'
+    ' i=$((i + 1)); [ "$i" -lt 50 ] || { echo "caffeinate took no sleep assertion within 5s"; exit 1; };'
+    " sleep 0.1; done; echo HELD; exec cat >/dev/null"
+)
 SLOT_PREFIX = "EXECUTION SLOT"
 HOLD_PREFIX = "EXECUTION HOLD"
 
@@ -647,8 +668,15 @@ def refuse_unrunnable(prefix: str, box: str, command: Sequence[str], reason: obj
 
 
 def start_guard(box: str, inhibitor: str, why: str) -> None:
-    """Take the sleep:idle block inhibitor in a double-forked helper reading a lifetime pipe whose
-    write end the command inherits; report HELD, or run bare under a WARNING."""
+    """Take the sleep:idle block inhibitor (on macOS, caffeinate's sleep assertions) in a
+    double-forked helper reading a lifetime pipe whose write end the command inherits; report HELD,
+    or run bare under a WARNING."""
+    mac = os.path.basename(inhibitor) == "caffeinate"
+    if mac:
+        argv = [inhibitor, "-i", "-s", "--", "sh", "-c", MAC_HELPER]
+    else:
+        argv = [inhibitor, "--what=sleep:idle", "--mode=block", "--who=fleet-worker", "--why=" + why,
+                "--", "sh", "-c", "echo HELD; exec cat >/dev/null"]
     sys.stdout.flush()
     sys.stderr.flush()  # nothing buffered may be written twice by a fork
     if len(why) > 160:  # one line of `systemd-inhibit --list` and of `wake-lab.sh status`
@@ -665,8 +693,7 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
                 os.dup2(ready_w, 2)
                 os.closerange(3, 65536)  # the slot flock, the lifetime pipe's write end, all of it
                 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-                os.execv(inhibitor, [inhibitor, "--what=sleep:idle", "--mode=block", "--who=fleet-worker",
-                                     "--why=" + why, "--", "sh", "-c", "echo HELD; exec cat >/dev/null"])
+                os.execv(inhibitor, argv)
             finally:
                 os._exit(127)
         os.write(ready_w, b"PID %d\n" % helper)
@@ -679,7 +706,7 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
     while not held:
         left = deadline - time.monotonic()
         if left <= 0 or not select.select([ready_r], [], [], left)[0]:
-            text += b"no answer from systemd-inhibit after %ds" % HOLD_WAIT
+            text += b"no answer from %s after %ds" % (os.path.basename(inhibitor).encode(), HOLD_WAIT)
             break
         chunk = os.read(ready_r, 4096)
         if not chunk:
@@ -692,7 +719,8 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
                 helper_pid = int(line[4:])
     os.close(ready_r)
     if held:
-        errline(f"{HOLD_PREFIX} {box}: sleep:idle block inhibitor held for: {why}")
+        what = "sleep assertions (caffeinate -i -s)" if mac else "sleep:idle block inhibitor"
+        errline(f"{HOLD_PREFIX} {box}: {what} held for: {why}")
         os.set_inheritable(life_w, True)
         return
     if helper_pid is not None:
@@ -705,7 +733,8 @@ def start_guard(box: str, inhibitor: str, why: str) -> None:
     errline(
         f"{HOLD_PREFIX} {box}: WARNING: running WITHOUT a sleep inhibitor, so nothing at the OS level"
         f" stops a suspend under it -- {inhibitor} refused: {detail.decode('utf-8', 'replace')[:200]}"
-        " (the one-time polkit grant: issue-wave/references/executions.md, \"The OS-level sleep guard\")"
+        + ("" if mac else
+           " (the one-time polkit grant: issue-wave/references/executions.md, \"The OS-level sleep guard\")")
     )
 
 
@@ -947,8 +976,9 @@ class Recorder:
 
 
 def inhibitor_path(cfg: Config) -> str:
-    """The systemd-inhibit this box would take the guard with, or empty for none."""
-    return shutil.which(cfg.inhibit) or ""
+    """The systemd-inhibit this box would take the guard with, else its caffeinate (macOS), or
+    empty for none."""
+    return shutil.which(cfg.inhibit) or shutil.which(cfg.caffeinate) or ""
 
 
 # --- the commands ---------------------------------------------------------------------------------

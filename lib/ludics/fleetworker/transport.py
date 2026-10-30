@@ -76,8 +76,8 @@ def emit_var(name: str, value: str) -> str:
 # The boundary, a fail-closed allowlist: FORWARDED alone travels. Never forwarded, because each is
 # the box's own: FLEET_LOCAL_BOX (its name), FLEET_SLOT_STATE (its slot locks, which every caller
 # on the box must share, or two caps would count two lock sets), ISSUE_WAVE_STATE (its worker
-# state; the far side's own paths already come from the prelude's STATE), FLEET_SYSTEMD_INHIBIT and
-# FLEET_TMUX_SOCKET; nor the per-call bounds (FLEET_*_TIMEOUT, FLEET_*_WAIT, FLEET_SLOT_WINDOW_POLL)
+# state; the far side's own paths already come from the prelude's STATE), FLEET_SYSTEMD_INHIBIT,
+# FLEET_CAFFEINATE and FLEET_TMUX_SOCKET; nor the per-call bounds (FLEET_*_TIMEOUT, FLEET_*_WAIT, FLEET_SLOT_WINDOW_POLL)
 # or the identity (FLEET_COORDINATOR: a far side's verbs read the registry, which needs none). Only
 # a far side that starts fleet-worker.sh gets the knobs, and only for that process and what it
 # starts: never the far shell itself, whose children include a launch's tmux server, which would

@@ -99,6 +99,7 @@ class Config:
     state: str
     slot_state: str
     inhibit: str
+    caffeinate: str
     anchor_state: str
     tmux_socket: str
     feeder_wait: str
@@ -139,6 +140,7 @@ def load_config(script: str, env: Mapping[str, str], host: str | None = None) ->
         state=state,
         slot_state=_or_default(env, "FLEET_SLOT_STATE", "$HOME/.local/state/fleet-execution-slots"),
         inhibit=_or_default(env, "FLEET_SYSTEMD_INHIBIT", "systemd-inhibit"),
+        caffeinate=_or_default(env, "FLEET_CAFFEINATE", "caffeinate"),
         anchor_state=_or_default(env, "FLEET_ANCHOR_STATE", state),
         tmux_socket=env.get("FLEET_TMUX_SOCKET", ""),
         feeder_wait=_or_default(env, "FLEET_FEEDER_WAIT", "10"),

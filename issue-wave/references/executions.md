@@ -336,12 +336,15 @@ which takes no slot of its own, is invoked as `fleet-worker.sh execution hold --
 `hold` takes nothing else - no slot, no registry read, no lease (but `hold --request <id>
 --worktree <dir> --rev <sha>`, which is an [`execution leg`](#a-leg-on-another-box) on the box
 itself, the worktree made or moved to the commit, ludics-lite#816) - and where there is no
-`systemd-inhibit` (macOS, a Linux host without systemd) it runs the command bare and silently.
+`systemd-inhibit` it takes `caffeinate -i -s` instead (macOS, ludics#538: `wake-lab.sh sleep`
+reads those assertions and refuses while one is held, and they keep a box that a network wake left
+in DarkWake awake under the run), and with neither (a Linux host without systemd) it runs the
+command bare and silently.
 The inhibitor is held by a helper BESIDE the command, not by systemd-inhibit wrapped around it:
 the command inherits the slot flock and the helper's lifetime pipe with its exit status
 unchanged, and the inhibitor lives exactly as long as the flock does - until the last process
 of the command's tree exits, however it ends.
-`FLEET_SYSTEMD_INHIBIT` names the binary; the suites point it at a stub.
+`FLEET_SYSTEMD_INHIBIT` and `FLEET_CAFFEINATE` name the binaries; the suites point them at stubs.
 
 **The command's process group, and `--deadline`** (ludics-lite#566). `hold` and `slot` run the
 command as the leader of a process group (a session) of its own and stay its parent, so the
