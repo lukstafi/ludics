@@ -19,15 +19,20 @@ class Knobs(unittest.TestCase):
     def test_the_site_slot_default_follows_the_roster_as_a_word_set(self) -> None:
         # ludics-lite#329: an exported roster equal to the default, in any order or spacing or
         # over several lines, is the default roster; a custom one has one slot everywhere.
-        for boxes in (None, "tuf-amd-linux  mac-studio\nminix-amd-linux rog-nv-linux mac-studio"):
+        for boxes in (None, "tuf-amd-linux  mac-studio macbook-pro\nminix-amd-linux rog-nv-linux mac-studio"):
             env = {} if boxes is None else {"FLEET_BOXES": boxes}
             cfg = load_config(SCRIPT, env, host="h")
             self.assertTrue(cfg.default_roster, boxes)
             self.assertEqual(cfg.slots, DEFAULT_SLOTS)
             self.assertEqual(box_correctness_slots(cfg, "mac-studio"), 6)
+            self.assertEqual(box_correctness_slots(cfg, "macbook-pro"), 4)
         custom = load_config(SCRIPT, {"FLEET_BOXES": "mac-studio rog-nv-linux"}, host="h")
         self.assertEqual((custom.slots, custom.gpu_tokens), ("", ""))
         self.assertEqual(box_correctness_slots(custom, "mac-studio"), 1)
+        # The roster before the MacBook joined (ludics#538), as every env.sh exported it, is a
+        # custom one now: why the rollout drops FLEET_BOXES from each env.sh.
+        legacy = load_config(SCRIPT, {"FLEET_BOXES": "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux"}, host="h")
+        self.assertFalse(legacy.default_roster)
 
     def test_a_set_but_empty_spec_or_box_name_is_a_value_not_an_absence(self) -> None:
         cfg = load_config(SCRIPT, {"FLEET_BOX_CORRECTNESS_SLOTS": "", "FLEET_LOCAL_BOX": ""}, host="mac-studio")
@@ -42,6 +47,10 @@ class Knobs(unittest.TestCase):
         self.assertEqual(detect_local_box("noequals rog=rog-nv-linux", "rog"), "rog-nv-linux")
         cfg = load_config(SCRIPT, {}, host="LukaszsacStudio")
         self.assertEqual(cfg.local_box, "mac-studio")
+        # The M4 Pro MacBook by its macOS host name (ludics#538), and never the macbook-air
+        # console, which is outside the fleet.
+        self.assertEqual(load_config(SCRIPT, {}, host="Lukaszs-MacBook-Pro").local_box, "macbook-pro")
+        self.assertEqual(load_config(SCRIPT, {}, host="Lukaszs-MacBook-Air").local_box, "")
 
     def test_the_checkout_is_physical_and_here_is_the_scripts_directory(self) -> None:
         cfg = load_config("/tmp/../tmp/x/issue-wave/scripts/fleet-worker.sh", {}, host="h")

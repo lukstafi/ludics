@@ -189,16 +189,17 @@ check 'Linux-configured dual boot reports WSL when its guest answered' '[ "$rc" 
 # woken by hand, often the one box awake -- beside rog and minix. Nothing else has a default: a bare
 # `wake-lab.sh`, typed to see the usage, woke rog and minix on 2026-09-24.
 cat >"$tmp/lab-hosts.sh" <<'HOSTS'
-mac_of() { case "$1" in rog) echo aa:bb:cc:00:00:02 ;; minix) echo aa:bb:cc:00:00:03 ;; tuf) echo aa:bb:cc:00:00:06 ;; *) return 1 ;; esac; }
+mac_of() { case "$1" in rog) echo aa:bb:cc:00:00:02 ;; minix) echo aa:bb:cc:00:00:03 ;; tuf) echo aa:bb:cc:00:00:06 ;; macbook) echo aa:bb:cc:00:00:07 ;; *) return 1 ;; esac; }
 eth_mac_of() { case "$1" in rog|minix) mac_of "$1" ;; *) return 1 ;; esac; }
-ip_of() { case "$1" in rog) echo 192.0.2.30 ;; minix) echo 192.0.2.31 ;; tuf) echo 192.0.2.32 ;; *) return 1 ;; esac; }
-kind_of() { case "$1" in rog|minix|tuf) echo linux ;; *) return 1 ;; esac; }
+ip_of() { case "$1" in rog) echo 192.0.2.30 ;; minix) echo 192.0.2.31 ;; tuf) echo 192.0.2.32 ;; macbook) echo 192.0.2.36 ;; *) return 1 ;; esac; }
+kind_of() { case "$1" in rog|minix|tuf) echo linux ;; macbook) echo macos ;; *) return 1 ;; esac; }
 HOSTS
 out=$(WAKE_LAB_HOSTS="$tmp/lab-hosts.sh" SSH_UP=1 "$tmp/wake-lab.sh" status 2>&1); rc=$?
-check 'bare status reads all three boxes, tuf included' '[ "$rc" = 0 ] && [[ "$out" == *"
+check 'bare status reads every box, tuf and macbook included' '[ "$rc" = 0 ] && [[ "$out" == *"
 rog "*"os=--"* ]] && [[ "$out" == *"
 minix "*"os=--"* ]] && [[ "$out" == *"
-tuf "*"os=linux  linux=UP"* ]]'
+tuf "*"os=linux  linux=UP"* ]] && [[ "$out" == *"
+macbook"*"os=--  mac=--"* ]]'
 # Every verb but status, given no box, prints the usage and exits 2 with nothing sent: no router
 # query, no packet, no ssh, no lock. '' is the bare invocation; `--wait --wsl` is a wake with flags
 # and still no box. The box-free unhold and lock-path are refused too, before they read anything.
@@ -451,7 +452,8 @@ out=$(WAKE_LAB_HOSTS="$tmp/absent.sh" "$tmp/wake-lab.sh" endpoint-map 2>&1); rc=
 check 'endpoint-map prints each row as the box and its aliases, with no site table and nothing sent' \
   '[ "$rc" = 0 ] && [ "$out" = "rog rog-nv-linux rog-nv-win rog-nv-wsl rog-lan
 minix minix-amd-linux minix-amd-win minix-amd-wsl minix-lan
-tuf tuf-amd-linux tuf-amd-win tuf-amd-wsl" ] && [ ! -s "$SSH_LOG" ]'
+tuf tuf-amd-linux tuf-amd-win tuf-amd-wsl
+macbook macbook-pro" ] && [ ! -s "$SSH_LOG" ]'
 out=$(WAKE_LAB_HOSTS="$tmp/absent.sh" "$tmp/wake-lab.sh" endpoint-map rog 2>&1); rc=$?
 check '...takes no box' '[ "$rc" = 2 ] && [[ "$out" == *"endpoint-map takes no arguments"* ]]'
 out=$(WAKE_LAB_HOSTS="$tmp/absent.sh" "$tmp/nova-bad-11/wake-lab.sh" endpoint-map 2>/dev/null); rc=$?
@@ -712,6 +714,44 @@ boot_run linux boot-windows
 check 'boot-windows with no box reboots no default' '[ "$rc" = 2 ] && [[ "$out" == *"boot-windows needs a box"* ]] && [ ! -s "$SSH_LOG" ]'
 BOOT_HOSTS="$tmp/lab-hosts.sh" boot_run linux boot-windows rog minix
 check '...and two boxes are refused too' '[ "$rc" = 1 ] && [[ "$out" == *"takes exactly one box (got 2)"* ]] && [ ! -s "$SSH_LOG" ]'
+# A macOS box (ludics#538): a mac endpoint alone on its row, manual wake, status and the waits over
+# its own sshd, and no power verb sent from here, --force included.
+cat >"$tmp/mac-hosts.sh" <<'HOSTS'
+mac_of() { [ "$1" = macbook ] && echo aa:bb:cc:00:00:07; }
+eth_mac_of() { return 1; } # Wi-Fi only: no magic packet reaches it
+ip_of() { [ "$1" = macbook ] && echo 192.0.2.36; }
+kind_of() { [ "$1" = macbook ] && echo macos; }
+HOSTS
+: >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro "$tmp/wake-lab.sh" status macbook 2>&1); rc=$?
+check 'macOS status reaches the box through its mac endpoint, with no logind read' \
+  '[ "$rc" = 0 ] && [[ "$out" == *"os=macos  mac=UP"* ]] && [[ "$out" != *"sleep-blocks="* ]] && ! grep -q systemd-inhibit "$SSH_LOG"'
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=0 "$tmp/wake-lab.sh" status macbook 2>&1); rc=$?
+check '...and says so when it does not answer' '[ "$rc" = 0 ] && [[ "$out" == *"os=--  mac=--"* ]]'
+: >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" "$tmp/wake-lab.sh" macbook 2>&1); rc=$?
+check 'a macOS box with no wired NIC is a manual wake, and no packet is sent' \
+  '[ "$rc" = 1 ] && [[ "$out" == *"wake it manually"* ]] && ! grep -q "^curl\|^python3" "$SSH_LOG"'
+: >"$SSH_LOG"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro WAKE_LAB_WAIT_SECONDS=5 "$tmp/wake-lab.sh" --wait macbook 2>&1); rc=$?
+check '--wait on an awake macOS box asks its own ssh to the anchor and reads all up' \
+  '[ "$rc" = 0 ] && [[ "$out" == *"all up"* ]] && grep -q "macbook-pro ssh -o BatchMode=yes -o ConnectTimeout=10 mac-studio true" "$SSH_LOG"'
+for verb in sleep hibernate down; do
+  for force in "" --force; do
+    : >"$SSH_LOG"
+    out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro "$tmp/wake-lab.sh" $verb $force macbook 2>&1); rc=$?
+    check "$verb ${force:+$force }on a macOS box is refused with nothing sent" \
+      '[ "$rc" = 1 ] && [[ "$out" == *"$verb REFUSED on macbook: a macOS box"* ]] && [ ! -s "$SSH_LOG" ]'
+  done
+done
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" "$tmp/wake-lab.sh" unhold macbook 2>&1); rc=$?
+check 'unhold on a macOS box needs no holder and no adapter' '[ "$rc" = 0 ] && [ "$out" = "no holder needed for macos box macbook" ]'
+mkdir "$tmp/mac-bad"
+sed 's/^  "macbook mac=macbook-pro"/  "macbook mac=macbook-pro linux=macbook-linux"/' "$tmp/wake-lab.sh" >"$tmp/mac-bad/wake-lab.sh"
+chmod +x "$tmp/mac-bad/wake-lab.sh"
+out=$(WAKE_LAB_HOSTS="$tmp/absent.sh" "$tmp/mac-bad/wake-lab.sh" endpoint-map 2>&1); rc=$?
+check 'a mac endpoint beside another OS'"'"'s is refused' \
+  'grep -q "macbook mac=macbook-pro linux=" "$tmp/mac-bad/wake-lab.sh" && [ "$rc" = 1 ] && [[ "$out" == *"a macOS endpoint (macbook-pro) beside another OS"* ]]'
 [ "$fail" -eq 0 ]
 exit "$?"
 }

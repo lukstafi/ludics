@@ -7,7 +7,7 @@
 #   2. A magic packet sent directly from this Mac (broadcast, UDP ports 7 and 9).
 #
 # Usage:
-#   wake-lab.sh rog|minix|tuf|all ...     wake the named boxes (all: every box in the endpoint map)
+#   wake-lab.sh rog|minix|tuf|macbook|all wake the named boxes (all: every box in the endpoint map)
 #   wake-lab.sh --wait [--wsl] rog        wake, then poll until configured OS answers, and on a
 #                                         linux box until its own ssh to the anchor works too
 #                                         (WAKE_LAB_ANCHOR, default mac-studio; "the anchor leg")
@@ -92,6 +92,9 @@ HOSTS_SVC=urn:dslforum-org:service:Hosts:1
 #   ASUS laptop whose onboard r8169 loses power in sleep, and whose USB AX88179B adapter cannot
 #   arm WoL under cdc_ncm and gets no link under ax88179_178a (all tested 2026-10-12). Its
 #   Ethernet MAC is therefore left out of eth_mac_of in the site file.
+# * macbook (the M4 Pro MacBook Pro, fleet box macbook-pro; ludics#538) is a macOS laptop on Wi-Fi
+#   with no wired NIC, so no magic packet reaches it: manual wake, like tuf. It is kept awake on
+#   AC by its own pmset settings, not from here, and this script drives no power verb on it.
 # * Both boxes wake from a full shutdown (S5), not just from sleep — verified 2026-08-15 on both,
 #   after enabling the `Wake Up` item on minix's BIOS SECOND setup screen (not under Advanced).
 #   "Powered off" is a normal starting state for a wake, not a reason to expect failure.
@@ -145,8 +148,8 @@ check_targets() {
     mac_of "$t" >/dev/null 2>&1 || { bad="$bad $t"; continue; }
     kind=$(box_kind "$t") || kind=""
     case "$kind" in
-      linux|wsl) ;;
-      *) echo "wake-lab.sh: invalid kind for $t: ${kind:-(none)} (expected wsl or linux)" >&2; exit 1 ;;
+      linux|wsl|macos) ;;
+      *) echo "wake-lab.sh: invalid kind for $t: ${kind:-(none)} (expected wsl, linux or macos)" >&2; exit 1 ;;
     esac
     check_endpoints "$t" "$kind" || exit 1
   done
@@ -178,6 +181,8 @@ box_kind() {
 #   linux  native Ubuntu                  win  the Windows host's sshd, over Tailscale
 #   wsl    the WSL guest on that host     lan  the same Windows sshd over the direct LAN route,
 #                                              which answers seconds after a cold boot
+#   mac    a macOS box's own sshd (Remote Login), over Tailscale; a Mac boots nothing else, so a
+#          mac endpoint stands alone on its row
 # A row lists every OS the box can boot, whatever kind_of says it is set to today: kind_of is the
 # site's current setting (hosts.sh), this is which endpoints exist, and status probes the others so
 # that a dual-boot box which booted the other OS says so. The short box names, first on each row,
@@ -188,6 +193,7 @@ ENDPOINT_MAP=(
   "rog   linux=rog-nv-linux    win=rog-nv-win    wsl=rog-nv-wsl    lan=rog-lan"
   "minix linux=minix-amd-linux win=minix-amd-win wsl=minix-amd-wsl lan=minix-lan"
   "tuf   linux=tuf-amd-linux   win=tuf-amd-win   wsl=tuf-amd-wsl"    # cabled, no WoL: manual wake
+  "macbook mac=macbook-pro"                                            # Wi-Fi only: manual wake
 )
 
 endpoints_of() { # endpoints_of <box> -- that box's row, less its name; 1 when the map has none
@@ -268,9 +274,11 @@ check_map() {
 #  * lan only beside win: it is a second route to that same Windows sshd.
 #  * linux, win and wsl share one stem (`<stem>-linux`, `<stem>-win`, `<stem>-wsl`), and lan is
 #    `<box>-lan`. A half-renamed row would go on probing the old box's name for one of its OSes.
+#  * mac only alone: a Mac boots no other OS, so a row pairing it with another key is a row
+#    copied from another box and half edited.
 #  * The configured kind's own endpoints are there.
 check_endpoints() {
-  local box=$1 kind=$2 row w ws key alias stem="" linux="" win="" wsl="" lan="" bad="" seen=""
+  local box=$1 kind=$2 row w ws key alias stem="" linux="" win="" wsl="" lan="" mac="" bad="" seen=""
   if ! row=$(endpoints_of "$box"); then
     printf '%s\n' "wake-lab.sh: no ssh endpoints for $box in wake-lab.sh's endpoint map" \
       "  add its row to ENDPOINT_MAP; nothing was sent." >&2
@@ -292,13 +300,15 @@ check_endpoints() {
       win)   win=$alias ;;
       wsl)   wsl=$alias ;;
       lan)   lan=$alias ;;
-      *) bad="$bad unknown endpoint $(printf %q "$key") (expected linux, win, wsl or lan);" ;;
+      mac)   mac=$alias ;;
+      *) bad="$bad unknown endpoint $(printf %q "$key") (expected linux, win, wsl, lan or mac);" ;;
     esac
   done
   [ -n "$win" ] && [ -z "$wsl" ] && bad="$bad a Windows endpoint ($win) with no WSL guest alias;"
   [ -n "$wsl" ] && [ -z "$win" ] && bad="$bad a WSL guest ($wsl) with no Windows host to start it;"
   [ -n "$lan" ] && [ -z "$win" ] && bad="$bad a LAN route ($lan) with no Windows endpoint;"
   [ -n "$lan" ] && [ "$lan" != "${box}-lan" ] && bad="$bad the LAN route $lan is not $box-lan;"
+  [ -n "$mac" ] && [ -n "$linux$win$wsl$lan" ] && bad="$bad a macOS endpoint ($mac) beside another OS's;"
   for w in "${linux}:-linux" "${win}:-win" "${wsl}:-wsl"; do
     alias=${w%%:*}; key=${w#*:}
     [ -n "$alias" ] || continue
@@ -312,6 +322,7 @@ check_endpoints() {
     linux) [ -n "$linux" ] || bad="$bad no linux ssh endpoint for a linux box;" ;;
     wsl)   [ -n "$win" ] || bad="$bad no Windows ssh endpoint for a wsl box;"
            [ -n "$wsl" ] || bad="$bad no WSL guest ssh endpoint for a wsl box;" ;;
+    macos) [ -n "$mac" ] || bad="$bad no mac ssh endpoint for a macos box;" ;;
   esac
   [ -z "$bad" ] && return 0
   printf '%s\n' "wake-lab.sh: incomplete ssh endpoints for $box:${bad%;}" \
@@ -446,6 +457,7 @@ is_up() { # is_up <box>
   case "$(box_kind "$1")" in
     wsl) wsl_box_live "$1" ;;
     linux) ssh_probe "$(endpoint_of "$1" linux)" ;;
+    macos) ssh_probe "$(endpoint_of "$1" mac)" ;;
     windows) win_alias "$1" >/dev/null ;;
   esac
 }
@@ -473,6 +485,9 @@ status_one() { # status_one <box>
   printf '%-6s router-active=%-1s' "$1" "$l"
   if [ "$(box_kind "$1")" = wsl ]; then
     wsl_status_fields "$1"
+  elif [ "$(box_kind "$1")" = macos ]; then
+    # No sleep-blocks column: macOS has no logind, and no verb here suspends a Mac.
+    if ssh_probe "$(endpoint_of "$1" mac)"; then printf '  os=macos  mac=UP'; else printf '  os=--  mac=--'; fi
   else
     host=$(endpoint_of "$1" linux) || return 1
     if ssh_probe "$host"; then
@@ -885,6 +900,12 @@ power_phase() { # power_phase <verb> <box...> — nonzero if any box was refused
   local verb=$1; shift
   local box fd=$LOCK_FD_BASE rc=0 i acted=() fds=() kept=() confirming=() refused=() measured=()
   for box in "$@"; do
+    # A macOS box (ludics#538) wakes only by hand, and its sleep is its own pmset's: a suspend from
+    # here would strand it until a person opens the lid, so even --force does not send one.
+    if [ "$(box_kind "$box")" = macos ]; then
+      echo "  $verb REFUSED on $box: a macOS box's power is not driven from here (manual wake; it sleeps by its own pmset settings)"
+      rc=1; continue
+    fi
     if [ "$FORCE" = 1 ]; then acted+=("$box"); continue; fi
     # Out of descriptors below bash 3.2's save slot: refuse rather than act on a box this shell
     # cannot hold. A reservation it cannot make is exactly the state the interlock exists to rule
@@ -1050,9 +1071,9 @@ wait_for() { # wait_for <box...> — poll until every box answers, for up to WAI
 # leg too, once the first answers: on the box, a non-interactive `ssh -o BatchMode=yes <anchor>
 # true`, polled for up to ANCHOR_WAIT_SECONDS. A box whose leg never comes up is NOT all up, and
 # its line says which leg failed -- the box itself, or its ssh to the anchor.
-# Boundary, a fail-closed allowlist: only a box whose kind is `linux` is asked, through its linux
-# endpoint, which is where its fleet shell runs. A wsl box's fleet shell is its WSL guest, and a
-# windows box runs no fleet work; neither is asked, and each says so on a line of its own rather
+# Boundary, a fail-closed allowlist: only a box whose kind is `linux` or `macos` is asked, through
+# its linux or mac endpoint, which is where its fleet shell runs. A wsl box's fleet shell is its
+# WSL guest, and a windows box runs no fleet work; neither is asked, and each says so on a line of its own rather
 # than passing as checked by omission. A WSL guest's own leg stays outside by that boundary
 # (ludics-lite#637), not by oversight: the fleet's boxes run native Linux, a WSL guest is booted by
 # hand for one placement (issue-wave/references/wsl-boxes.md), and its fleet-worker's UNREACHABLE
@@ -1074,8 +1095,11 @@ ANCHOR_UNASKED=""     # set by wait_anchor: the boxes it did not ask, for the fi
 ANCHOR_ASKED=0        # set by wait_anchor: 1 when it asked any leg, which is time spent
 
 anchor_alias() { # anchor_alias <box> -- the endpoint whose ssh to the anchor is asked; 1 when none is
-  [ "$(box_kind "$1")" = linux ] || return 1
-  endpoint_of "$1" linux
+  case "$(box_kind "$1")" in
+    linux) endpoint_of "$1" linux ;;
+    macos) endpoint_of "$1" mac ;;
+    *) return 1 ;;
+  esac
 }
 
 # 0 the leg works; ANCHOR_LEG_FAILED the box answered and its ssh to the anchor did not;
@@ -1105,7 +1129,7 @@ wait_anchor() { # wait_anchor <box...> -- poll each box's anchor leg until it wo
       echo "anchor leg not asked on $n: the anchor $ANCHOR is that box itself, read without ssh"
       ANCHOR_UNASKED="$ANCHOR_UNASKED $n"
     elif a=$(anchor_alias "$n"); then names+=("$n"); aliases+=("$a"); rcs+=(1); caps+=("$PROBE_CAP")
-    else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux box is asked (a WSL guest is a manual boot, outside this wait)"
+    else echo "anchor leg not checked on $n: its kind is $(box_kind "$n"), and only a linux or macos box is asked (a WSL guest is a manual boot, outside this wait)"
          ANCHOR_UNASKED="$ANCHOR_UNASKED $n"; fi
   done
   [ ${#names[@]} -gt 0 ] || return 0
@@ -1553,11 +1577,12 @@ load_wsl_adapter() {
   WSL_ADAPTER_LOADED=1
 }
 
-prepare_boxes() { # WSL gets its existing concurrent kick; Linux needs nothing after sshd boots.
-  local n wsl_boxes=()
+prepare_boxes() { # WSL gets its existing concurrent kick; Linux and macOS need nothing after sshd boots.
+  local n k wsl_boxes=()
   for n in "$@"; do
-    if [ "$(box_kind "$n")" = wsl ]; then wsl_boxes+=("$n");
-    else echo "linux ready on $n (sshd starts at boot; no holder needed)"; fi
+    k=$(box_kind "$n")
+    if [ "$k" = wsl ]; then wsl_boxes+=("$n");
+    else echo "$k ready on $n (sshd starts at boot; no holder needed)"; fi
   done
   if [ ${#wsl_boxes[@]} -gt 0 ]; then start_wsl "${wsl_boxes[@]}"; fi
 }
@@ -1663,9 +1688,9 @@ if [ "$VERB" = unhold ]; then
   [ ! -r "$HOSTS_FILE" ] || . "$HOSTS_FILE"
   for t in "${TARGETS[@]}"; do
     state_dir=${WAKE_LAB_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wake-lab}
-    if declare -F kind_of >/dev/null && [ "$(box_kind "$t")" = linux ] &&
+    if declare -F kind_of >/dev/null && k=$(box_kind "$t") && { [ "$k" = linux ] || [ "$k" = macos ]; } &&
        [ ! -e "$state_dir/hold-$t.pid" ] && [ ! -e "$state_dir/hold-$t.releasing" ]; then
-      echo "no holder needed for linux box $t"
+      echo "no holder needed for $k box $t"
     else
       load_wsl_adapter || exit 1
       release_hold "$t"
@@ -1792,7 +1817,7 @@ case "$VERB" in
           echo "Check BIOS Wake-on-LAN / 'Power Up' (minix needed the SECOND setup screen, not"
           echo "Advanced), then run scripts/enable-wol-windows.ps1 from an elevated Windows"
           echo "PowerShell to disable Fast Startup and re-arm the NIC. Check '$0 status' after the"
-          echo "router lease settles; tuf (no Wake-on-LAN) needs manual wake."
+          echo "router lease settles; tuf and macbook (no Wake-on-LAN) need manual wake."
         fi
         [ -n "$gone" ] && echo "NOT all up: stopped answering during the anchor wait: $gone"
         [ "$anchor_rc" != 0 ] && echo "NOT all up: no ssh to $ANCHOR yet from: $ANCHOR_FAILED (see above)"

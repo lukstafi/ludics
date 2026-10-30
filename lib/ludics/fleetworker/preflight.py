@@ -32,7 +32,7 @@ from ludics.fleetworker.transport import Done, err, is_local, prelude, run_on
 # #316). Spelled here as well as in the default, on purpose: the preflight fixture checks both
 # directions -- the site default draws no warning, and an empty spec warns about exactly the boxes
 # the site default gives more than one slot -- so a box added to one and not the other fails there.
-WIDENED = ["mac-studio", "rog-nv-linux", "minix-amd-linux", "tuf-amd-linux"]
+WIDENED = ["mac-studio", "rog-nv-linux", "minix-amd-linux", "tuf-amd-linux", "macbook-pro"]
 
 
 def knob(cfg: Config, name: str, default: str) -> str:

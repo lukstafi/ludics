@@ -208,7 +208,7 @@
 # `launch` also refuses while halted (`--force` admits the one triage worker) and runs the preflight
 # on the box first. Lease, halt and boards live on FLEET_ANCHOR.
 #
-# <box> is an ssh destination (rog-nv-linux, minix-amd-linux, tuf-amd-linux), or `local` / this machine's own fleet
+# <box> is an ssh destination (rog-nv-linux, minix-amd-linux, tuf-amd-linux, macbook-pro), or `local` / this machine's own fleet
 # name (detected from the hostname through FLEET_HOSTNAME_MAP; FLEET_LOCAL_BOX overrides) for the
 # coordinator's own machine.
 #
@@ -229,12 +229,12 @@
 #     lab's lane locks; mac-studio. A measurement on a lab box is refused, naming both, unless it is
 #     FLEET_ANCHOR (`local` in either reads as FLEET_LOCAL_BOX), since the registry reads the lane
 #     lock in the anchor's own lock directory (ludics-lite#454; the header of lib/ludics/fleetworker/registry.py).
-#   FLEET_BOXES: whole fleet; "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux". `ls` sweeps it minus local.
+#   FLEET_BOXES: whole fleet; "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro". `ls` sweeps it minus local.
 #     One entry per physical box: the registry refuses a reservation under a roster naming two
 #     aliases of one box, read from wake-lab.sh's endpoint map (ludics-lite#395; endpoint_map in lib/ludics/fleetworker/execution.py).
 #   FLEET_BOX_CORRECTNESS_SLOTS: `<box>=<n>` pairs, how many correctness executions may share a
 #     box (ludics-lite#157); an unnamed box has one. "mac-studio=6" whenever the roster is the
-#     default one, beside "rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3" in the same
+#     default one, beside "rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4" in the same
 #     value, whether FLEET_BOXES is unset or exports those same boxes (compared as a word set,
 #     ludics-lite#329); empty (one slot everywhere) with a custom FLEET_BOXES. Set, even to
 #     empty, it overrides the default either way. `preflight` prints the count per roster box.
@@ -253,7 +253,9 @@
 #     which two may hold its GPU (FLEET_BOX_GPU_TOKENS below): rungs of three or more concurrent
 #     `-j 8` cuda batches hit CUDA_ERROR_OUT_OF_MEMORY in 2 of 6 (10 of its 12 GiB in use),
 #     while two cuda batches beside one or two cc batches were green, so the bound there is
-#     GPU memory and not the box (ludics-lite#391).
+#     GPU memory and not the box (ludics-lite#391). macbook-pro four, provisionally: the M4 Pro
+#     MacBook (ludics#538) has fewer cores than mac-studio's M4 Max, and its count is to be
+#     measured there, with a concurrent fresh-binary XProtect probe, before it is relied on.
 #   FLEET_BOX_GPU_TOKENS: `<box>=<n>` pairs, how many of a box's correctness slots may run a
 #     batch that holds its GPU at once (ludics-lite#391); an unnamed box has as many as it has
 #     slots, so the pool binds nowhere else. "rog-nv-linux=2" whenever the roster is the default
@@ -402,7 +404,7 @@ fw_local_box() {
   local host pair
   local -a hostname_pairs=()
   host=$(hostname -s 2>/dev/null | tr 'A-Z' 'a-z')
-  read -r -d "" -a hostname_pairs <<< "${FLEET_HOSTNAME_MAP:-*mac-studio*=mac-studio lukaszsacstudio*=mac-studio rog-nv*=rog-nv-linux rog=rog-nv-linux minix*=minix-amd-linux tuf*=tuf-amd-linux}" || :
+  read -r -d "" -a hostname_pairs <<< "${FLEET_HOSTNAME_MAP:-*mac-studio*=mac-studio lukaszsacstudio*=mac-studio rog-nv*=rog-nv-linux rog=rog-nv-linux minix*=minix-amd-linux tuf*=tuf-amd-linux *macbook-pro*=macbook-pro}" || :
   for pair in "${hostname_pairs[@]}"; do
     case "$pair" in *=*) ;; *) continue ;; esac
     # shellcheck disable=SC2254  # the glob is the point
@@ -453,10 +455,10 @@ cmd_execution_slot_probe() {
 # whenever the roster IS the default one, compared as a word set (ludics-lite#329); set, even to
 # empty, a spec overrides that. The slot default is read from this line by check-prompts, which
 # holds every prompt that states mac-studio's count to it (ludics-lite#160).
-DEFAULT_BOXES="mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux"
+DEFAULT_BOXES="mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro"
 BOXES="${FLEET_BOXES:-$DEFAULT_BOXES}"
 if [ "$(fw_words "$BOXES")" = "$(fw_words "$DEFAULT_BOXES")" ]; then DEFAULT_ROSTER=1; else DEFAULT_ROSTER=0; fi
-SLOTS="${FLEET_BOX_CORRECTNESS_SLOTS-$([ "$DEFAULT_ROSTER" = 0 ] || echo mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3)}"
+SLOTS="${FLEET_BOX_CORRECTNESS_SLOTS-$([ "$DEFAULT_ROSTER" = 0 ] || echo mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4)}"
 GPU_TOKENS="${FLEET_BOX_GPU_TOKENS-$([ "$DEFAULT_ROSTER" = 0 ] || echo rog-nv-linux=2)}"
 
 cmd_execution_slot_probe
