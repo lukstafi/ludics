@@ -681,6 +681,8 @@ def start_guard(box: str, guard: Guard, why: str) -> None:
     double-forked helper reading a lifetime pipe whose write end the command inherits; report HELD,
     or run bare under a WARNING."""
     inhibitor, mac = guard
+    if len(why) > 160:  # one line of `systemd-inhibit --list` and of `wake-lab.sh status`
+        why = why[:157] + "..."  # before --why is built: a long command must not overflow its argv
     if mac:
         argv = [inhibitor, "-i", "-s", "--", "sh", "-c", MAC_HELPER]
     else:
@@ -688,8 +690,6 @@ def start_guard(box: str, guard: Guard, why: str) -> None:
                 "--", "sh", "-c", "echo HELD; exec cat >/dev/null"]
     sys.stdout.flush()
     sys.stderr.flush()  # nothing buffered may be written twice by a fork
-    if len(why) > 160:  # one line of `systemd-inhibit --list` and of `wake-lab.sh status`
-        why = why[:157] + "..."
     life_r, life_w = os.pipe()
     ready_r, ready_w = os.pipe()
     middle = os.fork()
@@ -1510,7 +1510,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
                 cli.say(line)
                 return 1
             case Inside():
-                run_command(SLOT_PREFIX, box, command, "", "", parsed.deadline, nested=True)
+                run_command(SLOT_PREFIX, box, command, None, "", parsed.deadline, nested=True)
             case Take():
                 del os.environ["FLEET_SLOT_HELD"]
             case _:
@@ -1533,7 +1533,7 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
         verdict = measured_verdict(box, marker_measure, judge_measurement(box, directory, marker_measure, measuring), command)
         match verdict:
             case Inside():
-                run_command(SLOT_PREFIX, box, command, "", "", parsed.deadline, nested=True)
+                run_command(SLOT_PREFIX, box, command, None, "", parsed.deadline, nested=True)
             case Take():
                 del os.environ["FLEET_MEASUREMENT_HELD"]
             case Refused(line=line):
