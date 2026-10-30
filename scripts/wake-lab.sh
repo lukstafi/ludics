@@ -953,6 +953,12 @@ power_phase() { # power_phase <verb> <box...> — nonzero if any box was refused
       echo "  $verb REFUSED on $box: a macOS box wakes over the LAN only from sleep, so only sleep is driven from here"
       rc=1; continue
     fi
+    # ...and only one whose waking NIC is in the site file: `wake` refuses a box without one, so a
+    # sleep sent to it would strand it until a person opens the lid.
+    if [ "$(box_kind "$box")" = macos ] && ! eth_mac_of "$box" >/dev/null 2>&1; then
+      echo "  $verb REFUSED on $box: no waking NIC (eth_mac_of) in the site file, so nothing here could wake it back"
+      rc=1; continue
+    fi
     if [ "$FORCE" = 1 ]; then acted+=("$box"); continue; fi
     # Out of descriptors below bash 3.2's save slot: refuse rather than act on a box this shell
     # cannot hold. A reservation it cannot make is exactly the state the interlock exists to rule
@@ -1054,6 +1060,12 @@ power_action() {
     if [ "$action_rc" = 0 ]; then
       printf '  %s\n' "$(printf '%s\n' "$output" | tail -1)"
       echo "  $1 requested on $2; a Mac reaches real sleep through DarkWake, up to $((MAC_DOWN_WAIT_SECONDS / 60)) min"
+      return 0
+    fi
+    # As on Linux: a connection that dropped or ran out its cap after the start marker may be a
+    # sleep under way, so it goes on to confirmation, the reservation still held.
+    if { [ "$action_rc" = 255 ] || [ "$action_rc" = 124 ]; } && grep -Fxq WAKE_LAB_POWER_STARTED <<<"$output"; then
+      echo "  $1 on $2 unconfirmed (connection dropped or timed out); checking reachability"
       return 0
     fi
     if [ "$action_rc" = 3 ] && grep -Fxq WAKE_LAB_MAC_GUARDED <<<"$output"; then

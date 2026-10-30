@@ -29,6 +29,8 @@ case "$*" in
     [[ " ${SSH_UP:-} " == *" macbook-pro "* ]] && [ ! -e "$SSH_LOG.asleep" ] || exit 255
     PATH="$MAC_BIN:$PATH" sh -c "${*: -1}"; st=$?
     [ "$st" = 0 ] && [ "${SSH_MAC_STAYS_UP:-0}" != 1 ] && : >"$SSH_LOG.asleep"
+    # SSH_MAC_DROP: the connection dies after the command started, as when the box sleeps under it.
+    [ "$st" = 0 ] && [ "${SSH_MAC_DROP:-0}" = 1 ] && exit 255
     exit "$st" ;;
   *'pmset -g assertions'*)
     [[ " ${SSH_UP:-} " == *" macbook-pro "* ]] || exit 255
@@ -815,6 +817,17 @@ out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="
   WAKE_LAB_MAC_DOWN_WAIT_SECONDS=2 WAKE_LAB_MAC_DOWN_POLL_SECONDS=1 "$tmp/wake-lab.sh" sleep macbook 2>&1); rc=$?
 check 'a Mac still answering at the macOS deadline is a sleep that may not have taken' \
   '[ "$rc" = 1 ] && [[ "$out" == *"macbook=up"* ]] && [[ "$out" == *"still reachable after 0 min"* ]]'
+rm -f "$SSH_LOG.asleep"
+out=$(WAKE_LAB_HOSTS="$tmp/mac-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_idle" SSH_MAC_DROP=1 WAKE_LAB_MAC_DOWN_POLL_SECONDS=1 "$tmp/wake-lab.sh" sleep macbook 2>&1); rc=$?
+check 'a connection dropped after the sleep started goes on to confirmation, as on Linux' \
+  '[ "$rc" = 0 ] && [[ "$out" == *"sleep on macbook unconfirmed (connection dropped or timed out)"* ]] && [[ "$out" == *"macbook=DOWN"* ]]'
+rm -f "$SSH_LOG.asleep"
+for force in "" --force; do
+  : >"$SSH_LOG"
+  out=$(WAKE_LAB_HOSTS="$tmp/mac-nowake-hosts.sh" SSH_UP=macbook-pro SSH_MAC_ASSERTIONS="$mac_idle" "$tmp/wake-lab.sh" sleep $force macbook 2>&1); rc=$?
+  check "sleep ${force:+$force }on a Mac with no waking NIC in the site file is refused with nothing sent" \
+    '[ "$rc" = 1 ] && [[ "$out" == *"sleep REFUSED on macbook: no waking NIC (eth_mac_of)"* ]] && [ ! -s "$SSH_LOG" ]'
+done
 for verb in hibernate down; do
   for force in "" --force; do
     : >"$SSH_LOG"
