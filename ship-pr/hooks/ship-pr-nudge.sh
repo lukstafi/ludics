@@ -93,8 +93,23 @@ fi
 # 7. Deliberately coarse: more edits to the same dirty files do NOT reset the nudge.
 # Include the worktree and session in the hash, both to isolate repos and to avoid using
 # an input session id as a path. Atomic mkdir lets concurrent Stops share one claim.
+#
+# With a human attending, nothing short of another branch resets it: they decide when to land, so
+# one reminder per session and branch is enough. Claude Code sets CLAUDE_CODE_SESSION_ATTENDED per
+# process -- 1 in the desktop app, 0 under `claude -p` even when inherited from an attended parent
+# (probed 2026-10-31, 2.1.309) -- so CLI fleet workers keep the per-state nudge. Codex payloads
+# (turn_id) do too: Codex sets no such variable, and an inherited one would describe someone else.
+#
+# Not done (yet): an attended session could skip the blocked stop altogether -- hold the message
+# here, and have this script registered as UserPromptSubmit hand it over as `additionalContext`
+# with the human's next message, costing no extra turn. Whether a reminder that arrives a message
+# late still lands the work is the open question.
 hash_cmd=$(command -v shasum || command -v sha1sum || command -v cksum)
-state=$(printf '%s\n' "$(pwd -P)" "$sid" "$branch" "$(git rev-parse HEAD)" "$dirty" | "$hash_cmd" | cut -d' ' -f1)
+if [ -z "$(q turn_id)" ] && [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" = 1 ]; then
+  state=$(printf '%s\n' "$(pwd -P)" "$sid" "$branch" attended | "$hash_cmd" | cut -d' ' -f1)
+else
+  state=$(printf '%s\n' "$(pwd -P)" "$sid" "$branch" "$(git rev-parse HEAD)" "$dirty" | "$hash_cmd" | cut -d' ' -f1)
+fi
 stamp_dir="${TMPDIR:-/tmp}/ship-pr-nudge"
 mkdir -p "$stamp_dir" 2>/dev/null || exit 0
 stamp="$stamp_dir/$state"

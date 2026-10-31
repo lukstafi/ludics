@@ -65,7 +65,9 @@ otherwise ask the parent and miss the PR that merged on origin.
 A nudge is claimed at most once per session, worktree, branch, HEAD and porcelain
 status. File contents are deliberately not hashed: editing the same dirty files
 again does not nag the user at every turn. A new commit or changed set/status of
-paths can permit another nudge. The `stop_hook_active` guard prevents an immediate
+paths can permit another nudge. A Claude Code session with a human attending
+(`CLAUDE_CODE_SESSION_ATTENDED=1`, as in the desktop app; `claude -p` sets `0`) is
+nudged at most once per session, worktree and branch: the human decides when to land. The `stop_hook_active` guard prevents an immediate
 continuation loop. Claims live in `${TMPDIR:-/tmp}/ship-pr-nudge` and are temporary.
 
 GitHub failures, timeouts, missing dependencies, and unreadable Git state are
