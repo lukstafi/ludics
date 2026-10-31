@@ -761,8 +761,8 @@ class Merge:
 
     # The state line, then a tab and the head (ludics#823). A merged PR's REST ``.head.sha`` is the
     # head it was merged at, frozen by the merge (lukstafi/ludics#822 after its merge: head.sha
-    # 3ee60da3 = the second parent of its merge commit 8119d447; the api contract pins a merged
-    # anchor's head.sha as 40-hex).
+    # 3ee60da3 = the second parent of its merge commit 8119d447; the api contract pins it on its
+    # merged anchor, whose head.sha must be its merge commit's second parent).
     _STATE_JQ = '"merged=\\(.merged) state=\\(.state)\\t\\(.head.sha // "-")"'
 
     def confirm(self) -> int:

@@ -88,6 +88,14 @@
 # that, and no local run could reproduce it until the fixture was rewritten. It does not imply
 # --require-tools; pass both to run what CI runs.
 #
+# A PUSH CARRIES HEAD, NOT THE WORKING TREE. Every step judges the bytes on disk, so a fix that is
+# edited but not committed passes here and is missing from the push -- PR #835 lost a review
+# round to exactly that (#841). When the judged root is a git work tree whose tracked files
+# differ from HEAD, staged or not, the run prints `head: WARN` naming the first such file and
+# says so in the summary, leaving the exit status alone; under --as-ci, which runs as CI judges,
+# it is `head: FAIL`, since an actions/checkout is HEAD. Untracked files are not a difference:
+# the push carries none of them either.
+#
 # `steps` prints "name<TAB>command<TAB>tool" per step (`-` for one implemented here, an empty tool
 # for one that needs nothing beyond this shell), `globs` the file-list
 # patterns, `files` the paths they expand to in the judged checkout, `guards`
@@ -693,6 +701,27 @@ failed=0
 skipped=0
 skipped_names=
 warned_names=
+
+# The tree against HEAD (#841): what the steps judge and what the push carries, compared. Only at
+# a work tree's root with a born HEAD, as for the file list; anywhere else there is no HEAD the
+# push could be missing an edit from.
+head_toplevel=$(git rev-parse --show-toplevel 2>/dev/null) &&
+  head_toplevel=$(CDPATH= cd "$head_toplevel" 2>/dev/null && pwd -P)
+if [ "${head_toplevel:-}" = "$ROOT" ] && git rev-parse --verify --quiet HEAD >/dev/null &&
+  head_diff=$(git diff --name-only --no-ext-diff HEAD 2>/dev/null) && [ -n "$head_diff" ]; then
+  head_file=${head_diff%%$'\n'*}
+  head_count=$(printf '%s\n' "$head_diff" | wc -l | tr -d ' ')
+  head_why="$head_file differs from HEAD ($head_count tracked file(s) do; git diff HEAD --stat lists them), and a push carries HEAD, not the working tree: commit, or the steps below judge bytes the push will not have"
+  if [ -n "$AS_CI" ]; then
+    fail_file "$head_file" "$head_why"
+    printf 'preflight: head: FAIL\n'
+    failed=$((failed + 1))
+  else
+    printf 'preflight: head: WARN (%s)\n' "$head_why"
+    warned_names="$warned_names head"
+  fi
+fi
+
 for name in "${WANTED[@]}"; do
   run_step "$name"
   case $? in

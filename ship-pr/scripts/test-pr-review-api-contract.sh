@@ -530,7 +530,7 @@ ok    every github-actions check run of the tip's newest 10 runs is named after 
 ok    the anchor PR #7 is merged, with a merge_commit_sha, a base.sha, a head.sha and a base.ref
 ok    a merged PR's mergeability never reads as a conflict: mergeable present, true or null, and mergeable_state in the vocabulary, not 'dirty' (what conflict_preflight, await_mergeable and status refuse on)
 ok    pulls/<n>/commits serves as many rows as the PR's .commits, oldest first, each with a sha and a string commit.message, the last one the PR's head (warn_series_close's shape)
-ok    the merge commit's second parent is the PR's head
+ok    a merged PR's head.sha is the head it merged at: the merge commit's second parent (confirm()'s merged-head check)
 ok    GitHub's merge commit is committed by noreply@github.com with a verified signature (tip_pr_head_verdict's clean-merge test)
 ok    commits/<merge sha>/pulls lists the PR it merged, with merged_at, that merge_commit_sha, its head.sha and base.ref (tip_pr_head_verdict's lookup)
 ok    `.base.sha` is a SNAPSHOT, not the base the merge was built on: on #7 it differs from the merge commit's first parent
@@ -609,7 +609,7 @@ test_a_squash_merged_anchor_skips_the_second_parent_claims() {
   unanswer "repos/$REPO/commits/$M7/pulls?per_page=100"
   run_contract
   assert_eq "$CONTRACT_RC" 0 "a one-parent anchor should not move a belief ($CONTRACT_ERR)"
-  assert_contains "$(verdicts)" "skip  the merge commit's second parent is the PR's head — #7 was squash- or rebase-merged" \
+  assert_contains "$(verdicts)" "skip  a merged PR's head.sha is the head it merged at: the merge commit's second parent (confirm()'s merged-head check) — #7 was squash- or rebase-merged" \
     "a one-parent anchor should skip the second-parent claim, saying why"
   assert_not_contains "$(verdicts)" "GitHub's merge commit is committed by noreply@github.com" \
     "the clean-merge claim rides on the second parent and should not be made"

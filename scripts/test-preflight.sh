@@ -226,6 +226,41 @@ else
   ko "could not build a scratch git repository: the tracked-scope controls below would prove nothing"
 fi
 
+# --- the tree against HEAD ------------------------------------------------------------------------
+#
+# The steps judge the bytes on disk and a push carries HEAD: PR #835 pushed without a fix that
+# passed preflight uncommitted (#841).
+
+tree head_diff
+if git -C "$T" init -q >/dev/null 2>&1 && git -C "$T" add -A >/dev/null 2>&1 &&
+  git -C "$T" -c user.name=t -c user.email=t@example.invalid commit -qm base >/dev/null 2>&1; then
+  ok "the HEAD-difference control could be built"
+  head_out=$("$PF" --root "$T" syntax 2>&1)
+  grep -qF 'head:' <<<"$head_out" && ko "a tree equal to HEAD drew a head verdict -- $head_out" \
+    || ok "a tree equal to HEAD draws no head verdict"
+  printf '# x\n' >"$T/scripts/untracked.sh"
+  head_out=$("$PF" --root "$T" syntax 2>&1)
+  grep -qF 'head:' <<<"$head_out" && ko "an untracked file drew a head verdict -- $head_out" \
+    || ok "...nor does an untracked file, which the push does not carry either"
+  rm "$T/scripts/untracked.sh"
+  printf '# edited\n' >>"$T/scripts/ok.sh"
+  expect "an uncommitted edit to a tracked file warns, naming it" \
+    0 'head: WARN (scripts/ok.sh differs from HEAD' -- "$PF" --root "$T" syntax
+  expect "...and the summary says so, leaving the exit status alone" \
+    0 '1 passed, 0 failed, 0 skipped; warned: head' -- "$PF" --root "$T" syntax
+  git -C "$T" add scripts/ok.sh
+  expect "...staged, it still warns: the index is not HEAD" \
+    0 'head: WARN (scripts/ok.sh differs from HEAD' -- "$PF" --root "$T" syntax
+  expect "...and --as-ci refuses it, as an annotation on the file" \
+    1 '::error file=scripts/ok.sh::scripts/ok.sh differs from HEAD' -- "$PF" --as-ci --root "$T" syntax
+  expect "...counted as a failure beside the step that passed" \
+    1 '1 passed, 1 failed' -- "$PF" --as-ci --root "$T" syntax
+  git -C "$T" -c user.name=t -c user.email=t@example.invalid commit -qm edit >/dev/null 2>&1
+  expect "...and committed, --as-ci passes" 0 '1 passed, 0 failed' -- "$PF" --as-ci --root "$T" syntax
+else
+  ko "could not build a scratch git repository: the HEAD-difference controls would prove nothing"
+fi
+
 # --- a step in the table with nothing behind it -------------------------------------------------
 #
 # The negative control needs a table entry that no arm implements, which only a patched copy of
