@@ -672,9 +672,10 @@ if [ -n "$STALE_BASE_PR" ]; then
   # dirty, await_mergeable (a merge call refused as "not mergeable", then re-read) exits 1 on
   # false, and status's CONFLICTS line renders dirty. On a PR that merged meanwhile a false or a
   # dirty would be a false refusal; true sends await_mergeable's caller to retry the call, which gh,
-  # finding the PR merged, ends 0 without a merge request, and confirm() reads merged=true; null
-  # ends it 3, "still computing". So both shapes GitHub has served are safe, and the claim is the
-  # one the readers rest on: present, never false, and a state in the vocabulary other than dirty.
+  # finding the PR merged, ends 0 without a merge request, and confirm() compares the head it
+  # merged at with the gated SHA (the second-parent claim below); null ends it 3, "still
+  # computing". So both shapes GitHub has served are safe, and the claim is the one the readers
+  # rest on: present, never false, and a state in the vocabulary other than dirty.
   pin "a merged PR's mergeability never reads as a conflict: mergeable present, true or null, and mergeable_state in the vocabulary, not 'dirty' (what conflict_preflight, await_mergeable and status refuse on)" \
     'has("mergeable") and (.mergeable == true or .mergeable == null) and (.mergeable_state as $s | $v | index([$s])) != null and .mergeable_state != "dirty"' \
     "$pr" --argjson v "$MERGEABLE_STATE_VOCAB"
@@ -709,7 +710,11 @@ if [ -n "$STALE_BASE_PR" ]; then
     # do not need the second parent: they are about `.base.sha` against the FIRST parent, which
     # every merge strategy has.
     if [ "$(jq '.parents | length' <<<"$merge_commit")" -ge 2 ]; then
-      pin "the merge commit's second parent is the PR's head" '.parents[1].sha == $head' "$merge_commit" --arg head "$head_sha"
+      # confirm() rests on this (ludics#823): `gh pr merge` on a PR already merged makes no merge
+      # request, so whether the gated head landed is read off the merged PR's `.head.sha`, compared
+      # with the gated SHA. A `.head.sha` that stopped being frozen at the merge would turn that
+      # comparison silently wrong in either direction.
+      pin "a merged PR's head.sha is the head it merged at: the merge commit's second parent (confirm()'s merged-head check)" '.parents[1].sha == $head' "$merge_commit" --arg head "$head_sha"
       # What tip_pr_head_verdict reads to call a tip a CLEAN merge of a PR head (ludics-lite#401):
       # GitHub's own merge commits are committed as noreply@github.com with a signature GitHub
       # verified. If either moved, every pushless tip would quietly read "no verdict".
@@ -720,7 +725,7 @@ if [ -n "$STALE_BASE_PR" ]; then
         'any(.[]; .number == $n and .merged_at != null and .merge_commit_sha == $m and .head.sha == $h and (.base.ref | type == "string"))' \
         "$tip_pulls" --argjson n "$STALE_BASE_PR" --arg m "$merge_sha" --arg h "$head_sha"
     else
-      skip "the merge commit's second parent is the PR's head" "#$STALE_BASE_PR was squash- or rebase-merged: its merge_commit_sha has one parent and does not carry the head as a parent at all; a merge-commit anchor pins this claim"
+      skip "a merged PR's head.sha is the head it merged at: the merge commit's second parent (confirm()'s merged-head check)" "#$STALE_BASE_PR was squash- or rebase-merged: its merge_commit_sha has one parent and does not carry the head as a parent at all; a merge-commit anchor pins this claim"
     fi
     pin "\`.base.sha\` is a SNAPSHOT, not the base the merge was built on: on #$STALE_BASE_PR it differs from the merge commit's first parent" \
       '.parents[0].sha != $base' "$merge_commit" --arg base "$base_sha"
