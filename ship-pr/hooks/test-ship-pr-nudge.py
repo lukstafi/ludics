@@ -39,7 +39,9 @@ class NudgeTests(unittest.TestCase):
                       '[ "$answer" = error ] && exit 1\n'
                       'printf "%s\\n" "$answer"\n')
         gh.chmod(0o755)
+        # Unattended unless a test says otherwise: the suite may itself run in an attended session.
         self.env = dict(os.environ, PATH=str(self.bin), TMPDIR=str(self.root), N_PR="0", N_SHA="0",
+                        CLAUDE_CODE_SESSION_ATTENDED="0",
                         GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                         GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.org",
                         GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.org")
@@ -84,6 +86,22 @@ class NudgeTests(unittest.TestCase):
         self.run_hook(0)
         self.git("add", ".")
         self.git("commit", "-qm", "checkpoint")
+        self.run_hook(2)
+
+    def test_attended_session_is_nudged_once_per_branch(self):
+        self.env["CLAUDE_CODE_SESSION_ATTENDED"] = "1"
+        self.run_hook(2)
+        self.git("commit", "-qam", "checkpoint")
+        self.run_hook(0)
+        self.git("switch", "-qc", "second")
+        self.run_hook(2)
+
+    def test_attended_flag_does_not_coarsen_a_codex_nudge(self):
+        self.env["CLAUDE_CODE_SESSION_ATTENDED"] = "1"
+        self.payload["turn_id"] = "turn-1"
+        self.run_hook(2)
+        self.git("commit", "-qam", "checkpoint")
+        self.payload["turn_id"] = "turn-2"
         self.run_hook(2)
 
     def test_codex_payload_and_loop_guard(self):
