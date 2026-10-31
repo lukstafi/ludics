@@ -2440,6 +2440,14 @@ test_a_commitless_receipt_approves_no_other_head() {
     request_comment 6413661149 2026-10-26T10:21:23Z),$(plain_comment 6413711632 2026-10-26T10:24:02Z "$RECEIPT_BODY")]"
   run_status
   assert_eq "$(state_tok "$STATE")" expected "a push-triggered round names no head it reviewed"
+  # A draft marked ready (#847's row, ludics#838): with no '@codex review' before it, the opening is
+  # the only request the binding dates, and the row says the round was not the opening's.
+  receipt_fixture
+  COMMENTS_JSON="[$(receipt_summary "${RECEIPT_SUMMARY_BODY/Manual request/Draft marked ready}"),$(
+    plain_comment 6413711632 2026-10-26T10:24:02Z "$RECEIPT_BODY")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" expected "a round triggered by marking the draft ready binds no head: its moment is not read"
+  assert_contains "$STATE" "triggered by 'PR opened'" "and the line says the row is not the opening's round"
   receipt_fixture
   COMMENTS_JSON="[$(receipt_summary "${RECEIPT_SUMMARY_BODY//10:24:03.723881Z/10:24:01.5Z}"),$(
     request_comment 6413661149 2026-10-26T10:21:23Z),$(plain_comment 6413711632 2026-10-26T10:24:02Z "$RECEIPT_BODY")]"

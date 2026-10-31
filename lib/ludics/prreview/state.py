@@ -126,12 +126,15 @@ _SUMMARY_FAILED_ROW = onig(SUMMARY_FAILED_ROW_RE)
 _SUMMARY_ROW_STAMP = onig(SUMMARY_ROW_STAMP_RE)
 # A Code Review row's last cell, its Review trigger, and the words the gate knows there: "Manual
 # request" and "PR opened" each name the request a commit-less receipt answers (_receipt_binding),
-# "New commits" a push whose head the row does not record. pr-review-api-contract.sh asks for both
-# verbatim and pins every live row's cell against the tuple (ludics#825).
+# "New commits" a push whose head the row does not record, and "Draft marked ready" a draft made
+# ready for review (#847's row, ludics#854), whose moment is the PR's `ready_for_review` timeline
+# event, which the gate does not read, so it binds no receipt either (#838).
+# pr-review-api-contract.sh asks for every word verbatim and pins every live row's cell against
+# the tuple (ludics#825).
 SUMMARY_TRIGGER_CELL_RE = r"\|[ \t]*(?<t>[^|]*?)[ \t]*\|[ \t]*$"
 REVIEW_TRIGGER_MANUAL = "Manual request"
 REVIEW_TRIGGER_OPENED = "PR opened"
-REVIEW_TRIGGERS = (REVIEW_TRIGGER_MANUAL, REVIEW_TRIGGER_OPENED, "New commits")
+REVIEW_TRIGGERS = (REVIEW_TRIGGER_MANUAL, REVIEW_TRIGGER_OPENED, "New commits", "Draft marked ready")
 _TRIGGER_CELL = onig(SUMMARY_TRIGGER_CELL_RE)
 # A no-findings receipt that names no commit (ludics#815): the reviewer's WHOLE comment body, as a
 # fail-closed allowlist of the two shapes seen (ocannl-staging#1424's, 2026-10-26, under the
@@ -441,7 +444,8 @@ def _receipt_binding(
     head's arrival (an earlier head's verdict), is "": no reading here. Any other case -- the
     commit date unread, a request time that does not read, the head arriving between the request
     and the receipt (which head the round reviewed is not in the feeds), no summary row, another
-    trigger ("New commits": which push is not recorded), a row older than the receipt -- is
+    trigger ("New commits": which push is not recorded; "Draft marked ready": the ready event is
+    not read), a row older than the receipt -- is
     "unbound": a verdict for an unknown head, neither approval nor a failed run. Not read: the 👀
     (a level an earlier round can leave up, so it dates no request), the receipt's prose beyond
     its allowlisted shape. Residual, stated: the arrival is the commit date or the PR's creation,
