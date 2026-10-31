@@ -749,9 +749,9 @@ Unless the round closed WITH a verdict: a "Didn't find any major issues" receipt
 at the request it answers, and for no later head. The request is the one the summary's commit-less
 row names as its trigger — "Manual request", the newest `@codex review` before the receipt; "PR
 opened", the PR's creation — and the head is bound to it when it arrived (commit date read) at or
-before it. A head pushed between request and receipt, a "New commits" trigger, no summary row, or
-an unread commit date reads `expected`: a verdict for an unknown head, neither approval nor a failed
-run, so a round for the head is due.
+before it. A head pushed between request and receipt, a "New commits" or "Draft marked ready"
+trigger, no summary row, or an unread commit date reads `expected`: a verdict for an unknown head,
+neither approval nor a failed run, so a round for the head is due.
 
 An empty `COMMENTED` review counts as no completed review unless its own inline-comments
 endpoint contains findings. This also excludes it from the convergence count; comments on another
