@@ -505,9 +505,10 @@ group_left() {
 # Sets TREE (one `<g> <start or -> <0|1>` line per group, the seeds first, in the marker's order),
 # TREE_LIVE (the live groups' ids, blank-separated, empty for none) and TREE_NEW (the groups found
 # this scan). Where ps cannot list the processes, only the seeds are judged, each by kill -0 on its
-# group, the wrapper's by the rule verdict used before (its group, and no running pid of its own).
+# group and its leader's identity where it can still be read (the wrapper's as `alive` reads it).
 tree_scan() {
-  { IFS= read -r lead; IFS= read -r lt; } < "$1/pid"
+  tdir=$1
+  { IFS= read -r lead; IFS= read -r lt; } < "$tdir/pid"
   seeds="$lead ${lt:--}"
   if [ -f "$1/stopped" ]; then
     while read -r w1 w2 sg st _; do
@@ -525,8 +526,14 @@ tree_scan() {
     while [ $# -ge 2 ]; do
       sg=$1 st=$2; shift 2
       live=0
+      # A running leader is the run's only under its recorded identity: the wrapper's as `alive`
+      # checks it, another's by the start time the marker recorded (where ps cannot say even that,
+      # the bare group stands, as it always did here); a group whose leader is gone, by kill -0.
       if [ "$sg" = "$lead" ]; then
-        if group_left "$sg" && ! running "$sg"; then live=1; fi
+        if group_left "$sg" && { ! running "$sg" || alive "$tdir/pid"; }; then live=1; fi
+      elif running "$sg"; then
+        now=$(started "$sg")
+        if [ "$st" != - ] && { [ -z "$now" ] || [ "$now" = "$st" ]; }; then live=1; fi
       elif kill -0 -- "-$sg" 2>/dev/null; then live=1
       fi
       TREE="$TREE$sg $st $live

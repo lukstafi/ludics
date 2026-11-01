@@ -760,6 +760,20 @@ else
   ko "the escape remnant fixture did not stage -- $(cat "$d/log" 2>/dev/null)"
 fi
 kill -9 "${esc:-99999999}" 2>/dev/null
+# Where ps cannot list every process (`ps -A` refused, as a minimal ps may), the tree is the
+# wrapper's group alone, judged as before: a live run is still stopped, and then reads STOPPED.
+mkdir -p "$TMP/nops"
+printf '%s\n' '#!/bin/sh' 'for a do [ "$a" = -A ] && exit 1; done' 'exec /bin/ps "$@"' > "$TMP/nops/ps"
+chmod +x "$TMP/nops/ps"
+d=$("$BG" spawn "$TMP/stop-nops" -- sleep 300)
+if until_file "$d/cpid" 10; then
+  BGPIDS="$BGPIDS $(head -n 1 "$d/cpid")"
+  expect "without ps -A, stop still ends a live run" 0 "STOPPED $d: process group" -- \
+    env PATH="$TMP/nops:$PATH" BG_RUN_STOP_GRACE=1 "$BG" stop "$d"
+  expect "...which then reads STOPPED" 7 STOPPED -- env PATH="$TMP/nops:$PATH" "$BG" wait "$d" --within 0
+else
+  ko "the ps-less fixture never published its cpid"
+fi
 # Nothing to stop: a finished run, one never started, a pid reused by another process.
 d=$("$BG" spawn "$TMP/stop-done" -- true)
 "$BG" wait "$d" --within 20 > /dev/null
