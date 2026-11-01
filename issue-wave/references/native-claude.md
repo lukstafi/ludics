@@ -76,8 +76,11 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   `bg-run.sh stop <dir>` does (ludics-lite#510). `spawn` gives the run a session of its own, and
   `stop` ends that session's process group - the command, its `gh` calls and `sleep`s, and a
   grandchild whose parent has already exited - with SIGTERM, then SIGKILL after 10 s
-  (`BG_RUN_STOP_GRACE`). It prints `STOPPED <dir>: ...` (exit 0), and a `wait` there then reads
-  `STOPPED` (ludics-lite#638), not `DIED`. A run that has already ended, or whose pid the system has since reused for another
+  (`BG_RUN_STOP_GRACE`), and with SIGKILL after the same grace every group the run formed outside
+  it (an `execution slot --bg` batch, a test runner's phase in a group of its own), found through
+  their parents before the first signal. It prints `STOPPED <dir>: ...` (exit 0), and a `wait`
+  there then reads `STOPPED` (ludics-lite#638), not `DIED`, once no process of any of those groups
+  is left - so a run lock or slot the tree held is free by then. A run that has already ended, or whose pid the system has since reused for another
   process (the start-time check `wait` makes), is left alone: `NOT RUNNING: <verdict>`, exit 1.
   The caller is never in the run's group, so the stop cannot take the caller down. A `merge`
   already inside its merge call when the stop lands may still have reached GitHub, so re-read the

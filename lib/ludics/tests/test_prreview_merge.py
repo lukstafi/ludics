@@ -197,6 +197,20 @@ class Production(unittest.TestCase):
                 done = self.run_cmd(entry, "merge", "o/r#7", "-C", os.path.join(clone, "."))
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertTrue(done.stdout.endswith("o/r#7 merged=true state=closed\n"), done.stdout)
+                # -C before the PR, as `git -C` takes it (wave-20261031 post-1-task-16): the same
+                # reading, the stranger refused before anything is read and the clone merged.
+                self.route(GREEN)
+                done = self.run_cmd(entry, "merge", "-C", stranger, "o/r#7", "--wait=60")
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("has no remote naming o/r", done.stderr)
+                self.assertEqual(self.calls(), [], "nothing was read, -C first")
+                self.route(GREEN)
+                done = self.run_cmd(entry, "merge", "-C", os.path.join(clone, "."), "o/r#7")
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertTrue(done.stdout.endswith("o/r#7 merged=true state=closed\n"), done.stdout)
+                done = self.run_cmd(entry, "merge", "-C", clone)
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("usage: merge <pr>", done.stdout + done.stderr)
 
     def test_an_empty_wait_is_no_wait(self) -> None:
         # The shell's `--wait=` set wait_for to '' and its arithmetic read that as 0.

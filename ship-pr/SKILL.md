@@ -1269,7 +1269,8 @@ moves again between the build and the call is the integration loop's either way
 **Where the merge build runs, how long it waits, and how to try a config** (ludics-lite#730, #764,
 #751). `merge -C <clone>` names the clone the build uses, for a `merge` started anywhere else (a
 `bg-run.sh spawn`); the PR is still named by `owner/name#<n>`, never by the clone, and `-C` is checked
-before anything is read, so a `--wait` never ends on "not a clone". On a box with run-time slots a
+before anything is read, so a `--wait` never ends on "not a clone". `-C` (like every option of
+`merge`) may stand before the PR or after it. On a box with run-time slots a
 measurement window holding the box is waited for within what is left of `--wait`'s ceiling (never
 less than 30 min, and 30 min without `--wait`), and the slot's lines naming the measurement (its
 request id, coordinator and worker) appear in `merge`'s stderr as soon as it finds it. The build

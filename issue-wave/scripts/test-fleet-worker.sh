@@ -4261,6 +4261,46 @@ for sc in INT:130 HUP:129; do
   grep -q "^survived" "$bgd/log" 2>/dev/null && ko "...but it survived $sig: $(cat "$bgd/log")" || ok "...rather than surviving it"
   bgkill "$bgd"
 done
+# THE STOPPED RUNNER (wave-20261031 post-1-task-16, ahrefs/ocannl#1727): bg-run.sh stop on a --bg
+# batch ends the whole tree the slot started. The stand-in runner is shaped like a test runner: a
+# launcher that takes the worktree's run lock (fd 9) and a supervisor in the batch's group, whose
+# child phase (`_resolve`) leads a group of its own, ignores TERM and blocks, holding the lock and
+# the slot's flock it inherited. The slot's group kill never reaches that group, and a stop that
+# signalled only its own left it running behind a STOPPED, refusing the next batch in the worktree.
+mkdir -p "$TMP/stub-runner/tools"
+cat > "$TMP/stub-runner/tools/test-run.sh" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+  run)
+    exec 9>>"$2"
+    perl -e 'use Fcntl qw(:flock); exit(flock(STDIN, LOCK_EX | LOCK_NB) ? 0 : 1)' <&9 || { echo "test-run: another test-run is active"; exit 2; }
+    perl -e 'my $c = fork(); if (!$c) { setpgrp(0, 0); exec @ARGV } waitpid($c, 0); exit($? >> 8)' "$0" _resolve "$3" &
+    wait "$!" ;;
+  _resolve) trap '' TERM; echo "$$" > "$2.tmp"; mv "$2.tmp" "$2"; while :; do sleep 1; done ;;
+esac
+EOF
+chmod +x "$TMP/stub-runner/tools/test-run.sh"
+rlock="$TMP/stub-runner/run.lock"
+expect "a --bg runner batch returns its run directory" 0 "^$TMP/slot-bg-stop/run-1$" -- \
+  "${FWS[@]}" execution slot --bg "$TMP/slot-bg-stop" -- "$TMP/stub-runner/tools/test-run.sh" run "$rlock" "$TMP/stub-runner/resolve.pid"
+bgd="$TMP/slot-bg-stop/run-1"
+rpid=
+for _ in $(seq 100); do [ -s "$TMP/stub-runner/resolve.pid" ] && rpid=$(cat "$TMP/stub-runner/resolve.pid") && break; sleep 0.2; done
+if [ -n "$rpid" ]; then
+  expect "bg-run.sh stop on it ends the runner's phase in a group of its own, after the grace" 0 \
+    "^STOPPED $bgd: process group [0-9]* and the run's groups [0-9 ]* outside it (TERM, then KILL after 1 s)$" -- \
+    env BG_RUN_STOP_GRACE=1 "$BGR" stop "$bgd"
+  case $(ps -o stat= -p "$rpid" 2>/dev/null) in ''|Z*) ok "...the phase (_resolve) is gone" ;;
+    *) ko "...the phase (_resolve, $rpid) outlived the stop"; kill -9 "$rpid" 2>/dev/null ;; esac
+  expect "...a wait there reads STOPPED" 7 STOPPED -- "$BGR" wait "$bgd" --within 0
+  expect "...the slot is free" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 -- echo after-stopped-runner
+  expect "...and so is the worktree's run lock: the next runner batch takes it" 0 "rc=0" -- \
+    sh -c 'd=$("$@") && "$0" wait "$d" --within 30' "$BGR" "${FWS[@]}" execution slot --bg "$TMP/slot-bg-stop" -- \
+    perl -e 'use Fcntl qw(:flock); open my $f, ">>", $ARGV[0] or exit 3; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$rlock"
+else
+  ko "the stub runner's phase never wrote its pid: $(cat "$bgd/log" 2>/dev/null)"
+fi
+bgkill "$bgd"
 expect "--bg on a host with no fleet name is refused in the foreground" 2 "no fleet name" -- \
   env -u FLEET_LOCAL_BOX FLEET_HOSTNAME_MAP="nomatch*=testbox" "$FW" execution slot --bg "$TMP/slot-bg-none" -- echo x
 [ ! -e "$TMP/slot-bg-none" ] && ok "...and allocates no run directory" || ko "a refused --bg allocated $TMP/slot-bg-none"

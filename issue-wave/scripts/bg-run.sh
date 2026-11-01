@@ -47,23 +47,38 @@
 # start-time check `alive` makes), one that has published no pid yet. For a live run it reads the
 # process group of the identity-checked wrapper (or, the wrapper gone, command), and signals it
 # only when that group is the run's own: led by the wrapper's pid, as `spawn` makes it, and not
-# `stop`'s own. It re-checks the identity, publishes the marker `stopped` in <dir> (ludics-lite#638),
-# sends SIGTERM to the group, and sends SIGKILL once BG_RUN_STOP_GRACE seconds (whole, default 10)
-# pass with any member still running; it prints `STOPPED <dir>: process group <g> (TERM)` (or
-# `(TERM, then KILL after <n> s)`) and exits 0. A wait there then reads STOPPED, never DIED: the run
-# was ended on purpose, and DIED's re-arm would relaunch what was stopped. The marker goes in BEFORE
-# the signal, so no wait between the wrapper's death and the stop's end reads DIED; until no member
-# of the group is left, a wait reads RUNNING (the stop is still ending it). A stop that was itself
-# ended inside its grace leaves such a remnant, and a second stop signals that group again. A
-# signal that finds the group already gone (`NOT RUNNING`, exit 1) leaves the marker in place: a
-# concurrent stop may be the one that ended it, and a run that ended on its own in that instant
-# still reads rc when it wrote one, and otherwise STOPPED, as the stop asked. A run whose wrapper
-# does not lead its own group (a `start` run as a harness task, or a managed session's command)
-# shares its caller's, and `stop` refuses it, exit 2, signalling nothing: the harness's own
-# task-stop ends that one. What `stop` does not reach: a process that left the group itself (one
-# that calls setsid). The window it leaves: the system does not reuse an id while a group by that
-# id exists, so the group can be mistaken only if its last member exits after the re-check and a
-# new process takes the id as a group of its own before the signal, in the same instant.
+# `stop`'s own. It re-checks the identity, then reads the TREE (wave-20261031 post-1-task-16,
+# ahrefs/ocannl#1727): the wrapper's group, and every process group the run's processes formed
+# outside it, found before anything is signalled -- every process of a group of the run's, every
+# descendant of those by parent pid, and each one's group. A slot-held batch is such a group (the
+# slot starts it in a session of its own), and so is a test runner's phase that leads a group of
+# its own: the slot's group kill does not reach that one, and a phase that outlived the stop held
+# the worktree's run lock, refusing the next batch there. It publishes the marker `stopped` in
+# <dir> (ludics-lite#638), naming every group of the tree, sends SIGTERM to the wrapper's group,
+# and sends SIGKILL to every group of the tree once BG_RUN_STOP_GRACE seconds (whole, default 10)
+# pass with any member of any of them still running; groups the tree forms meanwhile are added to
+# the marker as they are found, and killed with the rest. It prints `STOPPED <dir>: process group
+# <g> (TERM)` (or `(TERM, then KILL after <n> s)`; with the other groups the tree held named before
+# the parenthesis, `... process group <g> and the run's groups <h> <i> outside it (...)`) and exits
+# 0. A wait there then reads STOPPED, never DIED: the run was ended on purpose, and DIED's re-arm
+# would relaunch what was stopped. The marker goes in BEFORE the signal, so no wait between the
+# wrapper's death and the stop's end reads DIED; until no member of any group the marker names is
+# left, a wait reads RUNNING (the stop is still ending it), so STOPPED also says that whatever the
+# tree held -- a lock, a slot -- is released. A stop that was itself ended inside its grace leaves
+# such a remnant, and a second stop signals it: the wrapper's group while it has a member, else
+# every group of the remnant, TERM and then KILL as above. A signal that finds the tree already gone
+# (`NOT RUNNING`, exit 1) leaves the marker in place: a concurrent stop may be the one that ended
+# it, and a run that ended on its own in that instant still reads rc when it wrote one, and
+# otherwise STOPPED, as the stop asked. A run whose wrapper does not lead its own group (a `start`
+# run as a harness task, or a managed session's command) shares its caller's, and `stop` refuses
+# it, exit 2, signalling nothing: the harness's own task-stop ends that one. What `stop` does not
+# reach: a process whose parent had already exited, outside every group of the tree, when the tree
+# was read (a daemon's double fork, as the slot's guardian makes, which ends itself), and a process
+# on another box. Each group is judged by its leader's start time, recorded in the marker: a
+# recorded leader pid running under another start time is another process, and the run's group by
+# that id is gone. The window it leaves: the system does not reuse an id while a group by that id
+# exists, so a group can be mistaken only if its last member exits after the read and a new
+# process takes the id as a group of its own before the signal, in the same instant.
 #
 # The command starts with SIGINT, SIGQUIT, SIGHUP and SIGTERM at their DEFAULT dispositions,
 # whatever `start` inherited (ludics-lite#524): perl resets them and execs the command, since a
@@ -129,7 +144,8 @@
 #                 backgrounded `merge --wait`). It says nothing about what the command saw:
 #                 re-arm it in a new directory. A run `stop` ended reads STOPPED instead.
 #   STOPPED    7  `stop` ended the run (its marker `stopped` is there), and no process of it is
-#                 left: not the wrapper, not the command, no member of the wrapper's process group.
+#                 left: not the wrapper, not the command, no member of any process group of the
+#                 run's tree the marker names (the wrapper's, and those outside it; `stop`).
 #                 The run was ended on purpose, so it is NOT re-armed; the line is `STOPPED by
 #                 bg-run.sh stop before the command returned`. An rc written before the signal
 #                 landed still wins: the command returned, and rc=<n> says how.
@@ -164,7 +180,9 @@
 # exit status, and appears only once complete (rename); `log` is the command's whole output;
 # `pid` and `cpid` are the liveness evidence behind RUNNING and DIED; `stopped`, which only `stop`
 # writes (complete, by rename, before it signals), is what turns a run with no process left into
-# STOPPED rather than DIED, its content (`process group <g>`) for the reader. A directory written by a
+# STOPPED rather than DIED; its lines name the tree's groups, `process group <g>` (the wrapper's)
+# first, then `process group <h> <its leader's start time, or ->` for each other one, which `wait`
+# and a second `stop` read back. A directory written by a
 # bg-run.sh from before ludics-lite#425 may also hold `refused`, which nothing reads any more.
 # Dot-files (`new`'s token, in-flight temporaries) are never a reader's. `wait <dir> --within 0` gives the same
 # verdict in one call.
@@ -371,11 +389,13 @@ verdict() {
   elif alive "$1/pid" || alive "$1/cpid"; then V=RUNNING
   elif [ -s "$1/rc" ]; then V=rc   # it finished between the rc read and the probe
   elif [ -e "$1/stopped" ]; then
-    # A stop signalled the group the wrapper leads (cmd_stop). A member left in it is the stop
-    # still ending the run. A live process that holds the wrapper's pid now is another process:
-    # the system does not reuse an id while a group by that id exists, so the run's group is gone.
-    { IFS= read -r lead; } < "$1/pid"
-    if group_left "$lead" && ! running "$lead"; then V=RUNNING; else V=STOPPED; fi
+    # A stop signalled the run's tree (cmd_stop): the group the wrapper leads and every group the
+    # marker names. A live member left in any of them is the stop still ending the run -- a process
+    # that holds a lock of the run's (a worktree's run lock) included (tree_scan judges each
+    # group's identity: a live process that holds a recorded leader's pid now, with another start
+    # time, is another process, and the run's group by that id is gone).
+    tree_scan "$1"
+    if [ -n "$TREE_LIVE" ]; then V=RUNNING; else V=STOPPED; fi
   else V=DIED
   fi
 }
@@ -471,6 +491,111 @@ group_left() {
   printf '%s\n' "$members" | awk -v g="$1" '$1 == g && $2 !~ /^[ZX]/ { f = 1 } END { exit !f }'
 }
 
+# tree_scan <dir>: the run's tree as process groups (header, `stop`; ludics-lite#510 and the
+# slot-held batch's escapee). Seeds: the group the wrapper leads, under the wrapper's start time
+# from `pid`, and every further `process group <g> <start>` line of the marker `stopped`. A group
+# is the run's and LIVE when its leader runs under the recorded start time, or, its leader gone,
+# when a member that has not exited is left in it; a leader pid running under another start time
+# (or none recorded) is another process, which the system could give that id only once the run's
+# group was gone. From the live groups it then finds the rest of the tree: every process of a live
+# group, every descendant of those (by parent pid), and the group of each, a group the run's
+# processes formed outside the wrapper's (`execution slot` puts its batch in a session of its
+# own, and a test runner's phases lead groups of their own) recorded with its leader's start time
+# and live. Never the group of the process asking (`stop`'s, `wait`'s), nor 0 or 1.
+# Sets TREE (one `<g> <start or -> <0|1>` line per group, the seeds first, in the marker's order),
+# TREE_LIVE (the live groups' ids, blank-separated, empty for none) and TREE_NEW (the groups found
+# this scan). Where ps cannot list the processes, only the seeds are judged, each by kill -0 on its
+# group and its leader's identity where it can still be read (the wrapper's as `alive` reads it).
+tree_scan() {
+  tdir=$1
+  { IFS= read -r lead; IFS= read -r lt; } < "$tdir/pid"
+  seeds="$lead ${lt:--}"
+  if [ -f "$1/stopped" ]; then
+    while read -r w1 w2 sg st _; do
+      [ "$w1 $w2" = 'process group' ] || continue
+      case $sg in ''|*[!0-9]*) continue ;; esac
+      [ "$sg" != "$lead" ] || continue
+      seeds="$seeds $sg ${st:--}"
+    done < "$1/stopped"
+  fi
+  me=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  table=$(TZ=UTC LC_ALL=C ps -A -o pid= -o ppid= -o pgid= -o stat= -o lstart= 2>/dev/null)
+  if [ -z "$table" ]; then
+    TREE='' TREE_LIVE='' TREE_NEW=''
+    set -- $seeds
+    while [ $# -ge 2 ]; do
+      sg=$1 st=$2; shift 2
+      live=0
+      # A running leader is the run's only under its recorded identity: the wrapper's as `alive`
+      # checks it, another's by the start time the marker recorded (where ps cannot say even that,
+      # the bare group stands, as it always did here); a group whose leader is gone, by kill -0.
+      if [ "$sg" = "$lead" ]; then
+        if group_left "$sg" && { ! running "$sg" || alive "$tdir/pid"; }; then live=1; fi
+      elif running "$sg"; then
+        now=$(started "$sg")
+        if [ "$st" != - ] && { [ -z "$now" ] || [ "$now" = "$st" ]; }; then live=1; fi
+      elif kill -0 -- "-$sg" 2>/dev/null; then live=1
+      fi
+      TREE="$TREE$sg $st $live
+"
+      [ "$live" -eq 0 ] || TREE_LIVE="$TREE_LIVE $sg"
+    done
+    TREE_LIVE=${TREE_LIVE# }
+    return 0
+  fi
+  TREE=$(printf '%s\n' "$table" | awk -v seeds="$seeds" -v me="${me:-0}" '
+    BEGIN {
+      n = split(seeds, s, " ")
+      for (i = 1; i + 1 <= n; i += 2) {
+        if (s[i] in tok) continue
+        ord[++ng] = s[i]; tok[s[i]] = s[i + 1]; known[s[i]] = 1
+      }
+    }
+    {
+      p = $1; pp[p] = $2; pg[p] = $3; st[p] = $4; ls = ""
+      for (k = 5; k <= NF; k++) ls = ls $k
+      start[p] = ls; rows[++nr] = p
+    }
+    function gone(q) { return st[q] ~ /^[ZX]/ }
+    END {
+      for (i = 1; i <= ng; i++) {
+        g = ord[i]; live[g] = 0
+        if ((g in st) && !gone(g)) live[g] = (tok[g] != "-" && tok[g] == start[g])
+        else for (r = 1; r <= nr; r++) { q = rows[r]; if (pg[q] == g && !gone(q)) { live[g] = 1; break } }
+        if (live[g]) inside[g] = 1
+      }
+      more = 1
+      while (more) {
+        more = 0
+        for (r = 1; r <= nr; r++) {
+          q = rows[r]
+          if ((q in tree) || gone(q) || !((pg[q] in inside) || (pp[q] in tree))) continue
+          tree[q] = 1; more = 1; g = pg[q]
+          if ((g in known) || g == me || g <= 1) continue
+          ord[++ng] = g; known[g] = 1; inside[g] = 1; live[g] = 1; fresh[g] = 1
+          tok[g] = ((g in start) && start[g] != "" && !gone(g)) ? start[g] : "-"
+        }
+      }
+      for (i = 1; i <= ng; i++) printf "%s %s %d%s\n", ord[i], tok[ord[i]], live[ord[i]], (ord[i] in fresh) ? " new" : ""
+    }')
+  TREE_LIVE=$(printf '%s\n' "$TREE" | awk '$3 == 1 { printf "%s%s", s, $1; s = " " }')
+  TREE_NEW=$(printf '%s\n' "$TREE" | awk '$4 == "new" { printf "%s%s", s, $1; s = " " }')
+  TREE=$(printf '%s\n' "$TREE" | awk '{ print $1, $2, $3 }')
+}
+
+# record_tree <dir>: the marker `stopped`, rewritten (complete, by rename) to name every group in
+# TREE: the wrapper's first, as `process group <g>`, then `process group <g> <leader start>` for
+# each other one, so a later wait or stop judges each as tree_scan does. 1 when it cannot be written.
+record_tree() {
+  { IFS= read -r lead; } < "$1/pid"
+  {
+    printf 'process group %s\n' "$lead"
+    printf '%s\n' "$TREE" | awk -v lead="$lead" 'NF >= 2 && $1 != lead { print "process group", $1, $2 }'
+  } > "$1/.stopped.$$" && mv -f -- "$1/.stopped.$$" "$1/stopped" && return 0
+  rm -f -- "$1/.stopped.$$"
+  return 1
+}
+
 # stop <dir>: end a spawned run's whole process group (header; ludics-lite#510).
 cmd_stop() {
   [ $# -eq 1 ] || usage
@@ -510,34 +635,58 @@ cmd_stop() {
     printf '%s\n' 'NOT RUNNING: the run ended while stop read it; nothing was signalled'
     exit 1
   fi
-  # The marker before the signal (header): a wait that reads the wrapper gone reads STOPPED, never
-  # the DIED whose re-arm would relaunch what is being stopped.
-  if [ ! -e "$dir/stopped" ]; then
-    { printf 'process group %s\n' "$g" > "$dir/.stopped.$$" && mv -f -- "$dir/.stopped.$$" "$dir/stopped"; } || {
-      rm -f -- "$dir/.stopped.$$"
-      say "refused: cannot publish the stopped marker in $(printf '%q' "$dir"), so a wait there would read DIED; nothing was signalled"
-      exit 2
-    }
-  fi
-  # A group already gone keeps the marker (header): another stop may have ended it.
-  kill -TERM -- "-$g" 2>/dev/null || {
+  # The tree, read before anything is signalled, while every process of it still has its parent
+  # (header; tree_scan): the groups the run formed outside the wrapper's are found through their
+  # parents, which a TERM may take away.
+  tree_scan "$dir"
+  if [ -z "$TREE_LIVE" ]; then
     printf '%s\n' 'NOT RUNNING: the run ended while stop read it; nothing was signalled'
     exit 1
+  fi
+  # The marker before the signal (header): a wait that reads the wrapper gone reads STOPPED, never
+  # the DIED whose re-arm would relaunch what is being stopped. It names every group of the tree,
+  # so a wait reads RUNNING, not STOPPED, while any of them has a member left.
+  record_tree "$dir" || {
+    say "refused: cannot publish the stopped marker in $(printf '%q' "$dir"), so a wait there would read DIED; nothing was signalled"
+    exit 2
   }
+  # TERM to the wrapper's group while it has a member: the command ends what it runs outside the
+  # group itself (header), and gets the grace to. A stop that finds only a remnant outside it (a
+  # stop ended inside its grace) signals the remnant's groups. A group already gone keeps the
+  # marker (header): another stop may have ended it.
+  sent=
+  case " $TREE_LIVE " in
+    *" $g "*) kill -TERM -- "-$g" 2>/dev/null && sent=1 ;;
+    *) for h in $TREE_LIVE; do kill -TERM -- "-$h" 2>/dev/null && sent=1; done ;;
+  esac
+  if [ -z "$sent" ]; then
+    printf '%s\n' 'NOT RUNNING: the run ended while stop read it; nothing was signalled'
+    exit 1
+  fi
   how=TERM
   t0=$SECONDS
-  while group_left "$g"; do
+  while :; do
+    tree_scan "$dir"
+    [ -z "$TREE_NEW" ] || record_tree "$dir" || say "cannot record process groups $TREE_NEW in the stopped marker; a wait may read STOPPED while they run"
+    [ -n "$TREE_LIVE" ] || break
     if [ $((SECONDS - t0)) -ge "$grace" ]; then
-      kill -KILL -- "-$g" 2>/dev/null
       how="TERM, then KILL after $grace s"
-      # A killed member is gone at once, short of a process stuck in the kernel; 2 s for it.
+      # KILL to every group of the tree left, and to any the dying tree still forms; a killed
+      # member is gone at once, short of a process stuck in the kernel: 2 s for it.
       n=0
-      while group_left "$g" && [ "$n" -lt 20 ]; do sleep 0.1; n=$((n + 1)); done
+      while [ -n "$TREE_LIVE" ] && [ "$n" -lt 20 ]; do
+        for h in $TREE_LIVE; do kill -KILL -- "-$h" 2>/dev/null; done
+        sleep 0.1; n=$((n + 1))
+        tree_scan "$dir"
+        [ -z "$TREE_NEW" ] || record_tree "$dir" || say "cannot record process groups $TREE_NEW in the stopped marker; a wait may read STOPPED while they run"
+      done
       break
     fi
     sleep 0.2
   done
-  printf 'STOPPED %s: process group %s (%s)\n' "$dir" "$g" "$how"
+  others=$(printf '%s\n' "$TREE" | awk -v g="$g" 'NF && $1 != g { printf " %s", $1 }')
+  [ -z "$others" ] || others=" and the run's groups$others outside it"
+  printf 'STOPPED %s: process group %s%s (%s)\n' "$dir" "$g" "$others" "$how"
   exit 0
 }
 

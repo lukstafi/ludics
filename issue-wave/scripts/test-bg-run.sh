@@ -63,6 +63,13 @@
 #     marker reads STOPPED, with an rc beside it rc, and without the marker DIED (the control); a
 #     live process that has since taken the wrapper's pid, leading a group of its own, is not
 #     read as the run's group;
+#   - the run's tree outside the wrapper's group (wave-20261031 post-1-task-16): a batch in a session
+#     of its own whose child leads a group of its own, ignores TERM and holds a lock (a slot-held
+#     test runner's phase) is found through its parents and KILLed after the grace, the stop naming
+#     its groups and the lock free before a wait reads STOPPED; a copy without the walk through the
+#     parents is the control, which leaves it holding the lock behind a STOPPED. A stop ended inside
+#     its grace with only that escapee left reads RUNNING while the lock is held, and a second stop
+#     ends it;
 #   - when zsh is installed, a start issued through `zsh -c` the way the Bash tool issues it,
 #     with its arguments passed through intact.
 #
@@ -656,6 +663,117 @@ expect "stop sends KILL to a command that ignores TERM, after BG_RUN_STOP_GRACE"
 sleep 0.5
 case $(ps -o stat= -p "${c:-99999999}" 2>/dev/null) in ''|Z*) ok "...and the command is gone" ;;
   *) ko "the TERM-ignoring command ($c) outlived the KILL" ;; esac
+# The run's tree outside the wrapper's group (wave-20261031 post-1-task-16, ahrefs/ocannl#1727):
+# the shape of `execution slot --bg` around a test runner. The command starts a batch in a session
+# of its own (as the slot does), and the batch a child that leads a group of its own (as the
+# runner's phases do), ignores TERM and holds a lock (the worktree's run lock) -- the escapee a
+# group kill of the wrapper's group never reaches, which outlived such a stop and refused the next
+# batch in that worktree. The stop finds it through its parents before signalling, KILLs it after
+# the grace, and only then says STOPPED; the lock is free. The control is a copy without the walk
+# through the parents, which leaves the escapee holding the lock behind a STOPPED.
+cat > "$TMP/escapee.pl" <<'EOF'
+use Fcntl qw(:flock);
+open my $f, '>>', $ARGV[0] or die "escapee: $!";
+flock($f, LOCK_EX) or die "escapee: $!";
+$SIG{TERM} = 'IGNORE';
+setpgrp(0, 0);
+open my $p, '>', "$ARGV[1].tmp" or die "escapee: $!";
+print $p "$$\n";
+close $p;
+rename "$ARGV[1].tmp", $ARGV[1];
+sleep 1 while 1;
+EOF
+printf '%s\n' '#!/bin/sh' 'perl "$1" "$2" "$3" &' 'exec sleep 300' > "$TMP/batch.sh"
+printf '%s\n' '#!/bin/sh' 'perl -MPOSIX -e '"'"'POSIX::setsid(); exec @ARGV'"'"' sh "$1" "$2" "$3" "$4" &' 'exec sleep 300' \
+  > "$TMP/slot-shaped.sh"
+# escape_spawn <bg-run.sh> <name>: spawns the fixture under $TMP/<name>; d, the run, esc, the
+# escapee's pid once it holds the lock (empty if it never did), lock, the lock file.
+escape_spawn() {
+  lock="$TMP/$2.lock"
+  d=$("$1" spawn "$TMP/$2" -- sh "$TMP/slot-shaped.sh" "$TMP/batch.sh" "$TMP/escapee.pl" "$lock" "$TMP/$2.esc")
+  esc=
+  until_file "$TMP/$2.esc" 10 && esc=$(cat "$TMP/$2.esc") && BGPIDS="$BGPIDS $esc"
+}
+# lock_free <file>: 0 when no process holds its flock.
+lock_free() { perl -e 'use Fcntl qw(:flock); open my $f, ">>", $ARGV[0] or exit 2; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' "$1"; }
+escape_spawn "$BG" escape
+if [ -n "$esc" ] && ! lock_free "$lock"; then
+  expect "stop ends the run's groups outside the wrapper's: a TERM-ignoring escapee is KILLed after the grace" 0 \
+    "outside it (TERM, then KILL after 1 s)" -- env BG_RUN_STOP_GRACE=1 "$BG" stop "$d"
+  contains "$out" "STOPPED $d: process group $(head -n 1 "$d/pid") and the run's groups " \
+    && ok "...naming the wrapper's group and the others" || ko "the stop's line: $out"
+  case $(ps -o stat= -p "$esc" 2>/dev/null) in ''|Z*) ok "...the escapee is gone" ;;
+    *) ko "the escapee ($esc) outlived the stop" ;; esac
+  lock_free "$lock" && ok "...and the lock it held is free" || ko "the stopped run's lock is still held"
+  expect "...after which a wait reads STOPPED" 7 STOPPED -- "$BG" wait "$d" --within 0
+  [ "$(grep -c '^process group ' "$d/stopped")" -ge 3 ] && ok "...its marker naming every group of the tree" \
+    || ko "the marker: $(cat "$d/stopped")"
+else
+  ko "the escapee fixture did not stage (escapee ${esc:-none}) -- $(cat "$d/log" 2>/dev/null)"
+fi
+kill -9 "${esc:-99999999}" 2>/dev/null
+# The control: no walk through the parents (only the wrapper's group is seen), the pre-fix reach.
+sed 's/|| !((pg\[q\] in inside) || (pp\[q\] in tree))) continue$/|| !(pg[q] in inside)) continue/' "$BG" > "$TMP/nowalk.sh"
+chmod +x "$TMP/nowalk.sh"
+if cmp -s "$BG" "$TMP/nowalk.sh"; then
+  ko "control: the patch found no walk through the parents in $BG"
+else
+  escape_spawn "$TMP/nowalk.sh" escape-control
+  if [ -n "$esc" ]; then
+    env BG_RUN_STOP_GRACE=1 "$TMP/nowalk.sh" stop "$d" > /dev/null 2>&1
+    sleep 0.5
+    cw=$("$TMP/nowalk.sh" wait "$d" --within 0 2>&1)
+    if proc_live "$esc" && ! lock_free "$lock" && contains "$cw" STOPPED; then
+      ok "control: without the walk, the escapee outlives the stop, holding the lock behind a STOPPED"
+    else
+      ko "control: without the walk the escapee did not outlive the stop, so the cases above prove nothing"
+    fi
+  else
+    ko "control: the escapee fixture did not stage -- $(cat "$d/log" 2>/dev/null)"
+  fi
+  kill -9 "${esc:-99999999}" 2>/dev/null
+fi
+# A stop ended inside its grace once the wrapper's group is gone, the escapee left: a wait reads
+# RUNNING while it holds the lock (the marker names its group), not STOPPED, and a second stop ends
+# it, after which the lock is free and the run reads STOPPED.
+escape_spawn "$BG" escape-remnant
+if [ -n "$esc" ]; then
+  ew=$(head -n 1 "$d/pid" 2>/dev/null); ec=$(head -n 1 "$d/cpid" 2>/dev/null)
+  env BG_RUN_STOP_GRACE=60 "$BG" stop "$d" > "$TMP/escape-remnant.stop" 2>&1 &
+  rs=$!; BGPIDS="$BGPIDS $rs"
+  i=0
+  while { proc_live "${ew:-99999999}" || proc_live "${ec:-99999999}"; } && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+  sleep 0.5
+  kill -9 "$rs" 2>/dev/null; { wait "$rs"; } 2>/dev/null
+  if proc_live "$esc" && ! proc_live "${ew:-99999999}" && ! lock_free "$lock"; then
+    expect "a stop ended in its grace with only the escapee left: a wait reads RUNNING while it holds the lock" 3 RUNNING -- \
+      "$BG" wait "$d" --within 0
+    expect "...a second stop ends it" 0 'TERM, then KILL after 1 s' -- env BG_RUN_STOP_GRACE=1 "$BG" stop "$d"
+    case $(ps -o stat= -p "$esc" 2>/dev/null) in ''|Z*) ok "...the escapee included" ;;
+      *) ko "the escapee ($esc) outlived the second stop" ;; esac
+    lock_free "$lock" && ok "...the lock is free" || ko "the lock is still held after the second stop"
+    expect "...and the run reads STOPPED" 7 STOPPED -- "$BG" wait "$d" --within 0
+  else
+    ko "the escape remnant did not stage (wrapper ${ew:-none}, escapee $esc) -- $(cat "$TMP/escape-remnant.stop")"
+  fi
+else
+  ko "the escape remnant fixture did not stage -- $(cat "$d/log" 2>/dev/null)"
+fi
+kill -9 "${esc:-99999999}" 2>/dev/null
+# Where ps cannot list every process (`ps -A` refused, as a minimal ps may), the tree is the
+# wrapper's group alone, judged as before: a live run is still stopped, and then reads STOPPED.
+mkdir -p "$TMP/nops"
+printf '%s\n' '#!/bin/sh' 'for a do [ "$a" = -A ] && exit 1; done' 'exec /bin/ps "$@"' > "$TMP/nops/ps"
+chmod +x "$TMP/nops/ps"
+d=$("$BG" spawn "$TMP/stop-nops" -- sleep 300)
+if until_file "$d/cpid" 10; then
+  BGPIDS="$BGPIDS $(head -n 1 "$d/cpid")"
+  expect "without ps -A, stop still ends a live run" 0 "STOPPED $d: process group" -- \
+    env PATH="$TMP/nops:$PATH" BG_RUN_STOP_GRACE=1 "$BG" stop "$d"
+  expect "...which then reads STOPPED" 7 STOPPED -- env PATH="$TMP/nops:$PATH" "$BG" wait "$d" --within 0
+else
+  ko "the ps-less fixture never published its cpid"
+fi
 # Nothing to stop: a finished run, one never started, a pid reused by another process.
 d=$("$BG" spawn "$TMP/stop-done" -- true)
 "$BG" wait "$d" --within 20 > /dev/null

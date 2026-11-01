@@ -528,12 +528,16 @@ commit_row() { # <sha> <message>
 # The two streams are kept APART as well as together: the closing-keyword warning is required to
 # reach BOTH, and a single merged capture cannot tell a line that went to one from a line that went
 # to the other. MERGE_OUTPUT stays the pair, which is what every older case asserts against.
-run_merge() {
+run_merge() { run_merge_argv "$REPO#7" "$@"; }
+
+# run_merge_argv <merge's whole argument list>: run_merge with the PR placed by the case, for an
+# option that stands before it.
+run_merge_argv() {
   local rc
   fixture_call_reset
   : >"$CALLS_FILE"
   set +e
-  (if [ -n "$MERGE_CWD" ]; then cd "$MERGE_CWD" || exit 99; fi; cmd_merge "$REPO#7" "$@") >"$OUT_FILE" 2>"$ERR_FILE"
+  (if [ -n "$MERGE_CWD" ]; then cd "$MERGE_CWD" || exit 99; fi; cmd_merge "$@") >"$OUT_FILE" 2>"$ERR_FILE"
   rc=$?
   set -e
   MERGE_STDOUT=$(cat "$OUT_FILE")
@@ -3020,6 +3024,35 @@ test_merge_builds_in_the_clone_c_names() {
   assert_eq "$MERGE_CALLS" "" "before anything is read"
 }
 
+# -C before the PR, as `git -C` takes it (wave-20261031 post-1-task-16, ahrefs/ocannl#1734): the
+# same merge as with -C after it -- built in the clone -C names, the clash refused -- and not a
+# refusal of the PR as an unknown option. The options before the PR are read as those after it:
+# -C naming no checkout refuses before anything is read, and no PR at all is the usage.
+test_merge_takes_c_before_the_pr() {
+  reset
+  build_fixture clash
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  MERGE_CWD=$TEST_ROOT
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge_argv -C "$BUILD_CLONE" "$REPO#7"
+  assert_not_contains "$MERGE_OUTPUT" "unknown option" "-C before the PR is no unknown option ($MERGE_OUTPUT)"
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge build in the clone -C names, -C first"
+  else
+    assert_eq "$MERGE_RC" 1 "the clash is refused, -C first ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDOUT" "merge build $REPO#7: FAILED" "built in the clone -C names, -C first"
+    assert_no_merge_call
+    assert_clone_untouched
+  fi
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge_argv -C "$TEST_ROOT" "$REPO#7" --wait=60
+  assert_eq "$MERGE_RC" 2 "-C first naming no checkout refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "is not a directory inside a git checkout" "and says so, -C first"
+  assert_eq "$MERGE_CALLS" "" "before anything is read, -C first"
+  run_merge_argv -C "$BUILD_CLONE"
+  assert_eq "$MERGE_RC" 1 "-C with no PR after it is the usage ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "usage: merge <pr>" "and says so"
+  assert_eq "$MERGE_CALLS" "" "with nothing read"
+}
+
 # A PR that adds the merge-build config is judged by the default branch's copy, not its own
 # (ludics-lite#730, #738's case): with none there, the clash merges unbuilt, and merge says which
 # copy judged it. The dry run (merge-build, #751) is the control: the PR's own copy refuses the same
@@ -3184,6 +3217,7 @@ tests=(
   test_an_unusable_merge_build_never_merges
   test_any_input_catches_a_single_side_clash
   test_merge_builds_in_the_clone_c_names
+  test_merge_takes_c_before_the_pr
   test_a_pr_changing_the_config_is_told_which_copy_judged_it
 )
 
