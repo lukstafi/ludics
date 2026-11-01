@@ -1,6 +1,8 @@
 """``pr-review.sh merge <pr> [-C <clone>] [--override <reason>] [--wait[=s]] [--allow-no-verdict]
 [--require-green] [-- <gh pr merge args...>]``: read the build signal, then merge the head it was
-read for. ``-C`` names the clone the merge build uses (mergebuild.py), read first of all.
+read for. ``-C`` names the clone the merge build uses (mergebuild.py), read first of all. Every
+option may also stand before ``<pr>`` (``merge -C <clone> <pr>``, as ``git -C`` is written), up to a
+``--``.
 
 Ported from the shell's ``cmd_merge`` with ``refuse_merge_queue``, ``await_mergeable`` and
 ``absent_base_holds`` (ludics-lite#403). The gate and the merge are one command on purpose
@@ -95,10 +97,11 @@ class Options:
 
 
 def parse(args: list[str], config: GateConfig) -> Options:
-    if not args or not args[0]:
-        fail(1, USAGE)
-    opts = Options(pr=args[0])
-    rest = args[1:]
+    """The PR is the first word that is not an option or an option's value: the options may stand
+    before it as well as after it (``merge -C <clone> <pr>``, the order of ``git -C``), up to a
+    ``--``, after which every word is ``gh pr merge``'s."""
+    opts = Options(pr="")
+    rest = list(args)
     while rest:
         arg = rest[0]
         if arg == "--override":
@@ -131,9 +134,15 @@ def parse(args: list[str], config: GateConfig) -> Options:
         elif arg == "--":
             opts.gh_args = rest[1:]
             break
+        elif not opts.pr and not arg:
+            fail(1, USAGE)
+        elif not opts.pr and not arg.startswith("-"):
+            opts.pr = arg
         else:
             die(f"merge: unknown option '{arg}' (extra `gh pr merge` flags go after --)")
         rest = rest[1:]
+    if not opts.pr:
+        fail(1, USAGE)
     opts.forwarded = bool(opts.gh_args)
     if not opts.gh_args:
         opts.gh_args = ["--merge"]  # the repo convention: preserve the commit series

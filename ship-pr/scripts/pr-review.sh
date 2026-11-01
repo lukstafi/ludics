@@ -193,6 +193,8 @@
 #                                          # (see prreview/checks.py)
 #   pr-review.sh merge <pr> [--override "<why this red is unrelated>"] [--wait]
 #                           [--allow-no-verdict] [--require-green] [-C <clone>]
+#                                          # (the options may also stand before <pr>, as in
+#                                          # `merge -C <clone> <pr>`)
 #                                          # checks, then merge; refuses on an open review thread
 #                                          # (no flag bypasses that), on red without --override,
 #                                          # on NO verdict without --allow-no-verdict, and — with
