@@ -512,7 +512,7 @@ class IntegrationRecordsVerb(unittest.TestCase):
     RED, GREEN, OTHER = "b" * 40, "c" * 40, "d" * 40
 
     def records(self) -> list[dict[str, Any]]:
-        gpu = {"integration": None, "purpose": "GPU integration loop, hip: tip"}
+        gpu: dict[str, object] = {"integration": None, "purpose": "GPU integration loop, hip: tip"}
         return [
             record("cc-1", request={"repository": "Example/Project"}, observed_sha=self.GREEN),
             record("cc-2", verdict="fail", observed_sha=self.RED),
