@@ -131,7 +131,8 @@ grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
     last assignment among those that directly follow it nonempty, and a command after them -- any
     command, a ``bash -c '...'`` composite included (ludics#864: a leading ``env`` pin is how a
     composite carries one);
-  - ``slot-plan <path>``, at most one: THE SLOT PLAN below.
+  - ``slot-plan <path>``, at most one: THE SLOT PLAN below;
+  - ``run-report <path>``, at most one: THE RUN REPORT below.
 Any other line refuses the leg, naming it: a file this leg cannot read is never ignored. A leg that
 may hold the GPU -- one that does not declare ``--cpu``, the slot's own fail-closed definition, so a
 measurement's too -- whose repository's file names a pin and whose argv satisfies none is refused
@@ -178,6 +179,23 @@ slot kind only; the backend pin is judged before it on the leg's own flags, so a
 runner that takes its own slot inside the leg's is refused a GPU batch in a ``--cpu`` slot that is no
 GPU token (slot.py, THE NESTED SLOT), and one that does not is the project's plan to keep right. A measurement takes no slot and runs no plan. A stop during the plan ends its wrapper as it
 ends a run's, and the leg is refused with nothing run.
+
+THE RUN REPORT (ludics#829). A runner that keeps its detail in a log on the box (OCANNL's
+``tools/test-run.sh`` prints a digest, and a test's stderr -- its "(not part of the golden)" tables --
+stays in the run's log there) left every worker reading that log over ssh. A project whose
+``.github/fleet-leg`` names ``run-report <path>`` (the slot plan's path grammar) states what a reader
+of the leg needs: after each run that started (the main run, and the control, before its revert), the
+leg runs ``<path> <runner argv...>`` in the worktree, under a nested ``execution slot --deadline 300``
+(with the run's ``--cpu``/``--gpu``), and puts its stdout and stderr together, the last 200 lines, on
+the leg's stderr between ``EXECUTION LEG <box>: run report <path> after the <main|control> run (exit
+<n>), report exit <m>, <count>:`` and ``EXECUTION LEG <box>: end of the run report (<run> run)``,
+before the status line: next to the verdict, in the same log. What it prints is the project's (a log's
+tail, the lines a reader asks for); the leg reads none of it. Its status is said, never the leg's: a
+report that fails, times out or is no executable file (said as such, 127) changes no verdict. The
+boundary: the report runs where the run ran, in the slot that held it, so what it leaves in the
+worktree is the run's (a moved HEAD or dirt is the main run's NO CONTROL, or the after-run warning);
+it runs after no refusal and no run that never started; and a stop ends it as it ends a run. A
+runner's own stderr needs no report: it reaches the caller as it is written, over ssh's stderr.
 
 THE HALT (ludics-lite#796). A leg reads no halt: the registry refuses new reservations and dispatch
 under one, so the only records a leg can find newly dispatched there are the halt's triage owner's,
@@ -292,7 +310,7 @@ NOT_HOME = r"""not_home() {
 #     and nothing else -- every pin it satisfies names exactly <backend> -- and the file names a pin.
 # pin_grammar and pin_scan set the caller's locals (bash scopes dynamically): pin_flags, pin_envs and
 # pin_asks (the file's pins, the asks with `<backend>` for the value), pin_plan (its slot-plan path,
-# or empty), and pin_any (a pin the argv satisfies) and pin_other (the first one naming another
+# or empty), pin_report (its run-report path, or empty), and pin_any (a pin the argv satisfies) and pin_other (the first one naming another
 # backend than pin_target, as `<how>`).
 PIN = r"""fleet_leg_read() {
   local co="$1" sha="$2" text
@@ -304,7 +322,7 @@ PIN = r"""fleet_leg_read() {
 }
 pin_grammar() {
   local text="$1" d w extra good n=0
-  pin_flags="" pin_envs="" pin_asks="" pin_plan=""
+  pin_flags="" pin_envs="" pin_asks="" pin_plan="" pin_report=""
   while read -r d w extra || [ -n "$d" ]; do
     n=$((n + 1))
     case "$d" in ''|'#'*) continue ;; esac
@@ -314,15 +332,17 @@ pin_grammar() {
       pin-env) case "$w" in *[!A-Za-z0-9_]*|[0-9]*|'') ;; *) good=1 ;; esac ;;
       # A path in the worktree: relative, no `..` or `.` component, no empty one, not an option.
       slot-plan) case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;; *) [ -n "$pin_plan" ] || good=1 ;; esac ;;
+      run-report) case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;; *) [ -n "$pin_report" ] || good=1 ;; esac ;;
     esac
     if [ -z "$good" ] || [ -n "$extra" ]; then
-      printf '%s' ".github/fleet-leg line $n is not one this leg reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, a # comment or a blank line"
+      printf '%s' ".github/fleet-leg line $n is not one this leg reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, a # comment or a blank line"
       return 1
     fi
     case "$d" in
       pin-flag) pin_flags="$pin_flags $w"; pin_asks="$pin_asks, $w <backend>" ;;
       pin-env) pin_envs="$pin_envs $w"; pin_asks="$pin_asks, env $w=<backend>" ;;
       slot-plan) pin_plan=$w ;;
+      run-report) pin_report=$w ;;
     esac
   done <<FLEET_LEG_PIN
 $text
@@ -364,7 +384,7 @@ pin_scan() {
   done
 }
 backend_pin() {
-  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_plan pin_any="" pin_other="" pin_target="" hint="" e
+  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_any="" pin_other="" pin_target="" hint="" e
   shift 2
   pin_grammar "$text" || return 1
   [ "$gpu" = 1 ] && [ -n "$pin_flags$pin_envs" ] || return 0
@@ -388,7 +408,7 @@ backend_pin() {
   return 1
 }
 backend_pin_to() {
-  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_plan pin_any="" pin_other=""
+  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_any="" pin_other=""
   shift 2
   pin_grammar "$text" || return 1
   if [ -z "$pin_flags$pin_envs" ]; then
@@ -427,7 +447,7 @@ cleanup() {
   [ -z "$patch" ] || rm -f "$patch"
   [ -z "$lfile" ] || rm -f "$lfile"
   [ -z "$planned" ] || rm -f "$planned"
-  [ -z "$results" ] || rm -f "$results" "$results.sh"
+  [ -z "$results" ] || rm -f "$results" "$results.sh" "$results.report"
   git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
   return 0
 }
@@ -488,11 +508,11 @@ else
   how="fetched from $remote"
 fi
 [ -z "$want" ] || [ "$sha" = "$want" ] ||
-  refuse "$rev is $sha, but request $request was assigned $want: run --rev $want"
+  refuse "$rev is $sha, but request $request was assigned $want: run --rev $want (a rebase since? its coordinator can rebind $request to the new head: execution rebind, ludics#829)"
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the worktree moves.
 pins=$(fleet_leg_read "$co" "$sha"); prc=$?
 [ "$prc" -ne 1 ] || refuse "$pins; nothing ran"
-pin_plan=""
+pin_plan="" pin_report=""
 if [ "$prc" -eq 0 ]; then
   case " ${nest[*]} " in *" --cpu "*) gpu=0 ;; *) gpu=1 ;; esac
   # --reads-no-config: the caller declares a runner that reads none of the project's configuration, so no
@@ -584,9 +604,30 @@ results=$(mktemp "${TMPDIR:-/tmp}/fleet-leg.XXXXXX") || refuse "cannot create a 
 # takes anything it left running in that group with it (group.py, ludics-lite#566), so a runner's
 # leftover background child cannot overlap the control run, nor outlive the leg.
 cat > "$results.sh" <<'FLEET_LEG_RUNS' || refuse "cannot write a scratch file on $BOX"
-wt="$1" patch="$2" results="$3" box="$4" fw="$5" head="$6" n="$7"; shift 7
+wt="$1" patch="$2" results="$3" box="$4" fw="$5" head="$6" report="$7" n="$8"; shift 8
 nest=(); while [ "$n" -gt 0 ]; do nest+=("$1"); shift; n=$((n - 1)); done
 cd "$wt" || exit 1
+# THE RUN REPORT (see the header): after a run that started, the project's report, in its own nested
+# slot (300 s), stdout and stderr together, its last 200 lines on stderr
+# between two lines that say whose it is. Its status is said, never the leg's.
+said() {
+  local tag="$1" rc="$2" out n rrc
+  shift 2
+  [ -n "$report" ] && grep -qx "$tag-started" "$results" || return 0
+  out="$results.report"
+  if [ -f "$report" ] && [ -x "$report" ]; then
+    # The report's stderr joins its stdout inside the slot, whose own lines stay on stderr, outside it.
+    "$fw" execution slot --deadline 300 "${nest[@]:2}" -- bash -c 'exec "$0" "$@" 2>&1' "./$report" "$@" </dev/null >"$out"; rrc=$?
+  else
+    printf "no executable %s in %s\n" "$report" "$wt" >"$out"; rrc=127
+  fi
+  n=$(grep -c "" "$out")
+  if [ "$n" -gt 200 ]; then n="the last 200 of its $n lines"; else n="$n line(s)"; fi
+  printf "EXECUTION LEG %s: run report %s after the %s run (exit %s), report exit %s, %s:\n" "$box" "$report" "$tag" "$rc" "$rrc" "$n" >&2
+  tail -n 200 "$out" >&2
+  printf "EXECUTION LEG %s: end of the run report (%s run)\n" "$box" "$tag" >&2
+  rm -f "$out"
+}
 # go <tag> <runner...>: one run in its nested slot; <tag>-started is written by the shell the slot
 # starts, just before it becomes the runner, so a slot that refused is told from a runner that ran.
 go() {
@@ -599,6 +640,7 @@ go() {
 printf "started\n" >> "$results"
 go main "$@"; rc=$?
 printf "main=%s\n" "$rc" >> "$results"
+said main "$rc" "$@"
 { [ "$rc" -eq 0 ] && [ -n "$patch" ] && grep -qx main-started "$results"; } || exit "$rc"
 # The control is made against the commit the leg reports, clean, or not at all.
 now=$(git rev-parse --verify -q "HEAD^{commit}")
@@ -610,6 +652,7 @@ printf "applied\n" >> "$results"
 printf "EXECUTION LEG %s: control patch applied; the runner again, which must fail\n" "$box" >&2
 go control "$@"; crc=$?
 printf "control=%s\n" "$crc" >> "$results"
+said control "$crc" "$@"
 git apply -R "$patch" >&2 && printf "revert=ok\n" >> "$results"
 exit 0
 FLEET_LEG_RUNS
@@ -622,7 +665,7 @@ FLEET_LEG_RUNS
 # does not end it before the control is reverted and its files are removed.
 stop_asked=""
 trap 'stop_asked=1' TERM INT HUP
-fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
+fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "$pin_report" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
 trap '' PIPE
 [ -z "$stop_asked" ] || say "stopped (a signal from the leg's stop, or its group's): the wrapper exit $wrc"
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }

@@ -598,6 +598,22 @@ a new request id; conclude the old one at its reserved commit (`cancelled`, evid
 id), or `not-launched` when nothing ran. The rule is `bound_commit` in
 `lib/ludics/fleetworker/registry.py`.
 
+A worker that rebased after its request was bound holds a head that binding refuses (wave-20261102:
+reserved b36a8d66, run at fbfcc24f, and `conclude` refused either SHA). Before it runs there, the
+coordinator confirms the new head and rebinds the record (ludics#829): `fleet-worker.sh execution
+rebind <payload.json>`, payload `{"request_id": "<id>", "evidence": "<why: the worker's rebase onto
+main>", "rebound_revision": "<full pushed SHA>"}`. The record keeps its state and dispatch; its
+binding becomes that commit, so the leg runs `--rev <it>` and the conclusion names it (a `head-of:`
+record's `resolved_revision` is rewritten, any other gets `rebound_revision`). The SHA is checked on
+GitHub as every payload's is. Refused: a record that binds nothing (standing, free text, a `head-of:`
+never dispatched), a concluded or suspended one, another coordinator's lease, and one already holding
+an `observed_sha` at another commit (a run is recorded there: conclude it, and reserve the new head
+under a new id). The same commit again writes nothing. Nothing checks that the new commit is the old
+one rebased: the coordinator's confirmation is the check, so read the worker's branch head on GitHub
+(`gh api repos/<repo>/commits/<branch> --jq .sha`), not a SHA copied from prose. A `head-of:` request
+resolves at assignment, never at the leg's start: a binding resolved when the worker runs would bind
+whatever it pushed last, which is a standing record's freedom, not a request's.
+
 When the run went through OCANNL's `tools/test-run.sh` (or any runner leaving `exit`, `log`,
 `wt` and `cmd` under a run directory), `fleet-worker.sh execution conclude --from-run <run-dir>
 --request <id> --sha <sha> [--box <execution host>] [--evidence <text>]` composes that payload
@@ -717,7 +733,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   hold --request <id>`, which takes `--deadline` alone. A record holding a `resolved_revision`
   (a [`head-of:` request](#reserve-launch-observe-conclude)), or a non-standing one whose
   `requested_revision` is exactly one commit, refuses any `--rev` that comes to
-  another commit, and the registry refuses any `observed_sha` but that commit for it. A standing
+  another commit, and the registry refuses any `observed_sha` but that commit for it; after a
+  rebase, the coordinator's [`execution rebind`](#reserve-launch-observe-conclude) moves that
+  commit to the new head first (ludics#829). A standing
   record a [measurement window](#exclusivity-and-the-run-time-slots) has `suspended` is refused at
   once naming the window, unless the leg has `--wait-window[=<s>]` (ludics-lite#666): then it waits
   on the caller's box, in the slot's own wait (`EXECUTION LEG <box>: measurement window <id> holds
@@ -828,6 +846,19 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   slot](#exclusivity-and-the-run-time-slots) refuses a GPU batch in a `--cpu` slot that is no GPU
   token). An explicit `--cpu` or `--gpu`, and a measurement, run no plan. What the plan reads is
   the project's (OCANNL's runner names the slot its `run` would take with `plan`).
+- **The run report.** The runner's own stderr comes back as it is written, but a runner that keeps
+  its detail in a log on the box (OCANNL's `tools/test-run.sh` prints a digest, and a test's
+  "(not part of the golden)" tables stay in the run's log there) left workers reading that log over
+  ssh (ludics#829). A project names `run-report <path>` (relative, in the worktree) in its
+  `.github/fleet-leg`: after each run that started, the main run and the control (before its
+  revert), the leg runs `<path> <the runner's argv...>` in the worktree under a nested `execution
+  slot --deadline 300` with the run's `--cpu`/`--gpu`, and prints its stdout and stderr, the last
+  200 lines, on stderr between `EXECUTION LEG <box>: run report <path> after the <main|control> run
+  (exit <n>), report exit <m>, <count>:` and `EXECUTION LEG <box>: end of the run report (<run>
+  run)`, before the status line. What it prints is the project's; its status never changes the
+  leg's. What it leaves in the worktree counts as the run's (the main run's `NO CONTROL`, the
+  after-run warning). A leg run by a checkout from before this reads a `run-report` line as one it
+  cannot read and refuses, so a project adds it once its callers' skills checkout has it.
 - **Stopping a leg.** A leg's far side runs in an ssh session of its own, which nothing on the
   caller's box reaches, so a SIGTERM, SIGINT or SIGHUP the leg gets while it runs (`bg-run.sh stop`
   on its run, a Ctrl-C) ends the far side as well (ludics-lite#767): `EXECUTION LEG STOPPING <box>:

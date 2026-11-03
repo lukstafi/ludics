@@ -212,6 +212,22 @@ concluded record answers its identical retry before this check, so a record conc
 existed keeps its retries. `execution leg` reads the same function, so it refuses to run what the
 registry would refuse to record.
 
+THE REBIND (ludics#829): a worker that rebased after its request was bound holds a head the binding
+refuses (wave-20261102: reserved b36a8d66, ran at fbfcc24f, and conclude refused either SHA). The
+coordinator that holds the record's lease confirms the new head with `rebind`, payload
+`{"request_id", "evidence", "rebound_revision": <exact object ID>}`, the evidence saying why; the
+record keeps its state, and its binding becomes that commit: for a head-of record its
+`resolved_revision` (as an assignment's; a later dispatch resolves again), for any other its
+`rebound_revision`, a top-level field, so a registry copy from before this ignores it -- and,
+binding the old commit still, refuses what the new one names: fail-closed. Refused: a record that
+binds nothing (standing, free text: it runs at any commit), a concluded or suspended one, another
+coordinator's lease, and a record holding an `observed_sha` at another commit than the new one (its
+evidence is about the commit it ran: conclude it there, and reserve the new head under a new
+request id). The same commit again is answered with the record as it stands, nothing written, so a
+retry is harmless. What it does not check: that the new commit is the old one rebased (no rule
+tells a rebase from another commit; the coordinator's confirmation is the check) -- the near side
+checks only that GitHub has it in the request's repository, as every revision a payload names.
+
 THE CHECKOUT (ludics-lite#731): the one checkout a record's `--observed-from` conclusion may read,
 `checkout`, an absolute path on the execution host (POSIX, or a drive letter). A reserve, run or
 window payload may carry it BESIDE the request -- removed from the request, as `run` removes
@@ -355,6 +371,9 @@ def bound_commit(record: Record) -> str | None:
     request = as_object(record.get("request"))
     if request is None or request.get("standing") is True:
         return None
+    rebound = record.get("rebound_revision")
+    if isinstance(rebound, str) and OBJECT_ID.fullmatch(rebound):
+        return rebound  # THE REBIND (see the header)
     requested = request.get("requested_revision")
     return requested if isinstance(requested, str) and OBJECT_ID.fullmatch(requested) else None
 
@@ -370,13 +389,19 @@ def check_binding(record: Record, data: Record, action: str) -> None:
     if sha is None or sha == bound:
         return
     what = f"observed_sha {sha}" if named else f"the recorded observed_sha {sha}, which this conclusion inherits,"
+    rebind = (f"; a rebase since? its coordinator can rebind {record['request_id']} to the new head "
+              f"(execution rebind, ludics#829)")
     if "resolved_revision" in record:
         # The commit a head-of request was assigned is the one its evidence is about.
-        refuse(f"{what} is not {bound}, the commit {record['request']['requested_revision']} was resolved to at assignment")
+        refuse(f"{what} is not {bound}, the commit {record['request']['requested_revision']} was resolved to at "
+               f"assignment or rebind{rebind}")
+    if "rebound_revision" in record:
+        refuse(f"{what} is not {bound}, the commit non-standing request {record['request_id']} was rebound to "
+               f"(reserved at {record['request']['requested_revision']}){rebind}")
     refuse(f"{what} is not {bound}, the exact commit non-standing request {record['request_id']} reserved "
            f"(ludics-lite#634): evidence at another commit is another request's -- reserve that run under a new "
            f"request id (a deliberate re-pin), and conclude this one at {bound} (cancelled, evidence naming the "
-           f"new id) or not-launched if nothing ran")
+           f"new id) or not-launched if nothing ran{rebind}")
 
 
 def resolve_dispatch(record: Record, resolved: Any, event: Record) -> None:
@@ -542,6 +567,11 @@ def validate_record(data: Any, path: Path) -> Record:
                                               and OBJECT_ID.fullmatch(record["resolved_revision"])
                                               and record["request"]["requested_revision"].startswith(HEAD_OF)):
         refuse(f"invalid resolved revision: {path}")
+    if "rebound_revision" in record and not (isinstance(record["rebound_revision"], str)
+                                             and OBJECT_ID.fullmatch(record["rebound_revision"])
+                                             and not record["request"].get("standing")
+                                             and OBJECT_ID.fullmatch(record["request"]["requested_revision"])):
+        refuse(f"invalid rebound revision: {path}")
     # A suspension is exactly the state and its two fields, on a standing record (see the header).
     if record["state"] == "suspended":
         nonempty(record, ["suspended_by", "suspended_from"])
@@ -1236,10 +1266,12 @@ def main(argv: list[str]) -> None:
         if record is None:
             refuse("unknown request_id")
         if set(data) - {"request_id", "state", "evidence", "observed_sha", "remote_checkout", "handle", "log", "verdict",
-                        "execution_host", "resolved_revision", "pinned_backend"}:
+                        "execution_host", "resolved_revision", "pinned_backend", "rebound_revision"}:
             refuse("unknown evidence fields")
         if "resolved_revision" in data and action != "dispatch":
             refuse("resolved_revision is only valid for dispatch")
+        if ("rebound_revision" in data) != (action == "rebind"):
+            refuse("rebound_revision is required for rebind, and only valid for it")
         nonempty(data, ["evidence"])
         # Evidence read on a named box binds to the box that was reserved: a run record at the
         # same path on another machine cannot conclude this assignment.
@@ -1302,6 +1334,34 @@ def main(argv: list[str]) -> None:
                        f"to reserved and dispatch it, which resolves the branch")
             # reserved means evidence establishes no launch occurred and no process can run.
             record["lease_token"] = token
+        elif action == "rebind":
+            # THE REBIND (see the header): the record's binding moves; its state and evidence do not.
+            if set(data) - {"request_id", "evidence", "rebound_revision"}:
+                refuse("rebind takes request_id, evidence and rebound_revision only: it records no run")
+            if record["lease_token"] != token:
+                refuse("adopted assignment must be reconciled before rebind")
+            new = data["rebound_revision"]
+            if not (isinstance(new, str) and OBJECT_ID.fullmatch(new)):
+                refuse("rebound_revision must be an exact Git object ID")
+            bound = bound_commit(record)
+            if bound is None:
+                refuse(f"{identity} binds no commit: a standing request or a revision that is no exact commit runs at "
+                       f"whatever commit it has, and a head-of request is bound by its dispatch; nothing to rebind")
+            if bound == new:
+                # A retry, or a rebind to what already binds: answered with the record, nothing written.
+                sync_directory(directory.parent)
+                sync_directory(directory)
+                print(json.dumps(record, indent=2))
+                return
+            seen = record.get("observed_sha")
+            if seen is not None and seen != new:
+                refuse(f"{identity} records observed_sha {seen}, evidence of a run at that commit: conclude it there, "
+                       f"and reserve {new} under a new request id")
+            if record["request"]["requested_revision"].startswith(HEAD_OF):
+                record["resolved_revision"] = new
+            else:
+                record["rebound_revision"] = new
+            state = record["state"]
         elif action == "conclude":
             nonempty(data, ["verdict", "log"])
             if data["verdict"] not in {"pass", "fail", "timeout", "cancelled", "not-launched"}:

@@ -145,11 +145,13 @@
 #                          # --file: a local file the runner's {file} word names on the box;
 #                          # --reads-no-config: a runner that reads no project configuration, asked no
 #                          # backend pin (the contract: lib/ludics/fleetworker/leg.py)
-#   fleet-worker.sh execution reserve|dispatch|record|reconcile|conclude <json-file>
+#   fleet-worker.sh execution reserve|dispatch|record|reconcile|rebind|conclude <json-file>
 #                          # every commit a payload names must exist on GitHub in its repository;
 #                          # a "head-of:<branch>" requested_revision is resolved at run/dispatch;
 #                          # a reserve/run/window payload's "checkout" (absolute, on the execution
-#                          # host; required of a standing one) is the record's, fixed (ludics-lite#731)
+#                          # host; required of a standing one) is the record's, fixed (ludics-lite#731);
+#                          # rebind {"request_id","evidence","rebound_revision"} moves a bound
+#                          # record's commit to a rebased head the coordinator confirms (ludics#829)
 #   fleet-worker.sh execution conclude <json-file> --observed-from <checkout>   # observed_sha is
 #                          # that checkout's HEAD, read on the execution host; a checkout that is
 #                          # not clean draws an OBSERVED-FROM WARNING on stderr (every form); every
