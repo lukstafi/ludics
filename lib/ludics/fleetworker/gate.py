@@ -17,6 +17,10 @@ verdict, and at a green it writes those jobs to the file; the gate prints one ``
 line per job when it admits. The file is read as an allowlist: at a green, a JSON array of
 objects whose ``job`` is a non-empty string and whose ``sha`` is 40 lower-case hex, and nothing
 else -- an empty, unwritten or malformed file refuses the gate.
+
+``execution integration-records`` (ludics-lite#811) prints the same records, so the coordinator's
+last-green reads (issue-wave SKILL.md, *On a regression* and the GPU loop) take the gate's selection
+rather than a hand-written second one: a read of the listing, never a write.
 """
 
 import json
@@ -27,6 +31,7 @@ import tempfile
 import urllib.parse
 from typing import Any, cast
 
+from ludics import cli
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import field, listing, records_of
 from ludics.fleetworker.identity import die
@@ -87,41 +92,93 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else ("" if value is None else str(value))
 
 
+def _loop_run(r: dict[str, Any], repo: str) -> bool:
+    """A coordinator's loop run that judged the repository: concluded, pass or fail at an exact
+    observed SHA, a non-standing correctness run of transport ``coordinator``, the repository
+    compared without case."""
+    sha = r.get("observed_sha")
+    return bool(
+        r.get("state") == "concluded"
+        and r.get("verdict") in ("pass", "fail")
+        and field(r, "request", "transport") == "coordinator"
+        and field(r, "request", "kind") == "correctness"
+        and isinstance(field(r, "request", "repository"), str)
+        and _ascii_downcase(field(r, "request", "repository")) == _ascii_downcase(repo)
+        and field(r, "request", "standing") in (None, False)
+        and isinstance(sha, str)
+        and re.fullmatch(r"[0-9a-f]{40}", sha)
+    )
+
+
+def _row(r: dict[str, Any]) -> str:
+    return _tsv([_text(r.get("observed_sha")), _text(r.get("verdict")), _text(r.get("request_id")), _text(r.get("updated_at"))])
+
+
+def loop_records(records: list[dict[str, Any]], repo: str, backend: str = "") -> list[dict[str, Any]]:
+    """The cc loop's records for the repository: a loop run (``_loop_run``) marked
+    ``"integration": true``. With ``backend``, the GPU loop's records of that backend instead
+    (ludics-lite#811): a loop run whose record carries ``"pinned_backend": "<backend>"``
+    (registry.py, THE BACKEND MARK), never an unmarked one, whatever its purpose says."""
+    return [
+        r for r in records
+        if (r.get("pinned_backend") == backend if backend else field(r, "request", "integration") is True)
+        and _loop_run(r, repo)
+    ]  # fmt: skip
+
+
 def integration_rows(records: list[dict[str, Any]], repo: str) -> str:
-    """The registry's INTEGRATION RECORDS for the repository (ludics-lite#401): concluded, pass or
-    fail at an exact observed SHA, a coordinator's non-standing correctness run marked
-    ``"integration": true``, the repository compared without case. One
-    ``<sha>\\t<verdict>\\t<request id>\\t<concluded at>`` row each."""
-    rows: list[str] = []
-    for r in records:
-        sha = r.get("observed_sha")
-        if not (
-            r.get("state") == "concluded"
-            and r.get("verdict") in ("pass", "fail")
-            and field(r, "request", "integration") is True
-            and field(r, "request", "transport") == "coordinator"
-            and field(r, "request", "kind") == "correctness"
-            and isinstance(field(r, "request", "repository"), str)
-            and _ascii_downcase(field(r, "request", "repository")) == _ascii_downcase(repo)
-            and field(r, "request", "standing") in (None, False)
-            and isinstance(sha, str)
-            and re.fullmatch(r"[0-9a-f]{40}", sha)
-        ):
-            continue
-        rows.append(_tsv([sha, _text(r.get("verdict")), _text(r.get("request_id")), _text(r.get("updated_at"))]))
-    return "\n".join(rows)
+    """The registry's INTEGRATION RECORDS for the repository (ludics-lite#401), the cc loop's
+    (``loop_records``): one ``<sha>\\t<verdict>\\t<request id>\\t<concluded at>`` row each."""
+    return "\n".join(_row(r) for r in loop_records(records, repo))
+
+
+def registry_records(cfg: Config) -> list[dict[str, Any]] | None:
+    """The registry's records, or None when it could not be read."""
+    done = listing(cfg)
+    return records_of(done.out) if done.rc == 0 else None
 
 
 def integration_records(cfg: Config, repo: str) -> str | None:
     """The rows, or None when the registry could not be read (which refuses the gate: a failed
     record there would outrank a green PR head)."""
-    done = listing(cfg)
-    if done.rc != 0:
-        return None
-    records = records_of(done.out)
+    records = registry_records(cfg)
+    return None if records is None else integration_rows(records, repo)
+
+
+RECORDS_USAGE = "execution integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas]"
+
+
+def cmd_integration_records(cfg: Config, args: list[str]) -> int:
+    """``execution integration-records`` (ludics-lite#811): the rows the base gate reads, printed, so
+    a last-green read takes the gate's own selection instead of a second, hand-written one. A read:
+    no lease, no write. ``--verdict`` keeps one verdict's rows, ``--pinned-backend`` reads the GPU
+    loop's records of that backend instead of the cc loop's, and ``--shas`` prints the SHA column
+    alone, one per line, the shape ``pr-review.sh base --last-green <red> --greens`` reads.
+
+    Exit 0 with the rows (none is an empty output), 2 usage, 3 when the registry could not be read:
+    unknown, never an empty list, so a caller saving the output first cannot take an unread
+    registry for no candidates."""
+    if not args or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args[0]):
+        die(RECORDS_USAGE)
+    repo, rest = args[0], args[1:]
+    verdict, backend, shas = "", "", False
+    while rest:
+        arg, rest = rest[0], rest[1:]
+        if arg == "--shas":
+            shas = True
+        elif arg == "--verdict" and rest and rest[0] in ("pass", "fail"):
+            verdict, rest = rest[0], rest[1:]
+        elif arg == "--pinned-backend" and rest and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", rest[0]):
+            backend, rest = rest[0], rest[1:]
+        else:
+            die(RECORDS_USAGE)
+    records = registry_records(cfg)
     if records is None:
-        return None
-    return integration_rows(records, repo)
+        err(f"EXECUTION INTEGRATION-RECORDS: the registry on {cfg.anchor} could not be read; unknown, not empty")
+        return 3
+    kept = [r for r in loop_records(records, repo, backend) if not verdict or r.get("verdict") == verdict]
+    cli.emit("\n".join(_text(r.get("observed_sha")) if shas else _row(r) for r in kept))
+    return 0
 
 
 def stage_records(rows: str) -> str | None:

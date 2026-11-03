@@ -2537,6 +2537,15 @@ done
 expect "the gate hands the checker its target's integration records" 0 "BASE GREEN" -- "$FW" gate --target-repo example/project
 grep -Fq -- '--repo example/project base --wait=360 --interim --advisory-red FILE --integration-records ' "$BASE_CALL_LOG" && ok "...after the wait, as a file" || ko "no records file handed over: $(cat "$BASE_CALL_LOG")"
 [ "$(grep -c '^records: ' "$BASE_CALL_LOG")" = 1 ] && grep -q "^records: $ran	pass	int-a	" "$BASE_CALL_LOG" && ok "...only the marked integration pass/fail for that repository" || ko "wrong records offered: $(cat "$BASE_CALL_LOG")"
+# `execution integration-records` prints those same rows, for a last-green read (ludics-lite#811),
+# and an unread registry is exit 3, never an empty list.
+out=$("${FWX[@]}" execution integration-records example/project 2>&1); rc=$?
+[ "$rc" = 0 ] && [ "$(printf '%s\n' "$out" | grep -c .)" = 1 ] && grep -q "^$ran	pass	int-a	" <<<"$out" \
+  && ok "execution integration-records prints the gate's rows" || ko "integration-records rows (rc=$rc): $out"
+out=$("${FWX[@]}" execution integration-records example/project --verdict pass --shas 2>&1); rc=$?
+[ "$rc" = 0 ] && [ "$out" = "$ran" ] && ok "...and --verdict pass --shas the SHA alone" || ko "integration-records --shas (rc=$rc): $out"
+expect "...and an anchor that does not answer is exit 3, unknown" 3 "could not be read; unknown, not empty" -- \
+  env FLEET_ANCHOR=far-anchor "${FWX[@]}" execution integration-records example/project --shas
 # (With no record for the target, the call carries no flag at all: the "base gate" section's
 # exact call lines above pin that, since its gates ran before any record existed.)
 # A record concluding while the checker reads is one its verdict did not see: the green is refused

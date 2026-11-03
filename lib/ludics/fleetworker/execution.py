@@ -929,7 +929,8 @@ def execution_refresh(cfg: Config, record_text: str) -> None:
 
 LIST_USAGE = "execution list: expected --active, --compact or --host <box>"
 USAGE = (
-    "execution: list, slot -- <command>, hold -- <command>, leg --request <id> ... -- <runner>,"
+    "execution: list, slot -- <command>, hold -- <command>,"
+    " integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas], leg --request <id> ... -- <runner>,"
     " run|reserve|dispatch|record|reconcile|rebind|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
     " or tip-run <json-file> [--tip <branch>] --checkout <dir> -- <command>, tip-run --wait <id>"
@@ -1495,6 +1496,12 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             from ludics.fleetworker import slot
 
             return slot.cmd_hold(cfg, args[1:])
+        case "integration-records":
+            # The rows the base gate reads, printed for a last-green read (ludics-lite#811): a read
+            # of the listing, no lease, as ``list`` is.
+            from ludics.fleetworker import gate
+
+            return gate.cmd_integration_records(cfg, args[1:])
         case "tip-run":
             # A loop run reserved, prepared and started in one call (ludics-lite#615): the
             # registry steps are this verb's own, invoked as fleet-worker.sh invokes them.

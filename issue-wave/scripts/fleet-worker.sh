@@ -104,6 +104,10 @@
 #   fleet-worker.sh load
 #   fleet-worker.sh execution list [--active] [--compact] [--host <box>]   # --host: one box's
 #                          # records, an alias (rog) selecting its roster entry's (rog-nv-linux)
+#   fleet-worker.sh execution integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas]
+#                          # the cc loop's records the base gate reads (or, with --pinned-backend,
+#                          # the GPU loop's of that backend), one sha/verdict/id/time row each,
+#                          # --shas the SHAs alone for base --last-green --greens; exit 3 unread
 #   fleet-worker.sh execution slot [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>]
 #                          -- <command...>
 #                          # hold one of THIS box's run-time correctness slots around a suite or
