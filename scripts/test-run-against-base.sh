@@ -56,7 +56,17 @@
 #     live tree's files, index and stash are untouched (#765);
 #   - a plain base run that carries every file the branch changes warns that it is the branch's
 #     own run; a mutant run, or a branch with an uncarried change (untracked included), does not
-#     (#501).
+#     (#501);
+#   - --tally <ERE> / RUN_AGAINST_BASE_TALLY makes the last matching line the result line's
+#     verdict, and a run with no matching line says so instead of showing its last line; an empty
+#     or malformed pattern, and --red without --mutants, exit 125 (#779);
+#   - --mutants <file> runs one mutant per line (comments and blanks skipped) and reports each as
+#     killed with its red lines (at most 10 listed; this helper's own lines never count), killed
+#     with nothing red, timed out, SURVIVED or refused, with the closing count and exit 125 / 1 /
+#     0; a --mutate, --base, --timeout or --tally beside it reaches every run; a bad line (no
+#     expression, a file --mutate refuses, an expression sed refuses, a carriage return), an empty
+#     list and a missing one exit 125 before any run; TERM or INT mid-batch stops the run in
+#     flight, its suite and its worktree, and starts no further mutant (#779).
 #
 # Usage: test-run-against-base.sh   (exit 0 all pass, 1 otherwise)
 
