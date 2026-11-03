@@ -1,9 +1,8 @@
 """ludics.bgrun: bg-run.sh wait's verdict line, read in one place (ludics-lite#826).
 
-Every verdict form, the finished-earlier marker included, through both readers -- ``parse`` and
-the shell form ``SHELL_VERDICT`` that ``conclude --from-bg-run``'s far side runs -- from one table,
-so the two cannot disagree; then the lines the real bg-run.sh prints, one directory per verdict,
-so the table is the writer's and not this file's.
+Every verdict form, the finished-earlier marker included, through ``parse``, from one table; then
+the lines the real bg-run.sh prints, one directory per verdict, so the table is the writer's and not
+this file's.
 """
 
 import os
@@ -17,11 +16,10 @@ from ludics.bgrun import Word
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 BG_RUN = os.path.join(ROOT, "issue-wave", "scripts", "bg-run.sh")
-BASH = shutil.which("bash") or "bash"
 
 STAMP = "(finished earlier, at 2026-10-28T15:04:05Z)"
 
-# (line, exit, word, status, earlier): what each reader must make of the line with that exit.
+# (line, exit, word, status, earlier): what parse must make of the line with that exit.
 READS: tuple[tuple[str, int, Word | None, int | None, bool], ...] = (
     ("rc=0", 0, Word.RC, 0, False),
     ("rc=1", 0, Word.RC, 1, False),
@@ -59,14 +57,6 @@ READS: tuple[tuple[str, int, Word | None, int | None, bool], ...] = (
 )
 
 
-def shell_read(line: str, exit_status: int) -> tuple[int, str, str, str]:
-    """``bg_verdict "$line" "$exit"`` under bash: its status, bg_word, bg_status, bg_earlier."""
-    script = bgrun.SHELL_VERDICT + 'bg_verdict "$1" "$2"; r=$?\nprintf "%s|%s|%s|%s" "$r" "$bg_word" "$bg_status" "$bg_earlier"\n'
-    done = subprocess.run([BASH, "-c", script, "bg", line, str(exit_status)], capture_output=True, text=True, check=True)
-    r, word, status, earlier = done.stdout.split("|")
-    return int(r), word, status, earlier
-
-
 class Parse(unittest.TestCase):
     def test_every_form(self) -> None:
         for line, exit_status, word, status, earlier in READS:
@@ -93,17 +83,8 @@ class Parse(unittest.TestCase):
                          {"rc": 0, "RUNNING": 3, "STARTING": 4, "DIED": 5, "STOPPED": 7})
 
 
-class ShellForm(unittest.TestCase):
-    def test_the_shell_form_reads_every_line_as_parse_does(self) -> None:
-        for line, exit_status, word, status, earlier in READS:
-            with self.subTest(line=line, exit=exit_status):
-                want = (1, "", "", "") if word is None else (
-                    0, word.value, "" if status is None else str(status), "1" if earlier else "")
-                self.assertEqual(shell_read(line, exit_status), want)
-
-
 class TheWriter(unittest.TestCase):
-    """The lines bg-run.sh itself prints, one directory per verdict, read by both readers."""
+    """The lines bg-run.sh itself prints, one directory per verdict, read by parse."""
 
     def setUp(self) -> None:
         self.root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-bgrun-test."))
@@ -130,9 +111,6 @@ class TheWriter(unittest.TestCase):
         self.assertIsNotNone(got, f"{line!r} (exit {exit_status})")
         assert got is not None
         self.assertEqual(got.word, want, line)
-        shell = shell_read(line, exit_status)
-        self.assertEqual(shell[:3], (0, got.word.value, "" if got.status is None else str(got.status)), line)
-        self.assertEqual(shell[3], "1" if got.earlier else "")
         return got
 
     def test_every_verdict_bg_run_prints(self) -> None:

@@ -16,7 +16,9 @@ are its own header's.
 The far sides of ``conclude --from-run``, ``--from-bg-run`` and ``--standing-handback`` run on the
 box that holds the run, and read its record with the tools that wrote it. A test-run.sh record has
 one far side for both forms that read it, ``FROM_RUN``, which prints its facts and refuses nothing:
-each form's refusals are Python's (ludics-lite#657).
+each form's refusals are Python's (ludics-lite#657). A bg-run.sh directory's far side,
+``FROM_BG_RUN_HEAD``/``_TAIL``, is the same: it prints bg-run.sh wait's exit and line and the log's
+sentinel, and ``bg_run_verdict`` refuses or maps them (ludics-lite#713).
 
 Every commit a payload names is checked before the anchor is asked (ludics-lite#561): what is read,
 where, and the outcomes are ``ludics.fleetworker.revision``'s header.
@@ -219,44 +221,42 @@ printf 'exit=%s\nwt=%s\ngone=%s\nrunner=%s\nalive=%s\npair=%s\ndirty=%s\nrel=%s\
 printf 'launched=%s\n' "$rhead"
 """
 
-# Far side of `conclude --from-bg-run`, on the box that holds the directory: bg-run.sh's own `wait
-# <dir> --within 0` gives the verdict, so the directory contract keeps one reader, and its line is
-# read by ludics.bgrun's shell form (`bg_verdict`), so the line's grammar keeps one too. The
-# coordinator's copy of bg-run.sh travels in this script (transport's THE CARRIED BG-RUN.SH), so the
-# far box's skills checkout cannot read the directory with another version. The one thing read past `wait` is the runner's own exit
-# sentinel in `log`, a fail-closed allowlist: a whole line `exit: <status>` or `<name>: exit:
-# <status>`, the name [A-Za-z0-9._-]+ and the status 0-255 without leading zeros; the LAST such
-# line wins. Prints `status=rc`, `rc=` and `sentinel=` lines; `status=stopped` alone for wait's
-# STOPPED (exit 7: `bg-run.sh stop` ended the run and no process of it is left, ludics-lite#638),
-# which carries no status to read; or one FROM-BG-RUN REFUSED line.
+# The runner's own exit sentinel in a bg-run `log`, a fail-closed allowlist: a whole line `exit:
+# <status>` or `<name>: exit: <status>`, the name [A-Za-z0-9._-]+ and the status 0-255 without
+# leading zeros. One spelling, an ERE that Python's `re` reads alike, for the far side's grep and
+# for `bg_run_facts`, which takes no other line.
+SENTINEL = "([A-Za-z0-9._-]+: )?exit: (0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])"
+
+# Far side of `conclude --from-bg-run`, on the box that holds the directory. It prints facts and
+# refuses nothing, as FROM_RUN does for a test-run.sh record (ludics-lite#713, after #657): every
+# refusal and the verdict are `conclude_from_bg_run`'s. bg-run.sh's own `wait <dir> --within 0`
+# reads the directory, so its contract keeps one reader -- the rc file is never read past it, its
+# status is wait's line's -- and the coordinator's copy of bg-run.sh travels in this script
+# (transport's THE CARRIED BG-RUN.SH), so the far box's skills checkout cannot read the directory
+# with another version. Arg: the directory. Prints, one fact per line, in this order:
+#   dir       1, or 0 (no such directory: nothing else is read);
+#   scratch   0, alone after dir=1, when no scratch file for wait's output can be made;
+#   wait      wait's exit status;
+#   log       1 when `log` is a regular file, else 0;
+#   sentinel  the LAST line of `log` that is a whole SENTINEL, or empty -- read only when wait
+#             exits 0, the one verdict whose conclusion reads it (STOPPED's does not);
+#   said      LAST, the first line of wait's output (stdout and stderr together), as `head -n1`
+#             reads it: one line, its grammar ludics.bgrun's, read on the near side.
 FROM_BG_RUN_HEAD = r"""dir="$1"
-refuse() { echo "FROM-BG-RUN REFUSED: $*"; exit 1; }
-[ -d "$dir" ] || refuse "no run directory $dir on $BOX"
-tmp=$(mktemp "${TMPDIR:-/tmp}/fw-bg-run.XXXXXX") || refuse "cannot create a scratch file on $BOX"
+[ -d "$dir" ] || { printf 'dir=0\n'; exit 0; }
+printf 'dir=1\n'
+tmp=$(mktemp "${TMPDIR:-/tmp}/fw-bg-run.XXXXXX") || { printf 'scratch=0\n'; exit 0; }
 bash -s -- wait "$dir" --within 0 > "$tmp" 2>&1 <<'""" + BG_RUN_TAG + """'
 """
 FROM_BG_RUN_TAIL = r"""wrc=$?
 said=$(head -n1 "$tmp"); rm -f "$tmp"
-""" + bgrun.SHELL_VERDICT + r"""# The line is read by the one grammar (ludics.bgrun): its first word, which must be the exit's, so
-# a run long finished reads `rc=<n> (finished earlier, at ...)` as rc=<n>. The exit picks the arm
-# once the two agree.
-bg_verdict "$said" "$wrc" || refuse "bg-run.sh wait exit $wrc: $said"
-case "$wrc" in
-  0) ;;
-  3) refuse "bg-run.sh wait: RUNNING -- $dir has no rc and its task or command is alive; conclude once it finishes" ;;
-  4) refuse "bg-run.sh wait: STARTING -- no task has published a pid in $dir (never started, or not yet)" ;;
-  # DIED is never a conclusion: bg-run.sh's header names a window where it is wrong (a wrapper
-  # killed alone before its command published `cpid`), and no pause bounds how late the command
-  # may still publish and run. The coordinator checks for the run's processes itself.
-  5) refuse "bg-run.sh wait: DIED -- the task was killed before the command returned; bg-run cannot rule out a command that outlived it unpublished, so make sure no process of the run remains, then conclude it with a JSON payload (cancelled)" ;;
-  # STOPPED is a conclusion: the stop signalled the run's whole group, a command that had not yet
-  # published cpid included, and wait reads it only once no member of that group is left. What it
-  # cannot see is a process that left the group itself (bg-run.sh's header, on stop).
-  7) printf 'status=stopped\n'; exit 0 ;;
-esac
-[ -f "$dir/log" ] || refuse "$dir has an rc but no log"
-sentinel=$(LC_ALL=C grep -a -E '^([A-Za-z0-9._-]+: )?exit: (0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$' "$dir/log" | tail -n 1)
-printf 'status=rc\nrc=%s\nsentinel=%s\n' "$bg_status" "$sentinel"
+log=0; [ -f "$dir/log" ] && log=1
+sentinel=
+if [ "$wrc" = 0 ] && [ "$log" = 1 ]; then
+  sentinel=$(LC_ALL=C grep -a -E '^""" + SENTINEL + r"""$' "$dir/log" | tail -n 1)
+fi
+printf 'wait=%s\nlog=%s\nsentinel=%s\n' "$wrc" "$log" "$sentinel"
+printf 'said=%s\n' "$said"
 """
 
 
@@ -490,6 +490,68 @@ def conclude_from_run(cfg: Config, run_dir: str, request: str, box: str, sha: st
     )
 
 
+BG_RUN_KEYS = ("wait", "log", "sentinel")
+
+
+def bg_run_facts(text: str) -> dict[str, str] | None:
+    """FROM_BG_RUN's facts by key, or None for anything but its own shape, a fail-closed reading:
+    the keys it prints, each once and in its order, ``said`` last and whole, every other value one
+    line of its own vocabulary (a sentinel is a whole SENTINEL, and read only beside wait's 0)."""
+    if text == "dir=0":
+        return {"dir": "0"}
+    if text == "dir=1\nscratch=0":
+        return {"dir": "1", "scratch": "0"}
+    lines, cut, said = text.partition("\nsaid=")
+    rows = lines.split("\n")
+    if not cut or rows[0] != "dir=1" or len(rows) != 1 + len(BG_RUN_KEYS) or "\n" in said:
+        return None
+    if not all(row.startswith(key + "=") for key, row in zip(BG_RUN_KEYS, rows[1:])):
+        return None
+    facts = {key: row[len(key) + 1 :] for key, row in zip(BG_RUN_KEYS, rows[1:])}
+    sentinel = facts["sentinel"]
+    if not (re.fullmatch(r"0|[1-9][0-9]*", facts["wait"]) and facts["log"] in ("0", "1")
+            and (sentinel == "" or (facts["wait"] == "0" and facts["log"] == "1"
+                                    and re.fullmatch(SENTINEL, sentinel) is not None))):  # fmt: skip
+        return None
+    facts.update(dir="1", said=said)
+    return facts
+
+
+def bg_run_verdict(facts: dict[str, str], run_dir: str, box: str) -> bgrun.Verdict | Refusal:
+    """What ``--from-bg-run`` makes of FROM_BG_RUN's facts: wait's verdict when it concludes (an rc
+    with a log, or STOPPED), else the refusal -- no directory, no scratch file, a line that states
+    no verdict or not the exit's, RUNNING, STARTING, DIED, an rc with no log."""
+    if facts["dir"] == "0":
+        return Refusal(f"FROM-BG-RUN REFUSED: no run directory {run_dir} on {box}", 1)
+    if "scratch" in facts:
+        return Refusal(f"FROM-BG-RUN REFUSED: cannot create a scratch file on {box}", 1)
+    wrc, said = facts["wait"], facts["said"]
+    # The line is read by the one grammar (ludics.bgrun): its first word, which must be the exit's,
+    # so a run long finished reads `rc=<n> (finished earlier, at ...)` as rc=<n>.
+    verdict = bgrun.parse(said, int(wrc))
+    if verdict is None:
+        why = f"bg-run.sh wait exit {wrc}: {said}"
+    elif verdict.word is bgrun.Word.RUNNING:
+        why = f"bg-run.sh wait: RUNNING -- {run_dir} has no rc and its task or command is alive; conclude once it finishes"
+    elif verdict.word is bgrun.Word.STARTING:
+        why = f"bg-run.sh wait: STARTING -- no task has published a pid in {run_dir} (never started, or not yet)"
+    elif verdict.word is bgrun.Word.DIED:
+        # DIED is never a conclusion: bg-run.sh's header names a window where it is wrong (a wrapper
+        # killed alone before its command published `cpid`), and no pause bounds how late the
+        # command may still publish and run. The coordinator checks for the run's processes itself.
+        why = ("bg-run.sh wait: DIED -- the task was killed before the command returned; bg-run cannot rule out"
+               " a command that outlived it unpublished, so make sure no process of the run remains, then conclude"
+               " it with a JSON payload (cancelled)")
+    elif verdict.word is bgrun.Word.RC and facts["log"] != "1":
+        why = f"{run_dir} has an rc but no log"
+    else:
+        # STOPPED is a conclusion: the stop signalled the run's whole group, a command that had not
+        # yet published cpid included, and wait reads it only once no member of that group is left.
+        # What it cannot see is a process that left the group itself (bg-run.sh's header, on stop).
+        return verdict
+    return Refusal(f"FROM-BG-RUN REFUSED: {why}", 1)
+
+
 def conclude_from_bg_run(
     cfg: Config,
     run_dir: str,
@@ -499,7 +561,7 @@ def conclude_from_bg_run(
     sha: str,
     checkout: str,
     evidence: str,
-    bgrun: str,
+    bgrun_path: str,
     source: str = REPORTED,
 ) -> Conclusion:
     """The conclude payload read off a bg-run.sh directory. The verdict mapping:
@@ -509,25 +571,27 @@ def conclude_from_bg_run(
         cancelled; anything else fail;
       - bg-run's STOPPED (``bg-run.sh stop`` ended the run, and no process of it is left) is
         cancelled: the run was ended on purpose, and the log's sentinel is not read;
-      - bg-run's DIED is refused, not mapped, as are RUNNING and STARTING.
+      - bg-run's DIED is refused, not mapped, as are RUNNING and STARTING (``bg_run_verdict``).
     The read box need not be the execution host (a trip driven over ssh leaves its directory on
     the box that drove it), so the payload carries no ``execution_host`` binding, and the log and
     handle name the box read, ``<box>:<path>``."""
-    script = prelude(cfg, box) + FROM_BG_RUN_HEAD + carried_bg_run(bgrun) + FROM_BG_RUN_TAIL
+    script = prelude(cfg, box) + FROM_BG_RUN_HEAD + carried_bg_run(bgrun_path) + FROM_BG_RUN_TAIL
     done = run_on(cfg, box, script, [run_dir], capture=True)
     if done.unreachable:
         return Refusal(f"FROM-BG-RUN UNREACHABLE {box}: nothing concluded", 4)
-    facts = substitution(done.out)
-    if done.rc != 0:
-        return Refusal(facts, 1)
-    status = facts_of(facts, "status")
-    if status == "stopped" and facts == "status=stopped":
+    text = substitution(done.out)
+    facts = bg_run_facts(text) if done.rc == 0 else None
+    if facts is None:
+        return Refusal(f"FROM-BG-RUN REFUSED: unreadable run facts from {box} (exit {done.rc}): {text}", 1)
+    read = bg_run_verdict(facts, run_dir, box)
+    if isinstance(read, Refusal):
+        return read
+    if read.word is bgrun.Word.STOPPED:
         verdict = "cancelled"
         note = f"bg-run {run_dir} on {box}: STOPPED by bg-run.sh stop before the command returned, no process of it left"
-    elif status == "rc":
-        code, sentinel = facts_of(facts, "rc"), facts_of(facts, "sentinel")
-        if not re.fullmatch(r"[0-9]+", code):
-            return Refusal(f"FROM-BG-RUN REFUSED: unreadable run facts from {box}: {facts}", 1)
+    else:
+        # rc's status as the line spells it (a leading zero is no pass), and the sentinel beside it.
+        code, sentinel = facts["said"].partition(" ")[0].removeprefix("rc="), facts["sentinel"]
         note = f"bg-run {run_dir} on {box}: rc={code}"
         if sentinel:
             scode = sentinel.rsplit("exit: ", 1)[-1]
@@ -536,8 +600,6 @@ def conclude_from_bg_run(
                 code = scode
         verdict = run_verdict(code, timeout_codes=("124", "142"))
         note += "; the command returned"
-    else:
-        return Refusal(f"FROM-BG-RUN REFUSED: unreadable run facts from {box}: {facts}", 1)
     if not evidence:
         evidence = f"{note}; revision {sha} {source}"
     elif source != REPORTED:
