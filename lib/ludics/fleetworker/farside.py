@@ -41,12 +41,41 @@ tm() { if [ -n "$TMUX_SOCKET" ]; then tmux -L "$TMUX_SOCKET" "$@"; else tmux "$@
 # launch's probe session ending is that moment (ludics-lite#658). Any other refusal, or that one
 # five times running, is final, with the last attempt's message on stderr. For the GitHub probe's
 # throwaway session only: the same message can follow a session the server did create before it
-# exited, so a worker's session retried this way could start a second copy of the worker, and
-# launch and unstick keep their single try and its refusal.
+# exited, so a worker's session retried this way could start a second copy of the worker; launch
+# and unstick start theirs with tm_worker, which retries only once nothing can have started.
 tm_new() {
   local i err=""
   for i in 1 2 3 4 5; do
     err=$(tm new-session "$@" 2>&1 >/dev/null) && return 0
+    case "$err" in *"server exited unexpectedly"*) sleep 0.2 ;; *) break ;; esac
+  done
+  printf '%s\n' "$err" >&2; return 1
+}
+# tm_worker <name> <dir>: the worker's own session, running <dir>/run.sh, tried again as tm_new's
+# is, but only once nothing can have started (#716). Each try's command passes a FENCE before it
+# execs run.sh: a directory made for that try alone, which the command removes (`rmdir <fence> &&
+# exec bash run.sh`). rmdir is atomic and a command whose rmdir fails exits, so each fence is
+# passed once, by its try's command or by this function. After a try that met an exiting server,
+# a live session by the worker's name is that try having worked: its command passes the fence, or
+# has (the caller holds the name's lock and found no session before). After any failed try
+# this function removes the fence itself: success proves that try's command never started run.sh
+# and never will (a late one finds no fence), so a retry is safe; failure proves run.sh started and
+# its session is gone, and nothing is retried. Returns 0 with the session up, 2 when the run
+# started and its session is gone, 1 on any other refusal (any message but "server exited
+# unexpectedly", or that one five times running), with tmux's last message on stderr.
+# Its boundary: it proves which try's command started, never what the run did after. A retry
+# starts a server from this shell, as the first try would have with none running; the
+# tmux_env_check and tmux_gh_check the caller ran just before are not repeated (the probe's own
+# session ending is a server's exit again). Fences left by a session that never ran its command
+# are removed (claimed) on the next call.
+tm_worker() {
+  local s f i err; s=$(sess "$1")
+  for f in "$2"/start.*; do [ ! -d "$f" ] || rmdir "$f" 2>/dev/null; done
+  for i in 1 2 3 4 5; do
+    f=$(mktemp -d "$2/start.XXXXXX" 2>/dev/null) || { printf '%s\n' "cannot make a start fence under $2" >&2; return 1; }
+    err=$(tm new-session -d -s "$s" "rmdir $(printf '%q' "$f") 2>/dev/null && exec bash $(printf '%q' "$2/run.sh")" 2>&1 >/dev/null) && return 0
+    case "$err" in *"server exited unexpectedly"*) ! tm has-session -t "=$s" 2>/dev/null || return 0 ;; esac
+    if ! rmdir "$f" 2>/dev/null; then alive "$1" && return 0; printf '%s\n' "$err" >&2; return 2; fi
     case "$err" in *"server exited unexpectedly"*) sleep 0.2 ;; *) break ;; esac
   done
   printf '%s\n' "$err" >&2; return 1
@@ -1045,7 +1074,12 @@ fi
 } > "$d/meta" || refuse "cannot write $d/meta"
 msg=$(tmux_env_check) || refuse "$msg"   # the preflight's read may be minutes old
 tmux_gh_check || refuse "$tmux_gh_msg"   # and so may its GitHub probe of the server
-tm new-session -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")" || refuse "tmux failed"
+tm_worker "$name" "$d"; trc=$?
+if [ "$trc" = 2 ]; then
+  started=1   # run.sh ran: its record is the evidence of what it did, never rolled back
+  echo "LAUNCH REFUSED $BOX/$name: tmux failed after the worker's run.sh had started, so it was not tried again; the record is kept: \`fleet-worker.sh status $BOX $name\` reads what ran, then unstick it, or --replace"; exit 1
+fi
+[ "$trc" = 0 ] || refuse "tmux failed"
 started=1
 # Ownership is now visible as a live session; the box-wide lock can go.
 release_lock "$blaunch"; blaunch=""
@@ -1509,7 +1543,12 @@ if [ "$kind" = claude ]; then
   ilines=$il
   printf '%s\n' "$line" >> "$d/input.jsonl" 2>/dev/null || { echo "UNSTICK REFUSED $BOX/$name: cannot append to $d/input.jsonl"; exit 1; }
 fi
-if ! tm new-session -d -s "$(sess "$name")" "bash $(printf '%q' "$d/run.sh")"; then
+tm_worker "$name" "$d"; trc=$?
+if [ "$trc" = 2 ]; then
+  started=1   # run.sh ran: meta and the input line describe that run; the previous exit goes, as on a start
+  echo "UNSTICK REFUSED $BOX/$name: tmux failed after the resumed run.sh had started, so it was not tried again; the record describes that run: \`fleet-worker.sh status $BOX $name\` reads it"; exit 1
+fi
+if [ "$trc" != 0 ]; then
   [ -e "$d/exit.prev" ] && mv -f "$d/exit.prev" "$d/exit"
   mv -f "$d/meta.prev" "$d/meta"
   echo "UNSTICK REFUSED $BOX/$name: tmux failed (previous exit record and meta kept)"; exit 1
