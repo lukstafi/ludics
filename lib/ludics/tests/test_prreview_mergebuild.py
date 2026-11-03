@@ -38,6 +38,14 @@ class Grammar(unittest.TestCase):
         self.assertEqual(config, BuildConfig("dune build @check", ("*.ml", "*.mli"), 600))
         self.assertEqual(err, "")
 
+    def test_comments_lines_name_globs(self) -> None:
+        config, err = parsed("command make\ninput *.ml\ncomments *.mli\ncomments  lib/*.ml \n")
+        self.assertEqual(config and config.comments, ("*.mli", "lib/*.ml"))
+        self.assertEqual(err, "")
+        config, err = parsed("command make\ninput *.ml\ncomments\n")
+        self.assertIsNone(config, "a comments line names a glob")
+        self.assertIn("`comments <glob>`", err)
+
     def test_the_timeout_defaults(self) -> None:
         config, _ = parsed("command make\ninput *.c\n")
         self.assertEqual(config, BuildConfig("make", ("*.c",), mergebuild.DEFAULT_TIMEOUT))
@@ -768,6 +776,131 @@ class BaseAlone(Repo):
                     )
             self.assertEqual(caught.exception.rc, want, out.getvalue() + caught.exception.message)
             self.assertIn("main alone", caught.exception.message)
+
+
+ML = ["(* The library. *)", "let a = 1", "", "", "", "", "", "", "let b = 2 (* two *)", ""]
+RAN = "echo the build ran; exit 1"  # a build that runs is refused, so a merge that proceeds built nothing
+
+
+class CommentsOnly(Repo):
+    """COMMENTS ONLY (#861): a build input one side changed in comments alone does not count for
+    that side, where a ``comments`` glob names it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        with open(os.path.join(self.work, "lib.ml"), "w", encoding="utf-8") as f:
+            f.write("\n".join(ML))
+        git(self.work, "add", "lib.ml")
+        git(self.work, "commit", "-q", "-m", "lib.ml")
+        git(self.work, "push", "-q", self.remote, "HEAD:refs/heads/main")
+
+    def ml(self, path: str, first: str, last: str) -> None:
+        with open(os.path.join(self.work, path), "w", encoding="utf-8") as f:
+            f.write("\n".join([first, *ML[1:-2], last, ""]))
+
+    def ml_sides(self, pr_last: str, base_first: str, *, rename: bool = False) -> str:
+        """The PR rewrites lib.ml's last line, the base its first (renaming it to lib2.ml when
+        ``rename``): disjoint hunks. Returns the PR's head; sets ``self.tip``."""
+        self.ml("lib.ml", ML[0], pr_last)
+        git(self.work, "commit", "-q", "-a", "-m", "pr")
+        git(self.work, "push", "-q", self.remote, "HEAD:refs/pull/7/head")
+        head = git(self.work, "rev-parse", "HEAD")
+        git(self.work, "checkout", "-q", "--detach", "HEAD~1")
+        self.ml("lib.ml", base_first, ML[-2])
+        if rename:
+            git(self.work, "mv", "lib.ml", "lib2.ml")
+        git(self.work, "commit", "-q", "-a", "-m", "base")
+        git(self.work, "push", "-q", self.remote, "HEAD:refs/heads/main")
+        self.tip = git(self.work, "rev-parse", "HEAD")
+        return head
+
+    def run_build(
+        self, head: str, config: BuildConfig, cand: mergebuild.Candidates | None
+    ) -> tuple[int, str]:
+        refs = self.refs()
+        os.chdir(self.clone)
+        out = io.StringIO()
+        rc = 0
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                mergebuild._build(  # pyright: ignore[reportPrivateUsage]
+                    "owner/repo", "7", head, "main", self.tip, config, "test", candidates=cand,
+                )
+            except cli.Exit as exc:
+                rc = exc.rc
+                out.write(exc.message + "\n")
+        self.assert_untouched(refs)
+        return rc, out.getvalue()
+
+    SAME = BuildConfig(RAN, ("*.ml",), 60, comments=("*.ml",))
+    SHARED = mergebuild.Candidates(("lib.ml",), (), (), frozenset())
+
+    def test_a_comment_only_side_merges_without_a_build(self) -> None:
+        head = self.ml_sides("let b = 3 (* two *)", "(* The library, reworded\n   over two lines. *)")
+        rc, out = self.run_build(head, self.SAME, self.SHARED)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(
+            "no build — each of the 1 build input(s) changed on both sides (lib.ml) changed in comments only"
+            " on one side (comments *.ml)", out,
+        )
+        self.assertNotIn("the build ran", out)
+        self.assertNotIn("building", out)
+
+    def test_code_on_both_sides_still_builds(self) -> None:
+        head = self.ml_sides("let b = 3 (* two *)", "let z = 0")
+        rc, out = self.run_build(head, self.SAME, self.SHARED)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("changed in code on both sides: lib.ml", out)
+        self.assertIn("the build ran", out)
+
+    def test_without_a_comments_glob_on_the_path_it_builds(self) -> None:
+        head = self.ml_sides("let b = 3 (* two *)", "(* Reworded. *)")
+        rc, out = self.run_build(head, BuildConfig(RAN, ("*.ml",), 60, comments=("*.mli",)), self.SHARED)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the build ran", out)
+        # The control: a glob that matches it, and the language is read.
+        rc, out = self.run_build(head, BuildConfig(RAN, ("*.ml",), 60, comments=("*",)), self.SHARED)
+        self.assertEqual(rc, 0, out)
+        # No comments line at all: nothing is read again.
+        rc, out = self.run_build(head, BuildConfig(RAN, ("*.ml",), 60), None)
+        self.assertEqual(rc, 1, out)
+
+    def test_a_language_it_does_not_read_builds(self) -> None:
+        head, _ = self.sides("keep", "# a comment, in shell")
+        config = BuildConfig(RAN, ("*.sh",), 60, comments=("*",))
+        rc, out = self.run_build(head, config, mergebuild.Candidates(("api.sh",), (), (), frozenset()))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the build ran", out)
+
+    def test_a_renamed_path_builds(self) -> None:
+        head = self.ml_sides("let b = 3 (* two *)", "(* Reworded. *)", rename=True)
+        cand = mergebuild.Candidates(("lib.ml",), (), (), frozenset({"lib.ml", "lib2.ml"}))
+        rc, out = self.run_build(head, self.SAME, cand)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the build ran", out)
+
+    def test_any_input_needs_code_on_each_side(self) -> None:
+        anyi = BuildConfig(RAN, ("*.ml",), 60, "any-input", ("*.ml",))
+        both = mergebuild.Candidates((), ("lib.ml",), ("lib.ml",), frozenset())
+        head = self.ml_sides("let b = 3 (* two *)", "(* Reworded. *)")
+        rc, out = self.run_build(head, anyi, both)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("trigger any-input, and the base changed its build input(s) in comments only (lib.ml; comments *.ml)", out)
+
+    def test_the_candidates_are_read_off_the_drift(self) -> None:
+        d = drift.Drift(0, "main", "h", "t", ["a.ml", "x"], {"a.ml": ["b.ml"]}, ["a.ml", "c.ml", "x"], ["a.ml", "x"])
+        self.assertIsNone(mergebuild.comment_candidates(d, BuildConfig("make", ("*.ml",))), "no comments line")
+        unknown = drift.Drift(0, "main", "h", "t", None, {}, None, None)
+        self.assertIsNone(mergebuild.comment_candidates(unknown, self.SAME), "an UNKNOWN side is not read again")
+        self.assertEqual(
+            mergebuild.comment_candidates(d, self.SAME),
+            mergebuild.Candidates(("a.ml",), (), (), frozenset({"a.ml"})),
+        )
+        anyi = BuildConfig("make", ("*.ml",), trigger="any-input", comments=("*.ml",))
+        self.assertEqual(
+            mergebuild.comment_candidates(d, anyi),
+            mergebuild.Candidates((), ("a.ml", "c.ml"), ("a.ml",), frozenset({"a.ml"})),
+        )
 
 
 _GH_FAIL = """#!/bin/sh

@@ -22,6 +22,8 @@ naming it:
     # a comment (first non-blank character `#`), and blank lines, are ignored
     command <shell command>    exactly one: run by `sh -c` at the root of the merged tree
     input <glob>               one or more: the BUILD INPUTS (below)
+    comments <glob>            any number: a build input a side changed in comments only does
+                               not count for that side (COMMENTS ONLY, below)
     timeout <seconds>          at most one, 1 to 86400 (default 1200): the build's bound
     trigger same-input         at most one trigger line, default same-input: WHEN IT BUILDS
     trigger any-input
@@ -48,6 +50,25 @@ the drift read's own anchor: a ``pull_request`` run that already built the merge
 makes the build redundant, never wrong. Under ``same-input``, a semantic conflict across paths only
 ONE side changed is outside this boundary, and stays the integration loop's to catch on the merged
 tip.
+
+COMMENTS ONLY (#861). A doc-comment edit to an ``.mli`` on one side cost a 30-minute slot wait
+and a 434 s build: a change of comments alone cannot clash with the other side's code, unless the
+command reads comments. Whether it does is the repository's to say, so this is an opt-in per
+path: each ``comments`` glob (matched as an ``input`` glob is) names build inputs whose comments
+the command does not read -- no doc build over them, no output that names their line positions.
+When the config has such a line and both sides are known, the trigger is read again once the
+objects are fetched and the merge is textually clean, BEFORE the slot is taken: a build input
+that matches a ``comments`` glob counts as changed on a side only when git's diff of that side
+from the merge base (``git merge-base --all``, which must name exactly one commit) changes it in
+code -- its old and new blobs, both regular files of one mode, differ by more than comments and
+blanks as commentonly.py reads its language. ``same-input`` then builds only when a build input
+both sides changed was changed in code on BOTH sides; ``any-input`` only when EACH side changed
+some build input in code. Otherwise: no build, saying why, and the merge proceeds. The boundary,
+failing closed to a build: a path no ``comments`` glob matches, one a rename touched, one added,
+deleted or changed in type or mode on that side, one past ``COMMENT_PATHS`` paths a side, a blob
+over ``COMMENT_BYTES``, a language commentonly.py does not read (its own boundary: OCaml and
+dune) and any git call that does not answer each count as changed in code. Sides that are UNKNOWN
+are not read again: they build, as above.
 
 HOW IT BUILDS. From a local clone of the repository: the git checkout the merge runs in, or the one
 ``merge -C <dir>`` names (ludics-lite#730; checked before anything is read, so a wait never ends on
@@ -193,6 +214,7 @@ from types import FrameType
 from typing import Literal, NoReturn, assert_never
 
 from ludics import cli, proc
+from ludics.prreview import commentonly
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
 from ludics.prreview.drift import Drift
@@ -213,6 +235,8 @@ LINE_CHARS = 1000  # a longer line is shown cut
 NAMED = 10  # a side's build inputs are named up to this many in the build's reason
 NAMED_LINES = 20  # THE BASE ALONE: the merge's lines the base's log lacks, shown up to this many
 COMPARED_BYTES = 16 * 1024 * 1024  # THE BASE ALONE: a log over this is never read as "the same"
+COMMENT_PATHS = 200  # COMMENTS ONLY: a side's paths past this many are read as changed in code
+COMMENT_BYTES = 4 * 1024 * 1024  # COMMENTS ONLY: a blob over this is read as changed in code
 TRIGGERS = ("same-input", "any-input")
 BASE_SHA_VAR = "SHIP_PR_MERGE_BASE_SHA"  # THE COMMAND'S CONTRACT: the merge commit's first parent
 HEAD_SHA_VAR = "SHIP_PR_MERGE_HEAD_SHA"  # and its second
@@ -233,6 +257,7 @@ class BuildConfig:
     inputs: tuple[str, ...]
     timeout: int = DEFAULT_TIMEOUT
     trigger: Trigger = "same-input"
+    comments: tuple[str, ...] = ()  # COMMENTS ONLY's globs
 
 
 def parse_config(text: str, where: str) -> BuildConfig | None:
@@ -240,6 +265,7 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
     file that is not one."""
     command: str | None = None
     inputs: list[str] = []
+    comments: list[str] = []
     timeout: int | None = None
     trigger: Trigger | None = None
     for raw in text.split("\n"):
@@ -256,6 +282,8 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
             command = value
         elif key == "input" and value:
             inputs.append(value)
+        elif key == "comments" and value:
+            comments.append(value)
         elif key == "timeout" and value:
             if timeout is not None:
                 warn(f"{where} names a second timeout line: {line}")
@@ -279,13 +307,16 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
         else:
             warn(
                 f"{where} holds a line that is none of `command <shell command>`, `input <glob>`,",
-                f"`timeout <seconds>`, `trigger same-input|any-input`, a # comment or a blank line: {line}",
+                f"`comments <glob>`, `timeout <seconds>`, `trigger same-input|any-input`, a # comment or a",
+                f"blank line: {line}",
             )
             return None
     if command is None or not inputs:
         warn(f"{where} needs one `command` line and at least one `input` line; it has", f"{'a' if command else 'no'} command and {len(inputs)} input(s).")
         return None
-    return BuildConfig(command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout, trigger or "same-input")
+    return BuildConfig(
+        command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout, trigger or "same-input", tuple(comments)
+    )
 
 
 def build_inputs(paths: list[str], globs: tuple[str, ...], renamed: dict[str, list[str]] | None = None) -> list[str]:
@@ -321,6 +352,33 @@ def build_reason(drift: Drift, config: BuildConfig) -> tuple[str | None, str]:
     return None, (
         f"trigger any-input, and {'the PR' if not mine else 'the base'} changed no build input"
         f" ({' '.join(config.inputs)})"
+    )
+
+
+@dataclass(frozen=True)
+class Candidates:
+    """COMMENTS ONLY's reading of the trigger: the build inputs whose change decided it --
+    ``shared`` under ``same-input`` (both sides changed them), ``mine`` (the PR's) and ``theirs``
+    (the base's) under ``any-input`` -- and every name a rename on either side touched."""
+
+    shared: tuple[str, ...]
+    mine: tuple[str, ...]
+    theirs: tuple[str, ...]
+    renamed: frozenset[str]
+
+
+def comment_candidates(drift: Drift, config: BuildConfig) -> Candidates | None:
+    """What COMMENTS ONLY reads again once the objects are fetched; None when the config has no
+    ``comments`` line or a side is UNKNOWN (nothing is read again: the build stands)."""
+    if not config.comments or drift.overlap is None or drift.pr_paths is None or drift.base_paths is None:
+        return None
+    if config.trigger == "same-input":
+        return Candidates(tuple(build_inputs(drift.overlap, config.inputs, drift.renamed)), (), (), frozenset(drift.renamed))
+    return Candidates(
+        (),
+        tuple(build_inputs(drift.pr_paths, config.inputs, drift.renamed)),
+        tuple(build_inputs(drift.base_paths, config.inputs, drift.renamed)),
+        frozenset(drift.renamed),
     )
 
 
@@ -715,7 +773,10 @@ def merge_build(
             f"NOT merging {repo}#{pr}: {why}, and the tip of {drift.base_ref} could not be read (above),",
             "so the merge commit cannot be built. Retry.",
         )
-    return _build(repo, pr, gated, drift.base_ref, drift.base_sha, config, why, checkout=checkout, ceiling=ceiling, override=override)
+    return _build(
+        repo, pr, gated, drift.base_ref, drift.base_sha, config, why, checkout=checkout, ceiling=ceiling, override=override,
+        candidates=comment_candidates(drift, config),
+    )
 
 
 @dataclass(frozen=True)
@@ -733,22 +794,26 @@ class _Subject:
 def _build(
     repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str, *,
     checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False, override: str = "",
+    candidates: Candidates | None = None,
 ) -> str | None:
     """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
     clone ``checkout`` names as it is, with nothing fetched. Returns what an ``override`` goes over
-    (THE BASE ALONE: a failure the base shares), else None."""
+    (THE BASE ALONE: a failure the base shares), else None. ``candidates``: what COMMENTS ONLY
+    reads again before the slot is taken (None: nothing; the build stands)."""
     if dry:
         what = f"{gated[:8]} into {base_ref}"
         subject = _Subject(f"{what} (dry run)", f"merge-build {what}: NOT built", f"merge-build {what}: merge would REFUSE it", "")
     else:
         subject = _Subject(f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr)
     with _INTERRUPTS.installed():
-        return _build_in_scratch(subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override)
+        return _build_in_scratch(
+            subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override, candidates
+        )
 
 
 def _build_in_scratch(
     subject: _Subject, repo: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str,
-    where: str, ceiling: Ceiling | None, override: str,
+    where: str, ceiling: Ceiling | None, override: str, candidates: Candidates | None,
 ) -> str | None:
     stop, pr = subject.stop, subject.pr
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
@@ -817,6 +882,12 @@ def _build_in_scratch(
                 f"{stop}: {why}, and git could not compute the merge of {gated[:8]} into",
                 f"{base_ref} at {tip[:8]} ({_first_line(merged)}; `git merge-tree --write-tree` needs git >= 2.38).",
             )
+        if candidates is not None:
+            # COMMENTS ONLY: read again before the checkout and the slot.
+            why_not = _comments_only(subject, quiet, tree, tip, gated, config, candidates)
+            if why_not:
+                cli.say(f"merge build {subject.label}: no build — {why_not}")
+                return None
         merge_sha, err = _commit_out(quiet, tree, written, tip, gated, f"ship-pr merge build of {subject.label}", "the merge commit")
         if err:
             fail(3, f"{stop}: {err}.")
@@ -858,6 +929,117 @@ def _new_repo(scratch: str, tree: str, objects: str) -> str:
     with open(os.path.join(info, "alternates"), "w", encoding="utf-8") as handle:
         handle.write(objects + "\n")
     return ""
+
+
+class _CodeReader:
+    """COMMENTS ONLY on one side: whether it changed a path in code since ``base``. git's raw diff
+    of ``paths`` (the ones a ``comments`` glob matches and no rename touched, up to
+    ``COMMENT_PATHS``) is read once, at the first question; every other path, and every path when
+    that diff does not answer, is changed in code."""
+
+    def __init__(
+        self, quiet: list[str], tree: str, base: str, side: str, paths: tuple[str, ...], config: BuildConfig,
+        renamed: frozenset[str],
+    ) -> None:
+        self.quiet, self.tree, self.base, self.side = quiet, tree, base, side
+        eligible = [
+            p for p in dict.fromkeys(paths)
+            if p not in renamed and any(fnmatch.fnmatchcase(p, g) for g in config.comments)
+            and commentonly.language(p) is not None
+        ]
+        self.eligible = frozenset(eligible[:COMMENT_PATHS])
+        self.raw: dict[str, tuple[str, str, str, str, str]] | None = None
+        self.failed = ""
+
+    def _read(self) -> dict[str, tuple[str, str, str, str, str]]:
+        if self.raw is None:
+            self.raw = {}
+            done = _git(
+                [*self.quiet, "--literal-pathspecs", "diff", "--raw", "-z", "--no-renames", "--no-abbrev",
+                 "--no-color", "--no-ext-diff", self.base, self.side, "--", *sorted(self.eligible)],
+                self.tree,
+            )
+            fields = done.stdout.split("\0")
+            if fields and fields[-1] == "":
+                fields.pop()
+            if done.rc != 0 or len(fields) % 2:
+                self.failed = f"git diff {self.base[:8]} {self.side[:8]} did not answer ({_first_line(done)})"
+                return self.raw
+            for meta, path in zip(fields[0::2], fields[1::2], strict=True):
+                parts = meta.lstrip(":").split(" ")
+                if len(parts) != 5:
+                    self.failed = f"git diff {self.base[:8]} {self.side[:8]} said {meta!r}"
+                    self.raw = {}
+                    return self.raw
+                self.raw[path] = (parts[0], parts[1], parts[2], parts[3], parts[4])
+        return self.raw
+
+    def _blob(self, sha: str) -> str | None:
+        size = _git([*self.quiet, "cat-file", "-s", sha], self.tree).stdout.strip()
+        if not size.isascii() or not size.isdigit() or int(size) > COMMENT_BYTES:
+            return None
+        done = _git([*self.quiet, "cat-file", "blob", sha], self.tree)
+        return done.stdout if done.rc == 0 else None
+
+    def code(self, path: str) -> bool:
+        """True unless this side's change of ``path`` is in comments and blanks only (or none)."""
+        if path not in self.eligible:
+            return True
+        raw = self._read()
+        if self.failed:
+            return True
+        if path not in raw:
+            return False  # git sees no change of it on this side
+        old_mode, new_mode, old_sha, new_sha, status = raw[path]
+        if status != "M" or old_mode != new_mode or old_mode not in ("100644", "100755"):
+            return True
+        old, new = self._blob(old_sha), self._blob(new_sha)
+        return old is None or new is None or not commentonly.same_code(path, old, new)
+
+
+def _comments_only(
+    subject: _Subject, quiet: list[str], tree: str, tip: str, gated: str, config: BuildConfig, cand: Candidates
+) -> str:
+    """COMMENTS ONLY (module docstring): why there is no build after all, or "" to build."""
+    bases = _git([*quiet, "merge-base", "--all", tip, gated], tree)
+    found = bases.stdout.split()
+    if bases.rc != 0 or len(found) != 1 or not _SHA.fullmatch(found[0]):
+        cli.say(
+            f"merge build {subject.label}: comments not compared: the merge base is not one commit"
+            f" ({_first_line(bases) if bases.rc else f'{len(found)} found'}); building"
+        )
+        return ""
+    base = found[0]
+    globs = " ".join(config.comments)
+    if config.trigger == "same-input":
+        tip_side = _CodeReader(quiet, tree, base, tip, cand.shared, config, cand.renamed)
+        head_side = _CodeReader(quiet, tree, base, gated, cand.shared, config, cand.renamed)
+        code = [p for p in cand.shared if tip_side.code(p) and head_side.code(p)]
+        failed = tip_side.failed or head_side.failed
+        if failed:
+            cli.say(f"merge build {subject.label}: comments not fully compared: {failed}")
+        if code:
+            cli.say(f"merge build {subject.label}: changed in code on both sides: {_named(code)}")
+            return ""
+        return (
+            f"each of the {len(cand.shared)} build input(s) changed on both sides ({_named(list(cand.shared))})"
+            f" changed in comments only on one side (comments {globs})"
+        )
+    mine = _CodeReader(quiet, tree, base, gated, cand.mine, config, cand.renamed)
+    theirs = _CodeReader(quiet, tree, base, tip, cand.theirs, config, cand.renamed)
+    # Paths no reader reads first: any() stops at the first changed in code, before a git call.
+    pr_code = any(mine.code(p) for p in sorted(cand.mine, key=lambda p: p in mine.eligible))
+    base_code = pr_code and any(theirs.code(p) for p in sorted(cand.theirs, key=lambda p: p in theirs.eligible))
+    failed = mine.failed or theirs.failed
+    if failed:
+        cli.say(f"merge build {subject.label}: comments not fully compared: {failed}")
+    if pr_code and base_code:
+        return ""
+    side, paths = ("the PR", cand.mine) if not pr_code else ("the base", cand.theirs)
+    return (
+        f"trigger any-input, and {side} changed its build input(s) in comments only"
+        f" ({_named(list(paths))}; comments {globs})"
+    )
 
 
 def _commit_out(
@@ -1083,9 +1265,13 @@ def _fetch_gated(subject: _Subject, root: str, remote: str, quiet: list[str], ga
         )
 
 
-def dry_build(repo: str, head: str, base_ref: str, base: str, config: BuildConfig, why: str, checkout: str) -> None:
-    """THE DRY RUN's build (mergedry.py): ``head`` merged into ``base`` in ``checkout`` as it is."""
-    _build(repo, "", head, base_ref, base, config, why, checkout=checkout, dry=True)
+def dry_build(
+    repo: str, head: str, base_ref: str, base: str, config: BuildConfig, why: str, checkout: str,
+    candidates: Candidates | None = None,
+) -> None:
+    """THE DRY RUN's build (mergedry.py): ``head`` merged into ``base`` in ``checkout`` as it is,
+    ``candidates`` read again as merge's are (COMMENTS ONLY)."""
+    _build(repo, "", head, base_ref, base, config, why, checkout=checkout, dry=True, candidates=candidates)
 
 
 def run_git(args: list[str], cwd: str) -> proc.Completed:

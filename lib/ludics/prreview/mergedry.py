@@ -42,6 +42,7 @@ from ludics.prreview.mergebuild import (
     BuildConfig,
     build_reason,
     clone_of,
+    comment_candidates,
     dry_build,
     first_line,
     parse_config,
@@ -202,5 +203,5 @@ def run(session: GhSession, args: list[str]) -> int:
     if why is None:
         cli.say(f"merge build {label}: no build — {why_not} ({source})")
         return 0
-    dry_build(repo, head, base_arg, base, config, f"{why} ({source})", root)
+    dry_build(repo, head, base_arg, base, config, f"{why} ({source})", root, comment_candidates(drift, config))
     return 0
