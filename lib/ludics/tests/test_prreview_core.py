@@ -80,6 +80,16 @@ class Classification(unittest.TestCase):
         self.assertTrue(core.gateway_failure("gh: HTTP 502: Bad gateway (https://x)"))
         self.assertTrue(core.gateway_failure("503 No server is currently available"))
         self.assertFalse(core.gateway_failure("gh: Internal Server Error (HTTP 500)"))
+        # A 504 is no refusal (#708): the backend may have run it, even beside a refusal's marker.
+        for timeout in ("gh: HTTP 504: Gateway Timeout", "HTTP 504 (https://api.github.com/graphql)",
+                        "non-200 OK status code: 504 Gateway Timeout body: x",
+                        "gh: HTTP 504 (HTTP 502)"):
+            with self.subTest(timeout=timeout):
+                self.assertTrue(core.gateway_timeout(timeout))
+                self.assertFalse(core.gateway_failure(timeout))
+                self.assertTrue(core.transient_failure(timeout))
+        self.assertFalse(core.gateway_timeout("gh: HTTP 503: Service Unavailable"))
+        self.assertTrue(core.transient_failure("gh: Gateway Timeout (HTTP 404)"))
         self.assertTrue(core.api_rejection("gh: Not Found (HTTP 404)"))
         self.assertFalse(core.api_rejection("gh: HTTP 4xx"))
         self.assertTrue(core.transient_failure("gh: Internal Server Error (HTTP 500)"))
@@ -242,6 +252,22 @@ class Retry(unittest.TestCase):
                 "pr-review.sh: gh api failed (attempt 1/5), retrying in 5s: gh: HTTP 503",
                 s.stderr.getvalue(),
             )
+
+    def test_a_504_repeats_a_read_and_never_a_write(self) -> None:
+        # The gateway stopped waiting on a backend that may have finished the POST (#708).
+        timeout = Answer(1, "", "gh: HTTP 504: Gateway Timeout\n")
+        with FakeTool("gh") as gh:
+            gh.script(timeout)
+            s = Session()
+            self.assertEqual(s.retry("write", ["api", "-X", "POST", "x"]), GhFailed())
+            self.assertEqual(len(gh.calls()), 1)
+            self.assertFalse(core.api_rejection(s.session.err_line()))
+            self.assertEqual(s.session.unclear_attempts(), 1, "it may have landed")
+            gh.script(timeout, Answer(0, "ok\n"))
+            s = Session()
+            self.assertEqual(s.retry("read", ["api", "x"]), GhOk("ok"))
+            self.assertEqual(len(gh.calls()), 2)
+            self.assertEqual(s.session.unclear_attempts(), 1)
 
     def test_exhausted_retries_are_unanswered(self) -> None:
         with FakeTool("gh") as gh:
@@ -506,8 +532,9 @@ class UnreadableAnswer(unittest.TestCase):
             self.assertEqual(s.session.err_line(), "unexpected end of JSON input (HTTP 503)")
             self.assertEqual(s.session.recovered_status(), 503)
 
-    def test_a_2xx_or_a_500_stays_ambiguous_and_is_never_re_sent(self) -> None:
-        for status in ("HTTP/2.0 200 OK", "HTTP/2.0 201 Created", "HTTP/2.0 500 Internal Server Error"):
+    def test_a_2xx_a_500_or_a_504_stays_ambiguous_and_is_never_re_sent(self) -> None:
+        for status in ("HTTP/2.0 200 OK", "HTTP/2.0 201 Created", "HTTP/2.0 500 Internal Server Error",
+                       "HTTP/2.0 504 Gateway Timeout"):
             with self.subTest(status=status), FakeTool("gh") as gh:
                 gh.script(Answer(1, included(status), EMPTY))
                 s = Session()

@@ -488,6 +488,41 @@ test_the_write_exits_stay_apart_inside_a_batch() {
   assert_contains "$ERR" "failed AMBIGUOUSLY" "and is reported as ambiguous, never as rejected"
 }
 
+# #708: a 504 Gateway Timeout is the gateway giving up on a backend that HAD the request and may
+# have finished it, so it is no refusal: a reply or a comment re-sent after one can land twice. It
+# is ambiguous like a 500, as gh words it and as the status line of an answer gh could not read.
+test_a_gateway_timeout_is_never_re_sent() {
+  local how
+  for how in "msg:HTTP 504: Gateway Timeout" "status:504 Gateway Timeout"; do
+    reset_fixture
+    retune API_ATTEMPTS=3
+    FAIL_ID=901
+    case "$how" in
+    msg:*) FAIL_MSG="${how#msg:}" ;;
+    status:*) FAIL_STATUS="${how#status:}" ;;
+    esac
+    run_cmd cmd_reply 900+901+902 "Fixed in round 3 (abc1234)."
+    assert_eq "$RC" 3 "a timed-out reply is not a verdict ($how: $ERR)"
+    assert_contains "$ERR" "failed AMBIGUOUSLY" "it may have landed ($how)"
+    assert_contains "$ERR" "the reply MAY have landed" "and says so ($how)"
+    assert_not_contains "$ERR" "Nothing was posted" "never that nothing was ($how)"
+    assert_contains "$ERR" "retry with: 902 --anchor 900 if it is" "both answers named ($how)"
+    assert_eq "$(writes_to 901)" 1 "it is not re-sent ($how)"
+    assert_eq "$(writes_to 902)" 0 "and the batch stops there ($how)"
+    reset_fixture
+    retune API_ATTEMPTS=3
+    COMMENT_FAILS=5
+    case "$how" in
+    msg:*) FAIL_MSG="${how#msg:}" ;;
+    status:*) FAIL_STATUS="${how#status:}" ;;
+    esac
+    run_cmd cmd_comment "The comment."
+    assert_eq "$RC" 3 "a timed-out comment is not a verdict ($how: $ERR)"
+    assert_contains "$ERR" "will not post it twice" "it may have landed ($how)"
+    assert_eq "$(comment_attempts)" 1 "it is not re-sent ($how)"
+  done
+}
+
 # The retry a failed batch recommends has to be one that can be RUN: `--anchor` posts no body at
 # all and points every id in the token at the thread that already holds the answer. Without it the
 # suffix promotes its own first id to anchor, posting the composed body a second time and pointing
@@ -1550,6 +1585,7 @@ tests=(
   test_an_ambiguous_write_never_claims_nothing_was_posted
   test_an_anchored_retry_points_at_the_thread_that_answered
   test_the_write_exits_stay_apart_inside_a_batch
+  test_a_gateway_timeout_is_never_re_sent
   test_resolve_closes_every_thread_the_token_names
   test_an_already_resolved_thread_costs_no_write
   test_a_missing_thread_names_where_the_batch_stopped

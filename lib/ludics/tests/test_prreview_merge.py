@@ -131,6 +131,18 @@ class Production(unittest.TestCase):
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertTrue(done.stdout.endswith("o/r#7 merged=true state=closed\n"), done.stdout)
 
+    def test_a_timed_out_merge_call_is_ambiguous_and_never_re_sent(self) -> None:
+        """#708: a 504 is the gateway giving up on a backend that may have merged the PR."""
+        timed_out = [(["pr", "merge"], 1, "", "HTTP 504 (https://api.github.com/graphql)\n"), *GREEN]
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]):
+                self.route(timed_out)
+                done = self.run_cmd(entry, "merge", "o/r#7", SHIP_PR_API_ATTEMPTS="3")
+                self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+                self.assertIn("gh pr merge failed AMBIGUOUSLY: HTTP 504", done.stderr)
+                self.assertIn("It may have LANDED", done.stderr)
+                self.assertEqual(len([c for c in self.calls() if c[:2] == ["pr", "merge"]]), 1)
+
     def test_checks_ends_with_its_trailer_and_a_red_is_one(self) -> None:
         red = [(["check-runs"], 0, "ci\tfailure\thttps://u\t1\n", ""), *GREEN]
         for entry in self.entries():

@@ -18,8 +18,8 @@ apart both stopped at exit 3, landing nothing, while the same PATCH by hand went
 seconds after the second. The payload
 was never the cause: gh reads the file itself (``-F body=@file``), byte for byte. Since
 ludics-lite#612 the PATCH carries ``--include``, so such an answer is classified by the status line
-gh still prints (``core.gh_unreadable_answer``): a gateway's 502/503/504 changed nothing, another
-4xx is the API's rejection, a 403 or 429 the quota's, and a 2xx or a 500 stays ambiguous.
+gh still prints (``core.gh_unreadable_answer``): a gateway's 502/503 changed nothing, another
+4xx is the API's rejection, a 403 or 429 the quota's, and a 2xx, a 500 or a 504 stays ambiguous.
 
 Stdout: the PR's URL, and nothing else. Exit: 0 done; 1 the API rejected it (a 4xx); 2 usage;
 3 not done (a gateway or quota refusal on every attempt) or ambiguous (an attempt failed in a way

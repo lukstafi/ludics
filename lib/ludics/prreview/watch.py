@@ -952,7 +952,7 @@ class Watch:
         return self.clock.now() + self.cfg.grace - state.age
 
     def post_request(self) -> tuple[bool, str]:
-        """The watch's one write, ATTEMPTED ONCE: a gateway refusal that did land would otherwise
+        """The watch's one write, ATTEMPTED ONCE: a failure that did land would otherwise
         be a second review run nobody asked for (review of #465, round 4). Returns whether it
         posted, and its error line, which the failure message quotes. The shell's gh_err_line
         quoted the LAST FAILED call's error: the post's when the drift read after it succeeded,
