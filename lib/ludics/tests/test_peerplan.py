@@ -1,8 +1,9 @@
 """ludics.peerplan: paired planning's second planner, end to end through the real bg-run.sh.
 
-A fake ``gh`` answers the issue read and a fake ``codex`` records its argv, cwd and stdin, writes
-its ``-o`` file and prints a ``thread.started`` event, so each test drives the entry point as the
-coordinator does: ``start``, ``bg-run.sh wait``, ``critique``, ``wait``, ``clean``.
+A fake ``gh`` (tests/fake.py, routed by argv) answers the issue read and ``api user``, and a fake
+``codex`` records its argv, cwd and stdin, writes its ``-o`` file and prints a ``thread.started``
+event, so each test drives the entry point as the coordinator does: ``start``, ``bg-run.sh wait``,
+``critique``, ``wait``, ``clean``.
 """
 
 import json
@@ -17,7 +18,7 @@ import unittest
 from dataclasses import dataclass
 from typing import cast
 
-from ludics.tests.fake import FakeTool
+from ludics.tests.fake import Answer, FakeTool, When
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 ROOT = os.path.dirname(LIB)
@@ -25,6 +26,8 @@ ENTRY = os.path.join(ROOT, "issue-wave", "scripts", "peer-plan.sh")
 BG_RUN = os.path.join(ROOT, "issue-wave", "scripts", "bg-run.sh")
 ISSUE: dict[str, object] = {"number": 7, "title": "t", "body": "has a ``` fence\n````\n", "comments": []}
 
+# The codex fake is this suite's own program, over FakeTool's: it records its stdin and cwd beside
+# its argv, and its hang mode sleeps until bg-run.sh stop kills it, which an Answer cannot do.
 FAKE_CODEX = """\
 import json, os, sys
 here = os.path.dirname(os.path.abspath(__file__))
@@ -55,36 +58,6 @@ class Call:
     stdin: str
 
 
-# A gh that answers the issue read from issue.json beside it (or fails it, with FAKE_GH_ISSUE_RC)
-# and `api user` with FAKE_GH_LOGIN, logging each call.
-FAKE_GH = """\
-import json, os, sys
-here = os.path.dirname(os.path.abspath(__file__))
-argv = sys.argv[1:]
-with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
-    log.write(json.dumps(argv) + "\\n")
-if argv[:2] == ["api", "user"]:
-    print(os.environ.get("FAKE_GH_LOGIN", "maint"))
-    sys.exit(0)
-rc = int(os.environ.get("FAKE_GH_ISSUE_RC", "0"))
-if rc:
-    sys.stderr.write("HTTP 404\\n")
-    sys.exit(rc)
-with open(os.path.join(here, "issue.json"), encoding="utf-8") as f:
-    sys.stdout.write(f.read())
-"""
-
-# A git that fails `worktree add` and is the real git otherwise.
-FAKE_GIT = """\
-import os, subprocess, sys
-argv = sys.argv[1:]
-if "worktree" in argv and "add" in argv:
-    sys.stderr.write("fatal: injected worktree add failure\\n")
-    sys.exit(128)
-os.execv(os.environ["REAL_GIT"], ["git", *argv])
-"""
-
-
 def running(pid: int) -> bool:
     """Whether ``pid`` names a process that can still run: a zombie no PID 1 reaps (a container's,
     say) still answers ``kill -0``, and has stopped all the same."""
@@ -111,10 +84,7 @@ class PeerPlan(unittest.TestCase):
         git("init", "-q", "-b", "main", self.repo)
         git("-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
         self.gh = FakeTool("gh")
-        with open(os.path.join(self.gh.dir, "gh"), "w", encoding="utf-8") as f:
-            f.write(f"#!{sys.executable}\n{FAKE_GH}")
-        with open(os.path.join(self.gh.dir, "issue.json"), "w", encoding="utf-8") as f:
-            json.dump(ISSUE, f)
+        self.answer_gh()
         self.gh.__enter__()
         self.addCleanup(self.gh.__exit__, None, None, None)
         self.codex = FakeTool("codex")
@@ -122,9 +92,12 @@ class PeerPlan(unittest.TestCase):
             f.write(f"#!{sys.executable}\n{FAKE_CODEX}")
         self.codex.__enter__()
         self.addCleanup(self.codex.__exit__, None, None, None)
-        for name in ("FAKE_CODEX_MODE", "FAKE_GH_ISSUE_RC", "FAKE_GH_LOGIN"):
-            os.environ.pop(name, None)
+        os.environ.pop("FAKE_CODEX_MODE", None)
         self.dir = os.path.join(self.tmp, "plans", "w-7")
+
+    def answer_gh(self, login: str = "maint", issue: Answer = Answer(stdout=json.dumps(ISSUE))) -> None:
+        """The issue read and ``api user``, each answered by its own arguments: ``start`` makes both."""
+        self.gh.route((When(prefix=("issue", "view")), issue), (When(prefix=("api", "user")), Answer(stdout=login + "\n")))
 
     def entry(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run([ENTRY, *args], capture_output=True, text=True, check=False)
@@ -280,9 +253,9 @@ class PeerPlan(unittest.TestCase):
         real = shutil.which("git")
         assert real is not None
         fake = FakeTool("git")
-        with open(os.path.join(fake.dir, "git"), "w", encoding="utf-8") as f:
-            f.write(f"#!{sys.executable}\n{FAKE_GIT}")
-        os.environ["REAL_GIT"] = real
+        # The real git, but for one injected failure.
+        fake.route((When(has=("worktree", "add")), Answer(rc=128, stderr="fatal: injected worktree add failure\n")),
+                   through=real)
         with fake:
             done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
         self.assertEqual(done.returncode, 1)
@@ -325,7 +298,7 @@ class PeerPlan(unittest.TestCase):
         self.assertGreater(time.monotonic() - began, 2)
 
     def test_start_refuses_without_a_gh_account(self) -> None:
-        os.environ["FAKE_GH_LOGIN"] = "not a login"
+        self.answer_gh(login="not a login")
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
         self.assertEqual(done.returncode, 1)
         self.assertIn("gh account", done.stderr)
@@ -353,7 +326,7 @@ class PeerPlan(unittest.TestCase):
         self.assertFalse(os.path.exists(self.dir))
 
     def test_start_refuses_an_unreadable_issue(self) -> None:
-        os.environ["FAKE_GH_ISSUE_RC"] = "1"
+        self.answer_gh(issue=Answer(rc=1, stderr="HTTP 404\n"))
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
         self.assertEqual(done.returncode, 1)
         self.assertIn("HTTP 404", done.stderr)

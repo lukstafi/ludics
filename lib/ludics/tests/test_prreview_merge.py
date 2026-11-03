@@ -1,6 +1,7 @@
 """``pr-review.sh checks`` and ``merge``, end to end on the production path: through
 ``scripts/py -m ludics.prreview`` and through the shell script's ``main`` (which execs the Python),
-with a gh BINARY on PATH that answers by route -- no shell function, no bridge.
+with a gh BINARY on PATH that answers by route (tests/fake.py's ``When(text=...)``) -- no shell
+function, no bridge.
 
 The fixture suites (test-pr-review-checks-absent.sh, test-pr-review-merge.sh,
 test-pr-review-base-drift.sh) pin the behaviour through the sourced stubs and the shell bridge;
@@ -12,32 +13,14 @@ import json
 import os
 import shutil
 import subprocess
-import sys
-import tempfile
 import unittest
+
+from ludics.tests.fake import Answer, FakeTool, When
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 ROOT = os.path.dirname(LIB)
 PY = os.path.join(ROOT, "scripts", "py")
 PR_REVIEW = os.path.join(ROOT, "ship-pr", "scripts", "pr-review.sh")
-
-_PROGRAM = """\
-import json, os, sys
-here = os.path.dirname(os.path.abspath(__file__))
-args = sys.argv[1:]
-with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
-    log.write(json.dumps(args) + "\\n")
-joined = " ".join(args)
-with open(os.path.join(here, "routes.json"), encoding="utf-8") as f:
-    routes = json.load(f)
-for needles, rc, out, err in routes:
-    if all(n in joined for n in needles):
-        sys.stdout.write(out)
-        sys.stderr.write(err)
-        sys.exit(rc)
-sys.stderr.write("routed gh: no route for: " + joined + "\\n")
-sys.exit(99)
-"""
 
 COMPARE = json.dumps({"behind_by": 0, "ahead_by": 1, "merge_base_commit": {"sha": "mb"}, "files": []})
 THREADS = json.dumps({"totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []})
@@ -70,28 +53,18 @@ GREEN: list[tuple[list[str], int, str, str]] = [
 
 class Production(unittest.TestCase):
     def setUp(self) -> None:
-        self.dir = os.path.realpath(tempfile.mkdtemp(prefix="ludics-merge-test."))
-        gh = os.path.join(self.dir, "gh")
-        with open(gh, "w", encoding="utf-8") as f:
-            f.write(f"#!{sys.executable}\n{_PROGRAM}")
-        os.chmod(gh, 0o755)
+        self.gh = FakeTool("gh")
+        self.gh.route()  # until a test routes, every call is refused
+        self.dir = self.gh.dir
 
     def tearDown(self) -> None:
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def route(self, routes: list[tuple[list[str], int, str, str]]) -> None:
-        with open(os.path.join(self.dir, "routes.json"), "w", encoding="utf-8") as f:
-            json.dump(routes, f)
-        log = os.path.join(self.dir, "calls.jsonl")
-        if os.path.exists(log):
-            os.remove(log)
+        self.gh.route(*((When(text=tuple(needles)), Answer(rc, out, err)) for needles, rc, out, err in routes))
 
     def calls(self) -> list[list[str]]:
-        log = os.path.join(self.dir, "calls.jsonl")
-        if not os.path.exists(log):
-            return []
-        with open(log, encoding="utf-8") as f:
-            return [json.loads(line) for line in f if line.strip()]
+        return self.gh.calls()
 
     def run_cmd(self, entry: list[str], *args: str, **env: str) -> subprocess.CompletedProcess[str]:
         environ = {k: v for k, v in os.environ.items() if not k.startswith(("SHIP_PR_", "LUDICS_"))}
