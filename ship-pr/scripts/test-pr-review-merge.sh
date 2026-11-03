@@ -2758,7 +2758,10 @@ build_compare() { # <work> <from> <to> <behind> <ahead>
 # renames hook() as in clash while the PR calls hook from a new use.sh: a clash across paths only one
 # side changed, with no path changed on both sides (ludics-lite#635); config = clash, the PR
 # also ADDING the merge-build config ($MERGE_BUILD_SH) that would refuse it (ludics-lite#730:
-# #738's shape). Sets BUILD_CLONE,
+# #738's shape); base-red = the base renames hook() as in clash and marks a red (`red=1`, which
+# $MERGE_BUILD_RED reports) on that line, the PR calling keep(): a failure the base alone shares
+# (#860); base-red-clash = the same base, the PR calling hook as in clash: that red plus the
+# merge's own. Sets BUILD_CLONE,
 # BUILD_HEAD and BUILD_TIP, and points the fixture's gated head, tip, compares and series at them.
 build_fixture() { # <kind>
   local root="$TEST_ROOT/build-$1" work remote base
@@ -2789,7 +2792,8 @@ build_fixture() { # <kind>
     printf '%s\n' "$MERGE_BUILD_SH" >"$work/.github/ship-pr-merge-build"
     build_git "$work" add .github
     ;;
-  compatible) printf 'keep\n' >>"$work/api.sh" ;;
+  compatible | base-red) printf 'keep\n' >>"$work/api.sh" ;;
+  base-red-clash) printf 'hook\n' >>"$work/api.sh" ;;
   notes) printf 'pr\n' >>"$work/notes.md" ;;
   split)
     printf '%s\n' '. ./api.sh' 'hook' >"$work/use.sh"
@@ -2804,6 +2808,10 @@ build_fixture() { # <kind>
   case "$1" in
   notes)
     printf '%s\n' 'Notes, renamed' 'a' 'b' 'c' 'd' 'e' 'f' 'g' >"$work/notes.md"
+    ;;
+  base-red | base-red-clash)
+    printf '%s\n' 'seam() { :; }; red=1' '# one' '# two' '# three' '# four' 'keep() { :; }' \
+      '# five' '# six' '# seven' '# eight' >"$work/api.sh"
     ;;
   *)
     printf '%s\n' 'seam() { :; }' '# one' '# two' '# three' '# four' 'keep() { :; }' \
@@ -2955,6 +2963,62 @@ test_any_input_catches_a_single_side_clash() {
   assert_contains "$MERGE_STDOUT" "merge build $REPO#7: $why" "says why it builds"
   assert_contains "$MERGE_STDOUT" "merge build $REPO#7: FAILED" "says the build failed"
   assert_contains "$MERGE_STDOUT" "hook" "the output names what does not resolve"
+  assert_no_merge_call
+  assert_clone_untouched
+}
+
+# #860: a red the base's tip already has fails every merge build. The merge's build fails, the same
+# command on the base alone fails the same way, and the merge is refused naming --override; under a
+# cited --override it merges, announcing what it went over. One with a failure of its own beside
+# that red (base-red-clash) is refused under the override too, the extra line shown.
+MERGE_BUILD_RED=$'command sh ./api.sh; rc=$?; if grep -q red=1 api.sh; then echo "red: the scan fails"; exit 1; fi; exit $rc\ninput *.sh\ntimeout 120'
+BASE_RED_WHY="base red, not this PR: the scan, red at the base's tip; owned by $REPO#1"
+test_a_merge_build_failure_the_base_shares_merges_under_override() {
+  reset
+  build_fixture base-red
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_RED
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge build the base's red fails"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "without --override a failure the base shares is refused ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: FAILED (exit 1)" "the merge's build failed"
+  assert_contains "$MERGE_STDOUT" "red: the scan fails" "on the base's red"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: does the base share the failure? building main at ${BUILD_TIP:0:8} alone" \
+    "the base alone was built"
+  assert_contains "$MERGE_STDOUT" "main alone FAILED the same way (exit 1, every line of the merge's output in its own)" \
+    "and failed the same way"
+  assert_contains "$MERGE_STDERR" "the failure is the base's, not the merge's" "the refusal says whose failure it is"
+  assert_contains "$MERGE_STDERR" "re-run merge with --override" "and names the flag"
+  assert_no_merge_call
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge --override "$BASE_RED_WHY"
+  assert_eq "$MERGE_RC" 0 "under a cited --override it merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "OVERRIDE: merging $REPO#7 over a merge-build failure main at ${BUILD_TIP:0:8} alone shares" \
+    "announcing what it went over"
+  assert_contains "$MERGE_STDOUT" "$BASE_RED_WHY" "with the override's reason"
+  assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
+  assert_clone_untouched
+}
+
+test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override() {
+  reset
+  build_fixture base-red-clash
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_RED
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge --override "$BASE_RED_WHY"
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge build failing beside the base's red"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "a failure beyond the base's is refused under --override ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "main alone FAILED (exit 1)" "the base alone failed too"
+  assert_contains "$MERGE_STDOUT" "not the same way: 1 line(s) of the merge's output are not in main's" \
+    "but not the same way"
+  assert_contains "$MERGE_STDOUT" "  + " "the extra line is shown"
+  assert_contains "$MERGE_STDOUT" "hook" "naming what does not resolve"
+  assert_contains "$MERGE_STDERR" "--override goes over only a failure the base alone shares" \
+    "the refusal says what the override covers"
+  assert_not_contains "$MERGE_OUTPUT" "OVERRIDE: merging" "nothing is announced"
   assert_no_merge_call
   assert_clone_untouched
 }
@@ -3216,6 +3280,8 @@ tests=(
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges
   test_any_input_catches_a_single_side_clash
+  test_a_merge_build_failure_the_base_shares_merges_under_override
+  test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override
   test_merge_builds_in_the_clone_c_names
   test_merge_takes_c_before_the_pr
   test_a_pr_changing_the_config_is_told_which_copy_judged_it

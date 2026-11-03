@@ -16,7 +16,7 @@ review round:
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue last,
   and an ABSENT verdict's base (ludics-lite#523); then what the merge goes over (an override's
-  waived red, an unread signal), announced once, after every refusal before the first call has
+  waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
 
