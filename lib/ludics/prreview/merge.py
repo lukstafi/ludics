@@ -16,7 +16,7 @@ review round:
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue last,
   and an ABSENT verdict's base (ludics-lite#523); then what the merge goes over (an override's
-  waived red, an unread signal), announced once, after every refusal before the first call has
+  waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
 
@@ -882,10 +882,18 @@ class Merge:
         drift = self.drift()
         # The would-be merge commit's build, where the repository asks for one (mergebuild.py,
         # ludics-lite#611): after the drift read it is decided on, before the merge call.
-        merge_build(
+        # Under --override it may go over a failure the base alone shares (mergebuild.py's THE
+        # BASE ALONE, #860), announced with the gate's override, just before the call.
+        shared = merge_build(
             self.session, self.repo, self.num, self.gate.check_sha, drift, self.config.limits.contents_dir_cap,
-            checkout=self.opts.checkout, ceiling=ceiling,
+            checkout=self.opts.checkout, ceiling=ceiling, override=self.opts.override,
         )
+        if shared:
+            repo, pr, why = self.repo, self.num, self.opts.override
+            self.announced.append((
+                f"OVERRIDE: merging {repo}#{pr} over {shared} — {why}",
+                (f"OVERRIDE: merging {repo}#{pr} over {shared}: the base's own failure, not the merge's — {why}",),
+            ))
         self.merge_call()
         return self.confirm()
 

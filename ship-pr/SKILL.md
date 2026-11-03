@@ -1264,8 +1264,13 @@ POSIX host (the fleet's macOS and Linux boxes; Windows is refused) from a full c
 repository: one with no remote naming it, a shallow one (which may lack the merge base) or a
 partial one (a promisor remote) is exit 2. A
 build that does not finish is exit 4, one that could not run (the fetch, the slot) exit 3, a head
-that moved exit 5, a textual conflict exit 1. Nothing waives a failed build: merge the base in, fix
-the clash, push. By default the boundary is the intersection: a clash across paths only one side
+that moved exit 5, a textual conflict exit 1. A failed build is followed by the same command on the
+base alone (the base tip's tree, with the merge's parents and environment), so a red the base
+already has is told from the merge's own (#860). When the base alone passes, or fails with another
+status or with any line of the merge's output missing from its own (shown as `+` lines), the merge is
+refused whatever the flags: merge the base in, fix the clash, push. When it fails the same way, the
+refusal says the failure is the base's, and only `--override` goes over it (*The override*); without
+the flag that merge waits for the base's fix. By default the boundary is the intersection: a clash across paths only one side
 changed (a caller in a file the base never touched) is still the integration loop's. `trigger
 any-input` widens it to a build whenever EACH side changed some build input, which catches that
 clash at about three times the builds (ludics-lite#635), so it suits a cheap command. A base that
@@ -1345,8 +1350,10 @@ maintainer's decision). When your head's red is the base's own — the same chec
 test at the base's tip — and the wave coordinator has halted launches on it and named its owner,
 the triage issue (issue-wave's stop-the-world notice names all three), merge over it without
 waiting for the fix, and do not chase it: its attribution is the owner's. It covers a test that
-fails, never a build that breaks; where the repository has a merge build (*How stale the base has
-grown*), `merge` refuses a clash in the merge itself. The reason cites the check and test, the base
+fails, never a build that breaks. Where the repository has a merge build (*How stale the base has
+grown*) that runs the red check too, the merge build fails on it as well; `merge` then builds the
+base alone, and the override goes over the merge build's failure only when the base alone fails
+the same way, line for line (#860). A clash in the merge itself is still refused. The reason cites the check and test, the base
 SHA and the owner, so every merge in the red span names the red it rode over:
 
 ```bash

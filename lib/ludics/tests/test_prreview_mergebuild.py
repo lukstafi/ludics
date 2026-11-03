@@ -237,21 +237,28 @@ class Repo(unittest.TestCase):
         self.assertEqual(git(self.clone, "worktree", "list", "--porcelain").count("worktree "), 1)
         self.assertEqual(self.refs(), refs)
 
-    def build(self, gated: str, command: str = "sh ./api.sh") -> tuple[int, str]:
+    def build(self, gated: str, command: str = "sh ./api.sh", override: str = "") -> tuple[int, str]:
+        rc, out, _ = self.build_over(gated, command, override)
+        return rc, out
+
+    def build_over(self, gated: str, command: str, override: str) -> tuple[int, str, str | None]:
+        """``build``, with what an override went over (THE BASE ALONE) as its third member."""
         refs = self.refs()
         os.chdir(self.clone)
         out = io.StringIO()
         rc = 0
+        shared: str | None = None
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             try:
-                mergebuild._build(  # pyright: ignore[reportPrivateUsage]
-                    "owner/repo", "7", gated, "main", self.tip, BuildConfig(command, ("*.sh",), 60), "test"
+                shared = mergebuild._build(  # pyright: ignore[reportPrivateUsage]
+                    "owner/repo", "7", gated, "main", self.tip, BuildConfig(command, ("*.sh",), 60), "test",
+                    override=override,
                 )
             except cli.Exit as exc:
                 rc = exc.rc
                 out.write(exc.message + "\n")
         self.assert_untouched(refs)
-        return rc, out.getvalue()
+        return rc, out.getvalue(), shared
 
 
 
@@ -266,6 +273,8 @@ class Build(Repo):
         self.assertIn("  | ", out)
         self.assertIn("hook", out)
         self.assertIn("does not build", out)
+        self.assertIn("main alone PASSED", out, "the base alone was built, and the failure is the merge's")
+        self.assertIn("though each side is green on its own", out)
 
     def test_a_merge_that_builds_passes(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
@@ -678,6 +687,87 @@ class Forwarded(Repo):
         self.assertEqual(both.count("still holds box after 9s"), 1, both)
         self.assertIn("could not run", self.read(out))
 
+
+
+# THE BASE ALONE (#860): the base's first line marks a red (`red=1`) that the command reports
+# after api.sh runs, failing with status 1 whatever api.sh did; `pwd` first, so the two builds
+# compare as the same only when they ran at the same absolute path.
+RED = "hook() { :; }; red=1"
+RED_CHECK = 'pwd; sh ./api.sh; rc=$?; if grep -q red=1 api.sh; then echo "red: the scan fails"; exit 1; fi; exit $rc'
+WHY = "base red, not this PR: the scan, red at the base's tip; owned by owner/repo#1"
+
+
+class BaseAlone(Repo):
+    """A failed merge build is compared with the same command on the base alone (THE BASE ALONE)."""
+
+    def test_a_failure_the_base_shares_is_refused_naming_the_override(self) -> None:
+        head, _ = self.sides("keep", RED)
+        rc, out = self.build(head, RED_CHECK)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("merge build owner/repo#7: FAILED (exit 1)", out)
+        self.assertIn("does the base share the failure? building main at", out)
+        self.assertIn("main alone FAILED the same way (exit 1, every line of the merge's output in its own)", out)
+        self.assertIn("the failure is the base's, not the merge's", out)
+        self.assertIn("--override", out)
+
+    def test_under_override_a_shared_failure_is_gone_over(self) -> None:
+        head, tip = self.sides("keep", RED)
+        rc, out, shared = self.build_over(head, RED_CHECK, WHY)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(shared, f"a merge-build failure main at {tip[:8]} alone shares ({RED_CHECK}: exit 1)")
+        self.assertIn("FAILED the same way", out)
+
+    def test_an_extra_failure_is_refused_under_override(self) -> None:
+        head, _ = self.sides("seam", RED)
+        rc, out, shared = self.build_over(head, RED_CHECK, WHY)
+        self.assertEqual(rc, 1, out)
+        self.assertIsNone(shared)
+        self.assertIn("not the same way: 1 line(s) of the merge's output are not in main's", out)
+        # bash says `./api.sh: line 9: seam: command not found`, dash `./api.sh: 9: seam: not found`.
+        self.assertRegex(out, r"\n  \+ \./api\.sh: (line )?9: seam: ", "the merge's own failure is shown")
+        self.assertIn("its failure is not only main's", out)
+        self.assertIn("--override goes over only a failure the base alone shares", out)
+
+    def test_another_status_is_refused_under_override(self) -> None:
+        """No line differs (the PR's `false` prints nothing), only the status: not the same way."""
+        head, _ = self.sides("false", RED)
+        command = "sh ./api.sh; rc=$?; grep -q red=1 api.sh && exit $((rc + 5)); exit $rc"
+        rc, out, shared = self.build_over(head, command, WHY)
+        self.assertEqual(rc, 1, out)
+        self.assertIsNone(shared)
+        self.assertIn("main alone exits 5, the merge 6", out)
+
+    def test_the_base_alone_has_the_merges_parents_and_environment(self) -> None:
+        """THE COMMAND'S CONTRACT holds for the base's build too: the same two parents and
+        variables, the base tip's tree. Its log records them, and only the shared red fails."""
+        head, tip = self.sides("keep", RED)
+        command = (
+            f'test "$SHIP_PR_MERGE_BASE_SHA" = {tip} && test "$SHIP_PR_MERGE_HEAD_SHA" = {head}'
+            ' && test "$(git rev-parse HEAD^1)" = "$SHIP_PR_MERGE_BASE_SHA"'
+            ' && test "$(git rev-parse HEAD^2)" = "$SHIP_PR_MERGE_HEAD_SHA" || exit 9;'
+            ' if git diff --quiet HEAD^1 HEAD; then echo base; else echo merge; fi; ' + RED_CHECK
+        )
+        rc, out = self.build(head, command)
+        self.assertEqual(rc, 1, out)
+        # The merge's log says `merge`, the base's `base`: one line the base's lacks.
+        self.assertIn("  + merge", out)
+
+    def test_a_base_alone_with_no_verdict_under_override_is_no_verdict(self) -> None:
+        """The base's build past the timeout: what decides the merge was not read (exit 4); without
+        the override the merge's own failure refuses it (exit 1)."""
+        head, _ = self.sides("keep", RED)
+        command = 'if git diff --quiet HEAD^1 HEAD; then sleep 30; fi; ' + RED_CHECK
+        os.chdir(self.clone)
+        for override, want in ((WHY, 4), ("", 1)):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                with self.assertRaises(cli.Exit) as caught:
+                    mergebuild._build(  # pyright: ignore[reportPrivateUsage]
+                        "owner/repo", "7", head, "main", self.tip, BuildConfig(command, ("*.sh",), 3), "test",
+                        override=override,
+                    )
+            self.assertEqual(caught.exception.rc, want, out.getvalue() + caught.exception.message)
+            self.assertIn("main alone", caught.exception.message)
 
 
 _GH_FAIL = """#!/bin/sh

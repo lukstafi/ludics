@@ -144,7 +144,35 @@ within the bound: exit 4. Could not run (the slot refused, a fetch or git step f
 After the command ends, however it ends, its process group is ended too, so a process it left
 behind does not outlive the merge; interrupted, see INTERRUPTS. The build judges the base tip the drift read;
 a base that moves again between the build and the merge call is not rebuilt (that, again, is the
-integration loop's). No flag waives a failed build.
+integration loop's). One flag reaches a failed build, and only as THE BASE ALONE says.
+
+THE BASE ALONE (#860). A red the base's tip already has (a scan the command runs, failing on
+master) fails every merge build that triggers, so without this no PR could merge over it, cited
+``--override`` or not, until the base's fix landed. So when the merge's build FAILS, the same
+command runs once more, in a fresh repository at the same absolute path (the merge's tree is
+renamed aside), on a commit whose tree is the base tip's alone and whose parents and environment
+are the merge's (THE COMMAND'S CONTRACT), so a command that picks its tiers by what each side
+changed picks the same ones. Its verdict:
+
+  passed                    the failure is the merge's own: refused (exit 1), as before.
+  failed the same way       the same exit status, and every line of the merge's log (counted:
+                            a line twice in it must be twice in the base's) is in the base's:
+                            the failure is the base's. Without ``--override`` refused (exit 1),
+                            saying so and naming the flag; with it, the merge proceeds, and merge
+                            announces what it went over with the gate's override, before the call.
+  failed otherwise          another status, a line of the merge's log the base's lacks (shown,
+                            up to NAMED_LINES), or a log over COMPARED_BYTES or unreadable (never
+                            compared, so never the same): refused (exit 1), override or not.
+  no verdict                (its setup failed, the slot refused, its timeout): refused, exit 1
+                            without ``--override``; with it, 4 past the timeout and 3 otherwise,
+                            since what decides the merge was not read.
+
+The boundary: "the same way" is what the command says, line for line, and nothing else. A command
+that prints nothing on failure tells nothing apart, so two failures of one status read as the
+same; a line that differs only by a timing or a count (a test runner's tally) reads as an extra
+failure, a false refusal that leaves the merge waiting for the base's fix. Which failure the
+override was meant for is not checked against its reason: a reason is words (merge.py), and the
+log is the evidence. The dry run (THE DRY RUN) takes no override, so a shared failure is its exit 1.
 """
 
 import contextlib
@@ -157,11 +185,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import Literal, assert_never
+from typing import Literal, NoReturn, assert_never
 
 from ludics import cli, proc
 from ludics.prreview.clock import Clock
@@ -182,6 +211,8 @@ SHOWN_TAIL = 100
 SHOWN_BYTES = 64 * 1024  # at most this much is read from each end of a long log
 LINE_CHARS = 1000  # a longer line is shown cut
 NAMED = 10  # a side's build inputs are named up to this many in the build's reason
+NAMED_LINES = 20  # THE BASE ALONE: the merge's lines the base's log lacks, shown up to this many
+COMPARED_BYTES = 16 * 1024 * 1024  # THE BASE ALONE: a log over this is never read as "the same"
 TRIGGERS = ("same-input", "any-input")
 BASE_SHA_VAR = "SHIP_PR_MERGE_BASE_SHA"  # THE COMMAND'S CONTRACT: the merge commit's first parent
 HEAD_SHA_VAR = "SHIP_PR_MERGE_HEAD_SHA"  # and its second
@@ -635,11 +666,13 @@ def config_touched(drift: Drift) -> bool:
 
 def merge_build(
     session: GhSession, repo: str, pr: str, gated: str, drift: Drift, cap: int, *,
-    checkout: str | None = None, ceiling: Ceiling | None = None,
-) -> None:
+    checkout: str | None = None, ceiling: Ceiling | None = None, override: str = "",
+) -> str | None:
     """Build the would-be merge commit when the config and the drift read ask for it (the module
     docstring); return to merge, or end the command with its refusal. ``checkout`` is ``merge
-    -C``'s clone (None: the working directory)."""
+    -C``'s clone (None: the working directory); ``override`` is ``--override``'s reason. Returns
+    what the override goes over (THE BASE ALONE: a failure the base shares), for merge to
+    announce; None when the merge goes over nothing here."""
     touched = config_touched(drift)
 
     def note(state: str) -> None:
@@ -654,16 +687,16 @@ def merge_build(
     if drift.pr_paths is not None and drift.base_paths is not None and not (drift.pr_paths and drift.base_paths):
         # A side that changed nothing: no build is possible under either trigger, and the config is not read.
         note("not read: one side changed nothing, so no build is possible")
-        return
+        return None
     config = read_config(session, repo, cap)
     if config is None:
         note("absent there: nothing is built")
-        return
+        return None
     note("read below")
     why, why_not = build_reason(drift, config)
     if why is None:
         cli.say(f"merge build {repo}#{pr}: no build — {why_not}")
-        return
+        return None
     if os.name == "nt":
         fail(
             2,
@@ -682,7 +715,7 @@ def merge_build(
             f"NOT merging {repo}#{pr}: {why}, and the tip of {drift.base_ref} could not be read (above),",
             "so the merge commit cannot be built. Retry.",
         )
-    _build(repo, pr, gated, drift.base_ref, drift.base_sha, config, why, checkout=checkout, ceiling=ceiling)
+    return _build(repo, pr, gated, drift.base_ref, drift.base_sha, config, why, checkout=checkout, ceiling=ceiling, override=override)
 
 
 @dataclass(frozen=True)
@@ -699,23 +732,24 @@ class _Subject:
 
 def _build(
     repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str, *,
-    checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False,
-) -> None:
+    checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False, override: str = "",
+) -> str | None:
     """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
-    clone ``checkout`` names as it is, with nothing fetched."""
+    clone ``checkout`` names as it is, with nothing fetched. Returns what an ``override`` goes over
+    (THE BASE ALONE: a failure the base shares), else None."""
     if dry:
         what = f"{gated[:8]} into {base_ref}"
         subject = _Subject(f"{what} (dry run)", f"merge-build {what}: NOT built", f"merge-build {what}: merge would REFUSE it", "")
     else:
         subject = _Subject(f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr)
     with _INTERRUPTS.installed():
-        _build_in_scratch(subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling)
+        return _build_in_scratch(subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override)
 
 
 def _build_in_scratch(
     subject: _Subject, repo: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str,
-    where: str, ceiling: Ceiling | None,
-) -> None:
+    where: str, ceiling: Ceiling | None, override: str,
+) -> str | None:
     stop, pr = subject.stop, subject.pr
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
     # (a whole build tree, and the repository it is in) is swept by the next `watch`
@@ -766,16 +800,9 @@ def _build_in_scratch(
         objects = os.path.join(common, "objects")
         if not common or not os.path.isdir(objects):
             fail(3, f"{stop}: the object store of {root} could not be found ({common or 'no answer'}).")
-        # The build's own repository: it borrows the clone's objects (alternates, read only) and
-        # has its own config, refs and index, so the clone's sparse-checkout, hooks and refs are
-        # not the build's, and a git write the build makes lands here and goes with the scratch.
-        made = _git(["init", "--quiet", "--template=", tree], scratch)
-        if made.rc != 0:
-            fail(3, f"{stop}: the build's repository could not be made ({_first_line(made)}).")
-        info = os.path.join(tree, ".git", "objects", "info")
-        os.makedirs(info, exist_ok=True)
-        with open(os.path.join(info, "alternates"), "w", encoding="utf-8") as handle:
-            handle.write(objects + "\n")
+        made = _new_repo(scratch, tree, objects)
+        if made:
+            fail(3, f"{stop}: the build's repository could not be made ({made}).")
         merged = _git([*quiet, "merge-tree", "--write-tree", "--no-messages", tip, gated], tree)
         if merged.rc == 1:
             fail(
@@ -790,84 +817,23 @@ def _build_in_scratch(
                 f"{stop}: {why}, and git could not compute the merge of {gated[:8]} into",
                 f"{base_ref} at {tip[:8]} ({_first_line(merged)}; `git merge-tree --write-tree` needs git >= 2.38).",
             )
-        ident = dict(os.environ)
-        for role in ("AUTHOR", "COMMITTER"):
-            ident[f"GIT_{role}_NAME"] = "ship-pr merge build"
-            ident[f"GIT_{role}_EMAIL"] = "ship-pr@localhost"
-        commit = _git(
-            [*quiet, "commit-tree", written, "-p", tip, "-p", gated, "-m", f"ship-pr merge build of {subject.label}"],
-            tree,
-            env=ident,
-        )
-        merge_sha = commit.stdout.strip()
-        if commit.rc != 0 or not _SHA.fullmatch(merge_sha):
-            fail(3, f"{stop}: the merge commit could not be written ({_first_line(commit)}).")
-        out = _git([*quiet, "-c", "core.sparseCheckout=false", "checkout", "--quiet", "--detach", merge_sha], tree)
-        if out.rc != 0:
-            fail(3, f"{stop}: the merge commit could not be checked out ({_first_line(out)}).")
-        head = gated
+        merge_sha, err = _commit_out(quiet, tree, written, tip, gated, f"ship-pr merge build of {subject.label}", "the merge commit")
+        if err:
+            fail(3, f"{stop}: {err}.")
         runner = _slot_runner()
-        log = os.path.join(scratch, "build.log")
-        status = os.path.join(scratch, "build.status")
-        wrapped = ["sh", "-c", _WRAPPER, "merge-build", config.command, log, status]
-        bound = float(config.timeout)
-        if runner:
-            # THE WINDOW WAIT: its bound read now, after the setup, from what is left of the ceiling.
-            window = window_bound(ceiling)
-            where_run = f"in a run-time slot (a measurement on this box waited for up to {window}s)"
-            wrapped = ["bash", runner, "execution", "slot", "--cpu", "--wait", str(SLOT_WAIT),
-                       f"--wait-window={window}", "--deadline", str(config.timeout), "--", *wrapped]
-            bound += SLOT_WAIT + window + 120
-        else:
-            where_run = "bare (this box has no run-time slots)"
-        cli.say(
-            f"merge build {subject.label}: {why}; building {head[:8]} merged with {base_ref} at {tip[:8]}"
-            f" ({merge_sha[:8]}) {where_run}, bound {config.timeout}s: {config.command}"
+        ran = _run(
+            subject, config, runner, ceiling, tree, scratch, "build", tip, gated,
+            f"{why}; building {gated[:8]} merged with {base_ref} at {tip[:8]} ({merge_sha[:8]})",
         )
-        # THE COMMAND'S CONTRACT: the merge commit's parents, by name.
-        env = {**_clean_env(), BASE_SHA_VAR: tip, HEAD_SHA_VAR: gated}
-        started = time.monotonic()
-        try:
-            # Forwarded, not captured: the slot's lines (the measurement it waits for, by request id)
-            # reach the caller as the slot says them (THE WINDOW WAIT); the command's own output
-            # goes to the log.
-            done = _supervised(wrapped, tree, bound, env, end_group=True, forward=True)
-        except (ValueError, OSError) as exc:
-            # A command no exec can take (a NUL in it, past the argument limit): the config's fault.
-            where_fix = "the file on the default branch" if pr else "the config"
-            fail(2, f"{stop}: {CONFIG_FILE}'s command cannot be run ({exc}); fix {where_fix}.")
-        took = int(time.monotonic() - started)
-        try:
-            with open(status, encoding="utf-8") as handle:
-                rc_text = handle.read().strip()
-        except OSError:
-            rc_text = ""
-        if rc_text == "0":
-            cli.say(f"merge build {subject.label}: PASSED in {took}s ({config.command})")
-            return
-        if rc_text:
-            cli.say(f"merge build {subject.label}: FAILED (exit {rc_text}) after {took}s; its output:")
-            for line in _shown(log):
+        if ran.status == "0":
+            cli.say(f"merge build {subject.label}: PASSED in {ran.took}s ({config.command})")
+            return None
+        if ran.status:
+            cli.say(f"merge build {subject.label}: FAILED (exit {ran.status}) after {ran.took}s; its output:")
+            for line in _shown(ran.log):
                 cli.say(f"  | {line}")
-            fail(
-                1,
-                f"{subject.refuse}: {head[:8]} merged with {base_ref} at {tip[:8]} does not build",
-                f"({config.command}: exit {rc_text}, output above), though each side is green on its own. Merge",
-                f"{base_ref} in, fix the clash, push, and merge again.",
-            )
-        for line in (done.stdout + done.stderr).splitlines():
-            cli.say(f"  | {line}")
-        if done.rc == 124:
-            fail(
-                4,
-                f"{stop}: the build of its merge commit did not finish within",
-                f"{config.timeout}s ({CONFIG_FILE}'s timeout); no verdict. Re-run merge, or raise the timeout.",
-            )
-        fail(
-            3,
-            f"{stop}: the build of its merge commit could not run (the wrapper exited",
-            f"{done.rc} before the command did; what it said is above, on stderr). Retry.",
-        )
+            return _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
+        _no_verdict(stop, config, ran.done, "the build of its merge commit")
     finally:
         # Held from its first instruction (as in _supervised), so no signal skips the removal.
         was, _INTERRUPTS.holding = _INTERRUPTS.holding, True
@@ -877,6 +843,207 @@ def _build_in_scratch(
         finally:
             _INTERRUPTS.holding = was
         _INTERRUPTS.check()
+
+
+def _new_repo(scratch: str, tree: str, objects: str) -> str:
+    """The build's own repository at ``tree``: it borrows the clone's objects (alternates, read
+    only) and has its own config, refs and index, so the clone's sparse-checkout, hooks and refs
+    are not the build's, and a git write the build makes lands here and goes with the scratch.
+    Returns what went wrong, or ""."""
+    made = _git(["init", "--quiet", "--template=", tree], scratch)
+    if made.rc != 0:
+        return _first_line(made)
+    info = os.path.join(tree, ".git", "objects", "info")
+    os.makedirs(info, exist_ok=True)
+    with open(os.path.join(info, "alternates"), "w", encoding="utf-8") as handle:
+        handle.write(objects + "\n")
+    return ""
+
+
+def _commit_out(
+    quiet: list[str], tree: str, written: str, tip: str, gated: str, message: str, what: str
+) -> tuple[str, str]:
+    """A commit of the tree ``written`` with the merge's two parents (THE COMMAND'S CONTRACT),
+    checked out in full at ``tree``: ``(its sha, "")``, or ``("", what went wrong)``."""
+    ident = dict(os.environ)
+    for role in ("AUTHOR", "COMMITTER"):
+        ident[f"GIT_{role}_NAME"] = "ship-pr merge build"
+        ident[f"GIT_{role}_EMAIL"] = "ship-pr@localhost"
+    commit = _git([*quiet, "commit-tree", written, "-p", tip, "-p", gated, "-m", message], tree, env=ident)
+    sha = commit.stdout.strip()
+    if commit.rc != 0 or not _SHA.fullmatch(sha):
+        return "", f"{what} could not be written ({_first_line(commit)})"
+    out = _git([*quiet, "-c", "core.sparseCheckout=false", "checkout", "--quiet", "--detach", sha], tree)
+    if out.rc != 0:
+        return "", f"{what} could not be checked out ({_first_line(out)})"
+    return sha, ""
+
+
+@dataclass(frozen=True)
+class _Ran:
+    """One run of the command: ``status`` is the status file's text ("" when the command never
+    ended on its own: the wrapper's refusal, the deadline), ``done`` the wrapper's own result."""
+
+    status: str
+    done: proc.Completed
+    took: int
+    log: str
+
+
+def _run(
+    subject: _Subject, config: BuildConfig, runner: str | None, ceiling: Ceiling | None, tree: str,
+    scratch: str, name: str, tip: str, gated: str, what: str,
+) -> _Ran:
+    """The command at the root of ``tree``, its output to ``<scratch>/<name>.log``, inside the
+    box's slot when it has slots, bounded either way (HOW IT BUILDS)."""
+    log = os.path.join(scratch, f"{name}.log")
+    status = os.path.join(scratch, f"{name}.status")
+    wrapped = ["sh", "-c", _WRAPPER, "merge-build", config.command, log, status]
+    bound = float(config.timeout)
+    if runner:
+        # THE WINDOW WAIT: its bound read now, after the setup, from what is left of the ceiling.
+        window = window_bound(ceiling)
+        where_run = f"in a run-time slot (a measurement on this box waited for up to {window}s)"
+        wrapped = ["bash", runner, "execution", "slot", "--cpu", "--wait", str(SLOT_WAIT),
+                   f"--wait-window={window}", "--deadline", str(config.timeout), "--", *wrapped]
+        bound += SLOT_WAIT + window + 120
+    else:
+        where_run = "bare (this box has no run-time slots)"
+    cli.say(f"merge build {subject.label}: {what} {where_run}, bound {config.timeout}s: {config.command}")
+    # THE COMMAND'S CONTRACT: the merge commit's parents, by name.
+    env = {**_clean_env(), BASE_SHA_VAR: tip, HEAD_SHA_VAR: gated}
+    started = time.monotonic()
+    try:
+        # Forwarded, not captured: the slot's lines (the measurement it waits for, by request id)
+        # reach the caller as the slot says them (THE WINDOW WAIT); the command's own output
+        # goes to the log.
+        done = _supervised(wrapped, tree, bound, env, end_group=True, forward=True)
+    except (ValueError, OSError) as exc:
+        # A command no exec can take (a NUL in it, past the argument limit): the config's fault.
+        where_fix = "the file on the default branch" if subject.pr else "the config"
+        fail(2, f"{subject.stop}: {CONFIG_FILE}'s command cannot be run ({exc}); fix {where_fix}.")
+    took = int(time.monotonic() - started)
+    try:
+        with open(status, encoding="utf-8") as handle:
+            rc_text = handle.read().strip()
+    except OSError:
+        rc_text = ""
+    return _Ran(rc_text, done, took, log)
+
+
+def _no_verdict(stop: str, config: BuildConfig, done: proc.Completed, what: str) -> NoReturn:
+    """A run with no status of its own: what the wrapper said, then exit 4 (past the bound) or 3."""
+    for line in (done.stdout + done.stderr).splitlines():
+        cli.say(f"  | {line}")
+    if done.rc == 124:
+        fail(
+            4,
+            f"{stop}: {what} did not finish within",
+            f"{config.timeout}s ({CONFIG_FILE}'s timeout); no verdict. Re-run merge, or raise the timeout.",
+        )
+    fail(
+        3,
+        f"{stop}: {what} could not run (the wrapper exited",
+        f"{done.rc} before the command did; what it said is above, on stderr). Retry.",
+    )
+
+
+def _log_lines(log: str) -> Counter[str] | None:
+    """The log's lines, counted (THE BASE ALONE), or None when it is over ``COMPARED_BYTES`` or
+    cannot be read: a log not read whole is never "the same"."""
+    try:
+        with open(log, "rb") as handle:
+            data = handle.read(COMPARED_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > COMPARED_BYTES:
+        return None
+    return Counter(proc.decode(data).splitlines())
+
+
+def _against_base(
+    subject: _Subject, config: BuildConfig, runner: str | None, ceiling: Ceiling | None, scratch: str,
+    tree: str, objects: str, quiet: list[str], base_ref: str, tip: str, gated: str, merged: _Ran, override: str,
+) -> str | None:
+    """THE BASE ALONE (module docstring): after the merge's build FAILED, the same command on the
+    base tip's tree with the merge's parents, and the verdict: a refusal, or -- under ``override``,
+    for a failure the base shares -- what the override goes over."""
+    stop, label = subject.stop, subject.label
+    head8, tip8, rc = gated[:8], tip[:8], merged.status
+    plain = (
+        f"{subject.refuse}: {head8} merged with {base_ref} at {tip8} does not build",
+        f"({config.command}: exit {rc}, output above),",
+    )
+    # The merge's tree moves aside (a rename, whatever its files' modes; the scratch's removal
+    # takes it), so the base's is built at the same absolute path and a path the command prints
+    # reads the same in both logs.
+    try:
+        os.rename(tree, os.path.join(scratch, "merged"))
+        err = _new_repo(scratch, tree, objects)
+    except OSError as exc:
+        err = f"the merge's tree could not be moved aside ({exc.strerror})"
+    sha = ""
+    if not err:
+        sha, err = _commit_out(
+            quiet, tree, f"{tip}^{{tree}}", tip, gated, f"ship-pr merge build: {base_ref} alone, for {label}",
+            f"the commit of {base_ref} alone",
+        )
+    if err:
+        cli.say(f"merge build {label}: {base_ref} alone could not be built to compare: {err}")
+        if override:
+            fail(3, f"{stop}: its merge build FAILED (above), and {base_ref} alone could not be built to tell",
+                 f"whether the base shares that failure ({err}); --override goes over only one it shares. Retry.")
+        fail(1, *plain, f"and {base_ref} alone could not be built to compare ({err}). Merge {base_ref} in, fix the",
+             "clash, push, and merge again.")
+    base = _run(
+        subject, config, runner, ceiling, tree, scratch, "base", tip, gated,
+        f"does the base share the failure? building {base_ref} at {tip8} alone ({sha[:8]}: its tree, the merge's two parents)",
+    )
+    if not base.status:
+        if override:
+            _no_verdict(stop, config, base.done, f"its merge build FAILED (above), and the build of {base_ref} alone, which tells whether the base shares that failure,")
+        for line in (base.done.stdout + base.done.stderr).splitlines():
+            cli.say(f"  | {line}")
+        fail(1, *plain, f"and the build of {base_ref} alone gave no verdict to compare. Merge {base_ref} in, fix the",
+             "clash, push, and merge again.")
+    if base.status == "0":
+        cli.say(f"merge build {label}: {base_ref} alone PASSED in {base.took}s: the failure is the merge's own")
+        fail(1, *plain, f"though each side is green on its own. Merge {base_ref} in, fix the clash, push, and merge again.")
+    mine, theirs = _log_lines(merged.log), _log_lines(base.log)
+    if base.status != rc:
+        differs = f"{base_ref} alone exits {base.status}, the merge {rc}"
+        extra: list[str] = []
+    elif mine is None or theirs is None:
+        differs = f"a log is over {COMPARED_BYTES} bytes or could not be read, so the two were not compared"
+        extra = []
+    else:
+        extra = list((mine - theirs).elements())
+        differs = f"{len(extra)} line(s) of the merge's output are not in {base_ref}'s" if extra else ""
+    if differs:
+        cli.say(f"merge build {label}: {base_ref} alone FAILED (exit {base.status}) after {base.took}s, not the same way: {differs}")
+        for line in extra[:NAMED_LINES]:
+            cli.say(f"  + {line[:LINE_CHARS]}")
+        if len(extra) > NAMED_LINES:
+            cli.say(f"  + ... ({len(extra) - NAMED_LINES} more)")
+        fail(
+            1, *plain,
+            f"and its failure is not only {base_ref}'s ({differs}). Merge {base_ref} in, fix what is the merge's,",
+            "push, and merge again" + ("; --override goes over only a failure the base alone shares." if override else "."),
+        )
+    cli.say(
+        f"merge build {label}: {base_ref} alone FAILED the same way (exit {rc}, every line of the merge's output in"
+        f" its own) after {base.took}s: the failure is the base's"
+    )
+    shared = f"a merge-build failure {base_ref} at {tip8} alone shares ({config.command}: exit {rc})"
+    if override:
+        return shared
+    fail(
+        1, *plain,
+        f"and {base_ref} at {tip8} alone fails the same way: the failure is the base's, not the merge's. Only",
+        "where that red is established (ship-pr's *The override*) re-run merge with --override '<the red, the",
+        "base sha, its owner>', which goes over exactly a failure the base shares; otherwise this merge waits",
+        "for the base's fix.",
+    )
 
 
 def _fetch_gated(subject: _Subject, root: str, remote: str, quiet: list[str], gated: str, base_ref: str, why: str) -> None:
