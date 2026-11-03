@@ -1428,6 +1428,18 @@ if [ "$rc" -eq 1 ] && grep -qxF 'run-against-base: batch: [1] scripts/lib.sh: s/
 else
   ko "command batch: rc=$rc -- $out"
 fi
+# A mutant run is a run like a single one: its program starts with INT at its default, not
+# ignored as a non-interactive shell's background job would have it -- or a case that signals a
+# child of its own goes red on every mutant alike.
+printf '%s\n' 'lib.sh s/$/ # mutated/' >"$BM"
+# shellcheck disable=SC2016 # expanded by the inner sh
+run_rab --command --mutants "$BM" -- sh -c 'kill -INT $$; echo "INT WAS IGNORED"'
+if [ "$rc" -eq 0 ] && ! grep -qF 'INT WAS IGNORED' <<<"$out" \
+  && grep -qF 'batch: [1] scripts/lib.sh: s/$/ # mutated/: killed, exit 130' <<<"$out"; then
+  ok "a mutant run's program gets INT at its default disposition"
+else
+  ko "batch INT disposition: rc=$rc -- $out"
+fi
 # Refusals: every line is checked before any run.
 bm_refusal() { # LABEL WANT_TEXT CONTENT...
   local label=$1 want=$2

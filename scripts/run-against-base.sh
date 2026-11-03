@@ -832,8 +832,14 @@ if [ -n "$MUTANTS_FILE" ]; then
     trap 'pending=143' TERM HUP
     tee "$SCRATCH/mutant.$k" <"$SCRATCH/fifo" &
     teepid=$!
+    # `set -m`, as for the suite below: a background job of a non-interactive shell starts with INT
+    # ignored, a disposition nothing it starts could trap or reset, so without it every mutant run
+    # would run its suite with INT ignored -- and a case that signals a child of its own would go
+    # red on every mutant alike, hiding the survivors (it did, in this helper's own batch).
+    set -m
     "$BASH" "$0" "${run[@]}" >"$SCRATCH/fifo" 2>&1 </dev/null &
     inner_pid=$!
+    set +m
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     [ -z "$pending" ] || exit "$pending"
