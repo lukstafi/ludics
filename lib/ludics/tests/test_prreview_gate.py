@@ -357,8 +357,8 @@ class GateLoop(unittest.TestCase):
             gate.session.config = replace(gate.session.config, api_attempts=4)
             with self.subTest(again=again):
                 self.assertEqual((gate.check("7", 3600), gate.verdict, gate.gate_base), (0, "green", "b1"))
-                self.assertEqual(len(gate.head_unread), 5, "five failed reads, each recorded")
-                self.assertIn("5 head read(s) failed during this wait", gate.head_unread_note())
+                self.assertEqual(len(gate.unread), 5, "five failed reads, each recorded")
+                self.assertIn("5 read(s) failed during this wait", gate.unread_note())
                 self.assertEqual(clock.sleeps, [60] * 5, "a pause between them (no budget: its cap is the interval)")
 
     def test_a_head_that_never_reads_is_three_once_the_budget_is_spent(self) -> None:
@@ -374,7 +374,7 @@ class GateLoop(unittest.TestCase):
             with self.subTest(again=again):
                 self.assertEqual((gate.check("7", 900), gate.verdict), (3, "unknown"))
                 self.assertGreaterEqual(clock.t - FakeClock().t, 900, "only once the wait is spent")
-                self.assertIn("head reads failed during this wait, and its budget is spent", self.out.getvalue())
+                self.assertIn("reads failed during this wait, and its budget is spent", self.out.getvalue())
 
     def test_a_refused_or_unwaited_head_read_is_three_at_once(self) -> None:
         # The negative controls: a 404 no retry changes, and a read with no wait to ride it out in.
@@ -401,7 +401,118 @@ class GateLoop(unittest.TestCase):
         gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1")
         gate = make_gate(gh, FakeClock())
         self.assertEqual((gate.check("7", 600), gate.verdict), (5, "superseded"))
-        self.assertEqual(gate.head_unread, ["it answered no SHA"])
+        self.assertEqual(gate.unread, ["re-read o/r#7's head SHA: it answered no SHA"])
+
+    def test_a_wait_rides_out_failed_check_and_run_reads(self) -> None:
+        # ludics#808: a round's check-run read, or its workflow-run read, that did not answer is one
+        # failed poll, as a head read is (#795): the round is read again, and the first round whose
+        # reads answer is judged. Each failed round of the run read asks twice (the advisory
+        # workflow lookup, then run_signal), each read's four attempts spent.
+        ok_runs = "2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1"
+        for route, fails in (("check-runs", 8), ("actions/runs?head_sha=h1", 16)):
+            gh = FakeGh()
+            fail = proc.Completed(1, "", "gh: HTTP 503")
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h1\tb1\ttopic")
+            answers = {"check-runs": "ci\tsuccess\tu\t1\n", "actions/runs?head_sha=h1": ok_runs + "\n"}
+            for needle, out in answers.items():
+                served = [fail] * fails + [proc.Completed(0, out, "")] if needle == route else [proc.Completed(0, out, "")]
+                gh.routes.append(Route((needle,), served))
+            clock = FakeClock()
+            gate = make_gate(gh, clock)
+            gate.session.config = replace(gate.session.config, api_attempts=4)
+            with self.subTest(route=route):
+                self.assertEqual((gate.check("7", 3600), gate.verdict), (0, "green"))
+                self.assertEqual(len(gate.unread), 2, "two failed rounds, each recorded")
+                self.assertIn("2 read(s) failed during this wait", gate.unread_note())
+                self.assertIn("failed read 2 of this wait, reading it again", self.out.getvalue())
+                self.assertEqual(clock.sleeps, [60] * 2, "a pause after each")
+
+    def test_a_round_read_that_never_answers_is_three_once_the_budget_is_spent(self) -> None:
+        # The run-less head's commit-date read is the run read's too: with no clock from it, the
+        # round decides nothing, and a failed one is read again like the others.
+        for route in ("check-runs", "actions/runs?head_sha=h1", "commits/h1"):
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2099-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h1\tb1\ttopic")
+            for needle in ("check-runs", "actions/runs?head_sha=h1", "commits/h1"):
+                if needle == route:
+                    gh.on(needle, rc=1, err="gh: HTTP 503")
+                else:
+                    gh.on(needle, out="")
+            clock = FakeClock()
+            gate = make_gate(gh, clock)
+            with self.subTest(route=route):
+                self.assertEqual((gate.check("7", 900), gate.verdict), (3, "unknown"))
+                self.assertGreaterEqual(clock.t - FakeClock().t, 900, "only once the wait is spent")
+                self.assertIn("reads failed during this wait, and its budget is spent", self.out.getvalue())
+                self.assertIn("UNKNOWN, which is NOT 'nothing is red'", self.out.getvalue())
+
+    def test_a_refused_held_unusable_or_unwaited_round_read_is_three_at_once(self) -> None:
+        # The negative controls of #808, as for the head read: a 404, a read the polling budget
+        # stopped, an answer that decides nothing however often it is read (a run-less head whose
+        # only clocks are in the future), and any failure with no wait to ride it out in.
+        cases = [
+            (route, err, wait, why)
+            for route in ("check-runs", "actions/runs?head_sha=h1")
+            for err, wait, why in (
+                ("gh: Not Found (HTTP 404)", 3600, "GitHub refused the read"),
+                ("gh: API rate limit exceeded for user", 3600, "the polling budget made no call"),
+                ("gh: HTTP 503", 0, "with no wait left to read it again in"),
+            )
+        ] + [("commits/h1", "", 3600, "what it answered decides nothing")]
+        for route, err, wait, why in cases:
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2099-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h1\tb1\ttopic")
+            for needle in ("check-runs", "actions/runs?head_sha=h1"):
+                if needle == route:
+                    gh.on(needle, rc=1, err=err)
+                else:
+                    gh.on(needle, out="")
+            gh.on("commits/h1", out="2099-01-01T00:00:00Z")
+            clock = FakeClock()
+            self.out.truncate(0)
+            self.out.seek(0)
+            with self.subTest(route=route, err=err, wait=wait):
+                self.assertEqual(make_gate(gh, clock).check("7", wait), 3)
+                self.assertEqual(clock.sleeps, [], "no pause")
+                self.assertIn(why, self.out.getvalue())
+
+    def test_a_head_that_moves_over_a_failing_round_read_is_five_at_once(self) -> None:
+        # A failed round skips the round's own head re-read; the head is read after it instead, so
+        # a push over a failing read is SUPERSEDED on that round, not 3 once the wait is spent.
+        for route in ("check-runs", "actions/runs?head_sha=h1"):
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h2\tb1\ttopic")
+            for needle in ("check-runs", "actions/runs?head_sha=h1"):
+                if needle == route:
+                    gh.on(needle, rc=1, err="gh: HTTP 503")
+                else:
+                    gh.on(needle, out="ci\tsuccess\tu\t1")
+            clock = FakeClock()
+            gate = make_gate(gh, clock)
+            with self.subTest(route=route):
+                self.assertEqual((gate.check("7", 3600), gate.verdict), (5, "superseded"))
+                self.assertEqual((clock.sleeps, len(gate.unread)), ([], 1), "on the first failed round")
+
+    def test_a_recording_round_whose_run_read_fails_keeps_its_record(self) -> None:
+        # merge --override records the reds of its first round. A round whose run read failed had
+        # recorded them already: the next round applies that record, so a check that turned red
+        # during the pause is not waived as red when --override was given.
+        gh = FakeGh()
+        gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+        gh.on("pulls/7", out="h1\tb1\ttopic")
+        gh.on("check-runs", out=["ci\tfailure\tu\t1", "ci\tfailure\tu\t1\nlint\tfailure\tu\t1"])
+        ok_runs = proc.Completed(0, "2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tfailure\t1\n", "")
+        gh.routes.append(Route(("actions/runs?head_sha=h1",), [proc.Completed(1, "", "gh: HTTP 503")] * 2 + [ok_runs]))
+        gh.on("actions/runs/100/jobs", out="ci\tfailure\t2026-01-01T00:00:00Z\t2026-01-01T00:01:00Z")
+        clock = FakeClock()
+        gate = make_gate(gh, clock)
+        self.assertEqual((gate.check("7", 3600, waive=True), gate.verdict), (1, "red"))
+        self.assertEqual(gate.waived, {"check:1/ci"}, "the first round's record, and only it")
+        self.assertEqual((gate.check_waived, gate.check_red), (1, 1), "ci waived, lint red")
 
     def test_a_checkless_head_inside_the_grace_holds_and_past_it_is_absent(self) -> None:
         for commit, want, verdict in (("2026-01-01T00:00:00Z", 0, "absent"), ("2025-12-31T23:59:00Z", 4, "unjudged")):
