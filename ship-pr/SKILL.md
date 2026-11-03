@@ -1273,7 +1273,11 @@ refusal says the failure is the base's, and only `--override` goes over it (*The
 the flag that merge waits for the base's fix. By default the boundary is the intersection: a clash across paths only one side
 changed (a caller in a file the base never touched) is still the integration loop's. `trigger
 any-input` widens it to a build whenever EACH side changed some build input, which catches that
-clash at about three times the builds (ludics-lite#635), so it suits a cheap command. A base that
+clash at about three times the builds (ludics-lite#635), so it suits a cheap command. A `comments
+<glob>` line (any number) makes a build input a side changed in comments alone not count for that
+side, read before the slot is taken, so a doc-comment edit on one side builds nothing (#861). Only
+OCaml (`*.ml`, `*.mli`) and dune files have comments there (anything else is code); name only paths
+whose comments the command does not read (no doc build over them, no output naming their lines). A base that
 moves again between the build and the call is the integration loop's either way
 (`prreview/mergebuild.py` states both).
 
