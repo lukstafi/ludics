@@ -362,6 +362,64 @@ class Checkout(RegistryCase):
         self.assertIn("unknown evidence fields", err)
 
 
+class StoredRequest(RegistryCase):
+    """ludics#806: THE STORED REQUEST -- the request allowlist is strict on a new request, open on a
+    stored one, so a ledger a newer copy wrote still serves an older copy."""
+
+    FUTURE = {"future_field": ["any", {"shape": 1}]}   # a request field this copy does not know
+
+    def store_future(self, identity: str) -> None:
+        """What a newer copy wrote: the record's request, and its reserve event, carry FUTURE."""
+        path = os.path.join(self.root, "executions", f"{identity}.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["request"].update(self.FUTURE)
+        data["history"][0]["data"].update(self.FUTURE)
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+    def test_a_stored_unknown_field_lists_dispatches_records_and_concludes_kept_as_written(self) -> None:
+        self.assertEqual(self.call("reserve", request("r"))[0], 0)
+        self.store_future("r")
+        rc, out, _ = self.call("list", {})
+        self.assertEqual((rc, out[0]["request"]["future_field"]), (0, self.FUTURE["future_field"]))
+        self.assertEqual(self.call("dispatch", {"request_id": "r", "evidence": "go"})[0], 0)
+        self.assertEqual(self.call("record", {"request_id": "r", "state": "running", "evidence": "x"})[0], 0)
+        done = {"request_id": "r", "verdict": "pass", "log": "/l", "evidence": "x", "handle": "h",
+                "remote_checkout": "/w", "observed_sha": "a" * 40}
+        rc, out, _ = self.call("conclude", done)
+        self.assertEqual((rc, out["state"], out["request"]["future_field"]),
+                         (0, "concluded", self.FUTURE["future_field"]))
+
+    def test_a_new_request_carrying_it_is_refused_on_every_admitting_action(self) -> None:
+        refusal = "EXECUTION REFUSED: unknown reservation fields or invalid request\n"
+        for action in ("reserve", "run"):
+            rc, out, err = self.call(action, request(f"n{action}", **self.FUTURE), slots="mac=9")
+            self.assertEqual((rc, out, err), (1, None, refusal), action)
+        rc, out, err = self.call("window", {"box": "mac", "request": request("w", kind="measurement", **self.FUTURE)})
+        self.assertEqual((rc, out, err), (1, None, refusal), "window")
+        self.assertEqual(self.call("list", {})[1], [], "nothing was written")
+
+    def test_a_retry_is_compared_whole_and_known_fields_stay_validated(self) -> None:
+        self.assertEqual(self.call("reserve", request("r"))[0], 0)
+        self.store_future("r")
+        rc, _, err = self.call("reserve", request("r"))
+        self.assertEqual(rc, 1)
+        self.assertIn("request_id already names a different assignment", err)
+        rc, _, err = self.call("reserve", request("r", **self.FUTURE))
+        self.assertEqual((rc, err), (1, "EXECUTION REFUSED: unknown reservation fields or invalid request\n"))
+        # Open to an unknown field, not to a malformed known one.
+        path = os.path.join(self.root, "executions", "r.json")
+        with open(path) as f:
+            data = json.load(f)
+        data["request"]["kind"] = "benchmark"
+        with open(path, "w") as f:
+            json.dump(data, f)
+        rc, _, err = self.call("list", {})
+        self.assertEqual(rc, 1)
+        self.assertIn("kind must be correctness or measurement", err)
+
+
 class BackendMark(RegistryCase):
     """THE BACKEND MARK: `pinned_backend`, top-level, written by a record alone, the backend the
     purpose names."""

@@ -217,15 +217,29 @@ THE CHECKOUT (ludics-lite#731): the one checkout a record's `--observed-from` co
 window payload may carry it BESIDE the request -- removed from the request, as `run` removes
 `evidence` -- and the record keeps it as a top-level field, fixed for the record's life (in its
 reserve history event too). It is never a request field: every caller ships its own copy of this
-module and validates the whole ledger with it, and an older copy refuses a request field it does
-not know, which would refuse every record to every box whose checkout lags, while it ignores a
-top-level field. A NEW standing request must carry it (a standing record is concluded at its
+module and validates the whole ledger with it, and a copy from before THE STORED REQUEST refuses a
+request field it does not know, which would refuse every record to every box whose checkout lags,
+while it ignores a top-level field. A NEW standing request must carry it (a standing record is concluded at its
 worker's hand-back with `--observed-from`, and on 2026-10-18 one was concluded off another worker's
 worktree); any other request may. A retried reserve or run names the same checkout, or none if the
 record has none, or is refused. `remote_checkout` is not it: that is the evidence's own field, which
 any record, reconcile or conclude payload rewrites. What reads it is fleet-worker's near side
 (`execution.observed_sha_of`, and `execution leg`, whose `--worktree` must be it: ludics-lite#749);
 this module only records it.
+
+THE STORED REQUEST (ludics#806). The request-field allowlist (REQUEST_FIELDS, OPTIONAL_FIELDS) is
+strict on a NEW request only: a reserve, run or window payload, retries included, and so `execution
+tip-run`, which reserves through `run`. A field it does not name is refused there. A STORED record's
+request is read open: a field this copy does not know is kept as written and ignored, so a ledger
+that a newer copy wrote still lists, dispatches, records and concludes under an older one. The
+fields this copy does know are validated as before, stored or new. The boundary: this tolerates a
+field's presence, never its meaning. A copy acts on a stored record as if the field it does not
+know were absent, so a request field whose absence would make an older copy act wrongly (admit past
+a cap, bind another commit) needs its own rollout, not this tolerance. A retry is compared whole,
+so a copy that cannot send the field answers a record holding it as a different assignment. Every
+copy shipped before this one still refuses the whole ledger over an unknown request field, so the
+fields beside the request (THE CHECKOUT, THE HALT'S TRIAGE's list) stay there, and a new request
+field is safe to write only once every box's checkout carries this tolerance.
 
 A request's `issue` is optional (ludics-lite#664): the one issue the work is for, spelled exactly
 `owner/name#N` -- `fleet-worker.sh prs --wave` reads it as one -- or absent, for work with no issue of
@@ -240,8 +254,8 @@ the record keeps the halt's generation as `halt_identity`; a dispatch of a triag
 another or an ended halt is refused. The halt's TRIAGE is every record not concluded whose
 `halt_identity` is the current generation. One owner holds it, on several boxes: a payload may
 carry `"triage_boxes": [<box>, ...]` BESIDE the request (as THE CHECKOUT is, and for its reason:
-an older copy of this module refuses a request field it does not know, and would refuse the whole
-ledger), only with `triage_reason` -- a nonempty list of distinct canonical FLEET_BOXES entries
+a copy of this module from before THE STORED REQUEST refuses a request field it does not know, and
+would refuse the whole ledger), only with `triage_reason` -- a nonempty list of distinct canonical FLEET_BOXES entries
 naming the request's own execution host -- and the record keeps it as a top-level field, fixed for
 the record's life (a retry names the same list or is refused). A record without one is a triage of
 its own host alone (every triage record before #796). With the triage empty, a triage request
@@ -378,9 +392,11 @@ def resolve_dispatch(record: Record, resolved: Any, event: Record) -> None:
         refuse("resolved_revision is only for a head-of:<branch> request")
 
 
-def validate_request(data: Any) -> None:
+def validate_request(data: Any, *, new: bool) -> None:
+    """A request's known fields, on a NEW request (reserve, run, window) and a stored one alike; a
+    field outside REQUEST_FIELDS and OPTIONAL_FIELDS refuses only a new one (THE STORED REQUEST)."""
     request = as_object(data)
-    if request is None or set(request) - REQUEST_FIELDS - OPTIONAL_FIELDS:
+    if request is None or (new and set(request) - REQUEST_FIELDS - OPTIONAL_FIELDS):
         refuse("unknown reservation fields or invalid request")
     nonempty(request, list(REQUEST_FIELDS))
     for key in ("issue", "triage_reason"):
@@ -491,7 +507,7 @@ def validate_record(data: Any, path: Path) -> Record:
     nonempty(record, ["request_id", "coordinator", "lease_token", "state", "created_at", "updated_at"])
     if record["request_id"] != path.stem or record["state"] not in STATES:
         refuse(f"invalid execution record: {path}")
-    validate_request(record.get("request"))
+    validate_request(record.get("request"), new=False)
     if record["request"]["request_id"] != record["request_id"]:
         refuse(f"mismatched request identity: {path}")
     history = record.get("history")
@@ -1096,7 +1112,7 @@ def main(argv: list[str]) -> None:
             if "evidence" in data:
                 nonempty(data, ["evidence"])
                 dispatch_evidence = data["evidence"]
-        validate_request(request)
+        validate_request(request, new=True)
         if request["execution_host"] not in canonical_hosts:
             refuse("execution_host must exactly match a canonical FLEET_BOXES entry")
         if action == "window":
