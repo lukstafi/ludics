@@ -218,18 +218,7 @@ next_base() {
   if [ "$n" -eq 0 ]; then printf '%s' "$PR_BASE"; else printf '%s' "$PR_BASE_NEXT"; fi
 }
 
-# pr_read_names <object>: whether the PR read being answered asks for <object> (`head`, `base`), so
-# whether it takes the next entry of that object's sequence (HEAD_SEQ; next_base's count).
-# BOUNDARY, fail-closed: a read is exempt ONLY when it carries a jq filter (FIXTURE_FILTER) and that
-# filter never spells the object's name. A read with no filter (the whole PR) or one spelling the
-# name anywhere (`.head.sha`, `.head.ref`, inside a string) takes an entry, as every read did before.
-# A filter reaching the object without spelling it (`..`, `.[]`, `to_entries`, `keys`) is past the
-# boundary and would be answered as a non-head read; no reader of pulls/<n> sends one.
-pr_read_names() {
-  case "$FIXTURE_FILTER" in '' | *"$1"*) return 0 ;; esac
-  return 1
-}
-
+# pr_read_names (test-pr-review-lib.sh) says which PR reads take an entry of HEAD_SEQ or next_base's count.
 reset_fixture() {
   HEAD_SEQ=("$HEAD_SHA")
   CHECK_RUNS_SEQ=("$(check_runs_json '[]')")

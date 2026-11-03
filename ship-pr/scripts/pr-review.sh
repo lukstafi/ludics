@@ -686,10 +686,10 @@ py_native_path() {
   printf '%s\n' "$1"
 }
 
-# <subcommand> <args...>: PY_ARGS, the same words with the ones the Python opens as files in
-# native form -- `body`'s file (but `-`), `base --integration-records` and `--advisory-red`,
-# `reply`'s and `comment`'s `--body-file`, and `local-review`'s `--out` and `-C` -- which MSYS would have rewritten had py_forward not
-# turned its rewriting off.
+# <subcommand> <args...>: PY_ARGS, the same words with the ones the Python takes as paths in
+# native form -- `body`'s file (but `-`) and the path options below -- which MSYS would have
+# rewritten had py_forward not turned its rewriting off. lib/ludics/tests/test_prreview_pathargs.py
+# checks this table against the options the Python parsers take (ludics#756).
 py_native_args() {
   local sub="$1" a n=0 next=""
   PY_ARGS=("$1")

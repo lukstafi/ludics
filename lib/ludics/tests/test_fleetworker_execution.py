@@ -333,12 +333,12 @@ class FromRunForms(unittest.TestCase):
     def test_from_run_refuses_what_is_no_evidence_for_one_commit_and_standing_records_it(self) -> None:
         other = "c" * 40
         for over, want in (
-            ({"gone": "1", "runner": "none", "whead": ""}, "recorded worktree /w t is gone"),
+            ({"gone": "1", "runner": "none", "whead": ""}, "recorded worktree '/w t' is gone"),
             ({"launched": other, "rel": "outside"}, f"/r/head records {other} as the revision launched, but the reported revision is {self.SHA}"),
             ({"launched": other, "rel": "ancestor"}, f"this run is evidence for {other}, not {self.SHA}"),
             ({"dirty": "2"}, "/r/dirty lists 2 uncommitted path(s) at launch"),
-            ({"whead": ""}, "cannot read HEAD of /w t"),
-            ({"known": "0"}, f"/w t does not contain the reported revision {self.SHA}"),
+            ({"whead": ""}, "cannot read HEAD of '/w t'"),
+            ({"known": "0"}, f"'/w t' does not contain the reported revision {self.SHA}"),
         ):
             refused = execution.from_run_refusal(run_record(**over), "/r", "box", self.SHA)
             assert refused is not None, over
@@ -1065,6 +1065,44 @@ class LeftoverWarning(unittest.TestCase):
         got, err = self.head(f"head={SHA}\ndirty=unreadable\n")
         self.assertEqual(got, SHA)
         self.assertIn("is not clean: its status could not be read", err)
+
+
+class ThePaths(unittest.TestCase):
+    """THE PATHS (ludics#756): a path a refusal names is one shell word, quoted where it needs it;
+    the far side OBSERVED_FROM prints facts, and Python words its refusals."""
+
+    def observed(self, rc: int, out: str) -> str | Refusal:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+        with mock.patch.object(execution, "run_on", return_value=execution.Done(rc, out)):
+            return execution.observed_head(cfg, "rog", "/w/a b")
+
+    def test_the_observed_from_refusals_quote_the_checkout(self) -> None:
+        for out, want in (
+            ("checkout=missing\n", "OBSERVED-FROM REFUSED: no checkout '/w/a b' on rog"),
+            ("checkout=headless\n", "OBSERVED-FROM REFUSED: cannot read HEAD of '/w/a b' on rog (not a git checkout,"
+                                     " or no commit yet)"),
+            ("", "OBSERVED-FROM REFUSED: exit 1 reading '/w/a b' on rog"),
+        ):
+            with self.subTest(out=out):
+                got = self.observed(1, out)
+                assert isinstance(got, Refusal), got
+                self.assertEqual((got.text, got.rc), (want, 1))
+
+    def test_any_other_far_side_text_is_said_as_it_came(self) -> None:
+        got = self.observed(1, "EXECUTION FAILED: lease lock on rog\n")
+        assert isinstance(got, Refusal), got
+        self.assertEqual(got.text, "EXECUTION FAILED: lease lock on rog")
+        got = self.observed(0, "head=nope\n")
+        assert isinstance(got, Refusal), got
+        self.assertEqual(got.text, "OBSERVED-FROM REFUSED: unreadable HEAD of '/w/a b' from rog: head=nope")
+
+    def test_a_run_directory_and_its_files_are_quoted_whole(self) -> None:
+        refused = execution.from_run_refusal(run_record(exit="x"), "/r x", "box", "b" * 40)
+        assert refused is not None
+        self.assertEqual(refused.text, "FROM-RUN REFUSED: '/r x/exit' holds 'x', not a status")
+        refused = execution.from_run_refusal({"dir": "0"}, "/r x", "box", "b" * 40)
+        assert refused is not None
+        self.assertEqual(refused.text, "FROM-RUN REFUSED: no run directory '/r x' on box")
 
 
 class ReservedSince(unittest.TestCase):

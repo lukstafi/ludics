@@ -271,11 +271,14 @@ class RecordCheckout(unittest.TestCase):
         return rc, out.getvalue(), streamed
 
     def test_another_worktree_is_refused_naming_the_recorded_one(self) -> None:
-        for worktree in ["/h/wts/other", "/h/wts/w1/..", "~/wts/w1", "/h/wts/w1\\"]:
+        # THE PATHS (execution.py): the path is printed as one shell word, quoted where it needs it.
+        for worktree, shown in [("/h/wts/other", "/h/wts/other"), ("/h/wts/w1/..", "/h/wts/w1/.."),
+                                ("~/wts/w1", "'~/wts/w1'"), ("/h/wts/w1\\", "'/h/wts/w1\\'"),
+                                ("/h/wts/w 1", "'/h/wts/w 1'")]:
             with self.subTest(worktree=worktree):
                 rc, said, streamed = self.run_leg(worktree, "/h/wts/w1")
                 self.assertEqual(rc, 1)
-                self.assertEqual(said, f"EXECUTION LEG REFUSED: --worktree {worktree} is not it's recorded checkout /h/wts/w1"
+                self.assertEqual(said, f"EXECUTION LEG REFUSED: --worktree {shown} is not it's recorded checkout /h/wts/w1"
                                        " on testbox (ludics-lite#749: a leg moves only its own record's worktree); nothing ran\n")
                 streamed.assert_not_called()
 

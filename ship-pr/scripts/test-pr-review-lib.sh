@@ -563,6 +563,19 @@ gh_fixture_parse() {
     printf '%s\n' "$FIXTURE_ENDPOINT" >>"$PAGINATE_LOG"
 }
 
+# pr_read_names <object>: whether the PR read being answered asks for <object> (`head`, `base`), so
+# whether a fixture counts it as a read of that object: test-pr-review-checks-absent.sh's HEAD_SEQ and
+# next_base, test-pr-review-status.sh's PUSH_AFTER_PULLS_READ (ludics#756).
+# BOUNDARY, fail-closed: a read is exempt ONLY when it carries a jq filter (FIXTURE_FILTER) and that
+# filter never spells the object's name. A read with no filter (the whole PR) or one spelling the
+# name anywhere (`.head.sha`, `.head.ref`, inside a string) takes an entry, as every read did before.
+# A filter reaching the object without spelling it (`..`, `.[]`, `to_entries`, `keys`) is past the
+# boundary and would be answered as a non-head read; no reader of pulls/<n> sends one.
+pr_read_names() {
+  case "$FIXTURE_FILTER" in '' | *"$1"*) return 0 ;; esac
+  return 1
+}
+
 # A call with --include (pr-review.sh's own writes, ludics-lite#612) gets what gh prints ahead of the
 # body: the status line, the headers and a blank line, CRLF-ended (gh 2.101.0's processResponse).
 gh_fixture_headers() { # <status line, e.g. "200 OK">

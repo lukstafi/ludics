@@ -28,7 +28,7 @@ brief:
   stderr, as recorded, at once and then every ``FLEET_HOLD_DRAIN_REPEAT`` seconds, so the
   coordinator can decide without first finding what the drain waits for; and the line after it
   says whether this box confirms that record is the holder's (ludics-lite#712, holders.py's THE
-  CONFIRMATION).
+  CONFIRMATION). The record and its reader are ``slotrecord.py``'s.
 - THE WINDOW WAIT (ludics-lite#557): ``slot --wait-window[=<seconds>]`` turns the refusal beside an
   outstanding measurement on this box (a window or not) into a bounded wait for it to conclude, then
   queues for a slot under ``--wait`` as usual: two waits, each with its own bound and refusal line.
@@ -266,7 +266,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, NamedTuple, NoReturn, assert_never, cast
+from typing import Any, Literal, NamedTuple, NoReturn, assert_never
 
 from ludics import cli
 from ludics.fleetworker.config import (
@@ -278,6 +278,9 @@ from ludics.fleetworker.config import (
     short_hostname,
 )
 from ludics.fleetworker import cotenants, graces, group, holders
+# HOLDER_READ is re-exported for the tests; ``read_holder`` is called by its name here, so a test
+# patching ``slot.read_holder`` reaches the drain.
+from ludics.fleetworker.slotrecord import HOLDER_READ as HOLDER_READ, Holder, read_holder, record_holder
 from ludics.fleetworker.execution import field, jq_text, listing, records_of, registry_source
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
@@ -340,14 +343,7 @@ def _is_held(path: str) -> bool | None:
 
 # --- THE HOLDER RECORD ----------------------------------------------------------------------------
 #
-# The boundary of the reader (``read_holder``), as a fail-closed allowlist: it reads at most
-# HOLDER_READ bytes of a slot file, as one JSON object, and takes from it exactly five fields --
-# ``pid`` (an integer from 1 to PID_MAX, the range of every pid_t this package runs on),
-# ``command`` (a non-empty list of strings), ``started`` (a finite number, the epoch second the
-# slot was taken), ``deadline`` (null, or the positive whole ``--deadline`` seconds) and
-# ``expires`` (absent or null until the command starts, then a finite ``time.monotonic()`` reading
-# at which that deadline ends it). Any other key is not read. A file that is empty, longer, not
-# that shape, or not readable is no record ("left no record"), never a partial one.
+# The record and its reader's boundary are slotrecord.py's.
 #
 # What the drain says is what the record says, labelled as recorded: the slot, the recorded pid,
 # the command, how long ago the slot was taken, and the cap. It judges nothing about the pid --
@@ -359,82 +355,6 @@ def _is_held(path: str) -> bool | None:
 # ``expires`` is read against the same clock here, on the box the slot file is on.
 
 HOLDER_REPEAT = 300  # FLEET_HOLD_DRAIN_REPEAT's default: seconds between the naming lines
-HOLDER_READ = 65536
-PID_MAX = 2**31 - 1  # the range of every pid_t this package runs on
-
-
-@dataclass(frozen=True)
-class Holder:
-    pid: int
-    command: tuple[str, ...]
-    started: float
-    deadline: int | None
-    expires: float | None = None
-
-
-def record_holder(descriptor: int, command: Sequence[str], deadline: int | None,
-                  expires: float | None = None, started: float | None = None) -> float:
-    """Write this process's holder record into the slot file it has locked; the ``started`` it
-    wrote, which a rewrite at the command's start passes back. Fail-open: a record that cannot be
-    written leaves the drain saying the holder left none."""
-    when = time.time() if started is None else started
-    record = {"pid": os.getpid(), "command": list(command), "started": when, "deadline": deadline,
-              "expires": expires}
-    data = (json.dumps(record) + "\n").encode("utf-8", "backslashreplace")
-    try:
-        os.ftruncate(descriptor, 0)
-        os.pwrite(descriptor, data, 0)
-    except OSError:
-        pass
-    return when
-
-
-def _whole(value: object, top: int | None = None) -> bool:
-    return (isinstance(value, int) and not isinstance(value, bool) and value > 0
-            and (top is None or value <= top))
-
-
-def _finite(value: object) -> bool:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:  # a JSON integer past a float's range
-        return False
-
-
-def read_holder(path: str) -> Holder | None:
-    """The holder record in ``path`` (the boundary above), or None."""
-    try:
-        with open(path, "rb") as stream:
-            data = stream.read(HOLDER_READ + 1)
-    except OSError:
-        return None
-    if len(data) > HOLDER_READ:
-        return None
-    try:
-        decoded: Any = json.loads(data.decode("utf-8"))
-    except (ValueError, RecursionError):  # RecursionError: nesting deeper than the parser's stack
-        return None
-    if not isinstance(decoded, dict):
-        return None
-    record = cast(dict[str, Any], decoded)
-    pid: Any = record.get("pid")
-    command: Any = record.get("command")
-    started: Any = record.get("started")
-    deadline: Any = record.get("deadline")
-    expires: Any = record.get("expires")
-    if not _whole(pid, PID_MAX) or not (isinstance(command, list) and command):
-        return None
-    words = cast(list[Any], command)
-    if not all(isinstance(word, str) for word in words):
-        return None
-    if not _finite(started) or (deadline is not None and not _whole(deadline)):
-        return None
-    if expires is not None and not _finite(expires):
-        return None
-    return Holder(int(pid), tuple(str(word) for word in words), float(started),
-                  None if deadline is None else int(deadline), None if expires is None else float(expires))
 
 
 def span(seconds: float) -> str:

@@ -24,7 +24,7 @@ One line per held slot file, its fields:
   here: the slot is known to be held, its holder is not);
 - ``unknown``: ``{<field>: <why>}`` for each of ``pid``, ``user``, ``command``, ``cwd`` (and
   ``record``) left ``null``; empty when every field is known;
-- ``record`` (ludics-lite#712): the holder record the slot's taker wrote into the file (slot.py's
+- ``record`` (ludics-lite#712): the holder record the slot's taker wrote into the file (slotrecord.py's
   THE HOLDER RECORD) and whether this box confirms it is the holder's (THE CONFIRMATION, below),
   ``null`` when the file holds no record: ``verdict`` (``confirmed``, ``unconfirmed`` or
   ``unknown``), ``by`` (``proc-locks``, ``proc-fd`` or ``lsof``: what the verdict was read from),
@@ -120,9 +120,9 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
-from ludics.fleetworker import cotenants
+from ludics.fleetworker import cotenants, slotrecord
 
 PROC_LOCKS = "/proc/locks"
 PROC = "/proc"
@@ -215,21 +215,6 @@ def table_pids(table: list[Holder], path: str) -> list[int]:
 
 
 # --- THE CONFIRMATION -----------------------------------------------------------------------------
-
-
-class Recorded(Protocol):
-    """A slot's holder record, as slot.py's ``read_holder`` reads it (THE HOLDER RECORD there)."""
-
-    @property
-    def pid(self) -> int: ...
-    @property
-    def command(self) -> tuple[str, ...]: ...
-    @property
-    def started(self) -> float: ...
-    @property
-    def deadline(self) -> int | None: ...
-    @property
-    def expires(self) -> float | None: ...
 
 
 @dataclass(frozen=True)
@@ -341,7 +326,7 @@ def confirm(path: str, pid: int, table: list[Holder] | None, run: cotenants.Runn
                         + f" ({by}); {opened}")
 
 
-def record_field(holder: Recorded, confirmation: Confirmation, clock: float) -> dict[str, Any]:
+def record_field(holder: slotrecord.Holder, confirmation: Confirmation, clock: float) -> dict[str, Any]:
     """The listing's ``record`` object: the verdict, and the record's own fields only when confirmed."""
     field: dict[str, Any] = {"verdict": confirmation.verdict, "by": confirmation.by, "pid": holder.pid,
                              "pids": None if confirmation.pids is None else list(confirmation.pids),
@@ -361,12 +346,10 @@ def record_field(holder: Recorded, confirmation: Confirmation, clock: float) -> 
 
 def holders(box: str, directory: str, cap: int, tokens: int, run: cotenants.Runner = cotenants.run_bounded,
             locks: str = PROC_LOCKS, proc: str = PROC, platform: str = "",
-            read_record: Callable[[str], Recorded | None] | None = None,
+            read_record: Callable[[str], slotrecord.Holder | None] = slotrecord.read_holder,
             seen: Callable[[int], str] = visibility) -> list[dict[str, Any]]:
     """The held slots of ``directory``, one line each (the module's fields). ``read_record`` reads a
-    slot file's holder record: slot.py's ``read_holder`` when not given."""
-    if read_record is None:
-        from ludics.fleetworker.slot import read_holder as read_record  # slot.py imports this module
+    slot file's holder record: slotrecord.py's ``read_holder`` when not given."""
     table = read_lock_table(locks)
     at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     me = os.getpid()
@@ -380,7 +363,6 @@ def holders(box: str, directory: str, cap: int, tokens: int, run: cotenants.Runn
 
     def add_record(line: dict[str, Any], path: str) -> None:
         """``line``'s ``record`` (THE CONFIRMATION), read now."""
-        assert read_record is not None
         holder = read_record(path)
         if holder is None:
             line["record"] = None
