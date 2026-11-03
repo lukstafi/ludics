@@ -1133,6 +1133,16 @@ SLOT_VOICE = Voice(SLOT_PREFIX, "taking a slot", "no slot taken")
 
 
 @dataclass(frozen=True)
+class Ended:
+    """What a caller's ``holders`` returns when the read is the wait's answer but the box is not free
+    for it (ludics#710): ``execution leg``'s own record concluded or gone mid-wait, which nothing
+    will restore. ``await_measurements`` hands back that read, ``records``, without saying the box
+    is free (its ``voice.proceed``): the caller judges the read, and refuses."""
+
+    records: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
 class Unread:
     """The anchor's registry could not be read: the lines a refusal prints, and its status."""
 
@@ -1364,7 +1374,7 @@ class WaitingRecord:
 
 def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bound: WindowBound,
                        command: Sequence[str], voice: Voice = SLOT_VOICE,
-                       holders: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+                       holders: Callable[[list[dict[str, Any]]], list[dict[str, Any]] | Ended] | None = None,
                        registered: bool = False) -> list[dict[str, Any]] | int:
     """``--wait-window`` (ludics-lite#557): block until no measurement is outstanding on ``box``,
     re-reading the registry every ``FLEET_SLOT_WINDOW_POLL`` seconds (15), for at most ``bound``
@@ -1374,7 +1384,9 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     named once, and a line every ``WINDOW_PROGRESS`` seconds says the batch is still waiting.
     ``execution leg`` waits here too, on the agent host for its execution host's box, in its own
     ``voice``, with ``holders`` (what holds the box in a registry read; the box's measurements when
-    not given) adding the window its record is still suspended by (ludics-lite#666)."""
+    not given) adding the window its record is still suspended by (ludics-lite#666), or ending the
+    wait on a read that answers it otherwise (``Ended``, ludics#710): that read is handed back, and
+    the line saying nothing holds the box is not said."""
     poll = window_poll(cfg)
     # THE WAITERS (ludics-lite#719): every read in the wait tells the anchor this batch waits for the
     # box. ``registered`` says the read that found the box held already did (the caller's, made with
@@ -1385,8 +1397,14 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     start = time.monotonic()
     # The bound in whole seconds, said as it is: never read back off the monotonic clock, where
     # (start + 30) - start can come to 29.99... (round 4 of #771's CI).
+    def holding_in(read: list[dict[str, Any]]) -> list[dict[str, Any]] | Ended:
+        return holders(read) if holders is not None else measurement_records(read, box)
+
+    first = holding_in(records)
+    if isinstance(first, Ended):
+        return first.records
     if bound == BY_DEADLINE:
-        shown, said = window_cutoff(holders(records) if holders is not None else measurement_records(records, box))
+        shown, said = window_cutoff(first)
     else:
         shown, said = bound, "--wait-window"
     deadline = start + shown
@@ -1394,7 +1412,11 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     named: set[str] = set()
     unread: Unread | None = None
     while True:
-        holding = holders(records) if holders is not None else measurement_records(records, box)
+        holding = holding_in(records)
+        if isinstance(holding, Ended):
+            # Only a fresh read can end it so (the first was judged above, and a read that failed
+            # or came back past the bound leaves ``records`` as it was).
+            return holding.records
         if not holding and unread is None:
             if named:
                 errline(f"{voice.prefix} {box}: no measurement holds {box} after {int(time.monotonic() - start)}s;"

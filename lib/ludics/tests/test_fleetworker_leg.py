@@ -3,6 +3,7 @@ leg` section drives the whole verb against a fake remote)."""
 
 import contextlib
 import io
+import json
 import os
 import shlex
 import shutil
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from ludics.fleetworker import farside, leg, slot
+from ludics.fleetworker import execution, farside, leg, slot
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
 
@@ -559,7 +560,28 @@ class WindowWait(unittest.TestCase):
         result, out, err, reads = self.wait([handed_back], ["--wait-window=30"])
         assert isinstance(result, dict)
         self.assertEqual((result["state"], out, reads), ("concluded", "", 1))
-        self.assertIn("no measurement holds testbox after 0s; running the leg", err)
+        # ludics#710: the window still holds the box and the leg will not run, so the wait never
+        # says the box is free and the leg runs.
+        self.assertIn("measurement window w1 holds testbox", err)
+        self.assertNotIn("no measurement holds", err)
+        self.assertNotIn("running the leg", err)
+
+    def test_a_concluded_reservation_is_refused_by_the_leg_after_the_wait(self) -> None:
+        # The whole verb, from the read that finds the record suspended to its refusal (ludics#710).
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.01"}, host="testbox")
+        first = json.dumps([standing(), window("w1")])
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(execution, "listing", mock.Mock(return_value=Done(0, first))), \
+                mock.patch.object(slot, "read_registry", mock.Mock(side_effect=[[standing("concluded"), window("w1")]])), \
+                mock.patch.object(slot, "release_waiter"), mock.patch.object(leg, "run_leg", wraps=leg.run_leg) as ran, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = leg.leg_command(cfg, ["--request", "it", "--rev", "main", "--checkout", "/c", "--worktree", "/w",
+                                       "--wait-window=30", "--", "tools/check.sh"])
+        self.assertEqual((rc, out.getvalue()), (1, "EXECUTION LEG REFUSED: it is concluded, not dispatched (launching,"
+                                                   " running or uncertain); nothing ran\n"))
+        self.assertEqual(ran.call_count, 1)
+        self.assertNotIn("running the leg", err.getvalue())
 
     def test_an_unreachable_anchor_is_said_in_the_legs_voice(self) -> None:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
@@ -572,9 +594,10 @@ class WindowWait(unittest.TestCase):
         self.assertTrue(unread.lines[1].startswith("EXECUTION LEG UNREACHABLE far-anchor: a box woken"))
 
     def test_a_record_gone_from_the_registry_after_the_wait_is_refused(self) -> None:
-        result, out, _, _ = self.wait([[window("w1", "concluded")]], ["--wait-window=30"])
+        result, out, err, _ = self.wait([[window("w1", "concluded")]], ["--wait-window=30"])
         self.assertEqual(result, 1)
         self.assertIn("EXECUTION LEG REFUSED: unknown request_id it after waiting for window w1", out)
+        self.assertNotIn("running the leg", err)  # ludics#710
 
     def test_the_bound_is_the_last_wait_window_given(self) -> None:
         self.assertIsNone(leg.window_bound(["--cpu", "--wait", "5"]))

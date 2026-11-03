@@ -44,7 +44,8 @@ for the other. The leg waits for no window when its record is not suspended: the
 does, as for any batch.
 
 Its boundary: a bounded, best-effort wait that re-reads the registry. It ends at once when the
-record is gone or concluded (a worker handing back mid-window), and otherwise proceeds only on a
+record is gone or concluded (a worker handing back mid-window), without the wait's line that the
+box is free and the leg runs, which would be false there (ludics#710); otherwise it proceeds only on a
 read in which the record is active again; the leg then judges that record as above (launching,
 running or uncertain), so it never runs against a record that read showed suspended or concluded.
 It refuses loudly on a registry it cannot read at the bound, and at the bound. When a refusal
@@ -878,12 +879,14 @@ def await_window(cfg: Config, request: str, record: dict[str, Any], records: lis
                        " concludes, or give it --wait-window, which waits for it")
     host = execution.jq_text(execution.field(record, "request", "execution_host"))
 
-    def holders(read: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def holders(read: list[dict[str, Any]]) -> list[dict[str, Any]] | slot.Ended:
         # The box's measurements; else the window this record is still suspended by, from the read
         # or by its id alone when the read does not list it (a torn read, see the header).
         own = execution.record_of(read, request)
         if own is None or own.get("state") not in ("suspended", *DISPATCHED):
-            return []  # gone or concluded: nothing to wait for, and the leg refuses it
+            # Gone or concluded: nothing to wait for, and the leg refuses it -- without the wait's
+            # line that the box is free and the leg runs (ludics#710).
+            return slot.Ended(read)
         held = slot.measurement_records(read, host)
         if held or own.get("state") != "suspended":
             return held
