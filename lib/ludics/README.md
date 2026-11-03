@@ -80,6 +80,13 @@ prreview/workflows.py      the workflow-file reads and the paths-ignore walk (ch
 prreview/workflow_yaml.py  the narrow workflow-YAML readers and the glob translation
 ```
 
+`execution slot`'s holder record is a module of its own, so both of its readers import it:
+
+```
+fleetworker/slotrecord.py  THE HOLDER RECORD: Holder, record_holder, read_holder and its boundary
+                           (slot.py's drain names a holder from it; holders.py's listing confirms it)
+```
+
 A script other than `pr-review.sh` gets a sibling package, `lib/ludics/<script>/`, run as
 `scripts/py -m ludics.<script>`; its shell file becomes the one-line forward (`exec "$(dirname
 "$0")/../../scripts/py" -m ludics.<script> "$@"`, with the right number of `..`).
