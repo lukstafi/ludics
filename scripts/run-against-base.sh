@@ -107,9 +107,12 @@
 # verbatim. A blank line, or one whose first non-blank is `#`, is skipped; a line with a carriage
 # return, with no expression, naming a file --mutate would refuse, or with an expression sed
 # refuses (checked against empty input), is refused before any run, naming its line number. Every
-# mutant runs against the same tree: the base resolved once (without --base, ONE working-tree
-# snapshot), so an edit made while the batch runs reaches none of them -- nor this helper's own: the
-# runs are a copy of it taken when the batch starts. The other options apply to
+# mutant starts from the same commit: the base, and each --revert commit, resolved once (without
+# --base, ONE working-tree snapshot), so a moving ref or a commit made while the batch runs reaches
+# none of them; nor does an edit to this helper, since the runs are a copy of it taken when the
+# batch starts. What a run carries in -- the suite, the --also files -- is copied from the working
+# tree as that run starts, as a single run copies it: leave those files alone until the batch
+# ends. The other options apply to
 # every mutant: a --mutate given beside --mutants is applied first in each run. Each run's output
 # is shown live, between `run-against-base: batch: [<k>/<n>] ...` headers, as a single run's is.
 #   --red <ERE>      a red line of a mutant run (default RUN_AGAINST_BASE_RED, else
@@ -785,8 +788,8 @@ SCRATCH=$(mktemp -d "$TMP_ROOT/run-against-base.$$.XXXXXX") || die "mktemp faile
 WT="$SCRATCH/base"
 
 # The mutant batch: one run of this helper per mutant, each with its own worktree and cleanup,
-# against the one tree resolved above (its commit, so a moving ref or a later edit reaches none of
-# them). Its output is shown live and kept for the report; the report is the header's BOUNDARY
+# from the one commit resolved above, with the --revert commits as resolved above too (a moving
+# ref or a later commit reaches none of them; the carried files are each run's, see the header). Its output is shown live and kept for the report; the report is the header's BOUNDARY
 # shape. The runs go in the background with signals deferred across the launch, as the suite's
 # does below, so a TERM to this shell reaches the mutant run in flight (stop_inner) at once.
 if [ -n "$MUTANTS_FILE" ]; then
@@ -799,7 +802,7 @@ if [ -n "$MUTANTS_FILE" ]; then
   done
   i=0
   while [ "$i" -lt "${#REV_ARGS[@]}" ]; do
-    common+=(--revert "${REV_ARGS[$i]}" "${REV_PATHS[$i]}")
+    common+=(--revert "${REV_SHA[$i]}" "${REV_PATHS[$i]}")
     i=$((i + 1))
   done
   i=0

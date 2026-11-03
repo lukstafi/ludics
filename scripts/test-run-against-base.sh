@@ -1717,6 +1717,26 @@ v_refusal "a pathspec pattern (paths are literal)" 'changes nothing under' --rev
 v_refusal "a --revert with no path" '--revert needs a commit and a path' --revert "$REV_C1"
 v_clean "after --revert cases"
 
+# A batch's --revert is the commit resolved before the first run (#779): a run that moves the ref
+# it was named by changes nothing for the later ones.
+g -C "$V" branch -f movable "$REV_C1"
+printf '%s\n' 'docs.txt s/$/ x/' 'docs.txt s/$/ y/' >"$TMP/v-mutants"
+# shellcheck disable=SC2016 # expanded by the inner sh
+run_v . --command --revert movable scripts/mul.sh --mutants "$TMP/v-mutants" -- \
+  sh -c 'git branch -f movable "$1" && bash scripts/test-v.sh' sh "$REV_C3"
+if [ "$rc" -eq 0 ] && grep -qxF 'run-against-base: batch: [2] docs.txt: s/$/ y/: killed, exit 1, 1 red' <<<"$out" \
+  && grep -qxF 'run-against-base: batch: [2]   FAIL: mul 2 3' <<<"$out"; then
+  ok "a batch's --revert commit is resolved once, so moving its ref mid-batch reaches no later run"
+else
+  ko "batch --revert ref: rc=$rc -- $out"
+fi
+g -C "$V" branch -q -D movable
+if [ "$(git -C "$V" worktree list --porcelain | grep -c '^worktree ')" -eq 1 ] && [ "$(v_state)" = "$v_before" ]; then
+  ok "...and the revert checkout is as it was"
+else
+  ko "revert checkout after the batch: $(git -C "$V" worktree list; git -C "$V" status --porcelain)"
+fi
+
 # ---- the carried-everything warning (ludics-lite#501) ---------------------------------------------
 # A base run that carries every file the branch changes is the branch's own run, not a control.
 Wr="$TMP/warn"

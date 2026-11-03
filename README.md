@@ -412,7 +412,8 @@ the suite's:
   line, else the last non-blank line. The project states its pattern; none is built in here.
 - `--mutants <file>` (#779) is the batch form of `--mutate`: one `<file> <sed-expr>` per line
   (`#` comments and blank lines skipped, every line checked before any run), each run exactly as
-  its `--mutate` would be, all against one tree (one working-tree snapshot without `--base`). It
+  its `--mutate` would be, all from one commit (one working-tree snapshot without `--base`; the
+  suite and `--also` files are copied as each run starts, so leave them alone meanwhile). It
   then reports, per mutant, `killed` with the lines it turned red (`--red <ERE>`, default
   `^(FAIL|ERROR)[: ]`, at most 10 listed), `SURVIVED` (the finding: no case saw it), or `refused`,
   and a closing count; it exits 125 on any refusal, else 1 on any survivor, else 0. The header's
