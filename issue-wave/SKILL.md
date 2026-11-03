@@ -1165,7 +1165,12 @@ for a CLI worker; the thread or CLI stream is the full record - arrives carrying
 and reasoned drops; the coordinator's role here is editorial, not generative. Combine
 overlapping proposals across workers into single issues - cross-worker recurrence is the
 strongest priority signal a wave produces - revise drafts against the tracker's style, then do
-the filing and evidence comments yourself. Before filing a residual a worker drew from a
+the filing and evidence comments yourself. An issue or evidence comment drafted from a worker's
+proposal quotes that proposal verbatim under its Evidence, next to your summary and attributed to
+the worker's task and PR (a combined issue quotes each): a paraphrase can change the claim, and
+the next worker reads the issue, not the hand-back (#729's item said `merge` reads a stale
+review-record round count where the proposal said it warns on one, and #729's worker found the
+original only in another wave's scratchpad before deferring the item). Before filing a residual a worker drew from a
 measurement, check the wave's merges that landed after the measured SHA: a sibling's may
 already address it (ahrefs/ocannl#1659 was filed from an A/A measured before #1635's beam
 finals merged, and establishing that cost a worker and a measurement window). Every issue the wave files carries the
