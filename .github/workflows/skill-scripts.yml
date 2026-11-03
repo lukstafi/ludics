@@ -285,8 +285,10 @@ jobs:
     # 15, not #474's 10: served by Python (ludics-lite#403), the green runs on v2 took 427-574s
     # (runs 37340116809, 37377439485, 37385847278, 37390277847 attempt 2, 37404230827), one more
     # crossed 10 minutes green step by step (37390277847 attempt 1), and the budget suite came on
-    # top (~60s): p90 ~640s, x1.5.
-    timeout-minutes: 16
+    # top (~60s): p90 ~640s, x1.5. 24 since ludics#862: re-measured over the 13 green runs among
+    # the last 40 of 2026-11-03 (699-950s; 41663637720 950s, 41670294482 949s), p90 ~949s, x1.5;
+    # a run at the old cap's edge (987s) timed out green steps.
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-jq
@@ -355,8 +357,10 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
     # The hostile job's tail until ludics-lite#403 slowed both past its cap: 140-166s on v2
-    # (runs 37390277847 attempt 2, 37404230827), x1.5, at the 5-minute floor.
-    timeout-minutes: 5
+    # (runs 37390277847 attempt 2, 37404230827), x1.5, at the 5-minute floor. 8 since ludics#862:
+    # re-measured over the 15 green runs among the last 40 of 2026-11-03 (236-287s; 41662625375
+    # 287s, 41668635945 282s), p90 ~282s, x1.5; two attempts at 315s and 317s timed out green steps.
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-jq
