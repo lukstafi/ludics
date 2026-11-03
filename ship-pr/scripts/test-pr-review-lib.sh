@@ -73,7 +73,14 @@
 #                                       the suite's command line, or SHIP_PR_TEST_CASES="<case>
 #                                       <case>", run only those, and say so on a closing
 #                                       `SUBSET: n of m cases` line; a call without the `--`
-#                                       forward is refused
+#                                       forward is refused. Each case runs in a subshell of its
+#                                       own, so a failed one is tallied and the run goes on; a
+#                                       run with failures closes with `FAILED: n of m cases:
+#                                       <case>...` on stderr and exits non-zero (#809)
+#   chained <case>...                   declares cases whose state the cases after them read:
+#                                       they run in the suite's own shell instead, and a failure
+#                                       in one ends the run there (fail-fast), naming how many
+#                                       cases it left unrun
 #
 # The guard is why the file exists. Every function pr-review.sh and this file define is in scope in
 # every suite the moment it is sourced, and a suite helper that happens to share a name silently
@@ -281,11 +288,28 @@ state_detail() {
 # --- temporary paths and the one EXIT trap ----------------------------------------------------
 # This file owns the EXIT trap: the suite registers its scratch space through test_tmpdir instead
 # of installing a trap of its own. Only paths mktemp created are ever removed.
+#
+# The same trap reports a CHAINED case that ended the run (see `chained`): such a case runs in the
+# suite's own shell, so its failure is the shell's exit, and the trap is the one place left to say
+# which case it was, what failed before it, and how many cases it left unrun. An isolated case's
+# subshell installs this trap over its own, emptied, list (lib_run_case), so the directories a case
+# asks for are removed when the case ends and the suite's own are not touched by it.
 TEST_CLEANUP=()
+LIB_CHAINED_CASE=""
+LIB_UNRUN=0
+LIB_SELECTED_N=0
+LIB_FAILED=()
 test_cleanup() {
-  local p
+  local rc=$? p
   # bash 3.2 under `set -u` rejects "${TEST_CLEANUP[@]}" while it is empty.
   [ "${#TEST_CLEANUP[@]}" -eq 0 ] || for p in "${TEST_CLEANUP[@]}"; do rm -rf "$p"; done
+  [ -z "$LIB_CHAINED_CASE" ] || {
+    LIB_FAILED+=("$LIB_CHAINED_CASE")
+    printf '%s\n' "FAILED: chained case $LIB_CHAINED_CASE ended the run (exit $rc): the cases after it read what it leaves behind, so the $LIB_UNRUN after it did not run" >&2
+    printf '%s\n' "FAILED: ${#LIB_FAILED[@]} of $LIB_SELECTED_N cases:$(printf ' %s' "${LIB_FAILED[@]}") ($LIB_UNRUN not run)" >&2
+    # A chained case that ended the run with `exit 0` still ended it: never a green exit.
+    [ "$rc" -ne 0 ] || exit 1
+  }
 }
 trap test_cleanup EXIT
 
@@ -894,6 +918,44 @@ stub() {
 
 lib_declared_stub() { case "$STUBS" in *" $1 "*) ;; *) return 1 ;; esac; }
 
+# --- chained cases ----------------------------------------------------------------------------
+# run_tests runs each case in a subshell of its own (#809), so a failed case is tallied and the run
+# goes on to the next: before, a failed assertion was the suite's `exit 1`, and the first failure of
+# a run hid every case after it. A subshell also means nothing a case leaves in the shell — a
+# variable, a function, a retuned constant, a cwd — reaches the case after it. Files are another
+# matter: a fixture's files under $TEST_ROOT outlive the subshell, which is why every fixture suite
+# opens a case with its own reset.
+#
+# Some cases are meant to leave state behind for the next one: test-pr-review-lib.sh's retune pair,
+# where the second case judges what run_tests restored after the first. `chained <case>...` declares
+# them. A chained case runs in the suite's own shell, as every case once did, so what it leaves
+# persists; and a failure in it ENDS the run there — the cases after it would be judged on a fixture
+# it never finished, so their results would be noise — with the stop, the failures so far and the
+# number of cases left unrun reported by the EXIT trap (test_cleanup). Only the case that WRITES the
+# state needs the declaration: the case that reads it runs isolated, in a subshell that inherits
+# the state. A declared name that run_tests is not given is refused, as an unhonoured `stub` is.
+CHAINED=" "
+chained() {
+  local c
+  [ $# -gt 0 ] || bail "chained: no case named"
+  for c in "$@"; do CHAINED="$CHAINED$c "; done
+}
+
+lib_is_chained() { case "$CHAINED" in *" $1 "*) ;; *) return 1 ;; esac; }
+
+# lib_run_case <case> <errexit>: the body of an isolated case's subshell. Its own cleanup list and
+# EXIT trap first, so a directory the case asks of test_tmpdir is removed when the case ends rather
+# than leaked (the registration would die with the subshell), and the suite's own directories are
+# not on the list it removes. Then errexit again, when the suite runs under it: run_tests turns it
+# off around the subshell so that a failed case does not end the suite, and the subshell inherits
+# that.
+lib_run_case() {
+  TEST_CLEANUP=()
+  trap test_cleanup EXIT
+  [ -z "$2" ] || set -e
+  "$1"
+}
+
 # The files whose functions are protected, one per line — pr-review.sh and this file to begin
 # with, and whatever `protect_library` adds. Newline-separated rather than space-separated
 # because a checkout's path can contain spaces, which is a shape this file's own controls run in.
@@ -937,9 +999,12 @@ check_shadows() {
   }
 }
 
-# run_tests <case>... -- "$@": the guard, then the cases in order, each announced on stdout. A
-# case's retuned constants are put back before the next one starts, whether or not it restored
-# them.
+# run_tests <case>... -- "$@": the guard, then the cases in order, each announced on stdout. Each
+# case runs in a subshell (lib_run_case), so its failure is tallied rather than the suite's end,
+# and nothing it set reaches the next case; a `chained` case runs in this shell instead, its
+# retuned constants put back before the next one starts, whether or not it restored them, and its
+# failure ends the run. A run with failures closes with `FAILED: <n> of <m> cases: <case>...` on
+# stderr, after the SUBSET line when there is one, and exits with the first failed case's status.
 #
 # SHIP_PR_TEST_CASES, a space-separated list of case names, runs only those — in the suite's order,
 # not the list's, since some cases lean on the one before them — and ends the run with
@@ -962,6 +1027,7 @@ check_shadows() {
 # carries and no function answers is a defect of the suite, whichever cases a run selects.
 run_tests() {
   local test_name cases=() listed=() wanted=() selected=() missing="" undefined="" from
+  local unchained="" errexit rc first_rc=""
   check_shadows
   while [ $# -gt 0 ] && [ "$1" != -- ]; do
     cases+=("$1")
@@ -1011,12 +1077,48 @@ run_tests() {
       if lib_is_one_of "$test_name" "${wanted[@]}"; then selected+=("$test_name"); fi
     done
   fi
+  # shellcheck disable=SC2086 # the declared names are one word each, and the point is to split them
+  for test_name in $CHAINED; do
+    lib_is_one_of "$test_name" "${cases[@]}" || unchained="$unchained $(printf '%q' "$test_name")"
+  done
+  [ -z "$unchained" ] || {
+    echo "$LIB_BASENAME: REFUSING to run: \`chained\` declares what run_tests is not given:$unchained — a declaration that names no case of the suite keeps nothing in its shell" >&2
+    exit 2
+  }
+  # Not `( "$test_name" ) || rc=$?`: a subshell whose status is TESTED runs with errexit ignored
+  # throughout, so a case's failing command would no longer stop it. errexit is off around a plain
+  # subshell instead, and lib_run_case turns it back on inside.
+  case $- in *e*) errexit=1 ;; *) errexit="" ;; esac
+  LIB_SELECTED_N=${#selected[@]}
+  LIB_UNRUN=${#selected[@]}
   for test_name in "${selected[@]}"; do
-    "$test_name"
-    restore_tuning
-    echo "PASS: $test_name"
+    LIB_UNRUN=$((LIB_UNRUN - 1))
+    if lib_is_chained "$test_name"; then
+      LIB_CHAINED_CASE=$test_name
+      "$test_name"
+      LIB_CHAINED_CASE=""
+      restore_tuning
+      rc=0
+    else
+      set +e
+      (lib_run_case "$test_name" "$errexit")
+      rc=$?
+      [ -z "$errexit" ] || set -e
+    fi
+    if [ "$rc" -eq 0 ]; then
+      echo "PASS: $test_name"
+    else
+      printf '%s\n' "FAIL: case $test_name (exit $rc); the run goes on" >&2
+      LIB_FAILED+=("$test_name")
+      [ -n "$first_rc" ] || first_rc=$rc
+    fi
   done
   [ "${#wanted[@]}" -eq 0 ] || echo "SUBSET: ${#selected[@]} of ${#cases[@]} cases"
+  [ "${#LIB_FAILED[@]}" -eq 0 ] || {
+    printf '%s\n' "FAILED: ${#LIB_FAILED[@]} of ${#selected[@]} cases:$(printf ' %s' "${LIB_FAILED[@]}")" >&2
+    # The first failed case's own status, which is what the run exited with when it stopped there.
+    exit "$first_rc"
+  }
 }
 
 # lib_is_one_of <word> <word>...: whether the first word is one of the rest, compared whole — a
@@ -1245,7 +1347,9 @@ SUBSET: 1 of ${#tests[@]} cases" "the selected baseline case must run, alone"
   mutation_copy "$copy" "$2" "$3"
   GITHUB_ACTIONS='' TMPDIR="$root" control_run "$copy" "$1"
   assert_eq "$CONTROL_RC" 1 "mutant must fail the assertion in $1 ($CONTROL_ERR)"
-  assert_eq "$CONTROL_OUT" "" "the mutated case must not report a pass"
+  # No PASS, rather than an exact stdout: a mutant of the runner itself may stop before the SUBSET
+  # line a failed subset otherwise closes with.
+  assert_not_contains "$CONTROL_OUT" "PASS:" "the mutated case must not report a pass"
   assert_contains "$CONTROL_ERR" "FAIL: $4" "the named case must fail for the intended reason"
 }
 
@@ -1947,13 +2051,138 @@ test_retune_moves_a_constant() {
   retune GRACE=3 ABSENT_GRACE=9
   assert_eq "$GRACE" 3 "and retuning again after a restore still works"
   assert_eq "$ABSENT_GRACE" 9 "for every name, so the case after this one has two to check"
+  RETUNE_PAIR_WRITER=chained
 }
 
 # Listed immediately after the case above, and reading what that case left behind: nothing there
-# restored GRACE=3 or ABSENT_GRACE=0, so anything but the sourced values here is the leak.
+# restored GRACE=3 or ABSENT_GRACE=0, so anything but the sourced values here is the leak. The case
+# above is `chained` (below the register), so it runs in the suite's own shell and its constants are
+# really left moved for run_tests to restore; an isolated case's would die with its subshell, and
+# this case would pass whatever run_tests did.
 test_retune_is_undone_when_the_case_ends() {
+  assert_eq "${RETUNE_PAIR_WRITER-unset}" chained \
+    "the case above ran in this shell, directly before this one (without it this case judges nothing)"
   assert_eq "$GRACE" "$GRACE_AS_SOURCED" "run_tests restored the grace the case before it moved"
   assert_eq "$ABSENT_GRACE" "$ABSENT_GRACE_AS_SOURCED" "and every other constant that case moved"
+}
+
+# --- each case in a subshell of its own (#809) ------------------------------------------------
+# A failed assertion used to be the suite's `exit 1`, so the first failure of a run hid every case
+# after it: in PR #805 the watch suite's first failure hid 44 of its 90 cases and cost a second run.
+# isolation_suite <line>...: a throwaway suite of the given lines (its cases and its run_tests
+# call), sourcing this file, written to CONTROL_FILE and run.
+isolation_suite() {
+  CONTROL_FILE="$CONTROL_ROOT/isolation-$((CONTROL_N += 1)).sh"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -euo pipefail'
+    printf 'source %s\n' "\"$TEST_LIB_FILE\""
+    echo 'unset GITHUB_ACTIONS'
+    printf '%s\n' "$@"
+  } >"$CONTROL_FILE"
+  control_run "$CONTROL_FILE"
+}
+
+# The negative control the issue asks for: a case failing early, and the cases after it still run
+# and report. The second failure is a bare `false`, which pins that errexit still holds INSIDE a
+# case's subshell — a subshell whose status the runner tested would run with errexit ignored, the
+# case would go on past its failing command, and `after false` would print and pass.
+test_a_failed_case_does_not_end_the_run() {
+  isolation_suite \
+    'test_one() { :; }' \
+    'test_two() { echo "FAIL: two broke" >&2; exit 3; }' \
+    'test_three() { :; }' \
+    'test_four() { false; echo "after false"; }' \
+    'test_five() { assert_eq 1 2 "five is wrong"; }' \
+    'test_six() { :; }' \
+    'run_tests test_one test_two test_three test_four test_five test_six -- "$@"'
+  assert_eq "$CONTROL_RC" 3 "a run with failures exits with the first failed case's status ($CONTROL_ERR)"
+  assert_eq "$CONTROL_OUT" "PASS: test_one
+PASS: test_three
+PASS: test_six" "every case after the first failure still runs, and only the passing ones say PASS"
+  assert_contains "$CONTROL_ERR" "FAIL: two broke" "the failing case's own message is kept"
+  assert_contains "$CONTROL_ERR" "FAIL: case test_two (exit 3); the run goes on" "each failure names its case"
+  assert_contains "$CONTROL_ERR" "FAIL: five is wrong (got '1', expected '2')" "an assertion fails its case alone"
+  assert_contains "$CONTROL_ERR" "FAILED: 3 of 6 cases: test_two test_four test_five" \
+    "the run closes with the tally, naming every failed case"
+  # A subset that fails says SUBSET first, then the tally, and its exit is a failure too.
+  control_run "$CONTROL_FILE" test_five test_six
+  assert_eq "$CONTROL_RC" 1 "a failed assertion is exit 1 ($CONTROL_ERR)"
+  assert_eq "$CONTROL_OUT" "PASS: test_six
+SUBSET: 2 of 6 cases" "the subset's own cases, still marked partial"
+  assert_contains "$CONTROL_ERR" "FAILED: 1 of 2 cases: test_five" "tallied over the cases the run selected"
+}
+
+# Nothing a case leaves in the shell reaches the next one: a variable, a retuned constant, a cwd.
+# And the directory a case asks of test_tmpdir is removed when the CASE ends — its registration
+# dies with the subshell, so without the subshell's own trap it would leak — while the suite's own
+# directory, registered before the cases, outlives them all.
+test_a_case_leaves_nothing_in_the_shell() {
+  local probe
+  test_tmpdir probe isolation-probe
+  isolation_suite \
+    'test_tmpdir SUITE_DIR suite-level' \
+    'test_one() {' \
+    '  local mine' \
+    '  LEAK=1; retune GRACE=7777; cd /' \
+    '  test_tmpdir mine case-level' \
+    "  printf '%s' \"\$mine\" >\"$probe/case-dir\"" \
+    '}' \
+    'test_two() {' \
+    '  assert_eq "${LEAK-unset}" unset "a variable the case before set"' \
+    '  [ "$GRACE" != 7777 ] || bail "a constant the case before retuned"' \
+    '  [ "$PWD" != / ] || bail "the cwd the case before moved to"' \
+    "  [ ! -e \"\$(cat \"$probe/case-dir\")\" ] || bail \"the case before left its directory behind\"" \
+    '  [ -d "$SUITE_DIR" ] || bail "a case removed the suite'"'"'s own directory"' \
+    "  printf '%s' \"\$SUITE_DIR\" >\"$probe/suite-dir\"" \
+    '}' \
+    'run_tests test_one test_two -- "$@"'
+  assert_eq "$CONTROL_RC" 0 "isolated cases pass ($CONTROL_ERR)"
+  assert_eq "$CONTROL_OUT" "PASS: test_one
+PASS: test_two" "both cases run"
+  [ -n "$(cat "$probe/case-dir")" ] || bail "the case never recorded its directory"
+  [ ! -e "$(cat "$probe/suite-dir")" ] || bail "the suite's own directory outlived the suite"
+}
+
+# A `chained` case keeps its state for the next case, and its failure ends the run: the cases after
+# it would be judged on a fixture it never finished. The stop is reported by the EXIT trap, with
+# the failures before it and the cases left unrun; and a declaration naming no case is refused.
+test_a_chained_case_keeps_its_state_and_its_failure_stops_the_run() {
+  isolation_suite \
+    'test_one() { CHAIN=written; }' \
+    'test_two() { assert_eq "${CHAIN-unset}" written "what the chained case before left"; }' \
+    'chained test_one' \
+    'run_tests test_one test_two -- "$@"'
+  assert_eq "$CONTROL_RC" 0 "a chained case's state reaches the case after it ($CONTROL_ERR)"
+  assert_eq "$CONTROL_OUT" "PASS: test_one
+PASS: test_two" "both cases run"
+  isolation_suite \
+    'test_one() { bail "one broke"; }' \
+    'test_two() { bail "two broke"; }' \
+    'test_three() { :; }' \
+    'test_four() { :; }' \
+    'chained test_two' \
+    'run_tests test_one test_two test_three test_four -- "$@"'
+  assert_eq "$CONTROL_RC" 1 "a chained failure is the run's failure ($CONTROL_ERR)"
+  assert_eq "$CONTROL_OUT" "" "nothing after the chained failure runs"
+  assert_contains "$CONTROL_ERR" "FAIL: case test_one (exit 1); the run goes on" "the isolated failure before it did not stop the run"
+  assert_contains "$CONTROL_ERR" "FAILED: chained case test_two ended the run (exit 1)" "the stop names its case"
+  assert_contains "$CONTROL_ERR" "so the 2 after it did not run" "and counts what it left unrun"
+  assert_contains "$CONTROL_ERR" "FAILED: 2 of 4 cases: test_one test_two (2 not run)" "and tallies the failures"
+  # `exit 0` out of a chained case still ended the run, and is never a green exit.
+  isolation_suite \
+    'test_one() { exit 0; }' \
+    'test_two() { :; }' \
+    'chained test_one' \
+    'run_tests test_one test_two -- "$@"'
+  assert_eq "$CONTROL_RC" 1 "a chained case that exits 0 ended the run, and that is a failure ($CONTROL_ERR)"
+  assert_contains "$CONTROL_ERR" "FAILED: chained case test_one ended the run (exit 0)" "the stop is reported"
+  isolation_suite \
+    'test_one() { :; }' \
+    'chained test_one test_tow' \
+    'run_tests test_one -- "$@"'
+  assert_refused "a chained declaration naming no case of the run"
+  assert_contains "$CONTROL_ERR" "is not given: test_tow —" "the stray name is named, alone"
 }
 
 # A typo would otherwise invent a variable pr-review.sh never reads, and the case would pass while
@@ -2212,6 +2441,34 @@ test_probe_diagnostics_mutation_is_caught() {
     "the mutant must name the diagnostics file it left behind"
 }
 
+# The runner's isolation, reverted three ways (#809): back to the case in the suite's own shell,
+# which is fail-fast; to a subshell whose status is TESTED, which runs the case with errexit
+# ignored; and to a subshell without its own EXIT trap, which leaks the case's directories.
+test_fail_fast_mutation_is_caught() {
+  mutant test_a_failed_case_does_not_end_the_run \
+    '(lib_run_case "$test_name" "$errexit")' '"$test_name"' \
+    "every case after the first failure still runs"
+}
+
+test_tested_subshell_mutation_is_caught() {
+  mutant test_a_failed_case_does_not_end_the_run \
+    '(lib_run_case "$test_name" "$errexit")
+      rc=$?' 'rc=0
+      (lib_run_case "$test_name" "$errexit") || rc=$?' \
+    "every case after the first failure still runs"
+  assert_contains "$CONTROL_ERR" "PASS: test_four" "the mutant must pass the case that ran past its failing command"
+}
+
+test_case_trap_mutation_is_caught() {
+  mutant test_a_case_leaves_nothing_in_the_shell \
+    '  TEST_CLEANUP=()
+  trap test_cleanup EXIT
+' '' \
+    "isolated cases pass"
+  assert_contains "$CONTROL_ERR" "the case before left its directory behind" \
+    "the mutant must name the directory the case leaked"
+}
+
 # The route the whole file depends on: to SHOW a guard can fail you copy this file and pr-review.sh
 # into a scratch directory, revert the fix in the COPY, and run the copy — the tracked file is
 # never touched, so a session that dies between mutating and restoring leaves the repo clean. The
@@ -2302,6 +2559,9 @@ tests=(
   test_protect_library_refuses_a_file_that_defines_nothing
   test_retune_moves_a_constant
   test_retune_is_undone_when_the_case_ends # must stay directly after the case above
+  test_a_failed_case_does_not_end_the_run
+  test_a_case_leaves_nothing_in_the_shell
+  test_a_chained_case_keeps_its_state_and_its_failure_stops_the_run
   test_retune_of_a_name_the_script_does_not_set_is_refused
   test_a_probe_that_cannot_read_the_constants_refuses_with_the_reason
   test_a_refused_probe_leaves_no_diagnostics_in_tmpdir
@@ -2312,8 +2572,13 @@ tests=(
   test_snapshot_path_mutation_is_caught
   test_probe_status_mutation_is_caught
   test_probe_diagnostics_mutation_is_caught
+  test_fail_fast_mutation_is_caught
+  test_tested_subshell_mutation_is_caught
+  test_case_trap_mutation_is_caught
 )
 
+# Its constants are left moved for the case after it to judge what run_tests restored.
+chained test_retune_moves_a_constant
 run_tests "${tests[@]}" -- "$@"
 exit "$?"
 }
