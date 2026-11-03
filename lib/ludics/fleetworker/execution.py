@@ -50,7 +50,8 @@ a run directory or a file in it, a worktree, a script or payload file -- is prin
 reads as one word and pastes into a shell, as THE LEFTOVER WARNING's did first (ludics-lite#739).
 The far side ``OBSERVED_FROM`` prints facts and Python words its refusals, so the rule has one
 writer. Its boundary: text a payload carries (evidence, ``remote_checkout``) is written as it was,
-since a retry must compose the same payload; ``--from-bg-run``'s refusals are not read here yet;
+since a retry must compose the same payload; ``--from-bg-run``'s refusals (``bg_run_verdict``,
+ludics#713, moved to Python beside this rule) are not brought under it yet;
 and the other verbs keep their own lines (``execution leg``'s far side, ``tip-run``'s, the
 registry's, ``execution slot``'s), but for leg.py's recorded-checkout refusal, THE CHECKOUT's twin.
 """
