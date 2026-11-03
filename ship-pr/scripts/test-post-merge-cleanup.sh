@@ -1520,102 +1520,122 @@ test_preexisting_ignored_master_data() {
   echo "PASS: ignored master data on untouched paths passes cleanup intact"
 }
 
-# ludics-lite#215. The base-owner gate reads UNTRACKED files -- ignored data deliberately passes
-# it, as the case above records. The agent harness writes `.claude/` into every checkout it opens,
-# so in a repository whose ignore rules do not carry that name the primary checkout, which is
-# where the desktop harness most often sits and which owns the base on the standard layout,
-# refused cleanup unconditionally. The session gate's allow-list applies here too: harness-owned
-# `.claude/`, a real directory, no symbolic link at any component. #240's `git ls-files` fix for
-# the fleet-worker layout guard does NOT transfer -- this gate judges a checkout's contents, and
-# reading the index would defeat it rather than fix it. These two fail against the pre-fix gate.
-test_master_owner_harness_untracked_data_passes() {
-  setup_case harness-untracked-master merge main
+# ludics#859. Untracked data stands where ignored data does: at risk only on a path the
+# fast-forward changes, or an ancestor of one. The primary checkout owns the base on the standard
+# layout and holds the maintainer's notes and drafts as well as the harness's `.claude/`, so an
+# untracked file off the merged paths passes and is left exactly as it was (ludics-lite#215 had
+# exempted only the harness directory, by name). The second leg puts the untracked file in a
+# directory the fast-forward writes into, so the entry is collapsed (`?? docs/`) at the preflight
+# and spelled out at the recheck after the locked refresh, where a refusal would abandon a
+# fast-forward that had already landed.
+test_master_owner_untracked_data_passes() {
+  setup_case untracked-master-off-path merge main
+  echo irreplaceable >"$CASE_MAIN/notes.txt"
   mkdir -p "$CASE_MAIN/.claude"
   echo '{"sessionId":"other-session","pid":1}' >"$CASE_MAIN/.claude/scheduled_tasks.lock"
-  assert_eq "$(git -C "$CASE_MAIN" status --porcelain --untracked-files=normal)" '?? .claude/' \
-    "the fixture must reproduce an untracked, unignored harness directory"
+  assert_eq "$(git -C "$CASE_MAIN" status --porcelain --untracked-files=normal)" \
+    "$(printf '%s\n' '?? .claude/' '?? notes.txt')" \
+    "the fixture must reproduce untracked, unignored base-owner data"
   "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >/dev/null
   assert_cleaned
+  assert_eq "$(sed -n '1p' "$CASE_MAIN/notes.txt")" irreplaceable \
+    "an untracked base-owner file off the merged paths must be left exactly as it was"
   assert_eq "$(sed -n '1p' "$CASE_MAIN/.claude/scheduled_tasks.lock")" \
     '{"sessionId":"other-session","pid":1}' \
     "the base owner's harness directory must be left exactly as it was"
 
-  # And as individual entries, which is what Git reports once the repository tracks anything under
-  # `.claude/`. Here the incoming base does: the entry is collapsed at the preflight gate and
-  # spelled out at the recheck after the locked refresh, so this leg covers both readings and the
-  # post-refresh site, where a refusal would abandon a fast-forward that had already landed.
-  setup_case harness-untracked-master-files merge main
-  mkdir -p "$CASE_SESSION/.claude"
-  echo 'tracked by the repository' >"$CASE_SESSION/.claude/tracked"
-  land_topic_change "repository content under .claude" "merge .claude content" .claude/tracked
-  mkdir -p "$CASE_MAIN/.claude"
-  echo lock >"$CASE_MAIN/.claude/scheduled_tasks.lock"
-  assert_eq "$(git -C "$CASE_MAIN" status --porcelain --untracked-files=normal)" '?? .claude/' \
+  setup_case untracked-master-beside-incoming merge main
+  mkdir -p "$CASE_SESSION/docs"
+  echo 'tracked by the repository' >"$CASE_SESSION/docs/guide.md"
+  land_topic_change "repository content under docs" "merge docs content" docs/guide.md
+  mkdir -p "$CASE_MAIN/docs"
+  echo draft >"$CASE_MAIN/docs/sponsor-progress.md"
+  assert_eq "$(git -C "$CASE_MAIN" status --porcelain --untracked-files=normal)" '?? docs/' \
     "the fixture must start from the collapsed entry"
   "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >/dev/null
   assert_cleaned
   assert_eq "$(git -C "$CASE_MAIN" status --porcelain --untracked-files=normal)" \
-    '?? .claude/scheduled_tasks.lock' \
-    "the refreshed base owner must spell the harness entry out"
-  assert_eq "$(sed -n '1p' "$CASE_MAIN/.claude/scheduled_tasks.lock")" lock \
-    "the base owner's harness file must be left exactly as it was"
-  echo "PASS: harness-owned untracked .claude data passes the base-owner gate"
+    '?? docs/sponsor-progress.md' \
+    "the refreshed base owner must hold the draft beside the incoming file, still untracked"
+  assert_eq "$(sed -n '1p' "$CASE_MAIN/docs/sponsor-progress.md")" draft \
+    "an untracked file beside an incoming one must be left exactly as it was"
+  echo "PASS: untracked base-owner data off the merged paths passes the base-owner gate"
 }
 
-test_master_owner_untracked_data_refusal() {
-  local refusal
-  # Everything the allow-list does not clear keeps its refusal, and the refusal names the paths it
-  # tripped on rather than only the checkout, since the operator's decision for `.claude/` is
-  # nothing like the one for a forgotten edit.
-  setup_case untracked-master merge main
-  echo irreplaceable >"$CASE_MAIN/notes.txt"
+# Refuse before any ref moves: the fast-forward is never attempted, so the local base, the owner's
+# HEAD and every topic artifact are as they were, and the refusal is the collision scan's (the
+# locked refresh's own checkout would refuse too, but only after the named-ref update).
+assert_untracked_collision_refused() {
+  local expected="$1" what="$2" before refusal
+  before=$(git -C "$CASE_MAIN" rev-parse refs/heads/master)
   if refusal=$("$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic 2>&1); then
-    fail "an untracked file in the base owner was accepted for cleanup"
+    fail "$what was accepted for cleanup"
   fi
   case "$refusal" in
-  *notes.txt*) ;;
-  *) fail "the refusal did not name the untracked path: $refusal" ;;
+  *"fast-forward would overwrite untracked or ignored local data: "*"$expected"*) ;;
+  *) fail "$what was not refused by the collision scan naming $expected: $refusal" ;;
   esac
-  assert_eq "$(sed -n '1p' "$CASE_MAIN/notes.txt")" irreplaceable \
-    "untracked base-owner data must survive refused cleanup"
+  assert_eq "$(git -C "$CASE_MAIN" rev-parse refs/heads/master)" "$before" \
+    "$what: local master must not move"
+  assert_eq "$(git -C "$CASE_MAIN" rev-parse HEAD)" "$before" \
+    "$what: the base owner's HEAD must not move"
   assert_topic_preserved
+}
 
-  # A tracked change is not untracked data and keeps the refusal it always had.
+test_master_owner_untracked_collision_refusal() {
+  local refusal
+  # An untracked file at a path the fast-forward creates.
+  setup_case untracked-master-collision merge main
+  echo incoming >"$CASE_SESSION/notes.txt"
+  land_topic_change "add notes" "merge notes" notes.txt
+  echo irreplaceable >"$CASE_MAIN/notes.txt"
+  assert_untracked_collision_refused "/main/notes.txt" "an untracked file at an incoming path"
+  assert_eq "$(sed -n '1p' "$CASE_MAIN/notes.txt")" irreplaceable \
+    "untracked base-owner data at an incoming path must survive refused cleanup"
+
+  # An untracked file at an ANCESTOR of an incoming path: the fast-forward needs a directory there.
+  setup_case untracked-master-ancestor merge main
+  mkdir -p "$CASE_SESSION/drafts"
+  echo incoming >"$CASE_SESSION/drafts/plan.md"
+  land_topic_change "add drafts" "merge drafts" drafts/plan.md
+  echo irreplaceable >"$CASE_MAIN/drafts"
+  assert_untracked_collision_refused "/main/drafts" "an untracked file at an incoming path's ancestor"
+  assert_eq "$(cat "$CASE_MAIN/drafts")" irreplaceable \
+    "an untracked file at an ancestor must survive refused cleanup"
+
+  # The same ancestor as an untracked symbolic link to a directory, which is not followed into.
+  setup_case untracked-master-ancestor-link merge main
+  mkdir -p "$CASE_SESSION/drafts"
+  echo incoming >"$CASE_SESSION/drafts/plan.md"
+  land_topic_change "add drafts" "merge drafts" drafts/plan.md
+  mkdir -p "$CASE_ROOT/elsewhere"
+  ln -s "$CASE_ROOT/elsewhere" "$CASE_MAIN/drafts"
+  assert_untracked_collision_refused "/main/drafts" "an untracked symlink at an incoming path's ancestor"
+  [ -L "$CASE_MAIN/drafts" ] || fail "the symlink must survive refused cleanup"
+  [ ! -e "$CASE_ROOT/elsewhere/plan.md" ] || fail "the fast-forward wrote through an untracked symlink"
+
+  # An untracked directory where the fast-forward creates a file: its first entry is named.
+  setup_case untracked-master-directory merge main
+  echo incoming >"$CASE_SESSION/out"
+  land_topic_change "add out" "merge out" out
+  mkdir -p "$CASE_MAIN/out"
+  echo irreplaceable >"$CASE_MAIN/out/keep"
+  assert_untracked_collision_refused "/main/out/keep" "an untracked directory at an incoming file path"
+  assert_eq "$(sed -n '1p' "$CASE_MAIN/out/keep")" irreplaceable \
+    "an untracked directory's contents must survive refused cleanup"
+
+  # A tracked change keeps the refusal it always had, and names the path.
   setup_case dirty-master merge main
   echo edited >"$CASE_MAIN/value"
   if refusal=$("$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic 2>&1); then
     fail "a tracked edit in the base owner was accepted for cleanup"
   fi
   case "$refusal" in
-  *value*) ;;
+  *"master owner is dirty"*value*) ;;
   *) fail "the refusal did not name the edited path: $refusal" ;;
   esac
   assert_topic_preserved
-
-  # `.claude` as a regular file is not the harness directory, and Git reports it as `?? .claude`.
-  setup_case bare-claude-file-master merge main
-  echo irreplaceable >"$CASE_MAIN/.claude"
-  if refusal=$("$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic 2>&1); then
-    fail "an untracked regular file named .claude was accepted for cleanup"
-  fi
-  case "$refusal" in
-  *.claude*) ;;
-  *) fail "the refusal did not name the bare .claude path: $refusal" ;;
-  esac
-  assert_eq "$(cat "$CASE_MAIN/.claude")" irreplaceable \
-    "a bare .claude file must survive refused cleanup"
-  assert_topic_preserved
-
-  # And as a symbolic link, whose target the gate would otherwise be judging instead.
-  setup_case bare-claude-symlink-master merge main
-  mkdir -p "$CASE_ROOT/elsewhere"
-  ln -s "$CASE_ROOT/elsewhere" "$CASE_MAIN/.claude"
-  if "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >/dev/null 2>&1; then
-    fail "an untracked symlink named .claude was accepted for cleanup"
-  fi
-  [ -L "$CASE_MAIN/.claude" ] || fail "the symlink must survive refused cleanup"
-  assert_topic_preserved
-  echo "PASS: base-owner data the allow-list does not clear is refused and named"
+  echo "PASS: untracked base-owner data on a merged path or its ancestor refuses before any ref moves"
 }
 
 test_master_owner_switch_refusal() {
@@ -5675,8 +5695,8 @@ TESTS=(
   test_concurrent_master_edit_refusal
   test_concurrent_ignored_master_collision
   test_preexisting_ignored_master_data
-  test_master_owner_harness_untracked_data_passes
-  test_master_owner_untracked_data_refusal
+  test_master_owner_untracked_data_passes
+  test_master_owner_untracked_collision_refusal
   test_master_owner_switch_refusal
   test_master_initial_detach_compare_and_swap
   test_master_update_failure_reattaches_owner

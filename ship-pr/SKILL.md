@@ -1532,21 +1532,18 @@ validated tip also remains reachable under a direct `refs/ship-pr/recovery/` ref
 remote read can rule out a later base rollback; a divergent remote-tracking tip is retained
 separately under `refs/ship-pr/tracking-recovery/` before pruning. The base-owner refresh uses a non-destructive porcelain
 fast-forward through a helper-only reservation and a conditional named-ref update. A checked-out
-base owner must contain no tracked change and no untracked file, with one exemption and one
-deliberate omission. IGNORED data passes: the primary checkout owns the base on the standard
-layout and always carries build caches and ignored config, and ignored data is only at risk on
-the paths the fast-forward touches, which the changed-path collision scan refuses and
-`--no-overwrite-ignore` protects. UNTRACKED harness-owned state under a top-level `.claude/`
-directory passes too, on the same terms as the session gate — a real directory, no symbolic link
-at any component — because the agent harness writes it into every checkout it opens, the primary
-one included, and a repository whose ignore rules do not carry the name met it here rather than at
-the session gate and refused cleanup unconditionally. The read is NUL-delimited and the refusal
-names the shell-quoted paths, and the two rechecks after the locked refresh use the same scanner,
-so a `.claude/` that passed the preflight cannot come back as data the owner "gained" once the
+base owner must contain no tracked change. Its IGNORED and UNTRACKED data passes: the primary
+checkout owns the base on the standard layout and carries build caches, ignored config, the
+harness's `.claude/` and the maintainer's own notes and drafts, and either class is at risk only on
+a path the fast-forward changes or an ancestor of one. The changed-path collision scan refuses an
+untracked or ignored file, link or directory there before any ref moves, and the locked refresh's
+`checkout --no-overwrite-ignore` refuses either class besides. The refusal names the shell-quoted
+path to go clear, and the two rechecks after the locked refresh use the same tracked-change
+scanner, so data that passed the preflight cannot come back as data the owner "gained" once the
 fast-forward has already landed. After the update the owner is prepared
 at the new tree and reattached with a detached-HEAD compare-and-swap before the reservation is
 removed. The helper probes that compare-and-swap capability before any branch mutation and refuses
-older Git versions cleanly. The helper also checks ignored descendants when a directory is
+older Git versions cleanly. The helper also checks untracked and ignored descendants when a directory is
 replaced, refuses a topic owned by any other worktree, and transfers
 topic ownership to a temporary reservation through local ref deletion, and removes matching
 remote-tracking and only the standard keys from repository-local upstream configuration. Included, global,
