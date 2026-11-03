@@ -14,7 +14,7 @@ Two kinds live here, and they are kept in sync differently.
 | --- | --- | --- | --- | --- | --- |
 | `ocannl-cross-machine-sweep` | local scheduled task | daily 07:05 local (`5 7 * * *`), up to 699 s jitter, so 07:05–07:17 | `~/ocannl-staging` | Opus | `tools/sweep.sh` in OCANNL, `scripts/wake-lab.sh` |
 | `daily-issue-planning` | local scheduled task | daily 06:45 local (`45 6 * * *`), up to 333 s jitter | `~/ocannl-staging` | Fable | the sequencing plan `issue-wave` reads |
-| `ocannl-ci-red-triage` | cloud routine | on a master red: a `ci-env.yml` push run, or a `ci.yml` run other than a PR or a dispatch naming its commit (its daily schedule), each fired by its workflow; backstop daily 05:17 UTC (`17 5 * * *`) | Anthropic cloud, sources `lukstafi/ocannl-staging` and `ahrefs/ocannl` | Sonnet | the claiming issues OCANNL's mergers defer to |
+| `ocannl-ci-red-triage` | cloud routine | on a master red: a `ci-env.yml` push run, or a `ci.yml` run other than a PR or a dispatch naming its commit (its daily schedule), each fired by its workflow; backstop daily 05:17 UTC (`17 5 * * *`) | Anthropic cloud, sources `lukstafi/ocannl-staging` and `ahrefs/ocannl` | Sonnet | the claiming issues OCANNL's mergers defer to, and its cache-health issues |
 
 The local scheduler adds a per-task jitter of a few minutes to the times above. The sweep's
 times are the registry's (read with the scheduled-tasks list, 2026-09-23), and something outside
