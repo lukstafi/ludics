@@ -605,23 +605,18 @@ bench_provision() {
 # check-box's own repair line and repaired by nothing here. Returns 0 READY, 3 GAP, 4 not run.
 BENCH_CHECK_GAP=3 BENCH_CHECK_NOT_RUN=4
 
-# Fleet endpoint -> its measurement-box ID in DIGESTS.txt's `measurement-boxes` header. A
-# fail-closed allowlist: an endpoint not listed is not checked, never guessed at.
-bench_measurement_box() {
-  case $1 in
-    rog-nv-linux) printf 'rog-nv\n' ;;
-    minix-amd-linux) printf 'minix\n' ;;
-    tuf-amd-linux) printf 'tuf\n' ;;
-    *) return 1 ;;
-  esac
-}
-
 bench_not_run() { printf 'Box check NOT RUN (exit %s): %s\n' "$BENCH_CHECK_NOT_RUN" "$*"; return "$BENCH_CHECK_NOT_RUN"; }
 
+# The measurement-box ID is check-box's own reading of the fleet endpoint (--canonical-box, from the
+# same tip clone; ahrefs/ocannl#1433): this installer keeps no copy of its fleet table. What it
+# reads of that answer is a fail-closed allowlist: exit 0 and stdout one name, a letter or digit
+# then letters, digits, `.`, `_` and `-`; anything else (an older tip without the flag, its usage exit 2, an empty or
+# multi-line answer) is not run. Whether the name is a box to check is check-box's call: a name it
+# does not map comes back as itself, and its --box refuses one it does not declare (exit 2).
 bench_check() {
   local endpoint=$1 id url sha rc tip=$scratch/ocannl-tip
-  id=$(bench_measurement_box "$endpoint") ||
-    { bench_not_run "fleet endpoint $(printf '%q' "$endpoint") (FLEET_LOCAL_BOX) has no measurement-box ID; this installer knows rog-nv-linux, minix-amd-linux and tuf-amd-linux."; return; }
+  [[ -n $endpoint ]] ||
+    { bench_not_run "FLEET_LOCAL_BOX is unset, so there is no fleet endpoint to check."; return; }
   [[ -d $BENCH_CHECKOUT/benchmarks/fixtures ]] ||
     { bench_not_run "no fixture store $(printf '%q' "$BENCH_CHECKOUT/benchmarks/fixtures") to check."; return; }
   url=$(git -C "$BENCH_CHECKOUT" remote get-url origin) ||
@@ -633,7 +628,14 @@ bench_check() {
     return
   fi
   sha=$(git -C "$tip" rev-parse HEAD)
-  printf 'Box check: check-box.sh --box %s --box-only at %q %s\n' "$id" "$url" "$sha"
+  if id=$(bash "$tip/benchmarks/check-box.sh" --canonical-box "$endpoint"); then rc=0; else rc=$?; fi
+  if [[ $rc -ne 0 ]]; then
+    bench_not_run "check-box.sh --canonical-box $(printf '%q' "$endpoint") exited $rc at $(printf '%q' "$url") $sha, so no measurement-box ID."
+    return
+  fi
+  [[ $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
+    { bench_not_run "check-box.sh --canonical-box $(printf '%q' "$endpoint") answered $(printf '%q' "$id"), not one box name."; return; }
+  printf 'Box check: check-box.sh --box %s --box-only (FLEET_LOCAL_BOX %q) at %q %s\n' "$id" "$endpoint" "$url" "$sha"
   if bash "$tip/benchmarks/check-box.sh" --box "$id" --box-only --venv "$BENCH_VENV" \
        --fixture-dir "$BENCH_CHECKOUT/benchmarks/fixtures"; then rc=0; else rc=$?; fi
   case $rc in
