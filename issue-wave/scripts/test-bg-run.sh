@@ -26,6 +26,10 @@
 #   - a wrapper killed alone while its command runs on reads RUNNING, not DIED, through cpid; and
 #     a command that exited unreaped (a zombie, which still answers kill -0) reads DIED, and so
 #     does a pid the system has reused for a process with another start time;
+#   - THE START TOKEN (ludics#786): a start records this platform's kind, on Linux field 22 of
+#     /proc/<pid>/stat and elsewhere an lstart; on Linux a pid whose comm holds `) ` and blanks is
+#     read by its own tick (RUNNING) and not by another (DIED, and a stop signals nothing), and a
+#     run whose pid files carry pre-#786 lstarts reads RUNNING and a stop still ends it;
 #   - `start` runs only in a directory `new` allocated and no start has claimed (ludics-lite#425):
 #     it refuses, runs nothing and writes nothing, on a path that does not exist, on a directory
 #     `new` did not make, and on one a start has claimed -- a finished run's, whose rc and log stay
@@ -304,6 +308,83 @@ printf '%s\n' "$sp" > "$d/pid"
 expect "control: a pid with no start time recorded falls back to kill -0 (RUNNING)" 3 RUNNING -- \
   "$BG" wait "$d" --within 0
 kill -9 "$sp" 2>/dev/null; { wait "$sp"; } 2>/dev/null
+
+# THE START TOKEN (ludics#786): what a real start records is this platform's kind -- on Linux the
+# tick, field 22 of /proc/<pid>/stat, which the oracle here reads with awk's $22 off a process whose
+# comm is a plain word; elsewhere an lstart, never digits only. The cases above recorded lstarts,
+# so on Linux they are the pre-#786 records, read back in their own kind.
+os=$(uname -s)
+fresh token-kind
+bg_start "$d" sleep 30
+if until_file "$d/cpid" 10; then
+  w=$(head -n 1 "$d/pid"); wt=$(sed -n 2p "$d/pid"); c=$(head -n 1 "$d/cpid"); ct=$(sed -n 2p "$d/cpid")
+  if [ "$os" = Linux ]; then
+    [ "$wt" = "$(awk '{ print $22 }' "/proc/$w/stat")" ] && [ "$ct" = "$(awk '{ print $22 }' "/proc/$c/stat")" ] \
+      && ok "Linux: start records the wrapper's and the command's /proc stat field 22" \
+      || ko "Linux: the recorded tokens $wt/$ct are not field 22 of /proc/$w/stat, /proc/$c/stat"
+  else
+    case $wt$ct in
+      *[!0-9]*) [ -n "$wt" ] && [ -n "$ct" ] && ok "$os: start records lstart tokens, not ticks ($wt)" \
+        || ko "$os: start recorded an empty token: '$wt' '$ct'" ;;
+      *) ko "$os: start recorded digit-only tokens, a Linux tick's shape: '$wt' '$ct'" ;;
+    esac
+  fi
+  expect "...and the run they name reads RUNNING" 3 RUNNING -- "$BG" wait "$d" --within 0
+  kill -9 "$c" "$w" 2>/dev/null
+else
+  ko "the token-kind fixture never published its cpid"
+fi
+if [ "$os" = Linux ]; then
+  # The comm field may hold `) ` and blanks: a process exec'd under the name `x) 1 2 3`, whose tick
+  # the oracle read while it was still a plain `sh` (an exec keeps the start tick). A read that
+  # splits the line by blanks, or ends the comm at its first `)`, takes another field for field 22.
+  # The name is a copy of sh, which stays in the process while its `sleep` runs: a copy of sleep
+  # may be a multicall binary (uutils) that dispatches on its name and exits.
+  mkdir -p "$TMP/paren"
+  cp "$(command -v sh)" "$TMP/paren/x) 1 2 3"
+  sh -c 'read -r l < "/proc/$$/stat"; printf "%s\n" "$l" > "$0.tmp"; mv "$0.tmp" "$0"; exec "$1" -c "sleep 30; :"' \
+    "$TMP/paren/stat0" "$TMP/paren/x) 1 2 3" &
+  sp=$!; BGPIDS="$BGPIDS $sp"
+  if until_file "$TMP/paren/stat0" 10; then
+    tk=$(awk '{ print $22 }' "$TMP/paren/stat0")
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(cat "/proc/$sp/comm" 2>/dev/null)" = 'x) 1 2 3' ] && break; sleep 0.2; done
+    if [ "$(cat "/proc/$sp/comm" 2>/dev/null)" = 'x) 1 2 3' ] && [ -n "$tk" ]; then
+      ok "control: the fixture runs with comm 'x) 1 2 3', its tick $tk read under a plain comm"
+      d="$TMP/paren-same"; mkdir -p "$d"
+      printf '%s\n%s\n' "$sp" "$tk" > "$d/pid"
+      expect "Linux: a pid whose comm holds ') ' and blanks, recorded with its own tick, reads RUNNING" \
+        3 RUNNING -- "$BG" wait "$d" --within 0
+      d="$TMP/paren-other"; mkdir -p "$d"
+      printf '%s\n%s\n' "$sp" "$((tk + 1))" > "$d/pid"; cp "$d/pid" "$d/cpid"
+      expect "Linux: the same pid recorded with another tick (a reused pid) reads DIED" 5 DIED -- \
+        "$BG" wait "$d" --within 0
+      expect "...and stop there signals nothing" 1 'NOT RUNNING: DIED' -- "$BG" stop "$d"
+      kill -0 "$sp" 2>/dev/null && ok "...and the process that has that pid runs on" || ko "stop killed $sp"
+    else
+      ko "the paren fixture did not run as 'x) 1 2 3' with a tick read (comm: $(cat "/proc/$sp/comm" 2>/dev/null))"
+    fi
+  else
+    ko "the paren fixture never wrote its stat line"
+  fi
+  kill -9 "$sp" 2>/dev/null; { wait "$sp"; } 2>/dev/null
+  # A run recorded by a bg-run.sh from before #786: its pid file carries the wrapper's lstart. A
+  # wait reads it RUNNING, and a stop -- whose tree scan compares ticks -- still finds its group
+  # and ends it, rather than reading the run gone.
+  d=$("$BG" spawn "$TMP/legacy" -- sleep 300)
+  if until_file "$d/cpid" 10; then
+    { IFS= read -r w; IFS= read -r _; IFS= read -r g; } < "$d/pid"
+    printf '%s\n%s\n%s\n' "$w" "$(TZ=UTC LC_ALL=C ps -o lstart= -p "$w" | tr -d ' ')" "$g" > "$d/pid.new"
+    mv -f "$d/pid.new" "$d/pid"
+    c=$(head -n 1 "$d/cpid")
+    printf '%s\n%s\n' "$c" "$(TZ=UTC LC_ALL=C ps -o lstart= -p "$c" | tr -d ' ')" > "$d/cpid.new"
+    mv -f "$d/cpid.new" "$d/cpid"
+    expect "Linux: a run whose pid files carry lstarts (pre-#786) reads RUNNING" 3 RUNNING -- "$BG" wait "$d" --within 0
+    expect "...and stop ends it" 0 "STOPPED $d: process group $w" -- env BG_RUN_STOP_GRACE=1 "$BG" stop "$d"
+    expect "...which then reads STOPPED" 7 STOPPED -- "$BG" wait "$d" --within 5
+  else
+    ko "the legacy fixture never published its cpid"
+  fi
+fi
 
 # --- race 2: the command's output quotes the verdicts --------------------------------------------
 fresh quoting
@@ -757,7 +838,11 @@ else
   else
     ko "control: the escapee fixture did not stage -- $(cat "$d/log" 2>/dev/null)"
   fi
+  # The control's stop leaves the batch's session too: its `sleep 300`, the escapee's parent,
+  # would hold whatever the suite's caller handed it (a leg's lock, a slot) for five minutes.
+  bp=$(ps -o ppid= -p "${esc:-99999999}" 2>/dev/null | tr -d ' ')
   kill -9 "${esc:-99999999}" 2>/dev/null
+  case $bp in ''|*[!0-9]*|0|1) ;; *) kill -9 "$bp" 2>/dev/null ;; esac
 fi
 # A stop ended inside its grace once the wrapper's group is gone, the escapee left: a wait reads
 # RUNNING while it holds the lock (the marker names its group), not STOPPED, and a second stop ends
