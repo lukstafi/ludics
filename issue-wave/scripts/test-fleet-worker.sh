@@ -3087,7 +3087,7 @@ fixture_done hb-plain
 expect "an unknown request is refused" 1 "unknown request_id hb-none" -- hb hb-none --evidence x --verdict pass
 expect "an unfinished run is still refused: no verdict to read" 1 "FROM-RUN REFUSED: .*has no exit" -- hb hb-usage --evidence x --from-run "$hruns/unfinished"
 expect "...as is a run its runner says is still going" 1 "not a finished run" -- env SHIM_RUN_STATUS=3 "${FWH[@]}" execution conclude --standing-handback --request hb-usage --observed-from "$hwt" --evidence x --from-run "$hruns/dirty"
-expect "...as is a launch head that is no exact object ID (a truncated one would read as rewritten)" 1 "FROM-RUN REFUSED: .*/head holds '${hbase%??????}', not one commit ID" -- \
+expect "...as is a launch head that is no exact object ID (a truncated one would read as rewritten)" 1 "FROM-RUN REFUSED: '$hruns/truncated/head' holds '${hbase%??????}', not one commit ID" -- \
   hb hb-usage --evidence x --from-run "$hruns/truncated"
 expect "a --verdict the run record contradicts is refused" 1 "--verdict fail, but '$hruns/dirty' reads pass .*give one of them" -- hb hb-usage --evidence x --from-run "$hruns/dirty" --verdict fail
 expect "an observed HEAD GitHub does not have in the repository is refused" 1 "observed_sha $hhead is no commit of o/r" -- \
@@ -3382,7 +3382,7 @@ jq -n --arg wt "$lwt" '{request_id:"leg-c", wave:"w", worker:"leg-c", transport:
 "${FWL[@]}" execution run "$TMP/leg-c.json" >/dev/null 2>&1 || ko "could not take the standing reservation leg-c (setup)"
 n=$(marks)
 expect "a leg under a record's checkout refuses another worktree, naming the recorded one" 1 \
-  "^EXECUTION LEG REFUSED: --worktree $TMP/leg wts/w 2 is not leg-c's recorded checkout $lwt on testbox (ludics-lite#749" -- \
+  "^EXECUTION LEG REFUSED: --worktree '$TMP/leg wts/w 2' is not leg-c's recorded checkout '$lwt' on testbox (ludics-lite#749" -- \
   leg --request leg-c --rev claude/topic --checkout "$lco" --worktree "$TMP/leg wts/w 2" -- tools/check.sh
 [ "$(marks)" = "$n" ] && [ ! -e "$TMP/leg wts/w 2" ] && ok "...nothing made or run" || ko "the refused leg made its worktree or ran"
 expect "...and runs in its own, a trailing / dropped" 0 "execution-leg: exit: 0" -- \
