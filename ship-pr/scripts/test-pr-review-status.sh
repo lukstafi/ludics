@@ -57,7 +57,9 @@ PUSH_ON_REVIEWS_READ=""
 # The same simulated push, one read later: the PR read itself arms it, so the FIRST PR read of the
 # process answers the old head and every one after it answers the pushed one. That is a push landing
 # in the gap between a round's head read and the state read beside it — the gap ludics-lite#95
-# closes, and the one a state that re-read the PR would report the round through.
+# closes, and the one a state that re-read the PR would report the round through. Only a read that
+# asks for the head counts (pr_read_names, ludics#756): a PR read added for another field does not
+# move the push onto another read.
 PUSH_AFTER_PULLS_READ=""
 # The flat inline feed refusing to answer: the shape that fails a poll ROUND, so a case can ask what
 # a round that did not answer leaves behind for the state read after it.
@@ -255,8 +257,10 @@ gh() {
       '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, state:"open", draft:false}
        + (if $c == "" then {} else {created_at:$c} end)')
     # Armed AFTER the answer, so THIS read still sees the old head and the next one does not.
-    fixture_nth pulls
-    [ "$PUSH_AFTER_PULLS_READ" != "$FIXTURE_NTH" ] || : >"$TEST_ROOT/pushed"
+    if pr_read_names head; then
+      fixture_nth pulls
+      [ "$PUSH_AFTER_PULLS_READ" != "$FIXTURE_NTH" ] || : >"$TEST_ROOT/pushed"
+    fi
     ;;
   # Before the head arm: `main` is a ref this fixture resolves, not a head it serves.
   "repos/$REPO/commits/main") response="{\"sha\":\"$BASE_SHA\"}" ;;
