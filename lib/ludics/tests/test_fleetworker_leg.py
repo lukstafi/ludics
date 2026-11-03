@@ -2,6 +2,7 @@
 leg` section drives the whole verb against a fake remote)."""
 
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -659,6 +660,100 @@ class ForeignHome(unittest.TestCase):
             link = os.path.join(tmp, "home")
             os.symlink(real, link)
             self.assertEqual(self.hint(link, os.path.join(real, "ludics-lite")), "")
+
+
+class Sweep(unittest.TestCase):
+    """THE SWEEP (ludics#715): what earlier legs left on the box -- a staged file over the grace no
+    process holds, a private ref whose far shell is gone -- is removed; a claimed, young or foreign
+    file and a live leg's ref are kept; a claim that finds its own file swept is refused (3)."""
+
+    bash = shutil.which("bash") or "/bin/bash"
+    root = Path(leg.__file__).resolve().parents[3]
+    OLD = time.time() - leg.STAGED_GRACE - 60
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name, "state")
+        self.co = Path(tmp.name, "co")
+        for sub in ("leg-control", "leg-files"):
+            (self.state / sub).mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(self.co)], check=True)
+        subprocess.run(["git", "-C", str(self.co), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "c"], check=True)
+
+    def staged(self, sub: str, name: str, *, old: bool = True) -> Path:
+        path = self.state / sub / name
+        path.write_text("patch\n")
+        if old:
+            os.utime(path, (self.OLD, self.OLD))
+        return path
+
+    def ref(self, name: str) -> str:
+        ref = f"refs/fleet-leg/{name}"
+        subprocess.run(["git", "-C", str(self.co), "update-ref", ref, "HEAD"], check=True)
+        return ref
+
+    def refs(self) -> list[str]:
+        out = subprocess.run(["git", "-C", str(self.co), "for-each-ref", "--format=%(refname)", "refs/fleet-leg/"],
+                             capture_output=True, text=True, check=True).stdout
+        return out.split()
+
+    def sweep(self, body: str = 'sweep_staged "$@"', *args: str, pass_fds: tuple[int, ...] = ()) -> tuple[int, str]:
+        script = (f"STATE={shlex.quote(str(self.state))}\nSKILLS_REPO={shlex.quote(str(self.root))}\n"
+                  + leg.SWEEP + body + "\n")
+        done = subprocess.run([self.bash, "-c", script, "x", str(self.co), *args], capture_output=True, text=True,
+                              pass_fds=pass_fds)
+        return done.returncode, done.stdout
+
+    def dead_pid(self) -> int:
+        child = subprocess.Popen(["true"])
+        child.wait()
+        return child.pid
+
+    def test_a_stale_file_and_a_gone_shells_ref_are_swept(self) -> None:
+        patch = self.staged("leg-control", "w-1.0123456789abcdef.patch")
+        shipped = self.staged("leg-files", "w-1.0123456789abcdef.targets.txt")
+        gone = self.ref(str(self.dead_pid()))
+        rc, out = self.sweep()
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.splitlines(), [str(patch), str(shipped), gone])
+        self.assertFalse(patch.exists() or shipped.exists())
+        self.assertEqual(self.refs(), [])
+
+    def test_a_young_a_held_or_a_foreign_file_and_a_live_ref_are_kept(self) -> None:
+        young = self.staged("leg-control", "w-1.0123456789abcdef.patch", old=False)
+        held = self.staged("leg-control", "w-2.0123456789abcdef.patch")
+        foreign = self.staged("leg-control", "notes.txt")
+        untokened = self.staged("leg-files", "w-3.0123.patch")
+        link = self.state / "leg-files" / "w-4.0123456789abcdef.patch"
+        link.symlink_to(foreign)
+        live, odd = self.ref(str(os.getpid())), self.ref("x12")
+        with open(held, "rb") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            rc, out = self.sweep()
+        self.assertEqual((rc, out), (0, ""))
+        for path in (young, held, foreign, untokened, link):
+            self.assertTrue(os.path.lexists(path), path)
+        self.assertEqual(sorted(self.refs()), sorted([live, odd]))
+
+    def test_a_claimed_file_outlives_the_grace_in_a_later_sweep(self) -> None:
+        mine = self.staged("leg-control", "w-1.0123456789abcdef.patch", old=False)
+        old = f"touch -t 200001010000 {shlex.quote(str(mine))}"
+        rc, out = self.sweep(f'exec 7<"$2"; sweep_staged "$1" 7 "$2" || exit; {old}; sweep_staged "$1"', str(mine))
+        self.assertEqual((rc, out), (0, ""))
+        self.assertTrue(mine.exists())
+
+    def test_a_claim_whose_file_was_swept_first_is_refused(self) -> None:
+        mine = self.staged("leg-control", "w-1.0123456789abcdef.patch")
+        with open(mine, "rb") as f:
+            os.unlink(mine)
+            rc, _ = self.sweep(f'sweep_staged "$1" {f.fileno()} "$2"', str(mine), pass_fds=(f.fileno(),))
+        self.assertEqual(rc, 3)
+
+    def test_the_far_shell_s_own_ref_is_kept(self) -> None:
+        rc, out = self.sweep('git -C "$1" update-ref "refs/fleet-leg/$$" HEAD; sweep_staged "$1"; git -C "$1" for-each-ref refs/fleet-leg/ | wc -l')
+        self.assertEqual((rc, out.split()), (0, ["1"]))
 
 
 if __name__ == "__main__":
