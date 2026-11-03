@@ -422,12 +422,18 @@ class Gate:
             return 1
         return 2 if waived else 0
 
-    def run_inflight_is_advisory_only(self, run_id: str) -> bool:
+    def run_inflight_is_advisory_only(self, run_id: str, suite: str = "-") -> bool:
         """``run_inflight_is_advisory_only``: every unfinished job advisory, every finished
-        non-advisory job green, and the job list still for ADVISORY_SETTLE seconds."""
+        non-advisory job green -- or red with its check WAIVED by ``--override`` (ludics#862), the
+        key ``run_red_is_advisory_only`` reads, under the same one-job-of-that-name rule -- and the
+        job list still for ADVISORY_SETTLE seconds. The waived red is already the verdict (the check
+        fold's ``waived``); without this a waived red made the run's queued advisory leg a run in
+        flight, and ``merge --override`` held to its deadline as no verdict (lukstafi/ocannl-staging
+        #1612 and #1625: a master red shared by ``main 1/2`` beside a macOS leg queued 100 min)."""
         raw = self.run_jobs(run_id)
         if raw is None:
             return False
+        names = [n for n in (tab_fields(line, 4)[0] for line in herestring_lines(raw)) if n]
         unfinished = 0
         last = ""
         for line in herestring_lines(raw):
@@ -447,7 +453,10 @@ class Gate:
             last = newest(last, jdone)
             if self.is_advisory(jname):
                 continue
-            if conclusion_class(jconcl) != "green":
+            klass = conclusion_class(jconcl)
+            if klass == "red" and names.count(jname) == 1 and f"check:{suite or '-'}/{jname}" in self.waived:
+                continue
+            if klass != "green":
                 return False
         if unfinished == 0:
             return False
@@ -522,7 +531,7 @@ class Gate:
                 continue
             if status != "completed" or conclusion_class(concl) == "pending":
                 runs += 1
-                inflight_ids.append(rid)
+                inflight_ids.append(f"{rid}\t{suite or '-'}")
                 continue
             key = f"{wid}/{event}"
             if key in seen:
@@ -566,8 +575,9 @@ class Gate:
                 " check list",
             )
         inflight = released = 0
-        for rid in inflight_ids:
-            if self.run_inflight_is_advisory_only(rid):
+        for entry in inflight_ids:
+            rid, rsuite = tab_fields(entry, 2)
+            if self.run_inflight_is_advisory_only(rid, rsuite):
                 released += 1
             else:
                 inflight += 1
