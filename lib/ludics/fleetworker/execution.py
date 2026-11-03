@@ -929,8 +929,8 @@ def execution_refresh(cfg: Config, record_text: str) -> None:
 
 LIST_USAGE = "execution list: expected --active, --compact or --host <box>"
 USAGE = (
-    "execution: list, integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas],"
-    " slot -- <command>, hold -- <command>, leg --request <id> ... -- <runner>,"
+    "execution: list, slot -- <command>, hold -- <command>,"
+    " integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas], leg --request <id> ... -- <runner>,"
     " run|reserve|dispatch|record|reconcile|rebind|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
     " or tip-run <json-file> [--tip <branch>] --checkout <dir> -- <command>, tip-run --wait <id>"
