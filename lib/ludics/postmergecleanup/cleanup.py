@@ -357,24 +357,19 @@ class Cleanup:
                 f"move or remove it before cleanup: {', '.join(ignored)}"
             )
 
-    # The BASE-OWNER gate is the mirror image: nothing there is archived, so ignored data passes
-    # it, while untracked data does not, because the fast-forward writes into that tree. One class
-    # carries no stake (ludics-lite#215): harness-owned state under a top-level `.claude/`
-    # DIRECTORY, exempt by NAME, since this gate judges a live checkout's contents and not what the
-    # repository declares. An untracked file or link named `.claude` keeps its refusal.
-
-    def base_owner_untracked_is_harness_owned(self, worktree: str, entry: str) -> bool:
-        path = entry.removesuffix("/")
-        if not (path == ".claude" or path.startswith(".claude/")):
-            return False
-        harness = f"{worktree}/.claude"
-        if system.is_link(harness) or not system.is_dir(harness):
-            return False
-        return path_has_no_link_component(worktree, path)
+    # The BASE-OWNER gate is the mirror image: nothing there is archived, and the fast-forward
+    # writes only the paths it changes. So neither ignored NOR untracked data is part of this
+    # read (ludics#859, narrowing ludics-lite#215's by-name `.claude/` allow-list to nothing):
+    # both are at risk only on a changed path or an ancestor of one, which the collision scan in
+    # fast_forward_base refuses before any ref moves, and the locked refresh's plain
+    # `checkout --detach --no-overwrite-ignore` refuses to overwrite either class besides. #215
+    # kept untracked data in the gate "because the fast-forward writes into this tree", a
+    # whole-tree reading the changed-path scan makes exact. The one Git step that DOES overwrite
+    # untracked files, `read-tree --reset -u`, runs only in the helper's own fresh reservation.
 
     def scan_base_owner_local_data(self, worktree: str, index_file: str = "") -> str | None:
-        """The entries the rule above does not clear, shell-quoted and comma-joined (empty when
-        the owner holds nothing the gate objects to); None when the status could not be read. A
+        """The owner's tracked changes, shell-quoted and comma-joined (empty when there are none);
+        None when the status could not be read. Untracked files are not read (the rule above). A
         rename's second ``-z`` field carries no status prefix and is skipped."""
         done = git(
             "-C",
@@ -382,7 +377,7 @@ class Cleanup:
             "status",
             "--porcelain",
             "-z",
-            "--untracked-files=normal",
+            "--untracked-files=no",
             out="capture",
             env={"GIT_INDEX_FILE": index_file} if index_file else None,
         )
@@ -397,10 +392,7 @@ class Cleanup:
             if not entry:
                 continue
             code, path = entry[0:2], entry[3:]
-            if code == "??":
-                if self.base_owner_untracked_is_harness_owned(worktree, path):
-                    continue
-            elif len(code) == 2 and (code[0] in "RC" or code[1] in "RC"):
+            if len(code) == 2 and (code[0] in "RC" or code[1] in "RC"):
                 original = True
             data.append(q(path))
         return ", ".join(data)
@@ -1662,12 +1654,10 @@ class Cleanup:
             fail(f"cannot read {base} owner HEAD")
         if owner_head != self.local_master:
             fail(f"{base} owner's HEAD disagrees with local {base}")
-        # Ignored files are deliberately NOT part of this gate: on the standard layout the primary
-        # checkout owns the base and always carries build caches. Ignored data is at risk only on
-        # paths the fast-forward touches, which the collision scan below refuses, and the locked
-        # refresh runs checkout --no-overwrite-ignore. Untracked data IS part of the gate, minus
-        # the harness-owned class (ludics-lite#215); the rechecks after the refresh read the owner
-        # through the same scanner.
+        # Neither ignored nor untracked files are part of this gate (the rule above
+        # scan_base_owner_local_data): on the standard layout the primary checkout owns the base
+        # and carries build caches, notes and drafts. The rechecks after the refresh read the
+        # owner through the same scanner, so data that passed here cannot come back as "gained".
         local_data = self.scan_base_owner_local_data(owner)
         if local_data is None:
             fail(f"could not inspect {base} owner cleanliness")
@@ -1682,38 +1672,20 @@ class Cleanup:
         changed = git("-C", main, "diff", "--name-only", "-z", self.local_master, self.remote_master, out="capture")
         if changed.rc != 0:
             fail(f"could not enumerate paths changed by the {base} fast-forward")
+        # The collision scan, an allowlist of what may stand where the fast-forward writes. For
+        # each changed path it reads only the owner's working tree along that path: every proper
+        # ancestor must be a real directory or absent, and the path itself must be absent, a
+        # file Git tracks, or a directory that stays one (or holds nothing Git calls "other").
+        # Anything else on that path, an untracked or ignored file, link or directory, refuses
+        # here, before any ref moves. Off the changed paths it reads nothing.
         collision = ""
         for changed_path in system.nul_records(changed.out):
-            on_disk = f"{owner}/{changed_path}"
-            if system.lexists(on_disk) and git("-C", owner, "check-ignore", "-q", "--", changed_path).rc == 0:
-                collision = changed_path
+            collision = self.fast_forward_collision(owner, changed_path)
+            if collision:
                 break
-            if system.is_dir(on_disk):
-                _, remote_type = captured(
-                    "-C", main, "cat-file", "-t", f"{self.remote_master}:{changed_path}", quiet=True
-                )
-                if remote_type != "tree":
-                    # NUL-delimited: the name is reported as the path to go clear, and a quoted
-                    # rendering names no file on disk. One record is enough.
-                    descendants = git(
-                        "-C",
-                        owner,
-                        "ls-files",
-                        "--others",
-                        "--ignored",
-                        "--exclude-standard",
-                        "-z",
-                        "--",
-                        changed_path,
-                        out="capture",
-                    )
-                    descendant = system.first_nul_record(descendants.out)
-                    if descendant:
-                        collision = descendant
-                        break
         if collision:
             fail(
-                f"{base} fast-forward would overwrite ignored local data: "
+                f"{base} fast-forward would overwrite untracked or ignored local data: "
                 f"{q(f'{master_owner_shown}/{collision}')}"
             )
 
@@ -1753,7 +1725,7 @@ class Cleanup:
                 fail(f"could not recheck {base} during its locked refresh")
             if during != self.remote_master and not self.refresh_master_owner_to(during):
                 fail(f"{base} moved during refresh and its owner could not follow the concurrent tip")
-            # Ignored files pass here for the preflight gate's reason.
+            # Ignored and untracked files pass here for the preflight gate's reason.
             local_data = self.scan_base_owner_local_data(original, self.master_owner_index_lock)
             if local_data is None:
                 fail(f"could not recheck the locked {base} owner")
@@ -1780,6 +1752,39 @@ class Cleanup:
             fail(f"cannot reread local {self.branch}")
         if current != self.local_branch_oid:
             fail(f"local {self.branch} moved before remote deletion; all topic artifacts were preserved")
+
+    def untracked_or_ignored_entry(self, owner: str, path: str) -> str:
+        """The first file Git calls "other" (untracked or ignored, no exclude rules applied) at
+        or under ``path`` in the owner, NUL-delimited so the name is the path to go clear, and
+        empty when there is none. An unreadable listing refuses rather than reading as clear."""
+        listed = git("-C", owner, "ls-files", "--others", "-z", "--", f":(literal){path}", out="capture")
+        if listed.rc != 0:
+            fail(f"could not list local data the {self.base} fast-forward would touch: {q(path)}")
+        return system.first_nul_record(listed.out) or ""
+
+    def fast_forward_collision(self, owner: str, changed_path: str) -> str:
+        """The untracked or ignored entry the fast-forward of ``changed_path`` would overwrite in
+        the owner, or empty. An ancestor that is a file or a symbolic link stands where the
+        fast-forward needs a directory (a tracked one is itself a changed path, and Git replaces
+        it); a link is never followed into."""
+        parts = changed_path.split("/")
+        for depth in range(1, len(parts)):
+            ancestor = "/".join(parts[:depth])
+            on_disk = f"{owner}/{ancestor}"
+            if not system.lexists(on_disk):
+                return ""
+            if system.is_link(on_disk) or not system.is_dir(on_disk):
+                return self.untracked_or_ignored_entry(owner, ancestor)
+        on_disk = f"{owner}/{changed_path}"
+        if not system.lexists(on_disk):
+            return ""
+        if not system.is_link(on_disk) and system.is_dir(on_disk):
+            _, remote_type = captured(
+                "-C", self.main, "cat-file", "-t", f"{self.remote_master}:{changed_path}", quiet=True
+            )
+            if remote_type == "tree":
+                return ""
+        return self.untracked_or_ignored_entry(owner, changed_path)
 
     def retain_direct_ref(self, ref: str, oid: str, label: str, retain_failure: str) -> None:
         """``ref`` at ``oid``: created when absent, accepted when already there, refused when it

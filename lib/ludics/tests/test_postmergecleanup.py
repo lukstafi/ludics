@@ -3,7 +3,8 @@
 ship-pr/scripts/test-post-merge-cleanup.sh drives the helper end to end in scratch repositories;
 these pin the logic underneath it one rule at a time -- bash's ``printf '%q'``, the option table,
 the shell's file primitives, the drive-letter classification of #147, the interactive ref
-transaction, the finishing command's credential stripping -- and the entry point's own contract.
+transaction, the base fast-forward's collision scan (#859), the finishing command's credential
+stripping -- and the entry point's own contract.
 """
 
 import io
@@ -318,6 +319,83 @@ class Transaction(unittest.TestCase):
             os.dup2(saved, 2)
             os.close(saved)
         self.assertFalse(ok)
+
+
+class FastForwardCollision(unittest.TestCase):
+    """The base owner's changed-path collision scan (#859): what stands on a changed path or an
+    ancestor of one, read from the owner's working tree, and nothing off those paths."""
+
+    def setUp(self) -> None:
+        self.owner = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.owner, ignore_errors=True)
+        self.git("init", "-q")
+        self.write("value", "base\n")
+        self.git("add", "value")
+        self.git("commit", "-q", "-m", "base")
+        self.base = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "-b", "next")
+        for name in ("drafts/plan.md", "notes.txt", "out", "kept/inner"):
+            self.write(name, "incoming\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "next")
+        self.cleanup = Cleanup()
+        self.cleanup.main = self.owner
+        self.cleanup.base = "master"
+        self.cleanup.remote_master = self.git("rev-parse", "HEAD")
+        self.git("checkout", "-q", "--detach", self.base)
+
+    def git(self, *args: str) -> str:
+        done = subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", self.owner, *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return done.stdout.strip()
+
+    def write(self, name: str, text: str) -> None:
+        path = os.path.join(self.owner, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def collision(self, changed_path: str) -> str:
+        return self.cleanup.fast_forward_collision(self.owner, changed_path)
+
+    def test_absent_and_tracked_paths_are_clear(self) -> None:
+        self.assertEqual(self.collision("notes.txt"), "")
+        self.assertEqual(self.collision("drafts/plan.md"), "")
+        self.assertEqual(self.collision("value"), "")
+
+    def test_untracked_data_off_the_path_is_not_read(self) -> None:
+        self.write("drafts/other.md", "mine\n")
+        self.write("unrelated.txt", "mine\n")
+        self.assertEqual(self.collision("drafts/plan.md"), "")
+        self.assertEqual(self.collision("notes.txt"), "")
+
+    def test_untracked_leaf_and_ancestor_file_collide(self) -> None:
+        self.write("notes.txt", "mine\n")
+        self.assertEqual(self.collision("notes.txt"), "notes.txt")
+        self.write("drafts", "mine\n")
+        self.assertEqual(self.collision("drafts/plan.md"), "drafts")
+
+    def test_an_ancestor_link_collides_and_is_not_followed(self) -> None:
+        elsewhere = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        os.symlink(elsewhere, os.path.join(self.owner, "drafts"))
+        self.assertEqual(self.collision("drafts/plan.md"), "drafts")
+
+    def test_a_directory_where_a_file_lands_names_its_first_entry(self) -> None:
+        self.write("out/keep", "mine\n")
+        self.assertEqual(self.collision("out"), "out/keep")
+        # A directory that stays one is the fast-forward's to write into.
+        self.write("kept/mine", "mine\n")
+        self.assertEqual(self.collision("kept/inner"), "")
+
+    def test_ignored_data_on_the_path_collides_too(self) -> None:
+        self.write(".git/info/exclude", "notes.txt\n")
+        self.write("notes.txt", "mine\n")
+        self.assertEqual(self.collision("notes.txt"), "notes.txt")
 
 
 class FinishingCommand(unittest.TestCase):
