@@ -1002,12 +1002,26 @@ controlled through the tools in your coordinator's file, never through those com
   would admit a launch onto the red. Merges are not frozen (roll-forward: a merge never waits on
   the base's tip); what lands meanwhile joins the span the next verdict covers. Nor does a PR
   whose own head shows that red, once the red has an owner (below): its worker merges over it as
-  ship-pr's *The override* says (ludics-lite#623). Then, in order:
+  ship-pr's *The override* says (ludics-lite#623). One red skips all of it, checked before the
+  halt: **a red that a later merge fixed**. When `git log --first-parent <red sha>..<tip>` holds
+  a merge whose PR names that failing test (or its issue) as the failure it fixes, the red is
+  attributed to that fix and verified at the tip instead: no halt and no rerun at the red SHA.
+  The loop's next run, on that backend for a GPU red, judges the tip, and starts at once since
+  the tip has moved. Only a red there takes the path below. A run that predates the merged fix
+  of a known flake is not a regression to re-prove (wave-20261102: a GPU-loop red at a SHA below
+  ahrefs/ocannl#1773's merge). Without such a merge, in order:
   1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed --repo <owner/repo>`,
-     without `--failed` when the report names no failed job, a startup failure; a local run,
-     once more at the same SHA under the halt's triage reservation, references/executions.md
-     *Adoption and halt*) to rule out a flake: #479-class tee timeouts happen on the macOS
-     runner. The rerun is a new attempt, so judge that attempt and not the red already read:
+     without `--failed` when the report names no failed job, a startup failure) to rule out a
+     flake: #479-class tee timeouts happen on the macOS runner. **A local cc-loop run reruns only
+     what failed** (the GPU loop's rerun is its own, below): each failing alias or test, three
+     times at the red SHA on the same box, as one slot-wrapped batch under a triage reservation the coordinator holds (references/executions.md
+     *Adoption and halt*), concluded before any triage owner reserves, since the halt's triage
+     has one owner. Three passes mean a flake, typically load on a box shared with workers'
+     batches (wave-20261102: a `device_init_deadline` timing claim on macbook-pro beside five
+     workers' batches, settled in three minutes). Then `resume-launches` at once: the base gate
+     still reads the loop's fail record at the red SHA, so nothing launches onto that tip, and
+     the loop's next run judges the current one. One failure is a regression, as a red CI rerun
+     is below. The CI rerun is a new attempt, so judge that attempt and not the red already read:
      once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
      await it with `pr-review.sh retry run watch <owner/repo>#<run id>`. Green, it was a flake:
      `resume-launches` on the integration loop's next green verdict, which is about the
@@ -1106,10 +1120,10 @@ controlled through the tools in your coordinator's file, never through those com
     it. The cc loop's local run may take the same calls, its request carrying `"integration":
     true`: yielding is how it finds a quiet box too.
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
-    rerun pending"`; one rerun at the same SHA on a box of that backend under the halt's
-    triage reservation (the same `tip-run` and pinned command, its request carrying
-    `triage_reason`); green, a
-    flake, `resume-launches`; red, attribution by `git log --first-parent <last green on that
+    rerun pending"` (a red that gates nothing may skip it: *On a regression*, below); one rerun
+    at the same SHA on a box of that backend under the halt's triage reservation (the same
+    `tip-run` and pinned command, its request carrying `triage_reason` while a halt stands);
+    green, a flake, `resume-launches`; red, attribution by `git log --first-parent <last green on that
     backend>..<red tip>` with one triage owner, as in the order above. The last green on a
     backend is the nearest commit below the red tip on its first-parent chain that a pass of
     that backend's loop judged, never just the newest pass (ludics-lite#602, above). Its
@@ -1131,6 +1145,20 @@ controlled through the tools in your coordinator's file, never through those com
   may starve the workers, so the loop does not start on a box a sweep lane holds (the sweep is
   checking it more thoroughly anyway), and a lane that starts while a loop run is on its box
   finds one token fewer for at most that run.
+
+  **A backend the loop has not covered.** Alternation needs both backends' boxes free at some
+  start. When one backend's boxes stay down or busy (outstanding workers' runs, which the loop
+  yields to), the loop runs only the other, and that backend's reds reach master unseen
+  (wave-20261102: CUDA only, all wave; the HIP red ahrefs/ocannl#1817, which a HIP run at
+  ahrefs/ocannl#1769's or #1788's merge would have caught, was found by a worker's sweep). So
+  once the loop has run twice on one backend since the other's newest run that ran (or since the
+  wave's first merge), that other backend is overdue, and the coordinator makes room for its run.
+  Down: it wakes minix (`wake-lab.sh --wait minix-amd-linux`) and asks the user to wake tuf. The
+  loop itself still wakes nothing. Busy: when the overdue backend's box next has no
+  outstanding record, the coordinator starts the loop run there before assigning that box's
+  next queued worker leg. That is the loop taking a worker's place in line, not pre-empting
+  one. A backend still uncovered at close-out goes in the wave summary with its uncovered span
+  (`<its newest pass>..<tip>`), for the next daily sweep.
 - **On a regression, stop the world - as a mechanism.** `fleet-worker.sh halt "<what
   regressed, who owns the fix>"` (already set by the integration loop's red at the tip; repeating
   it updates the reason and keeps the halt) makes every subsequent `launch` refuse until
@@ -1156,6 +1184,18 @@ controlled through the tools in your coordinator's file, never through those com
   master is verified again, and the wave
   resumes with its remaining tasks. `fleet-worker.sh halted` is the check for a coordinator
   resuming after an interruption.
+
+  **A red that gates nothing may skip the halt.** The halt keeps launches off a red that a gate
+  reads: a check in a PR's merge build, or a source of the base gate's verdict. A red in a check
+  neither reads, such as a GPU backend's test (GitHub CI never builds it and the GPU loop's
+  records are informative), holds no merge and no launch. A halt for it would still refuse every
+  reservation fleet-wide. The coordinator may then skip the halt and keep the rest: the notice to
+  every open wave PR, so a worker that meets the red cites it instead of bisecting, and one
+  triage owner launched as an ordinary worker. The base gate reads green, so it takes no
+  `--allow-red-base`, and its runs take ordinary reservations, since `triage_reason` needs a
+  halt. It halts once that stops holding: a worker reports a merge blocked on the red
+  (wave-20261102: ahrefs/ocannl#1817, a HIP golden that a worker's sweep found mid-sprint, was
+  owned without a halt).
 - **A pause is not a halt.** When the user pauses the wave (a token budget about to run out),
   a halt would refuse the workers' own reservations. Message each worker instead, through its
   transport's channel: commit, push what has passed its tests, start no run, stop its own review
@@ -1212,7 +1252,15 @@ controlled through the tools in your coordinator's file, never through those com
   news: when a merge changes a type, signature or format that open sibling PRs use (`gh pr
   diff` names it), comment on each of them (`pr-review.sh comment`) with the change and the
   merge SHA, before their CI finds it (lukstafi/ocannl-staging#1274 changed
-  `Scan_attempt.Unparsed` under siblings that matched it).
+  `Scan_attempt.Unparsed` under siblings that matched it). A merge that adds a scan (a
+  scanner, a lint, a text guard) is the same news, and a comment after it comes too late: each
+  open sibling is green on its own base, and the scan refuses it only on master
+  (lukstafi/ocannl-staging#1611 added a `Tn.label` compare, #1614 the scan refusing it; master
+  was red at 388e864a until #1626). So the brief of a task that adds a scan says: before
+  merging, run it on every open wave PR's head merged with the scan's branch (a detached
+  scratch worktree per head), and name each hit to that sibling, so the two land in an order
+  that leaves master green. A worker briefed without it gets that check from the coordinator
+  before its merge.
 - **Relay milestones** to the user as they land - merged PRs with one-line substance, not
   worker-status noise.
 
