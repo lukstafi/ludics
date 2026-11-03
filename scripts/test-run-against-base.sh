@@ -666,13 +666,15 @@ worktrees_clean "after an escaped holder"
 # has read every byte then sleeps on with no writer left) is released by the drain, which opens
 # the fifo and closes it again while tee waits. The stand-in is a tee that, once at EOF, opens its
 # fifo a second time and waits there for a writer to come and go: nothing but the drain's open
-# provides one. It logs each release, so a run that never used it cannot pass.
+# provides one. It logs each such wait, so a run that never used it cannot pass. The wait is an
+# exec'd cat that opens the fifo itself, so the drain's TERM on a timeout ends it (a shell blocked
+# in a redirection's open survives TERM, and would hold this suite's output pipe for good).
 mkdir -p "$TMP/lost-eof-bin"
 {
   printf '#!/bin/sh\n'
   printf '%s "$@" || exit\n' "$(command -v tee)"
-  printf '%s\n' 'cat <"${1%/*}/fifo" >/dev/null || exit'
-  printf 'echo released >>%s\n' "$TMP/lost-eof.log"
+  printf 'echo waiting >>%s\n' "$TMP/lost-eof.log"
+  printf '%s\n' 'exec cat "${1%/*}/fifo" >/dev/null'
 } >"$TMP/lost-eof-bin/tee"
 chmod +x "$TMP/lost-eof-bin/tee"
 rm -f "$TMP/lost-eof.log"
@@ -680,24 +682,24 @@ SECONDS=0
 out=$(cd "$R/scripts" && PATH="$TMP/lost-eof-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 RUN_AGAINST_BASE_TEE_DRAIN=10 "$RAB" test-link.sh 2>&1)
 rc=$?
 took=$SECONDS
-if [ "$rc" -eq 0 ] && [ "$(cat "$TMP/lost-eof.log" 2>/dev/null)" = released ] && [ "$took" -lt 10 ] \
+if [ "$rc" -eq 0 ] && [ "$(cat "$TMP/lost-eof.log" 2>/dev/null)" = waiting ] && [ "$took" -lt 10 ] \
   && grep -qF 'exit 0 on origin/main: 1 passed, 0 failed' <<<"$out" && ! grep -qF 'tee: ' <<<"$out"; then
   ok "a capture that lost its EOF is released by the drain's open of the fifo (${took}s)"
 else
-  ko "lost EOF: rc=$rc after ${took}s, releases [$(cat "$TMP/lost-eof.log" 2>/dev/null)] -- $out"
+  ko "lost EOF: rc=$rc after ${took}s, waits [$(cat "$TMP/lost-eof.log" 2>/dev/null)] -- $out"
 fi
 worktrees_clean "after a lost EOF"
-# ...and a batch's: its own capture and its mutant run's, one release each.
+# ...and a batch's: its own capture and its mutant run's, one wait each.
 printf '%s\n' 'lib.sh s/$/ # mutated/' >"$TMP/lost-eof.mutants"
 rm -f "$TMP/lost-eof.log"
 out=$(cd "$R/scripts" && PATH="$TMP/lost-eof-bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 RUN_AGAINST_BASE_TEE_DRAIN=10 "$RAB" test-toy.sh --mutants "$TMP/lost-eof.mutants" 2>&1)
 rc=$?
-if [ "$rc" -eq 1 ] && [ "$(grep -c '^released$' "$TMP/lost-eof.log" 2>/dev/null)" -eq 2 ] \
+if [ "$rc" -eq 1 ] && [ "$(grep -c '^waiting$' "$TMP/lost-eof.log" 2>/dev/null)" -eq 2 ] \
   && grep -qxF 'run-against-base: batch: 0 killed, 1 survived, 0 refused, of 1; survived: [1]' <<<"$out" \
   && ! grep -qF 'tee: ' <<<"$out"; then
   ok "...and so are a batch's capture and its mutant run's"
 else
-  ko "lost EOF in a batch: rc=$rc, releases [$(cat "$TMP/lost-eof.log" 2>/dev/null)] -- $out"
+  ko "lost EOF in a batch: rc=$rc, waits [$(cat "$TMP/lost-eof.log" 2>/dev/null)] -- $out"
 fi
 worktrees_clean "after a lost EOF in a batch"
 out=$(cd "$R/scripts" && TMPDIR="$HTMP" RUN_AGAINST_BASE_TEE_DRAIN=x "$RAB" test-toy.sh 2>&1)
