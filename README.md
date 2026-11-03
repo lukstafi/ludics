@@ -367,7 +367,12 @@ under `GITHUB_ACTIONS=true`, so CI always runs the whole suite; the full run bef
 stands. A suite hands its arguments to `run_tests "${tests[@]}" -- "$@"`, and a call without the
 `--` is refused, so a new suite cannot silently run whole when given case names. Every case `run_tests` is
 given must already be a defined function, or the run is refused before any case: PR #415 defined a
-case inside another case's body, which a full run reached but a subset could never select.
+case inside another case's body, which a full run reached but a subset could never select. A failed
+case does not end the run (#809): `run_tests` runs each case in a subshell of its own, so a failure
+is tallied, the cases after it still run and report, and the run closes with `FAILED: <n> of <m>
+cases: <case>...` on stderr and exits with the first failed case's status. Nothing a case sets in
+the shell reaches the next one; a case whose state the next case reads is declared `chained
+<case>`, runs in the suite's own shell, and its failure still ends the run there.
 
 To show that new fixtures FAIL on the base code — the negative control every issue-wave brief
 asks for — run `scripts/run-against-base.sh <suite-path> [options] [suite args...]`. It makes a
@@ -1322,7 +1327,8 @@ the constants `pr-review.sh` reads from the environment exactly once, when it is
 cannot pass `SHIP_PR_REVIEW_GRACE` to it and has to assign the constant, and the restore is the
 part that gets forgotten — a constant left retuned leaks into every case after it, which is a wrong
 result rather than a failure. `retune GRACE=1` remembers the value as sourced, refuses a name the
-script does not set, and `run_tests` puts every one of them back when the case ends. Run directly,
+script does not set, and `run_tests` puts every one of them back when the case ends (an isolated
+case's die with its subshell; a `chained` case's are restored). Run directly,
 `test-pr-review-lib.sh` is its own suite: throwaway suites that source it prove the guard refuses
 what it must and passes what it must, and a pair of cases proves a retuned constant is restored for
 the case after it. A control there has to be *shown* to fail, and the way to show it is to copy the
