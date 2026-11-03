@@ -838,7 +838,11 @@ else
   else
     ko "control: the escapee fixture did not stage -- $(cat "$d/log" 2>/dev/null)"
   fi
+  # The control's stop leaves the batch's session too: its `sleep 300`, the escapee's parent,
+  # would hold whatever the suite's caller handed it (a leg's lock, a slot) for five minutes.
+  bp=$(ps -o ppid= -p "${esc:-99999999}" 2>/dev/null | tr -d ' ')
   kill -9 "${esc:-99999999}" 2>/dev/null
+  case $bp in ''|*[!0-9]*|0|1) ;; *) kill -9 "$bp" 2>/dev/null ;; esac
 fi
 # A stop ended inside its grace once the wrapper's group is gone, the escapee left: a wait reads
 # RUNNING while it holds the lock (the marker names its group), not STOPPED, and a second stop ends
