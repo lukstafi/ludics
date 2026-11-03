@@ -136,13 +136,16 @@ does not tell us the target Unix username.
   `~/ocannl-staging`'s origin into the run's scratch directory, with only `benchmarks/` checked out,
   removed with that directory when the run ends however it ends. It is not a `git worktree` of the
   shared checkout, which a killed run would leave registered there. `<id>` is the box's
-  measurement-box ID, from `FLEET_LOCAL_BOX` (the endpoint the shared setup prompts for):
-  `rog-nv-linux` is `rog-nv`, `minix-amd-linux` `minix`, `tuf-amd-linux` `tuf`; any other endpoint
-  is not checked. The check reports and never repairs: each `GAP` line carries check-box's
+  measurement-box ID, which check-box itself derives from `FLEET_LOCAL_BOX` (the endpoint the
+  shared setup prompts for): `check-box.sh --canonical-box "$FLEET_LOCAL_BOX"` from the same tip
+  clone (ahrefs/ocannl#1433), so `rog-nv-linux` checks as `rog-nv` by OCANNL's table, and this
+  installer keeps no copy of it. A name that table does not map is passed on as itself, and
+  check-box's `--box` refuses one it does not declare. The check reports and never repairs: each `GAP` line carries check-box's
   `repair:` line, and nothing here acts on it. The standalone mode's exit status says how it
   ended: **0** provisioned and READY; **1** provisioning failed (an `ERROR:` line); **3**
-  provisioned, the check found a GAP; **4** provisioned, the check did not run (no measurement-box
-  ID, no fixture store, no tip to clone, or check-box's own usage/harness exit 2), the reason on a
+  provisioned, the check found a GAP; **4** provisioned, the check did not run (`FLEET_LOCAL_BOX`
+  unset, no fixture store, no tip to clone, a tip whose `--canonical-box` fails or answers anything
+  but one box name, or check-box's own usage/harness exit 2), the reason on a
   `Box check NOT RUN` line. The shared setup prints the same verdict and carries on.
 
 Existing repositories are checked for the expected origin and left untouched.
