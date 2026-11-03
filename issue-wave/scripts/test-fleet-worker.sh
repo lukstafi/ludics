@@ -2890,7 +2890,7 @@ expect "...while one at the rebound commit concludes" 0 "\"observed_sha\": \"$re
 # --observed-from: the checkout's HEAD, read on the execution host, is the observed_sha.
 jq -n '{request_id:"rv-ref", verdict:"pass", log:"/logs/x", evidence:"fixture run", handle:"fixture"}' > "$TMP/rv-obs.json"
 expect "--observed-from must name an absolute checkout" 2 "must be absolute" -- "${FWR[@]}" execution conclude "$(rv_done rv-ref -)" --observed-from "obs wt"
-expect "--observed-from refuses a payload SHA that is not the checkout's HEAD, naming both" 1 "observed_sha $good is not HEAD $head of $obs on testbox" -- \
+expect "--observed-from refuses a payload SHA that is not the checkout's HEAD, naming both" 1 "observed_sha $good is not HEAD $head of '$obs' on testbox" -- \
   "${FWR[@]}" execution conclude "$(rv_done rv-ref "$good")" --observed-from "$obs"
 expect "--observed-from refuses a HEAD GitHub does not have in the repository (another repository's checkout)" 1 "observed_sha $head is no commit of o/r" -- \
   env SHIM_GH_NO_COMMIT="$head" "${FWR[@]}" execution conclude "$TMP/rv-obs.json" --observed-from "$obs"
@@ -2944,10 +2944,10 @@ expect "a retry of a landed conclusion is the registry's harmless retry, whateve
 "${FWR[@]}" execution run "$(rv_req rv-bound origin/main testbox "$obs")" >/dev/null 2>&1 || ko "could not reserve rv-bound (setup)"
 jq -n '{request_id:"rv-bound", verdict:"pass", log:"/logs/x", evidence:"fixture run", handle:"fixture"}' > "$TMP/rv-bound.json"
 expect "a plain conclusion's --observed-from that is not the record's checkout is refused" 1 \
-  "EXECUTION REFUSED: --observed-from $TMP is not rv-bound's recorded checkout $obs on testbox" -- \
+  "EXECUTION REFUSED: --observed-from $TMP is not rv-bound's recorded checkout '$obs' on testbox" -- \
   "${FWR[@]}" execution conclude "$TMP/rv-bound.json" --observed-from "$TMP"
 jq '.remote_checkout = "/w/x"' "$TMP/rv-bound.json" > "$TMP/rv-bound-x.json"
-expect "...as is a payload whose remote_checkout is not the checkout read" 1 "the payload's remote_checkout /w/x is not --observed-from $obs" -- \
+expect "...as is a payload whose remote_checkout is not the checkout read" 1 "the payload's remote_checkout /w/x is not --observed-from '$obs'" -- \
   "${FWR[@]}" execution conclude "$TMP/rv-bound-x.json" --observed-from "$obs"
 [ "$(state_of rv-bound)" = launching ] && ok "...each refusal leaving it dispatched" || ko "a refusal changed rv-bound: $(state_of rv-bound)"
 expect "...and its own checkout concludes it, unchecked nowhere" 0 "\"remote_checkout\": \"$obs\"" -- \
@@ -2963,13 +2963,13 @@ bgd=$(bash "$BG" new "$TMP/bg runs/rv-pass"); bash "$BG" start "$bgd" -- true >/
 "${FWR[@]}" execution run "$(rv_req rv-bg origin/main testbox "$obs")" >/dev/null 2>&1 || ko "could not reserve rv-bg (setup)"
 expect "--from-bg-run refuses a --sha that resolves to no commit" 1 "EXECUTION REFUSED: --sha $typo is no commit of o/r" -- \
   env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --sha "$typo"
-expect "--from-bg-run --observed-from refuses a --sha that is not HEAD" 1 "--sha $good is not HEAD $head of $obs on testbox" -- \
+expect "--from-bg-run --observed-from refuses a --sha that is not HEAD" 1 "--sha $good is not HEAD $head of '$obs' on testbox" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --sha "$good" --observed-from "$obs"
 # THE CHECKOUT (ludics-lite#731): a record naming its checkout reads that one, and the evidence names no other.
 expect "--from-bg-run --observed-from refuses a checkout that is not the record's" 1 \
-  "EXECUTION REFUSED: --observed-from $TMP is not rv-bg's recorded checkout $obs on testbox" -- \
+  "EXECUTION REFUSED: --observed-from $TMP is not rv-bg's recorded checkout '$obs' on testbox" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --observed-from "$TMP"
-expect "--from-bg-run refuses a --checkout that is not --observed-from" 1 "EXECUTION REFUSED: --checkout /w/else is not --observed-from $obs; give one of them" -- \
+expect "--from-bg-run refuses a --checkout that is not --observed-from" 1 "EXECUTION REFUSED: --checkout /w/else is not --observed-from '$obs'; give one of them" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --observed-from "$obs" --checkout /w/else
 [ "$(state_of rv-bg)" = launching ] && ok "...each refusal leaving it dispatched" || ko "a refusal changed rv-bg: $(state_of rv-bg)"
 expect "--from-bg-run --observed-from concludes at the checkout's HEAD" 0 "\"observed_sha\": \"$head\"" -- \
@@ -3089,14 +3089,14 @@ expect "an unfinished run is still refused: no verdict to read" 1 "FROM-RUN REFU
 expect "...as is a run its runner says is still going" 1 "not a finished run" -- env SHIM_RUN_STATUS=3 "${FWH[@]}" execution conclude --standing-handback --request hb-usage --observed-from "$hwt" --evidence x --from-run "$hruns/dirty"
 expect "...as is a launch head that is no exact object ID (a truncated one would read as rewritten)" 1 "FROM-RUN REFUSED: .*/head holds '${hbase%??????}', not one commit ID" -- \
   hb hb-usage --evidence x --from-run "$hruns/truncated"
-expect "a --verdict the run record contradicts is refused" 1 "--verdict fail, but $hruns/dirty reads pass .*give one of them" -- hb hb-usage --evidence x --from-run "$hruns/dirty" --verdict fail
+expect "a --verdict the run record contradicts is refused" 1 "--verdict fail, but '$hruns/dirty' reads pass .*give one of them" -- hb hb-usage --evidence x --from-run "$hruns/dirty" --verdict fail
 expect "an observed HEAD GitHub does not have in the repository is refused" 1 "observed_sha $hhead is no commit of o/r" -- \
   env SHIM_GH_NO_COMMIT="$hhead" "${FWH[@]}" execution conclude --standing-handback --request hb-usage --observed-from "$hwt" --evidence x --verdict pass
 # THE CHECKOUT (ludics-lite#731): on 2026-10-18 a standing record was concluded off another worker's
 # worktree. A sibling worktree of the same repository at the same commit is still another checkout.
 hsib="$TMP/handback sibling wt"; git -C "$hwt" worktree add -q --detach "$hsib" HEAD
 expect "a sibling worktree at the same commit is not the reservation's checkout, refused before it is read" 1 \
-  "^EXECUTION REFUSED: --observed-from $hsib is not hb-usage's recorded checkout $hwt on testbox .*nothing concluded$" -- \
+  "^EXECUTION REFUSED: --observed-from '$hsib' is not hb-usage's recorded checkout '$hwt' on testbox .*nothing concluded$" -- \
   hb hb-usage --observed-from "$hsib" --evidence x --verdict pass
 expect "...and so is the checkout's parent" 1 "is not hb-usage's recorded checkout" -- hb hb-usage --observed-from "$TMP" --evidence x --verdict pass
 [ "$(hstate hb-usage)" = launching ] && ok "every refusal left the standing record dispatched" || ko "a refusal changed hb-usage: $(hstate hb-usage)"

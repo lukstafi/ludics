@@ -43,6 +43,16 @@ THE CO-TENANT EVIDENCE (ludics-lite#566): a conclusion of a MEASUREMENT, in any 
 gets a summary of the GPU co-tenant record its ``execution hold --request`` left on the execution
 host (``cotenants.py``) appended to its evidence, read there by ``GPU_RECORD``. Nothing else is read,
 and a ``not-launched`` conclusion, which describes no run, reads nothing.
+
+THE PATHS (ludics#756): a path this module's refusals, warnings and usage deaths name -- a checkout,
+a run directory or a file in it, a worktree, a script or payload file -- is printed through
+``shown`` (``shlex.quote``: bare when it needs no quoting, else one single-quoted shell word), so it
+reads as one word and pastes into a shell, as THE LEFTOVER WARNING's did first (ludics-lite#739).
+The far side ``OBSERVED_FROM`` prints facts and Python words its refusals, so the rule has one
+writer. Its boundary: text a payload carries (evidence, ``remote_checkout``) is written as it was,
+since a retry must compose the same payload; ``--from-bg-run``'s refusals are not read here yet;
+and the other verbs keep their own lines (``execution leg``'s far side, ``tip-run``'s, the
+registry's, ``execution slot``'s), but for leg.py's recorded-checkout refusal, THE CHECKOUT's twin.
 """
 
 import json
@@ -104,7 +114,7 @@ def registry_source() -> str:
                 return f.read()
     except OSError:
         pass
-    die(f"execution: missing helper {REGISTRY}")
+    die(f"execution: missing helper {shown(REGISTRY)}")
 
 
 def listing(cfg: Config, waiter: dict[str, Any] | None = None) -> Done:
@@ -262,13 +272,13 @@ printf 'said=%s\n' "$said"
 
 # Far side of `--observed-from <checkout>`, on the execution host: the checkout's HEAD, the commit a
 # conclusion records instead of a SHA copied by hand (ludics-lite#561). Arg: the checkout. Prints one
-# `head=` line, or one OBSERVED-FROM REFUSED line; then, for a checkout that is not clean, one
-# `dirty=` line (``observed_head``'s warning, ludics-lite#732): the count of `git status --porcelain`
-# entries, or `unreadable`.
+# `head=` line, or, exiting 1, one `checkout=` line (`missing`: no such directory; `headless`: no
+# HEAD to read), which ``observed_head`` words as its refusal (THE PATHS); then, for a checkout that
+# is not clean, one `dirty=` line (``observed_head``'s warning, ludics-lite#732): the count of
+# `git status --porcelain` entries, or `unreadable`.
 OBSERVED_FROM = r"""co="$1"
-refuse() { echo "OBSERVED-FROM REFUSED: $*"; exit 1; }
-[ -d "$co" ] || refuse "no checkout $co on $BOX"
-head=$(git -C "$co" rev-parse --verify -q 'HEAD^{commit}') || refuse "cannot read HEAD of $co on $BOX (not a git checkout, or no commit yet)"
+[ -d "$co" ] || { printf 'checkout=missing\n'; exit 1; }
+head=$(git -C "$co" rev-parse --verify -q 'HEAD^{commit}') || { printf 'checkout=headless\n'; exit 1; }
 printf 'head=%s\n' "$head"
 if left=$(git --no-optional-locks -C "$co" status --porcelain 2>/dev/null); then
   [ -z "$left" ] || printf 'dirty=%s\n' "$(printf '%s\n' "$left" | grep -c '')"
@@ -312,6 +322,11 @@ class Refusal:
 type Conclusion = Payload | Refusal
 
 SHA40 = revision.SHA40
+
+
+def shown(path: str) -> str:
+    """THE PATHS (the header): ``path`` as a refusal or warning prints it."""
+    return shlex.quote(path)
 
 
 def facts_of(text: str, key: str) -> str:
@@ -396,27 +411,27 @@ def run_unfinished(facts: dict[str, str], run_dir: str, box: str) -> Refusal | N
     record file missing, an exit that is no status, a run still going) or a malformed record."""
     pair, launched = facts.get("pair"), facts.get("launched", "")
     if facts["dir"] == "0":
-        why = f"no run directory {run_dir} on {box}"
+        why = f"no run directory {shown(run_dir)} on {box}"
     elif "missing" in facts:
-        why = (f"{run_dir} has no {facts['missing']} (the run is unfinished, died without a verdict, or is not"
+        why = (f"{shown(run_dir)} has no {facts['missing']} (the run is unfinished, died without a verdict, or is not"
                " a test-run.sh record)")
     elif not re.fullmatch(r"[0-9]+", facts["exit"]):
-        why = f"{run_dir}/exit holds '{facts['exit']}', not a status"
+        why = f"{shown(run_dir + '/exit')} holds '{facts['exit']}', not a status"
     elif not facts["wt"]:
-        why = f"{run_dir}/wt names no worktree: a malformed record"
+        why = f"{shown(run_dir + '/wt')} names no worktree: a malformed record"
     elif facts["runner"] not in ("none", "0"):
-        why = f"tools/test-run.sh status {run_dir} exit {facts['runner']}: not a finished run"
+        why = f"tools/test-run.sh status {shown(run_dir)} exit {facts['runner']}: not a finished run"
     elif facts["alive"]:
-        why = f"supervisor pid {facts['alive']} of {run_dir} is still alive"
+        why = f"supervisor pid {facts['alive']} of {shown(run_dir)} is still alive"
     elif pair == "irregular":
-        why = f"{run_dir}/head or {run_dir}/dirty is not a regular file: a malformed record"
+        why = f"{shown(run_dir + '/head')} or {shown(run_dir + '/dirty')} is not a regular file: a malformed record"
     elif pair == "head":
-        why = f"{run_dir} has a head but no dirty: a malformed record (test-run.sh writes dirty first, so both or neither)"
+        why = f"{shown(run_dir)} has a head but no dirty: a malformed record (test-run.sh writes dirty first, so both or neither)"
     elif pair == "dirty":
-        why = f"{run_dir} has a dirty but no head: a malformed record (test-run.sh writes head after dirty, so both or neither)"
+        why = f"{shown(run_dir)} has a dirty but no head: a malformed record (test-run.sh writes head after dirty, so both or neither)"
     elif pair == "both" and not revision.OBJECT_ID.fullmatch(launched):
         # One exact object ID, 40 or 64 hex digits: a truncated one would read as a rewritten commit.
-        why = f"{run_dir}/head holds '{launched}', not one commit ID: a malformed record"
+        why = f"{shown(run_dir + '/head')} holds '{launched}', not one commit ID: a malformed record"
     else:
         return None
     return Refusal(f"FROM-RUN REFUSED: {why}", 1)
@@ -431,17 +446,17 @@ def from_run_refusal(facts: dict[str, str], run_dir: str, box: str, sha: str) ->
         return unfinished
     wt, launched, n = facts["wt"], facts["launched"], facts["dirty"]
     if facts["gone"] == "1":
-        why = f"recorded worktree {wt} is gone"
+        why = f"recorded worktree {shown(wt)} is gone"
     elif facts["pair"] == "both" and launched != sha:
-        why = (f"{run_dir}/head records {launched} as the revision launched, but the reported revision is {sha}:"
+        why = (f"{shown(run_dir + '/head')} records {launched} as the revision launched, but the reported revision is {sha}:"
                f" this run is evidence for {launched}, not {sha}")
     elif facts["pair"] == "both" and n != "0":
-        why = (f"{run_dir}/dirty lists {n} uncommitted path(s) at launch: the run tested {sha} plus those edits,"
+        why = (f"{shown(run_dir + '/dirty')} lists {n} uncommitted path(s) at launch: the run tested {sha} plus those edits,"
                f" so it is not evidence for {sha}; conclude it with a JSON payload whose evidence says so")
     elif not facts["whead"]:
-        why = f"cannot read HEAD of {wt}"
+        why = f"cannot read HEAD of {shown(wt)}"
     elif facts["known"] != "1":
-        why = f"{wt} does not contain the reported revision {sha}"
+        why = f"{shown(wt)} does not contain the reported revision {sha}"
     else:
         return None
     return Refusal(f"FROM-RUN REFUSED: {why}", 1)
@@ -459,7 +474,7 @@ def conclude_from_run(cfg: Config, run_dir: str, request: str, box: str, sha: st
         return refused
     code, wt, head, record = facts["exit"], facts["wt"], facts["whead"], facts["pair"]
     if not SHA40.fullmatch(head):
-        return Refusal(f"FROM-RUN REFUSED: unreadable HEAD {head!r} of {wt} from {box}", 1)
+        return Refusal(f"FROM-RUN REFUSED: unreadable HEAD {head!r} of {shown(wt)} from {box}", 1)
     # test-run.sh's exit vocabulary: 142 the cap, 129/130/137/143 a signal; every other nonzero
     # (dune's own 1, a refused invocation, 126/127 toolchain) is a failed run.
     verdict = run_verdict(code, timeout_codes=("142",))
@@ -695,10 +710,15 @@ def observed_head(cfg: Config, box: str, checkout: str) -> str | Refusal:
         return Refusal(f"OBSERVED-FROM UNREACHABLE {box}: nothing concluded", 4)
     facts = substitution(done.out)
     if done.rc != 0:
-        return Refusal(facts or f"OBSERVED-FROM REFUSED: exit {done.rc} reading {checkout} on {box}", 1)
+        why = {"missing": f"no checkout {shown(checkout)} on {box}",
+               "headless": f"cannot read HEAD of {shown(checkout)} on {box} (not a git checkout, or no commit yet)"}
+        said = facts_of(facts, "checkout")
+        if done.rc == 1 and said in why:
+            return Refusal(f"OBSERVED-FROM REFUSED: {why[said]}", 1)
+        return Refusal(facts or f"OBSERVED-FROM REFUSED: exit {done.rc} reading {shown(checkout)} on {box}", 1)
     head = facts_of(facts, "head")
     if not revision.OBJECT_ID.fullmatch(head):
-        return Refusal(f"OBSERVED-FROM REFUSED: unreadable HEAD of {checkout} from {box}: {facts}", 1)
+        return Refusal(f"OBSERVED-FROM REFUSED: unreadable HEAD of {shown(checkout)} from {box}: {facts}", 1)
     dirty_warning(box, checkout, facts_of(facts, "dirty"))
     return head
 
@@ -717,7 +737,7 @@ def dirty_warning(box: str, checkout: str, dirty: str) -> None:
     if not dirty:
         return
     count = "its status could not be read" if dirty == "unreadable" else f"it has {dirty} uncommitted path(s)"
-    where = shlex.quote(checkout)
+    where = shown(checkout)
     sys.stdout.flush()
     sys.stderr.write(
         f"OBSERVED-FROM WARNING: {where} on {box} is not clean: {count} (`git -C {where} status` there)."
@@ -771,8 +791,8 @@ def checkout_refusal(record: dict[str, Any], host: str, checkout: str) -> Refusa
     if not bound or same_checkout(bound, checkout):
         return None
     return Refusal(
-        f"EXECUTION REFUSED: --observed-from {checkout} is not {jq_text(record.get('request_id'))}'s recorded"
-        f" checkout {bound} on {host} (ludics-lite#731: a conclusion reads its own worker's checkout); nothing concluded",
+        f"EXECUTION REFUSED: --observed-from {shown(checkout)} is not {jq_text(record.get('request_id'))}'s recorded"
+        f" checkout {shown(bound)} on {host} (ludics-lite#731: a conclusion reads its own worker's checkout); nothing concluded",
         1,
     )
 
@@ -925,7 +945,7 @@ def endpoint_map(cfg: Config) -> str | None:
     if not os.path.isfile(wake):
         err(
             "EXECUTION WARNING: no endpoint map ("
-            + wake
+            + shown(wake)
             + " is missing): FLEET_BOXES is not checked for two aliases of one box, and a measurement"
             " is not checked against its box's lab lane lock"
         )
@@ -933,7 +953,7 @@ def endpoint_map(cfg: Config) -> str | None:
     done = run(["bash", wake, "endpoint-map"], capture=True)
     if done.rc != 0:
         err(
-            f"EXECUTION REFUSED: {wake} endpoint-map failed (above), so FLEET_BOXES cannot be checked"
+            f"EXECUTION REFUSED: {shown(wake)} endpoint-map failed (above), so FLEET_BOXES cannot be checked"
             " for two aliases of one box"
         )
         return None
@@ -1110,15 +1130,15 @@ def checked_evidence(cfg: Config, text: str, observed_from: str, action: str) ->
         if "observed_sha" in data and sha != head:
             cli.say(
                 f"EXECUTION REFUSED: the payload's observed_sha {jq_text(sha)} is not HEAD {head} of"
-                f" {observed_from} on {host}; drop it and let --observed-from record the checkout's"
+                f" {shown(observed_from)} on {host}; drop it and let --observed-from record the checkout's"
             )
             raise cli.Exit(1)
         named = data.get("remote_checkout")
         if "remote_checkout" in data and not (isinstance(named, str) and same_checkout(named, observed_from)):
             # THE CHECKOUT: the evidence names the checkout it was read off, not another.
             cli.say(
-                f"EXECUTION REFUSED: the payload's remote_checkout {jq_text(named)} is not --observed-from"
-                f" {observed_from}; drop it and let --observed-from record the checkout; nothing concluded"
+                f"EXECUTION REFUSED: the payload's remote_checkout {shown(jq_text(named))} is not --observed-from"
+                f" {shown(observed_from)}; drop it and let --observed-from record the checkout; nothing concluded"
             )
             raise cli.Exit(1)
         # Read off a checkout, the SHA has no typo, but the checkout may be another repository's.
@@ -1324,12 +1344,12 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
             return concluded(head)
         observed_from = spelled(record, observed_from)
         if sha and sha != head:
-            cli.say(f"EXECUTION REFUSED: --sha {sha} is not HEAD {head} of {observed_from} on {host}; give one of them")
+            cli.say(f"EXECUTION REFUSED: --sha {sha} is not HEAD {head} of {shown(observed_from)} on {host}; give one of them")
             raise cli.Exit(1)
         named = values.get("--checkout", "")
         if named and not same_checkout(named, observed_from):
             # THE CHECKOUT: the evidence names the checkout it was read off, not another.
-            cli.say(f"EXECUTION REFUSED: --checkout {named} is not --observed-from {observed_from}; give one of them;"
+            cli.say(f"EXECUTION REFUSED: --checkout {shown(named)} is not --observed-from {shown(observed_from)}; give one of them;"
                     " nothing concluded")
             raise cli.Exit(1)
         sha, what = head, "observed_sha"
@@ -1422,7 +1442,7 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
             return concluded(read)
         if verdict and verdict != read[0]:
             cli.say(
-                f"EXECUTION REFUSED: --verdict {verdict}, but {run_dir} reads {read[0]} ({read[1]});"
+                f"EXECUTION REFUSED: --verdict {verdict}, but {shown(run_dir)} reads {read[0]} ({read[1]});"
                 " give one of them; nothing concluded"
             )
             raise cli.Exit(1)
@@ -1505,7 +1525,7 @@ def window_lines(args: list[str], deadline: int | None = None) -> list[dict[str,
         with open(args[2], encoding="utf-8", errors="surrogateescape") as f:
             text = f.read()
     except OSError:
-        die(f"execution window: {args[2]} is not a JSON reservation")
+        die(f"execution window: {shown(args[2])} is not a JSON reservation")
     # jq's reading: a stream of JSON values, one wrapped line each. No value prints nothing, and
     # several print several lines; the registry refuses either payload (exit 1). Only text that
     # does not parse is the usage refusal (exit 2).
@@ -1520,7 +1540,7 @@ def window_lines(args: list[str], deadline: int | None = None) -> list[dict[str,
         try:
             request, position = decoder.raw_decode(text, position)
         except ValueError:
-            die(f"execution window: {args[2]} is not a JSON reservation")
+            die(f"execution window: {shown(args[2])} is not a JSON reservation")
         lines.append({"box": args[1], "request": request} | ({} if deadline is None else {"deadline": deadline}))
     return lines
 

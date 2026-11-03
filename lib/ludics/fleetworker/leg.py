@@ -1049,7 +1049,8 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     bound = execution.recorded_checkout(record)
     if bound and bound.rstrip("/") != worktree.rstrip("/"):
         host = execution.jq_text(execution.field(record, "request", "execution_host"))
-        return refused(f"--worktree {worktree} is not {request}'s recorded checkout {bound} on {host}"
+        return refused(f"--worktree {execution.shown(worktree)} is not {request}'s recorded checkout"
+                       f" {execution.shown(bound)} on {host}"
                        " (ludics-lite#749: a leg moves only its own record's worktree); nothing ran")
     kind = execution.jq_text(execution.field(record, "request", "kind"))
     if hold and kind != "measurement":
