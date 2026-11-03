@@ -12,7 +12,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from collections.abc import Sequence
@@ -27,6 +26,7 @@ from ludics.prreview.shtext import encode_ref, tab_fields
 from ludics.prreview.clock import FuncClock
 from ludics.prreview.budget import Budget
 from ludics.prreview.core import Config, GhRefusedOwn, GhSession
+from ludics.tests import fake
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 ROOT = os.path.dirname(LIB)
@@ -1048,52 +1048,22 @@ class LastGreen(unittest.TestCase):
                 self.assertEqual(gh.asked, [])
 
 
-_FAKE_GH = r'''
-import json, os, subprocess, sys
-here = os.path.dirname(os.path.abspath(__file__))
-args = sys.argv[1:]
-with open(os.path.join(here, "calls.log"), "a", encoding="utf-8") as log:
-    log.write(" ".join(args) + "\n")
-endpoint, jq, i = "", "", 1
-while i < len(args):
-    a = args[i]
-    if a in ("-H", "-X", "--jq"):
-        if a == "--jq":
-            jq = args[i + 1]
-        i += 2
-        continue
-    if not a.startswith("-") and not endpoint:
-        endpoint = a
-    i += 1
-with open(os.path.join(here, "answers.json"), encoding="utf-8") as f:
-    answers = json.load(f)
-if args[:1] != ["api"] or endpoint not in answers:
-    sys.stderr.write(f"gh: no fixture for {endpoint} (HTTP 404)\n")
-    sys.exit(1)
-body = answers[endpoint]
-if jq:
-    done = subprocess.run(["jq", "-r", jq], input=body, capture_output=True, text=True)
-    sys.stdout.write(done.stdout)
-    sys.stderr.write(done.stderr)
-    sys.exit(done.returncode)
-sys.stdout.write(body + "\n")
-'''
-
-
 class EndToEnd(unittest.TestCase):
+    """tests/fake.py's gh, routed by the endpoint after ``api`` (one whole argument) and printing
+    each answer through the call's ``--jq``, as gh does; an endpoint with no answer is a 404."""
+
     def setUp(self) -> None:
-        self.dir = os.path.realpath(tempfile.mkdtemp(prefix="ludics-base-test."))
-        with open(os.path.join(self.dir, "gh"), "w", encoding="utf-8") as f:
-            f.write(f"#!{sys.executable}\n{_FAKE_GH}")
-        os.chmod(os.path.join(self.dir, "gh"), 0o755)
+        self.gh = fake.FakeTool("gh")
+        self.dir = self.gh.dir
+        self.answer({})
 
     def tearDown(self) -> None:
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def answer(self, answers: dict[str, Answer]) -> None:
-        plain = {k: v for k, v in answers.items() if isinstance(v, str)}
-        with open(os.path.join(self.dir, "answers.json"), "w", encoding="utf-8") as f:
-            json.dump(plain, f)
+        self.gh.route(*((fake.When(prefix=("api",), has=(endpoint,)), fake.Answer(stdout=body + "\n", jq=True))
+                        for endpoint, body in answers.items() if isinstance(body, str)),
+                      otherwise=fake.Answer(rc=1, stderr="gh: no fixture (HTTP 404)\n"))
 
     def run_cmd(self, entry: list[str], *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
         env = {k: v for k, v in os.environ.items()
@@ -1146,9 +1116,8 @@ class EndToEnd(unittest.TestCase):
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertIn(f"o/r main: green (tip {C[:8]}; ci judged by PR #7's head run"
                               " (roll-forward rule))", done.stdout)
-                with open(os.path.join(self.dir, "calls.log"), encoding="utf-8") as log:
-                    self.assertIn(f"repos/o/r/commits/{H}/check-runs", log.read(),
-                                  "the gate read the head's checks through the gh on PATH")
+                self.assertTrue(any(f"repos/o/r/commits/{H}/check-runs" in " ".join(c) for c in self.gh.calls()),
+                                "the gate read the head's checks through the gh on PATH")
                 self.assertIn(f"(roll-forward rule): o/r#7 @{H[:8]}: green", done.stdout)
 
 

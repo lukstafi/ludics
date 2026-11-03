@@ -1,6 +1,6 @@
 """``pr-review.sh watch`` and ``retry run watch``: the pieces whose answers are jq's or bash's, and the
 production path end to end (``scripts/py -m ludics.prreview`` and pr-review.sh's ``main``, which
-execs it) with a fake gh BINARY that answers by endpoint.
+execs it) with a fake gh BINARY (tests/fake.py) that answers by endpoint.
 
 The fixture suites (ship-pr/scripts/test-pr-review-watch.sh and the watch cases of
 test-pr-review-status.sh) pin the command's behaviour through the shell bridge; these pin the
@@ -43,6 +43,7 @@ from ludics.prreview.poll import (
     short,
 )
 from ludics.prreview.checkruns import conclusion_class
+from ludics.tests.fake import Answer, FakeTool, When
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 ROOT = os.path.dirname(LIB)
@@ -198,47 +199,13 @@ class Pieces(unittest.TestCase):
 
 # --- the production path ------------------------------------------------------------------------------
 
-_FAKE_GH = """\
-import json, os, sys
-here = os.path.dirname(os.path.abspath(__file__))
-args = sys.argv[1:]
-with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
-    log.write(json.dumps(args) + "\\n")
-with open(os.path.join(here, "answers.json"), encoding="utf-8") as f:
-    answers = json.load(f)
-endpoint = ""
-skip = False
-for i, a in enumerate(args[1:], 1):
-    if skip:
-        skip = False
-        continue
-    if a in ("-X", "-f", "-F", "--jq", "--repo", "--json"):
-        skip = True
-        continue
-    if a.startswith("-"):
-        continue
-    endpoint = a
-    break
-key = " ".join(args[:2]) if args[0] == "run" else endpoint
-a = answers.get(key)
-if a is None:
-    sys.stderr.write("fake gh: no answer for " + key + "\\n")
-    sys.exit(1)
-sys.stdout.write(a.get("stdout", ""))
-sys.stderr.write(a.get("stderr", ""))
-sys.exit(a.get("rc", 0))
-"""
-
-
 class EndToEnd(unittest.TestCase):
-    """A fake gh first on PATH, answering by endpoint (already in the shape --jq would print)."""
+    """tests/fake.py's gh first on PATH, answering by endpoint (already in the shape --jq would print)."""
 
     def setUp(self) -> None:
-        self.dir = os.path.realpath(tempfile.mkdtemp(prefix="ludics-watch-test."))
-        gh = os.path.join(self.dir, "gh")
-        with open(gh, "w", encoding="utf-8") as f:
-            f.write(f"#!{sys.executable}\n{_FAKE_GH}")
-        os.chmod(gh, 0o755)
+        self.gh = FakeTool("gh")
+        self.dir = self.gh.dir
+        self.answer({})
         self.clock = os.path.join(self.dir, "clock")
         with open(self.clock, "w") as f:
             f.write("1790000000\n")
@@ -248,16 +215,15 @@ class EndToEnd(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def answer(self, answers: dict[str, dict[str, Json]]) -> None:
-        with open(os.path.join(self.dir, "answers.json"), "w", encoding="utf-8") as f:
-            json.dump(answers, f)
+    def answer(self, answers: dict[str, dict[str, str | int]]) -> None:
+        """Each key is an endpoint (one whole argument of the call) or a ``run <subcommand>``."""
+        self.gh.route(*((When(prefix=tuple(key.split(" "))) if key.startswith("run ") else When(has=(key,)),
+                         Answer(rc=int(a.get("rc", 0)), stdout=str(a.get("stdout", "")), stderr=str(a.get("stderr", ""))))
+                        for key, a in answers.items()),
+                      otherwise=Answer(rc=1, stderr="fake gh: no answer\n"))
 
     def calls(self) -> list[list[str]]:
-        try:
-            with open(os.path.join(self.dir, "calls.jsonl"), encoding="utf-8") as f:
-                return [json.loads(line) for line in f]
-        except FileNotFoundError:
-            return []
+        return self.gh.calls()
 
     def run_cmd(self, entry: list[str], *args: str, **env: str) -> subprocess.CompletedProcess[str]:
         e = dict(os.environ)
@@ -321,7 +287,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual((done.returncode, done.stderr), (1, "pr-review.sh: 1: usage: watch <pr> [watermark] [--no-nudge]\n"))
 
     def test_the_run_await_through_retry(self) -> None:
-        cases: tuple[tuple[dict[str, Json], int, str], ...] = (
+        cases: tuple[tuple[dict[str, str | int], int, str], ...] = (
             ({"stdout": "completed\tsuccess\n"}, 0, "run 5 in o/r: success"),
             ({"stdout": "completed\tfailure\n"}, 1, "the run FAILED"),
             ({"stdout": "completed\tcancelled\n"}, 4, "stopped, not judged"),
