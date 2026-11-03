@@ -721,6 +721,80 @@ class AdvisoryRed(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("base: --advisory-red takes a file", err)
 
+    def test_a_path_in_a_work_tree_or_a_file_it_never_wrote_is_refused_before_any_read(self) -> None:
+        """#704: a coordinator passed the checkout's own ``.github/ship-pr-advisory-checks`` and the
+        green replaced it with ``[]``. The flag names an OUTPUT; such a path is exit 2, unwritten,
+        with nothing asked of the API."""
+        with tempfile.TemporaryDirectory() as d:
+            tree = os.path.join(d, "checkout")
+            os.makedirs(os.path.join(tree, ".github"))
+            os.makedirs(os.path.join(tree, ".git"))
+            listed = os.path.join(tree, ".github", "ship-pr-advisory-checks")
+            os.makedirs(os.path.join(d, "linked", "sub"))
+            with open(os.path.join(d, "linked", ".git"), "w", encoding="utf-8") as f:
+                f.write("gitdir: /elsewhere\n")  # a linked worktree's or a submodule's .git is a file
+            other = os.path.join(d, "notes.txt")
+            os.symlink(os.path.join(d, "fresh.json"), os.path.join(d, "link.json"))
+            cases = [(listed, ADVISORY, "inside the git work tree"),
+                     (os.path.join(tree, "new.json"), None, "inside the git work tree"),
+                     (os.path.join(tree, "old.json"), "[]\n", "inside the git work tree"),
+                     (os.path.join(d, "linked", "sub", "out.json"), None, "inside the git work tree"),
+                     (other, "keep me\n", "other than a JSON array"),
+                     (os.path.join(d, "obj.json"), '{"a": 1}', "other than a JSON array"),
+                     (os.path.join(d, "bin.json"), b"\xff\xfe", "not UTF-8 text"),
+                     (d, None, "not a regular file"),
+                     (os.path.join(d, "link.json"), None, "not a regular file")]
+            for path, text, why in cases:
+                if isinstance(text, bytes):
+                    with open(path, "wb") as fb:
+                        fb.write(text)
+                elif text is not None:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(text)
+                with self.subTest(path=os.path.relpath(path, d)):
+                    rc, out, err, gh = base_run(self._world(), ["main", "--wait=900", "--advisory-red", path])
+                    self.assertEqual(rc, 2, out + err)
+                    self.assertIn("--advisory-red names the file base WRITES", err)
+                    self.assertIn(why, err)
+                    self.assertEqual(gh.asked, [], "refused before any read")
+                    if isinstance(text, str):
+                        with open(path, encoding="utf-8") as f:
+                            self.assertEqual(f.read(), text, "left as it was")
+                    elif text is None and path not in (d, os.path.join(d, "link.json")):
+                        self.assertFalse(os.path.lexists(path), "not created")
+            self.assertFalse(os.path.lexists(os.path.join(d, "fresh.json")), "the symlink's target untouched")
+
+    def test_a_blank_or_array_file_outside_a_work_tree_is_written(self) -> None:
+        """What the gate stages (a blank line) and what this flag wrote before (an array) are taken."""
+        for prior in ("\n", '[{"workflow": "ci"}]\n'):
+            with self.subTest(prior=prior), tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "advisory-red.json")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(prior)
+                rc, out, err, _ = base_run(self._world(), ["main", "--wait=900", "--advisory-red", path],
+                                           clock=FakeClock())
+                self.assertEqual(rc, 0, out + err)
+                with open(path, encoding="utf-8") as f:
+                    self.assertEqual([r["job"] for r in json.load(f)], ["bash 3.2 suites, a (macos)"])
+
+    def test_a_path_that_turned_bad_during_the_wait_is_not_written(self) -> None:
+        """Checked again at the write: the wait can last minutes, and something else may have put
+        a file there meanwhile. Exit 3 -- the green is not taken -- and the file is left alone."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "advisory-red.json")
+            class Meddled(FakeClock):
+                def _sleep(self, seconds: float) -> None:
+                    super()._sleep(seconds)
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write("not ours\n")
+            rc, out, err, _ = base_run(self._world(), ["main", "--wait=900", "--advisory-red", path],
+                                       clock=Meddled())
+            self.assertEqual(rc, 3, out + err)
+            self.assertIn("refusing to write --advisory-red's file", err)
+            self.assertIn("NOT 'green'", err)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), "not ours\n")
+
 
 def job(name: str, concl: str | None) -> dict[str, object]:
     """A job as the API serves it: an unfinished one has no conclusion and no completion time."""

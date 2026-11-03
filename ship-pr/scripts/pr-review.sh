@@ -260,10 +260,13 @@
 #                                          # the tip by a NAMED source or not at all (ludics-lite
 #                                          # #401): the merged PR's head run, or a coordinator's
 #                                          # [--integration-records <file>] (fleet-worker gate)
-#                                          # [--advisory-red <file>] (the gate's): a workflow red
-#                                          # only in jobs .github/ship-pr-advisory-checks names
-#                                          # is not red; those jobs are written to <file>; and
-#                                          # the interim judges by that list too (#659)
+#                                          # [--advisory-red <out-file>] (the gate's; base WRITES
+#                                          # it): a workflow red only in jobs the default
+#                                          # branch's .github/ship-pr-advisory-checks names is
+#                                          # not red; those jobs are written to <out-file>; and
+#                                          # the interim judges by that list too (#659). A path
+#                                          # in a git work tree, or an existing file that is not
+#                                          # blank or a JSON array, is refused (#704)
 #                                          # --interim: a tip whose own push run is in flight is
 #                                          # green by a NAMED source meanwhile (the merged PR's
 #                                          # head run), never the tip's own verdict; opt-in, for
@@ -800,10 +803,12 @@ main() {
   pr-review.sh base [owner/name] [branch] [--wait]  # is the base branch's CI green? (start of
                                              # work; --wait = post-merge integration read;
                                              # --integration-records <file>: fleet-worker gate's;
-                                             # --advisory-red <file>: the gate's too — a run red
-                                             # only in jobs the repository's advisory file names
-                                             # is not red, and its jobs go to <file>; the
-                                             # interim judges by that file too;
+                                             # --advisory-red <out-file>: the gate's too, and
+                                             # base WRITES it — a run red only in jobs the
+                                             # repository's advisory file names is not red, and
+                                             # its jobs go to <out-file> (never a path in a
+                                             # checkout: refused, #704); the
+                                             # interim judges by that list too;
                                              # --interim: a named green while the tip's run is in
                                              # flight — the gate's and the base watch's, never
                                              # the integration loop's)
