@@ -272,6 +272,12 @@
 #     registry while a measurement holds the box; 15.
 #   FLEET_WINDOW_GAP: the seconds `execution window` leaves between the box's last measurement and
 #     the window, so batches waiting out the last one take their slots (ludics-lite#667); 60.
+#   FLEET_RUNNER_GRACE: the whole seconds the innermost command of a stopped run (a project's test
+#     runner) needs from the SIGTERM its wrapper sends it to its exit, its own reap included; 10.
+#     Every layer around it -- a nested slot, a slot or hold, a leg's far stop and its own wait,
+#     bg-run.sh stop -- takes a grace that much longer than the one inside it (THE GRACES,
+#     lib/ludics/fleetworker/graces.py, ludics#827), so the runner's own cleanup finishes before
+#     any outer SIGKILL. The project states its runner's figure; a leg forwards the caller's value.
 #   FLEET_SLOT_HELD: set BY `execution slot` in its command's environment, never by hand:
 #     `<box> <slot> <slots> <gpu|cpu>`, the slot the batch holds (THE NESTED SLOT, below).
 #   FLEET_MEASUREMENT_HELD: set BY `execution hold --request <id>` in its command's environment,

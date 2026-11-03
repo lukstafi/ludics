@@ -149,12 +149,14 @@ a SIGTERM, SIGINT or SIGHUP to it (``bg-run.sh stop`` signals the run's whole gr
 the far side too, where until #767 it ran on holding the worktree's lock: the leg starts ``STOP`` on
 the box in a session of its own (so the stop's group signals do not cut it), which, once the pid
 still carries the token, sends SIGTERM to the far shell (in its setup this ends it; during the runs
-a trap defers it, and INT and HUP) and, every second for up to 30 s, to the far shell's ``execution slot`` or
-``execution hold`` child, the wrapper, which ends the runner's process group and dies (group.py, THE
+a trap defers it, and INT and HUP) and, every second for up to the far shell's grace (``graces.py``'s
+FAR_SHELL: 25 s at the default input), to the far shell's ``execution slot`` or ``execution hold`` child, the wrapper, which ends the runner's process group and dies (group.py, THE
 SIGNALLED WRAPPER). The far shell then winds down as after any ended run -- the control reverted,
 its files removed -- even with its connection gone, since it ignores SIGPIPE once the wrapper has
-returned. The leg waits up to 8 s for the stop's report, then dies of the signal it got; a second
-signal ends it at once. The boundary: only a signal the leg receives while it streams reaches the
+returned. The leg waits up to LEG's grace (30 s at the default input) for the stop's report, then
+dies of the signal it got; a second signal ends it at once. Those graces, and the wrappers' inside
+them, are THE GRACES (ludics#827): each strictly longer than the one inside it, from the leg's own
+``FLEET_RUNNER_GRACE``, which ``transport.FORWARDED`` gives the far side's wrappers. The boundary: only a signal the leg receives while it streams reaches the
 far side. On the caller's own box the far shell runs in a session of its own, as over ssh, so a
 signal aimed at the leg's group reaches it only through the stop (ludics-lite#816: until then the
 group signal reached the wrapper before the far stop could see its tree, THE ESCAPED). A SIGKILL of
@@ -166,8 +168,9 @@ command it started finishes on its own; its private ref and staged patch are lef
 
 THE ESCAPED (ludics-lite#816). The wrapper's group kill reaches only its group, and a runner may
 leave it: OCANNL's ``tools/test-run.sh`` runs dune in a group of its own, holding the runner's
-worktree lock, which its supervisor reaps on a TERM -- when the supervisor is ended first (the
-wrappers escalate to SIGKILL after their 10 s grace), dune runs on and the next run there is
+worktree lock, which its supervisor reaps on a TERM -- when the supervisor is ended first (until
+ludics#827 every wrapper escalated to SIGKILL after the same 10 s grace; now one whose input
+under-states the runner's reap still does), dune runs on and the next run there is
 refused, "another test-run is active", until ``tools/test-run.sh stop`` reaps the group it
 recorded (a stopped leg of wave-20261026, ahrefs/ocannl#1638's hand-back). So the far stop records
 the wrapper's whole process tree (pid, group and ``ps -o lstart`` start time), before its SIGTERM
@@ -175,7 +178,7 @@ and every second after while the wrapper runs, and once the far shell has ended 
 those trees still runs with the start time it was seen with: SIGTERM to each, and to the group it
 leads (members it started since), then SIGKILL after 10 s, said on the far stop's output. What it
 does not reach: a process that left the tree before the stop (a daemon that double-forked away),
-one born after the last look at the tree, and a tree whose far shell still runs at the 30 s bound
+one born after the last look at the tree, and a tree whose far shell still runs at the FAR_SHELL bound
 (said, as before). The far shell's own processes outside the wrapper (its setup's git, the
 control's revert) are not in it.
 """
@@ -194,7 +197,7 @@ from types import FrameType
 from typing import Any
 
 from ludics import cli
-from ludics.fleetworker import execution, revision, slot
+from ludics.fleetworker import execution, graces, revision, slot
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.preflight import knob
@@ -591,7 +594,7 @@ finish 0
 """
 
 # THE STOP's far side (see the header), after the prelude. Args: the far shell's pid, the leg's token,
-# the bound in seconds. It ignores SIGPIPE so that a connection cut under it does not end it before
+# the bound in seconds (THE GRACES' FAR_SHELL). It ignores SIGPIPE so that a connection cut under it does not end it before
 # its signals are sent.
 STOP = r"""pid="$1" token="$2" bound="$3"
 trap '' PIPE
@@ -669,8 +672,9 @@ if [ -n "$esc" ]; then
 fi
 say "the leg (pid $pid) has ended"
 """
-STOP_BOUND = "30"  # seconds the far stop waits for the far shell to end
-STOP_WAIT = 8.0  # seconds the leg waits for the far stop, under bg-run.sh stop's 10 s grace
+# THE GRACES (graces.py, ludics#827): the far stop waits FAR_SHELL's grace for the far shell, which
+# outlasts its wrapper's (WRAPPER's, whose nested per-run slot has NESTED's), and the leg waits LEG's
+# for the far stop's report, under bg-run.sh stop's BG_RUN, each from FLEET_RUNNER_GRACE.
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 ANNOUNCED = 1.0  # seconds a stop reads the far side's output for a pid line it has not yet consumed
 
@@ -787,6 +791,10 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
         die(USAGE)
     if not runner:
         die(USAGE)
+    try:
+        graces.runner(cfg.env)  # THE GRACES' input, refused before anything reaches the box
+    except ValueError as exc:
+        die(f"execution {'hold' if hold else 'leg'}: {exc}")
     for flag in ("--request", "--rev", "--checkout", "--worktree"):
         if flag not in values:
             die(f"execution leg: {flag} required ({USAGE})")
@@ -917,9 +925,10 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     )
 
     def stop(far_pid: str) -> tuple[list[str], str]:
-        return far_argv(cfg, box, [far_pid, token, STOP_BOUND]), prelude(cfg, box) + STOP
+        return far_argv(cfg, box, [far_pid, token, str(graces.seconds(graces.FAR_SHELL, cfg.env))]), prelude(cfg, box) + STOP
 
-    return stream(argv, script, box, token, local=is_local(cfg, box), stop=stop)
+    return stream(argv, script, box, token, local=is_local(cfg, box), stop=stop,
+                  stop_wait=graces.seconds(graces.LEG, cfg.env))
 
 
 def hold_in_worktree(cfg: Config, request: str, rev: str, checkout: str, worktree: str, deadline: int | None,
@@ -946,9 +955,9 @@ def hold_in_worktree(cfg: Config, request: str, rev: str, checkout: str, worktre
 
 
 def end_far(box: str, far_pid: str | None, signum: int, stop: Callable[[str], tuple[list[str], str]], *,
-            local: bool) -> None:
+            local: bool, wait: float) -> None:
     """THE STOP (see the header): end the far side whose shell reported ``far_pid``, through a far
-    stop in a session of its own, waiting up to STOP_WAIT for its report."""
+    stop in a session of its own, waiting up to ``wait`` seconds (THE GRACES' LEG) for its report."""
     name = signal.Signals(signum).name
     if far_pid is None:
         cli.say(f"EXECUTION LEG STOPPED {box}: {name} before the far side reported its pid; whether the runner"
@@ -969,7 +978,7 @@ def end_far(box: str, far_pid: str | None, signum: int, stop: Callable[[str], tu
     assert stop_in is not None
 
     def feed() -> None:
-        # From a thread, so a stop ssh that is slow to read cannot hold this past STOP_WAIT.
+        # From a thread, so a stop ssh that is slow to read cannot hold this past the wait.
         try:
             stop_in.write(script.encode("utf-8", "surrogateescape"))
             stop_in.close()
@@ -978,9 +987,9 @@ def end_far(box: str, far_pid: str | None, signum: int, stop: Callable[[str], tu
 
     threading.Thread(target=feed, daemon=True).start()
     try:
-        rc = proc.wait(timeout=STOP_WAIT)
+        rc = proc.wait(timeout=wait)
     except subprocess.TimeoutExpired:
-        cli.say(f"EXECUTION LEG STOPPING {box}: the far stop goes on after {STOP_WAIT:g}s; its last line follows on"
+        cli.say(f"EXECUTION LEG STOPPING {box}: the far stop goes on after {wait:g}s; its last line follows on"
                 " this output")
         return
     if rc == 255 and not local:
@@ -991,12 +1000,13 @@ def end_far(box: str, far_pid: str | None, signum: int, stop: Callable[[str], tu
 
 
 def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
-           stop: Callable[[str], tuple[list[str], str]] | None = None) -> int:
+           stop: Callable[[str], tuple[list[str], str]] | None = None, stop_wait: float | None = None) -> int:
     """Run the far side with its stdout passed through, watching for its status line under
     ``token``: the runner's status when it came (printed last, as the plain sentinel), else the far
     side's own (or UNREACHABLE for ssh's 255). With ``stop``, which builds the far stop's argv and
-    script for a pid, a SIGTERM, SIGINT or SIGHUP while it streams ends the far side too, and raises
-    LegStopped (THE STOP)."""
+    script for a pid, a SIGTERM, SIGINT or SIGHUP while it streams ends the far side too, waiting up
+    to ``stop_wait`` seconds for the far stop (THE GRACES' LEG; by default the default input's), and
+    raises LegStopped (THE STOP)."""
     # The status line ends the far side's output; after a runner whose output ended with no newline
     # it ends that line, whose text is kept and ended.
     reported = re.compile(rb"execution-leg " + re.escape(token.encode()) + rb": exit: ([0-9]{1,3})\r?\n?\Z")
@@ -1125,7 +1135,8 @@ def stream(argv: list[str], script: str, box: str, token: str, *, local: bool,
                 pass
             if far_pid is None:
                 child.kill()
-        end_far(box, far_pid, why.signum, stop, local=local)
+        end_far(box, far_pid, why.signum, stop, local=local,
+                wait=graces.seconds(graces.LEG, {}) if stop_wait is None else stop_wait)
         if child is not None and child.stdout is not None:
             child.stdout.close()
         raise
