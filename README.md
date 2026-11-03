@@ -960,7 +960,10 @@ moved without touching what the recognition reads merges after that second read;
 green, an unread base, a head that moved with the base), and a `merge --wait` that rides out the
 gate's failed head re-reads (ludics-lite#795): six of them, each four attempts spent, then an
 answer, merges; none ever answering is exit 3 only once the wait is spent, naming the failures; a
-404 is exit 3 at once, and so, the negative control, is any failure without `--wait`. Every case drives a command, never an
+404 is exit 3 at once, and so, the negative control, is any failure without `--wait`; the round's
+check-run and workflow-run reads ride out the same way (ludics#808: two failed rounds of either,
+then an answer, merge; runs never answering are 3 once the wait is spent; a refused check read is 3
+at once, and any failure without `--wait`). Every case drives a command, never an
 internal function (ludics-lite#403): the gate through `checks`, the override's waiver through
 `merge --override`, and the advisory list through what the gate then counts.
 `test-pr-review-merge.sh` pins that `merge` reads the list too, and does not merge when the read

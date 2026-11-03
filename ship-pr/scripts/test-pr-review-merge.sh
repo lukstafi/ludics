@@ -78,6 +78,10 @@ CHECKS_FAIL=""                         # nonempty = the head's check-run read do
 # The gate's per-round head re-read (ludics-lite#795): a number = that many of them answer a 503
 # before the rest answer; `always` = none ever does; `refused` = every one answers a 404.
 HEAD_REREAD_FAIL=""
+# A round's check-run and workflow-run reads (ludics#808), as HEAD_REREAD_FAIL: a number = that many
+# calls answer a 503 before the rest answer; `always` = none ever does; `refused` = every one a 404.
+CHECKS_READ_FAIL=""
+RUNS_READ_FAIL=""
 # The merge build (ludics-lite#611): the head the gate reads, the base branch's tip the drift read
 # anchors on, the drift's two compares, the repository's .github/ship-pr-merge-build, and the
 # directory merge runs in (a clone of the fixture remote; build_fixture below).
@@ -198,6 +202,23 @@ runs_answer() {
   else
     printf '%s\n' '{"workflow_runs":[{"id":100,"workflow_id":1,"event":"pull_request","name":"ci","status":"completed","conclusion":"success","created_at":"2026-09-01T00:00:00Z","check_suite_id":1}]}'
   fi
+}
+
+# fixture_read_fails <counter> <mode>: counts the call, and succeeds (printing gh's error) when the
+# mode (CHECKS_READ_FAIL, RUNS_READ_FAIL) makes it fail: a number = the calls up to it; `always`;
+# `refused` = a 404. Empty fails nothing.
+fixture_read_fails() {
+  local calls
+  calls=$(fixture_call_count "$1") || bail "fixture_read_fails $1: cannot count the call"
+  case "$2" in
+  '') return 1 ;;
+  refused) printf 'gh: Not Found (HTTP 404)\n' >&2 ;;
+  always) printf 'gh: 503 No server is currently available to service your request\n' >&2 ;;
+  *)
+    [ "$calls" -le "$2" ] || return 1
+    printf 'gh: 503 No server is currently available to service your request\n' >&2
+    ;;
+  esac
 }
 
 # The PR's base and head as the gate's reads see them: moved once the merge loop has read the base.
@@ -403,10 +424,12 @@ gh() {
         printf 'gh: 503 No server is currently available to service your request\n' >&2
         return 1
       fi
+      fixture_read_fails checks-read "$CHECKS_READ_FAIL" && return 1
       gh_fixture_parse "$@"
       gh_fixture_answer "$(check_runs_answer "$reads")"
       ;;
     *"repos/$REPO/actions/runs?head_sha="*)
+      fixture_read_fails runs-read "$RUNS_READ_FAIL" && return 1
       gh_fixture_parse "$@"
       gh_fixture_answer "$(runs_answer)"
       ;;
@@ -589,6 +612,8 @@ reset() {
   BASE_KEEPS_MOVING=""
   CHECKS_FAIL=""
   HEAD_REREAD_FAIL=""
+  CHECKS_READ_FAIL=""
+  RUNS_READ_FAIL=""
   GATED_HEAD=head-sha
   BASE_TIP=base-tip
   COMPARE_FORWARD=""
@@ -2630,9 +2655,9 @@ test_a_wait_rides_out_failed_head_rereads() (
   run_merge --wait=3600
   assert_eq "$MERGE_RC" 0 "six head re-reads that never answered end no wait ($MERGE_OUTPUT)"
   assert_eq "$(fixture_call_total head-reread)" 25 "the seventh read answered, after 6 x 4 failed attempts"
-  assert_contains "$MERGE_STDERR" "failed head read 6 of this wait, reading it again within the wait" \
+  assert_contains "$MERGE_STDERR" "failed read 6 of this wait, reading it again within the wait" \
     "each failure is said as it happens"
-  assert_contains "$MERGE_STDERR" "6 head read(s) failed during this wait and were read again within it" \
+  assert_contains "$MERGE_STDERR" "6 read(s) failed during this wait and were read again within it" \
     "and the final word names them"
   assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "and the head was merged"
   reset
@@ -2640,7 +2665,7 @@ test_a_wait_rides_out_failed_head_rereads() (
   HEAD_REREAD_FAIL=always
   run_merge --wait=600
   assert_eq "$MERGE_RC" 3 "a head that never re-reads ends the wait with 3 ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_STDERR" "head reads failed during this wait, and its budget is spent" \
+  assert_contains "$MERGE_STDERR" "reads failed during this wait, and its budget is spent" \
     "once the budget is spent, naming the failures"
   assert_contains "$MERGE_STDERR" "No server is currently available" "with the failure's own line"
   [ "$(awk '{ s += $1 } END { print s + 0 }' "$TEST_ROOT/sleeps")" -ge 600 ] ||
@@ -2660,6 +2685,66 @@ test_a_wait_rides_out_failed_head_rereads() (
   run_merge
   assert_eq "$MERGE_RC" 3 "without --wait a failed head re-read is 3 at once ($MERGE_OUTPUT)"
   assert_eq "$(fixture_call_total head-reread)" 4 "after one read's attempts"
+  assert_contains "$MERGE_STDERR" "with no wait left to read it again in" "and says so"
+  assert_no_merge_call
+)
+
+# ludics#808: the round's other reads ride out the same way. A check-run read, or a workflow-run read,
+# that did not answer is one failed poll: the round is read again, and only a wait spent with none
+# answering, or a refusal, is 3. A failed round reads the runs twice (the advisory-workflow lookup,
+# then run_signal), each read's four attempts spent: sixteen failed calls are two failed rounds.
+test_a_wait_rides_out_failed_round_reads() (
+  export SHIP_PR_TEST_CLOCK="$TEST_ROOT/clock"
+  date +%s >"$SHIP_PR_TEST_CLOCK"
+  sleep() {
+    printf '%s\n' "$1" >>"$TEST_ROOT/sleeps"
+    printf '%s\n' "$(($(cat "$SHIP_PR_TEST_CLOCK") + $1))" >"$SHIP_PR_TEST_CLOCK"
+  }
+  retune API_ATTEMPTS=4
+  reset
+  : >"$TEST_ROOT/sleeps"
+  CHECKS_READ_FAIL=8
+  run_merge --wait=3600
+  assert_eq "$MERGE_RC" 0 "two check-run reads that never answered end no wait ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total checks-read)" 9 "the third read answered, after 2 x 4 failed attempts"
+  assert_contains "$MERGE_STDERR" "could not read the checks of $REPO#7 @" "each failure names its read"
+  assert_contains "$MERGE_STDERR" "failed read 2 of this wait, reading it again within the wait" \
+    "and is said as it happens"
+  assert_contains "$MERGE_STDERR" "2 read(s) failed during this wait and were read again within it" \
+    "and the final word names them"
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "and the head was merged"
+  reset
+  : >"$TEST_ROOT/sleeps"
+  RUNS_READ_FAIL=16
+  run_merge --wait=3600
+  assert_eq "$MERGE_RC" 0 "two workflow-run rounds that never answered end no wait ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "could not read the workflow runs of $REPO#7 @" "each failure names its read"
+  assert_contains "$MERGE_STDERR" "2 read(s) failed during this wait and were read again within it" \
+    "and the final word names them"
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "and the head was merged"
+  reset
+  : >"$TEST_ROOT/sleeps"
+  RUNS_READ_FAIL=always
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 3 "workflow runs that never read end the wait with 3 ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "reads failed during this wait, and its budget is spent" \
+    "once the budget is spent, naming the failures"
+  [ "$(awk '{ s += $1 } END { print s + 0 }' "$TEST_ROOT/sleeps")" -ge 600 ] ||
+    bail "the wait should have ended only after its 600 s ($(tr '\n' ' ' <"$TEST_ROOT/sleeps"))"
+  assert_no_merge_call
+  reset
+  : >"$TEST_ROOT/sleeps"
+  CHECKS_READ_FAIL=refused
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 3 "a refused check-run read is 3 at once ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "GitHub refused the read, which no retry changes" "and says why"
+  assert_eq "$(fixture_call_total checks-read)" 1 "after one read"
+  assert_no_merge_call
+  # The negative control: without --wait there is no budget, so the first failure is the end.
+  reset
+  RUNS_READ_FAIL=always
+  run_merge
+  assert_eq "$MERGE_RC" 3 "without --wait a failed workflow-run read is 3 at once ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDERR" "with no wait left to read it again in" "and says so"
   assert_no_merge_call
 )
@@ -3317,6 +3402,7 @@ tests=(
   test_an_uncomputed_mergeability_is_read_again_never_judged
   test_an_unread_mergeability_neither_refuses_nor_clears
   test_a_wait_rides_out_failed_head_rereads
+  test_a_wait_rides_out_failed_round_reads
   test_a_base_that_moves_during_every_call_stops_after_three
   test_an_absent_base_that_keeps_moving_stops_after_three_reads
   test_a_rejected_merge_call_and_an_unconfirmed_state
