@@ -1018,10 +1018,11 @@ controlled through the tools in your coordinator's file, never through those com
      *Adoption and halt*), concluded before any triage owner reserves, since the halt's triage
      has one owner. Three passes mean a flake, typically load on a box shared with workers'
      batches (wave-20261102: a `device_init_deadline` timing claim on macbook-pro beside five
-     workers' batches, settled in three minutes). Then `resume-launches` at once: the base gate
-     still reads the loop's fail record at the red SHA, so nothing launches onto that tip, and
-     the loop's next run judges the current one. One failure is a regression, as a red CI rerun
-     is below. The CI rerun is a new attempt, so judge that attempt and not the red already read:
+     workers' batches, settled in three minutes). Then `resume-launches` and start the loop's next
+     run at the current tip at once, even when that is still the red SHA: the targeted batch is
+     no verdict, so the base gate keeps reading the loop's fail record there and nothing
+     launches onto that tip until the new run passes. One failure is a regression, as a red CI
+     rerun is below. The CI rerun is a new attempt, so judge that attempt and not the red already read:
      once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
      await it with `pr-review.sh retry run watch <owner/repo>#<run id>`. Green, it was a flake:
      `resume-launches` on the integration loop's next green verdict, which is about the
@@ -1155,8 +1156,8 @@ controlled through the tools in your coordinator's file, never through those com
   wave's first merge), that other backend is overdue, and the coordinator makes room for its run.
   Down: it wakes that backend's box (`wake-lab.sh --wait <box>`: rog for CUDA, minix for HIP)
   and asks the user to wake tuf when only tuf would do. The loop itself still wakes nothing. Busy: when the overdue backend's box next has no
-  outstanding record, the coordinator starts the loop run there before assigning that box's
-  next queued worker leg. That is the loop taking a worker's place in line, not pre-empting
+  outstanding record but a standing reservation (which the loop never yields to), the
+  coordinator starts the loop run there before assigning that box's next queued worker leg. That is the loop taking a worker's place in line, not pre-empting
   one. A backend still uncovered at close-out goes in the wave summary with its uncovered span
   (`<its newest pass>..<tip>`), for the next daily sweep.
 - **On a regression, stop the world - as a mechanism.** `fleet-worker.sh halt "<what
