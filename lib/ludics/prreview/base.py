@@ -53,6 +53,18 @@ flight. The file records the branch's own push runs' advisory reds only: a merge
 the ones ``merge`` admitted. Without the flag every reading here is BUILD_ADVISORY's, as before,
 so ``base --wait`` (the integration loop's) and the base watch's ``--interim`` are unchanged.
 
+The flag's file is an OUTPUT: ``base`` writes it, and never reads it as the advisory list -- the
+list is the default branch's, over the API (#704: a coordinator passed the checkout's
+``.github/ship-pr-advisory-checks`` and the green replaced it with ``[]``). So the path is
+refused (exit 2, before any read; and again just before the write, exit 3) unless, by an
+ALLOWLIST read with ``advisory_red_refusal``: it does not exist, or it is a regular file (not a
+symlink, not a directory) whose text is blank or one JSON array -- what this flag or the gate's
+staging writes -- AND no directory from the file's own (symlinks resolved) up to the root holds
+a ``.git`` entry (a work tree, a linked worktree, a submodule). BOUNDARY: that walk is all it asks
+of git -- a tree whose git dir lives elsewhere (``GIT_DIR``/``core.worktree``) is not seen; an
+unreadable file or directory is refused, never guessed at; and the instant between the second
+check and the write is not closed (the flag guards against a wrong path, not a racing writer).
+
 ``--last-green <red sha>`` is not a verdict but the integration loop's attribution lookup
 (ludics-lite#602): for each workflow whose push run at that SHA concluded red, the nearest commit
 below it on its first-parent chain with a successful push run created before the red run -- the
@@ -72,6 +84,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -1251,6 +1264,47 @@ class Args:
     greens: str = ""
 
 
+def advisory_red_refusal(path: str) -> str:
+    """Why ``--advisory-red``'s file may not be written, or "" (#704; the module docstring has
+    the allowlist and its boundary). The work tree is asked first: it is the incident's reason."""
+    d = os.path.dirname(os.path.realpath(path))
+    while True:
+        try:
+            os.lstat(os.path.join(d, ".git"))
+            return f"it is inside the git work tree at {shell_quote(d)}"
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            return f"{shell_quote(d)} cannot be examined for a .git entry ({e.strerror})"
+        up = os.path.dirname(d)
+        if up == d:
+            break
+        d = up
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return ""
+    except OSError as e:
+        return f"it cannot be examined ({e.strerror})"
+    if not stat.S_ISREG(st.st_mode):
+        return "it exists and is not a regular file"
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        return f"it exists and cannot be read ({e.strerror})"
+    except UnicodeDecodeError:
+        return "it exists and is not UTF-8 text, which this flag never wrote"
+    if text.strip():
+        try:
+            doc: object = json.loads(text)
+        except ValueError:
+            doc = None
+        if not isinstance(doc, list):
+            return "it exists and holds something other than a JSON array, which this flag never wrote"
+    return ""
+
+
 def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
     """The shell's parse, in its case order: the first SLASHED argument is the repo unless one is
     already named -- branches carry slashes too (``claude/...``)."""
@@ -1329,6 +1383,10 @@ def run(session: GhSession, args: list[str], *, clock: Clock | FuncClock | None 
     environ = os.environ if env is None else env
     knobs = load_knobs(environ)
     parsed = parse_args(args, session.config.repo, knobs)
+    if parsed.advisory_red and (why := advisory_red_refusal(parsed.advisory_red)):
+        die(f"base: --advisory-red names the file base WRITES (the advisory reds it discounted, as a"
+            f" JSON array), never the advisory list it reads; refusing {shell_quote(parsed.advisory_red)}:"
+            f" {why}. Pass a scratch file outside any checkout (the fleet-worker gate stages its own).")
     records = load_records(parsed.records) if parsed.records else []
     grace, interval = knobs.absent_grace, knobs.checks_interval
     wait_for = parsed.wait_for
@@ -1995,6 +2053,10 @@ class Wait:
             return
         rows = [{"workflow": w, "sha": sha, "run": run, "job": job, "conclusion": concl}
                 for w, sha, run, job, concl in rnd.advisory_red]
+        # Checked again here: the wait can last minutes, and the path is not ours (#704).
+        if why := advisory_red_refusal(path):
+            fail(3, f"base: refusing to write --advisory-red's file {shell_quote(path)}: {why};",
+                 "the verdict is UNKNOWN, which is NOT 'green'.")
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(json.dumps(rows) + "\n")
