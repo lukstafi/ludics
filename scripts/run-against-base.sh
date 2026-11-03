@@ -1089,7 +1089,10 @@ tee "$LOG" <"$SCRATCH/fifo" &
 teepid=$!
 # `set -m` puts the suite in a process group of its own (its pid is the group id), which
 # stop_group signals whole; it also keeps INT at its default there rather than ignored, as a
-# non-interactive shell would start a background job.
+# non-interactive shell would start a background job. On macOS, bash can print `child setpgid
+# (N to N): Operation not permitted` to this helper's stderr at this spawn and at a mutant's: the
+# child's setpgid lost a race with the parent's identical call, which has already placed it in its
+# own group, so the group stop_group signals is unchanged (ludics#780 measured it).
 set -m
 # execfail: a suite that cannot be started at all (a missing interpreter, no python3) never ran,
 # so it must not read as the suite's 126/127 failure on the base; the marker tells the two apart.
