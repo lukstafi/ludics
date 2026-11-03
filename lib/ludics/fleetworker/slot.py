@@ -50,7 +50,10 @@ brief:
 - THE GROUP (ludics-lite#566, ``group.py``): the command leads a process group of its own, this
   process its parent, and ``--deadline``, a signal to this process, or a SIGKILL of it (through a
   guardian) ends the whole group; a deadline exits 124. A nested batch is exec'd in its enclosing
-  group instead (``run_command``), so the enclosing wrapper's group kill reaches its tree.
+  group instead (``run_command``), so the enclosing wrapper's group kill reaches its tree. The
+  group's TERM-to-KILL grace is ``graces.py``'s (ludics#827): ``WRAPPER``'s, or ``NESTED``'s for a
+  nested ``--deadline`` batch, from ``FLEET_RUNNER_GRACE``, which is refused before anything is taken
+  when it is not a whole number.
 - THE CO-TENANTS (ludics-lite#566, ``cotenants.py``): a ``hold --request`` records the box's
   GPU-using processes outside its own tree when its command starts and once it has ended, into
   ``<slot dir>/<box>/measurement.<id>.gpu.jsonl``, which the measurement's conclusion cites. A hold
@@ -274,7 +277,7 @@ from ludics.fleetworker.config import (
     in_roster,
     short_hostname,
 )
-from ludics.fleetworker import cotenants, group, holders
+from ludics.fleetworker import cotenants, graces, group, holders
 from ludics.fleetworker.execution import field, jq_text, listing, records_of, registry_source
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
@@ -788,8 +791,10 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: Guard 
         if recorder is not None:
             recorder.opened(leader)
 
+    # THE GRACES (graces.py): a nested --deadline batch is the rung inside its enclosing wrapper's.
+    grace = graces.seconds(graces.NESTED if nested else graces.WRAPPER, os.environ)
     try:
-        outcome = group.run(command, deadline, f"{prefix} {box}", errline, started=started)
+        outcome = group.run(command, deadline, f"{prefix} {box}", errline, grace=grace, started=started)
     except OSError as exc:
         # A script whose interpreter is missing passes the lookup above and fails here.
         refuse_unrunnable(prefix, box, command, exc)
@@ -1439,8 +1444,17 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
         records, unread = read, None
 
 
+def check_graces(verb: str, cfg: Config) -> None:
+    """THE GRACES' input, refused (usage, exit 2) before the slot or hold takes anything."""
+    try:
+        graces.runner(cfg.env)
+    except ValueError as exc:
+        die(f"execution {verb}: {exc}")
+
+
 def cmd_slot(cfg: Config, args: list[str]) -> int:
     parsed = parse_slot(args)
+    check_graces("slot", cfg)
     command = parsed.command
     box = cfg.local_box
     if not box:
@@ -1618,6 +1632,7 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
         i += 1
     if not command:
         die("execution hold: a command to hold the box around is required, after --")
+    check_graces("hold", cfg)
     if place:
         if "--worktree" not in place:
             die(f"execution hold: --rev and --checkout go with --worktree ({HOLD_USAGE})")

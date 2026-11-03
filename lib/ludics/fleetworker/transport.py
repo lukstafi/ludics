@@ -89,6 +89,11 @@ def emit_var(name: str, value: str) -> str:
 # name, so a coordinator anchor of `local` becomes the coordinator's own box name, and with no name
 # to give it the start is REFUSED on the far side, never run against the box's own state. The pin
 # goes with the knobs, and any fleet-worker.sh under the started one checks it.
+#
+# FLEET_RUNNER_GRACE (THE GRACES, graces.py, ludics#827) travels as the coordinator's raw value, empty
+# when unset (the far side's default then, which is the coordinator's too): a leg's far wrappers must
+# take their graces from the input the leg sized its far stop's bound and its own wait by, not from
+# the box's.
 FORWARDED = (
     "FLEET_BOXES",
     "FLEET_HOSTNAME_MAP",
@@ -98,6 +103,7 @@ FORWARDED = (
     "FLEET_BOX_CORRECTNESS_SLOTS",
     "FLEET_BOX_GPU_TOKENS",
     "FLEET_SKILLS_REPO",
+    "FLEET_RUNNER_GRACE",
 )
 
 # The far side's runner of a fleet-worker.sh: `fleet_worker <fleet-worker.sh> <verb> ...`, its
@@ -144,6 +150,7 @@ def forwarded(cfg: Config, box: str) -> list[tuple[str, str]]:
         "FLEET_BOX_CORRECTNESS_SLOTS": cfg.slots,
         "FLEET_BOX_GPU_TOKENS": cfg.gpu_tokens,
         "FLEET_SKILLS_REPO": cfg.skills_repo,
+        "FLEET_RUNNER_GRACE": cfg.env.get("FLEET_RUNNER_GRACE", ""),
     }
     pin = registry_pin(anchor if anchor != "local" else anchor_name(cfg), cfg.anchor_state)
     return [(name, values[name]) for name in FORWARDED] + [(REGISTRY_PIN, pin)]

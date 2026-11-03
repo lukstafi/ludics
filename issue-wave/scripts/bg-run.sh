@@ -38,8 +38,8 @@
 # around a slot-held batch; there the command is the slot's wrapper, which runs the batch in a
 # group of its own and ends that group on the TERM `stop` sends it (ludics-lite#566). A command whose
 # work runs outside the group ends that work itself on the TERM: `fleet-worker.sh execution leg` ends
-# its far side, in an ssh session on another box (ludics-lite#767), and waits up to 8 s, inside the
-# grace, for the box to report it.
+# its far side, in an ssh session on another box (ludics-lite#767), and waits for the box to report
+# it inside the grace (THE GRACES, below).
 #
 # `stop <dir>` ends a run's whole tree. It reads the run as `wait` does, and a run that is not
 # RUNNING it leaves alone and says so: `NOT RUNNING: <verdict>`, exit 1 -- a run that has
@@ -55,8 +55,8 @@
 # its own: the slot's group kill does not reach that one, and a phase that outlived the stop held
 # the worktree's run lock, refusing the next batch there. It publishes the marker `stopped` in
 # <dir> (ludics-lite#638), naming every group of the tree, sends SIGTERM to the wrapper's group,
-# and sends SIGKILL to every group of the tree once BG_RUN_STOP_GRACE seconds (whole, default 10)
-# pass with any member of any of them still running; groups the tree forms meanwhile are added to
+# and sends SIGKILL to every group of the tree once the run's grace (THE GRACES, below) passes with
+# any member of any of them still running; groups the tree forms meanwhile are added to
 # the marker as they are found, and killed with the rest. It prints `STOPPED <dir>: process group
 # <g> (TERM)` (or `(TERM, then KILL after <n> s)`; with the other groups the tree held named before
 # the parenthesis, `... process group <g> and the run's groups <h> <i> outside it (...)`) and exits
@@ -79,6 +79,17 @@
 # that id is gone. The window it leaves: the system does not reuse an id while a group by that id
 # exists, so a group can be mistaken only if its last member exits after the read and a new
 # process takes the id as a group of its own before the signal, in the same instant.
+#
+# THE GRACES (ludics#827, lib/ludics/fleetworker/graces.py, where the ladder is stated): every layer
+# that stops a run escalates TERM to KILL after a grace strictly longer than the layer's inside it,
+# so a runner's own cleanup is not cut by an outer KILL. The input is FLEET_RUNNER_GRACE, the whole
+# seconds the innermost command needs between its TERM and its exit (default 10); a stop's grace is
+# the outermost rung, that plus 25 (35 s by default). `start` derives it from its own environment,
+# the one the run's layers inherit, and records it as its pid file's third line, and `stop` gives the
+# run that recorded grace, whatever its own environment says; BG_RUN_STOP_GRACE (whole seconds) on
+# the stop overrides it, and a run whose pid holds no record gets the one the stop's environment
+# derives. A FLEET_RUNNER_GRACE that is not a whole number is refused, exit 2: by `spawn` and `start`
+# before anything is allocated or run, and by a `stop` that needs it, before anything is signalled.
 #
 # The command starts with SIGINT, SIGQUIT, SIGHUP and SIGTERM at their DEFAULT dispositions,
 # whatever `start` inherited (ludics-lite#524): perl resets them and execs the command, since a
@@ -116,7 +127,8 @@
 #           command, so a command that outlives a killed wrapper is still seen running;
 #           Each pid file carries a second line, the process's start time as `ps -o lstart=`
 #           gives it, so a pid the system has since reused for another process is not read as
-#           the run's (where ps cannot say, the line is empty and the bare pid stands);
+#           the run's (where ps cannot say, the line is empty and the bare pid stands); `pid`
+#           carries a third, the run's stop grace in seconds (THE GRACES);
 #   log  -- the command's stdout and stderr, and the only file the command's output reaches;
 #   rc   -- the command's exit status, published (by rename) after the command returns.
 #
@@ -233,6 +245,24 @@ reset_signals='INT QUIT HUP TERM'
 reset_pl='$SIG{$_} = "DEFAULT" for qw('"$reset_signals"'); exec { $ARGV[0] } @ARGV;
 print STDERR "bg-run: cannot run $ARGV[0]: $!\n"; exit($!{ENOENT} ? 127 : 126);'
 
+# THE GRACES (lib/ludics/fleetworker/graces.py, ludics#827): stop's TERM-to-KILL is the outermost
+# rung, BG_RUN, spelled here from graces.py's constants (tests/test_fleetworker_graces.py runs this
+# file and pins the two equal): FLEET_RUNNER_GRACE, the innermost command's grace (default 10),
+# plus the margin for each layer up to this one.
+grace_runner_default=10 grace_margin=5 grace_rung=5
+# run_grace: sets G to that grace, from FLEET_RUNNER_GRACE in this environment; 1 (G unset) when it
+# is not a whole number of seconds.
+run_grace() {
+  G=
+  r=${FLEET_RUNNER_GRACE:-$grace_runner_default}
+  case $r in ''|*[!0-9]*) return 1 ;; esac
+  G=$((10#$r + grace_margin * grace_rung))
+}
+bad_grace() {
+  say "refused: FLEET_RUNNER_GRACE must be a whole number of seconds (the innermost command's stop grace), got $(printf '%q' "$FLEET_RUNNER_GRACE"); $1"
+  exit 2
+}
+
 cmd_new() {
   [ $# -eq 1 ] || usage
   parent=$1
@@ -304,13 +334,16 @@ cmd_start() {
     : > "$BG_RUN_CLAIM_GATE.$$"
     while [ ! -e "$BG_RUN_CLAIM_GATE" ]; do sleep 0.1; done
   fi
+  # THE GRACES: the run's stop grace, derived from this start's environment -- the one its layers
+  # inherit -- and recorded in the claim, so a stop from another environment gives it that grace.
+  run_grace || bad_grace "this start ran nothing"
   # The claim is the pid itself, published by a hard link, which fails when `pid` exists: of two
   # starts that both found the token, exactly one gets it and the other is refused before its
   # command runs. The content is complete before the link makes it visible. The winner then takes
   # the token away, so no later start gets past the check above. A lost claim writes nothing,
   # whatever state the winner has reached by now: the winner's run, finished or not, is the one a
   # wait there should report.
-  printf '%s\n%s\n' "$$" "$(started $$)" > "$dir/.pid.$$" || { say "cannot write in $(printf '%q' "$dir")"; exit 2; }
+  printf '%s\n%s\n%s\n' "$$" "$(started $$)" "$G" > "$dir/.pid.$$" || { say "cannot write in $(printf '%q' "$dir")"; exit 2; }
   if ! ln -- "$dir/.pid.$$" "$dir/pid" 2>/dev/null; then
     rm -f -- "$dir/.pid.$$"
     say "refused: another start claimed $(printf '%q' "$dir") first; a wait there reports that run, and this start ran nothing"
@@ -343,6 +376,8 @@ cmd_spawn() {
   parent=$1; shift
   [ "$1" = -- ] || usage
   shift
+  # The start runs detached, its refusals unseen: an input it would refuse is refused here first.
+  run_grace || bad_grace "nothing was allocated or run"
   dir=$(cmd_new "$parent") || exit 2
   # A session of its own, so the wrapper leads the run's one process group (header). Without perl
   # the start stays in the caller's group, and `stop` refuses it.
@@ -600,9 +635,8 @@ record_tree() {
 cmd_stop() {
   [ $# -eq 1 ] || usage
   dir=$1
-  grace=${BG_RUN_STOP_GRACE:-10}
-  case $grace in ''|*[!0-9]*) say "not a whole number of seconds: $(printf '%q' "$grace")"; exit 2 ;; esac
-  grace=$((10#$grace))
+  grace=${BG_RUN_STOP_GRACE:-}
+  case $grace in *[!0-9]*) say "not a whole number of seconds: $(printf '%q' "$grace")"; exit 2 ;; esac
   need_absolute "$dir"
   verdict "$dir"
   case $V in
@@ -629,6 +663,17 @@ cmd_stop() {
     say "refused: the run in $(printf '%q' "$dir") has no process group of its own (it was started by start, not spawn), so a group kill would reach whoever started it; nothing was signalled -- stop it through the task that runs it"
     exit 2
   fi
+  # THE GRACES: BG_RUN_STOP_GRACE when given; else the grace the run's start recorded (the third
+  # line of its pid); else, for a run whose start recorded none, the one this environment derives.
+  if [ -z "$grace" ]; then
+    rec=
+    { IFS= read -r _; IFS= read -r _; IFS= read -r rec; } < "$dir/pid"
+    case $rec in
+      ''|*[!0-9]*) run_grace || bad_grace "nothing was signalled"; grace=$G ;;
+      *) grace=$rec ;;
+    esac
+  fi
+  grace=$((10#$grace))
   # The identity again, immediately before the signal, to keep the window narrow (header).
   verdict "$dir"
   if [ "$V" != RUNNING ]; then

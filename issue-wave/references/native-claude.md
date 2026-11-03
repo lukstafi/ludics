@@ -75,8 +75,10 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   A spawned run is no background task of the harness's, so a task-stop does not reach it;
   `bg-run.sh stop <dir>` does (ludics-lite#510). `spawn` gives the run a session of its own, and
   `stop` ends that session's process group - the command, its `gh` calls and `sleep`s, and a
-  grandchild whose parent has already exited - with SIGTERM, then SIGKILL after 10 s
-  (`BG_RUN_STOP_GRACE`), and with SIGKILL after the same grace every group the run formed outside
+  grandchild whose parent has already exited - with SIGTERM, then SIGKILL after the run's grace
+  (35 s by default: `FLEET_RUNNER_GRACE`, the innermost runner's own, plus a margin for each layer
+  around it, recorded when the run started; `BG_RUN_STOP_GRACE` on the stop overrides it; THE
+  GRACES, ludics#827), and with SIGKILL after the same grace every group the run formed outside
   it (an `execution slot --bg` batch, a test runner's phase in a group of its own), found through
   their parents before the first signal. It prints `STOPPED <dir>: ...` (exit 0), and a `wait`
   there then reads `STOPPED` (ludics-lite#638), not `DIED`, once no process of any of those groups
