@@ -88,28 +88,57 @@ class Classification(unittest.TestCase):
         self.assertTrue(core.transient_failure("gh: Bad gateway (HTTP 404)"))
 
     def test_graphql_fixed_answers_verbatim(self) -> None:
-        # The bodies test-pr-review-retry.sh pins, under both prefixes.
+        # The bodies test-pr-review-retry.sh pins, under both prefixes. The pathed lines (#707) are
+        # go-gh's GraphQLError.Error over the `path` of the error document a real `gh api graphql`
+        # call printed (gh 2.101.0): `{ viewer { nosuchfield } }` answered ["query","viewer",
+        # "nosuchfield"], a named query ["query Q","node","... on User","nosuchfield"], a fragment
+        # ["fragment F","nosuchfield"], a mutation ["mutation M","addStar","nosuchfield"]. The
+        # node limit's line is `gh pr list --json commits --limit 1000`'s own: its error has no path.
         for line in (
             "GraphQL: By the time this query traverses to the authors connection, it is requesting"
             " up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000.",
-            "gh: Requesting 101 records on the `repositories` connection exceeds the `first`"
-            " limit of 100 records.",
             "gh: Field 'nosuchfield' doesn't exist on type 'User'",
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (query.viewer.nosuchfield)",
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User'"
+            " (query Q.node.... on User.nosuchfield)",
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (fragment F.nosuchfield)",
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'AddStarPayload'"
+            " (mutation M.addStar.nosuchfield)",
             'gh: Expected NAME, actual: (none) ("") at [1, 12]',
             'gh: Expected NAME, actual: STRING ("Bad gateway") at [1, 18]',
         ):
             self.assertTrue(core.graphql_fixed_answer(line), line)
+            self.assertFalse(core.graphql_ran_fixed(line), line)
         for line in (
             "gh: proxy: By the time this query traverses to the comments connection, it is"
             " requesting up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000.",
-            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (query.viewer.nosuchfield)",
             "Field 'nosuchfield' doesn't exist on type 'User'",
+            # A path where gh prints none: under `gh: `, or on a shape whose error carries none.
+            "gh: Field 'nosuchfield' doesn't exist on type 'User' (query.viewer.nosuchfield)",
+            "GraphQL: By the time this query traverses to the authors connection, it is requesting"
+            " up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000. (query)",
+            'GraphQL: Expected NAME, actual: (none) ("") at [1, 12] (query)',
+            # No path under `GraphQL: `, where every unknown field carries one; a suffix outside
+            # the document-path grammar (a response path, an HTTP status, a bare inline fragment).
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User'",
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (viewer.nosuchfield)",
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (HTTP 502)",
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (query.node....nosuchfield)",
+            "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (query.viewer.nosuchfield),"
+            " Field 'other' doesn't exist on type 'User' (query.viewer.other)",
+            # The page limit ran, so it is the other reader's.
+            "gh: Requesting 101 records on the `issues` connection exceeds the `first` limit of"
+            " 100 records.",
         ):
             self.assertFalse(core.graphql_fixed_answer(line), line)
 
-    def test_graphql_not_found_verbatim(self) -> None:
+    def test_graphql_ran_fixed_verbatim(self) -> None:
         # NOT_FOUND (ludics-lite#663), verbatim from gh 2.101.0: `gh api graphql` prints the bare
-        # message, gh's own commands append the error's ` (<path>)`.
+        # message, gh's own commands append the error's ` (<path>)`. The page limit (#707): the bare
+        # lines are `gh api graphql`'s own, and the pathed ones go-gh's GraphQLError.Error over the
+        # document that call printed: `repository { issues(first:101) }` answered ["repository",
+        # "issues"], and `pullRequests(first:1) { nodes { comments(first:101) } }` ["repository",
+        # "pullRequests","nodes",0,"comments"].
         for line in (
             "gh: Could not resolve to an Issue with the number of 99999.",
             "gh: Could not resolve to a Repository with the name 'lukstafi/no-such-repo-xyz'.",
@@ -119,14 +148,32 @@ class Classification(unittest.TestCase):
             " (repository.issue)",
             "GraphQL: Could not resolve to a PullRequest with the number of 99999."
             " (repository.pullRequest)",
+            "gh: Requesting 101 records on the `issues` connection exceeds the `first` limit of"
+            " 100 records.",
+            "gh: Requesting 101 records on the `pullRequests` connection exceeds the `last` limit"
+            " of 100 records.",
+            "GraphQL: Requesting 101 records on the `issues` connection exceeds the `first` limit"
+            " of 100 records. (repository.issues)",
+            "GraphQL: Requesting 101 records on the `comments` connection exceeds the `first`"
+            " limit of 100 records. (repository.pullRequests.nodes.0.comments)",
         ):
-            self.assertTrue(core.graphql_not_found(line), line)
+            self.assertTrue(core.graphql_ran_fixed(line), line)
             # Not a validation refusal: the document ran.
             self.assertFalse(core.graphql_fixed_answer(line), line)
         for line in (
             # The path suffix belongs to `GraphQL: ` alone, and is required there.
             "gh: Could not resolve to an Issue with the number of 99999. (repository.issue)",
             "GraphQL: Could not resolve to an Issue with the number of 99999.",
+            "gh: Requesting 101 records on the `issues` connection exceeds the `first` limit of"
+            " 100 records. (repository.issues)",
+            "GraphQL: Requesting 101 records on the `issues` connection exceeds the `first` limit"
+            " of 100 records.",
+            # A suffix outside the response-path grammar: a status, a document path, an index first.
+            "GraphQL: Requesting 101 records on the `issues` connection exceeds the `first` limit"
+            " of 100 records. (HTTP 502)",
+            "GraphQL: Requesting 101 records on the `issues` connection exceeds the `first` limit"
+            " of 100 records. (query Q.repository.issues)",
+            "GraphQL: Could not resolve to an Issue with the number of 99999. (0.issue)",
             # Two errors gh joined onto one line; another prefix; no prefix; a reworded tail.
             "GraphQL: Could not resolve to an Issue with the number of 1. (repository.a),"
             " Could not resolve to an Issue with the number of 2. (repository.b)",
@@ -135,7 +182,7 @@ class Classification(unittest.TestCase):
             "gh: Could not resolve to an Issue with the number of 99999 yet, try again.",
             "gh: Could not resolve to an Issue with the number of 99999. (HTTP 502)",
         ):
-            self.assertFalse(core.graphql_not_found(line), line)
+            self.assertFalse(core.graphql_ran_fixed(line), line)
 
     def test_client_refusals_verbatim(self) -> None:
         for line in (
@@ -275,6 +322,28 @@ class Retry(unittest.TestCase):
                 self.assertEqual(s.retry(mode, ["api", "graphql"]), GhFailed())
                 self.assertEqual(len(gh.calls()), 1)
                 # The document ran, so another field of a mutation may have landed.
+                self.assertEqual(s.session.unclear_attempts(), 1)
+
+    def test_a_page_limit_is_not_retried_and_leaves_a_landing_open(self) -> None:
+        # #707: the page limit is checked as its connection resolves, after the fields above it
+        # did (the document is the real call's), so like a NOT_FOUND it is never re-sent but rules
+        # no landing out. The line is gh's own commands' form, with the error's path.
+        document = (
+            '{"data":{"repository":null},"errors":[{"type":"EXCESSIVE_PAGINATION",'
+            '"path":["repository","issues"],"locations":[{"line":1,"column":49}],'
+            '"message":"Requesting 101 records on the `issues` connection exceeds the `first`'
+            ' limit of 100 records."}]}'
+        )
+        line = (
+            "GraphQL: Requesting 101 records on the `issues` connection exceeds the `first` limit"
+            " of 100 records. (repository.issues)\n"
+        )
+        for mode in ("read", "write"):
+            with FakeTool("gh") as gh:
+                gh.script(Answer(1, document, line))
+                s = Session()
+                self.assertEqual(s.retry(mode, ["api", "graphql"]), GhFailed())
+                self.assertEqual(len(gh.calls()), 1)
                 self.assertEqual(s.session.unclear_attempts(), 1)
 
     def test_a_later_success_clears_the_error_line(self) -> None:

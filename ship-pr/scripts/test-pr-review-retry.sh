@@ -361,16 +361,18 @@ test_no_verdict_is_exit_4() {
 
 # Every allowlisted shape, verbatim, under both prefixes gh prints: `gh: ` from `gh api graphql`
 # (whose stdout then carries the error document) and `GraphQL: ` from every other command (the
-# cost body is the one `gh pr list --json commits --limit 1000` printed). Each is the API's
-# answer, so the read stops on its first attempt and says it was rejected.
+# cost body is the one `gh pr list --json commits --limit 1000` printed). Under `GraphQL: ` an
+# unknown field carries its error's path (#707), here go-gh's rendering of the path a real
+# `gh api graphql -f query='query Q { node(id:"x") { ... on User { nosuchfield } } }'` answered.
+# Each is the API's answer, so the read stops on its first attempt and says it was rejected.
 test_a_fixed_graphql_answer_is_a_rejection() {
   local body
   local -a bodies=(
     'GraphQL: By the time this query traverses to the authors connection, it is requesting up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000.'
     'gh: By the time this query traverses to the comments connection, it is requesting up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000.'
-    'gh: Requesting 101 records on the `repositories` connection exceeds the `first` limit of 100 records.'
-    'gh: Requesting 101 records on the `repositories` connection exceeds the `last` limit of 100 records.'
     "gh: Field 'nosuchfield' doesn't exist on type 'User'"
+    "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (query.viewer.nosuchfield)"
+    "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (query Q.node.... on User.nosuchfield)"
     'gh: Expected NAME, actual: (none) ("") at [1, 12]'
     'gh: Expected one of SCHEMA, SCALAR, TYPE, ENUM, INPUT, UNION, INTERFACE, actual: RCURLY ("}") at [1, 22]'
     # A gateway marker the message only QUOTES, from `{ viewer { login "Bad gateway" } }`: the
@@ -432,6 +434,39 @@ test_a_graphql_not_found_is_fixed() {
   done
 }
 
+# The page limit (#707): gh's own commands print it with the error's path, which the allowlist
+# missed, so a refusal GitHub had answered was retried to exit 3. The bare lines and the document
+# are a real `gh api graphql` call's (gh 2.101.0, `repository(...) { issues(first:101) { ... } }`);
+# the pathed lines are go-gh's GraphQLError.Error over that document's path, and over a nested
+# one's. The document's `data` is why a write stays ambiguous: the limit is checked as its
+# connection resolves, after the fields above it ran, so a mutation's field may have landed.
+test_a_graphql_page_limit_is_fixed() {
+  local body
+  local -a bodies=(
+    'gh: Requesting 101 records on the `issues` connection exceeds the `first` limit of 100 records.'
+    'gh: Requesting 101 records on the `pullRequests` connection exceeds the `last` limit of 100 records.'
+    'GraphQL: Requesting 101 records on the `issues` connection exceeds the `first` limit of 100 records. (repository.issues)'
+    'GraphQL: Requesting 101 records on the `comments` connection exceeds the `first` limit of 100 records. (repository.pullRequests.nodes.0.comments)'
+  )
+  retune API_ATTEMPTS=3
+  for body in "${bodies[@]}"; do
+    reset_fixture
+    GQL_ERROR="$body"
+    GQL_OUT='{"data":{"repository":null},"errors":[{"type":"EXCESSIVE_PAGINATION","path":["repository","issues"],"locations":[{"line":1,"column":49}],"message":"Requesting 101 records on the `issues` connection exceeds the `first` limit of 100 records."}]}'
+    run_retry --read api graphql -f query=q
+    assert_eq "$RETRY_RC" 1 "a read past the page limit is exit 1 ($body: $RETRY_OUT)"
+    assert_contains "$RETRY_OUT" "was rejected: $body" "the message is the API's answer, quoted"
+    assert_not_contains "$RETRY_OUT" "never answered" "the API did answer ($body)"
+    assert_eq "$(gh_calls | wc -l | tr -d ' ')" 1 "and it is not re-sent ($body)"
+    reset_fixture
+    GQL_ERROR="$body"
+    run_retry api graphql -f query=q
+    assert_eq "$RETRY_RC" 3 "a write past the page limit may have landed a field ($body: $RETRY_OUT)"
+    assert_contains "$RETRY_OUT" "AMBIGUOUSLY" "so it is reported as ambiguous ($body)"
+    assert_eq "$(gh_calls | wc -l | tr -d ' ')" 1 "and not re-sent ($body)"
+  done
+}
+
 # The control: a gateway failure and GraphQL's execution failure are transport and still retry to
 # exit 3, so the case above cannot pass by never retrying anything.
 test_a_graphql_outage_still_retries() {
@@ -449,17 +484,23 @@ test_a_graphql_outage_still_retries() {
 }
 
 # The near-misses: an allowlisted sentence anywhere but as the whole first stderr line after one of
-# gh's two prefixes keeps the retry. Behind another prefix; with gh's ` (<path>)` suffix; on the
+# gh's two prefixes keeps the retry. Behind another prefix; with a ` (<path>)` suffix where gh
+# prints none, without one where gh always prints it, or with one outside the path grammar; on the
 # second line; and in stdout only, where a read's data can quote it.
 test_a_near_miss_still_retries() {
   local body
   local -a bodies=(
     'gh: proxy: By the time this query traverses to the comments connection, it is requesting up to 1,000,000 possible nodes which exceeds the maximum limit of 500,000.'
-    "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (query.viewer.nosuchfield)"
+    "gh: Field 'nosuchfield' doesn't exist on type 'User' (query.viewer.nosuchfield)"
+    "GraphQL: Field 'nosuchfield' doesn't exist on type 'User'"
+    "GraphQL: Field 'nosuchfield' doesn't exist on type 'User' (HTTP 502)"
     $'gh: Something went wrong (HTTP 500)\ngh: Field \'nosuchfield\' doesn\'t exist on type \'User\''
-    # NOT_FOUND's path suffix is `GraphQL: `'s alone, and required there.
+    # The path suffix of NOT_FOUND and the page limit is `GraphQL: `'s alone, and required there.
     'gh: Could not resolve to an Issue with the number of 99999. (repository.issue)'
     'GraphQL: Could not resolve to an Issue with the number of 99999.'
+    'gh: Requesting 101 records on the `issues` connection exceeds the `first` limit of 100 records. (repository.issues)'
+    'GraphQL: Requesting 101 records on the `issues` connection exceeds the `first` limit of 100 records.'
+    'GraphQL: Requesting 101 records on the `issues` connection exceeds the `first` limit of 100 records. (HTTP 502)'
   )
   retune API_ATTEMPTS=3
   for body in "${bodies[@]}"; do
@@ -1161,6 +1202,7 @@ tests=(
   test_the_await_beats_and_never_sleeps_past_its_deadline
   test_a_fixed_graphql_answer_is_a_rejection
   test_a_graphql_not_found_is_fixed
+  test_a_graphql_page_limit_is_fixed
   test_a_graphql_outage_still_retries
   test_a_near_miss_still_retries
   test_a_client_refusal_is_a_usage_error
