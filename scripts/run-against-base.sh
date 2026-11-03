@@ -108,7 +108,8 @@
 # return, with no expression, naming a file --mutate would refuse, or with an expression sed
 # refuses (checked against empty input), is refused before any run, naming its line number. Every
 # mutant runs against the same tree: the base resolved once (without --base, ONE working-tree
-# snapshot), so an edit made while the batch runs reaches none of them. The other options apply to
+# snapshot), so an edit made while the batch runs reaches none of them -- nor this helper's own: the
+# runs are a copy of it taken when the batch starts. The other options apply to
 # every mutant: a --mutate given beside --mutants is applied first in each run. Each run's output
 # is shown live, between `run-against-base: batch: [<k>/<n>] ...` headers, as a single run's is.
 #   --red <ERE>      a red line of a mutant run (default RUN_AGAINST_BASE_RED, else
@@ -814,6 +815,9 @@ if [ -n "$MUTANTS_FILE" ]; then
   else
     what=$rel
   fi
+  # The runs are this helper's copy as the batch started, not the file at $0: the brace group keeps
+  # an edit landing mid-batch out of this shell, and the copy keeps it out of the later runs.
+  cp -p "$0" "$SCRATCH/helper" || die "cannot copy $0 for the batch's runs"
   say "batch: $nm mutant(s) of $what against $base ($short), one run each; the report follows the last"
   [ -z "$SNAP_NOTE" ] || say "batch: $SNAP_NOTE"
   BM_RC=()
@@ -837,7 +841,7 @@ if [ -n "$MUTANTS_FILE" ]; then
     # would run its suite with INT ignored -- and a case that signals a child of its own would go
     # red on every mutant alike, hiding the survivors (it did, in this helper's own batch).
     set -m
-    "$BASH" "$0" "${run[@]}" >"$SCRATCH/fifo" 2>&1 </dev/null &
+    "$BASH" "$SCRATCH/helper" "${run[@]}" >"$SCRATCH/fifo" 2>&1 </dev/null &
     inner_pid=$!
     set +m
     trap 'exit 130' INT
@@ -888,7 +892,8 @@ if [ -n "$MUTANTS_FILE" ]; then
     *)
       killed=$((killed + 1))
       verdict="killed, exit $r"
-      [ "$r" -ne 124 ] || verdict="$verdict (timed out)"
+      # 124 is the timeout's only while one is armed: without one it is the suite's own status.
+      [ "$r" -ne 124 ] || [ "$TIMEOUT" -eq 0 ] || verdict="$verdict (timed out)"
       if [ "$nred" -gt 0 ]; then verdict="$verdict, $nred red"; else verdict="$verdict, nothing red"; fi
       ;;
     esac

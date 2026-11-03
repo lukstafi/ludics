@@ -1410,13 +1410,36 @@ if [ "$rc" -eq 0 ] && grep -qxF 'run-against-base: batch: [1] scripts/lib.sh: s/
 else
   ko "batch timeout: rc=$rc -- $out"
 fi
+# Without a timeout armed, a 124 is the suite's own status, not a hang.
+run_rab test-toy.sh --mutants "$BM" --rc124
+if [ "$rc" -eq 0 ] && grep -qxF 'run-against-base: batch: [1] scripts/lib.sh: s/$/ # mutated/: killed, exit 124, nothing red' <<<"$out"; then
+  ok "...and without --timeout a suite's own 124 is not marked timed out"
+else
+  ko "batch own 124: rc=$rc -- $out"
+fi
+# The runs are the helper as the batch started: a first run that edits the driving helper's file
+# (a copy here) reaches no later run.
+cp -p "$RAB" "$TMP/rab-driver.sh"
+printf '%s\n' 'lib.sh s/$/ # first/' 'lib.sh s/$/ # second/' >"$BM"
+# shellcheck disable=SC2016 # expanded by the inner sh
+out=$(cd "$R/scripts" && TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$TMP/rab-driver.sh" --command --mutants "$BM" -- \
+  sh -c 'grep -q first scripts/lib.sh && perl -0pi -e "s/\n/\nexit 99\n/" "$1"; exit 0' sh "$TMP/rab-driver.sh" 2>&1)
+rc=$?
+if [ "$rc" -eq 1 ] && grep -qxF 'run-against-base: batch: [2] scripts/lib.sh: s/$/ # second/: SURVIVED, exit 0' <<<"$out" \
+  && [ "$(sed -n 2p "$TMP/rab-driver.sh")" = 'exit 99' ]; then
+  ok "an edit to the helper's file during a batch reaches none of its later runs"
+else
+  ko "batch helper edit: rc=$rc line2=[$(sed -n 2p "$TMP/rab-driver.sh")] -- $out"
+fi
+printf '%s\n' 'lib.sh s/$/ # mutated/' >"$BM"
 # The command form: the cap on listed red lines, --tally carried into each run, and this helper's
 # own lines (a nested run's) never counted red.
 # shellcheck disable=SC2016 # expanded by the inner sh
 bm_cmd='echo "run-against-base: FAIL: a nested helper line"; grep -q MUT scripts/lib.sh || { echo "verdict: green"; exit 0; }
 i=0; while [ $i -lt 12 ]; do i=$((i + 1)); echo "FAIL: case $i"; done; echo "verdict: 12 red"; echo "trace row"; exit 1'
 printf '%s\n' 'lib.sh s/$/ # MUT/' 'lib.sh s/$/ # quiet/' >"$BM"
-run_rab --command --mutants "$BM" --tally '^verdict:' -- sh -c "$bm_cmd"
+# An unanchored --red, so the nested helper line would match it if this helper's own lines counted.
+run_rab --command --mutants "$BM" --tally '^verdict:' --red 'FAIL: ' -- sh -c "$bm_cmd"
 if [ "$rc" -eq 1 ] && grep -qxF 'run-against-base: batch: [1] scripts/lib.sh: s/$/ # MUT/: killed, exit 1, 12 red' <<<"$out" \
   && grep -qxF 'run-against-base: batch: [1]   FAIL: case 10' <<<"$out" \
   && ! grep -qF 'batch: [1]   FAIL: case 11' <<<"$out" \
