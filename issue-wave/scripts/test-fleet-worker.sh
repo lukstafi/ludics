@@ -611,10 +611,24 @@ cat > "$TMP/bin/tmux" <<EOF
 if [ -n "\${SHIM_TMUX_FAIL_NEW:-}" ]; then case " \$* " in *" new-session "*" -s iw-"*) echo "shim: tmux refuses new-session" >&2; exit 1 ;; esac; fi
 # A server caught exiting (ludics-lite#658): while the file SHIM_TMUX_EXITING names holds a count
 # above 0, a new-session of a session named by the glob SHIM_TMUX_EXITING_S (any, unset) takes one
-# off it and answers as a client that reached an exiting server does.
+# off it and answers as a client that reached an exiting server does. SHIM_TMUX_EXITING_HOW says
+# what the server did first (#716): nothing (unset); \`created\`, the real session, so it is up;
+# \`ran\`, the real session, killed once its command has passed the worker's start fence (the
+# directory its leading \`rmdir\` names), so the run started and is gone. SHIM_TMUX_EXITING_CMD
+# names a file each such try's command is appended to.
 if [ -n "\${SHIM_TMUX_EXITING:-}" ] && [ "\$(cat "\$SHIM_TMUX_EXITING")" -gt 0 ]; then
   case " \$* " in *" new-session "*" -s "\${SHIM_TMUX_EXITING_S:-*}" "*)
-    echo \$((\$(cat "\$SHIM_TMUX_EXITING") - 1)) > "\$SHIM_TMUX_EXITING"; echo "server exited unexpectedly" >&2; exit 1 ;;
+    echo \$((\$(cat "\$SHIM_TMUX_EXITING") - 1)) > "\$SHIM_TMUX_EXITING"
+    cmd=\${@: -1}; [ -z "\${SHIM_TMUX_EXITING_CMD:-}" ] || printf '%s\n' "\$cmd" >> "\$SHIM_TMUX_EXITING_CMD"
+    case "\${SHIM_TMUX_EXITING_HOW:-}" in created|ran) "$REAL_TMUX" "\$@" || exit 1 ;; esac
+    if [ "\${SHIM_TMUX_EXITING_HOW:-}" = ran ]; then
+      pre=(); for a in "\$@"; do [ "\$a" = new-session ] && break; pre+=("\$a"); done
+      s=""; prev=""; for a in "\$@"; do [ "\$prev" = -s ] && s=\$a; prev=\$a; done
+      f=\${cmd#rmdir }; f=\${f%% *}
+      for _ in \$(seq 1 100); do [ -d "\$f" ] || break; sleep 0.1; done
+      "$REAL_TMUX" "\${pre[@]}" kill-session -t "=\$s"
+    fi
+    echo "server exited unexpectedly" >&2; exit 1 ;;
   esac
 fi
 # The server the preflight's environment check reads (ludics-lite#327): SHIM_TMUX_GENV names a
@@ -2127,13 +2141,44 @@ expect "unstick --kill of the finished worker leaves the sibling session alone" 
 expect "...the sibling is still running" 0 "RUNNING testbox/p-12" -- "$FW" status testbox p-12
 settle p-1
 "$FW" unstick testbox p-12 --message "$TMP/msg.md" --kill >/dev/null; settle p-12
-# A worker's session is never tried again (ludics-lite#658): "server exited unexpectedly" can
-# follow a session the server did create, and a second try could start a second worker.
-echo 2 > "$TMP/exiting"
-expect "a launch whose worker session reaches an exiting tmux server refuses, not tries again" 1 "LAUNCH REFUSED testbox/te: tmux failed" -- \
-  env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-*' "$FW" launch testbox te --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
-[ "$(cat "$TMP/exiting")" = 1 ] && ok "...after its one try" || ko "worker-session tries against an exiting server: $((2 - $(cat "$TMP/exiting"))), want 1"
-[ -d "$ISSUE_WAVE_STATE/workers/te" ] && ko "the refused launch left a record" || ok "...leaving no record"
+# A worker's session that meets an exiting tmux server (ludics-lite#658) is tried again only once
+# nothing can have started (#716): "server exited unexpectedly" can follow a session the server did
+# create, and a blind second try could start a second worker. Each try's command passes a start
+# fence first, and the launcher claims a failed try's fence before the next.
+sessions_named() { "$REAL_TMUX" -L "$FLEET_TMUX_SOCKET" list-sessions -F '#{session_name}' 2>/dev/null | grep -cx -- "$1"; }
+echo 2 > "$TMP/exiting"; : > "$TMP/exiting-cmds"
+expect "a launch whose worker session reaches an exiting tmux server, which created nothing, is tried again and launches" 0 "LAUNCHED testbox/te " -- \
+  env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-*' SHIM_TMUX_EXITING_CMD="$TMP/exiting-cmds" "$FW" launch testbox te --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
+[ "$(cat "$TMP/exiting")" = 0 ] && ok "...past both refusals" || ko "worker-session tries against an exiting server: $((2 - $(cat "$TMP/exiting"))), want 2 refused"
+settle te
+# The refused tries' commands, run late (a server that had forked them after all): each finds its
+# fence claimed and exits before run.sh.
+lines=$(grep -c '' "$ISSUE_WAVE_STATE/workers/te/stream.jsonl")
+late=0; while IFS= read -r c; do sh -c "$c" </dev/null >/dev/null 2>&1 && late=$((late + 1)); done < "$TMP/exiting-cmds"
+[ "$late" = 0 ] && [ "$(grep -c '' "$TMP/exiting-cmds")" = 2 ] && [ "$(grep -c '' "$ISSUE_WAVE_STATE/workers/te/stream.jsonl")" = "$lines" ] &&
+  ok "...and a refused try's command run late starts nothing" || ko "late commands that ran: $late of $(grep -c '' "$TMP/exiting-cmds"), stream $lines -> $(grep -c '' "$ISSUE_WAVE_STATE/workers/te/stream.jsonl") lines"
+echo 1 > "$TMP/exiting"; : > "$TMP/exiting-cmds"
+expect "a launch whose exiting server had created the worker's session takes it, and starts no second one" 0 "LAUNCHED testbox/tc " -- \
+  env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-tc' SHIM_TMUX_EXITING_HOW=created SHIM_TMUX_EXITING_CMD="$TMP/exiting-cmds" "$FW" launch testbox tc --target-repo example/project --kind claude --brief "$TMP/slow20.md" --cwd "$proj"
+[ "$(grep -c '' "$TMP/exiting-cmds")" = 1 ] && [ "$(sessions_named iw-tc)" = 1 ] && ok "...in its one try, as the one session" ||
+  ko "tries: $(grep -c '' "$TMP/exiting-cmds"), sessions named iw-tc: $(sessions_named iw-tc), want 1 and 1"
+"$FW" unstick testbox tc --message "$TMP/msg.md" --kill >/dev/null; settle tc
+echo 1 > "$TMP/exiting"; : > "$TMP/exiting-cmds"
+expect "a launch whose run.sh started before its session went with the server is not tried again, and keeps the record" 1 \
+  "LAUNCH REFUSED testbox/tr: tmux failed after the worker's run.sh had started, so it was not tried again; the record is kept" -- \
+  env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-tr' SHIM_TMUX_EXITING_HOW=ran SHIM_TMUX_EXITING_CMD="$TMP/exiting-cmds" "$FW" launch testbox tr --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
+[ "$(grep -c '' "$TMP/exiting-cmds")" = 1 ] && [ "$(sessions_named iw-tr)" = 0 ] && [ -f "$ISSUE_WAVE_STATE/workers/tr/meta" ] &&
+  ok "...after its one try, no session, the record in place" || ko "tries: $(grep -c '' "$TMP/exiting-cmds"), sessions named iw-tr: $(sessions_named iw-tr), meta: $(ls "$ISSUE_WAVE_STATE/workers/tr" 2>&1 | tr '\n' ' ')"
+echo 9 > "$TMP/exiting"
+expect "a launch whose server keeps exiting still refuses" 1 "LAUNCH REFUSED testbox/tk: tmux failed" -- \
+  env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-*' "$FW" launch testbox tk --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
+[ "$(cat "$TMP/exiting")" = 4 ] && ok "...after five tries" || ko "tries against a server that keeps exiting: $((9 - $(cat "$TMP/exiting"))), want 5"
+[ -d "$ISSUE_WAVE_STATE/workers/tk" ] && ko "the refused launch left a record" || ok "...leaving no record"
+echo 1 > "$TMP/exiting"
+expect "an unstick whose resumed session reaches an exiting server is tried again" 0 "RESUMED testbox/te " -- \
+  env SHIM_TMUX_EXITING="$TMP/exiting" SHIM_TMUX_EXITING_S='iw-te' "$FW" unstick testbox te --message "$TMP/msg.md"
+[ "$(cat "$TMP/exiting")" = 0 ] && ok "...past its refusal" || ko "the unstick never met the exiting server"
+settle te
 expect "a first launch whose tmux fails leaves no record behind" 1 "LAUNCH REFUSED testbox/tf: tmux failed" -- env SHIM_TMUX_FAIL_NEW=1 "$FW" launch testbox tf --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
 [ -d "$ISSUE_WAVE_STATE/workers/tf" ] && ko "failed first launch left a record" || ok "no record left by the failed first launch"
 expect "...so the name launches normally afterwards" 0 "LAUNCHED testbox/tf" -- "$FW" launch testbox tf --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"

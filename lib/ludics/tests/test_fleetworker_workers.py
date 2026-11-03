@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from ludics.fleetworker import farside
@@ -306,6 +307,118 @@ class TmNew(unittest.TestCase):
     def test_a_server_that_keeps_exiting_refuses_after_five_tries(self) -> None:
         rc, err, calls = self.run_new(["server exited unexpectedly"] * 9)
         self.assertEqual((rc, err, len(calls)), (1, "server exited unexpectedly\n", 5))
+
+
+@unittest.skipIf(shutil.which("bash") is None or shutil.which("tmux") is None, "no bash or no tmux")
+class TmWorker(unittest.TestCase):
+    """farside.HELPERS' tm_worker: a worker's session, tried again only once nothing can have
+    started (#716), against a real tmux server on a scratch socket. The stand-in tmux answers the
+    n-th new-session as answers[n] says (past the list it is the real one): `none`, an exiting
+    server that created nothing; `created`, one that created the session first; `ran`, one whose
+    session's command passed the start fence before the session went; `other`, any other refusal."""
+
+    STAND_IN = r"""#!/bin/sh
+case " $* " in *" new-session "*)
+  n=0; [ ! -e "$0.calls" ] || n=$(($(wc -l < "$0.calls")))
+  for a; do last=$a; done; printf '%s\n' "$last" >> "$0.calls"
+  how=$(cat "$(dirname "$0")/answer$n" 2>/dev/null)
+  case "$how" in
+    none) echo "server exited unexpectedly" >&2; exit 1 ;;
+    created) "$REAL_TMUX" "$@" || exit 1; echo "server exited unexpectedly" >&2; exit 1 ;;
+    ran)
+      "$REAL_TMUX" "$@" || exit 1
+      f=${last#rmdir }; f=${f%% *}; i=0
+      while [ -d "$f" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+      "$REAL_TMUX" -L "$TMUX_SOCKET" kill-session -t =iw-w; echo "server exited unexpectedly" >&2; exit 1 ;;
+    other) echo "duplicate session: iw-w" >&2; exit 1 ;;
+  esac ;;
+esac
+exec "$REAL_TMUX" "$@"
+"""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.mkdtemp(prefix="fw-tmw.")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.sock = f"fwtest-tmw-{os.getpid()}"
+        self.real = shutil.which("tmux") or "tmux"
+        self.addCleanup(subprocess.run, [self.real, "-L", self.sock, "kill-server"], capture_output=True, check=False)
+        self.rec = os.path.join(self.dir, "rec")
+        os.mkdir(self.rec)
+        with open(os.path.join(self.rec, "run.sh"), "w") as f:
+            f.write(f"echo ran >> {shlex.quote(os.path.join(self.rec, 'ran'))}\nexec sleep 30\n")
+        os.mkdir(os.path.join(self.dir, "bin"))
+        self.tmux = os.path.join(self.dir, "bin", "tmux")
+        with open(self.tmux, "w") as f:
+            f.write(self.STAND_IN)
+        os.chmod(self.tmux, 0o755)
+
+    def start(self, answers: list[str]) -> tuple[int, str, list[str]]:
+        """tm_worker w against the stand-in; returns its status, stderr and each try's command."""
+        for i, answer in enumerate(answers):
+            with open(os.path.join(self.dir, "bin", f"answer{i}"), "w") as f:
+                f.write(answer + "\n")
+        env = {
+            **os.environ, "PATH": os.path.dirname(self.tmux) + os.pathsep + os.environ["PATH"],
+            "TMUX_SOCKET": self.sock, "STATE": self.dir, "REAL_TMUX": self.real, "REC": self.rec,
+        }  # fmt: skip
+        done = subprocess.run(
+            ["bash", "-c", farside.HELPERS + 'tm_worker w "$REC"'], env=env, capture_output=True, text=True, check=False
+        )
+        calls = []
+        if os.path.exists(self.tmux + ".calls"):
+            with open(self.tmux + ".calls") as f:
+                calls = f.read().splitlines()
+        return done.returncode, done.stderr, calls
+
+    def runs(self, want: int = 0) -> int:
+        """How many times run.sh started, waiting up to 5 s for it to reach <want>."""
+        n = 0
+        for _ in range(50):
+            with contextlib.suppress(FileNotFoundError), open(os.path.join(self.rec, "ran")) as f:
+                n = len(f.read().splitlines())
+            if n >= want:
+                break
+            time.sleep(0.1)
+        return n
+
+    def sessions(self) -> int:
+        done = subprocess.run(
+            [self.real, "-L", self.sock, "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True, check=False
+        )
+        return done.stdout.splitlines().count("iw-w")
+
+    def fences(self) -> list[str]:
+        return [n for n in os.listdir(self.rec) if n.startswith("start.")]
+
+    def test_tries_that_created_nothing_are_retried_and_their_late_commands_start_nothing(self) -> None:
+        rc, err, calls = self.start(["none", "none"])
+        self.assertEqual((rc, err, len(calls)), (0, "", 3))
+        self.assertEqual((self.runs(1), self.sessions()), (1, 1))
+        for c in calls[:2]:  # a server that had forked a refused try after all, running it now
+            self.assertNotEqual(subprocess.run(["sh", "-c", c], capture_output=True, check=False).returncode, 0)
+        time.sleep(0.3)
+        self.assertEqual((self.runs(), self.fences()), (1, []))
+
+    def test_a_session_the_exiting_server_created_is_taken_with_no_retry(self) -> None:
+        rc, _, calls = self.start(["created"])
+        self.assertEqual((rc, len(calls)), (0, 1))
+        self.assertEqual((self.runs(1), self.sessions()), (1, 1))
+
+    def test_a_run_that_started_before_its_session_went_is_not_retried(self) -> None:
+        rc, err, calls = self.start(["ran"])
+        self.assertEqual((rc, err, len(calls)), (2, "server exited unexpectedly\n", 1))
+        self.assertEqual((self.sessions(), self.fences()), (0, []))
+
+    def test_any_other_refusal_is_final_and_leaves_no_fence(self) -> None:
+        rc, err, calls = self.start(["other", "none"])
+        self.assertEqual((rc, err, len(calls)), (1, "duplicate session: iw-w\n", 1))
+        self.assertEqual((self.runs(), self.sessions(), self.fences()), (0, 0, []))
+
+    def test_a_server_that_keeps_exiting_refuses_after_five_tries(self) -> None:
+        os.mkdir(os.path.join(self.rec, "start.stale"))  # a fence a session never passed
+        rc, err, calls = self.start(["none"] * 9)
+        self.assertEqual((rc, err, len(calls)), (1, "server exited unexpectedly\n", 5))
+        self.assertEqual((self.runs(), self.sessions(), self.fences()), (0, 0, []))
 
 
 @unittest.skipIf(shutil.which("bash") is None, "no bash")
