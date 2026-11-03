@@ -18,11 +18,11 @@ without ``--allow-escape-sequences``) is the caller's call to fix too, though th
 GitHub: it was read as transport, retried four times and reported UNKNOWN (post-wave-3 task 8).
 
 Stdout: gh's own, on success. Exit: 0 done; 1 the API rejected it (a 4xx, or a GraphQL error no
-retry can change, ludics-lite#422, or under --read a NOT_FOUND, ludics-lite#663); 2 usage, or gh
-refused the arguments and sent nothing, or gh withheld the answer for want of
+retry can change, ludics-lite#422, or under --read a NOT_FOUND, ludics-lite#663, or a page limit,
+#707); 2 usage, or gh refused the arguments and sent nothing, or gh withheld the answer for want of
 ``--allow-escape-sequences``; 3 the API never answered, or a write failed ambiguously, a NOT_FOUND
-included (another field of it may have landed) -- the outcome is UNKNOWN, never a failure of the
-command's job.
+or a page limit included (another field of it may have landed) -- the outcome is UNKNOWN, never a
+failure of the command's job.
 """
 
 from typing import assert_never
@@ -42,7 +42,7 @@ from ludics.prreview.core import (
     fail,
     gh_api_only_command,
     graphql_fixed_answer,
-    graphql_not_found,
+    graphql_ran_fixed,
 )
 
 
@@ -89,9 +89,10 @@ def run(session: GhSession, args: list[str]) -> int:
                 "write, and never report the command as having failed to do its job.",
             )
         case GhFailed():
-            # A NOT_FOUND is the fact only for a read: a write's other fields may have landed.
-            not_found = mode == "read" and graphql_not_found(err)
-            if api_rejection(err) or graphql_fixed_answer(err) or not_found:
+            # A NOT_FOUND or a page limit is the fact only for a read: its document ran, so a
+            # write's other fields may have landed.
+            ran_fixed = mode == "read" and graphql_ran_fixed(err)
+            if api_rejection(err) or graphql_fixed_answer(err) or ran_fixed:
                 fail(1, f"gh {command} was rejected: {err}")
             fail(
                 3,

@@ -10,7 +10,7 @@ history; read them there before changing a rule here):
   Config / load_config            the source-time constants and their validation
   GhSession.retry / retry_caller  ``gh_retry`` and its classification: ``gateway_failure``,
                                   ``api_rejection``, ``graphql_fixed_answer``,
-                                  ``graphql_not_found`` (ludics-lite#663),
+                                  ``graphql_ran_fixed`` (ludics-lite#663, #707),
                                   ``gh_unreadable_answer`` and ``split_included`` (an answer
                                   gh could not read, classified by the status line
                                   ``--include`` keeps: ludics-lite#612),
@@ -182,76 +182,108 @@ def api_rejection(text: str) -> bool:
 
 
 # Did GraphQL answer with an error whose answer is FIXED, one that re-sending the same query can
-# never change? Retried as transport, a query-cost rejection (ludics-lite#422) and a lookup of an
-# issue that does not exist (ludics-lite#663) each spent four attempts and ~35s and then reported
-# "the API never answered" -- which it had.
+# never change? Retried as transport, a query-cost rejection (ludics-lite#422), a lookup of an issue
+# that does not exist (ludics-lite#663) and a page-limit refusal from gh's own commands (#707) each
+# spent four attempts and ~35s and then reported "the API never answered" -- which it had.
 #
 # The boundary. Both readers below read ONE line, the first line of gh's stderr, where gh prints a
 # GraphQL error's message after `gh: ` (`gh api graphql`) or `GraphQL: ` (every other gh command).
 # Each is a fail-closed ALLOWLIST of whole-line shapes, copied from real failing calls (gh 2.101.0).
-# graphql_fixed_answer, a query GraphQL refused to validate, so it ran nothing:
+# Under `GraphQL: ` gh (go-gh's GraphQLError.Error) appends ` (<path>)`, the error's `path` joined
+# with ".", whenever the error carries one; under `gh: ` it never does. So a shape whose error
+# carries a path takes the suffix under `GraphQL: ` and requires it there, in the grammar below, and
+# a shape whose error carries none takes no suffix under either prefix.
+# graphql_fixed_answer, a query GraphQL refused to validate, so it ran nothing (no `data` key):
 #   the node limit    By the time this query traverses to the <c> connection, it is requesting up
-#                     to <n> possible nodes which exceeds the maximum limit of <n>.
+#                     to <n> possible nodes which exceeds the maximum limit of <n>.        no path
+#   an unknown field  Field '<f>' doesn't exist on type '<T>'                         document path
+#   a parse error     Expected <tokens>, actual: <TOKEN> ("<text>") at [<line>, <column>]  no path
+# graphql_ran_fixed, an error raised while the document RAN (its `data` resolved around it):
+#   not found         Could not resolve to a|an <Type> with the <key> <n>|'<text>'.   response path
 #   the page limit    Requesting <n> records on the `<c>` connection exceeds the `first|last`
-#                     limit of <n> records.
-#   an unknown field  Field '<f>' doesn't exist on type '<T>'
-#   a parse error     Expected <tokens>, actual: <TOKEN> ("<text>") at [<line>, <column>]
-# graphql_not_found, GraphQL's NOT_FOUND: an issue, PR, repository, user or node id that does not
-# exist. Under `GraphQL: ` gh appends the error's ` (<path>)`, which this shape alone takes, and
-# requires, since every NOT_FOUND carries a path:
-#   not found         Could not resolve to a|an <Type> with the <key> <n>|'<text>'.
-# A NOT_FOUND is the answer of a document that RAN: no retry creates the object, so it is never
-# retried, but another field of the same mutation may have landed (a caller's `retry` can send
-# several), so it is no evidence that a write did nothing -- a write reads it as ambiguous, and only
-# a read takes it as the fact (exit 1). The machine type (`errors[].type`) is not read: only `gh
-# api graphql` prints the error document, on stdout, while gh's own commands (`pr view`, `issue
+#                     limit of <n> records.                                           response path
+# A document path (a validation error's) is the operation (`query`, `query <Name>`, `mutation`,
+# `mutation <Name>`) or `fragment <Name>`, then fields and `... on <Type>` inline fragments; a
+# response path is field names and aliases, with list indices after the first. The page limit is
+# checked when its connection resolves, after the fields above it did: `{ repository { issues(first:
+# 101) } }` answers `"data":{"repository":null}`, and a nested one answers its parent's nodes. So,
+# as for a NOT_FOUND, no retry changes the answer, but a mutation's field may have landed before it
+# (a caller's `retry` can send several): it is never retried, a write reads it as ambiguous, and
+# only a read takes it as the fact (exit 1). The machine type (`errors[].type`) is not read: only
+# `gh api graphql` prints the error document, on stdout, while gh's own commands (`pr view`, `issue
 # view`) print only the message, so the message is the one reading that serves both. Neither reader
-# reads stdout (a read's data can quote any of these sentences), the lines after the first, a
-# ` (<path>)` suffix on any shape but not found, several errors gh joined onto one line, gh's own
-# client-side refusals (`Unknown JSON field`), or any other GraphQL message. Those keep the
-# classification they had, and that direction is the point: a fixed shape this misses costs only
-# the retries it always cost, while a transient failure read as fixed would turn an unanswered read
-# into a false fact (exit 1).
-_GRAPHQL_FIXED = tuple(
-    re.compile(p)
-    for p in (
+# reads stdout (a read's data can quote any of these sentences), the lines after the first, a path
+# outside its grammar (`(HTTP 502)` is none), several errors gh joined onto one line, an inline
+# fragment with no type condition, gh's own client-side refusals (`Unknown JSON field`), or any
+# other GraphQL message. Those keep the classification they had, and that direction is the point:
+# a fixed shape this misses costs only the retries it always cost, while a transient failure read
+# as fixed would turn an unanswered read into a false fact (exit 1).
+_GRAPHQL_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_GRAPHQL_RESPONSE_PATH = rf"{_GRAPHQL_NAME}(\.({_GRAPHQL_NAME}|[0-9]+))*"
+_GRAPHQL_DOCUMENT_PATH = (
+    rf"((query|mutation)( {_GRAPHQL_NAME})?|fragment {_GRAPHQL_NAME})"
+    rf"(\.({_GRAPHQL_NAME}|\.\.\. on {_GRAPHQL_NAME}))+"
+)
+
+
+# Each shape's whole-line patterns: after ``gh: ``, and after ``GraphQL: ``.
+_GraphqlShapes = tuple[tuple[re.Pattern[str], re.Pattern[str]], ...]
+
+
+def _graphql_shapes(*shapes: tuple[str, str | None]) -> _GraphqlShapes:
+    """Each (message, path grammar or None) as its whole-line patterns after ``gh: `` and after
+    ``GraphQL: ``: the bare message, and the message with its required path suffix if it has one."""
+    return tuple(
+        (re.compile(msg), re.compile(msg if path is None else rf"{msg} \({path}\)"))
+        for msg, path in shapes
+    )
+
+
+_GRAPHQL_FIXED = _graphql_shapes(
+    (
         r"By the time this query traverses to the [A-Za-z0-9_]+ connection, it is requesting up"
         r" to [0-9,]+ possible nodes which exceeds the maximum limit of [0-9,]+\.",
+        None,
+    ),
+    (r"Field '[A-Za-z0-9_]+' doesn't exist on type '[A-Za-z0-9_]+'", _GRAPHQL_DOCUMENT_PATH),
+    (r'Expected [A-Za-z_ ,]+, actual: ([A-Z_]+|\(none\)) \(".*"\) at \[[0-9]+, [0-9]+\]', None),
+)
+_GRAPHQL_RAN_FIXED = _graphql_shapes(
+    (
+        r"Could not resolve to an? [A-Za-z ]+ with the [A-Za-z ]+ ([0-9]+|'[^']*')\.",
+        _GRAPHQL_RESPONSE_PATH,
+    ),
+    (
         r"Requesting [0-9,]+ records on the `[A-Za-z0-9_]+` connection exceeds the"
         r" `(first|last)` limit of [0-9,]+ records\.",
-        r"Field '[A-Za-z0-9_]+' doesn't exist on type '[A-Za-z0-9_]+'",
-        r'Expected [A-Za-z_ ,]+, actual: ([A-Z_]+|\(none\)) \(".*"\) at \[[0-9]+, [0-9]+\]',
-    )
+        _GRAPHQL_RESPONSE_PATH,
+    ),
 )
-_GRAPHQL_NOT_FOUND = r"Could not resolve to an? [A-Za-z ]+ with the [A-Za-z ]+ ([0-9]+|'[^']*')\."
-_GRAPHQL_NOT_FOUND_BARE = re.compile(_GRAPHQL_NOT_FOUND)
-_GRAPHQL_NOT_FOUND_PATHED = re.compile(_GRAPHQL_NOT_FOUND + r" \([A-Za-z0-9_.]+\)")
+
+
+def _graphql_line(first_line: str, shapes: _GraphqlShapes) -> bool:
+    if first_line.startswith("gh: "):
+        msg, pick = first_line[len("gh: ") :], 0
+    elif first_line.startswith("GraphQL: "):
+        msg, pick = first_line[len("GraphQL: ") :], 1
+    else:
+        return False
+    return any(pair[pick].fullmatch(msg) for pair in shapes)
 
 
 def graphql_fixed_answer(first_line: str) -> bool:
     """``graphql_fixed_answer``: GraphQL refused to validate the query, so re-sending it can never
     change the answer, and it ran nothing. Reads the first stderr line only, behind gh's
     ``gh: ``/``GraphQL: `` (the boundary above)."""
-    if first_line.startswith("gh: "):
-        msg = first_line[len("gh: ") :]
-    elif first_line.startswith("GraphQL: "):
-        msg = first_line[len("GraphQL: ") :]
-    else:
-        return False
-    return any(p.fullmatch(msg) for p in _GRAPHQL_FIXED)
+    return _graphql_line(first_line, _GRAPHQL_FIXED)
 
 
-def graphql_not_found(first_line: str) -> bool:
-    """GraphQL's NOT_FOUND (ludics-lite#663): what the document names does not exist, so re-sending
-    it can never change the answer -- though, unlike ``graphql_fixed_answer``, the document ran.
-    The first stderr line only, as ``gh api graphql`` (``gh: <message>``) or gh's own commands
-    (``GraphQL: <message> (<path>)``) print it (the boundary above)."""
-    if first_line.startswith("gh: "):
-        return _GRAPHQL_NOT_FOUND_BARE.fullmatch(first_line[len("gh: ") :]) is not None
-    if first_line.startswith("GraphQL: "):
-        return _GRAPHQL_NOT_FOUND_PATHED.fullmatch(first_line[len("GraphQL: ") :]) is not None
-    return False
-
+def graphql_ran_fixed(first_line: str) -> bool:
+    """A NOT_FOUND (ludics-lite#663) or the page limit (#707): re-sending the document can never
+    change the answer -- though, unlike ``graphql_fixed_answer``, the document ran. The first stderr
+    line only, as ``gh api graphql`` (``gh: <message>``) or gh's own commands (``GraphQL: <message>
+    (<path>)``) print it (the boundary above)."""
+    return _graphql_line(first_line, _GRAPHQL_RAN_FIXED)
 
 _SPACE = r" \t\n\r\f\v"  # [[:space:]] in the C locale, which is what the shell's lists mean
 _CLIENT_REFUSALS = tuple(
@@ -724,9 +756,10 @@ class GhSession:
                 self._quota = True
                 return GhUnanswered()
             # A fixed GraphQL answer is read FIRST, under both policies: the substring scans
-            # below would match a marker the message only quotes. A NOT_FOUND is as fixed, but
-            # its document ran, so it is not one of the answers that rule a landing out below.
-            if graphql_fixed_answer(first) or graphql_not_found(first):
+            # below would match a marker the message only quotes. A NOT_FOUND or a page limit is
+            # as fixed, but its document ran, so it is not one of the answers that rule a landing
+            # out below.
+            if graphql_fixed_answer(first) or graphql_ran_fixed(first):
                 retryable = False
             elif mode == "write":
                 retryable = gateway_failure(f"{err} {out}")

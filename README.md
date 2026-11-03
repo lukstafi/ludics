@@ -998,12 +998,14 @@ against that refusal: a 4xx on the pair is an invocation error (exit 2) and a ru
 `failure` is still the verdict (exit 1), with an unanswered read exit 3 and a run still going at
 the deadline exit 4. It pins the plain `retry`'s line between a GraphQL answer and transport too
 (ludics-lite#422): a query-cost rejection used to be retried four times and reported as "the API
-never answered". Each GraphQL body on the fixed-answer allowlist, verbatim from a real `gh` call,
-exits 1 on its first attempt. A `Could not resolve to …` NOT_FOUND (ludics-lite#663: a mistyped
-wave issue read as unreachable) is not re-sent either, exit 1 for a read and 3 for a write, whose
-other fields may have landed. A gateway failure, GraphQL's execution failure and the near-misses
-(another prefix, gh's path suffix where its shape takes none or a NOT_FOUND without it, a second
-line, stdout) still retry to exit 3. And gh refusing a
+never answered". Each GraphQL body on the fixed-answer allowlist, verbatim from a real `gh` call
+(an unknown field under `GraphQL: ` with its error's path, #707), exits 1 on its first attempt. A
+`Could not resolve to …` NOT_FOUND (ludics-lite#663: a mistyped wave issue read as unreachable)
+and the page limit (#707: gh's own commands print it with its path, which the allowlist missed)
+are not re-sent either, exit 1 for a read and 3 for a write: their document ran, so another of its
+fields may have landed. A gateway failure, GraphQL's execution failure and the near-misses
+(another prefix, a path suffix where gh prints none, none where it always prints one, or one
+outside the path grammar, a second line, stdout) still retry to exit 3. And gh refusing a
 caller's own arguments (ludics-lite#452: `gh pr view 1 --json nosuchfield` sends nothing, yet was
 retried four times to exit 3): each refusal on that allowlist, verbatim from a real call that sent
 no request, exits 2 on its first attempt under both policies; its near-misses (a prefix, a suffix,
