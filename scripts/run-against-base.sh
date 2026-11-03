@@ -685,9 +685,28 @@ gone() {
 }
 # TEE_DRAIN (default 30s): how long tee gets to see EOF once the suite's group is stopped. Not the
 # suite's grace, which may be 0 or 1: a tee that needs a moment on a loaded box is not a failed
-# capture (a macOS CI runner took over a second). Past it, either a process that escaped the group
-# still holds the fifo, or tee itself is stuck; macOS CI has hit it with suites that start nothing
-# (ludics-lite#479, cause not yet found), so the refusal names what tee was waiting on.
+# capture (a macOS CI runner took over a second). Past it, a process that escaped the group still
+# holds the fifo, or tee itself is stuck, and the refusal names what tee was waiting on.
+# drain_tee SECONDS: true once tee is gone, polling as `gone` does, for at most SECONDS. While tee
+# is still live, from its first second on and once a second, the fifo is opened read-write and
+# closed again (`: <>`, an open that never blocks on a fifo). That is the cure for ludics#479: the
+# macOS kernel can lose the EOF of a fifo's last writer. Its reader has read every byte and then
+# sleeps in read() with no writer left anywhere -- the CI sightings' `tee is [... S< tee ...]; the
+# fifo is also open in [nothing else]` -- and on mac-studio (Darwin 27.2) a bare perl reader and
+# writer did it 22 times in 200000 runs. One write-open and close is a new last-writer close: in
+# the runs that tried it, it released each stuck reader with its EOF. It cannot end a capture
+# early: a writer that escaped the group holds the fifo open across it, and tee goes on waiting.
+drain_tee() {
+  local i=0 limit=$1
+  while live "$teepid"; do
+    [ "$i" -ge $((limit * 10)) ] && return 1
+    if [ "$i" -gt 0 ] && [ $((i % 10)) -eq 0 ] && [ -p "$SCRATCH/fifo" ]; then
+      { : <>"$SCRATCH/fifo"; } 2>/dev/null
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
 # fifo_holders: what a tee that never saw EOF was waiting on, for the line that reports it
 # (ludics-lite#479): tee's own state, then every other process that still has the fifo open, with
 # its parent and process group. BOUNDARY: the holders are this user's processes whose open files
@@ -746,7 +765,7 @@ cleanup() {
   [ -n "$SCRATCH" ] || return 0
   [ -n "$inner_pid" ] && stop_inner
   [ -n "$child" ] && stop_group
-  if [ -n "$teepid" ] && ! gone "$teepid" "$TEE_DRAIN"; then
+  if [ -n "$teepid" ] && ! drain_tee "$TEE_DRAIN"; then
     printf '%s\n' "run-against-base: the output capture never saw its end ($(fifo_holders))" >&2
     kill "$teepid" 2>/dev/null
   fi
@@ -853,7 +872,7 @@ if [ -n "$MUTANTS_FILE" ]; then
     wait "$inner_pid"
     BM_RC+=("$?")
     inner_pid=
-    if gone "$teepid" "$TEE_DRAIN"; then
+    if drain_tee "$TEE_DRAIN"; then
       wait "$teepid"
       tee_rc=$?
     else
@@ -1149,7 +1168,7 @@ child=
 # tee is reaped and judged too: a capture that failed, or that something outside the group still
 # held open past the grace, would make the result line (and a SIGPIPE'd suite's status) a claim
 # about output nobody read.
-if gone "$teepid" "$TEE_DRAIN"; then
+if drain_tee "$TEE_DRAIN"; then
   wait "$teepid"
   tee_rc=$?
 else
