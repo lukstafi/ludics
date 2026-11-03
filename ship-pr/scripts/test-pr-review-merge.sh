@@ -2761,7 +2761,8 @@ build_compare() { # <work> <from> <to> <behind> <ahead>
 # #738's shape); base-red = the base renames hook() as in clash and marks a red (`red=1`, which
 # $MERGE_BUILD_RED reports) on that line, the PR calling keep(): a failure the base alone shares
 # (#860); base-red-clash = the same base, the PR calling hook as in clash: that red plus the
-# merge's own. Sets BUILD_CLONE,
+# merge's own; ml-comment = both sides edit lib.ml in disjoint hunks, the PR its code and the base a
+# comment alone (#861); ml-code = the same, the base editing code. Sets BUILD_CLONE,
 # BUILD_HEAD and BUILD_TIP, and points the fixture's gated head, tip, compares and series at them.
 build_fixture() { # <kind>
   local root="$TEST_ROOT/build-$1" work remote base
@@ -2775,6 +2776,9 @@ build_fixture() { # <kind>
   printf '%s\n' 'hook() { :; }' '# one' '# two' '# three' '# four' 'keep() { :; }' \
     '# five' '# six' '# seven' '# eight' >"$work/api.sh"
   printf '%s\n' 'Notes' 'a' 'b' 'c' 'd' 'e' 'f' 'g' >"$work/notes.md"
+  case "$1" in
+  ml-*) printf '%s\n' '(* The library. *)' 'let a = 1' '' '' '' '' '' 'let b = 2 (* two *)' >"$work/lib.ml" ;;
+  esac
   build_git "$work" add -A
   build_git "$work" commit -q -m base
   build_git "$work" push -q "$remote" HEAD:refs/heads/main
@@ -2795,6 +2799,7 @@ build_fixture() { # <kind>
   compatible | base-red) printf 'keep\n' >>"$work/api.sh" ;;
   base-red-clash) printf 'hook\n' >>"$work/api.sh" ;;
   notes) printf 'pr\n' >>"$work/notes.md" ;;
+  ml-*) printf '%s\n' '(* The library. *)' 'let a = 1' '' '' '' '' '' 'let b = 3 (* two *)' >"$work/lib.ml" ;;
   split)
     printf '%s\n' '. ./api.sh' 'hook' >"$work/use.sh"
     build_git "$work" add use.sh
@@ -2812,6 +2817,12 @@ build_fixture() { # <kind>
   base-red | base-red-clash)
     printf '%s\n' 'seam() { :; }; red=1' '# one' '# two' '# three' '# four' 'keep() { :; }' \
       '# five' '# six' '# seven' '# eight' >"$work/api.sh"
+    ;;
+  ml-comment)
+    printf '%s\n' '(* The library,' '   reworded. *)' 'let a = 1' '' '' '' '' '' 'let b = 2 (* two *)' >"$work/lib.ml"
+    ;;
+  ml-code)
+    printf '%s\n' '(* The library. *)' 'let a = 0' '' '' '' '' '' 'let b = 2 (* two *)' >"$work/lib.ml"
     ;;
   *)
     printf '%s\n' 'seam() { :; }' '# one' '# two' '# three' '# four' 'keep() { :; }' \
@@ -3019,6 +3030,44 @@ test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override() {
   assert_contains "$MERGE_STDERR" "--override goes over only a failure the base alone shares" \
     "the refusal says what the override covers"
   assert_not_contains "$MERGE_OUTPUT" "OVERRIDE: merging" "nothing is announced"
+  assert_no_merge_call
+  assert_clone_untouched
+}
+
+# #861: a build input both sides changed, one side in comments alone, under a `comments` glob: the
+# merge proceeds with no build (the command would fail, so a merge proves none ran). The control:
+# the base editing code there too, which builds. Under Windows both are the POSIX-only refusal:
+# the comments are read from the fetched objects, inside the build's scratch.
+MERGE_BUILD_COMMENTS=$'command echo the build ran; exit 1\ninput *.ml\ncomments *.ml\ntimeout 120'
+test_a_comment_only_shared_change_merges_without_a_build() {
+  reset
+  build_fixture ml-comment
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_COMMENTS
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a comment-only shared change" '1 build input(s) changed on both sides: lib.ml'
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "a comment-only shared change merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: no build — each of the 1 build input(s) changed on both sides (lib.ml) changed in comments only on one side (comments *.ml)" \
+    "says why nothing was built"
+  assert_not_contains "$MERGE_OUTPUT" "the build ran" "nothing was built"
+  assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
+  assert_clone_untouched
+}
+
+test_a_code_change_on_both_sides_still_builds() {
+  reset
+  build_fixture ml-code
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_COMMENTS
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a code change on both sides" '1 build input(s) changed on both sides: lib.ml'
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "the build ran and its failure refuses the merge ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: changed in code on both sides: lib.ml" "says why it builds"
+  assert_contains "$MERGE_STDOUT" "the build ran" "and built"
   assert_no_merge_call
   assert_clone_untouched
 }
@@ -3282,6 +3331,8 @@ tests=(
   test_any_input_catches_a_single_side_clash
   test_a_merge_build_failure_the_base_shares_merges_under_override
   test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override
+  test_a_comment_only_shared_change_merges_without_a_build
+  test_a_code_change_on_both_sides_still_builds
   test_merge_builds_in_the_clone_c_names
   test_merge_takes_c_before_the_pr
   test_a_pr_changing_the_config_is_told_which_copy_judged_it
