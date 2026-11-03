@@ -5392,6 +5392,62 @@ test_runner_names_an_errexit_death() {
   echo "PASS: a case that set -e ends names its command (a pipeline by its statuses) and line, and guarded failures stay quiet"
 }
 
+test_runner_fails_a_case_that_did_not_finish() {
+  # ludics#705: a case passes only by returning 0 and saying what it checked. One copy's case
+  # prints a PASS line and then dies on an unbound variable after a command that succeeded, which
+  # under bash 3.2 exits its shell 0 (bash 5 exits 1); the other's returns 0 before printing
+  # anything. Both are failures, named so, and neither prints a PASS line under the case's name.
+  # The copy runs on the `bash` PATH finds, through its shebang; under bash 3 the death must be
+  # named as an early exit, which is the shape that read as a pass before.
+  local tag="unfinished$$" copy="$TEST_ROOT/$COPY_DIR" out="$TEST_ROOT/copy.out" major
+  major=$(run_copy bash -c 'printf "%s" "${BASH_VERSINFO[0]}"') ||
+    fail "could not read the version of the bash the copy runs on"
+  unfinished_copy() { # <planted line>... -- <the FAIL header's note, after `exit 1`>...
+    local patched rc planted=() notes=() note header=""
+    while [ "$1" != -- ]; do
+      planted+=("$1")
+      shift
+    done
+    shift
+    notes=("$@")
+    rm -rf "$copy"
+    copy_runner "$copy" "$tag"
+    patched=$(RUNNER_SELF_PLANTED="$(printf '%s\n' "${planted[@]}")" awk -v target="$SELF_CASE() {" '{
+      print
+      if ($0 == target) print ENVIRON["RUNNER_SELF_PLANTED"]
+    }' "$copy/test-post-merge-cleanup.sh")
+    printf '%s\n' "$patched" >"$copy/test-post-merge-cleanup.sh"
+    [ "$(grep -A1 -xF -- "$SELF_CASE() {" "$copy/test-post-merge-cleanup.sh" | sed -n 2p)" = "${planted[0]}" ] ||
+      fail "could not plant the unfinished case in the copy: ${planted[0]}"
+    if run_copy env SHIP_PR_TEST_CASE_TIMEOUT="$SELF_CASE_TIMEOUT" "$copy/test-post-merge-cleanup.sh" -j 1 "$SELF_CASE" \
+      >"$out" 2>&1 </dev/null; then
+      rc=0
+    else
+      rc=$?
+    fi
+    [ "$rc" -eq 1 ] || fail "the copy exited $rc after its case '${planted[*]}', expected 1: $(cat "$out")"
+    for note in "${notes[@]}"; do
+      ! grep -Fqx "===== FAIL: $SELF_CASE (exit 1$note) =====" "$out" || header=found
+    done
+    [ -n "$header" ] || fail "the unfinished case '${planted[*]}' was not failed as such: $(cat "$out")"
+    grep -q "^FAIL: 1 of 1 post-merge cleanup states failed.*: $SELF_CASE\$" "$out" ||
+      fail "the unfinished case printed no right-named summary: $(cat "$out")"
+    if grep -q "^PASS $SELF_CASE" "$out"; then fail "the unfinished case read as a pass: $(cat "$out")"; fi
+    assert_copy_root_gone "$tag"
+  }
+  local early=" — the case's shell exited 0 before the case returned (bash 3.2 ends a shell on an unbound variable or a failed \${var:?} with the previous command's status; see the note above run_case)"
+  if [ "$major" -lt 4 ]; then
+    unfinished_copy '  local runner_self_one=(only)' '  echo "PASS: printed before the death"' '  true' \
+      '  echo "${runner_self_one[1]}"' -- "$early"
+  else
+    unfinished_copy '  local runner_self_one=(only)' '  echo "PASS: printed before the death"' '  true' \
+      '  echo "${runner_self_one[1]}"' -- "" "$early"
+  fi
+  grep -q 'runner_self_one\[1\]: unbound variable' "$out" || fail "the case log did not name the unbound variable: $(cat "$out")"
+  unfinished_copy '  return 0' -- " — the case returned 0 but printed no PASS or SKIP line"
+  echo "PASS: a case that dies on an unbound variable after a PASS line, or returns 0 without one, fails"
+}
+
 test_runner_reaps_a_statusless_case() {
   # Candidate (2) of ludics-lite#9: a case shell may exit without running its status trap. Remove
   # the trap from a copy; the scheduler must notice the gone or zombie child, reap it, and report
@@ -5586,7 +5642,9 @@ test_runner_keeps_job_control_to_the_spawn() {
   # run's output. So the runner turns it on for a case's spawn alone. The copy's case reads the
   # runner's own poll (`sleep 0.2` in reap_one, a child of the runner, `$$` in the case's
   # subshell) and records its group beside the runner's: one group, while the case runs in a group
-  # of its own. Boundary: read with `ps -o`, which Git for Windows' ps does not have.
+  # of its own. Boundary: read with `ps -o`, which Git for Windows' ps does not have. The probe's
+  # awk reads all of ps's output: an awk that exits at its match leaves ps writing into a closed
+  # pipe once the process table outgrows the pipe buffer, and pipefail fails the case with 141.
   local tag="jc$$" copy="$TEST_ROOT/$COPY_DIR" out="$TEST_ROOT/copy.out" rc patched
   local probe="$TEST_ROOT/probe.sh" seen="$TEST_ROOT/probe.out" poll runner case_pgid
   if [ "$ON_MSYS" -eq 1 ]; then
@@ -5596,7 +5654,7 @@ test_runner_keeps_job_control_to_the_spawn() {
   cat >"$probe" <<EOF
 probe_tries=0 probe_poll=
 while [ "\$probe_tries" -lt 100 ] && [ -z "\$probe_poll" ]; do
-  probe_poll=\$(ps -A -o ppid=,pgid=,comm= | awk -v r="\$\$" '\$1 == r && \$3 ~ /(^|\\/)sleep\$/ { print \$2; exit }')
+  probe_poll=\$(ps -A -o ppid=,pgid=,comm= | awk -v r="\$\$" '!found && \$1 == r && \$3 ~ /(^|\\/)sleep\$/ { print \$2; found = 1 }')
   [ -n "\$probe_poll" ] || sleep 0.1
   probe_tries=\$((probe_tries + 1))
 done
@@ -5875,6 +5933,7 @@ TESTS=(
   test_preexisting_recovery_ref
   test_runner_names_a_setup_case_failure
   test_runner_names_an_errexit_death
+  test_runner_fails_a_case_that_did_not_finish
   test_runner_reaps_a_statusless_case
   test_runner_cleans_up_after_a_closed_pipe
   test_runner_term_midrun_exits_130
@@ -6068,13 +6127,26 @@ BOUNDARY=()
 # Git for Windows path without core.longpaths, and the case name on top of the case's own slug and
 # a session-recovery ref pushed four cases just past it (ludics-lite#338). The log and
 # status files carry the name.
+#
+# A status of 0 counts only from a case that returned (ludics#705). bash 3.2 ends a shell on an
+# unbound variable under `set -u` or a failed `${var:?}` with the PREVIOUS command's status, so a
+# case that died on one after a command that succeeded exited 0, and its EXIT trap wrote 0 (bash
+# 5 exits 1). So the status trap writes `early` for a shell that exits 0 while CASE_RETURNED is
+# still empty, which only the return of the case's function fills, and report_case fails it.
+# Boundary -- what it reads: the exit of the case's own shell, before or after `"$name"` returns;
+# a case therefore ends by returning, never by `exit 0` (none does). Not read: a subshell or
+# command substitution inside the case that dies the same way: the case reads that status
+# itself, as it reads any command's. report_case also fails a status of 0 whose log holds no
+# PASS or SKIP line, which is what a case that returns early without saying so leaves.
+# test_runner_fails_a_case_that_did_not_finish pins both.
 run_case() {
   local name="$1"
   # The trap body is evaluated when the subshell exits, under whatever scope is live then. Every
   # case's setup_case has its own local `name`, so a failure inside it would resolve `$name` to
   # the scratch slug and write a status file the parent never looks for. Resolve the path now.
   CASE_STATUS_FILE="$LOG_DIR/$name.status"
-  trap 'echo "$?" >"$CASE_STATUS_FILE"' EXIT
+  CASE_RETURNED=
+  trap 'CASE_EXIT=$?; if [ "$CASE_EXIT" -eq 0 ] && [ -z "$CASE_RETURNED" ]; then CASE_EXIT=early; fi; echo "$CASE_EXIT" >"$CASE_STATUS_FILE"' EXIT
   # fd 8 is the case log as opened here, so report_errexit reaches it from inside a block whose
   # stderr the case sent to a file. `set -E` hands the ERR trap to every function and subshell.
   exec 8>&2
@@ -6084,7 +6156,10 @@ run_case() {
   CASE_NAME="$name" # skip_boundary names its line with it
   mkdir -p "$TEST_ROOT" || exit 1
   isolate_git_config
+  # Not `"$name" && ...` or `|| ...`: the case would run with errexit ignored throughout.
   "$name"
+  CASE_RETURNED=$?
+  return "$CASE_RETURNED"
 }
 
 # report_errexit <status> <line> <function> <command> <statuses>: the case's ERR trap
@@ -6284,8 +6359,19 @@ report_case() {
     note=" — the case exited $wait_status without reporting a status"
   fi
   case "$status" in
+  early)
+    status=1
+    note=" — the case's shell exited 0 before the case returned (bash 3.2 ends a shell on an unbound variable or a failed \${var:?} with the previous command's status; see the note above run_case)"
+    ;;
   '' | *[!0-9]*) status=1 ;;
   esac
+  # A case that returned 0 says what it checked; one that printed neither line returned early
+  # without saying so, or its log is gone, and neither is a pass (ludics#705).
+  if [ "$status" -eq 0 ] &&
+    ! awk -v p="SKIP $name: " 'index($0, p) == 1 || /^PASS:/ { found = 1 } END { exit !found }' "$log" 2>/dev/null; then
+    status=1
+    note=" — the case returned 0 but printed no PASS or SKIP line"
+  fi
   unset "RUNNING_PIDS[$i]" "RUNNING_NAMES[$i]" "RUNNING_STARTS[$i]"
   RUNNING=$((RUNNING - 1))
   if [ "$status" -eq 0 ]; then
@@ -6301,10 +6387,8 @@ report_case() {
       # reported without finding them by elimination (ludics-lite#337). A case that states a
       # boundary for all of itself prints only its SKIP line.
       awk -v n="$name" -v p="SKIP $name: " '
-        index($0, p) == 1 { print; found = 1; next }
-        sub(/^PASS:/, "PASS " n ":") { print; found = 1 }
-        END { exit !found }' "$log" ||
-        echo "PASS $name: (printed no PASS line)"
+        index($0, p) == 1 { print; next }
+        sub(/^PASS:/, "PASS " n ":") { print }' "$log"
     fi
     rm -rf "${TEST_ROOT:?}/$i"
   else

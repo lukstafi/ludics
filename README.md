@@ -1437,7 +1437,10 @@ its line (ludics-lite#649; bash 3.2 gives no line). The runner also tests itself
 copies: refused arguments, `--help` with an inherited pid list, a case log it cannot open, job control kept to a case's spawn, the deadline, an in-place rewrite
 of both scripts mid-run (with a negative control that strips the parse guard), a
 `core.hooksPath` planted through each config channel (with one that strips the isolation), and a
-case that `set -e` ends after failing in each guarded shape that must stay quiet.
+case that `set -e` ends after failing in each guarded shape that must stay quiet. A case passes
+only by returning 0 with a PASS or SKIP line: under bash 3.2 a shell that an unbound variable ends
+exits with the previous command's status, so a case shell that exits 0 before its case returned is
+failed as such (ludics#705).
 
 **The Python rewrite (ludics-lite#403).** The core scripts are moving to type-checked,
 standard-library-only Python 3.12 in one package, `lib/ludics/`, one script (and for `pr-review.sh`
