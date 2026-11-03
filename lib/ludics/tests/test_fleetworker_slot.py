@@ -566,6 +566,36 @@ class WindowWait(unittest.TestCase):
         self.assertIn("waiting up to 30s (--wait-window) for it to conclude, then for a slot, for: echo x", err)
         self.assertIn("no measurement holds testbox after", err)
 
+    def ended(self, first: list[dict[str, Any]], reads: list[Any], bound: slot.WindowBound = 30
+              ) -> tuple[object, str, str]:
+        """A caller's ``holders`` (ludics#710) that ends the wait on any read naming ``gone``."""
+        def holders(read: list[dict[str, Any]]) -> list[dict[str, Any]] | slot.Ended:
+            if any(r.get("request_id") == "gone" for r in read):
+                return slot.Ended(read)
+            return slot.measurement_records(read, "testbox")
+
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "0.01"}, host="testbox")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(slot, "read_registry", side_effect=reads), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result = await_measurements(cfg, "testbox", first, bound, ["echo", "x"], holders=holders)
+        return result, out.getvalue(), err.getvalue()
+
+    def test_a_read_its_holders_end_the_wait_on_is_handed_back_without_the_proceed_line(self) -> None:
+        # ludics#710: the window still holds the box, so nothing may say the box is free.
+        ended = [measurement("win"), measurement("gone", box="other")]
+        result, out, err = self.ended([measurement("win")], [[measurement("win")], ended])
+        self.assertEqual((result, out), (ended, ""))
+        self.assertIn("measurement window win holds testbox", err)
+        self.assertNotIn("no measurement holds", err)
+
+    def test_a_first_read_that_ends_the_wait_says_nothing(self) -> None:
+        for bound in (30, slot.BY_DEADLINE):
+            with self.subTest(bound=bound):
+                first = [measurement("win"), measurement("gone", box="other")]
+                self.assertEqual(self.ended(first, [], bound), (first, "", ""))
+
     def test_a_measurement_without_an_issue_is_named_by_its_purpose(self) -> None:
         # ludics-lite#664: `issue` is optional; a post-wave task's record names none.
         record = measurement("win")
