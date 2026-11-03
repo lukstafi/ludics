@@ -31,8 +31,9 @@
 #   - reviewThreads paginates at 100 too, so a long-running PR's later threads are unaddressable
 #     ("no review thread starts at comment N") unless the resolve lookup pages to the end;
 #   - a PR number names one PR in EVERY repository, so a repo that was not spelled out in the
-#     invocation is a guess about intent that no read can check — the repo travels in the PR
-#     argument (owner/name#number), and a bare number with no repo named is refused;
+#     invocation is a guess about intent that no EXISTENCE read can check — the repo travels in
+#     the PR argument (owner/name#number); a bare number resolves only to the checkout's own PR,
+#     the one whose head is the checked-out branch (#863), and is refused otherwise;
 #   - an API failure and a genuinely empty feed both render as `[]`, so a read that failed must
 #     report UNKNOWN and never "no approval yet" — that is a silent false negative on the merge
 #     gate, and it fired for real during the 2026-08-17 GitHub outage on an approved PR;
@@ -151,9 +152,9 @@
 # Thread resolution has no REST equivalent and stays on GraphQL, but reports transport failure as
 # such instead of as "no such thread".
 #
-# Usage (<pr> is owner/name#number, or a number with the repo named by --repo/REPO=; see the repo
-# note at prreview/core.py's resolve_repo — a bare number with no repo named anywhere is refused,
-# never taken from the cwd):
+# Usage (<pr> is owner/name#number, or a number with the repo named by --repo/REPO=, or a bare
+# number typed in the checkout whose branch is that PR's head; see the repo note at
+# prreview/core.py's resolve_repo — any other bare number is refused, never guessed from the cwd):
 #   pr-review.sh [--repo owner/name] poll <pr> [watermark]
 #                                          # new comments/reviews above the watermark, each stamped
 #                                          # with the commit it is about; ends with one machine
@@ -344,8 +345,9 @@
 #             it in (`checks` names the same jobs and stays 4). --allow-no-verdict still merges.
 #
 # Env: REPO=owner/name, overridden by a repo spelled out in the <pr> argument or by --repo; those
-#      three are the ONLY sources, for every subcommand including `retry run watch` (`base`, which
-#      resolves a repo and a branch rather than a bare number, still reads the cwd's checkout),
+#      three are the ONLY sources, for every subcommand including `retry run watch`, but two that
+#      read the cwd's checkout for a repo AND a branch: `base`, and a bare PR number, which
+#      resolves only to the PR whose head is the checked-out branch (#863),
 #      REVIEWER=login-prefix (default: codex app), WATCH_INTERVAL=seconds between polls (default
 #      90), WATCH_TIMEOUT=seconds to watch (900), SHIP_PR_REVIEW_POLL_CAP and
 #      SHIP_PR_BUILD_POLL_CAP=seconds the pause between unchanged polls doubles up to (300 for
@@ -808,7 +810,8 @@ main() {
   pr-review.sh retry run watch owner/name#<run-id>  # quiet await of ONE run (never forwarded
                                              # to gh); for a PR prefer: checks <pr> --wait
   <pr> is owner/name#number, or a number with --repo/REPO= naming the repo; a bare number with
-  no repo named is REFUSED, never resolved from the cwd (a PR number names one PR in every repo).
+  no repo named resolves only to the checkout's own PR (its head is the checked-out branch) and
+  is REFUSED otherwise, never guessed from the cwd (a PR number names one PR in every repo).
   The run argument takes the same form, and a bare run id without -R/REPO is refused." ;;
   esac
 }

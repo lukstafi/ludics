@@ -109,16 +109,17 @@ route `gh pr comment` through `retry`, though: it is the one call that cannot ta
 `owner/name#<pr>` argument this skill standardizes on (it wants a bare number plus `--repo`, or a
 full URL), so it fails on the argument and invites hand-building a PR URL. Use `comment` below.
 
-**Always name the repo in the PR argument: `owner/name#<pr>`, not a bare number.** This is not
-advice any more: a bare number with no repo named is refused (exit 2). The script used to infer the
-repo from the cwd, and a *background* shell does not reliably start in the checkout — `watch`, the
-one invocation this skill tells you to background, is exactly where that bit. Worse, the failure
+**Name the repo in the PR argument: `owner/name#<pr>`.** It works from any directory. A bare
+number works in one place only: the checkout whose branch is that PR's head, where every verb that
+takes a PR (`poll`, `status`, `rounds`, `checks`, `watch`, `merge`, `reply`, `resolve`, `comment`,
+`body`) resolves it to the checkout's own PR and says so on stderr (#863). Anywhere else it is
+refused, exit 2, naming the qualified form, with nothing written: a *background* shell does not
+reliably start in the checkout, and the script used to guess the repo from the cwd. That failure
 was not loud: every active repository has a PR 7, so the wrong checkout resolved to an unrelated
-PR of that number and `reply`/`resolve`/`comment` wrote onto it (ludics-lite#92). Verifying the
-guess does not help, which is why it is refused instead — `repos/<repo>/pulls/7` answers "this
-repository has a seventh PR", not "this is the PR you meant". The refusal also bites evenly, where
-the old inference did not: three `reply` calls in one message, the first two landing and the third
-dying, was a partial success that read as success.
+PR of that number and `reply`/`resolve`/`comment` wrote onto it (ludics-lite#92). Checking that
+the guessed repo HAS a PR 7 does not help; checking that its head is the branch checked out here
+does, because the wrong checkout fails it. A bare `watch` you background still dies in the
+background when the shell is elsewhere, so the qualified form is the one to write in a brief.
 
 There is no per-PR repo cache any more either, and for the same reason: it remembered a repo by
 *number*, across checkouts and across sessions, so once anything had named `repo-a#7`, a later bare
