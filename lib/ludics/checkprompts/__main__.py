@@ -14,6 +14,7 @@ from ludics.checkprompts.links import check_links
 from ludics.checkprompts.registers import check_fixtures, check_index
 from ludics.checkprompts.roster import check_roster
 from ludics.checkprompts.slots import check_slots
+from ludics.checkprompts.suitemap import check_suite_map
 from ludics.checkprompts.tree import Report, Tree
 from ludics.checkprompts.verdicts import check_verdict_reads
 
@@ -128,6 +129,7 @@ def run(argv: list[str]) -> int:
     check_cleanup_options(report, tree)
     check_links(report, tree)
     check_verdict_reads(report, tree)
+    check_suite_map(report, tree)
     cli.say("")
     cli.say(f"{PROG}: {report.passed} passed, {report.failed} failed")
     return 0 if report.failed == 0 else 1

@@ -27,6 +27,8 @@ The checks, each in its own module:
   links        relative Markdown links and their anchors (ludics-lite#260).
   verdicts     no shell or skill-text reader compares bg-run.sh wait's whole verdict line
                (ludics-lite#826).
+  suitemap     lib/ludics/README.md's map of the suites that drive each module: every module
+               has a line, and every suite and section it names exists (#718).
 
 Every reader works on the C-locale (byte) view of the files, as the shell's did under
 ``LC_ALL=C``; ``bytes_view`` says why that is part of the contract. Every scanner here reads LINE

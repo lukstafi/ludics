@@ -3289,6 +3289,152 @@ class VerdictReadsTest(Case):
         self.lacks("no writer", "verdict line", result)
 
 
+# --- the suite map (#718) ------------------------------------------------------------------------
+# lib/ludics/README.md's map of the suites that drive each module. The scratch package has a module
+# at the top, two in a subpackage and one below that, an __init__.py at each level and a tests/
+# directory (neither owes a line), and the fixture register's suites; alpha/scripts/test-shell.sh
+# declares the SECTIONS=( array that section arguments are read against.
+
+SUITE_MAP_OK = "ok: lib/ludics/README.md: every one of the 4 modules names the suites that drive it"
+SECTIONED = "alpha/scripts/test-shell.sh"
+SECTIONS_TEXT = 'echo first\nSECTIONS=(\n  "alpha one"\n  "beta / two --x"\n)\n'
+SUITE_MAP = """\
+# lib/ludics
+
+## Which suites drive each module
+
+Prose before the map.
+
+```
+a.py
+    alpha/scripts/test-shell.sh "alpha one" beta
+    lib/ludics/tests/test_x.py
+
+pkg/b.py pkg/c.py
+pkg/sub/d.py
+    ship-pr/scripts/test-*.sh
+```
+
+## Checking
+"""
+
+
+def suite_map_tree(root: str, text: str = SUITE_MAP) -> None:
+    fixture_tree(root)
+    for rel in ("__init__.py", "a.py", "pkg/__init__.py", "pkg/b.py", "pkg/c.py", "pkg/sub/__init__.py",
+                "pkg/sub/d.py", "tests/__init__.py", "tests/test_x.py", "tests/fake.py"):
+        write(os.path.join(root, "lib", "ludics", rel), "")
+    write(os.path.join(root, SECTIONED), SECTIONS_TEXT)
+    write(os.path.join(root, "lib", "ludics", "README.md"), text)
+
+
+def changed(text: str, old: str, new: str) -> str:
+    if old not in text:
+        raise FixtureMissed(f"'{old}' is not in the map fixture")
+    return text.replace(old, new, 1)
+
+
+class SuiteMapTest(Case):
+    BASE = SUITE_MAP
+
+    def test_a_mapped_package_passes(self) -> None:
+        # A section argument is a substring of a section's name, quoted or bare; a glob stands for
+        # the suites it matches; a group's module lines may run over several lines.
+        suite_map_tree(self.root, self.BASE)
+        self.expect("a package whose every module has a line passes", 0, SUITE_MAP_OK)
+
+    def test_no_package_no_obligation(self) -> None:
+        fixture_tree(self.root)
+        result = self.expect("a root without lib/ludics/__init__.py owes no map", 0, "0 failed")
+        self.lacks("no package", "suites that drive", result)
+
+    def test_each_defect_is_refused(self) -> None:
+        R = self.root
+        B = self.BASE
+        cases: tuple[tuple[str, str, str], ...] = (
+            ("a module named twice", changed(B, "pkg/b.py pkg/c.py", "pkg/b.py pkg/c.py a.py"),
+             "names 'a.py' again (first on line"),
+            ("a name that is no module", changed(B, "pkg/sub/d.py\n", "pkg/sub/d.py pkg/zz.py\n"),
+             "names 'pkg/zz.py', which is no module of lib/ludics"),
+            ("an __init__.py is no module", changed(B, "pkg/sub/d.py\n", "pkg/sub/d.py pkg/__init__.py\n"),
+             "names 'pkg/__init__.py', which is no module"),
+            ("a word that is no module path", changed(B, "a.py\n", "a.py lib/ludics/a\n"),
+             "'lib/ludics/a' is not a module path relative to lib/ludics"),
+            ("a group with no suite line", changed(B, "pkg/b.py pkg/c.py\npkg/sub/d.py\n", "pkg/b.py pkg/c.py\n\npkg/sub/d.py\n"),
+             "a module line with no suite line under it"),
+            ("a group with no suite line at the end", changed(B, "    ship-pr/scripts/test-*.sh\n", ""),
+             "a module line with no suite line under it"),
+            ("a module line after a suite line", changed(B, "test_x.py\n\npkg/b.py", "test_x.py\npkg/b.py"),
+             "a module line under suite lines"),
+            ("a suite line with no module line", changed(B, "test_x.py\n\n", "test_x.py\n\n    alpha/scripts/test-python.py\n\n"),
+             "a suite line with no module line above it in its group"),
+            ("a suite line of two spaces", changed(B, "    lib/ludics/tests/test_x.py", "  lib/ludics/tests/test_x.py"),
+             "neither a module line (no indent) nor a suite line"),
+            ("a suite line of five spaces", changed(B, "    lib/ludics/tests/test_x.py", "     lib/ludics/tests/test_x.py"),
+             "neither a module line (no indent) nor a suite line"),
+            ("a suite line indented by a tab", changed(B, "    lib/ludics/tests/test_x.py", "\tlib/ludics/tests/test_x.py"),
+             "neither a module line (no indent) nor a suite line"),
+            ("a path that is no suite", changed(B, "    lib/ludics/tests/test_x.py", "    lib/ludics/tests/fake.py"),
+             "'lib/ludics/tests/fake.py' is not a suite"),
+            ("a test-* file that is not a suite", changed(B, "    lib/ludics/tests/test_x.py", "    alpha/scripts/test-data.json"),
+             "'alpha/scripts/test-data.json' is not a suite"),
+            ("a glob that matches nothing", changed(B, "ship-pr/scripts/test-*.sh", "ship-pr/scripts/test-nope-*.sh"),
+             "the glob 'ship-pr/scripts/test-nope-*.sh' matches no suite"),
+            ("a glob given sections", changed(B, "ship-pr/scripts/test-*.sh", "ship-pr/scripts/test-*.sh alpha"),
+             "the glob 'ship-pr/scripts/test-*.sh' takes no section arguments"),
+            ("a section argument that selects none", changed(B, '"alpha one" beta', '"alpha one" gamma'),
+             f"'gamma' selects no section of {SECTIONED}"),
+            ("an argument the suite reads as an option", changed(B, '"alpha one" beta', '"alpha one" --x'),
+             f"'--x' starts with '-': {SECTIONED} reads it as an option"),
+            ("sections for a suite that declares none", changed(B, "tests/test_x.py\n", "tests/test_x.py alpha\n"),
+             "'lib/ludics/tests/test_x.py' declares no SECTIONS=( array"),
+            ("words that do not split", changed(B, '"alpha one" beta', '"alpha one beta'),
+             "its words do not split as the shell's"),
+            ("no heading", changed(B, "## Which suites drive each module", "## Which suites drive the modules"),
+             "no '## Which suites drive each module' line"),
+            ("a fence after the next heading", changed(B, "Prose before the map.\n", "## Next\n"),
+             "has no fenced block before the next heading"),
+            ("an unclosed fence", changed(B, "```\n\n## Checking", "\n## Checking"),
+             "the map's fence is never closed"),
+        )
+        for label, text, want in cases:
+            with self.subTest(case=label):
+                suite_map_tree(R, text)
+                result = self.expect(f"{label} is refused", 1, f"FAIL: lib/ludics/README.md: {want}"
+                                     if want.startswith(("no '", "module '")) else want)
+                self.lacks(label, SUITE_MAP_OK, result)
+
+    def test_every_module_owes_a_line(self) -> None:
+        R = self.root
+        for rel in ("pkg/e.py", "pkg/sub/deeper/f.py", "g.py"):
+            with self.subTest(module=rel):
+                suite_map_tree(R, self.BASE)
+                write(os.path.join(R, "lib", "ludics", rel), "")
+                self.expect(f"{rel} without a line is refused", 1,
+                            f"FAIL: lib/ludics/README.md: module '{rel}' has no line in the map")
+        # tests/ is the unit suites, not modules; __pycache__ holds no source. Neither owes a line.
+        suite_map_tree(R, self.BASE)
+        write(os.path.join(R, "lib", "ludics", "tests", "helper.py"), "")
+        write(os.path.join(R, "lib", "ludics", "pkg", "__pycache__", "b.py"), "")
+        self.expect("tests/ and __pycache__ owe no line", 0, SUITE_MAP_OK)
+
+    def test_the_readme_and_the_sections_are_read(self) -> None:
+        R = self.root
+        suite_map_tree(R, self.BASE)
+        os.remove(os.path.join(R, "lib", "ludics", "README.md"))
+        self.expect("a package with no README is refused", 1,
+                    "FAIL: lib/ludics/README.md: missing: it maps the suites that drive each module")
+        for label, old, new, want in (
+            ("a section name that is not plain", '  "beta / two --x"', '  "$beta"', "line 4 of its SECTIONS=( array is not a plain"),
+            ("an unclosed SECTIONS array", "\n)\n", "\n", "its SECTIONS=( array (line 2) is never closed"),
+        ):
+            with self.subTest(case=label):
+                suite_map_tree(R, self.BASE)
+                write(os.path.join(R, SECTIONED), changed(SECTIONS_TEXT, old, new))
+                self.expect(f"{label} is refused on the suite", 1,
+                            f"FAIL: {SECTIONED}: cannot read the sections of '{SECTIONED}': {want}")
+
+
 # --- this checkout -------------------------------------------------------------------------------
 
 

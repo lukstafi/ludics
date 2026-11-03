@@ -791,6 +791,9 @@ shared with other workers. Arguments
 narrow that, and while iterating they are the lever: each one selects every section whose name
 contains it (`test-fleet-worker.sh unstick`, `test-fleet-worker.sh 'real checkout'`), `--list`
 prints the section names, and an argument matching none of them is refused before anything runs.
+Which sections (and which other suites) a change to a `lib/ludics` module reaches is that
+package's map, *Which suites drive each module* in `lib/ludics/README.md`, which check-prompts
+keeps naming only modules, suites and sections that exist (#718).
 The setup the sections share (the shim CLIs, the scratch skills checkout, the scratch project repo)
 runs whatever is selected, and a section that needs more than that, such as the coordinator lease
 or a finished worker to read, takes it itself, so every section also passes when it is the only one
