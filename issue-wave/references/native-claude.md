@@ -174,7 +174,9 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    result is concluded, so a resumed worker holds one assignment and owes one result line.
 3. **Assign.** The coordinator completes the reservation (wave, worker, `transport:
    "subagent"`, agent host, repository, issue, purpose - the request supplies the rest, its
-   `checkout` kept beside the request as the record's), runs
+   `checkout` kept beside the request as the record's, and its `command` and `log` dropped: a
+   reservation has no such fields and refuses them (`unknown reservation fields`, wave-20261028),
+   so the command goes into the dispatch's `evidence` if anywhere), runs
    `execution run <reserve.json>` - or, for a measurement on a box where workers hold standing
    reservations, `execution window --deadline <seconds> <box> <reserve.json>`, batching the
    box's pending measurements and setting the deadline as

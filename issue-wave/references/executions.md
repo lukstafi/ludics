@@ -648,8 +648,11 @@ under the same request instead, `reconcile` it to `reserved` (the evidence estab
 nothing ran and nothing runs) and dispatch again.
 
 The actual verdict must be `pass`, `fail`, `timeout` or `cancelled`. A timeout/cancellation needs
-runner evidence that its processes stopped. SHA, checkout and handle may already be in the record;
-evidence and log are required in the conclusion. If reconciliation proves nothing launched, use
+runner evidence that its processes stopped. Evidence and log are required in the conclusion, and
+any verdict but `not-launched` also needs `observed_sha`, `remote_checkout` and `handle`, each
+nonempty, from the record or the conclusion. A run with no runner record (a foreground ssh that
+left only a log) still names a handle for what ran it, such as `ssh:<box>:<log>`: without one the
+conclusion is refused (`handle must be a nonempty string`, wave-20261028's rog check). If reconciliation proves nothing launched, use
 `not-launched` with evidence and a reconciliation log. Terminal records are immutable; an identical
 conclusion retry is harmless. There is no expiry or automatic release. Never remove a checkout
 while an outstanding record refers to it, or while a pending reservation could still be using it.
