@@ -547,6 +547,130 @@ class Refs(unittest.TestCase):
             core.pr_arg("o/r#x", "o/r")
         self.assertEqual(caught.exception.message, "PR must be a number or owner/name#number, got 'o/r#x'")
 
+    def test_pr_arg_with_a_session_reads_nothing_when_a_repo_is_named(self) -> None:
+        calls: list[tuple[str, list[str]]] = []
+
+        def run(name: str, args: Sequence[str]) -> proc.Completed:
+            calls.append((name, list(args)))
+            return proc.Completed(1, "", "unexpected")
+
+        session = GhSession(config(), run=run, sleep=lambda _s: None)
+        self.assertEqual(core.pr_arg("a/b#7", "", session), core.PrTarget("a/b", "7"))
+        self.assertEqual(core.pr_arg("7", "o/r", session), core.PrTarget("o/r", "7"))
+        self.assertEqual(calls, [])
+
+
+class CheckoutPr(unittest.TestCase):
+    """#863: a bare number resolves to the checkout's own PR, whose head is the checked-out
+    branch, or is refused naming the qualified form, with nothing written."""
+
+    def setUp(self) -> None:
+        self.calls: list[tuple[str, list[str]]] = []
+        self.branch = proc.Completed(0, "claude/w-863\n", "")
+        self.view = proc.Completed(0, "o/r\n", "")
+        self.pulls = proc.Completed(0, "claude/w-863\no/r\no/r\n", "")
+
+    def run_tool(self, name: str, args: Sequence[str]) -> proc.Completed:
+        self.calls.append((name, list(args)))
+        if name == "git":
+            return self.branch if args[0] == "symbolic-ref" else proc.Completed(1, "", "no remote")
+        if list(args[:2]) == ["repo", "view"]:
+            return self.view
+        if args[0] == "api":
+            return self.pulls
+        raise AssertionError(f"unexpected call {name} {args}")
+
+    def resolve(self, arg: str = "7") -> tuple[core.PrTarget | None, cli.Exit | None, str]:
+        session = GhSession(config(REPO="", SHIP_PR_API_ATTEMPTS="2"), run=self.run_tool,
+                            sleep=lambda _s: None)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            try:
+                return core.pr_arg(arg, session.config.repo, session), None, err.getvalue()
+            except cli.Exit as end:
+                return None, end, err.getvalue()
+
+    def api_calls(self) -> list[list[str]]:
+        return [args for name, args in self.calls if name == "gh" and args[0] == "api"]
+
+    def test_the_checkouts_own_pr_resolves_and_says_so(self) -> None:
+        got, end, err = self.resolve()
+        self.assertIsNone(end)
+        self.assertEqual(got, core.PrTarget("o/r", "7"))
+        self.assertIn("PR 7 is o/r#7, the PR whose head is this checkout's branch claude/w-863", err)
+        self.assertEqual(self.api_calls()[0][:2], ["api", "repos/o/r/pulls/7"])
+
+    def test_a_renamed_repository_resolves_to_the_name_the_api_gives(self) -> None:
+        self.view = proc.Completed(0, "o/old\n", "")
+        self.pulls = proc.Completed(0, "claude/w-863\no/new\no/new\n", "")
+        got, end, _err = self.resolve()
+        self.assertIsNone(end)
+        self.assertEqual(got, core.PrTarget("o/new", "7"))
+
+    def test_no_branch_is_refused_before_any_github_read(self) -> None:
+        self.branch = proc.Completed(128, "", "fatal: not a git repository")
+        got, end, _err = self.resolve()
+        self.assertIsNone(got)
+        assert end is not None
+        self.assertEqual(end.rc, 2)
+        self.assertIn("not a checkout on a branch", end.message)
+        self.assertIn("Pass it as owner/name#7 (or --repo", end.message)
+        self.assertEqual([n for n, _a in self.calls], ["git"])
+
+    def test_a_checkout_with_no_github_repository_is_refused(self) -> None:
+        self.view = proc.Completed(1, "", "none")
+        got, end, _err = self.resolve()
+        self.assertIsNone(got)
+        assert end is not None
+        self.assertEqual(end.rc, 2)
+        self.assertIn("names no GitHub repository", end.message)
+        self.assertEqual(self.api_calls(), [])
+
+    def test_another_branchs_pr_is_refused_with_nothing_written(self) -> None:
+        # The #92 collision: the checkout's repository HAS a PR 7, and the read says so. What it
+        # also says is whose branch PR 7 is, and that is the claim that can fail.
+        self.pulls = proc.Completed(0, "someone-else\no/r\no/r\n", "")
+        got, end, _err = self.resolve()
+        self.assertIsNone(got)
+        assert end is not None
+        self.assertEqual(end.rc, 2)
+        self.assertIn("o/r#7's head is someone-else, not this checkout's branch claude/w-863", end.message)
+        self.assertIn("owner/name#7", end.message)
+        self.assertEqual(len(self.api_calls()), 1)
+        self.assertNotIn("-X", self.api_calls()[0])
+
+    def test_a_fork_pr_is_refused_even_on_a_matching_branch_name(self) -> None:
+        self.pulls = proc.Completed(0, "claude/w-863\nfork/r\no/r\n", "")
+        got, end, _err = self.resolve()
+        self.assertIsNone(got)
+        assert end is not None
+        self.assertEqual(end.rc, 2)
+        self.assertIn("its head is in fork/r", end.message)
+        self.pulls = proc.Completed(0, "claude/w-863\n\no/r\n", "")
+        _got, end, _err = self.resolve()
+        assert end is not None
+        self.assertIn("a deleted repository", end.message)
+
+    def test_no_such_pr_is_refused_and_no_answer_is_exit_3(self) -> None:
+        self.pulls = proc.Completed(1, "", "gh: Not Found (HTTP 404)\n")
+        _got, end, _err = self.resolve()
+        assert end is not None
+        self.assertEqual(end.rc, 2)
+        self.assertIn("answered no PR 7", end.message)
+        self.pulls = proc.Completed(1, "", "gh: HTTP 503: No server is currently available\n")
+        _got, end, _err = self.resolve()
+        assert end is not None
+        self.assertEqual(end.rc, 3)
+        self.assertIn("never got an answer", end.message)
+
+    def test_a_malformed_argument_is_still_refused_first(self) -> None:
+        _got, end, _err = self.resolve("7x")
+        assert end is not None
+        self.assertEqual(end.message, "PR must be a number or owner/name#number, got '7x'")
+        self.assertEqual(self.calls, [])
+
+
+class RepoFromCwd(unittest.TestCase):
     def test_repo_from_cwd(self) -> None:
         def runner(gh: proc.Completed, git: proc.Completed):
             def run(name: str, args: Sequence[str]) -> proc.Completed:

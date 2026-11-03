@@ -82,7 +82,7 @@ def run(session: GhSession, args: list[str]) -> int:
             select = value
         else:
             die(f"checks: unknown option '{arg}'")
-    target = pr_arg(pr, session.config.repo)
+    target = pr_arg(pr, session.config.repo, session)
     # A --wait is the PR's build observer from its first read on, the advisory list's included
     # (the polling budget, budget.py): a second is refused before it reads anything.
     if session.budget is not None:

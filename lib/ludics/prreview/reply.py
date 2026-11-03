@@ -326,7 +326,7 @@ def run(session: GhSession, args: list[str]) -> int:
         if not allow_mention:
             mention_refusal("reply", body)
     pr_ref, token = rest[0], rest[1]
-    target = pr_arg(pr_ref, session.config.repo)
+    target = pr_arg(pr_ref, session.config.repo, session)
     repo, pr = target.repo, target.num
     ids = split_ids(token, "reply")
     anchor_url = ""

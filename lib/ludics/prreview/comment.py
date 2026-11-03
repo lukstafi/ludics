@@ -77,7 +77,7 @@ def run(session: GhSession, args: list[str]) -> int:
             die("comment: the body is empty; there is nothing to post")
     if not allow_mention:
         mention_refusal("comment", body)
-    target = pr_arg(pr_ref, session.config.repo)
+    target = pr_arg(pr_ref, session.config.repo, session)
     on = f"PR {target.repo}#{target.num}"
     result = session.retry(
         "write",

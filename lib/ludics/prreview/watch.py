@@ -1286,7 +1286,7 @@ def run(session: GhSession, args: list[str], env: Mapping[str, str] | None = Non
     if len(rest) > 1:
         die(f"watch: one watermark at most, got {len(rest)} arguments after the PR")
     mark = rest[0] if rest else ""
-    target = pr_arg(args[0], session.config.repo)
+    target = pr_arg(args[0], session.config.repo, session)
     cfg = with_window(cfg, e)
     threshold = "off" if session.config.round_threshold is None else str(session.config.round_threshold)
     ctx = Ctx(session, target.repo, session.config.reviewer, clock_from_env(e), cfg.stall,

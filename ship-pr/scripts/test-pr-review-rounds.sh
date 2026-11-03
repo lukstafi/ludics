@@ -162,7 +162,8 @@ test_malformed_threshold_is_refused() {
 # named are pr_arg's refusals, exit 2. Nothing is read in any of them. (The library exports
 # SHIP_PR_TEST_SOURCE_ONLY for its own sourcing; these runs are the whole command, so they drop it.)
 test_the_readers_refuse_a_missing_or_malformed_pr() {
-  local out rc sub
+  local out rc sub NOT_A_CHECKOUT
+  test_tmpdir NOT_A_CHECKOUT not-a-checkout
   for sub in poll status rounds; do
     set +e
     out=$(env -u REPO -u SHIP_PR_TEST_SOURCE_ONLY bash "$HELPER" "$sub" 2>&1)
@@ -189,12 +190,15 @@ test_the_readers_refuse_a_missing_or_malformed_pr() {
     set -e
     assert_eq "$rc" 2 "$sub with a malformed PR is a usage error"
     assert_contains "$out" "PR must be a number or owner/name#number, got '$REPO#x'" "$sub names the argument"
+    # From a directory that is no checkout: a bare number from a checkout's branch is resolved
+    # against that checkout's own PR (#863), which here would be this repository's real PR 7.
     set +e
-    out=$(env -u REPO -u SHIP_PR_TEST_SOURCE_ONLY bash "$HELPER" "$sub" 7 2>&1)
+    out=$(cd "$NOT_A_CHECKOUT" && GIT_CEILING_DIRECTORIES=$(dirname "$NOT_A_CHECKOUT") env -u REPO -u SHIP_PR_TEST_SOURCE_ONLY bash "$HELPER" "$sub" 7 2>&1)
     rc=$?
     set -e
     assert_eq "$rc" 2 "$sub with a bare number and no repository is refused"
     assert_contains "$out" "Pass it as owner/name#7" "$sub says how to name it"
+    assert_contains "$out" "not a checkout on a branch" "$sub says why there is no checkout to read"
   done
 }
 

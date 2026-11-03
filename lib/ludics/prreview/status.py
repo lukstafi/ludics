@@ -29,7 +29,7 @@ from ludics.prreview.threads import threads_line
 def run(session: GhSession, args: list[str]) -> int:
     if not args or not args[0]:
         cli.exit_with(1, "1: usage: status <pr>")
-    target = pr_arg(args[0], session.config.repo)
+    target = pr_arg(args[0], session.config.repo, session)
     ctx = outside_watch(session, target.repo)
     state = status_state(ctx, target.num)
     threads = state_threads(ctx, target.num)
@@ -46,7 +46,7 @@ def run_state(session: GhSession, args: list[str]) -> int:
     """``status-state <pr> [<nudge watermark>]``."""
     if not args or not args[0]:
         die("usage: status-state <pr> [<issue-comment watermark>]")
-    target = pr_arg(args[0], session.config.repo)
+    target = pr_arg(args[0], session.config.repo, session)
     after = args[1] if len(args) > 1 else ""
     if after and not knobs.is_digits(after):
         die(f"status-state: the watermark must be a whole number, got '{after}'")

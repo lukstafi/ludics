@@ -893,7 +893,7 @@ class Merge:
 def run(session: GhSession, args: list[str]) -> int:
     config = load_gate_config(os.environ)
     opts = parse(args, config)
-    target = pr_arg(opts.pr, session.config.repo)
+    target = pr_arg(opts.pr, session.config.repo, session)
     # A --wait is the PR's build observer from its first read on, the body's included (the polling
     # budget, budget.py).
     if session.budget is not None:
