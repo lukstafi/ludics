@@ -622,6 +622,10 @@ check 'boot-windows reboots a box in Ubuntu into Windows and verifies its native
 check '...selecting the one Windows Boot Manager entry from the listing, for one boot, and nothing else' '[ "$(nsel)" = 1 ] && grep -qx "rog-nv-linux sudo -n efibootmgr --bootnext 0003" "$SSH_LOG" && [[ "$out" == *"BootNext=0003 (Windows Boot Manager) for one boot; BootOrder untouched"* ]] && ! grep -Eq -- "--bootorder|efibootmgr .*-o |grub|--delete-bootnext" "$SSH_LOG"'
 check '...with both of its lab locks held at the moment of the reboot' 'grep -qx "locks lane=held hold=held" "$SSH_LOG"'
 check '...and both released when it returns' 'lock_free "$bl/rog.lock" && lock_free "$bl/rog.hold.lock"'
+# The fleet name a measurement reservation carries is an ssh alias, and executions.md hands it to
+# the boot verbs (ludics#605): it acts on its box, rog, whose locks are the ones held.
+boot_run linux boot-windows rog-nv-linux
+check 'boot-windows takes the fleet name rog-nv-linux as its box, rog, under rog'"'"'s own locks' '[ "$rc" = 0 ] && [[ "$out" == *"rog-nv-linux is an ssh alias of rog (the endpoint map); acting on rog."* ]] && [[ "$out" == *"rog: in Windows, native Git Bash answers on rog-lan"* ]] && grep -qx "locks lane=held hold=held" "$SSH_LOG" && [ "$(cat "$tmp/boot.state")" = windows ]'
 boot_run windows boot-windows rog
 check 'boot-windows on a box already in Windows verifies Git Bash and reboots nothing' '[ "$rc" = 0 ] && [[ "$out" == *"already in Windows; no reboot"* ]] && [[ "$out" == *"native Git Bash answers"* ]] && ! grep -q "systemctl reboot\|efibootmgr" "$SSH_LOG"'
 boot_run dark boot-windows rog
