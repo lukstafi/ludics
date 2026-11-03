@@ -184,6 +184,9 @@ class Reply(unittest.TestCase):
             ("gh: Internal Server Error (HTTP 500)", 3,
              "Read comment 901's thread: retry with: 901+902 --anchor 900 if the reply is not there;"
              " retry with: 902 --anchor 900 if it is  902\n"),
+            ("gh: HTTP 504: Gateway Timeout", 3,
+             "Read comment 901's thread: retry with: 901+902 --anchor 900 if the reply is not there;"
+             " retry with: 902 --anchor 900 if it is  902\n"),
         )
         for message, want_rc, says in cases:
             with self.subTest(message=message):
@@ -230,6 +233,7 @@ class Comment(unittest.TestCase):
             ("gh: Not Found (HTTP 404)", 1, "was REJECTED, not dropped", 1),
             ("gh: HTTP 502: Bad gateway", 3, "Nothing was posted, so retry.", 2),
             ("gh: HTTP 500", 3, "will not post it twice", 1),
+            ("gh: HTTP 504: Gateway Timeout", 3, "will not post it twice", 1),
         ):
             with self.subTest(message=message):
                 gh = Gh(lambda call, m=message: err(m))
@@ -610,6 +614,8 @@ class Retry(unittest.TestCase):
     def test_the_policies(self) -> None:
         cases = (
             (["api", "x/y"], "gh: HTTP 500", 3, "gh api failed AMBIGUOUSLY", 1),
+            (["api", "x/y"], "gh: HTTP 504: Gateway Timeout", 3, "gh api failed AMBIGUOUSLY", 1),
+            (["--read", "api", "x/y"], "gh: HTTP 504", 3, "gh api did not go through after 2", 2),
             (["--read", "api", "x/y"], "gh: HTTP 500", 3, "gh api did not go through after 2", 2),
             (["api", "x/y"], "gh: HTTP 404", 1, "gh api was rejected: gh: HTTP 404", 1),
             (["api", "graphql"], "gh: Field 'x' doesn't exist on type 'User'", 1, "was rejected", 1),

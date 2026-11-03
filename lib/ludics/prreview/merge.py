@@ -242,7 +242,8 @@ class Recovery:
         result = self.session.retry("write", args)
         if isinstance(result, GhOk):
             return True
-        unclear = isinstance(result, GhUnanswered)
+        # An attempt that failed without saying whether it ran (a 500, a 504: #708) may have landed.
+        unclear = isinstance(result, GhUnanswered) or self.session.unclear_attempts() > 0
         self.why = (
             f"`{command}` failed ({self.session.err_line()})"
             + ("; it may have landed — read `gh run view " + rid + f" --repo {self.repo}` before repeating it" if unclear else "")

@@ -9,6 +9,7 @@ history; read them there before changing a rule here):
                                   commands that define them)
   Config / load_config            the source-time constants and their validation
   GhSession.retry / retry_caller  ``gh_retry`` and its classification: ``gateway_failure``,
+                                  ``gateway_timeout`` (a 504 is no refusal: #708),
                                   ``api_rejection``, ``graphql_fixed_answer``,
                                   ``graphql_ran_fixed`` (ludics-lite#663, #707),
                                   ``gh_unreadable_answer`` and ``split_included`` (an answer
@@ -130,20 +131,31 @@ def load_config(env: Mapping[str, str]) -> Config:
 # --- classifying a failed gh call ---------------------------------------------------------------
 
 
+# A gateway's own failure, read as a substring of the call's stderr and stdout. A 502 or a 503 is
+# the gateway REFUSING the request: no backend took it, so even a write may be repeated. A 504 is the
+# gateway giving up WAITING on a backend that had the request and may have finished it (#708): a
+# comment or a reply re-sent after one can land twice. So a 504 is no refusal: a read repeats it as
+# transport, and a write reads it as ambiguous (never re-sent, exit 3, "may have landed") with the
+# 500s and the GraphQL answers whose document ran. A text that carries both kinds is a timeout.
+_GATEWAY_REFUSALS = (
+    "No server is currently available",
+    "HTTP 502",
+    "HTTP 503",
+    "Bad gateway",
+    "Service Unavailable",
+)
+_GATEWAY_TIMEOUTS = ("HTTP 504", "Gateway Timeout")
+
+
+def gateway_timeout(text: str) -> bool:
+    """A 504: the gateway stopped waiting on a backend that may have run the request (#708)."""
+    return any(marker in text for marker in _GATEWAY_TIMEOUTS)
+
+
 def gateway_failure(text: str) -> bool:
-    """``gateway_failure``: refused before a backend ran it, so even a write may be repeated."""
-    return any(
-        marker in text
-        for marker in (
-            "No server is currently available",
-            "HTTP 502",
-            "HTTP 503",
-            "HTTP 504",
-            "Bad gateway",
-            "Service Unavailable",
-            "Gateway Timeout",
-        )
-    )
+    """``gateway_failure``: refused before a backend ran it, so even a write may be repeated. Never
+    a 504 (``gateway_timeout``), whatever else the text says."""
+    return not gateway_timeout(text) and any(marker in text for marker in _GATEWAY_REFUSALS)
 
 
 _HTTP_4XX = re.compile(r"HTTP 4[0-9][0-9]")
@@ -346,10 +358,11 @@ def gh_withheld_escapes(first_line: str) -> bool:
 # (``\r\n`` endings, a bare ``\n`` taken too); stdout of any other shape is the body, whole, and the
 # status stays unknown -- the classification a call without --include had. The status found is
 # appended to the complaint as gh's own ``(HTTP <n>)``, so the readers above classify it as the line
-# gh prints when it can read the body: a 502/503/504 is a gateway refusal (``gateway_failure``),
+# gh prints when it can read the body: a 502/503 is a gateway refusal (``gateway_failure``),
 # any other 4xx the API's rejection (``api_rejection``), a 429 the quota's (``quota_failure``). A
 # BODILESS 403 is the quota's too (``bodiless_quota``): GitHub words every other 403. A 2xx, a 500,
-# or any other status keeps the write ambiguous: the backend ran it, or may have.
+# a 504 (``gateway_timeout``), or any other status keeps the write ambiguous: the backend ran it,
+# or may have.
 _DECODER_COMPLAINTS = (
     re.compile(r"unexpected end of JSON input"),
     re.compile(r"invalid character '(\\.|[^\\'\n]|\\x[0-9a-f]{2}|\\u[0-9a-f]{4})' [a-z][a-z :'()\\-]*"),
@@ -466,8 +479,9 @@ def gh_api_only_command(args: Sequence[str]) -> bool:
 
 
 def transient_failure(text: str) -> bool:
-    """``transient_failure``, the READ policy: everything but an explicit 4xx is retried."""
-    if gateway_failure(text):
+    """``transient_failure``, the READ policy: everything but an explicit 4xx is retried, and a
+    gateway's refusal or timeout even beside a 4xx's marker."""
+    if gateway_failure(text) or gateway_timeout(text):
         return True
     return not api_rejection(text)
 
@@ -762,6 +776,7 @@ class GhSession:
             if graphql_fixed_answer(first) or graphql_ran_fixed(first):
                 retryable = False
             elif mode == "write":
+                # Only a refusal no backend ran: never a 504, which one may have finished (#708).
                 retryable = gateway_failure(f"{err} {out}")
             else:
                 retryable = transient_failure(f"{err} {out}")

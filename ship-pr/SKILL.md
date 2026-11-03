@@ -104,7 +104,9 @@ N` for three threads that existed, because its paginated GraphQL lookup had 503'
 For the `gh` calls this skill makes outside the script — an ad-hoc `api` read, say — use
 `pr-review.sh retry [--read] <gh args…>` rather than hand-rolling a
 `for i in 1 2 3; do … && break; sleep; done` loop (which one outage session wrote five times).
-Writes are retried only on gateway refusals, so a merge or a comment cannot be sent twice. Do not
+Writes are retried only on gateway refusals (a 502 or 503, which no backend ran), so a merge or a
+comment cannot be sent twice; a 500 or a 504 (the gateway gave up waiting on a backend that may
+have finished) is never re-sent, and its exit 3 says `AMBIGUOUSLY`: read the state first. Do not
 route `gh pr comment` through `retry`, though: it is the one call that cannot take the
 `owner/name#<pr>` argument this skill standardizes on (it wants a bare number plus `--repo`, or a
 full URL), so it fails on the argument and invites hand-building a PR URL. Use `comment` below.
@@ -601,7 +603,9 @@ paragraph points the maintainer at.
 
 Check every call in such a batch, not just the last: these are independent invocations, and one
 failing while its neighbours succeed leaves a thread silently unanswered. A `reply` that exits 3
-posted nothing (the gateway refused it) — repeat it; a `resolve` that exits 3 found the thread and
+with `did not go through` posted nothing (the gateway refused it) — repeat it; one that `failed
+AMBIGUOUSLY` (a 500, a 504) may have landed — read the thread, then run the retry its message
+names for what you find. A `resolve` that exits 3 found the thread and
 failed to close it, so repeating that is safe too. Only exit 1 from `resolve` means the thread is
 really not there. A `reply` over a *folded* token is the one batch the script makes itself, and it
 is the one place that rule needs care: if it fails after the anchor's reply landed, the refusal

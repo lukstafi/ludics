@@ -364,7 +364,20 @@ class MergeRecovery(Quiet):
         self.assertEqual((rc, clock.sleeps), (4, []))
         self.assertEqual(len(self.writes(gh)), 1, "a refused write is not sent again")
         self.assertIn("failed (HTTP 403", recovery.why)
+        self.assertNotIn("may have landed", recovery.why)
         self.assertEqual(recovery.commands, ["gh run rerun 100 --failed --repo o/r"])
+
+    def test_a_timed_out_rerun_is_not_re_sent_and_may_have_landed(self) -> None:
+        # A 504 is the gateway giving up on a backend that may have run the rerun (#708).
+        gh = FakeGh()
+        self.head(gh)
+        gh.on("run", "rerun", rc=1, err="gh: HTTP 504: Gateway Timeout")
+        gh.on("check-runs", out="build\tcancelled\tu\t1")
+        gh.on("actions/runs?head_sha=h1", out=run_row())
+        jobs(gh, "100", out=job_row())
+        rc, recovery, _clock = self.run_gate(gh, 7200)
+        self.assertEqual((rc, len(self.writes(gh))), (4, 1))
+        self.assertIn("failed (gh: HTTP 504: Gateway Timeout); it may have landed", recovery.why)
 
 
 if __name__ == "__main__":

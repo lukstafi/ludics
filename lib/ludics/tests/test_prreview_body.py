@@ -63,6 +63,8 @@ class Body(unittest.TestCase):
             (Answer(1, "", "gh: HTTP 503: Service Unavailable\n"), 3, "Nothing was changed, so retry", 2),
             # Ambiguous: repeated, since the PATCH sets the body whole, and still 3 once spent.
             (Answer(1, "", "gh: Internal Server Error (HTTP 500)\n"), 3, "repeating the same command is safe", 2),
+            # A 504 may have landed too (#708): repeated as the 500 is, never "nothing was changed".
+            (Answer(1, "", "gh: HTTP 504: Gateway Timeout\n"), 3, "repeating the same command is safe", 2),
             (Answer(1, "", "unexpected end of JSON input\n"), 3, "GitHub sent no readable answer", 2),
             # The same complaint with the status line --include keeps (ludics-lite#612): a
             # gateway's refusal changed nothing, a 2xx may have landed.
