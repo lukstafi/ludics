@@ -726,7 +726,10 @@ def measurement_window():
         out, err = window(request('elsewhere', 'rog', kind='measurement'), expected=1)
         assert 'the window is for mac, but the measurement names rog' in err, err
         out, err = run('execution', 'window', 'mac', expected=2)
-        assert 'execution window [--no-gap] [--deadline <seconds>] <box> <measurement reserve.json>' in err, err
+        # The verb and its positional tail, not the option list between them (the rule
+        # test-fleet-worker.sh's usage cases follow), so an option added to the window does not
+        # edit this case (#718, after ludics-lite#667's `[--no-gap]`).
+        assert 'execution window [' in err and '] <box> <measurement reserve.json>' in err, err
         change('run', request('assigned'))
         out, err = window(request('blocked', kind='measurement'), expected=1)
         assert 'request=assigned' in err and 'suspends only standing reservations' in err, err

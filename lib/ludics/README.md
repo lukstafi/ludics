@@ -150,6 +150,211 @@ the markers. Two remain, in `postmergecleanup/`, on purpose (`git grep SHARED-CA
 them with their reasons): its `printf %q` (bash 5's rules, computed) beside `core.shell_quote`
 (which asks the running bash), and its signal-safe process runner beside `proc.run_tool`.
 
+## Which suites drive each module
+
+The unit tests (`lib/ludics/tests/test_*.py`) run whole, by discovery, before every push that
+touches `lib/`. A suite that drives a module through its command line can also pin what the module
+prints, and that suite is the one that goes red only in CI when nobody knew it drove the verb.
+`issue-wave/scripts/test-fleet-execution.py` pinned `execution window`'s usage line, so adding
+`[--no-gap]` went red there (ludics-lite#667). A new `execution` action broke the usage pin in
+`test-fleet-worker.sh`'s "execution run and conclude --from-run" section, not in "usage" (#811). So
+before a push, run the suites listed under each module the diff changes, slot-wrapped, under
+`bash` and `/bin/bash`. Each suite line below is a command: the arguments on a
+`test-fleet-worker.sh` line are its section selection, a `lib/ludics/tests/` path runs as `scripts/py
+-m unittest ludics.tests.<name>`, and a glob stands for each suite it matches.
+
+A line is the map author's reading of the module's call paths: the verbs it serves, and the modules
+that import it. It may name more than strictly drives the module, and it cannot prove that no other
+suite does. check-prompts (`checkprompts/suitemap.py`) pins the map's shape: each module has
+exactly one line, and every suite, glob and section the line names exists. A new module needs its
+line. A new section, a new suite, or a verb a suite starts to drive needs the lines it reaches.
+
+A usage case matches the verb and its positional tail, not the option list between them (the rule
+`test-fleet-worker.sh`'s usage cases follow), so a PR that adds an option does not edit the cases
+of every suite that drives the verb.
+
+```
+cli.py proc.py
+    issue-wave/scripts/test-fleet-worker.sh
+    issue-wave/scripts/test-fleet-execution.py
+    ship-pr/scripts/test-pr-review-*.sh
+    ship-pr/scripts/test-post-merge-cleanup.sh
+    lib/ludics/tests/test_checkprompts_cli.py
+    lib/ludics/tests/test_peerplan.py
+    scripts/test-py.sh
+
+bgrun.py
+    issue-wave/scripts/test-fleet-worker.sh "conclude --from-bg-run" tip-run board
+    lib/ludics/tests/test_bgrun.py
+    lib/ludics/tests/test_peerplan.py
+
+checkprompts/__main__.py checkprompts/bytes_view.py checkprompts/cleanup.py checkprompts/drift.py
+checkprompts/frontmatter.py checkprompts/links.py checkprompts/registers.py checkprompts/roster.py
+checkprompts/slots.py checkprompts/suitemap.py checkprompts/tree.py checkprompts/verdicts.py
+    lib/ludics/tests/test_checkprompts_cli.py
+
+fleetworker/__main__.py fleetworker/config.py fleetworker/identity.py fleetworker/transport.py
+fleetworker/farside.py
+    issue-wave/scripts/test-fleet-worker.sh
+    issue-wave/scripts/test-fleet-execution.py
+
+fleetworker/execution.py fleetworker/registry.py
+    issue-wave/scripts/test-fleet-worker.sh execution "prs (" refresh "base gate"
+    issue-wave/scripts/test-fleet-execution.py
+
+fleetworker/revision.py fleetworker/cotenants.py
+    issue-wave/scripts/test-fleet-worker.sh execution refresh
+    issue-wave/scripts/test-fleet-execution.py
+
+fleetworker/lease.py
+    issue-wave/scripts/test-fleet-worker.sh "coordinator lease" halt "base gate" "the real checkout" "launch /" board execution
+    issue-wave/scripts/test-fleet-execution.py
+
+fleetworker/preflight.py
+    issue-wave/scripts/test-fleet-worker.sh preflight refresh "the real checkout" "launch /" execution
+    issue-wave/scripts/test-fleet-execution.py
+
+fleetworker/gate.py
+    issue-wave/scripts/test-fleet-worker.sh "base gate" halt "execution run and conclude" "the real checkout" "coordinator lease" "launch /" "failure verdicts" unstick "codex workers" usage
+
+fleetworker/workers.py
+    issue-wave/scripts/test-fleet-worker.sh "the real checkout" "base gate" "coordinator lease" halt "launch /" "failure verdicts" unstick "codex workers" "log --last-result" usage
+
+fleetworker/supervision.py
+    issue-wave/scripts/test-fleet-worker.sh load "prs ("
+
+fleetworker/board.py fleetworker/boardstore.py fleetworker/takeover.py
+    issue-wave/scripts/test-fleet-worker.sh board
+
+fleetworker/slot.py fleetworker/holders.py fleetworker/group.py fleetworker/slotrecord.py
+fleetworker/graces.py fleetworker/leg.py
+    issue-wave/scripts/test-fleet-worker.sh "execution slot" "execution leg" tip-run
+
+fleetworker/tiprun.py
+    issue-wave/scripts/test-fleet-worker.sh tip-run
+
+peerplan/__main__.py peerplan/plan.py
+    lib/ludics/tests/test_peerplan.py
+
+postmergecleanup/__main__.py postmergecleanup/cleanup.py postmergecleanup/options.py
+postmergecleanup/shellquote.py postmergecleanup/system.py postmergecleanup/transaction.py
+    ship-pr/scripts/test-post-merge-cleanup.sh
+
+prreview/__main__.py
+    ship-pr/scripts/test-pr-review-*.sh
+    scripts/test-py.sh
+
+prreview/core.py prreview/jqsem.py
+    ship-pr/scripts/test-pr-review-*.sh
+    issue-wave/scripts/test-fleet-worker.sh load "prs ("
+
+prreview/knobs.py prreview/shtext.py prreview/clock.py
+    ship-pr/scripts/test-pr-review-*.sh
+
+prreview/base.py
+    ship-pr/scripts/test-pr-review-base-*.sh
+    ship-pr/scripts/test-pr-review-api-contract.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+
+prreview/budget.py
+    ship-pr/scripts/test-pr-review-budget.sh
+    ship-pr/scripts/test-pr-review-watch.sh
+    ship-pr/scripts/test-pr-review-base-*.sh
+    ship-pr/scripts/test-pr-review-checks-absent.sh
+    ship-pr/scripts/test-pr-review-merge.sh
+    ship-pr/scripts/test-pr-review-retry.sh
+
+prreview/body.py prreview/space.py
+    ship-pr/scripts/test-pr-review-reply.sh
+    ship-pr/scripts/test-pr-review-retry.sh
+
+prreview/comment.py
+    ship-pr/scripts/test-pr-review-reply.sh
+    ship-pr/scripts/test-pr-review-retry.sh
+    ship-pr/scripts/test-pr-review-status.sh
+    ship-pr/scripts/test-pr-review-watch.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+
+prreview/reply.py
+    ship-pr/scripts/test-pr-review-reply.sh
+    ship-pr/scripts/test-pr-review-retry.sh
+    ship-pr/scripts/test-pr-review-lib.sh
+
+prreview/resolve.py
+    ship-pr/scripts/test-pr-review-reply.sh
+    ship-pr/scripts/test-pr-review-retry.sh
+    ship-pr/scripts/test-pr-review-status.sh
+    ship-pr/scripts/test-pr-review-merge.sh
+
+prreview/retry.py prreview/runwatch.py
+    ship-pr/scripts/test-pr-review-retry.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+    ship-pr/scripts/test-pr-review-lib.sh
+
+prreview/poll.py prreview/rounds.py
+    ship-pr/scripts/test-pr-review-watch.sh
+    ship-pr/scripts/test-pr-review-status.sh
+    ship-pr/scripts/test-pr-review-rounds.sh
+
+prreview/feeds.py prreview/state.py prreview/threads.py
+    ship-pr/scripts/test-pr-review-watch.sh
+    ship-pr/scripts/test-pr-review-status.sh
+    ship-pr/scripts/test-pr-review-rounds.sh
+    ship-pr/scripts/test-pr-review-retry.sh
+    ship-pr/scripts/test-pr-review-reply.sh
+    ship-pr/scripts/test-pr-review-merge.sh
+
+prreview/status.py
+    ship-pr/scripts/test-pr-review-status.sh
+    ship-pr/scripts/test-pr-review-retry.sh
+
+prreview/watch.py
+    ship-pr/scripts/test-pr-review-watch.sh
+    ship-pr/scripts/test-pr-review-status.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+    ship-pr/scripts/test-pr-review-base-drift.sh
+
+prreview/drift.py
+    ship-pr/scripts/test-pr-review-base-drift.sh
+    ship-pr/scripts/test-pr-review-merge.sh
+    ship-pr/scripts/test-pr-review-status.sh
+    ship-pr/scripts/test-pr-review-watch.sh
+
+prreview/checks.py prreview/runners.py
+    ship-pr/scripts/test-pr-review-checks-absent.sh
+    ship-pr/scripts/test-pr-review-merge.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+    ship-pr/scripts/test-pr-review-lib.sh
+
+prreview/merge.py prreview/closekw.py
+    ship-pr/scripts/test-pr-review-merge.sh
+    ship-pr/scripts/test-pr-review-base-drift.sh
+    ship-pr/scripts/test-pr-review-checks-absent.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+    ship-pr/scripts/test-pr-review-lib.sh
+
+prreview/gate.py prreview/ere.py prreview/checkruns.py
+    ship-pr/scripts/test-pr-review-checks-absent.sh
+    ship-pr/scripts/test-pr-review-merge.sh
+    ship-pr/scripts/test-pr-review-base-*.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+    ship-pr/scripts/test-pr-review-lib.sh
+    ship-pr/scripts/test-pr-review-retry.sh
+
+prreview/workflows.py prreview/workflow_yaml.py
+    ship-pr/scripts/test-pr-review-base-*.sh
+    ship-pr/scripts/test-pr-review-checks-absent.sh
+    ship-pr/scripts/test-pr-review-merge.sh
+
+prreview/mergebuild.py prreview/commentonly.py prreview/mergedry.py
+    ship-pr/scripts/test-pr-review-merge.sh
+    lib/ludics/tests/test_prreview_mergebuild.py
+    lib/ludics/tests/test_prreview_commentonly.py
+
+prreview/localreview.py
+    lib/ludics/tests/test_prreview_localreview.py
+```
+
 ## Checking
 
 ```sh
