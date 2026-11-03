@@ -367,8 +367,8 @@
 #      a cancelled one included (ludics-lite#785) — a run whose red is
 #      explained entirely by advisory JOBS is not a red build signal either, and a run still in
 #      flight whose every unfinished job is advisory does not hold a `--wait` once its finished
-#      non-advisory jobs are all green and its job list has been still for a minute
-#      (ludics-lite#500; prreview/gate.py). BOUNDARY: GitHub creates a
+#      non-advisory jobs are all green (or red with the check `merge --override` waived, ludics#862)
+#      and its job list has been still for a minute (ludics-lite#500; prreview/gate.py). BOUNDARY: GitHub creates a
 #      `needs:`-blocked job only once its dependencies finish, so a required job that `needs:` an
 #      advisory one is not visible while that advisory job runs — such a workflow is released
 #      early. A required job must not `needs:` an advisory one. A value REPLACES the default list,
