@@ -1307,8 +1307,8 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
     a verdict source, so its last batch's record is evidence, with whatever makes it no evidence for
     one commit (``from_run_refusal``'s: a dirty tree, a launch head that is not observed_sha, the
     worktree gone) recorded rather than refused. observed_sha is read off --observed-from and checked
-    on GitHub as any conclusion's is; it is not bound to requested_revision (#634 keeps standing
-    records exempt). The verdict is the run record's with --from-run, else --verdict, never a default;
+    on GitHub as any conclusion's is; it is not bound to requested_revision, nor to a standing head-of
+    request's resolved_revision (#634 and #703 keep standing records exempt). The verdict is the run record's with --from-run, else --verdict, never a default;
     both given must agree."""
     values = flag_values(
         args[2:], ("--request", "--observed-from", "--evidence", "--from-run", "--verdict"), HANDBACK_USAGE

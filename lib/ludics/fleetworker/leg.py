@@ -20,9 +20,9 @@ coordinator identity. The box is the record's execution host (``--box``, when gi
 a correctness record runs the runner under ``execution slot`` on that box (``--cpu``/``--gpu``,
 ``--wait``, ``--wait-window``, ``--deadline`` passed to it), a measurement under ``execution hold
 --request <id>`` (``--deadline`` alone). When the registry binds the record to one commit
-(``registry.bound_commit``: a ``head-of:<branch>`` request's ``resolved_revision``, or a non-standing
-request whose ``requested_revision`` is exactly one commit, ludics-lite#634), ``--rev`` must come to
-exactly that commit.
+(``registry.bound_commit``: a non-standing ``head-of:<branch>`` request's ``resolved_revision``, or a
+non-standing request whose ``requested_revision`` is exactly one commit, ludics-lite#634), ``--rev``
+must come to exactly that commit; a standing record binds none (ludics#703), so its leg runs any.
 
 THE WINDOW WAIT (ludics-lite#666). A standing record a measurement window has ``suspended`` is
 refused at once -- unless the leg was given ``--wait-window[=<s>]``, when it waits here, on the
@@ -1072,7 +1072,8 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     # observed_sha, so the leg runs nothing the registry would refuse to record.
     want = bound_commit(record) or ""
     requested = execution.field(record, "request", "requested_revision")
-    if isinstance(requested, str) and requested.startswith("head-of:") and not want:
+    standing = execution.field(record, "request", "standing") is True
+    if isinstance(requested, str) and requested.startswith("head-of:") and not want and not standing:
         # Reconciled to running without a dispatch, say: the branch was never resolved, so no commit
         # is this request's, and any --rev would pass.
         return refused(f"{request} follows {requested} but records no resolved_revision (it was never dispatched);"
