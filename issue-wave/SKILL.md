@@ -615,7 +615,8 @@ requirements for every transport with transport-specific setup and identity, and
   standing reservation: a window's drain waits for it with the box's other slots idle
   (ludics-lite#668). A resumed worker
   runs only the assigned command, at the exact revision `EXECUTION_ASSIGNED` names (a leg at a
-  newer SHA is refused, ahrefs/ocannl#1278), and reports `EXECUTION_RESULT` as soon as the run
+  newer SHA is refused, ahrefs/ocannl#1278; after a rebase it asks for a
+  [rebind](references/native-claude.md#worker-channel) first, ludics#829), and reports `EXECUTION_RESULT` as soon as the run
   ends, before any other work: the coordinator concludes a run only from that line, so an
   unreported finished run holds the box's reservation and blocks a sibling's window
   (ahrefs/ocannl#1314 held two boxes for about 2.5 h). Neither the returned turn nor its report

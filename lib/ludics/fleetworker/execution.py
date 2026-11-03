@@ -930,7 +930,7 @@ def execution_refresh(cfg: Config, record_text: str) -> None:
 LIST_USAGE = "execution list: expected --active, --compact or --host <box>"
 USAGE = (
     "execution: list, slot -- <command>, hold -- <command>, leg --request <id> ... -- <runner>,"
-    " run|reserve|dispatch|record|reconcile|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
+    " run|reserve|dispatch|record|reconcile|rebind|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
     " or tip-run <json-file> [--tip <branch>] --checkout <dir> -- <command>, tip-run --wait <id>"
 )
@@ -1072,6 +1072,28 @@ def checked_evidence(cfg: Config, text: str, observed_from: str, action: str) ->
     if checking and inherits and isinstance(inherited, str) and inherited:
         fail(revision.commit_refusal(repo, "inherited observed_sha", inherited, gh_timeout(cfg)))
     return text
+
+
+def checked_rebind(cfg: Config, text: str) -> None:
+    """THE REBIND (registry.py's header, ludics#829): the commit a ``rebind`` payload names is one
+    GitHub has in the request's repository, as every revision a payload names is (revision.py). A
+    payload the registry refuses on shape anyway, or for an unknown or concluded record, passes
+    unread: its refusal is the registry's."""
+    try:
+        decoded: Any = json.loads(text)
+    except ValueError:
+        return
+    if not isinstance(decoded, dict):
+        return
+    data = cast(dict[str, Any], decoded)
+    sha, request = data.get("rebound_revision"), data.get("request_id")
+    if not (isinstance(request, str) and request and isinstance(sha, str) and revision.OBJECT_ID.fullmatch(sha)):
+        return
+    record = record_to_check(cfg, request)
+    if record is None or record.get("state") == "concluded":
+        return
+    repo = jq_text(field(record, "request", "repository"))
+    fail(revision.commit_refusal(repo, "rebound_revision", sha, gh_timeout(cfg)))
 
 
 def conclude_payload(cfg: Config, args: list[str]) -> str:
@@ -1494,10 +1516,12 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             else:
                 payload = conclude_payload(cfg, args)
             payload = with_gpu_record(cfg, payload)
-        case "reserve" | "run" | "dispatch" | "record" | "reconcile":
+        case "reserve" | "run" | "dispatch" | "record" | "reconcile" | "rebind":
             payload = read_payload(action, args)
             check_identity(cfg)
-            if action in ("dispatch", "record", "reconcile"):
+            if action == "rebind":
+                checked_rebind(cfg, payload)
+            elif action in ("dispatch", "record", "reconcile"):
                 payload = checked_evidence(cfg, payload, "", action)
             else:
                 checked_request(cfg, payload, action)

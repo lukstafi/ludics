@@ -210,6 +210,15 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    unfinished run - or
    `--from-bg-run <run>` when the run is a `bg-run.sh` directory - and then
    resumes the worker with `EXECUTION_CONCLUDED <id> <verdict>` or its next assignment.
+5. **A rebase after a request.** A request bound to one commit (an exact SHA, or a `head-of:`
+   branch once assigned) refuses a leg and a conclusion at any other, so a worker that rebased
+   since does not run the assignment at its new head, nor at the old one it no longer has: it
+   ends its turn with one line, `EXECUTION_REBIND <request_id> <full 40-hex pushed SHA>`. The
+   coordinator reads the branch's head on GitHub, and when it is that SHA runs `execution rebind`
+   ([executions.md](executions.md#reserve-launch-observe-conclude), ludics#829) and resumes the
+   worker with `EXECUTION_ASSIGNED <request_id>` naming the new revision; the record keeps its
+   dispatch, so nothing is reserved again. A record the rebind refuses (a run already recorded
+   at the old commit) is concluded there, and the new head is a new request.
 
 The same request and result lines work for a Codex native worker that prefers them; what
 differs is only that Codex may keep its turn open and wait.

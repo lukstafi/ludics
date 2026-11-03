@@ -290,6 +290,102 @@ class Binding(RegistryCase):
                       " the commit head-of:topic was resolved to at assignment", err)
 
 
+class Rebind(RegistryCase):
+    """ludics#829: the coordinator rebinds a bound record to a rebased head it confirms."""
+
+    SHA, NEW, OTHER = "a" * 40, "c" * 40, "b" * 40
+    DONE = {"verdict": "pass", "log": "/l", "evidence": "x", "handle": "h", "remote_checkout": "/w"}
+
+    def rebind(self, identity: str, sha: str, **extra: object) -> tuple[int, Any, str]:
+        return self.call("rebind", {"request_id": identity, "evidence": "rebased onto main", "rebound_revision": sha, **extra})
+
+    def test_an_exact_request_concludes_at_the_rebound_commit_only(self) -> None:
+        self.call("run", request("e", requested_revision=self.SHA))
+        rc, rec, _ = self.rebind("e", self.NEW)
+        self.assertEqual((rc, rec["state"], rec["rebound_revision"]), (0, "launching", self.NEW))
+        self.assertEqual(rec["request"]["requested_revision"], self.SHA, "the request stands as it was asked")
+        self.assertEqual(rec["history"][-1]["action"], "rebind")
+        self.assertEqual(registry.bound_commit(rec), self.NEW)
+        rc, _, err = self.call("conclude", {"request_id": "e", **self.DONE, "observed_sha": self.SHA})
+        self.assertEqual(rc, 1)
+        self.assertIn(f"observed_sha {self.SHA} is not {self.NEW}, the commit non-standing request e was rebound to"
+                      f" (reserved at {self.SHA})", err)
+        rc, rec, _ = self.call("conclude", {"request_id": "e", **self.DONE, "observed_sha": self.NEW})
+        self.assertEqual((rc, rec["observed_sha"]), (0, self.NEW))
+        self.assertEqual(self.rebind("e", self.OTHER)[2], "EXECUTION REFUSED: assignment already concluded\n")
+
+    def test_a_head_of_record_is_rebound_through_its_resolution(self) -> None:
+        self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
+        rc, rec, _ = self.rebind("h", self.NEW)
+        self.assertEqual((rc, rec["resolved_revision"]), (0, self.NEW))
+        self.assertNotIn("rebound_revision", rec, "a head-of record keeps one binding field, which older copies read")
+        rc, _, err = self.call("conclude", {"request_id": "h", **self.DONE, "observed_sha": self.SHA})
+        self.assertIn("the commit head-of:topic was resolved to at assignment or rebind", err)
+
+    def test_the_same_commit_again_writes_nothing(self) -> None:
+        self.call("run", request("e", requested_revision=self.SHA))
+        before = len(self.call("list", {})[1][0]["history"])
+        rc, rec, _ = self.rebind("e", self.SHA)
+        self.assertEqual((rc, len(rec["history"])), (0, before))
+        self.assertEqual(self.rebind("e", self.NEW)[0], 0)
+        rc, rec, _ = self.rebind("e", self.NEW)
+        self.assertEqual((rc, len(rec["history"])), (0, before + 1), "a retry is answered with the record")
+
+    def test_what_is_refused(self) -> None:
+        self.call("run", request("s", requested_revision=self.SHA, standing=True))
+        self.call("run", request("f", requested_revision=f"{self.SHA} plus working diff"), slots="mac=4")
+        self.call("reserve", request("u", requested_revision="head-of:topic"), slots="mac=4")
+        for identity in ("s", "f", "u"):
+            rc, _, err = self.rebind(identity, self.NEW)
+            self.assertEqual(rc, 1, identity)
+            self.assertIn(f"{identity} binds no commit", err)
+        self.call("run", request("e", requested_revision=self.SHA), slots="mac=4")
+        for bad, why in [
+            ({"rebound_revision": self.NEW[:39]}, "rebound_revision must be an exact Git object ID"),
+            ({"rebound_revision": self.NEW.upper()}, "rebound_revision must be an exact Git object ID"),
+            ({"rebound_revision": self.NEW, "observed_sha": self.NEW}, "rebind takes request_id, evidence and rebound_revision only"),
+            ({"rebound_revision": self.NEW, "state": "running"}, "state is only valid for record or reconcile"),
+        ]:
+            rc, _, err = self.call("rebind", {"request_id": "e", "evidence": "x", **bad})
+            self.assertEqual(rc, 1, bad)
+            self.assertIn(why, err)
+        rc, _, err = self.call("rebind", {"request_id": "e", "rebound_revision": self.NEW})
+        self.assertEqual(rc, 1, "a rebind says why")
+        rc, _, err = self.call("reconcile", {"request_id": "e", "state": "running", "evidence": "x", "rebound_revision": self.NEW})
+        self.assertIn("rebound_revision is required for rebind, and only valid for it", err)
+        # Another coordinator's lease.
+        argv = ["-", self.root, "rebind", "other", "other-token",
+                json.dumps({"request_id": "e", "evidence": "x", "rebound_revision": self.NEW}), "mac", "", ""]
+        out, err_io = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err_io):
+            self.assertEqual(registry.run(argv), 1)
+        self.assertIn("adopted assignment must be reconciled before rebind", err_io.getvalue())
+        # A run recorded at the old commit is that commit's evidence.
+        self.call("record", {"request_id": "e", "state": "running", "evidence": "x", "observed_sha": self.SHA})
+        rc, _, err = self.rebind("e", self.NEW)
+        self.assertEqual(rc, 1)
+        self.assertIn(f"e records observed_sha {self.SHA}, evidence of a run at that commit: conclude it there", err)
+        stored = [r for r in self.call("list", {})[1] if r["request_id"] == "e"]
+        self.assertNotIn("rebound_revision", stored[0], "a refusal changes nothing")
+
+    def test_a_stored_rebound_revision_is_validated(self) -> None:
+        self.call("run", request("e", requested_revision=self.SHA))
+        self.rebind("e", self.NEW)
+        path = os.path.join(self.root, "executions", "e.json")
+        with open(path) as f:
+            data = json.load(f)
+        for bad in ("C" * 40, 3, ""):
+            with self.subTest(bad=bad):
+                with open(path, "w") as f:
+                    json.dump({**data, "rebound_revision": bad}, f)
+                rc, _, err = self.call("list", {})
+                self.assertEqual(rc, 1)
+                self.assertIn("invalid rebound revision", err)
+        with open(path, "w") as f:
+            json.dump({**data, "request": {**data["request"], "requested_revision": "origin/main"}}, f)
+        self.assertIn("invalid rebound revision", self.call("list", {})[2], "only a record its request binds")
+
+
 class Checkout(RegistryCase):
     """ludics-lite#731: THE CHECKOUT -- beside the request, fixed at reserve, required of a new
     standing request."""

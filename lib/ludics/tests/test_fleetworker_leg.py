@@ -362,6 +362,22 @@ class BackendPin(unittest.TestCase):
                                f"{self.PINS}slot-plan tools/p.sh\n"], capture_output=True, text=True)
         self.assertEqual((done.returncode, done.stdout), (0, "[tools/p.sh]"))
 
+    def test_a_run_report_line_is_read_and_asks_for_no_pin(self) -> None:
+        """ludics#829: THE RUN REPORT's path, by the slot plan's grammar, at most one."""
+        self.assertEqual(self.pin("run-report tools/report.sh\n", "1", "tools/t.sh"), (0, ""))
+        done = subprocess.run([self.bash, "-c", leg.PIN + 'pin_grammar "$1" && printf "[%s][%s]" "$pin_plan" "$pin_report"', "x",
+                               f"{self.PINS}slot-plan tools/p.sh\nrun-report tools/r.sh\n"], capture_output=True, text=True)
+        self.assertEqual((done.returncode, done.stdout), (0, "[tools/p.sh][tools/r.sh]"))
+        for line in ["run-report", "run-report /abs/r", "run-report ../r", "run-report a/./r", "run-report -r",
+                     "run-report a b", "run-report a$b"]:
+            with self.subTest(line=line):
+                rc, why = self.pin(f"# ok\n{line}", "0", "tools/t.sh")
+                self.assertEqual(rc, 1)
+                self.assertTrue(why.startswith(f".github/fleet-leg line 2 is not one this leg reads ({line})"), why)
+        rc, why = self.pin("run-report p\nrun-report q\n", "0", "tools/t.sh")
+        self.assertEqual(rc, 1)
+        self.assertIn("line 2 is not one this leg reads (run-report q)", why)
+
     def test_a_line_the_leg_cannot_read_refuses_even_a_cpu_leg(self) -> None:
         for line in ["pin-flagg --x", "pin-flag", "pin-flag x", "pin-flag --", "pin-flag --x=y", "pin-flag --x # c",
                      "pin-env 9X", "pin-env A-B", "pin-env", "slot-plan", "slot-plan /abs/p", "slot-plan ../p",
@@ -374,7 +390,8 @@ class BackendPin(unittest.TestCase):
         rc, why = self.pin("slot-plan p\nslot-plan q\n", "0", "tools/t.sh")
         self.assertEqual(rc, 1)
         self.assertEqual(why, ".github/fleet-leg line 2 is not one this leg reads (slot-plan q): pin-flag <option>,"
-                              " pin-env <NAME>, one slot-plan <path in the worktree>, a # comment or a blank line")
+                              " pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, a # comment"
+                              " or a blank line")
 
 
 class BackendPinTo(unittest.TestCase):

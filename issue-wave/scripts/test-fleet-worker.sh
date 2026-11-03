@@ -2867,6 +2867,17 @@ expect "a 404 is UNVERIFIED: no repository, or a private one the token cannot se
 expect "a SHA-256 observed_sha is refused: GitHub cannot hold one" 1 "is a SHA-256 object ID" -- \
   "${FWR[@]}" execution conclude "$(rv_done rv-ref "$(printf 'e%.0s' $(seq 64))")"
 [ "$(state_of rv-ref)" = launching ] && ok "every refusal left the assignment dispatched" || ko "a refusal changed rv-ref: $(state_of rv-ref)"
+# THE REBIND (ludics#829): the commit a coordinator rebinds a bound record to is checked on GitHub too.
+rebound=$(printf 'a%.0s' $(seq 40))
+"${FWR[@]}" execution run "$(rv_req rv-rb "$good" other)" >/dev/null 2>&1 || ko "could not run rv-rb (setup)"
+rv_rb() { jq -n --arg sha "$1" '{request_id:"rv-rb", evidence:"rebased onto main; the worker reported its new head", rebound_revision:$sha}' > "$TMP/rv-rb.json"; printf '%s' "$TMP/rv-rb.json"; }
+expect "a rebind to a commit GitHub does not have is refused" 1 "EXECUTION REFUSED: rebound_revision $typo is no commit of o/r (checked on GitHub" -- \
+  env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution rebind "$(rv_rb "$typo")"
+expect "...one it has rebinds the record, its state kept" 0 "\"rebound_revision\": \"$rebound\"" -- "${FWR[@]}" execution rebind "$(rv_rb "$rebound")"
+[ "$(state_of rv-rb)" = launching ] && ok "...still launching" || ko "the rebind moved rv-rb's state: $(state_of rv-rb)"
+expect "...and a conclusion at the reserved commit is then refused, naming the rebind" 1 "is not $rebound, the commit non-standing request rv-rb was rebound to (reserved at $good)" -- \
+  "${FWR[@]}" execution conclude "$(rv_done rv-rb "$good")"
+expect "...while one at the rebound commit concludes" 0 "\"observed_sha\": \"$rebound\"" -- "${FWR[@]}" execution conclude "$(rv_done rv-rb "$rebound")"
 # --observed-from: the checkout's HEAD, read on the execution host, is the observed_sha.
 jq -n '{request_id:"rv-ref", verdict:"pass", log:"/logs/x", evidence:"fixture run", handle:"fixture"}' > "$TMP/rv-obs.json"
 expect "--observed-from must name an absolute checkout" 2 "must be absolute" -- "${FWR[@]}" execution conclude "$(rv_done rv-ref -)" --observed-from "obs wt"
@@ -3458,6 +3469,42 @@ grep -q "^plan argv" <<<"$out" && ko "the --gpu leg asked the plan: $out" || ok 
 expect "...nor does a --cpu one" 0 "^runner slot: testbox [2-4] 4 cpu$" -- \
   leg --request leg-a --rev planned --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh gpu
 grep -q "^plan argv" <<<"$out" && ko "the --cpu leg asked the plan: $out" || ok "...its plan unasked"
+# THE RUN REPORT (ludics#829): the project's run-report, after each run that started, comes back
+# on the leg's stderr between its two lines, before the status line; its own status is only said.
+git -C "$lsrc" checkout -q -b reported pinned && printf 'run-report tools/report.sh\n' >> "$lsrc/.github/fleet-leg" &&
+  cat > "$lsrc/tools/report.sh" <<'REPORT' &&
+#!/usr/bin/env bash
+printf 'report argv:'; printf ' [%s]' "$@"; printf '\n'
+printf 'report slot: %s\n' "${FLEET_SLOT_HELD:-none}"
+printf 'report stderr: (not part of the golden) %s\n' "$([ -e broken ] && echo patched || echo clean)" >&2
+for a in "$@"; do last=$a; done
+case $last in long) i=0; while [ "$i" -lt 250 ]; do i=$((i + 1)); printf 'report line %s\n' "$i"; done ;; fail) exit 3 ;; esac
+exit 0
+REPORT
+  chmod +x "$lsrc/tools/report.sh" && git -C "$lsrc" add -A && git -C "$lsrc" commit -q -m reported && lrep=$(git -C "$lsrc" rev-parse HEAD) &&
+  git -C "$lsrc" push -q "$lremote" reported && git -C "$lsrc" checkout -q main || ko "could not build the run-report fixture (setup)"
+expect "a project's run report comes back after the main run, before the status line" 0 \
+  "^EXECUTION LEG testbox: run report tools/report.sh after the main run (exit 0), report exit 0, 3 line(s):$" -- \
+  leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh quick
+rep=$(sed -n '/run report tools\/report.sh after the main run/,/end of the run report (main run)$/p' <<<"$out")
+grep -q "^report argv: \[tools/check.sh\] \[quick\]$" <<<"$rep" && grep -q "^report slot: testbox [2-4] 4 cpu$" <<<"$rep" &&
+  grep -q "^report stderr: (not part of the golden) clean$" <<<"$rep" && [ "$(last_line)" = "execution-leg: exit: 0" ] &&
+  ok "...its stdout and stderr, asked with the runner's argv in a --cpu nested slot" || ko "the report did not come back as stated: $out"
+expect "...after the control run too, before its revert, the control's status unchanged" 0 \
+  "^EXECUTION LEG testbox: run report tools/report.sh after the control run (exit 4), report exit 0, 3 line(s):$" -- \
+  leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu --control "$TMP/break.patch" -- tools/check.sh
+grep -q "^report stderr: (not part of the golden) patched$" <<<"$out" && grep -q "control failed as required (exit 4), patch reverted" <<<"$out" &&
+  ok "...the patched worktree's" || ko "the control's report was not the patched run's: $out"
+expect "...only its last 200 lines, saying how many it had" 0 "report exit 0, the last 200 of its 253 lines:$" -- \
+  leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh long
+grep -q "^report line 250$" <<<"$out" && grep -q "^report line 51$" <<<"$out" && ! grep -q "^report line 50$" <<<"$out" &&
+  ok "...its tail" || ko "the long report was not cut to its tail: $out"
+expect "...and a report that fails changes no verdict" 0 "after the main run (exit 0), report exit 3, 3 line(s):$" -- \
+  leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh fail
+[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...the runner's status stands" || ko "a failed report changed the status: $out"
+expect "a runner that never started gets no report" 1 "EXECUTION LEG REFUSED testbox: the runner is not an executable command" -- \
+  leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- tools/no-such-runner.sh
+grep -q "run report" <<<"$out" && ko "a report ran for a runner that never started: $out" || ok "...none asked"
 # A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
 # control run's, which a runner prints last otherwise.
 lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") || ko "could not allocate a bg-run directory (setup)"
