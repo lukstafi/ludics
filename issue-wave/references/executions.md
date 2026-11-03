@@ -873,6 +873,12 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   leg killed with SIGKILL, a dropped connection (both leave the runner running: look on the box), a
   box ssh cannot reach at stop time (`EXECUTION LEG STOP UNREACHABLE <box>`, which prints the
   command that ends it there), and a process the runner moved out of its group.
+- **What a leg that never started leaves.** A control patch or `--file` copied to the box before
+  its ssh or bash could start, or a far side stopped in its setup, stays in the box's state
+  directory (and the setup's `refs/fleet-leg/<pid>` in the checkout). The next leg on that box
+  sweeps them (ludics#715, `swept what earlier legs left`): a staged file over an hour old that no
+  running leg holds, and a ref of that checkout whose far shell is gone. Nothing needs cleaning by
+  hand; a running leg's files are never swept, however long it runs.
 - **The control.** `--control <patch>` (a file on the caller's box) must apply before anything runs.
   After a main run that passed it is applied, the runner runs again in the same slot and must fail,
   and the patch is reverted: the leg exits 0 when the control failed (1-127, but 124), 1 with

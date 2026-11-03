@@ -3364,6 +3364,26 @@ expect "a main run that fails is the leg's status, its control not run (and the 
   leg --request leg-a --rev red --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- tools/check.sh
 grep -q "control patch applied" <<<"$out" && ko "the control ran after a red main run: $out" || ok "...the control skipped"
 [ -z "$(find "$ISSUE_WAVE_STATE/leg-control" -type f 2>/dev/null)" ] && ok "...and every copied patch removed from the box" || ko "a patch was left: $(ls "$ISSUE_WAVE_STATE/leg-control")"
+# ludics#715: what a leg whose ssh or bash never started left (its staged files), and a setup's
+# private ref whose far shell is gone, are swept by the next leg on the box; a young file, and a
+# private ref whose far shell still runs, are kept.
+mkdir -p "$ISSUE_WAVE_STATE/leg-files"
+lstale="$ISSUE_WAVE_STATE/leg-control/leg-z.0123456789abcdef.patch" lshipped="$ISSUE_WAVE_STATE/leg-files/leg-z.0123456789abcdef.list"
+lyoung="$ISSUE_WAVE_STATE/leg-control/leg-y.0123456789abcdef.patch"
+cp "$TMP/break.patch" "$lstale" && cp "$TMP/break.patch" "$lshipped" && cp "$TMP/break.patch" "$lyoung" &&
+  touch -t 200001010000 "$lstale" "$lshipped" || ko "could not plant stale staged files (setup)"
+sh -c 'exit 0' & lgone=$!; wait "$lgone"
+sleep 300 & llive=$!
+git -C "$lco" update-ref "refs/fleet-leg/$lgone" HEAD && git -C "$lco" update-ref "refs/fleet-leg/$llive" HEAD || ko "could not plant fleet-leg refs (setup)"
+expect "a leg sweeps what earlier legs left on its box, saying so" 0 "^EXECUTION LEG testbox: swept what earlier legs left (ludics#715): .*leg-z.0123456789abcdef.patch .*leg-z.0123456789abcdef.list refs/fleet-leg/$lgone$" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --control "$TMP/break.patch" -- \
+  sh -c 'if [ -e broken ]; then exit 3; fi; exit 0'
+[ ! -e "$lstale" ] && [ ! -e "$lshipped" ] && [ -e "$lyoung" ] && ok "...the stale files gone, a young one kept" || ko "the sweep took the wrong files: $(ls "$ISSUE_WAVE_STATE/leg-control" "$ISSUE_WAVE_STATE/leg-files")"
+[ "$(git -C "$lco" for-each-ref --format='%(refname)' refs/fleet-leg)" = "refs/fleet-leg/$llive" ] && ok "...and a live far shell's ref kept" ||
+  ko "the ref sweep: $(git -C "$lco" for-each-ref refs/fleet-leg)"
+grep -q "control failed as required" <<<"$out" && ok "...and the leg ran its control as ever" || ko "the sweeping leg did not run its control: $out"
+kill "$llive" 2>/dev/null; wait "$llive" 2>/dev/null
+git -C "$lco" update-ref -d "refs/fleet-leg/$llive"; rm -f "$lyoung"
 # ludics-lite#749: a run that leaves the worktree dirty says so, beside the HEAD-moved warning; the
 # leg's status stays the runner's.
 expect "a run that leaves the worktree dirty warns, its status the runner's" 0 "^EXECUTION LEG testbox: WARNING: $lwt has 1 uncommitted path(s) after the run (?? leftover;)" -- \

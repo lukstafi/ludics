@@ -223,8 +223,30 @@ group signal reached the wrapper before the far stop could see its tree, THE ESC
 the leg, a dropped connection, and a box that ssh cannot reach at stop time
 (``EXECUTION LEG STOP UNREACHABLE``, which prints the pid and the command that ends it there) leave
 the runner running, as UNREACHABLE says. A stop in the far side's setup ends its shell, and a git
-command it started finishes on its own; its private ref and staged patch are left. The stop reads
-``ps`` on the box (Linux, macOS, WSL).
+command it started finishes on its own; its private ref and staged files are left, for a later leg's
+SWEEP. The stop reads ``ps`` on the box (Linux, macOS, WSL).
+
+THE SWEEP (ludics#715). A leg's staged files (the control patch, the ``--file``) are copied to the box
+before its far shell starts, so one whose ssh or bash cannot start leaves them there, and a stop or a
+kill in the far side's setup leaves them and its ``refs/fleet-leg/<pid>``; nothing reads them and
+they hold no lock. So each far shell, once it holds its worktree's lock, CLAIMS its own staged files
+-- a shared flock on a descriptor of its own, which every process it starts inherits, the slot or
+hold wrapper included, as the worktree's lock is (a claim it finds already swept refuses the leg,
+nothing run) -- and then sweeps: it removes each staged file of ``$STATE/leg-control`` and
+``$STATE/leg-files`` older than STAGED_GRACE (an hour) whose exclusive flock it can take, and each
+``refs/fleet-leg/<pid>`` of its own ``--checkout`` whose pid is no live process on the box (this
+shell's own excepted), said in one line (``swept what earlier legs left``). The age bound is not the
+leg's run bound: a leg that runs for days holds its claim for as long as any process of it runs, so
+the age covers only the gap from the copy to the claim -- seconds (the second copy, ssh's connect,
+the far side's first checks) -- and an hour is outlived only by a file whose leg never claimed it.
+The boundary, a fail-closed allowlist: regular files directly in those two directories named as the
+leg names them (``<request>.<16 hex token>.<name>``, each part in ``[A-Za-z0-9._-]``), and refs
+``refs/fleet-leg/<digits>``; anything else there is left. What it does not do: sweep a box no later
+leg reaches, or a checkout no later leg names; remove a ref whose pid the system has given to another
+process since (it waits for that process to end), or any ref when ``ps`` cannot see the far shell
+itself; or stop the ``git fetch`` a stopped setup left running, which may write its ref back after the
+sweep, for the next one. A file a claim misses -- one whose far shell took over an hour to reach its
+first checks -- is swept, and that leg refuses (above), never runs without its patch.
 
 THE ESCAPED (ludics-lite#816). The wrapper's group kill reaches only its group, and a runner may
 leave it: OCANNL's ``tools/test-run.sh`` runs dune in a group of its own, holding the runner's
@@ -247,6 +269,7 @@ import os
 import re
 import secrets
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -425,13 +448,82 @@ backend_pin_to() {
 }
 """
 
+# THE SWEEP (ludics#715, see the header). A staged file's claim must be taken within this many seconds
+# of its copy: the --file's copy, ssh's connect (ConnectTimeout=15) and the far side's first checks
+# come between, so an hour is a bound only a file whose leg never started outlives.
+STAGED_GRACE = 3600
+# What the sweep reads, a fail-closed allowlist: regular files directly in $STATE/leg-control and
+# $STATE/leg-files named as run_leg names them (<request>.<16 hex token>.<name>, each part in
+# [A-Za-z0-9._-]), and refs refs/fleet-leg/<digits> of the leg's own --checkout. Anything else there
+# is not the fleet's and is left alone.
+SWEEP_PY = r"""import fcntl, os, re, stat, sys, time
+state, grace, own = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
+# The claim: a shared flock on each of this leg's own files, through the descriptor the far shell
+# opened, and the file still at its path (a sweep that won the race unlinked it): else exit 3.
+for fd, path in zip(own[0::2], own[1::2]):
+    try:
+        fcntl.flock(int(fd), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        mine, there = os.fstat(int(fd)), os.stat(path)
+    except OSError:
+        sys.exit(3)
+    if (mine.st_dev, mine.st_ino) != (there.st_dev, there.st_ino):
+        sys.exit(3)
+named = re.compile(r"[A-Za-z0-9._-]+\.[0-9a-f]{16}\.[A-Za-z0-9._-]+")
+now = time.time()
+for sub in ("leg-control", "leg-files"):
+    where = os.path.join(state, sub)
+    try:
+        names = sorted(os.listdir(where))
+    except OSError:
+        continue
+    for name in names:
+        path = os.path.join(where, name)
+        try:
+            st = os.lstat(path)
+            if not named.fullmatch(name) or not stat.S_ISREG(st.st_mode) or now - st.st_mtime < grace:
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            # Claimed: its leg, or a process it started, still holds it.
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held, there = os.fstat(fd), os.lstat(path)
+            if (held.st_dev, held.st_ino) == (there.st_dev, there.st_ino):
+                os.unlink(path)
+                print(path)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+"""
+SWEEP = (f"STAGED_GRACE={STAGED_GRACE}\nSWEEP_PY={shlex.quote(SWEEP_PY)}\n" + r"""# sweep_staged <checkout> [<fd> <path>]...: claim this leg's own staged files (exit 3 when one was
+# lost), then remove the stale ones earlier legs left; each path or ref removed on stdout.
+sweep_staged() {
+  local co="$1" r p
+  shift
+  "$SKILLS_REPO/scripts/py" -c "$SWEEP_PY" "$STATE" "$STAGED_GRACE" "$@" </dev/null || return
+  # A private ref whose far shell is no live process on this box: nothing will read it. A ps that
+  # cannot see this shell sees no process, so it sweeps no ref.
+  ps -p "$$" >/dev/null 2>&1 || return 0
+  git -C "$co" for-each-ref --format='%(refname)' refs/fleet-leg/ 2>/dev/null | while IFS= read -r r; do
+    p=${r#refs/fleet-leg/}
+    case "$p" in ''|*[!0-9]*) continue ;; esac
+    [ "$p" != "$$" ] || continue
+    if ps -p "$p" >/dev/null 2>&1; then continue; fi
+    git -C "$co" update-ref -d "$r" >/dev/null 2>&1 && printf '%s\n' "$r"
+  done
+  return 0
+}
+""")
+
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
 # (FLEET_FETCH_TIMEOUT), the status token (see the header), the shipped --file's name (in
 # $STATE/leg-files, or empty), the --reads-no-config declaration (0|1), the wrapper's word count and words
 # (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot flags'
 # count and words, then the runner's argv.
-LEG = NOT_HOME + PIN + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" nwrap="${12}"
+LEG = NOT_HOME + PIN + SWEEP + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" nwrap="${12}"
 # THE STOP (see the header): this shell's pid, first, under the token; the leg keeps it.
 printf 'execution-leg %s: far: %s\n' "$token" "$$"
 shift 12
@@ -490,6 +582,15 @@ except BlockingIOError:
     sys.exit(3)' </dev/null; lrc=$?
 [ "$lrc" -ne 3 ] || refuse "--worktree $wt: another leg is using it (lock $wlock); wait for it, or name another worktree"
 [ "$lrc" -eq 0 ] || refuse "cannot lock --worktree $wt ($SKILLS_REPO/scripts/py exit $lrc, above)"
+# THE SWEEP (see the header): this leg's own staged files claimed, on descriptors every process
+# started from here inherits, as the worktree's lock is; then what earlier legs left is removed.
+own=()
+if [ -n "$patch" ]; then exec 7<"$patch" || refuse "the control patch did not arrive at $patch"; own+=(7 "$patch"); fi
+if [ -n "$lfile" ]; then exec 6<"$lfile" || refuse "the --file did not arrive at $lfile"; own+=(6 "$lfile"); fi
+swept=$(sweep_staged "$co" ${own[@]+"${own[@]}"}); src=$?
+[ "$src" -ne 3 ] || refuse "this leg's staged files were swept as stale before it claimed them (they waited over ${STAGED_GRACE}s for the leg to start); nothing ran"
+[ "$src" -eq 0 ] || refuse "cannot claim this leg's staged files or sweep stale ones ($SKILLS_REPO/scripts/py exit $src, above); nothing ran"
+[ -z "$swept" ] || say "swept what earlier legs left (ludics#715): $(printf '%s' "$swept" | tr '\n' ' ')"
 # The commit, into a private ref of the checkout (never FETCH_HEAD: see the module header).
 case "$rev" in *[!0-9a-f]*) sha_like=0 ;; *) case ${#rev} in 40|64) sha_like=1 ;; *) sha_like=0 ;; esac ;; esac
 if [ "$sha_like" = 1 ] && git -C "$co" cat-file -e "$rev^{commit}" 2>/dev/null; then
