@@ -3832,6 +3832,16 @@ probe '3\n' '0\ngreen -- 3 passed\nchecks: verdict=green extra\n'
 [ "$rc" -eq 4 ] && grep -q " ci=unknown " <<<"$out" && ok "a malformed checks trailer is ci=unknown" || ko "malformed checks trailer (exit $rc): $out"
 probe '3\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n  a line after it\n'
 [ "$rc" -eq 4 ] && grep -q " ci=unknown " <<<"$out" && ok "a checks trailer that is not the last line is not read" || ko "trailer not last (exit $rc): $out"
+# ludics#753: a head held by a job that never got a runner says so in the trailer's runners=
+# field, and prs shows it on the pending verdict; the field on any other verdict is at odds.
+probe '3\n' '4\nNO RUNNER  build\nchecks: verdict=unjudged runners=no-runner\n'
+[ "$rc" -eq 0 ] && grep -q "^o/r#9 rounds=3 ci=pending(no-runner) " <<<"$out" && ok "a runner-less job shows as ci=pending(no-runner), exit unchanged" || ko "runners field (exit $rc): $out"
+probe '3\n' '4\nx\nchecks: verdict=pending runners=no-runner,never-started\n'
+[ "$rc" -eq 0 ] && grep -q "^o/r#9 rounds=3 ci=pending(no-runner,never-started) " <<<"$out" && ok "...both kinds in the trailer's order" || ko "both kinds (exit $rc): $out"
+probe '3\n' '0\ngreen -- 3 passed\nchecks: verdict=green runners=no-runner\n'
+[ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=3 ci=unknown " <<<"$out" && ok "...and a runners field beside a settled verdict is ci=unknown" || ko "green with runners (exit $rc): $out"
+probe '3\n' '4\nx\nchecks: verdict=pending runners=asleep\n'
+[ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=3 ci=unknown " <<<"$out" && ok "...as is a kind outside the field's vocabulary" || ko "unknown kind (exit $rc): $out"
 probe '3\n-\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=? ci=green " <<<"$out" && ok "a count with no rounds trailer is rounds=?, even under readable prose" || ko "no rounds trailer (exit $rc): $out"
 probe '3\nrounds: n=6 threshold=off first=0\n' '0\ngreen -- 3 passed\nchecks: verdict=green\n'

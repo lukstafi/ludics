@@ -8,9 +8,10 @@ import io
 import json
 import shutil
 import subprocess
+import typing
 import unittest
 
-from ludics.prreview import runners
+from ludics.prreview import checks, runners
 from ludics.prreview.gate import Gate
 from ludics.prreview.merge import Recovery
 from ludics.tests.test_prreview_gate import FakeClock, FakeGh, make_gate
@@ -219,6 +220,21 @@ class Classes(Quiet):
         gate.check("7", 0)
         self.assertEqual(gate.orphans, [])
         self.assertFalse(any("run_attempt" in " ".join(c) for c in gh.calls), "no run is old enough to read")
+
+
+class Trailer(unittest.TestCase):
+    """ludics#753: the kinds found ride in the trailer's own runners= field, the verdict's
+    vocabulary unchanged, so ``fleet-worker.sh prs`` can show a starved head."""
+
+    def test_the_kinds_are_written_in_order_on_a_no_verdict_exit_only(self) -> None:
+        both = {"never-started", "no-runner"}
+        self.assertEqual(checks.trailer(4, "unjudged", {"no-runner"}), "checks: verdict=unjudged runners=no-runner")
+        self.assertEqual(checks.trailer(4, "pending", both), "checks: verdict=pending runners=no-runner,never-started")
+        self.assertEqual(checks.trailer(4, "pending", set()), "checks: verdict=pending", "none found: no field")
+        for rc, verdict in ((0, "green"), (1, "red"), (3, "unknown"), (5, "superseded")):
+            with self.subTest(rc=rc):
+                self.assertEqual(checks.trailer(rc, verdict, both), f"checks: verdict={verdict}")
+        self.assertEqual(checks.RUNNER_KINDS, typing.get_args(runners.Kind.__value__), "the field's vocabulary is the scan's")
 
 
 class MergeRecovery(Quiet):
