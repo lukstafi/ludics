@@ -324,7 +324,7 @@ shared_group_burst() {
 }
 
 # Pushes sharing one group with `cancel-in-progress: false` (skill-scripts.yml's main since
-# ludics-lite#597; OCANNL's `ci`): a burst leaves one run going at an older merge, the tip's run
+# ludics-lite#597): a burst leaves one run going at an older merge, the tip's run
 # pending behind it, and the merges between them with `cancelled` runs, each replaced while it was
 # pending. The integration loop reads `base --wait` WITHOUT --interim, and none of those
 # cancellations may read red or hold the verdict: the wait ends on the tip's own run, whichever way

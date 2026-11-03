@@ -440,6 +440,12 @@ which takes the tip's verdict from a record at the tip first, else from the PR t
 GitHub's clean merge of, when that workflow ran green on its head (roll-forward), and names the
 source it used. A tip with neither reads `NO VERDICT` at once, and dispatch waits; an unreadable
 registry refuses too, since a failed record there would outrank the PR head (ludics-lite#401).
+A branch can carry both kinds: OCANNL's master has `ci-env` as its per-merge push verdict and
+`ci` retired from push, so a tip is green only with `ci-env`'s own green at it AND a named source
+for `ci` - the integration records, or the roll-forward head - and `ci-env`'s green never
+speaks for `ci`. The records and the PRs are the `--target-repo`'s: name the repository the PRs
+merge in and the integration runs record (for OCANNL its staging fork, not the upstream that
+master is pushed to, where the gate finds neither and reads `NO VERDICT`).
 Through a merge burst the tip's own run is always in flight, and the wait used to reach its
 ceiling and refuse every launch (20-40 min per launch on 09-24 and 09-25). The gate now passes
 `--interim` (ludics-lite#308): a tip whose own push run is in flight, with nothing red and
@@ -452,7 +458,7 @@ other hold. A tip with neither source stays pending and refused, and so does one
 an older merge still going. The advisory file decides there too (ludics-lite#659):
 a merged head, or an older run, going only on jobs it names, every other job passed, holds
 nothing. Under a push group that keeps one running run and the
-newest pending one (this repository's main since ludics-lite#597, OCANNL's `ci`), that refusal
+newest pending one (this repository's main since ludics-lite#597), that refusal
 comes only from the one running run, and runs cancelled while pending never hold it (ship-pr's
 *Read the base before you branch*). The integration
 loop, which reads `base --wait` WITHOUT `--interim`, still waits for the tip's own run: an interim is
@@ -901,7 +907,9 @@ controlled through the tools in your coordinator's file, never through those com
   older commit's verdict, which judges no merge the tip added. Where the
   default branch's workflow no longer runs on push (its file at the tip names no `push`) there is
   no tip run to await: the integration run's own record, concluded at the merged SHA, is that
-  tip's verdict, and it is what the base gate reads before the next launch. Reserve it as transport
+  tip's verdict, and it is what the base gate reads before the next launch. A workflow that still
+  runs on push beside it (OCANNL's `ci-env`) is read as any push verdict, so its red at the tip is
+  the tip's red as well. Reserve it as transport
   `coordinator`, kind `correctness`, with `"integration": true`, and conclude it with its
   `observed_sha` - a record without the field is a targeted batch to the gate, not a verdict
   source. GitHub orders a group's waiting runs by when each started waiting and does not

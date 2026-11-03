@@ -653,8 +653,10 @@ while an outstanding record refers to it, or while a pending reservation could s
 A coordinator's integration run (SKILL.md's integration loop) adds `"integration": true` to an
 ordinary non-standing `correctness` request of transport `coordinator`; the registry refuses the
 field on any other shape. Concluded `pass` or `fail` at an exact `observed_sha`, it is the verdict
-`fleet-worker.sh gate` hands `pr-review.sh base` for a default branch without push CI
-(ludics-lite#401); a correctness run without the field is a targeted batch and is never offered.
+`fleet-worker.sh gate` hands `pr-review.sh base` for a default-branch workflow that no longer runs
+on push (ludics-lite#401), beside any that still do; a correctness run without the field is a
+targeted batch and is never offered. Its `repository` is the one the PRs merge in, which the gate
+must name as `--target-repo` to be handed it (SKILL.md's *Base gate*).
 
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
 `fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] --checkout <dir> [--id-prefix
