@@ -701,7 +701,11 @@ stays the review question it was. And it refuses a shell, Python or skill-text r
 rest to that, over a fail-closed allowlist of comparison shapes its `verdicts` module's header lists
 (an `==`/`!=`, a `test` `=`, a `grep -x`, an anchored grep, a `case` arm, each against an exact
 verdict token). A green scan says no line of those shapes is there, not that every reader reads the
-first word: a comparison of another shape is outside it. Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
+first word: a comparison of another shape is outside it. It also holds the two prose lists of the
+fleet roster, the daily planner's home-box sentence and issue-wave's fleet bullet, to
+`DEFAULT_BOXES` in `lib/ludics/fleetworker/config.py` (#853): each names every default box and no
+other, read as the backticked names at parenthesis depth zero in the one sentence after a fixed
+anchor, the allowlist its `roster` module's header states. Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
 against scratch trees, one per defect, with the well-formed tree as the control, and ends by
 running it on this checkout.
 

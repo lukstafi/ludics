@@ -1583,6 +1583,122 @@ class SlotCountTest(Case):
         self.lacks(f"...and a root without {WORKER} carries no slot obligation", "mac-studio", run(CP, self.root))
 
 
+# --- the fleet roster's prose lists (#853) ------------------------------------------------------
+# The planner's home-box sentence and issue-wave's fleet bullet, held to DEFAULT_BOXES in the
+# worker's config.py. The tree is the real files, copied, as the slot tree is: both READMEs for the
+# index lookup, LINK_TARGETS for the link check, and no fleet-worker.sh or fixture, so neither of
+# those agreements applies.
+
+ROSTER_SOURCE = "lib/ludics/fleetworker/config.py"
+PLANNER = "routines/daily-issue-planning/SKILL.md"
+FLEET = "issue-wave/SKILL.md"
+SPARE = "spare-box"  # a box no roster names
+
+
+@functools.cache
+def roster() -> tuple[str, ...]:
+    found = [m.group(1) for line in src_lines(ROSTER_SOURCE) if (m := re.fullmatch(r'DEFAULT_BOXES = "([^"]*)"\s*', line))]
+    if len(found) != 1 or not found[0].split():
+        raise AssertionError(f'the roster probes need one DEFAULT_BOXES = "..." line in {ROSTER_SOURCE}')
+    boxes = tuple(found[0].split())
+    if SPARE in boxes:
+        raise AssertionError(f"the roster probes use {SPARE} as the box no roster names")
+    return boxes
+
+
+def roster_tree(root: str) -> None:
+    shutil.rmtree(root, ignore_errors=True)
+    copy_prompts(root, "README.md", "routines/README.md", FLEET, PLANNER, *LINK_TARGETS, ROSTER_SOURCE)
+
+
+def roster_value(root: str, *, to: str) -> None:
+    rewrite(root, ROSTER_SOURCE, pattern=r'^DEFAULT_BOXES = "[^"]*"', repl=f'DEFAULT_BOXES = "{to}"')
+
+
+class RosterListsTest(Case):
+    AGREE = "the planner's home-box list and issue-wave's fleet list name DEFAULT_BOXES"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.boxes = roster()
+        roster_tree(self.root)
+
+    def test_the_lists_and_the_roster_agree(self) -> None:
+        self.expect("both prose lists name the default roster", 0, self.AGREE)
+
+    # The negative control the issue names: a box joins the roster and neither list follows.
+    def test_a_roster_with_an_extra_box(self) -> None:
+        roster_value(self.root, to=" ".join((*self.boxes, SPARE)))
+        result = run(CP, self.root)
+        self.check(
+            "a box added to DEFAULT_BOXES alone leaves both lists refused",
+            1,
+            result,
+            f"FAIL: {PLANNER}: the home-box sentence leaves out `{SPARE}`",
+            f"FAIL: {FLEET}: the fleet bullet leaves out `{SPARE}`",
+        )
+        self.lacks("...and no agreement is claimed", self.AGREE, result)
+
+    def test_a_box_retired_from_the_roster(self) -> None:
+        gone = self.boxes[-1]
+        roster_value(self.root, to=" ".join(self.boxes[:-1]))
+        self.check(
+            "a box retired from DEFAULT_BOXES alone leaves both lists refused",
+            1,
+            run(CP, self.root),
+            f"FAIL: {PLANNER}: the home-box sentence names `{gone}`, which {ROSTER_SOURCE}'s DEFAULT_BOXES",
+            f"FAIL: {FLEET}: the fleet bullet names `{gone}`, which",
+        )
+
+    def test_a_list_moving_alone(self) -> None:
+        R, last = self.root, self.boxes[-1]
+        rewrite(R, PLANNER, pattern=rf"`{re.escape(last)}`", repl=f"`{last}`, `{SPARE}`")
+        self.expect("an extra box in the planner's list is refused", 1, f"{PLANNER}: the home-box sentence names `{SPARE}`")
+        roster_tree(R)
+        rewrite(R, FLEET, pattern=rf"`{re.escape(last)}`", repl=f"`{SPARE}`")
+        result = self.expect("a box renamed in the fleet bullet is refused", 1, f"{FLEET}: the fleet bullet names `{SPARE}`")
+        self.check("...both ways", 1, result, f"{FLEET}: the fleet bullet leaves out `{last}`")
+
+    # Only the spans at parenthesis depth zero, and only inside the sentence, are box names.
+    def test_what_is_read(self) -> None:
+        R, first = self.root, self.boxes[0]
+        rewrite(R, FLEET, pattern=rf"`{re.escape(first)}` \(", repl=f"`{first}` (`{SPARE}`, ")
+        self.expect("a code span in parentheses describes a box rather than naming one", 0, self.AGREE)
+        roster_tree(R)
+        rewrite(R, FLEET, pattern=r"^(- \*\*The fleet\*\*:.*)$", repl=lambda m: f"{m.group(1)} (`{SPARE}`")
+        self.expect("an unclosed parenthesis is refused, not read loosely", 1, f"{FLEET}: the fleet bullet cannot be read")
+        roster_tree(R)
+        rewrite(R, PLANNER, pattern=r"running native Linux\.", repl=f"running native Linux. Not `{SPARE}`.")
+        self.expect("a span past the sentence's end is not in the list", 0, self.AGREE)
+        # The anchor's words may wrap where the prose wraps.
+        roster_tree(R)
+        rewrite(R, PLANNER, pattern=r"every item: exactly", repl="every\n    item: exactly")
+        self.expect("a wrapped anchor is still the anchor", 0, self.AGREE)
+
+    def test_the_anchors(self) -> None:
+        R = self.root
+        rewrite(R, PLANNER, pattern=r"exactly one of", repl="one of")
+        self.expect("an anchor edited away is refused", 1, f"{PLANNER}: has no 'home-box field on every item: exactly one of'")
+        roster_tree(R)
+        append(f"{R}/{FLEET}", "\n- **The fleet**: `x`.\n")
+        self.expect("a repeated anchor is refused", 1, f"{FLEET}: has 2 of '- **The fleet**:'")
+        roster_tree(R)
+        os.remove(f"{R}/{PLANNER}")
+        self.expect("a missing list is refused", 1, f"{PLANNER}: is missing")
+
+    def test_the_roster_line(self) -> None:
+        R = self.root
+        rewrite(R, ROSTER_SOURCE, pattern=r"^DEFAULT_BOXES = ", repl="DEFAULT_BOXES: str = ")
+        self.expect("a roster in a shape this check does not read is refused", 1, f"FAIL: {ROSTER_SOURCE}: has no one line")
+        roster_tree(R)
+        append(f"{R}/{ROSTER_SOURCE}", 'DEFAULT_BOXES = "a"\n')
+        self.expect("two roster lines are refused", 1, f"FAIL: {ROSTER_SOURCE}: has no one line")
+
+    def test_no_config_no_obligation(self) -> None:
+        fresh(self.root)
+        self.lacks(f"a root without {ROSTER_SOURCE} carries no roster obligation", "DEFAULT_BOXES", run(CP, self.root))
+
+
 # --- the installed-routine drift guard -----------------------------------------------------------
 # ludics-lite#199: each routine sync-routines.sh installs opens by running it and reading its own
 # drift, and nothing but this check stops that step being edited away. Both READMEs come along

@@ -12,6 +12,7 @@ from ludics.checkprompts.drift import check_drift_guard
 from ludics.checkprompts.frontmatter import check_skill_file
 from ludics.checkprompts.links import check_links
 from ludics.checkprompts.registers import check_fixtures, check_index
+from ludics.checkprompts.roster import check_roster
 from ludics.checkprompts.slots import check_slots
 from ludics.checkprompts.tree import Report, Tree
 from ludics.checkprompts.verdicts import check_verdict_reads
@@ -122,6 +123,7 @@ def run(argv: list[str]) -> int:
     check_index(report, tree, "routines/README.md", "routines/", "routine")
     check_fixtures(report, tree)
     check_slots(report, tree)
+    check_roster(report, tree)
     check_drift_guard(report, tree)
     check_cleanup_options(report, tree)
     check_links(report, tree)
