@@ -5642,7 +5642,9 @@ test_runner_keeps_job_control_to_the_spawn() {
   # run's output. So the runner turns it on for a case's spawn alone. The copy's case reads the
   # runner's own poll (`sleep 0.2` in reap_one, a child of the runner, `$$` in the case's
   # subshell) and records its group beside the runner's: one group, while the case runs in a group
-  # of its own. Boundary: read with `ps -o`, which Git for Windows' ps does not have.
+  # of its own. Boundary: read with `ps -o`, which Git for Windows' ps does not have. The probe's
+  # awk reads all of ps's output: an awk that exits at its match leaves ps writing into a closed
+  # pipe once the process table outgrows the pipe buffer, and pipefail fails the case with 141.
   local tag="jc$$" copy="$TEST_ROOT/$COPY_DIR" out="$TEST_ROOT/copy.out" rc patched
   local probe="$TEST_ROOT/probe.sh" seen="$TEST_ROOT/probe.out" poll runner case_pgid
   if [ "$ON_MSYS" -eq 1 ]; then
@@ -5652,7 +5654,7 @@ test_runner_keeps_job_control_to_the_spawn() {
   cat >"$probe" <<EOF
 probe_tries=0 probe_poll=
 while [ "\$probe_tries" -lt 100 ] && [ -z "\$probe_poll" ]; do
-  probe_poll=\$(ps -A -o ppid=,pgid=,comm= | awk -v r="\$\$" '\$1 == r && \$3 ~ /(^|\\/)sleep\$/ { print \$2; exit }')
+  probe_poll=\$(ps -A -o ppid=,pgid=,comm= | awk -v r="\$\$" '!found && \$1 == r && \$3 ~ /(^|\\/)sleep\$/ { print \$2; found = 1 }')
   [ -n "\$probe_poll" ] || sleep 0.1
   probe_tries=\$((probe_tries + 1))
 done
