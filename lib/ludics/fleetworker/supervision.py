@@ -112,7 +112,9 @@ ROUNDS_TRAILER = re.compile(r"rounds: n=([0-9]+) threshold=off first=([0-9]+|unk
 # a round 1 of LARGE_FIRST or more inline findings is flagged from round EARLY_ROUND, ahead of --flag-at.
 EARLY_ROUND = 3
 LARGE_FIRST = 5
-_VERDICT = re.compile(r"checks: verdict=([a-z]+)")
+# The checks trailer: its verdict, and the runners= field a head held by a job that never got a
+# runner carries (ludics#753; prreview/checks.py writes it, its kinds in that order).
+_VERDICT = re.compile(r"checks: verdict=([a-z]+)(?: runners=(no-runner|never-started|no-runner,never-started))?")
 _YEAR = re.compile(r"[0-9]{4}-")
 
 # The verdicts each exit status of `pr-review.sh checks` can carry, and what prs prints for them
@@ -129,6 +131,20 @@ CI_OF = {
     ("4", "unjudged"): "pending",
     ("5", "superseded"): "moved",
 }
+
+
+def ci_of(checks_rc: int, checks_out: str) -> str:
+    """What prs prints for one ``pr-review.sh checks`` read: ``CI_OF`` of its status and trailer,
+    and on a pending head the trailer's runner-less kinds, ``pending(no-runner)`` (ludics#753). A
+    runners= field on a head that is not pending is at odds with the status: ci=unknown."""
+    trailer = _VERDICT.fullmatch(last_line(checks_out))
+    if trailer is None:
+        return "unknown"
+    ci = CI_OF.get((str(checks_rc), trailer.group(1)), "unknown")
+    kinds = trailer.group(2)
+    if kinds is None:
+        return ci
+    return f"pending({kinds})" if ci == "pending" else "unknown"
 
 
 def last_line(text: str) -> str:
@@ -351,7 +367,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     PRs (ludics-lite#405). The skill sends the convergence policy "after ~5 rounds", but no view
     showed the count: staging#783 reached round 10 before the coordinator noticed, and ended at 14.
     One line per open PR -- ``pr-review.sh rounds`` (review rounds with findings), ``pr-review.sh
-    checks`` (the build signal on the head, never waited for) and the head's age -- and a CONVERGE
+    checks`` (the build signal on the head, never waited for; ``pending(<kinds>)`` when a build job
+    never got a runner, ludics#753) and the head's age -- and a CONVERGE
     note on a PR at --flag-at rounds or more, or at EARLY_ROUND or more when round 1 had LARGE_FIRST
     or more inline findings (the rounds trailer's ``first``, ludics-lite#650). Of the helper's text
     only the machine-readable trailer each command ends with is read (ludics-lite#423), never the
@@ -467,8 +484,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         if (rounds == "?" or first == "unknown") and worst != 1:
             worst = 4
         checks_rc, checks_out = helper_read([helper, "checks", f"{repo}#{n}"])
-        verdict = _VERDICT.fullmatch(last_line(checks_out))
-        ci = CI_OF.get((str(checks_rc), verdict.group(1) if verdict else ""), "unknown")
+        ci = ci_of(checks_rc, checks_out)
         if ci == "unknown" and worst != 1:
             worst = 4
         date_rc, date = helper_read([helper, "retry", "--read", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date"])

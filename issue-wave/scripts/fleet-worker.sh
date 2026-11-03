@@ -197,7 +197,8 @@
 #                          # 0; with --tip also TIP-RUN TIP <branch> <sha> moved|current), TIP-RUN
 #                          # RUNNING ... (exit 3: re-issue) (lib/ludics/fleetworker/tiprun.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
-#                          # CI state and head age; flags <n> (5) or more rounds, or 3 or more
+#                          # CI state (pending(no-runner|never-started): a build job never got a
+#                          # runner) and head age; flags <n> (5) or more rounds, or 3 or more
 #                          # after a round 1 of 5 or more inline findings (read-only); --wave
 #                          # keeps the PRs that close or reference an issue the wave's records name
 #   fleet-worker.sh halt <reason> | resume-launches | halted

@@ -4,7 +4,11 @@ its trailer.
 Ported from the shell's ``cmd_checks`` (ludics-lite#403). The repository's advisory list is read
 first (``Gate.advisory_policy``); a policy that could not be read is the command's status, with
 nothing judged. The last stdout line is always ``checks: verdict=<v>`` from a closed vocabulary
-(ludics-lite#423): ``fleet-worker.sh prs`` reads the verdict from it, never from the prose.
+(ludics-lite#423): ``fleet-worker.sh prs`` reads the verdict from it, never from the prose. A head
+held by a build job that never got a runner (runners.py: NO RUNNER, NEVER STARTED) adds one field,
+``checks: verdict=<v> runners=<kinds>``, ``<kinds>`` being ``no-runner``, ``never-started`` or both
+in that order, comma-joined (ludics#753): only on exit 4, the verdict's vocabulary unchanged, so
+``prs`` can tell a starved head from a running one. No field: no such job was found.
 
 Exit: the gate's (0 green or a confirmed absence, 1 red, 3 unread -- under --wait, a head,
 check-run or workflow-run read that did not answer is read again until the wait is spent (gate.py,
@@ -40,6 +44,14 @@ USAGE = "usage: checks <pr> [--wait[=seconds]] [--check <ERE>]"
 VERDICTS = (
     "green", "absent", "red", "runred", "waived", "pending", "mixed", "unjudged", "superseded", "unknown",
 )
+# The trailer's ``runners=`` kinds, in the order they are written (runners.Kind).
+RUNNER_KINDS = ("no-runner", "never-started")
+
+
+def trailer(rc: int, verdict: str, kinds: set[str]) -> str:
+    """The last stdout line: the verdict, and the runner-less kinds found on a no-verdict exit (4)."""
+    found = [kind for kind in RUNNER_KINDS if kind in kinds] if rc == 4 else []
+    return f"checks: verdict={verdict}" + (f" runners={','.join(found)}" if found else "")
 
 
 def parse_wait(value: str, command: str) -> int:
@@ -90,13 +102,15 @@ def run(session: GhSession, args: list[str]) -> int:
     gate = Gate(session, target.repo, config, clock_from_env(os.environ), select=select or "", orphans_on=True)
     # A selection names its checks itself; the advisory list has no say in it.
     policy = 0 if select else gate.advisory_policy()
+    kinds: set[str] = set()
     if policy == 0:
         rc = gate.check(target.num, wait_for)
         verdict: str = gate.verdict
+        kinds = {orphan.kind for orphan in gate.orphans}
     else:
         rc = policy
         verdict = "unknown"
     if verdict not in VERDICTS:
         verdict = "unknown"
-    cli.say(f"checks: verdict={verdict}")
+    cli.say(trailer(rc, verdict, kinds))
     return rc

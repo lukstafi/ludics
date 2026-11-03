@@ -1621,6 +1621,9 @@ test_a_job_no_runner_took_is_named_and_ends_the_wait() {
     "the job is named as one no runner took"
   assert_contains "$GATE_OUTPUT" "recover: gh run rerun 101 --failed --repo $REPO" "with the command that recovers it"
   assert_contains "$GATE_OUTPUT" "checks: verdict=unjudged" "and the trailer's vocabulary is unchanged"
+  # ludics#753: the trailer's own field names the kind, so `fleet-worker.sh prs` can show it.
+  assert_eq "$(tail -n 1 <<<"$GATE_OUTPUT")" "checks: verdict=unjudged runners=no-runner" \
+    "the trailer is the last line, with the runner-less kind in its runners= field"
   [ $((SECONDS - start)) -lt 15 ] || bail "the wait should end on it, not at its 20 s ceiling ($((SECONDS - start)) s)"
   JOBS_JSON=$(jobs_json '[{"id":501,"name":"build","status":"completed","conclusion":"cancelled",
     "created_at":"2026-01-01T00:00:00Z","steps":[{"name":"Set up job"}],"runner_id":7,
@@ -1628,6 +1631,7 @@ test_a_job_no_runner_took_is_named_and_ends_the_wait() {
   run_gate 0
   assert_eq "$GATE_RC" 4 "a cancel after a step ran is still no verdict ($GATE_OUTPUT)"
   assert_not_contains "$GATE_OUTPUT" "NO RUNNER" "but no runner-less job is named"
+  assert_eq "$(tail -n 1 <<<"$GATE_OUTPUT")" "checks: verdict=unjudged" "and the trailer carries no runners= field"
 }
 
 # Round 4, P1: the advisory list is a deny-list of CHECK names, and build_checks applies it per
