@@ -882,10 +882,18 @@ class Merge:
         drift = self.drift()
         # The would-be merge commit's build, where the repository asks for one (mergebuild.py,
         # ludics-lite#611): after the drift read it is decided on, before the merge call.
-        merge_build(
+        # Under --override it may go over a failure the base alone shares (mergebuild.py's THE
+        # BASE ALONE, #860), announced with the gate's override, just before the call.
+        shared = merge_build(
             self.session, self.repo, self.num, self.gate.check_sha, drift, self.config.limits.contents_dir_cap,
-            checkout=self.opts.checkout, ceiling=ceiling,
+            checkout=self.opts.checkout, ceiling=ceiling, override=self.opts.override,
         )
+        if shared:
+            repo, pr, why = self.repo, self.num, self.opts.override
+            self.announced.append((
+                f"OVERRIDE: merging {repo}#{pr} over {shared} — {why}",
+                (f"OVERRIDE: merging {repo}#{pr} over {shared}: the base's own failure, not the merge's — {why}",),
+            ))
         self.merge_call()
         return self.confirm()
 
