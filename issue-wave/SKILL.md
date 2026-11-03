@@ -1153,8 +1153,8 @@ controlled through the tools in your coordinator's file, never through those com
   ahrefs/ocannl#1769's or #1788's merge would have caught, was found by a worker's sweep). So
   once the loop has run twice on one backend since the other's newest run that ran (or since the
   wave's first merge), that other backend is overdue, and the coordinator makes room for its run.
-  Down: it wakes minix (`wake-lab.sh --wait minix-amd-linux`) and asks the user to wake tuf. The
-  loop itself still wakes nothing. Busy: when the overdue backend's box next has no
+  Down: it wakes that backend's box (`wake-lab.sh --wait <box>`: rog for CUDA, minix for HIP)
+  and asks the user to wake tuf when only tuf would do. The loop itself still wakes nothing. Busy: when the overdue backend's box next has no
   outstanding record, the coordinator starts the loop run there before assigning that box's
   next queued worker leg. That is the loop taking a worker's place in line, not pre-empting
   one. A backend still uncovered at close-out goes in the wave summary with its uncovered span
