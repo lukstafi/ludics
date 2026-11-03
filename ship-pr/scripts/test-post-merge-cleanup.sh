@@ -5555,6 +5555,74 @@ test_runner_help_ignores_inherited_pids() {
   echo "PASS: --help with an inherited RUNNING_PIDS signals nothing"
 }
 
+test_runner_refuses_an_unopenable_case_log() {
+  # ludics#780: the runner opens a case's log before the fork (so a line bash writes in the child
+  # ahead of the case lands there), and a log it cannot open fails the spawn with nothing forked.
+  # The pid it would then read is a stale `$!` -- the previous case's, or none -- so the run must
+  # stop naming the log, not register that pid as the case. The log here is a directory.
+  local tag="lg$$" copy="$TEST_ROOT/$COPY_DIR" out="$TEST_ROOT/copy.out" logs="$TEST_ROOT/copy-logs" rc
+  copy_runner "$copy" "$tag"
+  mkdir -p "$logs/$SELF_CASE.log"
+  if run_copy env SHIP_PR_TEST_LOG_DIR="$logs" "$copy/test-post-merge-cleanup.sh" -j 1 "$SELF_CASE" \
+    >"$out" 2>&1 </dev/null; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] || fail "the copy exited $rc with an unopenable case log, expected 1: $(cat "$out")"
+  # bash 3.2 reaches the runner's own refusal; a bash whose errexit stops at the failed
+  # redirection prints bash's own message, which names the log too.
+  grep -qF "$logs/$SELF_CASE.log" "$out" || fail "the unopenable log was not named: $(cat "$out")"
+  if grep -q -e '^PASS' -e '===== FAIL' -e 'without reporting a status' "$out"; then
+    fail "the copy registered a case it never started: $(cat "$out")"
+  fi
+  assert_copy_root_gone "$tag"
+  echo "PASS: a case log the runner cannot open stops the run before the case is registered"
+}
+
+test_runner_keeps_job_control_to_the_spawn() {
+  # ludics#780: job control on for the whole run gave each foreground command the runner runs a
+  # process group of its own, and every such fork could print bash's `child setpgid` line to the
+  # run's output. So the runner turns it on for a case's spawn alone. The copy's case reads the
+  # runner's own poll (`sleep 0.2` in reap_one, a child of the runner, `$$` in the case's
+  # subshell) and records its group beside the runner's: one group, while the case runs in a group
+  # of its own. Boundary: read with `ps -o`, which Git for Windows' ps does not have.
+  local tag="jc$$" copy="$TEST_ROOT/$COPY_DIR" out="$TEST_ROOT/copy.out" rc patched
+  local probe="$TEST_ROOT/probe.sh" seen="$TEST_ROOT/probe.out" poll runner case_pgid
+  if [ "$ON_MSYS" -eq 1 ]; then
+    skip_boundary "the runner's poll group: Git for Windows' ps prints no process groups (no ps -o)"
+    return 0
+  fi
+  cat >"$probe" <<EOF
+probe_tries=0 probe_poll=
+while [ "\$probe_tries" -lt 100 ] && [ -z "\$probe_poll" ]; do
+  probe_poll=\$(ps -A -o ppid=,pgid=,comm= | awk -v r="\$\$" '\$1 == r && \$3 ~ /(^|\\/)sleep\$/ { print \$2; exit }')
+  [ -n "\$probe_poll" ] || sleep 0.1
+  probe_tries=\$((probe_tries + 1))
+done
+printf '%s\\n' "\$probe_poll \$(ps -o pgid= -p "\$\$" | tr -d ' ') \$(sh -c 'ps -o pgid= -p "\$PPID"' | tr -d ' ')" >"$seen"
+EOF
+  copy_runner "$copy" "$tag"
+  patched=$(sed "s|^$SELF_CASE() {\$|$SELF_CASE() { . '$probe';|" "$copy/test-post-merge-cleanup.sh")
+  printf '%s\n' "$patched" >"$copy/test-post-merge-cleanup.sh"
+  grep -qF -- "$SELF_CASE() { . '$probe';" "$copy/test-post-merge-cleanup.sh" || fail "could not plant the probe in the copy"
+  if run_copy env SHIP_PR_TEST_CASE_TIMEOUT="$SELF_CASE_TIMEOUT" "$copy/test-post-merge-cleanup.sh" -j 1 "$SELF_CASE" \
+    >"$out" 2>&1 </dev/null; then
+    rc=0
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 0 ] || fail "the copy exited $rc with the probe planted, expected 0: $(cat "$out")"
+  [ -s "$seen" ] || fail "the probe recorded nothing: $(cat "$out")"
+  read -r poll runner case_pgid <"$seen" || true
+  [ -n "$poll" ] || fail "the probe saw no poll of the runner's in 10 s, so nothing here checks its group: $(cat "$seen")"
+  [ -n "$runner" ] && [ -n "$case_pgid" ] || fail "the probe could not read the runner's or the case's group: $(cat "$seen")"
+  [ "$poll" = "$runner" ] ||
+    fail "the runner's poll ran in a group of its own ($poll, the runner's is $runner): job control is on outside the spawn"
+  [ "$case_pgid" != "$runner" ] || fail "the case ran in the runner's group ($runner): job control was off for the spawn"
+  echo "PASS: the runner's job control places the case in its own group and leaves its own polls in the runner's"
+}
+
 test_runner_counts_a_stated_boundary() {
   # ludics-lite#338: a case that states a platform boundary still passes, but its SKIP line is
   # printed under its name and the summary counts and names it, so the boundary is on the record.
@@ -5814,6 +5882,8 @@ TESTS=(
   test_runner_kills_a_case_past_its_deadline
   test_runner_refuses_bad_arguments
   test_runner_help_ignores_inherited_pids
+  test_runner_refuses_an_unopenable_case_log
+  test_runner_keeps_job_control_to_the_spawn
   test_runner_counts_a_stated_boundary
   test_runner_isolates_ambient_git_config
 )
@@ -5975,7 +6045,9 @@ esac
 # helper, its git children, a hook paused in a sleep loop — can be terminated as a unit: on an
 # interrupt, and after every case, before its scratch tree is removed from under it. Without it
 # a killed case leaves descendants waiting on markers in a directory that no longer exists.
-set -m
+# start_case turns it on for the spawn alone. Left on, it gave every foreground command the runner
+# runs (each `sleep 0.2` of its polls, each awk and rm) a process group of its own too, and each
+# of those forks could print bash's `child setpgid` line to the runner's output (ludics#780).
 if [ -n "${SHIP_PR_TEST_LOG_DIR:-}" ]; then
   LOG_DIR="$SHIP_PR_TEST_LOG_DIR" # kept after the run: CI collects it as an artifact on failure
 else
@@ -6085,19 +6157,37 @@ start_case() {
   # this case's verdict before the case had run.
   rm -f "$LOG_DIR/$name.status"
   i=$SPAWNED
-  (run_case "$name" "$i") >"$LOG_DIR/$name.log" 2>&1 </dev/null &
-  pid=$!
+  # Job control is on for the spawn alone (the note above LOG_DIR says why), and the case's
+  # redirections sit on a group around it, so the runner applies them BEFORE the fork: the child
+  # starts with the case log as its stderr, and a line bash writes there ahead of anything the
+  # case runs lands in that log, not in the runner's output (ludics#780; see the group check
+  # below). A log that cannot be opened fails the group before anything forks, so the pid is read
+  # inside the group, where only a spawn sets it: `$!` after it would still name the previous
+  # case. A bash whose errexit ends the runner at that failed redirection stops there; bash 3.2
+  # runs on to the refusal below. Never an `if` or `||` around the group: the case would inherit
+  # the condition context, and with it a `set -e` that ends nothing (bash 3.2 does; caught by
+  # test_runner_names_an_errexit_death).
+  pid=
+  set -m
+  { (run_case "$name" "$i") & pid=$!; } >"$LOG_DIR/$name.log" 2>&1 </dev/null
+  set +m
+  [ -n "$pid" ] || {
+    printf '%s\n' "FAIL: the runner could not open $name's log $LOG_DIR/$name.log, so the case was not started" >&2
+    exit 1
+  }
   SPAWNED=$((SPAWNED + 1))
   RUNNING_PIDS[$i]="$pid"
   RUNNING_NAMES[$i]="$name"
   RUNNING_STARTS[$i]="$SECONDS"
   RUNNING=$((RUNNING + 1))
   # Prove the case is in its own process group rather than trusting job control's handoff. Both
-  # sides of the fork call setpgid; on macOS the child's call intermittently fails with "child
-  # setpgid (N to N): Operation not permitted" (bash prints that line itself, before the case's
-  # redirections apply, so it cannot be silenced here). On every such occasion observed the
-  # parent's identical call had already succeeded — 354 spawns, 13 complaints, 0 wrong groups —
-  # so the line is noise; this check is what makes that a fact rather than a hope. A case that
+  # sides of the fork call setpgid(child, child); on macOS the child's call intermittently fails
+  # with "child setpgid (N to N): Operation not permitted", which bash prints to the child's
+  # stderr -- the case log, by the group above. It is the loser of a race between those two
+  # identical calls (ludics#780, measured on macOS 27 with perl's fork: 20000 forks where both
+  # sides call it gave 18 child-side EPERMs, every one with the parent's call succeeded and the
+  # child already in its own group; 5000 where only the child calls gave none). So the line is
+  # noise, and this check is what makes that a fact rather than a hope on every spawn. A case that
   # is nevertheless not a group leader cannot be repaired from here (setpgid reaches only the
   # caller or its children, and any helper process this runner starts is the case's sibling),
   # and the deadline and cleanup guarantees rest on the group: the case is ended now and
