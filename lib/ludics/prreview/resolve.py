@@ -209,7 +209,7 @@ def resolve_one(
 def run(session: GhSession, args: list[str], *, env: Mapping[str, str] | None = None) -> int:
     if len(args) != 2:
         die(f"usage: resolve <pr> <comment-id>[+<comment-id>...] — got {len(args)} argument(s)")
-    target = pr_arg(args[0], session.config.repo)
+    target = pr_arg(args[0], session.config.repo, session)
     ids = split_ids(args[1], "resolve")
     cap = page_cap(os.environ if env is None else env)
     label = len(ids) > 1

@@ -326,7 +326,7 @@ def run(session: GhSession, args: list[str]) -> int:
     feed did not answer, 4 a feed did not parse)."""
     if not args or not args[0]:
         cli.exit_with(1, "1: usage: poll <pr> [watermark]")
-    target = pr_arg(args[0], session.config.repo)
+    target = pr_arg(args[0], session.config.repo, session)
     result = poll(outside_watch(session, target.repo), target.num, args[1] if len(args) > 1 else "")
     emit(result)
     return result.rc

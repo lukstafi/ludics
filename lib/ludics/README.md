@@ -44,7 +44,7 @@ lib/ludics/proc.py               run_tool, the shell bridge, and Git Bash's PATH
 lib/ludics/bgrun.py              bg-run.sh wait's verdict line: parse, and its shell form SHELL_VERDICT
 lib/ludics/prreview/core.py      pr-review.sh's prelude: fail/die/warn, Config, GhSession
                                  (gh_retry and its classification), parse_ref/pr_arg,
-                                 repo_from_cwd, api_list, mark_of
+                                 checkout_pr, repo_from_cwd, api_list, mark_of
 lib/ludics/prreview/<name>.py    one module per ported subcommand: run(session, args) -> int
 lib/ludics/prreview/__main__.py  the dispatcher: `scripts/py -m ludics.prreview <name> ...`
 lib/ludics/<script>/             the next script's package (e.g. checkprompts/, fleetworker/),

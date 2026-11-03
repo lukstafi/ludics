@@ -18,9 +18,11 @@ history; read them there before changing a rule here):
                                   ``gh_refused_own`` (an exception here, not a USR2 trap and a
                                   marker file: #471's stop is one ``GhRefusedOwn`` reaching main)
   gh_api_only_command             ``gh_api_only_command`` (the allowlist for a CALLER's args)
-  parse_ref / pr_arg / resolve_repo / repo_from_cwd
-                                  the repository rules (ludics-lite#92: never from the cwd for a
-                                  PR; ``repo_from_cwd`` survives for ``base`` alone)
+  parse_ref / pr_arg / resolve_repo / checkout_pr / repo_from_cwd
+                                  the repository rules (ludics-lite#92: a PR's repo is never
+                                  GUESSED from the cwd; #863: a bare number resolves to the
+                                  checkout's own PR, its head the checked-out branch, or is
+                                  refused; ``repo_from_cwd`` serves ``base`` and that proof)
   api_list / mark_of              ``api_list`` (a feed that is whole or absent) and ``mark_of``
 
 Not here: the jq line-ending probe (``jq_eol_probe``: Python reads JSON itself, so no jq), the
@@ -593,6 +595,11 @@ class GhSession:
     def err_line(self) -> str:
         return self._err_line
 
+    def tool(self, name: str, args: Sequence[str]) -> proc.Completed:
+        """A local tool run through the session's runner (``git``, ``gh repo view``): the same
+        fixture the suites answer gh through, outside the retry policy."""
+        return self._run(name, args)
+
     def unclear_attempts(self) -> int:
         """How many attempts of the last call failed in a way that says nothing about whether the
         request reached a backend: neither a gateway refusal, nor a quota refusal, nor a 4xx, nor a
@@ -787,55 +794,109 @@ class PrTarget:
 
 
 # A PR is addressed by a repository and a number, and the number alone names one PR in every
-# repository there is. So the repository is either SPELLED OUT in the invocation — an
-# owner/name#<n> argument, --repo, REPO= — or the call is refused. Resolution happens after the PR
-# argument is parsed, because that argument may carry the repo itself.
+# repository there is. So the repository is SPELLED OUT in the invocation — an owner/name#<n>
+# argument, --repo, REPO= — or the number is the CHECKOUT'S OWN PR, proven as below, or the call
+# is refused. Resolution happens after the PR argument is parsed, because that argument may carry
+# the repo itself.
 #
-# Two other sources stood here and both are gone (ludics-lite#92). The cwd was trusted outright,
+# Two guesses stood here and both are gone (ludics-lite#92). The cwd's repo was trusted outright,
 # and cached: a bare `reply 7` typed from a shell sitting in another project's worktree posted into
 # whatever PR 7 is over there. The per-PR cache remembered a repo by NUMBER, across checkouts and
 # across sessions, so a `reply 7` meant for repo B resolved to the repo A that some earlier call
-# had named for 7.
+# had named for 7. Verifying either guess against `repos/<repo>/pulls/<n>` is the fix that looks
+# right and is not one: that read answers "this repository has a seventh PR", not "this is the PR
+# you meant", and every active repository has a PR 7 — a claim that cannot fail, standing in for a
+# safeguard. No cache is back, and no read of that kind is.
 #
-# Both were verified against `repos/<repo>/pulls/<n>` before use, or could have been, and this is
-# the half worth writing down because verification is the fix that looks right: that read answers
-# "this repository has a seventh PR", not "this is the PR you meant". Every active repository has a
-# PR 7. So on exactly the invocations these guesses fail on — a worktree of another project, a
-# stale entry from yesterday's PR — the check passes and the write lands on a stranger's review
-# thread, now with a verification behind it. A claim that cannot fail, standing in for a
-# safeguard, is worse than no safeguard. Nor can any other read stand in: what both sources are
-# guesses about is INTENT, and the API has nothing to say about that.
+# What #863 adds is a check that CAN fail, because it asks about intent the checkout itself
+# records: the PR's head must be the branch the checkout has checked out, from the same repository
+# as its base (no fork), in the repository the checkout resolves to (`repo_from_cwd`, the same
+# resolution `base` uses). A worker typing its own PR's number in its own worktree passes it. A
+# shell in another project's worktree, in the primary checkout on main, in a sibling's worktree,
+# or in no checkout at all (a background shell that did not start in one, the #863 incident)
+# fails it, with nothing written and the qualified form named: for PR n to pass from the wrong
+# checkout, that checkout's branch would have to be exactly the head of ITS repository's PR n.
 #
-# So there is no inference left, as ludics-lite#74 (PR #79) left none for `retry run watch` after a
-# background shell in a sibling worktree turned a wrong-target read into a failed-run verdict. The
-# cost is one `owner/name#<n>` per call, which is what the skill's instructions have always told
-# callers to write. What it buys is an invariant with no exception to remember: no command
-# addresses a repository that its invocation did not name. `repo_from_cwd` survives for `base`
-# alone, which resolves a repo and a BRANCH — a name the API can actually be asked about — rather
-# than a bare number every repository answers to.
+# The boundary, fail-closed: what is read is the local branch name (`git symbolic-ref --short
+# HEAD`; a detached HEAD or no checkout is refused before any API read), the checkout's repository
+# (`repo_from_cwd`), and that repository's `pulls/<n>` head ref, head repository and base
+# repository. What is NOT read: the branch's upstream (a local branch pushed under another name is
+# refused), a fork's PR (refused, whatever the names), and the PR's state (the checkout's own
+# closed PR resolves; it is still the PR the number and the branch both name). The resolved repo
+# is the PR's base repository as the API names it, so a renamed repository addresses its new name.
 def resolve_repo(num: str, repo: str) -> None:
-    """``resolve_repo``: a PR number with no repository named anywhere is refused (#92)."""
+    """``resolve_repo``: a PR number with no repository named, and no checkout to prove it
+    against, is refused (#92). ``pr_arg`` with a session tries the checkout first (#863)."""
     if repo:
         return
     die(
         f"PR {num} was given with no repository, and a PR number alone names one PR in every",
         f"repository there is. Pass it as owner/name#{num} (or --repo owner/name, or REPO=owner/name).",
-        "Nothing was read or written anywhere. It is NOT taken from the working directory and there",
-        "is no per-number memory of an earlier call: either would resolve the wrong checkout, or",
-        f"yesterday's PR {num}, to a real PR of that number rather than to an error — a write onto a",
-        "stranger's review thread (ludics-lite#92). A BACKGROUND invocation is where that bit",
-        "hardest, since background shells do not start in the checkout, and the skill's documented",
-        "`watch` call is a backgrounded one.",
+        "Nothing was read or written anywhere. A bare number resolves only to the checkout's own",
+        "PR, from a checkout whose branch is that PR's head (#863); there is no per-number memory",
+        "of an earlier call (ludics-lite#92).",
     )
 
 
-def pr_arg(arg: str, repo: str) -> PrTarget:
+def _bare_refused(num: str, why: str, done: str) -> NoReturn:
+    die(
+        f"PR {num} was given with no repository, and {why}. Pass it as owner/name#{num} (or --repo",
+        "owner/name, or REPO=owner/name): a bare number resolves only to the checkout's own PR, from",
+        f"the checkout whose branch is that PR's head. {done} (#863, ludics-lite#92)",
+    )
+
+
+_HEAD_JQ = '.head.ref // "", .head.repo.full_name // "", .base.repo.full_name // ""'
+
+
+def checkout_pr(session: "GhSession", num: str) -> PrTarget:
+    """A bare PR number, resolved against the checkout it was typed in (#863; the boundary is the
+    comment above ``resolve_repo``): the PR whose head is the checked-out branch, or exit 2 naming
+    the qualified form (3 when the API never answered). Nothing is written either way."""
+    nothing = "Nothing was read from GitHub or written."
+    branch_read = session.tool("git", ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    branch = proc.substitution(branch_read.stdout) if branch_read.rc == 0 else ""
+    if not branch:
+        _bare_refused(num, "the working directory is not a checkout on a branch, so there is no "
+                      "checkout to resolve it against", nothing)
+    repo = repo_from_cwd(session.tool, session.budget)
+    if not repo:
+        _bare_refused(num, f"the checkout on {shell_quote(branch)} names no GitHub repository", nothing)
+    result = session.retry("read", ["api", f"repos/{repo}/pulls/{num}", "--jq", _HEAD_JQ])
+    unwritten = "Nothing was written."
+    match result:
+        case GhUnanswered():
+            fail(3, f"PR {num} was given with no repository, and reading {repo}#{num} to check it is",
+                 f"this checkout's own PR never got an answer ({session.err_line() or 'no answer'}).",
+                 f"Nothing is known and nothing was written; pass it as owner/name#{num} or retry.")
+        case GhFailed():
+            _bare_refused(num, f"the checkout's repository {repo} answered no PR {num}"
+                          f" ({session.err_line() or 'the read failed'})", unwritten)
+        case GhOk(stdout=out):
+            pass
+    head, head_repo, base_repo = ([*out.split("\n"), "", "", ""])[:3]
+    if not base_repo or head_repo.lower() != base_repo.lower():
+        _bare_refused(num, f"{repo}#{num} is not a PR from a branch of {base_repo or repo} itself"
+                      f" (its head is in {head_repo or 'a deleted repository'})", unwritten)
+    if head != branch:
+        _bare_refused(num, f"{base_repo}#{num}'s head is {shell_quote(head)}, not this checkout's"
+                      f" branch {shell_quote(branch)}, so the checkout is no evidence that it is the"
+                      " PR meant", unwritten)
+    warn(f"PR {num} is {base_repo}#{num}, the PR whose head is this checkout's branch"
+         f" {shell_quote(branch)} (#863).")
+    return PrTarget(base_repo, num)
+
+
+def pr_arg(arg: str, repo: str, session: "GhSession | None" = None) -> PrTarget:
     """``pr_arg``: the PR an argument names. A repo in the argument wins over ``repo`` (from
-    --repo or REPO=); with neither, the call is refused."""
+    --repo or REPO=); with neither, a ``session`` resolves a bare number against the checkout
+    (``checkout_pr``), and without one the call is refused."""
     ref = parse_ref(arg)
     if ref is None:
         die(f"PR must be a number or owner/name#number, got '{arg}'")
     target = ref.repo or repo
+    if not target and session is not None:
+        return checkout_pr(session, ref.num)
     resolve_repo(ref.num, target)
     return PrTarget(target, ref.num)
 
@@ -844,7 +905,7 @@ def repo_from_cwd(
     run: Callable[[str, Sequence[str]], proc.Completed] = proc.run_tool,
     budget: "Budget | None" = None,
 ) -> str | None:
-    """``repo_from_cwd``, for ``base`` alone: ``gh repo view`` (it honours gh-resolved), then the
+    """``repo_from_cwd``, for ``base`` and ``checkout_pr``'s proof: ``gh repo view`` (it honours gh-resolved), then the
     origin remote, which answers locally when GraphQL is down. None when neither names one.
 
     ``gh repo view`` is not the session's call, so it passes the polling budget's gate itself. A

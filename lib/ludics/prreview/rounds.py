@@ -73,7 +73,7 @@ def count_token(result: str) -> str:
 def run(session: GhSession, args: list[str]) -> int:
     if not args or not args[0]:
         cli.exit_with(1, "1: usage: rounds <pr>")
-    target = pr_arg(args[0], session.config.repo)
+    target = pr_arg(args[0], session.config.repo, session)
     ctx = outside_watch(session, target.repo)
     rounds = review_rounds(ctx, target.num, session.config.round_gap, first=True)
     result = as_result(rounds)

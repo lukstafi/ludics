@@ -89,7 +89,7 @@ def run(session: GhSession, args: list[str]) -> int:
         die(f"body: '{path}' is not a readable file")
     if not _has_content(path):
         die(f"body: '{path}' is empty; a PR body is not cleared through this command")
-    target = pr_arg(pr, session.config.repo)
+    target = pr_arg(pr, session.config.repo, session)
     repo, num = target.repo, target.num
     result = session.retry(
         "read",
