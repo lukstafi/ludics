@@ -406,6 +406,18 @@ the suite's:
 - `--timeout <s>` (or `RUN_AGAINST_BASE_TIMEOUT`) stops a hanging suite's process group and
   reports the base as failing, exit 124: a hang is a valid negative control for a fix that ends
   one.
+- `--tally <ERE>` (or `RUN_AGAINST_BASE_TALLY`; #779) names the project's verdict line: the
+  result line shows the last output line matching it, and says so when none does, rather than
+  show the last line (a runner's trace row, say). Without it, the last `<n> passed, <m> failed`
+  line, else the last non-blank line. The project states its pattern; none is built in here.
+- `--mutants <file>` (#779) is the batch form of `--mutate`: one `<file> <sed-expr>` per line
+  (`#` comments and blank lines skipped, every line checked before any run), each run exactly as
+  its `--mutate` would be, all from one commit (one working-tree snapshot without `--base`; the
+  suite and `--also` files are copied as each run starts, so leave them alone meanwhile). It
+  then reports, per mutant, `killed` with the lines it turned red (`--red <ERE>`, default
+  `^(FAIL|ERROR)[: ]`, at most 10 listed), `SURVIVED` (the finding: no case saw it), or `refused`,
+  and a closing count; it exits 125 on any refusal, else 1 on any survivor, else 0. The header's
+  BOUNDARY states the report's lines.
 
 In the run's tree the copies come first, then the reverts, then the mutations, whatever the
 flags' order. A plain base run warns when every file the branch changes is carried into it (#501):
