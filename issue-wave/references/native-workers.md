@@ -88,15 +88,18 @@ Maintain the board on the anchor with `fleet-worker.sh board`: `board set [--cre
 the verb (a markdown file under `FLEET_ANCHOR_STATE`, such as `<wave>-board.md`) keeps that file
 to its close-out, and recovery reads it there: `board show` reads only the structured boards and
 refuses a wave it has none for. Store wave and coordinator identity as notes, and per worker
-the dispatch status, last observation, remaining gates and hand-back beside the **takeover keys**,
-written at launch (before the spawn, then `agent` after it) and again whenever one changes:
-`worktree`, `branch`, `base`, `agent`, `transport`, `agent_host`, `exec_hosts`, `brief` and
+its `state`, last observation, remaining gates and hand-back beside the **takeover keys**,
+written at launch (before the spawn, then `agent` after it) and again whenever one changes.
+A `state` starts with one of the state words, then any text (`merged #812 at 1a2b3c4`): `pending`
+at the brief, `launched` at the spawn, a live word for each later phase, and a done word
+(`merged`, `done`, `closed`, `dropped`) once the hand-back is verified. `board set` warns on any
+other first word and on a `status` key, and writes both. The takeover keys are `worktree`, `branch`, `base`, `agent`, `transport`, `agent_host`, `exec_hosts`, `brief` and
 `brief_host` (the durable brief's absolute path and box), `repository` (`owner/name`), `issue`
 (`owner/name#N`), `worker` (the registry's `request.worker`), `pr` (the number, once opened),
 `runs` (the worker's bg-run parent), `standing` and `requests` (request ids, space-separated, or
-`none`), `farside` (`<box>:<path>` far-side worktrees) and `plan_dir`. Their grammars are
-`lib/ludics/fleetworker/takeover.py`'s. The writers check the lease themselves; check it before
-interventions. A board write that fails may or may not have landed: re-read with `board show`
+`none`), `farside` (`<box>:<path>` far-side worktrees), `plan_dir` and `state`. Their grammars
+and the state words are `lib/ludics/fleetworker/takeover.py`'s. The writers check the lease
+themselves; check it before interventions. A board write that fails may or may not have landed: re-read with `board show`
 before retrying it.
 
 When a worker died with its process (a coordinator restart kills every in-process worker), its
@@ -146,6 +149,9 @@ rebuilding its ref/ancestry checks in an ad-hoc cleanup script; Dune can copy a 
 file into `_build/default`, which a plain `git clean -fdX` will preserve as a nested repository.
 App-managed worktrees follow [separate-codex.md](separate-codex.md#close-out) or
 [app-claude.md](app-claude.md#intervention-and-close-out) instead.
+Set each row's `state` to its done word as its hand-back is verified. Before the board is
+persisted, `fleet-worker.sh board check <wave>` exits 0 only when every row's state is done; exit 3
+lists each row that is not, a row left `launched` among them.
 Consolidate workers' after-merge proposals and persist the completed wave's board. Route chips
 through SKILL.md's selected mode; retain the lease across the default post-wave coordination
 loop and release it only at final close-out.
