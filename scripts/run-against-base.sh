@@ -693,9 +693,9 @@ gone() {
 # macOS kernel can lose the EOF of a fifo's last writer. Its reader has read every byte and then
 # sleeps in read() with no writer left anywhere -- the CI sightings' `tee is [... S< tee ...]; the
 # fifo is also open in [nothing else]` -- and on mac-studio (Darwin 27.2) a bare perl reader and
-# writer did it 22 times in 200000 runs. One write-open and close is a new last-writer close: in
-# the runs that tried it, it released each stuck reader with its EOF. It cannot end a capture
-# early: a writer that escaped the group holds the fifo open across it, and tee goes on waiting.
+# writer did it 25 times in 350000 runs. One write-open and close is a new last-writer close: each
+# of the 6 stuck readers that got one saw its EOF at once. It cannot end a capture early: a writer
+# that escaped the group holds the fifo open across it, and tee goes on waiting for that one.
 drain_tee() {
   local i=0 limit=$1
   while live "$teepid"; do
