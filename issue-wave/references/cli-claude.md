@@ -31,7 +31,9 @@ fleet-worker.sh attach <box> <repo>-<issue>     # Bash run_in_background: the wa
 ```
 
 `launch` creates `<checkout>-worktrees/<name>` off `origin/master` on the box (`FLEET_BASE_REF`
-for another default, `--base` for one launch, `--cwd` for a worktree that already exists) and
+for another default, `--base <ref>` for one launch, `--cwd` for a worktree that already exists;
+a `--base` that is not an `origin/<branch>` ref, such as a SHA, also takes `--base-branch <branch>`, the
+branch whose CI the base gate reads, and is refused without it) and
 prints the session id that addresses every later intervention. `attach` blocks until the
 worker's turn ends and prints one verdict line, riding out ssh drops and box naps by retrying
 from the coordinator's side: `IDLE` for a Claude worker whose turn answered the latest message

@@ -963,7 +963,11 @@ reservation taken while a window is open is admitted suspended, and restored wit
 By default the coordinator takes a second standing reservation at launch, beside the agent-host
 one, its `checkout` the far-side worktree, on the task's GPU box whenever the plan homes the task there or names a GPU iteration leg
 for it: one per such box, request id `<wave>-<issue>-<box>-iterate`, the agent host still the
-worker's (ludics-lite#621). A GPU box that IS the agent host (a CLI worker resident there) takes
+worker's (ludics-lite#621). A change to code that every GPU backend emits or runs (codegen, which
+reaches every staged or hand-built kernel; SKILL.md, *The brief*) takes one on every GPU box the
+roster has up, whatever the plan's legs say, so the coordinator reads the issue for that as well
+as the plan: ahrefs/ocannl#1661, a rog-homed CLI worker with no standing record on a HIP box, spent
+five request round trips on HIP legs (wave-20261102). A GPU box that IS the agent host (a CLI worker resident there) takes
 no second one: its agent-host reservation already has that id and covers the batches, run
 locally. A request per GPU run cost ahrefs/ocannl#1240 three HIP round trips in wave-20261014
 before the coordinator granted a standing one mid-task, while #1313 on tuf-amd-linux, holding one
@@ -1008,23 +1012,23 @@ and messages instead ([native-codex.md](native-codex.md#worker-channel)).
 
 ## CLI reservation handoff
 
-A detached CLI worker has no message channel to the coordinator. Its self-contained brief names
-absolute request and result paths under its worker state directory on its agent host. Before
-fleet tests or experiments, it writes the requested revision, execution host, workload kind,
-exact bounded command/batch, checkout and intended log path to the request file, prints
-`EXECUTION_REQUEST <absolute-path>`, and ends its turn without starting that execution.
+A detached CLI worker has no message channel to the coordinator, so its handoff is turn-shaped
+like a Claude native worker's, in the same lines: before fleet tests or experiments it ends its
+turn with the `EXECUTION_REQUEST` ... `END_EXECUTION_REQUEST` block of the [Claude worker
+channel](native-claude.md#worker-channel), without starting that execution, and it ends the
+result turn with one `EXECUTION_RESULT {json}` line. One format serves every transport, and
+there are no request or result files to place, name in the brief, or read over ssh.
 
-The coordinator observes the tracked `attach` exit, takes the path from the turn's final
-message (`fleet-worker.sh log <agent-box> <worker> --last-result`; `EXECUTION_RESULT <path>`
-likewise ends the result turn), reads the file (over ssh when needed), and confirms through
-`status` that the turn has ended: a Claude worker `IDLE`, a Codex exec exited.
+The coordinator observes the tracked `attach` exit, reads the turn's final message with
+`fleet-worker.sh log <agent-box> <worker> --last-result`, which prints it whole, and confirms
+through `status` that the turn has ended: a Claude worker `IDLE`, a Codex exec exited.
 Queue the request until the execution host is available. Reserve it with `transport: "cli"` and
 the actual `agent_host`, then call `execution dispatch`. Only after successful dispatch, send the
 continuation with `fleet-worker.sh unstick <agent-box> <worker> --message <brief-file>` (an
-append to the idle Claude process, a resume of the Codex thread). The continuation names the
-request ID, assigned command/batch, revision, checkout, log and result paths; it instructs the
-worker to run only that assignment and return its actual runner handle, observed SHA, log and
-terminal outcome in the result file, then end its turn again before additional fleet work.
+append to the idle Claude process, a resume of the Codex thread). The continuation is the
+channel's `EXECUTION_ASSIGNED <request_id>` with the assigned command/batch, revision, checkout and
+log; it instructs the worker to run only that assignment and end its turn with the
+`EXECUTION_RESULT` line (its run, exit and observed SHA) before additional fleet work.
 Start a new tracked `attach` waiter and record the unstick/runner evidence on the board.
 
 Dispatch preceding the unstick is a point-in-time gate just as it precedes an ssh runner call.
