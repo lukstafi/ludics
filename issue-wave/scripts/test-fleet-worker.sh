@@ -3374,18 +3374,18 @@ expect "...and so does one holding a NUL byte, which a shell variable would drop
 # ludics#864: the forms the pin gate refused in wave-20261102, each now passing or refused naming
 # the form that passes. A shell composite carries its pin as a leading env pin, never inside -c.
 expect "a GPU leg whose runner is a bash -c composite is refused, naming the leading env pin and --file" 1 \
-  "a pin inside a bash -c string is no word of the argv: lead with it, env LEG_BACKEND=<backend> bash -c '...', or give the runner a long list as a file, --file <local file> and the runner word {file}; or declare --cpu .*, or --probe for a runner" -- \
+  "a pin inside a bash -c string is no word of the argv: lead with it, env LEG_BACKEND=<backend> bash -c '...', or give the runner a long list as a file, --file <local file> and the runner word {file}; or declare --cpu .*, or --reads-no-config for a runner" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- bash -c 'tools/check.sh --expect-backend cc'
 expect "...and the composite behind a leading env pin runs" 0 "runner argv: \\[--expect-backend\\] \\[cc\\]" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc bash -c 'tools/check.sh --expect-backend cc'
-# --probe: a runner declared to read none of the project's configuration is asked no pin, said.
-expect "a --probe leg is asked no pin, and says so" 0 "^EXECUTION LEG testbox: --probe: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $lpin); its result is no backend's evidence$" -- \
-  leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" --probe -- tools/check.sh
-[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...and runs the runner to its sentinel" || ko "the --probe leg did not run: $out"
+# --reads-no-config: a runner declared to read none of the project's configuration is asked no pin, said.
+expect "a --reads-no-config leg is asked no pin, and says so" 0 "^EXECUTION LEG testbox: --reads-no-config: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $lpin); its result is no backend's evidence$" -- \
+  leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" --reads-no-config -- tools/check.sh
+[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...and runs the runner to its sentinel" || ko "the --reads-no-config leg did not run: $out"
 expect "...but a .github/fleet-leg line it cannot read still refuses it" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one this leg reads" -- \
-  leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --probe -- tools/check.sh
-expect "execution hold takes --probe only with --worktree" 2 "execution hold: --probe goes with --worktree" -- \
-  "${FWL[@]}" execution hold --request leg-a --probe -- true
+  leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --reads-no-config -- tools/check.sh
+expect "execution hold takes --reads-no-config only with --worktree" 2 "execution hold: --reads-no-config goes with --worktree" -- \
+  "${FWL[@]}" execution hold --request leg-a --reads-no-config -- true
 # THE FILE: a local list shipped to the box, the runner's {file} word its copy's path there.
 printf '@a/runtest-x\n@b/runtest-y\n' > "$TMP/leg targets.txt"
 expect "a --file is shipped to the box and named by the runner's {file} word" 0 "^@b/runtest-y$" -- \

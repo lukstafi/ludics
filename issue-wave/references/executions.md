@@ -698,7 +698,7 @@ reservation (ludics-lite#558):
 ```
 fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   --checkout <checkout on the box> --worktree <worktree on the box> [--remote <name>] \
-  [--control <patch>] [--file <local file>] [--probe] [--cpu|--gpu] [--wait <s>] \
+  [--control <patch>] [--file <local file>] [--reads-no-config] [--cpu|--gpu] [--wait <s>] \
   [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
 ```
 
@@ -781,25 +781,27 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   - a long alias list as a file the runner reads, never a `$(cat ...)` inside `sh -c`: `--file
     <local file>` and the runner word `{file}` (*The file* below);
   - a runner that reads none of the project's configuration (a standalone driver probe):
-    `--probe`, which skips the pin (below);
+    `--reads-no-config`, which skips the pin (below);
   - a leg that holds no GPU: `--cpu`, which skips it too.
 
   The pin shows that a backend was named, never that the run held it: that evidence is the
   runner's own check (`--expect-backend`), and a leg the pin admitted is no GPU evidence. A `--cpu`
-  or `--probe` leg, and a repository without the file, are not checked (the file is still parsed,
+  or `--reads-no-config` leg, and a repository without the file, are not checked (the file is still parsed,
   so a line this version cannot read refuses them too), but a brief pins the backend on every
   leg, a CPU one included: a project default that names the CPU backend hides the missing pin on a
   CPU leg and silently takes over a GPU one, and a measurement, which cannot declare `--cpu`, is
   refused unpinned (OCANNL's test config pins cc, so a cc measurement on rog runs `env
   OCANNL_BACKEND=cc ...`; ludics-lite#794).
-- **The probe.** `--probe` declares that the runner reads none of the project's configuration, so
-  no backend can be selected for it and none is asked (ludics#864: a standalone C transfer probe's
-  measurements were refused, then re-run under a meaningless `env OCANNL_BACKEND=hip`). It is the
-  caller's declaration, as `--cpu` is, which the leg cannot check, and it says so on its output
-  (`EXECUTION LEG <box>: --probe: ... no backend pin was asked of it ...; its result is no
-  backend's evidence`). A runner that reads the project's configuration (OCANNL's `tools/test-run.sh`,
-  a benchmark driver over the library) is never a probe. On the worker's own box, `execution hold
-  --request <id> --worktree <dir> --rev <sha> --probe -- <probe>` is the same.
+- **A runner that reads no project configuration.** `--reads-no-config` declares that the runner
+  reads none of the project's configuration, so no backend can be selected for it and none is
+  asked (ludics#864: a standalone C transfer probe's measurements were refused, then re-run under
+  a meaningless `env OCANNL_BACKEND=hip`). It is the caller's declaration, as `--cpu` is, which the
+  leg cannot check, and it says so on its output (`EXECUTION LEG <box>: --reads-no-config: ... no
+  backend pin was asked of it ...; its result is no backend's evidence`). A runner that reads the
+  project's configuration (OCANNL's `tools/test-run.sh`, a benchmark driver over the library)
+  never declares it. On the worker's own box, `execution hold --request <id> --worktree <dir>
+  --rev <sha> --reads-no-config -- <command>` is the same. (Not `--probe`: `execution slot
+  --probe` asks whether a slot is free.)
 - **The file.** `--file <local file>` copies a file of the caller's box to the box's state
   directory, beside a control patch, and each runner word that is exactly `{file}` becomes the
   copy's absolute path there (`EXECUTION LEG <box>: --file shipped as <path>, the runner's

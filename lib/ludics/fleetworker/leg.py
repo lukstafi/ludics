@@ -8,8 +8,8 @@ which cannot see the main checkout's ``FETCH_HEAD``; a hard-coded commit re-pinn
 is that script, once, inside the reservation:
 
     execution leg --request <id> [--box <box>] --rev <sha|branch> --checkout <dir> --worktree <dir>
-                  [--remote <name>] [--control <patch>] [--file <local file>] [--probe] [--cpu|--gpu]
-                  [--wait <s>] [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
+                  [--remote <name>] [--control <patch>] [--file <local file>] [--reads-no-config]
+                  [--cpu|--gpu] [--wait <s>] [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
 
 ``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>]`` is this verb on
 the box it runs on, for a measurement (``hold_in_worktree``, ludics-lite#816).
@@ -141,15 +141,18 @@ shipped with ``--file`` (THE FILE). The boundary: argv words as given, nothing e
 ``sh -c`` string, an environment the caller exported (it does not travel to the box), or a project
 file that selects the backend does not count. It establishes that the command NAMES a backend, never
 that the run held it: that is the runner's own check (OCANNL's ``--expect-backend``), and no refusal
-here is GPU evidence. A repository without the file, a ``--cpu`` leg, and a ``--probe`` leg are not
-checked (the file is still parsed for each, so a line this version cannot read refuses them too).
+here is GPU evidence. A repository without the file, a ``--cpu`` leg, and a ``--reads-no-config``
+leg are not checked (the file is still parsed for each, so a line this version cannot read refuses
+them too).
 
-``--probe`` (ludics#864) is the caller's declaration that the runner reads none of the project's
-configuration -- a standalone C probe of the driver, which no backend variable reaches: such
-measurements were refused, then re-run under a meaningless ``env OCANNL_BACKEND=hip``. It stands where
-``--cpu`` stands, a caller's declaration the leg cannot check, and it is said on the leg's output
-(``--probe: ... no backend pin was asked of it``) so a reader of the log sees that no pin was asked.
-It is not the project's to grant: the gate is against a forgotten pin, and a declaration is not one.
+``--reads-no-config`` (ludics#864) is the caller's declaration that the runner reads none of the
+project's configuration -- a standalone C probe of the driver, which no backend variable reaches:
+such measurements were refused, then re-run under a meaningless ``env OCANNL_BACKEND=hip``. It
+stands where ``--cpu`` stands, a caller's declaration the leg cannot check, and it is said on the
+leg's output (``--reads-no-config: ... no backend pin was asked of it``) so a reader of the log sees
+that no pin was asked. It is not the project's to grant: the gate is against a forgotten pin, and a
+declaration is not one. (Not ``--probe``, the issue's word: ``execution slot --probe`` asks whether
+a slot is free, and OCANNL's runner calls it.)
 
 THE FILE (ludics#864). ``--file <local file>`` copies a file of the caller's box (an alias list a
 pre-push run reads) to the box's state directory beside the control patch, under the request and the
@@ -244,8 +247,8 @@ from ludics.fleetworker.transport import fleet_name, far_argv, is_local, prelude
 
 USAGE = (
     "execution leg --request <id> [--box <box>] --rev <sha|branch> --checkout <dir> --worktree <dir>"
-    " [--remote <name>] [--control <patch>] [--file <local file>] [--probe] [--cpu|--gpu] [--wait <seconds>]"
-    " [--wait-window[=<seconds>]] [--deadline <seconds>] -- <runner command...>"
+    " [--remote <name>] [--control <patch>] [--file <local file>] [--reads-no-config] [--cpu|--gpu]"
+    " [--wait <seconds>] [--wait-window[=<seconds>]] [--deadline <seconds>] -- <runner command...>"
 )
 FILE_WORD = "{file}"  # the runner word THE FILE replaces with the shipped copy's path
 DISPATCHED = ("launching", "running", "uncertain")
@@ -381,7 +384,7 @@ backend_pin() {
           fi ;;
       esac ;;
   esac
-  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin it (as words of the runner's own argv)$hint; or declare --cpu for a leg that holds no GPU, or --probe for a runner that reads none of the project's configuration"
+  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin it (as words of the runner's own argv)$hint; or declare --cpu for a leg that holds no GPU, or --reads-no-config for a runner that reads none of the project's configuration"
   return 1
 }
 backend_pin_to() {
@@ -404,10 +407,10 @@ backend_pin_to() {
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
 # (FLEET_FETCH_TIMEOUT), the status token (see the header), the shipped --file's name (in
-# $STATE/leg-files, or empty), the --probe declaration (0|1), the wrapper's word count and words
+# $STATE/leg-files, or empty), the --reads-no-config declaration (0|1), the wrapper's word count and words
 # (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot flags'
 # count and words, then the runner's argv.
-LEG = NOT_HOME + PIN + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" probe="${11}" nwrap="${12}"
+LEG = NOT_HOME + PIN + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" nwrap="${12}"
 # THE STOP (see the header): this shell's pid, first, under the token; the leg keeps it.
 printf 'execution-leg %s: far: %s\n' "$token" "$$"
 shift 12
@@ -492,12 +495,12 @@ pins=$(fleet_leg_read "$co" "$sha"); prc=$?
 pin_plan=""
 if [ "$prc" -eq 0 ]; then
   case " ${nest[*]} " in *" --cpu "*) gpu=0 ;; *) gpu=1 ;; esac
-  # --probe: the caller declares a runner that reads none of the project's configuration, so no
+  # --reads-no-config: the caller declares a runner that reads none of the project's configuration, so no
   # pin is asked of it; the file is still read, and a line this version cannot read still refuses.
-  [ "$probe" != 1 ] || gpu=0
+  [ "$no_config" != 1 ] || gpu=0
   why=$(backend_pin "$pins" "$gpu" "$@") || refuse "$why (.github/fleet-leg at $sha); nothing ran"
   pin_grammar "$pins"
-  [ "$probe" != 1 ] || say "--probe: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $sha); its result is no backend's evidence"
+  [ "$no_config" != 1 ] || say "--reads-no-config: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $sha); its result is no backend's evidence"
 fi
 # The worktree: a linked worktree of the checkout, made or moved to the commit, never overwritten.
 if [ -e "$wt" ] || [ -L "$wt" ]; then
@@ -875,15 +878,15 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     values: dict[str, str] = {}
     slot_flags: list[str] = []
     runner: list[str] = []
-    probe = False
+    no_config = False
     i = 0
     while i < len(args):
         arg = args[i]
         if arg == "--":
             runner = args[i + 1 :]
             break
-        if arg == "--probe":
-            probe = True
+        if arg == "--reads-no-config":
+            no_config = True
             i += 1
             continue
         if arg in ("--request", "--box", "--rev", "--checkout", "--worktree", "--remote", "--control", "--file"):
@@ -981,16 +984,16 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
             # whatever ends it: a heartbeat left to expire would make a window opened just after a
             # short leg wait out the gap for nobody.
             return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
-                           fetch_timeout, hold=hold, shipped=shipped, probe=probe)
+                           fetch_timeout, hold=hold, shipped=shipped, no_config=no_config)
         finally:
             slot.release_waiter(cfg, waiter)
     slot.release_waiter(cfg, waiter)
     return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
-                   fetch_timeout, hold=hold, shipped=shipped, probe=probe)
+                   fetch_timeout, hold=hold, shipped=shipped, no_config=no_config)
 
 
 def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[str], runner: list[str], box: str, checkout: str, worktree: str, remote: str, rev: str, control: str,
-            fetch_timeout: str, *, hold: bool = False, shipped: str = "", probe: bool = False) -> int:
+            fetch_timeout: str, *, hold: bool = False, shipped: str = "", no_config: bool = False) -> int:
     """The leg on its dispatched record: refuse what the registry would not record, then run it on
     ``box`` (the far side's slot or hold around it) and stream its result."""
     state = execution.jq_text(record.get("state"))
@@ -1059,7 +1062,7 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     script = prelude(cfg, box) + LEG
     argv = far_argv(
         cfg, box,
-        [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, fname, "1" if probe else "0",
+        [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, fname, "1" if no_config else "0",
          str(len(wrap)), *wrap,
          str(len(nest)), *nest, *runner],
     )
@@ -1072,8 +1075,9 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
 
 
 def hold_in_worktree(cfg: Config, request: str, rev: str, checkout: str, worktree: str, deadline: int | None,
-                     command: list[str], *, probe: bool = False) -> int:
-    """``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>] [--probe]`` (ludics-lite#816):
+                     command: list[str], *, no_config: bool = False) -> int:
+    """``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>] [--reads-no-config]``
+    (ludics-lite#816):
     the measurement's command in a worktree of THIS box, made or moved to the commit, as a leg on this
     box -- THE CHECKOUT AND THE REVISION, THE RECORD'S CHECKOUT, THE BACKEND PIN and THE STOP as above,
     under the ``execution hold --request`` a measurement's leg runs in, its status line the leg's. The
@@ -1091,8 +1095,8 @@ def hold_in_worktree(cfg: Config, request: str, rev: str, checkout: str, worktre
     args = ["--request", request, "--box", cfg.local_box, "--rev", rev, "--checkout", checkout, "--worktree", worktree]
     if deadline is not None:
         args += ["--deadline", str(deadline)]
-    if probe:
-        args.append("--probe")
+    if no_config:
+        args.append("--reads-no-config")
     return cmd_leg(cfg, [*args, "--", *command], hold=True)
 
 

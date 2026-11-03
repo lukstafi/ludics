@@ -325,7 +325,7 @@ class BackendPin(unittest.TestCase):
                 self.assertEqual(why, "this leg may hold the GPU (no --cpu), but its runner pins no backend, and"
                                       " .github/fleet-leg asks for one of: --expect-backend <backend>,"
                                       " env OCANNL_BACKEND=<backend>; pin it (as words of the runner's own argv);"
-                                      " or declare --cpu for a leg that holds no GPU, or --probe for a runner that"
+                                      " or declare --cpu for a leg that holds no GPU, or --reads-no-config for a runner that"
                                       " reads none of the project's configuration")
 
     def test_a_shell_composite_is_refused_naming_the_form_that_carries_its_pin(self) -> None:
