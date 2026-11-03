@@ -515,7 +515,17 @@ requirements for every transport with transport-specific setup and identity, and
   backend-uniform golden proves nothing), and keep one dune per _build. A claim gated on several
   GPU backends gets a leg on each backend it names before merge, recorded in the PR body
   (wave-20261018o: three tests whose CUDA and HIP arms had run only on CUDA merged three HIP
-  reds); what each backend's leg must enable is the project's agent notes'. Add the box kind's
+  reds); what each backend's leg must enable is the project's agent notes'. A claim's backend
+  set is where its tests run, not where its diff is: a value test that runs on every backend
+  needs every backend's leg (lukstafi/ocannl-staging#1441 merged on cc and Metal codegen alone,
+  since its GPU codegen was unchanged, and its bitwise claims failed on CUDA, HIP and Metal,
+  ahrefs/ocannl#1647). **A pin on a box's shared package environment is
+  additive**: an environment every worktree builds against (OCANNL's opam switch) is master's
+  build too, so build a master-based worktree against the new version in a scratch install before
+  pinning, and land the dependency's change free of deprecations before the consumer PR
+  (ahrefs/ocannl#1594's `metal.dev` pin deprecated an API master used, and dev-profile alerts are
+  fatal, so every master build on the box broke); how to stage the scratch install is the
+  project's agent notes'. Add the box kind's
   durable traps to the brief: [native traps](references/linux-boxes.md) for `linux`, [WSL
   traps](references/wsl-boxes.md) for `wsl`. Say up front where the evidence goes: the PR body,
   the issue's comments and the project's agent notes, never a report file the task did not ask
