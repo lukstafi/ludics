@@ -49,7 +49,8 @@ lib/ludics/prreview/<name>.py    one module per ported subcommand: run(session, 
 lib/ludics/prreview/__main__.py  the dispatcher: `scripts/py -m ludics.prreview <name> ...`
 lib/ludics/<script>/             the next script's package (e.g. checkprompts/, fleetworker/),
                                  with its own __main__.py
-lib/ludics/tests/test_*.py       unittest suites (fake.py: a fake tool first on PATH)
+lib/ludics/tests/test_*.py       unittest suites (fake.py: a fake tool first on PATH, answering by
+                                 call order or by argv routes)
 ```
 
 The helpers more than one `pr-review.sh` subcommand reads are ported once, in a module of their own:
