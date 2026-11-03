@@ -176,6 +176,8 @@ test_the_pr_must_be_the_one_the_tip_merged() {
   assert_eq "$BASE_RC" 4 "a tip no merged PR names as its merge commit has no PR head to read"
   assert_contains "$BASE_OUTPUT" "no single merged pull request has the tip ${SHA_C:0:8} as its merge commit" \
     "the line names what was missing"
+  assert_contains "$BASE_OUTPUT" "GitHub made it, but no pull request of $REPO did" \
+    "and that a merge GitHub made for no PR here points at the repository the PRs merge in"
   pushless_fixture
   TIP_PULLS=$(jq -cn --arg c "$SHA_C" --arg a "$SHA_A" \
     '[{number: 7, merged_at: "2026-09-26T08:00:53Z", merge_commit_sha: $c,
@@ -424,9 +426,9 @@ test_a_file_confirmed_absent_at_the_tip_reads_as_before() {
   assert_not_contains "$(cat "$REQUEST_LOG")" "/pulls" "no named source is consulted"
 }
 
-# Mixed, as ocannl will be: its gh-pages deploy keeps its push trigger while `ci` drops it. The
-# push workflow's own green at the tip does not speak for `ci`, so without a source the tip has
-# no verdict; with one it is green, the push workflow's line unchanged beside it.
+# Mixed, as ocannl is: its `ci-env` and gh-pages deploy keep their push trigger while `ci` drops
+# it. The push workflow's own green at the tip does not speak for `ci`, so without a source the
+# tip has no verdict; with one it is green, the push workflow's line unchanged beside it.
 test_a_push_workflow_green_at_the_tip_does_not_speak_for_a_retired_one() {
   pushless_fixture
   WORKFLOWS_JSON=$(workflows_json '[{"id":1,"name":"ci"},{"id":2,"name":"pages"}]')
@@ -578,8 +580,8 @@ test_interim_is_not_asked_outside_its_shape() {
   assert_not_contains "$(cat "$REQUEST_LOG")" "/pulls" "and no source is asked"
 }
 
-# A push group that does not cancel a running run (OCANNL's `ci`, and skill-scripts.yml's main
-# since ludics-lite#597): a burst leaves one run going at an older
+# A push group that does not cancel a running run (skill-scripts.yml's main since ludics-lite#597,
+# and OCANNL's `ci` while it still ran on push): a burst leaves one run going at an older
 # merge, the tip's run waiting behind it (status `pending`), and the merges between cancelled as
 # each was replaced while pending. That older run judges base changes the PR head never met, so
 # the interim waits for it; once it has finished green the tip's run is all that is coming and a

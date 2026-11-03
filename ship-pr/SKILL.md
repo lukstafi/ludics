@@ -176,7 +176,12 @@ tip is GitHub's own merge commit of that head and the workflow itself ran green 
 made outside GitHub has neither, and reads **no verdict** (exit 4), never an older green. What
 counts as "no longer runs on push" is narrow on purpose: its file at the tip was read and names no
 `push` trigger. A workflow that still declares `push`, or whose file the reader refuses, reads as
-it always did.
+it always did, beside a retired one too: a repository can move its per-merge verdict to a smaller
+push workflow and retire the full one from push (OCANNL: `ci-env` on push, `ci` on PRs, the
+schedule and dispatch), and then the tip needs both, the push run's own green and a named source
+for the retired one; neither speaks for the other. A tip GitHub merged for a PR of another
+repository (a fork the branch is pushed from) has no PR here, and its line says to read that
+repository instead.
 
 A tip whose own run is **in flight** over a window with no judged run reads **pending** — `NO
 VERDICT YET`, exit 4 — not "never judged": the run that will judge it is running (ludics-lite#308).

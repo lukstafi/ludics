@@ -424,8 +424,8 @@ def load_records(path: str) -> list[Record]:
 # not; a merge made elsewhere can carry a resolution the head's run never saw, and a squash or a
 # rebase keeps no head in the history at all. The workflows the verdict is FOR must each have a run
 # of their own at the head that concluded `success` with a non-advisory job that succeeded: the
-# head's build signal is an aggregate, and on a docs-only PR the retired `ci` is filtered out by
-# its `pull_request` paths-ignore while another workflow passes (review rounds 1 and 2).
+# head's build signal is an aggregate, and on a docs-only PR a retired workflow can be filtered out
+# by its `pull_request` paths-ignore while another workflow passes (review rounds 1 and 2).
 
 type SourceVerdict = Literal["green", "red", "pending", "none"]
 
@@ -878,6 +878,14 @@ class Base:
                 _field(alt(get(p, "base", "ref"), "-")))
                for p in pulls
                if get(p, "merged_at") is not None and get(p, "merge_commit_sha") == sha]
+        if not prs:
+            # GitHub made and signed this merge, yet no PR of this repository merged it: it was made
+            # for a PR of another repository and pushed here (a fork staging the PRs of the one it
+            # mirrors). That PR, and the integration records naming it, are that repository's.
+            return TipPr("none", f"no single merged pull request has the tip {s8} as its merge"
+                         f" commit: GitHub made it, but no pull request of {self.repo} did, so if this"
+                         " branch is pushed from another repository's, read that one, where the PR and"
+                         " its records are")
         if len(prs) != 1:
             return TipPr("none", f"no single merged pull request has the tip {s8} as its merge commit")
         num, head, bref = prs[0]
