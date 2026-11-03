@@ -14,7 +14,7 @@ Two kinds live here, and they are kept in sync differently.
 | --- | --- | --- | --- | --- | --- |
 | `ocannl-cross-machine-sweep` | local scheduled task | daily 07:05 local (`5 7 * * *`), up to 699 s jitter, so 07:05–07:17 | `~/ocannl-staging` | Opus | `tools/sweep.sh` in OCANNL, `scripts/wake-lab.sh` |
 | `daily-issue-planning` | local scheduled task | daily 06:45 local (`45 6 * * *`), up to 333 s jitter | `~/ocannl-staging` | Fable | the sequencing plan `issue-wave` reads |
-| `ocannl-ci-red-triage` | cloud routine | on any non-PR master red except a dispatch naming its commit, fired by `ci.yml`; backstop daily 05:17 UTC (`17 5 * * *`) | Anthropic cloud, sources `lukstafi/ocannl-staging` and `ahrefs/ocannl` | Sonnet | the claiming issues OCANNL's mergers defer to |
+| `ocannl-ci-red-triage` | cloud routine | on a master red: a `ci-env.yml` push run, or a `ci.yml` run other than a PR or a dispatch naming its commit (its daily schedule), each fired by its workflow; backstop daily 05:17 UTC (`17 5 * * *`) | Anthropic cloud, sources `lukstafi/ocannl-staging` and `ahrefs/ocannl` | Sonnet | the claiming issues OCANNL's mergers defer to |
 
 The local scheduler adds a per-task jitter of a few minutes to the times above. The sweep's
 times are the registry's (read with the scheduled-tasks list, 2026-09-23), and something outside
@@ -230,7 +230,7 @@ Its non-prompt configuration, for re-creating it:
 | Sources | `https://github.com/lukstafi/ocannl-staging`, `https://github.com/ahrefs/ocannl` |
 | Allowed tools | `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep` (the GitHub MCP tools, `actions_run_trigger` among them, load through `ToolSearch` regardless) |
 | MCP | `Claude_Code_Remote` (`https://api.anthropic.com/v1/code/mcp/meta`) |
-| Fire API | `ci.yml`'s `notify-triage-routine` job, with the `ROUTINE_FIRE_URL` and `ROUTINE_FIRE_TOKEN` repository secrets |
+| Fire API | the `notify-triage-routine` job of `ci-env.yml` (push reds) and of `ci.yml` (scheduled reds), with the `ROUTINE_FIRE_URL` and `ROUTINE_FIRE_TOKEN` repository secrets |
 | Notifications | none; findings reach people as issues on `ahrefs/ocannl` |
 
 ## Site configuration
