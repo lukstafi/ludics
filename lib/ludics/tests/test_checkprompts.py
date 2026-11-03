@@ -17,6 +17,7 @@ from ludics.checkprompts.cleanup import invocation_options, lex
 from ludics.checkprompts.frontmatter import Refused, Resolved, frontmatter, value_of, well_formed_bytes
 from ludics.checkprompts.links import heading_slugs, md_links, render_spans, resolve, slug
 from ludics.checkprompts.registers import fixture_command, indexed
+from ludics.checkprompts.roster import roster_of, stated_boxes
 from ludics.checkprompts.slots import (
     BadPair,
     Count,
@@ -205,6 +206,42 @@ class SlotsTest(unittest.TestCase):
         self.assertEqual(awk_assigned("a\\0b"), "a")
         self.assertEqual(awk_assigned("a\\"), "a\\")
         self.assertIsNone(awk_assigned("a\nb"))
+
+
+class RosterTest(unittest.TestCase):
+    def test_the_roster_line(self) -> None:
+        cases: dict[str, list[str] | None] = {
+            'DEFAULT_BOXES = "a b  c"\n': ["a", "b", "c"],
+            'x = 1\nDEFAULT_BOXES = "a b" \n': ["a", "b"],
+            'DEFAULT_BOXES = "a"\nDEFAULT_BOXES = "b"\n': None,  # two: which one is ambiguous
+            '    DEFAULT_BOXES = "a"\n': None,  # not top level
+            '# DEFAULT_BOXES = "a"\n': None,
+            'DEFAULT_BOXES = "a \\"b"\n': None,  # not a plain literal
+            'DEFAULT_BOXES = " "\n': None,
+            'DEFAULT_BOXES="a"\n': None,  # the shell spelling is not this file's
+        }
+        for text, want in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(roster_of(text), want)
+
+    def test_the_sentence(self) -> None:
+        cases: dict[str, list[str] | str] = {
+            " `a`, `b` (C, `c1`), and `d`. Then `e`.": ["a", "b", "d"],
+            " `a`,\n  `b` and\n  `d` wrapped. `e`": ["a", "b", "d"],
+            " `a` (one. two) `b`.\n`e`": ["a", "b"],  # a period in parentheses ends nothing
+            " `a` and `b.c` here": ["a", "b.c"],  # nor one in a code span, nor one not before a blank
+            " `a`, `b`\n\n`e`.": ["a", "b"],  # a blank line ends it
+            " `a`, `b`\n \t\n`e`.": ["a", "b"],
+            " `a`.": ["a"],
+            " `a`, `b": "a code span that never closes",
+            " `a`, `b\n\n` x": "a code span that never closes",
+            " `a` (and `b`": "a '(' that never closes",
+            " `a`) `b`.": "a ')' with no '(' before it",
+            " nothing here.": [],
+        }
+        for text, want in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(stated_boxes(text, 0), want)
 
 
 class CleanupTest(unittest.TestCase):

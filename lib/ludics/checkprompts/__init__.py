@@ -20,6 +20,8 @@ The checks, each in its own module:
   registers    the README index of those directories, and the test-fixture register (README and
                CI workflows);
   slots        the mac-studio correctness-slot count, fleet-worker.sh against every statement;
+  roster       the planner's home-box list and issue-wave's fleet list against the worker's
+               ``DEFAULT_BOXES`` (#853);
   drift        each routine sync-routines.sh installs runs it (ludics-lite#199);
   cleanup      ship-pr/SKILL.md against post-merge-cleanup.sh's usage text (ludics-lite#276);
   links        relative Markdown links and their anchors (ludics-lite#260).
