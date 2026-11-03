@@ -373,10 +373,10 @@ class BackendPin(unittest.TestCase):
             with self.subTest(line=line):
                 rc, why = self.pin(f"# ok\n{line}", "0", "tools/t.sh")
                 self.assertEqual(rc, 1)
-                self.assertTrue(why.startswith(f".github/fleet-leg line 2 is not one this leg reads ({line})"), why)
+                self.assertTrue(why.startswith(f".github/fleet-leg line 2 is not one the fleet reads ({line})"), why)
         rc, why = self.pin("run-report p\nrun-report q\n", "0", "tools/t.sh")
         self.assertEqual(rc, 1)
-        self.assertIn("line 2 is not one this leg reads (run-report q)", why)
+        self.assertIn("line 2 is not one the fleet reads (run-report q)", why)
 
     def test_a_line_the_leg_cannot_read_refuses_even_a_cpu_leg(self) -> None:
         for line in ["pin-flagg --x", "pin-flag", "pin-flag x", "pin-flag --", "pin-flag --x=y", "pin-flag --x # c",
@@ -386,10 +386,10 @@ class BackendPin(unittest.TestCase):
             with self.subTest(line=line):
                 rc, why = self.pin(f"# ok\n{line}", "0", "tools/t.sh")
                 self.assertEqual(rc, 1)
-                self.assertTrue(why.startswith(f".github/fleet-leg line 2 is not one this leg reads ({line})"), why)
+                self.assertTrue(why.startswith(f".github/fleet-leg line 2 is not one the fleet reads ({line})"), why)
         rc, why = self.pin("slot-plan p\nslot-plan q\n", "0", "tools/t.sh")
         self.assertEqual(rc, 1)
-        self.assertEqual(why, ".github/fleet-leg line 2 is not one this leg reads (slot-plan q): pin-flag <option>,"
+        self.assertEqual(why, ".github/fleet-leg line 2 is not one the fleet reads (slot-plan q): pin-flag <option>,"
                               " pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, a # comment"
                               " or a blank line")
 
@@ -447,7 +447,7 @@ class BackendPinTo(unittest.TestCase):
     def test_a_line_it_cannot_read_refuses(self) -> None:
         rc, why = self.pin("pin-env 9X", "cuda", "env", "OCANNL_BACKEND=cuda", "tools/t.sh")
         self.assertEqual(rc, 1)
-        self.assertTrue(why.startswith(".github/fleet-leg line 1 is not one this leg reads (pin-env 9X)"), why)
+        self.assertTrue(why.startswith(".github/fleet-leg line 1 is not one the fleet reads (pin-env 9X)"), why)
 
 
 

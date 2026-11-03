@@ -3390,9 +3390,9 @@ expect "a --cpu leg needs no pin" 0 "execution-leg: exit: 0" -- leg --request le
 expect "a leg pinned by the runner's flag runs" 0 "runner argv: \\[--expect-backend\\] \\[cc\\]" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- tools/check.sh --expect-backend cc
 expect "...or by its env assignment" 0 "execution-leg: exit: 0" -- leg --request leg-a --rev "$lpin" --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh
-expect "a .github/fleet-leg line the leg cannot read refuses even a --cpu leg" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one this leg reads (pin-flagg --expect-backend)" -- \
+expect "a .github/fleet-leg line the leg cannot read refuses even a --cpu leg" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one the fleet reads (pin-flagg --expect-backend)" -- \
   leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
-expect "...and so does one holding a NUL byte, which a shell variable would drop" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg at [0-9a-f]* holds NUL bytes" -- \
+expect "...and so does one holding a NUL byte, which a shell variable would drop" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg at [0-9a-f]* holds NUL bytes, which the fleet does not read; nothing ran$" -- \
   leg --request leg-a --rev nulpin --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 # ludics#864: the forms the pin gate refused in wave-20261102, each now passing or refused naming
 # the form that passes. A shell composite carries its pin as a leading env pin, never inside -c.
@@ -3405,7 +3405,7 @@ expect "...and the composite behind a leading env pin runs" 0 "runner argv: \\[-
 expect "a --reads-no-config leg is asked no pin, and says so" 0 "^EXECUTION LEG testbox: --reads-no-config: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $lpin); its result is no backend's evidence$" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" --reads-no-config -- tools/check.sh
 [ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...and runs the runner to its sentinel" || ko "the --reads-no-config leg did not run: $out"
-expect "...but a .github/fleet-leg line it cannot read still refuses it" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one this leg reads" -- \
+expect "...but a .github/fleet-leg line it cannot read still refuses it" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one the fleet reads" -- \
   leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --reads-no-config -- tools/check.sh
 expect "execution hold takes --reads-no-config only with --worktree" 2 "execution hold: --reads-no-config goes with --worktree" -- \
   "${FWL[@]}" execution hold --request leg-a --reads-no-config -- true
