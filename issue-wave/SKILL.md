@@ -209,17 +209,58 @@ context lean:
   never whole; independent tool calls go in one message; and the hand-back follows the merge and
   after-merge at once.
 
-**Sprint mode** is the maximum-throughput wave and accepts the misses. It fills agent capacity, less
-the headroom workers' own subagents need
+**Sprint mode** is the maximum-throughput wave and accepts the misses. It drops the adaptive count
+and fills agent capacity, less the headroom workers' own subagents need
 ([native-workers.md](references/native-workers.md#placement-and-launch), step 2; a Claude
 coordinator's limit and headroom are [native-claude.md](references/native-claude.md#agent-capacity)). More
 workers stop adding throughput where the shared resources bind: mac-studio's six correctness slots
 and its XProtect queue, GitHub's macOS runner queue, the reviewer's turnaround, the coordinator's
-own latency. So where the user left transport open, a sprint places the workers beyond what its
-agent host's slots carry as CLI workers on their GPU home boxes ([cli-claude.md](references/cli-claude.md)),
-where they count against no native limit and their batches take that box's slots, and the wave
-summary says which. Under an explicit native choice the sprint stops at the native limit (*Launch*). It drops the adaptive count. It keeps the after-each-turn checklist, since a concluded run whose
-worker waits is lost throughput too, and close-out reports `cache-misses.py` as before.
+own latency. It keeps the after-each-turn checklist, since a concluded run whose worker waits is
+lost throughput too, and close-out reports `cache-misses.py` as before. Wave-20261102, the first
+sprint, settled five more rules (ludics#867):
+
+- **Native or CLI by home box.** Where the user left transport open, every issue whose home box
+  (the plan's placement table) is the coordinator's agent host runs as a native worker, up to the
+  native limit, and every issue homed on another box runs as a CLI worker on that box
+  ([cli-claude.md](references/cli-claude.md)), where it counts against no native limit and its
+  batches take that box's slots. The agent host's correctness slots do not cap the native count.
+  The wave summary says which workers run where. Under an explicit native choice the sprint stops
+  at the native limit (*Launch*).
+- **The pre-push scope** is *The brief*'s (the tests the change reaches, less the slow and
+  training members CI runs). A sprint's loaded boxes are where the full set ran into the runner's
+  caps.
+- **A cross-cutting change's long run goes to a CPU-only box or to CI.** A change that reaches
+  nearly every test (OCANNL: `low_level.ml`, a backend) has a pre-push run of hundreds of aliases.
+  The worker requests it (*The brief*, Execution handoff) instead of running it under its standing
+  reservation on a GPU box, and the coordinator assigns it to a box whose GPU no leg of the wave
+  needs, or leaves it to CI, never to a box whose GPU tokens the wave's GPU legs need. On a GPU box
+  such a run holds a non-standing correctness record, which refuses every measurement window there
+  ([executions.md](references/executions.md#exclusivity-and-the-run-time-slots)), and its affected
+  list holds backend-named tests that take the box's GPU tokens (wave-20261102: three or four
+  workers' cc runs on rog-nv-linux held both CUDA tokens for 30+ minutes, and a two-test CUDA leg
+  was refused after 600 s, ahrefs/ocannl#1794). At this site those CPU-only boxes are
+  tuf-amd-linux, macbook-pro, and minix-amd-linux while its GPU is idle, less the integration box
+  below.
+- **One box for the integration loop alone.** Where the project's integration loop is a local run
+  (*Supervise*, the roll-forward bullet), the sprint reserves that loop's box for it: no worker is
+  homed there, no worker's leg or long run is assigned there, and the wave summary names it. Since
+  ahrefs/ocannl#1816 one integration tip-run per merge is the base gate's critical path (*Base
+  gate*), and at wave-20261102's first merge every quiet Linux box held workers' full-suite runs,
+  so the cc loop went to macbook-pro.
+- **The plan gate: plan in free capacity, implement at GO.** An issue whose launch waits, on a
+  dependency's merge or on the base gate, may launch plan-first into free agent capacity, its brief
+  carrying *The brief*'s Plan gate addition: the worker ends at `PLAN_READY` (a paired worker, once
+  it has reconciled, at `PLAN_RECONCILED`) and waits for `GO_IMPLEMENT <sha>`. A plan-only launch
+  makes no edits, so the base gate runs at GO, not at the spawn (wave-20261102 launched eight
+  plan-gated workers before the gate's verdict came back, and the verdict refused): the
+  coordinator creates the worktree at the verified base SHA, spawns, and when the issue is ready
+  runs `fleet-worker.sh gate` and resumes the worker with `GO_IMPLEMENT` naming the SHA the gate
+  passed. A CLI worker's `launch` takes the gate itself and has no plan-only form, so a plan-first
+  CLI launch waits for a passing gate as any launch does. Record it on the board (`board set
+  <wave> <task> plan_gate=waiting`, then `plan_gate=go`). Planning overlaps the implementation
+  waits, and the move at GO keeps the base fresh. This is sprint-only (the maintainer's call,
+  2026-11-02): in regular mode a planned worker idling for its GO is the idle-gap cost regular
+  mode exists to avoid, so regular mode keeps gating the launch.
 
 ## Scope and sequencing
 
@@ -294,8 +335,8 @@ PRs, adds that question to a batch already going out, never opening one for it a
 ([native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs)).
 
 The wave summary names the wave mode (*Wave mode*): regular, with its starting worker count, unless
-the user asked for a sprint, whose summary names its agent count and which workers run as CLI
-workers on their home boxes.
+the user asked for a sprint, whose summary names its agent count, which workers run as CLI
+workers on their home boxes, and its integration box.
 
 ## Launch
 
@@ -414,7 +455,8 @@ job, or a list or jobs read that fails, still refuses (ludics-lite#651).
 Which branch is checked: for a new worktree, `origin/<branch>`, with `--base-branch` for any
 other base; for `--cwd` and for native dispatch, the repository default branch unless
 `--base-branch` names the intended base. The coordinator names the repository and base that
-match the worker's brief and checkout.
+match the worker's brief and checkout. A sprint's plan-first native worker takes the gate at its
+GO, not at its spawn (*Wave mode*).
 
 A new worktree is pinned to an immutable SHA: `launch` fetches and resolves the base to a SHA
 before the verdict, confirms that SHA still matches the target CI branch after the verdict, and
@@ -503,7 +545,12 @@ requirements for every transport with transport-specific setup and identity, and
   AGENTS.md names, run last, slot-wrapped and read as it says (OCANNL: *Format before the first
   push*), and the commit is gated on that batch's own exit status in the same command
   (`<formatter batch> && git commit ...`), never chained after it with `;` or behind a pipe whose
-  last stage's status replaces it (ahrefs/ocannl#1442 pushed after a FAILED check). **On mac-studio**:
+  last stage's status replaces it (ahrefs/ocannl#1442 pushed after a FAILED check). **The pre-push
+  run** is the tests the change reaches (OCANNL: its `affected` set) less the slow and training
+  members the project marks, which CI runs; the project's agent notes name those members and the
+  command (wave-20261102: full affected
+  runs blew the runner's 3600 s run cap or its 1500 s per-test cap on loaded boxes,
+  ahrefs/ocannl#1697 on minix-amd-linux, #1769 on tuf-amd-linux). **On mac-studio**:
   Gatekeeper/XProtect stalls fresh executables for minutes - sample the pid before assuming a
   hang; never start a second dune against a running _build; and **targeted test aliases only**
   (`dune build @<dir>/runtest-<name>` for the tests the change reaches, plus the scanners), never a full
@@ -716,7 +763,16 @@ requirements for every transport with transport-specific setup and identity, and
   requirement is a decision-gate item, never the brief's alone. Left to the review, an unbounded reader draws one corner per round for as long as
   it exists (2026-09-19: PR #274 went 17 rounds and 1,800 lines for a warning, and the reduction
   had to be filed afterwards as ludics-lite#295).
-- Wave mode: a regular wave's brief carries the context-discipline lines of *Wave mode*.
+- Wave mode: a regular wave's brief carries the context-discipline lines of *Wave mode*, and a
+  sprint's carries its placement of a cross-cutting change's long run.
+- **Plan gate**, only for a sprint's plan-first worker (*Wave mode*): plan first, alone, under the
+  headings of [paired-planning.md](references/paired-planning.md#the-brief-addition), and end the
+  turn with the plan in its `PLAN_READY` ... `END_PLAN_READY` block. A paired worker reconciles as
+  that addition says, then ends its turn with `PLAN_RECONCILED <the plan comment's URL>` instead
+  of implementing. No edit and no batch before GO. Resumed with `GO_IMPLEMENT <sha>`, the worker
+  rebases onto that SHA, re-checks the plan against what landed since its base (`git diff --stat
+  <base> <sha>`), notes in the PR body any change that forces, and implements and ships as the
+  rest of the brief says.
 - Encouragement. It is cheap and the user asked for it: name why the issue matters and
   express confidence. Workers visibly do their best work when the brief treats them as
   trusted colleagues.
