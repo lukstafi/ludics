@@ -1044,16 +1044,16 @@ controlled through the tools in your coordinator's file, never through those com
      red tip, so the range comes out empty and `git bisect` refuses the endpoints
      (ludics-lite#602). `pr-review.sh base <owner/repo> <base> --last-green <red tip>` prints it
      for each workflow red there, from the successful push runs created before the red run. For
-     a local integration run, the `pass` integration records' SHAs are its candidates, read off
-     a listing saved first, since a pipe would hand a failed registry read on as an empty list:
+     a local integration run, its candidates are the `pass` records of those the base gate reads
+     (ludics-lite#811), saved first, since a pipe would hand a failed registry read on as an empty list:
 
-         fleet-worker.sh execution list --compact > <records.json>
-         jq -r '.[] | select(.verdict == "pass" and .request.integration == true and .request.repository == "<owner/repo>") | .observed_sha' <records.json> | pr-review.sh base <owner/repo> --last-green <red tip> --greens -
+         fleet-worker.sh execution integration-records <owner/repo> --verdict pass --shas > <greens>
+         pr-review.sh base <owner/repo> --last-green <red tip> --greens <greens>
 
      It never guesses: exit 3 (a read failed) prints nothing, and exit 4 (nothing red at that
      SHA, no candidate given, or a red workflow with no green on the chain within 300 first
-     parents) prints a SHA only for a workflow it found one for. A nonzero `execution list` is
-     unknown too: read it again, never take it for no candidates. A merge in that range whose diff reaches the failing suite,
+     parents) prints a SHA only for a workflow it found one for. A nonzero `integration-records`
+     (exit 3: the registry was not read) is unknown too: read it again, never take it for no candidates. A merge in that range whose diff reaches the failing suite,
      alone, owns it.
   3. **Bisect only when that is still ambiguous**: run the failing suite at the range's
      intermediate merges (`git bisect start --first-parent <red tip> <last green>`) in a detached
@@ -1138,14 +1138,14 @@ controlled through the tools in your coordinator's file, never through those com
     that backend's loop judged, never just the newest pass (ludics-lite#602, above). Its
     candidates are the passes `tip-run` marked `pinned_backend` (it marks only a run it started
     past the backend pin): the GPU-loop records before #793 carry the same purpose and were cc
-    runs, so an unmarked pass is no green on any backend:
+    runs, so an unmarked pass is no green on any backend (`--pinned-backend` reads only marked ones):
 
-        fleet-worker.sh execution list --compact > <records.json>
-        jq -r '.[] | select(.verdict == "pass" and .pinned_backend == "hip" and .request.repository == "<owner/repo>") | .observed_sha' <records.json> | pr-review.sh base <owner/repo> --last-green <red tip> --greens -
+        fleet-worker.sh execution integration-records <owner/repo> --pinned-backend hip --verdict pass --shas > <greens>
+        pr-review.sh base <owner/repo> --last-green <red tip> --greens <greens>
 
     Exit 4 (no marked pass, or none on the chain within 300 first parents) falls back to the
     daily sweep's last green on that backend, checked the same way (its SHA the one candidate).
-    A nonzero `execution list`, or exit 3 (a read failed), is unknown, not absent: read again
+    A nonzero `integration-records`, or exit 3 (a read failed), is unknown, not absent: read again
     rather than fall back.
 
   The daily cross-machine sweep stays the thorough check: every backend on every box, where the

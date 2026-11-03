@@ -27,7 +27,7 @@ from ludics.fleetworker.execution import (
     window_payload,
 )
 from ludics.fleetworker.gate import integration_rows
-from ludics.fleetworker.transport import PAYLOAD_ON_FD, carried_bg_run
+from ludics.fleetworker.transport import PAYLOAD_ON_FD, Done, carried_bg_run
 from ludics.tests.fake import Answer, FakeTool
 
 SHA = "a" * 40
@@ -502,6 +502,73 @@ class IntegrationRecords(unittest.TestCase):
             [f"{SHA}\tpass\tint-a\t2026-10-05T00:00:00+00:00", f"{SHA}\tfail\tint-i\t2026-10-05T00:00:00+00:00"],
         )
         self.assertEqual(integration_rows([], "example/project"), "")
+
+
+class IntegrationRecordsVerb(unittest.TestCase):
+    """ludics-lite#811: ``execution integration-records`` prints the gate's own selection, the GPU
+    loop's marked records with ``--pinned-backend``, and exits 3, printing nothing, on an unread
+    registry. The listing is faked: the verb only reads, and no test touches the real registry."""
+
+    RED, GREEN, OTHER = "b" * 40, "c" * 40, "d" * 40
+
+    def records(self) -> list[dict[str, Any]]:
+        gpu = {"integration": None, "purpose": "GPU integration loop, hip: tip"}
+        return [
+            record("cc-1", request={"repository": "Example/Project"}, observed_sha=self.GREEN),
+            record("cc-2", verdict="fail", observed_sha=self.RED),
+            record("cc-3", request={"transport": "subagent"}, observed_sha=self.OTHER),
+            record("gpu-1", request=gpu, pinned_backend="hip", observed_sha=self.OTHER),
+            record("gpu-2", request=gpu, observed_sha=self.RED),  # a pre-#793 cc run: unmarked
+            record("gpu-3", request=gpu | {"standing": True}, pinned_backend="hip", observed_sha=self.RED),
+            record("gpu-4", request=gpu, pinned_backend="cuda", observed_sha=self.RED),
+        ]
+
+    def run_verb(self, args: list[str], done: Done) -> tuple[int, str, str]:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+        out, errs = io.StringIO(), io.StringIO()
+        with mock.patch("ludics.fleetworker.gate.listing", return_value=done) as listed, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(errs):
+            rc = execution.cmd_execution(cfg, ["integration-records", *args])
+        listed.assert_called_once_with(cfg)
+        return rc, out.getvalue(), errs.getvalue()
+
+    def listed(self) -> Done:
+        return Done(0, json.dumps(self.records()))
+
+    def test_the_rows_are_the_gates_own(self) -> None:
+        rc, out, _ = self.run_verb(["example/project"], self.listed())
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, integration_rows(self.records(), "example/project") + "\n")
+        self.assertEqual([line.split("\t")[2] for line in out.splitlines()], ["cc-1", "cc-2"])
+
+    def test_verdict_and_shas_give_last_greens_candidates(self) -> None:
+        self.assertEqual(self.run_verb(["example/project", "--verdict", "pass", "--shas"], self.listed()),
+                         (0, self.GREEN + "\n", ""))
+        self.assertEqual(self.run_verb(["EXAMPLE/project", "--shas", "--verdict", "fail"], self.listed()),
+                         (0, self.RED + "\n", ""))
+        self.assertEqual(self.run_verb(["o/r", "--shas"], self.listed()), (0, "", ""), "none is an empty output")
+
+    def test_a_pinned_backend_reads_only_the_marked_gpu_loop_runs(self) -> None:
+        self.assertEqual(self.run_verb(["example/project", "--pinned-backend", "hip", "--verdict", "pass", "--shas"],
+                                       self.listed()), (0, self.OTHER + "\n", ""))
+        rc, out, _ = self.run_verb(["example/project", "--pinned-backend", "cuda"], self.listed())
+        self.assertEqual((rc, [line.split("\t")[2] for line in out.splitlines()]), (0, ["gpu-4"]))
+
+    def test_an_unread_registry_is_exit_3_with_nothing_printed(self) -> None:
+        for done in (Done(1, ""), Done(0, "not json"), Done(0, '{"a": 1}')):
+            rc, out, errs = self.run_verb(["example/project", "--verdict", "pass", "--shas"], done)
+            self.assertEqual((rc, out), (3, ""), done)
+            self.assertIn("could not be read; unknown, not empty", errs)
+
+    def test_usage(self) -> None:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+        for bad in ([], ["example"], ["--shas"], ["o/r", "--verdict"], ["o/r", "--verdict", "timeout"],
+                    ["o/r", "--pinned-backend"], ["o/r", "--pinned-backend", "-x"], ["o/r", "--active"]):
+            with mock.patch("ludics.fleetworker.gate.listing") as listed, self.assertRaises(cli.Exit) as caught, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                execution.cmd_execution(cfg, ["integration-records", *bad])
+            self.assertEqual(caught.exception.rc, 2, bad)
+            listed.assert_not_called()
 
 
 class WindowPayload(unittest.TestCase):
