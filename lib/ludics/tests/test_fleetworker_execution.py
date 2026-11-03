@@ -27,7 +27,7 @@ from ludics.fleetworker.execution import (
     window_payload,
 )
 from ludics.fleetworker.gate import integration_rows
-from ludics.fleetworker.transport import PAYLOAD_ON_FD, Done, carried_bg_run
+from ludics.fleetworker.transport import PAYLOAD_ON_FD, UNREACHABLE, Done, carried_bg_run
 from ludics.tests.fake import Answer, FakeTool
 
 SHA = "a" * 40
@@ -82,26 +82,6 @@ class Conclusions(unittest.TestCase):
             self.assertEqual(run_verdict(code, timeout_codes=("142",)), want, code)
         self.assertEqual(run_verdict("124", timeout_codes=("124", "142")), "timeout")
 
-    def test_a_stopped_bg_run_concludes_cancelled_and_nothing_else_does(self) -> None:
-        """#638: the far side's ``status=stopped`` (bg-run.sh wait's STOPPED) is cancelled, with no
-        status read; any other fact beside it is unreadable, not a conclusion."""
-        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
-        with tempfile.NamedTemporaryFile("w", suffix=".sh") as bgrun:
-            def conclude(out: str) -> execution.Conclusion:
-                with mock.patch.object(execution, "run_on", return_value=execution.Done(0, out)):
-                    return execution.conclude_from_bg_run(
-                        cfg, "/runs/run-3", "req-1", "testbox", "testbox", SHA, "", "", bgrun.name)
-            done = conclude("status=stopped\n")
-            assert isinstance(done, Payload), done
-            payload = json.loads(done.json)
-            self.assertEqual(payload["verdict"], "cancelled")
-            self.assertIn("/runs/run-3 on testbox: STOPPED by bg-run.sh stop before the command returned", payload["evidence"])
-            self.assertEqual(payload["handle"], "bg-run:testbox:/runs/run-3")
-            for out in ("status=stopped\nrc=0\nsentinel=", "status=STOPPED", "status=stopped\nstatus=rc"):
-                refused = conclude(out)
-                assert isinstance(refused, Refusal), (out, refused)
-                self.assertIn("FROM-BG-RUN REFUSED: unreadable run facts", refused.text)
-
     def test_facts_are_read_by_key_as_sed_reads_them(self) -> None:
         facts = "exit=0\nwt=/w t\nhead=" + SHA + "\nrecord=none"
         self.assertEqual((facts_of(facts, "exit"), facts_of(facts, "wt"), facts_of(facts, "record")), ("0", "/w t", "none"))
@@ -138,10 +118,108 @@ def run_record(**over: str) -> dict[str, str]:
     return facts
 
 
+def bg_text(**over: str) -> str:
+    """FROM_BG_RUN's output for a run whose command returned 0, ``over`` replacing facts."""
+    base = {"wait": "0", "log": "1", "sentinel": "", "said": "rc=0"}
+    base.update(over)
+    return "dir=1\n" + "\n".join(f"{k}={v}" for k, v in base.items())
+
+
+def bg_conclude(out: str, rc: int = 0) -> execution.Conclusion:
+    """``conclude_from_bg_run`` over the far side's output ``out`` (exit ``rc``), on testbox."""
+    cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+    with tempfile.NamedTemporaryFile("w", suffix=".sh") as bgrun, \
+            mock.patch.object(execution, "run_on", return_value=Done(rc, out)):
+        return execution.conclude_from_bg_run(cfg, "/runs/run-3", "req-1", "testbox", "testbox", SHA, "", "", bgrun.name)
+
+
+def bg_payload(out: str) -> dict[str, str]:
+    done = bg_conclude(out)
+    assert isinstance(done, Payload), (out, done)
+    return json.loads(done.json)
+
+
+def bg_refusal(out: str, rc: int = 0) -> str:
+    done = bg_conclude(out, rc)
+    assert isinstance(done, Refusal), (out, done)
+    assert done.rc == 1, done
+    return done.text
+
+
+class FromBgRunFacts(unittest.TestCase):
+    """#713: FROM_BG_RUN prints a bg-run.sh directory's facts and refuses nothing; the reading is
+    fail-closed, and every refusal and verdict is ``conclude_from_bg_run``'s."""
+
+    def test_the_facts_read_key_by_key(self) -> None:
+        facts = execution.bg_run_facts(bg_text(sentinel="tests: exit: 3", said="rc=3 (finished earlier, at T)"))
+        self.assertEqual(facts, {"dir": "1", "wait": "0", "log": "1", "sentinel": "tests: exit: 3",
+                                 "said": "rc=3 (finished earlier, at T)"})
+        self.assertEqual(execution.bg_run_facts("dir=0"), {"dir": "0"})
+        self.assertEqual(execution.bg_run_facts("dir=1\nscratch=0"), {"dir": "1", "scratch": "0"})
+        # said is last and whole: what follows its `=` is the line, a `said=` inside it included.
+        facts = execution.bg_run_facts(bg_text(said="DIED said=rc=0"))
+        self.assertEqual(facts and facts["said"], "DIED said=rc=0")
+
+    def test_anything_but_its_own_shape_is_unreadable(self) -> None:
+        full = bg_text()
+        for text in ("", "dir=2", "dir=0\nwait=0", "dir=1\nscratch=1", "dir=1\nscratch=0\nwait=0", "junk\n" + full,
+                     full.replace("log=1\n", ""), full.replace("wait=0\nlog=1", "log=1\nwait=0"),
+                     full.replace("\nsaid=", "\nsaid=x\nsaid="), full.replace("\nsaid=rc=0", ""),
+                     full + "\nmore", "dir=1\nwait=0\nlog=1\nsentinel=\nsentinel=\nsaid=rc=0"):
+            self.assertIsNone(execution.bg_run_facts(text), text)
+        for over in ({"wait": "x"}, {"wait": "03"}, {"wait": ""}, {"log": "2"}, {"sentinel": "exit: 256"},
+                     {"sentinel": "exit: 01"}, {"sentinel": "a b: exit: 1"}, {"sentinel": "exit: 1 tail"},
+                     {"wait": "7", "sentinel": "exit: 0"}, {"log": "0", "sentinel": "exit: 0"}):
+            self.assertIsNone(execution.bg_run_facts(bg_text(**over)), over)
+
+    def test_a_command_that_returned_concludes_on_its_status_and_sentinel(self) -> None:
+        payload = bg_payload(bg_text())
+        self.assertEqual(payload["verdict"], "pass")
+        self.assertEqual(payload["evidence"], f"bg-run /runs/run-3 on testbox: rc=0; the command returned; revision {SHA} {execution.REPORTED}")
+        self.assertEqual((payload["handle"], payload["log"]), ("bg-run:testbox:/runs/run-3", "testbox:/runs/run-3/log"))
+        for over, want in (({"said": "rc=3 (finished earlier, at T)"}, "fail"),
+                           ({"sentinel": "runner: exit: 1"}, "fail"),
+                           ({"said": "rc=1", "sentinel": "exit: 0"}, "fail"),
+                           ({"sentinel": "machine-verify: exit: 142"}, "timeout"),
+                           ({"said": "rc=124"}, "timeout"), ({"said": "rc=143"}, "cancelled"),
+                           ({"said": "rc=00"}, "fail")):  # a leading zero is no pass, as the shell compared it
+            self.assertEqual(bg_payload(bg_text(**over))["verdict"], want, over)
+        self.assertIn("rc=0, runner sentinel 'runner: exit: 1'; the command returned",
+                      bg_payload(bg_text(sentinel="runner: exit: 1"))["evidence"])
+
+    def test_a_stopped_run_concludes_cancelled_without_its_sentinel(self) -> None:
+        payload = bg_payload(bg_text(wait="7", said="STOPPED by bg-run.sh stop before the command returned"))
+        self.assertEqual(payload["verdict"], "cancelled")
+        self.assertIn("/runs/run-3 on testbox: STOPPED by bg-run.sh stop before the command returned, no process of it left",
+                      payload["evidence"])
+        self.assertEqual(bg_payload(bg_text(wait="7", log="0", said="STOPPED"))["verdict"], "cancelled")
+
+    def test_every_other_reading_is_refused(self) -> None:
+        for out, want in (
+            ("dir=0", "FROM-BG-RUN REFUSED: no run directory /runs/run-3 on testbox"),
+            ("dir=1\nscratch=0", "FROM-BG-RUN REFUSED: cannot create a scratch file on testbox"),
+            (bg_text(wait="3", said="RUNNING after 0 s of --within 0"), "FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING -- /runs/run-3 has no rc"),
+            (bg_text(wait="4", said="STARTING after 0 s of --within 0"), "FROM-BG-RUN REFUSED: bg-run.sh wait: STARTING -- no task"),
+            (bg_text(wait="5", said="DIED"), "FROM-BG-RUN REFUSED: bg-run.sh wait: DIED -- the task was killed"),
+            (bg_text(log="0"), "FROM-BG-RUN REFUSED: /runs/run-3 has an rc but no log"),
+            # A line that states no verdict, or not the exit's, is refused on the line.
+            (bg_text(said="rc=x"), "FROM-BG-RUN REFUSED: bg-run.sh wait exit 0: rc=x"),
+            (bg_text(wait="3", said="rc=0"), "FROM-BG-RUN REFUSED: bg-run.sh wait exit 3: rc=0"),
+            (bg_text(wait="6", said="REFUSED: no"), "FROM-BG-RUN REFUSED: bg-run.sh wait exit 6: REFUSED: no"),
+            (bg_text(said=""), "FROM-BG-RUN REFUSED: bg-run.sh wait exit 0: "),
+            ("status=stopped", "FROM-BG-RUN REFUSED: unreadable run facts from testbox (exit 0): status=stopped"),
+        ):
+            self.assertTrue(bg_refusal(out).startswith(want), (out, bg_refusal(out)))
+        self.assertEqual(bg_refusal("oops", rc=2), "FROM-BG-RUN REFUSED: unreadable run facts from testbox (exit 2): oops")
+        unreachable = bg_conclude("", rc=UNREACHABLE)
+        assert isinstance(unreachable, Refusal)
+        self.assertEqual((unreachable.text, unreachable.rc), ("FROM-BG-RUN UNREACHABLE testbox: nothing concluded", 4))
+
+
 class FromBgRunFarSide(unittest.TestCase):
-    """``conclude --from-bg-run``'s far side over the real bg-run.sh: its line read by ludics.bgrun's
-    shell form, so a run long finished, whose wait prints ``rc=<n> (finished earlier, at ...)``,
-    concludes on its status (ludics-lite#816, #826)."""
+    """``conclude --from-bg-run``'s far side over the real bg-run.sh, its facts read by the near
+    side: a run long finished, whose wait prints ``rc=<n> (finished earlier, at ...)``, concludes on
+    its status (ludics-lite#816, #826), and every other verdict maps or refuses as #713 moved it."""
 
     BG_RUN = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
                           "issue-wave", "scripts", "bg-run.sh")
@@ -152,24 +230,45 @@ class FromBgRunFarSide(unittest.TestCase):
         for name, text in files.items():
             with open(os.path.join(root, name), "w") as f:
                 f.write(text)
+        return self.far_at(root)
+
+    def far_at(self, root: str) -> str:
         script = "BOX=testbox\n" + execution.FROM_BG_RUN_HEAD + carried_bg_run(self.BG_RUN) + execution.FROM_BG_RUN_TAIL
         done = subprocess.run(["bash", "-c", script, "far", root], capture_output=True, text=True, check=False,
                               env={**os.environ, "BG_RUN_HEARTBEAT": "0"})
+        self.assertEqual(done.returncode, 0, done)  # the far side refuses nothing
         return done.stdout
 
+    def facts(self, **files: str) -> dict[str, str]:
+        facts = execution.bg_run_facts(execution.substitution(self.far(**files)))
+        assert facts is not None, files
+        return facts
+
     def test_a_run_that_finished_earlier_reads_its_status(self) -> None:
-        self.assertEqual(self.far(rc="3\n", log="tests: exit: 3\n"), "status=rc\nrc=3\nsentinel=tests: exit: 3\n")
-        self.assertEqual(self.far(rc="0\n", log=""), "status=rc\nrc=0\nsentinel=\n")
+        facts = self.facts(rc="3\n", log="tests: exit: 3\n")
+        self.assertEqual((facts["wait"], facts["log"], facts["sentinel"]), ("0", "1", "tests: exit: 3"))
+        self.assertTrue(facts["said"].startswith("rc=3 (finished earlier"), facts)
+        self.assertEqual(bg_payload(self.far(rc="3\n", log="tests: exit: 3\n"))["verdict"], "fail")
+        self.assertEqual(bg_payload(self.far(rc="0\n", log=""))["verdict"], "pass")
+        # The sentinel is the LAST whole line of the grammar; a line outside it is never one.
+        self.assertEqual(self.facts(rc="0\n", log="exit: 1\nexit: 1 (a test)\nx: ssh exit: 5\nr: exit: 142\nr: ssh exit: 142\n")["sentinel"],
+                         "r: exit: 142")
+        self.assertEqual(self.facts(rc="0\n", log="exit: 1 (a test named exit)\n")["sentinel"], "")
 
     def test_every_other_verdict(self) -> None:
         dead = subprocess.Popen(["true"])
         dead.wait()
-        self.assertEqual(self.far(pid=f"{dead.pid}\n", stopped="process group 1\n"), "status=stopped\n")
-        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: DIED", self.far(pid=f"{dead.pid}\n"))
-        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING", self.far(pid=f"{os.getpid()}\n"))
-        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: STARTING", self.far())
-        # An rc that is no status states no verdict: refused on the line, never read as a status.
-        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait exit 0: rc=x", self.far(rc="x\n", log=""))
+        stopped = self.facts(pid=f"{dead.pid}\n", stopped="process group 1\n", log="exit: 0\n")
+        self.assertEqual((stopped["wait"], stopped["sentinel"]), ("7", ""))  # STOPPED's log is not read
+        self.assertEqual(bg_payload(self.far(pid=f"{dead.pid}\n", stopped="process group 1\n"))["verdict"], "cancelled")
+        for files, want in (({"pid": f"{dead.pid}\n"}, "FROM-BG-RUN REFUSED: bg-run.sh wait: DIED"),
+                            ({"pid": f"{os.getpid()}\n"}, "FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING"),
+                            ({}, "FROM-BG-RUN REFUSED: bg-run.sh wait: STARTING"),
+                            ({"rc": "0\n"}, "FROM-BG-RUN REFUSED: /runs/run-3 has an rc but no log"),
+                            # An rc that is no status states no verdict: refused on the line, never read as a status.
+                            ({"rc": "x\n", "log": ""}, "FROM-BG-RUN REFUSED: bg-run.sh wait exit 0: rc=x")):
+            self.assertIn(want, bg_refusal(self.far(**files)), files)
+        self.assertEqual(self.far_at("/nonexistent/ludics-from-bg-run"), "dir=0\n")
 
 
 class RunFacts(unittest.TestCase):

@@ -29,7 +29,7 @@ followed by the end of the line, a blank, ``]``, ``)``, ``;``, ``&``, ``|``, a b
 
 A form is flagged whatever the other operand is, an already-cut first word (``${said%% *}``)
 included: the scanner reads shapes, not values, so such a read is spelled as a prefix pattern
-(``rc=*``) or through ``bg_verdict``.
+(``rc=*``) or read in Python by ``ludics.bgrun``.
 
 Read on every line of every file in ``SWEEP``, with no notion of fences, comments, strings or
 heredocs: a form inside any of them is flagged, which is why the four files in ``EXCLUDED`` --
@@ -130,8 +130,7 @@ def check_verdict_reads(report: Report, tree: Tree) -> None:
             report.ko(
                 rel,
                 f"line {n}: {what} reads bg-run.sh wait's whole verdict line; its verdict is the first"
-                " word (read it with ludics.bgrun, its shell form bg_verdict, or a prefix pattern such"
-                " as rc=*), ludics-lite#826",
+                " word (read it with ludics.bgrun or a prefix pattern such as rc=*), ludics-lite#826",
             )
             bad = True
     if not bad:

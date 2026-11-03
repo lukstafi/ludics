@@ -18,12 +18,12 @@ someone else's output) are refused rather than believed on either half. The firs
 everything before the first blank, as the shell's ``${line%% *}`` cuts it; rc's status is
 ``[0-9]+``; the marker is the rest of the line opening ``(finished earlier``.
 
-``SHELL_VERDICT`` is the same reading as a shell function, for a far side that reads the line where
-Python does not run (``execution conclude --from-bg-run``). It is built from ``EXIT_OF``, this
-module's one table of words and exit codes, and the suite runs both readers over every form, so
-the two cannot drift. A reader that compares the WHOLE line instead (a test against the bare
-``rc=0``, a ``grep -x``) is what check-prompts' ``verdicts`` scanner refuses: the next marker breaks
-it.
+``parse`` is the line's one reader in this package: a far side that waits on a directory
+(``execution conclude --from-bg-run``, ``tip-run --wait``) prints the line and wait's exit, and the
+near side reads them here, so no second form of the grammar is left to drift (ludics-lite#713
+retired the shell form ``--from-bg-run``'s far side ran). A reader that compares the WHOLE line instead (a test against the
+bare ``rc=0``, a ``grep -x``) is what check-prompts' ``verdicts`` scanner refuses: the next marker
+breaks it.
 """
 
 import re
@@ -81,29 +81,3 @@ def parse(line: str, exit_status: int | None = None) -> Verdict | None:
         return None
     return Verdict(word, status, word is Word.RC and rest.startswith(MARKER), line)
 
-
-def _shell_verdict() -> str:
-    arms = "".join(f"    {word.value}) bg_exit={code} ;;\n" for word, code in EXIT_OF.items() if word is not Word.RC)
-    return (
-        "# bg_verdict <line> <exit>: bg-run.sh wait's verdict line, read as ludics.bgrun.parse reads it.\n"
-        "# Sets bg_word (rc, or the word), bg_status (rc's status) and bg_earlier (1 on rc's\n"
-        "# finished-earlier marker) and returns 0; returns 1 with all three empty for a line that states\n"
-        "# no verdict, or whose word is not the exit's. (bg_exit is its scratch: the word's exit.)\n"
-        "# Generated from ludics/bgrun.py's EXIT_OF; edit it there.\n"
-        "bg_verdict() {\n"
-        "  bg_word= bg_status= bg_earlier= bg_exit=\n"
-        '  case "${1%% *}" in\n'
-        f'    rc=*) bg_status=${{1%% *}}; bg_status=${{bg_status#rc=}}; bg_exit={EXIT_OF[Word.RC]}\n'
-        '      case "$bg_status" in \'\'|*[!0-9]*) bg_status=; return 1 ;; esac ;;\n'
-        f"{arms}"
-        "    *) return 1 ;;\n"
-        "  esac\n"
-        '  if [ "$bg_exit" != "$2" ]; then bg_status= bg_exit=; return 1; fi\n'
-        '  bg_word=${1%% *}\n'
-        f'  case "$bg_word" in rc=*) bg_word={Word.RC.value}\n'
-        f'    case "${{1#* }}" in "{MARKER}"*) bg_earlier=1 ;; esac ;; esac\n'
-        "}\n"
-    )
-
-
-SHELL_VERDICT = _shell_verdict()
