@@ -1045,7 +1045,8 @@ checks leave nothing to wait for (green as well as absent), the gate reads
   pending or stopped check on the same head;
 - a queued or running non-advisory run is exit 4, **including under a green check** — one
   workflow's green says nothing about a sibling that has not judged the head. A run whose every
-  unfinished job is advisory does not hold (ludics-lite#500); `SHIP_PR_ADVISORY_CHECKS` in
+  unfinished job is advisory does not hold (ludics-lite#500), queued or running, beside a red
+  `--override` waived too (#862); `SHIP_PR_ADVISORY_CHECKS` in
   `pr-review.sh`'s usage text says when, and the `needs:` boundary that comes with it;
 - a run that completed `cancelled`/`stale`/`action_required` with nothing behind it is exit 4,
   stopped-not-judged like everywhere else, as is one reported `completed` with no conclusion

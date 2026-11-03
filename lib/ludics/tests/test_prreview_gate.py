@@ -445,6 +445,30 @@ class GateLoop(unittest.TestCase):
         self.assertEqual(gate.check("7", 600, waive=True), 1)
         self.assertEqual((gate.verdict, gate.waived), ("red", {"check:1/ubuntu"}))
 
+    def test_a_waived_red_releases_a_run_left_running_only_advisory_jobs(self) -> None:
+        # ludics#862: a red the override waived is a verdict read, so beside a queued advisory leg
+        # it releases the run as a green job would. The controls hold: no waiver (the plain red
+        # verdict), the run in another suite, a second unwaived red, a waived name two jobs share.
+        old = "2025-12-31T23:00:00Z"
+        cases = (
+            (True, "1", f"ubuntu\tfailure\t{old}\t{old}", (1, "waived")),
+            (False, "1", f"ubuntu\tfailure\t{old}\t{old}", (1, "red")),
+            (True, "2", f"ubuntu\tfailure\t{old}\t{old}", (4, "unjudged")),
+            (True, "1", f"ubuntu\tfailure\t{old}\t{old}\ntest\tfailure\t{old}\t{old}", (4, "unjudged")),
+            (True, "1", f"ubuntu\tfailure\t{old}\t{old}\nubuntu\tfailure\t{old}\t{old}", (4, "unjudged")),
+        )
+        for waive, suite, jobs, want in cases:
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h1\tb1\ttopic")
+            gh.on("check-runs", out="ubuntu\tfailure\tu\t1\tcompleted\nmacos\tpending\tm\t1\tqueued")
+            gh.on("actions/runs?head_sha=h1",
+                  out=f"2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t{suite}")
+            gh.on("actions/runs/100/jobs", out=f"{jobs}\nmacos\tpending\t{old}\t-")
+            with self.subTest(waive=waive, suite=suite, jobs=jobs):
+                gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+                self.assertEqual((gate.check("7", 0, waive=waive), gate.verdict), want)
+
 
 T0 = 1767225600
 

@@ -1783,7 +1783,7 @@ test_unreadable_jobs_keep_the_red() {
 # what run_inflight_is_advisory_only weighs is how long the run's job list has been still.
 inflight_jobs() {
   jq -cn --argjson jobs "$1" \
-    '{jobs: [$jobs[] | {name, conclusion: (.conclusion // null),
+    '{jobs: [$jobs[] | {name, conclusion: (.conclusion // null), status: (.status // null),
       created_at: (if .created_ago == null then null else ((now - .created_ago) | floor | todateiso8601) end),
       completed_at: (if .completed_ago == null then null else ((now - .completed_ago) | floor | todateiso8601) end)}]}'
 }
@@ -1886,6 +1886,61 @@ test_an_untimed_job_holds_its_run() {
                               {"name":"macos","created_ago":900}]'
   run_gate
   assert_eq "$GATE_RC" 4 "a finished job with no completed_at holds"
+}
+
+# A queued advisory leg beside required jobs that all have their verdict (ludics#862):
+# lukstafi/ocannl-staging#1612 and #1625 held `merge --wait` for 80 minutes and more on a macOS leg
+# with no runner yet, and one of them merged only with --allow-no-verdict. Their required jobs were
+# green except one red `--override` waived (a red master shared). A waived red is a verdict READ,
+# so it releases the run as a green job does -- the waiver's own key, its suite and job name, one
+# job of that name in the run. The plain case (every required job green, the leg `queued`) is the
+# issue's own wording, read through `merge` with no --allow-no-verdict. The controls hold: the run
+# in another check suite (the waiver names suite 11's `ubuntu`, not this run's), a second required
+# red nobody waived, and a waived name two jobs share.
+queued_advisory_merge_fixture() { # <check suite of the run> <jobs, as inflight_jobs takes them>
+  advisory_inflight_fixture "$2"
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ubuntu","conclusion":"failure","html_url":"u","check_suite":{"id":11}},
+                                        {"name":"macos","status":"queued","conclusion":null,"html_url":"m","check_suite":{"id":11}}]')")
+  RUNS_SEQ=("$(runs_json "$(jq -cn --argjson s "$1" '[{name:"ci",status:"in_progress",conclusion:null,check_suite_id:$s}]')")")
+}
+test_a_queued_advisory_leg_does_not_hold_the_merge() {
+  advisory_inflight_fixture '[{"name":"build","conclusion":"success","created_ago":900,"completed_ago":600},
+                              {"name":"macos","status":"queued","created_ago":900}]'
+  run_merge --wait=30
+  assert_eq "$MERGE_RC" 0 "green required jobs and a queued advisory leg merge without --allow-no-verdict ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "green — 1 build checks passed" "on the green verdict"
+  assert_contains "$MERGE_OUTPUT" "1 of them still running, but only advisory jobs" "naming the run not waited for"
+  assert_not_contains "$MERGE_OUTPUT" "ALLOW-NO-VERDICT" "not as an unread merge"
+
+  queued_advisory_merge_fixture 11 '[{"name":"ubuntu","conclusion":"failure","created_ago":900,"completed_ago":600},
+                                     {"name":"macos","status":"queued","created_ago":900}]'
+  run_merge --wait=30 --override "$WAIVE_WHY"
+  assert_eq "$MERGE_RC" 0 "a waived red and a queued advisory leg merge over the override ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" ": RED, WAIVED" "the verdict is the waived red"
+  assert_contains "$MERGE_OUTPUT" "1 of them still running, but only advisory jobs" "naming the run not waited for"
+  assert_contains "$MERGE_OUTPUT" "OVERRIDE: merging $REPO#7 over a RED build signal — $WAIVE_WHY" "announced"
+  assert_not_contains "$MERGE_OUTPUT" "ALLOW-NO-VERDICT" "not as an unread merge"
+
+  queued_advisory_merge_fixture 22 '[{"name":"ubuntu","conclusion":"failure","created_ago":900,"completed_ago":600},
+                                     {"name":"macos","status":"queued","created_ago":900}]'
+  run_merge --wait=30 --override "$WAIVE_WHY"
+  assert_eq "$MERGE_RC" 4 "another suite's job of the waived name is not the waived red ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "have no conclusion yet" "its run holds"
+  assert_eq "$MERGE_CALLS" "" "no merge call is made"
+
+  queued_advisory_merge_fixture 11 '[{"name":"ubuntu","conclusion":"failure","created_ago":900,"completed_ago":600},
+                                     {"name":"test","conclusion":"failure","created_ago":900,"completed_ago":600},
+                                     {"name":"macos","status":"queued","created_ago":900}]'
+  run_merge --wait=30 --override "$WAIVE_WHY"
+  assert_eq "$MERGE_RC" 4 "a required red the check list has not shown, and nobody waived, holds ($MERGE_OUTPUT)"
+  assert_eq "$MERGE_CALLS" "" "no merge call is made"
+
+  queued_advisory_merge_fixture 11 '[{"name":"ubuntu","conclusion":"failure","created_ago":900,"completed_ago":600},
+                                     {"name":"ubuntu","conclusion":"failure","created_ago":900,"completed_ago":600},
+                                     {"name":"macos","status":"queued","created_ago":900}]'
+  run_merge --wait=30 --override "$WAIVE_WHY"
+  assert_eq "$MERGE_RC" 4 "a waived name two jobs share explains neither ($MERGE_OUTPUT)"
+  assert_eq "$MERGE_CALLS" "" "no merge call is made"
 }
 
 # A successor never inherits the observed head's checks, even when those checks passed
@@ -2359,6 +2414,7 @@ tests=(
   test_a_run_between_jobs_holds
   test_a_red_or_stopped_required_job_holds_its_run
   test_an_untimed_job_holds_its_run
+  test_a_queued_advisory_leg_does_not_hold_the_merge
   test_wait_holds_until_the_checks_appear
   test_wait_ceiling_with_a_queued_run_is_no_verdict
   test_a_selected_check_settles_while_a_slow_one_runs

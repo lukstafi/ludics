@@ -941,7 +941,10 @@ is the one run read a red check list makes. Nor does a run still in flight hold 
 listed as running, a run with no jobs yet, a jobs read that failed, a run with nothing unfinished
 (between jobs), a required job that finished red or stopped, a job with no timestamp, and a job
 list that changed inside the settle (`ADVISORY_SETTLE`, whose reason is at
-`run_inflight_is_advisory_only`). The `needs:` boundary the release leaves is stated once, in
+`run_inflight_is_advisory_only`). A red `merge --override` waived releases the run as a green job
+does (ludics#862: a queued macOS leg beside a waived master red held `merge --wait` past an hour);
+its controls are the run in another check suite, a second red nobody waived, and a waived name two
+jobs share. The `needs:` boundary the release leaves is stated once, in
 `SHIP_PR_ADVISORY_CHECKS`'s entry in `pr-review.sh`'s usage text. The list itself can come from
 the repository (ludics-lite#530): `checks` reads `.github/ship-pr-advisory-checks` from the default
 branch, and its lines, one ERE each, replace the default list end to end. Only a 404 that a
