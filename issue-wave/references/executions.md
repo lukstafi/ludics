@@ -698,8 +698,8 @@ reservation (ludics-lite#558):
 ```
 fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   --checkout <checkout on the box> --worktree <worktree on the box> [--remote <name>] \
-  [--control <patch>] [--cpu|--gpu] [--wait <s>] [--wait-window[=<s>]] [--deadline <s>] \
-  -- <runner command...>
+  [--control <patch>] [--file <local file>] [--probe] [--cpu|--gpu] [--wait <s>] \
+  [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
 ```
 
 - **The reservation.** `--request` must name a dispatched record (`launching`, `running` or
@@ -766,19 +766,63 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   nothing selected, and reported green). The leg reads that file on the box at the commit under
   test, before the worktree moves. Its lines are `# comments`, blanks, `pin-flag <option>` (the
   runner's words hold `<option> <backend>` or `<option>=<backend>` before any `--` of its own) and
-  `pin-env <NAME>` (the runner is `env NAME=<backend> ... <command>`, a command after the assignments); any other line refuses the
+  `pin-env <NAME>` (the runner is `env NAME=<backend> ... <command>`, a command after the assignments), and at most
+  one `slot-plan <path>` (*The slot plan* below); any other line refuses the
   leg. A leg that may hold the GPU -- one that does not declare `--cpu`, a measurement's included --
   whose command satisfies none of the pins is refused before anything runs, saying which it asks
-  for. OCANNL's would be `pin-flag --expect-backend` and `pin-env OCANNL_BACKEND`, so `-- env
+  for. OCANNL's are `pin-flag --expect-backend` and `pin-env OCANNL_BACKEND`, so `-- env
   OCANNL_BACKEND=cuda tools/test-run.sh run --expect-backend cuda <alias>` runs. Only argv words
   count: a pin inside a `sh -c` string does not, nor does the caller's environment, which does not
-  travel. The pin shows that a backend was named, never that the run held it: that evidence is the
+  travel. **The accepted runner forms** (ludics#864), every other one refused naming them:
+  - the runner itself, its pin flag among its own words: `-- <runner> ... --expect-backend cuda`;
+  - a leading `env` pin before any command, a shell composite included: `-- env
+    OCANNL_BACKEND=cuda bash -c '...'` passes, where `-- bash -c 'OCANNL_BACKEND=cuda ...'` is
+    refused;
+  - a long alias list as a file the runner reads, never a `$(cat ...)` inside `sh -c`: `--file
+    <local file>` and the runner word `{file}` (*The file* below);
+  - a runner that reads none of the project's configuration (a standalone driver probe):
+    `--probe`, which skips the pin (below);
+  - a leg that holds no GPU: `--cpu`, which skips it too.
+
+  The pin shows that a backend was named, never that the run held it: that evidence is the
   runner's own check (`--expect-backend`), and a leg the pin admitted is no GPU evidence. A `--cpu`
-  leg, and a repository without the file, are not checked, but a brief pins the backend on every
+  or `--probe` leg, and a repository without the file, are not checked (the file is still parsed,
+  so a line this version cannot read refuses them too), but a brief pins the backend on every
   leg, a CPU one included: a project default that names the CPU backend hides the missing pin on a
   CPU leg and silently takes over a GPU one, and a measurement, which cannot declare `--cpu`, is
   refused unpinned (OCANNL's test config pins cc, so a cc measurement on rog runs `env
   OCANNL_BACKEND=cc ...`; ludics-lite#794).
+- **The probe.** `--probe` declares that the runner reads none of the project's configuration, so
+  no backend can be selected for it and none is asked (ludics#864: a standalone C transfer probe's
+  measurements were refused, then re-run under a meaningless `env OCANNL_BACKEND=hip`). It is the
+  caller's declaration, as `--cpu` is, which the leg cannot check, and it says so on its output
+  (`EXECUTION LEG <box>: --probe: ... no backend pin was asked of it ...; its result is no
+  backend's evidence`). A runner that reads the project's configuration (OCANNL's `tools/test-run.sh`,
+  a benchmark driver over the library) is never a probe. On the worker's own box, `execution hold
+  --request <id> --worktree <dir> --rev <sha> --probe -- <probe>` is the same.
+- **The file.** `--file <local file>` copies a file of the caller's box to the box's state
+  directory, beside a control patch, and each runner word that is exactly `{file}` becomes the
+  copy's absolute path there (`EXECUTION LEG <box>: --file shipped as <path>, the runner's
+  {file}`); it is removed when the leg ends, and never lands in the worktree, which stays clean. It
+  is how a pre-push alias list reaches a GPU box without a `sh -c` hiding the pin (OCANNL: `--file
+  <list> -- env OCANNL_BACKEND=cuda tools/test-run.sh run --expect-backend cuda --targets-file
+  '{file}' build`; a list made by `tools/test-run.sh affected ... > <list>` on the caller's box). A
+  `--file` with no `{file}` word, and a `{file}` word with no `--file`, are usage errors; a word
+  that only contains `{file}` (`--targets-file={file}`) is passed as given, so spell the value as
+  its own word.
+- **The slot plan.** A correctness leg that declares neither `--cpu` nor `--gpu` takes a slot that
+  may hold the GPU, though its runs may hold none. A project that can tell names `slot-plan <path>`
+  (relative, in the worktree) in its `.github/fleet-leg`: once the worktree is clean at the commit,
+  the leg runs `<path> <the runner's argv...>` there under an `execution slot --cpu` of its own
+  (the leg's slot flags, each run's bound), and an exit 0 whose last nonblank stdout line is `cpu`
+  makes both runs `--cpu` (`EXECUTION LEG <box>: slot plan <path> (...): cpu, so the runs take
+  their slot --cpu`). `gpu`, any other line, a nonzero exit or no executable plan leaves the slot as
+  given (a `WARNING` for all but `gpu`), and a plan that moves HEAD or leaves the worktree not clean
+  refuses the leg. The pin is judged before the plan, on the leg's own flags. A wrong `cpu` cannot
+  put a GPU batch past the tokens where the runner takes its own slot (the [nested
+  slot](#exclusivity-and-the-run-time-slots) refuses a GPU batch in a `--cpu` slot that is no GPU
+  token). An explicit `--cpu` or `--gpu`, and a measurement, run no plan. What the plan reads is
+  the project's (OCANNL's runner names the slot its `run` would take with `plan`).
 - **Stopping a leg.** A leg's far side runs in an ssh session of its own, which nothing on the
   caller's box reaches, so a SIGTERM, SIGINT or SIGHUP the leg gets while it runs (`bg-run.sh stop`
   on its run, a Ctrl-C) ends the far side as well (ludics-lite#767): `EXECUTION LEG STOPPING <box>:

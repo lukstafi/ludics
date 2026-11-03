@@ -569,8 +569,12 @@ requirements for every transport with transport-specific setup and identity, and
   ahrefs/ocannl#1324 and #1326). Every leg spells its far-side paths absolutely: an unquoted
   `~` is expanded by the caller's shell to the caller's home (a leg from rog reached mac-studio
   as `/home/lukstafi/...` and was refused). Every leg's command names its backend, a CPU leg's
-  included, and leans on none of the checkout's ignored setup, which a leg's fresh worktree lacks
-  ([*The backend pin* and *The worktree*](references/executions.md#a-leg-on-another-box)). A
+  included, as words of its own argv in one of the forms the leg accepts: the runner's pin flag, a
+  leading `env` pin (a `bash -c` composite goes after it, never around it), a long alias list as
+  `--file <local file>` with the runner word `{file}`, and `--probe` for a runner that reads none
+  of the project's configuration (ludics#864: six workers of wave-20261102 lost turns to refused
+  forms). It leans on none of the checkout's ignored setup, which a leg's fresh worktree lacks
+  ([*The backend pin*, *The file* and *The worktree*](references/executions.md#a-leg-on-another-box)). A
   base-against-head A/B goes through the project's two-revision tooling where it has one, never
   two checkouts paired by hand, and the brief points to that tooling's own constraints as it does
   to the gate (OCANNL: `benchmarks/ab.py` and `bin_cells.py --arm-exe`; ludics-lite#794: three
