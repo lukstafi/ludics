@@ -220,9 +220,13 @@ class Binding(RegistryCase):
                      self.SHA[:39], "origin/main", f"origin/{self.SHA}", f"{self.SHA}^"):
             self.assertIsNone(bound(requested_revision=free), repr(free))
         self.assertIsNone(bound(requested_revision=self.SHA, standing=True), "a standing record is exempt")
-        resolved = {"request_id": "h", "resolved_revision": self.OTHER,
-                    "request": request("h", requested_revision="head-of:topic", standing=True)}
-        self.assertEqual(registry.bound_commit(resolved), self.OTHER, "a resolution binds whatever the record")
+        resolved: dict[str, object] = {"request_id": "h", "resolved_revision": self.OTHER,
+                                       "request": request("h", requested_revision="head-of:topic")}
+        self.assertEqual(registry.bound_commit(resolved), self.OTHER, "a resolution binds a non-standing record")
+        resolved["request"] = request("h", requested_revision="head-of:topic", standing=True)
+        self.assertIsNone(registry.bound_commit(resolved), "a standing record's resolution binds nothing (ludics#703)")
+        self.assertEqual(registry.bound_commit({"resolved_revision": self.OTHER, "request": "not an object"}), self.OTHER,
+                         "a malformed request still binds by its record's resolution")
         self.assertIsNone(registry.bound_commit({"request": "not an object"}))
 
     def test_every_payload_naming_another_commit_is_refused_and_the_reserved_one_passes(self) -> None:
@@ -278,6 +282,18 @@ class Binding(RegistryCase):
             json.dump(data, f)
         rc, rec, _ = self.call("conclude", {**done, "observed_sha": self.OTHER})
         self.assertEqual((rc, rec["observed_sha"]), (0, self.OTHER))
+
+    def test_a_standing_head_of_record_is_concluded_at_the_workers_head(self) -> None:
+        # ludics#703: a standing head-of:main record was bound to main's launch commit, so its own
+        # hand-back at the worker's head was refused. Its resolution is kept, and binds nothing.
+        rc, rec, _ = self.call("run", request("si", requested_revision="head-of:main", resolved_revision=self.SHA,
+                                              standing=True))
+        self.assertEqual((rc, rec["resolved_revision"]), (0, self.SHA), "the dispatch still records the base")
+        self.assertIsNone(registry.bound_commit(rec))
+        rc, _, _ = self.call("record", {"request_id": "si", "state": "running", "evidence": "batch", "observed_sha": self.OTHER})
+        self.assertEqual(rc, 0)
+        rc, rec, _ = self.call("conclude", {"request_id": "si", **self.DONE, "observed_sha": "e" * 40})
+        self.assertEqual((rc, rec["state"], rec["observed_sha"]), (0, "concluded", "e" * 40))
 
     def test_a_resolved_head_of_conclusion_inheriting_another_commit_is_refused(self) -> None:
         self.call("run", request("h", requested_revision="head-of:topic", resolved_revision=self.SHA))
@@ -335,7 +351,8 @@ class Rebind(RegistryCase):
         self.call("run", request("s", requested_revision=self.SHA, standing=True))
         self.call("run", request("f", requested_revision=f"{self.SHA} plus working diff"), slots="mac=4")
         self.call("reserve", request("u", requested_revision="head-of:topic"), slots="mac=4")
-        for identity in ("s", "f", "u"):
+        self.call("run", request("sh", requested_revision="head-of:topic", resolved_revision=self.SHA, standing=True))
+        for identity in ("s", "f", "u", "sh"):
             rc, _, err = self.rebind(identity, self.NEW)
             self.assertEqual(rc, 1, identity)
             self.assertIn(f"{identity} binds no commit", err)

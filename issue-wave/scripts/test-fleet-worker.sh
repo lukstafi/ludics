@@ -3139,6 +3139,16 @@ rm -rf "${rwt:?}"
 expect "a --from-run retry after its worktree is removed is the registry's harmless retry" 0 '"state": "concluded"' -- \
   env SHIM_GH=down "${FWH[@]}" execution conclude --standing-handback --request hb-retry --observed-from "$hwt" --evidence "green" --from-run "$hruns/later"
 grep -Fq "is gone" <<<"$out" && ko "the retry recomposed its evidence: $out" || ok "...with the evidence the conclusion recorded"
+# ludics#703: a standing head-of:main request is resolved at launch, and that resolution binds
+# nothing: the hand-back concludes it at the worker's head, past the commit main was then.
+printf 'main %s\n' "$hbase" > "$TMP/hb-heads"
+jq -n --arg co "$hwt" '{request_id:"hb-head-of", wave:"w", worker:"hb-head-of", transport:"subagent", issue:"o/r#703",
+  purpose:"standing fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"head-of:main",
+  kind:"correctness", standing:true, checkout:$co}' > "$TMP/hb-head-of.json"
+env SHIM_GH_HEADS="$TMP/hb-heads" "${FWH[@]}" execution run "$TMP/hb-head-of.json" >/dev/null 2>&1 || ko "could not run hb-head-of (setup)"
+expect "a standing head-of:main record concludes at the worker's head, past main's commit at launch" 0 "\"observed_sha\": \"$hhead\"" -- \
+  hb hb-head-of --evidence "all green" --verdict pass
+grep -Fq "\"resolved_revision\": \"$hbase\"" <<<"$out" && ok "...keeping the base its launch resolved" || ko "hb-head-of lost its resolution: $out"
 hreq hb-verdict
 expect "with no run named, the hand-back's own verdict concludes it" 0 "verdict fail as the worker's hand-back reports it, no run record named" -- \
   hb hb-verdict --evidence "the scans batch stayed red" --verdict fail
@@ -3613,6 +3623,15 @@ expect "a head-of leg refuses the branch once it has moved past the assigned com
   leg --request leg-h --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 expect "...and runs the assigned commit" 0 "execution-leg: exit: 0" -- leg --request leg-h --rev "$lb" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 fixture_done leg-h
+# ...but a standing head-of record binds nothing (ludics#703): its worker's batches run at the commit
+# it then has, so its leg runs the branch past the assigned commit too.
+jq -n --arg wt "$lwt" '{request_id:"leg-hs", wave:"w", worker:"leg-hs", transport:"subagent", issue:"o/r#703", purpose:"leg fixture",
+  agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"head-of:claude/topic", kind:"correctness",
+  standing:true, checkout:$wt}' > "$TMP/leg-hs.json"
+SHIM_GH_HEADS="$TMP/leg-heads" "${FWL[@]}" execution run "$TMP/leg-hs.json" >/dev/null 2>&1 || ko "could not run leg-hs (setup)"
+expect "a standing head-of leg runs the branch past the assigned commit" 0 "execution-leg: exit: 0" -- \
+  leg --request leg-hs --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+fixture_done leg-hs
 # A request for one exact commit binds its leg to that commit as well.
 lreq leg-x testbox correctness "$la"
 expect "a leg of an exact-SHA request refuses another commit" 1 "but request leg-x was assigned $la: run --rev $la" -- \

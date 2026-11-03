@@ -589,11 +589,12 @@ with its answer lost reuses the SHA the record holds rather than the checkout's 
 still the registry's harmless identical retry after the worktree has moved on or gone.
 
 A non-standing request whose `requested_revision` is exactly one commit is concluded only at that
-commit (ludics-lite#634), as a `head-of:` request is at its `resolved_revision`: an `observed_sha`
+commit (ludics-lite#634), as a non-standing `head-of:` request is at its `resolved_revision`: an `observed_sha`
 naming another commit, in any `dispatch`, `record`, `reconcile` or `conclude` (named, read off
 `--observed-from`, `--sha`, or inherited from the record), is refused naming the reserved one. A
 revision with prose or a ref beside it (`<sha> plus working diff`) is free text and binds nothing,
-and a standing record is exempt: it is concluded at its worker's final head. A deliberate re-pin is
+and a standing record is exempt, its `resolved_revision` too (ludics#703): it is concluded at its
+worker's final head. A deliberate re-pin is
 a new request id; conclude the old one at its reserved commit (`cancelled`, evidence naming the new
 id), or `not-launched` when nothing ran. The rule is `bound_commit` in
 `lib/ludics/fleetworker/registry.py`.
@@ -730,7 +731,7 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   so spell the worktree as the record does. So a leg's request names its far-side worktree as
   `checkout`, not the box's clone. A correctness record's runs go under
   `execution slot` on that box, with the slot flags given here; a measurement's under `execution
-  hold --request <id>`, which takes `--deadline` alone. A record holding a `resolved_revision`
+  hold --request <id>`, which takes `--deadline` alone. A non-standing record holding a `resolved_revision`
   (a [`head-of:` request](#reserve-launch-observe-conclude)), or a non-standing one whose
   `requested_revision` is exactly one commit, refuses any `--rev` that comes to
   another commit, and the registry refuses any `observed_sha` but that commit for it; after a
@@ -923,7 +924,8 @@ concluded with `--observed-from unchecked` in its evidence. The mechanism and it
 `lib/ludics/fleetworker/registry.py`'s and `execution.py`'s THE CHECKOUT.
 `observed_sha` is that checkout's HEAD, read on the execution host and checked on GitHub like any
 conclusion's (so conclude after the push), never a SHA copied from the report, and it is not bound
-to `requested_revision` (standing records are exempt, #634). With `--from-run` the verdict is the
+to `requested_revision` (standing records are exempt, #634), nor to the `resolved_revision` of a
+standing `head-of:` request, which records only the base its launch resolved (#703). With `--from-run` the verdict is the
 record's exit, and what plain `conclude --from-run` refuses the record for goes into the evidence
 instead: a nonempty `dirty`, a launch `head` that is not `observed_sha` (an ancestor of it, or
 outside its history: rewritten or never pushed), a recorded worktree that is gone. An unfinished

@@ -196,14 +196,18 @@ refused at reserve. Any other revision is the free text it always was, and a dis
 carrying `resolved_revision` for one is refused, as is a head-of dispatch without it. A reconcile to
 `reserved` and a later dispatch resolve again: each dispatch records the commit it assigned. A
 head-of record never dispatched names no commit, so reconcile refuses to make it `running` or
-`uncertain`; and once resolved, an `observed_sha` that any later payload names must be that commit.
+`uncertain`; and once resolved, an `observed_sha` that any later payload names must be that commit
+(a non-standing record's: THE BINDING, below).
 
 THE BINDING (ludics-lite#634): the one commit a record's evidence may name, `bound_commit`. Fail-closed
 on what binds, and nothing else: a record's `resolved_revision` (above), else -- for a request
 WITHOUT `"standing": true` -- a `requested_revision` that is, whole, one exact object ID (40 or 64
 lowercase hex, as `observed_sha` is spelled). Every other revision is free text (`<sha> plus working
-diff`, a ref, prose, a SHA with surrounding blanks) and binds nothing; a standing record covers a
-worker's whole life, each batch at the commit it then has, and binds only through a resolution.
+diff`, a ref, prose, a SHA with surrounding blanks) and binds nothing. A standing record binds
+nothing at all, a resolution included: it covers a worker's whole life, each batch at the commit it
+then has, and is concluded at the worker's final head (ludics#703: a standing `head-of:main` record
+refused its own hand-back, bound to the commit main was at launch); its `resolved_revision` still
+records the commit its dispatch assigned, the base the worker started from, binding nothing.
 For a bound record, a `dispatch`, `record`, `reconcile` or `conclude` whose `observed_sha` is
 another commit is refused naming the bound one; so is a conclusion naming none (other than
 `not-launched`) when the observed_sha it would inherit is another commit (one recorded before this
@@ -365,11 +369,13 @@ def ref_name_ok(name: str) -> bool:
 def bound_commit(record: Record) -> str | None:
     """THE BINDING (see the header): the commit a record's evidence must name, or None when it is
     bound to none. Read defensively, as `execution leg` hands it a record off a listing."""
+    request = as_object(record.get("request"))
+    if request is not None and request.get("standing") is True:
+        return None  # a standing record binds nothing, its resolution included (ludics#703)
     resolved = record.get("resolved_revision")
     if isinstance(resolved, str) and OBJECT_ID.fullmatch(resolved):
         return resolved
-    request = as_object(record.get("request"))
-    if request is None or request.get("standing") is True:
+    if request is None:
         return None
     rebound = record.get("rebound_revision")
     if isinstance(rebound, str) and OBJECT_ID.fullmatch(rebound):
