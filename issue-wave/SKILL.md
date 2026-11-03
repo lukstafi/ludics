@@ -195,7 +195,10 @@ context lean:
   and its window will not open within the hour, the coordinator refuses the request with an offer:
   `EXECUTION_REFUSED <request_id>` naming another box that runs the same backend and when it is free
   (wave-20261023: ahrefs/ocannl#1482's cc measurement, offered minix-amd-linux in place of a
-  mac-studio held by the wave's workers). The box is a variable of the measurement, so only the
+  mac-studio held by the wave's workers). It offers only a box on the project's measurement-box
+  list (OCANNL: `benchmarks/README.md`, *Measurement boxes*), since a box off it measures only
+  past the harness's box check, and a worker rightly declines such numbers as not
+  measurement-grade (wave-20261102: macbook-pro offers, ahrefs/ocannl#1630). The box is a variable of the measurement, so only the
   worker can accept: it sends a new `EXECUTION_REQUEST` built for that box (its request id,
   `execution_host` and checkout), or keeps the home box and waits. The coordinator
   makes no offer for a leg whose box is its point (TUF's discrete memory, a backend only one box
@@ -429,8 +432,9 @@ only its outbound reach.
 
 Never two issues in one brief, even a sequential pair (2026-09-15: the #977-then-#979 worker
 never sent the interim hand-back it was asked for and ran straight into phase two). A
-sequential pair is two workers, the second a stacked launch off the first's branch once that is
-approved (Supervise: *Stacked launches*). Worktrees live outside the repo per project
+sequential pair, which the plan writes as "one owner, sequential workers" (an older plan's
+"#A + #B, one owner" reads the same), is two workers, the second a stacked launch off the
+first's branch once that is approved (Supervise: *Stacked launches*). Worktrees live outside the repo per project
 convention; a parallel group launches together. Native launch is in
 [native-workers.md](references/native-workers.md); CLI launch, attach, status, unstick and
 recovery are in [cli-claude.md](references/cli-claude.md).
@@ -586,7 +590,10 @@ requirements for every transport with transport-specific setup and identity, and
 - Execution handoff: the worker's own targeted correctness batches on its agent host run under
   the [standing reservation](references/executions.md#standing-iteration-reservation) the
   coordinator took at launch - name its request id, the bounded aliases and `-j` width it
-  covers, and that every batch goes through the project runner, wrapped in `fleet-worker.sh
+  covers, and that every batch goes through the project runner, in the spelling the project's
+  runner or agent notes give, copied rather than composed (OCANNL: `tools/test-run.sh run
+  --targets-file F build -j 4`; a wave-20261102 worker lost a run to the refused `run
+  --targets-file F -j 4`), wrapped in `fleet-worker.sh
   execution slot --wait-window -- <batch>` (`--cpu` before the `--` for one that holds no GPU;
   a runner that takes the slot itself runs inside the wrapper, [nested
   slots](references/executions.md#exclusivity-and-the-run-time-slots); `--wait-window` waits
