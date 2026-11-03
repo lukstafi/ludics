@@ -53,7 +53,10 @@
 #   - `stop` (ludics-lite#510) ends a spawned run's whole group, a grandchild behind an exited
 #     subshell included, from a caller that survives it, and a wait there then reads STOPPED
 #     (exit 7, ludics-lite#638), never DIED, its `stopped` marker the one file added; it sends
-#     KILL after BG_RUN_STOP_GRACE to a command that ignores TERM; it signals nothing, exit 1, on a
+#     KILL after BG_RUN_STOP_GRACE to a command that ignores TERM, and with none the grace the run's
+#     start recorded in its pid (THE GRACES, ludics#827: 35 s with no FLEET_RUNNER_GRACE), whatever
+#     the stop's own environment holds -- and without a record, reads that environment's input and
+#     refuses one that is not a number, exit 2, signalling nothing; it signals nothing, exit 1, on a
 #     run that finished, one never started, one already stopped, and a pid the system has reused
 #     for another process; and it refuses, exit 2, a run started by `start` in a group it does not
 #     lead, which runs on;
@@ -663,6 +666,29 @@ expect "stop sends KILL to a command that ignores TERM, after BG_RUN_STOP_GRACE"
 sleep 0.5
 case $(ps -o stat= -p "${c:-99999999}" 2>/dev/null) in ''|Z*) ok "...and the command is gone" ;;
   *) ko "the TERM-ignoring command ($c) outlived the KILL" ;; esac
+# THE GRACES (ludics#827): a start records the run's stop grace as its pid's third line, the runner
+# grace of its own environment plus 25 (35 s with none), and a stop with no BG_RUN_STOP_GRACE gives
+# the run that recorded grace, not one its own environment derives -- staged at 1 s here, and the
+# stop's environment holding a FLEET_RUNNER_GRACE that is not even a number. The control: with the
+# record taken out, the stop reads its own environment's input, and refuses that one, exit 2,
+# signalling nothing.
+d=$(env -u FLEET_RUNNER_GRACE "$BG" spawn "$TMP/recorded" -- sh -c 'trap "" TERM; : > "$0"; while :; do sleep 1; done' "$TMP/recorded.ready")
+until_exists "$TMP/recorded.ready" 10
+c=$(head -n 1 "$d/cpid" 2>/dev/null); BGPIDS="$BGPIDS $c"
+[ "$(sed -n 3p "$d/pid")" = 35 ] && ok "a start with no FLEET_RUNNER_GRACE records a 35 s stop grace in its pid" \
+  || ko "the pid's third line is $(sed -n 3p "$d/pid" | od -c | head -n 2)"
+sed -n 1,2p "$d/pid" > "$TMP/recorded.pid2"
+cp "$TMP/recorded.pid2" "$d/pid"
+expect "a stop with no recorded grace reads its own environment's input, and refuses one that is not a number" 2 \
+  "FLEET_RUNNER_GRACE must be a whole number" -- env -u BG_RUN_STOP_GRACE FLEET_RUNNER_GRACE=soon "$BG" stop "$d"
+expect "...signalling nothing: the run still reads RUNNING" 3 RUNNING -- "$BG" wait "$d" --within 0
+[ ! -e "$d/stopped" ] && ok "...and writing no marker" || ko "the refused stop left a marker: $(cat "$d/stopped")"
+{ cat "$TMP/recorded.pid2"; echo 1; } > "$d/pid"
+expect "with a grace recorded, the stop gives the run that grace whatever its own environment says" 0 'TERM, then KILL after 1 s' -- \
+  env -u BG_RUN_STOP_GRACE FLEET_RUNNER_GRACE=soon "$BG" stop "$d"
+sleep 0.5
+case $(ps -o stat= -p "${c:-99999999}" 2>/dev/null) in ''|Z*) ok "...and the command is gone" ;;
+  *) ko "the TERM-ignoring command ($c) outlived the recorded grace's KILL" ;; esac
 # The run's tree outside the wrapper's group (wave-20261031 post-1-task-16, ahrefs/ocannl#1727):
 # the shape of `execution slot --bg` around a test runner. The command starts a batch in a session
 # of its own (as the slot does), and the batch a child that leads a group of its own (as the

@@ -4301,6 +4301,41 @@ else
   ko "the stub runner's phase never wrote its pid: $(cat "$bgd/log" 2>/dev/null)"
 fi
 bgkill "$bgd"
+# THE GRACES (ludics#827): a runner whose own cleanup on a TERM takes 12 s, longer than the 10 s every
+# layer used to give it, finishes under bg-run.sh stop when its grace is the input: the slot gives
+# its group the input plus two margins, and the stop gives the run the input plus five, recorded at
+# the spawn, so the stop needs no input of its own. The control is the same runner under an input of
+# 0, which puts the slot's grace back at the old 10 s: the slot's KILL cuts the cleanup.
+# shellcheck disable=SC2016 # the runner's own sh expands these
+GRUN='trap "sleep 12; echo cleaned > \"$0\"; exit 0" TERM; : > "$1"; while :; do sleep 1; done'
+for gc in 12:22:cleaned 0:10:cut; do
+  gr=${gc%%:*}; gs=${gc#*:}; gs=${gs%%:*}; gw=${gc##*:}
+  rm -f "$TMP/grace-clean" "$TMP/grace-ready"
+  env FLEET_RUNNER_GRACE="$gr" "${FWS[@]}" execution slot --bg "$TMP/slot-bg-grace" -- \
+    sh -c "$GRUN" "$TMP/grace-clean" "$TMP/grace-ready" > "$TMP/grace.out" 2>&1
+  bgd=$(tail -n 1 "$TMP/grace.out")
+  for _ in $(seq 100); do [ -e "$TMP/grace-ready" ] && break; sleep 0.2; done
+  if [ -e "$TMP/grace-ready" ]; then
+    expect "a stop under FLEET_RUNNER_GRACE=$gr ends the runner's tree on its TERM alone" 0 \
+      "^STOPPED $bgd: process group [0-9]* and the run's groups [0-9 ]* outside it (TERM)$" -- \
+      env -u FLEET_RUNNER_GRACE "$BGR" stop "$bgd"
+    grep -q "SIGTERM received: ending the command's process group [0-9]* (SIGTERM, then SIGKILL after ${gs}s)$" "$bgd/log" \
+      && ok "...the slot giving the runner's group ${gs} s" || ko "...the slot's grace was not ${gs} s: $(cat "$bgd/log")"
+    if [ "$gw" = cleaned ]; then
+      [ "$(cat "$TMP/grace-clean" 2>/dev/null)" = cleaned ] && ok "...and the runner's 12 s cleanup completed" \
+        || ko "...but the runner's 12 s cleanup was cut: $(cat "$bgd/log")"
+    else
+      [ ! -e "$TMP/grace-clean" ] && ok "...and the control's 12 s cleanup was cut by the slot's KILL at 10 s" \
+        || ko "...but the control's cleanup completed, so the fixture does not show the grace"
+    fi
+    expect "...a wait there reads STOPPED" 7 STOPPED -- "$BGR" wait "$bgd" --within 0
+  else
+    ko "the graces runner never started: $(cat "$TMP/grace.out" "$bgd/log" 2>/dev/null)"
+  fi
+  bgkill "$bgd"
+done
+expect "a FLEET_RUNNER_GRACE that is not a whole number is refused before the slot is taken" 2 \
+  "execution slot: FLEET_RUNNER_GRACE must be a whole number" -- env FLEET_RUNNER_GRACE=soon "${FWS[@]}" execution slot -- true
 expect "--bg on a host with no fleet name is refused in the foreground" 2 "no fleet name" -- \
   env -u FLEET_LOCAL_BOX FLEET_HOSTNAME_MAP="nomatch*=testbox" "$FW" execution slot --bg "$TMP/slot-bg-none" -- echo x
 [ ! -e "$TMP/slot-bg-none" ] && ok "...and allocates no run directory" || ko "a refused --bg allocated $TMP/slot-bg-none"

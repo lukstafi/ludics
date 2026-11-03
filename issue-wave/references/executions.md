@@ -350,7 +350,11 @@ command as the leader of a process group (a session) of its own and stay its par
 whole tree can be ended, not just its top: in the 2026-10-05 wave a hand-rolled `perl -e 'alarm
 N; exec ...'` killed a driver script and left its benchmark child on the GPU for half an hour past
 the window. `--deadline <seconds>` bounds the tree: when it passes, the group gets SIGTERM, then
-SIGKILL once the leader and the rest are gone or 10 s have passed, and the wrapper exits **124**
+SIGKILL once the leader and the rest are gone or the wrapper's grace has passed (THE GRACES,
+`lib/ludics/fleetworker/graces.py`, ludics#827: `FLEET_RUNNER_GRACE`, the seconds the runner
+itself needs to end on a TERM, default 10, plus 10 s, or plus 5 s for a slot nested in another
+with `--deadline`; every layer outside it, up to `bg-run.sh stop`, waits longer than the one
+inside it), and the wrapper exits **124**
 with `EXECUTION HOLD|SLOT <box>: --deadline <n>s reached`; a command that ends first takes
 anything it left running in its group with it. Without `--deadline` a command's leftovers run on,
 holding the slot and the guard, as before. A SIGTERM, SIGINT, SIGHUP or SIGALRM to the wrapper
@@ -779,7 +783,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   SIGTERM; ending the far side (pid <n>)`, then the box's own `EXECUTION LEG STOP <box>: ...` lines,
   `the leg (pid <n>) has ended` last. The far stop ends the leg's wrapper there, which ends the
   runner's process group; the far shell then reverts a control patch and removes its files, so the
-  worktree and its lock are free. The leg waits up to 8 s for that report and then dies of the
+  worktree and its lock are free. The leg waits up to `FLEET_RUNNER_GRACE` plus 20 s (30 s by
+  default; the far stop's own bound on the far shell is 5 s less, the far wrappers' less again,
+  and the leg's own value is forwarded to them: THE GRACES) for that report and then dies of the
   signal; the stop goes on, and its last line follows in the same log. What it does not reach: a
   leg killed with SIGKILL, a dropped connection (both leave the runner running: look on the box), a
   box ssh cannot reach at stop time (`EXECUTION LEG STOP UNREACHABLE <box>`, which prints the

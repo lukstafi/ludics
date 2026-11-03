@@ -2,8 +2,6 @@
 longer than the one inside it, from one input -- the ladder, its readers in the slot, the leg and
 the transport, and bg-run.sh's shell spelling of its rung, run here and pinned to the module's."""
 
-import contextlib
-import io
 import os
 import shutil
 import subprocess
