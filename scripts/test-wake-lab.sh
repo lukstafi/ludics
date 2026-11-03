@@ -499,6 +499,13 @@ expect "...naming every missing target, with a known one alongside" 1 "nosuch al
   env WAKE_LAB_HOSTS="$TMP/hosts.sh" "$WL" rog nosuch alsomissing
 [ ! -s "$CURL_LOG" ] && ok "...before waking the box it does know" \
   || ko "a partial wake went out before the refusal: $(cat "$CURL_LOG")"
+# An ssh alias is its box (ludics#605), but only as the map spells it: a case variant is no alias,
+# and stays a name the table refuses before anything is sent.
+: > "$CURL_LOG"
+expect "a case variant of an ssh alias is not that box, and refuses the run" 1 "not in the host table.*ROG-NV-LINUX" -- \
+  env WAKE_LAB_HOSTS="$TMP/hosts.sh" "$WL" ROG-NV-LINUX
+[ ! -s "$CURL_LOG" ] && ok "...before any packet" \
+  || ko "a wake went out for a case-variant alias: $(cat "$CURL_LOG")"
 
 # --- the WSL kick reaches the Windows side by whichever alias answers ---------------------------
 # After a cold boot the LAN alias answers within seconds and tailscaled lags a minute or more, so a
@@ -2515,6 +2522,12 @@ out=$(env WAKE_LAB_HOSTS="$TMP/absent.sh" WAKE_LAB_LOCK_DIR="$LOCKS" "$WL" lock-
 [ "$rc" -eq 0 ] && [ "$out" = "$LOCKS/minix.lock" ] \
   && ok "lock-path answers without the site file, at the path the holder must take (rc=$rc)" \
   || ko "lock-path did not answer the contract path without hosts.sh (rc=$rc) -- $out"
+# The fleet name is the box: a harness holding a reservation's execution host asks by that name
+# and must get the box's own lock, the answer alone on stdout and the note on stderr (ludics#605).
+out=$(env WAKE_LAB_HOSTS="$TMP/absent.sh" WAKE_LAB_LOCK_DIR="$LOCKS" "$WL" lock-path minix-amd-wsl 2>"$TMP/alias.err"); rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "$LOCKS/minix.lock" ] && grep -q 'minix-amd-wsl is an ssh alias of minix' "$TMP/alias.err" \
+  && ok "lock-path takes an ssh alias as its box, answering that box's lock (rc=$rc)" \
+  || ko "lock-path on an alias did not answer minix's lock (rc=$rc) -- $out / $(cat "$TMP/alias.err")"
 
 # --- the lock contract with the ocannl sweep, compared across the two repositories ---------------
 # Every case above pins this side against a literal; none of them compares the two sides, and the

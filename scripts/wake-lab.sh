@@ -36,6 +36,8 @@
 # Every verb but `status` and `endpoint-map` needs a box (or `all`): with none, wake-lab.sh prints
 # this and exits 2, sending nothing. A bare invocation is what you type to see the usage, so it must never wake,
 # sleep or restart anything.
+# A box is named by its short name (rog) or by any of its ssh aliases on the endpoint map's row
+# (rog-nv-linux, the fleet name a roster and a reservation carry); an alias acts on its box.
 # WSL and Windows hardware notes live with the adapter in scripts/wake-lab-wsl.sh.
 #
 # Every path that takes a box away from whatever is running on it -- `restart-wsl` and
@@ -231,6 +233,24 @@ endpoint_of() { # endpoint_of <box> linux|win|wsl|lan -- that OS's ssh alias; 1 
   read -r -a ws <<<"$row"; [ ${#ws[@]} -gt 0 ] || return 1
   for w in "${ws[@]}"; do
     case "$w" in "$2"=?*) printf '%s\n' "${w#*=}"; return 0 ;; esac
+  done
+  return 1
+}
+
+# box_of_alias <name> -- the box whose row lists <name> as one of its ssh aliases; 1 when none does.
+# A fleet roster names a box by an alias (FLEET_BOXES' `rog-nv-linux`), and `executions.md` hands
+# that name to boot-windows/boot-linux, which refused it as no host-table box (ludics#605). Exact
+# match only: the boundary is the map's own spellings, as `endpoint-map` prints them; a name that
+# differs from every alias by case or by anything else stays as typed, for check_targets to refuse.
+# check_map's one-owner rule makes the answer unique; the caller runs it first.
+box_of_alias() {
+  local r name rest w ws
+  for r in "${ENDPOINT_MAP[@]}"; do
+    read -r name rest <<<"$r"
+    read -r -a ws <<<"$rest"
+    for w in ${ws[@]+"${ws[@]}"}; do
+      case "$w" in *=?*) [ "${w#*=}" = "$1" ] && { printf '%s\n' "$name"; return 0; } ;; esac
+    done
   done
   return 1
 }
@@ -1752,6 +1772,21 @@ for arg in "$@"; do
     all) while IFS= read -r t; do TARGETS+=("$t"); done < <(lab_boxes) ;;
     *) TARGETS+=("$arg") ;;
   esac
+done
+# A target that is no box name but is one box's ssh alias -- the fleet name a roster and a
+# reservation carry -- is that box from here on, for every verb, so its locks, its host-table rows
+# and its reservations are the box's own (ludics#605; box_of_alias says what matches). The map is
+# checked whole first, and only when some target needs resolving, so that box names alone never
+# depend on it (unhold and lock-path run without the site table). The note goes to stderr: stdout
+# is lock-path's answer and status's report.
+for i in ${TARGETS[@]+"${!TARGETS[@]}"}; do
+  t=${TARGETS[$i]}
+  endpoints_of "$t" >/dev/null && continue
+  check_map || exit 1
+  if b=$(box_of_alias "$t"); then
+    printf '%s\n' "wake-lab.sh: $(printf %q "$t") is an ssh alias of $b (the endpoint map); acting on $b." >&2
+    TARGETS[$i]=$b
+  fi
 done
 # Only `status` has a no-box default. It is a read -- a router query and ssh probes, nothing that
 # changes a box's state -- so it covers the whole lab, tuf included (ludics-lite#320): tuf has no

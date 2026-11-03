@@ -618,7 +618,10 @@ requirements for every transport with transport-specific setup and identity, and
   `echo =====` fails, and a reading command with that separator hid the brief's output from five
   workers of the 2026-10-05 post-waves: a native Claude worker reads the brief file with its Read
   tool, a CLI worker gets it on the launcher's input, and a shell command that reads it (a
-  Codex worker's) prints no separator.
+  Codex worker's) prints no separator. And Claude Code's Bash tool asks the user before any `rm`
+  of a path built on a variable that may be empty (`rm -f $D/*.out`), in every permission mode,
+  `bypassPermissions` included, past any allow rule or hook: write `rm -f "${D:?}"/*.out` or the
+  literal path (a worker of the 2026-10-13 OCANNL wave stopped twice on it, ludics#605).
 - Credentials, one line the brief carries verbatim: never borrow, copy or export a credential
   from another box, file or account to get past an authentication failure; a failed `gh`, push
   or login is a gate to report and stop on (2026-09-23: a worker on minix, whose `gh` token was
@@ -706,7 +709,9 @@ requirements for every transport with transport-specific setup and identity, and
   accepts, refusing the rest, or the language's own tool. A denylist of spellings never closes,
   and the review finds the next exotic one every round (ahrefs/ocannl#1095: 14 rounds;
   ahrefs/ocannl#1220: three to five in each of rounds 4-7); under an allowlist a missed
-  spelling is a refusal, a loud finding. Where the requirement needs structure (a nested key
+  spelling is a refusal, a loud finding. The first PR body lists that closed set in a
+  "Recognised forms (closed)" section, so round 1 reviews against it (lukstafi/ocannl-staging#1089
+  ran 13 rounds as a coverage hunt until it was stated). Where the requirement needs structure (a nested key
   hierarchy, a block grammar), say so and do not substitute a scan; a reduction of the
   requirement is a decision-gate item, never the brief's alone. Left to the review, an unbounded reader draws one corner per round for as long as
   it exists (2026-09-19: PR #274 went 17 rounds and 1,800 lines for a warning, and the reduction
