@@ -338,9 +338,11 @@ if [ "$os" = Linux ]; then
   # The comm field may hold `) ` and blanks: a process exec'd under the name `x) 1 2 3`, whose tick
   # the oracle read while it was still a plain `sh` (an exec keeps the start tick). A read that
   # splits the line by blanks, or ends the comm at its first `)`, takes another field for field 22.
+  # The name is a copy of sh, which stays in the process while its `sleep` runs: a copy of sleep
+  # may be a multicall binary (uutils) that dispatches on its name and exits.
   mkdir -p "$TMP/paren"
-  cp "$(command -v sleep)" "$TMP/paren/x) 1 2 3"
-  sh -c 'read -r l < "/proc/$$/stat"; printf "%s\n" "$l" > "$0.tmp"; mv "$0.tmp" "$0"; exec "$1" 30' \
+  cp "$(command -v sh)" "$TMP/paren/x) 1 2 3"
+  sh -c 'read -r l < "/proc/$$/stat"; printf "%s\n" "$l" > "$0.tmp"; mv "$0.tmp" "$0"; exec "$1" -c "sleep 30; :"' \
     "$TMP/paren/stat0" "$TMP/paren/x) 1 2 3" &
   sp=$!; BGPIDS="$BGPIDS $sp"
   if until_file "$TMP/paren/stat0" 10; then
