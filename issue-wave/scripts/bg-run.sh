@@ -125,9 +125,9 @@
 #           runs its command;
 #   cpid -- the command's own pid, published by the command's process before it execs the
 #           command, so a command that outlives a killed wrapper is still seen running;
-#           Each pid file carries a second line, the process's start time as `ps -o lstart=`
-#           gives it, so a pid the system has since reused for another process is not read as
-#           the run's (where ps cannot say, the line is empty and the bare pid stands); `pid`
+#           Each pid file carries a second line, the process's start time (THE START TOKEN,
+#           below), so a pid the system has since reused for another process is not read as
+#           the run's (where it cannot be read, the line is empty and the bare pid stands); `pid`
 #           carries a third, the run's stop grace in seconds (THE GRACES);
 #   log  -- the command's stdout and stderr, and the only file the command's output reaches;
 #   rc   -- the command's exit status, published (by rename) after the command returns.
@@ -194,7 +194,21 @@
 # writes (complete, by rename, before it signals), is what turns a run with no process left into
 # STOPPED rather than DIED; its lines name the tree's groups, `process group <g>` (the wrapper's)
 # first, then `process group <h> <its leader's start time, or ->` for each other one, which `wait`
-# and a second `stop` read back. A directory written by a
+# and a second `stop` read back.
+#
+# THE START TOKEN (ludics#786), the start time a pid file and the marker record and every identity
+# check compares. On Linux it is field 22 of /proc/<pid>/stat, the kernel's own start tick since
+# boot, read after the LAST `) ` (the comm field before it may hold blanks and parentheses):
+# procps's lstart is that tick added to a boot time the kernel re-derives from the wall clock on
+# every read, so after a suspend and resume (or a clock step) the same process can print another
+# lstart, and a live run read DIED (ahrefs/ocannl#1448). Everywhere else it is `ps -o lstart=` in one fixed locale and
+# zone, blanks removed. A recorded token is read back in its own kind, by its shape: digits only
+# are a tick, anything else an lstart -- so a run recorded by a bg-run.sh from before #786 on
+# Linux is judged by lstart, as it was, and not read DIED across the upgrade. The boundary: the
+# kind is the platform's (`uname -s`), never chosen per process, and a token recorded on one box
+# means nothing on another, which no reader asks of it.
+#
+# A directory written by a
 # bg-run.sh from before ludics-lite#425 may also hold `refused`, which nothing reads any more.
 # Dot-files (`new`'s token, in-flight temporaries) are never a reader's. `wait <dir> --within 0` gives the same
 # verdict in one call.
@@ -354,12 +368,17 @@ cmd_start() {
   # at which the command runs untracked; it then execs perl, which resets the dispositions and
   # execs the command, all in that one process, so cpid and its start time stay the command's.
   # shellcheck disable=SC2016 # expanded by the inner sh
-  sh -c 'cpid=$0 pl=$1; shift
-    printf "%s\n%s\n" "$$" "$(TZ=UTC LC_ALL=C ps -o lstart= -p "$$" 2>/dev/null | tr -d " ")" > "$cpid.$$" \
+  sh -c 'cpid=$0 pl=$1 kind=$2; shift 2
+    if [ "$kind" = tick ]; then
+      t=$( { IFS= read -r l < "/proc/$$/stat"; } 2>/dev/null && set -- ${l##*") "} \
+        && [ $# -ge 20 ] && shift 19 && printf "%s" "$1")
+    else t=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$$" 2>/dev/null | tr -d " ")
+    fi
+    printf "%s\n%s\n" "$$" "$t" > "$cpid.$$" \
       && mv -f "$cpid.$$" "$cpid" || exit
     command -v perl > /dev/null 2>&1 && exec perl -e "$pl" -- "$@"
     printf "%s\n" "bg-run: no perl here, so the command starts with the signal dispositions start inherited" >&2
-    exec "$@"' "$dir/cpid" "$reset_pl" "$@" \
+    exec "$@"' "$dir/cpid" "$reset_pl" "$TOKEN_KIND" "$@" \
     < /dev/null > "$dir/log" 2>&1 &
   wait "$!"
   rc=$?
@@ -395,10 +414,35 @@ cmd_spawn() {
   exit 0
 }
 
-# started <pid>: the process's start time, blanks removed, in one fixed locale and zone so the
-# start and the wait spell it alike; empty where ps cannot say. (The inner sh in cmd_start spells
-# the same pipeline out, since it cannot call this function.)
-started() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -d ' '; }
+# THE START TOKEN (header): the kind this platform records.
+case $(uname -s 2>/dev/null) in Linux) TOKEN_KIND=tick ;; *) TOKEN_KIND=lstart ;; esac
+
+# tick_of <pid>: field 22 of /proc/<pid>/stat, the 20th after the last `) `; empty where it cannot
+# be read. One line is read: a comm is at most 15 bytes, so a newline in it leaves fewer than 20
+# fields on that line, and the read gives nothing rather than another field.
+tick_of() {
+  { IFS= read -r _st < "/proc/$1/stat"; } 2>/dev/null || return 0
+  set -- ${_st##*") "}
+  [ $# -lt 20 ] || printf '%s\n' "${20}"
+}
+
+# lstart_of <pid>: ps's lstart, blanks removed, in one fixed locale and zone so the start and the
+# wait spell it alike; empty where ps cannot say.
+lstart_of() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -d ' '; }
+
+# started <pid>: the process's start token in this platform's kind; empty where it cannot be read.
+# (The inner sh in cmd_start spells both reads out, since it cannot call these functions.)
+started() { if [ "$TOKEN_KIND" = tick ]; then tick_of "$1"; else lstart_of "$1"; fi; }
+
+# start_is <pid> <token>: the pid's start, read in the recorded token's own kind (digits only: a
+# tick; else an lstart), is that token -- or cannot be read, where the bare pid stands.
+start_is() {
+  case $2 in
+    *[!0-9]*) now=$(lstart_of "$1") ;;
+    *) now=$(tick_of "$1") ;;
+  esac
+  [ -z "$now" ] || [ "$now" = "$2" ]
+}
 
 # alive <pid-file>: whether the process it names is still the run's, and running. `kill -0` alone
 # answers yes for two processes that are not: a zombie -- an orphaned command that exited under a
@@ -411,8 +455,7 @@ alive() {
   kill -0 "$p" 2>/dev/null || return 1
   case $(ps -o stat= -p "$p" 2>/dev/null | tr -d ' ') in Z*|X*) return 1 ;; esac
   if [ -n "${t:-}" ]; then
-    now=$(started "$p")
-    [ -z "$now" ] || [ "$now" = "$t" ] || return 1
+    start_is "$p" "$t" || return 1
   fi
   return 0
 }
@@ -553,8 +596,35 @@ tree_scan() {
       seeds="$seeds $sg ${st:--}"
     done < "$1/stopped"
   fi
+  # THE START TOKEN: the table spells every start as a tick on Linux, so a seed recorded as an
+  # lstart (a run from before #786) that is still its process's is re-spelt as that process's tick
+  # for the comparisons below; one that is not keeps its lstart, which no tick equals.
+  if [ "$TOKEN_KIND" = tick ]; then
+    norm=
+    set -- $seeds
+    while [ $# -ge 2 ]; do
+      sg=$1 st=$2; shift 2
+      case $st in
+        -) ;;
+        *[!0-9]*) if start_is "$sg" "$st"; then now=$(tick_of "$sg"); [ -z "$now" ] || st=$now; fi ;;
+      esac
+      norm="$norm $sg $st"
+    done
+    seeds=${norm# }
+  fi
   me=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
-  table=$(TZ=UTC LC_ALL=C ps -A -o pid= -o ppid= -o pgid= -o stat= -o lstart= 2>/dev/null)
+  if [ "$TOKEN_KIND" = tick ]; then
+    # ps lists the processes, as everywhere; each one's start is its tick, read as tick_of reads
+    # it (an awk regex for the last `) `), and blank where its stat is gone by now.
+    table=$(ps -A -o pid= -o ppid= -o pgid= -o stat= 2>/dev/null | awk '{
+      t = ""; f = "/proc/" $1 "/stat"
+      if ((getline l < f) > 0) { n = split(l, a, /[)] /); if (split(a[n], b, " ") >= 20) t = b[20] }
+      close(f)
+      print $1, $2, $3, $4, t
+    }')
+  else
+    table=$(TZ=UTC LC_ALL=C ps -A -o pid= -o ppid= -o pgid= -o stat= -o lstart= 2>/dev/null)
+  fi
   if [ -z "$table" ]; then
     TREE='' TREE_LIVE='' TREE_NEW=''
     set -- $seeds
@@ -567,8 +637,7 @@ tree_scan() {
       if [ "$sg" = "$lead" ]; then
         if group_left "$sg" && { ! running "$sg" || alive "$tdir/pid"; }; then live=1; fi
       elif running "$sg"; then
-        now=$(started "$sg")
-        if [ "$st" != - ] && { [ -z "$now" ] || [ "$now" = "$st" ]; }; then live=1; fi
+        if [ "$st" != - ] && start_is "$sg" "$st"; then live=1; fi
       elif kill -0 -- "-$sg" 2>/dev/null; then live=1
       fi
       TREE="$TREE$sg $st $live
