@@ -63,7 +63,11 @@ from the merge base (``git merge-base --all``, which must name exactly one commi
 code -- its old and new blobs, both regular files of one mode, differ by more than comments and
 blanks as commentonly.py reads its language. ``same-input`` then builds only when a build input
 both sides changed was changed in code on BOTH sides; ``any-input`` only when EACH side changed
-some build input in code. Otherwise: no build, saying why, and the merge proceeds. The boundary,
+some build input in code. A path both sides changed, one of them in comments only, counts as code
+on that side too unless the merge's own code there (the blob in ``git merge-tree``'s tree) is the
+other side's: a side can move comment delimiters over duplicated code, its own code reading
+unchanged, so that the clean merge drops the other side's edit. Otherwise: no build, saying why,
+and the merge proceeds. The boundary,
 failing closed to a build: a path no ``comments`` glob matches, one a rename touched, one added,
 deleted or changed in type or mode on that side, one past ``COMMENT_PATHS`` paths a side, a blob
 over ``COMMENT_BYTES``, a language commentonly.py does not read (its own boundary: OCaml and
@@ -884,7 +888,7 @@ def _build_in_scratch(
             )
         if candidates is not None:
             # COMMENTS ONLY: read again before the checkout and the slot.
-            why_not = _comments_only(subject, quiet, tree, tip, gated, config, candidates)
+            why_not = _comments_only(subject, quiet, tree, tip, gated, written, config, candidates)
             if why_not:
                 cli.say(f"merge build {subject.label}: no build — {why_not}")
                 return None
@@ -974,13 +978,6 @@ class _CodeReader:
                 self.raw[path] = (parts[0], parts[1], parts[2], parts[3], parts[4])
         return self.raw
 
-    def _blob(self, sha: str) -> str | None:
-        size = _git([*self.quiet, "cat-file", "-s", sha], self.tree).stdout.strip()
-        if not size.isascii() or not size.isdigit() or int(size) > COMMENT_BYTES:
-            return None
-        done = _git([*self.quiet, "cat-file", "blob", sha], self.tree)
-        return done.stdout if done.rc == 0 else None
-
     def code(self, path: str) -> bool:
         """True unless this side's change of ``path`` is in comments and blanks only (or none)."""
         if path not in self.eligible:
@@ -993,12 +990,34 @@ class _CodeReader:
         old_mode, new_mode, old_sha, new_sha, status = raw[path]
         if status != "M" or old_mode != new_mode or old_mode not in ("100644", "100755"):
             return True
-        old, new = self._blob(old_sha), self._blob(new_sha)
+        old, new = _blob(self.quiet, self.tree, old_sha), _blob(self.quiet, self.tree, new_sha)
         return old is None or new is None or not commentonly.same_code(path, old, new)
 
 
+def _blob(quiet: list[str], tree: str, spec: str) -> str | None:
+    """The blob ``spec`` names (an id, or ``<tree-ish>:<path>``) as text, None when git cannot
+    read it or it is over ``COMMENT_BYTES``."""
+    size = _git([*quiet, "cat-file", "-s", spec], tree).stdout.strip()
+    if not size.isascii() or not size.isdigit() or len(size) > 12 or int(size) > COMMENT_BYTES:
+        return None
+    done = _git([*quiet, "cat-file", "blob", spec], tree)
+    return done.stdout if done.rc == 0 else None
+
+
+def _merged_keeps(quiet: list[str], tree: str, written: str, other: str, path: str) -> bool:
+    """COMMENTS ONLY's last check on a path one side changed in comments only: the merge's code
+    there is the other side's (``other``). Without it, a side that moves comment delimiters over
+    duplicated code reads as comments only, and the merge can drop the other side's edit."""
+    merged, theirs = _blob(quiet, tree, f"{written}:{path}"), _blob(quiet, tree, f"{other}:{path}")
+    if merged is None or theirs is None:
+        return False
+    code = commentonly.code_of(path, merged)
+    return code is not None and code == commentonly.code_of(path, theirs)
+
+
 def _comments_only(
-    subject: _Subject, quiet: list[str], tree: str, tip: str, gated: str, config: BuildConfig, cand: Candidates
+    subject: _Subject, quiet: list[str], tree: str, tip: str, gated: str, written: str, config: BuildConfig,
+    cand: Candidates,
 ) -> str:
     """COMMENTS ONLY (module docstring): why there is no build after all, or "" to build."""
     bases = _git([*quiet, "merge-base", "--all", tip, gated], tree)
@@ -1014,12 +1033,22 @@ def _comments_only(
     if config.trigger == "same-input":
         tip_side = _CodeReader(quiet, tree, base, tip, cand.shared, config, cand.renamed)
         head_side = _CodeReader(quiet, tree, base, gated, cand.shared, config, cand.renamed)
-        code = [p for p in cand.shared if tip_side.code(p) and head_side.code(p)]
+        code: list[str] = []
+        moved: list[str] = []
+        for p in cand.shared:
+            in_tip, in_head = tip_side.code(p), head_side.code(p)
+            if in_tip and in_head:
+                code.append(p)
+            elif not _merged_keeps(quiet, tree, written, tip if in_tip else gated, p):
+                moved.append(p)
         failed = tip_side.failed or head_side.failed
         if failed:
             cli.say(f"merge build {subject.label}: comments not fully compared: {failed}")
         if code:
             cli.say(f"merge build {subject.label}: changed in code on both sides: {_named(code)}")
+        if moved:
+            cli.say(f"merge build {subject.label}: merged into code that is not the code-changing side's: {_named(moved)}")
+        if code or moved:
             return ""
         return (
             f"each of the {len(cand.shared)} build input(s) changed on both sides ({_named(list(cand.shared))})"
@@ -1029,7 +1058,12 @@ def _comments_only(
     theirs = _CodeReader(quiet, tree, base, tip, cand.theirs, config, cand.renamed)
     # Paths no reader reads first: any() stops at the first changed in code, before a git call.
     pr_code = any(mine.code(p) for p in sorted(cand.mine, key=lambda p: p in mine.eligible))
+    shared = [p for p in cand.mine if p in set(cand.theirs)]
+    # A side read as comments only counts as code where the merge's code of a path both changed
+    # is not the other side's (_merged_keeps).
+    pr_code = pr_code or not all(_merged_keeps(quiet, tree, written, tip, p) for p in shared)
     base_code = pr_code and any(theirs.code(p) for p in sorted(cand.theirs, key=lambda p: p in theirs.eligible))
+    base_code = base_code or (pr_code and not all(_merged_keeps(quiet, tree, written, gated, p) for p in shared))
     failed = mine.failed or theirs.failed
     if failed:
         cli.say(f"merge build {subject.label}: comments not fully compared: {failed}")

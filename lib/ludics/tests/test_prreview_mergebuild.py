@@ -879,6 +879,40 @@ class CommentsOnly(Repo):
         self.assertEqual(rc, 1, out)
         self.assertIn("the build ran", out)
 
+    def test_comment_delimiters_moved_over_duplicated_code_still_build(self) -> None:
+        """The base moves comment delimiters so the commented-out copy of a binding is the live one
+        (its code reads unchanged), while the PR edits the first copy: a clean merge whose code is
+        neither side's, the PR's edit gone. The merge's code is checked, so it builds."""
+        fill = ["(* f2 *)", "(* f3 *)", "(* f4 *)"]
+        after = ["(* f6 *)", "(* f7 *)", "(* f8 *)"]
+
+        def text(first: str, live: str, opener: str, last: str) -> str:
+            return "\n".join([first, *fill, live, *after, opener, "let x = 1", last, ""])
+
+        with open(os.path.join(self.work, "lib.ml"), "w", encoding="utf-8") as f:
+            f.write(text("(* head *)", "let x = 1", "(*", "*)"))
+        git(self.work, "commit", "-q", "-a", "-m", "merge base")
+        git(self.work, "push", "-q", self.remote, "HEAD:refs/heads/main")
+        with open(os.path.join(self.work, "lib.ml"), "w", encoding="utf-8") as f:
+            f.write(text("(* head *)", "let x = 2", "(*", "*)"))
+        git(self.work, "commit", "-q", "-a", "-m", "pr")
+        git(self.work, "push", "-q", self.remote, "HEAD:refs/pull/7/head")
+        head = git(self.work, "rev-parse", "HEAD")
+        git(self.work, "checkout", "-q", "--detach", "HEAD~1")
+        with open(os.path.join(self.work, "lib.ml"), "w", encoding="utf-8") as f:
+            f.write(text("(*", "let x = 1", "*)", "(* tail *)"))
+        git(self.work, "commit", "-q", "-a", "-m", "base")
+        git(self.work, "push", "-q", self.remote, "HEAD:refs/heads/main")
+        self.tip = git(self.work, "rev-parse", "HEAD")
+        rc, out = self.run_build(head, self.SAME, self.SHARED)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("merged into code that is not the code-changing side's: lib.ml", out)
+        self.assertIn("the build ran", out)
+        anyi = BuildConfig(RAN, ("*.ml",), 60, "any-input", ("*.ml",))
+        rc, out = self.run_build(head, anyi, mergebuild.Candidates((), ("lib.ml",), ("lib.ml",), frozenset()))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the build ran", out)
+
     def test_any_input_needs_code_on_each_side(self) -> None:
         anyi = BuildConfig(RAN, ("*.ml",), 60, "any-input", ("*.ml",))
         both = mergebuild.Candidates((), ("lib.ml",), ("lib.ml",), frozenset())

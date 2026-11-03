@@ -1246,7 +1246,8 @@ the build's output when it fails:
 # The command is trusted as a developer's build is: its scratch repository is a place to build,
 # not a sandbox. timeout: 1 to 86400 seconds. trigger: same-input (default) or any-input.
 # The command runs at the merged tree's root; HEAD^1 is the base's tip and HEAD^2 the PR's head,
-# also named by $SHIP_PR_MERGE_BASE_SHA and $SHIP_PR_MERGE_HEAD_SHA.
+# also named by $SHIP_PR_MERGE_BASE_SHA and $SHIP_PR_MERGE_HEAD_SHA. comments: build inputs whose
+# comments the command does not read (#861), so a side changing only their comments counts not.
 command dune build @check
 input *.ml
 input *.mli
@@ -1254,6 +1255,7 @@ input dune
 input */dune
 input dune-project
 input *.opam
+comments *.mli
 timeout 1200
 ```
 
