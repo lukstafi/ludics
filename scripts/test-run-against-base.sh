@@ -1296,6 +1296,186 @@ else
   ko "working tree changed: $(git -C "$R" status --porcelain)"
 fi
 
+# ---- --tally: a project names its own verdict line (#779) ------------------------------------
+# A runner whose last line is a trace row: the default reads that row; --tally reads the verdict.
+# shellcheck disable=SC2016 # expanded by the inner sh
+noisy='echo "verdict: 2 red of 9"; echo "0.69 0 ocamlopt.opt trace"; exit 1'
+run_rab --command -- sh -c "$noisy"
+if [ "$rc" -eq 1 ] && grep -qF 'exit 1 on origin/main: 0.69 0 ocamlopt.opt trace' <<<"$out"; then
+  ok "control: without --tally the result line is the runner's last line, here a trace row"
+else
+  ko "--tally control: rc=$rc -- $out"
+fi
+run_rab --command --tally '^verdict:' -- sh -c "$noisy"
+if [ "$rc" -eq 1 ] && grep -qxF 'run-against-base: exit 1 on origin/main: verdict: 2 red of 9' <<<"$out"; then
+  ok "--tally <ERE> makes the last matching line the result line's verdict"
+else
+  ko "--tally: rc=$rc -- $out"
+fi
+out=$(cd "$R/scripts" && TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 RUN_AGAINST_BASE_TALLY='^ARGS=' "$RAB" test-toy.sh x 2>&1)
+rc=$?
+if [ "$rc" -eq 1 ] && grep -qxF 'run-against-base: exit 1 on origin/main: ARGS=[x]' <<<"$out"; then
+  ok "...RUN_AGAINST_BASE_TALLY does the same, in the suite form too"
+else
+  ko "RUN_AGAINST_BASE_TALLY: rc=$rc -- $out"
+fi
+run_rab --command --tally '^verdict:' -- sh -c 'echo "0.69 trace"; exit 3'
+if [ "$rc" -eq 3 ] && grep -qF "exit 3 on origin/main: (no line matched the tally pattern" <<<"$out" \
+  && ! grep -qF 'origin/main: 0.69 trace' <<<"$out"; then
+  ok "...and with no line matching it says so, never standing another line in for the verdict"
+else
+  ko "--tally no match: rc=$rc -- $out"
+fi
+for bad in '' '['; do
+  run_rab --command --tally "$bad" -- true
+  if [ "$rc" -eq 125 ] && grep -qF -- '--tally' <<<"$out" && ! grep -qF 'command:' <<<"$out"; then
+    ok "--tally $(printf '%q' "$bad") is refused before any run"
+  else
+    ko "--tally $(printf '%q' "$bad"): rc=$rc -- $out"
+  fi
+done
+run_rab --command --red '^FAIL' -- true
+if [ "$rc" -eq 125 ] && grep -qF -- 'it takes --mutants' <<<"$out"; then
+  ok "--red without --mutants is refused"
+else
+  ko "--red alone: rc=$rc -- $out"
+fi
+
+# ---- --mutants: a batch of mutant runs, and which cases each turned red (#779) ----------------
+BM="$TMP/mutants"
+printf '%s\n' '# a comment, then a blank line' '' 'lib.sh s/+/-/' '  lib.sh	 s/$/ # mutated/' \
+  'lib.sh s/no-such-text/x/' >"$BM"
+run_rab test-toy.sh --mutants "$BM" one
+if [ "$rc" -eq 125 ] \
+  && grep -qxF 'run-against-base: batch: [1] scripts/lib.sh: s/+/-/: killed, exit 1, 1 red' <<<"$out" \
+  && grep -qxF 'run-against-base: batch: [1]   FAIL: add 2 3' <<<"$out" \
+  && grep -qxF 'run-against-base: batch: [2] scripts/lib.sh: s/$/ # mutated/: SURVIVED, exit 0' <<<"$out" \
+  && grep -qxF "run-against-base: batch: [3] scripts/lib.sh: s/no-such-text/x/: refused, exit 125: the mutation 's/no-such-text/x/' changed nothing in scripts/lib.sh: that is not a mutant" <<<"$out" \
+  && grep -qxF 'run-against-base: batch: 1 killed, 1 survived, 1 refused, of 3; survived: [2]; refused: [3]' <<<"$out" \
+  && [ "$(grep -c '^ARGS=\[one\]$' <<<"$out")" -eq 2 ] \
+  && grep -qF 'run-against-base: batch: [3/3] scripts/lib.sh: s/no-such-text/x/' <<<"$out"; then
+  ok "a batch runs each mutant line, skipping comments and blanks, and reports killed, survived and refused (125)"
+else
+  ko "batch: rc=$rc -- $out"
+fi
+if [ "$(cksum <"$R/scripts/lib.sh")" = "$lib_before" ] && [ "$(git -C "$R" status --porcelain)" = "$status_before" ] \
+  && [ -z "$(git -C "$R" stash list)" ]; then
+  ok "...and the live tree, index and stash are untouched"
+else
+  ko "the batch reached the live tree: $(git -C "$R" status --porcelain; git -C "$R" stash list)"
+fi
+printf '%s\n' 'lib.sh s/$/ # mutated/' >"$BM"
+run_rab test-toy.sh --mutants "$BM"
+if [ "$rc" -eq 1 ] && grep -qxF 'run-against-base: batch: 0 killed, 1 survived, 0 refused, of 1; survived: [1]' <<<"$out"; then
+  ok "a batch with a survivor and no refusal exits 1: the survivor is the finding"
+else
+  ko "batch survivor: rc=$rc -- $out"
+fi
+# A --mutate beside --mutants applies to every run, first.
+run_rab test-toy.sh --mutate lib.sh 's/+/-/' --mutants "$BM"
+if [ "$rc" -eq 0 ] && grep -qxF 'run-against-base: batch: 1 killed, 0 survived, 0 refused, of 1' <<<"$out" \
+  && grep -qF 'run-against-base: mutant: scripts/lib.sh: s/+/-/' <<<"$out"; then
+  ok "...a --mutate given beside it is in every run, and every mutant killed exits 0"
+else
+  ko "batch with a common --mutate: rc=$rc -- $out"
+fi
+printf '%s\n' 'lib.sh s/+/-/' >"$BM"
+run_rab test-toy.sh --mutants "$BM" --red '^NO SUCH CASE LINE'
+if [ "$rc" -eq 0 ] && grep -qxF 'run-against-base: batch: [1] scripts/lib.sh: s/+/-/: killed, exit 1, nothing red' <<<"$out"; then
+  ok "--red names the case lines; a failing run none of whose lines match is killed with nothing red"
+else
+  ko "batch --red: rc=$rc -- $out"
+fi
+run_rab test-toy.sh --mutants "$BM" --base fixed
+if [ "$rc" -eq 0 ] && grep -qF "batch: 1 mutant(s) of scripts/test-toy.sh against fixed ($(git -C "$R" rev-parse --short fixed))" <<<"$out" \
+  && grep -qF "exit 1 on $(git -C "$R" rev-parse fixed): 1 passed, 1 failed" <<<"$out"; then
+  ok "with --base every mutant runs against that ref's commit"
+else
+  ko "batch --base: rc=$rc -- $out"
+fi
+printf '%s\n' 'lib.sh s/$/ # mutated/' >"$BM"
+run_rab test-toy.sh --mutants "$BM" --timeout 2 --slow "$TMP/bm-hang.pid"
+if [ "$rc" -eq 0 ] && grep -qxF 'run-against-base: batch: [1] scripts/lib.sh: s/$/ # mutated/: killed, exit 124 (timed out), nothing red' <<<"$out"; then
+  ok "--timeout reaches each mutant run, and a hang is a kill, marked timed out"
+else
+  ko "batch timeout: rc=$rc -- $out"
+fi
+# The command form: the cap on listed red lines, --tally carried into each run, and this helper's
+# own lines (a nested run's) never counted red.
+# shellcheck disable=SC2016 # expanded by the inner sh
+bm_cmd='echo "run-against-base: FAIL: a nested helper line"; grep -q MUT scripts/lib.sh || { echo "verdict: green"; exit 0; }
+i=0; while [ $i -lt 12 ]; do i=$((i + 1)); echo "FAIL: case $i"; done; echo "verdict: 12 red"; echo "trace row"; exit 1'
+printf '%s\n' 'lib.sh s/$/ # MUT/' 'lib.sh s/$/ # quiet/' >"$BM"
+run_rab --command --mutants "$BM" --tally '^verdict:' -- sh -c "$bm_cmd"
+if [ "$rc" -eq 1 ] && grep -qxF 'run-against-base: batch: [1] scripts/lib.sh: s/$/ # MUT/: killed, exit 1, 12 red' <<<"$out" \
+  && grep -qxF 'run-against-base: batch: [1]   FAIL: case 10' <<<"$out" \
+  && ! grep -qF 'batch: [1]   FAIL: case 11' <<<"$out" \
+  && grep -qxF 'run-against-base: batch: [1]   ... 2 more red lines' <<<"$out" \
+  && ! grep -qF 'batch: [1]   run-against-base' <<<"$out" \
+  && grep -qF 'exit 1 on ' <<<"$out" && grep -qF ': verdict: 12 red' <<<"$out" \
+  && grep -qxF 'run-against-base: batch: [2] scripts/lib.sh: s/$/ # quiet/: SURVIVED, exit 0' <<<"$out"; then
+  ok "a command batch lists at most 10 red lines, skips the helper's own, and carries --tally into each run"
+else
+  ko "command batch: rc=$rc -- $out"
+fi
+# Refusals: every line is checked before any run.
+bm_refusal() { # LABEL WANT_TEXT CONTENT...
+  local label=$1 want=$2
+  shift 2
+  printf '%s\n' "$@" >"$BM"
+  run_rab test-toy.sh --mutants "$BM"
+  if [ "$rc" -eq 125 ] && grep -qF -- "$want" <<<"$out" && ! grep -qF 'batch: [1/' <<<"$out"; then
+    ok "--mutants refuses $label before any run"
+  else
+    ko "--mutants $label: rc=$rc -- $out"
+  fi
+}
+bm_refusal "a line with no expression" '--mutants line 2: lib.sh has no sed expression' 'lib.sh s/+/-/' 'lib.sh   '
+bm_refusal "a file outside the checkout" "--mutants line 1: $TMP/victim.sh is not inside this checkout" "$TMP/victim.sh s/V/W/"
+bm_refusal "a missing file" '--mutants line 3: no such file in the working tree: ./nope.sh' 'lib.sh s/+/-/' '# c' 'nope.sh s/a/b/'
+bm_refusal "an expression sed refuses" "--mutants line 1: sed refuses the expression" 'lib.sh s/unterminated'
+bm_refusal "a CRLF line" '--mutants line 1: it holds a carriage return' $'lib.sh s/+/-/\r'
+bm_refusal "a list of comments only" 'lists no mutant' '# nothing' ''
+run_rab test-toy.sh --mutants "$TMP/no-such-mutants"
+if [ "$rc" -eq 125 ] && grep -qF 'is not a readable file' <<<"$out"; then
+  ok "--mutants refuses a missing list"
+else
+  ko "--mutants missing list: rc=$rc -- $out"
+fi
+# A signal mid-batch reaches the mutant run in flight: its suite and its worktree go too.
+printf '%s\n' 'lib.sh s/$/ # mutated/' 'lib.sh s/+/-/' >"$BM"
+for bsig in TERM INT; do
+  rm -f "$TMP/bm.pid"
+  set -m
+  (cd "$R/scripts" && TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 exec "$RAB" test-toy.sh --mutants "$BM" --slow "$TMP/bm.pid") >"$TMP/bm.out" 2>&1 &
+  bpid=$!
+  set +m
+  for i in $(seq 1 300); do [ -s "$TMP/bm.pid" ] && break; sleep 0.1; done
+  bspid=$(cat "$TMP/bm.pid" 2>/dev/null)
+  kill -"$bsig" "$bpid" 2>/dev/null
+  for i in $(seq 1 600); do
+    case $(ps -o stat= -p "$bpid" 2>/dev/null) in '' | Z*) break ;; esac
+    sleep 0.1
+  done
+  if case $(ps -o stat= -p "$bpid" 2>/dev/null) in '' | Z*) false ;; *) true ;; esac then
+    ko "$bsig mid-batch: the helper was still running 60s after it -- $(cat "$TMP/bm.out")"
+    kill -KILL -- "-$bpid" 2>/dev/null
+  fi
+  wait "$bpid"
+  brc=$?
+  want=143
+  [ "$bsig" = TERM ] || want=130
+  if [ "$brc" -eq "$want" ] && [ -n "$bspid" ] && ! kill -0 "$bspid" 2>/dev/null \
+    && ! grep -qF 'batch: [2/2]' "$TMP/bm.out"; then
+    ok "$bsig mid-batch: exit $want, the run in flight's suite is gone, and no further mutant starts"
+  else
+    ko "$bsig mid-batch: rc=$brc, suite ${bspid:-never started} $(kill -0 "$bspid" 2>/dev/null && echo ALIVE) -- $(cat "$TMP/bm.out")"
+    [ -z "$bspid" ] || kill -KILL "$bspid" 2>/dev/null
+  fi
+  worktrees_clean "after $bsig mid-batch"
+done
+worktrees_clean "after --mutants cases"
+
 # ---- --revert: the head with one committed change undone (ludics-lite#765) ---------------------
 # History: B0 (buggy add and mul) -> C1 (the fix: add, mul, a new extra.sh, tools.sh made
 # executable) -> C2 (the cases) -> C3 (a later, independent fix to sub, a far line of lib.sh, and

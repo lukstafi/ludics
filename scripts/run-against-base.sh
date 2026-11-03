@@ -46,8 +46,9 @@
 # Path arguments of the command are spelled from the root of the checkout, where it runs. The
 # helper does not read or interpret the command or its output beyond the result line: it cannot
 # tell a runner's own refusal or a build failure from a failing test (the output says), so the
-# caller reads the output and shows the head passing too. The *.py rules below are the suite
-# form's only.
+# caller reads the output and shows the head passing too. A runner whose last line is a trace row
+# rather than a verdict names its verdict line with --tally (below). The *.py rules below are the
+# suite form's only.
 #
 #   --base <ref>     the base to run against (default origin/main; with --mutate or --revert, the
 #                    working tree)
@@ -91,6 +92,41 @@
 #                    0: none). On expiry its process group gets TERM, then KILL after the grace,
 #                    and the run is reported as the base FAILING, exit 124: a hang is a valid
 #                    negative control for a fix that ends one, not a refusal (ludics-lite#501).
+#   --tally <ERE>    the result line's verdict is the LAST output line matching this extended
+#                    regular expression (grep -E; default RUN_AGAINST_BASE_TALLY). The project names
+#                    its own verdict line (OCANNL's runner, say, its `^verdict:`); none is built in
+#                    here (#779). With no line matching, the result line says so rather than show
+#                    another line. Without it, the verdict is the last `<n> passed, <m> failed`
+#                    line, else the last non-blank line of output. An empty pattern, or one grep
+#                    refuses, is refused (125).
+# MUTANT BATCH (#779): `--mutants <file>` runs one mutant run per line of <file> (read whole, and
+# every line checked, before any run), each exactly the run `--mutate <file> <sed-expr>` would make
+# with the other options given, and then reports which output lines each one turned red. A line is
+# `<file> <sed-expr>`: the file is the first word (a path with no blank in it; name one that has
+# one with --mutate), the expression is the rest of the line after the blanks that follow it,
+# verbatim. A blank line, or one whose first non-blank is `#`, is skipped; a line with a carriage
+# return, with no expression, naming a file --mutate would refuse, or with an expression sed
+# refuses (checked against empty input), is refused before any run, naming its line number. Every
+# mutant runs against the same tree: the base resolved once (without --base, ONE working-tree
+# snapshot), so an edit made while the batch runs reaches none of them. The other options apply to
+# every mutant: a --mutate given beside --mutants is applied first in each run. Each run's output
+# is shown live, between `run-against-base: batch: [<k>/<n>] ...` headers, as a single run's is.
+#   --red <ERE>      a red line of a mutant run (default RUN_AGAINST_BASE_RED, else
+#                    `^(FAIL|ERROR)[: ]`: this repository's suites and unittest). Read from each
+#                    run's merged output, every line but this helper's own (`run-against-base: `
+#                    lines, a nested run's included) -- a pattern the case output does not print
+#                    finds nothing, and the report says so. Only with --mutants.
+# BOUNDARY of the report: these lines, after every run, and nothing else --
+#   run-against-base: batch: [<k>] <file>: <sed-expr>: <verdict>
+#   run-against-base: batch: [<k>]   <red line>          (at most 10, then `... <n> more red lines`)
+#   run-against-base: batch: <a> killed, <b> survived, <c> refused, of <n>[; survived: [k]...][; refused: [k]...]
+# where <verdict> is `killed, exit <rc>, <r> red` (`exit 124 (timed out)` for a hang), `killed,
+# exit <rc>, nothing red` (the run failed but no line matched --red: a crash or a build failure,
+# not a case, may have caught it -- read its run), `SURVIVED, exit 0` (no case saw the mutation:
+# that is the finding), or `refused, exit 125: <the run's refusal>` (it never ran as a mutant: a
+# mutation that changed nothing, say). The batch exits 125 when any mutant was refused, else 1
+# when any survived, else 0 -- the reverse sense of a single run, where the base failing is the
+# expected result. The batch's own refusals are 125 before any run, like a single run's.
 # A suite that is not a `*.py` file runs as itself (it must be executable). A `*.py` suite is run
 # the way CI runs it, so the base run is the one CI would make:
 #   - a file under lib/ (a `lib/ludics/tests/test_*.py` unit file) runs through the BASE's
@@ -126,12 +162,14 @@ set -uo pipefail
 # (ludics-lite#10, #247).
 {
 say() { printf '%s\n' "run-against-base: $*"; }
+# DIE_CTX: a prefix for every refusal while it is set (the --mutants line being read).
+DIE_CTX=
 die() {
-  printf '%s\n' "run-against-base: $*" >&2
+  printf '%s\n' "run-against-base: $DIE_CTX$*" >&2
   exit 125
 }
 
-[ $# -ge 1 ] || die "usage: run-against-base.sh <suite-path> [--base <ref>] [--also <path>]... [--mutate <file> <sed-expr>]... [--revert <commit> <path>]... [--timeout <s>] [suite args...]
+[ $# -ge 1 ] || die "usage: run-against-base.sh <suite-path> [--base <ref>] [--also <path>]... [--mutate <file> <sed-expr>]... [--revert <commit> <path>]... [--timeout <s>] [--tally <ERE>] [--mutants <file> [--red <ERE>]] [suite args...]
        run-against-base.sh --command [the same options] -- <program> [args...]"
 case "$1" in -h | --help)
   sed -n '2,/^$/s/^# \{0,1\}//p' "$0"
@@ -159,6 +197,10 @@ MUT_ARGS=()
 MUT_EXPRS=()
 REV_ARGS=()
 REV_PATHS=()
+TALLY=${RUN_AGAINST_BASE_TALLY:-}
+MUTANTS_FILE=
+RED_FLAG=
+RED=${RUN_AGAINST_BASE_RED:-'^(FAIL|ERROR)[: ]'}
 ended=
 # The helper's options, up to the first word that is not one: that word and the rest are the
 # suite's. No `--` terminator, because a suite may take `--` itself and always could. In command
@@ -198,6 +240,24 @@ while [ $# -gt 0 ]; do
     TIMEOUT=$2
     shift 2
     ;;
+  --tally)
+    [ $# -ge 2 ] || die "--tally needs an extended regular expression"
+    [ -n "$2" ] || die "--tally: an empty pattern matches every line; name the verdict line"
+    TALLY=$2
+    shift 2
+    ;;
+  --mutants)
+    [ $# -ge 2 ] || die "--mutants needs a file of mutants, one <file> <sed-expr> per line"
+    MUTANTS_FILE=$2
+    shift 2
+    ;;
+  --red)
+    [ $# -ge 2 ] || die "--red needs an extended regular expression"
+    [ -n "$2" ] || die "--red: an empty pattern matches every line; name the failing-case line"
+    RED=$2
+    RED_FLAG=1
+    shift 2
+    ;;
   *)
     [ -z "$CMD_MODE" ] || die "--command takes its options, then -- and the command; got $(printf '%q' "$1") before any --"
     break
@@ -211,6 +271,14 @@ if [ -n "$CMD_MODE" ]; then
   shift
 fi
 
+[ -z "$RED_FLAG" ] || [ -n "$MUTANTS_FILE" ] || die "--red names a mutant batch's red lines; it takes --mutants <file>"
+# check_ere <what> <pattern>: grep -E accepts it (exit 1 on empty input; a malformed pattern is 2).
+check_ere() {
+  printf '' | grep -a -E -e "$2" >/dev/null 2>&1
+  [ $? -eq 1 ] || die "$1 is not an extended regular expression grep -E accepts: $(printf '%q' "$2")"
+}
+[ -z "$TALLY" ] || check_ere "the tally pattern (--tally, RUN_AGAINST_BASE_TALLY)" "$TALLY"
+[ -z "$MUTANTS_FILE" ] || check_ere "the red pattern (--red, RUN_AGAINST_BASE_RED)" "$RED"
 # Whole seconds, checked before anything is allocated, like the grace below; 0 is no timeout.
 case "$TIMEOUT" in '' | *[!0-9]*) die "the timeout must be whole seconds (--timeout, RUN_AGAINST_BASE_TIMEOUT): $TIMEOUT" ;; esac
 TIMEOUT=$((10#$TIMEOUT))
@@ -434,7 +502,7 @@ else
 fi
 SNAPSHOT=
 SNAP_NOTE=
-if [ -z "$base" ] && [ $((${#MUT_REL[@]} + ${#REV_ARGS[@]})) -gt 0 ]; then
+if [ -z "$base" ] && { [ $((${#MUT_REL[@]} + ${#REV_ARGS[@]})) -gt 0 ] || [ -n "$MUTANTS_FILE" ]; }; then
   SNAPSHOT=1
   # A mutant (or a revert) is of the change: the throwaway worktree is the working tree as it
   # stands, tracked files staged or not, and HEAD when nothing differs from it. `git stash create` writes the
@@ -509,12 +577,43 @@ while [ "$i" -lt "${#REV_ARGS[@]}" ]; do
   i=$((i + 1))
 done
 
+# --mutants, read whole and every line checked before anything is allocated (the header's MUTANT
+# BATCH): a bad line 12 is refused now, not after eleven suite runs. What is left to the runs
+# themselves is what only the run's tree can tell: a mutation that changes nothing there, or a
+# file the tree does not hold.
+BM_ARG=()
+BM_REL=()
+BM_EXPR=()
+if [ -n "$MUTANTS_FILE" ]; then
+  { [ -f "$MUTANTS_FILE" ] && [ -r "$MUTANTS_FILE" ]; } \
+    || die "--mutants: $(printf '%q' "$MUTANTS_FILE") is not a readable file"
+  n=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    DIE_CTX="--mutants line $n: "
+    case "$line" in *$'\r'*) die "it holds a carriage return (a CRLF file?), which sed would read as part of the expression" ;; esac
+    line=${line#"${line%%[![:blank:]]*}"}
+    case "$line" in '' | '#'*) continue ;; esac
+    f=${line%%[[:blank:]]*}
+    e=${line#"$f"}
+    e=${e#"${e%%[![:blank:]]*}"}
+    [ -n "$e" ] || die "$(printf '%q' "$f") has no sed expression after it"
+    resolve "$f"
+    sed -e "$e" </dev/null >/dev/null 2>&1 || die "sed refuses the expression $(printf '%q' "$e")"
+    BM_ARG+=("$f")
+    BM_REL+=("$R_REL")
+    BM_EXPR+=("$e")
+  done <"$MUTANTS_FILE"
+  DIE_CTX=
+  [ "${#BM_ARG[@]}" -gt 0 ] || die "--mutants: $(printf '%q' "$MUTANTS_FILE") lists no mutant"
+fi
+
 # The warning (ludics-lite#501): a plain base run whose carried files are every file the branch
 # changes is the branch's own run. Path sets only, read NUL-delimited: tracked changes of the
 # working tree against the merge base, and untracked files that are not ignored. The first change
 # not carried ends the check; no merge base, or no change at all, warns of nothing.
 CARRIED_WARN=
-if [ -z "$SNAPSHOT" ] && [ $((${#MUT_REL[@]} + ${#REV_ARGS[@]})) -eq 0 ] \
+if [ -z "$SNAPSHOT" ] && [ -z "$MUTANTS_FILE" ] && [ $((${#MUT_REL[@]} + ${#REV_ARGS[@]})) -eq 0 ] \
   && mb=$(git -C "$TOP" merge-base "$sha" HEAD 2>/dev/null); then
   carried() { # <path>: is it the suite or an --also file?
     local j=0
@@ -558,6 +657,8 @@ WT=
 ADMIN=
 child=
 teepid=
+inner_pid=
+INNER_LEAK=
 # live PID | live -PGID: whether that process, or any member of that process group, is still
 # running. An exited child of this shell stays a zombie until it is waited for, and kill -0
 # still reaches a zombie, so the state is read instead.
@@ -621,11 +722,25 @@ stop_group() {
   wait "$child" 2>/dev/null
   return 0
 }
+# stop_inner: a batch's mutant run is this helper again, with a cleanup of its own (its suite's
+# group, its capture, its worktree), so it gets TERM and the time that cleanup takes -- the grace,
+# the drain, and a margin for the worktree's removal -- before KILL, which would leave its worktree.
+stop_inner() {
+  kill -TERM "$inner_pid" 2>/dev/null
+  if ! gone "$inner_pid" $((GRACE + TEE_DRAIN + 30)); then
+    kill -KILL "$inner_pid" 2>/dev/null
+    printf '%s\n' "run-against-base: the mutant run (pid $inner_pid) did not stop after TERM; a run-against-base.* directory under $TMP_ROOT, and its worktree's registration, may be left behind" >&2
+    INNER_LEAK=1
+  fi
+  wait "$inner_pid" 2>/dev/null
+  inner_pid=
+}
 cleanup() {
   # A second INT/TERM/HUP while this runs must not cut it short: the trap's `exit` would leave
   # the EXIT trap before the worktree is removed.
   trap '' INT TERM HUP
   [ -n "$SCRATCH" ] || return 0
+  [ -n "$inner_pid" ] && stop_inner
   [ -n "$child" ] && stop_group
   if [ -n "$teepid" ] && ! gone "$teepid" "$TEE_DRAIN"; then
     printf '%s\n' "run-against-base: the output capture never saw its end ($(fifo_holders))" >&2
@@ -655,7 +770,7 @@ cleanup() {
     printf '%s\n' "run-against-base: could not remove $SCRATCH; remove it by hand" >&2
     leaked=1
   fi
-  [ -z "$leaked" ] || exit 125
+  [ -z "$leaked$INNER_LEAK" ] || exit 125
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -667,6 +782,122 @@ trap 'exit 143' TERM HUP
 TMP_ROOT=$(CDPATH= cd "${TMPDIR:-/tmp}" && pwd -P) || die "cannot resolve ${TMPDIR:-/tmp}"
 SCRATCH=$(mktemp -d "$TMP_ROOT/run-against-base.$$.XXXXXX") || die "mktemp failed"
 WT="$SCRATCH/base"
+
+# The mutant batch: one run of this helper per mutant, each with its own worktree and cleanup,
+# against the one tree resolved above (its commit, so a moving ref or a later edit reaches none of
+# them). Its output is shown live and kept for the report; the report is the header's BOUNDARY
+# shape. The runs go in the background with signals deferred across the launch, as the suite's
+# does below, so a TERM to this shell reaches the mutant run in flight (stop_inner) at once.
+if [ -n "$MUTANTS_FILE" ]; then
+  common=(--base "$sha" --timeout "$TIMEOUT")
+  [ -z "$TALLY" ] || common+=(--tally "$TALLY")
+  i=0
+  while [ "$i" -lt "${#ALSO_ARGS[@]}" ]; do
+    common+=(--also "${ALSO_ARGS[$i]}")
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "${#REV_ARGS[@]}" ]; do
+    common+=(--revert "${REV_ARGS[$i]}" "${REV_PATHS[$i]}")
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "${#MUT_ARGS[@]}" ]; do
+    common+=(--mutate "${MUT_ARGS[$i]}" "${MUT_EXPRS[$i]}")
+    i=$((i + 1))
+  done
+  nm=${#BM_ARG[@]}
+  short=$(git -C "$TOP" rev-parse --short "$sha")
+  if [ -n "$CMD_MODE" ]; then
+    what="the command $(printf '%q ' "$cmd_word" "$@")"
+    what=${what% }
+  else
+    what=$rel
+  fi
+  say "batch: $nm mutant(s) of $what against $base ($short), one run each; the report follows the last"
+  [ -z "$SNAP_NOTE" ] || say "batch: $SNAP_NOTE"
+  BM_RC=()
+  k=0
+  while [ "$k" -lt "$nm" ]; do
+    if [ -n "$CMD_MODE" ]; then
+      run=(--command "${common[@]}" --mutate "${BM_ARG[$k]}" "${BM_EXPR[$k]}" -- "$cmd_word" "$@")
+    else
+      run=("$suite_abs" "${common[@]}" --mutate "${BM_ARG[$k]}" "${BM_EXPR[$k]}" "$@")
+    fi
+    say "batch: [$((k + 1))/$nm] ${BM_REL[$k]}: ${BM_EXPR[$k]}"
+    rm -f "$SCRATCH/fifo"
+    mkfifo "$SCRATCH/fifo" || die "mkfifo failed"
+    pending=
+    trap 'pending=130' INT
+    trap 'pending=143' TERM HUP
+    tee "$SCRATCH/mutant.$k" <"$SCRATCH/fifo" &
+    teepid=$!
+    "$BASH" "$0" "${run[@]}" >"$SCRATCH/fifo" 2>&1 </dev/null &
+    inner_pid=$!
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    [ -z "$pending" ] || exit "$pending"
+    wait "$inner_pid"
+    BM_RC+=("$?")
+    inner_pid=
+    if gone "$teepid" "$TEE_DRAIN"; then
+      wait "$teepid"
+      tee_rc=$?
+    else
+      tee_rc="timeout: $(fifo_holders)"
+      kill "$teepid" 2>/dev/null
+      wait "$teepid" 2>/dev/null
+    fi
+    teepid=
+    [ "$tee_rc" = 0 ] || die "capturing mutant [$((k + 1))]'s output failed (tee: $tee_rc); the batch has no report"
+    k=$((k + 1))
+  done
+  killed=0
+  nsurv=0
+  nref=0
+  survived=
+  refused=
+  k=0
+  while [ "$k" -lt "$nm" ]; do
+    tag="batch: [$((k + 1))]"
+    log="$SCRATCH/mutant.$k"
+    r=${BM_RC[$k]}
+    # NULs dropped first: a command substitution cannot hold one.
+    red=$(tr -d '\000' <"$log" | grep -a -v -e '^run-against-base: ' | grep -a -E -e "$RED")
+    nred=0
+    [ -z "$red" ] || nred=$(printf '%s\n' "$red" | wc -l | tr -d ' ')
+    case "$r" in
+    125)
+      why=$(grep -a -e '^run-against-base: ' "$log" | tail -n 1)
+      verdict="refused, exit 125: ${why#run-against-base: }"
+      refused="$refused [$((k + 1))]"
+      nref=$((nref + 1))
+      red=
+      ;;
+    0)
+      verdict="SURVIVED, exit 0"
+      survived="$survived [$((k + 1))]"
+      nsurv=$((nsurv + 1))
+      ;;
+    *)
+      killed=$((killed + 1))
+      verdict="killed, exit $r"
+      [ "$r" -ne 124 ] || verdict="$verdict (timed out)"
+      if [ "$nred" -gt 0 ]; then verdict="$verdict, $nred red"; else verdict="$verdict, nothing red"; fi
+      ;;
+    esac
+    say "$tag ${BM_REL[$k]}: ${BM_EXPR[$k]}: $verdict"
+    if [ -n "$red" ]; then
+      printf '%s\n' "$red" | head -n 10 | while IFS= read -r l; do say "$tag   $l"; done
+      [ "$nred" -le 10 ] || say "$tag   ... $((nred - 10)) more red lines"
+    fi
+    k=$((k + 1))
+  done
+  say "batch: $killed killed, $nsurv survived, $nref refused, of $nm${survived:+; survived:$survived}${refused:+; refused:$refused}"
+  [ "$nref" -eq 0 ] || exit 125
+  [ "$nsurv" -eq 0 ] || exit 1
+  exit 0
+fi
 
 git -C "$TOP" worktree add --quiet --detach "$WT" "$sha" >/dev/null 2>&1 \
   || die "git worktree add failed for $base ($sha)"
@@ -913,12 +1144,20 @@ teepid=
 [ "$tee_rc" = 0 ] || die "capturing the suite's output failed (tee: $tee_rc); its exit $rc is not a result"
 
 # -a: a NUL byte in the output would otherwise make grep call the log binary and print no line.
-tally=$(grep -a -E '[0-9]+ passed, [0-9]+ failed' "$LOG" | tail -n 1)
-[ -n "$tally" ] || tally=$(grep -a -v '^[[:space:]]*$' "$LOG" | tail -n 1)
+# A project's own verdict line (--tally) is the only line that may stand for it: no fallback to the
+# last line, which is the noise the pattern is there to skip (#779).
+notally=
+if [ -n "$TALLY" ]; then
+  tally=$(grep -a -E -e "$TALLY" "$LOG" | tail -n 1)
+  [ -n "$tally" ] || notally="(no line matched the tally pattern $(printf '%q' "$TALLY"))"
+else
+  tally=$(grep -a -E '[0-9]+ passed, [0-9]+ failed' "$LOG" | tail -n 1)
+  [ -n "$tally" ] || tally=$(grep -a -v '^[[:space:]]*$' "$LOG" | tail -n 1)
+fi
 if [ -n "$timed_out" ]; then
   say "exit 124 on $base: timed out after ${TIMEOUT}s, and its process group was stopped -- a hang is a failing run, not a refusal${tally:+ (last tally: $tally)}"
 else
-  say "exit $rc on $base: ${tally:-(no output)}"
+  say "exit $rc on $base: ${tally:-${notally:-(no output)}}"
 fi
 if [ -z "$timed_out" ] && [ -n "$ENV_UNCHECKED" ]; then
   case "$rc" in 126 | 127) say "note: $ENV_UNCHECKED" ;; esac
