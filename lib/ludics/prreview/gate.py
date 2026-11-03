@@ -778,6 +778,25 @@ class Gate:
             then,
         )
 
+    def _superseded(self, pr: str, sha: str, current: str) -> None:
+        self.verdict = "superseded"
+        cli.say(
+            f"build signal {self.repo}#{pr}: SUPERSEDED — observed {sha}, current {current};"
+            " re-run for the new head"
+        )
+
+    def _moved(self, pr: str, sha: str) -> bool:
+        """After a round read the wait reads past (ludics#808): has the head moved? A round that
+        failed skips the round's own head re-read, so without this a head pushed over a failing read
+        is not seen until the wait is spent, and the wait ends 3 rather than 5. One read; when it
+        does not answer, the round already counts as one failed poll and the next round reads it
+        again, so it is neither recorded nor a failure of its own."""
+        kind, (current, _base, _ref) = self._pr_fields(pr, with_updated=False)
+        if kind == "ok" and current and current != "null" and current != sha:
+            self._superseded(pr, sha, current)
+            return True
+        return False
+
     def _pause(self, deadline: int, last_pause: int | None, changed: bool) -> int:
         """Sleep the budget's next pause (``pause``), clipped at the deadline; the pause taken."""
         budget = self.session.budget
@@ -850,6 +869,8 @@ class Gate:
                     unknown,
                 ):
                     return 3
+                if self._moved(pr, sha):
+                    return 5
                 last_pause = self._pause(deadline, last_pause, False)
                 continue
             rows = self.drop_advisory_workflows(sha, rows)
@@ -876,6 +897,8 @@ class Gate:
                         sig, pr, sha, deadline, "Whether a check matching --check can still appear is UNKNOWN."
                     ):
                         return 3
+                    if self._moved(pr, sha):
+                        return 5
                     last_pause = self._pause(deadline, last_pause, False)
                     continue
                 match sig.rc:
@@ -923,6 +946,8 @@ class Gate:
                             " 'nothing is red'.",
                         ):
                             return 3
+                        if self._moved(pr, sha):
+                            return 5
                         last_pause = self._pause(deadline, last_pause, False)
                         continue
                     case 4:
@@ -952,11 +977,7 @@ class Gate:
                 continue
             base_sha, head_ref = reread_base, reread_ref
             if current != sha:
-                self.verdict = "superseded"
-                cli.say(
-                    f"build signal {repo}#{pr}: SUPERSEDED — observed {sha}, current {current};"
-                    " re-run for the new head"
-                )
+                self._superseded(pr, sha, current)
                 return 5
             # A round that waited a quota hold out between its reads is two moments, not one: a
             # check read green before the wait may have been re-run since. Read the round again.

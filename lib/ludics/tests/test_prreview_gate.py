@@ -479,6 +479,24 @@ class GateLoop(unittest.TestCase):
                 self.assertEqual(clock.sleeps, [], "no pause")
                 self.assertIn(why, self.out.getvalue())
 
+    def test_a_head_that_moves_over_a_failing_round_read_is_five_at_once(self) -> None:
+        # A failed round skips the round's own head re-read; the head is read after it instead, so
+        # a push over a failing read is SUPERSEDED on that round, not 3 once the wait is spent.
+        for route in ("check-runs", "actions/runs?head_sha=h1"):
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h2\tb1\ttopic")
+            for needle in ("check-runs", "actions/runs?head_sha=h1"):
+                if needle == route:
+                    gh.on(needle, rc=1, err="gh: HTTP 503")
+                else:
+                    gh.on(needle, out="ci\tsuccess\tu\t1")
+            clock = FakeClock()
+            gate = make_gate(gh, clock)
+            with self.subTest(route=route):
+                self.assertEqual((gate.check("7", 3600), gate.verdict), (5, "superseded"))
+                self.assertEqual((clock.sleeps, len(gate.unread)), ([], 1), "on the first failed round")
+
     def test_a_recording_round_whose_run_read_fails_keeps_its_record(self) -> None:
         # merge --override records the reds of its first round. A round whose run read failed had
         # recorded them already: the next round applies that record, so a check that turned red
