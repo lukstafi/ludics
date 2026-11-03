@@ -1012,7 +1012,8 @@ BY_DEADLINE: Literal["deadline"] = "deadline"  # a bare --wait-window: the windo
 type WindowBound = int | Literal["deadline"]  # --wait-window=<seconds>, or bare
 WINDOW_PROGRESS = 60  # seconds between the lines that say a waiting batch is still waiting
 HOLD_USAGE = (
-    "execution hold [--why <text>] [--request <id> [--worktree <dir> --rev <sha|branch> [--checkout <dir>]]]"
+    "execution hold [--why <text>] [--request <id> [--worktree <dir> --rev <sha|branch> [--checkout <dir>]"
+    " [--reads-no-config]]]"
     " [--deadline <seconds>] -- <command> [args...]"
 )
 
@@ -1603,10 +1604,13 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
     deadline: int | None = None
     command: list[str] = []
     place: dict[str, str] = {}  # --worktree, --rev, --checkout (THE WORKTREE, leg.hold_in_worktree)
+    no_config = False  # --reads-no-config, leg.py's: a command that reads none of the project's configuration
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg in ("--worktree", "--rev", "--checkout"):
+        if arg == "--reads-no-config":
+            no_config = True
+        elif arg in ("--worktree", "--rev", "--checkout"):
             if i + 1 >= len(args) or not args[i + 1]:
                 die(f"execution hold: expected a value for {arg}")
             place[arg] = args[i + 1]
@@ -1632,6 +1636,9 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
         i += 1
     if not command:
         die("execution hold: a command to hold the box around is required, after --")
+    if no_config and "--worktree" not in place:
+        die("execution hold: --reads-no-config goes with --worktree, whose leg asks the backend pin of the command"
+            f" ({HOLD_USAGE})")
     check_graces("hold", cfg)
     if place:
         if "--worktree" not in place:
@@ -1644,7 +1651,7 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
         from ludics.fleetworker import leg
 
         return leg.hold_in_worktree(cfg, request, place["--rev"], place.get("--checkout", ""), place["--worktree"],
-                                    deadline, command)
+                                    deadline, command, no_config=no_config)
     box = cfg.local_box or short_hostname()
     hold_lock, marker, cap = "", "", 0
     if request:

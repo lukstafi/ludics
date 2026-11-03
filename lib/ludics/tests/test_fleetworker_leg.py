@@ -305,7 +305,9 @@ class BackendPin(unittest.TestCase):
                           ("1", ["env", "OCANNL_BACKEND=cuda", "tools/t.sh", "bisect", "a", "b"]),
                           ("1", ["env", "X=1", "OCANNL_BACKEND=metal", "tools/t.sh"]),
                           ("1", ["env", "OTHER=", "OCANNL_BACKEND=cuda", "tools/t.sh"]),
-                          ("1", ["env", "OCANNL_BACKEND=", "OCANNL_BACKEND=hip", "tools/t.sh"])]:
+                          ("1", ["env", "OCANNL_BACKEND=", "OCANNL_BACKEND=hip", "tools/t.sh"]),
+                          # ludics#864: a leading env pin carries a shell composite.
+                          ("1", ["env", "OCANNL_BACKEND=cuda", "bash", "-c", "tools/t.sh run $(cat list)"])]:
             with self.subTest(gpu=gpu, argv=argv):
                 self.assertEqual(self.pin(self.PINS, gpu, *argv), (0, ""))
 
@@ -313,7 +315,6 @@ class BackendPin(unittest.TestCase):
         for argv in [["tools/t.sh", "run"], ["tools/t.sh", "run", "--expect-backend"],
                      ["tools/t.sh", "run", "--expect-backend="], ["tools/t.sh", "--", "--expect-backend", "cuda"],
                      ["tools/t.sh", "OCANNL_BACKEND=cuda"], ["env", "OCANNL_BACKEND=", "tools/t.sh"],
-                     ["sh", "-c", "OCANNL_BACKEND=cuda tools/t.sh run --expect-backend cuda"],
                      ["env", "tools/t.sh", "OCANNL_BACKEND=cuda"],
                      ["env", "OCANNL_BACKEND=cuda", "OCANNL_BACKEND=", "tools/t.sh"],
                      ["env", "OCANNL_BACKEND=cuda"], ["env", "X=1", "OCANNL_BACKEND=cuda"],
@@ -323,20 +324,57 @@ class BackendPin(unittest.TestCase):
                 self.assertEqual(rc, 1)
                 self.assertEqual(why, "this leg may hold the GPU (no --cpu), but its runner pins no backend, and"
                                       " .github/fleet-leg asks for one of: --expect-backend <backend>,"
-                                      " env OCANNL_BACKEND=<backend>; pin it (as words of the runner's own argv),"
-                                      " or declare --cpu for a leg that holds no GPU")
+                                      " env OCANNL_BACKEND=<backend>; pin it (as words of the runner's own argv);"
+                                      " or declare --cpu for a leg that holds no GPU, or --reads-no-config for a runner that"
+                                      " reads none of the project's configuration")
+
+    def test_a_shell_composite_is_refused_naming_the_form_that_carries_its_pin(self) -> None:
+        # ludics#864 (gh-ocannl-1687): the pin inside the -c string is one word to the reader.
+        for argv, shell in [(["bash", "-c", "OCANNL_BACKEND=cuda tools/t.sh run --expect-backend cuda"], "bash"),
+                            (["/bin/sh", "-ec", "tools/t.sh run --expect-backend cuda"], "sh"),
+                            (["zsh", "-c", "tools/t.sh"], "zsh")]:
+            with self.subTest(argv=argv):
+                rc, why = self.pin(self.PINS, "1", *argv)
+                self.assertEqual(rc, 1)
+                self.assertIn(f"; pin it (as words of the runner's own argv); a pin inside a {shell} -c string is no"
+                              f" word of the argv: lead with it, env OCANNL_BACKEND=<backend> {shell} -c '...', or give"
+                              " the runner a long list as a file, --file <local file> and the runner word {file}; or"
+                              " declare --cpu", why)
+        rc, why = self.pin("pin-flag --expect-backend\n", "1", "bash", "-c", "tools/t.sh --expect-backend cuda")
+        self.assertEqual(rc, 1)
+        self.assertIn("a pin inside a bash -c string is no word of the argv: run the runner itself, its pin among its"
+                      " words, and give it a long list as a file", why)
+        # A shell given a script file, or a long option, is no -c composite: the plain refusal.
+        for argv in [["bash", "tools/t.sh"], ["bash", "--norc", "tools/t.sh"]]:
+            with self.subTest(argv=argv):
+                self.assertNotIn(" -c string", self.pin(self.PINS, "1", *argv)[1])
 
     def test_a_file_with_no_pin_asks_for_none(self) -> None:
         self.assertEqual(self.pin("# nothing yet\n", "1", "tools/t.sh"), (0, ""))
         self.assertEqual(self.pin("", "1", "tools/t.sh"), (0, ""))
 
+    def test_a_slot_plan_line_is_read_and_asks_for_no_pin(self) -> None:
+        for line in ["slot-plan tools/fleet-slot-plan.sh", "slot-plan plan", "slot-plan a.b/c-d_e/f"]:
+            with self.subTest(line=line):
+                self.assertEqual(self.pin(f"{line}\n", "1", "tools/t.sh"), (0, ""))
+                self.assertEqual(self.pin(f"{self.PINS}{line}\n", "0", "tools/t.sh"), (0, ""))
+        done = subprocess.run([self.bash, "-c", leg.PIN + 'pin_grammar "$1" && printf "[%s]" "$pin_plan"', "x",
+                               f"{self.PINS}slot-plan tools/p.sh\n"], capture_output=True, text=True)
+        self.assertEqual((done.returncode, done.stdout), (0, "[tools/p.sh]"))
+
     def test_a_line_the_leg_cannot_read_refuses_even_a_cpu_leg(self) -> None:
         for line in ["pin-flagg --x", "pin-flag", "pin-flag x", "pin-flag --", "pin-flag --x=y", "pin-flag --x # c",
-                     "pin-env 9X", "pin-env A-B", "pin-env"]:
+                     "pin-env 9X", "pin-env A-B", "pin-env", "slot-plan", "slot-plan /abs/p", "slot-plan ../p",
+                     "slot-plan a/../p", "slot-plan ./p", "slot-plan a/./p", "slot-plan a//p", "slot-plan a/",
+                     "slot-plan -p", "slot-plan a b", "slot-plan a$b", "slot-plan ..", "slot-plan a/.."]:
             with self.subTest(line=line):
                 rc, why = self.pin(f"# ok\n{line}", "0", "tools/t.sh")
                 self.assertEqual(rc, 1)
                 self.assertTrue(why.startswith(f".github/fleet-leg line 2 is not one this leg reads ({line})"), why)
+        rc, why = self.pin("slot-plan p\nslot-plan q\n", "0", "tools/t.sh")
+        self.assertEqual(rc, 1)
+        self.assertEqual(why, ".github/fleet-leg line 2 is not one this leg reads (slot-plan q): pin-flag <option>,"
+                              " pin-env <NAME>, one slot-plan <path in the worktree>, a # comment or a blank line")
 
 
 class BackendPinTo(unittest.TestCase):
@@ -553,7 +591,7 @@ class ForeignHome(unittest.TestCase):
             script = f"STATE={shlex.quote(state)}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
             done = subprocess.run(
                 [self.bash, "-s", "/home/leg669/ludics", "/home/leg669/wt", "origin", "main", "", "", "req", "5",
-                 "t0k", "0", "0", "true"],
+                 "t0k", "", "0", "0", "0", "true"],
                 input=script, env={**os.environ, "HOME": "/Users/leg669"}, capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertEqual(done.stderr, "EXECUTION LEG REFUSED box: --checkout /home/leg669/ludics is not a git checkout"

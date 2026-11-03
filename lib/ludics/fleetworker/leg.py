@@ -8,8 +8,8 @@ which cannot see the main checkout's ``FETCH_HEAD``; a hard-coded commit re-pinn
 is that script, once, inside the reservation:
 
     execution leg --request <id> [--box <box>] --rev <sha|branch> --checkout <dir> --worktree <dir>
-                  [--remote <name>] [--control <patch>] [--cpu|--gpu] [--wait <s>]
-                  [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
+                  [--remote <name>] [--control <patch>] [--file <local file>] [--reads-no-config]
+                  [--cpu|--gpu] [--wait <s>] [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
 
 ``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>]`` is this verb on
 the box it runs on, for a measurement (``hold_in_worktree``, ludics-lite#816).
@@ -128,15 +128,56 @@ grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
     value nonempty, among its words after the first and before its first ``--`` (what follows a
     ``--`` is passed on to something else);
   - ``pin-env <NAME>``: the runner is ``env NAME=<value> ... <command>``, its first word ``env``, NAME's
-    last assignment among those that directly follow it nonempty, and a command after them.
+    last assignment among those that directly follow it nonempty, and a command after them -- any
+    command, a ``bash -c '...'`` composite included (ludics#864: a leading ``env`` pin is how a
+    composite carries one);
+  - ``slot-plan <path>``, at most one: THE SLOT PLAN below.
 Any other line refuses the leg, naming it: a file this leg cannot read is never ignored. A leg that
 may hold the GPU -- one that does not declare ``--cpu``, the slot's own fail-closed definition, so a
 measurement's too -- whose repository's file names a pin and whose argv satisfies none is refused
-before anything runs. The boundary: argv words as given, nothing else -- a pin inside a ``sh -c``
-string, an environment the caller exported (it does not travel to the box), or a project file that
-selects the backend does not count. It establishes that the command NAMES a backend, never that the
-run held it: that is the runner's own check (OCANNL's ``--expect-backend``), and no refusal here is
-GPU evidence. A repository without the file, and a ``--cpu`` leg, are not checked.
+before anything runs, naming the forms that pass: the pins, and for a runner that is a shell's
+``-c`` string (``sh``, ``bash``, ``dash``, ``zsh``, ``ksh``) the leading ``env`` pin or a long list
+shipped with ``--file`` (THE FILE). The boundary: argv words as given, nothing else -- a pin inside a
+``sh -c`` string, an environment the caller exported (it does not travel to the box), or a project
+file that selects the backend does not count. It establishes that the command NAMES a backend, never
+that the run held it: that is the runner's own check (OCANNL's ``--expect-backend``), and no refusal
+here is GPU evidence. A repository without the file, a ``--cpu`` leg, and a ``--reads-no-config``
+leg are not checked (the file is still parsed for each, so a line this version cannot read refuses
+them too).
+
+``--reads-no-config`` (ludics#864) is the caller's declaration that the runner reads none of the
+project's configuration -- a standalone C probe of the driver, which no backend variable reaches:
+such measurements were refused, then re-run under a meaningless ``env OCANNL_BACKEND=hip``. It
+stands where ``--cpu`` stands, a caller's declaration the leg cannot check, and it is said on the
+leg's output (``--reads-no-config: ... no backend pin was asked of it``) so a reader of the log sees
+that no pin was asked. It is not the project's to grant: the gate is against a forgotten pin, and a
+declaration is not one. (Not ``--probe``, the issue's word: ``execution slot --probe`` asks whether
+a slot is free, and OCANNL's runner calls it.)
+
+THE FILE (ludics#864). ``--file <local file>`` copies a file of the caller's box (an alias list a
+pre-push run reads) to the box's state directory beside the control patch, under the request and the
+invocation's token, and each runner word that is exactly ``{file}`` becomes that copy's absolute path,
+so a long list reaches the runner as a file it reads (OCANNL's ``--targets-file {file}``) rather than
+through a ``sh -c`` that would hide the pin. A ``--file`` with no ``{file}`` word, and a ``{file}``
+word with no ``--file``, are usage errors; a word that merely contains ``{file}`` is not replaced. The
+copy is removed when the leg ends, as the patch is; it is never in the worktree, which stays clean.
+
+THE SLOT PLAN (ludics#864). A correctness leg that declares neither ``--cpu`` nor ``--gpu`` takes a slot
+that may hold the GPU, though its runs may not: a CPU batch holding a GPU token. A project whose
+``.github/fleet-leg`` names ``slot-plan <path>`` (relative, in the worktree; no ``..``) states how to
+tell: once the worktree is clean at the commit, the leg runs ``<path> <runner argv...>`` there, under an
+``execution slot --cpu`` of its own with the leg's slot flags and each run's bound, its stdout shown on
+stderr, and only an exit 0 whose last nonblank stdout line is ``cpu`` makes both runs ``--cpu``
+(``slot plan <path> ...: cpu``). ``gpu``, another line, a nonzero exit or a path that is no
+executable file leave the slot as given, the fail-closed default, said (a WARNING for anything but
+``gpu``). A plan that moved HEAD or left the worktree not clean refuses the leg, since the runs would
+not be at the commit. The plan is the project's: what it reads (OCANNL's runner has ``plan``, which
+names the slot its ``run`` would take) is outside this verb. The boundary: it decides the leg's
+slot kind only; the backend pin is judged before it on the leg's own flags, so a leg the plan makes
+``--cpu`` was still asked for its pin. A wrong ``cpu`` cannot put a GPU batch past the tokens: a
+runner that takes its own slot inside the leg's is refused a GPU batch in a ``--cpu`` slot that is no
+GPU token (slot.py, THE NESTED SLOT), and one that does not is the project's plan to keep right. A measurement takes no slot and runs no plan. A stop during the plan ends its wrapper as it
+ends a run's, and the leg is refused with nothing run.
 
 THE HALT (ludics-lite#796). A leg reads no halt: the registry refuses new reservations and dispatch
 under one, so the only records a leg can find newly dispatched there are the halt's triage owner's,
@@ -206,9 +247,10 @@ from ludics.fleetworker.transport import fleet_name, far_argv, is_local, prelude
 
 USAGE = (
     "execution leg --request <id> [--box <box>] --rev <sha|branch> --checkout <dir> --worktree <dir>"
-    " [--remote <name>] [--control <patch>] [--cpu|--gpu] [--wait <seconds>] [--wait-window[=<seconds>]]"
-    " [--deadline <seconds>] -- <runner command...>"
+    " [--remote <name>] [--control <patch>] [--file <local file>] [--reads-no-config] [--cpu|--gpu]"
+    " [--wait <seconds>] [--wait-window[=<seconds>]] [--deadline <seconds>] -- <runner command...>"
 )
+FILE_WORD = "{file}"  # the runner word THE FILE replaces with the shipped copy's path
 DISPATCHED = ("launching", "running", "uncertain")
 HEX = re.compile(r"[0-9a-fA-F]{7,}")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -249,8 +291,9 @@ NOT_HOME = r"""not_home() {
 #   backend_pin_to <file text> <backend> <runner argv...>: exit 0 only when the argv pins <backend>
 #     and nothing else -- every pin it satisfies names exactly <backend> -- and the file names a pin.
 # pin_grammar and pin_scan set the caller's locals (bash scopes dynamically): pin_flags, pin_envs and
-# pin_asks (the file's pins, the asks with `<backend>` for the value), and pin_any (a pin the argv
-# satisfies) and pin_other (the first one naming another backend than pin_target, as `<how>`).
+# pin_asks (the file's pins, the asks with `<backend>` for the value), pin_plan (its slot-plan path,
+# or empty), and pin_any (a pin the argv satisfies) and pin_other (the first one naming another
+# backend than pin_target, as `<how>`).
 PIN = r"""fleet_leg_read() {
   local co="$1" sha="$2" text
   [ "$(git -C "$co" cat-file -t "$sha:.github/fleet-leg" 2>/dev/null)" = blob ] || return 2
@@ -261,7 +304,7 @@ PIN = r"""fleet_leg_read() {
 }
 pin_grammar() {
   local text="$1" d w extra good n=0
-  pin_flags="" pin_envs="" pin_asks=""
+  pin_flags="" pin_envs="" pin_asks="" pin_plan=""
   while read -r d w extra || [ -n "$d" ]; do
     n=$((n + 1))
     case "$d" in ''|'#'*) continue ;; esac
@@ -269,12 +312,18 @@ pin_grammar() {
     case "$d" in
       pin-flag) case "$w" in -*[!A-Za-z0-9_.-]*|-|--) ;; -*) good=1 ;; esac ;;
       pin-env) case "$w" in *[!A-Za-z0-9_]*|[0-9]*|'') ;; *) good=1 ;; esac ;;
+      # A path in the worktree: relative, no `..` or `.` component, no empty one, not an option.
+      slot-plan) case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;; *) [ -n "$pin_plan" ] || good=1 ;; esac ;;
     esac
     if [ -z "$good" ] || [ -n "$extra" ]; then
-      printf '%s' ".github/fleet-leg line $n is not one this leg reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, a # comment or a blank line"
+      printf '%s' ".github/fleet-leg line $n is not one this leg reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, a # comment or a blank line"
       return 1
     fi
-    if [ "$d" = pin-flag ]; then pin_flags="$pin_flags $w"; pin_asks="$pin_asks, $w <backend>"; else pin_envs="$pin_envs $w"; pin_asks="$pin_asks, env $w=<backend>"; fi
+    case "$d" in
+      pin-flag) pin_flags="$pin_flags $w"; pin_asks="$pin_asks, $w <backend>" ;;
+      pin-env) pin_envs="$pin_envs $w"; pin_asks="$pin_asks, env $w=<backend>" ;;
+      slot-plan) pin_plan=$w ;;
+    esac
   done <<FLEET_LEG_PIN
 $text
 FLEET_LEG_PIN
@@ -315,17 +364,31 @@ pin_scan() {
   done
 }
 backend_pin() {
-  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_any="" pin_other="" pin_target=""
+  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_plan pin_any="" pin_other="" pin_target="" hint="" e
   shift 2
   pin_grammar "$text" || return 1
   [ "$gpu" = 1 ] && [ -n "$pin_flags$pin_envs" ] || return 0
   pin_scan "$@"
   [ -z "$pin_any" ] || return 0
-  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin it (as words of the runner's own argv), or declare --cpu for a leg that holds no GPU"
+  # A shell's -c string is one word to this reader: say the form that carries the pin outside it.
+  case "${1##*/}" in
+    sh|bash|dash|zsh|ksh)
+      case "${2:-}" in
+        --*) ;;
+        -*c*)
+          if [ -n "$pin_envs" ]; then
+            for e in $pin_envs; do break; done
+            hint="; a pin inside a ${1##*/} -c string is no word of the argv: lead with it, env $e=<backend> ${1##*/} -c '...', or give the runner a long list as a file, --file <local file> and the runner word {file}"
+          else
+            hint="; a pin inside a ${1##*/} -c string is no word of the argv: run the runner itself, its pin among its words, and give it a long list as a file, --file <local file> and the runner word {file}"
+          fi ;;
+      esac ;;
+  esac
+  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin it (as words of the runner's own argv)$hint; or declare --cpu for a leg that holds no GPU, or --reads-no-config for a runner that reads none of the project's configuration"
   return 1
 }
 backend_pin_to() {
-  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_any="" pin_other=""
+  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_plan pin_any="" pin_other=""
   shift 2
   pin_grammar "$text" || return 1
   if [ -z "$pin_flags$pin_envs" ]; then
@@ -343,23 +406,27 @@ backend_pin_to() {
 
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
-# (FLEET_FETCH_TIMEOUT), the status token (see the header), the wrapper's word count and
-# words (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot
-# flags' count and words, then the runner's argv.
-LEG = NOT_HOME + PIN + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" nwrap="${10}"
+# (FLEET_FETCH_TIMEOUT), the status token (see the header), the shipped --file's name (in
+# $STATE/leg-files, or empty), the --reads-no-config declaration (0|1), the wrapper's word count and words
+# (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot flags'
+# count and words, then the runner's argv.
+LEG = NOT_HOME + PIN + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" nwrap="${12}"
 # THE STOP (see the header): this shell's pid, first, under the token; the leg keeps it.
 printf 'execution-leg %s: far: %s\n' "$token" "$$"
-shift 10
+shift 12
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
 while [ "$nwrap" -gt 0 ]; do wrap+=("$1"); shift; nwrap=$((nwrap - 1)); done
 nnest="$1"; shift; nest=()
 while [ "$nnest" -gt 0 ]; do nest+=("$1"); shift; nnest=$((nnest - 1)); done
 patch=""; [ -z "$pname" ] || patch="$STATE/leg-control/$pname"
-ref="refs/fleet-leg/$$"; results=""
+lfile=""; [ -z "$fname" ] || lfile="$STATE/leg-files/$fname"
+ref="refs/fleet-leg/$$"; results=""; planned=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
 cleanup() {
   [ -z "$patch" ] || rm -f "$patch"
+  [ -z "$lfile" ] || rm -f "$lfile"
+  [ -z "$planned" ] || rm -f "$planned"
   [ -z "$results" ] || rm -f "$results" "$results.sh"
   git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
   return 0
@@ -425,9 +492,15 @@ fi
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the worktree moves.
 pins=$(fleet_leg_read "$co" "$sha"); prc=$?
 [ "$prc" -ne 1 ] || refuse "$pins; nothing ran"
+pin_plan=""
 if [ "$prc" -eq 0 ]; then
   case " ${nest[*]} " in *" --cpu "*) gpu=0 ;; *) gpu=1 ;; esac
+  # --reads-no-config: the caller declares a runner that reads none of the project's configuration, so no
+  # pin is asked of it; the file is still read, and a line this version cannot read still refuses.
+  [ "$no_config" != 1 ] || gpu=0
   why=$(backend_pin "$pins" "$gpu" "$@") || refuse "$why (.github/fleet-leg at $sha); nothing ran"
+  pin_grammar "$pins"
+  [ "$no_config" != 1 ] || say "--reads-no-config: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $sha); its result is no backend's evidence"
 fi
 # The worktree: a linked worktree of the checkout, made or moved to the commit, never overwritten.
 if [ -e "$wt" ] || [ -L "$wt" ]; then
@@ -457,7 +530,51 @@ if [ -n "$patch" ]; then
   [ -f "$patch" ] || refuse "the control patch did not arrive at $patch"
   git -C "$wt" apply --check "$patch" >&2 || refuse "the control patch does not apply to $sha in $wt (above)"
 fi
+# THE FILE (see the header): each runner word that is exactly {file} becomes the shipped copy's path.
+if [ -n "$lfile" ]; then
+  [ -f "$lfile" ] || refuse "the --file did not arrive at $lfile"
+  words=()
+  for a in "$@"; do if [ "$a" = '{file}' ]; then words+=("$lfile"); else words+=("$a"); fi; done
+  set -- "${words[@]}"
+fi
 say "$made $wt at $sha ($rev, $how) for request $request; observed_sha=$head"
+[ -z "$lfile" ] || say "--file shipped as $lfile, the runner's {file}"
+# THE SLOT PLAN (see the header): a correctness leg that names neither --cpu nor --gpu, in a project
+# whose .github/fleet-leg names a slot-plan, asks it whether the runs hold the GPU. The plan runs
+# here, in the worktree at the commit, under a slot of its own taken --cpu with the leg's slot flags
+# and each run's bound; only its exit 0 with `cpu` as its last stdout line makes the runs --cpu.
+# Anything else leaves the leg's slot as given (it may hold the GPU: the fail-closed default), said.
+if [ -n "$pin_plan" ] && [ "${wrap[2]}" = slot ] && case " ${nest[*]} " in *" --cpu "*|*" --gpu "*) false ;; *) true ;; esac; then
+  planned=$(mktemp "${TMPDIR:-/tmp}/fleet-leg-plan.XXXXXX") || refuse "cannot create a scratch file on $BOX"
+  stop_asked=""
+  trap 'stop_asked=1' TERM INT HUP
+  if [ -f "$wt/$pin_plan" ] && [ -x "$wt/$pin_plan" ]; then
+    # In this shell, not a subshell: the wrapper must be its child, which THE STOP ends.
+    here=$PWD
+    cd "$wt" || refuse "cannot enter $wt for the slot plan"
+    fleet_worker "${wrap[@]}" --cpu "${nest[0]}" "${nest[1]}" -- "./$pin_plan" "$@" </dev/null >"$planned"; plrc=$?
+    cd "$here" || cd / || refuse "cannot leave $wt after the slot plan"
+  else
+    printf 'no executable %s in %s\n' "$pin_plan" "$wt" >&2; plrc=127
+  fi
+  trap - TERM INT HUP
+  [ -z "$stop_asked" ] || refuse "stopped during the slot plan (exit $plrc); nothing ran"
+  cat "$planned" >&2
+  kind=$(sed '/^[[:space:]]*$/d' "$planned" | tail -n 1)
+  rm -f "$planned"; planned=""
+  now=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null)
+  [ "$now" = "$head" ] || refuse "the slot plan $pin_plan moved HEAD of $wt to ${now:-unreadable}, not $head; nothing ran"
+  dirty=$(dirt "$wt") || refuse "cannot read the status of $wt after the slot plan"
+  [ -z "$dirty" ] || refuse "the slot plan $pin_plan left $wt not clean at $head ($(printf '%s\n' "$dirty" | head -n 3 | tr '\n' ';')); nothing ran"
+  if [ "$plrc" -eq 0 ] && [ "$kind" = cpu ]; then
+    wrap+=(--cpu); nest+=(--cpu)
+    say "slot plan $pin_plan (.github/fleet-leg at $sha): cpu, so the runs take their slot --cpu"
+  elif [ "$plrc" -eq 0 ] && [ "$kind" = gpu ]; then
+    say "slot plan $pin_plan (.github/fleet-leg at $sha): gpu, so the runs take a slot that may hold the GPU"
+  else
+    say "WARNING: slot plan $pin_plan (.github/fleet-leg at $sha) named no kind (exit $plrc, last line: ${kind:-none}; it prints cpu or gpu last): the runs take a slot that may hold the GPU, as given"
+  fi
+fi
 results=$(mktemp "${TMPDIR:-/tmp}/fleet-leg.XXXXXX") || refuse "cannot create a scratch file on $BOX"
 # The runs, under ONE slot (or the measurement's hold): the main run, then the control. Each step
 # that ends is written to the results file, so a wrapper that refused is told from a runner that ran.
@@ -761,13 +878,18 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     values: dict[str, str] = {}
     slot_flags: list[str] = []
     runner: list[str] = []
+    no_config = False
     i = 0
     while i < len(args):
         arg = args[i]
         if arg == "--":
             runner = args[i + 1 :]
             break
-        if arg in ("--request", "--box", "--rev", "--checkout", "--worktree", "--remote", "--control"):
+        if arg == "--reads-no-config":
+            no_config = True
+            i += 1
+            continue
+        if arg in ("--request", "--box", "--rev", "--checkout", "--worktree", "--remote", "--control", "--file"):
             if i + 1 >= len(args) or not args[i + 1]:
                 die(f"execution leg: expected a value for {arg}")
             values[arg] = args[i + 1]
@@ -813,6 +935,15 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     control = values.get("--control", "")
     if control and not (os.path.isfile(control) and os.access(control, os.R_OK)):
         die(f"execution leg: --control {control} is not a readable patch file")
+    # THE FILE (see the header): a --file and a runner word {file} come together, or not at all.
+    shipped = values.get("--file", "")
+    if shipped and not (os.path.isfile(shipped) and os.access(shipped, os.R_OK)):
+        die(f"execution leg: --file {shipped} is not a readable file on this box")
+    if shipped and FILE_WORD not in runner:
+        die(f"execution leg: --file {shipped} is shipped to the box for the runner word {FILE_WORD}, which the runner"
+            f" does not have: name it where the runner reads the file (e.g. --targets-file {FILE_WORD})")
+    if not shipped and FILE_WORD in runner:
+        die(f"execution leg: the runner word {FILE_WORD} names the leg's --file <local file>, which was not given")
 
     fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
     if not SECONDS.fullmatch(fetch_timeout):
@@ -853,16 +984,16 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
             # whatever ends it: a heartbeat left to expire would make a window opened just after a
             # short leg wait out the gap for nobody.
             return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
-                           fetch_timeout, hold=hold)
+                           fetch_timeout, hold=hold, shipped=shipped, no_config=no_config)
         finally:
             slot.release_waiter(cfg, waiter)
     slot.release_waiter(cfg, waiter)
     return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
-                   fetch_timeout, hold=hold)
+                   fetch_timeout, hold=hold, shipped=shipped, no_config=no_config)
 
 
 def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[str], runner: list[str], box: str, checkout: str, worktree: str, remote: str, rev: str, control: str,
-            fetch_timeout: str, *, hold: bool = False) -> int:
+            fetch_timeout: str, *, hold: bool = False, shipped: str = "", no_config: bool = False) -> int:
     """The leg on its dispatched record: refuse what the registry would not record, then run it on
     ``box`` (the far side's slot or hold around it) and stream its result."""
     state = execution.jq_text(record.get("state"))
@@ -907,20 +1038,32 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     # One random token per invocation: the status line's (see the header), and the staged patch's
     # name on the box, which no other leg's can share.
     token = secrets.token_hex(8)
+    stem = f"{re.sub(r'[^A-Za-z0-9._-]', '_', request)}.{token}"
     pname = ""
     if control:
-        pname = f"{re.sub(r'[^A-Za-z0-9._-]', '_', request)}.{token}.patch"
+        pname = f"{stem}.patch"
         sent = put_file(cfg, box, control, f"{cfg.state}/leg-control/{pname}")
         if sent.rc != 0:
             if sent.unreachable:
                 cli.say(f"EXECUTION LEG UNREACHABLE {box}: the control patch could not be copied; nothing ran")
                 return 4
             return refused(f"the control patch could not be copied to {box} (exit {sent.rc}); nothing ran")
+    fname = ""
+    if shipped:
+        # The copy keeps the file's own name after the stem, so the runner's messages still say it.
+        fname = f"{stem}.{re.sub(r'[^A-Za-z0-9._-]', '_', os.path.basename(shipped))}"
+        sent = put_file(cfg, box, shipped, f"{cfg.state}/leg-files/{fname}")
+        if sent.rc != 0:
+            if sent.unreachable:
+                cli.say(f"EXECUTION LEG UNREACHABLE {box}: the --file could not be copied; nothing ran")
+                return 4
+            return refused(f"the --file could not be copied to {box} (exit {sent.rc}); nothing ran")
 
     script = prelude(cfg, box) + LEG
     argv = far_argv(
         cfg, box,
-        [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, str(len(wrap)), *wrap,
+        [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, fname, "1" if no_config else "0",
+         str(len(wrap)), *wrap,
          str(len(nest)), *nest, *runner],
     )
 
@@ -932,8 +1075,9 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
 
 
 def hold_in_worktree(cfg: Config, request: str, rev: str, checkout: str, worktree: str, deadline: int | None,
-                     command: list[str]) -> int:
-    """``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>]`` (ludics-lite#816):
+                     command: list[str], *, no_config: bool = False) -> int:
+    """``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>] [--reads-no-config]``
+    (ludics-lite#816):
     the measurement's command in a worktree of THIS box, made or moved to the commit, as a leg on this
     box -- THE CHECKOUT AND THE REVISION, THE RECORD'S CHECKOUT, THE BACKEND PIN and THE STOP as above,
     under the ``execution hold --request`` a measurement's leg runs in, its status line the leg's. The
@@ -951,6 +1095,8 @@ def hold_in_worktree(cfg: Config, request: str, rev: str, checkout: str, worktre
     args = ["--request", request, "--box", cfg.local_box, "--rev", rev, "--checkout", checkout, "--worktree", worktree]
     if deadline is not None:
         args += ["--deadline", str(deadline)]
+    if no_config:
+        args.append("--reads-no-config")
     return cmd_leg(cfg, [*args, "--", *command], hold=True)
 
 

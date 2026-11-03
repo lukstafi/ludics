@@ -3383,6 +3383,81 @@ expect "a .github/fleet-leg line the leg cannot read refuses even a --cpu leg" 1
   leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
 expect "...and so does one holding a NUL byte, which a shell variable would drop" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg at [0-9a-f]* holds NUL bytes" -- \
   leg --request leg-a --rev nulpin --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+# ludics#864: the forms the pin gate refused in wave-20261102, each now passing or refused naming
+# the form that passes. A shell composite carries its pin as a leading env pin, never inside -c.
+expect "a GPU leg whose runner is a bash -c composite is refused, naming the leading env pin and --file" 1 \
+  "a pin inside a bash -c string is no word of the argv: lead with it, env LEG_BACKEND=<backend> bash -c '...', or give the runner a long list as a file, --file <local file> and the runner word {file}; or declare --cpu .*, or --reads-no-config for a runner" -- \
+  leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- bash -c 'tools/check.sh --expect-backend cc'
+expect "...and the composite behind a leading env pin runs" 0 "runner argv: \\[--expect-backend\\] \\[cc\\]" -- \
+  leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc bash -c 'tools/check.sh --expect-backend cc'
+# --reads-no-config: a runner declared to read none of the project's configuration is asked no pin, said.
+expect "a --reads-no-config leg is asked no pin, and says so" 0 "^EXECUTION LEG testbox: --reads-no-config: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $lpin); its result is no backend's evidence$" -- \
+  leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" --reads-no-config -- tools/check.sh
+[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...and runs the runner to its sentinel" || ko "the --reads-no-config leg did not run: $out"
+expect "...but a .github/fleet-leg line it cannot read still refuses it" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one this leg reads" -- \
+  leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --reads-no-config -- tools/check.sh
+expect "execution hold takes --reads-no-config only with --worktree" 2 "execution hold: --reads-no-config goes with --worktree" -- \
+  "${FWL[@]}" execution hold --request leg-a --reads-no-config -- true
+# THE FILE: a local list shipped to the box, the runner's {file} word its copy's path there.
+printf '@a/runtest-x\n@b/runtest-y\n' > "$TMP/leg targets.txt"
+expect "a --file is shipped to the box and named by the runner's {file} word" 0 "^@b/runtest-y$" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --cpu --file "$TMP/leg targets.txt" -- cat '{file}'
+shipped=$(sed -n 's/^EXECUTION LEG testbox: --file shipped as \(.*\), the runner.s {file}$/\1/p' <<<"$out")
+case "$shipped" in
+  "$ISSUE_WAVE_STATE/leg-files/leg-a."*".leg_targets.txt")
+    [ ! -e "$shipped" ] && ok "...in the box's state directory, removed once the leg ended" || ko "the shipped file was left: $shipped" ;;
+  *) ko "the shipped copy is not under the state directory: ${shipped:-no line} -- $out" ;;
+esac
+expect "...a word only containing {file} is passed as given" 0 "runner argv: \\[--targets-file\\] \\[/.*/leg-files/[^]]*\\] \\[x{file}\\]" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --cpu --file "$TMP/leg targets.txt" -- tools/check.sh --targets-file '{file}' 'x{file}'
+n=$(marks)
+expect "a --file with no {file} word in the runner is a usage error" 2 "execution leg: --file .* is shipped to the box for the runner word {file}, which the runner does not have" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --cpu --file "$TMP/leg targets.txt" -- tools/check.sh
+expect "...as is a {file} word with no --file" 2 "execution leg: the runner word {file} names the leg's --file <local file>, which was not given" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh --targets-file '{file}'
+expect "...and a --file that is not a readable file" 2 "execution leg: --file $TMP/no such list is not a readable file" -- \
+  leg --request leg-a --rev claude/topic --checkout "$lco" --worktree "$lwt" --cpu --file "$TMP/no such list" -- cat '{file}'
+[ "$(marks)" = "$n" ] && [ -z "$(find "$ISSUE_WAVE_STATE/leg-files" -type f 2>/dev/null)" ] && ok "...each before anything was shipped or run" ||
+  ko "a refused --file leg shipped or ran"
+# THE SLOT PLAN: the project's slot-plan, asked by a leg that declares neither --cpu nor --gpu, makes
+# the runs --cpu on `cpu`; anything else leaves the slot that may hold the GPU, said.
+git -C "$lsrc" checkout -q -b planned pinned && printf 'slot-plan tools/plan.sh\n' >> "$lsrc/.github/fleet-leg" &&
+  cat > "$lsrc/tools/plan.sh" <<'PLAN' &&
+#!/usr/bin/env bash
+printf 'plan argv:'; printf ' [%s]' "$@"; printf '\n'
+printf 'plan slot: %s\n' "${FLEET_SLOT_HELD:-none}"
+for a in "$@"; do last=$a; done
+case $last in dirty) : > plan-left ;; fail) printf 'cpu\n'; exit 3 ;; esac
+printf '%s\n\n' "$last"
+PLAN
+  chmod +x "$lsrc/tools/plan.sh" && git -C "$lsrc" add -A && git -C "$lsrc" commit -q -m planned && lplan=$(git -C "$lsrc" rev-parse HEAD) &&
+  git -C "$lsrc" push -q "$lremote" planned && git -C "$lsrc" checkout -q main || ko "could not build the slot-plan fixture (setup)"
+expect "a slot plan that says cpu makes the runs --cpu" 0 "^runner slot: testbox [2-4] 4 cpu$" -- \
+  leg --request leg-a --rev planned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh cpu
+grep -q "^plan argv: \[env\] \[LEG_BACKEND=cc\] \[tools/check.sh\] \[cpu\]$" <<<"$out" && grep -q "^plan slot: testbox [2-4] 4 cpu$" <<<"$out" &&
+  grep -q "^EXECUTION LEG testbox: slot plan tools/plan.sh (.github/fleet-leg at $lplan): cpu, so the runs take their slot --cpu$" <<<"$out" &&
+  ok "...asked in the worktree with the runner's argv, under a --cpu slot of its own, and said" || ko "the plan was not asked as stated: $out"
+expect "...one that says gpu leaves a slot that may hold the GPU" 0 "^runner slot: testbox [1-4] 4 gpu$" -- \
+  leg --request leg-a --rev planned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh gpu
+grep -q "slot plan tools/plan.sh (.github/fleet-leg at $lplan): gpu, so the runs take a slot that may hold the GPU$" <<<"$out" && ok "...said" ||
+  ko "the gpu plan was not said: $out"
+expect "...as does one that exits nonzero, even after printing cpu, with a WARNING" 0 "^runner slot: testbox [1-4] 4 gpu$" -- \
+  leg --request leg-a --rev planned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh fail
+grep -q "WARNING: slot plan tools/plan.sh (.github/fleet-leg at $lplan) named no kind (exit 3, last line: cpu; it prints cpu or gpu last)" <<<"$out" &&
+  ok "...naming its exit" || ko "no warning for the failed plan: $out"
+expect "...and one that names another word" 0 "named no kind (exit 0, last line: maybe;" -- \
+  leg --request leg-a --rev planned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh maybe
+n=$(marks)
+expect "a slot plan that leaves the worktree not clean refuses the leg" 1 "EXECUTION LEG REFUSED testbox: the slot plan tools/plan.sh left $lwt not clean at $lplan (?? plan-left;); nothing ran" -- \
+  leg --request leg-a --rev planned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc tools/check.sh dirty
+[ "$(marks)" = "$n" ] && ok "...the runner not run" || ko "the leg ran after a plan that dirtied the worktree"
+rm -f "$lwt/plan-left"
+expect "a leg that declares --gpu asks no slot plan" 0 "^runner slot: testbox [1-4] 4 gpu$" -- \
+  leg --request leg-a --rev planned --checkout "$lco" --worktree "$lwt" --gpu -- env LEG_BACKEND=cc tools/check.sh cpu
+grep -q "^plan argv" <<<"$out" && ko "the --gpu leg asked the plan: $out" || ok "...its plan unasked"
+expect "...nor does a --cpu one" 0 "^runner slot: testbox [2-4] 4 cpu$" -- \
+  leg --request leg-a --rev planned --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh gpu
+grep -q "^plan argv" <<<"$out" && ko "the --cpu leg asked the plan: $out" || ok "...its plan unasked"
 # A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
 # control run's, which a runner prints last otherwise.
 lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") || ko "could not allocate a bg-run directory (setup)"
