@@ -723,7 +723,8 @@ class BaseAlone(Repo):
         self.assertEqual(rc, 1, out)
         self.assertIsNone(shared)
         self.assertIn("not the same way: 1 line(s) of the merge's output are not in main's", out)
-        self.assertIn("  + ./api.sh: line 9: seam:", out, "the merge's own failure is shown")
+        # bash says `./api.sh: line 9: seam: command not found`, dash `./api.sh: 9: seam: not found`.
+        self.assertRegex(out, r"\n  \+ \./api\.sh: (line )?9: seam: ", "the merge's own failure is shown")
         self.assertIn("its failure is not only main's", out)
         self.assertIn("--override goes over only a failure the base alone shares", out)
 
