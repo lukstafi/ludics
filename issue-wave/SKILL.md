@@ -519,8 +519,13 @@ requirements for every transport with transport-specific setup and identity, and
   set is where its tests run, not where its diff is: a value test that runs on every backend
   needs every backend's leg (lukstafi/ocannl-staging#1441 merged on cc and Metal codegen alone,
   since its GPU codegen was unchanged, and its bitwise claims failed on CUDA, HIP and Metal,
-  ahrefs/ocannl#1647). **A pin on a box's shared package environment is
-  additive**: an environment every worktree builds against (OCANNL's opam switch) is master's
+  ahrefs/ocannl#1647); a test whose golden comes from a separate off-CPU branch needs a
+  non-CPU leg even for a CPU-only change (lukstafi/ocannl-staging#1483's cc-only change
+  reordered every GPU golden, fixed forward in #1488); and a codegen change reaches every test
+  that executes staged or hand-built kernel text, not only the ones that pin emitted text
+  (lukstafi/ocannl-staging#1491 ran only the text pins, and a staged kernel failed on CUDA,
+  #1497). Which tests those are is the project's agent notes'. **A pin on a box's shared
+  package environment is additive**: an environment every worktree builds against (OCANNL's opam switch) is master's
   build too, so build a master-based worktree against the new version in a scratch install before
   pinning, and land the dependency's change free of deprecations before the consumer PR
   (ahrefs/ocannl#1594's `metal.dev` pin deprecated an API master used, and dev-profile alerts are
@@ -1159,7 +1164,10 @@ for a CLI worker; the thread or CLI stream is the full record - arrives carrying
 and reasoned drops; the coordinator's role here is editorial, not generative. Combine
 overlapping proposals across workers into single issues - cross-worker recurrence is the
 strongest priority signal a wave produces - revise drafts against the tracker's style, then do
-the filing and evidence comments yourself. Every issue the wave files carries the
+the filing and evidence comments yourself. Before filing a residual a worker drew from a
+measurement, check the wave's merges that landed after the measured SHA: a sibling's may
+already address it (ahrefs/ocannl#1659 was filed from an A/A measured before #1635's beam
+finals merged, and establishing that cost a worker and a measurement window). Every issue the wave files carries the
 `wave-followup` label, so a later triage pass can prune that backlog without re-reading each
 issue (wave 2026-10-14 filed about 47): the first time a tracker needs it, run `gh label create
 wave-followup -R <tracker> --color C5DEF5 --description 'Filed by an issue-wave close-out'`,
