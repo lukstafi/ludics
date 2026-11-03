@@ -2320,7 +2320,19 @@ rmdir "$ISSUE_WAVE_STATE/COORDINATOR.lock"
 expect "a key outside the grammar is refused by the store" 1 "^BOARD REFUSED: a key must be" -- "$FW" board set bw t "bad key=1"
 expect "a field without = is a usage error" 2 "board set: expected <key>=<value>" -- "$FW" board set bw t novalue
 expect "show of a wave with no board refuses" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
-expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show or takeover" -- "$FW" board edit bw
+expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show, check or takeover" -- "$FW" board edit bw
+# A row's state grammar (ludics#810): set warns on status= and on a state with no state word, and writes
+# both as given; check, a read, exits 3 listing each row not done and 0 when every row is.
+expect "set warns on status=, and writes it" 0 "^BOARD WARNING: task \"ck-1\": a row's state is its state key, not status; written as given$" -- \
+  "$FW" board set --create ck ck-1 status=launched
+expect "...and on a state with no state word" 0 '^BOARD WARNING: task "ck-1": state="spawned" starts with no state word' -- \
+  "$FW" board set ck ck-1 state=spawned
+expect "check lists each row not done and exits 3, without the lease or any identity" 3 '^- "ck-1": state="spawned" (no state word' -- \
+  env -u FLEET_COORDINATOR "${B[@]}" board check ck
+[ "$(jq -r '.tasks[0].fields | "\(.status) \(.state)"' "$ISSUE_WAVE_STATE/boards/ck.json")" = "launched spawned" ] &&
+  ok "...each written as given" || ko "ck board: $(cat "$ISSUE_WAVE_STATE/boards/ck.json")"
+"$FW" board set ck ck-1 "state=merged #1" >/dev/null 2>&1 || ko "could not write ck-1's state (setup)"
+expect "...and 0 once every row is done" 0 "^BOARD CHECK ck: 1 rows, 1 done, 0 not done$" -- "$FW" board check ck
 # board takeover (ludics-lite#731): the stored brief, then the state at takeover from the row's keys and
 # the live sources; a read, so no lease and no identity; a missing key printed missing, never guessed.
 tkwt="$TMP/tk wt"; git init -q "$tkwt" && git -C "$tkwt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tk

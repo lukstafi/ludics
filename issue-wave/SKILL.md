@@ -1156,7 +1156,8 @@ controlled through the tools in your coordinator's file, never through those com
 When the last gate clears: every worker on the board has finished its work and its hand-back
 (verified through its transport's tools, the PRs and git; the CLI-side condition is in
 [cli-claude.md](references/cli-claude.md#close-out)), write the completed wave's board (issue or
-task -> box -> PR -> merge state), residuals and follow-up issues, and any gates left for the next
+task -> box -> PR -> merge state; `fleet-worker.sh board check <wave>` exits 0 once every row's
+`state` is a done word), residuals and follow-up issues, and any gates left for the next
 invocation. Workers ran `after-merge` in hand-back mode, so each close-out - collected through
 the transport's channel: the coordinator file's messages and waits for a native worker,
 `read_thread` or `list_events` for an app worker, `fleet-worker.sh log <box> <name> --last-result`

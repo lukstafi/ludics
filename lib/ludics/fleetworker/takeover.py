@@ -24,6 +24,17 @@ outside it prints ``invalid: <value> (<why>)`` and is not used, a key the row la
   standing    request ids, space-separated, or ``none``    requests the same, for its other requests
   farside     far-side worktrees, ``<box>:<path>`` words (printed, not read)
   plan_dir    a paired plan's directory (printed, not read)
+  state       the row's state: a STATE WORD first, then any text (ludics#810)
+
+THE STATE WORDS, the one vocabulary of a row's state (``board set`` warns on any other first word and
+on a ``status`` key; ``board check`` reads done-ness by them). A state's first word, compared
+lower-cased with a trailing ``;:,.`` stripped, is one of these; any other first word, an empty state
+included, is no state word, which ``board check`` reads as not done (an allowlist, fail-closed):
+
+  live   pending (briefed, not spawned), launched, implementing, measuring, reviewing, merging,
+         blocked (on the user or a dependency), reconciling (after an interruption)
+  done   merged, done (handed back without a merge of its own), closed (the issue closed with no
+         PR), dropped (out of the wave, launched or not)
 
 What it reads, and nothing else (the boundary): the board (``board show --json`` on the anchor, no
 lock, no lease); the brief, a file on brief_host; on agent_host, the worktree's HEAD, branch and
@@ -98,6 +109,24 @@ def _free(value: str) -> str | None:
     return None if value.strip() else "empty"
 
 
+# THE STATE WORDS (the header): a row's work still owed, and its work finished.
+LIVE_STATES = ("pending", "launched", "implementing", "measuring", "reviewing", "merging", "blocked", "reconciling")
+DONE_STATES = ("merged", "done", "closed", "dropped")
+
+
+def state_word(value: str) -> str | None:
+    """The state's STATE WORD, or None when its first word is none (the header's comparison)."""
+    words = value.split()
+    word = words[0].rstrip(";:,.").lower() if words else ""
+    return word if word in LIVE_STATES or word in DONE_STATES else None
+
+
+def _state(value: str) -> str | None:
+    if state_word(value) is not None:
+        return None
+    return f"its first word is no state word: live {', '.join(LIVE_STATES)}; done {', '.join(DONE_STATES)}"
+
+
 # THE TAKEOVER KEYS, in the order printed, each with its grammar (None: within it; else why not).
 KEYS: list[tuple[str, Callable[[str], str | None]]] = [
     ("worktree", _by(PATH, "an absolute path")),
@@ -118,6 +147,7 @@ KEYS: list[tuple[str, Callable[[str], str | None]]] = [
     ("requests", _ids),
     ("farside", _free),
     ("plan_dir", _free),
+    ("state", _state),
 ]
 
 # Far side, on brief_host: the brief's text, or exit 3 with why on stdout.

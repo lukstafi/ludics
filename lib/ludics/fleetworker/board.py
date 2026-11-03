@@ -9,8 +9,18 @@ Its header is the contract: the document, what it accepts, and the markdown view
   board note [--create] <wave> <key=value>...         the wave's own facts (lease)
   board log <wave> <text>...                          one appended log line, the words joined (lease)
   board show <wave> [--json]                          the markdown view, or the document (no lease)
+  board check <wave>                                  the close-out check: every row done (no lease)
   board takeover <wave> <task>                        a worker's stored brief and its state now (no
                                                       lease; ``ludics.fleetworker.takeover``)
+
+A row's state is its ``state`` key, a STATE WORD first (``takeover``'s header states the vocabulary,
+ludics#810). ``set`` writes any value as given, and warns on stderr (``BOARD WARNING: ...``, the exit
+unchanged) for a ``state`` whose first word is no state word and for a ``status`` key, the name
+boards before #810 used beside ``state``. ``check`` reads each row's ``state``, or on a row with no
+``state`` its ``status``, by the state words and nothing else of the row, the notes or the log: it
+prints ``BOARD CHECK <wave>: <n> rows, <d> done, <o> not done``, then a line per row not done, and
+exits 0 when every row's state is a done word, 3 when a row's is not (a live word, no state word or
+no state: an allowlist), 1 with no board, 4 when the anchor did not answer.
 
 The writers run inside the lease lock after the lease check (``lease.LEASE_MUTATION``), the lock and
 check every halt and registry write takes; ``show`` takes neither, so anyone may read a board. Every
@@ -25,18 +35,22 @@ since an append is not idempotent and a retried first write must be.
 
 import json
 
+from typing import Any, cast
+
 from ludics import cli
 from ludics.fleetworker import boardstore
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
-from ludics.fleetworker.transport import PAYLOAD_ON_FD, prelude, run_on, shipped_python
+from ludics.fleetworker.takeover import DONE_STATES, LIVE_STATES, board_document, cmd_takeover, state_word
+from ludics.fleetworker.transport import PAYLOAD_ON_FD, err, prelude, run_on, shipped_python
 
 USAGE = (
     "board set [--create] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
-    "board log <wave> <text>... | board show <wave> [--json] | board takeover <wave> <task>"
+    "board log <wave> <text>... | board show <wave> [--json] | board check <wave> | board takeover <wave> <task>"
 )
+STATE_WORDS = f"live {', '.join(LIVE_STATES)}; done {', '.join(DONE_STATES)}"
 
 FIND_PYTHON = (
     FLEET_PYTHON
@@ -76,7 +90,7 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
             die(f"board show: expected <wave> [--json] ({USAGE})")
         return action, {"wave": rest[0], "json": rest[1:] == ["--json"]}
     if action not in ("set", "note", "log"):
-        die(f"board: expected set, note, log, show or takeover ({USAGE})")
+        die(f"board: expected set, note, log, show, check or takeover ({USAGE})")
     create = bool(rest) and rest[0] == "--create"
     if create and action == "log":
         die(f"board log: takes no --create; start the board with set or note --create ({USAGE})")
@@ -103,12 +117,66 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
     return action, payload
 
 
+def warnings_of(task: str, pairs: list[list[str]]) -> list[str]:
+    """``set``'s warnings on a row's state (the header): a ``status`` key, a ``state`` with no state word."""
+    shown = json.dumps(task, ensure_ascii=False)
+    out: list[str] = []
+    for key, value in pairs:
+        if key == "status":
+            out.append(f"BOARD WARNING: task {shown}: a row's state is its state key, not status; written as given")
+        elif key == "state" and state_word(value) is None:
+            out.append(f"BOARD WARNING: task {shown}: state={json.dumps(value, ensure_ascii=False)} starts with no"
+                       f" state word ({STATE_WORDS}); written as given")
+    return out
+
+
+def row_state(fields: dict[str, str]) -> tuple[str, str] | None:
+    """The key and value ``check`` reads as the row's state: ``state``, else ``status``, else none."""
+    for key in ("state", "status"):
+        if key in fields:
+            return key, fields[key]
+    return None
+
+
+def cmd_check(cfg: Config, args: list[str]) -> int:
+    if len(args) != 1 or not args[0]:
+        die(f"board check: expected <wave> ({USAGE})")
+    wave = args[0]
+    doc = board_document(cfg, wave)
+    if isinstance(doc, int):
+        return doc
+    tasks: Any = doc.get("tasks")
+    rows = [cast(dict[str, Any], r) for r in cast(list[Any], tasks) if isinstance(r, dict)] if isinstance(tasks, list) else []
+    left: list[str] = []
+    for row in rows:
+        raw: Any = row.get("fields")
+        fields = {str(k): str(v) for k, v in cast(dict[Any, Any], raw).items()} if isinstance(raw, dict) else {}
+        task = json.dumps(str(row.get("task")), ensure_ascii=False)
+        state = row_state(fields)
+        if state is None:
+            left.append(f"- {task}: no state")
+            continue
+        key, value = state
+        word = state_word(value)
+        if word in DONE_STATES:
+            continue
+        why = "live" if word is not None else f"no state word: {STATE_WORDS}"
+        left.append(f"- {task}: {key}={json.dumps(value, ensure_ascii=False)} ({why})")
+    cli.say(f"BOARD CHECK {wave}: {len(rows)} rows, {len(rows) - len(left)} done, {len(left)} not done")
+    for line in left:
+        cli.say(line)
+    return 3 if left else 0
+
+
 def cmd_board(cfg: Config, args: list[str]) -> int:
     if args[:1] == ["takeover"]:
-        from ludics.fleetworker import takeover
-
-        return takeover.cmd_takeover(cfg, args[1:])
+        return cmd_takeover(cfg, args[1:])
+    if args[:1] == ["check"]:
+        return cmd_check(cfg, args[1:])
     action, payload = payload_of(args)
+    if action == "set":
+        for line in warnings_of(cast(str, payload["task"]), cast(list[list[str]], payload["fields"])):
+            err(line)
     raw = json.dumps(payload, separators=(",", ":"))
     if action == "show":
         script = prelude(cfg, cfg.anchor) + "shift 3\n" + store_command(raw)

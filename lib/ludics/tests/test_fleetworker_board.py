@@ -12,7 +12,10 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import board, boardstore
+from ludics.fleetworker import board, boardstore, takeover
+from ludics.fleetworker.config import load_config
+
+CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # The cell texts that broke `sed` on the OCANNL wave-20261014 board, and the rest of the shell's and
 # markdown's metacharacters.
@@ -193,7 +196,7 @@ class CommandLine(unittest.TestCase):
         self.assertIn("expected <key>=<value>, got \"--create\"", self.refused("set", "w", "t", "k=v", "--create"))
 
     def test_usage_refusals(self) -> None:
-        self.assertIn("expected set, note, log, show or takeover", self.refused())
+        self.assertIn("expected set, note, log, show, check or takeover", self.refused())
         self.assertIn("board show: expected <wave> [--json]", self.refused("show"))
         self.assertIn("board show: expected <wave> [--json]", self.refused("show", "w", "--md"))
         self.assertIn("board set: expected <task>", self.refused("set", "w"))
@@ -201,6 +204,92 @@ class CommandLine(unittest.TestCase):
         self.assertIn("board note: give at least one", self.refused("note", "--create", "w"))
         self.assertIn("board log: expected the line's text", self.refused("log", "w"))
         self.assertEqual(self.payload("show", "w", "--json"), ("show", {"wave": "w", "json": True}))
+
+
+class StateGrammar(unittest.TestCase):
+    """THE STATE WORDS (takeover's header, ludics#810): set's warnings and the close-out check."""
+
+    def test_a_state_word_is_the_first_word_without_case_or_trailing_punctuation(self) -> None:
+        for value, word in (("merged", "merged"), ("MERGED #812 at abc", "merged"), ("done; handed back", "done"),
+                            ("Launched.", "launched"), ("reviewing round 3", "reviewing")):
+            self.assertEqual(takeover.state_word(value), word, value)
+        for value in ("", "  ", "done-merged", "not launched", "spawned", "#812 merged", "merged!"):
+            self.assertIsNone(takeover.state_word(value), value)
+        self.assertFalse(set(takeover.LIVE_STATES) & set(takeover.DONE_STATES))
+
+    def test_set_warns_on_status_and_on_a_state_with_no_state_word(self) -> None:
+        self.assertEqual(board.warnings_of("t", [["state", "merged #9"], ["pr", "9"]]), [])
+        got = board.warnings_of("ll#1", [["status", "merged"], ["state", "spawned\nx"], ["state", "launched"]])
+        self.assertEqual(len(got), 2, got)
+        self.assertEqual(got[0], 'BOARD WARNING: task "ll#1": a row\'s state is its state key, not status; written as given')
+        self.assertTrue(got[1].startswith('BOARD WARNING: task "ll#1": state="spawned\\nx" starts with no state word'
+                                          " (live pending, launched,"), got[1])
+        self.assertTrue(got[1].endswith("done merged, done, closed, dropped); written as given"), got[1])
+
+
+class Check(unittest.TestCase):
+    """``board check`` end to end on this box: the anchor ``local`` over a scratch state root."""
+
+    def setUp(self) -> None:
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-board-check-test."))
+        self.cfg = load_config(os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh"), {
+            "FLEET_ANCHOR": "local", "FLEET_ANCHOR_STATE": self.root, "FLEET_SKILLS_REPO": CHECKOUT,
+            "FLEET_BOXES": "local", "PATH": os.environ.get("PATH", ""), "HOME": self.root,
+        }, host="testbox")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.root)
+
+    def row(self, task: str, **fields: str) -> None:
+        payload = {"wave": "w", "create": True, "task": task, "fields": [[k, v] for k, v in fields.items()]}
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(boardstore.run(["-", self.root, "set", "coord", json.dumps(payload)]), 0)
+
+    def check(self, wave: str = "w") -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("ludics.fleetworker.board.check_identity") as identity, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = board.cmd_board(self.cfg, ["check", wave])
+            except cli.Exit as exc:
+                rc = exc.rc
+        identity.assert_not_called()  # a read: no lease, no identity
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_every_row_done_exits_0(self) -> None:
+        self.row("a", state="merged #1")
+        self.row("b", status="done")              # a board before #810: status read on a row with no state
+        self.row("c", state="Closed.", status="launched")  # state wins over status
+        self.row("d", state="dropped (out of scope)")
+        rc, out, err = self.check()
+        self.assertEqual((rc, out, err), (0, "BOARD CHECK w: 4 rows, 4 done, 0 not done\n", ""))
+
+    def test_a_row_not_done_is_listed_and_exits_3(self) -> None:
+        self.row("a", state="merged")
+        self.row("b", status="launched")          # the rows wave-20261021's close-out left
+        self.row("c", state="done-merged")        # no state word: an allowlist, so not done
+        self.row("d", pr="4")                     # no state at all
+        self.row("e", state="reviewing", status="merged")
+        rc, out, _ = self.check()
+        self.assertEqual(rc, 3)
+        lines = out.splitlines()
+        self.assertEqual(lines[0], "BOARD CHECK w: 5 rows, 1 done, 4 not done")
+        self.assertEqual(lines[1], '- "b": status="launched" (live)')
+        self.assertTrue(lines[2].startswith('- "c": state="done-merged" (no state word: live pending,'), lines[2])
+        self.assertEqual(lines[3:], ['- "d": no state', '- "e": state="reviewing" (live)'])
+
+    def test_an_empty_board_is_done_and_no_board_refuses(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(boardstore.run(["-", self.root, "note", "coord", json.dumps(
+                {"wave": "w", "create": True, "fields": [["scope", "x"]]})]), 0)
+        self.assertEqual(self.check()[:2], (0, "BOARD CHECK w: 0 rows, 0 done, 0 not done\n"))
+        self.assertEqual(self.check("none")[:2], (1, ""))  # the store's refusal is the far side's stderr
+
+    def test_usage(self) -> None:
+        with self.assertRaises(cli.Exit) as caught:
+            board.cmd_board(self.cfg, ["check"])
+        self.assertEqual(caught.exception.rc, 2)
+        self.assertIn("board check: expected <wave>", caught.exception.message)
 
 
 if __name__ == "__main__":

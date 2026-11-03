@@ -63,7 +63,8 @@ class Takeover(unittest.TestCase):
         fields = dict(worktree=self.wt, branch="claude/w-7", base=SHA[:8], agent="a1", transport="native",
                       agent_host="local", exec_hosts="local", brief=self.brief, brief_host="local", repository="o/r",
                       issue="o/r#7", worker="w-7", pr="42", runs=os.path.join(self.root, "runs"),
-                      standing="w-7-iterate", requests="none", farside="rog:/home/u/wt", plan_dir="/plans/7")
+                      standing="w-7-iterate", requests="none", farside="rog:/home/u/wt", plan_dir="/plans/7",
+                      state="reviewing round 2")
         fields.update(over)
         return {k: v for k, v in fields.items() if v != "-"}
 
@@ -174,13 +175,15 @@ class Takeover(unittest.TestCase):
         self.assertEqual(self.gh[0][:5], ["pr", "list", "--repo", "o/r", "--head"])
 
     def test_a_value_outside_its_grammar_is_invalid_and_unused(self) -> None:
-        self.board("t7", **self.full(pr="#42", repository="o", worktree="rel/wt", standing="", state="spawned"))
+        self.board("t7", **self.full(pr="#42", repository="o", worktree="rel/wt", standing="", state="spawned",
+                                    status="launched"))
         rc, out, _ = self.takeover()
         self.assertEqual(rc, 0)
         for want in ("- pr: invalid: #42 (not a PR number)", "- repository: invalid: o (not owner/name)",
                      "- worktree: invalid: rel/wt (not an absolute path)",
                      "- standing: invalid:  (empty (write none for no requests))",
-                     "- state (another key of the row): spawned", "- not read: the row lacks a valid repository",
+                     "- state: invalid: spawned (its first word is no state word: live pending, launched,",
+                     "- status (another key of the row): launched", "- not read: the row lacks a valid repository",
                      "- not read: the row lacks a valid worktree or agent_host"):
             self.assertIn(want, out)
         self.assertEqual(self.gh, [])
