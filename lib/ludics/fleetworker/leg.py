@@ -133,7 +133,7 @@ grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
     composite carries one);
   - ``slot-plan <path>``, at most one: THE SLOT PLAN below;
   - ``run-report <path>``, at most one: THE RUN REPORT below.
-Any other line refuses the leg, naming it: a file this leg cannot read is never ignored. A leg that
+Any other line refuses the leg, naming it: a file the fleet cannot read is never ignored. A leg that
 may hold the GPU -- one that does not declare ``--cpu``, the slot's own fail-closed definition, so a
 measurement's too -- whose repository's file names a pin and whose argv satisfies none is refused
 before anything runs, naming the forms that pass: the pins, and for a runner that is a shell's
@@ -317,7 +317,7 @@ PIN = r"""fleet_leg_read() {
   [ "$(git -C "$co" cat-file -t "$sha:.github/fleet-leg" 2>/dev/null)" = blob ] || return 2
   text=$(git -C "$co" cat-file blob "$sha:.github/fleet-leg") || { printf '%s' "cannot read .github/fleet-leg at $sha in $co (above)"; return 1; }
   [ "$(git -C "$co" cat-file blob "$sha:.github/fleet-leg" | tr -d '\000' | wc -c)" -eq "$(git -C "$co" cat-file -s "$sha:.github/fleet-leg")" ] ||
-    { printf '%s' ".github/fleet-leg at $sha holds NUL bytes, which this leg does not read"; return 1; }
+    { printf '%s' ".github/fleet-leg at $sha holds NUL bytes, which the fleet does not read"; return 1; }
   printf '%s' "$text"
 }
 pin_grammar() {
@@ -335,7 +335,7 @@ pin_grammar() {
       run-report) case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;; *) [ -n "$pin_report" ] || good=1 ;; esac ;;
     esac
     if [ -z "$good" ] || [ -n "$extra" ]; then
-      printf '%s' ".github/fleet-leg line $n is not one this leg reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, a # comment or a blank line"
+      printf '%s' ".github/fleet-leg line $n is not one the fleet reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, a # comment or a blank line"
       return 1
     fi
     case "$d" in
