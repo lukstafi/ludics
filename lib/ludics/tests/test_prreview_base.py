@@ -904,28 +904,67 @@ class RepositoryAdvisoryInterim(unittest.TestCase):
         self.assertIn(f"green, interim (tip {C[:8]}", out)
         self.assertIn(f"(run 9 of ci at {B[:8]} is still running, but only jobs the repository's advisory"
                       " list names — not waited for)", out)
+        self.assertNotIn("holds the interim:", out, "a released run is not also named as holding")
         rc, out, _ = self._base(answers)
         self.assertEqual(rc, 4, out)
         self.assertNotIn("green, interim", out)
+        self.assertNotIn("holds the interim:", out, "without the flag there is no release to explain")
 
     def test_an_older_run_still_owing_a_required_job_holds_the_interim(self) -> None:
-        for name, jobs in (("a required job running", [job(UBUNTU, None), job(MAC, None)]),
-                           ("a required job red", [job(UBUNTU, "failure"), job(MAC, None)]),
-                           ("no job yet", [])):
+        """#930 on base's side: the run that holds is named with the job that kept it and why,
+        once per run though the interim reads it twice (the page and the deeper read)."""
+        for name, jobs, why in (
+                ("a required job running", [job(UBUNTU, None), job(MAC, None)],
+                 "job 'fixtures (ubuntu)' is still running (or queued) and is not advisory"),
+                ("a required job red", [job(UBUNTU, "failure"), job(MAC, None)],
+                 "job 'fixtures (ubuntu)' concluded failure, red and not waived"),
+                ("no job yet", [], "it lists no jobs yet")):
             with self.subTest(name):
                 answers = self._world(older={"status": "in_progress", "conclusion": None}, older_jobs=jobs)
                 rc, out, _ = self._base(answers, advisory=True)
                 self.assertEqual(rc, 4, out)
                 self.assertNotIn("green, interim", out)
+                line = f"           (run 9 of ci at {B[:8]} holds the interim: {why})\n"
+                self.assertIn(line, out)
+                rounds = out.count("(run 9 of ci at")
+                self.assertEqual(rounds, out.count(line), "every note on the run is that one line")
+                self.assertNotIn("not waited for", out)
 
     def test_an_unreadable_list_holds_the_interim(self) -> None:
-        """Fail closed: a list that cannot be read releases nothing and judges no head."""
+        """Fail closed: a list that cannot be read releases nothing and judges no head -- and the
+        run it held says that is why."""
         answers = self._world(older={"status": "in_progress", "conclusion": None},
                               older_jobs=[job(UBUNTU, "success"), job(MAC, None)])
         answers["repos/o/r/contents/.github/ship-pr-advisory-checks"] = (1, "gh: Forbidden (HTTP 403)")
         rc, out, _ = self._base(answers, advisory=True)
         self.assertEqual(rc, 4, out)
         self.assertNotIn("green, interim", out)
+        self.assertIn(f"(run 9 of ci at {B[:8]} holds the interim: the repository's advisory list could"
+                      " not be read, so it releases nothing)", out)
+
+    def test_a_merged_head_re_run_on_a_required_job_names_the_job(self) -> None:
+        """The source's other in-flight read (``tip_pr_head_verdict``): the head judged green, a
+        run of ci at the head still going on a required job (a re-run) leaves the source pending,
+        and under the flag the line says which run, which job and why (#930's reason); without
+        it, as before."""
+        answers = pushless_world()
+        answers.update({
+            f"repos/o/r/actions/runs?head_sha={H}&per_page=100": json.dumps({"workflow_runs": [
+                {"created_at": "2026-09-26T09:00:00Z", "id": 8009, "workflow_id": 1, "run_attempt": 1,
+                 "status": "in_progress", "conclusion": None}]}),
+            "repos/o/r/actions/runs/8009/jobs?per_page=100": json.dumps(
+                {"jobs": [job(UBUNTU, None), job(MAC, None)]}),
+            "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY,
+        })
+        green = gate_stub("green", "o/r#7 @eeeeeeee: green — 1 build checks passed")
+        for advisory, line in ((True, "is being re-run by ci (run 8009 held: job 'fixtures (ubuntu)' is"
+                                      " still running (or queued) and is not advisory)\n"),
+                               (False, "is being re-run by ci\n")):
+            with self.subTest(advisory=advisory), tempfile.TemporaryDirectory() as d:
+                args = ["main"] + (["--advisory-red", os.path.join(d, "a.json")] if advisory else [])
+                rc, out, _, _ = base_run(answers, args, gate=green)
+                self.assertEqual(rc, 4, out)
+                self.assertIn(line, out)
 
 
 class NamedSources(unittest.TestCase):

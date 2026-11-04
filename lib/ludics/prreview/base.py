@@ -45,8 +45,11 @@ The same flag puts the interim under that one list (ludics-lite#659), at its two
 the merged PR head's build signal (source (a)) and the interim's "nothing else in flight". A
 merged head is judged as ``checks``/``merge`` judged it when it merged -- jobs the list names still
 running, or red, do not hold it -- and a run at an older commit still in flight ONLY on jobs the
-list names, every other job of it passed (``Gate.run_inflight_is_advisory_only``, the rule
-``checks`` releases a head's run by), is not in flight for the interim, on a note line of its own.
+list names, every other job of it passed (``Gate.run_inflight_hold``, the rule ``checks``
+releases a head's run by), is not in flight for the interim, on a note line of its own. A run the
+rule does not release names, on a line of its own too, the job that kept it and why (#930's
+``held`` reason, as ``checks`` and ``merge`` print it), and the merged head's run re-run by a
+workflow says the same inside its source line.
 BOUNDARY, fail closed: a list or jobs read that fails releases nothing, and judges no head (no
 interim); a run with no job yet, or any job the list does not name unfinished or not green, is in
 flight. The file records the branch's own push runs' advisory reds only: a merged head's are
@@ -741,15 +744,22 @@ class Base:
             self._advisory_jobs = Matcher(gate.advisory)
         return self._advisory_jobs
 
-    def inflight_advisory_only(self, run_id: str) -> bool:
-        """Under ``--advisory-red`` (#659): a run not yet completed whose every unfinished job the
-        repository's list names and whose every finished job it does not name passed -- the
-        rule ``checks`` releases a head's run by (``Gate.run_inflight_is_advisory_only``, its
-        job-list settle included). False without the flag, and on any read that fails."""
-        if not self.repo_advisory or not _DIGITS.fullmatch(run_id):
-            return False
+    def inflight_hold(self, run_id: str) -> str | None:
+        """Under ``--advisory-red`` (#659): None for a run not yet completed whose every unfinished
+        job the repository's list names and whose every finished job it does not name passed --
+        the rule ``checks`` releases a head's run by (``Gate.run_inflight_hold``, its job-list
+        settle included) -- else the run holds, and this is why: the gate's reason naming the job
+        (#930), or the read that failed. Without the flag every run in flight holds and there is no
+        release to explain: "" (held, nothing to name). Which runs hold is the gate's None/not-None
+        and nothing else, so a reason's wording never changes a decision."""
+        if not self.repo_advisory:
+            return ""
+        if not _DIGITS.fullmatch(run_id):
+            return "its run id is not known, so its jobs cannot be read"
         gate = self.repo_gate()
-        return gate is not None and gate.run_inflight_is_advisory_only(run_id)
+        if gate is None:
+            return "the repository's advisory list could not be read, so it releases nothing"
+        return gate.run_inflight_hold(run_id)
 
     def advisory_red(self, run_id: str, attempt: int) -> tuple[list[tuple[str, str]], str]:
         """Under ``--advisory-red``: the red run's red jobs when every one of them is a job the
@@ -952,8 +962,8 @@ class Base:
         for wid, wname in wants:
             row = next((r for r in runs if r[2] == wid), None)
             if row is not None and row[3] != "completed":
-                if not self.inflight_advisory_only(row[1]):
-                    rerun.append(wname)
+                if (hold := self.inflight_hold(row[1])) is not None:
+                    rerun.append(f"{wname} (run {row[1]} held: {hold})" if hold else wname)
                     continue
                 released.append(wname)
             else:
@@ -2030,15 +2040,20 @@ class Wait:
     def held_by(self, rnd: _Round, rows: Sequence[RunRow], released: dict[str, bool]) -> int:
         """How many of these runs at an older commit, each not completed, hold the interim. Under
         ``--advisory-red`` a run going only on jobs the repository's list names, every other job
-        of it passed, does not (#659): it is named on a note line, once per run however many reads
-        hold it (``released`` remembers the answers within the round)."""
+        of it passed, does not (#659), and one that holds says which job kept it and why (#930's
+        reason): either is named on a note line, once per run however many reads hold it
+        (``released`` remembers the answers within the round)."""
         held = 0
         for r in rows:
             if r.run_id not in released:
-                released[r.run_id] = self.b.inflight_advisory_only(r.run_id)
-                if released[r.run_id]:
+                hold = self.b.inflight_hold(r.run_id)
+                released[r.run_id] = hold is None
+                if hold is None:
                     rnd.out += (f"           (run {r.run_id} of {r.name} at {r.head_sha[:8]} is still running,"
                                 " but only jobs the repository's advisory list names — not waited for)\n")
+                elif hold:
+                    rnd.out += (f"           (run {r.run_id} of {r.name} at {r.head_sha[:8]} holds the"
+                                f" interim: {hold})\n")
             if not released[r.run_id]:
                 held += 1
         return held
