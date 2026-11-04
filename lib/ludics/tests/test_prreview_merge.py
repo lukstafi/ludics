@@ -1,6 +1,6 @@
 """``pr-review.sh checks`` and ``merge``, end to end on the production path: through
 ``scripts/py -m ludics.prreview`` and through the shell script's ``main`` (which execs the Python),
-with a gh BINARY on PATH that answers by route (tests/fake.py's ``When(text=...)``) -- no shell
+with a gh BINARY on PATH that answers by route (tests/fake.py's ``When``) -- no shell
 function, no bridge.
 
 The fixture suites (test-pr-review-checks-absent.sh, test-pr-review-merge.sh,
@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import unittest
+from collections.abc import Sequence
 
 from ludics.tests.fake import Answer, FakeTool, When
 
@@ -25,13 +26,16 @@ PR_REVIEW = os.path.join(ROOT, "ship-pr", "scripts", "pr-review.sh")
 COMPARE = json.dumps({"behind_by": 0, "ahead_by": 1, "merge_base_commit": {"sha": "mb"}, "files": []})
 THREADS = json.dumps({"totalCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []})
 
-# The reads of one green, clean merge, most specific first (the first route whose needles all
-# appear in the call answers it): the output each would have printed after its --jq.
-GREEN: list[tuple[list[str], int, str, str]] = [
-    # No merge-build config: a --wait from a directory that is no clone of o/r reads it (#944).
-    # First, as its path holds the needles of the merge call's route ("pr", "merge").
-    (["ship-pr-merge-build"], 1, "", "gh: Not Found (HTTP 404)\n"),
-    (["pr", "merge"], 0, "", ""),
+# A route's matcher: a ``When``, or text needles (``When(text=...)``) that all appear in the call.
+Route = tuple[When | list[str], int, str, str]
+# The merge call itself, by argv prefix: a read whose arguments merely hold the substrings "pr"
+# and "merge" (the merge-build config's path, .github/ship-pr-merge-build) never matches it.
+MERGE = When(prefix=("pr", "merge"))
+
+# The reads of one green, clean merge, most specific first (the first route that holds for the
+# call answers it): the output each would have printed after its --jq.
+GREEN: list[Route] = [
+    (MERGE, 0, "", ""),
     # A --wait's conflict preflight (ludics-lite#729), before the drift read its projection shares
     # a field with.
     (["\\(.mergeable)"], 0, "true\tclean\tmain\n", ""),
@@ -43,6 +47,8 @@ GREEN: list[tuple[list[str], int, str, str]] = [
     ([".body"], 0, "Nothing to close.\n", ""),
     ([".commits|tostring"], 0, "1\theadsha\n", ""),
     (["pulls/7/commits"], 0, "headsha\tA commit.\n", ""),
+    # No merge-build config: a --wait from a directory that is no clone of o/r reads it (#944).
+    (["ship-pr-merge-build"], 1, "", "gh: Not Found (HTTP 404)\n"),
     (["ship-pr-advisory-checks"], 1, "", "gh: Not Found (HTTP 404)\n"),
     (["contents/.github"], 0, "1\nworkflows\n", ""),
     (["check-runs"], 0, "ci\tsuccess\thttps://u\t1\n", ""),
@@ -63,8 +69,9 @@ class Production(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def route(self, routes: list[tuple[list[str], int, str, str]]) -> None:
-        self.gh.route(*((When(text=tuple(needles)), Answer(rc, out, err)) for needles, rc, out, err in routes))
+    def route(self, routes: Sequence[Route]) -> None:
+        self.gh.route(*((w if isinstance(w, When) else When(text=tuple(w)), Answer(rc, out, err))
+                        for w, rc, out, err in routes))
 
     def calls(self) -> list[list[str]]:
         return self.gh.calls()
@@ -94,7 +101,7 @@ class Production(unittest.TestCase):
     def test_a_pr_merged_at_another_head_is_not_this_merge(self) -> None:
         """ludics#823: gh finds the PR already merged, makes no merge request and exits 0 with its
         warning on stderr (gh v2.101.0); the merged head decides, not gh's exit."""
-        merged_elsewhere = [(["pr", "merge"], 0, "", "! Pull request o/r#7 was already merged\n"), *GREEN]
+        merged_elsewhere = [(MERGE, 0, "", "! Pull request o/r#7 was already merged\n"), *GREEN]
         at_another = [(["merged=\\(.merged)"], 0, "merged=true state=closed\tlandedsha\n", ""), *merged_elsewhere]
         for entry in self.entries():
             with self.subTest(entry=entry[0]):
@@ -109,7 +116,7 @@ class Production(unittest.TestCase):
 
     def test_a_timed_out_merge_call_is_ambiguous_and_never_re_sent(self) -> None:
         """#708: a 504 is the gateway giving up on a backend that may have merged the PR."""
-        timed_out = [(["pr", "merge"], 1, "", "HTTP 504 (https://api.github.com/graphql)\n"), *GREEN]
+        timed_out = [(MERGE, 1, "", "HTTP 504 (https://api.github.com/graphql)\n"), *GREEN]
         for entry in self.entries():
             with self.subTest(entry=entry[0]):
                 self.route(timed_out)
