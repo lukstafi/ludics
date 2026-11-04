@@ -394,6 +394,12 @@ gh() {
     fi
     response="$ADVISORY_BODY"
     ;;
+  # No merge-build config (#611), exact for the same reason: a merge --wait run outside a clone
+  # of $REPO reads it before the wait (#944), and a workflow file read as one would refuse it.
+  "repos/$REPO/contents/.github/ship-pr-merge-build")
+    echo "gh: Not Found (HTTP 404)" >&2
+    return 1
+    ;;
   "repos/$REPO/contents/.github") response=$(advisory_listing "$ADVISORY_DIR") || return 1 ;;
   "repos/$REPO/contents") response=$(advisory_listing "$ADVISORY_ROOT") || return 1 ;;
   "repos/$REPO/contents/"*"?ref=$BASE_SHA")

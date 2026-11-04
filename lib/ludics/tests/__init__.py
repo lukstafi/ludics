@@ -3,8 +3,9 @@
 Importing this package arms a watchdog: once ``LUDICS_TEST_WATCHDOG`` seconds (default 600) have
 passed, faulthandler prints every thread's stack to stderr and exits the process with status 1.
 It is one timer for the whole process, not one per test, so it bounds the run: the full suite
-takes about 105 s on mac-studio and 100 s on the CI runner. ``0`` disables it. CI sets a lower
-bound, because its job cap is shorter than the default and a job killed at the cap prints nothing.
+took about 235 s on the CI runner in 2026-11 (skill-scripts.yml's python job states the measure).
+``0`` disables it. CI sets a lower bound, because its job cap is shorter than the default and a
+job killed at the cap prints nothing.
 
 Why: while writing the tests for ludics-lite#736, two in-process flock deadlocks (a
 ``take_slot`` slot lock leaked onto a descriptor nothing could reach any more; the registry's

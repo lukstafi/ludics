@@ -473,7 +473,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -485,11 +485,14 @@ jobs:
         run: npx --yes pyright@1.1.414 --pythonplatform Darwin
       - name: The package's unit tests
         # The test package's watchdog (lib/ludics/tests/__init__.py) dumps every thread's stack
-        # and fails a hung run; its 600 s default outlasts this job's 5-minute cap, which kills a
-        # hang with no trace, so it fires here first: ~140 s of tests (the prompt checker's
-        # conformance suite, test_checkprompts_cli, is ~40 s of them) plus ~45 s of steps before.
+        # and fails a hung run; its 600 s default outlasts this job's 7-minute cap, which kills a
+        # hang with no trace, so it fires here first, with room for the steps before it (~45 s).
+        # Measured on 2026-11-04 (#944): this step's p90 was 234 s and its maximum 239 s over the
+        # job's 29 latest successful runs, the job's own p90 275 s -- so the old 240 s watchdog
+        # and 5-minute cap had no headroom left, and a PR adding 12 s of tests went red on it.
+        # Hence the cap, ceil(1.5 x 275 s) = 7 min by THE CAPS, and 360 s for the watchdog.
         env:
-          LUDICS_TEST_WATCHDOG: '240'
+          LUDICS_TEST_WATCHDOG: '360'
         run: scripts/py -m unittest discover -s lib -t lib -p 'test_*.py' -v
 
   # ---- every script suite on macOS, two jobs, two runner assignments -----------------------

@@ -3200,6 +3200,43 @@ test_an_unusable_merge_build_never_merges() {
   assert_no_merge_call
 }
 
+# merge --wait without -C, run from a directory that is no clone (#944): with the config on the
+# default branch it is refused before the wait, exit 2, naming -C -- the conflict preflight (and so
+# the gate behind it) never reached; with no config it waits and merges as before, and with an
+# unread one it says so and waits, the build step's own read deciding after the wait (exit 3).
+test_a_wait_from_no_clone_refuses_before_the_wait() {
+  reset
+  build_fixture clash
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  MERGE_CWD=$TEST_ROOT
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge --wait=60
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    # Not POSIX: nothing is read early, and the build step's host refusal comes first, as before.
+    assert_posix_only_refusal "a merge build outside a clone under --wait"
+  else
+    assert_eq "$MERGE_RC" 2 "a --wait outside a clone of a building repository refuses ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "REFUSING to merge $REPO#7 before the wait: $REPO's .github/ship-pr-merge-build asks for a build" \
+      "before the wait, saying why a clone is needed"
+    assert_contains "$MERGE_STDERR" "or name one with -C <clone>" "naming -C"
+    assert_contains "$MERGE_CALLS" "CALL merge-build-config" "the config was read"
+    assert_not_contains "$MERGE_CALLS" "CALL mergeability" "the conflict preflight was never reached"
+    assert_no_merge_call
+  fi
+  MERGE_BUILD_CONFIG=""
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge --wait=60
+  assert_eq "$MERGE_RC" 0 "no config: a --wait outside a clone merges as before ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_CALLS" "pr merge 7" "the merge is made"
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  MERGE_BUILD_CONFIG_FAIL=1
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge --wait=60
+  assert_eq "$MERGE_RC" 3 "an unread config is unknown after the wait, as before ($MERGE_OUTPUT)"
+  if [ "$MERGE_BUILD_RUNS" -eq 1 ]; then
+    assert_contains "$MERGE_STDERR" "could not be read before the wait" "and the early read says it did not answer"
+    assert_contains "$MERGE_CALLS" "CALL mergeability" "the wait went on"
+  fi
+  assert_no_merge_call
+}
+
 # merge -C <clone> (ludics-lite#730): run from a directory that is no clone, it builds in the clone -C
 # names, and refuses the clash as from inside it. -C naming no checkout is exit 2 before anything
 # is read.
@@ -3420,6 +3457,7 @@ tests=(
   test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override
   test_a_comment_only_shared_change_merges_without_a_build
   test_a_code_change_on_both_sides_still_builds
+  test_a_wait_from_no_clone_refuses_before_the_wait
   test_merge_builds_in_the_clone_c_names
   test_merge_takes_c_before_the_pr
   test_a_pr_changing_the_config_is_told_which_copy_judged_it

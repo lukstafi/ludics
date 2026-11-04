@@ -986,7 +986,8 @@ base alone shares (the same command on the base tip's tree, the merge's parents)
 refused under the override too, its extra line shown (#860); under a `comments *.ml` line, a
 build input both sides changed, one side in a comment alone, merges with no build, and a code change
 there on both sides still builds (#861); a line outside the config's
-grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2. Each build case then
+grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2 -- under `--wait`
+before the wait, naming `-C`, while with no config it merges and with an unread one it waits (#944). Each build case then
 checks the clone: its working tree, its worktree list and its refs are as they were. Under Git Bash
 the merge build is POSIX-only by design, so the cases that would build (the clash, its control, the
 single-side clash under `any-input`, the two base-red cases, the two `comments` cases and the merge outside a clone) assert its refusal there instead

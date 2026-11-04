@@ -11,7 +11,8 @@ seven merges). The order of the reads is the shell's, and it is load-bearing -- 
 review round:
 
   the body's closing-keyword scan (lead time), the merge queue (a close-out merge), the advisory
-  list, a --wait's conflict preflight (ludics-lite#729, ``conflict_preflight``), the gate (with the
+  list, a --wait's clone preflight without ``-C`` (#944, mergebuild.py's ``clone_preflight``) and
+  conflict preflight (ludics-lite#729, ``conflict_preflight``), the gate (with the
   override's waiver), the close-out refusals, the base drift, the build of
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue last,
@@ -57,7 +58,7 @@ from ludics.prreview.core import (
 from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, load_gate_config
-from ludics.prreview.mergebuild import Ceiling, clone_of, merge_build
+from ludics.prreview.mergebuild import Ceiling, clone_of, clone_preflight, merge_build
 from ludics.prreview.runners import (
     HeadRun,
     Idle,
@@ -877,6 +878,9 @@ class Merge:
         if policy != 0:
             return policy
         if self.opts.wait_for > 0:
+            if self.opts.checkout is None:
+                # The working directory as the build's clone (#944): -C was checked first of all.
+                clone_preflight(self.session, self.repo, self.num, os.getcwd())
             self.conflict_preflight()
         self.judge()
         ceiling = self.ceiling()
