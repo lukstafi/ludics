@@ -132,7 +132,11 @@ start_is() {
 }
 take_lock() {
   local lock="$1" wait="$2" label="$3" waited=0 holder hstart
-  until mkdir "$lock" 2>/dev/null; do
+  # The claim is the mkdir AND the start file's exclusive creation: bash's noclobber opens with
+  # O_EXCL, while uutils's mkdir (Ubuntu's coreutils since 25.10) can report success to both of two
+  # racers (#921), which let two launches, two unsticks or two owners of one worktree through
+  # (#953). A racer whose mkdir succeeded but whose start file exists already is a contender.
+  until mkdir "$lock" 2>/dev/null && ( set -C; : > "$lock/start" ) 2>/dev/null; do
     [ -d "$lock" ] || { echo "$label: cannot create lock $lock (unwritable?)"; return 1; }
     holder=$(cat "$lock/pid" 2>/dev/null); hstart=$(cat "$lock/start" 2>/dev/null)
     if [ -n "$holder" ] && { ! kill -0 "$holder" 2>/dev/null || ! start_is "$holder" "$hstart"; }; then
@@ -148,7 +152,7 @@ take_lock() {
   done
   # start before pid: a contender that sees a pid without its start time would otherwise read
   # the mismatch as a reused pid and reclaim a lock that is being taken right now.
-  proc_start $$ > "$lock/start"; echo $$ > "$lock/pid"
+  proc_start $$ >> "$lock/start"; echo $$ > "$lock/pid"
 }
 release_lock() { rm -f "$1/pid" "$1/start"; rmdir "$1" 2>/dev/null; }
 # bounded [--stdin <file>] <secs> <cmd...>: run detached from the caller's stdin, kill the whole
