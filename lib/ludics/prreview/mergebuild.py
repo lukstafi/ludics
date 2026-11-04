@@ -76,7 +76,8 @@ are not read again: they build, as above.
 
 HOW IT BUILDS. From a local clone of the repository: the git checkout the merge runs in, or the one
 ``merge -C <dir>`` names (ludics-lite#730; checked before anything is read, so a wait never ends on
-it), whose remote (``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional,
+it; without ``-C``, a ``--wait`` checks the working directory before the wait, #944's
+``clone_preflight``), whose remote (``origin`` first) has a URL ending in the repository's ``owner/name`` (``.git`` optional,
 case ignored), so an SSH host alias serves as well as github.com. No such clone is exit 2 (the refusal names
 ``-C``), and so is a SHALLOW clone, which may lack the merge base (run from a full clone, or ``git fetch
 --unshallow``). The clone fetches ``refs/pull/<n>/head`` and the base branch as OBJECTS only -- no
@@ -506,6 +507,56 @@ def find_clone(repo: str, where: str, hooks: str, stop: str = "NOT merging") -> 
             "name one with -C <clone>.",
         )
     return root, remote
+
+
+def clone_preflight(session: GhSession, repo: str, pr: str, where: str) -> None:
+    """A ``merge --wait`` without ``-C``, before the wait (#944): the clone the build would use is
+    the checkout ``where`` (the working directory) is in, and when it is no clone of ``repo`` while
+    the repository asks for builds, the wait would end in ``find_clone``'s refusal -- 30 minutes
+    late on lukstafi/ocannl-staging#1673, from ``~/ludics``. So that is refused now, exit 2,
+    naming ``-C``; the clone to name is the caller's to say (#174: a guessed worktree is not the
+    caller's intent), so none is inferred.
+
+    The boundary, as an allowlist of what refuses: the checkout has no remote naming ``repo`` (or
+    ``where`` is in no checkout) AND the default branch's ``CONFIG_FILE`` read answered with a
+    body. The remotes are read first, locally, so a clone reads nothing here. Not read: whether
+    this drift triggers a build, known only after the wait -- a config is the request for a
+    clone, so a PR whose build would not have run is refused too, and ``-C`` answers it; nor
+    the body's grammar, a shallow or partial clone, or the host, all the build step's own -- on a
+    non-POSIX host nothing is read here, so its host refusal comes first there, as before. Any
+    other answer of the config read (a 404, a refusal, no answer) is no refusal here: the build
+    step reads the config again after the wait and decides as before. A non-answer says so on
+    stderr."""
+    if os.name == "nt":
+        return
+    root, remote = clone_of(repo, where)
+    if remote is not None:
+        return
+    result = session.retry(
+        "read", ["api", "-H", "Accept: application/vnd.github.raw", f"repos/{repo}/contents/{CONFIG_FILE}"]
+    )
+    match result:
+        case GhOk():
+            pass
+        case GhFailed() if "HTTP 404" in session.err_line():
+            return
+        case GhFailed() | GhUnanswered():
+            warn(
+                f"{repo}'s {CONFIG_FILE} could not be read before the wait ({session.err_line()}), so whether",
+                f"this merge needs a clone of {repo} is unknown until its build step; waiting for the build signal.",
+            )
+            return
+        case _:
+            assert_never(result)
+    here = f"the checkout this merge runs in ({root}) has no remote naming {repo}" if root else (
+        f"this merge does not run inside a git checkout ({where})"
+    )
+    fail(
+        2,
+        f"REFUSING to merge {repo}#{pr} before the wait: {repo}'s {CONFIG_FILE} asks for a build of the",
+        f"merge commit, and {here}. Run merge from a clone of {repo}, or name one with -C <clone>",
+        "(the PR's own worktree, say). Nothing was waited for.",
+    )
 
 
 def _slot_runner() -> str | None:

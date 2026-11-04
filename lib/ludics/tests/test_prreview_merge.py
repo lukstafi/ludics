@@ -28,6 +28,9 @@ THREADS = json.dumps({"totalCount": 0, "pageInfo": {"hasNextPage": False, "endCu
 # The reads of one green, clean merge, most specific first (the first route whose needles all
 # appear in the call answers it): the output each would have printed after its --jq.
 GREEN: list[tuple[list[str], int, str, str]] = [
+    # No merge-build config: a --wait from a directory that is no clone of o/r reads it (#944).
+    # First, as its path holds the needles of the merge call's route ("pr", "merge").
+    (["ship-pr-merge-build"], 1, "", "gh: Not Found (HTTP 404)\n"),
     (["pr", "merge"], 0, "", ""),
     # A --wait's conflict preflight (ludics-lite#729), before the drift read its projection shares
     # a field with.
@@ -66,12 +69,12 @@ class Production(unittest.TestCase):
     def calls(self) -> list[list[str]]:
         return self.gh.calls()
 
-    def run_cmd(self, entry: list[str], *args: str, **env: str) -> subprocess.CompletedProcess[str]:
+    def run_cmd(self, entry: list[str], *args: str, cwd: str | None = None, **env: str) -> subprocess.CompletedProcess[str]:
         environ = {k: v for k, v in os.environ.items() if not k.startswith(("SHIP_PR_", "LUDICS_"))}
         environ.update({"PATH": self.dir + os.pathsep + os.environ.get("PATH", ""), "REPO": "",
                         "SHIP_PR_API_ATTEMPTS": "1", "SHIP_PR_API_BACKOFF": "0",
                         "SHIP_PR_STATE_DIR": os.path.join(self.dir, "state"), **env})
-        return subprocess.run([*entry, *args], capture_output=True, text=True, env=environ, cwd=self.dir, check=False)
+        return subprocess.run([*entry, *args], capture_output=True, text=True, env=environ, cwd=cwd or self.dir, check=False)
 
     def entries(self) -> list[list[str]]:
         return [[PY, "-m", "ludics.prreview"], [PR_REVIEW]]
@@ -262,6 +265,52 @@ class Production(unittest.TestCase):
                 done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertEqual(sum("\\(.mergeable)" in " ".join(c) for c in self.calls()), 1)
+
+    def test_a_wait_from_no_clone_refuses_before_the_wait_when_the_repository_builds(self) -> None:
+        """#944: ``merge --wait`` without ``-C``, run where no checkout has a remote naming o/r, while
+        o/r's default branch has a merge-build config: exit 2 before the gate reads anything, naming
+        ``-C``. No config (a 404) or an unread one waits and merges as before; a clone of o/r as the
+        working directory reads no config before the gate; no --wait reads nothing early."""
+        config = [(["ship-pr-merge-build"], 0, "command sh ./build.sh\ninputs *.ml\n", ""), *GREEN]
+        unread = [(["ship-pr-merge-build"], 1, "", "gh: Service Unavailable (HTTP 503)\n"), *GREEN]
+        remote = os.path.join(self.dir, "remotes", "o", "r.git")
+        subprocess.run(["git", "init", "-q", "--bare", remote], check=True)
+        clone = os.path.join(self.dir, "clone")
+        subprocess.run(["git", "clone", "-q", remote, clone], check=True, capture_output=True)
+
+        def gated(calls: list[list[str]]) -> bool:
+            return any("check-runs" in " ".join(c) for c in calls)
+
+        for entry in self.entries():
+            with self.subTest(entry=entry[0], config="present"):
+                self.route(config)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("REFUSING to merge o/r#7 before the wait: o/r's .github/ship-pr-merge-build", done.stderr)
+                self.assertIn("does not run inside a git checkout", done.stderr)
+                self.assertIn("name one with -C <clone>", done.stderr)
+                self.assertFalse(gated(self.calls()), "the gate read nothing")
+                self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
+            with self.subTest(entry=entry[0], config="absent"):
+                self.route(GREEN)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertEqual(sum("ship-pr-merge-build" in " ".join(c) for c in self.calls()), 1, "read once")
+            with self.subTest(entry=entry[0], config="unread"):
+                self.route(unread)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn("could not be read before the wait", done.stderr)
+            with self.subTest(entry=entry[0], config="present, from a clone"):
+                self.route(config)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30", cwd=clone)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertFalse(any("ship-pr-merge-build" in " ".join(c) for c in self.calls()), "no config read")
+            with self.subTest(entry=entry[0], config="present, no wait"):
+                self.route(config)
+                done = self.run_cmd(entry, "merge", "o/r#7")
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertFalse(any("ship-pr-merge-build" in " ".join(c) for c in self.calls()), "no config read")
 
 
 if __name__ == "__main__":
