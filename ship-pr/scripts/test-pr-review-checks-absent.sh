@@ -1782,12 +1782,17 @@ test_unreadable_jobs_leave_the_red_unknown() {
 # `macos` stands for the advisory leg a repository's advisory list names; build_checks
 # drops its check run, so the check list below carries only the required job's. Each row's times
 # are given as AGES in seconds (created_ago, completed_ago; an absent age is a null field), since
-# what run_inflight_is_advisory_only weighs is how long the run's job list has been still.
+# what run_inflight_is_advisory_only weighs is how long the run's job list has been still. Every
+# hold names the run, the first job that kept the release from applying, and why (ludics#930):
+# each case below pins its reason's line, through assert_held.
 inflight_jobs() {
   jq -cn --argjson jobs "$1" \
     '{jobs: [$jobs[] | {name, conclusion: (.conclusion // null), status: (.status // null),
       created_at: (if .created_ago == null then null else ((now - .created_ago) | floor | todateiso8601) end),
       completed_at: (if .completed_ago == null then null else ((now - .completed_ago) | floor | todateiso8601) end)}]}'
+}
+assert_held() { # <the reason, after the job> <message>
+  assert_contains "$GATE_OUTPUT" "  held     workflow run 101 (ci): $1" "$2"
 }
 advisory_inflight_fixture() { # <jobs, as inflight_jobs takes them>
   reset_fixture
@@ -1820,6 +1825,7 @@ test_a_pending_required_job_holds_its_run() {
   run_gate
   assert_eq "$GATE_RC" 4 "a required job still running is a verdict on its way"
   assert_contains "$GATE_OUTPUT" "1 workflow run(s) for this head have no conclusion yet" "the run holds"
+  assert_held "job test is still running (or queued) and is not advisory" "naming the job that holds it"
 }
 
 # Fail closed on what the read cannot show: a run that has not created its jobs, and a read that
@@ -1829,6 +1835,7 @@ test_an_inflight_run_without_jobs_holds() {
   run_gate
   assert_eq "$GATE_RC" 4 "a run with no jobs yet holds"
   assert_contains "$GATE_OUTPUT" "have no conclusion yet" "as a run in flight"
+  assert_held "it lists no jobs yet" "saying it has none"
 }
 
 test_an_unreadable_jobs_read_holds_its_run() {
@@ -1838,6 +1845,8 @@ test_an_unreadable_jobs_read_holds_its_run() {
   run_gate
   assert_eq "$GATE_RC" 4 "an unread job list holds the run"
   assert_contains "$GATE_OUTPUT" "have no conclusion yet" "as a run in flight"
+  assert_held "its job list could not be read (" "naming the read that failed"
+  assert_contains "$GATE_OUTPUT" "so whether only advisory jobs are left is unknown" "and what it leaves unknown"
 }
 
 # The `needs:` race. GitHub creates a dependent job only once its dependencies finish, so in the
@@ -1849,10 +1858,14 @@ test_a_job_list_inside_the_settle_holds_its_run() {
                               {"name":"macos","created_ago":900}]'
   run_gate
   assert_eq "$GATE_RC" 4 "a required job that has only just finished may have dependents on the way"
+  assert_held "its job list last changed " "naming the settle"
+  assert_contains "$GATE_OUTPUT" "ago (job build), inside the 1m settle" "naming the settle and the job that moved it"
   advisory_inflight_fixture '[{"name":"build","conclusion":"success","created_ago":900,"completed_ago":600},
                               {"name":"macos","created_ago":5}]'
   run_gate
   assert_eq "$GATE_RC" 4 "a job created inside the settle is a job list still moving"
+  assert_held "its job list last changed " "naming the settle"
+  assert_contains "$GATE_OUTPUT" "ago (job macos), inside the 1m settle" "naming the job that moved it"
 }
 
 # A run still in flight with NO unfinished job is between jobs, or finishing: its next job may not
@@ -1862,6 +1875,7 @@ test_a_run_between_jobs_holds() {
                               {"name":"macos","conclusion":"success","created_ago":900,"completed_ago":600}]'
   run_gate
   assert_eq "$GATE_RC" 4 "an in-flight run with nothing unfinished in its list holds"
+  assert_held "none of its jobs is unfinished: it is between jobs or finishing" "saying so"
 }
 
 # This read only ever releases. A required job that finished red or stopped, which the check list
@@ -1876,6 +1890,12 @@ test_a_red_or_stopped_required_job_holds_its_run() {
     run_gate
     assert_eq "$GATE_RC" 4 "a required job that concluded $concl is not released past"
   done
+  assert_held "job test concluded cancelled, stopped and not judged" "a stopped job is named as stopped"
+  advisory_inflight_fixture '[{"name":"build","conclusion":"success","created_ago":900,"completed_ago":600},
+                              {"name":"test","conclusion":"failure","created_ago":900,"completed_ago":600},
+                              {"name":"macos","created_ago":900}]'
+  run_gate
+  assert_held "job test concluded failure, red and not waived" "a red job is named as unwaived red"
 }
 
 # A job with no timestamp cannot be placed against the settle, so it proves nothing.
@@ -1884,10 +1904,13 @@ test_an_untimed_job_holds_its_run() {
                               {"name":"macos"}]'
   run_gate
   assert_eq "$GATE_RC" 4 "a job with no created_at holds"
+  assert_held "job macos has no created_at, so the settle cannot place it (untimed)" "naming the untimed job"
   advisory_inflight_fixture '[{"name":"build","conclusion":"success","created_ago":900},
                               {"name":"macos","created_ago":900}]'
   run_gate
   assert_eq "$GATE_RC" 4 "a finished job with no completed_at holds"
+  assert_held "job build concluded success with no completed_at, so the settle cannot place it (untimed)" \
+    "naming the finished job with no completed_at"
 }
 
 # A queued advisory leg beside required jobs that all have their verdict (ludics#862):
@@ -1942,6 +1965,8 @@ test_a_queued_advisory_leg_does_not_hold_the_merge() {
                                      {"name":"macos","status":"queued","created_ago":900}]'
   run_merge --wait=30 --override "$WAIVE_WHY"
   assert_eq "$MERGE_RC" 4 "a waived name two jobs share explains neither ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "  held     workflow run 101 (ci): job ubuntu concluded failure, red, and the waiver cannot single it out: 2 jobs of the run share its name" \
+    "the hold names the shared waived name"
   assert_eq "$MERGE_CALLS" "" "no merge call is made"
 }
 

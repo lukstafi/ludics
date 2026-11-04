@@ -944,7 +944,9 @@ is the one run read a red check list makes. Nor does a run still in flight hold 
 listed as running, a run with no jobs yet, a jobs read that failed, a run with nothing unfinished
 (between jobs), a required job that finished red or stopped, a job with no timestamp, and a job
 list that changed inside the settle (`ADVISORY_SETTLE`, whose reason is at
-`run_inflight_is_advisory_only`). A red `merge --override` waived releases the run as a green job
+`run_inflight_hold`). Each of those holds prints a `held` line naming the run, the
+first job that kept the release from applying, and why (ludics#930: a hold that named no cause got
+#862 filed against the wrong one), and each case pins its line. A red `merge --override` waived releases the run as a green job
 does (ludics#862: a queued macOS leg beside a waived master red held `merge --wait` past an hour);
 its controls are the run in another check suite, a second red nobody waived, and a waived name two
 jobs share. The `needs:` boundary the release leaves is stated once, in
