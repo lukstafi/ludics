@@ -1004,7 +1004,8 @@ hold. Each observation re-reads the PR head, including before returning a termin
 If it moved, `checks` and `merge` return **5 (SUPERSEDED)** with both SHAs; neither follows
 the successor automatically, and neither merge override bypasses this refusal. An unreadable
 head returns 3, never superseded or green — but under `--wait` a head, check-run or workflow-run
-read that did not answer is one failed poll, read again within the wait (ludics-lite#795, #808): 3
+read, or a red run's job list, that did not answer is one failed poll, read again within the wait
+(ludics-lite#795, #808, #929): 3
 comes once the wait is spent, or at once when GitHub refused the read (a 4xx), naming the failed
 reads. Detection occurs on the next poll (after any active
 API calls), not through a push notification. If the ceiling runs out it exits 4 naming `--allow-no-verdict`; for anything a compiler sees,

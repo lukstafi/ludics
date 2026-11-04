@@ -9,8 +9,8 @@ override's waiver (``apply_waiver``/``is_waived``, #392), the check fold (``buil
 ``merge`` also look for jobs that never got a runner (runners.py, #560/#728): named in the report,
 they end the wait, unless ``merge --wait``'s one recovery keeps it. Under a wait, a round's read
 that did not answer -- the head's (ludics-lite#795), the check runs' or the workflow runs'
-(ludics#808) -- is one failed poll, read again within the wait's budget (``_unread``, which states
-what rides out and what does not).
+(ludics#808), a red run's jobs (ludics#929) -- is one failed poll, read again within the wait's
+budget (``_unread``, which states what rides out and what does not).
 
 The shell's comments above each of those functions carry the incident history and every review
 round's reason; read them there before changing a rule here. What changed in the port is the
@@ -125,6 +125,8 @@ class RunSignal:
     stopped: bool = False
     # On a 3: how the read failed (``Unread``), which decides whether a wait reads it again.
     unread: Unread = "unanswered"
+    # On a 3: the read that failed, as "<verb> <the thing read>"; "" the head's workflow runs.
+    unread_what: str = ""
 
 
 # `gate_checks` (with build_checks, summarize_checks, run_signal, apply_waiver), ported once: `checks`,
@@ -188,6 +190,9 @@ class Gate:
     # The round's run read as ``read_runs`` returned it, so the check fold's workflow lookup and
     # ``run_signal`` ask the API once a round.
     _round_raw: str | None = None
+    # The round's run read that failed, as its failure line: ``run_signal`` reports it rather than
+    # asking again, so one failed round is one failed read (ludics#929). None: not failed this round.
+    _round_runs_failure: str | None = None
     _advisory: ere.Matcher | None = None
     _selected: ere.Matcher | None = None
 
@@ -306,8 +311,8 @@ class Gate:
         workflow (OCANNL's ``github pages docs``, whose job is ``build``) matched only the run, and
         a cancelled job of it read as a stopped build check -- no verdict, the gate held. The
         suites come from the round's run read; an unread run list drops nothing, and
-        ``run_signal`` then reads it again and says so. Under a selection nothing is advisory, and
-        the run read is not made."""
+        ``run_signal`` then reports that read's failure without asking again (ludics#929). Under a
+        selection nothing is advisory, and the run read is not made."""
         if self.select or not rows:
             return rows
         raw = self.read_runs(sha)
@@ -396,7 +401,8 @@ class Gate:
     # --- the run list ---------------------------------------------------------------------------------
 
     def run_jobs(self, run_id: str) -> str | None:
-        """``run_jobs``: "name\\tconclusion\\tcreated_at\\tcompleted_at" per job of the run."""
+        """``run_jobs``: "name\\tconclusion\\tcreated_at\\tcompleted_at" per job of the run; None
+        when the read failed, how it failed in ``read_failure``."""
         result = self.session.retry(
             "read",
             [
@@ -409,14 +415,19 @@ class Gate:
                 '          | map(if type == "string" and length > 0 then . else "-" end) | @tsv',
             ],
         )
-        return result.stdout if isinstance(result, GhOk) else None
+        if not isinstance(result, GhOk):
+            self.read_failure = self._failure_of(result)
+            return None
+        return result.stdout
 
     def run_red_is_advisory_only(self, run_id: str, suite: str) -> int:
         """``run_red_is_advisory_only``: 0 advisory jobs alone explain the run's red; 2 explained,
-        but a job the override waived is part of it; 1 not explained (or the jobs are unread)."""
+        but a job the override waived is part of it; 1 not explained; 3 the jobs are unread
+        (``read_failure`` says how), which explains nothing either way (ludics#929: read as 1, one
+        transient failure made a red only advisory jobs explain a refusal)."""
         raw = self.run_jobs(run_id)
         if raw is None:
-            return 1
+            return 3
         names = [tab_fields(line, 3)[0] for line in herestring_lines(raw)]
         names = [n for n in names if n]
         jobs = hard = waived = 0
@@ -497,6 +508,7 @@ class Gate:
         )
         if not isinstance(result, GhOk):
             self.read_failure = self._failure_of(result)
+            self._round_runs_failure = self.session.err_line()
             return None
         raw = newest_first_lines(result.stdout, 1, 2)
         runs: list[HeadRun] = []
@@ -511,7 +523,7 @@ class Gate:
     def find_orphans(self, sha: str) -> list[Orphan]:
         """The jobs of the head's runs that never got a runner (runners.py), read on a round with
         no verdict; the run list is this round's when ``run_signal`` read it, else read here."""
-        if self._round_runs is None and self.read_runs(sha) is None:
+        if self._round_runs is None and (self._round_runs_failure is not None or self.read_runs(sha) is None):
             return []
         runs = self._round_runs or []
 
@@ -527,13 +539,20 @@ class Gate:
         wait for, and able to overrule it (see the shell's comment for every round)."""
         repo = self.repo
         waived_runs = ""
-        raw = self._round_raw if self._round_raw is not None else self.read_runs(sha)
+        # The round's run read, made once a round: a read the fold's workflow lookup already saw
+        # fail is reported as it failed, not asked again (ludics#929).
+        if self._round_raw is not None:
+            raw = self._round_raw
+        elif self._round_runs_failure is None:
+            raw = self.read_runs(sha)
+        else:
+            raw = None
         if raw is None:
             return RunSignal(
                 3,
                 0,
                 waived_runs,
-                f"the workflow runs for this head could not be read ({self.session.err_line()})",
+                f"the workflow runs for this head could not be read ({self._round_runs_failure or ''})",
                 unread=self.read_failure,
             )
         self.run_state = " ".join(
@@ -570,6 +589,13 @@ class Gate:
                     assert_never(cls)
         red = 0
         red_note = ""
+        # Red runs whose job list did not answer (ludics#929): not explained, and not unexplained
+        # either. A red the round did read decides it first; else the round is unread, a 3 that a
+        # wait reads again (``_unread``), the first failure's line its reason, and the most final
+        # kind among them how it failed (a refusal, or a budget stop, outranks a transport failure).
+        unread_jobs = 0
+        unread_what = unread_line = ""
+        unread_kind: Unread = "unanswered"
         for row in red_rows:
             rid, rname, rconcl, rsuite = tab_fields(row, 4)
             if not rid:
@@ -583,6 +609,14 @@ class Gate:
             if self.waive_mode == "record" or (self.waive_mode == "apply" and f"run:{rid}" in self.waived):
                 waived_runs += f"{rid} run {rname}\n"
                 continue
+            if explained == 3:
+                unread_jobs += 1
+                if not unread_what:
+                    unread_what = f"read the jobs of workflow run {rid} ({rname}, {rconcl}) of {repo} @{sha[:8]}"
+                    unread_line = self.session.err_line() or "it did not answer"
+                if unread_kind == "unanswered":
+                    unread_kind = self.read_failure
+                continue
             red += 1
             red_note = red_note or f"{rname} ({rconcl})"
         if red > 0:
@@ -593,6 +627,16 @@ class Gate:
                 f"{red} workflow run(s) for this head concluded red with no build check"
                 f" to show for it — {red_note}; a run that fails before its jobs start leaves nothing in the"
                 " check list",
+            )
+        if unread_jobs > 0:
+            return RunSignal(
+                3,
+                0,
+                waived_runs,
+                f"{unread_line}; the job list of {unread_jobs} red workflow run(s) for this head could"
+                " not be read, so whether only advisory jobs explain the red is unknown",
+                unread=unread_kind,
+                unread_what=unread_what,
             )
         inflight = released = 0
         for entry in inflight_ids:
@@ -722,11 +766,14 @@ class Gate:
         gate's OWN reads that decide a round -- the head's first read and each round's re-read
         (ludics-lite#795), the round's check-run read (``build_checks``) and its workflow-run read
         (``read_runs``, and ``run_signal``'s commit-date read behind a run-less head's clock;
-        ludics#808). Not ridden out: a refused read (a 4xx, which no retry changes); one the polling
+        ludics#808), and the job list of a red run the round reads to see whether only advisory
+        jobs explain it (``run_red_is_advisory_only``, ludics#929; a red the round did read decides
+        the round first). Not ridden out: a refused read (a 4xx, which no retry changes); one the polling
         budget stopped (budget.py already waits a quota hold out within the wait, so what reaches
         here outlasts it, or is a state-directory error); answers that decide nothing however often
         they are read (``unusable``: a head with no usable clock); the reads whose failure is not a 3
-        today (a run's job list, read as "not explained", and the orphan scan's); and merge's own
+        today (an unfinished run's job list, read as in flight: a 4 the wait already waits on; and
+        the orphan scan's); and merge's own
         head reads beside a write (the recovery's before its rerun, the re-read after a call lost a
         race to the base), which fail closed because a write follows."""
         self.unread.append(f"{what}: {failure}")
@@ -773,7 +820,7 @@ class Gate:
         return self._unread(
             sig.unread,
             deadline,
-            f"read the workflow runs of {self.repo}#{pr} @{sha[:8]}",
+            sig.unread_what or f"read the workflow runs of {self.repo}#{pr} @{sha[:8]}",
             sig.reason,
             then,
         )
@@ -856,6 +903,7 @@ class Gate:
             self.run_state = ""
             self._round_runs = None
             self._round_raw = None
+            self._round_runs_failure = None
             rows = self.build_checks(sha)
             if rows is None:
                 # A round whose check runs did not answer judges nothing: under a wait with budget

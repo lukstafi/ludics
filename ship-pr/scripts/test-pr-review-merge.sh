@@ -2691,8 +2691,8 @@ test_a_wait_rides_out_failed_head_rereads() (
 
 # ludics#808: the round's other reads ride out the same way. A check-run read, or a workflow-run read,
 # that did not answer is one failed poll: the round is read again, and only a wait spent with none
-# answering, or a refusal, is 3. A failed round reads the runs twice (the advisory-workflow lookup,
-# then run_signal), each read's four attempts spent: sixteen failed calls are two failed rounds.
+# answering, or a refusal, is 3. A failed round reads the runs once (ludics#929: the advisory-workflow
+# lookup's failure is run_signal's too), its four attempts spent: eight failed calls are two rounds.
 test_a_wait_rides_out_failed_round_reads() (
   export SHIP_PR_TEST_CLOCK="$TEST_ROOT/clock"
   date +%s >"$SHIP_PR_TEST_CLOCK"
@@ -2715,9 +2715,10 @@ test_a_wait_rides_out_failed_round_reads() (
   assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "and the head was merged"
   reset
   : >"$TEST_ROOT/sleeps"
-  RUNS_READ_FAIL=16
+  RUNS_READ_FAIL=8
   run_merge --wait=3600
   assert_eq "$MERGE_RC" 0 "two workflow-run rounds that never answered end no wait ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total runs-read)" 9 "the third round read the runs once, after 2 x 4 failed attempts"
   assert_contains "$MERGE_STDERR" "could not read the workflow runs of $REPO#7 @" "each failure names its read"
   assert_contains "$MERGE_STDERR" "2 read(s) failed during this wait and were read again within it" \
     "and the final word names them"
