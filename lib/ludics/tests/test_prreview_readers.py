@@ -530,6 +530,39 @@ class NudgeRead(unittest.TestCase):
                 self.assertIn("did not answer", read.why)
 
 
+class FailedRowWithNote(unittest.TestCase):
+    """ludics#931: lukstafi/ludics#886's Failed row (2026-11-03, read back from the summary's edit
+    history) closes its Status cell with the app's note after a ``<br/>``. The row reading missed
+    it, so the state read EXPECTED and the watch's nudge read was barred by the row naming the
+    head. Verbatim but for its head (#886's f76f78a) and the stamp, moved to a minute ago."""
+
+    def summary(self, note: str) -> dict[str, Json]:
+        at = iso(60)
+        return comment(1, at, (
+            "<!-- codex-pull-request-review-summary -->\n"
+            '<!-- codex-review-state:v1 {"code_review":{"commit_sha":"' + HEAD + '","has_any_findings":true,'
+            '"has_unresolved_findings":true,"status":"failed"}} -->\n\n## Codex Review Summary\n\n'
+            "| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n"
+            f"| 📝 **Code Review** | ⚠️ **Failed** <relative-time datetime=\"{at[:-1]}.512899Z\">{at[:-1]}.512899Z"
+            f"</relative-time>{note} | `{HEAD[:7]}` | PR opened |"))
+
+    NOTE = "<br/>We couldn’t complete this review. Comment `@codex review` to try again."
+
+    def test_the_note_is_the_same_failed_run(self) -> None:
+        st = run_state(feeds(comments=[self.summary(self.NOTE)], head_at=iso(300), created=iso(200)))
+        self.assertEqual(st.tok, "failed", st.line())
+        self.assertTrue(st.detail.startswith("aaaaaaa|run|"), st.detail)
+        reworded = self.NOTE.replace("couldn’t complete", "could not finish")
+        self.assertEqual(run_state(feeds(comments=[self.summary(reworded)], head_at=iso(300),
+                                         created=iso(200))).tok, "failed", "the note's words are not read")
+
+    def test_a_note_outside_the_boundary_keeps_the_old_reading(self) -> None:
+        for note in ("<br/><b>We couldn’t complete this review.</b>", "<br>We couldn’t complete this review."):
+            with self.subTest(note):
+                st = run_state(feeds(comments=[self.summary(note)], head_at=iso(300), created=iso(200)))
+                self.assertEqual(st.tok, "expected", st.line())
+
+
 def state_summary(cid: int, at: str, record: str, row_sha: str = HEAD[:7], edited: str = "") -> dict[str, Json]:
     """The reviewer's summary comment as the app writes it (lukstafi/ludics-lite#690's, 2026-10-18):
     the tag, the hidden state record, and the table with its Code Review row, Completed at ``at``.

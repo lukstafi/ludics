@@ -109,9 +109,14 @@ SUMMARY_COMPLETED_ROW_RE = (
     '^\\|[^|]*Code Review[^|]*\\| *\u2705 \\*\\*Completed\\*\\* <relative-time datetime="(?<at>[^"]+)">'
     "[^<|]*</relative-time> *\\| *`(?<sha>[0-9a-f]{7,40})` *\\|"
 )
+# A Failed row's Status cell may close with the app's note after a line break (ludics#931:
+# #886's, 2026-11-03, read back from the summary's edit history: `<br/>We couldn\u2019t complete this
+# review. Comment `@codex review` to try again.`). Boundary, fail-closed: one `<br/>` and then
+# plain text to the cell's end -- no further tag and no pipe; the note's words are not read, so
+# a rewording keeps the reading and a note carrying markup does not.
 SUMMARY_FAILED_ROW_RE = (
     '^\\|[^|]*Code Review[^|]*\\| *\u26a0\ufe0f \\*\\*Failed\\*\\* <relative-time datetime="(?<at>[^"]+)">'
-    "[^<|]*</relative-time> *\\| *`(?<sha>[0-9a-f]{7,40})` *\\|"
+    "[^<|]*</relative-time>(?:<br/>[^<|]*)? *\\| *`(?<sha>[0-9a-f]{7,40})` *\\|"
 )
 SUMMARY_ROW_STAMP_RE = 'datetime="(?<at>[^"]+)"[^|]*\\| *`(?<sha>[0-9a-f]{7,40})` *\\|'
 # A Completed row whose Commit cell is an em dash (ludics-lite#787): a round the app closed with no
