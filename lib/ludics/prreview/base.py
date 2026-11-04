@@ -49,7 +49,8 @@ list names, every other job of it passed (``Gate.run_inflight_hold``, the rule `
 releases a head's run by), is not in flight for the interim, on a note line of its own. A run the
 rule does not release names, on a line of its own too, the job that kept it and why (#930's
 ``held`` reason, as ``checks`` and ``merge`` print it), and the merged head's run re-run by a
-workflow says the same inside its source line.
+workflow says the same inside its source line -- as does a merged head the gate holds pending
+on a run in flight, whose source line carries the gate's own ``held`` lines.
 BOUNDARY, fail closed: a list or jobs read that fails releases nothing, and judges no head (no
 interim); a run with no job yet, or any job the list does not name unfinished or not green, is in
 flight. The file records the branch's own push runs' advisory reds only: a merged head's are
@@ -103,7 +104,7 @@ from ludics.prreview.workflows import Reads
 from ludics.prreview.checkruns import conclusion_class, newest_first
 from ludics.prreview.budget import pause
 from ludics.prreview.clock import Clock, FuncClock, age_of, clock_from_env
-from ludics.prreview.shtext import encode_ref, tab_fields
+from ludics.prreview.shtext import encode_ref, herestring_lines, tab_fields
 from ludics.prreview.workflow_yaml import paths_ignore_covers, workflow_filter, workflow_keys
 from ludics.prreview.core import (
     GhFailed,
@@ -478,11 +479,13 @@ class Trigger:
 
 @dataclass(frozen=True)
 class GateSignal:
-    """What ``gate_checks`` leaves for ``tip_pr_head_verdict``: its VERDICT and its ``build
-    signal`` line."""
+    """What ``gate_checks`` leaves for ``tip_pr_head_verdict``: its VERDICT, its ``build
+    signal`` line, and the ``held`` lines its report carries under that line (``Gate.check_holds``:
+    the runs in flight that keep a no-verdict head pending, each with its job and why, #930)."""
 
     verdict: str
     line: str
+    holds: str = ""
 
 
 # ``gate_checks <pr> 0`` for source (a); None when it ended without a verdict. Injectable for the
@@ -871,7 +874,7 @@ class Base:
             return None
         line = next((ln[len("build signal "):] for ln in out.getvalue().split("\n")
                      if ln.startswith("build signal ")), "")
-        return GateSignal(gate.verdict, line)
+        return GateSignal(gate.verdict, line, gate.check_holds)
 
     def tip_pr_head_verdict(self, branch: str, sha: str, wants: Sequence[Want]) -> TipPr | None:
         """``tip_pr_head_verdict``, source (a): the tip is GitHub's own clean merge of one merged
@@ -935,6 +938,9 @@ class Base:
         h8 = head[:8]
         why = (f"PR #{num}'s head {h8}, which GitHub merged cleanly as the tip {s8} (roll-forward rule):"
                f" {signal.line}")
+        # The held runs the gate's report named under its line (#930): joined on, as the gate's own
+        # heartbeat joins them, so every line that carries this source names the run, job and why.
+        why = "; ".join([why, *(h.strip() for h in herestring_lines(signal.holds) if h)])
         if verdict != "green" or not wants:
             return TipPr(verdict, why, num, head)
         pages = self.gh_pages(["api", "--paginate",
