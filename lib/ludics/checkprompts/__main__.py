@@ -11,6 +11,7 @@ from ludics.checkprompts.cleanup import check_cleanup_options
 from ludics.checkprompts.drift import check_drift_guard
 from ludics.checkprompts.frontmatter import check_skill_file
 from ludics.checkprompts.links import check_links
+from ludics.checkprompts.readwhen import check_reading_list
 from ludics.checkprompts.registers import check_fixtures, check_index
 from ludics.checkprompts.roster import check_roster
 from ludics.checkprompts.slots import check_slots
@@ -130,6 +131,7 @@ def run(argv: list[str]) -> int:
     check_links(report, tree)
     check_verdict_reads(report, tree)
     check_suite_map(report, tree)
+    check_reading_list(report, tree)
     cli.say("")
     cli.say(f"{PROG}: {report.passed} passed, {report.failed} failed")
     return 0 if report.failed == 0 else 1

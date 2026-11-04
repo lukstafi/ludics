@@ -189,8 +189,9 @@ bgrun.py
     lib/ludics/tests/test_peerplan.py
 
 checkprompts/__main__.py checkprompts/bytes_view.py checkprompts/cleanup.py checkprompts/drift.py
-checkprompts/frontmatter.py checkprompts/links.py checkprompts/registers.py checkprompts/roster.py
-checkprompts/slots.py checkprompts/suitemap.py checkprompts/tree.py checkprompts/verdicts.py
+checkprompts/frontmatter.py checkprompts/links.py checkprompts/readwhen.py checkprompts/registers.py
+checkprompts/roster.py checkprompts/slots.py checkprompts/suitemap.py checkprompts/tree.py
+checkprompts/verdicts.py
     lib/ludics/tests/test_checkprompts_cli.py
 
 fleetworker/__main__.py fleetworker/config.py fleetworker/identity.py fleetworker/transport.py

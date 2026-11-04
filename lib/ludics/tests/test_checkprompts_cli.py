@@ -1699,6 +1699,95 @@ class RosterListsTest(Case):
         self.lacks(f"a root without {ROSTER_SOURCE} carries no roster obligation", "DEFAULT_BOXES", run(CP, self.root))
 
 
+# --- ship-pr's staged reading list ---------------------------------------------------------------
+# ship-pr's "What to read when" paragraph and issue-wave's Landing bullet that points to it, held to
+# ship-pr/SKILL.md's headings (post-wave chip of ludics#949). The tree is the real files, copied:
+# both READMEs for the index lookup, LINK_TARGETS (ship-pr/SKILL.md among them) for the link check.
+
+SHIP = "ship-pr/SKILL.md"
+READ_WHEN_AGREE = f"the reading list and its pointer name are headings of {SHIP}"
+
+
+def reading_tree(root: str) -> None:
+    shutil.rmtree(root, ignore_errors=True)
+    copy_prompts(root, "README.md", "routines/README.md", FLEET, *LINK_TARGETS)
+
+
+def read_when(root: str, *, append_text: str) -> None:
+    """Appends ``append_text`` to the last line of ship-pr's What to read when paragraph."""
+    rewrite(root, SHIP, pattern=r"(command's output names it\.)$", repl=lambda m: m.group(1) + append_text)
+
+
+class ReadingListTest(Case):
+    def setUp(self) -> None:
+        super().setUp()
+        reading_tree(self.root)
+
+    # The real files pass, with *The\napproval is one gate; ...* wrapped across a line.
+    def test_the_list_and_the_headings_agree(self) -> None:
+        self.expect("every section the list names is a heading", 0, READ_WHEN_AGREE)
+
+    # The negative control the task names: a heading renamed, the list left as it was.
+    def test_a_renamed_heading(self) -> None:
+        rewrite(self.root, SHIP, pattern=r"^### When the loop ends$", repl="### When the loop closes")
+        result = run(CP, self.root)
+        self.check(
+            "a heading renamed under the list is refused",
+            1,
+            result,
+            f"FAIL: {SHIP}: the What to read when paragraph names *When the loop ends*, which is no heading",
+        )
+        self.lacks("...and no agreement is claimed", READ_WHEN_AGREE, result)
+
+    def test_the_pointer_is_read(self) -> None:
+        rewrite(self.root, FLEET, pattern=r"ship-pr's \*Open\*\.", repl="ship-pr's *Opening*.")
+        self.expect(
+            "a section issue-wave's Landing bullet names is held too", 1, f"FAIL: {FLEET}: the Landing bullet names *Opening*"
+        )
+
+    def test_what_is_an_italic_span(self) -> None:
+        R = self.root
+        read_when(R, append_text=" A **bold** run and `*/SKILL.md` in code name no section.")
+        self.expect("bold and a code span's asterisks are not italic", 0, READ_WHEN_AGREE)
+        reading_tree(R)
+        read_when(R, append_text=" Read *Monitor   again*.")
+        self.expect("emphasis in the paragraph is read as a section name", 1, "names *Monitor again*, which is no heading")
+        reading_tree(R)
+        read_when(R, append_text=" Read *Monitor.")
+        self.expect("an unclosed italic span is refused", 1, f"FAIL: {SHIP}: the What to read when paragraph cannot be read")
+        # A heading-shaped line inside a fence is not a heading.
+        reading_tree(R)
+        read_when(R, append_text=" Also *Fenced*.")
+        append(f"{R}/{SHIP}", "\n```\n## Fenced\n```\n")
+        self.expect("a fenced heading line is no heading", 1, "names *Fenced*, which is no heading")
+        reading_tree(R)
+        read_when(R, append_text=" Also *Fenced*.")
+        append(f"{R}/{SHIP}", "\n## Fenced\n")
+        self.expect("...while the same line outside a fence is one", 0, READ_WHEN_AGREE)
+
+    def test_the_lead(self) -> None:
+        R = self.root
+        rewrite(R, SHIP, pattern=r"^\*\*What to read when\.\*\*", repl="**What to read, when.**")
+        self.expect("a lead edited away is refused", 1, f"FAIL: {SHIP}: has no line opening with '**What to read when.**'")
+        reading_tree(R)
+        append(f"{R}/{SHIP}", "\n**What to read when.** *Open*.\n")
+        self.expect("a repeated lead is refused", 1, f"FAIL: {SHIP}: has 2 lines opening with '**What to read when.**'")
+        reading_tree(R)
+        rewrite(R, SHIP, pattern=r"\*", repl="", count=0, lines=False)
+        rewrite(R, SHIP, pattern=r"^What to read when\. ", repl="**What to read when.** ")
+        self.expect("an emptied list is refused", 1, f"FAIL: {SHIP}: the What to read when paragraph names no *section*")
+        reading_tree(R)
+        rewrite(R, FLEET, pattern=r"^- Landing:", repl="- Landing it:")
+        self.expect("a pointer bullet edited away is refused", 1, f"FAIL: {FLEET}: has no line opening with '- Landing:'")
+
+    def test_obligations(self) -> None:
+        R = self.root
+        os.remove(f"{R}/{FLEET}")
+        self.expect("without issue-wave, the paragraph alone is held", 0, READ_WHEN_AGREE)
+        fresh(R)
+        self.lacks(f"a root without {SHIP} carries no reading-list obligation", "What to read when", run(CP, R))
+
+
 # --- the installed-routine drift guard -----------------------------------------------------------
 # ludics-lite#199: each routine sync-routines.sh installs opens by running it and reading its own
 # drift, and nothing but this check stops that step being edited away. Both READMEs come along

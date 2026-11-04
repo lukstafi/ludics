@@ -15,6 +15,13 @@ CLAUDE.md/AGENTS.md before splitting work differently.
 `master` below stands for the repository's base branch. Where that is `main` (this repository,
 for one), substitute it in the commands, and pass `--base main` to the cleanup helper at the end.
 
+**What to read when.** This file is about 1600 lines, most of an agent's context on a PR approved
+in round 0 (ludics#948), so read it in stages, each section where it acts, never the whole file.
+While the route is still open, *PR or direct commit?* decides it. Then *Open* and *Monitor* before
+opening the PR; *Address a round* and *When the loop ends* at the first round with findings; *The
+approval is one gate; the build is the other* and *After it lands* before merging. The rest is
+reference, read when one of those sections or a command's output names it.
+
 ## Fire when the work is done, not when a PR is asked for
 
 Reaching a finished goal with unlanded changes is itself the trigger; landing does not wait for
