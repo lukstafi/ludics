@@ -545,48 +545,57 @@ requirements for every transport with transport-specific setup and identity, and
   (new fixtures shown to FAIL on base: `~/ludics/scripts/run-against-base.sh <suite>`, slot-wrapped;
   a project runner through `--command ... -- <runner> <args>`, and the head with the fix undone
   through `--revert <commit> <path>`, both in the README's negative-control paragraph),
-  and the box's known environmental traps. **The formatter batch** is the one the project's
-  AGENTS.md names, run last, slot-wrapped and read as it says (OCANNL: *Format before the first
-  push*), and the commit is gated on that batch's own exit status in the same command
-  (`<formatter batch> && git commit ...`), never chained after it with `;` or behind a pipe whose
-  last stage's status replaces it (ahrefs/ocannl#1442 pushed after a FAILED check). **The pre-push
-  run** is the tests the change reaches (OCANNL: its `affected` set) less the slow and training
-  members the project marks, which CI runs; the project's agent notes name those members and the
-  command (wave-20261102: full affected
-  runs blew the runner's 3600 s run cap or its 1500 s per-test cap on loaded boxes,
-  ahrefs/ocannl#1697 on minix-amd-linux, #1769 on tuf-amd-linux). **On mac-studio**:
-  Gatekeeper/XProtect stalls fresh executables for minutes - sample the pid before assuming a
-  hang; never start a second dune against a running _build; and **targeted test aliases only**
-  (`dune build @<dir>/runtest-<name>` for the tests the change reaches, plus the scanners), never a full
-  directory suite, full suites are CI's - the XProtect scanner is one single-threaded service
-  for the machine and each worktree links its own copies of every test exe, so N parallel full
-  suites queue N x ~200 fresh binaries behind it and every worker's run freezes (2026-08-22: 34
-  exes parked in dlopen, logs frozen, load 2.5); `dune -j 4` when more than ~4 workers share
-  the box. **On GPU boxes**: name the backend and how to prove the run executed on it (a
-  backend-uniform golden proves nothing), and keep one dune per _build. A claim gated on several
-  GPU backends gets a leg on each backend it names before merge, recorded in the PR body
-  (wave-20261018o: three tests whose CUDA and HIP arms had run only on CUDA merged three HIP
-  reds); what each backend's leg must enable is the project's agent notes'. A claim's backend
-  set is where its tests run, not where its diff is: a value test that runs on every backend
-  needs every backend's leg (lukstafi/ocannl-staging#1441 merged on cc and Metal codegen alone,
-  since its GPU codegen was unchanged, and its bitwise claims failed on CUDA, HIP and Metal,
-  ahrefs/ocannl#1647); a test whose golden comes from a separate off-CPU branch needs a
-  non-CPU leg even for a CPU-only change (lukstafi/ocannl-staging#1483's cc-only change
-  reordered every GPU golden, fixed forward in #1488); and a codegen change reaches every test
-  that executes staged or hand-built kernel text, not only the ones that pin emitted text
+  and the box's known environmental traps: the bullets below, plus the box kind's durable traps,
+  [native traps](references/linux-boxes.md) for `linux` and [WSL traps](references/wsl-boxes.md)
+  for `wsl`. **The pre-push run** is the tests the change reaches (OCANNL: its `affected` set)
+  less the slow and training members the project marks, which CI runs; the project's agent notes
+  name those members and the command (wave-20261102: full affected runs blew the runner's 3600 s
+  run cap or its 1500 s per-test cap on loaded boxes, ahrefs/ocannl#1697 on minix-amd-linux,
+  #1769 on tuf-amd-linux).
+- **The formatter gate**: the formatter batch is the one the project's AGENTS.md names, run last,
+  slot-wrapped and read as it says (OCANNL: *Format before the first push*), and the commit is
+  gated on that batch's own exit status in the same command. The brief carries this one form,
+  for the worker to copy, not compose:
+
+      <formatter batch> > <log> 2>&1 && git commit ...; echo "gate exit=$?"; tail -n 20 <log>
+
+  The log stands in for the pipe a worker reaches for to keep the readout short: a pipe's last
+  stage replaces the batch's status, and the commit then runs after a failed check
+  (ahrefs/ocannl#1442 pushed after a FAILED check; two wave-20261103 workers piped `fmt-check`
+  through `tail` in their first commit, ludics#948). `gate exit` is the batch's status when it
+  failed, and the commit's when it passed. Never chain the commit after the batch with `;`.
+- **On mac-studio**: Gatekeeper/XProtect stalls fresh executables for minutes - sample the pid
+  before assuming a hang; never start a second dune against a running _build; and **targeted
+  test aliases only** (`dune build @<dir>/runtest-<name>` for the tests the change reaches, plus
+  the scanners), never a full directory suite, full suites are CI's - the XProtect scanner is one
+  single-threaded service for the machine and each worktree links its own copies of every test
+  exe, so N parallel full suites queue N x ~200 fresh binaries behind it and every worker's run
+  freezes (2026-08-22: 34 exes parked in dlopen, logs frozen, load 2.5); `dune -j 4` when more
+  than ~4 workers share the box.
+- **GPU-box legs**: name the backend and how to prove the run executed on it (a backend-uniform
+  golden proves nothing), and keep one dune per _build. A claim gated on several GPU backends
+  gets a leg on each backend it names before merge, recorded in the PR body (wave-20261018o:
+  three tests whose CUDA and HIP arms had run only on CUDA merged three HIP reds); what each
+  backend's leg must enable is the project's agent notes'. A claim's backend set is where its
+  tests run, not where its diff is: a value test that runs on every backend needs every
+  backend's leg (lukstafi/ocannl-staging#1441 merged on cc and Metal codegen alone, since its GPU
+  codegen was unchanged, and its bitwise claims failed on CUDA, HIP and Metal,
+  ahrefs/ocannl#1647); a test whose golden comes from a separate off-CPU branch needs a non-CPU
+  leg even for a CPU-only change (lukstafi/ocannl-staging#1483's cc-only change reordered every
+  GPU golden, fixed forward in #1488); and a codegen change reaches every test that executes
+  staged or hand-built kernel text, not only the ones that pin emitted text
   (lukstafi/ocannl-staging#1491 ran only the text pins, and a staged kernel failed on CUDA,
-  #1497). Which tests those are is the project's agent notes'. **A pin on a box's shared
-  package environment is additive**: an environment every worktree builds against (OCANNL's opam switch) is master's
-  build too, so build a master-based worktree against the new version in a scratch install before
-  pinning, and land the dependency's change free of deprecations before the consumer PR
-  (ahrefs/ocannl#1594's `metal.dev` pin deprecated an API master used, and dev-profile alerts are
-  fatal, so every master build on the box broke); how to stage the scratch install is the
-  project's agent notes'. Add the box kind's
-  durable traps to the brief: [native traps](references/linux-boxes.md) for `linux`, [WSL
-  traps](references/wsl-boxes.md) for `wsl`. Say up front where the evidence goes: the PR body,
-  the issue's comments and the project's agent notes, never a report file the task did not ask
-  for - a Claude subagent is instructed not to write report `.md` files, so a planned
-  `benchmarks/report-*.md` had to move mid-task (ahrefs/ocannl#1190).
+  #1497). Which tests those are is the project's agent notes'.
+- **A pin on a box's shared package environment is additive**: an environment every worktree
+  builds against (OCANNL's opam switch) is master's build too, so build a master-based worktree
+  against the new version in a scratch install before pinning, and land the dependency's change
+  free of deprecations before the consumer PR (ahrefs/ocannl#1594's `metal.dev` pin deprecated
+  an API master used, and dev-profile alerts are fatal, so every master build on the box broke);
+  how to stage the scratch install is the project's agent notes'.
+- **Where the evidence goes**, said up front: the PR body, the issue's comments and the project's
+  agent notes, never a report file the task did not ask for - a Claude subagent is instructed not
+  to write report `.md` files, so a planned `benchmarks/report-*.md` had to move mid-task
+  (ahrefs/ocannl#1190).
 - Execution handoff: the worker's own targeted correctness batches on its agent host run under
   the [standing reservation](references/executions.md#standing-iteration-reservation) the
   coordinator took at launch - name its request id, the bounded aliases and `-j` width it
@@ -695,7 +704,12 @@ requirements for every transport with transport-specific setup and identity, and
   corners over six rounds (ludics-lite#609).
 - Landing: the ship-pr skill through review to merge; for a PR that fully resolves the issue,
   include `Closes #N` in its body (`Closes owner/repo#N` for a separate upstream tracker), per
-  ship-pr's *Open*. Then close out the tracked issue with a summary comment - `gh issue comment
+  ship-pr's *Open*. The brief names the ship-pr sections to read, each where it acts, never the
+  whole file: its SKILL.md is about 1600 lines, most of a worker's context on a PR approved in
+  round 0 (ludics#948). *Open* and *Monitor* before opening; *Address a round* and *When the loop
+  ends* at the first round with findings; *The approval is one gate; the build is the other* and
+  *After it lands* before merging. The rest is reference, read when one of those sections or a
+  command's output names it. Then close out the tracked issue with a summary comment - `gh issue comment
   --body-file` first and `gh issue close` only if the merge left it open, per ship-pr's *After
   it lands*, because `gh issue close --comment` on an issue a PR body's `Closes #N` already
   closed posts nothing at all - then the after-merge brainstorm ship-pr ends with, in
