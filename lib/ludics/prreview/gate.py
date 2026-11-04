@@ -159,6 +159,8 @@ class Gate:
     # (ludics-lite#740). Zero on a pending round is the wait the pause reads faster.
     check_queued: int = 0
     check_lines: str = ""
+    # The held lines the report carries (``RunSignal.holds``), for ``base``'s merged-head check.
+    check_holds: str = ""
     # The names of the checks the fold left running, for the wait's progress line (#569).
     pending_names: list[str] = field(default_factory=lambda: list[str]())
     # ``checks --check <ERE>`` (#569): judge only the check runs whose name the ERE matches, grep
@@ -968,6 +970,7 @@ class Gate:
             self.gate_base = base_sha
             nomatch = ""
             run_holds = ""
+            self.check_holds = ""
             if self.select and self.check_total == 0:
                 # A selection that matches no check run yet asks the run list one question: can a
                 # matching run still appear? A run in flight, or a run-less head inside the
@@ -993,6 +996,7 @@ class Gate:
                         run_why = f"no check run matches --check {shlex.quote(self.select)} yet — {sig.reason}"
                         run_holds = sig.holds
                         self.check_lines += run_holds
+                        self.check_holds = run_holds
                     case _:
                         self.verdict = "unknown"
                         nomatch = sig.reason
@@ -1043,6 +1047,7 @@ class Gate:
                         if self.verdict != "pending":
                             self.verdict = "unjudged"
                             self.check_lines += run_holds
+                            self.check_holds = run_holds
                     case _:
                         if self.run_waived and self.verdict in ("green", "absent"):
                             self.verdict = "waived"

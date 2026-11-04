@@ -966,6 +966,35 @@ class RepositoryAdvisoryInterim(unittest.TestCase):
                 self.assertEqual(rc, 4, out)
                 self.assertIn(line, out)
 
+    def test_a_merged_head_the_gate_holds_pending_names_the_held_run(self) -> None:
+        """#930 through the gate itself: the merged head's run is in flight on a required job no
+        check row shows yet (a dependent job, queued) beside the advisory macOS leg, so the real
+        gate is pending on that run, and the source line base prints carries the gate's own
+        ``held`` line -- in the interim's note, and in a retired workflow's "not yet" line."""
+        answers = self._world(head_status="in_progress", head_concl=None,
+                              head_jobs=[job(UBUNTU, "success"), job(MAC, None), job("deploy (ubuntu)", None)])
+        held = ("1 workflow run(s) for this head have no conclusion yet (queued, running, or completed with"
+                " none recorded) — their check runs may not exist yet (1 build check(s) have passed so far);"
+                " held     workflow run 8001 (ci):"
+                " job 'deploy (ubuntu)' is still running (or queued) and is not advisory")
+        rc, out, _ = self._base(answers, advisory=True)
+        self.assertEqual(rc, 4, out)
+        self.assertNotIn("green, interim", out)
+        self.assertIn(f"(no interim verdict for ci: source (a): PR #7's head {H[:8]}, which GitHub merged"
+                      f" cleanly as the tip {C[:8]} (roll-forward rule): o/r#7 @{H[:8]}: NO VERDICT YET —"
+                      f" {held})\n", out)
+        answers.update({
+            f"repos/o/r/contents/.github/workflows/ci.yml?ref={C}": PUSHLESS,
+            "repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=10":
+                runs({"conclusion": "success", "head_sha": A}),
+        })
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, _, _ = base_run(answers, ["main", "--advisory-red", os.path.join(d, "a.json")])
+        self.assertEqual(rc, 4, out)
+        self.assertIn(f"  no verdict  ci — not yet: source (a): PR #7's head {H[:8]}, which GitHub merged"
+                      f" cleanly as the tip {C[:8]} (roll-forward rule): o/r#7 @{H[:8]}: NO VERDICT YET —"
+                      f" {held}\n", out)
+
 
 class NamedSources(unittest.TestCase):
     def test_a_clean_merge_of_a_green_head_judges_a_retired_workflow(self) -> None:
