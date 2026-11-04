@@ -240,9 +240,10 @@ class Trailer(unittest.TestCase):
 class MergeRecovery(Quiet):
     """The recovery as ``merge --wait`` installs it, round by round."""
 
-    def run_gate(self, gh: FakeGh, wait: int, clock: FakeClock | None = None) -> tuple[int, Recovery, FakeClock]:
+    def run_gate(self, gh: FakeGh, wait: int, clock: FakeClock | None = None,
+                 **env: str) -> tuple[int, Recovery, FakeClock]:
         clock = clock or FakeClock()
-        gate = make_gate(gh, clock)
+        gate = make_gate(gh, clock, **env)
         gate.orphans_on = True
         recovery = Recovery(gate.session, "o/r", "7", gate, gate.clock, wait)
         gate.recover = recovery
@@ -485,6 +486,47 @@ class CancelledRecovery(MergeRecovery):
                 gate.recover = recovery
                 gate.check("7", 300)
                 self.assertEqual((self.writes(gh), recovery.why), ([], ""))
+
+    def test_a_run_cancelled_only_in_advisory_jobs_is_not_rerun(self) -> None:
+        """ludics#958: the advisory macOS leg of a non-advisory workflow, cancelled at its cap
+        beside passed jobs, holds nothing -- so the recovery, called on a round another run keeps
+        unjudged, does not rerun it, and the head merges on that run's green. The control: the
+        same run with its required job cancelled is rerun."""
+        t = "2025-12-31T23:00:00Z"
+        other = f"{t}\t101\t2\tpull_request\tdocs\tin_progress\tpending\t2"
+        done = f"{t}\t101\t2\tpull_request\tdocs\tcompleted\tsuccess\t2"
+        for jobs_out, want in (
+            (f"build\tsuccess\t{t}\t{t}\nmacos\tcancelled\t{t}\t{t}", []),
+            (f"build\tcancelled\t{t}\t{t}\nmacos\tcancelled\t{t}\t{t}", ["run rerun 100 --failed --repo o/r"]),
+        ):
+            with self.subTest(jobs=jobs_out):
+                gh = FakeGh()
+                self.head(gh)
+                gh.on("run", "rerun", out="")
+                gh.on("check-runs", out="build\tsuccess\tu\t1\nmacos\tcancelled\tm\t1")
+                gh.on("actions/runs?head_sha=h1", out=[f"{other}\n{run_row()}", f"{done}\n{run_row()}"])
+                gh.on("actions/runs/100/jobs", "run_attempt", out=CAPPED)
+                gh.on("actions/runs/100/jobs", out=jobs_out)
+                jobs(gh, "101", out="")
+                run_read(gh, "100", out="completed\tcancelled\t1")
+                rc, recovery, _clock = self.run_gate(gh, 7200, SHIP_PR_ADVISORY_CHECKS="^macos$")
+                self.assertEqual(self.writes(gh), want)
+                if not want:
+                    self.assertEqual((rc, recovery.why), (0, ""))
+
+    def test_a_rerun_cancelled_again_only_in_advisory_jobs_is_no_seven(self) -> None:
+        """ludics#958: the one rerun's attempt cancelled again, but only in its advisory leg, is a
+        release, not the second cancellation: the wait ends on the green, not with 7."""
+        t = "2025-12-31T23:00:00Z"
+        gh = FakeGh()
+        self.cancelled(gh, ["build\tcancelled\tu\t1", "build\tsuccess\tu\t1\nmacos\tcancelled\tm\t1"])
+        gh.routes = [r for r in gh.routes if r.needles != ("actions/runs/100/jobs",)]
+        gh.on("actions/runs/100/jobs", out=[f"build\tcancelled\t{t}\t{t}"] * 2
+              + [f"build\tsuccess\t{t}\t{t}\nmacos\tcancelled\t{t}\t{t}"])
+        run_read(gh, "100", out=["completed\tcancelled\t1", "completed\tcancelled\t2"])
+        rc, recovery, _clock = self.run_gate(gh, 7200, SHIP_PR_ADVISORY_CHECKS="^macos$")
+        self.assertEqual((rc, recovery.why), (0, ""))
+        self.assertEqual(self.writes(gh), ["run rerun 100 --failed --repo o/r"], "exactly one rerun")
 
     def test_a_no_runner_rerun_cancelled_again_is_the_one_recovery_spent(self) -> None:
         """One recovery per head run: a NO RUNNER rerun whose attempt is then cancelled is not

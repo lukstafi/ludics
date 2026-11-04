@@ -946,7 +946,12 @@ listed as running, a run with no jobs yet, a jobs read that failed, a run with n
 list that changed inside the settle (`ADVISORY_SETTLE`, whose reason is at
 `run_inflight_hold`). Each of those holds prints a `held` line naming the run, the
 first job that kept the release from applying, and why (ludics#930: a hold that named no cause got
-#862 filed against the wrong one), and each case pins its line. A red `merge --override` waived releases the run as a green job
+#862 filed against the wrong one), and each case pins its line. A run that completed `cancelled`
+releases the same way when an advisory job of it was stopped and every other job passed
+(`run_stopped_hold`, ludics#958: the macOS legs of `skill scripts`, cancelled at their cap, held
+the gate as a stopped run and `merge --wait` reran it to a 7); a required job stopped, red or
+unfinished, no advisory job stopped, or a job list that did not answer keeps the stopped 4, with
+its `held` line, and `merge --wait` does not rerun a run it released. A red `merge --override` waived releases the run as a green job
 does (ludics#862: a queued macOS leg beside a waived master red held `merge --wait` past an hour);
 its controls are the run in another check suite, a second red nobody waived, and a waived name two
 jobs share. The `needs:` boundary the release leaves is stated once, in

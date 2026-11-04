@@ -202,19 +202,22 @@ class Recovery:
 
     - CANCELLED (#928): the newest completed run of a workflow and event (the run ``run_signal``
       judges), not advisory, concluded ``cancelled`` -- no red, or the fold would be RED and nothing
-      recovers -- with no NO RUNNER of its own and no newer run of that workflow and event in
-      flight. A job its own ``timeout-minutes`` cap stopped has this shape (the job and the run read
-      ``cancelled``, the check run too). The run is re-read (``status``, ``conclusion``,
+      recovers -- with no NO RUNNER of its own, no newer run of that workflow and event in
+      flight, and not cancelled only in advisory jobs (``Gate.run_stopped_hold``, ludics#958: such
+      a run holds neither ``checks`` nor the wait, so it is never rerun and never a 7). A job its
+      own ``timeout-minutes`` cap stopped has this shape (the job and the run read ``cancelled``,
+      the check run too). The run is re-read (``status``, ``conclusion``,
       ``run_attempt``) and, still completed ``cancelled`` at a readable attempt, rerun once as a NO
       RUNNER is, with the same deadline move. A LATER attempt read ``cancelled`` again is the second
       cancellation and ends the wait; the attempt that was rerun still read after ``TRANSITION``
       seconds is a rerun that did not take, and ends it too. These ends are ``code`` 7.
 
-    Boundary of CANCELLED: it reads the round's run list and one run read per such run, nothing
-    else. It reruns ``cancelled`` alone: ``stale`` and ``action_required`` stop a run too, but a
-    rerun answers neither (an approval does), so they stay the 4 they were. A run read that fails,
-    or answers no attempt, classifies nothing that round: no write, and the gate's wait goes on as
-    it would without a recovery. A run a person cancelled on purpose is rerun too; stop the merge,
+    Boundary of CANCELLED: it reads the round's run list, one jobs read per completed
+    ``cancelled`` run, and one run read per such run, nothing else. It reruns ``cancelled``
+    alone: ``stale`` and ``action_required`` stop a run too, but a rerun answers neither (an
+    approval does), so they stay the 4 they were. A jobs read or run read that fails, or a run
+    read that answers no attempt, classifies nothing that round: no write, and the gate's wait
+    goes on as it would without a recovery. A run a person cancelled on purpose is rerun too; stop the merge,
     not the run, to keep it from landing.
 
     Before each write the PR head is re-read: a head that moved is ``superseded`` (5), and nothing
@@ -279,7 +282,10 @@ class Recovery:
 
     def cancelled_runs(self, runs: list[HeadRun]) -> list[HeadRun]:
         """The round's head runs CANCELLED reads (the class docstring): newest first, one per
-        workflow and event, completed ``cancelled``, not advisory, no newer run of the key in flight."""
+        workflow and event, completed ``cancelled``, not advisory, no newer run of the key in
+        flight, and held by the gate (``Gate.run_stopped_hold``): a run cancelled only in advisory
+        jobs holds nothing, so it is not rerun (ludics#958), and one whose job list did not answer
+        classifies nothing that round."""
         seen: set[str] = set()
         out: list[HeadRun] = []
         for run in runs:
@@ -290,7 +296,9 @@ class Recovery:
                 continue
             seen.add(key)
             if run.status == "completed" and run.conclusion == "cancelled":
-                out.append(run)
+                hold = self.gate.run_stopped_hold(run.rid)
+                if hold is not None and not hold[1]:
+                    out.append(run)
         return out
 
     def read_run(self, rid: str) -> tuple[str, str, int] | None:

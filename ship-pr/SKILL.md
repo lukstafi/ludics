@@ -1002,7 +1002,8 @@ person's) is no verdict, and nothing it holds moves until it is rerun. `merge --
 by itself, `gh run rerun <id> --failed`, with the same fresh budget, and a second cancellation ends
 the wait with 7 (#928). A job its cap cancelled twice is likely a hang to read, not a queue to wait
 out. `stale` and `action_required` are not rerun (an approval answers them), and without `--wait`
-the run stays a 4.
+the run stays a 4. A run cancelled only in advisory jobs, every other job of it passed, is neither:
+it holds nothing and is not rerun (#958).
 
 **Exit 4 refuses too, by default.** Nothing has failed, but nothing has passed, and a merge that
 waits for neither read nothing — it was a warning until 2026-08-23, when a day-long runner queue
