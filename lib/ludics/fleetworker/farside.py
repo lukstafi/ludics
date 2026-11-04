@@ -106,13 +106,36 @@ WORKERS="$STATE/workers"
 # The holder is identified by pid AND process start time: after a reboot (or plain pid reuse)
 # the recorded pid may belong to an unrelated live process, which a bare kill -0 would treat
 # as the holder forever.
-proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' '; }
+# The start time is a TOKEN (ludics#953, bg-run.sh's since ludics#786): on Linux field 22 of
+# /proc/<pid>/stat, the kernel's start tick since boot, read after the LAST `) ` (the comm before
+# it may hold blanks and parentheses); elsewhere `ps -o lstart=`, blanks squeezed. procps's lstart
+# is that tick added to a boot time re-derived from the wall clock on every read, so a clock step
+# (chrony settling a fresh VM, a resume from suspend) changes a LIVE holder's lstart by a second,
+# and a contender read it as a reused pid and reclaimed a held lock: two launches of one name,
+# two unsticks, two owners of one worktree (the ubuntu-26.04 runner, #953). A recorded token is
+# read back in its own kind, by its shape: digits only are a tick, anything else an lstart, so a
+# lock taken by a far side from before #953 is judged as it was. A token means nothing on
+# another box, which no reader asks of it.
+proc_tick() {
+  local st; { IFS= read -r st < "/proc/$1/stat"; } 2>/dev/null || return 0
+  set -- ${st##*") "}
+  [ $# -lt 20 ] || printf '%s\n' "${20}"
+}
+proc_lstart() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' '; }
+proc_start() { if [ "$(uname -s 2>/dev/null)" = Linux ]; then proc_tick "$1"; else proc_lstart "$1"; fi; }
+# start_is <pid> <token>: the pid's start, read in the token's own kind, is that token.
+start_is() {
+  case $2 in
+    ''|*[!0-9]*) [ "$(proc_lstart "$1")" = "$2" ] ;;
+    *) [ "$(proc_tick "$1")" = "$2" ] ;;
+  esac
+}
 take_lock() {
   local lock="$1" wait="$2" label="$3" waited=0 holder hstart
   until mkdir "$lock" 2>/dev/null; do
     [ -d "$lock" ] || { echo "$label: cannot create lock $lock (unwritable?)"; return 1; }
     holder=$(cat "$lock/pid" 2>/dev/null); hstart=$(cat "$lock/start" 2>/dev/null)
-    if [ -n "$holder" ] && { ! kill -0 "$holder" 2>/dev/null || [ "$(proc_start "$holder")" != "$hstart" ]; }; then
+    if [ -n "$holder" ] && { ! kill -0 "$holder" 2>/dev/null || ! start_is "$holder" "$hstart"; }; then
       rm -f "$lock/pid" "$lock/start"; rmdir "$lock" 2>/dev/null; continue   # dead or reused pid: reclaim
     fi
     # No owner recorded: registration takes milliseconds, so an ownerless lock older than 30 s
