@@ -979,6 +979,7 @@ The other verdicts are not refusals, and none of them is a green light either:
 | 5 | superseded | the PR head moved from the observed SHA — refused; re-run to judge the successor |
 | 4 | no verdict | still running, every finished job was `cancelled`, or a run for the head is queued, stopped without a verdict, or has yet to create its checks — refused without `--allow-no-verdict` |
 | 6 | no verdict (`merge` only) | a build job never got a runner, and the one rerun below is spent or failed (or `merge` ran without `--wait`) — refused without `--allow-no-verdict`, naming the commands |
+| 7 | no verdict (`merge --wait` only) | a head run was cancelled with no red, and the one rerun below was cancelled again, did not take, or failed — refused without `--allow-no-verdict`, naming the rerun commands |
 
 **A job that never got a runner** is named on its own line by `checks` and `merge`, with the
 command that recovers it: `NO RUNNER` (cancelled with no step run and no runner, GitHub's "not
@@ -988,6 +989,13 @@ at once on one (exit 4: nothing moves until the run is re-run). `merge --wait` r
 head run: `gh run rerun <id> --failed` (after `gh run cancel <id>` for a never-started job), and
 its wait gets a fresh `--wait` budget from the rerun. A second one on that run ends it with 6. A
 run you cancelled yourself while its jobs were queued has the NO RUNNER shape too, and is rerun.
+
+**A head run cancelled with no red** (a job's own `timeout-minutes` cap, a concurrency cancel, a
+person's) is no verdict, and nothing it holds moves until it is rerun. `merge --wait` reruns it once
+by itself, `gh run rerun <id> --failed`, with the same fresh budget, and a second cancellation ends
+the wait with 7 (#928). A job its cap cancelled twice is likely a hang to read, not a queue to wait
+out. `stale` and `action_required` are not rerun (an approval answers them), and without `--wait`
+the run stays a 4.
 
 **Exit 4 refuses too, by default.** Nothing has failed, but nothing has passed, and a merge that
 waits for neither read nothing — it was a warning until 2026-08-23, when a day-long runner queue
@@ -1420,6 +1428,11 @@ conflict-resolution merge. `merge` re-reads `.mergeable` over REST until it is n
 on `true`, so a nonzero exit from it already means the recompute settled: `mergeable=false` is base
 drift needing a merge or rebase of the base branch, and only a repeated failure after that is a
 conflict you must resolve.
+
+The build gate's own nonzero exits are the table under the gate above. Two of them come after
+`merge --wait` has already made its one recovery on a head run: 6 (a job that never got a runner)
+and 7 (a run cancelled with no red, rerun once and cancelled again). Neither is a moment to re-arm
+the same wait: read the run the refusal names first.
 
 ### After it lands
 

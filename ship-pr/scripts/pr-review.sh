@@ -230,6 +230,12 @@
 #                                          # rerun per head run under --wait; then, or without
 #                                          # --wait, it refuses with 6 naming the commands
 #                                          # (ludics-lite#560/#728; see prreview/runners.py).
+#                                          # A head run cancelled with no red (a job's own
+#                                          # timeout-minutes cap among the causes) gets ONE
+#                                          # rerun per run under --wait; cancelled again, it
+#                                          # refuses with 7 naming the rerun commands (#928;
+#                                          # see prreview/merge.py, Recovery). Without --wait
+#                                          # it is a 4, as any stopped run is.
 #                                          # A PR found merged at another head than the
 #                                          # gated one (gh makes no merge request for a
 #                                          # merged PR) is exit 1, "MERGED at an UNJUDGED
@@ -347,6 +353,9 @@
 #             `merge` adds 6: no verdict because a build job never got a runner, and the one
 #             rerun `--wait` makes per head run is spent or failed, or there was no wait to make
 #             it in (`checks` names the same jobs and stays 4). --allow-no-verdict still merges.
+#             `merge` adds 7: no verdict because a head run was cancelled with no red, and the one
+#             rerun `--wait` makes of it was cancelled again, did not take, or failed (#928;
+#             without --wait, and from `checks`, that run is a 4). --allow-no-verdict still merges.
 #
 # Env: REPO=owner/name, overridden by a repo spelled out in the <pr> argument or by --repo; those
 #      three are the ONLY sources, for every subcommand including `retry run watch`, but two that

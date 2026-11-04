@@ -107,7 +107,8 @@ MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 
 # while run 130 of the same workflow has a job on the same labels running). The recovery's writes
 # (`run cancel`, `run rerun`) are logged and leave a marker; after the cancel the run reads
 # completed with its job no runner took, and after the rerun it reads as attempt 2 -- the same
-# story again, unless RUNNER_RECOVERS is set: then green.
+# story again, unless RUNNER_RECOVERS is set: then green. `capped` (#928) is run 100 completed
+# cancelled by its job's own timeout-minutes cap: steps ran on a named runner, no red, no NO RUNNER.
 RUNNER_CASE=""
 RUNNER_RECOVERS=""
 # The "from the SECOND read on" switches above are counted by the lib's fixture_call_count, under
@@ -127,7 +128,7 @@ check_runs_answer() { # <n>
   if [ -n "$RUNNER_CASE" ]; then
     case "$(runner_state)" in
     recovered) rows=$(printf 'green\tbuild\tsuccess\thttps://example/build\t1') ;;
-    norunner) rows=$(printf 'nogo\tbuild\tcancelled\thttps://example/build\t1') ;;
+    norunner | capped) rows=$(printf 'nogo\tbuild\tcancelled\thttps://example/build\t1') ;;
     *) rows=$(printf 'pending\tbuild\tpending\thttps://example/build\t1') ;;
     esac
   elif [ -n "$CHECK_ROWS_LATER" ] && [ "$1" -ge 2 ]; then
@@ -147,11 +148,14 @@ check_runs_answer() { # <n>
 }
 
 # Where RUNNER_CASE's story stands: `queued` (the never-started job waits), `norunner` (the run
-# completed with its job cancelled before any runner took it), or `recovered` (green after the
-# rerun). The attempt is 2 once the rerun was sent.
+# completed with its job cancelled before any runner took it), `capped` (the run completed with its
+# job cancelled at its cap, before the rerun and after it), or `recovered` (green after the rerun).
+# The attempt is 2 once the rerun was sent.
 runner_state() {
   if [ -e "$TEST_ROOT/runner-rerun" ] && [ -n "$RUNNER_RECOVERS" ]; then
     echo recovered
+  elif [ "$RUNNER_CASE" = capped ]; then
+    echo capped
   elif [ "$RUNNER_CASE" = no-runner ] || { [ -e "$TEST_ROOT/runner-cancel" ] && [ ! -e "$TEST_ROOT/runner-rerun" ]; }; then
     echo norunner
   else
@@ -178,6 +182,11 @@ runner_jobs() { # <run id>
     jq -cn --argjson a "$(runner_attempt)" '{jobs:[{id:501,name:"build",status:"completed",conclusion:"cancelled",
       created_at:"2026-09-01T00:00:00Z",steps:[],runner_name:null,labels:["macos-14"],run_attempt:$a}]}'
     ;;
+  capped)
+    jq -cn --argjson a "$(runner_attempt)" '{jobs:[{id:501,name:"build",status:"completed",conclusion:"cancelled",
+      created_at:"2026-09-01T00:00:00Z",steps:[{name:"Set up job"},{name:"Run tests"}],
+      runner_name:"GitHub Actions 3",labels:["ubuntu-latest"],run_attempt:$a}]}'
+    ;;
   *)
     jq -cn --argjson a "$(runner_attempt)" '{jobs:[{id:501,name:"build",status:"queued",conclusion:null,
       created_at:"2026-09-01T00:00:00Z",steps:[],runner_name:null,labels:["macos-14"],run_attempt:$a}]}'
@@ -192,7 +201,7 @@ runs_answer() {
   if [ -n "$RUNNER_CASE" ]; then
     case "$(runner_state)" in
     recovered) runner_run completed success ;;
-    norunner) runner_run completed cancelled ;;
+    norunner | capped) runner_run completed cancelled ;;
     *) runner_run in_progress null ;;
     esac
   elif [ -n "$MOVED_RUN_RC" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
@@ -523,6 +532,16 @@ gh() {
   "api repos/$REPO/actions/workflows/1/runs?"*)
     gh_fixture_parse "$@"
     gh_fixture_answer '{"workflow_runs":[{"id":130,"status":"in_progress","created_at":"2026-09-01T00:10:00Z"}]}'
+    ;;
+  # The recovery's re-read of one head run (#928): its status, conclusion and attempt as the story has it.
+  "api repos/$REPO/actions/runs/"[0-9]*)
+    [ -n "$RUNNER_CASE" ] || bail "a run read with no RUNNER_CASE: $*"
+    gh_fixture_parse "$@"
+    case "$(runner_state)" in
+    recovered) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"completed",conclusion:"success",run_attempt:$a}')" ;;
+    norunner | capped) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"completed",conclusion:"cancelled",run_attempt:$a}')" ;;
+    *) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"in_progress",conclusion:null,run_attempt:$a}')" ;;
+    esac
     ;;
   "run cancel" | "run rerun")
     printf 'CALL %s\n' "$*" >>"$CALLS_FILE"
@@ -2444,6 +2463,43 @@ test_a_job_no_runner_took_is_rerun_once_and_merges() {
   assert_not_contains "$MERGE_CALLS" "CALL run " "and nothing was rerun without a wait"
 }
 
+# #928: a head run cancelled with no red held `merge --wait` to its ceiling, printing "re-run the
+# workflow" while nothing did (11 minutes on ludics#881, until a person did). Here its job was
+# cancelled by its own timeout-minutes cap, steps run on a named runner (ludics run 41831895619's
+# shape): under --wait it is rerun once by itself and the rerun's green merges; a rerun cancelled
+# again ends the wait early with 7 and the rerun commands. Without --wait it stays the 4 it was.
+test_a_cancelled_head_run_is_rerun_once() {
+  local start
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=capped
+  RUNNER_RECOVERS=1
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 0 "the rerun's green merges ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c '^CALL run rerun 100 --failed --repo example/repo$' <<<"$MERGE_CALLS")" 1 "after one rerun"
+  assert_not_contains "$MERGE_CALLS" "CALL run cancel" "a completed run needs no cancel"
+  assert_contains "$MERGE_OUTPUT" "run 100: it was cancelled before its jobs were judged; recovering once" "the rerun is said"
+  assert_contains "$MERGE_CALLS" "--match-head-commit head-sha " "bound to the gated head"
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=capped
+  start=$SECONDS
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 7 "a second cancellation is its own exit ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c '^CALL run rerun 100 --failed --repo example/repo$' <<<"$MERGE_CALLS")" 1 "one rerun, never two"
+  assert_contains "$MERGE_OUTPUT" "run 100 was cancelled again on its rerun (attempt 2)" "the second cancellation ends it"
+  assert_contains "$MERGE_OUTPUT" "By hand: gh run rerun 100 --failed --repo $REPO; gh run rerun 100 --repo $REPO" \
+    "naming the rerun commands"
+  [ $((SECONDS - start)) -lt 120 ] || bail "the wait should end early, not at its 600 s ceiling ($((SECONDS - start)) s)"
+  assert_no_merge_call
+  reset
+  RUNNER_CASE=capped
+  run_merge
+  assert_eq "$MERGE_RC" 4 "without --wait a cancelled run is no verdict, as before ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "and a merge that does not wait writes nothing"
+  assert_no_merge_call
+}
+
 # A gate that could not read the checks is UNKNOWN, and no flag merges past it.
 test_an_unread_build_signal_never_merges() {
   reset
@@ -3430,6 +3486,7 @@ tests=(
   test_no_verdict_refuses_without_the_flag
   test_a_never_started_job_ends_the_wait_early_with_its_commands
   test_a_job_no_runner_took_is_rerun_once_and_merges
+  test_a_cancelled_head_run_is_rerun_once
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
   test_a_pr_merged_elsewhere_at_an_unjudged_head_is_not_this_merge
