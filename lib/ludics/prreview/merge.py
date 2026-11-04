@@ -29,7 +29,11 @@ instead (ludics-lite#795, ludics#808), so there 3 means the wait's budget was sp
 answering, or GitHub refused the read, and the message names the failures; 4 no verdict; 5 the head was superseded;
 6 no verdict because a build job never got a runner (runners.py: NO RUNNER, NEVER STARTED), and the
 one recovery ``--wait`` makes per head run (``Recovery``) is spent or failed, or there was no wait
-to make it in -- the refusal names the commands. ``--allow-no-verdict`` still merges it unread.
+to make it in -- the refusal names the commands; 7 no verdict because a head run completed
+``cancelled`` with no red (a job's ``timeout-minutes`` cap, a person's or a concurrency cancel), and
+``--wait``'s one rerun of it (``Recovery``) was cancelled again, did not take, or failed -- the
+refusal names the rerun commands (#928). Without ``--wait`` such a run is a 4, as before.
+``--allow-no-verdict`` still merges a 6 or a 7 unread.
 """
 
 import os
@@ -196,9 +200,27 @@ class Recovery:
       old attempt, ignored for ``TRANSITION`` seconds, after which the rerun did not take and the
       wait ends too.
 
+    - CANCELLED (#928): the newest completed run of a workflow and event (the run ``run_signal``
+      judges), not advisory, concluded ``cancelled`` -- no red, or the fold would be RED and nothing
+      recovers -- with no NO RUNNER of its own and no newer run of that workflow and event in
+      flight. A job its own ``timeout-minutes`` cap stopped has this shape (the job and the run read
+      ``cancelled``, the check run too). The run is re-read (``status``, ``conclusion``,
+      ``run_attempt``) and, still completed ``cancelled`` at a readable attempt, rerun once as a NO
+      RUNNER is, with the same deadline move. A LATER attempt read ``cancelled`` again is the second
+      cancellation and ends the wait; the attempt that was rerun still read after ``TRANSITION``
+      seconds is a rerun that did not take, and ends it too. These ends are ``code`` 7.
+
+    Boundary of CANCELLED: it reads the round's run list and one run read per such run, nothing
+    else. It reruns ``cancelled`` alone: ``stale`` and ``action_required`` stop a run too, but a
+    rerun answers neither (an approval does), so they stay the 4 they were. A run read that fails,
+    or answers no attempt, classifies nothing that round: no write, and the gate's wait goes on as
+    it would without a recovery. A run a person cancelled on purpose is rerun too; stop the merge,
+    not the run, to keep it from landing.
+
     Before each write the PR head is re-read: a head that moved is ``superseded`` (5), and nothing
     is written; one that could not be re-read is ``unread`` (3). Every other end leaves ``why`` and
-    ``commands`` for merge's exit 6."""
+    ``commands`` for merge's exit ``code``: 6 for a job that never got a runner, 7 for a cancelled
+    run."""
 
     TRANSITION = 300
 
@@ -214,10 +236,12 @@ class Recovery:
         self.commands: list[str] = []
         self.superseded = ""
         self.unread = False
+        self.code = 6
 
-    def stop(self, why: str, *commands: str) -> Stop:
+    def stop(self, why: str, *commands: str, code: int = 6) -> Stop:
         self.why = why
         self.commands = list(commands)
+        self.code = code
         return Stop()
 
     def head_moved(self) -> bool:
@@ -231,7 +255,8 @@ class Recovery:
             return True
         return False
 
-    def write(self, rid: str, action: Literal["cancel", "rerun"], attempt: int | None, now: int) -> bool:
+    def write(self, rid: str, action: Literal["cancel", "rerun"], attempt: int | None, now: int,
+              reason: str = "a build job never got a runner") -> bool:
         """Record, then send, one write; False (with ``why``) when it was not sent or failed."""
         if self.head_moved():
             return False
@@ -239,7 +264,7 @@ class Recovery:
         args = ["run", "cancel", rid, "--repo", self.repo] if action == "cancel" else \
             ["run", "rerun", rid, "--failed", "--repo", self.repo]
         command = cancel_command(rid, self.repo) if action == "cancel" else rerun_command(rid, self.repo)
-        warn(f"{self.repo}#{self.num}: run {rid}: a build job never got a runner; recovering once: {command}")
+        warn(f"{self.repo}#{self.num}: run {rid}: {reason}; recovering once: {command}")
         result = self.session.retry("write", args)
         if isinstance(result, GhOk):
             return True
@@ -251,6 +276,72 @@ class Recovery:
         )
         self.commands = [command] if action == "rerun" else [command, rerun_command(rid, self.repo)]
         return False
+
+    def cancelled_runs(self, runs: list[HeadRun]) -> list[HeadRun]:
+        """The round's head runs CANCELLED reads (the class docstring): newest first, one per
+        workflow and event, completed ``cancelled``, not advisory, no newer run of the key in flight."""
+        seen: set[str] = set()
+        out: list[HeadRun] = []
+        for run in runs:
+            if not run.rid or self.gate.is_advisory(run.name):
+                continue
+            key = f"{run.wid}/{run.event}"
+            if key in seen:
+                continue
+            seen.add(key)
+            if run.status == "completed" and run.conclusion == "cancelled":
+                out.append(run)
+        return out
+
+    def read_run(self, rid: str) -> tuple[str, str, int] | None:
+        """The run's status, conclusion and attempt as it stands; None when the read failed or
+        answered no attempt."""
+        result = self.session.retry(
+            "read",
+            [
+                "api",
+                f"repos/{self.repo}/actions/runs/{rid}",
+                "--jq",
+                '[(.status // "-"), (.conclusion // "-"), ((.run_attempt // "-") | tostring)] | @tsv',
+            ],
+        )
+        if not isinstance(result, GhOk):
+            return None
+        status, concl, attempt = tab_fields(result.stdout, 3)
+        return (status, concl, int(attempt)) if re.fullmatch("[0-9]+", attempt) else None
+
+    def rerun_cancelled(self, run: HeadRun, now: int) -> Step | None:
+        """CANCELLED for one run: Stop, Wait (a rerun sent, or one still to show), or None (nothing
+        to do this round)."""
+        rid = run.rid
+        done = self.done.get(rid)
+        state = self.read_run(rid)
+        if state is None:
+            return None
+        status, concl, attempt = state
+        if status != "completed" or concl != "cancelled":
+            return None
+        if done is None:
+            if not self.write(rid, "rerun", attempt, now, "it was cancelled before its jobs were judged"):
+                self.code = 7
+                return Stop()
+            return Wait(now + self.wait_for)
+        if done.attempt is not None and attempt > done.attempt:
+            return self.stop(
+                f"run {rid} was cancelled again on its rerun (attempt {attempt}): the one rerun this wait"
+                " makes per run is spent",
+                rerun_command(rid, self.repo),
+                rerun_command(rid, self.repo, failed=False),
+                code=7,
+            )
+        if now - done.at >= self.TRANSITION:
+            return self.stop(
+                f"run {rid} still reads cancelled at attempt {attempt} {(now - done.at) // 60} min after"
+                " its rerun, which did not take",
+                rerun_command(rid, self.repo),
+                code=7,
+            )
+        return Wait()
 
     def still_queued(self, rid: str, jid: str) -> bool:
         jobs = read_jobs(self.session, self.repo, rid)
@@ -318,6 +409,25 @@ class Recovery:
                     cancel_command(run.rid, self.repo),
                     rerun_command(run.rid, self.repo),
                 )
+        # A head run cancelled with no red (#928): nothing the gate holds on moves until it is
+        # rerun. A run with an orphan, or one this recovery cancelled, is the loops' above.
+        for run in self.cancelled_runs(runs):
+            done = self.done.get(run.rid)
+            if run.rid in by_run or (done is not None and done.action == "cancel"):
+                continue
+            step = self.rerun_cancelled(run, now)
+            match step:
+                case None:
+                    pass
+                case Stop():
+                    return step
+                case Wait(until=at):
+                    acted = True
+                    until = max(until, at)
+                case Idle():
+                    pass
+                case _:
+                    assert_never(step)
         return Wait(until) if acted else Idle()
 
 
@@ -557,6 +667,8 @@ class Merge:
                 3,
                 f"NOT merging {repo}#{pr}: {recovery.why}; nothing was written. Retry.",
             )
+        if rc == 4 and recovery.why and recovery.code == 7 and not opts.allow_no_verdict:
+            self.refuse_cancelled()
         if rc == 4 and (gate.orphans or recovery.why) and not opts.allow_no_verdict:
             self.refuse_no_runner()
         match rc:
@@ -667,6 +779,19 @@ class Merge:
             f"NOT merging {repo}#{pr}: a build job never got a runner (NO RUNNER / NEVER STARTED, listed above) —",
             f"{why}. No verdict comes of it until the run is re-run. By hand: {'; '.join(commands)};",
             "then merge again (--wait). --allow-no-verdict merges without the verdict instead.",
+        )
+
+    def refuse_cancelled(self) -> None:
+        """Exit 7: no verdict because a head run was cancelled with no red, and ``--wait``'s one
+        rerun of it is spent, did not take, or failed (#928). Names the commands."""
+        repo, pr, recovery = self.repo, self.num, self.recovery
+        fail(
+            7,
+            f"NOT merging {repo}#{pr}: a workflow run of the head was cancelled before its jobs were judged",
+            f"(listed above) — {recovery.why}. No verdict comes of it until the run is re-run. By hand:",
+            f"{'; '.join(recovery.commands)}; then merge again (--wait). A run cancelled again by its",
+            "own timeout-minutes cap is a hang to read, not a runner to wait for. --allow-no-verdict",
+            "merges without the verdict instead.",
         )
 
     def merge_call(self) -> None:

@@ -396,5 +396,110 @@ class MergeRecovery(Quiet):
         self.assertIn("failed (gh: HTTP 504: Gateway Timeout); it may have landed", recovery.why)
 
 
+# A job its own ``timeout-minutes`` cap stopped (#928; ludics run 41831895619): steps ran on a named
+# runner, and the job, its check run and its run all read ``cancelled`` -- no red, and no NO RUNNER.
+CAPPED = job_row(steps="7", runner="GitHub Actions 1000059632")
+
+
+def run_read(gh: FakeGh, rid: str, out: str | list[str] = "", rc: int = 0, err: str = "") -> None:
+    """The recovery's re-read of one run: status, conclusion, attempt."""
+    gh.on(f"actions/runs/{rid} --jq", out=out, rc=rc, err=err)
+
+
+class CancelledRecovery(MergeRecovery):
+    """#928: a head run cancelled with no red is rerun once; a second cancellation ends the wait."""
+
+    def cancelled(self, gh: FakeGh, checks: list[str] | None = None, runs: list[str] | None = None) -> None:
+        self.head(gh)
+        gh.on("run", "rerun", out="")
+        gh.on("check-runs", out=checks or ["build\tcancelled\tu\t1"])
+        gh.on("actions/runs?head_sha=h1", out=runs or [run_row()])
+        jobs(gh, "100", out=CAPPED)
+
+    def test_a_run_its_cap_cancelled_is_rerun_once_and_reaches_the_verdict(self) -> None:
+        gh = FakeGh()
+        self.cancelled(gh, ["build\tcancelled\tu\t1", "build\tsuccess\tu\t1"], [run_row(), run_row(concl="success")])
+        run_read(gh, "100", out="completed\tcancelled\t1")
+        rc, recovery, _clock = self.run_gate(gh, 7200)
+        self.assertEqual((rc, recovery.why), (0, ""))
+        self.assertEqual(self.writes(gh), ["run rerun 100 --failed --repo o/r"])
+        self.assertIn("it was cancelled before its jobs were judged; recovering once", self.out.getvalue())
+
+    def test_a_second_cancellation_ends_the_wait_with_its_own_code(self) -> None:
+        gh = FakeGh()
+        self.cancelled(gh)
+        run_read(gh, "100", out=["completed\tcancelled\t1", "completed\tcancelled\t2"])
+        rc, recovery, clock = self.run_gate(gh, 7200)
+        self.assertEqual((rc, recovery.code), (4, 7))
+        self.assertEqual(self.writes(gh), ["run rerun 100 --failed --repo o/r"], "exactly one rerun")
+        self.assertIn("run 100 was cancelled again on its rerun (attempt 2)", recovery.why)
+        self.assertEqual(recovery.commands, ["gh run rerun 100 --failed --repo o/r", "gh run rerun 100 --repo o/r"])
+        self.assertLess(sum(clock.sleeps), 600, "ended at the second cancellation, not at the deadline")
+
+    def test_a_rerun_that_does_not_take_ends_after_the_window(self) -> None:
+        gh = FakeGh()
+        self.cancelled(gh)
+        run_read(gh, "100", out="completed\tcancelled\t1")
+        rc, recovery, clock = self.run_gate(gh, 7200)
+        self.assertEqual((rc, recovery.code, len(self.writes(gh))), (4, 7, 1))
+        self.assertIn("still reads cancelled at attempt 1", recovery.why)
+        self.assertGreaterEqual(sum(clock.sleeps), Recovery.TRANSITION)
+        self.assertLess(sum(clock.sleeps), Recovery.TRANSITION + 600)
+
+    def test_a_refused_rerun_ends_the_wait_with_its_own_code(self) -> None:
+        gh = FakeGh()
+        self.head(gh)
+        gh.on("run", "rerun", rc=1, err="HTTP 403: Resource not accessible by integration")
+        gh.on("check-runs", out="build\tcancelled\tu\t1")
+        gh.on("actions/runs?head_sha=h1", out=run_row())
+        jobs(gh, "100", out=CAPPED)
+        run_read(gh, "100", out="completed\tcancelled\t1")
+        rc, recovery, clock = self.run_gate(gh, 7200)
+        self.assertEqual((rc, recovery.code, clock.sleeps), (4, 7, []))
+        self.assertEqual(recovery.commands, ["gh run rerun 100 --failed --repo o/r"])
+
+    def test_what_is_not_rerun(self) -> None:
+        """An unread run, an attempt that does not read, a run in flight on re-read, a newer run of
+        the same workflow in flight, a stop a rerun does not answer, an advisory run: no write, and
+        the wait holds as it did before #928."""
+        newer = run_row(rid=101, status="in_progress", concl="pending", created="2025-12-31T23:30:00Z")
+        cases: list[tuple[str, list[str], dict[str, typing.Any], dict[str, str]]] = [
+            ("unread", [run_row()], {"rc": 1, "err": "gh: HTTP 502"}, {}),
+            ("no attempt", [run_row()], {"out": "completed\tcancelled\t-"}, {}),
+            ("in flight on re-read", [run_row()], {"out": "in_progress\t-\t2"}, {}),
+            ("a newer run in flight", [newer + "\n" + run_row()], {"out": "completed\tcancelled\t1"}, {}),
+            ("action_required", [run_row(concl="action_required")], {"out": "completed\taction_required\t1"}, {}),
+            ("advisory", [run_row()], {"out": "completed\tcancelled\t1"}, {"SHIP_PR_ADVISORY_CHECKS": "^ci$"}),
+        ]
+        for name, runs, read, env in cases:
+            with self.subTest(name):
+                gh = FakeGh()
+                self.cancelled(gh, runs=runs)
+                jobs(gh, "101", out="")
+                gh.on("commits/h1", out=T0)  # an advisory run's suite leaves no check: the head's age
+                run_read(gh, "100", **read)
+                clock = FakeClock()
+                gate = make_gate(gh, clock, **env)
+                gate.orphans_on = True
+                recovery = Recovery(gate.session, "o/r", "7", gate, gate.clock, 300)
+                gate.recover = recovery
+                gate.check("7", 300)
+                self.assertEqual((self.writes(gh), recovery.why), ([], ""))
+
+    def test_a_no_runner_rerun_cancelled_again_is_the_one_recovery_spent(self) -> None:
+        """One recovery per head run: a NO RUNNER rerun whose attempt is then cancelled is not
+        rerun a second time."""
+        gh = FakeGh()
+        self.head(gh)
+        gh.on("run", "rerun", out="")
+        gh.on("check-runs", out="build\tcancelled\tu\t1")
+        gh.on("actions/runs?head_sha=h1", out=run_row())
+        jobs(gh, "100", out=[job_row(), job_row(steps="7", runner="r", attempt="2")])
+        run_read(gh, "100", out="completed\tcancelled\t2")
+        rc, recovery, _clock = self.run_gate(gh, 7200)
+        self.assertEqual((rc, recovery.code, len(self.writes(gh))), (4, 7, 1))
+        self.assertIn("cancelled again on its rerun (attempt 2)", recovery.why)
+
+
 if __name__ == "__main__":
     unittest.main()
