@@ -704,12 +704,10 @@ requirements for every transport with transport-specific setup and identity, and
   corners over six rounds (ludics-lite#609).
 - Landing: the ship-pr skill through review to merge; for a PR that fully resolves the issue,
   include `Closes #N` in its body (`Closes owner/repo#N` for a separate upstream tracker), per
-  ship-pr's *Open*. The brief names the ship-pr sections to read, each where it acts, never the
-  whole file: its SKILL.md is about 1600 lines, most of a worker's context on a PR approved in
-  round 0 (ludics#948). *Open* and *Monitor* before opening; *Address a round* and *When the loop
-  ends* at the first round with findings; *The approval is one gate; the build is the other* and
-  *After it lands* before merging. The rest is reference, read when one of those sections or a
-  command's output names it. Then close out the tracked issue with a summary comment - `gh issue comment
+  ship-pr's *Open*. The brief points the worker to the staged reading list that opens ship-pr's
+  SKILL.md, its "What to read when" paragraph, and does not restate it, so the worker reads each
+  section where it acts and never the whole file: it is about 1600 lines, most of a worker's
+  context on a PR approved in round 0 (ludics#948). Then close out the tracked issue with a summary comment - `gh issue comment
   --body-file` first and `gh issue close` only if the merge left it open, per ship-pr's *After
   it lands*, because `gh issue close --comment` on an issue a PR body's `Closes #N` already
   closed posts nothing at all - then the after-merge brainstorm ship-pr ends with, in

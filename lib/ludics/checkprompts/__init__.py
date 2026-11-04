@@ -29,6 +29,8 @@ The checks, each in its own module:
                (ludics-lite#826).
   suitemap     lib/ludics/README.md's map of the suites that drive each module: every module
                has a line, and every suite and section it names exists (#718).
+  readwhen     ship-pr's "What to read when" paragraph, and issue-wave's Landing bullet that
+               points to it: every italic section name is a heading of ship-pr/SKILL.md.
 
 Every reader works on the C-locale (byte) view of the files, as the shell's did under
 ``LC_ALL=C``; ``bytes_view`` says why that is part of the contract. Every scanner here reads LINE
