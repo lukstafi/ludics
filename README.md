@@ -1320,7 +1320,10 @@ it is never the default, never asked over a red or a run in flight at an older c
 more than a green (a direct push, a red head, a head that never built the workflow stay pending).
 Under the gate's `--advisory-red` the interim judges by the repository's advisory list
 (ludics-lite#659): a merged head still going only on jobs the list names, and an older run going
-only on them with every other job passed, do not hold it; each holds it without the flag.
+only on them with every other job passed, do not hold it; each holds it without the flag. A run
+the list does not release says why, as `checks` and `merge` do: the run, the first job that kept
+the release from applying and the reason (`run_inflight_hold`, ludics#930), on a note line of its
+own for an older run and inside the source's line for a merged head's re-run; cases pin both.
 A tip's run that finished while the source was read, or a tip that moved, takes the round again
 at once, and the next round's feed decides: the tip's own verdict, or the new tip's (#426); at
 most twice per call, so a lagging feed stops on three rounds with its note. The hold for a

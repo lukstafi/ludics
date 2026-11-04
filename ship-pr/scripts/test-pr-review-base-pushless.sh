@@ -266,6 +266,18 @@ test_a_rerun_behind_a_green_head_is_pending() {
   run_base
   assert_eq "$BASE_RC" 4 "a re-run in flight is no verdict yet"
   assert_contains "$BASE_OUTPUT" "is being re-run by ci" "and the line says which workflow"
+  assert_not_contains "$BASE_OUTPUT" "held:" "and, with no release rule to miss, no reason"
+  # Under --advisory-red the re-run is read by the repository's rule, and one still going on a
+  # required job says which run, which job and why (#930's reason, as checks prints it).
+  local later=$HEAD_RUNS_LATER
+  pushless_fixture
+  HEAD_RUNS_LATER=$later
+  JOBS_8009=$(jobs_json '[{"name":"build","conclusion":null,"created_at":"2026-09-26T09:00:00Z","completed_at":null}]')
+  ADVISORY_LIST="$THIS_REPOS_ADVISORY_LIST"
+  run_base --advisory-red "$TEST_ROOT/advisory-red.json"
+  assert_eq "$BASE_RC" 4 "under the flag the re-run on a required job is no verdict yet"
+  assert_contains "$BASE_OUTPUT" "is being re-run by ci (run 8009 held: job build is still running (or queued) and is not advisory)" \
+    "and the line names the run, the job and why"
 }
 
 # A plain read tolerates a tip read that fails — its verdict comes from the runs, and the tip only
@@ -678,6 +690,7 @@ test_interim_under_the_repositorys_advisory_list() {
     else
       assert_eq "$BASE_RC" 4 "without the flag that run holds the interim, as before"
       assert_not_contains "$BASE_OUTPUT" "green, interim" "no green over it"
+      assert_not_contains "$BASE_OUTPUT" "holds the interim:" "and there is no release to explain"
     fi
   done
   burst_fixture "$older"
@@ -687,6 +700,8 @@ test_interim_under_the_repositorys_advisory_list() {
   run_base --wait=2 --interim --advisory-red "$out"
   assert_eq "$BASE_RC" 4 "a required job still running keeps it in flight"
   assert_not_contains "$BASE_OUTPUT" "green, interim" "and holds the interim"
+  assert_contains "$BASE_OUTPUT" "(run 7801 of ci at ${SHA_B:0:8} holds the interim: job 'fixtures (ubuntu)' is still running (or queued) and is not advisory)" \
+    "naming the run, the job that kept it and why (#930's reason, as checks prints it)"
   # The merged head still going on its macOS jobs: green by the list `merge` merged it under.
   for flag in --advisory-red ""; do
     burst_fixture "$BURST_RUNS"
