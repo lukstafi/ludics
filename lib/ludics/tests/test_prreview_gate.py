@@ -619,6 +619,69 @@ class GateLoop(unittest.TestCase):
                 gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
                 self.assertEqual((gate.check("7", 0, waive=waive), gate.verdict), want)
 
+    def test_an_inflight_hold_names_its_run_job_and_reason(self) -> None:
+        # ludics#930: a hold that named no cause got #862 filed against the wrong one. Each way the
+        # advisory release fails names the run, the first job in list order that kept it, and why;
+        # a released run has no line. The waived cases read the waiver of a recorded red ``ubuntu``.
+        old = "2025-12-31T23:00:00Z"
+        new = "2025-12-31T23:59:55Z"
+        leg = f"macos\tpending\t{old}\t-"
+        cases = (
+            (f"build\tsuccess\t{old}\t{old}\n{leg}", None, None),
+            (f"build\tsuccess\t{old}\t{old}\ntest\tpending\t{old}\t-\n{leg}", None,
+             "job test is still running (or queued) and is not advisory"),
+            (f"build\tfailure\t{old}\t{old}\n{leg}", None, "job build concluded failure, red and not waived"),
+            (f"ubuntu\tfailure\t{old}\t{old}\nubuntu\tfailure\t{old}\t{old}\n{leg}", {"check:1/ubuntu"},
+             "job ubuntu concluded failure, red, and the waiver cannot single it out: 2 jobs of the run share its name"),
+            (f"build\tcancelled\t{old}\t{old}\n{leg}", None, "job build concluded cancelled, stopped and not judged"),
+            (f"build\tsuccess\t{old}\t{new}\n{leg}", None,
+             "its job list last changed 5s ago (job build), inside the 1m settle"),
+            (f"build\tsuccess\t{old}\t{old}\nmacos\tpending\t-\t-", None,
+             "job macos has no created_at, so the settle cannot place it (untimed)"),
+            (f"build\tsuccess\t{old}\t-\n{leg}", None,
+             "job build concluded success with no completed_at, so the settle cannot place it (untimed)"),
+            (f"build\tsuccess\t{old}\t{old}\nmacos\tsuccess\t{old}\t{old}", None,
+             "none of its jobs is unfinished: it is between jobs or finishing"),
+            ("", None, "it lists no jobs yet"),
+            (f"build\tsuccess\t2026-01-01T01:00:00Z\t2026-01-01T01:00:00Z\n{leg}", None,
+             "its newest job stamp (job build, 2026-01-01T01:00:00Z) is unreadable or in the future (untimed)"),
+        )
+        for jobs, waived, want in cases:
+            gh = FakeGh()
+            gh.on("actions/runs/100/jobs", out=jobs)
+            gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+            gate.waived = waived or set()
+            with self.subTest(jobs=jobs):
+                hold = gate.run_inflight_hold("100", "1")
+                if want is None:
+                    self.assertIsNone(hold)
+                else:
+                    assert hold is not None
+                    self.assertIn(want, hold)
+                self.assertEqual(gate.run_inflight_is_advisory_only("100", "1"), want is None)
+        gh = FakeGh()
+        gh.on("actions/runs/100/jobs", rc=1, err="gh: HTTP 503")
+        gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+        self.assertEqual(
+            gate.run_inflight_hold("100", "1"),
+            "its job list could not be read (gh: HTTP 503), so whether only advisory jobs are left is unknown",
+        )
+        # Through ``checks``: the line follows the NO VERDICT YET headline, named by run and workflow.
+        gh = FakeGh()
+        gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+        gh.on("pulls/7", out="h1\tb1\ttopic")
+        gh.on("check-runs", out="build\tsuccess\tu\t1\tcompleted")
+        gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tmain 1/2\tin_progress\tpending\t1")
+        gh.on("actions/runs/100/jobs", out=f"build\tsuccess\t{old}\t{old}\ntest\tpending\t{old}\t-\n{leg}")
+        gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+        self.out.truncate(0)
+        self.out.seek(0)
+        self.assertEqual((gate.check("7", 0), gate.verdict), (4, "unjudged"))
+        self.assertIn(
+            "\n  held     workflow run 100 ('main 1/2'): job test is still running (or queued) and is not advisory\n",
+            self.out.getvalue(),
+        )
+
 
 T0 = 1767225600
 

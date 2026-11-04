@@ -34,7 +34,7 @@ from ludics.prreview import knobs
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, warn
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.budget import pause
-from ludics.prreview.clock import Clock, FuncClock, age_of, fmt_age, freshest_age, newest
+from ludics.prreview.clock import Clock, FuncClock, age_of, fmt_age, freshest_age
 from ludics.prreview.runners import HeadRun, Idle, Orphan, Recover, Stop, Wait, report_line, scan
 from ludics.prreview.shtext import herestring_lines, is_digits, placeholder, tab_fields
 from ludics.prreview.workflows import RecognitionLimits, Reads, head_within_paths_ignore
@@ -116,7 +116,9 @@ class RunSignal:
     "<run id> <run|job> <name>" per line), and the reason line. ``stopped``: the 4 is a run that
     stopped without a verdict, with nothing in flight -- no new check run comes of it unless
     someone re-runs it, which ``checks --check`` reads as final (#569). ``unread``: on a 3, how the
-    read failed (``Unread``)."""
+    read failed (``Unread``). ``holds``: on a 4 for runs in flight, one report line per held run,
+    naming the job that kept the advisory release from applying and why (``run_inflight_hold``,
+    ludics#930)."""
 
     rc: int
     red: int
@@ -127,6 +129,7 @@ class RunSignal:
     unread: Unread = "unanswered"
     # On a 3: the read that failed, as "<verb> <the thing read>"; "" the head's workflow runs.
     unread_what: str = ""
+    holds: str = ""
 
 
 # `gate_checks` (with build_checks, summarize_checks, run_signal, apply_waiver), ported once: `checks`,
@@ -449,45 +452,75 @@ class Gate:
         return 2 if waived else 0
 
     def run_inflight_is_advisory_only(self, run_id: str, suite: str = "-") -> bool:
-        """``run_inflight_is_advisory_only``: every unfinished job advisory, every finished
+        """``run_inflight_is_advisory_only``: ``run_inflight_hold`` found nothing to hold the run."""
+        return self.run_inflight_hold(run_id, suite) is None
+
+    def run_inflight_hold(self, run_id: str, suite: str = "-") -> str | None:
+        """``run_inflight_hold``: None when every unfinished job is advisory, every finished
         non-advisory job green -- or red with its check WAIVED by ``--override`` (ludics#862), the
         key ``run_red_is_advisory_only`` reads, under the same one-job-of-that-name rule -- and the
-        job list still for ADVISORY_SETTLE seconds. The waived red is already the verdict (the check
+        job list still for ADVISORY_SETTLE seconds; else why the release did not apply, naming the
+        first job in the list's order that kept it (ludics#930: a hold that named no cause got
+        ludics#862 filed against the wrong one). The waived red is already the verdict (the check
         fold's ``waived``); without this a waived red made the run's queued advisory leg a run in
         flight, and ``merge --override`` held to its deadline as no verdict (lukstafi/ocannl-staging
-        #1612 and #1625: a master red shared by ``main 1/2`` beside a macOS leg queued 100 min)."""
+        #1612 and #1625: a master red shared by ``main 1/2`` beside a macOS leg queued 100 min).
+        A jobs read that failed holds the run too, and says so: the run is in flight either way,
+        so it stays a 4 rather than #929's 3, and the reason names the failed read."""
         raw = self.run_jobs(run_id)
         if raw is None:
-            return False
+            failure = self.session.err_line() or "it did not answer"
+            return f"its job list could not be read ({failure}), so whether only advisory jobs are left is unknown"
         names = [n for n in (tab_fields(line, 4)[0] for line in herestring_lines(raw)) if n]
         unfinished = 0
-        last = ""
+        last = last_job = ""
         for line in herestring_lines(raw):
             jname, jconcl, jcreated, jdone = tab_fields(line, 4)
             if not jname:
                 continue
+            job = f"job {shlex.quote(jname)}"
             if (jcreated or "-") == "-":
-                return False
-            last = newest(last, jcreated)
+                return f"{job} has no created_at, so the settle cannot place it (untimed)"
+            if jcreated > last:
+                last, last_job = jcreated, job
             if conclusion_class(jconcl) == "pending":
                 if not self.is_advisory(jname):
-                    return False
+                    return f"{job} is still running (or queued) and is not advisory"
                 unfinished += 1
                 continue
             if (jdone or "-") == "-":
-                return False
-            last = newest(last, jdone)
+                return f"{job} concluded {jconcl} with no completed_at, so the settle cannot place it (untimed)"
+            if jdone > last:
+                last, last_job = jdone, job
             if self.is_advisory(jname):
                 continue
             klass = conclusion_class(jconcl)
-            if klass == "red" and names.count(jname) == 1 and f"check:{suite or '-'}/{jname}" in self.waived:
+            key = f"check:{suite or '-'}/{jname}"
+            if klass == "red":
+                if key not in self.waived:
+                    return f"{job} concluded {jconcl}, red and not waived"
+                if names.count(jname) != 1:
+                    return (
+                        f"{job} concluded {jconcl}, red, and the waiver cannot single it out:"
+                        f" {names.count(jname)} jobs of the run share its name"
+                    )
                 continue
             if klass != "green":
-                return False
+                return f"{job} concluded {jconcl}, stopped and not judged"
+        if not names:
+            return "it lists no jobs yet"
         if unfinished == 0:
-            return False
+            return "none of its jobs is unfinished: it is between jobs or finishing, and its own conclusion settles it"
+        settle = self.config.advisory_settle
         age = age_of(last, self.clock.time())
-        return age is not None and age >= self.config.advisory_settle
+        if age is None:
+            return f"its newest job stamp ({last_job}, {last}) is unreadable or in the future (untimed)"
+        if age < settle:
+            return (
+                f"its job list last changed {fmt_age(age)} ago ({last_job}), inside the {fmt_age(settle)}"
+                " settle a dependent job may still appear in"
+            )
+        return None
 
     def read_runs(self, sha: str) -> str | None:
         """The head's workflow runs, newest first, one projection row each; None when the read
@@ -570,7 +603,7 @@ class Gate:
                 continue
             if status != "completed" or conclusion_class(concl) == "pending":
                 runs += 1
-                inflight_ids.append(f"{rid}\t{suite or '-'}")
+                inflight_ids.append(f"{rid}\t{suite or '-'}\t{name}")
                 continue
             key = f"{wid}/{event}"
             if key in seen:
@@ -639,12 +672,15 @@ class Gate:
                 unread_what=unread_what,
             )
         inflight = released = 0
+        holds = ""
         for entry in inflight_ids:
-            rid, rsuite = tab_fields(entry, 2)
-            if self.run_inflight_is_advisory_only(rid, rsuite):
+            rid, rsuite, rname = tab_fields(entry, 3)
+            hold = self.run_inflight_hold(rid, rsuite)
+            if hold is None:
                 released += 1
             else:
                 inflight += 1
+                holds += f"  held     workflow run {rid} ({shlex.quote(rname)}): {hold}\n"
         if inflight > 0:
             return RunSignal(
                 4,
@@ -652,6 +688,7 @@ class Gate:
                 waived_runs,
                 f"{inflight} workflow run(s) for this head have no conclusion yet (queued,"
                 " running, or completed with none recorded) — their check runs may not exist yet",
+                holds=holds,
             )
         if nogo > 0:
             return RunSignal(
@@ -930,6 +967,7 @@ class Gate:
             self.run_waived = 0
             self.gate_base = base_sha
             nomatch = ""
+            run_holds = ""
             if self.select and self.check_total == 0:
                 # A selection that matches no check run yet asks the run list one question: can a
                 # matching run still appear? A run in flight, or a run-less head inside the
@@ -953,6 +991,8 @@ class Gate:
                     case 4 if not sig.stopped:
                         self.verdict = "unjudged"
                         run_why = f"no check run matches --check {shlex.quote(self.select)} yet — {sig.reason}"
+                        run_holds = sig.holds
+                        self.check_lines += run_holds
                     case _:
                         self.verdict = "unknown"
                         nomatch = sig.reason
@@ -963,6 +1003,7 @@ class Gate:
             elif self.verdict != "red":
                 sig = self.run_signal(sha, pr_at, self.check_total, base_sha, head_ref, pr)
                 run_why = sig.reason
+                run_holds = sig.holds
                 for entry in herestring_lines(sig.waived_runs):
                     if not entry:
                         continue
@@ -1001,6 +1042,7 @@ class Gate:
                     case 4:
                         if self.verdict != "pending":
                             self.verdict = "unjudged"
+                            self.check_lines += run_holds
                     case _:
                         if self.run_waived and self.verdict in ("green", "absent"):
                             self.verdict = "waived"
@@ -1074,7 +1116,8 @@ class Gate:
                 break
             if now - beat >= self.config.checks_heartbeat:
                 note = (
-                    run_why if self.verdict == "unjudged"
+                    "; ".join([run_why, *(h.strip() for h in herestring_lines(run_holds) if h)])
+                    if self.verdict == "unjudged"
                     else f"{self.check_pending} check(s) running: {running_list(self.pending_names)}"
                 )
                 warn(
