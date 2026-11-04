@@ -604,6 +604,24 @@ if [ -n "\${SHIM_GIT_HANG_FETCH:-}" ]; then for a in "\$@"; do [ "\$a" = fetch ]
 exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$TMP/bin/git"
+# Two PATH prefixes for one case each (ludics#953), off the suite's PATH: $TMP/bin-skew's ps answers
+# an lstart read with another start time, as procps's does for a live process once the wall clock
+# has stepped; $TMP/bin-racy's mkdir reports an existing directory made, as uutils's mkdir can
+# answer the second of two racers (#921). Any other call is the real one.
+mkdir -p "$TMP/bin-skew" "$TMP/bin-racy"
+REAL_PS=$(command -v ps); REAL_MKDIR=$(command -v mkdir)
+cat > "$TMP/bin-skew/ps" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" lstart= "*) echo "Thu Jan  1 00:00:01 1970"; exit 0 ;; esac
+exec "$REAL_PS" "\$@"
+EOF
+cat > "$TMP/bin-racy/mkdir" <<EOF
+#!/usr/bin/env bash
+for last in "\$@"; do :; done
+[ ! -d "\$last" ] || exit 0
+exec "$REAL_MKDIR" "\$@"
+EOF
+chmod +x "$TMP/bin-skew/ps" "$TMP/bin-racy/mkdir"
 REAL_TMUX=$(command -v tmux)
 cat > "$TMP/bin/tmux" <<EOF
 #!/usr/bin/env bash
@@ -624,7 +642,11 @@ if [ -n "\${SHIM_TMUX_EXITING:-}" ] && [ "\$(cat "\$SHIM_TMUX_EXITING")" -gt 0 ]
     if [ "\${SHIM_TMUX_EXITING_HOW:-}" = ran ]; then
       pre=(); for a in "\$@"; do [ "\$a" = new-session ] && break; pre+=("\$a"); done
       s=""; prev=""; for a in "\$@"; do [ "\$prev" = -s ] && s=\$a; prev=\$a; done
-      f=\${cmd#rmdir }; f=\${f%% *}
+      # The fence is the command's first argument as tm_worker quotes it (printf %q), and the
+      # suite's state path holds a blank (ludics#953): cutting at the first blank waited on no
+      # fence, so the kill raced the command's rmdir. Unquoted here; no fence path is a setup fault.
+      f=\${cmd#rmdir }; f=\${f%%" 2>/dev/null && exec bash "*}; eval "f=\$f"
+      [ -d "\${f%/*}" ] || { echo "shim: no start fence in: \$cmd" >&2; exit 1; }
       for _ in \$(seq 1 100); do [ -d "\$f" ] || break; sleep 0.1; done
       "$REAL_TMUX" "\${pre[@]}" kill-session -t "=\$s"
     fi
@@ -2093,8 +2115,19 @@ settle q
 mkdir -p "$ISSUE_WAVE_STATE/locks/q"; echo $$ > "$ISSUE_WAVE_STATE/locks/q/pid"; echo "bogus start" > "$ISSUE_WAVE_STATE/locks/q/start"
 expect "a lock whose pid is live but whose start time differs (pid reuse) is reclaimed" 0 "LAUNCHED testbox/q" -- "$FW" launch testbox q --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" --replace
 settle q
-mkdir -p "$ISSUE_WAVE_STATE/locks/q"; echo $$ > "$ISSUE_WAVE_STATE/locks/q/pid"; ps -o lstart= -p $$ | tr -s ' ' > "$ISSUE_WAVE_STATE/locks/q/start"
+# The holder's start token as take_lock records it (#953): on Linux its /proc start tick, else lstart.
+start_token() { if [ "$(uname -s)" = Linux ]; then local s; s=$(cat "/proc/$1/stat"); set -- ${s##*") "}; printf '%s\n' "${20}"; else ps -o lstart= -p "$1" | tr -s ' '; fi; }
+mkdir -p "$ISSUE_WAVE_STATE/locks/q"; echo $$ > "$ISSUE_WAVE_STATE/locks/q/pid"; start_token $$ > "$ISSUE_WAVE_STATE/locks/q/start"
 expect "a lock held by a live process still refuses" 1 "another launch or unstick of this name is in progress" -- "$FW" launch testbox q --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" --replace
+if [ "$(uname -s)" = Linux ]; then
+  # The boundary elsewhere: lstart is the token there, and a clock step still moves it.
+  expect "...and still refuses once a clock step has moved the holder's lstart (Linux: the token is the kernel's tick)" 1 "another launch or unstick of this name is in progress" -- \
+    env PATH="$TMP/bin-skew:$PATH" "$FW" launch testbox q --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" --replace
+fi
+expect "...and when a mkdir answers a racer that it made the held lock's directory (uutils, #921)" 1 "another launch or unstick of this name is in progress" -- \
+  env PATH="$TMP/bin-racy:$PATH" "$FW" launch testbox q --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" --replace
+ps -o lstart= -p $$ | tr -s ' ' > "$ISSUE_WAVE_STATE/locks/q/start"
+expect "a lock recorded with an lstart (a far side from before #953) is read as one, and still refuses" 1 "another launch or unstick of this name is in progress" -- "$FW" launch testbox q --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" --replace
 rm -rf "$ISSUE_WAVE_STATE/locks/q"
 "$FW" launch testbox q.mutating --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" >/dev/null; settle q.mutating
 expect "a worker named like a lock suffix does not block its sibling" 0 "LAUNCHED testbox/q" -- "$FW" launch testbox q --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" --replace
