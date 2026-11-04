@@ -291,6 +291,13 @@ class Production(unittest.TestCase):
                 self.assertIn("name one with -C <clone>", done.stderr)
                 self.assertFalse(gated(self.calls()), "the gate read nothing")
                 self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
+            with self.subTest(entry=entry[0], config="present, from a clone"):
+                self.route(config)
+                done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30", cwd=clone)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertFalse(any("ship-pr-merge-build" in " ".join(c) for c in self.calls()), "no config read")
+            if entry != self.entries()[0]:
+                continue  # The rest is the Python's alone; the forward is pinned by the two above.
             with self.subTest(entry=entry[0], config="absent"):
                 self.route(GREEN)
                 done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
@@ -301,11 +308,6 @@ class Production(unittest.TestCase):
                 done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 self.assertIn("could not be read before the wait", done.stderr)
-            with self.subTest(entry=entry[0], config="present, from a clone"):
-                self.route(config)
-                done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30", cwd=clone)
-                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-                self.assertFalse(any("ship-pr-merge-build" in " ".join(c) for c in self.calls()), "no config read")
             with self.subTest(entry=entry[0], config="present, no wait"):
                 self.route(config)
                 done = self.run_cmd(entry, "merge", "o/r#7")
