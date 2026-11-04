@@ -2042,6 +2042,12 @@ test_a_same_head_rerun_after_findings_is_reviewing() {
 FAILED_RUN_HEAD=1e14b1368a51d19726b17bb6d2a6e557680d0b4b
 FAILED_RUN_ROW='| 📝 **Code Review** | ⚠️ **Failed** <relative-time datetime="2026-09-04T22:47:25.387018Z">2026-09-04T22:47:25.387018Z</relative-time> | `1e14b13` | New commits |'
 
+# lukstafi/ludics#886's row, 2026-11-03 (ludics#931), read back from the summary's edit history
+# (the app rewrote it Completed after a hand nudge): the same Failed cell closed by the app's note
+# after a <br/>, which the row reading missed, so status read EXPECTED and watch did not re-request.
+# Verbatim but for its head, here the fixture's 1e14b13 for #886's f76f78a.
+FAILED_NOTE_ROW='| 📝 **Code Review** | ⚠️ **Failed** <relative-time datetime="2026-11-03T14:29:20.512899Z">2026-11-03T14:29:20.512899Z</relative-time><br/>We couldn’t complete this review. Comment `@codex review` to try again. | `1e14b13` | PR opened |'
+
 failed_run_summary() { # <id> <row>
   plain_comment "$1" 2026-09-04T22:47:26Z "<!-- codex-pull-request-review-summary -->
 
@@ -2087,6 +2093,12 @@ test_a_failed_run_on_the_head_is_a_failed_state() {
   COMMENTS_JSON="[$(failed_run_summary 1 '| 📝 **Code Review** | ⚠️ **Failed** <relative-time datetime="2026-09-29T17:40:02.163602Z">2026-09-29T17:40:02.163602Z</relative-time> | `1e14b13` | PR opened |')]"
   run_status
   assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" run "#462's row reads as the same failed run"
+  COMMENTS_JSON="[$(failed_run_summary 1 "$FAILED_NOTE_ROW")]"
+  run_status
+  assert_eq "$(state_tok "$STATE")" failed "#886's row, with the app's note after the stamp, is the same failed run"
+  assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" run "and nobody has re-requested it on this head"
+  assert_contains "$LINE" "Failed at 2026-11-03T14:29:20Z" "dated by the row's own stamp"
+  assert_not_contains "$LINE" "review EXPECTED" "the reading #886 had before"
   failed_run_fixture
   # A 👀 left up under the row, with nothing said since it, is the same failed run.
   REACTIONS_JSON="[$(reaction eyes 2026-09-04T22:46:40Z)]"
@@ -2196,7 +2208,8 @@ test_a_failed_run_posted_with_an_initialization_failure() {
 test_a_failed_row_outside_the_allowlist_is_not_read() {
   local row
   for row in "${FAILED_RUN_ROW/⚠️/⚠}" "${FAILED_RUN_ROW/⚠️/❌}" "${FAILED_RUN_ROW/Failed/Error}" \
-    "${FAILED_RUN_ROW/\*\*Failed\*\*/Failed}"; do
+    "${FAILED_RUN_ROW/\*\*Failed\*\*/Failed}" "${FAILED_NOTE_ROW/<br\/>We/<br/><b>We</b>}" \
+    "${FAILED_NOTE_ROW/<br\/>/<br>}"; do
     failed_run_fixture
     COMMENTS_JSON="[$(failed_run_summary 1 "$row")]"
     run_status
@@ -2254,6 +2267,19 @@ _🤖 Addressed by an automated coding agent_" "the plain request the pending-nu
   assert_contains "$WATCH_OUT" "reviewer's run FAILED AGAIN on head 1e14b13" "the verdict is on stdout"
   assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 0 "and nothing is posted"
   rm -f "$TEST_ROOT/posted.keep"
+}
+
+# ludics#931: #886's Failed row, its note after the stamp, gets the same one request.
+test_watch_re_requests_a_failed_run_with_the_apps_note_once() {
+  retune GRACE=2
+  failed_run_fixture
+  COMMENTS_JSON="[$(failed_run_summary 1 "$FAILED_NOTE_ROW")]"
+  run_watch 0,1,0 1 3
+  assert_eq "$(grep -c -x "repos/$REPO/issues/7/comments" "$REQUEST_LOG" || true)" 1 \
+    "one re-request posted for the failed run"
+  assert_contains "$WATCH_ERR" "re-requested the review with '@codex review'" "the watch says it did"
+  assert_not_contains "$WATCH_OUT" "not nudged automatically" "the row naming the head is the failure, not a bar"
+  rm -f "$TEST_ROOT/posted"
 }
 
 # lukstafi/ocannl-staging#1347 (ludics-lite#787), 2026-10-23: head ee97b22 committed 09:45:45Z,
@@ -2695,6 +2721,7 @@ tests=(
   test_watch_reads_a_commitless_receipt_as_the_approval_it_is
   test_a_broken_jq_program_is_unknown_on_the_request_read
   test_watch_re_requests_a_failed_run_once
+  test_watch_re_requests_a_failed_run_with_the_apps_note_once
   test_watch_re_requests_a_commitless_completed_row_once
   test_watch_surfaces_a_re_request_that_did_not_post
   test_watch_waits_out_a_re_request_posted_on_its_last_poll
