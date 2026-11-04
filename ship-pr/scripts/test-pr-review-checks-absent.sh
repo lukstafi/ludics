@@ -1758,15 +1758,18 @@ test_a_run_level_red_is_waived_only_from_the_first_read() {
   assert_eq "$MERGE_CALLS" "" "no merge call is made"
 }
 
-# A red this cannot disprove stands: no jobs at all is the startup_failure shape, and an
-# unreadable job list is not evidence of innocence.
-test_unreadable_jobs_keep_the_red() {
+# A red run whose job list cannot be read is never green: an unreadable list is not evidence of
+# innocence, nor of guilt (ludics#929: read as unexplained, one transient failure made a red only
+# advisory jobs explain a refusal). It is an unread round, here with no wait to read it again in.
+test_unreadable_jobs_leave_the_red_unknown() {
   reset_fixture
   RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"completed","conclusion":"failure"}]')")
   FAIL_ENDPOINT="*/jobs?per_page=100"
   run_gate
-  assert_eq "$GATE_RC" 1 "an unreadable job list leaves the red standing"
-  assert_contains "$GATE_OUTPUT" ": RED" "the red should still headline"
+  assert_eq "$GATE_RC" 3 "an unreadable job list leaves the red unknown ($GATE_OUTPUT)"
+  assert_contains "$GATE_OUTPUT" "could not read the jobs of workflow run" "naming the read that failed"
+  assert_contains "$GATE_OUTPUT" "with no wait left to read it again in" "and why it is not read again"
+  assert_not_contains "$GATE_OUTPUT" ": GREEN" "never green"
 }
 
 # --- an in-flight run whose only unfinished jobs are advisory (ludics-lite#500) -----------------
@@ -2388,7 +2391,7 @@ tests=(
   test_non_advisory_job_failure_is_a_red_run
   test_a_waived_leg_does_not_redden_its_run
   test_a_run_level_red_is_waived_only_from_the_first_read
-  test_unreadable_jobs_keep_the_red
+  test_unreadable_jobs_leave_the_red_unknown
   test_a_run_with_only_advisory_jobs_left_does_not_hold
   test_a_pending_required_job_holds_its_run
   test_an_inflight_run_without_jobs_holds
