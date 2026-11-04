@@ -406,10 +406,10 @@ class GateLoop(unittest.TestCase):
     def test_a_wait_rides_out_failed_check_and_run_reads(self) -> None:
         # ludics#808: a round's check-run read, or its workflow-run read, that did not answer is one
         # failed poll, as a head read is (#795): the round is read again, and the first round whose
-        # reads answer is judged. Each failed round of the run read asks twice (the advisory
-        # workflow lookup, then run_signal), each read's four attempts spent.
+        # reads answer is judged. A failed round of the run read asks once (ludics#929: the
+        # advisory workflow lookup's failure is run_signal's too), its four attempts spent.
         ok_runs = "2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1"
-        for route, fails in (("check-runs", 8), ("actions/runs?head_sha=h1", 16)):
+        for route, fails in (("check-runs", 8), ("actions/runs?head_sha=h1", 8)):
             gh = FakeGh()
             fail = proc.Completed(1, "", "gh: HTTP 503")
             gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
@@ -427,6 +427,45 @@ class GateLoop(unittest.TestCase):
                 self.assertIn("2 read(s) failed during this wait", gate.unread_note())
                 self.assertIn("failed read 2 of this wait, reading it again", self.out.getvalue())
                 self.assertEqual(clock.sleeps, [60] * 2, "a pause after each")
+                reads = [c for c in gh.calls if any(route in a for a in c)]
+                self.assertEqual(len(reads), fails + 1, "the third round's read answered, read once")
+
+    def test_a_red_whose_jobs_do_not_answer_is_one_failed_poll(self) -> None:
+        # ludics#929: a red run whose job list did not answer is neither explained nor unexplained.
+        # Under a wait it is one failed poll, and the round that reads the jobs judges it: a red
+        # only an advisory job explains is green, not a run-level RED. The controls: a red the round
+        # did read decides it first; a refusal, or no wait, is 3 (UNKNOWN), never RED.
+        old = "2025-12-31T23:00:00Z"
+        fail = proc.Completed(1, "", "gh: HTTP 503")
+        runs = "2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tfailure\t1"
+        lint = "2026-01-01T00:00:00Z\t101\t2\tpush\tlint\tcompleted\tfailure\t2"
+        advisory_red = f"ci\tsuccess\t{old}\t{old}\nmacos\tfailure\t{old}\t{old}\n"
+        cases = (
+            ([fail] * 4, runs, 3600, (0, "green"), "failed read 1 of this wait, reading it again"),
+            ([fail] * 4, f"{runs}\n{lint}", 3600, (1, "runred"), "concluded red with no build check"),
+            ([proc.Completed(1, "", "gh: Not Found (HTTP 404)")], runs, 3600, (3, "unknown"),
+             "GitHub refused the read"),
+            ([fail] * 4, runs, 0, (3, "unknown"), "with no wait left to read it again in"),
+        )
+        for failed, run_list, wait, want, said in cases:
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h1\tb1\ttopic")
+            gh.on("check-runs", out="ci\tsuccess\tu\t1\tcompleted")
+            gh.on("actions/runs?head_sha=h1", out=run_list)
+            gh.routes.append(Route(("actions/runs/100/jobs",), [*failed, proc.Completed(0, advisory_red, "")]))
+            gh.on("actions/runs/101/jobs", out=f"lint\tfailure\t{old}\t{old}")
+            clock = FakeClock()
+            gate = make_gate(gh, clock, SHIP_PR_ADVISORY_CHECKS="^macos$")
+            gate.session.config = replace(gate.session.config, api_attempts=4)
+            self.out.truncate(0)
+            self.out.seek(0)
+            with self.subTest(want=want, said=said):
+                self.assertEqual((gate.check("7", wait), gate.verdict), want)
+                self.assertIn(said, self.out.getvalue())
+                if want[1] == "unknown":
+                    self.assertIn("could not read the jobs of workflow run 100 (ci, failure)", self.out.getvalue())
+                    self.assertEqual(clock.sleeps, [], "no pause")
 
     def test_a_round_read_that_never_answers_is_three_once_the_budget_is_spent(self) -> None:
         # The run-less head's commit-date read is the run read's too: with no clock from it, the
