@@ -577,6 +577,7 @@ class GateLoop(unittest.TestCase):
             gh.on("actions/runs?head_sha=h1", out=(
                 "2026-01-01T00:00:00Z\t100\t1\tpush\tci\tcompleted\tsuccess\t1\n"
                 "2026-01-01T00:00:00Z\t101\t2\tpull_request\tgithub pages docs\tcompleted\tcancelled\t2"))
+            gh.on("actions/runs/101/jobs", out="build\tcancelled\t-\t-")
             with self.subTest(env=env):
                 gate = make_gate(gh, FakeClock(), **env)
                 self.assertEqual((gate.check("7", 0), gate.verdict), (want, verdict))
@@ -681,6 +682,66 @@ class GateLoop(unittest.TestCase):
             "\n  held     workflow run 100 ('main 1/2'): job test is still running (or queued) and is not advisory\n",
             self.out.getvalue(),
         )
+
+    def test_a_run_cancelled_only_in_advisory_jobs_releases_and_any_other_holds(self) -> None:
+        # ludics#958: the advisory macOS legs of the non-advisory ``skill scripts`` workflow,
+        # cancelled at their cap, held the gate as a stopped run. Released when an advisory job was
+        # stopped (or left unfinished) and every other job passed; each other shape names its hold.
+        t = "2025-12-31T23:00:00Z"
+        cases = (
+            (f"build\tsuccess\t{t}\t{t}\nmacos\tcancelled\t{t}\t{t}", None),
+            (f"build\tskipped\t{t}\t{t}\nmacos\tpending\t{t}\t-", None),
+            (f"build\tcancelled\t{t}\t{t}\nmacos\tcancelled\t{t}\t{t}", "job build concluded cancelled and is not advisory"),
+            (f"build\tfailure\t{t}\t{t}\nmacos\tcancelled\t{t}\t{t}", "job build concluded failure and is not advisory"),
+            (f"build\tpending\t{t}\t-\nmacos\tcancelled\t{t}\t{t}", "job build concluded pending and is not advisory"),
+            (f"build\tsuccess\t{t}\t{t}\nmacos\tsuccess\t{t}\t{t}", "no advisory job of it was stopped"),
+            ("", "no advisory job of it was stopped"),
+        )
+        for jobs, want in cases:
+            gh = FakeGh()
+            gh.on("actions/runs/100/jobs", out=jobs)
+            gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+            with self.subTest(jobs=jobs):
+                hold = gate.run_stopped_hold("100")
+                if want is None:
+                    self.assertIsNone(hold)
+                else:
+                    assert hold is not None
+                    self.assertEqual(hold[1], False)
+                    self.assertIn(want, hold[0])
+        gh = FakeGh()
+        gh.on("actions/runs/100/jobs", rc=1, err="gh: HTTP 503")
+        gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+        self.assertEqual(
+            gate.run_stopped_hold("100"),
+            ("its job list could not be read (gh: HTTP 503), so whether only advisory jobs were stopped is unknown",
+             True),
+        )
+        # Through ``checks``: released, the run is named as stopped and not rerun; held (and an
+        # unread job list too), the stopped 4 it was, with its held line.
+        for jobs, rc, want in (
+            (f"build\tsuccess\t{t}\t{t}\nmacos\tcancelled\t{t}\t{t}", (0, "green"),
+             "  stopped  1 workflow run(s) for this head are judged — 1 of them cancelled only in advisory jobs"),
+            (f"build\tsuccess\t{t}\t{t}\ntest\tcancelled\t{t}\t{t}", (4, "unjudged"),
+             "  held     workflow run 100 ('skill scripts'): job test concluded cancelled and is not advisory\n"),
+            (None, (4, "unjudged"), "  held     workflow run 100 ('skill scripts'): its job list could not be read"),
+        ):
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h1\tb1\ttopic")
+            gh.on("check-runs", out="build\tsuccess\tu\t1\tcompleted\nmacos\tcancelled\tm\t1\tcompleted")
+            gh.on("actions/runs?head_sha=h1",
+                  out="2026-01-01T00:00:00Z\t100\t1\tpush\tskill scripts\tcompleted\tcancelled\t1")
+            if jobs is None:
+                gh.on("actions/runs/100/jobs", rc=1, err="gh: HTTP 503")
+            else:
+                gh.on("actions/runs/100/jobs", out=jobs)
+            gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+            self.out.truncate(0)
+            self.out.seek(0)
+            with self.subTest(jobs=jobs):
+                self.assertEqual((gate.check("7", 0), gate.verdict), rc)
+                self.assertIn(want, self.out.getvalue())
 
 
 T0 = 1767225600

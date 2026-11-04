@@ -109,6 +109,8 @@ MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 
 # completed with its job no runner took, and after the rerun it reads as attempt 2 -- the same
 # story again, unless RUNNER_RECOVERS is set: then green. `capped` (#928) is run 100 completed
 # cancelled by its job's own timeout-minutes cap: steps ran on a named runner, no red, no NO RUNNER.
+# `advisory-capped` (ludics#958) is run 100 completed cancelled with its `build` job passed and only
+# its advisory `claude` job (the default list's) cancelled at its cap, before a rerun and after it.
 RUNNER_CASE=""
 RUNNER_RECOVERS=""
 # The "from the SECOND read on" switches above are counted by the lib's fixture_call_count, under
@@ -129,6 +131,7 @@ check_runs_answer() { # <n>
     case "$(runner_state)" in
     recovered) rows=$(printf 'green\tbuild\tsuccess\thttps://example/build\t1') ;;
     norunner | capped) rows=$(printf 'nogo\tbuild\tcancelled\thttps://example/build\t1') ;;
+    advisory-capped) rows=$(printf 'green\tbuild\tsuccess\thttps://example/build\t1\nnogo\tclaude\tcancelled\thttps://example/claude\t1') ;;
     *) rows=$(printf 'pending\tbuild\tpending\thttps://example/build\t1') ;;
     esac
   elif [ -n "$CHECK_ROWS_LATER" ] && [ "$1" -ge 2 ]; then
@@ -154,8 +157,8 @@ check_runs_answer() { # <n>
 runner_state() {
   if [ -e "$TEST_ROOT/runner-rerun" ] && [ -n "$RUNNER_RECOVERS" ]; then
     echo recovered
-  elif [ "$RUNNER_CASE" = capped ]; then
-    echo capped
+  elif [ "$RUNNER_CASE" = capped ] || [ "$RUNNER_CASE" = advisory-capped ]; then
+    echo "$RUNNER_CASE"
   elif [ "$RUNNER_CASE" = no-runner ] || { [ -e "$TEST_ROOT/runner-cancel" ] && [ ! -e "$TEST_ROOT/runner-rerun" ]; }; then
     echo norunner
   else
@@ -187,6 +190,15 @@ runner_jobs() { # <run id>
       created_at:"2026-09-01T00:00:00Z",steps:[{name:"Set up job"},{name:"Run tests"}],
       runner_name:"GitHub Actions 3",labels:["ubuntu-latest"],run_attempt:$a}]}'
     ;;
+  advisory-capped)
+    jq -cn --argjson a "$(runner_attempt)" '{jobs:[
+      {id:501,name:"build",status:"completed",conclusion:"success",created_at:"2026-09-01T00:00:00Z",
+       completed_at:"2026-09-01T00:05:00Z",steps:[{name:"Set up job"}],runner_name:"GitHub Actions 3",
+       labels:["ubuntu-latest"],run_attempt:$a},
+      {id:502,name:"claude",status:"completed",conclusion:"cancelled",created_at:"2026-09-01T00:00:00Z",
+       completed_at:"2026-09-01T00:40:00Z",steps:[{name:"Set up job"},{name:"Run tests"}],
+       runner_name:"GitHub Actions 4",labels:["macos-14"],run_attempt:$a}]}'
+    ;;
   *)
     jq -cn --argjson a "$(runner_attempt)" '{jobs:[{id:501,name:"build",status:"queued",conclusion:null,
       created_at:"2026-09-01T00:00:00Z",steps:[],runner_name:null,labels:["macos-14"],run_attempt:$a}]}'
@@ -201,7 +213,7 @@ runs_answer() {
   if [ -n "$RUNNER_CASE" ]; then
     case "$(runner_state)" in
     recovered) runner_run completed success ;;
-    norunner | capped) runner_run completed cancelled ;;
+    norunner | capped | advisory-capped) runner_run completed cancelled ;;
     *) runner_run in_progress null ;;
     esac
   elif [ -n "$MOVED_RUN_RC" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
@@ -539,7 +551,7 @@ gh() {
     gh_fixture_parse "$@"
     case "$(runner_state)" in
     recovered) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"completed",conclusion:"success",run_attempt:$a}')" ;;
-    norunner | capped) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"completed",conclusion:"cancelled",run_attempt:$a}')" ;;
+    norunner | capped | advisory-capped) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"completed",conclusion:"cancelled",run_attempt:$a}')" ;;
     *) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"in_progress",conclusion:null,run_attempt:$a}')" ;;
     esac
     ;;
@@ -2500,6 +2512,26 @@ test_a_cancelled_head_run_is_rerun_once() {
   assert_no_merge_call
 }
 
+# ludics#958: a run cancelled only in an advisory job -- the macOS legs of this repository's
+# non-advisory `skill scripts` workflow, cancelled at their cap -- held the gate as a stopped run,
+# and since #928 `merge --wait` reran it and refused 7 on its second cap-cancel. Every other job
+# passed: it holds neither the gate nor the wait, and nothing is rerun.
+test_a_run_cancelled_only_in_advisory_jobs_merges_unrerun() {
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=advisory-capped
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 0 "the run's advisory-only cancel holds nothing ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "and nothing was rerun"
+  assert_contains "$MERGE_OUTPUT" "1 of them cancelled only in advisory jobs" "the release is said"
+  assert_contains "$MERGE_CALLS" "--match-head-commit head-sha " "bound to the gated head"
+  reset
+  RUNNER_CASE=advisory-capped
+  run_merge
+  assert_eq "$MERGE_RC" 0 "nor does a merge that does not wait hold on it ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "and it writes nothing"
+}
+
 # A gate that could not read the checks is UNKNOWN, and no flag merges past it.
 test_an_unread_build_signal_never_merges() {
   reset
@@ -3487,6 +3519,7 @@ tests=(
   test_a_never_started_job_ends_the_wait_early_with_its_commands
   test_a_job_no_runner_took_is_rerun_once_and_merges
   test_a_cancelled_head_run_is_rerun_once
+  test_a_run_cancelled_only_in_advisory_jobs_merges_unrerun
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
   test_a_pr_merged_elsewhere_at_an_unjudged_head_is_not_this_merge

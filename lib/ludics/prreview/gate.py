@@ -524,6 +524,35 @@ class Gate:
             )
         return None
 
+    def run_stopped_hold(self, run_id: str) -> tuple[str, bool] | None:
+        """``run_stopped_hold``: None when advisory jobs alone explain a run's ``cancelled`` -- at
+        least one advisory job stopped or left unfinished, every non-advisory job green (ludics#958:
+        the advisory macOS jobs of the non-advisory ``skill scripts`` workflow, cancelled at their
+        ``timeout-minutes`` cap, held the gate to its ceiling, and ``merge --wait`` reran the run
+        and refused 7 over it). Else the reason the release did not apply, naming the first job in
+        the list's order that kept it, and whether it is that the job list could not be read. No
+        settle: the run is completed, so no job of it appears later. A non-advisory red, waived or
+        not, keeps the hold -- the run's own conclusion is what this explains, and a cancel beside a
+        red is not the advisory jobs' alone."""
+        raw = self.run_jobs(run_id)
+        if raw is None:
+            failure = self.session.err_line() or "it did not answer"
+            return f"its job list could not be read ({failure}), so whether only advisory jobs were stopped is unknown", True
+        explained = False
+        for line in herestring_lines(raw):
+            jname, jconcl, _times = tab_fields(line, 3)
+            if not jname:
+                continue
+            klass = conclusion_class(jconcl)
+            if self.is_advisory(jname):
+                explained = explained or klass in ("nogo", "pending")
+                continue
+            if klass != "green":
+                return f"job {shlex.quote(jname)} concluded {jconcl} and is not advisory", False
+        if not explained:
+            return "no advisory job of it was stopped, so its cancel is not theirs", False
+        return None
+
     def read_runs(self, sha: str) -> str | None:
         """The head's workflow runs, newest first, one projection row each; None when the read
         failed. Kept for the round (``_round_runs``) for the orphan scan."""
@@ -596,6 +625,7 @@ class Gate:
         seen: set[str] = set()
         red_rows: list[str] = []
         inflight_ids: list[str] = []
+        cancelled_ids: list[str] = []
         runs = nogo = 0
         for line in herestring_lines(raw):
             _created, rid, wid, event, name, status, concl, suite = tab_fields(line, 8)
@@ -617,7 +647,10 @@ class Gate:
                 case "red":
                     red_rows.append(f"{rid}\t{name}\t{concl}\t{suite or '-'}")
                 case "nogo":
-                    nogo += 1
+                    if concl == "cancelled":
+                        cancelled_ids.append(f"{rid}\t{name}")
+                    else:
+                        nogo += 1
                 case "green" | "pending":
                     pass
                 case _:
@@ -692,6 +725,18 @@ class Gate:
                 " running, or completed with none recorded) — their check runs may not exist yet",
                 holds=holds,
             )
+        # Cancelled runs are asked about their jobs only now, with nothing red or in flight left to
+        # decide the round first (ludics#958). A held one is the stopped 4 it always was, with a
+        # held line; an unread job list holds as well, the old reading, and says so.
+        stopped_released = 0
+        for entry in cancelled_ids:
+            rid, rname = tab_fields(entry, 2)
+            stopped_hold = self.run_stopped_hold(rid)
+            if stopped_hold is None:
+                stopped_released += 1
+            else:
+                nogo += 1
+                holds += f"  held     workflow run {rid} ({shlex.quote(rname)}): {stopped_hold[0]}\n"
         if nogo > 0:
             return RunSignal(
                 4,
@@ -701,12 +746,16 @@ class Gate:
                 " stale or action_required) with no build check behind them — stopped is not absence and"
                 " not a verdict: re-run the workflow",
                 stopped=True,
+                holds=holds,
             )
         if checks > 0 and runs > 0:
-            if released > 0:
+            if released > 0 or stopped_released > 0:
+                parts = [f"{released} of them still running, but only advisory jobs"] if released else []
+                if stopped_released:
+                    parts.append(f"{stopped_released} of them cancelled only in advisory jobs")
                 reason = (
-                    f"{runs} workflow run(s) for this head are judged — {released} of them"
-                    " still running, but only advisory jobs (SHIP_PR_ADVISORY_CHECKS)"
+                    f"{runs} workflow run(s) for this head are judged — {'; '.join(parts)}"
+                    " (SHIP_PR_ADVISORY_CHECKS)"
                 )
             else:
                 reason = f"{runs} workflow run(s) for this head are finished and judged"
@@ -1051,8 +1100,10 @@ class Gate:
                     case _:
                         if self.run_waived and self.verdict in ("green", "absent"):
                             self.verdict = "waived"
-                        if "only advisory jobs" in run_why:
+                        if "still running, but only advisory jobs" in run_why:
                             self.check_lines += f"  running  {run_why} — not waited for\n"
+                        elif "cancelled only in advisory jobs" in run_why:
+                            self.check_lines += f"  stopped  {run_why} — not rerun\n"
             if self.waive_mode == "record":
                 self.waive_mode = "apply"
             kind, (current, reread_base, reread_ref) = self._pr_fields(pr, with_updated=False)
