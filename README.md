@@ -504,9 +504,10 @@ state what each check establishes rather than enumerate the shapes that would fo
 **A `test-*` name is a promise to run.** `check-prompts.sh`'s fixture check walks `scripts/test-*`,
 `*/scripts/test-*` and `*/hooks/test-*`, and of every `.sh`, `.py` or `.ps1` it finds there it
 requires a line in this Tests section that is that path once an optional `python3` or `./` prefix is
-stripped — the two forms the register itself uses — and an inline `run:` line in
-`.github/workflows/skill-scripts.yml` on each platform that file needs — both Ubuntu and macOS for a
-shell suite, and for one under `ship-pr/scripts/` a run line in the `git-bash` job of
+stripped — the two forms the register itself uses — and an inline `run:` line on each platform
+the suite needs: Ubuntu in `.github/workflows/skill-scripts.yml` and macOS in
+`.github/workflows/macos-weekly.yml` for a shell suite (a macOS job in skill-scripts.yml does not
+count, ludics#974), and for one under `ship-pr/scripts/` a run line in the `git-bash` job of
 `.github/workflows/windows-git-bash.yml` (not merely on a Windows runner, which the PowerShell job
 shares), while a `.ps1` goes to Windows on its extension and the two Ubuntu-only Python fixtures are the
 ones named by path in the checker. The lookup is the section and not the block — any such
@@ -605,22 +606,19 @@ commands in those indented blocks, one at a time, so a command malformed in itse
 what does not apply is the reproduction that needs bash to read the prose around it.
 
 The GitHub Actions workflow in `.github/workflows/skill-scripts.yml` runs the shell suites and
-shared Python fixtures on Ubuntu and on macOS (the fleet's bash is 3.2), with macOS spread over two
-jobs and a step per suite. The count of macOS jobs is itself the thing being tuned: the hosted
-runners are scarce enough that four separate macOS jobs queued a green PR for one to two hours
-behind nine minutes of work (ludics-lite#55). Two rather than four, because that exposure grows
-with the runner assignments and not with the work — the second job re-pays only a checkout and a
-`brew install tmux`. Two rather than one, because the suites now take about eighteen minutes
-together and all of it sits on the critical path of `main`'s macOS verdict; the halves are cut
-along what they exercise, ship-pr's own suites in one and the repo and fleet guards in the other,
-and come out at roughly nine minutes each. The workflow carries the measured queue waits that
-trade rests on, and the standing answer if the macOS pool starts starving these jobs: not a third
-assignment, but moving suites off the per-push path onto periodic CI. The macOS jobs run on
-pushes to `main` and on `workflow_dispatch`, not on pull requests (ludics-lite#727): they are
-advisory at merge, so on a PR head they decided nothing while taking the scarcest runners. A
-PR's bash 3.2 evidence is the worker's own `/bin/bash` run of the suites it touched; a PR whose
-change only macOS exercises dispatches the workflow on its branch
-(`gh workflow run skill-scripts.yml --ref <branch>`). This repository also declares a merge build
+shared Python fixtures on Ubuntu, on every pull request and every push to `main`. No job there
+runs past 30 minutes, and the target is a p90 of 20 (the maintainer's decision on ludics#974): a
+job over that is split, not given a higher cap. The fleet launcher suite and the hostile pass run
+as matrices of `--shard I/N` rows, each one contiguous part of the section or suite list cut at
+names the job sets (`FLEET_WORKER_TEST_CUTS`, `PR_REVIEW_HOSTILE_CUTS`), and the plain pr-review
+pass is two jobs. The macOS suites (the fleet's bash is 3.2) run weekly and on dispatch, in
+`.github/workflows/macos-weekly.yml`, not per push: remote CI does not repeat what local runs
+cover, and per merge the macOS coverage is the merging worker's own `/bin/bash` run of every suite
+its change reaches (issue-wave's SKILL.md, *The brief*). Nothing runs the full macOS set per merge
+or at the merged tip until local per-tip runs become a base-gate source (ludics#964); the weekly
+run is what catches image drift and a suite a change reached unnoticed, and a red there opens an
+issue, since `base` reads push runs only. A PR whose change only macOS exercises dispatches that
+workflow on its branch (`gh workflow run macos-weekly.yml --ref <branch>`). This repository also declares a merge build
 (`.github/ship-pr-merge-build`, ludics-lite#721): when `main` has moved since a PR's head and both
 sides changed a `lib/*.py` path, `pr-review.sh merge` runs the package's unit tests on the PR
 merged with `main`'s tip and refuses the merge when they fail, as the merge of #700 and #698 would

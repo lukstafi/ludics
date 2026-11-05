@@ -112,6 +112,18 @@ def fixture_command(lines: list[str], want: str, required: str = "") -> bool:
 
 SKILL_SCRIPTS = ".github/workflows/skill-scripts.yml"
 GIT_BASH = ".github/workflows/windows-git-bash.yml"
+# The macOS suites run weekly, not per push (ludics#974), so their run lines are read from that
+# workflow alone: a macOS job left in skill-scripts.yml does not satisfy the register.
+MACOS_WEEKLY = ".github/workflows/macos-weekly.yml"
+
+
+def workflow_of(platform: str) -> str:
+    """The workflow file whose jobs on ``platform`` the register reads."""
+    if platform == "git-bash":
+        return GIT_BASH
+    if platform == "macos":
+        return MACOS_WEEKLY
+    return SKILL_SCRIPTS
 UBUNTU_ONLY = ("scripts/test-workflow-reporters.py", "ship-pr/scripts/test-pr-review-hostile.py")
 
 
@@ -148,7 +160,7 @@ def check_fixtures(report: Report, tree: Tree) -> None:
             report.ko("README.md", f"fixture '{suite}' has no command line in the test register")
             bad = True
         for platform in platforms_of(suite):
-            workflow = GIT_BASH if platform == "git-bash" else SKILL_SCRIPTS
+            workflow = workflow_of(platform)
             lines = lines_of(workflow)
             if lines is None or not fixture_command(lines, suite, platform):
                 report.ko(workflow, f"fixture '{suite}' has no inline run command on {platform}")

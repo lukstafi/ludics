@@ -7,7 +7,8 @@
 # Usage: test-fleet-worker.sh [section ...] (exit 0 all pass, 1 otherwise; skips with a notice
 #                                          when tmux is not installed, which is the CI runner's
 #                                          state unless the workflow installs it)
-#        test-fleet-worker.sh --list       (the section names)
+#        test-fleet-worker.sh --shard I/N  (part I, 0-based, of N contiguous parts; see below)
+#        test-fleet-worker.sh --list [...]  (the section names the same arguments would run)
 #
 # With no arguments every section runs; each argument selects every section whose name contains
 # it, so a prefix or any distinctive substring will do. An argument matching no section is refused
@@ -15,12 +16,20 @@
 # the scratch project repo -- runs whatever is selected, and a section that needs more than that
 # (the coordinator lease, a finished worker) takes it explicitly, so any section runs on its own.
 #
+# `--shard I/N` is how CI splits the suite across a matrix (ludics#974): the sections are cut into N
+# contiguous parts at the exact section names in FLEET_WORKER_TEST_CUTS ('|'-separated, N-1 of
+# them), and the run takes part I. A workflow passes `${{ strategy.job-index }}/${{
+# strategy.job-total }}`, so a matrix that lost a row no longer matches its cut list and is refused,
+# and a new section lands in whichever part its place in SECTIONS puts it. The cut list is the
+# workflow's (it is balanced on that runner's measured section times); shard_select states what
+# it refuses.
+#
 # Each section prints its elapsed time when it ends, and a run that blocks fails by name: a section
 # (or the setup between two) still running after FLEET_WORKER_TEST_SECTION_TIMEOUT seconds (default
 # 600; 0 or off disables the watchdog) is reported, and the run's process group stopped. See the
 # section watchdog below. The default is sized on the slowest section measured: `unstick`, 350 s on
 # GitHub's macOS runner, 240 s on its Ubuntu one and on a loaded mac-studio (ludics-lite#640's
-# follow-up); a CI job with a tighter cap sets its own bound in skill-scripts.yml.
+# follow-up); a CI job with a tighter cap sets its own bound in its workflow.
 
 set -uo pipefail
 # No `... | grep -q` under that pipefail: grep exits on its first match and the writer takes
@@ -63,17 +72,22 @@ SECTIONS=(
   "refresh (execution-only boxes)"
   "execution slot"
   "usage"
+  "shard selection"
   "section watchdog"
 )
 
 usage() {
   cat <<'USAGE'
-usage: test-fleet-worker.sh [--list] [section ...]
+usage: test-fleet-worker.sh [--list] [section ... | --shard I/N]
 
 With no arguments every section runs. Each argument selects every section whose
 name contains it, so a prefix or any distinctive substring ("coord", "unstick",
-"status") will do; --list prints the names. An argument matching no section is
-refused before anything runs.
+"status") will do; --list prints the names the same arguments would run. An
+argument matching no section is refused before anything runs.
+
+--shard I/N runs part I (0-based) of N contiguous parts of the section list, cut
+at the exact section names in FLEET_WORKER_TEST_CUTS ('|'-separated, N-1 of
+them). A cut list that does not make N non-empty parts is refused.
 
 Selected sections run in file order, after the setup they all share: the shim
 CLIs, the scratch skills checkout and the scratch project repo. A section that
@@ -95,11 +109,55 @@ select_section() {
   for s in ${SELECTED[@]+"${SELECTED[@]}"}; do [ "$s" = "$1" ] && return 0; done
   SELECTED+=("$1")
 }
+# shard_refuse <message>: a --shard that cannot be cut, refused before anything runs.
+shard_refuse() {
+  printf '%s\n' "FAIL: --shard: $1" >&2
+  printf '%s\n' "run with --list to see the ${#SECTIONS[@]} section names" >&2
+  exit 1
+}
+# shard_select <I/N>: select part I (0-based, as GitHub's strategy.job-index) of N contiguous parts
+# of SECTIONS, cut at the exact section names in FLEET_WORKER_TEST_CUTS ('|'-separated, in SECTIONS
+# order; each cut is the first section of the part after it). Complete by construction: the parts
+# of one cut list are every section once, so a section added anywhere lands in some part. What can
+# drop one is refused: N other than the cuts plus one (a matrix that lost a row, passed as
+# strategy.job-total), a cut that is not a section's exact name (a renamed section), cuts out of
+# order or repeated, or at the first section (an empty part, which would pass green running
+# nothing), and I outside 0..N-1. Boundary: this reads the cut list and SECTIONS, nothing else -- it
+# cannot see whether a workflow passes job-index/job-total; that is the run line's shape.
+shard_select() {
+  local spec=$1 i n c k s at prev=0 lo=0 hi=${#SECTIONS[@]} cuts=()
+  case "$spec" in
+    [0-9]*/[0-9]*) i=${spec%%/*} n=${spec#*/} ;;
+    *) shard_refuse "want I/N (part I of N, 0-based), got $(printf '%q' "$spec")" ;;
+  esac
+  case "$i$n" in *[!0-9]*) shard_refuse "want I/N (part I of N, 0-based), got $(printf '%q' "$spec")" ;; esac
+  i=$((10#$i)) n=$((10#$n))
+  [ "$n" -ge 1 ] && [ "$i" -lt "$n" ] || shard_refuse "part $i of $n does not exist (parts are 0..$((n - 1)))"
+  [ -z "${FLEET_WORKER_TEST_CUTS:-}" ] || IFS='|' read -r -a cuts <<<"$FLEET_WORKER_TEST_CUTS"
+  [ "${#cuts[@]}" -eq $((n - 1)) ] ||
+    shard_refuse "$n parts need $((n - 1)) cut(s) in FLEET_WORKER_TEST_CUTS, which names ${#cuts[@]}: $(printf '%q' "${FLEET_WORKER_TEST_CUTS:-}")"
+  for ((k = 0; k < ${#cuts[@]}; k++)); do
+    c=${cuts[$k]} at=-1
+    for ((s = 0; s < ${#SECTIONS[@]}; s++)); do [ "${SECTIONS[$s]}" = "$c" ] && at=$s; done
+    [ "$at" -ge 0 ] || shard_refuse "cut $(printf '%q' "$c") is not a section's exact name"
+    [ "$at" -gt "$prev" ] || shard_refuse "cut $(printf '%q' "$c") leaves an empty part (cuts go in section order, once each, after the first section)"
+    prev=$at
+    [ "$k" -eq $((i - 1)) ] && lo=$at
+    [ "$k" -eq "$i" ] && hi=$at
+  done
+  for ((s = lo; s < hi; s++)); do select_section "${SECTIONS[$s]}"; done
+}
 ARGS=("$@")   # as given, for the section watchdog's run of this file
+LIST=0
+SHARD=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h | --help) usage; exit 0 ;;
-    --list) printf '%s\n' "${SECTIONS[@]}"; exit 0 ;;
+    --list) LIST=1 ;;
+    --shard)
+      [ "$#" -ge 2 ] || shard_refuse "want I/N after it"
+      SHARD=$2; shift
+      ;;
     -*) echo "FAIL: unknown option: $1" >&2; usage >&2; exit 1 ;;
     *)
       matched=0
@@ -116,6 +174,20 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+if [ -n "$SHARD" ]; then
+  [ "$NAMED" -eq 0 ] || shard_refuse "it selects its own sections, so it takes no section arguments"
+  shard_select "$SHARD"
+  NAMED=1
+fi
+if [ "$LIST" -eq 1 ]; then
+  # The names a run with these arguments would run, in the order it would run them.
+  for s in "${SECTIONS[@]}"; do
+    keep=$((1 - NAMED))
+    for t in ${SELECTED[@]+"${SELECTED[@]}"}; do [ "$t" = "$s" ] && keep=1; done
+    [ "$keep" -eq 0 ] || printf '%s\n' "$s"
+  done
+  exit 0
+fi
 SECTION_TIMEOUT=${FLEET_WORKER_TEST_SECTION_TIMEOUT:-600}
 case "$SECTION_TIMEOUT" in
   off) SECTION_TIMEOUT=0 ;;
@@ -5137,6 +5209,46 @@ mkdir -p "$TMP/stray/issue-wave/scripts" && cp "$FW" "$TMP/stray/issue-wave/scri
 expect "a copy of the script away from its checkout names the missing scripts/py, exit 2" 2 \
   "^fleet-worker.sh: no .*/stray/scripts/py: run this script from its skills checkout" -- \
   bash "$TMP/stray/issue-wave/scripts/fleet-worker.sh" status testbox w1
+}
+
+section "shard selection" && {
+# ludics#974: CI runs this suite as a matrix of `--shard I/N` rows. The parts of one cut list must
+# be every section once, in order, none empty -- read here from the suite's own --list, the names a
+# run with those arguments would run -- and every cut list that could drop a section or run an
+# empty part is refused before anything runs. The cut lists are spelled from SECTIONS, not from a
+# workflow's, so a new or renamed section cannot leave this section asserting stale names.
+shard_list() { env -u TEST_FLEET_WORKER_WATCH FLEET_WORKER_TEST_CUTS="$1" "$BASH" "$HERE/test-fleet-worker.sh" --list --shard "$2"; }
+all=$(env -u TEST_FLEET_WORKER_WATCH "$BASH" "$HERE/test-fleet-worker.sh" --list)
+[ "$(printf '%s\n' "$all" | wc -l | tr -d ' ')" -eq "${#SECTIONS[@]}" ] &&
+  ok "--list with no selection names every section" || ko "--list named: $all"
+last=$((${#SECTIONS[@]} - 1))
+for cuts in "${SECTIONS[1]}" "${SECTIONS[7]}|${SECTIONS[14]}" "${SECTIONS[$last]}"; do
+  IFS='|' read -r -a cut_names <<<"$cuts"
+  n=$((${#cut_names[@]} + 1)) joined="" empty=0
+  for ((p = 0; p < n; p++)); do
+    part=$(shard_list "$cuts" "$p/$n" 2>&1) || { empty=1; joined+="[part $p refused: $part]"$'\n'; continue; }
+    [ -n "$part" ] || empty=1
+    joined+="$part"$'\n'
+  done
+  [ "$empty" -eq 0 ] && [ "$joined" = "$all"$'\n' ] &&
+    ok "the $n parts cut at $(printf '%q' "$cuts") are every section once, in order, none empty" ||
+    ko "the $n parts cut at $(printf '%q' "$cuts") are not the section list -- $joined"
+done
+expect "a part count that does not match the cut list (a matrix that lost a row) is refused" 1 \
+  "FAIL: --shard: 3 parts need 2 cut(s) in FLEET_WORKER_TEST_CUTS, which names 1" -- shard_list "${SECTIONS[7]}" 0/3
+expect "...and so is a cut list with no matrix behind it" 1 "1 parts need 0 cut(s)" -- shard_list "${SECTIONS[7]}" 0/1
+expect "a cut that is not a section's exact name (a renamed section) is refused" 1 "is not a section's exact name" -- \
+  shard_list "${SECTIONS[7]%?}" 0/2
+expect "a cut at the first section (an empty first part) is refused" 1 "leaves an empty part" -- shard_list "${SECTIONS[0]}" 0/2
+expect "a repeated cut (an empty part between) is refused" 1 "leaves an empty part" -- shard_list "${SECTIONS[7]}|${SECTIONS[7]}" 1/3
+expect "cuts out of section order are refused" 1 "leaves an empty part" -- shard_list "${SECTIONS[14]}|${SECTIONS[7]}" 0/3
+expect "a part past the last is refused" 1 "part 2 of 2 does not exist" -- shard_list "${SECTIONS[7]}" 2/2
+expect "a part that is not I/N is refused" 1 "want I/N" -- shard_list "${SECTIONS[7]}" 1/2/3
+expect "...nor a bare number" 1 "want I/N" -- shard_list "${SECTIONS[7]}" 1
+expect "--shard with section arguments is refused" 1 "takes no section arguments" -- \
+  env -u TEST_FLEET_WORKER_WATCH FLEET_WORKER_TEST_CUTS="${SECTIONS[7]}" "$BASH" "$HERE/test-fleet-worker.sh" --list --shard 0/2 usage
+expect "--shard with nothing after it is refused" 1 "want I/N after it" -- \
+  env -u TEST_FLEET_WORKER_WATCH "$BASH" "$HERE/test-fleet-worker.sh" --shard
 }
 
 section "section watchdog" && {

@@ -372,7 +372,7 @@ scripts/py -m unittest ludics.tests.test_checkprompts_cli         # ...and the p
 CI runs pyright and the unit tests in the `python` job of `.github/workflows/skill-scripts.yml`,
 and the shell suites where they always ran. A ported conformance suite runs where its shell suite
 did as well, named as a module: `test_checkprompts_cli` in the small-guards job, whatever the diff,
-and in the macOS job. `scripts/fleet-peers.py` is not behind `scripts/py`
+and in macos-weekly.yml's repo-guards job. `scripts/fleet-peers.py` is not behind `scripts/py`
 yet: its callers and its tests run it with `python3` and by path.
 
 The execution registry (formerly `issue-wave/scripts/fleet-execution.py`) is

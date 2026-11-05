@@ -103,6 +103,18 @@ class Readers(unittest.TestCase):
         self.assertIsNone(workflow_keys("on:\n  push:\n# a\ttab\n  pull_request:\n"),
                           "a tab on a comment line inside the block is still reached")
 
+    def test_the_real_workflows_read_as_their_triggers_say(self) -> None:
+        # ludics#974 moved the macOS suites to a workflow with no push trigger, and the base gate
+        # reads such a workflow by its file at the tip: `pushless` releases it, while a file the
+        # narrow reader refuses (`unparsed`) is read as a push workflow and holds the interim. So
+        # the real file must read as its triggers, and skill-scripts.yml must still read as push.
+        def keys(name: str) -> list[str] | None:
+            with open(os.path.join(ROOT, ".github", "workflows", name), encoding="utf-8") as f:
+                return workflow_keys(f.read())
+
+        self.assertEqual(keys("macos-weekly.yml"), ["schedule", "workflow_dispatch"])
+        self.assertIn("push", keys("skill-scripts.yml") or [])
+
     def test_the_keys_reader_reads_three_forms_and_tells_absent_from_unread(self) -> None:
         self.assertEqual(workflow_keys(PUSHLESS), ["pull_request", "schedule", "workflow_dispatch"])
         self.assertEqual(workflow_keys(DOCS_IGNORED), ["push"])

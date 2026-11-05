@@ -843,6 +843,13 @@ jobs:
       - run: python3 scripts/test-workflow-reporters.py
       - run: python3 ship-pr/scripts/test-pr-review-hostile.py
       - run: ship-pr/scripts/test-shell.sh
+  windows:
+    runs-on: windows-latest
+    steps:
+      - run: ./issue-wave/scripts/test-windows-driver.ps1
+"""
+MACOS_WORKFLOW = """\
+jobs:
   macos:
     runs-on: macos-latest
     steps:
@@ -850,10 +857,6 @@ jobs:
       - run: python3 alpha/scripts/test-python.py
       - run: python3 alpha/hooks/test-hook.py
       - run: ship-pr/scripts/test-shell.sh || { echo failed; exit 1; }
-  windows:
-    runs-on: windows-latest
-    steps:
-      - run: ./issue-wave/scripts/test-windows-driver.ps1
 """
 GIT_BASH_WORKFLOW = """\
 jobs:
@@ -867,6 +870,8 @@ jobs:
 """
 SKILL_SCRIPTS = ".github/workflows/skill-scripts.yml"
 GIT_BASH = ".github/workflows/windows-git-bash.yml"
+MACOS_WEEKLY = ".github/workflows/macos-weekly.yml"
+WORKFLOW_OF = {"ubuntu": SKILL_SCRIPTS, "macos": MACOS_WEEKLY, "git-bash": GIT_BASH}
 
 
 def fixture_tree(root: str) -> None:
@@ -876,6 +881,7 @@ def fixture_tree(root: str) -> None:
     append(os.path.join(root, "README.md"), FIXTURE_README)
     write(os.path.join(root, SKILL_SCRIPTS), FIXTURE_WORKFLOW)
     write(os.path.join(root, GIT_BASH), GIT_BASH_WORKFLOW)
+    write(os.path.join(root, MACOS_WEEKLY), MACOS_WORKFLOW)
 
 
 def unregister(root: str, *, suite: str) -> None:
@@ -933,7 +939,7 @@ class FixtureRegisterTest(Case):
                     "alpha/hooks/test-hook.py",
                     *suites,
                 ]
-            workflow = GIT_BASH if platform == "git-bash" else SKILL_SCRIPTS
+            workflow = WORKFLOW_OF[platform]
             for suite in suites:
                 with self.subTest(platform=platform, suite=suite):
                     fixture_tree(self.root)
@@ -967,6 +973,20 @@ class FixtureRegisterTest(Case):
         append(f"{R}/{SKILL_SCRIPTS}", read(f"{R}/{GIT_BASH}").split("\n", 1)[1])
         os.remove(f"{R}/{GIT_BASH}")
         self.expect("...nor is the git-bash job back in skill-scripts.yml", 1, f"windows-git-bash.yml: {want}")
+
+    # The macOS leg is macos-weekly.yml's, not any macOS runner's: since ludics#974 the macOS
+    # suites run weekly, and a macOS job back in skill-scripts.yml, the per-push file they moved out
+    # of, does not satisfy the register.
+    def test_the_macos_leg_is_the_weekly_workflow(self) -> None:
+        R = self.root
+        fixture_tree(R)
+        append(f"{R}/{SKILL_SCRIPTS}", read(f"{R}/{MACOS_WEEKLY}").split("\n", 1)[1])
+        os.remove(f"{R}/{MACOS_WEEKLY}")
+        self.expect(
+            "a macOS job back in skill-scripts.yml is no macOS leg",
+            1,
+            "macos-weekly.yml: fixture 'alpha/scripts/test-shell.sh' has no inline run command on macos",
+        )
 
     def test_platform_specific_suites(self) -> None:
         for suite in (
