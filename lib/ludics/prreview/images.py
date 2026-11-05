@@ -33,7 +33,8 @@ session's own attempts or reported.
   whose event is ``push``, ``schedule`` or ``workflow_dispatch`` -- the base branch's own runs, not
   a pull request from a fork's branch of the same name. Those runs' jobs are read newest first,
   each run at most once per report, until every red job's name is found green; a name not green in
-  any of them has no base image, and prints nothing.
+  any of them has no base image, and prints nothing. A job list that does not answer ends that
+  name's search unfound: the job in it may be the newest green one.
 - The workflow of the red job's run is the round's run read (``HeadRun.wid``) when it holds that
   run, else one read of ``repos/R/actions/runs/{id}``.
 It writes nothing.
@@ -182,9 +183,14 @@ class Images:
         return self._jobs[run]
 
     def last_green(self, wid: str, branch: str, name: str) -> tuple[str, str] | None:
-        """``(run id, job id)`` of the job name's newest success on the base branch, or None."""
+        """``(run id, job id)`` of the job name's newest success on the base branch, or None. A
+        newer run whose job list did not answer ends the search with None: its job may be the
+        newest green one, so an older one is not the last green run."""
         for run in self.base_runs(wid, branch) or []:
-            for jid, jname, concl in self.jobs(run) or []:
+            jobs = self.jobs(run)
+            if jobs is None:
+                return None
+            for jid, jname, concl in jobs:
                 if jname == name and concl == "success":
                     return run, jid
         return None

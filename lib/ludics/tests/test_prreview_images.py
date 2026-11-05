@@ -144,6 +144,14 @@ class GateReport(unittest.TestCase):
         self.assertIsInstance(result, GhFailed)
         self.assertEqual(len(gh.calls), 1, "re-sending gets it withheld again")
 
+    def test_an_unread_newer_base_run_is_not_skipped(self) -> None:
+        gh = FakeGh()
+        gh.on("actions/runs/300/jobs", rc=1, err="HTTP 404: Not Found")
+        red_world(gh, "ubuntu-26.04", "ubuntu-24.04")
+        self.gate(gh)
+        self.assertEqual(self.out.getvalue().splitlines()[1:], [f"  RED      ci (failure)  {URL}"])
+        self.assertFalse(any("runs/298/jobs" in " ".join(c) for c in gh.calls))
+
     def test_a_job_never_green_on_the_base_prints_nothing(self) -> None:
         gh = FakeGh()
         gh.on("actions/runs/298/jobs", out="777\tci\tskipped")
