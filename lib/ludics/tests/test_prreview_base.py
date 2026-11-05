@@ -996,6 +996,127 @@ class RepositoryAdvisoryInterim(unittest.TestCase):
                       f" {held}\n", out)
 
 
+class AdvisoryStopped(unittest.TestCase):
+    """#967: under ``--advisory-red`` the tip's own run, cancelled only in jobs the repository's
+    advisory list names (the macOS legs of ``skill scripts`` at their ``timeout-minutes`` cap), is
+    the tip's verdict, green, as ``checks``/``merge`` release it (``Gate.run_stopped_hold``, #958).
+    Without the flag, and for every other cancel, ``base --wait`` ends with no tip verdict as before."""
+
+    def _world(self, jobs: Answer, concl: str = "cancelled", older: bool = True) -> dict[str, Answer]:
+        rows: list[dict[str, object]] = [{"conclusion": concl, "head_sha": C}]
+        if older:
+            rows.append({"conclusion": "success", "head_sha": A})
+        return world(C, runs(*rows), **{
+            "repos/o/r/actions/runs/1000/jobs?per_page=100":
+                jobs if isinstance(jobs, tuple) else json.dumps({"jobs": jobs}),
+            "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY,
+        })
+
+    def _base(self, answers: dict[str, Answer], *flags: str,
+              advisory: bool = True) -> tuple[int, str, Endpoints, object]:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "advisory-red.json")
+            args = ["main", *flags] + (["--advisory-red", path] if advisory else [])
+            rc, out, err, gh = base_run(answers, args, clock=FakeClock(), knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+            record: object = None
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    record = json.load(f)
+        return rc, out + err, gh, record
+
+    def test_a_tip_run_cancelled_only_in_advisory_jobs_settles_green(self) -> None:
+        line = (f"  advisory-stopped  ci — cancelled at {C[:8]} (2026-09-10T00:59:00Z), stopped only in jobs"
+                " the repository's advisory list names, every other job of it passed  https://x/1000\n")
+        stopped = [job(UBUNTU, "success"), job("classify the diff", "skipped"), job(MAC, "cancelled")]
+        for older in (True, False):
+            with self.subTest(older=older):
+                answers = self._world(stopped, older=older)
+                rc, out, _, record = self._base(answers, "--wait=900")
+                self.assertEqual(rc, 0, out)
+                self.assertIn(f"o/r main: green (tip {C[:8]})", out)
+                self.assertIn(line, out)
+                self.assertNotIn("stopped-not-judged", out)
+                self.assertNotIn("stopped not judged", out)
+                self.assertEqual(record, [], "a green writes the file, and a stopped job is no red")
+                # The read without --wait takes the same reading.
+                rc, out, _, _ = self._base(answers)
+                self.assertEqual(rc, 0, out)
+                self.assertIn(line, out)
+        # Without the flag: today's end, and neither the list nor the jobs are read.
+        rc, out, gh, _ = self._base(self._world(stopped), "--wait=900", advisory=False)
+        self.assertEqual(rc, 4, out)
+        self.assertIn("stopped-not-judged and no replacement appeared", out)
+        self.assertIn(f"NO VERDICT for the tip {C[:8]}", out)
+        self.assertNotIn("advisory-stopped", out)
+        self.assertNotIn("repos/o/r/contents/.github/ship-pr-advisory-checks", gh.asked)
+        self.assertNotIn("repos/o/r/actions/runs/1000/jobs?per_page=100", gh.asked)
+
+    def test_any_other_cancel_keeps_the_no_tip_verdict_end(self) -> None:
+        """The release is not widened: a required job cancelled, red or unfinished, no advisory job
+        stopped, a jobs or list read that fails, or a stop that is not ``cancelled``."""
+        unread = (1, "gh: Bad Gateway (HTTP 502)")
+        for name, jobs, concl, why in (
+                ("a required job cancelled", [job(UBUNTU, "cancelled"), job(MAC, "cancelled")], "cancelled",
+                 "job 'fixtures (ubuntu)' concluded cancelled and is not advisory"),
+                ("a required job red", [job(UBUNTU, "failure"), job(MAC, "cancelled")], "cancelled",
+                 "job 'fixtures (ubuntu)' concluded failure and is not advisory"),
+                ("a required job unfinished", [job(UBUNTU, None), job(MAC, "cancelled")], "cancelled",
+                 "job 'fixtures (ubuntu)' concluded pending and is not advisory"),
+                ("no advisory job stopped", [job(UBUNTU, "success"), job(MAC, "success")], "cancelled",
+                 "no advisory job of it was stopped, so its cancel is not theirs"),
+                ("the jobs unread", unread, "cancelled", "its job list could not be read ("),
+                ("stale, not cancelled", [job(UBUNTU, "success"), job(MAC, "cancelled")], "stale", "")):
+            with self.subTest(name):
+                rc, out, gh, _ = self._base(self._world(jobs, concl), "--wait=900")
+                self.assertEqual(rc, 4, out)
+                self.assertIn("stopped-not-judged and no replacement appeared", out)
+                self.assertNotIn("advisory-stopped", out)
+                if why:
+                    self.assertIn(f"           (the tip's cancelled run is not stopped only in advisory jobs: {why}",
+                                  out)
+                else:
+                    self.assertNotIn("repos/o/r/actions/runs/1000/jobs?per_page=100", gh.asked)
+        answers = self._world([job(UBUNTU, "success"), job(MAC, "cancelled")])
+        answers["repos/o/r/contents/.github/ship-pr-advisory-checks"] = (1, "gh: Forbidden (HTTP 403)")
+        rc, out, _, _ = self._base(answers, "--wait=900")
+        self.assertEqual(rc, 4, out)
+        self.assertIn("(the tip's cancelled run is not stopped only in advisory jobs: the repository's advisory"
+                      " list could not be read, so it releases nothing)", out)
+
+    def test_a_cancel_below_the_tip_is_not_read(self) -> None:
+        """Only the tip's own run: a cancelled run at an older commit -- under the tip's green, or
+        the newest run when the tip has none -- is context, as before, and its jobs are not asked
+        for."""
+        stopped = json.dumps({"jobs": [job(UBUNTU, "success"), job(MAC, "cancelled")]})
+        for name, rows, verdict in (
+                ("under the tip's green", [{"conclusion": "success", "head_sha": C},
+                                           {"conclusion": "cancelled", "head_sha": B}],
+                 f"  green    ci — success at {C[:8]}\n"),
+                ("the tip has no run", [{"conclusion": "cancelled", "head_sha": B},
+                                        {"conclusion": "success", "head_sha": A}],
+                 f"(that verdict is about {A[:8]}, not the tip {C[:8]})")):
+            with self.subTest(name):
+                answers = world(C, runs(*rows), **{
+                    "repos/o/r/actions/runs/1000/jobs?per_page=100": stopped,
+                    "repos/o/r/actions/runs/1001/jobs?per_page=100": stopped,
+                    "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY})
+                rc, out, gh, _ = self._base(answers, "--wait=900")
+                self.assertEqual(rc, 0, out)
+                self.assertIn(verdict, out)
+                self.assertNotIn("advisory-stopped", out)
+                self.assertFalse(any("/jobs" in a for a in gh.asked), gh.asked)
+        # A later run at the tip in flight over the cancelled one: that run is the answer to come.
+        answers = world(C, runs({"status": "in_progress", "conclusion": None, "head_sha": C},
+                                {"conclusion": "cancelled", "head_sha": C},
+                                {"conclusion": "success", "head_sha": A}), **{
+            "repos/o/r/actions/runs/1001/jobs?per_page=100": stopped,
+            "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY})
+        rc, out, gh, _ = self._base(answers)
+        self.assertNotIn("advisory-stopped", out)
+        self.assertIn(f"(ci is running now at {C[:8]})", out)
+        self.assertFalse(any("/jobs" in a for a in gh.asked), gh.asked)
+
+
 class NamedSources(unittest.TestCase):
     def test_a_clean_merge_of_a_green_head_judges_a_retired_workflow(self) -> None:
         rc, out, _, _ = base_run(pushless_world(), ["main"],

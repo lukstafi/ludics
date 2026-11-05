@@ -57,6 +57,17 @@ flight. The file records the branch's own push runs' advisory reds only: a merge
 the ones ``merge`` admitted. Without the flag every reading here is BUILD_ADVISORY's, as before,
 so ``base --wait`` (the integration loop's) and the base watch's ``--interim`` are unchanged.
 
+The flag's third place (#967) is a workflow whose newest run, completed at the tip, concluded
+``cancelled``: its jobs are read, and when advisory jobs alone explain the stop -- at least one job
+the list names stopped or unfinished, every other job green (``Gate.run_stopped_hold``, the release
+``checks`` and ``merge`` give a head's cancelled run, #958) -- that run is the tip's verdict, green,
+on an ``advisory-stopped`` line of its own, where without the flag it is stopped-not-judged and a
+``--wait`` ends with no tip verdict. BOUNDARY, fail closed: only ``cancelled`` (not ``stale`` or
+``action_required``), only the tip's newest run of the workflow and only once it is completed; a
+required job red, cancelled or unfinished, no advisory job stopped, or a list or jobs read that
+fails, keeps today's reading, with a note naming why. The jobs read is the gate's, the run's latest
+attempt, as ``checks`` reads it; no stopped job is written to the file, which records reds.
+
 The flag's file is an OUTPUT: ``base`` writes it, and never reads it as the advisory list -- the
 list is the default branch's, over the API (#704: a coordinator passed the checkout's
 ``.github/ship-pr-advisory-checks`` and the green replaced it with ``[]``). So the path is
@@ -763,6 +774,21 @@ class Base:
         if gate is None:
             return "the repository's advisory list could not be read, so it releases nothing"
         return gate.run_inflight_hold(run_id)
+
+    def stopped_hold(self, run_id: str) -> str | None:
+        """Under ``--advisory-red`` (#967): None for a run that concluded ``cancelled`` whose stop
+        the repository's advisory jobs alone explain -- at least one job the list names stopped or
+        unfinished, every other job green: the rule ``checks`` and ``merge`` release a head's
+        cancelled run by (``Gate.run_stopped_hold``, #958) -- else why the run stays stopped, not
+        judged: the gate's reason naming the job, or the read that failed. Fail closed as
+        ``inflight_hold``: a list or jobs read that fails releases nothing."""
+        if not _DIGITS.fullmatch(run_id):
+            return "its run id is not known, so its jobs cannot be read"
+        gate = self.repo_gate()
+        if gate is None:
+            return "the repository's advisory list could not be read, so it releases nothing"
+        hold = gate.run_stopped_hold(run_id)
+        return None if hold is None else hold[0]
 
     def advisory_red(self, run_id: str, attempt: int) -> tuple[list[tuple[str, str]], str]:
         """Under ``--advisory-red``: the red run's red jobs when every one of them is a job the
@@ -1782,11 +1808,24 @@ class Wait:
             concl, csha, cwhen, curl = f.concl, f.csha, f.cwhen, f.curl
             if not name or b.is_advisory(name):
                 continue
+            # --advisory-red (#967): the tip's own newest run, completed and concluded cancelled,
+            # whose stop the repository's advisory jobs alone explain (``Base.stopped_hold``, the
+            # release ``checks``/``merge`` give a head's run, #958), is the tip's verdict: green for
+            # the wait and the report, on an ``advisory-stopped`` line of its own. A run it does not
+            # release is read as without the flag, with a note saying why.
+            released = False
+            stopped_standing = ""
+            if (self.args.advisory_red and tip and status == "completed" and f.csha == tip
+                    and f.concl == "cancelled"):
+                hold = b.stopped_hold(f.crun)
+                released = hold is None
+                stopped_standing = hold or ""
+            vsha = tip if released else f.vsha
             trig_note = ""
             # A workflow whose newest judged run is not the tip's is asked whether its file at the
             # tip still runs on push (ludics-lite#401); one that does not is set aside, and the
             # tip's verdict for it comes from a named source below.
-            if not tip or f.vsha != tip:
+            if not tip or vsha != tip:
                 trigger = b.push_trigger(f.wfid, tip or self.ebranch)
                 if trigger is None:
                     fail(3, f"could not read {repo}'s '{name}' workflow file at the tip"
@@ -1819,7 +1858,7 @@ class Wait:
             fly = status != "completed" and bool(tip) and sha == tip
             if fly:
                 rnd.tipfly.append((f.wfid, name))
-            if not (tip and f.vsha == tip):
+            if not (tip and vsha == tip):
                 rnd.uncovered += 1
                 if not fly:
                     rnd.uncov_nofly += 1
@@ -1829,12 +1868,16 @@ class Wait:
                     rnd.tip_unjudged += 1
                 else:
                     rnd.unrun.append((f.wfid, name, f.vsha))
-            if conclusion_class(concl) == "nogo" and tip and csha == tip:
+            if conclusion_class(concl) == "nogo" and tip and csha == tip and not released:
                 rnd.nogo_at_tip += 1
             # The newest JUDGED run carries the verdict; a stopped run over it is context.
             stopped_note = ""
             crun, cattempt = f.crun, f.cattempt
-            if conclusion_class(concl) == "nogo" and f.vsha != "-":
+            if released:
+                out.append(f"  advisory-stopped  {name} — {concl} at {csha[:8]} ({cwhen}), stopped only in"
+                           " jobs the repository's advisory list names, every other job of it passed"
+                           f"  {curl}\n")
+            elif conclusion_class(concl) == "nogo" and f.vsha != "-":
                 stopped_note = (f"           (newest completed run: {concl} at {csha[:8]}, stopped not"
                                 " judged — verdict above is the newest judged run)\n")
                 concl, csha, cwhen, curl = f.vconcl, f.vsha, f.vwhen, f.vurl
@@ -1854,6 +1897,8 @@ class Wait:
                                f" advisory job(s): {jobs}  {curl}\n")
                     advisory = True
             match klass:
+                case _ if released:
+                    pass
                 case "red" if advisory:
                     pass
                 case "red":
@@ -1886,6 +1931,9 @@ class Wait:
                                    f" no earlier judged run in the window)  {curl}\n")
                 case _:
                     assert_never(klass)
+            if stopped_standing:
+                stopped_note += (f"           (the tip's cancelled run is not stopped only in advisory jobs:"
+                                 f" {stopped_standing})\n")
             out.append(stopped_note + trig_note)
             if f.wfid in rnd.exhausted_wids:
                 rnd.exhausted.append(name)
