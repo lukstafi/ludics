@@ -1052,6 +1052,24 @@ class AdvisoryStopped(unittest.TestCase):
         self.assertNotIn("repos/o/r/contents/.github/ship-pr-advisory-checks", gh.asked)
         self.assertNotIn("repos/o/r/actions/runs/1000/jobs?per_page=100", gh.asked)
 
+    def test_a_released_tip_needs_no_judged_history(self) -> None:
+        """A hundred runs cancelled in the macOS legs judge nothing, so without the release the read
+        stops at them, no verdict (the local review's finding: the exhausted-history hold outlived
+        the release)."""
+        cancelled: list[dict[str, object]] = [{"conclusion": "cancelled", "head_sha": C if i == 0 else B} for i in range(100)]
+        answers = world(C, runs(*cancelled[:10]), **{
+            "repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=100": runs(*cancelled),
+            "repos/o/r/actions/runs/1000/jobs?per_page=100": json.dumps(
+                {"jobs": [job(UBUNTU, "success"), job(MAC, "cancelled")]}),
+            "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY})
+        rc, out, _, _ = self._base(answers)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"  advisory-stopped  ci — cancelled at {C[:8]}", out)
+        self.assertNotIn("none of its newest 100 push runs", out)
+        rc, out, _, _ = self._base(answers, advisory=False)
+        self.assertEqual(rc, 4, out)
+        self.assertIn("none of its newest 100 push runs", out)
+
     def test_any_other_cancel_keeps_the_no_tip_verdict_end(self) -> None:
         """The release is not widened: a required job cancelled, red or unfinished, no advisory job
         stopped, a jobs or list read that fails, or a stop that is not ``cancelled``."""

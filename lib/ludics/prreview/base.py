@@ -65,7 +65,8 @@ on an ``advisory-stopped`` line of its own, where without the flag it is stopped
 ``--wait`` ends with no tip verdict. BOUNDARY, fail closed: only ``cancelled`` (not ``stale`` or
 ``action_required``), only the tip's newest run of the workflow and only once it is completed; a
 required job red, cancelled or unfinished, no advisory job stopped, or a list or jobs read that
-fails, keeps today's reading, with a note naming why. The jobs read is the gate's, the run's latest
+fails, keeps today's reading, with a note naming why. A released run is the tip's verdict even
+when none of the workflow's newest 100 runs judged the branch: no history past it is needed. The jobs read is the gate's, the run's latest
 attempt, as ``checks`` reads it; no stopped job is written to the file, which records reds.
 
 The flag's file is an OUTPUT: ``base`` writes it, and never reads it as the advisory list -- the
@@ -1935,7 +1936,8 @@ class Wait:
                 stopped_note += (f"           (the tip's cancelled run is not stopped only in advisory jobs:"
                                  f" {stopped_standing})\n")
             out.append(stopped_note + trig_note)
-            if f.wfid in rnd.exhausted_wids:
+            # A released tip run is the tip's verdict, so no history past it is needed.
+            if f.wfid in rnd.exhausted_wids and not released:
                 rnd.exhausted.append(name)
                 out.append(f"           ({name}: none of its newest 100 push runs on {branch} judged it,"
                            " and this read stops there — a judged run further back, a red included, is"
