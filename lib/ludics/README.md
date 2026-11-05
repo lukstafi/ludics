@@ -336,7 +336,7 @@ prreview/merge.py prreview/closekw.py
     ship-pr/scripts/test-pr-review-budget.sh
     ship-pr/scripts/test-pr-review-lib.sh
 
-prreview/gate.py prreview/ere.py prreview/checkruns.py
+prreview/gate.py prreview/ere.py prreview/checkruns.py prreview/images.py
     ship-pr/scripts/test-pr-review-checks-absent.sh
     ship-pr/scripts/test-pr-review-merge.sh
     ship-pr/scripts/test-pr-review-base-*.sh
