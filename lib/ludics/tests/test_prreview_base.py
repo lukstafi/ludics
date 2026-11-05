@@ -1002,13 +1002,14 @@ class AdvisoryStopped(unittest.TestCase):
     the tip's verdict, green, as ``checks``/``merge`` release it (``Gate.run_stopped_hold``, #958).
     Without the flag, and for every other cancel, ``base --wait`` ends with no tip verdict as before."""
 
-    def _world(self, jobs: Answer, concl: str = "cancelled", older: bool = True) -> dict[str, Answer]:
+    def _world(self, jobs: list[dict[str, object]] | tuple[int, str], concl: str = "cancelled",
+               older: bool = True) -> dict[str, Answer]:
         rows: list[dict[str, object]] = [{"conclusion": concl, "head_sha": C}]
         if older:
             rows.append({"conclusion": "success", "head_sha": A})
         return world(C, runs(*rows), **{
             "repos/o/r/actions/runs/1000/jobs?per_page=100":
-                jobs if isinstance(jobs, tuple) else json.dumps({"jobs": jobs}),
+                json.dumps({"jobs": jobs}) if isinstance(jobs, list) else jobs,
             "repos/o/r/contents/.github/ship-pr-advisory-checks": ADVISORY,
         })
 
@@ -1054,7 +1055,7 @@ class AdvisoryStopped(unittest.TestCase):
     def test_any_other_cancel_keeps_the_no_tip_verdict_end(self) -> None:
         """The release is not widened: a required job cancelled, red or unfinished, no advisory job
         stopped, a jobs or list read that fails, or a stop that is not ``cancelled``."""
-        unread = (1, "gh: Bad Gateway (HTTP 502)")
+        unread: tuple[int, str] = (1, "gh: Bad Gateway (HTTP 502)")
         for name, jobs, concl, why in (
                 ("a required job cancelled", [job(UBUNTU, "cancelled"), job(MAC, "cancelled")], "cancelled",
                  "job 'fixtures (ubuntu)' concluded cancelled and is not advisory"),
@@ -1088,13 +1089,14 @@ class AdvisoryStopped(unittest.TestCase):
         the newest run when the tip has none -- is context, as before, and its jobs are not asked
         for."""
         stopped = json.dumps({"jobs": [job(UBUNTU, "success"), job(MAC, "cancelled")]})
-        for name, rows, verdict in (
+        cases: list[tuple[str, list[dict[str, object]], str]] = [
                 ("under the tip's green", [{"conclusion": "success", "head_sha": C},
                                            {"conclusion": "cancelled", "head_sha": B}],
                  f"  green    ci — success at {C[:8]}\n"),
                 ("the tip has no run", [{"conclusion": "cancelled", "head_sha": B},
                                         {"conclusion": "success", "head_sha": A}],
-                 f"(that verdict is about {A[:8]}, not the tip {C[:8]})")):
+                 f"(that verdict is about {A[:8]}, not the tip {C[:8]})")]
+        for name, rows, verdict in cases:
             with self.subTest(name):
                 answers = world(C, runs(*rows), **{
                     "repos/o/r/actions/runs/1000/jobs?per_page=100": stopped,
