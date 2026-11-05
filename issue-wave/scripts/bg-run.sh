@@ -301,9 +301,11 @@ cmd_new() {
   # A test seam, unset in use: test-bg-run.sh holds two `new`s here, past the scan, until both
   # have reached it (each drops <gate>.<pid>; the suite then creates <gate>), so both try the same
   # N and the exclusive mkdir below is what decides between them.
+  # BG_RUN_NEW_GATE_SPIN set, the wait spins instead of napping, so both leave it within
+  # microseconds of each other: the suite's stress case, which races the real `mkdir`.
   if [ -n "${BG_RUN_NEW_GATE:-}" ]; then
     : > "$BG_RUN_NEW_GATE.$$"
-    while [ ! -e "$BG_RUN_NEW_GATE" ]; do sleep 0.1; done
+    while [ ! -e "$BG_RUN_NEW_GATE" ]; do [ -n "${BG_RUN_NEW_GATE_SPIN:-}" ] || sleep 0.1; done
   fi
   # `mkdir` without -p fails when the name exists, so exactly one caller creates each run-<N>. A
   # failure with the name still absent is not a race lost but a parent that refuses the write:
