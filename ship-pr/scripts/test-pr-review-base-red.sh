@@ -401,8 +401,51 @@ test_an_unreadable_advisory_list_keeps_the_red() {
   assert_contains "$BASE_OUTPUT" "holds no ERE line" "and the reader says what is wrong with it"
 }
 
+# #967: the tip's own run cancelled only in its macOS jobs (their timeout-minutes cap) is the
+# tip's green under --advisory-red, as checks/merge release it (#958); without the flag, or with
+# a required job stopped beside them, the wait still ends with no verdict for the tip.
+advisory_stopped_run() { # <jobs json>: ci cancelled at the tip in run 3004, green under it
+  RUNS_1=$(runs_json 1 "$(jq -cn --arg c "$SHA_C" --arg a "$SHA_A" \
+    '[{conclusion:"cancelled", head_sha:$c, id:3004}, {conclusion:"success", head_sha:$a, id:3001}]')")
+  JOBS_3004=$(jobs_json "$1")
+  ADVISORY_LIST="$THIS_REPOS_ADVISORY_LIST"
+  ADVISORY_OUT="$TEST_ROOT/advisory-red.json"
+  : >"$ADVISORY_OUT"
+  retune ABSENT_GRACE=0
+}
+
+test_a_tip_run_cancelled_only_in_advisory_jobs_is_green_under_advisory_red() {
+  reset_fixture
+  advisory_stopped_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"cancelled"},
+                         {"name":"fixtures (ubuntu)","conclusion":"success"}]'
+  run_base --wait=2 --advisory-red "$ADVISORY_OUT"
+  assert_eq "$BASE_RC" 0 "a cancel only advisory jobs explain is the tip's green ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "green (tip ${SHA_C:0:8})" "headlined green at the tip"
+  assert_contains "$BASE_OUTPUT" "advisory-stopped  ci — cancelled at ${SHA_C:0:8}" "on a line of its own"
+  assert_not_contains "$BASE_OUTPUT" "stopped-not-judged" "and not the no-verdict end"
+  # The control: without the flag, today's end, and no list or jobs read.
+  reset_fixture
+  advisory_stopped_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"cancelled"},
+                         {"name":"fixtures (ubuntu)","conclusion":"success"}]'
+  run_base --wait=2
+  assert_eq "$BASE_RC" 4 "without the flag a cancelled tip run is no verdict ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "stopped-not-judged and no replacement appeared" "as before"
+  assert_not_contains "$(cat "$REQUEST_LOG")" "ship-pr-advisory-checks" "and the advisory file is not read"
+  # A required job cancelled beside the macOS one: the cancel is not the advisory jobs' alone.
+  reset_fixture
+  advisory_stopped_run '[{"name":"bash 3.2 suites, a (macos)","conclusion":"cancelled"},
+                         {"name":"fixtures (ubuntu)","conclusion":"cancelled"}]'
+  run_base --wait=2 --advisory-red "$ADVISORY_OUT"
+  assert_eq "$BASE_RC" 4 "a required job cancelled keeps the no-verdict end ($BASE_OUTPUT)"
+  assert_contains "$BASE_OUTPUT" "stopped-not-judged and no replacement appeared" "as before"
+  assert_contains "$BASE_OUTPUT" "not stopped only in advisory jobs: job 'fixtures (ubuntu)' concluded cancelled" \
+    "saying why"
+  assert_not_contains "$BASE_OUTPUT" "advisory-stopped" "with no release line"
+}
+
 tests=(
   test_an_advisory_only_red_is_out_of_the_verdict_under_advisory_red
+  test_a_tip_run_cancelled_only_in_advisory_jobs_is_green_under_advisory_red
   test_a_required_red_beside_an_advisory_one_stays_red
   test_an_unreadable_advisory_list_keeps_the_red
   test_red_names_the_failing_job_and_the_first_red_commit
