@@ -326,8 +326,12 @@ def gh_client_refusal(first_line: str) -> bool:
 # --allow-escape-sequences, whether or not stdout is a terminal, and gh exits 1. The request
 # reached GitHub and was answered, so this is not transport, and re-sending it prints the same
 # refusal. A JSON answer is not withheld (its strings carry the escape as text), nor is a --jq
-# projection that decodes one, so the script's own calls, which all read JSON, never meet it.
-# Matched as the whole first line, fail-closed like the refusals above.
+# projection that decodes one, so the script's own calls, which read JSON, never meet it -- but
+# for images.py's read of a job log's first bytes (ludics#959), which does not pass the flag (a gh
+# before 2.101 refuses it as a flag, which would stop the whole command): there a withheld answer
+# is a failed read, GhFailed, not retried (re-sending gets it withheld again), and the image is
+# not known. Matched as the whole first line,
+# fail-closed like the refusals above.
 _ESCAPE_REFUSAL = (
     "the response contains terminal escape sequences;"
     " pass --allow-escape-sequences to output it anyway"
@@ -745,9 +749,10 @@ class GhSession:
                     return GhArgsRefused()
                 raise GhRefusedOwn(refused_own_message(args, first))
             # An answer gh withheld was still an answer: re-sending gets it withheld again. Read
-            # for a caller's listed path only; an own call reads JSON, which gh never withholds.
-            if whose == "listed" and gh_withheld_escapes(first):
-                return GhOutputWithheld()
+            # for a caller's listed path, and for an own call (images.py's log head, the one own
+            # call that reads text, not JSON), which fails at once rather than on the backoff.
+            if whose != "unlisted" and gh_withheld_escapes(first):
+                return GhOutputWithheld() if whose == "listed" else GhFailed()
             # A quota refusal is no answer about what was asked, so it is 3 under both policies, and
             # it is not retried on the backoff below: it sets the hold instead. An observer's read
             # waits that hold out at the gate above and repeats; a read the probe found no hold for

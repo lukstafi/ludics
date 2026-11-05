@@ -35,6 +35,7 @@ from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, warn
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.budget import pause
 from ludics.prreview.clock import Clock, FuncClock, age_of, fmt_age, freshest_age
+from ludics.prreview.images import RedJob, report_lines as image_lines
 from ludics.prreview.runners import HeadRun, Idle, Orphan, Recover, Stop, Wait, report_line, scan
 from ludics.prreview.shtext import herestring_lines, is_digits, placeholder, tab_fields
 from ludics.prreview.workflows import RecognitionLimits, Reads, head_within_paths_ignore
@@ -179,6 +180,12 @@ class Gate:
     # Without it, a round that finds one ends the wait: nothing it waits for moves until someone
     # reruns the run.
     orphans_on: bool = False
+    # A red check's runner image against the base's last green run of that job (images.py,
+    # ludics#959): read only when ``images_on`` (``checks`` and ``merge``; ``base`` polls a merged
+    # head and leaves it off), once, for the report of a ``red`` verdict. ``red_jobs`` is the
+    # fold's red checks, in its order.
+    images_on: bool = False
+    red_jobs: list[RedJob] = field(default_factory=lambda: list[RedJob]())
     orphans: list[Orphan] = field(default_factory=lambda: list[Orphan]())
     recover: Recover | None = None
     # The last ``check``'s wait deadline on ``clock``, as the wait left it: its start plus the wait,
@@ -357,6 +364,7 @@ class Gate:
         red = waived = pending = queued = nogo = green = passed = 0
         lines: list[str] = []
         running: list[str] = []
+        reds: list[RedJob] = []
         for row in rows:
             cls, name, concl, url, _suite, status = tab_fields(row, 6)
             if not cls:
@@ -365,6 +373,7 @@ class Gate:
                 case "red":
                     red += 1
                     lines.append(f"  RED      {name} ({concl})  {url}\n")
+                    reds.append(RedJob(name, url))
                 case "waived":
                     waived += 1
                     lines.append(f"  RED      {name} ({concl} — WAIVED: red when --override was given)  {url}\n")
@@ -382,6 +391,7 @@ class Gate:
                     if concl == "success":
                         passed += 1
         self.check_lines = "".join(lines)
+        self.red_jobs = reds
         self.pending_names = running
         self.check_red = red
         self.check_waived = waived
@@ -1232,6 +1242,8 @@ class Gate:
                 pass
             case _:
                 assert_never(self.verdict)
+        if self.images_on and self.verdict == "red":
+            self.check_lines += image_lines(self.session, repo, pr, self.red_jobs, self._round_runs or [], shlex.quote)
         if self.check_lines:
             sys.stdout.write(self.check_lines)
         if self.unread:

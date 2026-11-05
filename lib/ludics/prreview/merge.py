@@ -449,7 +449,7 @@ class Merge:
         self.config = config
         self.clock = clock
         self.opts = opts
-        self.gate = Gate(session, repo, config, clock, orphans_on=True)
+        self.gate = Gate(session, repo, config, clock, orphans_on=True, images_on=True)
         # The one recovery from a job that never got a runner, under --wait only: a merge that does
         # not wait does not rerun (runners.py; Recovery above).
         self.recovery = Recovery(session, repo, num, self.gate, clock, opts.wait_for)

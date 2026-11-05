@@ -76,6 +76,8 @@ prreview/ere.py            the advisory list, asked of grep (is_advisory, ere_va
 prreview/gate.py           gate_checks (checks, merge, and base's merged-head source)
 prreview/runners.py        build jobs that never got a runner: NO RUNNER, NEVER STARTED (checks, merge;
                            merge.py's Recovery reruns once, #560/#728)
+prreview/images.py         a red check's runner image against the base's last green run of it:
+                           NEW IMAGE (checks, merge; #959)
 prreview/workflows.py      the workflow-file reads and the paths-ignore walk (checks/merge, base)
 prreview/workflow_yaml.py  the narrow workflow-YAML readers and the glob translation
 ```
@@ -334,7 +336,7 @@ prreview/merge.py prreview/closekw.py
     ship-pr/scripts/test-pr-review-budget.sh
     ship-pr/scripts/test-pr-review-lib.sh
 
-prreview/gate.py prreview/ere.py prreview/checkruns.py
+prreview/gate.py prreview/ere.py prreview/checkruns.py prreview/images.py
     ship-pr/scripts/test-pr-review-checks-absent.sh
     ship-pr/scripts/test-pr-review-merge.sh
     ship-pr/scripts/test-pr-review-base-*.sh
