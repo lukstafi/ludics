@@ -92,7 +92,10 @@ fi
 
 # 7. Deliberately coarse: more edits to the same dirty files do NOT reset the nudge.
 # Include the worktree and session in the hash, both to isolate repos and to avoid using
-# an input session id as a path. Atomic mkdir lets concurrent Stops share one claim.
+# an input session id as a path. The stamp is a file created with bash's noclobber, an open with
+# O_EXCL, so concurrent Stops share one claim: exactly one of them creates it and nudges. Not a
+# `mkdir`: uutils's (Ubuntu's coreutils since 25.10) can report success to both of two racers for
+# one name (#921). A stamp left as a directory by an older copy of this hook still counts.
 #
 # With a human attending, nothing short of another branch resets it: they decide when to land, so
 # one reminder per session and branch is enough. Claude Code sets CLAUDE_CODE_SESSION_ATTENDED per
@@ -153,7 +156,7 @@ pr_exempt() {
     pr_count=$(bounded gh pr list ${repo:+--repo "$repo"} "$@" --state all --limit 1 --json number --jq length) || exit 0
     case "$pr_count" in
       0) ;;
-      1) mkdir "$stamp" 2>/dev/null; exit 0 ;;
+      1) ( set -C; : > "$stamp" ) 2>/dev/null; exit 0 ;;
       *) exit 0 ;;
     esac
   done
@@ -181,7 +184,7 @@ if [ "$ahead" != "0" ]; then
   fi
 fi
 
-mkdir "$stamp" 2>/dev/null || exit 0
+( set -C; : > "$stamp" ) 2>/dev/null || exit 0
 {
   printf 'Unlanded work: branch %s' "$branch"
   [ "$ahead" != "0" ] && printf ', %s commit(s) ahead of %s%s' "$ahead" "$upstream" "$stale_note"

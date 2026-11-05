@@ -5,13 +5,19 @@
 #
 # What it pins:
 #   - a finished run reads rc=<its exit status> with exit 0, whatever that status is, and the
-#     background `start` itself exits with it too, its directory left holding cpid, log, pid and rc;
+#     background `start` itself exits with it too, its directory left holding new's `.made`, cpid,
+#     log, pid and rc;
 #     a wait whose first read finds the rc already there says `(finished earlier, at <time>)` after
 #     it, and one that saw the run live does not (ludics-lite#816);
-#   - `new` allocates: it creates the parent and prints <parent>/run-<N>, holding only its `.new`
-#     token, one past the highest run-<N> there (other names not counted); two `new`s racing for the same N each get
-#     a directory of their own, and a copy without the exclusive mkdir is the control that
-#     hands both the same one; a parent it cannot write in, or that is a file, is an error, not an
+#   - `new` allocates: it creates the parent and prints <parent>/run-<N>, holding only its `.made`
+#     claim and `.new` token, one past the highest run-<N> there (other names not counted); two
+#     `new`s racing for the same N each get a directory of their own, also under a `mkdir` that
+#     reports an existing directory made, as uutils's can (#921), and a copy whose claim is neither
+#     an exclusive mkdir nor an exclusive `.made` is the control that hands both the same one; a
+#     stress case races two `new`s through the real `mkdir`, gated to leave together, for
+#     BG_RUN_STRESS_ROUNDS rounds (default 200), and no round may hand both one directory (it bites
+#     only where `mkdir` is not exclusive: on uutils, Ubuntu's coreutils since 25.10, so CI's
+#     ubuntu-26.04 job); a parent it cannot write in, or that is a file, is an error, not an
 #     endless search; a wait on a `new` directory before `start` reads STARTING, and `start`
 #     there runs and reads rc;
 #   - race 1: a task killed before its command returned (so no rc is ever written) reads DIED,
@@ -145,7 +151,7 @@ wait "$S"; src=$?
   || ko "the background start exited $src, want 7"
 [ "$(cat "$d/log")" = hello ] && ok "...and the command's output is in log" \
   || ko "log holds: $(cat "$d/log")"
-[ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid rc " ] && ok "...and the directory holds cpid, log, pid, rc and nothing else" \
+[ "$(ls -A "$d" | tr '\n' ' ')" = ".made cpid log pid rc " ] && ok "...and the directory holds new's .made, cpid, log, pid, rc and nothing else" \
   || ko "the directory holds: $(ls -A "$d" | tr '\n' ' ')"
 fresh finished0
 fin0=$d
@@ -171,8 +177,9 @@ esac
 p="$TMP/runs"
 expect "new on an absent parent creates it and prints run-1" 0 "$p/run-1" -- "$BG" new "$p"
 [ "$out" = "$p/run-1" ] && ok "...and prints that path and nothing else" || ko "new printed: $out"
-[ -d "$p/run-1" ] && [ "$(ls -A "$p/run-1")" = .new ] && ok "...a directory holding only new's token" \
-  || ko "run-1 is not a directory holding only .new: $(ls -A "$p/run-1" 2>&1)"
+[ -d "$p/run-1" ] && [ "$(ls -A "$p/run-1" | tr '\n' ' ')" = '.made .new ' ] \
+  && ok "...a directory holding only new's claim and token" \
+  || ko "run-1 is not a directory holding only .made and .new: $(ls -A "$p/run-1" 2>&1)"
 expect "a second new prints run-2" 0 "$p/run-2" -- "$BG" new "$p/"
 [ "$out" = "$p/run-2" ] && ok "...with the parent's trailing slash dropped" || ko "new printed: $out"
 mkdir "$p/run-7"; : > "$p/run-12x"; mkdir "$p/other"; : > "$p/run-"; mkdir "$p/run-0000000000099"
@@ -180,41 +187,89 @@ expect "new counts past the highest run-<N>, not the other names beside it" 0 "$
 : > "$p/run-9"
 expect "a FILE named run-<N> is counted too, and never reused" 0 "$p/run-10" -- "$BG" new "$p"
 # The race: two `new`s held past the scan until both are there, so both try the same N and only
-# the exclusive mkdir can tell them apart. The control patches it into `mkdir -p`, which must then
-# hand both the same directory.
-# twin_news <script> <parent>: sets TWIN_OUT (the two printed paths, sorted) and TWIN_NRCS.
+# the claim can tell them apart. The control patches the claim away, into `mkdir -p` and a plain
+# write of `.made`, which must then hand both the same directory.
+# twin_news <script> <parent> [env assignment...]: sets TWIN_OUT (the two printed paths, sorted)
+# and TWIN_NRCS. The assignments go to both news (a PATH, the gate's spin).
 twin_news() {
-  local gate="$2.gate" a b ra rb i=0
-  mkdir -p "$2"
-  BG_RUN_NEW_GATE=$gate "$1" new "$2" > "$2.a" 2>&1 &
+  local gate="$2.gate" a b ra rb i=0 bg=$1 par=$2
+  shift 2
+  mkdir -p "$par"
+  env BG_RUN_NEW_GATE="$gate" "$@" "$bg" new "$par" > "$par.a" 2>&1 &
   a=$!
-  BG_RUN_NEW_GATE=$gate "$1" new "$2" > "$2.b" 2>&1 &
+  env BG_RUN_NEW_GATE="$gate" "$@" "$bg" new "$par" > "$par.b" 2>&1 &
   b=$!
   BGPIDS="$BGPIDS $a $b"
-  while [ -z "$(find "$TMP" -maxdepth 1 -name "${gate##*/}.$a")" ] \
-    || [ -z "$(find "$TMP" -maxdepth 1 -name "${gate##*/}.$b")" ]; do
-    [ "$i" -lt 100 ] || break
-    sleep 0.1; i=$((i + 1))
+  while [ ! -e "$gate.$a" ] || [ ! -e "$gate.$b" ]; do
+    [ "$i" -lt 1000 ] || break
+    sleep 0.01; i=$((i + 1))
   done
   : > "$gate"
   wait "$a"; ra=$?; wait "$b"; rb=$?
-  TWIN_OUT=$(cat "$2.a" "$2.b" | sort | tr '\n' ' ')
+  TWIN_OUT=$(cat "$par.a" "$par.b" | sort | tr '\n' ' ')
   TWIN_NRCS="$ra $rb"
 }
 twin_news "$BG" "$TMP/twin-new"
 [ "$TWIN_NRCS" = "0 0" ] && [ "$TWIN_OUT" = "$TMP/twin-new/run-1 $TMP/twin-new/run-2 " ] \
   && ok "two news racing for one N each get a directory of their own (run-1, run-2)" \
   || ko "twin news exited $TWIN_NRCS and printed: $TWIN_OUT"
-sed 's|if mkdir -- "$base/run-$n"|if mkdir -p -- "$base/run-$n"|' "$BG" > "$TMP/unexclusive.sh"
+# A mkdir that reports an existing directory made, as uutils's can answer the second of two
+# racers (#921): the deterministic stand-in for the real race, on every platform.
+mkdir -p "$TMP/bin-racy"
+REAL_MKDIR=$(command -v mkdir)
+cat > "$TMP/bin-racy/mkdir" <<EOF
+#!/usr/bin/env bash
+for last in "\$@"; do :; done
+[ ! -d "\$last" ] || exit 0
+exec "$REAL_MKDIR" "\$@"
+EOF
+chmod +x "$TMP/bin-racy/mkdir"
+# The order is fixed, so no timing can let both mkdirs miss the other's directory: both news held
+# past the scan, then the first let through to its exit, then the second, whose mkdir of the same
+# N comes after the first's claim is complete.
+par="$TMP/twin-racy"; mkdir -p "$par"; i=0
+env BG_RUN_NEW_GATE="$par.g1" PATH="$TMP/bin-racy:$PATH" "$BG" new "$par" > "$par.a" 2>&1 &
+a=$!
+env BG_RUN_NEW_GATE="$par.g2" PATH="$TMP/bin-racy:$PATH" "$BG" new "$par" > "$par.b" 2>&1 &
+b=$!
+BGPIDS="$BGPIDS $a $b"
+while [ ! -e "$par.g1.$a" ] || [ ! -e "$par.g2.$b" ]; do
+  [ "$i" -lt 1000 ] || break
+  sleep 0.01; i=$((i + 1))
+done
+: > "$par.g1"; wait "$a"; ra=$?
+: > "$par.g2"; wait "$b"; rb=$?
+[ "$ra $rb" = "0 0" ] && [ "$(cat "$par.a" "$par.b" | tr '\n' ' ')" = "$par/run-1 $par/run-2 " ] \
+  && ok "...also under a mkdir that reports an existing directory made, as uutils's can (#921)" \
+  || ko "news under the racy mkdir exited $ra $rb and printed: $(cat "$par.a" "$par.b" | tr '\n' ' ')"
+sed -e 's|if mkdir -- "$d"|if mkdir -p -- "$d"|' -e 's|if ( set -C; : > "$d/.made" ) 2>/dev/null|if : > "$d/.made"|' \
+  "$BG" > "$TMP/unexclusive.sh"
 chmod +x "$TMP/unexclusive.sh"
-if cmp -s "$BG" "$TMP/unexclusive.sh"; then
-  ko "control: the patch found no exclusive mkdir to replace in $BG"
+if [ "$(grep -c -e 'if mkdir -p -- "$d"' -e 'if : > "$d/.made"' "$TMP/unexclusive.sh")" != 2 ]; then
+  ko "control: the patch did not find both halves of the claim to replace in $BG"
 else
   twin_news "$TMP/unexclusive.sh" "$TMP/twin-new-control"
   [ "$TWIN_OUT" = "$TMP/twin-new-control/run-1 $TMP/twin-new-control/run-1 " ] \
-    && ok "control: with mkdir -p, both news print run-1" \
-    || ko "control: the copy without the exclusive mkdir printed $TWIN_OUT, so the case above proves nothing"
+    && ok "control: with mkdir -p and a plain write of .made, both news print run-1" \
+    || ko "control: the copy without the claim printed $TWIN_OUT, so the cases above prove nothing"
 fi
+# The stress case: the real mkdir, raced round after round, the two news leaving the gate within
+# microseconds of each other (BG_RUN_NEW_GATE_SPIN). Where mkdir is exclusive it cannot bite; on
+# uutils two plain mkdirs of one name both succeeded in 17 rounds of 200 (#921).
+rounds=${BG_RUN_STRESS_ROUNDS:-200}
+case $rounds in ''|*[!0-9]*) ko "BG_RUN_STRESS_ROUNDS=$rounds is not a count"; rounds=0 ;; esac
+mkdir -p "$TMP/stress"
+shared=0; failed=0; t0=$SECONDS; r=0
+while [ "$r" -lt "$rounds" ]; do
+  r=$((r + 1))
+  twin_news "$BG" "$TMP/stress/r$r" BG_RUN_NEW_GATE_SPIN=1
+  [ "$TWIN_NRCS" = "0 0" ] || failed=$((failed + 1))
+  case $TWIN_OUT in "$TMP/stress/r$r/run-1 $TMP/stress/r$r/run-2 ") ;; *) shared=$((shared + 1)) ;; esac
+  rm -rf "${TMP:?}/stress/r$r" "$TMP/stress/r$r".*
+done
+[ "$shared" -eq 0 ] && [ "$failed" -eq 0 ] \
+  && ok "stress: $rounds rounds of two news racing through the real mkdir ($REAL_MKDIR) never shared a directory ($((SECONDS - t0)) s)" \
+  || ko "stress: of $rounds rounds of two news racing through the real mkdir ($REAL_MKDIR), $shared did not print run-1 and run-2 and $failed had a new fail ($((SECONDS - t0)) s)"
 : > "$TMP/a-file"
 expect "new under a parent that is a file is refused" 2 'cannot create' -- "$BG" new "$TMP/a-file"
 p="$TMP/locked"; mkdir -p "$p"; chmod 555 "$p"
@@ -442,7 +497,7 @@ expect "a run to reuse finishes (rc=3)" 0 'rc=3' -- "$BG" wait "$d" --within 20
 expect "a second start on a finished run's directory is refused" 2 'already claimed' -- \
   "$BG" start "$d" -- sh -c 'touch "$0"; exit 9' "$TMP/reused.ran"
 [ ! -e "$TMP/reused.ran" ] && ok "...and runs nothing" || ko "the refused start ran its command"
-[ "$(cat "$d/rc")" = 3 ] && [ "$(cat "$d/log")" = first ] && [ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid rc " ] \
+[ "$(cat "$d/rc")" = 3 ] && [ "$(cat "$d/log")" = first ] && [ "$(ls -A "$d" | tr '\n' ' ')" = ".made cpid log pid rc " ] \
   && ok "...and leaves the earlier run's files as they were, adding none" \
   || ko "the earlier run's directory changed: $(ls -A "$d" | tr '\n' ' ')"
 expect "...so a wait there reads the earlier run's rc=3: the accepted caller error" 0 'rc=3' -- "$BG" wait "$d" --within 0
@@ -627,7 +682,7 @@ expect "a wait on a spawned run that is still going reads RUNNING" 3 RUNNING -- 
 expect "...and its status once it finishes (rc=5)" 0 'rc=5' -- "$BG" wait "$d" --within 20
 [ "$(cat "$d/log")" = "$(printf '%s\n' 'a b' '$HOME')" ] && ok "...with its arguments passed through intact, in its log" \
   || ko "the spawned run logged: $(cat "$d/log")"
-[ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid rc " ] && ok "...in the directory layout start writes, and nothing else" \
+[ "$(ls -A "$d" | tr '\n' ' ')" = ".made cpid log pid rc " ] && ok "...in the directory layout start writes, and nothing else" \
   || ko "the spawned directory holds: $(ls -A "$d" | tr '\n' ' ')"
 expect "a second spawn takes the next directory" 0 "$p/run-2" -- "$BG" spawn "$p" -- true
 expect "...and reads its own status" 0 'rc=0' -- "$BG" wait "$p/run-2" --within 20
@@ -705,7 +760,7 @@ done
   || ko "the grandchild (${gc:-never recorded}) outlived the stop"
 expect "...and a wait there reads STOPPED (exit 7), not DIED (ludics-lite#638)" 7 \
   'STOPPED by bg-run.sh stop before the command returned' -- "$BG" wait "$d" --within 5
-[ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid stopped " ] && ok "...its marker the one file the stop added" \
+[ "$(ls -A "$d" | tr '\n' ' ')" = ".made cpid log pid stopped " ] && ok "...its marker the one file the stop added" \
   || ko "the stopped directory holds: $(ls -A "$d" | tr '\n' ' ')"
 expect "a second stop there signals nothing (NOT RUNNING, exit 1)" 1 'NOT RUNNING: STOPPED' -- "$BG" stop "$d"
 # A stop ended inside its grace (ludics-lite#638): the command leaves a TERM-ignoring grandchild

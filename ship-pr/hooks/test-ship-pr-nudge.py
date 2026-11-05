@@ -32,6 +32,12 @@ class NudgeTests(unittest.TestCase):
         gh.write_text('#!/bin/bash\n'
                       'echo "$*" >> "$TMPDIR/gh-calls"\n'
                       '[ "$1 $2" = "pr list" ] || exit 9\n'
+                      # RACE_STAMP: a concurrent Stop claims that stamp (RACE_SHAPE dir: as a
+                      # directory, an older hook's shape) while this one asks GitHub.
+                      'if [ -n "${RACE_STAMP:-}" ]; then\n'
+                      '  if [ "$RACE_SHAPE" = dir ]; then "$REAL_MKDIR" "$RACE_STAMP"\n'
+                      '  else : > "$RACE_STAMP"; fi\n'
+                      'fi\n'
                       'answer=$N_PR\n'
                       'case " $* " in *" --repo "*) answer=${N_ORIGIN:-$N_PR} ;; esac\n'
                       'case " $* " in *" --search "*) answer=$N_SHA ;; esac\n'
@@ -125,6 +131,30 @@ class NudgeTests(unittest.TestCase):
         self.run_hook(0)
         self.env["N_PR"] = "0"
         self.run_hook(2)
+
+    def test_racing_stops_share_one_claim_under_a_racy_mkdir(self):
+        # #921: uutils's mkdir can report success to both of two racers for one name. The shim
+        # reports an existing directory made, as it does, so only an exclusive claim keeps the
+        # Stop that lost the race from nudging a second time.
+        self.env["REAL_MKDIR"] = os.path.realpath(shutil.which("mkdir"))
+        (self.bin / "mkdir").unlink()
+        racy = self.bin / "mkdir"
+        racy.write_text('#!/bin/bash\n'
+                        'for last in "$@"; do :; done\n'
+                        '[ ! -d "$last" ] || exit 0\n'
+                        'exec "$REAL_MKDIR" "$@"\n')
+        racy.chmod(0o755)
+        self.run_hook(2)
+        stamps = list((self.root / "ship-pr-nudge").iterdir())
+        self.assertEqual(len(stamps), 1)
+        for shape in ("file", "dir"):
+            with self.subTest(racer=shape):
+                if stamps[0].is_dir():
+                    stamps[0].rmdir()
+                else:
+                    stamps[0].unlink()
+                self.env.update(RACE_STAMP=str(stamps[0]), RACE_SHAPE=shape)
+                self.run_hook(0)
 
     def test_pr_found_by_commit_under_another_branch_name(self):
         # Pushed as `git push origin HEAD:<other>`: no PR has this branch's name, one has HEAD.
