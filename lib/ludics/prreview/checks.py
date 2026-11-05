@@ -99,7 +99,8 @@ def run(session: GhSession, args: list[str]) -> int:
     # (the polling budget, budget.py): a second is refused before it reads anything.
     if session.budget is not None:
         session.budget.observe("build", wait_for, target.repo, target.num)
-    gate = Gate(session, target.repo, config, clock_from_env(os.environ), select=select or "", orphans_on=True)
+    gate = Gate(session, target.repo, config, clock_from_env(os.environ), select=select or "", orphans_on=True,
+                images_on=True)
     # A selection names its checks itself; the advisory list has no say in it.
     policy = 0 if select else gate.advisory_policy()
     kinds: set[str] = set()
