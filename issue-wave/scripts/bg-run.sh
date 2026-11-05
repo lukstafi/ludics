@@ -2,14 +2,14 @@
 # bg-run.sh -- run one command as a background task and block on it in bounded foreground calls.
 #
 # A native worker has nothing that holds its turn on a background task except a foreground Bash
-# call, and that call is capped at 600 s. So a command that can outlast the cap (ship-pr's
-# `pr-review.sh watch`, `merge --wait`) runs in the background under `start`, and the worker
+# call, and that call is capped (THE SUBAGENT CAP, below). So a command that can outlast the cap
+# (ship-pr's `pr-review.sh watch`, `merge --wait`) runs in the background under `start`, and the worker
 # re-issues `wait` in the foreground until it reports the command's exit status
 # (issue-wave/references/native-claude.md, *Blocking on a run*). This replaces the two lines of
 # hand-copied shell that took three review rounds of races (ludics-lite#354, #357):
 #
 #   bg-run.sh spawn <parent> -- <cmd> [arg...] # foreground; `new` + a detached `start`, prints <dir>
-#   bg-run.sh wait  <dir> [--within <s>]       # run it in the foreground; default 540
+#   bg-run.sh wait  <dir> [--within <s>]       # run it in the foreground; default under the cap
 #   bg-run.sh stop  <dir>                      # foreground; ends a spawned run's whole tree
 #
 # or, with the start as the harness's own background task:
@@ -138,9 +138,9 @@
 #   rc   -- the command's exit status, published (by rename) after the command returns.
 #
 # `wait` polls every 5 s (BG_RUN_POLL, whole seconds) and returns the first settled verdict, or
-# the current one once --within seconds are spent (default 540, under the 600 s cap on a foreground
-# tool call). It prints one line on stdout and exits with its code. The verdict is the line's
-# first word; anything after it is for the reader, never the grammar:
+# the current one once --within seconds are spent (default: under the cap, THE SUBAGENT CAP). It
+# prints one line on stdout and exits with its code. The verdict is the line's first word;
+# anything after it is for the reader, never the grammar:
 #   rc=<n>     0  the command finished; <n> is its exit status (also in <dir>/rc). Exit 0 means
 #                 FINISHED, not succeeded: a command may exit with any status, so no exit code
 #                 of this script can both carry it and stay distinct from the verdicts below.
@@ -213,6 +213,19 @@
 # Linux is judged by lstart, as it was, and not read DIED across the upgrade. The boundary: the
 # kind is the platform's (`uname -s`), never chosen per process, and a token recorded on one box
 # means nothing on another, which no reader asks of it.
+#
+# THE SUBAGENT CAP (ludics#972). Claude Code caps a foreground Bash call at 600 s (its
+# BASH_MAX_TIMEOUT_MS), but in a native worker -- an async subagent, never a main session -- it
+# moves the call to the background once it has run for `tengu_maple_ferry` ms, whatever `timeout`
+# the call asked for. That is a server-side feature flag, not a setting: nothing local sets it (the
+# env CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS is the main session's, not a subagent's), and it was
+# 180000 on 2026-11-05 (Claude Code 2.1.317), where workers of wave-20261105 had their 540 s
+# waits moved at 180 s. A moved wait no longer holds the turn. Claude Code caches the flag in
+# `cachedGrowthBookFeatures` of its config, ${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json, so `wait`'s
+# default --within is read from there: the cap less 10 s when it is positive, at most 540 (under
+# the 600 s cap) and at least 1 (a cap under 12 s); 540 when the flag is 0 (no subagent cap); and 170 when no value can be read (no
+# Claude Code on the box, or the cache's shape changed), under the cap as last measured. An explicit
+# --within is taken as given.
 #
 # A directory written by a
 # bg-run.sh from before ludics-lite#425 may also hold `refused`, which nothing reads any more.
@@ -508,10 +521,26 @@ running() {
   return 0
 }
 
+# default_within: wait's default bound (header, THE SUBAGENT CAP), on stdout.
+default_within() {
+  cap=$(grep -o '"tengu_maple_ferry": *[0-9][0-9]*' "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" 2>/dev/null |
+    head -n 1 | sed 's/.*[^0-9]//')
+  case $cap in
+    ''|*[!0-9]*) echo 170 ;;
+    ??????????*) echo 540 ;; # ten digits or more: past 550 s, and kept clear of overflow
+    *)
+      cap=$((10#$cap))
+      if [ "$cap" -eq 0 ] || [ "$cap" -ge 550000 ]; then echo 540
+      elif [ "$cap" -ge 12000 ]; then echo $((cap / 1000 - 10))
+      else echo 1
+      fi ;;
+  esac
+}
+
 cmd_wait() {
   [ $# -ge 1 ] || usage
   dir=$1; shift
-  within=540
+  within=$(default_within)
   while [ $# -gt 0 ]; do
     case $1 in
       --within) [ $# -ge 2 ] || usage; within=$2; shift 2 ;;

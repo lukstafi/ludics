@@ -46,6 +46,9 @@
 #     and leaves the winner's verdict alone -- also when the winner has already finished by the
 #     time the loser's claim fails;
 #   - a --within shorter than the poll interval is spent in full rather than answered at once;
+#   - the default --within is read off the cached subagent cap (THE SUBAGENT CAP, ludics#972): the
+#     cap less 10 s, 540 for none or one past 550 s, 1 under 12 s, 170 where no number is there to
+#     read; an explicit --within overrides it;
 #   - a wait that reaches its bound says `RUNNING after <e> s of --within <w>` (a STARTING line
 #     likewise), and while it blocks prints heartbeat lines on stderr only, none starting with a
 #     verdict word, none with BG_RUN_HEARTBEAT=0;
@@ -466,6 +469,31 @@ expect "race 3: no pid within the start grace reads STARTING" 4 STARTING -- \
   env BG_RUN_START_GRACE=2 "$BG" wait "$TMP/never" --within 540
 [ $((SECONDS - t0)) -le 6 ] && ok "...after the grace, not the 540 s window" \
   || ko "STARTING took $((SECONDS - t0)) s with a 2 s grace"
+# --- the default --within, read off the subagent cap (THE SUBAGENT CAP, ludics#972) ------------
+# A wait with no --within on a directory no start claimed, with no start grace, returns at once
+# and names its bound: `STARTING after 0 s of --within <w>`.
+cfg="$TMP/claude-config"; mkdir -p "$cfg"
+default_is() { # default_is <label> <want-within> [config text]: with no text, no config file
+  rm -f "$cfg/.claude.json"
+  [ $# -lt 3 ] || printf '%s\n' "$3" > "$cfg/.claude.json"
+  expect "default --within: $1" 4 "of --within $2" -- \
+    env CLAUDE_CONFIG_DIR="$cfg" BG_RUN_START_GRACE=0 "$BG" wait "$TMP/never"
+  case $out in *"of --within $2") ;; *) ko "...and $2 is the whole bound -- $out" ;; esac
+}
+default_is "no Claude Code config: 170" 170
+default_is "the 180 s cap measured on 2026-11-05: 170" 170 \
+  '{"cachedGrowthBookFeatures": {"tengu_other": 5, "tengu_maple_ferry": 180000}}'
+default_is "compact JSON is read too: 80 under a 90 s cap" 80 '{"tengu_maple_ferry":90000}'
+default_is "a cap of 0 (none): 540, under the 600 s tool cap" 540 '{"tengu_maple_ferry": 0}'
+default_is "a cap past 550 s: 540" 540 '{"tengu_maple_ferry": 600000}'
+default_is "a cap of ten digits or more: 540" 540 '{"tengu_maple_ferry": 99999999999999999999}'
+default_is "a cap under 12 s: 1" 1 '{"tengu_maple_ferry": 5000}'
+default_is "a flag of another shape: 170" 170 '{"tengu_maple_ferry": {"ms": 30000}}'
+default_is "a config without the flag: 170" 170 '{"cachedGrowthBookFeatures": {}}'
+printf '%s\n' '{"tengu_maple_ferry": 180000}' > "$cfg/.claude.json"
+expect "an explicit --within is taken as given, whatever the cap" 4 "of --within 7" -- \
+  env CLAUDE_CONFIG_DIR="$cfg" BG_RUN_START_GRACE=0 "$BG" wait "$TMP/never" --within 7
+
 fresh late
 "$BG" wait "$d" --within 30 > "$TMP/late.out" 2>&1 &
 W=$!; BGPIDS="$BGPIDS $W"
