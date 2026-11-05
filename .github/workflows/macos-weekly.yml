@@ -41,9 +41,6 @@ on:
     # base-watch.yml (06:47), which run daily.
     - cron: '37 4 * * 0'
   workflow_dispatch:
-  # TEMPORARY (ludics#974's PR): registers this file so it can be dispatched before it is on main.
-  push:
-    branches: [claude/w1105b-974]
 
 permissions:
   contents: read
