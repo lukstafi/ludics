@@ -1,0 +1,301 @@
+name: macos suites
+
+# Every script suite under the macOS runner's /bin/bash 3.2 (the fleet's bash), weekly and on
+# dispatch. Not per push or pull request since ludics#974, by the maintainer's decision there:
+# remote CI does not repeat coverage that local runs give, and no remote job runs past 30 minutes.
+# Until then these were skill-scripts.yml's two macOS jobs, run on every push to main and v2 at up
+# to 47 and 30 minutes, and before ludics-lite#727 on pull requests too.
+#
+# WHAT COVERS MACOS PER MERGE. The merging worker's own runs, on mac-studio under /bin/bash 3.2,
+# slot-wrapped, of every suite its change reaches, at the worker's head (issue-wave's SKILL.md,
+# *The brief*: the suites whose files it changes, the suites lib/ludics/README.md maps to each
+# module it changes, and the test-fleet-worker.sh sections the change reaches). Nothing runs the
+# full set per merge, nor at the merged tip, until local per-tip integration runs become a
+# base-gate source (ludics#964). What only this workflow covers is the full set on a clean
+# macos-latest image: image drift (ludics#953), and a suite a change reaches without its author
+# knowing, surface here, up to a week late. A PR whose change only macOS exercises dispatches this
+# workflow on its branch (`gh workflow run macos-weekly.yml --ref <branch>`) and cites the run.
+#
+# WHO READS IT. `pr-review.sh base` folds push runs only, so neither main's verdict nor the fleet
+# gate waits on this workflow or sees its reds: it is a listed workflow with no push run, and the
+# gate's interim reads this file's `on:` as pushless and releases it (lib/ludics/tests pins that
+# reading of this file). A dispatched run does put check runs on the head it ran at; every job
+# name here matches .github/ship-pr-advisory-checks' macOS line, so `checks` and `merge` read them
+# as advisory. A scheduled red opens (or comments on) one issue, the `report` job: the only reader
+# of a weekly red. Every macOS suite has its `run:` line in this file, which check-prompts.sh's
+# fixture register holds.
+#
+# THE SHAPE. skill-scripts.yml's THE CAPS hold here too: a 30-minute ceiling, a p90 target of 20,
+# and a job over the ceiling is split. The suites are spread over six runner assignments, which a
+# weekly run can afford (per push, ludics-lite#55 measured each extra macOS assignment as one more
+# draw from a heavy-tailed queue): ship-pr's suites in two jobs, the repo and fleet guards in one,
+# and the fleet launcher suite as a three-row `--shard` matrix (it was 1946s at p90 as one step).
+# Each step runs after an earlier one fails (`if: !cancelled()`) and names its suite in an
+# `::error` annotation when it fails. The figures at each job are step p90s over the old jobs'
+# 8-11 green runs on macos-26-arm64 from 2026-11-04 (ludics#974's PR), summed per job, x1.5,
+# until this workflow's own runs measure them.
+
+on:
+  schedule:
+    # Sundays, away from windows-git-bash.yml (03:11), api-contract.yml (05:23) and
+    # base-watch.yml (06:47), which run daily.
+    - cron: '37 4 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-weekly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ship-pr-1:
+    name: bash 3.2 suites, ship-pr part 1 of 2 (macos)
+    runs-on: macos-latest
+    # The base and build gates' suites, the nudge and the API contract: 923s of p90s, ~11s of
+    # setup, x1.5.
+    timeout-minutes: 24
+    steps:
+      # A shallow checkout, as the ubuntu ship-pr jobs take: these suites build their own scratch
+      # repositories. The full history and tmux belong to the fleet launcher, below. The image
+      # ships a jq of its own, but not necessarily the fleet's patch release, so the suites run
+      # the pinned one (ludics-lite#508).
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-jq
+      # The subcommands ported to Python run through scripts/py, which needs a Python >= 3.12
+      # (ludics-lite#403); the image's own python3 is not promised to be one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Every suite step below runs whether or not an earlier one failed, and a failure names
+      # its suite in the run's annotations; the job's conclusion is red if any step's is.
+      - name: ship-pr nudge
+        if: ${{ !cancelled() }}
+        run: python3 ship-pr/hooks/test-ship-pr-nudge.py || { echo '::error title=macOS suite failed::test-ship-pr-nudge.py'; exit 1; }
+      - name: pr-review fixtures, shared preamble and shadow guard
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-lib.sh || { echo '::error title=macOS suite failed::test-pr-review-lib.sh'; exit 1; }
+      - name: pr-review fixtures, the base suites' shared fixture transport
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-base-lib.sh || { echo '::error title=macOS suite failed::test-pr-review-base-lib.sh'; exit 1; }
+      - name: pr-review fixtures, base drift
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-base-drift.sh || { echo '::error title=macOS suite failed::test-pr-review-base-drift.sh'; exit 1; }
+      - name: pr-review fixtures, the base command's red report
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-base-red.sh || { echo '::error title=macOS suite failed::test-pr-review-base-red.sh'; exit 1; }
+      - name: pr-review fixtures, the paths-ignore settle
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-base-settle.sh || { echo '::error title=macOS suite failed::test-pr-review-base-settle.sh'; exit 1; }
+      - name: pr-review fixtures, what the base wait loop decides
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-base-verdict.sh || { echo '::error title=macOS suite failed::test-pr-review-base-verdict.sh'; exit 1; }
+      - name: pr-review fixtures, the named sources of a tip no push run judges
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-base-pushless.sh || { echo '::error title=macOS suite failed::test-pr-review-base-pushless.sh'; exit 1; }
+      - name: pr-review fixtures, absent vs not yet
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-checks-absent.sh || { echo '::error title=macOS suite failed::test-pr-review-checks-absent.sh'; exit 1; }
+      - name: pr-review fixtures, review rounds
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-rounds.sh || { echo '::error title=macOS suite failed::test-pr-review-rounds.sh'; exit 1; }
+      - name: pr-review fixtures, the plain retry and the run await
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-retry.sh || { echo '::error title=macOS suite failed::test-pr-review-retry.sh'; exit 1; }
+      - name: pr-review fixtures, the polling budget
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-budget.sh || { echo '::error title=macOS suite failed::test-pr-review-budget.sh'; exit 1; }
+      - name: pr-review fixtures, the live-API contract's own logic
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-api-contract.sh || { echo '::error title=macOS suite failed::test-pr-review-api-contract.sh'; exit 1; }
+
+  ship-pr-2:
+    name: bash 3.2 suites, ship-pr part 2 of 2 (macos)
+    runs-on: macos-latest
+    # The merge, status, watch and reply suites and post-merge cleanup: 883s of p90s, ~11s of
+    # setup, x1.5. The cleanup suite kills a stalled case at SHIP_PR_TEST_CASE_TIMEOUT
+    # (ludics-lite#14); this cap is the backstop behind that.
+    timeout-minutes: 23
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-jq
+      # The subcommands ported to Python run through scripts/py, which needs a Python >= 3.12
+      # (ludics-lite#403); the image's own python3 is not promised to be one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Every suite step below runs whether or not an earlier one failed, and a failure names
+      # its suite in the run's annotations; the job's conclusion is red if any step's is.
+      - name: pr-review fixtures, merge
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-merge.sh || { echo '::error title=macOS suite failed::test-pr-review-merge.sh'; exit 1; }
+      - name: pr-review fixtures, status and watch
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-status.sh || { echo '::error title=macOS suite failed::test-pr-review-status.sh'; exit 1; }
+      - name: pr-review fixtures, what ends a watch
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-watch.sh || { echo '::error title=macOS suite failed::test-pr-review-watch.sh'; exit 1; }
+      - name: pr-review fixtures, the folded reply and resolve
+        if: ${{ !cancelled() }}
+        run: ship-pr/scripts/test-pr-review-reply.sh || { echo '::error title=macOS suite failed::test-pr-review-reply.sh'; exit 1; }
+      - name: post-merge cleanup
+        if: ${{ !cancelled() }}
+        # The per-case logs go OUTSIDE the checkout, in the runner temp, as on the Ubuntu leg:
+        # that is what the upload step below reads. This is the one job here that uploads them.
+        env:
+          SHIP_PR_TEST_LOG_DIR: ${{ runner.temp }}/cleanup-logs
+        run: ship-pr/scripts/test-post-merge-cleanup.sh || { echo '::error title=macOS suite failed::test-post-merge-cleanup.sh'; exit 1; }
+      - name: Keep the cleanup suite's per-case logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cleanup-logs-macos
+          path: ${{ runner.temp }}/cleanup-logs
+          if-no-files-found: ignore
+
+  repo:
+    name: bash 3.2 suites, repo guards (macos)
+    runs-on: macos-latest
+    # Every repo and fleet suite but the fleet launcher's: 1026s of p90s (wake-lab 419s of it),
+    # ~36s of setup, x1.5.
+    timeout-minutes: 27
+    steps:
+      # The whole history, as the job these steps came from had it (ludics#974 moved them off the
+      # fleet launcher's runner unchanged).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-jq
+      # scripts/test-py.sh asserts this runner has a Python >= 3.12 for scripts/py to find.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install tmux
+        run: |
+          set -e
+          brew list tmux >/dev/null 2>&1 || brew install tmux
+          command -v tmux && command -v jq
+      # Every suite step below runs whether or not an earlier one failed, and a failure names
+      # its suite in the run's annotations; the job's conclusion is red if any step's is.
+      # Every suite step below runs whether or not an earlier one failed, and a failure names
+      # its suite in the run's annotations; the job's conclusion is red if any step's is.
+      - name: wake-lab
+        if: ${{ !cancelled() }}
+        run: scripts/test-wake-lab.sh || { echo '::error title=macOS suite failed::test-wake-lab.sh'; exit 1; }
+      - name: wake-lab linux
+        if: ${{ !cancelled() }}
+        run: scripts/test-wake-lab-linux.sh || { echo '::error title=macOS suite failed::test-wake-lab-linux.sh'; exit 1; }
+      - name: Linux bootstrap helpers
+        if: ${{ !cancelled() }}
+        run: python3 scripts/test-install-linux.py || { echo '::error title=macOS suite failed::test-install-linux.py'; exit 1; }
+      - name: fleet ssh mesh helper
+        if: ${{ !cancelled() }}
+        run: python3 scripts/test-fleet-peers.py || { echo '::error title=macOS suite failed::test-fleet-peers.py'; exit 1; }
+      - name: sync-routines
+        if: ${{ !cancelled() }}
+        run: scripts/test-sync-routines.sh || { echo '::error title=macOS suite failed::test-sync-routines.sh'; exit 1; }
+      - name: prompt checker fixtures
+        if: ${{ !cancelled() }}
+        run: scripts/py -m unittest ludics.tests.test_checkprompts_cli || { echo '::error title=macOS suite failed::test_checkprompts_cli.py'; exit 1; }
+      - name: jq shape guard fixtures
+        if: ${{ !cancelled() }}
+        run: scripts/test-check-jq-shapes.sh || { echo '::error title=macOS suite failed::test-check-jq-shapes.sh'; exit 1; }
+      - name: scratch directory guard fixtures
+        # The one platform where the rule has teeth: /var and /tmp are symlinks into /private
+        # here, so a probe that passes on Ubuntu because the two spellings coincide is judged for
+        # real on this leg.
+        if: ${{ !cancelled() }}
+        run: scripts/test-check-scratch-dirs.sh || { echo '::error title=macOS suite failed::test-check-scratch-dirs.sh'; exit 1; }
+      - name: parse guard fixtures
+        # bash 3.2: the `|| return 0` dispatch that keeps a sourced library's caller alive inside
+        # the brace group, and the offset the appended-line controls turn on, are both read by the
+        # shell the fleet actually runs.
+        if: ${{ !cancelled() }}
+        run: scripts/test-check-parse-guards.sh || { echo '::error title=macOS suite failed::test-check-parse-guards.sh'; exit 1; }
+      - name: preflight fixtures
+        # bash 3.2 is the fleet's shell and the preflight's home ground: it is run locally on
+        # these macs far more often than in CI.
+        if: ${{ !cancelled() }}
+        run: scripts/test-preflight.sh || { echo '::error title=macOS suite failed::test-preflight.sh'; exit 1; }
+      - name: base negative-control helper
+        if: ${{ !cancelled() }}
+        run: scripts/test-run-against-base.sh || { echo '::error title=macOS suite failed::test-run-against-base.sh'; exit 1; }
+      - name: Python interpreter wrapper
+        if: ${{ !cancelled() }}
+        run: scripts/test-py.sh || { echo '::error title=macOS suite failed::test-py.sh'; exit 1; }
+      - name: execution reservations
+        if: ${{ !cancelled() }}
+        run: python3 issue-wave/scripts/test-fleet-execution.py || { echo '::error title=macOS suite failed::test-fleet-execution.py'; exit 1; }
+      - name: background-run waiter
+        if: ${{ !cancelled() }}
+        run: issue-wave/scripts/test-bg-run.sh || { echo '::error title=macOS suite failed::test-bg-run.sh'; exit 1; }
+      - name: subagent cache-miss report
+        if: ${{ !cancelled() }}
+        run: python3 issue-wave/scripts/test-cache-misses.py || { echo '::error title=macOS suite failed::test-cache-misses.py'; exit 1; }
+      - name: branch waiter
+        if: ${{ !cancelled() }}
+        run: wait-and-proceed/scripts/test-wait-for.sh || { echo '::error title=macOS suite failed::test-wait-for.sh'; exit 1; }
+
+  fleet-worker:
+    name: bash 3.2 suites, fleet launcher shard ${{ strategy.job-index }} of ${{ strategy.job-total }} (macos)
+    runs-on: macos-latest
+    # The fleet launcher suite, one contiguous part of its sections per row (`--shard`, cut at
+    # FLEET_WORKER_TEST_CUTS); the row passes job-index/job-total, so a matrix that loses a row no
+    # longer matches the cut list and the suite refuses it, and a new section lands in some part.
+    # Cut at `unstick` and `execution tip-run`: the sections' macOS p90s sum to 648s, 618s and
+    # ~743s, ~36s of setup each, x1.5. The suite's default 600 s section watchdog stands (`unstick`,
+    # p90 446s here, is the slowest). fail-fast off, so one red row does not cancel the others into
+    # stopped, unjudged ones.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2]
+    timeout-minutes: 20
+    env:
+      FLEET_WORKER_TEST_CUTS: unstick|execution tip-run
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the fleet launcher suite installs and preflights the real checkout
+      - uses: ./.github/actions/setup-jq
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install tmux
+        run: |
+          set -e
+          brew list tmux >/dev/null 2>&1 || brew install tmux
+          command -v tmux && command -v jq
+      # Every suite step below runs whether or not an earlier one failed, and a failure names
+      # its suite in the run's annotations; the job's conclusion is red if any step's is.
+      - name: fleet launcher
+        if: ${{ !cancelled() }}
+        run: issue-wave/scripts/test-fleet-worker.sh --shard "${{ strategy.job-index }}/${{ strategy.job-total }}" || { echo '::error title=macOS suite failed::test-fleet-worker.sh'; exit 1; }
+
+  report:
+    name: report a red weekly run
+    # A scheduled run nobody watches fails silently, and `base` cannot see this one. One open
+    # issue, not one per week: a later red comments on it. No checkout, since this job's token can
+    # write. A job that hit its cap concludes cancelled, and that is a red here too.
+    needs: [ship-pr-1, ship-pr-2, repo, fleet-worker]
+    if: ${{ !cancelled() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or extend the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          title="macos suites: the weekly run of the bash 3.2 suites is red"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "Still red on $(date -u +%Y-%m-%d): $run_url"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --body "The scheduled \`macos-weekly.yml\` run on main is red at $GITHUB_SHA: $run_url. Its annotations name each failed suite."
+          fi
