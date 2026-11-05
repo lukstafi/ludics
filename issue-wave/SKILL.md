@@ -718,16 +718,20 @@ requirements for every transport with transport-specific setup and identity, and
   worker's shell sits inside it (removing your own cwd is the "Unable to read current working
   directory" failure ship-pr warns about), and the coordinator may still resume the session
   there for the hand-back. The coordinator removes worktrees at close-out.
-- **In a ludics wave, workers merge with the two macOS jobs advisory** (the maintainer's
-  decision), and since ludics-lite#727 those jobs do not run on PR heads at all. Before
-  merging, the worker runs every suite it touched under `/bin/bash` (3.2, the macOS jobs'
-  shell), slot-wrapped, and merges with the plain
-  `pr-review.sh merge lukstafi/ludics-lite#<pr> --wait`, blocked on as any merge wait. The
-  decision lives in the repository, in `.github/ship-pr-advisory-checks` on `main`, which
-  `checks` and `merge` read (ludics-lite#530), so the brief sets no `SHIP_PR_ADVISORY_CHECKS`
-  and the command keeps the shape the maintainer's standing merge rule clears. The macOS jobs
-  run on the merged tip, as the integration loop's to read, and on a dispatch
-  (`gh workflow run skill-scripts.yml --ref <branch>`) for a change only macOS exercises.
+- **In a ludics wave, the worker's own `/bin/bash` runs are the macOS coverage per merge.** The
+  macOS suites run weekly and on dispatch in `.github/workflows/macos-weekly.yml`, not on PR
+  heads or pushes (ludics#974). Before merging, the worker runs, under `/bin/bash` (3.2, the
+  macOS runner's shell) and slot-wrapped, every suite its change reaches: the suites whose
+  files it changes, the suites `lib/ludics/README.md` maps to each module it changes, and the
+  `test-fleet-worker.sh` sections the change reaches. It then merges with the plain
+  `pr-review.sh merge lukstafi/ludics#<pr> --wait`, blocked on as any merge wait. Those macOS
+  jobs stay advisory where a dispatch puts them on a head: `.github/ship-pr-advisory-checks` on
+  `main`, which `checks` and `merge` read (ludics-lite#530), names them, so the brief sets no
+  `SHIP_PR_ADVISORY_CHECKS` and the command keeps the shape the maintainer's standing merge
+  rule clears. A change only macOS exercises dispatches
+  `gh workflow run macos-weekly.yml --ref <branch>` and cites the run. Nothing runs the full
+  macOS set at the merged tip until #964: a weekly red opens an issue (`base` reads push runs
+  only), and the integration loop owns it, bisecting on mac-studio as below.
 - **The worker's verification ends at its own merge** (2026-08-30: seven workers chased
   master's moving tip for 100-120 minutes each): after `merge` confirms `merged`, the worker
   does NOT watch master's subsequent CI - "the latest tip's workflows" is a moving target under

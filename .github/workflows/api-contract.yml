@@ -7,7 +7,7 @@ name: api contract
 # base and mergeability, and the reviewer feeds. It runs daily, because a field that moves does so
 # on GitHub's clock, not on a push; on demand; and on a pull request that changes the contract
 # itself. Reads only, with the default token. It is its own workflow file rather than a job in
-# skill-scripts.yml so that the schedule does not also run the whole macOS matrix every day.
+# skill-scripts.yml so that the schedule does not also run every suite every day.
 
 on:
   schedule:
