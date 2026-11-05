@@ -48,8 +48,10 @@ name: skill scripts
 # green its steps were, and costs a re-run (ludics-lite#474). So every cap is at least
 # max(5, ceil(1.5 x p90)) minutes, the p90 taken over the job's successful runs on main and on
 # pull requests (for a job formed by moving steps, the sum of those steps); a cap above that
-# floor gives its own reason at the job. The runs measured are listed in ludics-lite#474's PR.
-# Re-measure with `gh run view <id> --json jobs` rather than trusting a figure written here.
+# floor gives its own reason at the job. The runs measured are listed in ludics-lite#474's PR;
+# the Ubuntu caps were re-derived on the ubuntu-26.04 image in ludics#955's PR, a job's p90 over
+# its green runs on that image alone (the image is the job log's `Image:` line). Re-measure with
+# `gh run view <id> --json jobs` rather than trusting a figure written here.
 
 on:
   pull_request:
@@ -108,7 +110,9 @@ jobs:
     # scripts/preflight.sh runs the others as its GUARDS (`preflight.sh guards`; the Markdown-
     # triggered ones by default, all under `--guards all`, ludics-lite#553), and
     # scripts/test-preflight.sh holds its guard table and this job's steps to one set: a suite
-    # added here and not there fails it.
+    # added here and not there fails it. The cap is THE CAPS' floor, and on ubuntu-26.04 the job
+    # is at it (ludics#955): 132-228s over its 28 green runs, p90 200s, x1.5 = 300s exactly. One
+    # more suite here, or a slower image, re-derives it.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -153,6 +157,7 @@ jobs:
 
   lint:
     name: syntax, shellcheck, mode bits, parse guard
+    # THE CAPS' floor: 63-123s over its 28 green runs on ubuntu-26.04, p90 110s (ludics#955).
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -240,7 +245,8 @@ jobs:
     name: classify the diff
     # Pull requests only: a push to main runs every suite regardless (the consumers' `if:`
     # below treats any other event as "scripts changed"), so main's verdict is always the full
-    # one and the runtimes measured there are the whole workflow's.
+    # one and the runtimes measured there are the whole workflow's. THE CAPS' floor: 3-15s over
+    # its 17 green runs on ubuntu-26.04 (ludics#955).
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -287,8 +293,11 @@ jobs:
     # crossed 10 minutes green step by step (37390277847 attempt 1), and the budget suite came on
     # top (~60s): p90 ~640s, x1.5. 24 since ludics#862: re-measured over the 13 green runs among
     # the last 40 of 2026-11-03 (699-950s; 41663637720 950s, 41670294482 949s), p90 ~949s, x1.5;
-    # a run at the old cap's edge (987s) timed out green steps.
-    timeout-minutes: 24
+    # a run at the old cap's edge (987s) timed out green steps. 29 since ludics#955, on the
+    # ubuntu-26.04 image (2026-11-04 from ~10:20Z): its 28 green runs took 839-1153s (41894599794
+    # 1153s, 41856232965 1142s), p90 1126s, x1.5; ubuntu-24.04's last 54 had already reached p90
+    # 1061s, so the suites' growth, not the image alone, is most of it.
+    timeout-minutes: 29
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-jq
@@ -340,8 +349,11 @@ jobs:
     # The CRLF jq repeat is its own job below since ludics-lite#403: with it, the job crossed
     # #474's 13 minutes green on v2 (run 37404230827: 637s + 166s). The hostile pass alone took
     # 491-663s on v2 (37390277847 both attempts, 37404230827), the budget suite on top (~80s):
-    # p90 ~745s, x1.5.
-    timeout-minutes: 19
+    # p90 ~745s, x1.5. 29 since ludics#955, on ubuntu-26.04: its 27 green runs took 853-1133s
+    # (41820201891 1133s, 41822543428 1132s), p90 1128s, x1.5, and 41831895619 hit the old 19
+    # (1140s) green step by step. No one case: the growth is the second step, which repeats every
+    # pr-review suite and grows with them (p90 1063s on ubuntu-24.04, 1122s on 26.04).
+    timeout-minutes: 29
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-jq
@@ -360,7 +372,9 @@ jobs:
     # (runs 37390277847 attempt 2, 37404230827), x1.5, at the 5-minute floor. 8 since ludics#862:
     # re-measured over the 15 green runs among the last 40 of 2026-11-03 (236-287s; 41662625375
     # 287s, 41668635945 282s), p90 ~282s, x1.5; two attempts at 315s and 317s timed out green steps.
-    timeout-minutes: 8
+    # 10 since ludics#955, on ubuntu-26.04: 336-418s over its 28 green runs (41873261135 both
+    # attempts 418s), p90 394s, x1.5.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-jq
@@ -382,7 +396,8 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
     # One stalled case once held a job for the six-hour default (ludics-lite#14). The suite now
-    # kills a case at SHIP_PR_TEST_CASE_TIMEOUT and reports it; this is the backstop.
+    # kills a case at SHIP_PR_TEST_CASE_TIMEOUT and reports it; this is the backstop, above THE
+    # CAPS' 5-minute floor on purpose: 50-84s over its 28 green runs on ubuntu-26.04 (ludics#955).
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -408,7 +423,8 @@ jobs:
     # 12, not 5: the suite grew from 211 assertions to 259 with ludics-lite#192, and a good part
     # of the new time is deliberate -- a teardown grace, capped probes that have to be allowed to
     # fire, and a release slowed on purpose so a competing hold can race it. At 5 it was cancelled
-    # mid-run, which reads as a failing suite and is not one.
+    # mid-run, which reads as a failing suite and is not one. Still 12 on ubuntu-26.04
+    # (ludics#955): 430-446s over its 28 green runs, p90 444s, x1.5.
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -429,7 +445,9 @@ jobs:
     runs-on: ubuntu-latest
     # Re-measured 2026-10-18 (ludics-lite#640's follow-up): 965-1184s over the job's 13 green runs
     # that day (jobs 117711250363 to 117729143780; it had crept to 19.7 of the old 20), x1.5.
-    timeout-minutes: 30
+    # 40 since ludics#955, on ubuntu-26.04: 1288-1584s over its 15 green runs (41898756817 1584s,
+    # 41876590997 1583s), p90 1583s, x1.5; the last 55 on ubuntu-24.04 were already at p90 1478s.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -448,9 +466,10 @@ jobs:
         # The suite's per-section watchdog (ludics-lite#640), tighter than its 600 s default so a
         # hang in its last section still fails by name inside this job's cap: the slowest section
         # here, `unstick`, took 207-240 s over ten runs (x1.5); the suite starts ~85 s in and takes
-        # 853-1042 s.
+        # 853-1042 s. 470 since ludics#955: on ubuntu-26.04 `unstick` took 253-310 s over the 15
+        # green runs, p90 308 s, x1.5, against the old 360 (the next, `execution slot`, p90 264 s).
         env:
-          FLEET_WORKER_TEST_SECTION_TIMEOUT: 360
+          FLEET_WORKER_TEST_SECTION_TIMEOUT: 470
         run: issue-wave/scripts/test-fleet-worker.sh
       - name: Exercise the background-run waiter
         run: issue-wave/scripts/test-bg-run.sh
@@ -473,7 +492,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -491,8 +510,11 @@ jobs:
         # job's 29 latest successful runs, the job's own p90 275 s -- so the old 240 s watchdog
         # and 5-minute cap had no headroom left, and a PR adding 12 s of tests went red on it.
         # Hence the cap, ceil(1.5 x 275 s) = 7 min by THE CAPS, and 360 s for the watchdog.
+        # Re-measured on ubuntu-26.04 (ludics#955): over the job's 27 green runs this step's p90
+        # was 254 s (max 260 s) and the job's 295 s (max 299 s), so the cap is ceil(1.5 x 295 s)
+        # = 8 min and the watchdog 390 s (1.5 x 254 s), ~45 s of earlier steps still inside it.
         env:
-          LUDICS_TEST_WATCHDOG: '360'
+          LUDICS_TEST_WATCHDOG: '390'
         run: scripts/py -m unittest discover -s lib -t lib -p 'test_*.py' -v
 
   # ---- every script suite on macOS, two jobs, two runner assignments -----------------------
