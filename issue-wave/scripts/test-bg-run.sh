@@ -151,7 +151,7 @@ wait "$S"; src=$?
   || ko "the background start exited $src, want 7"
 [ "$(cat "$d/log")" = hello ] && ok "...and the command's output is in log" \
   || ko "log holds: $(cat "$d/log")"
-[ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid rc " ] && ok "...and the directory holds new's .made, cpid, log, pid, rc and nothing else" \
+[ "$(ls -A "$d" | tr '\n' ' ')" = ".made cpid log pid rc " ] && ok "...and the directory holds new's .made, cpid, log, pid, rc and nothing else" \
   || ko "the directory holds: $(ls -A "$d" | tr '\n' ' ')"
 fresh finished0
 fin0=$d
@@ -177,7 +177,7 @@ esac
 p="$TMP/runs"
 expect "new on an absent parent creates it and prints run-1" 0 "$p/run-1" -- "$BG" new "$p"
 [ "$out" = "$p/run-1" ] && ok "...and prints that path and nothing else" || ko "new printed: $out"
-[ -d "$p/run-1" ] && [ "$(ls -A "$p/run-1" | tr '\n' ' ')" = '.new ' ] \
+[ -d "$p/run-1" ] && [ "$(ls -A "$p/run-1" | tr '\n' ' ')" = '.made .new ' ] \
   && ok "...a directory holding only new's claim and token" \
   || ko "run-1 is not a directory holding only .made and .new: $(ls -A "$p/run-1" 2>&1)"
 expect "a second new prints run-2" 0 "$p/run-2" -- "$BG" new "$p/"
@@ -242,10 +242,10 @@ done
 [ "$ra $rb" = "0 0" ] && [ "$(cat "$par.a" "$par.b" | tr '\n' ' ')" = "$par/run-1 $par/run-2 " ] \
   && ok "...also under a mkdir that reports an existing directory made, as uutils's can (#921)" \
   || ko "news under the racy mkdir exited $ra $rb and printed: $(cat "$par.a" "$par.b" | tr '\n' ' ')"
-sed -e 's|if mkdir -- "$base/run-$n"|if mkdir -p -- "$base/run-$n"|' \
+sed -e 's|if mkdir -- "$d"|if mkdir -p -- "$d"|' -e 's|if ( set -C; : > "$d/.made" ) 2>/dev/null|if : > "$d/.made"|' \
   "$BG" > "$TMP/unexclusive.sh"
 chmod +x "$TMP/unexclusive.sh"
-if [ "$(grep -c -e 'if mkdir -p -- "$base/run-$n"' "$TMP/unexclusive.sh")" != 1 ]; then
+if [ "$(grep -c -e 'if mkdir -p -- "$d"' -e 'if : > "$d/.made"' "$TMP/unexclusive.sh")" != 2 ]; then
   ko "control: the patch did not find both halves of the claim to replace in $BG"
 else
   twin_news "$TMP/unexclusive.sh" "$TMP/twin-new-control"
@@ -497,7 +497,7 @@ expect "a run to reuse finishes (rc=3)" 0 'rc=3' -- "$BG" wait "$d" --within 20
 expect "a second start on a finished run's directory is refused" 2 'already claimed' -- \
   "$BG" start "$d" -- sh -c 'touch "$0"; exit 9' "$TMP/reused.ran"
 [ ! -e "$TMP/reused.ran" ] && ok "...and runs nothing" || ko "the refused start ran its command"
-[ "$(cat "$d/rc")" = 3 ] && [ "$(cat "$d/log")" = first ] && [ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid rc " ] \
+[ "$(cat "$d/rc")" = 3 ] && [ "$(cat "$d/log")" = first ] && [ "$(ls -A "$d" | tr '\n' ' ')" = ".made cpid log pid rc " ] \
   && ok "...and leaves the earlier run's files as they were, adding none" \
   || ko "the earlier run's directory changed: $(ls -A "$d" | tr '\n' ' ')"
 expect "...so a wait there reads the earlier run's rc=3: the accepted caller error" 0 'rc=3' -- "$BG" wait "$d" --within 0
@@ -682,7 +682,7 @@ expect "a wait on a spawned run that is still going reads RUNNING" 3 RUNNING -- 
 expect "...and its status once it finishes (rc=5)" 0 'rc=5' -- "$BG" wait "$d" --within 20
 [ "$(cat "$d/log")" = "$(printf '%s\n' 'a b' '$HOME')" ] && ok "...with its arguments passed through intact, in its log" \
   || ko "the spawned run logged: $(cat "$d/log")"
-[ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid rc " ] && ok "...in the directory layout start writes, and nothing else" \
+[ "$(ls -A "$d" | tr '\n' ' ')" = ".made cpid log pid rc " ] && ok "...in the directory layout start writes, and nothing else" \
   || ko "the spawned directory holds: $(ls -A "$d" | tr '\n' ' ')"
 expect "a second spawn takes the next directory" 0 "$p/run-2" -- "$BG" spawn "$p" -- true
 expect "...and reads its own status" 0 'rc=0' -- "$BG" wait "$p/run-2" --within 20
@@ -760,7 +760,7 @@ done
   || ko "the grandchild (${gc:-never recorded}) outlived the stop"
 expect "...and a wait there reads STOPPED (exit 7), not DIED (ludics-lite#638)" 7 \
   'STOPPED by bg-run.sh stop before the command returned' -- "$BG" wait "$d" --within 5
-[ "$(ls -A "$d" | tr '\n' ' ')" = "cpid log pid stopped " ] && ok "...its marker the one file the stop added" \
+[ "$(ls -A "$d" | tr '\n' ' ')" = ".made cpid log pid stopped " ] && ok "...its marker the one file the stop added" \
   || ko "the stopped directory holds: $(ls -A "$d" | tr '\n' ' ')"
 expect "a second stop there signals nothing (NOT RUNNING, exit 1)" 1 'NOT RUNNING: STOPPED' -- "$BG" stop "$d"
 # A stop ended inside its grace (ludics-lite#638): the command leaves a TERM-ignoring grandchild

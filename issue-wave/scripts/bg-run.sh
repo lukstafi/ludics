@@ -101,10 +101,15 @@
 # the command starts with what it inherited, and a `bg-run:` line in the log says so.
 #
 # `new` allocates the run directory, so no caller has to keep a fresh name by hand: it creates
-# <parent> if need be (absolute), then <parent>/run-<N> with one exclusive `mkdir`, N one past the
-# highest run-<N> already there, leaves the token `.new` in it, and prints that path and nothing
-# else. A `mkdir` lost to a racing `new` moves on to the next N, so every `new` gets a directory of
-# its own, created by that call. A directory from `new` has never held a run, so a `wait` on it,
+# <parent> if need be (absolute), then <parent>/run-<N>, N one past the highest run-<N> already
+# there, claimed by an exclusive creation of the marker `.made` in it, leaves the token `.new` in
+# it, and prints that path and nothing else. A claim lost to a racing `new` moves on to the next N,
+# so every `new` gets a directory of its own, claimed by that call. The claim is not the `mkdir`:
+# uutils's `mkdir` (Ubuntu's coreutils since 25.10) can report success to both of two racers for
+# one name (#921), so the `mkdir` only makes the directory, and the claim is bash's noclobber
+# creation of `.made`, an open with O_EXCL, which exactly one caller wins. `.made` stays for the
+# directory's life: `start` takes `.new` away, and a racer whose `mkdir` reported success late must
+# still find the name claimed. A directory from `new` has never held a run, so a `wait` on it,
 # even one issued before `start`, can only read this run or STARTING.
 #
 # <dir> is absolute and FRESH for every run, and `new` is the only way to get one (ludics-lite#425):
@@ -194,7 +199,8 @@
 # writes (complete, by rename, before it signals), is what turns a run with no process left into
 # STOPPED rather than DIED; its lines name the tree's groups, `process group <g>` (the wrapper's)
 # first, then `process group <h> <its leader's start time, or ->` for each other one, which `wait`
-# and a second `stop` read back.
+# and a second `stop` read back. `.made` is `new`'s claim (above), left for the directory's life;
+# nothing but `new` reads it.
 #
 # THE START TOKEN (ludics#786), the start time a pid file and the marker record and every identity
 # check compares. On Linux it is field 22 of /proc/<pid>/stat, the kernel's own start tick since
@@ -307,19 +313,26 @@ cmd_new() {
     : > "$BG_RUN_NEW_GATE.$$"
     while [ ! -e "$BG_RUN_NEW_GATE" ]; do [ -n "${BG_RUN_NEW_GATE_SPIN:-}" ] || sleep 0.1; done
   fi
-  # `mkdir` without -p fails when the name exists, so exactly one caller creates each run-<N>. A
-  # failure with the name still absent is not a race lost but a parent that refuses the write:
-  # that is an error, not a reason to try the next N. The bound only stops a pathological loop.
+  # The claim (header): a `mkdir` that fails with the name there is a race lost, and so is one that
+  # reports success where `.made` turns out to exist already. A `mkdir` failure with the name still
+  # absent is not a race lost but a parent that refuses the write, and a `.made` that cannot be
+  # created in a directory this call just made, with none there, is a write refused too: errors,
+  # not reasons to try the next N. The bound only stops a pathological loop.
   n=$((top + 1)); tries=0
   while [ "$tries" -lt 1000 ]; do
-    if mkdir -- "$base/run-$n" 2>/dev/null; then
-      # The token `start` requires (header): this directory is new's, and unclaimed.
-      : > "$base/run-$n/.new" || { say "cannot write in $(printf '%q' "$base/run-$n")"; exit 2; }
-      printf '%s\n' "$base/run-$n"
-      exit 0
+    d=$base/run-$n
+    if mkdir -- "$d" 2>/dev/null; then
+      if ( set -C; : > "$d/.made" ) 2>/dev/null; then
+        # The token `start` requires (header): this directory is new's, and unclaimed.
+        : > "$d/.new" || { say "cannot write in $(printf '%q' "$d")"; exit 2; }
+        printf '%s\n' "$d"
+        exit 0
+      fi
+      [ -e "$d/.made" ] || [ -L "$d/.made" ] || { say "cannot write in $(printf '%q' "$d")"; exit 2; }
+    else
+      [ -e "$d" ] || [ -L "$d" ] \
+        || { say "cannot create a run directory in $(printf '%q' "$parent")"; exit 2; }
     fi
-    [ -e "$base/run-$n" ] || [ -L "$base/run-$n" ] \
-      || { say "cannot create a run directory in $(printf '%q' "$parent")"; exit 2; }
     n=$((n + 1)); tries=$((tries + 1))
   done
   say "no free run directory in $(printf '%q' "$parent") after $tries tries"
