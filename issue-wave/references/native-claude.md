@@ -27,10 +27,18 @@ A native worker has no tool that holds its turn on a background task. `TaskOutpu
 from its runtime (2026-09-23: three workers, `ToolSearch select:TaskOutput` matched nothing), so
 name it only where the runtime lists it. `Monitor` and background-completion notifications are
 not waits either: they arrive after the turn has ended, and a worker that yields on one may not be
-woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
+woken. What holds a turn is a foreground Bash call, and only until the subagent cap: Claude Code
+moves a native worker's foreground call to the background once it has run for the server-side
+flag `tengu_maple_ferry` (180 s on 2026-11-05, Claude Code 2.1.317), whatever `timeout` the call
+asked for, and a moved call holds nothing (ludics#972: three of wave-20261105's four workers hit
+it). It is a feature flag, not a setting: nothing local sets it, and
+`CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS` is the main session's, not a subagent's. Its current
+value is cached in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` where that is set):
+`grep -o '"tengu_maple_ferry": *[0-9]*' ~/.claude.json`, in ms. A main session (a coordinator,
+a CLI worker) has no such cap, only the tool's 600 s maximum. So, in a native worker:
 
-- a project-runner batch blocks with `tools/test-run.sh wait last --timeout 540`, re-issued
-  on exit 124 until the run's own status comes back;
+- a project-runner batch blocks with `tools/test-run.sh wait last --timeout 170` (the cap less
+  10 s), re-issued on exit 124 until the run's own status comes back;
 - anything that can outlast the cap, ship-pr's `pr-review.sh watch` and `merge --wait` included
   (never run in the foreground: a live 👀 can stretch a watch to its 20-minute grace), runs under
   [`scripts/bg-run.sh`](../scripts/bg-run.sh) in two calls. `spawn` takes one absolute parent
@@ -50,11 +58,14 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   ~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>
   ```
 
-  `wait` blocks for its whole bound, `--within`, default 540 s so it ends under the 600 s cap,
-  unless the run settles first, and prints one line led by its verdict; its exit code says the
-  same. Give the Bash call `timeout: 600000`: the tool's default of 120 s cuts the wait short.
-  One `wait` per Bash call: each may take its whole 540 s, so two in one call (`wait <a>; wait
-  <b>`, or chained with `&&`) can pass the 600 s cap, which cuts the call (ludics-lite#816).
+  `wait` blocks for its whole bound, `--within`, unless the run settles first, and prints one
+  line led by its verdict; its exit code says the same. Leave `--within` to its default, which
+  `wait` reads off that cached flag: the cap less 10 s (170 s under a 180 s cap), 540 s (under
+  the 600 s maximum) when the flag is 0, and 170 s when it cannot be read (the script's header,
+  THE SUBAGENT CAP); the line `RUNNING after <e> s of --within <w>` names the bound it used. Give
+  the Bash call `timeout: 600000`: the tool's default of 120 s would cut a 540 s wait short. One
+  `wait` per Bash call: two in one call (`wait <a>; wait <b>`, or chained with `&&`) can pass the
+  cap, which moves the call (ludics-lite#816).
   While it blocks it writes a `bg-run: still waiting after <e> s ...` line to stderr every 120 s.
   `rc=<n>` (exit 0): the command finished with status `<n>`, and its output is `<dir>/log`. The status is a file of its own, so a review body quoting `rc=` cannot
   end the wait. A wait whose first look finds the run already finished prints `rc=<n> (finished
@@ -93,7 +104,7 @@ woken. What holds a turn is a foreground Bash call, capped at 600 s. So:
   script's header is the full contract, the run directory's layout included, and `test-bg-run.sh`
   beside it pins the races each verdict closes (ludics-lite#357, #388).
 
-**The wait keeps the cache only under a 1-hour subagent TTL.** A subagent's prompt cache lives 5
+**A wait past 300 s keeps the cache only under a 1-hour subagent TTL.** A subagent's prompt cache lives 5
 minutes from its last request (a main session's an hour) unless the coordinator's host sets
 `"subagentPromptCacheTtl": "1h"` in `~/.claude/settings.json` (or exports
 `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`; Claude Code 2.1.242 and later). Without it every wait
@@ -101,14 +112,15 @@ that returns past ~300 s makes the worker's next turn rewrite its whole context:
 2026-10-09..17, 1147 worker turns wrote 299M tokens that way, 95% of them after a `bg-run.sh
 wait`, none after a gap under 300 s. With it that turn re-reads the cache at a tenth of the input
 price, and the price is a cache write at twice the input price instead of 1.25 times, which those
-misses dwarf. [`scripts/cache-misses.py`](../scripts/cache-misses.py) counts such turns (SKILL.md,
-*Close out*).
+misses dwarf. Under a 180 s subagent cap the default bound is 170 s, inside the 5 minutes, so the
+TTL decides only for the other gaps and once the cap is lifted (a 540 s bound).
+[`scripts/cache-misses.py`](../scripts/cache-misses.py) counts such turns (SKILL.md, *Close out*).
 
 ## Idle workers
 
 A worker's cache lives one TTL from its last request, and every request renews it. A worker
-blocked inside its turn makes a request at least every 540 s (`bg-run.sh wait`), so it never
-misses; a worker whose turn has ended is on the clock from its last reply until the coordinator's
+blocked inside its turn makes a request at least once per `wait` bound (170 s under the subagent
+cap), so it never misses; a worker whose turn has ended is on the clock from its last reply until the coordinator's
 message. Claude Code 2.1.309 does not let that clock run out on a large context: about 55 minutes
 into an idle spell, while the 1-hour cache is still warm, it writes a compaction summary in the
 background, and the next turn swaps it in in milliseconds (`compact_boundary` with `"trigger":

@@ -612,8 +612,8 @@ requirements for every transport with transport-specific setup and identity, and
   box](references/executions.md#the-gpu-home-box), name that request id too, the far-side
   checkout that is the worker's to prepare, and the batch's form there as that section gives it
   (over ssh, the checkout moved to the pushed SHA under test, the runner under `execution slot
-  --wait-window` on that box), concluded at hand-back with the agent-host one. For a Claude batch that can outlast the 600 s tool cap, a
-  window's wait included, use `execution slot --bg <parent> --wait-window -- <batch>`, which
+  --wait-window` on that box), concluded at hand-back with the agent-host one. For a Claude batch that can outlast the tool cap (a
+  native worker's is the ~180 s subagent cap), a window's wait included, use `execution slot --bg <parent> --wait-window -- <batch>`, which
   prints a run directory to block on with
   `bg-run.sh wait` ([Blocking on a run](references/native-claude.md#blocking-on-a-run)). For
   local native Codex with managed exec sessions, use `bg-run.sh new <parent>`, then foreground
