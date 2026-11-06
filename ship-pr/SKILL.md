@@ -258,7 +258,8 @@ no merge base, no commit past it, or an uncommitted change to a tracked file. It
 so fetch first. Exit 0 means a verdict was written; codex's own failure is propagated, and 1 means
 it ended without a verdict. Read `verdict.md`, not the transcript, which is the whole agent run;
 open `run.log` only on a failure. It runs for minutes, so give it a long timeout or a background
-run. Fix the findings you agree with and commit, then run the gates above on that commit — they
+run (a native issue-wave worker: `bg-run.sh spawn`, since no timeout outlasts its cap, as for
+`watch` below). Fix the findings you agree with and commit, then run the gates above on that commit — they
 gate the head you push, so they come after the local review, not before it. Name each finding you
 dismiss, with the reason, in the PR body so the reviewer's first round does not raise it again. Do
 not re-run it to a clean pass, and do not run it on later rounds: it gates nothing, the reviewer's

@@ -37,21 +37,29 @@ value is cached in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` where tha
 `grep -o '"tengu_maple_ferry": *[0-9]*' ~/.claude.json`, in ms. A main session (a coordinator,
 a CLI worker) has no such cap, only the tool's 600 s maximum. So, in a native worker:
 
-- a project-runner batch blocks with `tools/test-run.sh wait last --timeout 170` (the cap less
-  10 s), re-issued on exit 124 until the run's own status comes back;
-- anything that can outlast the cap, ship-pr's `pr-review.sh watch` and `merge --wait` included
-  (never run in the foreground: a live 👀 can stretch a watch to its 20-minute grace), runs under
-  [`scripts/bg-run.sh`](../scripts/bg-run.sh) in two calls. `spawn` takes one absolute parent
+- a project runner's own wait is not how a batch blocks: its batch is a slot-held batch like any
+  other, and `tools/test-run.sh wait last --timeout 170` (the cap less 10 s, re-issued on exit
+  124) is only for a run under no `--bg`, one the runner's own `start` detached or a foreground
+  call the cap already moved;
+- every slot-held batch, with no "can it outlast the cap?" judgment, since the cap fits almost
+  none (ludics#980: a unit run plus pyright, moved at 180 s, ludics#969; any project-runner run;
+  any batch that sits through a `--wait-window`), and everything else that can outlast the cap
+  runs under [`scripts/bg-run.sh`](../scripts/bg-run.sh) in two calls. That is ship-pr's
+  `pr-review.sh watch` (a live 👀 can stretch it to its 20-minute grace), `merge` and `merge-build`
+  (a merge build holds a slot of its own, with or without `--wait`) and `local-review`, and every
+  `execution leg` and `execution hold`; none of them runs in the foreground. `spawn` takes one absolute parent
   for all your runs (under the scratchpad with the issue prefix), allocates a fresh
   `<parent>/run-<N>` no run has used, starts the command there detached, and prints that `<dir>`;
   a slot-held batch is `fleet-worker.sh execution slot --bg <parent>`, which does the same around
-  the slot (inside an enclosing slot too). Spell the printed `<dir>` out in the wait, since a Bash
+  the slot (inside an enclosing slot too), the one form
+  ([executions.md](executions.md#exclusivity-and-the-run-time-slots), which also says what a CLI
+  or Codex worker does instead). Spell the printed `<dir>` out in the wait, since a Bash
   call's variables do not reach the next one:
 
   ```bash
   # foreground; each prints <dir> at once
   ~/.claude/skills/issue-wave/scripts/bg-run.sh spawn <parent> -- <cmd> [arg...]
-  ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot --bg <parent> -- <batch>
+  ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot --bg <parent> --wait 1800 --wait-window -- <batch>
   # foreground, with Bash timeout: 600000, re-issued until it prints rc=
   ~/.claude/skills/issue-wave/scripts/bg-run.sh wait <dir>
   # foreground; ends the run's whole tree
@@ -151,12 +159,13 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    form](executions.md#standing-iteration-reservation). Being standing, it consumes no
    correctness slot, so a box holds as many as it has workers and a worker never waits on a
    sibling's brief-reading to start. The brief tells the worker to wrap each batch in the
-   run-time lock instead - `fleet-worker.sh execution slot -- <batch>`, which takes one of the
+   run-time lock instead - `fleet-worker.sh execution slot --bg <parent> --wait 1800
+   --wait-window -- <batch>`, [the one form](#blocking-on-a-run), which takes one of the
    box's slots for exactly as long as the batch runs (six on mac-studio, four on rog-nv-linux
    with two GPU tokens that a batch declared `--cpu` does not take, four on minix-amd-linux,
    three on tuf-amd-linux, one on a box the spec does not name) and
    refuses while a measurement is outstanding there; a measurement still needs the box to itself through the registry.
-   The brief's wrapper adds `--wait-window`, which waits out a coordinator's *measurement
+   Its `--wait-window` waits out a coordinator's *measurement
    window* on the box instead of refusing (SKILL.md, *The brief*, execution handoff).
 2. **Request, for everything else.** A measurement, a one-off cross-box leg, a full suite: the worker
    ends its turn with its final message carrying the block, one per request and each naming one
@@ -199,19 +208,21 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    command, revision, checkout and log to use. For a `head-of:` request the revision is the
    record's `resolved_revision` (the `EXECUTION RESOLVED` line), never the branch. On a refusal, hold the worker idle
    ([Idle workers](#idle-workers)) or answer `EXECUTION_REFUSED <reason>` so it keeps implementing.
-4. **Result.** The resumed worker runs only the assigned command. Correctness uses
-   `fleet-worker.sh execution slot -- <command>`, which is what bounds the box's
-   concurrent load. An exclusively reserved measurement runs the bounded project runner directly,
+4. **Result.** The resumed worker runs only the assigned command, in the form of [Blocking on a
+   run](#blocking-on-a-run). Correctness uses
+   `fleet-worker.sh execution slot --bg <parent> --wait 1800 --wait-window -- <command>`, which is what bounds the box's
+   concurrent load, and an assigned leg goes under `bg-run.sh spawn <parent> --`. An exclusively reserved measurement runs the bounded project runner directly,
    without `execution slot`, as [executions.md](executions.md#reserve-launch-observe-conclude)
-   specifies: under `fleet-worker.sh execution hold --request <request_id> -- <command>`, the
+   specifies: under `bg-run.sh spawn <parent> -- fleet-worker.sh execution hold --request <request_id> -- <command>`, the
    OS-level sleep guard alone, inside which a runner's own `execution slot` runs instead of
    being refused. The hold first waits for any batch still running on the box (`waits for the
-   batch in slot <n> to end`) and keeps the box's slots until the command's tree ends. The worker blocks on either kind to completion within the turn ([Blocking on a
-   run](#blocking-on-a-run)), and ends that turn with one fixed line,
-   so the coordinator concludes without grepping run ids out of prose:
+   batch in slot <n> to end`) and keeps the box's slots until the command's tree ends. The worker blocks on either kind to completion within the turn with `bg-run.sh wait <dir>`, and ends that turn with one fixed line,
+   so the coordinator concludes without grepping run ids out of prose. Its `run` is the project
+   runner's record directory where the runner keeps one, read as soon as `rc=` prints (OCANNL:
+   `tools/test-run.sh paths run last`), and otherwise that `<dir>`:
 
    ```
-   EXECUTION_RESULT {"request_id":"<id>","run":"<absolute test-run.sh run directory>","exit":0,"observed_sha":"<full 40-hex SHA that ran (git rev-parse HEAD)>"}
+   EXECUTION_RESULT {"request_id":"<id>","run":"<absolute run directory>","exit":0,"observed_sha":"<full 40-hex SHA that ran (git rev-parse HEAD)>"}
    ```
 
    The coordinator runs `fleet-worker.sh execution conclude --from-run <run> --request <id>
