@@ -107,7 +107,7 @@ verdict() {
 kept() { verdict KEPT "$1"; }
 [ -e "$wt" ] || [ -L "$wt" ] || verdict GONE "no such path on $BOX"
 [ -d "$wt" ] && [ ! -L "$wt" ] || kept "not a directory"
-found=$(common "$wt"); [ -n "$found" ] || kept "not a git checkout"
+found=$(common "$wt"); [ -n "$found" ] || kept "not the top of a worktree"
 top=$(cd "$wt" && git rev-parse --show-toplevel 2>/dev/null)
 [ -n "$top" ] && [ "$(cd "$top" && pwd -P)" = "$(cd "$wt" && pwd -P)" ] || kept "not the top of a worktree"
 [ "$(gitdir "$wt")" != "$found" ] || kept "the repository's main checkout; only a linked worktree is removed"
