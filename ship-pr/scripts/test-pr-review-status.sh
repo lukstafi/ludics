@@ -50,6 +50,12 @@ FAIL_INLINE=""
 HEAD_SHA=head-sha
 MERGEABLE_STATE=clean
 FAIL_PULLS=""
+# The branch-tip read (branchtip.py, #960). BRANCH_TIP nonempty = the tip the refs API answers, else
+# the PR's head. BRANCH_TIP_FAIL: 404 or 503, what that read answers instead. HEAD_REPO = the PR's
+# head repository, else this one.
+BRANCH_TIP=""
+BRANCH_TIP_FAIL=""
+HEAD_REPO=""
 # Which READS the two simulated pushes fire on, counted from the start of the case: a watch reads
 # every feed once for its opening status and again for each round, so "the push landed on the
 # round's read" is 2, and a bare `status` case's only read is 1.
@@ -106,6 +112,9 @@ reset_fixture() {
   HEAD_AT=2026-09-01T00:00:00Z
   PR_CREATED_AT=""
   FAIL_PULLS=""
+  BRANCH_TIP=""
+  BRANCH_TIP_FAIL=""
+  HEAD_REPO=""
   PUSH_ON_REVIEWS_READ=""
   PUSH_AFTER_PULLS_READ=""
   FAIL_INLINE_FEED=""
@@ -254,13 +263,28 @@ gh() {
     # base.sha is a stale snapshot on purpose, as on a conflicted PR (see the base-drift suite).
     [ ! -e "$TEST_ROOT/pushed" ] || HEAD_SHA="$PUSHED_HEAD"
     response=$(jq -cn --arg h "$HEAD_SHA" --arg m "$MERGEABLE_STATE" --arg c "${PR_CREATED_AT:-}" \
-      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, state:"open", draft:false}
+      --arg r "${HEAD_REPO:-$REPO}" \
+      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h, ref:"topic", repo:{full_name:$r}}, mergeable_state:$m, state:"open", draft:false}
        + (if $c == "" then {} else {created_at:$c} end)')
     # Armed AFTER the answer, so THIS read still sees the old head and the next one does not.
     if pr_read_names head; then
       fixture_nth pulls
       [ "$PUSH_AFTER_PULLS_READ" != "$FIXTURE_NTH" ] || : >"$TEST_ROOT/pushed"
     fi
+    ;;
+  "repos/$REPO/git/ref/heads/topic" | "repos/fork-owner/repo/git/ref/heads/topic")
+    case "$BRANCH_TIP_FAIL" in
+    404)
+      echo "gh: Not Found (HTTP 404)" >&2
+      return 1
+      ;;
+    503)
+      echo "gh: 503 No server is currently available to service your request" >&2
+      return 1
+      ;;
+    esac
+    [ ! -e "$TEST_ROOT/pushed" ] || HEAD_SHA="$PUSHED_HEAD"
+    response=$(jq -cn --arg s "${BRANCH_TIP:-$HEAD_SHA}" '{object:{type:"commit", sha:$s}}')
     ;;
   # Before the head arm: `main` is a ref this fixture resolves, not a head it serves.
   "repos/$REPO/commits/main") response="{\"sha\":\"$BASE_SHA\"}" ;;
@@ -533,6 +557,84 @@ test_watch_approved_leaves_the_drift_to_merge() {
 }
 
 
+# --- a head that is not the branch's (branchtip.py, #960) ------------------------------------------
+
+run_tip_status() {
+  local rc
+  set +e
+  TIP_OUT=$(cmd_status "$REPO#7" 2>"$TEST_ROOT/status.err")
+  rc=$?
+  set -e
+  TIP_RC=$rc
+}
+
+test_status_marks_an_approval_of_a_lagging_head() {
+  reset_fixture
+  REACTIONS_JSON="[$(reaction +1 "$PAST")]"
+  BRANCH_TIP=pushed-sha
+  run_tip_status
+  assert_eq "$TIP_RC" 0 "status warns and goes on: merge is the gate"
+  assert_eq "$(printf '%s\n' "$TIP_OUT" | sed -n 1p | cut -c1-23)" "HEAD IS NOT THE BRANCH'" \
+    "the first word of the state line is not 'approved' ($TIP_OUT)"
+  assert_contains "$TIP_OUT" "PR head head-sha, branch tip pushed-sha): approved (👍 from" "the mark names both SHAs"
+  assert_contains "$TIP_OUT" "WARNING: $REPO#7's head head-sha is NOT its branch's tip" "and the warning stands below it"
+}
+
+test_status_warns_of_a_lag_in_a_state_with_no_approval() {
+  reset_fixture
+  BRANCH_TIP=pushed-sha
+  run_tip_status
+  assert_contains "$TIP_OUT" "stands at pushed-sha" "a lag is said in any state ($TIP_OUT)"
+  assert_not_contains "$TIP_OUT" "HEAD IS NOT THE BRANCH'S" "and only an approval carries the mark"
+}
+
+test_status_says_nothing_of_a_head_that_agrees() {
+  reset_fixture
+  REACTIONS_JSON="[$(reaction +1 "$PAST")]"
+  run_tip_status
+  assert_eq "$(printf '%s\n' "$TIP_OUT" | sed -n 1p | cut -c1-9)" "approved " "an agreeing head reads plain ($TIP_OUT)"
+  assert_not_contains "$TIP_OUT" "WARNING" "with no warning"
+}
+
+test_status_does_not_read_an_unread_tip_as_agreement() {
+  reset_fixture
+  REACTIONS_JSON="[$(reaction +1 "$PAST")]"
+  BRANCH_TIP_FAIL=503
+  run_tip_status
+  assert_eq "$TIP_RC" 0 "an unread tip warns and goes on"
+  assert_contains "$TIP_OUT" "BRANCH TIP UNREAD (so this head is not known to be the branch's): approved" \
+    "the approval is marked ($TIP_OUT)"
+  assert_contains "$TIP_OUT" "WARNING: whether $REPO#7's head is its branch's tip is UNREAD" "and the warning says why"
+}
+
+test_status_names_a_deleted_branch() {
+  reset_fixture
+  REACTIONS_JSON="[$(reaction +1 "$PAST")]"
+  BRANCH_TIP_FAIL=404
+  run_tip_status
+  assert_contains "$TIP_OUT" "BRANCH GONE (PR head head-sha" "the approval is marked ($TIP_OUT)"
+  assert_contains "$TIP_OUT" "its branch topic is gone from $REPO" "and the warning names the branch"
+}
+
+test_status_reads_a_fork_prs_tip_on_the_fork() {
+  reset_fixture
+  HEAD_REPO=fork-owner/repo
+  BRANCH_TIP=pushed-sha
+  run_tip_status
+  assert_contains "$TIP_OUT" "topic on fork-owner/repo stands at pushed-sha" "the fork is named ($TIP_OUT)"
+  assert_contains "$(cat "$REQUEST_LOG")" "repos/fork-owner/repo/git/ref/heads/topic" "and read"
+  assert_not_contains "$(cat "$REQUEST_LOG")" "repos/$REPO/git/ref" "not the base repository"
+}
+
+test_status_with_no_state_reads_no_tip() {
+  reset_fixture
+  FAIL_PULLS=1
+  run_tip_status
+  assert_eq "$TIP_RC" 3 "an unread state is exit 3"
+  assert_not_contains "$(cat "$REQUEST_LOG")" "git/ref" "and there is nothing for a tip to qualify"
+}
+
+
 # --- one observation per round (ludics-lite#95) ------------------------------------------------
 # A watch round used to read the comments, the reviews and the PR twice: once for the round and
 # once again, a second later, for the state reported beside it. The round now publishes what it
@@ -556,8 +658,9 @@ test_a_round_and_its_state_are_one_read() {
   # Three PR reads, and the third is not a duplicate of either: `watch_act` reads the base drift
   # when a round lands, which asks the PR for its base branch and its mergeability at merge-advice
   # time. It is one read per ROUND THAT LANDS, not one per poll, and it is a different question.
-  assert_eq "$(pulls_reads)" 3 \
-    "one PR read for the opening state, one for the round, and the drift read a landing round makes"
+  # And the exit reads the branch tip (branchtip.py, #960), once, by name: not a read of the round.
+  assert_eq "$(pulls_reads)" 4 \
+    "one PR read for the opening state, one for the round, the drift read a landing round makes, and the exit's tip read"
   # The per-review comments endpoint is the other duplicate: poll re-reads a new review's own
   # comments because the flat feed lags it, and substantive_reviews asks the same question of the
   # same review to tell an envelope from findings.
@@ -2624,6 +2727,13 @@ test_watch_no_nudge_leaves_a_failed_run_to_the_caller() {
 }
 
 tests=(
+  test_status_marks_an_approval_of_a_lagging_head
+  test_status_warns_of_a_lag_in_a_state_with_no_approval
+  test_status_says_nothing_of_a_head_that_agrees
+  test_status_does_not_read_an_unread_tip_as_agreement
+  test_status_names_a_deleted_branch
+  test_status_reads_a_fork_prs_tip_on_the_fork
+  test_status_with_no_state_reads_no_tip
   test_watch_no_nudge_leaves_a_failed_run_to_the_caller
   test_empty_reviews_need_their_own_findings
   test_idle_clean_says_next_move_is_yours

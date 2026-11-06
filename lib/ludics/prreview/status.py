@@ -4,9 +4,11 @@ Ported from the shell's ``cmd_status`` (ludics-lite#403): the reviewer state (``
 the one port ``watch`` reads too) checked for open review threads under an approval
 (``state.approval_gate``), rendered; the open review threads counted on the head the state was read
 against and on earlier heads (``threads.threads_line``, ludics-lite#587), from the one walk the gate
-shares; and the round count against the threshold on the line after it. Exit: 0 whatever state the reads answered
-(``unresolved`` included: `merge` is the gate that refuses it), 3 on ``unknown`` — a failed read
-is not "not approved yet". Neither count changes the exit.
+shares; and the round count against the threshold on the line after it. A head that is not the
+branch's (branchtip.py, #960) marks an approval and warns on the line after it, and goes on: `merge`
+is the gate that refuses it. Exit: 0 whatever state the reads answered (``unresolved`` included:
+`merge` is the gate that refuses it), 3 on ``unknown`` — a failed read is not "not approved yet".
+Neither count, and no tip read, changes the exit.
 
 Two more entry points serve the suites, which judge the state line itself rather than its
 rendering; pr-review.sh's command line routes to neither:
@@ -19,6 +21,7 @@ from typing import cast, get_args
 
 from ludics import cli
 from ludics.prreview import knobs
+from ludics.prreview.branchtip import Clear, qualified, read_tip, warning
 from ludics.prreview.core import GhSession, die, pr_arg
 from ludics.prreview.rounds import rounds_line, rounds_result
 from ludics.prreview.feeds import outside_watch
@@ -34,7 +37,12 @@ def run(session: GhSession, args: list[str]) -> int:
     state = status_state(ctx, target.num)
     threads = state_threads(ctx, target.num)
     state = approval_gate(ctx, target.num, state, threads)
-    cli.say(status_line(state, target.repo, target.num))
+    # A state that did not read has nothing to qualify, and the same outage would answer this read.
+    tip = read_tip(session, target.repo, target.num) if state.tok != "unknown" else Clear()
+    cli.say(qualified(state, status_line(state, target.repo, target.num), tip))
+    note = warning(tip, target.repo, target.num)
+    if note:
+        cli.say(f"WARNING: {note}")
     head = ctx.head_seen.sha if ctx.head_seen is not None else ""
     cli.say(threads_line(threads, head))
     line, _rc = rounds_line(rounds_result(ctx, target.num), session.config.round_threshold)

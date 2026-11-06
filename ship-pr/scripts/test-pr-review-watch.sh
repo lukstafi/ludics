@@ -65,6 +65,8 @@ PR_STATE=open
 PUSH_AT_WRITE_GATE=""
 DRAFT_AT_WRITE_GATE=""
 FAIL_PULLS=""
+BRANCH_TIP=""                          # nonempty = the tip the refs API answers (#960), else the head
+BRANCH_TIP_FAIL=""                     # nonempty = the refs read gets a 503
 # The poll round from which the feeds stop answering (the transport failure a final poll can hit),
 # and the one from which the PR read stops answering. 0 is never.
 FAIL_FEEDS_FROM=0
@@ -121,6 +123,8 @@ reset_fixture() {
   PUSH_AT_WRITE_GATE=""
   DRAFT_AT_WRITE_GATE=""
   FAIL_PULLS=""
+  BRANCH_TIP=""
+  BRANCH_TIP_FAIL=""
   FAIL_FEEDS_FROM=0
   FAIL_PULLS_FROM=0
   FAIL_PULLS_UNTIL=0
@@ -292,8 +296,19 @@ gh() {
     local draft=false
     case "$FIXTURE_FILTER" in *.draft*) [ -z "$DRAFT_AT_WRITE_GATE" ] || draft=true ;; esac
     response=$(jq -cn --arg h "$head" --arg m "$MERGEABLE_STATE" --arg c "$PR_CREATED_AT" --arg s "$PR_STATE" \
-      --argjson d "$draft" \
-      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h}, mergeable_state:$m, created_at:$c, state:$s, draft:$d}')
+      --argjson d "$draft" --arg r "$REPO" \
+      '{base:{ref:"main",sha:"stale-base-sha"}, head:{sha:$h, ref:"topic", repo:{full_name:$r}},
+        mergeable_state:$m, created_at:$c, state:$s, draft:$d}')
+    ;;
+  "repos/$REPO/git/ref/heads/topic")
+    if [ -n "$BRANCH_TIP_FAIL" ]; then
+      echo "gh: 503 No server is currently available to service your request" >&2
+      return 1
+    fi
+    head="$HEAD_SHA"
+    [ ! -e "$FEEDS/head.0" ] || head=$(feed_answer head)
+    [ ! -e "$FEEDS/pushed" ] || head="$PUSH_AT_WRITE_GATE"
+    response=$(jq -cn --arg s "${BRANCH_TIP:-$head}" '{object:{type:"commit", sha:$s}}')
     ;;
   "repos/$REPO/commits/$H1" | "repos/$REPO/commits/$H2")
     response=$(jq -cn --arg d "$HEAD_AT" '{sha:"head-sha", commit:{committer:{date:$d}}}')
@@ -2667,6 +2682,58 @@ test_a_hold_inside_an_extension_extends_it() {
   assert_contains "$WATCH_OUT" "--- review id=502 state=COMMENTED commit=${H2:0:7}" "and the watch ends on it"
 }
 
+# --- a head that is not the branch's (branchtip.py, #960) ------------------------------------------
+# The incident: `watch` reported approved for a head the branch had left.
+
+test_an_approval_of_a_lagging_head_is_not_reported_plain() {
+  reset_fixture
+  schedule reactions 1 "[$(reaction +1 "$(clock_at -5)")]"
+  BRANCH_TIP=pushed-sha
+  run_watch 0,0,0 1 5
+  assert_contains "$WATCH_OUT" "HEAD IS NOT THE BRANCH'S (PR head $H2, branch tip pushed-sha): approved (👍" \
+    "the approval carries both SHAs in front ($WATCH_OUT)"
+  assert_contains "$WATCH_OUT" "WARNING: $REPO#7's head $H2 is NOT its branch's tip" "and the warning stands with it"
+  assert_not_contains "$(printf '%s\n' "$WATCH_OUT" "$WATCH_ERR" | grep -v "HEAD IS NOT" || true)" "approved (👍" \
+    "no line says approved without the mark"
+}
+
+test_a_review_round_on_a_lagging_head_warns() {
+  reset_fixture
+  schedule reviews 1 "[$(review 500 "$H2" "$(clock_at -5)" 'the round on the old head')]"
+  BRANCH_TIP=pushed-sha
+  run_watch 0,0,0 1 5
+  assert_contains "$WATCH_OUT" "--- review id=500" "the wait ended on the round ($WATCH_OUT)"
+  assert_contains "$WATCH_OUT" "stands at pushed-sha" "and says the head is not the branch's"
+}
+
+test_a_quiet_window_on_a_lagging_head_warns() {
+  reset_fixture
+  BRANCH_TIP=pushed-sha
+  run_watch 0,0,0 1 1
+  assert_contains "$WATCH_OUT" "no reviewer activity" "a window with nothing in it ($WATCH_OUT)"
+  assert_contains "$WATCH_OUT" "WARNING: $REPO#7's head $H2 is NOT its branch's tip" \
+    "says why nothing may be coming"
+  assert_eq "$(printf '%s\n' "$WATCH_OUT" | tail -n 1 | cut -c1-11)" "watermark: " "the watermark stays last"
+}
+
+test_an_unread_tip_does_not_stop_a_watch_or_pass_for_agreement() {
+  reset_fixture
+  schedule reactions 1 "[$(reaction +1 "$(clock_at -5)")]"
+  BRANCH_TIP_FAIL=1
+  run_watch 0,0,0 1 5
+  assert_eq "$WATCH_RC" 0 "the watch goes on to its verdict ($WATCH_OUT)"
+  assert_contains "$WATCH_OUT" "BRANCH TIP UNREAD (so this head is not known to be the branch's): approved (👍" \
+    "which is marked"
+  assert_contains "$WATCH_OUT" "is UNREAD" "and warned of"
+}
+
+test_a_quiet_poll_reads_no_tip() {
+  reset_fixture
+  run_watch 0,0,0 1 3
+  assert_eq "$(grep -c 'git/ref/heads' "$REQUEST_LOG" || true)" 1 \
+    "the tip is read once, by the exit that reports on it, not once a poll"
+}
+
 # Review of #583, round 3. A PR closed or merged while the watch runs is not nudged: the state
 # machine still reads its head as due, and the PR's own state is the write's last gate.
 test_a_closed_pr_is_not_nudged() {
@@ -2721,6 +2788,11 @@ test_a_draft_or_conflicted_pr_is_not_nudged() {
 }
 
 tests=(
+  test_an_approval_of_a_lagging_head_is_not_reported_plain
+  test_a_review_round_on_a_lagging_head_warns
+  test_a_quiet_window_on_a_lagging_head_warns
+  test_an_unread_tip_does_not_stop_a_watch_or_pass_for_agreement
+  test_a_quiet_poll_reads_no_tip
   test_a_round_zero_schedule_holds_through_the_polls
   test_a_pr_made_a_draft_at_the_write_gate_is_not_nudged
   test_a_push_at_the_write_gate_is_held

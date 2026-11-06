@@ -976,6 +976,19 @@ the build says — the `unresolved` state above, read before every merge attempt
 `--wait`), since a thread opened meanwhile moves no head for `--match-head-commit` to catch. No flag bypasses it:
 answer and resolve the threads, then re-run `merge`.
 
+**It refuses a head that is not the branch's** (exit 1, naming both SHAs; #960). On GitHub's
+2026-11-04 incident a push reached the branch and the PR's head stayed on the old commit for 17
+minutes, so everything that reads the PR read a commit the branch had left, and nothing said so.
+`merge` compares the PR's head with the branch's tip (on the head repository, so a fork's tip is
+read there) before the gate and last before every merge call, and no flag goes over it. A branch
+that is gone is exit 1 too. A tip it cannot read warns at the first read and is exit 3 at the last:
+unknown is not agreement. `status` and `watch` warn and go on, in any state, and put
+`HEAD IS NOT THE BRANCH'S`, `BRANCH GONE` or `BRANCH TIP UNREAD` in front of an `approved` line, so
+that line is not an approval of what you pushed. Wait a minute and read again; a lag that stands
+has been cleared by a new push (`git commit --amend --no-edit && git push --force-with-lease`).
+The guarantee stops at the read: a push landing after it is `--match-head-commit`'s, which cannot
+refuse a push the PR has not picked up either.
+
 The other verdicts are not refusals, and none of them is a green light either:
 
 | exit | verdict | what it is |

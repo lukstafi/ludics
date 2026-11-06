@@ -298,6 +298,12 @@ pin "commits/<encode_ref branch> answers the branch tip's sha and committer date
 HEAD=$(jq -r '.sha // empty' <<<"$tip")
 is_sha "$HEAD" || { echo "pr-review-api-contract.sh: the tip read carries no usable sha; nothing below can be anchored (1 moved)" >&2; exit 1; }
 echo "      base $BASE tip $HEAD"
+# branchtip.py's read (#960): an exact match on the name, answering one ref. A prefix match answers
+# an array, which reads as no SHA and refuses every merge; a tip that is not the commit a branch
+# stands on would be worse, a lag that is never seen.
+ref=$(api "repos/$REPO/git/ref/heads/$BASE_ENC")
+pin "git/ref/heads/<encode_ref branch> answers one ref whose object is the branch tip's commit (branchtip.py's read of a head's branch)" \
+  'type == "object" and .object.type == "commit" and .object.sha == $tip' "$ref" --arg tip "$HEAD"
 
 # --- actions/runs?head_sha= -------------------------------------------------------------------
 section "actions/runs?head_sha=<tip> — run_signal's feed"
@@ -826,7 +832,8 @@ fi
 : >"$SCRATCH/open_prs"
 for n in $(jq -r --arg a "$OPEN_PR" '[.[].number // "-"] + (if $a == "" then [] else [$a | tonumber] end) | map(tostring) | unique | .[]' <<<"$open_list"); do
   is_num "$n" || continue # recorded MOVED just above; no request is built from it
-  api "repos/$REPO/pulls/$n" | jq -c '{number, state, draft, head_sha: .head.sha, base_ref: .base.ref, updated_at,
+  api "repos/$REPO/pulls/$n" | jq -c '{number, state, draft, head_sha: .head.sha, head_ref: .head.ref,
+    head_repo: .head.repo.full_name, base_ref: .base.ref, updated_at,
     created_at, mergeable: (if has("mergeable") then .mergeable else "absent" end), mergeable_state}' >>"$SCRATCH/open_prs"
 done
 read_prs=$(jq -s . "$SCRATCH/open_prs")
@@ -847,6 +854,8 @@ open_prs=$(jq -c --arg a "$OPEN_PR" '[.[] | select(($a != "" and .number == ($a 
 if [ "$(jq length <<<"$open_prs")" -ge 1 ]; then
   pin "an open PR's pulls/<n> read carries head.sha, base.ref, updated_at, and mergeable (present) in {true,false,null}" \
     "all(.[]; (.head_sha | test(\"$HEX40\")) and (.base_ref | type == \"string\" and length > 0) and (.updated_at | test(\"$ISO\")) and (.mergeable == true or .mergeable == false or .mergeable == null))" "$open_prs"
+  pin "... and head.ref and head.repo.full_name, the branch and the repository branchtip.py reads its tip on" \
+    'all(.[]; (.head_ref | type == "string" and length > 0) and (.head_repo | type == "string" and test("^[^/]+/[^/]+$")))' "$open_prs"
   # created_at is the floor the review clock starts at (status_state's `expected`), and unlike
   # updated_at it must not move: a clock that comments could push forward would never let the
   # grace expire. That it does not move is not checkable in one read; that it is there, is.

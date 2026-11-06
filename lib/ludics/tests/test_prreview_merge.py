@@ -36,6 +36,9 @@ MERGE = When(prefix=("pr", "merge"))
 # call answers it): the output each would have printed after its --jq.
 GREEN: list[Route] = [
     (MERGE, 0, "", ""),
+    # The branch-tip read (branchtip.py, #960): the PR, then the refs API on its head repository.
+    ([".head.repo.full_name"], 0, "open\theadsha\ttopic\to/r\n", ""),
+    (["repos/o/r/git/ref/heads/topic"], 0, "headsha\n", ""),
     # A --wait's conflict preflight (ludics-lite#729), before the drift read its projection shares
     # a field with.
     (["\\(.mergeable)"], 0, "true\tclean\tmain\n", ""),
@@ -97,6 +100,44 @@ class Production(unittest.TestCase):
                 self.assertTrue(done.stdout.endswith("o/r#7 merged=true state=closed\n"), done.stdout)
                 merges = [c for c in self.calls() if c[:2] == ["pr", "merge"]]
                 self.assertEqual(merges, [["pr", "merge", "7", "--repo", "o/r", "--match-head-commit", "headsha", "--merge"]])
+
+    def _tip_answers(self, rc: int, out: str, err: str = "") -> list[Route]:
+        """GREEN with the refs read answering otherwise."""
+        return [(["repos/o/r/git/ref/heads/topic"], rc, out, err), *GREEN]
+
+    def test_a_head_that_is_not_the_branchs_is_never_merged(self) -> None:
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]):
+                self.route(self._tip_answers(0, "pushedsha\n"))
+                done = self.run_cmd(entry, "merge", "o/r#7")
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("headsha is NOT its branch's tip", done.stderr)
+                self.assertIn("topic on o/r stands at pushedsha", done.stderr)
+                self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
+
+    def test_an_unread_tip_never_merges_and_a_deleted_branch_is_a_fact(self) -> None:
+        for rc, err, want in ((1, "gh: 503 No server is currently available to service your request\n", 3),
+                              (1, "gh: Not Found (HTTP 404)\n", 1)):
+            with self.subTest(want=want):
+                self.route(self._tip_answers(rc, "", err))
+                done = self.run_cmd([PY, "-m", "ludics.prreview"], "merge", "o/r#7")
+                self.assertEqual(done.returncode, want, done.stdout + done.stderr)
+                self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
+
+    def test_a_tip_read_of_an_unknown_shape_is_not_agreement(self) -> None:
+        self.route([([".head.repo.full_name"], 0, "open\theadsha\ttopic\tno-such-shape\n", ""), *GREEN])
+        done = self.run_cmd([PY, "-m", "ludics.prreview"], "merge", "o/r#7")
+        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+        self.assertIn("UNREAD", done.stderr)
+
+    def test_a_branch_that_prefixes_another_is_read_exactly(self) -> None:
+        self.route(GREEN)
+        done = self.run_cmd([PY, "-m", "ludics.prreview"], "merge", "o/r#7")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        reads = [c for c in self.calls() if any("git/ref" in a for a in c)]
+        self.assertTrue(reads)
+        self.assertTrue(all("repos/o/r/git/ref/heads/topic" in c for c in reads), reads)
+        self.assertFalse(any("matching-refs" in a for c in self.calls() for a in c))
 
     def test_a_pr_merged_at_another_head_is_not_this_merge(self) -> None:
         """ludics#823: gh finds the PR already merged, makes no merge request and exits 0 with its
