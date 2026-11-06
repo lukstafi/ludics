@@ -52,11 +52,14 @@ issue or checklist and compare by content before writing to it; the reconciliati
        gh issue list -R <tracker> --state all --json number,title,state \
          --search '"<wave ID> small follow-ups" in:title'
        gh issue create -R <tracker> --label wave-followup --title '<wave ID> small follow-ups' \
-         --body-file <file>      # only when no hit has the exact title
+         --milestone process --body-file <file>   # only when no hit has the exact title; drop
+                                                  # --milestone on a tracker without `process`
        gh issue reopen <n> -R <tracker>   # only when the exact-title hit is closed
        gh issue view <n> -R <tracker> --json body --jq .body > <file>   # then append the items
        gh issue edit <n> -R <tracker> --body-file <file>
 
+   An item that could change a result is not polish, whatever its size: it gets its own issue
+   (ahrefs/ocannl#2012 sat in #1160's checklist as a one-line item for over a month).
    The label is the one SKILL.md's *Close out* creates. (Wave 2026-10-14 ran five post-waves,
    17 -> 11 -> 8 -> 2 -> 3 tasks, the last ones mostly such polish, and filed about 47 follow-up
    issues.)

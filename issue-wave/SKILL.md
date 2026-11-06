@@ -267,6 +267,13 @@ sprint, settled five more rules (ludics#867):
 
 ## Scope and sequencing
 
+**Every wave carries a thread.** Where the tracker has versioned milestones, name in the proposal
+one thread from the lowest open versioned milestone: a stated goal, and one issue is enough.
+`process`, `dormant` and any other unversioned milestone never supply it. The rest of the wave is
+the coordinator's call, from any milestone, as many issues as it sees fit: the thread sets no limit
+on the wave. If the lowest milestone holds no thread, say so and run the wave anyway: that prompts
+its release or a move of what remains. A scope the user names overrides all of this.
+
 Propose a wave to the user in one exchange: the issues, each with its box, the parallel groups,
 and what is deferred to a later wave and why. Take the plan's Parallelism and Dependencies
 sections as the starting truth, then adjust for churn surfaces the plan does not model: two
@@ -1351,6 +1358,11 @@ wave-followup -R <tracker> --color C5DEF5 --description 'Filed by an issue-wave 
 where an "already exists" refusal is success; file with `gh issue create -R <tracker> --label
 wave-followup ...`; and add it to the follow-up issues workers filed during the wave (the ones
 their hand-backs and PRs name) with `gh issue edit <n> -R <tracker> --add-label wave-followup`.
+**Give each one a milestone** where the tracker uses them (`--milestone <title>` on either command).
+It takes `process`, if the tracker has that milestone, when all three hold: a release's users could
+not tell whether it is fixed, no release claim rests on it, and more of its kind will keep being
+filed. Otherwise it takes the lowest open versioned milestone whose scope fits. This is the one
+statement of the rule; daily planning applies it too.
 Route the remaining chips through the selected mode:
 spawn task chips only in the explicit spawn mode; in the default mode, collect the
 non-discarded tasks without their own issue for [Post-wave coordination](references/post-wave.md).
