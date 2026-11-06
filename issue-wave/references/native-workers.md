@@ -151,7 +151,16 @@ rebuilding its ref/ancestry checks in an ad-hoc cleanup script; Dune can copy a 
 file into `_build/default`, which a plain `git clean -fdX` will preserve as a nested repository.
 App-managed worktrees follow [separate-codex.md](separate-codex.md#close-out) or
 [app-claude.md](app-claude.md#intervention-and-close-out) instead.
-Set each row's `state` to its done word as its hand-back is verified. Before the board is
+Once a hand-back is verified, close a task whose PR merged with `fleet-worker.sh board close <wave>
+<task> [--pr <n>] [--agent <id>] [--evidence <text>]`, one line of output: it reads the merge SHA
+from GitHub, concludes every standing record the row's `standing` key names (`--verdict pass`, off
+each record's own checkout), logs the close and sets the row. After a partial close, run it again:
+it reads what stands and does only what is missing, and refuses before any write on a PR not merged
+or a row that disagrees with the registry. `lib/ludics/fleetworker/closeout.py` states its recovery
+boundary. Do it before removing the worktree, whose HEAD `conclude` reads, and before
+`farside-close`, which waits for the row it sets and is the coordinator's next step for a row with
+far-side worktrees (the line's `NOTE` names it). Any other task sets its
+row's `state` to its done word by hand, as its hand-back is verified. Before the board is
 persisted, `fleet-worker.sh board check <wave>` exits 0 only when every row's state is done; exit 3
 lists each row that is not, a row left `launched` among them.
 Consolidate workers' after-merge proposals and persist the completed wave's board. Route chips

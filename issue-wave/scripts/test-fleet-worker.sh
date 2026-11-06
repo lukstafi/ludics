@@ -848,6 +848,11 @@ if [ "$#" -eq 6 ] && [ "$1 $2 $3 $5 $6" = "api --hostname github.com -q .sha" ];
   esac
   printf '%s\n' "$sha"; exit 0
 fi
+# `pr view`: the file SHIM_GH_PR_VIEW names (board close, #982).
+if [ "$1 $2" = "pr view" ]; then
+  [ "${SHIM_GH:-}" != down ] || { printf 'error connecting to api.github.com\n' >&2; exit 1; }
+  cat "$SHIM_GH_PR_VIEW"; exit 0
+fi
 if [ "$*" = "auth git-credential get" ]; then
   cat > /dev/null
   case "${SHIM_GH_CRED:-}" in none) exit 1 ;; hang) sleep 30 ;; esac
@@ -2486,7 +2491,7 @@ rmdir "$ISSUE_WAVE_STATE/COORDINATOR.lock"
 expect "a key outside the grammar is refused by the store" 1 "^BOARD REFUSED: a key must be" -- "$FW" board set bw t "bad key=1"
 expect "a field without = is a usage error" 2 "board set: expected <key>=<value>" -- "$FW" board set bw t novalue
 expect "show of a wave with no board refuses" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
-expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show, check or takeover" -- "$FW" board edit bw
+expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show, check, takeover or close" -- "$FW" board edit bw
 # A row's state grammar (ludics#810): set warns on status= and on a state with no state word, and writes
 # both as given; check, a read, exits 3 listing each row not done and 0 when every row is.
 expect "set warns on status=, and writes it" 0 "^BOARD WARNING: task \"ck-1\": a row's state is its state key, not status; written as given$" -- \
@@ -3339,6 +3344,80 @@ grep -Fq '"handle": "standing-handback:hb-verdict"' <<<"$out" && grep -Fq '"verd
 git -C "$hwt" commit -q --allow-empty -m "moved on"
 expect "...and a retry once the checkout has moved on is the registry's harmless retry" 0 "\"observed_sha\": \"$hhead\"" -- \
   env SHIM_GH=down "${FWH[@]}" execution conclude --standing-handback --request hb-verdict --observed-from "$hwt" --evidence "the scans batch stayed red" --verdict fail
+# board close (#982): the five-step recipe as one verb and one line. Read before any write, the merge
+# SHA from GitHub, every standing record of the row concluded, and a re-run resuming a partial close.
+MERGE=$(printf 'a%.0s' $(seq 40))
+FWC=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4" "$FW")
+cwt="$TMP/close wt"; git clone -q "$TMP/proj.git" "$cwt"
+cwt2="$TMP/close wt two"; git clone -q "$TMP/proj.git" "$cwt2"
+creq() { # <id> <checkout> [standing: true|false]: a reservation of worker w-close in wave cw
+  jq -n --arg id "$1" --arg co "$2" --arg rev "$hbase" --argjson standing "${3:-true}" '{request_id:$id, wave:"cw", worker:"w-close", transport:"subagent",
+    issue:"o/r#982", purpose:"close fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
+    requested_revision:$rev, kind:"correctness"} + (if $standing then {standing:true, checkout:$co} else {} end)' > "$TMP/$1.json"
+  "${FWC[@]}" execution run "$TMP/$1.json" >/dev/null 2>&1 || ko "could not reserve $1 (setup)"
+}
+cpr() { # <state> <merge oid or -> <head branch>: what gh pr view answers
+  jq -n --arg s "$1" --arg m "$2" --arg b "$3" '{number:7, state:$s, headRefName:$b, mergeCommit:(if $m == "-" then null else {oid:$m} end)}' > "$TMP/pr-view.json"
+}
+export SHIM_GH_PR_VIEW="$TMP/pr-view.json"
+cfield() { "$FW" board show cw --json | jq -r --arg t "$1" --arg k "$2" '.tasks[] | select(.task == $t) | .fields[$k] // ""'; }
+clog() { "$FW" board show cw --json | jq -r '.log | length'; }
+"$FW" board set --create cw t1 repository=o/r pr=7 branch=claude/close standing="c-1 c-2" worker=w-close agent=agent-1 >/dev/null
+creq c-1 "$cwt"; creq c-2 "$cwt2"
+expect "board close needs a wave and a task" 2 "board close: expected <wave> <task>" -- "$FW" board close cw
+expect "...takes a PR number" 2 "--pr takes a PR number" -- "$FW" board close cw t1 --pr x
+expect "...and no stray word" 2 "board close: expected board close" -- "$FW" board close cw t1 --sha "$MERGE"
+expect "a task the board does not hold is refused" 1 '^BOARD REFUSED: no task "t9" on the board of cw$' -- "$FW" board close cw t9
+cpr OPEN - claude/close
+expect "a PR not merged is refused" 1 'o/r#7 is OPEN, not merged; nothing closed' -- "$FW" board close cw t1
+cpr MERGED - claude/close
+expect "...as is one GitHub names no merge commit for" 1 'names no merge commit' -- "$FW" board close cw t1
+cpr MERGED "$MERGE" claude/other
+expect "...and one on another branch: a wrong number typed" 1 "o/r#7's head is claude/other, the row's branch claude/close; nothing closed" -- "$FW" board close cw t1
+cpr MERGED "$MERGE" claude/close
+expect "GitHub not answering is exit 4" 4 "could not be read" -- env SHIM_GH=down "$FW" board close cw t1
+"$FW" board set cw t2 repository=o/r pr=7 >/dev/null
+expect "a row with no standing key is refused, never guessed" 1 "standing: the row has no standing; nothing closed" -- "$FW" board close cw t2
+"$FW" board set cw t2 standing=c-unknown >/dev/null
+expect "...and one naming a record the registry does not hold" 1 "c-unknown, which the registry does not hold" -- "$FW" board close cw t2
+creq c-plain "$cwt" false
+"$FW" board set cw t2 standing=c-plain >/dev/null
+expect "...or a record that is no standing reservation" 1 "c-plain, which is no standing reservation" -- "$FW" board close cw t2
+"$FW" board set cw t2 standing=c-1 worker=w-other >/dev/null
+expect "...or another worker's record, which a wrong id must not conclude" 1 "c-1, whose worker is w-close, not w-other" -- "$FW" board close cw t2
+"$FW" board set cw t3 repository=o/r pr=7 "standing=c-1" worker=w-close >/dev/null
+expect "a standing record of the worker the row does not name is refused" 1 "standing record(s) of worker w-close the row does not name: c-2" -- "$FW" board close cw t3
+[ "$(hstate c-1)" != concluded ] && ok "...nothing concluded by any refusal" || ko "a refusal concluded c-1"
+[ "$(clog)" = 0 ] && [ -z "$(cfield t1 state)" ] && ok "...nothing written to the board" || ko "a refusal wrote the board: $(clog) $(cfield t1 state)"
+# A partial close: the first record concludes, the second's checkout is gone, and the row stays open.
+mv "$cwt2" "$cwt2.away"
+expect "a step that fails stops the close, saying what landed" 1 "conclude c-2 exit 1 (.*); 1 concluded here, the row is not set; a re-run resumes" -- "$FW" board close cw t1 --pr 7 --agent agent-2 --evidence "the hand-back's words"
+mv "$cwt2.away" "$cwt2"
+[ "$(hstate c-1)" = concluded ] && [ "$(hstate c-2)" != concluded ] && ok "...the first concluded, the second not" || ko "states: $(hstate c-1) $(hstate c-2)"
+[ -z "$(cfield t1 state)" ] && [ "$(clog)" = 0 ] && ok "...and the board untouched" || ko "a stopped close wrote the board: $(cfield t1 state) $(clog)"
+expect "the re-run finishes it, in one line, the merge SHA GitHub's" 0 "^BOARD CLOSE cw: \"t1\" merged o/r#7 at ${MERGE:0:12}; 1 standing concluded, 1 already; row set; NOTE still open: c-plain$" -- \
+  "$FW" board close cw t1 --pr 7 --agent agent-2 --evidence "the hand-back's words"
+[ "$(wc -l <<<"$out" | tr -d ' ')" = 1 ] && ok "...one line, not the record" || ko "more than one line: $out"
+[ "$(hstate c-2)" = concluded ] && ok "...every standing record concluded" || ko "c-2: $(hstate c-2)"
+"$FW" execution list | jq -e --arg m "$MERGE" '[.[] | select(.request_id == "c-1" or .request_id == "c-2") | .verdict == "pass" and (.history[-1].data.evidence | contains("o/r#7 merged at " + $m + ", read from GitHub; hand-back of agent-2; the hand-back'"'"'s words"))] == [true, true]' >/dev/null \
+  && ok "...each a pass, its evidence naming the merge and the hand-back" || ko "evidence: $("$FW" execution list | jq -c '[.[] | select(.request_id == "c-1" or .request_id == "c-2") | keys]')"
+[ "$(cfield t1 state)" = "merged #7 at ${MERGE:0:12}" ] && [ "$(cfield t1 merge)" = "$MERGE" ] && [ "$(cfield t1 agent)" = agent-2 ] && ok "...the row set" || ko "row: $(cfield t1 state)"
+[ "$(clog)" = 1 ] && ok "...one log line" || ko "log lines: $(clog)"
+expect "a close run again writes nothing and says so" 0 '^BOARD CLOSE cw: "t1" merged o/r#7 at aaaaaaaaaaaa; already closed; NOTE still open: c-plain$' -- "$FW" board close cw t1 --pr 7 --agent agent-2
+[ "$(clog)" = 1 ] && ok "...no second log line" || ko "log lines: $(clog)"
+# A log written and a row not (the set refused, or its answer lost): the re-run sets the row alone.
+"$FW" board set cw t1 state=reviewing >/dev/null
+expect "a close that lost its last write is finished by a re-run" 0 '; 0 standing concluded, 2 already; row set; NOTE' -- "$FW" board close cw t1
+[ "$(clog)" = 1 ] && [ "$(cfield t1 state)" = "merged #7 at ${MERGE:0:12}" ] && ok "...with no second log line" || ko "log $(clog) state $(cfield t1 state)"
+"$FW" board set cw t4 repository=o/r pr=7 standing=none "farside=none" >/dev/null
+expect "standing=none closes a task with no reservation" 0 '"t4" merged o/r#7 at aaaaaaaaaaaa; 0 standing concluded, 0 already; row set$' -- "$FW" board close cw t4
+"$FW" board set cw t5 repository=o/r pr=7 standing=none "farside=other:/wt/a other:/wt/b" >/dev/null
+expect "...and a far-side worktree is named for farside-close, not removed here" 0 '; row set; NOTE 2 far-side worktree(s): farside-close cw --task t5$' -- "$FW" board close cw t5
+expect "...and without the lease the close writes nothing" 1 "." -- env -u FLEET_COORDINATOR FLEET_COORDINATOR=somebody-else "$FW" board close cw t1 --agent agent-3
+[ "$(cfield t1 agent)" = agent-2 ] && ok "...its row as it was" || ko "a close with no lease set the row: $(cfield t1 agent)"
+jq -n --arg sha "$(git -C "$cwt" rev-parse HEAD)" --arg wt "$cwt" '{request_id:"c-plain", verdict:"pass", log:"/dev/null",
+  evidence:"fixture", observed_sha:$sha, remote_checkout:$wt, handle:"fixture"}' > "$TMP/c-plain-done.json"
+"${FWC[@]}" execution conclude "$TMP/c-plain-done.json" >/dev/null || ko "could not conclude c-plain (cleanup)"
 }
 
 section "execution leg" && {

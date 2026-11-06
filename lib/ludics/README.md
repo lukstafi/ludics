@@ -231,6 +231,9 @@ fleetworker/supervision.py
 fleetworker/board.py fleetworker/boardstore.py fleetworker/takeover.py
     issue-wave/scripts/test-fleet-worker.sh board
 
+fleetworker/closeout.py
+    issue-wave/scripts/test-fleet-worker.sh "execution conclude --standing-handback" board
+
 fleetworker/slot.py fleetworker/holders.py fleetworker/group.py fleetworker/slotrecord.py
 fleetworker/graces.py fleetworker/leg.py
     issue-wave/scripts/test-fleet-worker.sh "execution slot" "execution leg" tip-run

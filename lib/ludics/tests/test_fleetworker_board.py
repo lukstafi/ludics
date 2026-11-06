@@ -196,7 +196,7 @@ class CommandLine(unittest.TestCase):
         self.assertIn("expected <key>=<value>, got \"--create\"", self.refused("set", "w", "t", "k=v", "--create"))
 
     def test_usage_refusals(self) -> None:
-        self.assertIn("expected set, note, log, show, check or takeover", self.refused())
+        self.assertIn("expected set, note, log, show, check, takeover or close", self.refused())
         self.assertIn("board show: expected <wave> [--json]", self.refused("show"))
         self.assertIn("board show: expected <wave> [--json]", self.refused("show", "w", "--md"))
         self.assertIn("board set: expected <task>", self.refused("set", "w"))
