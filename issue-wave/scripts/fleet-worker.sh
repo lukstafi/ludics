@@ -185,7 +185,8 @@
 #                          # requested_revision one full SHA, or with --tip the branch's head on
 #                          # GitHub now; with --id-prefix its id <prefix>-<n>, the next <n> the
 #                          # registry holds none past), check that SHA out detached in the
-#                          # clean checkout on the box (a GPU-loop purpose's command must pin its
+#                          # clean checkout on the box, unless its filesystem has under
+#                          # FLEET_LEG_MIN_FREE_GIB free (a GPU-loop purpose's command must pin its
 #                          # backend by .github/fleet-leg there), and start the command there under
 #                          # `execution slot --bg <runs> --wait 0` (a GPU token unless --cpu, only
 #                          # if one is free now); prints TIP-RUN STARTED <id> <box> <sha> <dir>
@@ -326,8 +327,9 @@
 #   FLEET_PROBE_TIMEOUT: wall-clock bound on the live headless preflight turn; 120.
 #   FLEET_CROSS_TIMEOUT: wall-clock bound on each cross-box ssh reach probe of the preflight; 20.
 #   FLEET_FETCH_TIMEOUT: wall-clock bound on skills-checkout and project fetches; 300.
-#   FLEET_LEG_MIN_FREE_GIB: `execution leg` refuses a box with less free on the filesystem of its
-#     checkout or worktree (a whole number of GiB, read by the caller; 0 for no floor); 20.
+#   FLEET_LEG_MIN_FREE_GIB: `execution leg` and `execution tip-run` refuse a box with less free on
+#     the filesystem of their checkout, or a leg's worktree (a whole number of GiB, read by the
+#     caller; 0 for no floor); 20.
 #   FLEET_GH_TIMEOUT: wall-clock bound on each of the GitHub probe's API calls, `gh api user` and
 #     the try of the credential git returns (git's helper gets twice that plus 5 s, the try
 #     inside it included), in the preflight's session and in a tmux session, and on `execution`'s

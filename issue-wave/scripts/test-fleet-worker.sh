@@ -2978,6 +2978,46 @@ expect "a halted fleet starts no loop run" 1 "^TIP-RUN NOT STARTED tip-g: the re
   "${FWT[@]}" execution tip-run "$(tipreq tip-g)" --checkout "$tco" -- echo never
 grep -q "fleet halted" <<<"$out" && ok "...naming the halt" || ko "no halt named: $out"
 "$FW" resume-launches >/dev/null
+# THE FREE-SPACE FLOOR (ludics#991): a floor no disk meets stands for a nearly full one. The commit
+# is one the checkout lacks, so a refusal past the fetch would show as the commit having arrived.
+tfhead=$(git -C "$tco" rev-parse HEAD)
+echo three > "$tsrc/f" && git -C "$tsrc" commit -q -am three && git -C "$tsrc" push -q origin main || ko "could not push the floor's commit (setup)"
+tfloor=$(git -C "$tsrc" rev-parse HEAD)
+tfmark="$TMP/tip-floor-ran"; tfruns="$TMP/tip floor runs"
+tfrun=(sh -c ': > "$1"; echo "exit: 0"' sh "$tfmark")
+expect "a loop run under the floor is refused, naming the box, the free space and the floor" 1 \
+  "^TIP-RUN NOT STARTED tip-n: only [0-9.]* GiB free on the filesystem of $tco on testbox, under the floor of 999999999 GiB (FLEET_LEG_MIN_FREE_GIB); nothing ran" -- \
+  env FLEET_LEG_MIN_FREE_GIB=999999999 "${FWT[@]}" execution tip-run "$(tipreq tip-n "$tfloor")" --checkout "$tco" --runs "$tfruns" -- "${tfrun[@]}"
+[ "$(state_of tip-n)" = "concluded not-launched" ] && ok "...concluding what it reserved not-launched" || ko "tip-n: $(state_of tip-n)"
+git -C "$tco" cat-file -e "$tfloor^{commit}" 2>/dev/null && ko "a refused run fetched: $out" || ok "...before the fetch"
+[ "$(git -C "$tco" rev-parse HEAD)" = "$tfhead" ] && ok "...and the checkout" || ko "a refused run moved the checkout"
+[ ! -e "$tfruns" ] && ok "...and the slot" || ko "a refused run took a slot: $(ls "$tfruns")"
+[ ! -e "$tfmark" ] && ok "...the command not run" || ko "a refused run ran its command"
+expect "a floor that is no whole number is a usage error" 2 "FLEET_LEG_MIN_FREE_GIB must be a whole number of GiB" -- \
+  env FLEET_LEG_MIN_FREE_GIB=lots "${FWT[@]}" execution tip-run "$(tipreq tip-o "$tfloor")" --checkout "$tco" -- echo never
+[ -z "$(state_of tip-o)" ] && ok "...before anything is reserved" || ko "tip-o was reserved: $(state_of tip-o)"
+# A box the run reaches over ssh names no fleet-worker.sh, so the far side finds its skills checkout's:
+# here a served clone of the dispatcher, which the refresh a remote run asks for has to find current.
+tskills="$TMP/tip skills"; tskillso="$TMP/tip skills.git"
+git init -q --bare "$tskillso" && cp -R "$TMP/dispatcher" "$tskills" && git -C "$tskills" init -q -b main && git -C "$tskills" add -A &&
+  git -C "$tskills" commit -q -m served && git -C "$tskills" remote add origin "$tskillso" && git -C "$tskills" push -q -u origin main &&
+  git -C "$tskillso" symbolic-ref HEAD refs/heads/main || ko "could not stage the served skills checkout (setup)"
+tipreq tip-p "$tfloor" '{"execution_host":"other"}' >/dev/null
+expect "...and over ssh, on the box the record names" 1 "^TIP-RUN NOT STARTED tip-p: only [0-9.]* GiB free on the filesystem of $tco on other, under the floor of 999999999 GiB" -- \
+  env SHIM_SSH_LOCAL=other FLEET_SKILLS_REPO="$tskills" FLEET_LEG_MIN_FREE_GIB=999999999 "${FWT[@]}" execution tip-run "$TMP/tip-p.json" --checkout "$tco" -- echo never
+expect "a floor the disk meets lets the run start" 0 "^TIP-RUN STARTED tip-q testbox $tfloor /" -- \
+  env FLEET_LEG_MIN_FREE_GIB=1 "${FWT[@]}" execution tip-run "$(tipreq tip-q "$tfloor")" --checkout "$tco" --runs "$tfruns" --cpu -- "${tfrun[@]}"
+expect "...to its end" 0 "^TIP-RUN CONCLUDED tip-q pass testbox $tfloor /" -- "${FWT[@]}" execution tip-run --wait tip-q --within 60
+# A read that fails is a note, and the run starts: scripts/py, which the far side runs, fails the
+# floor's program alone.
+mv "$TMP/dispatcher/scripts/py" "$TMP/dispatcher/scripts/py.real"
+printf '#!/bin/sh\ncase "$2" in *disk_usage*) exit 7 ;; esac\nexec "$(dirname "$0")/py.real" "$@"\n' > "$TMP/dispatcher/scripts/py"
+chmod +x "$TMP/dispatcher/scripts/py"
+expect "a free-space read that fails is a note, and the run starts" 0 "^TIP-RUN STARTED tip-r testbox $tfloor /" -- \
+  env FLEET_LEG_MIN_FREE_GIB=999999999 "${FWT[@]}" execution tip-run "$(tipreq tip-r "$tfloor")" --checkout "$tco" --cpu -- "${tfrun[@]}"
+grep -q "^TIP-RUN NOTE testbox: cannot read the free space of $tco (exit 7), so the floor of 999999999 GiB" <<<"$out" && ok "...said on the run's stderr" || ko "no note: $out"
+expect "...to its end" 0 "^TIP-RUN CONCLUDED tip-r pass testbox $tfloor /" -- "${FWT[@]}" execution tip-run --wait tip-r --within 60
+mv "$TMP/dispatcher/scripts/py.real" "$TMP/dispatcher/scripts/py"
 # The request is the loop's shape, or a usage refusal before the anchor is asked.
 expect "an abbreviated revision is refused" 2 "requested_revision must be exactly one full 40-hex commit SHA" -- \
   "${FWT[@]}" execution tip-run "$(tipreq tip-h "${tip:0:12}")" --checkout "$tco" -- echo never

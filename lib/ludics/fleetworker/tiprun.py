@@ -35,9 +35,9 @@ In order, each step yielding rather than waiting:
     request id must be one the registry does not hold yet: ``run``
     hands back an identical request's existing record, concluded or not, and a second run would
     start under the first one's evidence.
- 4. On the box (the far side below): the checkout must be clean before anything touches it, and
-    is fetched only when it lacks the commit, checked out detached at it, and checked again (HEAD
-    is the SHA, the tree clean). The command then starts in it under ``execution slot --bg
+ 4. On the box (the far side below): the checkout must be clean before anything touches it, must
+    stand on a filesystem above THE FREE-SPACE FLOOR, and is fetched only when it lacks the commit,
+    checked out detached at it, and checked again (HEAD is the SHA, the tree clean). The command then starts in it under ``execution slot --bg
     <runs> --wait 0``: one GPU token unless ``--cpu``, taken only if one is free at once, never
     queued behind or among the workers' batches, and with no ``--wait-window``. An enclosing
     slot's or measurement's marker is dropped first: a loop run is never part of another batch.
@@ -82,6 +82,23 @@ run as before, ``--cpu`` or not. A GPU-loop run that started says the check was 
 record carries ``"pinned_backend": "<backend>"`` (registry.py, THE BACKEND MARK), which the loop's
 last-green read selects on, since the records before #793 carry the same purpose and were cc runs.
 No other record carries it.
+
+THE FREE-SPACE FLOOR (ludics#991): ``execution leg``'s (leg.py, THE FREE-SPACE FLOOR; one program,
+``FLOOR_PY``, and one knob, FLEET_LEG_MIN_FREE_GIB, read where the verb runs and carried to the box as
+an argument; a value that is no whole number is a usage refusal before GitHub or the anchor is asked,
+and 0 turns the check off). #981's first witness was this path: a CUDA integration run cut off at
+17 MB free, dune exit 2 and no named failure. A disk it reads under the floor refuses the run, naming
+the box, the free space and the floor, so it ends as any far-side refusal does, ``TIP-RUN NOT STARTED
+<id>: only <n> GiB free ...``, its record concluded ``not-launched``, and the loop tries again at its
+next start. The check stands right after the checkout's own (a path that is no clean checkout says
+so, not what the disk under it holds) and before the fetch, the checkout and the slot, each of which
+fails with something else on a full disk; like the leg's it runs outside ``bounded``, whose scratch
+files such a disk would deny. It runs the ``scripts/py`` of the ``fleet-worker.sh`` this run starts,
+the one interpreter the slot needs on the box anyway, and not ``$SKILLS_REPO``'s, which a local box's
+run does not use. A read that fails is a ``TIP-RUN NOTE <box>:`` on stderr and the run goes on: the
+floor refuses a disk it has read, never one it could not. Its boundary: one reading of the filesystem
+of ``--checkout``, before the run. What the run then writes, and a filesystem the checkout is not on
+(``--runs``, ``$STATE``, a dune cache), is outside it.
 
 THE REQUEST ID (ludics-lite#714). With ``--id-prefix <prefix>`` the payload names no
 ``request_id`` (one source, as for ``--tip``'s revision): the run takes ``<prefix>-<n>``, ``<n>``
@@ -134,7 +151,7 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker import revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.leg import PIN
+from ludics.fleetworker.leg import FLOOR, PIN, min_free_gib
 from ludics.fleetworker.preflight import refresh_box
 from ludics.fleetworker.transport import (
     BG_RUN_TAG,
@@ -162,10 +179,11 @@ HANDLE = re.compile(r"bg-run:([^:]+):(/.*)", re.DOTALL)
 # Far side, on the execution host, read by `bash -s` from stdin: so every child that could read
 # stdin is given /dev/null, or it would eat the rest of this script. Args: checkout, sha, runs parent (empty: $STATE/tip-runs), the
 # fleet-worker.sh to run there (empty: the box's skills checkout's), cpu|gpu, the settle bound, the
-# backend a GPU-loop purpose names (empty: none, nothing checked), then the command. Prints `dir=`
+# backend a GPU-loop purpose names (empty: none, nothing checked), the free-space floor in GiB
+# (FLEET_LEG_MIN_FREE_GIB, 0 for none), then the command. Prints `dir=`
 # and `slot=held|ended|unsettled` (and `said=` for ended), or one TIP-RUN REFUSED line, exit 1, when
 # nothing was started.
-FAR = PIN + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7"; shift 7
+FAR = PIN + FLOOR + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7" min_free="$8"; shift 8
 refuse() { echo "TIP-RUN REFUSED: $*"; exit 1; }
 [ -n "$runs" ] || runs="$(expand_tilde "$STATE")/tip-runs"
 [ -n "$fw" ] || fw="$(expand_tilde "$SKILLS_REPO")/issue-wave/scripts/fleet-worker.sh"
@@ -173,6 +191,12 @@ refuse() { echo "TIP-RUN REFUSED: $*"; exit 1; }
 cd "$co" 2>/dev/null || refuse "no checkout $co on $BOX"
 dirty=$(git status --porcelain </dev/null 2>/dev/null) || refuse "$co on $BOX is not a git checkout"
 [ -z "$dirty" ] || refuse "$co on $BOX has uncommitted changes ($(printf '%s\n' "$dirty" | grep -c '') path(s)): a run over them verifies nothing, and they are not this run's to discard"
+# THE FREE-SPACE FLOOR (see the header): before this run writes anything on the box.
+if [ "$min_free" != 0 ]; then
+  room=$("$(dirname "$fw")/../../scripts/py" -c "$FLOOR_PY" "$min_free" "$co" </dev/null 2>/dev/null); frc=$?
+  [ "$frc" -ne 3 ] || refuse "only ${room%% *} GiB free on the filesystem of ${room#* } on $BOX, under the floor of $min_free GiB (FLEET_LEG_MIN_FREE_GIB); nothing ran: free space there first (fleet-worker.sh farside-close <wave> removes a closed wave's far-side worktrees), or lower the knob for a run that fits"
+  [ "$frc" -eq 0 ] || printf '%s\n' "TIP-RUN NOTE $BOX: cannot read the free space of $co (exit $frc), so the floor of $min_free GiB (FLEET_LEG_MIN_FREE_GIB) is not checked; the run goes on" >&2
+fi
 if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
   bounded 300 git fetch -q origin >/dev/null; frc=$?
   [ "$frc" -eq 0 ] || refuse "git fetch origin in $co on $BOX failed (exit $frc)"
@@ -410,6 +434,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     problem = request_problem(request, bool(parsed.tip), bool(parsed.id_prefix))
     if problem:
         die(f"execution tip-run: {problem}")
+    min_free = min_free_gib(cfg)
     fields = cast(dict[str, Any], request)
     # Until --id-prefix's number is allocated (THE REQUEST ID), a line names the run `<prefix>-?`.
     label = f"{parsed.id_prefix}-?" if parsed.id_prefix else str(fields["request_id"])
@@ -474,7 +499,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     fw = os.path.join(cfg.here, os.path.basename(cfg.script)) if is_local(cfg, box) else ""
     kind = "cpu" if parsed.cpu else "gpu"
     backend = loop_backend(fields)
-    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, *parsed.command]
+    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, min_free, *parsed.command]
     done = run_on(cfg, box, prelude(cfg, box) + FAR, far, capture=True)
     text = done.out.rstrip("\n")
     if done.unreachable:
