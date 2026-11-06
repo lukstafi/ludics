@@ -886,6 +886,13 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   leg's. What it leaves in the worktree counts as the run's (the main run's `NO CONTROL`, the
   after-run warning). A leg run by a checkout from before this reads a `run-report` line as one it
   cannot read and refuses, so a project adds it once its callers' skills checkout has it.
+- **The free-space floor.** A leg is refused, before its worktree's lock, fetch, checkout and slot,
+  when the filesystem of `--checkout` or `--worktree` has under `FLEET_LEG_MIN_FREE_GIB` free (a whole
+  number of GiB, default 20, read where the leg is run; 0 turns it off): `EXECUTION LEG REFUSED <box>:
+  only <n> GiB free on the filesystem of <path>, under the floor of <m> GiB`, status 1. A run on a
+  fuller disk dies mid-checkout or mid-build with no named failure. Free the box's space
+  ([`farside-close`](#the-gpu-home-box)), or lower the knob for a run that fits. A read that fails is
+  a `NOTE` on the leg's output, and the leg runs.
 - **Stopping a leg.** A leg's far side runs in an ssh session of its own, which nothing on the
   caller's box reaches, so a SIGTERM, SIGINT or SIGHUP the leg gets while it runs (`bg-run.sh stop`
   on its run, a Ctrl-C) ends the far side as well (ludics-lite#767): `EXECUTION LEG STOPPING <box>:
@@ -1033,12 +1040,26 @@ Each standing reservation is concluded at hand-back from its own box's last batc
 `--observed-from <the far-side checkout>`: its runner record in the [standing
 form](#standing-iteration-reservation) (`--from-run`, read on the reservation's execution host, or
 no run and the hand-back's `--verdict`), or the leg's `bg-run.sh` directory with `--from-bg-run
---box <agent host>`. The coordinator records the far-side checkout on the board and removes
-it at close-out with the worker's local one, once that conclusion has landed. A conclusion that
+--box <agent host>`. The coordinator records the far-side checkout on the board (`board set <wave>
+<task> farside=<box>:<path>`) and removes it at close-out with the worker's local one, once that
+conclusion has landed. A conclusion that
 reads a checkout which is not clean (a golden promoted there on hardware) says so in an
 `OBSERVED-FROM WARNING` line and still concludes: resume the worker to commit or revert it before
 the removal discards it. A measurement
 there, and a one-off leg on a box the plan names no iteration for, still go through a request.
+
+The removal is `fleet-worker.sh farside-close <wave> [--task <task>]... [--regenerable <dir>]...
+[--remote <name>] [--dry-run]`, with the lease (a dry run needs none). It reads the board's `farside`
+words and nothing else, and removes a worktree only when its row's state is a done word, no
+outstanding reservation refers to it, no leg holds its lock, the tree is clean, no ignored path
+is left but what `--regenerable` names (the project's to say, as for `post-merge-cleanup.sh`: OCANNL's
+is `_build`), and HEAD is on a branch of the remote, asked afresh. A worktree that fails only that
+last gate loses its `--regenerable` directories and stays, `TRIMMED`; any other failure is `KEPT`, its
+reason on its line, for you to act on. It prints one line per word, re-runs safely (what went reads
+`GONE`), writes neither board nor registry, and exits 0 when nothing stayed, 3 when something did, 4
+when a box did not answer: wake that box and run it again. The gates, their boundary and the
+recovery are the header of `lib/ludics/fleetworker/farsideclose.py`. A past wave's debris goes the
+same way, once its words are on a board.
 
 ## Native handoffs
 

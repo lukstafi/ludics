@@ -10,6 +10,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from ludics import cli
 from ludics.fleetworker import execution, farside, leg, slot
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -635,7 +637,7 @@ class ForeignHome(unittest.TestCase):
             script = f"STATE={shlex.quote(state)}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
             done = subprocess.run(
                 [self.bash, "-s", "/home/leg669/ludics", "/home/leg669/wt", "origin", "main", "", "", "req", "5",
-                 "t0k", "", "0", "0", "0", "true"],
+                 "t0k", "", "0", "0", "0", "0", "true"],
                 input=script, env={**os.environ, "HOME": "/Users/leg669"}, capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertEqual(done.stderr, "EXECUTION LEG REFUSED box: --checkout /home/leg669/ludics is not a git checkout"
@@ -660,6 +662,48 @@ class ForeignHome(unittest.TestCase):
             link = os.path.join(tmp, "home")
             os.symlink(real, link)
             self.assertEqual(self.hint(link, os.path.join(real, "ludics-lite")), "")
+
+
+class FreeSpaceFloor(unittest.TestCase):
+    """THE FREE-SPACE FLOOR (ludics#981): the far side's reading of a filesystem. The refusal, its
+    place before the leg's first write and the failed read's note are the shell suite's."""
+
+    def read(self, floor: int, *paths: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, "-I", "-c", leg.FLOOR_PY, str(floor), *paths], capture_output=True, text=True)
+
+    def test_a_filesystem_over_the_floor_passes_and_one_under_it_exits_3_naming_the_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            free = shutil.disk_usage(tmp).free / 2**30
+            self.assertEqual(self.read(0, tmp).returncode, 0)
+            done = self.read(int(free) + 1000, tmp)
+            self.assertEqual(done.returncode, 3)
+            gib, where = done.stdout.rstrip("\n").split(" ", 1)
+            self.assertAlmostEqual(float(gib), free, delta=2)
+            self.assertEqual(where, tmp)
+
+    def test_a_worktree_not_made_yet_is_read_at_its_nearest_existing_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.read(0, os.path.join(tmp, "not", "yet"))
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertTrue(done.stdout.rstrip("\n").endswith(os.path.join(tmp, "not", "yet")))
+
+    def test_a_path_with_a_space_survives_the_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "a b")
+            os.mkdir(path)
+            self.assertEqual(self.read(0, path).stdout.rstrip("\n").split(" ", 1)[1], path)
+
+    def test_a_path_that_cannot_be_read_exits_1_with_nothing_printed(self) -> None:
+        done = self.read(0, "relative/nowhere/at/all")
+        self.assertEqual((done.returncode, done.stdout), (1, ""))
+
+    def test_a_floor_that_is_no_whole_number_is_a_usage_error_before_anything_is_read(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "agent", "FLEET_LEG_MIN_FREE_GIB": "lots"}, host="agent")
+        with mock.patch.object(execution, "listing") as listing, self.assertRaises(cli.Exit) as raised:
+            leg.cmd_leg(cfg, ["--request", "r", "--rev", "main", "--checkout", "/c", "--worktree", "/w", "--", "true"])
+        self.assertEqual(raised.exception.rc, 2)
+        self.assertIn("FLEET_LEG_MIN_FREE_GIB must be a whole number", str(raised.exception))
+        listing.assert_not_called()
 
 
 class Sweep(unittest.TestCase):

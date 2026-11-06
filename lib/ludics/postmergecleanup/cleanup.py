@@ -29,6 +29,25 @@ from ludics.postmergecleanup.transaction import RefTransaction
 
 
 CALLER_TMPDIR = "LUDICS_CALLER_TMPDIR"
+# The state a Git operation under way keeps in a worktree's git directory: pending commits, and with
+# `--autostash` uncommitted edits, a clean tree and a plain stash list do not show (fleetworker's
+# farside-close reads this list too).
+ACTIVE_OPERATIONS = (
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "REBASE_HEAD",
+    "BISECT_START",
+    "BISECT_LOG",
+    "BISECT_NAMES",
+    "BISECT_TERMS",
+    "BISECT_RUN",
+    "BISECT_ANCESTORS_OK",
+    "BISECT_EXPECTED_REV",
+    "sequencer",
+    "rebase-merge",
+    "rebase-apply",
+)
 
 
 def fail(message: str) -> NoReturn:
@@ -510,22 +529,7 @@ class Cleanup:
 
     def refuse_active_session_operations(self, worktree: str = "", description: str = "session") -> None:
         checkout = worktree or self.session
-        for name in (
-            "MERGE_HEAD",
-            "CHERRY_PICK_HEAD",
-            "REVERT_HEAD",
-            "REBASE_HEAD",
-            "BISECT_START",
-            "BISECT_LOG",
-            "BISECT_NAMES",
-            "BISECT_TERMS",
-            "BISECT_RUN",
-            "BISECT_ANCESTORS_OK",
-            "BISECT_EXPECTED_REV",
-            "sequencer",
-            "rebase-merge",
-            "rebase-apply",
-        ):
+        for name in ACTIVE_OPERATIONS:
             _, path = self.locate(checkout, name, f"could not locate session operation state: {name}")
             if system.lexists(path):
                 fail(

@@ -216,8 +216,15 @@
 #                          # exit 3 when the brief cannot be read (lib/ludics/fleetworker/takeover.py)
 #                          # (set/note --create starts the board; without it every writer refuses
 #                          # an unknown wave; the contract: lib/ludics/fleetworker/boardstore.py)
+#   fleet-worker.sh farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]
+#                          # remove a closed wave's far-side worktrees, the board's `farside` words,
+#                          # each only past its row's done state, no outstanding reservation, no leg
+#                          # holding it, a clean tree and HEAD on a branch of the remote; else kept,
+#                          # or only --regenerable dirs removed when HEAD alone fails; one line a
+#                          # word, re-runnable; exit 3 when one stayed, 4 when a box did not answer;
+#                          # needs the lease unless --dry-run (lib/ludics/fleetworker/farsideclose.py)
 #
-# `launch`, `unstick`, `close`, `halt`, `resume-launches` and the board's writers require the lease;
+# `launch`, `unstick`, `close`, `farside-close`, `halt`, `resume-launches` and the board's writers require the lease;
 # `launch` also refuses while halted (`--force` admits the one triage worker) and runs the preflight
 # on the box first. Lease, halt and boards live on FLEET_ANCHOR.
 #
@@ -313,6 +320,8 @@
 #   FLEET_PROBE_TIMEOUT: wall-clock bound on the live headless preflight turn; 120.
 #   FLEET_CROSS_TIMEOUT: wall-clock bound on each cross-box ssh reach probe of the preflight; 20.
 #   FLEET_FETCH_TIMEOUT: wall-clock bound on skills-checkout and project fetches; 300.
+#   FLEET_LEG_MIN_FREE_GIB: `execution leg` refuses a box with less free on the filesystem of its
+#     checkout or worktree (a whole number of GiB, read by the caller; 0 for no floor); 20.
 #   FLEET_GH_TIMEOUT: wall-clock bound on each of the GitHub probe's API calls, `gh api user` and
 #     the try of the credential git returns (git's helper gets twice that plus 5 s, the try
 #     inside it included), in the preflight's session and in a tmux session, and on `execution`'s

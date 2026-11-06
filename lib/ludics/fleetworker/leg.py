@@ -72,6 +72,26 @@ path, held by every process the leg starts, the runner's wrapper included, so it
 shell that dies first): a second is refused, never queued, since a worktree moved under a running leg would make it test another commit than the one
 it reports.
 
+THE FREE-SPACE FLOOR (ludics#981). A disk left with 17 MB cut off a CUDA integration run with dune
+exit 2 and no named failure, and a leg (``run-29``) spent a slot and died mid-checkout. So a leg is
+refused, ``EXECUTION LEG REFUSED <box>: only <n> GiB free ...`` naming the box, the free space and the
+floor, when the filesystem of ``--checkout`` or of ``--worktree`` (its nearest existing ancestor, for
+one not made yet) has less than FLEET_LEG_MIN_FREE_GIB (a whole number of GiB, default 20: about two
+of the 10 GB ``_build`` trees rog held; 0 turns the check off) free to this user. The knob is read
+where the leg is run, as FLEET_FETCH_TIMEOUT is, so a lower floor for a small box is the caller's or
+the site's (``~/.config/fleet/env.sh``), and a value that is no whole number is a usage error. The
+check is the far shell's first write-free step after the paths are known: before the worktree's
+lock, the fetch, ``git worktree add`` and the slot, since on a full disk each of those fails with
+something else. It reads ``shutil.disk_usage`` through ``scripts/py``, which the worktree's lock
+needs on the box anyway, rather than ``df``, so no output format and no coreutils are read (GNU,
+uutils and BSD alike), and directly rather than under ``bounded``, whose scratch files a full disk
+would deny, turning the refusal into a note. A read that fails is a NOTE and the leg goes on: the
+floor refuses a disk it has read, never one it could not. Its boundary: one reading, before the
+run. What a run then writes, and a filesystem neither path is on (``$STATE``, ``$TMPDIR``), is outside
+it; the files a leg copies to the box before its far shell starts are written first, and a refusal
+removes them as any refusal does. ``farside-close`` (``ludics.fleetworker.farsideclose``) is what
+frees a closed wave's far-side worktrees.
+
 THE RUNNER. The command after ``--`` runs in the worktree, its argv passed untouched (each word
 quoted for the box's shell), stdin closed; nothing here names a project's runner. Its status is the
 leg's, unchanged -- a 125 or a signal's 128+n survives the trip -- and the last line on stdout is
@@ -300,6 +320,7 @@ REMOTE = re.compile(r"[A-Za-z0-9._-]+")
 SECONDS = re.compile(r"[1-9][0-9]*")
 WHOLE = re.compile(r"[0-9]+")
 RUN_BOUND = "86400"  # each run's --deadline when the leg names none: a day, a bound only to reap with
+DEFAULT_MIN_FREE_GIB = "20"  # THE FREE-SPACE FLOOR's default (see the header)
 HELD_BACK = 64  # bytes of an unfinished line kept back for the status line; it is never longer than 45
 
 # A HINT FOR A PATH FROM ANOTHER BOX'S HOME (ludics-lite#669), appended to the far side's refusals of
@@ -517,16 +538,69 @@ sweep_staged() {
 }
 """)
 
+# What every far side that judges a leg's worktree shares (this verb, `farside-close`): one reading
+# of what the checkout is and is holding, and above all ONE LOCK. A second spelling of the lock's key
+# would name another file, and a close-out would remove a worktree a leg still runs in.
+#   common <path>, gitdir <path>: its git common directory, its git directory, physical; empty when
+#     it is no checkout.
+#   dirt <path>: what makes a worktree not the commit at its HEAD: changed, staged or untracked paths
+#     and submodules, whatever the configuration says to show or ignore; git's own failure is its
+#     status, never an empty (clean) answer.
+#   canon <path>: the nearest existing ancestor's physical path, then the rest as given, so a leg
+#     before the worktree exists and one after it name the same lock.
+#   leg_lock_file <canon's output>, leg_flock: the lock's file, and a flock on descriptor 9 (exit 3:
+#     held; the caller opens the descriptor, so a refusal can name a failed open). A flock belongs to
+#     the open file, so it holds until the last process that inherited it has exited. Taken by
+#     scripts/py (Python >= 3.12, which `execution slot` needs on the box anyway), since macOS has no
+#     flock(1).
+WORKTREE = r"""common() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
+gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
+dirt() { git -C "$1" status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null; }
+canon() {
+  local p="$1" rest="" base
+  while [ ! -d "$p" ] && [ "$p" != / ] && [ "$p" != . ]; do rest="/$(basename "$p")$rest"; p=$(dirname "$p"); done
+  base=$(cd "$p" && pwd -P) || return 1
+  printf '%s%s' "${base%/}" "$rest"
+}
+leg_lock_file() { printf '%s' "$STATE/leg-locks/$(printf '%s' "$1" | cksum | tr ' ' -)"; }
+leg_flock() {
+  "$SKILLS_REPO/scripts/py" -c 'import fcntl, sys
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit(3)' </dev/null
+}
+"""
+
+# THE FREE-SPACE FLOOR (see the header). Args: the floor in GiB, the paths. Prints `<GiB free> <path>`
+# for the path with the least free; exit 3 when that is under the floor, 1 with nothing printed when
+# one cannot be read.
+FLOOR_PY = r"""import os, shutil, sys
+floor, paths = int(sys.argv[1]), sys.argv[2:]
+def room(path):
+    while path and not os.path.exists(path):
+        path = os.path.dirname(path)
+    return shutil.disk_usage(path).free
+try:
+    least, where = min((room(path), path) for path in paths)
+except OSError:
+    sys.exit(1)
+print(f"{least // 2**20 / 1024:.2f} {where}")
+sys.exit(3 if least < floor * 2**30 else 0)
+"""
+FLOOR = f"FLOOR_PY={shlex.quote(FLOOR_PY)}\n"
+
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
 # (FLEET_FETCH_TIMEOUT), the status token (see the header), the shipped --file's name (in
-# $STATE/leg-files, or empty), the --reads-no-config declaration (0|1), the wrapper's word count and words
+# $STATE/leg-files, or empty), the --reads-no-config declaration (0|1), the free-space floor in GiB
+# (FLEET_LEG_MIN_FREE_GIB, 0 for none), the wrapper's word count and words
 # (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot flags'
 # count and words, then the runner's argv.
-LEG = NOT_HOME + PIN + SWEEP + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" nwrap="${12}"
+LEG = NOT_HOME + PIN + SWEEP + WORKTREE + FLOOR + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" min_free="${12}" nwrap="${13}"
 # THE STOP (see the header): this shell's pid, first, under the token; the leg keeps it.
 printf 'execution-leg %s: far: %s\n' "$token" "$$"
-shift 12
+shift 13
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
 while [ "$nwrap" -gt 0 ]; do wrap+=("$1"); shift; nwrap=$((nwrap - 1)); done
@@ -546,40 +620,26 @@ cleanup() {
 }
 refuse() { printf 'EXECUTION LEG REFUSED %s: %s\n' "$BOX" "$*" >&2; cleanup; exit 1; }
 finish() { cleanup; printf 'execution-leg %s: exit: %s\n' "$token" "$1"; exit "$1"; }
-# A path's git common directory, physical; empty when it is no checkout.
-common() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
-gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
-# What makes a worktree not the commit at its HEAD: changed, staged or untracked paths and
-# submodules, whatever the configuration says to show or ignore; git's own failure is its status,
-# never an empty (clean) answer.
-dirt() { git -C "$1" status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null; }
 [ -x "$fw" ] || refuse "no executable fleet-worker.sh at $fw (the skills checkout on $BOX; run fleet-worker.sh refresh $BOX)"
 cdir=$(common "$co"); [ -n "$cdir" ] || refuse "--checkout $co is not a git checkout on $BOX$(not_home "$co")"
 # One leg at a time in a worktree, from the status check through the control's revert: a second
 # leg moving it would make the first test another commit than the observed_sha it reports. The lock
-# is a flock on a file under $STATE/leg-locks, taken on descriptor 9 of this shell, which every
-# process started from here inherits -- the slot or hold wrapper included, which stays the parent of
-# the runner's group for as long as any of it runs. A flock belongs to the open file, so it holds
-# until the last of those processes has exited: this shell dying while the runner runs on (a
-# dropped connection) does not free the worktree. Taken by scripts/py (Python >= 3.12, which
-# `execution slot` needs on the box anyway), since macOS has no flock(1).
-# The key: the nearest existing ancestor's physical path, then the rest as given, so a leg before the
-# worktree exists and one after it name the same lock.
-canon() {
-  local p="$1" rest="" base
-  while [ ! -d "$p" ] && [ "$p" != / ] && [ "$p" != . ]; do rest="/$(basename "$p")$rest"; p=$(dirname "$p"); done
-  base=$(cd "$p" && pwd -P) || return 1
-  printf '%s%s' "${base%/}" "$rest"
-}
+# (WORKTREE) is taken on descriptor 9 of this shell, which every process started from here inherits
+# -- the slot or hold wrapper included, which stays the parent of the runner's group for as long as
+# any of it runs -- so this shell dying while the runner runs on (a dropped connection) does not free
+# the worktree.
 wkey=$(canon "$wt") || refuse "cannot resolve --worktree $wt on $BOX$(not_home "$wt")"
+# THE FREE-SPACE FLOOR (see the header): before this leg writes anything on the box. No `bounded`
+# here: it needs scratch files, which a full disk denies.
+if [ "$min_free" != 0 ]; then
+  room=$("$SKILLS_REPO/scripts/py" -c "$FLOOR_PY" "$min_free" "$co" "$wkey" </dev/null 2>/dev/null); frc=$?
+  [ "$frc" -ne 3 ] || refuse "only ${room%% *} GiB free on the filesystem of ${room#* }, under the floor of $min_free GiB (FLEET_LEG_MIN_FREE_GIB); nothing ran: free space there first (fleet-worker.sh farside-close <wave> removes a closed wave's far-side worktrees), or lower the knob for a run that fits"
+  [ "$frc" -eq 0 ] || say "NOTE: cannot read the free space of $co or $wt (exit $frc), so the floor of $min_free GiB (FLEET_LEG_MIN_FREE_GIB) is not checked; the leg goes on"
+fi
 mkdir -p "$STATE/leg-locks" || refuse "cannot create $STATE/leg-locks on $BOX"
-wlock="$STATE/leg-locks/$(printf '%s' "$wkey" | cksum | tr ' ' -)"
+wlock=$(leg_lock_file "$wkey")
 exec 9>>"$wlock" || refuse "cannot open the worktree lock $wlock on $BOX"
-"$SKILLS_REPO/scripts/py" -c 'import fcntl, sys
-try:
-    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError:
-    sys.exit(3)' </dev/null; lrc=$?
+leg_flock; lrc=$?
 [ "$lrc" -ne 3 ] || refuse "--worktree $wt: another leg is using it (lock $wlock); wait for it, or name another worktree"
 [ "$lrc" -eq 0 ] || refuse "cannot lock --worktree $wt ($SKILLS_REPO/scripts/py exit $lrc, above)"
 # THE SWEEP (see the header): this leg's own staged files claimed, on descriptors every process
@@ -1095,6 +1155,9 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
     if not SECONDS.fullmatch(fetch_timeout):
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
+    if not WHOLE.fullmatch(knob(cfg, "FLEET_LEG_MIN_FREE_GIB", DEFAULT_MIN_FREE_GIB)):
+        die(f"FLEET_LEG_MIN_FREE_GIB must be a whole number of GiB (0 for no floor),"
+            f" not {knob(cfg, 'FLEET_LEG_MIN_FREE_GIB', DEFAULT_MIN_FREE_GIB)!r}")
 
     # The reservation: a dispatched record, whose execution host is the box. A leg that may wait out a
     # window registers as its waiter in this same read, by its request (THE WAITERS, ludics-lite#719):
@@ -1212,6 +1275,7 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     argv = far_argv(
         cfg, box,
         [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, fname, "1" if no_config else "0",
+         knob(cfg, "FLEET_LEG_MIN_FREE_GIB", DEFAULT_MIN_FREE_GIB),
          str(len(wrap)), *wrap,
          str(len(nest)), *nest, *runner],
     )

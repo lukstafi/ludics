@@ -366,6 +366,9 @@ export FLEET_ANCHOR="testbox"
 # guess (tested below), so a test must name it, as would any coordinator whose harness supplies no
 # session identity.
 export FLEET_COORDINATOR="test-coordinator"
+# THE FREE-SPACE FLOOR (ludics#981) is off for every leg here, whatever disk runs the suite (a CI
+# runner has about 14 GB free); the cases that mean it set it.
+export FLEET_LEG_MIN_FREE_GIB=0
 unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID
 # An exported GitHub token changes the preflight's credential repair text (ludics-lite#360), so the
 # runner's own must not reach it.
@@ -3956,6 +3959,75 @@ expect "...so it has no record to run a leg under" 1 "unknown request_id leg-ord
 [ "$(marks)" = $((n + 2)) ] && ok "...and the refused ran nothing" || ko "a refused leg ran: $(marks) (from $n)"
 "$FW" resume-launches >/dev/null || ko "could not resume launches (setup)"
 fixture_done leg-tr-testbox; fixture_done leg-tr-other
+
+# THE FREE-SPACE FLOOR (ludics#981): a floor no disk meets stands for a nearly full one. The refusal
+# comes before the leg's first write: no worktree, no slot taken, no runner, nothing staged left.
+lreq leg-fl
+fwt="$TMP/fc wts/floor"
+n=$(marks)
+expect "a leg under the floor is refused, naming the box, the free space and the floor" 1 \
+  "^EXECUTION LEG REFUSED testbox: only [0-9.]* GiB free on the filesystem of .*, under the floor of 999999999 GiB (FLEET_LEG_MIN_FREE_GIB); nothing ran" -- \
+  env FLEET_LEG_MIN_FREE_GIB=999999999 "${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$fwt" \
+  --control "$TMP/break.patch" --cpu -- tools/check.sh
+if [ ! -e "$fwt" ] && [ ! -e "$(dirname "$fwt")" ]; then ok "...before any worktree"; else ko "a refused leg made $fwt"; fi
+grep -q "execution-leg: exit" <<<"$out" && ko "a refused leg printed a sentinel: $out" || ok "...printing no sentinel, so nothing ran to an end"
+grep -q "held for\|slot [0-9]" <<<"$out" && ko "a refused leg took a slot: $out" || ok "...and taking no slot"
+[ "$(marks)" = "$n" ] && ok "...the runner not run" || ko "a refused leg ran its runner: $(marks) (from $n)"
+ls "$ISSUE_WAVE_STATE/leg-control" 2>/dev/null | grep -q "leg-fl" && ko "a refused leg left its patch: $(ls "$ISSUE_WAVE_STATE/leg-control")" || ok "...and its staged patch removed"
+lreq leg-fo other
+expect "...and over ssh, on the box the record names" 1 "^EXECUTION LEG REFUSED other: only [0-9.]* GiB free" -- \
+  env SHIM_SSH_LOCAL=other FLEET_LEG_MIN_FREE_GIB=999999999 "${FWL[@]}" execution leg --request leg-fo --rev main --checkout "$lco" --worktree "$fwt" -- tools/check.sh
+fixture_done leg-fo
+expect "a floor that is no whole number is a usage error" 2 "FLEET_LEG_MIN_FREE_GIB must be a whole number of GiB" -- \
+  env FLEET_LEG_MIN_FREE_GIB=lots "${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$fwt" -- tools/check.sh
+expect "a floor the disk meets lets the leg run" 0 "execution-leg: exit: 0" -- \
+  env FLEET_LEG_MIN_FREE_GIB=1 "${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$fwt" -- tools/check.sh
+# A read that fails is a note, and the leg runs: scripts/py, which the far side runs, fails the floor's
+# program alone.
+mv "$TMP/dispatcher/scripts/py" "$TMP/dispatcher/scripts/py.real"
+printf '#!/bin/sh\ncase "$2" in *disk_usage*) exit 7 ;; esac\nexec "$(dirname "$0")/py.real" "$@"\n' > "$TMP/dispatcher/scripts/py"
+chmod +x "$TMP/dispatcher/scripts/py"
+expect "a free-space read that fails is a note, and the leg runs" 0 "execution-leg: exit: 0" -- \
+  env FLEET_LEG_MIN_FREE_GIB=999999999 "${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$fwt" -- tools/check.sh
+grep -q "^EXECUTION LEG testbox: NOTE: cannot read the free space of .* (exit 7), so the floor of 999999999 GiB" <<<"$out" && ok "...said on the leg's output" || ko "no note: $out"
+mv "$TMP/dispatcher/scripts/py.real" "$TMP/dispatcher/scripts/py"
+
+# farside-close (ludics#981): the board's far-side words through the real registry and board; the
+# gates themselves, each against real git, are test_fleetworker_farsideclose.py's. Worktrees made by
+# real legs, so the lock and the layout are a leg's own.
+FWC=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4 other=2" FLEET_SKILLS_REPO="$TMP/dispatcher" "$FW" farside-close)
+"$FW" board set --create fcw t1 state=reviewing "farside=testbox:$TMP/fcwts/a" >/dev/null || ko "could not start the board (setup)"
+"${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$TMP/fcwts/a" -- tools/check.sh >/dev/null 2>&1 || ko "could not make worktree a (setup)"
+expect "a row that is not done keeps its far-side worktree" 3 "^FARSIDE KEPT testbox:.*/fcwts/a (t1): the row's state is not a done word (reviewing)$" -- "${FWC[@]}" fcw
+"$FW" board set fcw t1 state=merged requests=leg-fl >/dev/null
+expect "an outstanding reservation the row names keeps it" 3 "^FARSIDE KEPT testbox:.*/fcwts/a (t1): outstanding reservation: leg-fl$" -- "${FWC[@]}" fcw
+[ -d "$TMP/fcwts/a" ] && ok "...on the box too" || ko "a kept worktree went"
+fixture_done leg-fl
+expect "a dry run needs no lease, and removes nothing" 0 "^FARSIDE WOULD-REMOVE testbox:.*/fcwts/a (t1): clean, and HEAD $la is on a branch of origin$" -- \
+  env ISSUE_WAVE_STATE="$TMP/state-b" FLEET_ANCHOR_STATE="$ISSUE_WAVE_STATE" "${FWC[@]}" fcw --dry-run
+[ -d "$TMP/fcwts/a" ] && ok "...the worktree still there" || ko "a dry run removed it"
+expect "a coordinator without the lease is refused" 1 "^FARSIDE CLOSE REFUSED fcw: coordinator lease held by" -- \
+  env ISSUE_WAVE_STATE="$TMP/state-b" FLEET_ANCHOR_STATE="$ISSUE_WAVE_STATE" FLEET_COORDINATOR=rival "${FWC[@]}" fcw
+expect "past every gate the worktree goes" 0 "^FARSIDE REMOVED testbox:.*/fcwts/a (t1): HEAD $la is on a branch of origin$" -- "${FWC[@]}" fcw
+[ ! -e "$TMP/fcwts/a" ] && ok "...from the box" || ko "still there: $(ls "$TMP/fcwts")"
+git -C "$lco" worktree list | grep -q fcwts && ko "git still lists it" || ok "...and from the checkout's worktree list"
+expect "a re-run says it is gone" 0 "^FARSIDE GONE testbox:.*/fcwts/a (t1): " -- "${FWC[@]}" fcw
+grep -q "^FARSIDE CLOSE fcw: 1 gone$" <<<"$out" && ok "...and counts it" || ko "no count line: $out"
+# A leg running in a worktree the row does not otherwise tie to any record: the leg's own lock keeps it.
+lreq leg-busy
+"$FW" board set fcw t2 state=done "farside=testbox:$TMP/fcwts/busy" >/dev/null
+fcrun="$TMP/fc-running"; rm -f "$fcrun" "$fcrun.go"
+"${FWL[@]}" execution leg --request leg-busy --rev main --checkout "$lco" --worktree "$TMP/fcwts/busy" --cpu -- \
+  sh -c 'touch "$0"; while [ ! -e "$0.go" ]; do sleep 0.1; done' "$fcrun" >/dev/null 2>&1 &
+fcleg=$!
+for _ in $(seq 1 300); do [ -e "$fcrun" ] && break; sleep 0.1; done
+[ -e "$fcrun" ] || ko "the leg never started its runner (setup)"
+expect "a worktree a leg is running in is kept, by the leg's own lock" 3 "^FARSIDE KEPT testbox:.*/fcwts/busy (t2): another leg is using it (lock " -- "${FWC[@]}" fcw --task t2
+[ -d "$TMP/fcwts/busy/tools" ] && ok "...whole" || ko "the running leg's worktree went"
+touch "$fcrun.go"; wait "$fcleg"
+fixture_done leg-busy
+expect "...and goes once the leg has ended" 0 "^FARSIDE REMOVED testbox:.*/fcwts/busy (t2): " -- "${FWC[@]}" fcw --task t2
+expect "a wave with no board is refused" 1 "no board" -- "${FWC[@]}" no-such-wave
 unset LEG_MARK
 }
 
