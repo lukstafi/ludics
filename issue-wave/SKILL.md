@@ -752,10 +752,10 @@ requirements for every transport with transport-specific setup and identity, and
   local `/bin/bash` run cannot show, a clean `macos-latest` image or a tool difference (image
   drift, ludics#953); a change those runs cover and negative-test needs none. `merge` does not
   wait for a dispatch and nothing else reads its result, so a worker whose PR claims that result
-  waits itself, `pr-review.sh checks lukstafi/ludics#<pr> --wait --check '\(macos\)$'` blocked on as any wait,
-  says so in the PR and cites the run. Nothing runs the full
-  macOS set at the merged tip until #964: a weekly red opens an issue (`base` reads push runs
-  only), and the integration loop owns it, bisecting on mac-studio as below.
+  waits itself, `pr-review.sh checks lukstafi/ludics#<pr> --wait --check '\(macos\)$'` blocked on
+  as any wait, says so in the PR and cites the run. Nothing runs the full macOS set at the merged
+  tip until #964: a weekly red opens an issue (`base` reads push runs only), and the integration
+  loop owns it, bisecting on mac-studio as below.
 - **The worker's verification ends at its own merge** (2026-08-30: seven workers chased
   master's moving tip for 100-120 minutes each): after `merge` confirms `merged`, the worker
   does NOT watch master's subsequent CI - "the latest tip's workflows" is a moving target under
