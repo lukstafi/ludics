@@ -362,13 +362,40 @@ def referencing_read(helper: str, repo: str, issue: Json) -> set[int] | tuple[in
                    " that only references it is not shown")
 
 
+def merge_builds(cfg: Config, clock: float | None = None) -> dict[str, str]:
+    """``{owner/name#n, casefolded: its "<elapsed>s/<bound>s"}``: the merge builds running now.
+    #1735's ran past 15 minutes while the coordinator's heartbeat listed it as open, and the
+    maintainer noticed first. Boundary, a fail-closed allowlist: what is read is THIS box's slot
+    files, through ``holders.held_records``, and a build is a held slot whose confirmed record has
+    the command ``mergebuild.build_of`` reads and a ``--deadline``, which is the bound. So it does
+    not show a build on another box (a CLI worker's), a bare one (a box with no slots), one in a slot
+    its merge already held, or one still waiting for a slot. Elapsed counts from the command's start,
+    the clock the deadline runs on. Nothing is said for what it cannot read: this is a sighting,
+    and an unread slot leaves the line as it was."""
+    from ludics.fleetworker import holders
+    from ludics.prreview.mergebuild import build_of
+
+    if not cfg.local_box:
+        return {}
+    directory = os.path.join(cfg.path(cfg.slot_state), cfg.local_box)
+    now = time.monotonic() if clock is None else clock
+    found: dict[str, str] = {}
+    for holder in holders.held_records(directory, lambda h: build_of(h.command) is not None and h.deadline is not None):
+        build, bound = build_of(holder.command), holder.deadline
+        if build is not None and bound is not None:
+            elapsed = 0 if holder.expires is None else max(int(bound - (holder.expires - now)), 0)
+            found[build.casefold()] = f"{elapsed}s/{bound}s"
+    return found
+
+
 def cmd_prs(cfg: Config, args: list[str]) -> int:
     """``prs <owner/repo> [--wave <id>] [--flag-at <n>]``: the coordinator's supervision read of open
     PRs (ludics-lite#405). The skill sends the convergence policy "after ~5 rounds", but no view
     showed the count: staging#783 reached round 10 before the coordinator noticed, and ended at 14.
     One line per open PR -- ``pr-review.sh rounds`` (review rounds with findings), ``pr-review.sh
     checks`` (the build signal on the head, never waited for; ``pending(<kinds>)`` when a build job
-    never got a runner, ludics#753) and the head's age -- and a CONVERGE
+    never got a runner, ludics#753) and the head's age, ``merge-build=<elapsed>s/<bound>s`` while
+    its merge build runs (``merge_builds``), -- and a CONVERGE
     note on a PR at --flag-at rounds or more, or at EARLY_ROUND or more when round 1 had LARGE_FIRST
     or more inline findings (the rounds trailer's ``first``, ludics-lite#650). Of the helper's text
     only the machine-readable trailer each command ends with is read (ludics-lite#423), never the
@@ -476,6 +503,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         cli.say(f"PRS REFUSED: the open-PR list of {repo} did not parse")
         return 1
     rounds_env = {**cfg.env, "SHIP_PR_ROUND_THRESHOLD": "off"}
+    building = merge_builds(cfg) if rows else {}
     for n, sha, created, draft, branch, title in rows:
         _, rounds_out = helper_read([helper, "rounds", f"{repo}#{n}"], env=rounds_env)
         found = ROUNDS_TRAILER.fullmatch(last_line(rounds_out))
@@ -493,7 +521,9 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         if note:
             worst = 1
         mark = "draft " if draft == "draft" else ""
-        cli.say(f"{repo}#{n} rounds={rounds} ci={ci} head={age} {mark}{branch}: {title}{note}")
+        build = building.get(f"{repo}#{n}".casefold())
+        running = f"merge-build={build} " if build else ""
+        cli.say(f"{repo}#{n} rounds={rounds} ci={ci} head={age} {running}{mark}{branch}: {title}{note}")
     if not rows:
         cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}, or on a branch of its workers" if wave else ""))
     return worst

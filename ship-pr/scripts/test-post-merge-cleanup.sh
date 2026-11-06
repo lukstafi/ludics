@@ -2744,6 +2744,92 @@ test_active_session_operation_refusal() {
   echo "PASS: active session operation state is refused before mutation"
 }
 
+# REBASE_HEAD alone is a finished rebase (#982): six of one wave's worktrees were refused with no
+# rebase directory, a clean tree and HEAD already in the base. The file's commit is still retained.
+test_stale_rebase_head_is_finished() {
+  local session_git_dir recovery
+  setup_case stale-rebase-head merge main-off
+  session_git_dir=$(git -C "$CASE_SESSION" rev-parse --absolute-git-dir)
+  git -C "$CASE_SESSION" rev-parse HEAD >"$session_git_dir/REBASE_HEAD"
+  [ ! -e "$session_git_dir/rebase-merge" ] && [ ! -e "$session_git_dir/rebase-apply" ] ||
+    fail "stale-REBASE_HEAD test has a rebase directory"
+
+  "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >/dev/null 2>&1 ||
+    fail "a REBASE_HEAD with no rebase directory was refused"
+  assert_cleaned
+  recovery=$(git -C "$CASE_MAIN" for-each-ref --format='%(refname)' \
+    "refs/ship-pr/session-recovery/topic/pseudoref-REBASE_HEAD-$CASE_TOPIC_OID")
+  [ -n "$recovery" ] || fail "the stale REBASE_HEAD's commit was not retained"
+  echo "PASS: a stale REBASE_HEAD does not stop cleanup, and its commit is retained"
+}
+
+# The check guards a deletion, so its other half is the silent one: a live rebase holding REBASE_HEAD
+# beside its directory stays refused. A rebase stopped at a conflict has moved HEAD off the tip, so an
+# earlier gate refuses it; these two reach this check with HEAD at the tip and a clean tree: a real
+# rebase stopped at an `exec`, with the REBASE_HEAD a conflict stop writes added, and the apply
+# backend's directory (which `exec` does not run under) planted as test_active_session_operation_refusal's is.
+test_live_rebase_is_refused() {
+  local backend directory local_master session_git_dir out
+  for backend in merge apply; do
+    directory="rebase-$backend"
+    setup_case "live-rebase-$backend" merge main-off
+    local_master=$(git -C "$CASE_MAIN" rev-parse refs/heads/master)
+    session_git_dir=$(git -C "$CASE_SESSION" rev-parse --absolute-git-dir)
+    if [ "$backend" = merge ]; then
+      if git -C "$CASE_SESSION" rebase --exec false HEAD~1 >/dev/null 2>&1; then
+        fail "the rebase did not stop at its exec"
+      fi
+    else
+      mkdir "$session_git_dir/$directory"
+      printf '1\n' >"$session_git_dir/$directory/next"
+    fi
+    [ -d "$session_git_dir/$directory" ] || fail "the $backend fixture holds no $directory"
+    git -C "$CASE_SESSION" rev-parse HEAD >"$session_git_dir/REBASE_HEAD"
+    assert_eq "$(git -C "$CASE_SESSION" rev-parse HEAD)" "$CASE_TOPIC_OID" "the $backend fixture keeps HEAD at the tip"
+    [ -z "$(git -C "$CASE_SESSION" status --porcelain --untracked-files=all)" ] ||
+      fail "the $backend fixture did not leave a clean worktree"
+
+    if out=$("$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic 2>&1); then
+      fail "a live $backend rebase was accepted for cleanup"
+    fi
+    case "$out" in
+    *"active or retained Git operation; finish or abort it before cleanup: $directory"*) ;;
+    *) fail "a live $backend rebase was refused otherwise: $out" ;;
+    esac
+    assert_eq "$(git -C "$CASE_MAIN" rev-parse refs/heads/master)" "$local_master" \
+      "a live $backend rebase's refusal must precede master advancement"
+    [ -d "$session_git_dir/$directory" ] || fail "the live $backend rebase's state was lost"
+  done
+  echo "PASS: a live rebase of either backend is refused before mutation"
+}
+
+# A rebase stopped at a real conflict holds both too, HEAD off the tip: whichever gate says so first,
+# nothing moves and nothing is lost.
+test_rebase_stopped_at_a_conflict_is_refused() {
+  local backend directory blob tree other local_master session_git_dir
+  for backend in merge apply; do
+    directory="rebase-$backend"
+    setup_case "conflicted-rebase-$backend" merge main-off
+    local_master=$(git -C "$CASE_MAIN" rev-parse refs/heads/master)
+    session_git_dir=$(git -C "$CASE_SESSION" rev-parse --absolute-git-dir)
+    blob=$(printf 'clash\n' | git -C "$CASE_SESSION" hash-object -w --stdin)
+    tree=$(printf '100644 blob %s\tvalue\n' "$blob" | git -C "$CASE_SESSION" mktree)
+    other=$(git -C "$CASE_SESSION" commit-tree "$tree" -p HEAD~1 -m clash)
+    if git -C "$CASE_SESSION" rebase "--$backend" "$other" >/dev/null 2>&1; then
+      fail "the $backend rebase did not stop at its conflict"
+    fi
+    [ -e "$session_git_dir/REBASE_HEAD" ] && [ -d "$session_git_dir/$directory" ] ||
+      fail "the stopped $backend rebase holds no REBASE_HEAD beside $directory"
+    if "$HELPER" "$CASE_MAIN" "$CASE_SESSION" topic >/dev/null 2>&1; then
+      fail "a $backend rebase stopped at a conflict was accepted for cleanup"
+    fi
+    assert_eq "$(git -C "$CASE_MAIN" rev-parse refs/heads/master)" "$local_master" \
+      "a stopped $backend rebase's refusal must precede master advancement"
+    [ -d "$session_git_dir/$directory" ] || fail "the stopped $backend rebase's state was lost"
+  done
+  echo "PASS: a rebase stopped at a conflict is refused before mutation"
+}
+
 test_active_session_bisect_refusal() {
   local bisect_start local_master
   setup_case active-session-bisect merge main-off
@@ -5856,6 +5942,9 @@ TESTS=(
   test_locked_session_refusal
   test_active_session_operation_refusal
   test_active_session_bisect_refusal
+  test_stale_rebase_head_is_finished
+  test_live_rebase_is_refused
+  test_rebase_stopped_at_a_conflict_is_refused
   test_symbolic_session_pseudoref_refusal
   test_private_worktree_ref_refusal
   test_rewritten_worktree_ref_refusal

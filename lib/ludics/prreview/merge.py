@@ -28,7 +28,8 @@ real conflict, an open thread, a deferred merge) or merged at a head the gate di
 call included) -- under ``--wait``, a read of the gate's
 that did not answer (the head's, the check runs', the workflow runs') is read again after a pause
 instead (ludics-lite#795, ludics#808), so there 3 means the wait's budget was spent with none
-answering, or GitHub refused the read, and the message names the failures; 4 no verdict; 5 the head was superseded;
+answering, or GitHub refused the read, and the message names the failures; 4 no verdict (a merge
+build past its bound among them: its refusal says whether a re-run would repeat it, #982); 5 the head was superseded;
 6 no verdict because a build job never got a runner (runners.py: NO RUNNER, NEVER STARTED), and the
 one recovery ``--wait`` makes per head run (``Recovery``) is spent or failed, or there was no wait
 to make it in -- the refusal names the commands; 7 no verdict because a head run completed

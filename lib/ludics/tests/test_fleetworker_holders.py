@@ -72,6 +72,42 @@ class SlotDir(unittest.TestCase):
         return path
 
 
+class HeldRecords(SlotDir):
+    """``held_records``: what ``prs`` reads of a running merge build (#982)."""
+
+    COMMAND = ["sh", "-c", "x", "merge-build"]
+
+    def record(self, name: str, pid: int, command: Sequence[str]) -> None:
+        with open(os.path.join(self.dir, name), "w", encoding="utf-8") as stream:
+            json.dump({"pid": pid, "command": list(command), "started": 1.0, "deadline": 60, "expires": 5.0}, stream)
+
+    def read(self, locks: str) -> list[int]:
+        def no_lsof(argv: Sequence[str]) -> tuple[int, str]:
+            raise AssertionError(argv)
+
+        kept = holders.held_records(self.dir, lambda h: h.command[3:4] == ("merge-build",), run=no_lsof, locks=locks)
+        return [holder.pid for holder in kept]
+
+    def test_a_held_slot_whose_record_the_lock_table_confirms_is_kept(self) -> None:
+        self.record("slot.1", 4242, self.COMMAND)
+        self.hold("slot.1")
+        self.assertEqual(self.read(self.write_table([self.table_line("slot.1", 4242)])), [4242])
+
+    def test_a_free_slots_file_keeps_its_last_record_which_says_nothing(self) -> None:
+        self.record("slot.1", 4242, self.COMMAND)
+        self.assertEqual(self.read(self.write_table([self.table_line("slot.1", 4242)])), [])
+
+    def test_a_record_another_process_holds_the_lock_over_is_not_confirmed(self) -> None:
+        self.record("slot.1", 4242, self.COMMAND)
+        self.hold("slot.1")
+        self.assertEqual(self.read(self.write_table([self.table_line("slot.1", 4343)])), [])
+
+    def test_a_record_not_wanted_costs_no_test(self) -> None:
+        self.record("slot.1", 4242, ["sleep", "1"])
+        self.hold("slot.1")
+        self.assertEqual(self.read(self.write_table([])), [])
+
+
 class Holders(SlotDir):
     def test_with_no_lock_table_held_slots_are_listed_with_their_kinds_and_the_holder_unknown(self) -> None:
         self.hold("slot.1")  # a GPU token (one token of three slots)

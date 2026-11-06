@@ -71,6 +71,7 @@ prreview/drift.py          warn_base_drift (merge, watch), and read_base_drift's
 prreview/commentonly.py    whether a change is to comments only (the merge build's comments lines, #861)
 prreview/mergebuild.py     merge's build of the would-be merge commit (.github/ship-pr-merge-build, #611)
 prreview/mergedry.py       merge-build, that build alone as a dry run for two revisions (#751)
+prreview/buildhistory.py   what a repository's merge build has taken on this box, for an overrun's advice (#982)
 prreview/localreview.py    local-review, the local Codex review before a PR opens (#750)
 prreview/checkruns.py      conclusion_class, newest_first
 prreview/ere.py            the advisory list, asked of grep (is_advisory, ere_valid)
@@ -361,9 +362,10 @@ prreview/workflows.py prreview/workflow_yaml.py
     ship-pr/scripts/test-pr-review-checks-absent.sh
     ship-pr/scripts/test-pr-review-merge.sh
 
-prreview/mergebuild.py prreview/commentonly.py prreview/mergedry.py
+prreview/mergebuild.py prreview/commentonly.py prreview/mergedry.py prreview/buildhistory.py
     ship-pr/scripts/test-pr-review-merge.sh
     lib/ludics/tests/test_prreview_mergebuild.py
+    lib/ludics/tests/test_prreview_buildhistory.py
     lib/ludics/tests/test_prreview_commentonly.py
 
 prreview/localreview.py

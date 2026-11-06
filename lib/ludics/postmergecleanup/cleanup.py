@@ -31,12 +31,13 @@ from ludics.postmergecleanup.transaction import RefTransaction
 CALLER_TMPDIR = "LUDICS_CALLER_TMPDIR"
 # The state a Git operation under way keeps in a worktree's git directory: pending commits, and with
 # `--autostash` uncommitted edits, a clean tree and a plain stash list do not show (fleetworker's
-# farside-close reads this list too).
+# farside-close reads this list too). ``REBASE_HEAD`` is not on it (#982): Git can leave the file
+# behind a finished rebase (six of one wave's worktrees had it), and a rebase in progress is its
+# ``rebase-merge`` or ``rebase-apply`` directory, which every backend holds from its start to its end.
 ACTIVE_OPERATIONS = (
     "MERGE_HEAD",
     "CHERRY_PICK_HEAD",
     "REVERT_HEAD",
-    "REBASE_HEAD",
     "BISECT_START",
     "BISECT_LOG",
     "BISECT_NAMES",
@@ -528,6 +529,9 @@ class Cleanup:
             fail(f"session worktree has a private ref; remove or retain it before cleanup: {private_ref}")
 
     def refuse_active_session_operations(self, worktree: str = "", description: str = "session") -> None:
+        """Refuse what names a Git operation in progress (``ACTIVE_OPERATIONS``). A ``REBASE_HEAD``
+        alone is a finished rebase: the metadata gates still judge it (a symbolic one, a held lock)
+        and the archive retains the commit it names, as for ``ORIG_HEAD``."""
         checkout = worktree or self.session
         for name in ACTIVE_OPERATIONS:
             _, path = self.locate(checkout, name, f"could not locate session operation state: {name}")

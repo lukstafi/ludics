@@ -166,7 +166,9 @@ business, as it would be from a developer's shell.
 
 VERDICTS. Passed: the merge proceeds. Failed (any nonzero status): exit 1, refused, with the build
 output (its first and last lines when long, each line and each end bounded in bytes). Not finished
-within the bound: exit 4. Could not run (the slot refused, a fetch or git step failed): exit 3.
+within the bound: exit 4, saying how far it got (the size of its output and its last lines) and what
+buildhistory.py has of the command on this box, which says whether a re-run is likely to repeat the
+overrun (#982). Could not run (the slot refused, a fetch or git step failed): exit 3.
 After the command ends, however it ends, its process group is ended too, so a process it left
 behind does not outlive the merge; interrupted, see INTERRUPTS. The build judges the base tip the drift read;
 a base that moves again between the build and the merge call is not rebuilt (that, again, is the
@@ -212,14 +214,14 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn, assert_never
 
 from ludics import cli, proc
-from ludics.prreview import commentonly
+from ludics.prreview import buildhistory, commentonly
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
 from ludics.prreview.drift import Drift
@@ -238,6 +240,7 @@ SHOWN_TAIL = 100
 SHOWN_BYTES = 64 * 1024  # at most this much is read from each end of a long log
 LINE_CHARS = 1000  # a longer line is shown cut
 NAMED = 10  # a side's build inputs are named up to this many in the build's reason
+OVERRUN_LINES = 20  # an overrun's last lines shown: how far it got
 NAMED_LINES = 20  # THE BASE ALONE: the merge's lines the base's log lacks, shown up to this many
 COMPARED_BYTES = 16 * 1024 * 1024  # THE BASE ALONE: a log over this is never read as "the same"
 COMMENT_PATHS = 200  # COMMENTS ONLY: a side's paths past this many are read as changed in code
@@ -248,9 +251,14 @@ HEAD_SHA_VAR = "SHIP_PR_MERGE_HEAD_SHA"  # and its second
 
 _LINE = re.compile(r"([a-z]+)(?:[ \t]+(.*))?")
 _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
-# Run by `sh -c`: the command, its output to the log, and its status to a file -- the status file is
-# what tells the command's own failure from the slot wrapper's refusal or deadline.
-_WRAPPER = 'sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; exit "$rc"'
+# Run by `sh -c`: a marker that the command is starting (its mtime is where the build's own time
+# starts, a slot's and a window's waits left behind), the command, its output to the log, and its
+# status to a file -- the status file is what tells the command's own failure from the slot
+# wrapper's refusal or deadline. A word after the status path names the PR in the slot's holder
+# record (`build_of`); the script does not read it.
+_WRAPPER = ': >"$3.started"; sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; exit "$rc"'
+_WRAPPER_NAME = "merge-build"
+_BUILD_OF = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
 
 
 type Trigger = Literal["same-input", "any-input"]
@@ -263,6 +271,14 @@ class BuildConfig:
     timeout: int = DEFAULT_TIMEOUT
     trigger: Trigger = "same-input"
     comments: tuple[str, ...] = ()  # COMMENTS ONLY's globs
+
+
+def build_of(command: Sequence[str]) -> str | None:
+    """The ``owner/name#n`` a slot's holder record names as the PR whose merge build holds the slot,
+    or None: a command of ``_run``'s exact shape, and nothing else (a dry run names no PR)."""
+    if len(command) != 8 or command[0] != "sh" or command[3] != _WRAPPER_NAME:
+        return None
+    return command[7] if _BUILD_OF.fullmatch(command[7]) else None
 
 
 def parse_config(text: str, where: str) -> BuildConfig | None:
@@ -838,12 +854,14 @@ def merge_build(
 class _Subject:
     """Whose build it is, in its lines: ``label`` after ``merge build``, ``stop`` leading a
     refusal before a verdict, ``refuse`` leading a failed build's; ``pr`` is the PR whose head is
-    fetched, and empty for a dry run (THE DRY RUN), which fetches nothing."""
+    fetched, and empty for a dry run (THE DRY RUN), which fetches nothing; ``repo`` is the
+    repository whose build history (buildhistory.py) the run goes into."""
 
     label: str
     stop: str
     refuse: str
     pr: str
+    repo: str
 
 
 def _build(
@@ -857,9 +875,9 @@ def _build(
     reads again before the slot is taken (None: nothing; the build stands)."""
     if dry:
         what = f"{gated[:8]} into {base_ref}"
-        subject = _Subject(f"{what} (dry run)", f"merge-build {what}: NOT built", f"merge-build {what}: merge would REFUSE it", "")
+        subject = _Subject(f"{what} (dry run)", f"merge-build {what}: NOT built", f"merge-build {what}: merge would REFUSE it", "", repo)
     else:
-        subject = _Subject(f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr)
+        subject = _Subject(f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr, repo)
     with _INTERRUPTS.installed():
         return _build_in_scratch(
             subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override, candidates
@@ -959,7 +977,7 @@ def _build_in_scratch(
             for line in _shown(ran.log):
                 cli.say(f"  | {line}")
             return _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
-        _no_verdict(stop, config, ran.done, "the build of its merge commit")
+        _no_verdict(subject.label, stop, config, ran, "the build of its merge commit")
     finally:
         # Held from its first instruction (as in _supervised), so no signal skips the removal.
         was, _INTERRUPTS.holding = _INTERRUPTS.holding, True
@@ -1149,12 +1167,16 @@ def _commit_out(
 @dataclass(frozen=True)
 class _Ran:
     """One run of the command: ``status`` is the status file's text ("" when the command never
-    ended on its own: the wrapper's refusal, the deadline), ``done`` the wrapper's own result."""
+    ended on its own: the wrapper's refusal, the deadline), ``done`` the wrapper's own result,
+    ``took`` the seconds the command ran (with no sign of its start, the whole wait for the
+    wrapper) and ``started`` whether it did start; ``earlier`` the build history as this run found it."""
 
     status: str
     done: proc.Completed
     took: int
     log: str
+    started: bool = True
+    earlier: tuple[buildhistory.Row, ...] = ()
 
 
 def _run(
@@ -1165,7 +1187,9 @@ def _run(
     box's slot when it has slots, bounded either way (HOW IT BUILDS)."""
     log = os.path.join(scratch, f"{name}.log")
     status = os.path.join(scratch, f"{name}.status")
-    wrapped = ["sh", "-c", _WRAPPER, "merge-build", config.command, log, status]
+    wrapped = ["sh", "-c", _WRAPPER, _WRAPPER_NAME, config.command, log, status]
+    if subject.pr:
+        wrapped.append(f"{subject.repo}#{subject.pr}")
     bound = float(config.timeout)
     if runner:
         # THE WINDOW WAIT: its bound read now, after the setup, from what is left of the ceiling.
@@ -1195,18 +1219,58 @@ def _run(
             rc_text = handle.read().strip()
     except OSError:
         rc_text = ""
-    return _Ran(rc_text, done, took, log)
+    ran_for = _ran_for(status, rc_text != "")
+    earlier = buildhistory.read(subject.repo, config.command)
+    if ran_for is not None:
+        if rc_text == "0":
+            buildhistory.record(subject.repo, config.command, "passed", ran_for, config.timeout)
+        elif not rc_text and done.rc == 124:
+            buildhistory.record(subject.repo, config.command, "overran", ran_for, config.timeout)
+    return _Ran(rc_text, done, took if ran_for is None else ran_for, log, ran_for is not None, tuple(earlier))
 
 
-def _no_verdict(stop: str, config: BuildConfig, done: proc.Completed, what: str) -> NoReturn:
+def _ran_for(status: str, ended: bool) -> int | None:
+    """The seconds the command ran, from ``_WRAPPER``'s marker to its status file, or to now when
+    it ``ended`` not by itself; None when it never started."""
+    try:
+        began = os.stat(f"{status}.started").st_mtime
+        return max(int((os.stat(status).st_mtime if ended else time.time()) - began), 0)
+    except OSError:
+        return None
+
+
+def _say_progress(label: str, took: int, bound: int, log: str) -> None:
+    """How far an overrun's build got: its time, the size of its output, then its last lines."""
+    try:
+        size = os.stat(log).st_size
+    except OSError:
+        size = 0
+    if not size:
+        cli.say(f"merge build {label}: stopped {took}s in, bound {bound}s, having written no output")
+        return
+    cli.say(f"merge build {label}: stopped {took}s in, bound {bound}s, having written {size} byte(s); its last lines:")
+    for line in _shown(log)[-OVERRUN_LINES:]:
+        cli.say(f"  | {line}")
+
+
+def _no_verdict(label: str, stop: str, config: BuildConfig, ran: _Ran, what: str) -> NoReturn:
     """A run with no status of its own: what the wrapper said, then exit 4 (past the bound) or 3."""
+    done = ran.done
     for line in (done.stdout + done.stderr).splitlines():
         cli.say(f"  | {line}")
     if done.rc == 124:
+        if not ran.started:
+            fail(
+                4,
+                f"{stop}: {what} never started within its waits (bound {config.timeout}s, slot and",
+                "window waits apart); no verdict. Re-run merge.",
+            )
+        _say_progress(label, ran.took, config.timeout, ran.log)
         fail(
             4,
             f"{stop}: {what} did not finish within",
-            f"{config.timeout}s ({CONFIG_FILE}'s timeout); no verdict. Re-run merge, or raise the timeout.",
+            f"{config.timeout}s ({CONFIG_FILE}'s timeout); no verdict.",
+            *buildhistory.overrun_advice(list(ran.earlier), config.timeout, CONFIG_FILE),
         )
     fail(
         3,
@@ -1268,7 +1332,7 @@ def _against_base(
     )
     if not base.status:
         if override:
-            _no_verdict(stop, config, base.done, f"its merge build FAILED (above), and the build of {base_ref} alone, which tells whether the base shares that failure,")
+            _no_verdict(label, stop, config, base, f"its merge build FAILED (above), and the build of {base_ref} alone, which tells whether the base shares that failure,")
         for line in (base.done.stdout + base.done.stderr).splitlines():
             cli.say(f"  | {line}")
         fail(1, *plain, f"and the build of {base_ref} alone gave no verdict to compare. Merge {base_ref} in, fix the",

@@ -20,7 +20,7 @@ import time
 import unittest
 
 from ludics import cli
-from ludics.prreview import drift, mergebuild
+from ludics.prreview import buildhistory, drift, mergebuild
 from ludics.prreview.core import Json
 from ludics.prreview.mergebuild import BuildConfig, build_inputs, build_reason, parse_config
 
@@ -212,10 +212,17 @@ class Repo(unittest.TestCase):
         git(self.dir, "clone", "-q", self.remote, self.clone)
         self.cwd = os.getcwd()
         os.environ["FLEET_LOCAL_BOX"] = "not-a-fleet-box"
+        # The build history (buildhistory.py) goes here, never in the box's own state.
+        self.state_dir = os.environ.get("SHIP_PR_STATE_DIR")
+        os.environ["SHIP_PR_STATE_DIR"] = os.path.join(self.dir, "state")
 
     def tearDown(self) -> None:
         os.chdir(self.cwd)
         os.environ.pop("FLEET_LOCAL_BOX", None)
+        if self.state_dir is None:
+            os.environ.pop("SHIP_PR_STATE_DIR", None)
+        else:
+            os.environ["SHIP_PR_STATE_DIR"] = self.state_dir
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def write(self, lines: list[str]) -> None:
@@ -408,6 +415,64 @@ class Build(Repo):
                 )
         self.assertEqual(caught.exception.rc, 4, out.getvalue())
         self.assertIn("did not finish within", caught.exception.message)
+
+    def overrun(self, head: str, bound: int) -> tuple[str, str]:
+        """An overrunning build under ``bound``: (what it said, the refusal)."""
+        os.chdir(self.clone)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            with self.assertRaises(cli.Exit) as caught:
+                mergebuild._build(  # pyright: ignore[reportPrivateUsage]
+                    "owner/repo", "7", head, "main", self.tip, BuildConfig("sh ./api.sh", ("*.sh",), bound), "test"
+                )
+        self.assertEqual(caught.exception.rc, 4, out.getvalue())
+        return out.getvalue(), caught.exception.message
+
+    def test_an_overrun_says_how_far_it_got_and_what_a_re_run_would_do(self) -> None:
+        """#982: ahrefs/ocannl#1735's worker re-ran an overrun the refusal told it to re-run. The
+        first overrun has nothing to compare; the second knows a re-run repeats."""
+        head, _ = self.sides("echo the-shell-tier-started; sleep 30", "seam() { :; }")
+        said, refusal = self.overrun(head, 1)
+        self.assertIn("having written", said)
+        self.assertIn("| the-shell-tier-started", said)
+        self.assertNotIn("Re-run merge", refusal)
+        self.assertIn("No earlier build of this command is on record", refusal)
+        self.assertEqual([r.outcome for r in buildhistory.read("owner/repo", "sh ./api.sh")], ["overran"])
+        _, refusal = self.overrun(head, 1)
+        self.assertIn("A re-run will likely repeat this overrun (1 earlier overrun(s))", refusal)
+        self.assertIn("raise `timeout` in .github/ship-pr-merge-build", refusal)
+
+    def test_an_overrun_past_tight_passes_says_a_re_run_likely_repeats_it(self) -> None:
+        """A pass within the bound's last fifth is the #1994 case: the bound was already tight."""
+        head, _ = self.sides("sleep 30", "seam() { :; }")
+        buildhistory.record("owner/repo", "sh ./api.sh", "passed", 1, 1)
+        _, refusal = self.overrun(head, 1)
+        self.assertIn("A re-run will likely repeat this overrun (the slowest pass took 100% of the bound)", refusal)
+
+    def test_an_overrun_out_of_line_with_its_passes_says_so(self) -> None:
+        head, _ = self.sides("sleep 30", "seam() { :; }")
+        buildhistory.record("owner/repo", "sh ./api.sh", "passed", 0, 2)
+        _, refusal = self.overrun(head, 2)
+        self.assertIn("out of line for the command", refusal)
+        self.assertNotIn("will likely repeat", refusal)
+
+    def test_a_pass_goes_into_the_history_and_a_failure_does_not(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.build(head)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([r.outcome for r in buildhistory.read("owner/repo", "sh ./api.sh")], ["passed"])
+        rc, out = self.build(head, "sh -c 'exit 3'")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(buildhistory.read("owner/repo", "sh -c 'exit 3'"), [])
+
+    def test_the_slot_record_names_the_pr_a_dry_run_none(self) -> None:
+        """What `prs` reads (supervision.merge_builds): only `_run`'s own shape names a PR."""
+        wrapper = ["sh", "-c", "x", "merge-build", "cmd", "log", "status"]
+        self.assertEqual(mergebuild.build_of([*wrapper, "owner/repo#7"]), "owner/repo#7")
+        for command in (wrapper, [*wrapper, "not a pr"], [*wrapper, "owner/repo#0"], [*wrapper, "owner/repo#7", "x"],
+                        ["sh", "-c", "x", "other", "cmd", "log", "status", "owner/repo#7"],
+                        ["bash", "-c", "x", "merge-build", "cmd", "log", "status", "owner/repo#7"]):
+            self.assertIsNone(mergebuild.build_of(command), command)
 
     @unittest.skipIf(os.name == "nt", "POSIX signals")
     def test_an_interrupted_merge_stops_its_build(self) -> None:

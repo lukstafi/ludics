@@ -457,8 +457,12 @@ fi
 # The integration records the gate stages for the checker are logged by content: the file is
 # removed once the read returns (ludics-lite#401).
 prev=""
+records_file=""
 for arg in "$@"; do
-  [ "$prev" != --integration-records ] || sed 's/^/records: /' "$arg" >> "$BASE_CALL_LOG"
+  if [ "$prev" = --integration-records ]; then
+    records_file="$arg"
+    sed 's/^/records: /' "$arg" >> "$BASE_CALL_LOG"
+  fi
   prev="$arg"
 done
 if [ "$3" = retry ]; then
@@ -497,9 +501,18 @@ if [ "${SHIM_BASE_RC:-0}" = 0 ]; then printf '%s' "${SHIM_BASE_ADVISORY_RED-[]}"
 # SHIM_BASE_TOUCH: a marker this read leaves behind, so a test can change the world between the
 # preflight and the launch's far side (the tmux shim's SHIM_TMUX_GENV_WHEN reads it).
 [ -z "${SHIM_BASE_TOUCH:-}" ] || touch "$SHIM_BASE_TOUCH"
-# SHIM_BASE_CONCLUDE: an execution conclusion payload the read concludes while it "waits", as an
-# integration run finishing mid-gate would (ludics-lite#401, review round 6).
-[ -z "${SHIM_BASE_CONCLUDE:-}" ] || env FLEET_BOXES="testbox other" "$SHIM_FW" execution conclude "$SHIM_BASE_CONCLUDE" >/dev/null || exit 3
+# SHIM_BASE_CONCLUDE: a file listing execution conclusion payloads, one per read: the read takes the
+# first line off it and concludes that payload while it "waits", as an integration run finishing
+# mid-gate would (ludics-lite#401, review round 6; #982: a list, since the gate reads again).
+if [ -s "${SHIM_BASE_CONCLUDE:-}" ]; then
+  payload=$(sed -n 1p "$SHIM_BASE_CONCLUDE")
+  sed 1d "$SHIM_BASE_CONCLUDE" > "$SHIM_BASE_CONCLUDE.rest" && mv "$SHIM_BASE_CONCLUDE.rest" "$SHIM_BASE_CONCLUDE" || exit 3
+  env FLEET_BOXES="testbox other" "$SHIM_FW" execution conclude "$payload" >/dev/null || exit 3
+fi
+# SHIM_BASE_RED_OVER: a request id; a read handed that record reads red.
+if [ -n "${SHIM_BASE_RED_OVER:-}" ] && grep -q "	$SHIM_BASE_RED_OVER	" "$records_file" 2>/dev/null; then
+  echo 'BASE RED'; exit 1
+fi
 # SHIM_BASE_HALT: a halt reason the read records while it "waits", as a coordinator halting the
 # fleet during a minutes-long base read would: the gate re-reads the lease and halt after it.
 [ -z "${SHIM_BASE_HALT:-}" ] || "$SHIM_FW" halt "$SHIM_BASE_HALT" >/dev/null || exit 3
@@ -2701,17 +2714,33 @@ expect "...and an anchor that does not answer is exit 3, unknown" 3 "could not b
   env FLEET_ANCHOR=far-anchor "${FWX[@]}" execution integration-records example/project --shas
 # (With no record for the target, the call carries no flag at all: the "base gate" section's
 # exact call lines above pin that, since its gates ran before any record existed.)
-# A record concluding while the checker reads is one its verdict did not see: the green is refused
-# and the coordinator reads again (review round 6 of #401). The shim concludes one mid-read.
+# A record concluding while the checker reads is one its verdict did not see, so that green is not
+# taken: the gate reads once more over the record (#982), and only a second such read refuses (review
+# round 6 of #401). The shim concludes one mid-read.
 : > "$BASE_CALL_LOG"
-"${FWX[@]}" execution run "$(intreq int-e coordinator example/project true)" >/dev/null || ko "could not reserve int-e (setup)"
-jq -n --arg sha "$ran" --arg wt "$wt" '{request_id:"int-e", verdict:"fail", log:"/dev/null",
-  evidence:"fixture integration run", observed_sha:$sha, remote_checkout:$wt, handle:"fixture"}' > "$TMP/int-e-done.json"
-expect "a record concluded during the read refuses the green" 1 "concluded during the read" -- \
-  env SHIM_BASE_CONCLUDE="$TMP/int-e-done.json" "$FW" gate --target-repo example/project
+for int_id in int-e int-f int-g int-h; do
+  env FLEET_BOX_CORRECTNESS_SLOTS="testbox=4" "${FWX[@]}" execution run "$(intreq "$int_id" coordinator example/project true)" >/dev/null || ko "could not reserve $int_id (setup)"
+  jq -n --arg id "$int_id" --arg sha "$ran" --arg wt "$wt" '{request_id:$id, verdict:"fail", log:"/dev/null",
+    evidence:"fixture integration run", observed_sha:$sha, remote_checkout:$wt, handle:"fixture"}' > "$TMP/$int_id-done.json"
+done
+queue="$TMP/conclude-queue"
+printf '%s\n' "$TMP/int-e-done.json" > "$queue"
+expect "a record concluded during the read makes the gate read once more" 0 "reading once more over it" -- \
+  env SHIM_BASE_CONCLUDE="$queue" "$FW" gate --target-repo example/project
+[ "$(grep -c -- ' base --wait=' "$BASE_CALL_LOG")" = 2 ] && ok "...two reads, no more" || ko "not two reads: $(cat "$BASE_CALL_LOG")"
+[ "$(grep -c "^records: $ran	fail	int-e	" "$BASE_CALL_LOG")" = 1 ] && ok "...the second over the concluded record, which the first never saw" \
+  || ko "the concluded record was not offered once: $(cat "$BASE_CALL_LOG")"
 : > "$BASE_CALL_LOG"
-expect "...and the next read hands it over" 0 "BASE GREEN" -- "$FW" gate --target-repo example/project
-grep -q "^records: $ran	fail	int-e	" "$BASE_CALL_LOG" && ok "...with the failed record in the file" || ko "the concluded record was not offered: $(cat "$BASE_CALL_LOG")"
+printf '%s\n' "$TMP/int-f-done.json" > "$queue"
+expect "...and a green is not kept when the record turns the second read red" 1 "base checker exit 1" -- \
+  env SHIM_BASE_CONCLUDE="$queue" SHIM_BASE_RED_OVER=int-f "$FW" gate --target-repo example/project
+printf '%s\n%s\n' "$TMP/int-g-done.json" "$TMP/int-h-done.json" > "$queue"
+expect "a record concluded during the second read too refuses the green" 1 "neither verdict saw them all; re-run the gate" -- \
+  env SHIM_BASE_CONCLUDE="$queue" "$FW" gate --target-repo example/project
+: > "$BASE_CALL_LOG"
+expect "...and the next read hands them over" 0 "BASE GREEN" -- "$FW" gate --target-repo example/project
+grep -q "^records: $ran	fail	int-h	" "$BASE_CALL_LOG" && ok "...with the last record in the file" || ko "the concluded record was not offered: $(cat "$BASE_CALL_LOG")"
+[ "$(grep -c -- ' base --wait=' "$BASE_CALL_LOG")" = 1 ] && ok "...in one read, nothing having concluded" || ko "not one read: $(cat "$BASE_CALL_LOG")"
 # An unreadable registry refuses the gate rather than withholding the source: a failed record
 # there would outrank a green PR head (review round 3 of #401).
 printf 'not json\n' > "$ISSUE_WAVE_STATE/executions/zz-broken.json"
@@ -4053,6 +4082,26 @@ grep -q "^o/r#9 rounds=? ci=absent head=[01]m claude/issue-9: -$" <<<"$out" && o
 grep -q "rounds o/r#12 threshold=off" "$P/calls" && grep -q "^retry --read pr list --repo o/r --state open .*isCrossRepository" "$P/calls" && ok "...through pr-review.sh, the repo spelled out in every read" || ko "calls: $(cat "$P/calls")"
 expect "--flag-at raises the flag; an unread count alone exits 4" 4 "o/r#9 rounds=?" -- "$FW" prs o/r --flag-at 7
 grep -q CONVERGE <<<"$out" && ko "a PR under --flag-at was flagged: $out" || ok "...and nothing is flagged under it"
+# A merge build running in this box's slot shows on its PR's line, elapsed and bound, read from the
+# holder record merge's wrapper writes (#982): a real slot, the shape mergebuild.build_of reads.
+prs_slot() { # <log> <words after the status path...>
+  local log="$1"; shift
+  env FLEET_BOXES="testbox other" "$FW" execution slot --cpu --deadline 300 -- \
+    sh -c 'sleep 45.982' merge-build 'the build' "$TMP/prs-build.log" "$TMP/prs-build.status" "$@" > "$log" 2>&1 &
+  prs_pid=$!
+  local i
+  for i in $(seq 40); do grep -q ' held' "$log" 2>/dev/null && return 0; sleep 0.25; done
+  ko "the merge-build fixture took no slot: $(cat "$log")"
+}
+prs_slot "$TMP/prs-slot.log" o/r#7
+expect "prs shows a merge build running in this box's slot" 1 "o/r#7 rounds=2 ci=pending head=[01]m merge-build=[0-9]*s/300s claude/issue-7: first PR" -- "$FW" prs o/r
+[ "$(grep -c merge-build= <<<"$out")" = 1 ] && ok "...on its own PR's line alone" || ko "merge-build on other lines: $out"
+kill "$prs_pid" 2>/dev/null; wait "$prs_pid" 2>/dev/null
+expect "...and not once it ended, though the slot's file keeps the record" 1 "o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r
+grep -q merge-build= <<<"$out" && ko "a finished build was shown: $out" || ok "...nowhere"
+prs_slot "$TMP/prs-slot.log"
+expect "...and a dry run's build names no PR" 1 "o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r
+kill "$prs_pid" 2>/dev/null; wait "$prs_pid" 2>/dev/null
 expect "a list that reaches its cap says PRs past it are not shown, exit 4" 4 "PRS INCOMPLETE o/r: the list reached its cap of 3 open PRs" -- env FLEET_PRS_LIMIT=3 "$FW" prs o/r --flag-at 7
 grep -q "^o/r#12 rounds=6" <<<"$out" && ok "...and still lists what it read" || ko "a capped list dropped its rows: $out"
 # Only the trailers are read (ludics-lite#423): the prose may be reworded, and a trailer that is

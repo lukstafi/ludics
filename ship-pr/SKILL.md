@@ -1181,6 +1181,11 @@ merge refuse (exit 1, naming the SHA it read) instead of landing a head nothing 
 Run `checks` on its own — same verdicts, same exit codes, no merge — whenever you want the build
 signal without acting on it, such as before asking the reviewer for another round.
 
+**Reading a job's log.** `gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs
+--allow-escape-sequences > <file>`, while the rest of the run still goes (`gh run view --log-failed`
+waits for all of it). Without the flag gh refuses a log carrying ANSI colours, dune's among them,
+and leaves an empty file with the refusal on stderr: a `wc -l` of 0 means the flag, not an empty log.
+
 **Awaiting CI is `checks --wait`'s job, never `gh run watch`'s.** Raw `gh run watch` streamed
 ~168k tokens of progress redraws into one session, and its nonzero exit on a run that concluded
 FAILURE carries no HTTP status, so a retry loop reads a workflow verdict as transport — the
@@ -1338,6 +1343,12 @@ owner/name` and no `--config` for the default branch's copy). It merges the two 
 applies the trigger, runs the command, and exits as `merge`'s build step would (0 would proceed, 1
 refused); it reads no PR, fetches nothing and merges nothing. A config change's negative control is
 that run on a pair the config must refuse.
+
+**A merge build that overruns its bound** ends `merge` with exit 4 and no verdict. The refusal shows
+how far the build got and what the same command has taken on this box, and says when a re-run will
+likely repeat the overrun: then do not re-run, raise `timeout` on the default branch
+(`prreview/buildhistory.py` states the reading). `fleet-worker.sh prs` shows a build running in one
+of the coordinator's box's slots as `merge-build=<elapsed>s/<bound>s`.
 
 **Standalone use does not watch CI at all** (since 2026-08-31): trailing failures on the merged
 base belong to the repository's **post-merge owner**, the watch or triage routine its agent notes
