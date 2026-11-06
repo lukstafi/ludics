@@ -90,7 +90,8 @@ floor refuses a disk it has read, never one it could not. Its boundary: one read
 run. What a run then writes, and a filesystem neither path is on (``$STATE``, ``$TMPDIR``), is outside
 it; the files a leg copies to the box before its far shell starts are written first, and a refusal
 removes them as any refusal does. ``farside-close`` (``ludics.fleetworker.farsideclose``) is what
-frees a closed wave's far-side worktrees.
+frees a closed wave's far-side worktrees. ``execution tip-run`` takes the same program and the same
+knob (ludics#991; tiprun.py, THE FREE-SPACE FLOOR).
 
 THE RUNNER. The command after ``--`` runs in the worktree, its argv passed untouched (each word
 quoted for the box's shell), stdin closed; nothing here names a project's runner. Its status is the
@@ -573,9 +574,9 @@ except BlockingIOError:
 }
 """
 
-# THE FREE-SPACE FLOOR (see the header). Args: the floor in GiB, the paths. Prints `<GiB free> <path>`
-# for the path with the least free; exit 3 when that is under the floor, 1 with nothing printed when
-# one cannot be read.
+# THE FREE-SPACE FLOOR (see the header), this verb's far side's and `tip-run`'s. Args: the floor in GiB,
+# the paths. Prints `<GiB free> <path>` for the path with the least free; exit 3 when that is under the
+# floor, 1 with nothing printed when one cannot be read.
 FLOOR_PY = r"""import os, shutil, sys
 floor, paths = int(sys.argv[1]), sys.argv[2:]
 def room(path):
@@ -1010,6 +1011,15 @@ class LegStopped(Exception):
         self.signum = signum
 
 
+def min_free_gib(cfg: Config) -> str:
+    """THE FREE-SPACE FLOOR's knob, as the far side takes it; anything but a whole number is a usage
+    error, in `leg` and in `tip-run` alike."""
+    value = knob(cfg, "FLEET_LEG_MIN_FREE_GIB", DEFAULT_MIN_FREE_GIB)
+    if not WHOLE.fullmatch(value):
+        die(f"FLEET_LEG_MIN_FREE_GIB must be a whole number of GiB (0 for no floor), not {value!r}")
+    return value
+
+
 def refused(text: str, rc: int = 1) -> int:
     cli.say(f"EXECUTION LEG REFUSED: {text}")
     return rc
@@ -1156,9 +1166,7 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
     if not SECONDS.fullmatch(fetch_timeout):
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
-    if not WHOLE.fullmatch(knob(cfg, "FLEET_LEG_MIN_FREE_GIB", DEFAULT_MIN_FREE_GIB)):
-        die(f"FLEET_LEG_MIN_FREE_GIB must be a whole number of GiB (0 for no floor),"
-            f" not {knob(cfg, 'FLEET_LEG_MIN_FREE_GIB', DEFAULT_MIN_FREE_GIB)!r}")
+    min_free_gib(cfg)  # a usage error before the reservation is read; run_leg passes it on
 
     # The reservation: a dispatched record, whose execution host is the box. A leg that may wait out a
     # window registers as its waiter in this same read, by its request (THE WAITERS, ludics-lite#719):
@@ -1276,7 +1284,7 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     argv = far_argv(
         cfg, box,
         [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, fname, "1" if no_config else "0",
-         knob(cfg, "FLEET_LEG_MIN_FREE_GIB", DEFAULT_MIN_FREE_GIB),
+         min_free_gib(cfg),
          str(len(wrap)), *wrap,
          str(len(nest)), *nest, *runner],
     )

@@ -11,7 +11,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import tiprun
+from ludics.fleetworker import leg, tiprun
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.tiprun import (concluded_line, far_facts, loop_backend, next_id, parse, parse_wait, request_problem,
                                        started_run, yielding_to)
@@ -350,12 +350,11 @@ class Allocate(unittest.TestCase):
         self.assertIn("TIP-RUN UNKNOWN w-gpu-rog-?: the anchor's registry could not be read", out.getvalue())
 
 
-class Mark(unittest.TestCase):
-    """THE BACKEND PIN's mark: a started GPU-loop run's running record carries ``pinned_backend``,
-    the backend the far side checked; no other record does, and nothing not started is marked."""
+class Starting(unittest.TestCase):
+    """A run started with a far side's canned answer; the reservation and the record are mocks."""
 
-    def start(self, req: dict[str, Any], far: str) -> tuple[int, list[tuple[list[str], dict[str, Any] | None]], list[str]]:
-        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
+    def start(self, req: dict[str, Any], far: str, env: dict[str, str] | None = None) -> tuple[int, list[tuple[list[str], dict[str, Any] | None]], list[str]]:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", env or {}, host="h")
         calls: list[tuple[list[str], dict[str, Any] | None]] = []
         far_args: list[str] = []
 
@@ -381,6 +380,11 @@ class Mark(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "env", "OCANNL_BACKEND=hip", "true"])
         return rc, calls, far_args
+
+
+class Mark(Starting):
+    """THE BACKEND PIN's mark: a started GPU-loop run's running record carries ``pinned_backend``,
+    the backend the far side checked; no other record does, and nothing not started is marked."""
 
     def test_a_started_gpu_loop_run_is_marked_with_the_backend_the_far_side_checked(self) -> None:
         rc, calls, far = self.start(request(purpose="GPU integration loop, hip: tip"), "dir=/s/run-1\nslot=held\n")
@@ -409,6 +413,43 @@ def running(**fields: object) -> dict[str, Any]:
                               "handle": "bg-run:rog-nv-linux:/s/tip-runs/run-3", "request": {"execution_host": "rog-nv-linux"}}
     record.update(fields)
     return record
+
+
+class Floor(Starting):
+    """THE FREE-SPACE FLOOR: the knob reaches the far side as its argument, a value that is no whole
+    number is a usage refusal before anything is asked, and a far-side refusal is concluded as any
+    other. The reading itself is ``test_fleetworker_leg``'s, and the far side's order the shell suite's."""
+
+    def test_the_far_side_takes_the_leg_s_floor_and_its_default(self) -> None:
+        for env, floor in (({}, "20"), ({"FLEET_LEG_MIN_FREE_GIB": "7"}, "7"), ({"FLEET_LEG_MIN_FREE_GIB": "0"}, "0")):
+            with self.subTest(env=env):
+                rc, _, far = self.start(request(), "dir=/s/run-1\nslot=held\n", env)
+                self.assertEqual(rc, 0)
+                self.assertEqual(far[7:], [floor, "env", "OCANNL_BACKEND=hip", "true"], "the floor, then the command")
+
+    def test_the_far_side_carries_the_one_floor_program(self) -> None:
+        self.assertIn(leg.FLOOR, tiprun.FAR)
+
+    def test_a_refusal_under_the_floor_is_concluded_not_launched(self) -> None:
+        why = "only 3.00 GiB free on the filesystem of /co on rog-nv-linux, under the floor of 20 GiB (FLEET_LEG_MIN_FREE_GIB); nothing ran"
+        rc, calls, _ = self.start(request(), f"TIP-RUN REFUSED: {why}\n")
+        self.assertEqual(rc, 1)
+        conclusion = calls[-1]
+        self.assertEqual(conclusion[0], ["execution", "conclude"])
+        self.assertEqual((conclusion[1] or {}).get("verdict"), "not-launched")
+        self.assertEqual((conclusion[1] or {}).get("evidence"), f"tip-run: {why}")
+
+    def test_a_floor_that_is_no_whole_number_is_a_usage_error_before_anything_is_asked(self) -> None:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {"FLEET_LEG_MIN_FREE_GIB": "lots"}, host="h")
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(request(), f)
+            with mock.patch.object(tiprun, "listing", side_effect=AssertionError("the anchor was asked")), \
+                    self.assertRaises(cli.Exit) as raised:
+                tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "true"])
+        self.assertEqual(raised.exception.rc, 2)
+        self.assertIn("FLEET_LEG_MIN_FREE_GIB must be a whole number", str(raised.exception))
 
 
 class Wait(unittest.TestCase):

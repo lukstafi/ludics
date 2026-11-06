@@ -718,7 +718,10 @@ A loop run - the GPU integration loop's, or the cc loop's local run - is one cal
 under the prefix (ludics-lite#714). A request whose `purpose` begins `GPU integration loop,
 <backend>:` runs only a command pinning exactly that backend, by the project's `.github/fleet-leg`
 at the commit (the leg's backend pin, below; ludics-lite#793): an unpinned command, one pinning
-another backend, and a commit without the file are refused. It yields, reserving nothing, to anything
+another backend, and a commit without the file are refused. A checkout whose filesystem has under
+`FLEET_LEG_MIN_FREE_GIB` free is refused before the fetch, the checkout and the slot (the leg's
+free-space floor, below; ludics#991), naming the box, the free space and the floor, and a read that
+fails is a `TIP-RUN NOTE <box>:` on stderr and the run goes on. It yields, reserving nothing, to anything
 outstanding on the box but standing reservations (read again once its own is published); then it
 runs `execution run`, starts nothing on a remote box whose skills checkout the refresh did not
 bring current, checks the SHA out
@@ -893,7 +896,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   only <n> GiB free on the filesystem of <path>, under the floor of <m> GiB`, status 1. A run on a
   fuller disk dies mid-checkout or mid-build with no named failure. Free the box's space
   ([`farside-close`](#the-gpu-home-box)), or lower the knob for a run that fits. A read that fails is
-  a `NOTE` on the leg's output, and the leg runs.
+  a `NOTE` on the leg's output, and the leg runs. The same knob covers `execution tip-run`, on the
+  filesystem of its `--checkout`. The default is about one cold OCANNL `@runtest @train` tree (22 GB
+  in 2026-11): a site that runs one in a checkout with no `_build` yet raises the knob.
 - **Stopping a leg.** A leg's far side runs in an ssh session of its own, which nothing on the
   caller's box reaches, so a SIGTERM, SIGINT or SIGHUP the leg gets while it runs (`bg-run.sh stop`
   on its run, a Ctrl-C) ends the far side as well (ludics-lite#767): `EXECUTION LEG STOPPING <box>:
