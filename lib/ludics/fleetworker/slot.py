@@ -1235,9 +1235,12 @@ def waiter_id(cfg: Config) -> str:
 
 class WaitingRecord:
     """THE WAITING RECORD (ludics-lite#719): ``<slot directory>/waiting.<pid>``, one JSON object
-    (``pid``, ``command``, ``since``, ``phase`` -- ``window`` while it waits out a measurement,
-    ``slot`` while it waits for a free slot -- and ``kind``, the slot it asks for), flocked by this
-    process for as long as it waits. ``slot --holders`` lists a record only while its flock is held,
+    (``pid``, ``command``, ``argv``, ``since``, ``phase`` -- ``window`` while it waits out a
+    measurement, ``slot`` while it waits for a free slot -- and ``kind``, the slot it asks for),
+    flocked by this process for as long as it waits. ``command`` is text for a person, the words
+    joined with no quoting and cut to 300 characters; ``argv`` is those words whole, for a reader
+    that has to tell them apart (``holders.waiting_records``: a merge build's PR is its last word).
+    ``slot --holders`` lists a record only while its flock is held,
     so a waiter that died leaves nothing listed, and the kernel is what says so. It is written to a
     temporary name, locked, and only then renamed into place, so a ``waiting.<pid>`` that is not
     locked is one whose owner has gone, and the next waiter removes it. ``done`` removes the record
@@ -1247,6 +1250,7 @@ class WaitingRecord:
     def __init__(self, directory: str, command: Sequence[str], phase: str, kind: str) -> None:
         self.path = os.path.join(directory, f"waiting.{os.getpid()}")
         self.fields: dict[str, Any] = {"pid": os.getpid(), "command": " ".join(command)[:300],
+                                       "argv": list(command),
                                        "since": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kind": kind}
         self.descriptor: int | None = None
         try:

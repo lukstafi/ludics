@@ -957,7 +957,8 @@ controlled through the tools in your coordinator's file, never through those com
   lukstafi/ocannl-staging#1200 and #1216 reached rounds 12-13 between heartbeats, and
   ahrefs/ocannl#1281's PR round 8 while the heartbeat's output showed it climbing from round 5).
   The count is read on every heartbeat with `fleet-worker.sh prs <owner/repo> --wave <id>` (which
-  also shows a merge build running in this box's slots, `merge-build=<elapsed>s/<bound>s`) for
+  also shows a merge build running in this box's slots, `merge-build=<elapsed>s/<bound>s`, or
+  queued for them, `merge-build=waiting(window|slot)`) for
   EACH wave repository - the PR repository (`lukstafi/ocannl-staging` for an ahrefs/ocannl
   wave), not the tracker - and no wake event (a
   desktop CI-monitor event, a worker's notification) stands in for that read. It lists each open

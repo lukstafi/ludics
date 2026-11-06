@@ -4181,6 +4181,22 @@ grep -q merge-build= <<<"$out" && ko "a finished build was shown: $out" || ok ".
 prs_slot "$TMP/prs-slot.log"
 expect "...and a dry run's build names no PR" 1 "o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r
 kill "$prs_pid" 2>/dev/null; wait "$prs_pid" 2>/dev/null
+# A merge build queued for this box's one slot shows on its own line, from its waiting record's
+# argv (#982). The config's command is past the record's 300-character text, so its PR would be
+# cut from that text; the holder is another PR's build.
+prs_slot "$TMP/prs-slot.log" o/r#9
+env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=1" "$FW" execution slot --cpu --wait 60 --deadline 300 -- \
+  sh -c 'sleep 45.982' merge-build "$(printf 'x%.0s' $(seq 400))" "$TMP/prs-build.log" "$TMP/prs-build.status" o/r#7 > "$TMP/prs-wait.log" 2>&1 &
+prs_wait=$!
+for i in $(seq 40); do
+  env FLEET_BOXES="testbox other" "$FW" execution slot --holders 2>/dev/null | grep -q '"event":"waiting"' && break
+  sleep 0.25
+done
+expect "prs shows a merge build waiting for a slot, on its own PR's line" 4 "o/r#7 rounds=2 ci=pending head=[01]m merge-build=waiting(slot) claude/issue-7: first PR" -- env FLEET_BOX_CORRECTNESS_SLOTS="testbox=1" "$FW" prs o/r --flag-at 7
+grep -q "^o/r#9 .*merge-build=[0-9]*s/300s" <<<"$out" && ok "...beside the build that holds the slot" || ko "the holder's line: $out"
+kill "$prs_wait" 2>/dev/null; wait "$prs_wait" 2>/dev/null
+expect "...and not once it stopped waiting" 4 "o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r --flag-at 7
+kill "$prs_pid" 2>/dev/null; wait "$prs_pid" 2>/dev/null
 expect "a list that reaches its cap says PRs past it are not shown, exit 4" 4 "PRS INCOMPLETE o/r: the list reached its cap of 3 open PRs" -- env FLEET_PRS_LIMIT=3 "$FW" prs o/r --flag-at 7
 grep -q "^o/r#12 rounds=6" <<<"$out" && ok "...and still lists what it read" || ko "a capped list dropped its rows: $out"
 # Only the trailers are read (ludics-lite#423): the prose may be reworded, and a trailer that is

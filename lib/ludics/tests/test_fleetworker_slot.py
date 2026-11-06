@@ -18,7 +18,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import slot
+from ludics.fleetworker import holders, slot
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.slot import (
     Covered,
@@ -437,6 +437,18 @@ class Waiting(unittest.TestCase):
         waiting.done()
         waiting.done()
         self.assertEqual(os.listdir(self.dir), [])
+
+    def test_argv_keeps_the_words_the_command_text_joins_and_cuts(self) -> None:
+        """#982: a merge build's PR is its last word, past the text's cut on any long command."""
+        words = ["sh", "-c", "a b", "merge-build", "x" * 400, "owner/repo#7"]
+        waiting = slot.WaitingRecord(self.dir, words, "slot", "cpu")
+        self.addCleanup(waiting.done)
+        (found,) = holders.waiting_records(self.dir)
+        self.assertEqual((found.phase, found.command), ("slot", tuple(words)))
+        with open(os.path.join(self.dir, f"waiting.{os.getpid()}")) as f:
+            self.assertNotIn("owner/repo#7", json.load(f)["command"])
+        waiting.phase("window")
+        self.assertEqual([w.phase for w in holders.waiting_records(self.dir)], ["window"])
 
     def test_a_record_its_owner_left_unlocked_is_removed_by_the_next_waiter_and_a_locked_one_is_kept(self) -> None:
         for name in ("waiting.1", "waiting.2"):

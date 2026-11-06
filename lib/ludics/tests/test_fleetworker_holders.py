@@ -13,9 +13,11 @@ import time
 import unittest
 from collections.abc import Sequence
 from typing import Any
+from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import cotenants, holders
+from ludics.fleetworker import cotenants, holders, slotrecord, supervision
+from ludics.fleetworker.config import load_config
 from ludics.tests import fake
 from ludics.fleetworker.slot import parse_slot
 
@@ -375,9 +377,8 @@ class Confirmation(SlotDir):
         self.assertIn(stale.pid, record["pids"], line)
 
 
-class Waiters(unittest.TestCase):
-    """ludics-lite#719: ``--holders`` lists the batches waiting here from their ``waiting.<pid>``
-    records, and only while each record's flock is held."""
+class WaitingDir(unittest.TestCase):
+    """A directory of ``waiting.<pid>`` records, their flocks held by this process."""
 
     def setUp(self) -> None:
         self.dir = tempfile.mkdtemp(prefix="ludics-holders-waiters.")
@@ -391,6 +392,11 @@ class Waiters(unittest.TestCase):
             descriptor = os.open(path, os.O_RDONLY)
             self.addCleanup(os.close, descriptor)
             fcntl.flock(descriptor, fcntl.LOCK_EX)
+
+
+class Waiters(WaitingDir):
+    """ludics-lite#719: ``--holders`` lists the batches waiting here from their ``waiting.<pid>``
+    records, and only while each record's flock is held."""
 
     def test_a_locked_record_is_listed_in_order_of_its_wait_and_an_unlocked_one_is_not(self) -> None:
         self.record(12, json.dumps({"pid": 12, "command": "make b", "since": "2026-10-20T10:00:05Z",
@@ -425,6 +431,71 @@ class Waiters(unittest.TestCase):
             open(os.path.join(self.dir, name), "w").close()
         self.assertEqual(holders.waiters("testbox", self.dir), [])
         self.assertEqual(holders.waiters("testbox", os.path.join(self.dir, "missing")), [])
+
+
+class WaitingRecords(WaitingDir):
+    """``waiting_records``: what ``prs`` reads of a queued merge build (#982). Fail-closed: a record
+    without a known phase and a whole ``argv`` is left out, where ``--holders`` lists it in part."""
+
+    def test_a_locked_record_gives_its_phase_and_words_and_an_unlocked_one_nothing(self) -> None:
+        self.record(12, json.dumps({"phase": "slot", "argv": ["sh", "a b"]}))
+        self.record(11, json.dumps({"phase": "window", "argv": ["make"]}))
+        self.record(13, json.dumps({"phase": "slot", "argv": ["left"]}), locked=False)
+        self.assertEqual(holders.waiting_records(self.dir),
+                         [holders.Waiter("window", ("make",)), holders.Waiter("slot", ("sh", "a b"))])
+
+    def test_a_record_of_any_other_shape_is_left_out(self) -> None:
+        records: list[dict[str, Any]] = [{"phase": "slot", "command": "written by a fleet-worker older than argv"},
+                                         {"phase": "slot", "argv": []}, {"phase": "slot", "argv": "make test"},
+                                         {"phase": "slot", "argv": ["make", 1]}, {"argv": ["make"]},
+                                         {"phase": "drain", "argv": ["make"]}, {"phase": ["slot"], "argv": ["make"]}]
+        for pid, record in enumerate(records, start=30):
+            self.record(pid, json.dumps(record))
+        self.record(40, "")
+        self.record(41, "[]")
+        self.record(42, json.dumps({"phase": "slot", "argv": ["x" * slotrecord.HOLDER_READ]}))
+        self.assertEqual(holders.waiting_records(self.dir), [])
+        self.assertEqual(holders.waiting_records(os.path.join(self.dir, "missing")), [])
+
+
+class MergeBuilds(WaitingDir):
+    """``supervision.merge_builds``: a build's line for ``prs``, running or queued (#982)."""
+
+    WRAPPER = ["sh", "-c", "x", "merge-build", "the build", "log", "status"]
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.state = self.dir
+        self.dir = os.path.join(self.state, "testbox")
+        os.mkdir(self.dir)
+        self.cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                               {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_STATE": self.state}, host="testbox")
+
+    def wait(self, pid: int, phase: str, *words: str) -> None:
+        self.record(pid, json.dumps({"phase": phase, "argv": list(words)}))
+
+    def test_a_queued_build_shows_its_phase_keyed_as_the_prs_line_looks_it_up(self) -> None:
+        self.wait(1, "slot", *self.WRAPPER, "Owner/Repo#7")
+        self.wait(2, "window", *self.WRAPPER, "owner/repo#8")
+        self.assertEqual(supervision.merge_builds(self.cfg), {"owner/repo#7": "waiting(slot)", "owner/repo#8": "waiting(window)"})
+
+    def test_only_the_shape_of_a_merge_build_names_a_pr(self) -> None:
+        self.wait(1, "slot", *self.WRAPPER)
+        self.wait(2, "slot", "make", "owner/repo#7")
+        self.assertEqual(supervision.merge_builds(self.cfg), {})
+
+    def test_a_running_build_wins_over_a_queued_one_of_its_pr(self) -> None:
+        command = (*self.WRAPPER, "owner/repo#7")
+        self.wait(1, "slot", *command)
+        running = slotrecord.Holder(4242, command, 1.0, 300, 200.0)
+        with mock.patch.object(holders, "held_records", mock.Mock(return_value=[running])):
+            self.assertEqual(supervision.merge_builds(self.cfg, clock=100.0), {"owner/repo#7": "200s/300s"})
+
+    def test_a_box_of_no_name_reads_nothing(self) -> None:
+        self.wait(1, "slot", *self.WRAPPER, "owner/repo#7")
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "", "FLEET_SLOT_STATE": self.state}, host="unmapped")
+        self.assertEqual(supervision.merge_builds(cfg), {})
 
 
 class HoldersArguments(unittest.TestCase):
