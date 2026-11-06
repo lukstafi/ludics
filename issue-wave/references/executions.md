@@ -896,7 +896,8 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   fuller disk dies mid-checkout or mid-build with no named failure. Free the box's space
   ([`farside-close`](#the-gpu-home-box)), or lower the knob for a run that fits. A read that fails is
   a `NOTE` on the leg's output, and the leg runs. The same knob covers `execution tip-run`, on the
-  filesystem of its `--checkout`.
+  filesystem of its `--checkout`. The default is about one cold OCANNL `@runtest @train` tree (22 GB
+  in 2026-11): a site that runs one in a checkout with no `_build` yet raises the knob.
 - **Stopping a leg.** A leg's far side runs in an ssh session of its own, which nothing on the
   caller's box reaches, so a SIGTERM, SIGINT or SIGHUP the leg gets while it runs (`bg-run.sh stop`
   on its run, a Ctrl-C) ends the far side as well (ludics-lite#767): `EXECUTION LEG STOPPING <box>:
