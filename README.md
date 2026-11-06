@@ -362,7 +362,9 @@ To iterate on a few cases of a `ship-pr/scripts/test-pr-review-*.sh` suite, name
 `ship-pr/scripts/test-pr-review-watch.sh test_a test_b` (or
 `SHIP_PR_TEST_CASES="test_a test_b" ship-pr/scripts/test-pr-review-watch.sh`; naming cases both
 ways is refused) runs only those, in the suite's order, and closes with `SUBSET: 2 of <m> cases` —
-a line a full run never prints. A name the suite does not run is refused, and so is any subset
+a line a full run never prints — then, when green, `PASSED: 2 of 2 cases, a SUBSET of <m>`. A full
+green run's last line is `PASSED: <m> of <m> cases` (#989), so a read of the log's last line
+gets a count. A name the suite does not run is refused, and so is any subset
 under `GITHUB_ACTIONS=true`, so CI always runs the whole suite; the full run before a push still
 stands. A suite hands its arguments to `run_tests "${tests[@]}" -- "$@"`, and a call without the
 `--` is refused, so a new suite cannot silently run whole when given case names. Every case `run_tests` is

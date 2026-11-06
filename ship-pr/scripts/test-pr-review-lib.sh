@@ -76,7 +76,9 @@
 #                                       forward is refused. Each case runs in a subshell of its
 #                                       own, so a failed one is tallied and the run goes on; a
 #                                       run with failures closes with `FAILED: n of m cases:
-#                                       <case>...` on stderr and exits non-zero (#809)
+#                                       <case>...` on stderr and exits non-zero (#809), and a
+#                                       green one ends with `PASSED: m of m cases` on stdout,
+#                                       `, a SUBSET of <all>` added on a partial run (#989)
 #   chained <case>...                   declares cases whose state the cases after them read:
 #                                       they run in the suite's own shell instead, and a failure
 #                                       in one ends the run there (fail-fast), naming how many
@@ -1018,6 +1020,10 @@ check_shadows() {
 # retuned constants put back before the next one starts, whether or not it restored them, and its
 # failure ends the run. A run with failures closes with `FAILED: <n> of <m> cases: <case>...` on
 # stderr, after the SUBSET line when there is one, and exits with the first failed case's status.
+# A green run's last line is `PASSED: <m> of <m> cases`, from the cases that printed a PASS line, so
+# a digest of the last line reads a count and not the last case's name (#989). A partial run's says
+# `, a SUBSET of <all>` too, since the last line may be all a reader keeps of it. A failed run prints
+# no such line on either stream.
 #
 # SHIP_PR_TEST_CASES, a space-separated list of case names, runs only those — in the suite's order,
 # not the list's, since some cases lean on the one before them — and ends the run with
@@ -1040,7 +1046,7 @@ check_shadows() {
 # carries and no function answers is a defect of the suite, whichever cases a run selects.
 run_tests() {
   local test_name cases=() listed=() wanted=() selected=() missing="" undefined="" from
-  local unchained="" errexit rc first_rc=""
+  local unchained="" errexit rc first_rc="" passed=0 partial=""
   check_shadows
   while [ $# -gt 0 ] && [ "$1" != -- ]; do
     cases+=("$1")
@@ -1120,6 +1126,7 @@ run_tests() {
     fi
     if [ "$rc" -eq 0 ]; then
       echo "PASS: $test_name"
+      passed=$((passed + 1))
     else
       printf '%s\n' "FAIL: case $test_name (exit $rc); the run goes on" >&2
       LIB_FAILED+=("$test_name")
@@ -1132,6 +1139,8 @@ run_tests() {
     # The first failed case's own status, which is what the run exited with when it stopped there.
     exit "$first_rc"
   }
+  [ "${#wanted[@]}" -eq 0 ] || partial=", a SUBSET of ${#cases[@]}"
+  echo "PASSED: $passed of ${#selected[@]} cases$partial"
 }
 
 # lib_is_one_of <word> <word>...: whether the first word is one of the rest, compared whole — a
@@ -1355,7 +1364,8 @@ mutant() {
   GITHUB_ACTIONS='' TMPDIR="$root" control_run "$copy" "$1"
   assert_eq "$CONTROL_RC" 0 "mutation baseline for $1 ($CONTROL_ERR)"
   assert_eq "$CONTROL_OUT" "PASS: $1
-SUBSET: 1 of ${#tests[@]} cases" "the selected baseline case must run, alone"
+SUBSET: 1 of ${#tests[@]} cases
+PASSED: 1 of 1 cases, a SUBSET of ${#tests[@]}" "the selected baseline case must run, alone"
   assert_eq "$CONTROL_ERR" "" "the baseline must be clean"
   mutation_copy "$copy" "$2" "$3"
   GITHUB_ACTIONS='' TMPDIR="$root" control_run "$copy" "$1"
@@ -1813,11 +1823,13 @@ test_a_subset_runs_the_cases_it_names_and_says_so() {
   # The suite's order, not the list's; and the closing line a full run never prints.
   assert_eq "$CONTROL_OUT" "PASS: test_one
 PASS: test_three
-SUBSET: 2 of 3 cases" "only the named cases run, in the suite's order, and the run says it was partial"
+SUBSET: 2 of 3 cases
+PASSED: 2 of 2 cases, a SUBSET of 3" "only the named cases run, in the suite's order, and the run says it was partial"
   subset_suite 'unset GITHUB_ACTIONS' 'SHIP_PR_TEST_CASES=" "'
   assert_eq "$CONTROL_OUT" "PASS: test_one
 PASS: test_two
-PASS: test_three" "a list naming nothing is a full run, with no SUBSET line ($CONTROL_ERR)"
+PASS: test_three
+PASSED: 3 of 3 cases" "a list naming nothing is a full run, with no SUBSET line ($CONTROL_ERR)"
 }
 
 test_a_subset_naming_a_case_the_suite_lacks_is_refused() {
@@ -1857,7 +1869,8 @@ test_a_case_that_is_not_a_function_is_refused() {
   control_run "$CONTROL_FILE"
   assert_eq "$CONTROL_RC" 0 "top-level cases run ($CONTROL_ERR)"
   assert_eq "$CONTROL_OUT" "PASS: test_outer
-PASS: test_inner" "both cases run once the inner one is defined at the top level"
+PASS: test_inner
+PASSED: 2 of 2 cases" "both cases run once the inner one is defined at the top level"
 }
 
 test_a_subset_under_ci_is_refused() {
@@ -1868,7 +1881,8 @@ test_a_subset_under_ci_is_refused() {
   subset_suite 'GITHUB_ACTIONS=true'
   assert_eq "$CONTROL_OUT" "PASS: test_one
 PASS: test_two
-PASS: test_three" "a full run in CI runs every case ($CONTROL_ERR)"
+PASS: test_three
+PASSED: 3 of 3 cases" "a full run in CI runs every case ($CONTROL_ERR)"
 }
 
 # --- cases named on the command line --------------------------------------------------------
@@ -1881,7 +1895,8 @@ test_cases_named_on_the_command_line_select_like_the_list() {
   assert_eq "$CONTROL_RC" 0 "a subset named on the command line runs ($CONTROL_ERR)"
   assert_eq "$CONTROL_OUT" "PASS: test_one
 PASS: test_three
-SUBSET: 2 of 3 cases" "only the named cases run, in the suite's order, and the run says it was partial"
+SUBSET: 2 of 3 cases
+PASSED: 2 of 2 cases, a SUBSET of 3" "only the named cases run, in the suite's order, and the run says it was partial"
   control_run "$CONTROL_FILE" test_one test_tow
   assert_refused "a misspelt case on the command line"
   assert_contains "$CONTROL_ERR" "the command line names what this suite does not run: test_tow —" \
@@ -2013,7 +2028,8 @@ extra_control() {
 test_a_second_library_is_protected_once_it_says_so() {
   extra_control
   assert_eq "$CONTROL_RC" 0 "a suite over a second library still runs ($CONTROL_ERR)"
-  assert_eq "$CONTROL_OUT" "PASS: test_a_case" "and its case passes"
+  assert_eq "$CONTROL_OUT" "PASS: test_a_case
+PASSED: 1 of 1 cases" "and its case passes"
 
   extra_control 'extra_helper() { echo suite; }'
   assert_refused "a suite-defined extra_helper"
@@ -2126,6 +2142,30 @@ SUBSET: 2 of 6 cases" "the subset's own cases, still marked partial"
   assert_contains "$CONTROL_ERR" "FAILED: 1 of 2 cases: test_five" "tallied over the cases the run selected"
 }
 
+# A green run's last line is its count (#989), so a digest of the last line, which is what a
+# reader of a long run's log keeps, reads how many cases ran and not the name of the last one. The
+# run's other readings of that line are pinned here too: a partial run's says so, since a count
+# alone would let it pass for a full one on the one line kept, and no red run prints it at all. The
+# last line is read off the capture, not off CONTROL_OUT's whole text, because that is the claim.
+test_a_green_run_ends_with_its_count() {
+  subset_suite 'unset GITHUB_ACTIONS'
+  assert_eq "$CONTROL_RC" 0 "a full run passes ($CONTROL_ERR)"
+  assert_eq "$(tail -n 1 "$CONTROL_ROOT/out")" "PASSED: 3 of 3 cases" "a full run's last line is its count"
+  assert_eq "$CONTROL_ERR" "" "and nothing follows it on stderr"
+  control_run "$CONTROL_FILE" test_three test_one
+  assert_eq "$CONTROL_RC" 0 "a subset passes ($CONTROL_ERR)"
+  assert_eq "$(tail -n 1 "$CONTROL_ROOT/out")" "PASSED: 2 of 2 cases, a SUBSET of 3" \
+    "a partial run's last line counts what it ran, and says it was partial"
+  isolation_suite 'test_one() { :; }' 'test_two() { assert_eq 1 2 "two is wrong"; }' \
+    'run_tests test_one test_two -- "$@"'
+  assert_eq "$CONTROL_RC" 1 "a run with a failed case fails ($CONTROL_ERR)"
+  assert_not_contains "$CONTROL_OUT$CONTROL_ERR" "PASSED:" "a failed run prints no green count"
+  isolation_suite 'test_one() { bail "one broke"; }' 'test_two() { :; }' 'chained test_one' \
+    'run_tests test_one test_two -- "$@"'
+  assert_eq "$CONTROL_RC" 1 "a chained failure fails the run ($CONTROL_ERR)"
+  assert_not_contains "$CONTROL_OUT$CONTROL_ERR" "PASSED:" "and a run a chained case ended prints none"
+}
+
 # Nothing a case leaves in the shell reaches the next one: a variable, a retuned constant, a cwd.
 # And the directory a case asks of test_tmpdir is removed when the CASE ends — its registration
 # dies with the subshell, so without the subshell's own trap it would leak — while the suite's own
@@ -2152,7 +2192,8 @@ test_a_case_leaves_nothing_in_the_shell() {
     'run_tests test_one test_two -- "$@"'
   assert_eq "$CONTROL_RC" 0 "isolated cases pass ($CONTROL_ERR)"
   assert_eq "$CONTROL_OUT" "PASS: test_one
-PASS: test_two" "both cases run"
+PASS: test_two
+PASSED: 2 of 2 cases" "both cases run"
   [ -n "$(cat "$probe/case-dir")" ] || bail "the case never recorded its directory"
   [ ! -e "$(cat "$probe/suite-dir")" ] || bail "the suite's own directory outlived the suite"
 }
@@ -2168,7 +2209,8 @@ test_a_chained_case_keeps_its_state_and_its_failure_stops_the_run() {
     'run_tests test_one test_two -- "$@"'
   assert_eq "$CONTROL_RC" 0 "a chained case's state reaches the case after it ($CONTROL_ERR)"
   assert_eq "$CONTROL_OUT" "PASS: test_one
-PASS: test_two" "both cases run"
+PASS: test_two
+PASSED: 2 of 2 cases" "both cases run"
   isolation_suite \
     'test_one() { bail "one broke"; }' \
     'test_two() { bail "two broke"; }' \
@@ -2482,6 +2524,13 @@ test_case_trap_mutation_is_caught() {
     "the mutant must name the directory the case leaked"
 }
 
+# The green count, dropped: the line a digest reads is back to a case's name (#989).
+test_green_count_mutation_is_caught() {
+  mutant test_a_green_run_ends_with_its_count \
+    'echo "PASSED: $passed of ${#selected[@]} cases$partial"' ':' \
+    "a full run's last line is its count"
+}
+
 # The route the whole file depends on: to SHOW a guard can fail you copy this file and pr-review.sh
 # into a scratch directory, revert the fix in the COPY, and run the copy — the tracked file is
 # never touched, so a session that dies between mutating and restoring leaves the repo clean. The
@@ -2501,7 +2550,8 @@ test_case_trap_mutation_is_caught() {
 #
 # The inner run is given `--inner-copy` so it skips this case instead of copying itself forever.
 # It still reports a PASS line for it, so the two lists match exactly and a case silently lost
-# from the copy is a diff rather than a shorter list nobody counted.
+# from the copy is a diff rather than a shorter list nobody counted. The closing count is part of
+# the equality, so a full run of this very file holds the count line too.
 #
 # What the equality below pins is the PASS list; what pins the diagnostics is the inner run's own
 # controls, each of which asserts on the refusal it provoked. That is why `assert_refused` matches
@@ -2522,7 +2572,7 @@ test_the_self_test_runs_from_a_renamed_copy() {
   err=$(cat "$root/err")
   assert_eq "$rc" 0 "a renamed copy beside pr-review.sh must run its own controls ($err)"
   assert_eq "$err" "" "and say nothing on stderr"
-  want=$(printf 'PASS: %s\n' "${tests[@]}")
+  want=$(printf 'PASS: %s\n' "${tests[@]}"; printf 'PASSED: %s of %s cases\n' "${#tests[@]}" "${#tests[@]}")
   assert_eq "$out" "$want" "the copy should report every case this file runs, in the same order"
   # The marker's own guard, shown to refuse rather than assumed to. Reading `$1` alone accepted
   # `--inner-copy typo` — the trailing word ignored, this case skipped, and all 19 PASS lines
@@ -2573,6 +2623,7 @@ tests=(
   test_retune_moves_a_constant
   test_retune_is_undone_when_the_case_ends # must stay directly after the case above
   test_a_failed_case_does_not_end_the_run
+  test_a_green_run_ends_with_its_count
   test_a_case_leaves_nothing_in_the_shell
   test_a_chained_case_keeps_its_state_and_its_failure_stops_the_run
   test_retune_of_a_name_the_script_does_not_set_is_refused
@@ -2588,6 +2639,7 @@ tests=(
   test_fail_fast_mutation_is_caught
   test_tested_subshell_mutation_is_caught
   test_case_trap_mutation_is_caught
+  test_green_count_mutation_is_caught
 )
 
 # Its constants are left moved for the case after it to judge what run_tests restored.

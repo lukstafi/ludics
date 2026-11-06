@@ -140,7 +140,8 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # free slot or GPU token before the deadline, an outstanding measurement -- with --wait-window, one
 # still outstanding at its bound -- a malformed spec); 4 when the
 # anchor's registry could not be read; 127 when the command itself could not be run. The command
-# is run and not interpreted, so a pipeline or a builtin goes as `sh -c '...'`.
+# is run and not interpreted, so a builtin goes as `sh -c '...'`. A pipeline there would make the
+# slot's exit its last stage's, so a suite is never piped (issue-wave SKILL.md, ludics#989).
 #
 # THE GUARD (ludics-lite#317). Under WSL the Windows-side holder kept a lane's box alive; on
 # native Ubuntu nothing at the OS level stopped another session's `wake-lab.sh sleep`, or an idle
