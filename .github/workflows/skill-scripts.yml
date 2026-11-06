@@ -27,7 +27,7 @@ name: skill scripts
 # suite its change reaches under /bin/bash 3.2, slot-wrapped -- issue-wave's SKILL.md) and what
 # only that weekly run does. Before ludics#974 they ran here on every push to main and v2 (never on
 # a pull request since ludics-lite#727), as two jobs of up to 47 and 30 minutes that main's verdict
-# waited on. A PR whose change only macOS exercises dispatches that workflow on its branch.
+# waited on. When a PR dispatches that workflow, and that `merge` does not wait for it: its header.
 #
 # Some jobs gather independent checks into one runner (`prompts` and `pr-review-hostile` here, the
 # macOS jobs, and windows-git-bash.yml's `git-bash` job), so each of their steps runs after an earlier one fails (`if: !cancelled()`) and

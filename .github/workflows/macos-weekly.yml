@@ -13,17 +13,27 @@ name: macos suites
 # full set per merge, nor at the merged tip, until local per-tip integration runs become a
 # base-gate source (ludics#964). What only this workflow covers is the full set on a clean
 # macos-latest image: image drift (ludics#953), and a suite a change reaches without its author
-# knowing, surface here, up to a week late. A PR whose change only macOS exercises dispatches this
-# workflow on its branch (`gh workflow run macos-weekly.yml --ref <branch>`) and cites the run.
+# knowing, surface here, up to a week late.
+#
+# WHEN TO DISPATCH. Only for what a local /bin/bash run cannot show: a clean macos-latest image or
+# a tool difference, the class of image drift (ludics#953). A change those runs cover and
+# negative-test needs no dispatch, however macOS-specific it is. A dispatch is `gh workflow run
+# macos-weekly.yml --ref <branch>`. `merge` does not wait for it (WHO READS IT), so the worker whose
+# PR claims its result waits itself, `pr-review.sh checks lukstafi/ludics#<pr> --wait --check
+# '\(macos\)$'`, says so in the PR and cites the run. A change with no such claim has no dispatch
+# to wait for.
 #
 # WHO READS IT. `pr-review.sh base` folds push runs only, so neither main's verdict nor the fleet
 # gate waits on this workflow or sees its reds: it is a listed workflow with no push run, and the
 # gate's interim reads this file's `on:` as pushless and releases it (lib/ludics/tests pins that
 # reading of this file). A dispatched run does put check runs on the head it ran at; every job
 # name here matches .github/ship-pr-advisory-checks' macOS line, so `checks` and `merge` read them
-# as advisory. A scheduled red opens (or comments on) one issue, the `report` job: the only reader
-# of a weekly red. Every macOS suite has its `run:` line in this file, which check-prompts.sh's
-# fixture register holds.
+# as advisory. The run itself is released once every unfinished job is advisory and the job list
+# has been still for a minute (gate.py, run_inflight_hold; `report`, the one job the list does not
+# name, is created only when the others end), so a dispatch in flight holds neither `checks` nor
+# `merge --wait`, nor does its red. A scheduled red opens (or comments on) one issue, the `report`
+# job: the only reader of a weekly red, and a dispatched red has none but its worker. Every macOS
+# suite has its `run:` line in this file, which check-prompts.sh's fixture register holds.
 #
 # THE SHAPE. skill-scripts.yml's THE CAPS hold here too: a 30-minute ceiling, a p90 target of 20,
 # and a job over the ceiling is split. The suites are spread over six runner assignments, which a
