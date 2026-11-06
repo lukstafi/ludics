@@ -19,8 +19,9 @@ name: macos suites
 # a tool difference, the class of image drift (ludics#953). A change those runs cover and
 # negative-test needs no dispatch, however macOS-specific it is. A dispatch is `gh workflow run
 # macos-weekly.yml --ref <branch>`. `merge` does not wait for it (WHO READS IT), so the worker whose
-# PR claims its result waits itself, `pr-review.sh checks <pr> --wait --check '\(macos\)$'`, says
-# so in the PR and cites the run. A change with no such claim has no dispatch to wait for.
+# PR claims its result waits itself, `pr-review.sh checks lukstafi/ludics#<pr> --wait --check
+# '\(macos\)$'`, says so in the PR and cites the run. A change with no such claim has no dispatch
+# to wait for.
 #
 # WHO READS IT. `pr-review.sh base` folds push runs only, so neither main's verdict nor the fleet
 # gate waits on this workflow or sees its reds: it is a listed workflow with no push run, and the
