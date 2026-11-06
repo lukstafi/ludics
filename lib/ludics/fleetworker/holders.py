@@ -41,6 +41,7 @@ Then one line per batch WAITING here (ludics-lite#719), from its ``waiting.<pid>
 it waits out a measurement, ``slot`` while it waits for a free slot), ``kind`` (the slot it asks
 for), ``pid``, ``command``, ``since`` (when it began to wait), ``source`` ``waiting-record``, and
 ``unknown`` as above for a record whose text does not parse. Its order is the records' ``since``.
+``waiting_records`` is the other reader of those records, for a command's words (``prs``, #982).
 
 WHAT IT READS, AND WHAT IT DOES NOT (the boundary). It reads the slot directory's ``slot.<n>``
 files (``<n>`` decimal) and ``waiting.<pid>`` records, and nothing else there. A waiting record
@@ -131,6 +132,7 @@ PROC = "/proc"
 LOCK_LINE = re.compile(r"[0-9]+: FLOCK +[A-Z]+ +[A-Z]+ +(-?[0-9]+) +([0-9a-f]+):([0-9a-f]+):([0-9]+) ")
 SLOT_FILE = re.compile(r"slot\.([0-9]+)")
 WAITING_FILE = re.compile(r"waiting\.([0-9]+)")
+WAITING_PHASES = ("window", "slot")  # slot.py's WaitingRecord
 
 
 @dataclass(frozen=True)
@@ -447,21 +449,54 @@ def held_records(directory: str, wanted: Callable[[slotrecord.Holder], bool], ru
     return kept
 
 
-def waiters(box: str, directory: str) -> list[dict[str, Any]]:
-    """The batches waiting here: one line per ``waiting.<pid>`` record whose flock is held now."""
+def waiting_files(directory: str) -> list[tuple[int, str]]:
+    """The pid and path of each ``waiting.<pid>`` record of ``directory`` whose flock is held now."""
     try:
         names = os.listdir(directory)
     except OSError:
         return []
-    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    lines: list[dict[str, Any]] = []
+    found: list[tuple[int, str]] = []
     for name in names:
         match = WAITING_FILE.fullmatch(name)
         path = os.path.join(directory, name)
-        if not match or not match.group(1).isascii() or held_now(path) is not True:
-            continue
+        if match and match.group(1).isascii() and held_now(path) is True:
+            found.append((int(match.group(1)), path))
+    return sorted(found)
+
+
+@dataclass(frozen=True)
+class Waiter:
+    """A batch waiting here, as ``waiting_records`` reads it."""
+
+    phase: str
+    command: tuple[str, ...]
+
+
+def waiting_records(directory: str) -> list[Waiter]:
+    """The batches waiting here with their commands' words. Its boundary, a fail-closed allowlist:
+    of a record whose flock is held now, read through ``slotrecord.read_object``'s bound, it takes
+    ``phase`` (one of WAITING_PHASES) and ``argv`` (a non-empty list of strings), and nothing else.
+    It never reads ``command``, a text no parser can split (the words are joined unquoted and cut
+    to 300 characters). A record without those two is left out, never listed in part: one that a
+    fleet-worker older than ``argv`` wrote, one caught mid-rewrite as its phase changes, one past
+    the bound. For a reader that shows what is running, never for one that decides anything."""
+    kept: list[Waiter] = []
+    for _, path in waiting_files(directory):
+        record = slotrecord.read_object(path)
+        command = slotrecord.words_of(record.get("argv")) if record is not None else None
+        phase = record.get("phase") if record is not None else None
+        if command is not None and phase in WAITING_PHASES:
+            kept.append(Waiter(str(phase), command))
+    return kept
+
+
+def waiters(box: str, directory: str) -> list[dict[str, Any]]:
+    """The batches waiting here: one line per ``waiting.<pid>`` record whose flock is held now."""
+    at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    lines: list[dict[str, Any]] = []
+    for pid, path in waiting_files(directory):
         line: dict[str, Any] = {"box": box, "at": at, "event": "waiting", "phase": None, "kind": None,
-                                "pid": int(match.group(1)), "command": None, "since": None,
+                                "pid": pid, "command": None, "since": None,
                                 "source": "waiting-record", "unknown": {}}
         try:
             with open(path, encoding="utf-8") as record:

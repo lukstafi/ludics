@@ -66,8 +66,8 @@ def _finite(value: object) -> bool:
         return False
 
 
-def read_holder(path: str) -> Holder | None:
-    """The holder record in ``path`` (the boundary above), or None."""
+def read_object(path: str) -> dict[str, Any] | None:
+    """The one JSON object ``path`` holds, read as the boundary above says, or None."""
     try:
         with open(path, "rb") as stream:
             data = stream.read(HOLDER_READ + 1)
@@ -79,22 +79,32 @@ def read_holder(path: str) -> Holder | None:
         decoded: Any = json.loads(data.decode("utf-8"))
     except (ValueError, RecursionError):  # RecursionError: nesting deeper than the parser's stack
         return None
-    if not isinstance(decoded, dict):
+    return cast(dict[str, Any], decoded) if isinstance(decoded, dict) else None
+
+
+def words_of(value: object) -> tuple[str, ...] | None:
+    """A non-empty JSON list of strings, or None for anything else."""
+    if not isinstance(value, list) or not value:
         return None
-    record = cast(dict[str, Any], decoded)
+    words = cast(list[Any], value)
+    return tuple(str(word) for word in words) if all(isinstance(word, str) for word in words) else None
+
+
+def read_holder(path: str) -> Holder | None:
+    """The holder record in ``path`` (the boundary above), or None."""
+    record = read_object(path)
+    if record is None:
+        return None
     pid: Any = record.get("pid")
-    command: Any = record.get("command")
+    command = words_of(record.get("command"))
     started: Any = record.get("started")
     deadline: Any = record.get("deadline")
     expires: Any = record.get("expires")
-    if not _whole(pid, PID_MAX) or not (isinstance(command, list) and command):
-        return None
-    words = cast(list[Any], command)
-    if not all(isinstance(word, str) for word in words):
+    if not _whole(pid, PID_MAX) or command is None:
         return None
     if not _finite(started) or (deadline is not None and not _whole(deadline)):
         return None
     if expires is not None and not _finite(expires):
         return None
-    return Holder(int(pid), tuple(str(word) for word in words), float(started),
+    return Holder(int(pid), command, float(started),
                   None if deadline is None else int(deadline), None if expires is None else float(expires))
