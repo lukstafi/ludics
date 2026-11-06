@@ -267,14 +267,12 @@ sprint, settled five more rules (ludics#867):
 
 ## Scope and sequencing
 
-**Build the wave around one thread.** Where the tracker has versioned milestones, take a thread
-(one stated goal a set of related issues serves) from the lowest open versioned milestone;
-`process`, `dormant` and any other unversioned milestone never supply it. Name the thread in the
-proposal. Fill the rest of the wave, from any milestone, by what an issue gives the thread, its
-affinity to the thread, or its independence from it. An issue that shares the thread's churn
-surface without serving it waits. No fixed share governs the mix. If the lowest milestone no longer
-holds a coherent thread, say so in the proposal instead of inventing one: that prompts its release
-or a move of what remains. A scope the user names overrides all of this.
+**Every wave carries a thread.** Where the tracker has versioned milestones, name in the proposal
+one thread from the lowest open versioned milestone: a stated goal, and one issue is enough.
+`process`, `dormant` and any other unversioned milestone never supply it. The rest of the wave is
+the coordinator's call, from any milestone, as many issues as it sees fit: the thread sets no limit
+on the wave. If the lowest milestone holds no thread, say so and run the wave anyway: that prompts
+its release or a move of what remains. A scope the user names overrides all of this.
 
 Propose a wave to the user in one exchange: the issues, each with its box, the parallel groups,
 and what is deferred to a later wave and why. Take the plan's Parallelism and Dependencies

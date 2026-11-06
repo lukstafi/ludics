@@ -49,7 +49,7 @@ Arrange the material without unhelpful redundancy, the following are needs, not 
     and write `D2/D3` for a D2 on the border (one whose change couples semantics, interacting states or
     verification logic), which gets one round of paired planning. A D3 whose design question is tiered "ask"
     is still listed, with that question named as its gate.
-  - For OCANNL, open the list with the threads the lowest open versioned milestone offers, each a stated goal with its issues, as the issue-wave skill's *Scope and sequencing* builds a wave around one. If it has no coherent thread left, say so among the Design questions.
+  - For OCANNL, open the list with the threads the lowest open versioned milestone offers, each a stated goal with its issues, since every wave carries one (the issue-wave skill's *Scope and sequencing*). If it has none left, say so among the Design questions.
   - Among them, show which ones are good to run in parallel to one-another.
   - Among them, show which ones prefer to run on ROG (NVIDIA GPU), which on Minix (AMD GPU, unified memory), and which on TUF (AMD GPU, discrete memory).
 - The Macs are one group in the Machine-placement section: `mac-studio` and `macbook-pro` (M4 Pro) both run Metal and platform-neutral work, so give them one paragraph, and split the Mac-homed first-wave items between them so both get work — the home-box field still names one of the two. Every Mac measurement the plan cites or asks for names the Mac it ran on, since a number from one does not stand in for the other. `macbook-pro` wakes over Wi-Fi, so its placements carry no "manual wake" note.
