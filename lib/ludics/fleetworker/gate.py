@@ -233,6 +233,36 @@ def _remove(path: str) -> None:
         pass
 
 
+def checker_read(cfg: Config, helper: str, target: str, branch: str, where: str, rows: str) -> tuple[int, str | None] | None:
+    """One read of the checker over the records ``rows``: its exit and its --advisory-red file's
+    text, or None (having refused) when a file it needs could not be staged. The ordinary base read
+    may carry an older green while the tip is running: --wait, bounded by the derived ceiling, and
+    --interim (ludics-lite#308), which names a green PR head meanwhile. And --advisory-red
+    (ludics-lite#651): the repository's own advisory file decides a red that is only in jobs it
+    names, and the checker writes those jobs to this file at a green."""
+    advisory = stage_records("")
+    if advisory is None:
+        err(f"BASE REFUSED: {where}: cannot stage the checker's advisory-red file; dispatch blocked")
+        return None
+    argv = [helper, "--repo", target, "base"] + ([branch] if branch else []) + [f"--wait={BASE_WAIT}", "--interim"]
+    argv += ["--advisory-red", advisory]
+    records = ""
+    if rows:
+        staged = stage_records(rows)
+        if staged is None:
+            _remove(advisory)
+            err(f"BASE REFUSED: {where}: cannot stage the integration records; dispatch blocked")
+            return None
+        records = staged
+        argv += ["--integration-records", records]
+    rc = base_checker(cfg, argv)
+    if records:
+        _remove(records)
+    text = _read(advisory)
+    _remove(advisory)
+    return rc, text
+
+
 def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, expected: str = "") -> int:
     """0 the base may be built on, 1 refused (its line on stderr); a usage error dies (2). With
     ``expected`` (launch's fetched base), the branch's tip must still be that commit."""
@@ -254,42 +284,33 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
             " record judges its tip is unknown; dispatch blocked"
         )
         return 1
-    # The ordinary base read may carry an older green while the tip is running: --wait, bounded by
-    # the derived ceiling, and --interim (ludics-lite#308), which names a green PR head meanwhile.
-    # And --advisory-red (ludics-lite#651): the repository's own advisory file decides a red that
-    # is only in jobs it names, and the checker writes those jobs to this file at a green.
-    advisory = stage_records("")
-    if advisory is None:
-        err(f"BASE REFUSED: {where}: cannot stage the checker's advisory-red file; dispatch blocked")
-        return 1
-    argv = [helper, "--repo", target, "base"] + ([branch] if branch else []) + [f"--wait={BASE_WAIT}", "--interim"]
-    argv += ["--advisory-red", advisory]
-    records = ""
-    if rows:
-        staged = stage_records(rows)
-        if staged is None:
-            _remove(advisory)
-            err(f"BASE REFUSED: {where}: cannot stage the integration records; dispatch blocked")
-            return 1
-        records = staged
-        argv += ["--integration-records", records]
-    rc = base_checker(cfg, argv)
-    if records:
-        _remove(records)
-    text = _read(advisory)
-    _remove(advisory)
+    rc = 0
     admitted: list[tuple[str, str]] = []
     # The records were a snapshot, and the read can wait minutes: a green is taken only over the
-    # records it was given (review round 6 of #401).
-    if rc == 0:
+    # records it was given (review round 6 of #401). With integration loops running a record often
+    # concludes during a read, and the answer was always the same re-run (#982: several launches of
+    # one wave, a read taking two minutes), so the gate makes that re-run itself, once, over the
+    # records as they now stand. Any other verdict of the first read stands: only a green read
+    # over an outdated snapshot is read again.
+    for attempt in (1, 2):
+        read = checker_read(cfg, helper, target, branch, where, rows)
+        if read is None:
+            return 1
+        rc, text = read
+        if rc != 0:
+            break
         later = integration_records(cfg, target)
         if later is None:
             err(f"BASE REFUSED: {where}: the execution registry could not be re-read after the verdict; dispatch blocked")
             return 1
         if later != rows:
+            if attempt == 1:
+                err(f"BASE: {where}: an integration record concluded during the read; reading once more over it")
+                rows = later
+                continue
             err(
-                f"BASE REFUSED: {where}: an integration record for it concluded during the read, which the"
-                " verdict did not see; re-run the gate"
+                f"BASE REFUSED: {where}: an integration record for it concluded during the read, and another"
+                " during the one more read the gate makes; neither verdict saw them all; re-run the gate"
             )
             return 1
         jobs = advisory_red_jobs(text) if text is not None else None
@@ -300,6 +321,7 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
             )
             return 1
         admitted = jobs
+        break
     if rc == 1 and force and reason:
         err(f"BASE TRIAGE OVERRIDE: {where}: {reason}")
         rc = 0

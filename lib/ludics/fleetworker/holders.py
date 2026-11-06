@@ -428,6 +428,25 @@ def holders(box: str, directory: str, cap: int, tokens: int, run: cotenants.Runn
     return lines
 
 
+def held_records(directory: str, wanted: Callable[[slotrecord.Holder], bool], run: cotenants.Runner = cotenants.run_bounded,
+                 locks: str = PROC_LOCKS, proc: str = PROC, seen: Callable[[int], str] = visibility) -> list[slotrecord.Holder]:
+    """The holder records ``wanted`` keeps among the slots of ``directory`` held now, each one
+    THE CONFIRMATION confirms (a free slot's file keeps its last taker's record, so a record alone
+    says nothing). Only a kept record costs a test and a confirmation. Unknown reads as not listed:
+    for a reader that shows what is running, never for one that decides anything."""
+    table = read_lock_table(locks)
+    me = os.getpid()
+    kept: list[slotrecord.Holder] = []
+    for index in slot_files(directory):
+        path = os.path.join(directory, f"slot.{index}")
+        holder = slotrecord.read_holder(path)
+        if holder is None or not wanted(holder) or held_now(path) is not True:
+            continue
+        if confirm(path, holder.pid, table, run, proc, me, locks, seen).verdict == "confirmed":
+            kept.append(holder)
+    return kept
+
+
 def waiters(box: str, directory: str) -> list[dict[str, Any]]:
     """The batches waiting here: one line per ``waiting.<pid>`` record whose flock is held now."""
     try:

@@ -198,7 +198,8 @@
 #                          # RUNNING ... (exit 3: re-issue) (lib/ludics/fleetworker/tiprun.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state (pending(no-runner|never-started): a build job never got a
-#                          # runner) and head age; flags <n> (5) or more rounds, or 3 or more
+#                          # runner), head age and, for a merge build running in one of this
+#                          # box's slots, merge-build=<elapsed>s/<bound>s; flags <n> (5) or more rounds, or 3 or more
 #                          # after a round 1 of 5 or more inline findings (read-only); --wave
 #                          # keeps the PRs that close or reference an issue the wave's records name
 #   fleet-worker.sh halt <reason> | resume-launches | halted
