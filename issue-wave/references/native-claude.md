@@ -75,7 +75,9 @@ a CLI worker) has no such cap, only the tool's 600 s maximum. So, in a native wo
   `wait` per Bash call: two in one call (`wait <a>; wait <b>`, or chained with `&&`) can pass the
   cap, which moves the call (ludics-lite#816).
   While it blocks it writes a `bg-run: still waiting after <e> s ...` line to stderr every 120 s.
-  `rc=<n>` (exit 0): the command finished with status `<n>`, and its output is `<dir>/log`. The status is a file of its own, so a review body quoting `rc=` cannot
+  `rc=<n>` (exit 0): the command finished with status `<n>`, and its output is `<dir>/log`.
+  Read that with `tail` or `grep` in a later call: a suite piped inside the batch's `sh -c` makes
+  `rc=` the last stage's (*Never pipe a suite*, in SKILL.md's *The brief*). The status is a file of its own, so a review body quoting `rc=` cannot
   end the wait. A wait whose first look finds the run already finished prints `rc=<n> (finished
   earlier, at <UTC time>)`: the same status, not a fresh result. `RUNNING after <e> s of --within <w>` (3): the bound was spent with the run still
   live, the designed return: re-issue it (an `<e>` under `<w>` is a bug worth reporting). A

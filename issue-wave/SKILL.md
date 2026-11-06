@@ -568,8 +568,8 @@ requirements for every transport with transport-specific setup and identity, and
       [ "$(cat <dir>/rc)" = 0 ] && git commit ...; echo "gate exit=$?"; tail -n 20 <dir>/log
 
   A batch the slot refused fails that test, and so does one with no `rc` yet. The log stands in
-  for the pipe a worker reaches for to keep the readout short: a pipe's last
-  stage replaces the batch's status, and the commit then runs after a failed check
+  for the pipe a worker reaches for to keep the readout short, which no batch takes (*Never pipe
+  a suite*, below): here the commit would run after a failed check
   (ahrefs/ocannl#1442 pushed after a FAILED check; two wave-20261103 workers piped `fmt-check`
   through `tail` in their first commit, ludics#948). `gate exit` is the commit's status when the
   batch passed; when it failed it is the batch's status in the first form and 1 in the second
@@ -630,6 +630,13 @@ requirements for every transport with transport-specific setup and identity, and
     -- fleet-worker.sh execution slot --wait-window -- <batch>`, and retains and observes that
     session to completion, as [local managed command
     sessions](references/native-codex.md#local-managed-command-sessions) says.
+
+  **Never pipe a suite**, in any form (ludics#989). A batch's status
+  is the status of the one command it runs, so in `sh -c '<suite> | tail -n 20'` it is `tail`'s,
+  and after a `;` the last command's: a failed suite reads `rc=0`. Wave-20261106's three workers
+  all met this, and two failed unit runs passed as green. The batch writes the whole log, so the
+  digest is a later call's `tail` or `grep` of it. Steps that belong together go joined with `&&`,
+  as a script under `set -e`, or as one batch each; a builtin still goes as `sh -c '...'`.
 
   In every form `--cpu` goes before the `--` for a batch that holds no GPU, a runner that takes
   the slot itself runs inside the wrapper ([nested

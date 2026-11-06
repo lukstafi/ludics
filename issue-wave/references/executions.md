@@ -77,7 +77,8 @@ cannot be read. Its lock files live under `FLEET_SLOT_STATE`
 (`~/.local/state/fleet-execution-slots/<box>`), which is box-wide on purpose: `ISSUE_WAVE_STATE`
 is each coordinator's own directory, and slots kept there would let two workers under different
 coordinators each take slot 1 on one machine. The command after `--` is exec'd, not
-interpreted, so a pipeline or a shell builtin goes as `sh -c '...'`. `--bg <parent>`
+interpreted, so a shell builtin or an `&&` chain goes as `sh -c '...'`, and a pipeline does not:
+its status is its last stage's (*Never pipe a suite*, in SKILL.md's *The brief*). `--bg <parent>`
 (ludics-lite#181) is the same slot-held batch, detached under `bg-run.sh spawn`, whose one
 foreground call prints the run directory at once; `bg-run.sh wait` blocks on it and `execution
 conclude --from-bg-run` reads it.
