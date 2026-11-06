@@ -1166,7 +1166,7 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
     if not SECONDS.fullmatch(fetch_timeout):
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
-    min_free = min_free_gib(cfg)
+    min_free_gib(cfg)  # a usage error before the reservation is read; run_leg passes it on
 
     # The reservation: a dispatched record, whose execution host is the box. A leg that may wait out a
     # window registers as its waiter in this same read, by its request (THE WAITERS, ludics-lite#719):
@@ -1284,7 +1284,7 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     argv = far_argv(
         cfg, box,
         [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, fname, "1" if no_config else "0",
-         min_free,
+         min_free_gib(cfg),
          str(len(wrap)), *wrap,
          str(len(nest)), *nest, *runner],
     )
