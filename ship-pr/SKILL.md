@@ -1208,7 +1208,9 @@ A platform the PR matrix skips is its scheduled run's to cover: a PR neither wai
 nor dispatches it by default. Dispatch it on the head, and cite the run, only when the change
 needs that platform's evidence — it fixes a failure the platform reported, or changes behavior
 only that platform exercises. A dispatched run puts its check runs on the head, so `checks` and
-`merge` then wait on it: close to an hour for a Windows leg (ludics-lite#337).
+`merge` then wait on it: close to an hour for a Windows leg (ludics-lite#337). Where the advisory
+list names its jobs they do not, past a minute's settle: whoever needs the result waits with
+`checks --wait --check '<ERE>'`.
 
 ### How stale the base has grown
 

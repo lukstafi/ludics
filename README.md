@@ -618,8 +618,8 @@ cover, and per merge the macOS coverage is the merging worker's own `/bin/bash` 
 its change reaches (issue-wave's SKILL.md, *The brief*). Nothing runs the full macOS set per merge
 or at the merged tip until local per-tip runs become a base-gate source (ludics#964); the weekly
 run is what catches image drift and a suite a change reached unnoticed, and a red there opens an
-issue, since `base` reads push runs only. A PR whose change only macOS exercises dispatches that
-workflow on its branch (`gh workflow run macos-weekly.yml --ref <branch>`). This repository also declares a merge build
+issue, since `base` reads push runs only. When a PR dispatches that workflow, and that `merge` does
+not wait for it, is in its header's *WHEN TO DISPATCH*. This repository also declares a merge build
 (`.github/ship-pr-merge-build`, ludics-lite#721): when `main` has moved since a PR's head and both
 sides changed a `lib/*.py` path, `pr-review.sh merge` runs the package's unit tests on the PR
 merged with `main`'s tip and refuses the merge when they fail, as the merge of #700 and #698 would
