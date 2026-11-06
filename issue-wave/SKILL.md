@@ -105,7 +105,7 @@ script; they are what the coordinator tells its workers.
 - **The plan**: `~/self-improve/ClaudeDesktop/sequencing_plan.md`, maintained daily by the
   Daily Issue Planning task. Read it live at every invocation - never rely on a remembered
   copy; it turns over fast. It supplies difficulty classes (D1/D2/D3), a dependency graph,
-  a parallelism analysis, machine placement, and a ready-now first wave. If it has a design
+  a parallelism analysis, machine placement, and a ready-now wavefront. If it has a design
   questions section (see Decision gate), that too.
 - **The fleet**: `mac-studio` (Metal + cc, the reference dev box), `macbook-pro` (Metal, M4 Pro;
   wakes over Wi-Fi), `rog-nv-linux` (CUDA, 24
@@ -118,7 +118,7 @@ script; they are what the coordinator tells its workers.
   before reserving it, and record the translation in the wave board. Never translate
   to an endpoint that `status` did not reach. A WSL boot uses the `-wsl` alias and the
   [WSL setup](references/wsl-boxes.md). Placement is a lookup, never a re-derivation of
-  hardware needs from issue bodies: where the plan's first-wave list carries a box per item,
+  hardware needs from issue bodies: where the plan's wavefront list carries a box per item,
   that column is the **dispatch table**. Where it still places by prose - the Machine-placement
   paragraphs, one per box, listing *legs* of issues rather than issues (ludics-lite#13) - derive
   one box per issue from them before proposing the wave: an issue's home is the box where its
