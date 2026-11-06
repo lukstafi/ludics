@@ -259,10 +259,12 @@ class Near(unittest.TestCase):
         for word, why in (("nobox", "not <box>:<path>"), (":/x", "not <box>:<path>"), ("rog:", "not <box>:<path>"),
                           ("elsewhere:/h/w", "no box of this fleet"), ("rog:relative/w", "not an absolute path"),
                           ("rog:/", "not an absolute path"), ("rog:/h/../etc", "not an absolute path"),
-                          ("rog:/h/./w", "not an absolute path"), ("rog:~/w", "not an absolute path")):
+                          ("rog:/h/./w", "not an absolute path"), ("rog:~/w", "not an absolute path"),
+                          ("rog:/h//w", "not an absolute path")):
             with self.subTest(word=word):
                 self.assertIn(why, farsideclose.parse_word(self.cfg, word)[2])
         self.assertEqual(farsideclose.parse_word(self.cfg, "rog:/h/w:1"), ("rog", "/h/w:1", ""))
+        self.assertEqual(farsideclose.parse_word(self.cfg, "local:/h/w/"), ("mac", "/h/w/", ""))
 
     def test_a_live_row_or_a_state_that_is_no_done_word_keeps_its_words(self) -> None:
         for state in ("reviewing", "launched", "whatever", ""):
@@ -275,6 +277,8 @@ class Near(unittest.TestCase):
         self.assertEqual(got[0], "a row that is not done names it too")
         got = self.held([self.row("t1"), self.row("t2", state="reviewing", farside="rog:/h/wts/w1/")])
         self.assertEqual(got[0], "a row that is not done names it too")
+        got = self.held([self.row("t1", farside="local:/h/wts/w1"), self.row("t2", state="reviewing", farside="mac:/h/wts/w1")])
+        self.assertEqual(got[0], "a row that is not done names it too")
 
     def test_an_outstanding_record_keeps_it_by_each_way_it_can_refer_to_it(self) -> None:
         row = self.row(standing="s1", requests="r1", worker="wk")
@@ -283,6 +287,10 @@ class Near(unittest.TestCase):
                     record("x", worker="z", checkout="/h/wts/w1/sub")):
             with self.subTest(rec=rec):
                 self.assertIn("outstanding reservation", self.held([row], [rec])[0])
+        here = self.row(farside="local:/h/wts/w1", worker="wk")
+        for rec in (record("x", worker="z", host="mac", checkout="/h/wts/w1"), record("x", worker="z", host="local", checkout="/h/wts/w1")):
+            with self.subTest(rec=rec):
+                self.assertIn("outstanding reservation", self.held([here], [rec])[0])
 
     def test_a_concluded_record_or_anothers_on_another_box_keeps_nothing(self) -> None:
         row = self.row(standing="s1", worker="wk")

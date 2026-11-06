@@ -11,8 +11,9 @@ never asked to trust that a word is safe. It is the coordinator's: it needs the 
 brought into the object store). A HALT does not stop it: a halt launches nothing new, and this frees.
 
 WHAT IT READS, a fail-closed allowlist. The ``farside`` key of a row of this board, each word
-``<box>:<path>``, the box a fleet box and the path absolute with no ``.`` or ``..`` component (``none``
-is no word). It takes no path from anywhere else: not a directory listing of the box, not ``git
+``<box>:<path>``, the box a fleet box and the path absolute with no ``.``, ``..`` or empty component (a
+trailing ``/`` aside; ``none`` is no word), so one worktree has one lexical spelling for the row and
+registry gates to compare, the box by its fleet name (``local`` is this box's). It takes no path from anywhere else: not a directory listing of the box, not ``git
 worktree list``, so a worktree the board does not name is never touched, and a past wave's debris is
 removed only by a coordinator who has written it on a board. A word of any other shape is reported
 KEPT. A path holding a space cannot be written as a word; the key has no quoting.
@@ -67,7 +68,9 @@ worktree: that path is a person's to look at. And a far shell killed mid-fetch l
 WHAT IT DOES NOT JUDGE. A process with no leg around it working in the worktree (a shell, a CLI worker
 of the box: ``fleet-worker.sh ls`` is the coordinator's check first); commits reachable only from the
 worktree's reflog; a stash, which belongs to the repository and survives; a record that names neither
-the row's ids nor the row's worker nor a checkout. It frees space on no box the board does not name,
+the row's ids nor the row's worker nor a checkout; a second spelling of one worktree through a
+symlinked ancestor, which those lexical gates cannot see (the leg's lock, keyed physically, still
+does). It frees space on no box the board does not name,
 and says nothing of how much it freed.
 """
 
@@ -85,7 +88,7 @@ from ludics.fleetworker.lease import anchor_gate
 from ludics.fleetworker.leg import REMOTE, SECONDS, WORKTREE
 from ludics.fleetworker.preflight import knob
 from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
-from ludics.fleetworker.transport import err, is_local, prelude, run_on
+from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run_on
 
 USAGE = "farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]"
 REGENERABLE = re.compile(r"\.?[A-Za-z0-9_][A-Za-z0-9._-]*")  # one name: no separator, no `..`, no option
@@ -179,10 +182,16 @@ def parse_word(cfg: Config, word: str) -> tuple[str, str, str]:
         return box, path, "not <box>:<path>"
     if box not in cfg.boxes.split() and not is_local(cfg, box):
         return box, path, f"{shlex.quote(box)} is no box of this fleet"
-    parts = path.split("/")
-    if not path.startswith("/") or not path.strip("/") or "." in parts or ".." in parts:
-        return box, path, "not an absolute path to a directory, with no . or .. component"
-    return box, path, ""
+    parts = path.rstrip("/").split("/")[1:]
+    if not path.startswith("/") or not parts or any(part in ("", ".", "..") for part in parts):
+        return box, path, "not an absolute path to a directory, with no ., .. or empty component"
+    return fleet_name(cfg, box), path, ""
+
+
+def same_word(cfg: Config, word: str) -> str:
+    """A word as the row gate compares it: the box's fleet name, no trailing ``/``."""
+    box, path, why = parse_word(cfg, word)
+    return word if why else f"{box}:{path.rstrip('/')}"
 
 
 def rows_of(doc: dict[str, Any]) -> list[tuple[str, dict[str, str]]]:
@@ -209,7 +218,7 @@ def row_done(fields: dict[str, str]) -> bool:
     return state_word(value) in DONE_STATES
 
 
-def outstanding(records: list[dict[str, Any]], wave: str, fields: dict[str, str], box: str, path: str) -> list[str]:
+def outstanding(cfg: Config, records: list[dict[str, Any]], wave: str, fields: dict[str, str], box: str, path: str) -> list[str]:
     """The ids of the records that keep this word (THE GATES). A record refers to it by the row's
     ids, by the row's worker in this wave, or by its own recorded checkout on this box."""
     named = [w for key in ("standing", "requests") for w in fields.get(key, "").split() if w != "none"]
@@ -224,7 +233,7 @@ def outstanding(records: list[dict[str, Any]], wave: str, fields: dict[str, str]
         if (rid in named
                 or (worker is not None and field(record, "request", "wave") == wave
                     and field(record, "request", "worker") == worker)
-                or (field(record, "request", "execution_host") == box and bound
+                or (fleet_name(cfg, jq_text(field(record, "request", "execution_host"))) == box and bound
                     and (same_checkout(bound, path) or bound.startswith(root)))):
             ids.append(rid)
     return ids
@@ -233,7 +242,7 @@ def outstanding(records: list[dict[str, Any]], wave: str, fields: dict[str, str]
 def plan(cfg: Config, wave: str, rows: list[tuple[str, dict[str, str]]], chosen: list[str],
          records: list[dict[str, Any]]) -> list[Word]:
     """The chosen rows' words, each with what the near side's gates found (THE GATES' first two)."""
-    live = {word.rstrip("/") for _, fields in rows if not row_done(fields) for word in words_of(fields)}
+    live = {same_word(cfg, word) for _, fields in rows if not row_done(fields) for word in words_of(fields)}
     out: list[Word] = []
     for task, fields in rows:
         if chosen and task not in chosen:
@@ -242,10 +251,10 @@ def plan(cfg: Config, wave: str, rows: list[tuple[str, dict[str, str]]], chosen:
             box, path, why = parse_word(cfg, word)
             if not why and not row_done(fields):
                 why = f"the row's state is not a done word ({fields.get('state', fields.get('status', 'none'))})"
-            if not why and word.rstrip("/") in live:
+            if not why and same_word(cfg, word) in live:
                 why = "a row that is not done names it too"
             if not why:
-                ids = outstanding(records, wave, fields, box, path)
+                ids = outstanding(cfg, records, wave, fields, box, path)
                 if ids:
                     why = f"outstanding reservation: {' '.join(ids)}"
             out.append(Word(task, word, box, path, why))
