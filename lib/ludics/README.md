@@ -66,6 +66,7 @@ prreview/feeds.py          the feeds, the round snapshot, pr_head_read, substant
 prreview/state.py          status_state, status_line, approval_gate, gated_state, review_rounds
 prreview/poll.py           cmd_poll (poll, and every watch round)
 prreview/threads.py        the review-threads walk and the open-thread gate (resolve, status, merge)
+prreview/branchtip.py      whether a PR's head is its branch's tip (status, watch, merge; #960)
 prreview/drift.py          warn_base_drift (merge, watch), and read_base_drift's Drift for the merge build
 prreview/commentonly.py    whether a change is to comments only (the merge build's comments lines, #861)
 prreview/mergebuild.py     merge's build of the would-be merge commit (.github/ship-pr-merge-build, #611)
@@ -306,6 +307,14 @@ prreview/feeds.py prreview/state.py prreview/threads.py
     ship-pr/scripts/test-pr-review-retry.sh
     ship-pr/scripts/test-pr-review-reply.sh
     ship-pr/scripts/test-pr-review-merge.sh
+
+prreview/branchtip.py
+    ship-pr/scripts/test-pr-review-merge.sh
+    ship-pr/scripts/test-pr-review-status.sh
+    ship-pr/scripts/test-pr-review-watch.sh
+    ship-pr/scripts/test-pr-review-checks-absent.sh
+    ship-pr/scripts/test-pr-review-budget.sh
+    lib/ludics/tests/test_prreview_merge.py
 
 prreview/status.py
     ship-pr/scripts/test-pr-review-status.sh

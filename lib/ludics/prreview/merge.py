@@ -11,19 +11,21 @@ seven merges). The order of the reads is the shell's, and it is load-bearing -- 
 review round:
 
   the body's closing-keyword scan (lead time), the merge queue (a close-out merge), the advisory
-  list, a --wait's clone preflight without ``-C`` (#944, mergebuild.py's ``clone_preflight``) and
-  conflict preflight (ludics-lite#729, ``conflict_preflight``), the gate (with the
-  override's waiver), the close-out refusals, the base drift, the build of
+  list, the branch tip (#960, ``branch_tip_gate``), a --wait's clone preflight without ``-C`` (#944,
+  mergebuild.py's ``clone_preflight``) and conflict preflight (ludics-lite#729,
+  ``conflict_preflight``), the gate (with the override's waiver), the branch tip again after a
+  --wait that did not end green, the close-out refusals, the base drift, the build of
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
-  EVERY attempt: the body again, the commit series, the open review threads, the merge queue last,
-  and an ABSENT verdict's base (ludics-lite#523); then what the merge goes over (an override's
+  EVERY attempt: the body again, the commit series, the open review threads, the merge queue, an
+  ABSENT verdict's base (ludics-lite#523), and the branch tip last; then what the merge goes over (an override's
   waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
 
-Exit: 0 merged at the gated head; 1 refused (red, a moved head, a real conflict, an open thread, a
-deferred merge) or merged at a head the gate did not judge;
-2 usage; 3 something that decides it could not be read -- under ``--wait``, a read of the gate's
+Exit: 0 merged at the gated head; 1 refused (red, a moved head, a head that is not the branch's, a
+real conflict, an open thread, a deferred merge) or merged at a head the gate did not judge;
+2 usage; 3 something that decides it could not be read (the branch tip at the last read before the
+call included) -- under ``--wait``, a read of the gate's
 that did not answer (the head's, the check runs', the workflow runs') is read again after a pause
 instead (ludics-lite#795, ludics#808), so there 3 means the wait's budget was spent with none
 answering, or GitHub refused the read, and the message names the failures; 4 no verdict; 5 the head was superseded;
@@ -44,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Literal, assert_never
 
 from ludics import cli
+from ludics.prreview.branchtip import Clear, Gone, Lags, Unread, read_tip, warning
 from ludics.prreview.checks import parse_wait
 from ludics.prreview.closekw import MultiClose, SeriesClose
 from ludics.prreview.core import (
@@ -594,6 +597,28 @@ class Merge:
             "waiting for the build signal, and the merge call re-checks it.",
         )
 
+    def branch_tip_gate(self, last: bool) -> None:
+        """Is the head the branch's (branchtip.py, #960, whose header bounds the read)? A head that
+        is not, or a branch that is gone, is refused, exit 1: no override or --allow-no-verdict goes
+        over it, since each waives a verdict on the head and this says the head is the wrong one.
+
+        Unread, an earlier read warns and goes on, as ``conflict_preflight`` does: its job is to
+        refuse early, and a wait must not end on one outage. The ``last`` read, before each merge
+        call, is the one that decides, so unread there is exit 3. That read is the guarantee, and it
+        stops at the call: ``--match-head-commit`` binds the call to the gated head at GitHub, and
+        a push landing after this read is that pin's, as far as it reaches (branchtip.py)."""
+        repo, pr = self.repo, self.num
+        tip = read_tip(self.session, repo, pr)
+        match tip:
+            case Clear():
+                return
+            case Lags() | Gone():
+                fail(1, f"REFUSING to merge {repo}#{pr}: {warning(tip, repo, pr)} Nothing was merged.")
+            case Unread():
+                if last:
+                    fail(3, f"NOT merging {repo}#{pr}: {warning(tip, repo, pr)} Nothing was merged. Retry.")
+                warn(warning(tip, repo, pr), "Going on; the last read before the merge call decides.")
+
     def absent_base_holds(self) -> bool:
         """``absent_base_holds``: is the PR's base still the one the ABSENT verdict was read against?
         A moved base is gated again (no wait, no waiver) and answers False once that read passes on
@@ -661,6 +686,10 @@ class Merge:
         # old (the polling budget, budget.py).
         if self.session.budget is not None:
             self.session.budget.wait_until = None
+        # A wait can outlive the first read, and a refusal below would then name a head nobody's
+        # branch stands on: the tip is said first, as the incident's old red never was (#960).
+        if opts.wait_for > 0 and rc != 0:
+            self.branch_tip_gate(last=False)
         waived = gate.check_waived + gate.run_waived
         recovery = self.recovery
         if recovery.superseded:
@@ -821,6 +850,7 @@ class Merge:
                     )
                 attempt += 1
                 continue
+            self.branch_tip_gate(last=True)
             self.announce()
             args = ["pr", "merge", pr, "--repo", repo, "--match-head-commit", gate.check_sha, *opts.gh_args]
             if opts.forwarded:
@@ -1010,6 +1040,7 @@ class Merge:
         policy = self.gate.advisory_policy()
         if policy != 0:
             return policy
+        self.branch_tip_gate(last=False)
         if self.opts.wait_for > 0:
             if self.opts.checkout is None:
                 # The working directory as the build's clone (#944): -C was checked first of all.

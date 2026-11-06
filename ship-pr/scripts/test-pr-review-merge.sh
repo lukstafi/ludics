@@ -78,6 +78,16 @@ CHECKS_FAIL=""                         # nonempty = the head's check-run read do
 # The gate's per-round head re-read (ludics-lite#795): a number = that many of them answer a 503
 # before the rest answer; `always` = none ever does; `refused` = every one answers a 404.
 HEAD_REREAD_FAIL=""
+# The branch-tip read (branchtip.py, #960). BRANCH_TIP nonempty = the tip the refs API answers, else
+# the PR's head; BRANCH_TIP_LATER = it, from the SECOND refs read on, so a lag can start mid-merge.
+# BRANCH_TIP_FAIL: 404 = the refs read answers Not Found, 503 = it never answers; 503-later = it
+# answers once and then does not. HEAD_REPO = the PR's head repository (a fork's, or `-` when the
+# PR reads none). PR_OPEN_STATE = the state that read answers.
+BRANCH_TIP=""
+BRANCH_TIP_LATER=""
+BRANCH_TIP_FAIL=""
+HEAD_REPO=""
+PR_OPEN_STATE=open
 # A round's check-run and workflow-run reads (ludics#808), as HEAD_REREAD_FAIL: a number = that many
 # calls answer a 503 before the rest answer; `always` = none ever does; `refused` = every one a 404.
 CHECKS_READ_FAIL=""
@@ -271,6 +281,10 @@ gh() {
     # The series scan's count read: the count and the head, derived from the rows the matching
     # commits read serves, so the two agree unless a case says otherwise.
     # The --wait's conflict preflight (ludics-lite#729), told by its interpolated projection.
+    # The branch-tip read, told by its head repository field, above every other head read.
+    *'.head.repo.full_name'*)
+      printf '%s\t%s\tclaude/topic\t%s\n' "$PR_OPEN_STATE" "$(fixture_head "$CURRENT_HEAD")" "${HEAD_REPO:-$REPO}"
+      ;;
     *'\(.mergeable)'*)
       printf 'CALL mergeability\n' >>"$CALLS_FILE"
       reads=$(fixture_call_count mergeability) || return 1
@@ -541,6 +555,31 @@ gh() {
     fi
     ;;
   # The newer runs of the head run's workflow (runners.py's evidence for NEVER STARTED).
+  "api repos/$REPO/git/ref/heads/"* | "api repos/fork-owner/repo/git/ref/heads/"*)
+    printf 'CALL %s\n' "$2" >>"$CALLS_FILE"
+    reads=$(fixture_call_count branch-tip) || return 1
+    case "$BRANCH_TIP_FAIL" in
+    404)
+      printf 'gh: Not Found (HTTP 404)\n' >&2
+      return 1
+      ;;
+    503)
+      printf 'gh: 503 No server is currently available to service your request\n' >&2
+      return 1
+      ;;
+    503-later)
+      if [ "$reads" -ge 2 ]; then
+        printf 'gh: 503 No server is currently available to service your request\n' >&2
+        return 1
+      fi
+      ;;
+    esac
+    if [ -n "$BRANCH_TIP_LATER" ] && [ "$reads" -ge 2 ]; then
+      printf '%s\n' "$BRANCH_TIP_LATER"
+    else
+      printf '%s\n' "${BRANCH_TIP:-$(fixture_head "$CURRENT_HEAD")}"
+    fi
+    ;;
   "api repos/$REPO/actions/workflows/1/runs?"*)
     gh_fixture_parse "$@"
     gh_fixture_answer '{"workflow_runs":[{"id":130,"status":"in_progress","created_at":"2026-09-01T00:10:00Z"}]}'
@@ -606,6 +645,11 @@ assert_no_merge_call() {
 }
 
 reset() {
+  BRANCH_TIP=""
+  BRANCH_TIP_LATER=""
+  BRANCH_TIP_FAIL=""
+  HEAD_REPO=""
+  PR_OPEN_STATE=open
   CURRENT_HEAD=head-sha
   SKIPS_ONLY=""
   CHECK_ROWS=""
@@ -675,6 +719,119 @@ test_merge_binds_to_the_gated_head() {
 
 # The repository's advisory list is read before the gate, and a read that did not answer is an
 # unknown policy: exit 3, and no merge call (ludics-lite#530).
+# --- a head that is not the branch's (branchtip.py, #960) ------------------------------------------
+# The incident: a push reached the branch and the PR's head stayed on the old commit for 17 minutes,
+# so `merge` read that old commit's red, and could as well have merged it.
+
+merge_calls() { grep -c '^CALL pr merge' "$CALLS_FILE" || true; }
+
+test_a_head_lagging_its_branch_is_refused_before_the_gate() {
+  reset
+  BRANCH_TIP=pushed-sha
+  CHECK_ROWS="$(row red ubuntu failure)"
+  run_merge
+  assert_eq "$MERGE_RC" 1 "a head that is not the branch's refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "REFUSING to merge $REPO#7" "and says it refuses"
+  assert_contains "$MERGE_STDERR" "head-sha is NOT its branch's tip" "naming the PR's head"
+  assert_contains "$MERGE_STDERR" "stands at pushed-sha" "and the branch's tip"
+  assert_not_contains "$MERGE_OUTPUT" "concluded failure" "the old head's red is not what it reports"
+  assert_eq "$(merge_calls)" 0 "no merge call is made"
+}
+
+test_no_waiver_goes_over_a_lagging_head() {
+  reset
+  BRANCH_TIP=pushed-sha
+  run_merge --override 'an unrelated red reason' --allow-no-verdict
+  assert_eq "$MERGE_RC" 1 "a waiver of a verdict does not move the head ($MERGE_OUTPUT)"
+  assert_eq "$(merge_calls)" 0 "no merge call is made"
+}
+
+test_a_lag_starting_after_the_gate_is_refused_before_the_call() {
+  reset
+  BRANCH_TIP_LATER=pushed-sha
+  run_merge
+  assert_eq "$MERGE_RC" 1 "the last read before the call decides ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "stands at pushed-sha" "and it names the tip"
+  assert_contains "$MERGE_OUTPUT" "build signal $REPO#7" "the gate had read a verdict"
+  assert_eq "$(merge_calls)" 0 "and no merge call is made"
+}
+
+test_a_lag_starting_during_a_wait_is_said_before_its_red() {
+  reset
+  BRANCH_TIP_LATER=pushed-sha
+  CHECK_ROWS="$(row red ubuntu failure)"
+  run_merge --wait=5
+  assert_eq "$MERGE_RC" 1 "refused ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "head-sha is NOT its branch's tip" "as a head that is not the branch's"
+  assert_not_contains "$MERGE_STDERR" "concluded failure on the" "not as a red to go and fix"
+}
+
+test_a_tip_unread_at_the_last_read_refuses_with_exit_3() {
+  reset
+  BRANCH_TIP_FAIL=503
+  run_merge
+  assert_eq "$MERGE_RC" 3 "unknown is not agreement, and not a refusal on the facts ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "Going on; the last read before the merge call decides" \
+    "the first read warned and went on"
+  assert_contains "$MERGE_STDERR" "NOT merging $REPO#7" "the last read refused"
+  assert_contains "$MERGE_STDERR" "UNREAD" "and says what it could not read"
+  assert_eq "$(merge_calls)" 0 "no merge call is made"
+}
+
+test_a_tip_unread_only_at_the_last_read_refuses_too() {
+  reset
+  BRANCH_TIP_FAIL=503-later
+  run_merge
+  assert_eq "$MERGE_RC" 3 "an earlier agreement is not this one ($MERGE_OUTPUT)"
+  assert_eq "$(merge_calls)" 0 "no merge call is made"
+}
+
+test_a_deleted_branch_is_refused_as_a_fact() {
+  reset
+  BRANCH_TIP_FAIL=404
+  run_merge
+  assert_eq "$MERGE_RC" 1 "the API answered: there is no such branch ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "claude/topic is gone from $REPO" "and it says so"
+  assert_eq "$(merge_calls)" 0 "no merge call is made"
+}
+
+test_a_deleted_head_repository_is_refused_as_a_fact() {
+  reset
+  HEAD_REPO=-
+  run_merge
+  assert_eq "$MERGE_RC" 1 "no repository, no branch ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "its head repository is gone" "and it says so"
+  assert_not_contains "$(cat "$CALLS_FILE")" "git/ref/heads" "with no refs read to make"
+}
+
+test_a_fork_prs_tip_is_read_on_the_fork() {
+  reset
+  HEAD_REPO=fork-owner/repo
+  run_merge
+  assert_eq "$MERGE_RC" 0 "a fork PR agreeing with its branch merges ($MERGE_OUTPUT)"
+  assert_contains "$(cat "$CALLS_FILE")" "CALL repos/fork-owner/repo/git/ref/heads/claude/topic" \
+    "the branch is read where it lives"
+  assert_not_contains "$(cat "$CALLS_FILE")" "CALL repos/$REPO/git/ref/heads" "not on the base repository"
+}
+
+test_the_tip_is_the_last_read_before_the_merge_call() {
+  reset
+  run_merge
+  assert_eq "$MERGE_RC" 0 "an agreeing head merges ($MERGE_OUTPUT)"
+  assert_contains "$(grep -B1 '^CALL pr merge' "$CALLS_FILE")" "git/ref/heads/claude/topic" \
+    "nothing stands between the tip read and the call"
+}
+
+test_a_merged_prs_gone_branch_is_no_refusal() {
+  reset
+  PR_OPEN_STATE=closed
+  BRANCH_TIP_FAIL=404
+  ALREADY_MERGED=1
+  run_merge
+  assert_eq "$MERGE_RC" 0 "a PR merged at the judged head stays a success ($MERGE_OUTPUT)"
+  assert_not_contains "$(cat "$CALLS_FILE")" "git/ref/heads" "and a closed PR's branch is not read"
+}
+
 test_an_unread_advisory_list_never_merges() {
   reset
   run_merge
@@ -3551,6 +3708,17 @@ tests=(
   test_merge_builds_in_the_clone_c_names
   test_merge_takes_c_before_the_pr
   test_a_pr_changing_the_config_is_told_which_copy_judged_it
+  test_a_head_lagging_its_branch_is_refused_before_the_gate
+  test_no_waiver_goes_over_a_lagging_head
+  test_a_lag_starting_after_the_gate_is_refused_before_the_call
+  test_a_lag_starting_during_a_wait_is_said_before_its_red
+  test_a_tip_unread_at_the_last_read_refuses_with_exit_3
+  test_a_tip_unread_only_at_the_last_read_refuses_too
+  test_a_deleted_branch_is_refused_as_a_fact
+  test_a_deleted_head_repository_is_refused_as_a_fact
+  test_a_fork_prs_tip_is_read_on_the_fork
+  test_the_tip_is_the_last_read_before_the_merge_call
+  test_a_merged_prs_gone_branch_is_no_refusal
 )
 
 run_tests "${tests[@]}" -- "$@"

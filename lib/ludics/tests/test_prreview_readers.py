@@ -17,7 +17,7 @@ from unittest import mock
 
 from ludics import proc
 from ludics.prreview import jqsem as jq
-from ludics.prreview import poll, rounds, state, status, threads
+from ludics.prreview import branchtip, poll, rounds, state, status, threads
 from ludics.prreview.clock import FuncClock
 from ludics.prreview.core import GhSession, Json, json_stream, load_config
 from ludics.prreview.feeds import HEAD_JQ, Ctx
@@ -69,6 +69,9 @@ class FakeGh:
             fields = [jq.jstr(jq.alt(jq.path(value, *p), "-")) for p in (("head", "sha"),
                       ("mergeable_state",), ("created_at",))]
             return tsv(fields) + "\n"
+        if expr == branchtip.PR_JQ:
+            # Not open, so no refs read: the tip's own cases are the status suite's.
+            return "closed\t-\t-\t-\n"
         if expr == ".commit.committer.date":
             return jq.jstr(jq.path(value, "commit", "committer", "date")) + "\n"
         if expr == ".data.repository.pullRequest.reviewThreads":
@@ -1161,7 +1164,7 @@ class ThreadsByHead(unittest.TestCase):
                 self.assertEqual(lines[1], "review threads: 1 open on head aaaaaaa, 1 on earlier heads: 2 by"
                                  " codex on a.sh — answer and resolve these before pushing past them", lines)
                 self.assertEqual(gh.calls.count("graphql"), walks, "one walk, shared with the gate")
-                self.assertEqual(gh.calls.count("repos/o/r/pulls/7"), 1, "and no second head read for it")
+                self.assertEqual(gh.calls.count("repos/o/r/pulls/7"), 2, "and no second head read for it: the other is the tip's")
 
     def test_threads_named_reads_the_longer_row(self) -> None:
         n, shown = threads.threads_named([tsv(["1", "u", "p", HEAD, "-"])])

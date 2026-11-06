@@ -196,6 +196,7 @@ world_healthy() {
   mkdir -p "$WORLD"
   answer "$R" '{"default_branch":"main"}'
   answer "$R/commits/main" "{\"sha\":\"$TIP\",\"commit\":{\"committer\":{\"date\":\"2026-09-30T10:00:00Z\"}}}"
+  answer "$R/git/ref/heads/main" "{\"ref\":\"refs/heads/main\",\"object\":{\"type\":\"commit\",\"sha\":\"$TIP\"}}"
   tip_runs="[$(run_row 202 11 402 push completed '"success"' 2026-09-30T10:00:05Z "$TIP"),$(run_row 201 11 401 pull_request completed '"failure"' 2026-09-30T10:00:00Z "$TIP")]"
   answer "$R/actions/runs?head_sha=$TIP&per_page=100" "{\"total_count\":2,\"workflow_runs\":$tip_runs}"
   answer "$R/actions/runs?head_sha=$TIP&per_page=10" "{\"total_count\":2,\"workflow_runs\":$tip_runs}"
@@ -233,7 +234,7 @@ world_healthy() {
   answer "$R/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
     '[{"number":7,"merged_at":"2026-09-20T10:00:00Z"},{"number":8,"merged_at":null}]'
   answer "$R/pulls?state=open&per_page=10" '[{"number":12}]'
-  answer "$R/pulls/12" "{\"number\":12,\"state\":\"open\",\"draft\":true,\"head\":{\"sha\":\"$H12\"},\"base\":{\"ref\":\"main\"},\"created_at\":\"2026-09-30T09:00:00Z\",
+  answer "$R/pulls/12" "{\"number\":12,\"state\":\"open\",\"draft\":true,\"head\":{\"sha\":\"$H12\",\"ref\":\"topic\",\"repo\":{\"full_name\":\"o/n\"}},\"base\":{\"ref\":\"main\"},\"created_at\":\"2026-09-30T09:00:00Z\",
     \"updated_at\":\"2026-09-30T09:30:00Z\",\"mergeable\":true,\"mergeable_state\":\"clean\"}"
 
   # The reviewed anchor #9: the inline rows are the shared builders', a migrated anchor on each feed.
@@ -489,6 +490,7 @@ test_the_exit_trap_cleans_up_and_names_an_unchosen_exit() {
 IFS= read -r -d '' HEALTHY_VERDICTS <<'EOF' || :
 ok    repos/<owner/name> carries default_branch (the drift anchor's ref when none is given)
 ok    commits/<encode_ref branch> answers the branch tip's sha and committer date (the drift anchor and the push clock)
+ok    git/ref/heads/<encode_ref branch> answers one ref whose object is the branch tip's commit (branchtip.py's read of a head's branch)
 ok    the feed is workflow_runs[]
 ok    every row carries the fields the fold indexes: numeric id and workflow_id, string event, name and status, created_at (created_at and id are the sort key it orders on)
 ok    every row's head_sha is the sha asked for (the filter filters)
@@ -546,6 +548,7 @@ ok    pulls?state=open is a list
 ok    every row of the open-PR list carries a numeric number
 ok    the open-PR anchor #12 is open and a draft (reopen it, or make a new one as the header says and point CONTRACT_OPEN_PR at it)
 ok    an open PR's pulls/<n> read carries head.sha, base.ref, updated_at, and mergeable (present) in {true,false,null}
+ok    ... and head.ref and head.repo.full_name, the branch and the repository branchtip.py reads its tip on
 ok    ... and created_at, the review clock's floor, no later than updated_at
 ok    ... and a mergeable_state in the vocabulary status_state renders (dirty is CONFLICTS, unknown is not yet computed)
 skip  a push made while mergeable_state=dirty gets no pull_request run — needs a dirty PR pushed to under observation; not manufactured here
@@ -662,7 +665,7 @@ test_the_open_pr_anchor_keeps_the_open_pr_claims_made() {
   # row is not among them.
   world_healthy
   answer "$R/pulls?state=open&per_page=10" '[{"number":13}]'
-  answer "$R/pulls/13" "{\"number\":13,\"state\":\"open\",\"draft\":false,\"head\":{\"sha\":\"$H13\"},\"base\":{\"ref\":\"main\"},\"created_at\":\"2026-09-30T09:00:00Z\",
+  answer "$R/pulls/13" "{\"number\":13,\"state\":\"open\",\"draft\":false,\"head\":{\"sha\":\"$H13\",\"ref\":\"topic\",\"repo\":{\"full_name\":\"o/n\"}},\"base\":{\"ref\":\"main\"},\"created_at\":\"2026-09-30T09:00:00Z\",
     \"updated_at\":\"2026-09-30T09:30:00Z\",\"mergeable\":true,\"mergeable_state\":\"clean\"}"
   doctor "$R/pulls/12" '.state = "closed" | .mergeable_state = "surprise"'
   run_contract
@@ -723,6 +726,9 @@ test_a_doctored_response_moves_its_pin_and_only_it() {
     "$R/actions/runs/201/jobs?per_page=100^.jobs[0] |= del(.completed_at)^MOVED jobs[] rows carry an ISO created_at, and every finished job an ISO completed_at" \
     "$R/commits/$TIP/check-runs?filter=latest&per_page=100^.check_runs[0].conclusion = \"surprise\"^MOVED check-run conclusions are in the vocabulary" \
     "$R/commits/$TIP/check-runs?filter=latest&per_page=100^.check_runs[1].conclusion = null^MOVED every check run carries a status string, never \"completed\" while its conclusion is null" \
+    "$R/git/ref/heads/main^.object.sha = \"$H12\"^MOVED git/ref/heads/<encode_ref branch> answers one ref" \
+    "$R/git/ref/heads/main^[.]^MOVED git/ref/heads/<encode_ref branch> answers one ref" \
+    "$R/pulls/12^.head.repo = null^MOVED ... and head.ref and head.repo.full_name" \
     "$R/commits/$M7^.commit.verification.verified = false^MOVED GitHub's merge commit is committed by noreply@github.com" \
     "$R/pulls/7^.mergeable = false^MOVED a merged PR's mergeability never reads as a conflict" \
     "$R/pulls/7^.mergeable_state = \"dirty\"^MOVED a merged PR's mergeability never reads as a conflict" \

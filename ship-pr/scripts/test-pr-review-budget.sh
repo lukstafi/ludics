@@ -224,8 +224,12 @@ gh() {
     a=false state=open
     [ ! -s "$MERGE_LOG" ] || a=true state=closed
     body=$(jq -cn --arg sha "$HEAD_SHA" --arg base "$BASE_SHA" --argjson merged "$a" --arg state "$state" \
-      '{head:{sha:$sha, ref:"topic"}, base:{sha:$base}, updated_at:"2026-10-04T00:00:00Z",
+      --arg repo "$REPO" \
+      '{head:{sha:$sha, ref:"topic", repo:{full_name:$repo}}, base:{sha:$base}, updated_at:"2026-10-04T00:00:00Z",
         merged:$merged, state:$state, mergeable:true, mergeable_state:"clean"}')
+    ;;
+  "repos/$REPO/git/ref/heads/topic")
+    body=$(jq -cn --arg sha "$HEAD_SHA" '{object:{sha:$sha}}')
     ;;
   "repos/$REPO/commits/$HEAD_SHA/check-runs?filter=latest&per_page=100")
     state=$(next_check)

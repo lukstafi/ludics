@@ -295,7 +295,18 @@ gh() {
   # do NOT overlap (the glob demands the slash), nor do "actions/runs?…" and "actions/runs/"*.
   # The PR read's projections are not arms: one arm answers them all, pr_read_names classifying each.
   case "$FIXTURE_ENDPOINT" in
+  "repos/$REPO/git/ref/heads/topic")
+    response=$(jq -cn --arg s "$(current_of HEAD_SEQ)" '{object:{sha:$s}}')
+    ;;
   "repos/$REPO/pulls/7")
+    # The branch-tip read (#960) reports on the head and reads none: this suite's heads move with
+    # HEAD_SEQ, so it takes no entry, and the tip agrees with the head served last.
+    if [ "${FIXTURE_FILTER#*.head.repo.full_name}" != "$FIXTURE_FILTER" ]; then
+      [ ! -e "$TEST_ROOT/merged" ] || merged=true
+      gh_fixture_answer "$(jq -cn --arg s "$(current_of HEAD_SEQ)" --arg r "$REPO" --argjson m "$merged" \
+        '{state:(if $m then "closed" else "open" end), head:{sha:$s, ref:"topic", repo:{full_name:$r}}}')"
+      return 0
+    fi
     # The PR read. Only a read asking for the head takes the next HEAD_SEQ entry; any other
     # projection is answered from the head served last, taking none (pr_read_names decides which, and
     # next_base's count is held to base reads the same way). A case's sequence counts the reads of

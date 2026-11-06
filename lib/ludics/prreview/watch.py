@@ -75,6 +75,7 @@ from ludics.prreview.core import (
 )
 from ludics.prreview.clock import Clock, age_of, clock_from_env, fmt_age
 from ludics.prreview.drift import warn_base_drift
+from ludics.prreview.branchtip import Tip, qualified, read_tip, warning
 from ludics.prreview.feeds import Ctx, pr_head_read
 from ludics.prreview.jqsem import JqError, idx, jstr, login_is
 from ludics.prreview.poll import poll
@@ -343,6 +344,8 @@ class Watch:
         # through, with the failure line the window's end prints: an attempt is once per head as a
         # post is, but it buys no request grace (review of #770, round 1).
         self.stall_failed: dict[str, str] = {}
+        # This round's branch-tip read (#960), read only where something is reported on it.
+        self.tip_read: Tip | None = None
 
     # --- the pieces of a round -------------------------------------------------------------------
 
@@ -350,14 +353,31 @@ class Watch:
     def repo(self) -> str:
         return self.ctx.repo
 
+    def branch_tip(self) -> Tip:
+        """Once a round at most, and only when a line needs it: never a read a quiet poll pays for."""
+        if self.tip_read is None:
+            self.tip_read = read_tip(self.ctx.session, self.repo, self.pr)
+        return self.tip_read
+
     def line(self, state: State) -> str:
-        return status_line(state, self.repo, self.pr)
+        """The state line. An approval is qualified by the tip here, so no exit reports one bare
+        (#960); an approval ends the wait, so this read is not one per poll."""
+        line = status_line(state, self.repo, self.pr)
+        return qualified(state, line, self.branch_tip()) if state.tok in ("approved", "unresolved") else line
+
+    def tip_note(self) -> None:
+        """An exit's warning that the head is not the branch's, in every state: a push the PR has not
+        picked up is also a head no reviewer is coming to, so the quiet exits need it most."""
+        note = warning(self.branch_tip(), self.repo, self.pr)
+        if note:
+            _say(f"WARNING: {note}")
 
     def drift_note(self) -> None:
         warn_base_drift(self.ctx.session, self.repo, self.pr, self.cfg.stale_base, say=_err, err=_err)
 
     def round(self) -> None:
         """``watch_round``: one poll, the head read after it, and the split of its items."""
+        self.tip_read = None
         snap = self.ctx.snap
         snap.arm()
         result = poll(self.ctx, self.pr, self.mark)
@@ -572,6 +592,7 @@ class Watch:
             p.out = f"{_drop_last_line(p.out)}\n{threads}\n{self.rounds_trailer()}\n{last}"
         else:
             p.out = f"{p.out}\n{threads}\n{self.rounds_trailer()}"
+        self.tip_note()
         _say(p.out)
 
     def threads_line(self) -> str:
@@ -581,7 +602,9 @@ class Watch:
 
     def finish(self) -> None:
         """The last two lines of an exit that reports a state: the thread count, then the
-        watermark. An exit that read nothing (exit 3) prints the watermark alone."""
+        watermark, under the warning of a head that is not the branch's. An exit that read nothing
+        (exit 3) prints the watermark alone."""
+        self.tip_note()
         _say(self.threads_line())
         _say(f"watermark: {self.mark}")
 
