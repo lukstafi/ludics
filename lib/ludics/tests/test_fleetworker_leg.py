@@ -800,5 +800,58 @@ class Sweep(unittest.TestCase):
         self.assertEqual((rc, out.split()), (0, ["1"]))
 
 
+class WorktreeReading(unittest.TestCase):
+    """``common`` and ``gitdir`` (leg.WORKTREE) under the /bin/bash a Mac's far side has. Bash 3.2's
+    ``cd ""`` succeeds and stays put, so a ``git rev-parse`` that failed must never reach the ``cd``:
+    a plain directory would read as its own git directory, and the leg's ``--checkout ... is not a
+    git checkout`` refusal, on a Mac, would never fire. Bash 5 fails that ``cd``, so only a macOS run
+    of these cases can catch the shape coming back."""
+
+    bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"  # 3.2 on macOS
+
+    def setUp(self) -> None:
+        made = tempfile.TemporaryDirectory()
+        self.addCleanup(made.cleanup)
+        self.tmp = Path(made.name).resolve()
+        self.plain = self.tmp / "plain"
+        self.plain.mkdir()
+        self.co = self.tmp / "co"
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(self.co)]
+        subprocess.run(["git", "init", "-q", str(self.co)], capture_output=True, check=True)
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "a"], capture_output=True, check=True)
+        self.wt = self.tmp / "wt"
+        subprocess.run([*git, "worktree", "add", "-q", str(self.wt), "-b", "topic"], capture_output=True, check=True)
+
+    def read(self, function: str, path: Path) -> str:
+        done = subprocess.run([self.bash, "-c", leg.WORKTREE + f'{function} "$1"\n', "x", str(path)],
+                              capture_output=True, text=True, cwd="/")
+        return done.stdout.rstrip("\n")
+
+    def test_a_plain_directory_reads_empty(self) -> None:
+        self.assertEqual((self.read("common", self.plain), self.read("gitdir", self.plain)), ("", ""))
+
+    def test_a_main_checkout_reads_absolute_though_git_prints_it_relative(self) -> None:
+        sub = self.co / "sub"
+        sub.mkdir()
+        dotgit = str(self.co / ".git")
+        self.assertEqual((self.read("common", self.co), self.read("gitdir", self.co)), (dotgit, dotgit))
+        self.assertEqual(self.read("common", sub), dotgit)
+
+    def test_a_linked_worktree_reads_the_checkouts_common_and_its_own_gitdir(self) -> None:
+        self.assertEqual(self.read("common", self.wt), str(self.co / ".git"))
+        self.assertEqual(self.read("gitdir", self.wt), str(self.co / ".git" / "worktrees" / "wt"))
+
+    def test_a_plain_directory_as_checkout_is_the_legs_first_refusal(self) -> None:
+        # The whole far side, as ForeignHome runs it. Past this line it would go on to the fetch.
+        root = Path(leg.__file__).resolve().parents[3]
+        script = f"STATE={shlex.quote(str(self.tmp / 'state'))}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
+        done = subprocess.run(
+            [self.bash, "-s", str(self.plain), str(self.tmp / "new"), "origin", "main", "", "", "req", "5",
+             "t0k", "", "0", "0", "0", "0", "true"],
+            input=script, env={**os.environ, "HOME": str(self.tmp)}, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(done.stderr, f"EXECUTION LEG REFUSED box: --checkout {self.plain} is not a git checkout on box\n")
+
+
 if __name__ == "__main__":
     unittest.main()
