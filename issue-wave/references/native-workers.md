@@ -145,7 +145,8 @@ checkout. Only the coordinator removes its externally created worker worktree, w
 project's cleanup procedure; retain any checkout whose ownership or execution is uncertain.
 For Git cleanup use the existing [ship-pr helper](../../ship-pr/SKILL.md#after-it-lands) where
 applicable, with the repository's base and explicitly regenerable directories (for example
-`--regenerable _build`). Archive unique experiment inputs and instrumentation first. Avoid
+`--regenerable _build`); a far-side worktree goes through `fleet-worker.sh farside-close`
+([executions.md](executions.md#the-gpu-home-box)). Archive unique experiment inputs and instrumentation first. Avoid
 rebuilding its ref/ancestry checks in an ad-hoc cleanup script; Dune can copy a worktree's `.git`
 file into `_build/default`, which a plain `git clean -fdX` will preserve as a nested repository.
 App-managed worktrees follow [separate-codex.md](separate-codex.md#close-out) or

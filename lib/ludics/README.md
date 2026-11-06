@@ -233,6 +233,9 @@ fleetworker/slot.py fleetworker/holders.py fleetworker/group.py fleetworker/slot
 fleetworker/graces.py fleetworker/leg.py
     issue-wave/scripts/test-fleet-worker.sh "execution slot" "execution leg" tip-run
 
+fleetworker/farsideclose.py
+    issue-wave/scripts/test-fleet-worker.sh "execution leg"
+
 fleetworker/tiprun.py
     issue-wave/scripts/test-fleet-worker.sh tip-run
 

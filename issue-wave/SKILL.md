@@ -1347,8 +1347,9 @@ its proposals for this same editorial pass and chip mode. Worktree removal comes
 transport-specific: native in [native-workers.md](references/native-workers.md#close-out-and-bounded-smoke),
 app in [separate-codex.md](references/separate-codex.md#close-out) or
 [app-claude.md](references/app-claude.md#intervention-and-close-out), CLI in
-[cli-claude.md](references/cli-claude.md#close-out); no checkout is removed while an
-outstanding reservation refers to it. For a wave with native Claude workers, put the summary of
+[cli-claude.md](references/cli-claude.md#close-out); far-side worktrees, whatever the transport,
+through `fleet-worker.sh farside-close <wave>` ([executions.md](references/executions.md#the-gpu-home-box));
+no checkout is removed while an outstanding reservation refers to it. For a wave with native Claude workers, put the summary of
 `~/.claude/skills/issue-wave/scripts/cache-misses.py --since <the wave's start date> --session
 <coordinator session id>` in the
 report: its exit 1 means a worker turn after a block rewrote the worker's whole context, which a

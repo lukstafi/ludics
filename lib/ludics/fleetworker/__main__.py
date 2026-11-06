@@ -20,7 +20,7 @@ import re
 import sys
 
 from ludics import cli
-from ludics.fleetworker import board, execution, gate, lease, preflight, supervision, workers
+from ludics.fleetworker import board, execution, farsideclose, gate, lease, preflight, supervision, workers
 from ludics.fleetworker.config import Config, load_config, pin_refusal
 from ludics.fleetworker.identity import PROG, die
 
@@ -38,6 +38,7 @@ VERBS = (
     "load",
     "prs",
     "board",
+    "farside-close",
     "execution",
     "halt",
     "resume-launches",
@@ -114,6 +115,8 @@ def dispatch(argv: list[str]) -> int:
             return supervision.cmd_prs(cfg, rest)
         case "board":
             return board.cmd_board(cfg, rest)
+        case "farside-close":
+            return farsideclose.cmd_farside_close(cfg, rest)
         case "execution":
             return execution.cmd_execution(cfg, rest)
         case "halt":
