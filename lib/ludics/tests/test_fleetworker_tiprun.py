@@ -350,9 +350,8 @@ class Allocate(unittest.TestCase):
         self.assertIn("TIP-RUN UNKNOWN w-gpu-rog-?: the anchor's registry could not be read", out.getvalue())
 
 
-class Mark(unittest.TestCase):
-    """THE BACKEND PIN's mark: a started GPU-loop run's running record carries ``pinned_backend``,
-    the backend the far side checked; no other record does, and nothing not started is marked."""
+class Starting(unittest.TestCase):
+    """A run started with a far side's canned answer; the reservation and the record are mocks."""
 
     def start(self, req: dict[str, Any], far: str, env: dict[str, str] | None = None) -> tuple[int, list[tuple[list[str], dict[str, Any] | None]], list[str]]:
         cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", env or {}, host="h")
@@ -381,6 +380,11 @@ class Mark(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "env", "OCANNL_BACKEND=hip", "true"])
         return rc, calls, far_args
+
+
+class Mark(Starting):
+    """THE BACKEND PIN's mark: a started GPU-loop run's running record carries ``pinned_backend``,
+    the backend the far side checked; no other record does, and nothing not started is marked."""
 
     def test_a_started_gpu_loop_run_is_marked_with_the_backend_the_far_side_checked(self) -> None:
         rc, calls, far = self.start(request(purpose="GPU integration loop, hip: tip"), "dir=/s/run-1\nslot=held\n")
@@ -411,7 +415,7 @@ def running(**fields: object) -> dict[str, Any]:
     return record
 
 
-class Floor(Mark):
+class Floor(Starting):
     """THE FREE-SPACE FLOOR: the knob reaches the far side as its argument, a value that is no whole
     number is a usage refusal before anything is asked, and a far-side refusal is concluded as any
     other. The reading itself is ``test_fleetworker_leg``'s, and the far side's order the shell suite's."""
