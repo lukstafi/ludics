@@ -212,6 +212,10 @@
 #   fleet-worker.sh board show <wave> [--json]   # the markdown view (or the document); no lease
 #   fleet-worker.sh board check <wave>   # the close-out check: exit 0 when every row's state is a
 #                          # done word, 3 listing each row that is not; no lease (ludics#810)
+#   fleet-worker.sh board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>]
+#                          # a merged task's close-out, one line: the merge SHA read from GitHub,
+#                          # every standing record of the row concluded, the log and the row
+#                          # written; a re-run resumes a partial close (fleetworker/closeout.py)
 #   fleet-worker.sh board takeover <wave> <task>   # the task's stored brief, then its state at
 #                          # takeover from the row's takeover keys and the live sources; no lease;
 #                          # exit 3 when the brief cannot be read (lib/ludics/fleetworker/takeover.py)

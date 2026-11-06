@@ -12,6 +12,8 @@ Its header is the contract: the document, what it accepts, and the markdown view
   board check <wave>                                  the close-out check: every row done (no lease)
   board takeover <wave> <task>                        a worker's stored brief and its state now (no
                                                       lease; ``ludics.fleetworker.takeover``)
+  board close <wave> <task> [--pr <n>] ...            a merged task's close-out, in one line (lease;
+                                                      ``ludics.fleetworker.closeout``)
 
 A row's state is its ``state`` key, a STATE WORD first (``takeover``'s header states the vocabulary,
 ludics#810). ``set`` writes any value as given, and warns on stderr (``BOARD WARNING: ...``, the exit
@@ -48,7 +50,8 @@ from ludics.fleetworker.transport import PAYLOAD_ON_FD, err, prelude, run_on, sh
 
 USAGE = (
     "board set [--create] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
-    "board log <wave> <text>... | board show <wave> [--json] | board check <wave> | board takeover <wave> <task>"
+    "board log <wave> <text>... | board show <wave> [--json] | board check <wave> | board takeover <wave> <task> | "
+    "board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>]"
 )
 STATE_WORDS = f"live {', '.join(LIVE_STATES)}; done {', '.join(DONE_STATES)}"
 
@@ -90,7 +93,7 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
             die(f"board show: expected <wave> [--json] ({USAGE})")
         return action, {"wave": rest[0], "json": rest[1:] == ["--json"]}
     if action not in ("set", "note", "log"):
-        die(f"board: expected set, note, log, show, check or takeover ({USAGE})")
+        die(f"board: expected set, note, log, show, check, takeover or close ({USAGE})")
     create = bool(rest) and rest[0] == "--create"
     if create and action == "log":
         die(f"board log: takes no --create; start the board with set or note --create ({USAGE})")
@@ -173,6 +176,10 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
         return cmd_takeover(cfg, args[1:])
     if args[:1] == ["check"]:
         return cmd_check(cfg, args[1:])
+    if args[:1] == ["close"]:
+        from ludics.fleetworker.closeout import cmd_close
+
+        return cmd_close(cfg, args[1:])
     action, payload = payload_of(args)
     if action == "set":
         for line in warnings_of(cast(str, payload["task"]), cast(list[list[str]], payload["fields"])):

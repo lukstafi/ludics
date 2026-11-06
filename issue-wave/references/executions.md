@@ -948,7 +948,9 @@ absolute on the execution host) and names it in the brief; the worker then runs 
 the project runner without asking, blocks on each inside its turn, and reports every run
 directory. Measurement, one-off cross-box legs and full suites still go through a request.
 
-The reservation is concluded once, at hand-back, in the standing form:
+The reservation is concluded once, at hand-back: for a task whose PR merged, by `fleet-worker.sh board
+close` ([native-workers.md](native-workers.md#close-out-and-bounded-smoke)), and otherwise in the
+standing form:
 
 ```
 fleet-worker.sh execution conclude --standing-handback --request <id> --observed-from <the worker's worktree> \
