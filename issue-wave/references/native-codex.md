@@ -29,7 +29,10 @@ Name the workload kind in that assignment and use the wrapper specified in
 [executions.md](executions.md#reserve-launch-observe-conclude): correctness takes a run-time
 slot; an exclusively reserved measurement runs the bounded project runner directly, under
 `fleet-worker.sh execution hold --request <request_id> -- <command>` (the OS-level sleep guard
-alone, inside which a runner's own `execution slot` runs instead of being refused).
+alone, inside which a runner's own `execution slot` runs instead of being refused). A Claude
+native worker's every-batch `execution slot --bg` is that runtime's subagent cap, not a rule here
+([which form](executions.md#exclusivity-and-the-run-time-slots)): the wrapper stays in the
+foreground of the turn.
 
 ## Local managed command sessions
 

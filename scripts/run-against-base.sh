@@ -15,7 +15,8 @@
 # It is a suite run like any other, so callers take the box's correctness slot around it:
 #   ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot -- \
 #     scripts/run-against-base.sh <suite-path> [options] [suite args...]
-# (`execution slot --cpu -- ...` for a suite that holds no GPU).
+# (`execution slot --cpu -- ...` for a suite that holds no GPU; a native Claude worker takes the
+# `--bg` form, issue-wave/references/executions.md, *Which form a caller uses*).
 #
 # The base ref is used as it stands locally: fetch first if origin/main may be stale.
 #

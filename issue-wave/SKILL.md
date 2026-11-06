@@ -542,7 +542,8 @@ requirements for every transport with transport-specific setup and identity, and
   [paired-planning.md](references/paired-planning.md#the-brief-addition), with its mode. The
   coordinator starts the second planner on the worker's startup SHA as soon as the launch succeeds.
 - Verification expectations: scoped test runs, negative controls where the work is a checker
-  (new fixtures shown to FAIL on base: `~/ludics/scripts/run-against-base.sh <suite>`, slot-wrapped;
+  (new fixtures shown to FAIL on base: `~/ludics/scripts/run-against-base.sh <suite>` as the batch,
+  [slot-wrapped](#the-brief) as the execution handoff below says;
   a project runner through `--command ... -- <runner> <args>`, and the head with the fix undone
   through `--revert <commit> <path>`, both in the README's negative-control paragraph),
   and the box's known environmental traps: the bullets below, plus the box kind's durable traps,
@@ -554,16 +555,25 @@ requirements for every transport with transport-specific setup and identity, and
   #1769 on tuf-amd-linux).
 - **The formatter gate**: the formatter batch is the one the project's AGENTS.md names, run last,
   slot-wrapped and read as it says (OCANNL: *Format before the first push*), and the commit is
-  gated on that batch's own exit status in the same command. The brief carries this one form,
-  for the worker to copy, not compose:
+  gated on that batch's own exit status. The brief carries its worker's one form, to copy, not
+  compose. A batch that runs in the foreground gates in the same command:
 
       <formatter batch> > <log> 2>&1 && git commit ...; echo "gate exit=$?"; tail -n 20 <log>
 
-  The log stands in for the pipe a worker reaches for to keep the readout short: a pipe's last
+  A native Claude worker's batch has no status in any command: `--bg` prints a directory, and
+  `bg-run.sh wait` exits 0 on a batch that failed, so `wait <dir> && git commit` gates nothing.
+  Once the wait has printed `rc=`, its next call reads the status that batch published, with no
+  edit in between (an edit needs a new batch):
+
+      [ "$(cat <dir>/rc)" = 0 ] && git commit ...; echo "gate exit=$?"; tail -n 20 <dir>/log
+
+  A batch the slot refused fails that test, and so does one with no `rc` yet. The log stands in
+  for the pipe a worker reaches for to keep the readout short: a pipe's last
   stage replaces the batch's status, and the commit then runs after a failed check
   (ahrefs/ocannl#1442 pushed after a FAILED check; two wave-20261103 workers piped `fmt-check`
-  through `tail` in their first commit, ludics#948). `gate exit` is the batch's status when it
-  failed, and the commit's when it passed. Never chain the commit after the batch with `;`.
+  through `tail` in their first commit, ludics#948). `gate exit` is the commit's status when the
+  batch passed; when it failed it is the batch's status in the first form and 1 in the second
+  (`rc=` has the batch's). Never chain the commit after the batch with `;`.
 - **On mac-studio**: Gatekeeper/XProtect stalls fresh executables for minutes - sample the pid
   before assuming a hang; never start a second dune against a running _build; and **targeted
   test aliases only** (`dune build @<dir>/runtest-<name>` for the tests the change reaches, plus
@@ -602,25 +612,35 @@ requirements for every transport with transport-specific setup and identity, and
   covers, and that every batch goes through the project runner, in the spelling the project's
   runner or agent notes give, copied rather than composed (OCANNL: `tools/test-run.sh run
   --targets-file F build -j 4`; a wave-20261102 worker lost a run to the refused `run
-  --targets-file F -j 4`), wrapped in `fleet-worker.sh
-  execution slot --wait-window -- <batch>` (`--cpu` before the `--` for one that holds no GPU;
-  a runner that takes the slot itself runs inside the wrapper, [nested
-  slots](references/executions.md#exclusivity-and-the-run-time-slots); `--wait-window` waits
-  out a [measurement window](references/executions.md#exclusivity-and-the-run-time-slots) on
-  the box instead of refusing, so the brief needs no waiter loop and no retry rule), and
-  is reported by run directory. Where the coordinator also took one on the task's [GPU home
+  --targets-file F -j 4`), is slot-wrapped, and is reported by run directory.
+  **Slot-wrapped**, in every bullet here, is one form per transport, which the brief spells out
+  and no worker chooses ([which form](references/executions.md#exclusivity-and-the-run-time-slots)):
+  - **A native Claude worker**, every batch, with no "can it outlast the cap?" judgment, since
+    its ~180 s subagent cap fits almost none (ludics#980): `fleet-worker.sh execution slot --bg
+    <parent> --wait 1800 --wait-window -- <batch>`, which prints a run directory to block on
+    with `bg-run.sh wait <dir>` ([Blocking on a
+    run](references/native-claude.md#blocking-on-a-run)). Its `execution leg` and `execution
+    hold` are the same two calls with `bg-run.sh spawn <parent> -- <the command>`: they take no
+    slot on its own box, and either can outlast the cap.
+  - **A CLI or app Claude worker**: foreground `fleet-worker.sh execution slot --wait-window --
+    <batch>`, with `--bg <parent>` and `bg-run.sh wait` for a batch that can outlast the tool's
+    600 s maximum, a window's wait included.
+  - **A Codex worker**: that same foreground command, kept in its turn. Local native Codex with
+    managed exec sessions uses `bg-run.sh new <parent>`, then foreground `bg-run.sh start <dir>
+    -- fleet-worker.sh execution slot --wait-window -- <batch>`, and retains and observes that
+    session to completion, as [local managed command
+    sessions](references/native-codex.md#local-managed-command-sessions) says.
+
+  In every form `--cpu` goes before the `--` for a batch that holds no GPU, a runner that takes
+  the slot itself runs inside the wrapper ([nested
+  slots](references/executions.md#exclusivity-and-the-run-time-slots)), and `--wait-window` waits
+  out a [measurement window](references/executions.md#exclusivity-and-the-run-time-slots) on the
+  box instead of refusing, so the brief needs no waiter loop and no retry rule. Where the
+  coordinator also took one on the task's [GPU home
   box](references/executions.md#the-gpu-home-box), name that request id too, the far-side
   checkout that is the worker's to prepare, and the batch's form there as that section gives it
   (over ssh, the checkout moved to the pushed SHA under test, the runner under `execution slot
-  --wait-window` on that box), concluded at hand-back with the agent-host one. For a Claude batch that can outlast the tool cap (a
-  native worker's is the ~180 s subagent cap), a window's wait included, use `execution slot --bg <parent> --wait-window -- <batch>`, which
-  prints a run directory to block on with
-  `bg-run.sh wait` ([Blocking on a run](references/native-claude.md#blocking-on-a-run)). For
-  local native Codex with managed exec sessions, use `bg-run.sh new <parent>`, then foreground
-  `bg-run.sh start <dir> -- fleet-worker.sh execution slot --wait-window -- <batch>` (add `--cpu` for a
-  CPU-only batch); retain and observe that session to completion, as
-  [local managed command sessions](references/native-codex.md#local-managed-command-sessions)
-  says. Every other run - a
+  --wait-window` on that box), concluded at hand-back with the agent-host one. Every other run - a
   measurement (only for a timing-grade claim or a run that needs the box to itself, a
   [rule](references/executions.md#exclusivity-and-the-run-time-slots) the brief carries), a
   one-off cross-box leg, a full suite - needs a request first, in the transport's shape:
@@ -720,8 +740,8 @@ requirements for every transport with transport-specific setup and identity, and
   there for the hand-back. The coordinator removes worktrees at close-out.
 - **In a ludics wave, the worker's own `/bin/bash` runs are the macOS coverage per merge.** The
   macOS suites run weekly and on dispatch in `.github/workflows/macos-weekly.yml`, not on PR
-  heads or pushes (ludics#974). Before merging, the worker runs, under `/bin/bash` (3.2, the
-  macOS runner's shell) and slot-wrapped, every suite its change reaches: the suites whose
+  heads or pushes (ludics#974). Before merging, the worker runs, slot-wrapped with `/bin/bash
+  <suite>` as the batch (3.2, the macOS runner's shell), every suite its change reaches: the suites whose
   files it changes, the suites `lib/ludics/README.md` maps to each module it changes, and the
   `test-fleet-worker.sh` sections the change reaches. It then merges with the plain
   `pr-review.sh merge lukstafi/ludics#<pr> --wait`, blocked on as any merge wait. Those macOS

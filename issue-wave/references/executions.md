@@ -77,12 +77,37 @@ cannot be read. Its lock files live under `FLEET_SLOT_STATE`
 (`~/.local/state/fleet-execution-slots/<box>`), which is box-wide on purpose: `ISSUE_WAVE_STATE`
 is each coordinator's own directory, and slots kept there would let two workers under different
 coordinators each take slot 1 on one machine. The command after `--` is exec'd, not
-interpreted, so a pipeline or a shell builtin goes as `sh -c '...'`. A batch that can outlast
-the tool cap (600 s; a native Claude worker's ~180 s subagent cap, [Blocking on a
-run](native-claude.md#blocking-on-a-run)) takes `--bg <parent>` (ludics-lite#181): the same slot-held batch, detached
-under `bg-run.sh spawn`, whose one foreground call prints the run directory at once; a Claude
-worker blocks on it with `bg-run.sh wait` ([Blocking on a
-run](native-claude.md#blocking-on-a-run)), and `execution conclude --from-bg-run` reads it.
+interpreted, so a pipeline or a shell builtin goes as `sh -c '...'`. `--bg <parent>`
+(ludics-lite#181) is the same slot-held batch, detached under `bg-run.sh spawn`, whose one
+foreground call prints the run directory at once; `bg-run.sh wait` blocks on it and `execution
+conclude --from-bg-run` reads it.
+
+**Which form a caller uses** (ludics#980) is the transport's, and the brief names it:
+
+- **A native Claude worker: `--bg`, for every batch.** Its foreground call is moved to the
+  background at the subagent cap, ~180 s, and a moved call holds nothing, so the worker yields on
+  a run it believes it is blocking on ([Blocking on a run](native-claude.md#blocking-on-a-run)).
+  That fits almost no batch, so there is no "can it outlast the cap?" judgment to make:
+
+  ```
+  fleet-worker.sh execution slot --bg <parent> --wait 1800 --wait-window [--cpu] -- <batch>  # prints <dir>
+  bg-run.sh wait <dir>                                                                       # re-issued until rc=
+  ```
+
+  `rc=<n>` is the batch's status and `<dir>/log` its output. The slot's own refusal arrives the
+  same way, as an `EXECUTION SLOT REFUSED` line in the log with its 1 or 4 in `rc=`, and nothing
+  ran. A detached batch can afford a slot's long wait, hence `--wait 1800` where the default's
+  600 s would fail a batch behind busy siblings. A [leg](#a-leg-on-another-box) or an `execution
+  hold` is the same pair with `bg-run.sh spawn <parent> -- <the command>`: a leg's slot is the
+  far box's and a hold takes none, and either's own run can outlast the cap.
+- **A main session and a CLI or app Claude worker: the foreground `execution slot -- <batch>`.**
+  It has no subagent cap, only the tool's 600 s maximum, and takes `--bg <parent>` for a batch
+  that can outlast that, a window's wait included.
+- **A Codex worker, native or CLI: no `--bg` rule.** It has no subagent cap and keeps the
+  foreground command in its turn ([what a returned turn
+  means](native-codex.md#what-a-returned-turn-means)); a local native one with managed exec
+  sessions runs `bg-run.sh start` in that session when it needs a record, not `spawn` ([local
+  managed command sessions](native-codex.md#local-managed-command-sessions)).
 
 **Nested slots.** A held slot exports `FLEET_SLOT_HELD` (`<box> <slot> <slots> <gpu|cpu>`) to
 its command, and an `execution slot` that finds it runs its command under the enclosing slot
@@ -898,7 +923,8 @@ runs and takes the slot itself inside the leg's (the [nested slot](#exclusivity-
 (ahrefs/ocannl#1225), which bisects where it is invoked, so the leg is how it reaches a GPU box,
 and its 125 and its abort statuses come back as they left. Any other repository passes its own
 command, building first if its runner does not (`-- sh -c 'make && make check'`, `--
-scripts/test.sh unit`), with `--checkout` its clone on the box. A leg longer than a tool call runs
+scripts/test.sh unit`), with `--checkout` its clone on the box. A leg longer than a tool call, which
+for a native Claude worker is every leg ([which form](#exclusivity-and-the-run-time-slots)), runs
 under `bg-run.sh spawn` on the caller's box and concludes with `conclude --from-bg-run <dir> --box
 <that box> --sha <the observed_sha the leg printed>`: not `--observed-from <worktree>`, whose HEAD a
 runner may have moved (a bisect) or a later leg may since have. Do not wrap the leg itself in an `execution slot` on the
@@ -944,7 +970,9 @@ form, and any other is refused, naming the plain ones (#605).
 `"standing": true` is what exempts the record from the box's slot count, and it is explicit
 rather than read off the `-iterate` id convention: a mistyped id must not silently escape the
 cap, and `execution list` shows the exemption as a field. Only a correctness reservation may
-carry it, and only as `true`. In exchange the worker wraps each batch in the run-time lock:
+carry it, and only as `true`. In exchange the worker wraps each batch in the run-time lock, in
+its transport's [form](#exclusivity-and-the-run-time-slots); the foreground one, which a native
+Claude worker takes with `--bg <parent>`:
 
 ```
 fleet-worker.sh execution slot --wait-window -- tools/test-run.sh run <alias> -j 4
@@ -996,8 +1024,10 @@ fleet-worker.sh execution leg --request <wave>-<issue>-<box>-iterate --rev <sha>
 A standing record carries no per-batch revision, so the `<sha>` in the command is what binds a
 batch to the code it judged; the leg prints it as `observed_sha`, and the worker reports it with
 the run. A GPU batch passes no `-j` (above), so the box's GPU tokens (rog-nv-linux: 2) still
-bound it however many standing records the box holds. A batch that can outlast the tool cap runs
-the leg under `bg-run.sh spawn` on the agent host, and blocks there with `bg-run.sh wait <dir>`.
+bound it however many standing records the box holds. A native Claude worker runs every leg
+under `bg-run.sh spawn` on the agent host and blocks there with `bg-run.sh wait <dir>`; another
+caller does so for a leg that can outlast the tool's 600 s
+([which form](#exclusivity-and-the-run-time-slots)).
 
 Each standing reservation is concluded at hand-back from its own box's last batch, with
 `--observed-from <the far-side checkout>`: its runner record in the [standing

@@ -145,7 +145,7 @@ for the CLI worker lifecycle, and the explicit separate-conversation alternative
 for either transport, including host-local CLI work, and coordinator integration. Agent residence
 does not confer ownership, and an issue may reserve checks on several boxes. Measurement is
 exclusive per box; correctness runs share a box up to its `FLEET_BOX_CORRECTNESS_SLOTS` (six on
-mac-studio), a run-time count a worker takes around each batch with `execution slot -- <batch>`,
+mac-studio), a run-time count a worker takes around each batch with `execution slot`,
 so a standing iteration record gates no agent's start (ludics-lite#160). Every run on a native
 Linux box also holds a logind block inhibitor on sleep for as long as it runs - `execution hold --
 <command>`, which `execution slot` runs inside and an exclusive measurement uses alone, as `execution
@@ -382,7 +382,8 @@ worktree, and reports its exit status and
 pass/fail line (its own refusals exit 125, never the suite's status); the worktree is removed and
 pruned on every exit path, INT and TERM included, and whatever the suite left running is stopped
 with it (its process group: TERM, then KILL after a grace). It is a suite run, so wrap it in
-`~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot -- …` like any other.
+`~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot` like any other, in your
+transport's form (`executions.md`, *Which form a caller uses*).
 `scripts/test-run-against-base.sh` pins it against a scratch repo. Its options come right after
 the suite path, in any order (ludics-lite#501); the first other word, and everything after it, is
 the suite's:
