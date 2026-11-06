@@ -3532,6 +3532,12 @@ if [ ! -w /home ]; then   # a worktree no leg can create there (a CI runner that
 fi
 expect "...but a checkout under the box's own home is refused with no such hint" 1 "is not a git checkout on testbox$" -- \
   leg --request leg-a --rev main --checkout "$HOME/no-such-checkout" --worktree "$lwt" -- tools/check.sh
+# A directory that exists and is no checkout: bash 3.2's `cd ""` succeeds, so a failed `git rev-parse`
+# must stop `common` before that `cd`, or this reaches the fetch (leg.WORKTREE).
+mkdir -p "$TMP/leg plain"
+expect "a plain directory is refused as no checkout, by the leg's first check" 1 \
+  "EXECUTION LEG REFUSED testbox: --checkout $TMP/leg plain is not a git checkout on testbox$" -- \
+  leg --request leg-a --rev main --checkout "$TMP/leg plain" --worktree "$lwt" -- tools/check.sh
 [ "$(marks)" = "$n" ] && ok "...none of them ran the runner" || ko "a refused leg ran its runner"
 # The control: a patch that must make the runner fail, in the same slot, reverted after.
 expect "a control the runner catches makes the leg pass" 0 "control failed as required (exit 4), patch reverted" -- \
@@ -3944,6 +3950,9 @@ grep -q "^EXECUTION LEG testbox: created $hwt at $lb " <<<"$out" && grep -q "^ex
 expect "...and moves an existing one to another commit, the --checkout named" 0 "^EXECUTION LEG testbox: refreshed $hwt at $la " -- \
   "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" --rev "$la" --checkout "$lco" -- git rev-parse HEAD
 grep -qx "$la" <<<"$out" && ok "...where the command runs (git rev-parse HEAD reads $la)" || ko "the moved hold's command: $out"
+expect "...and a plain directory as its --checkout is refused as the leg refuses it, the same far-side text" 1 \
+  "EXECUTION LEG REFUSED testbox: --checkout $TMP/leg plain is not a git checkout on testbox$" -- \
+  "${FWL[@]}" execution hold --request leg-m --worktree "$hwt" --rev "$la" --checkout "$TMP/leg plain" -- true
 # ...and stopped, it ends what its command left in a group of its own: on the caller's own box the
 # far shell has a session of its own, so the group stop does not tear the wrapper down before the
 # far stop has seen its tree (THE ESCAPED).

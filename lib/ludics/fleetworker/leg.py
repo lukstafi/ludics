@@ -542,7 +542,8 @@ sweep_staged() {
 # of what the checkout is and is holding, and above all ONE LOCK. A second spelling of the lock's key
 # would name another file, and a close-out would remove a worktree a leg still runs in.
 #   common <path>, gitdir <path>: its git common directory, its git directory, physical; empty when
-#     it is no checkout.
+#     it is no checkout. A failed `git rev-parse` stops them before the `cd` that makes its answer
+#     absolute: bash 3.2's `cd ""` succeeds and stays put, so a plain directory would read as its own.
 #   dirt <path>: what makes a worktree not the commit at its HEAD: changed, staged or untracked paths
 #     and submodules, whatever the configuration says to show or ignore; git's own failure is its
 #     status, never an empty (clean) answer.
@@ -553,8 +554,8 @@ sweep_staged() {
 #     the open file, so it holds until the last process that inherited it has exited. Taken by
 #     scripts/py (Python >= 3.12, which `execution slot` needs on the box anyway), since macOS has no
 #     flock(1).
-WORKTREE = r"""common() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
-gitdir() { (cd "$1" 2>/dev/null && cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
+WORKTREE = r"""common() { (cd "$1" 2>/dev/null && d=$(git rev-parse --git-common-dir 2>/dev/null) && cd "$d" 2>/dev/null && pwd -P); }
+gitdir() { (cd "$1" 2>/dev/null && d=$(git rev-parse --git-dir 2>/dev/null) && cd "$d" 2>/dev/null && pwd -P); }
 dirt() { git -C "$1" status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null; }
 canon() {
   local p="$1" rest="" base
