@@ -32,15 +32,22 @@ THE GATES, in order; the first that fails keeps the worktree, and says why.
     starts during it is refused as ``another leg is using it``. A runner that outlived its far shell
     still holds that lock.
   - The tree is clean: nothing changed, staged or untracked, submodules included (``leg``'s ``dirt``).
+  - Nothing a clean status does not show, which is post-merge-cleanup.sh's gate for the same removal:
+    no Git operation under way (its list, ``cleanup.ACTIVE_OPERATIONS``, or an ``index.lock``), whose
+    state can hold pending commits and an autostash; no path whose index flag hides it from status
+    (assume-unchanged, skip-worktree: refused outright, where that helper probes a copy of the index,
+    since a leg's worktree carries neither); no private ref (``refs/worktree/``, ``refs/bisect/``,
+    ``refs/rewritten/``).
   - No ignored data but what ``--regenerable`` names. Ignored files are the class a plain status
     does not show, and a removal takes them with the tree. ``--regenerable`` is post-merge-cleanup.sh's
     flag: repeatable, no default, the project's to say (OCANNL's AGENTS.md names ``_build``); each value
     ONE top-level directory, here wholly ignored (git reports it as one ``!! <dir>/`` entry, so no
     tracked file is in it, and a symlink never matches). Any other ignored path keeps the worktree.
   - HEAD is on a branch of the remote: a fresh ``git fetch`` of ``refs/heads/*`` from ``--remote``
-    (``origin``), into a private ref namespace, ``refs/fleet-close/<pid>/``, removed again, so neither a
-    box's stale remote-tracking ref nor a narrow fetch refspec can answer, and the served clone's own
-    refs do not move. Bounded by FLEET_FETCH_TIMEOUT.
+    (``origin``), into a private ref namespace named by a token of this run, ``refs/fleet-close/<token>/``
+    (a pid can come back, and find an interrupted run's refs), removed again, so neither a box's stale
+    remote-tracking ref nor a narrow fetch refspec can answer, and the served clone's own refs do not
+    move. Bounded by FLEET_FETCH_TIMEOUT.
 
 THE VERDICTS, one line per word on stdout, ``FARSIDE <verdict> <box>:<path> (<task>): <why>``:
   REMOVED       every gate passed; ``git worktree remove``, never ``--force``, so a locked worktree
@@ -63,18 +70,21 @@ the line for the coordinator to act on. Two things are not undone by a re-run. A
 remove`` that fails partway (a permission error deep in the tree) has already deleted part of the
 tree, and git drops the worktree's metadata regardless, so the next run reports it KEPT, no longer a
 worktree: that path is a person's to look at. And a far shell killed mid-fetch leaves its
-``refs/fleet-close/<pid>/`` behind: nothing reads them, ``git update-ref -d`` removes them.
+``refs/fleet-close/<token>/`` behind: nothing reads them, ``git update-ref -d`` removes them.
 
 WHAT IT DOES NOT JUDGE. A process with no leg around it working in the worktree (a shell, a CLI worker
 of the box: ``fleet-worker.sh ls`` is the coordinator's check first); commits reachable only from the
-worktree's reflog; a stash, which belongs to the repository and survives; a record that names neither
+worktree's reflog; a merge conflict's resolve-undo record in its index; a stash, which belongs to the
+repository and survives; a record that names neither
 the row's ids nor the row's worker nor a checkout; a second spelling of one worktree through a
 symlinked ancestor, which those lexical gates cannot see (the leg's lock, keyed physically, still
 does). It frees space on no box the board does not name,
 and says nothing of how much it freed.
 """
 
+import posixpath
 import re
+import secrets
 import shlex
 from collections import Counter
 from dataclasses import dataclass
@@ -82,13 +92,14 @@ from typing import Any, cast
 
 from ludics import cli
 from ludics.fleetworker.config import Config
-from ludics.fleetworker.execution import field, jq_text, listing, recorded_checkout, records_of, same_checkout
+from ludics.fleetworker.execution import field, jq_text, listing, recorded_checkout, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import anchor_gate
 from ludics.fleetworker.leg import REMOTE, SECONDS, WORKTREE
 from ludics.fleetworker.preflight import knob
 from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
 from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run_on
+from ludics.postmergecleanup.cleanup import ACTIVE_OPERATIONS
 
 USAGE = "farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]"
 REGENERABLE = re.compile(r"\.?[A-Za-z0-9_][A-Za-z0-9._-]*")  # one name: no separator, no `..`, no option
@@ -96,10 +107,12 @@ CLEARED = ("REMOVED", "GONE", "WOULD-REMOVE")  # the verdicts that leave nothing
 FAR_VERDICTS = ("REMOVED", "TRIMMED", "KEPT", "GONE", "WOULD-REMOVE", "WOULD-TRIM")
 
 # The far side, after the prelude and leg.WORKTREE. Args: the worktree, the remote, the fetch's bound
-# in seconds, dry (0|1), then the regenerable directories. Its stdout is one line, `<verdict><TAB><why>`,
-# whatever it found; every other word goes to stderr.
-CLOSE = WORKTREE + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4"; shift 4
-ns="refs/fleet-close/$$"; cdir=""
+# in seconds, dry (0|1), this run's token, then the regenerable directories. Its stdout is one line,
+# `<verdict><TAB><why>`, whatever it found; every other word goes to stderr.
+CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5"; shift 5
+# No trailing `/`: `[ -L "$wt/" ]` follows the link and reads the directory behind it.
+wt=${wt%"${wt##*[!/]}"}
+ns="refs/fleet-close/$token"; cdir=""
 verdict() {
   [ -z "$cdir" ] || git --git-dir="$cdir" for-each-ref --format='%(refname)' "$ns/" 2>/dev/null | while IFS= read -r r; do
     git --git-dir="$cdir" update-ref -d "$r" >/dev/null 2>&1
@@ -125,6 +138,16 @@ leg_flock; lrc=$?
 [ "$lrc" -eq 0 ] || kept "cannot lock it (scripts/py exit $lrc)"
 dirty=$(dirt "$wt") || kept "cannot read its status"
 [ -z "$dirty" ] || kept "$(printf '%s\n' "$dirty" | grep -c '') uncommitted path(s): $(printf '%s\n' "$dirty" | head -n 3 | tr '\n' ';')"
+# What a clean status does not show (see the header).
+wdir=$(gitdir "$wt"); [ -n "$wdir" ] || kept "cannot find its git directory"
+for op in $operations index.lock; do
+  [ ! -e "$wdir/$op" ] && [ ! -L "$wdir/$op" ] || kept "a Git operation is under way or left behind in it: $op"
+done
+flagged=$(git -C "$wt" ls-files -v 2>/dev/null) || kept "cannot read its index flags"
+hidden=$(printf '%s\n' "$flagged" | grep -c '^[a-zS] ')
+[ "$hidden" -eq 0 ] || kept "$hidden path(s) hidden from status by an index flag (assume-unchanged or skip-worktree)"
+private=$(git -C "$wt" for-each-ref --count=1 --format='%(refname)' refs/worktree/ refs/bisect/ refs/rewritten/ 2>/dev/null) || kept "cannot read its refs"
+[ -z "$private" ] || kept "it holds a private ref: $private"
 # The ignored paths, NUL-delimited, no quoting by git. A fully ignored directory is one entry, its
 # name ending in `/` (traditional mode, untracked files not listed one by one); a status that fails
 # must not read as none, so its own exit closes the listing, in a record no status entry can be.
@@ -218,23 +241,32 @@ def row_done(fields: dict[str, str]) -> bool:
     return state_word(value) in DONE_STATES
 
 
+def refers_to(bound: str, want: str) -> bool:
+    """A recorded checkout at or under ``want``. The registry keeps a checkout as it was spelled, so
+    it is compared collapsed; one with a ``..`` cannot be placed lexically, and counts as this one."""
+    if ".." in bound.split("/"):
+        return True
+    collapsed = "/" + posixpath.normpath(bound).lstrip("/")
+    return collapsed == want or collapsed.startswith(want + "/")
+
+
 def outstanding(cfg: Config, records: list[dict[str, Any]], wave: str, fields: dict[str, str], box: str, path: str) -> list[str]:
     """The ids of the records that keep this word (THE GATES). A record refers to it by the row's
     ids, by the row's worker in this wave, or by its own recorded checkout on this box."""
     named = [w for key in ("standing", "requests") for w in fields.get(key, "").split() if w != "none"]
     worker = fields.get("worker")
-    root = path.rstrip("/") + "/"
+    want = path.rstrip("/")
     ids: list[str] = []
     for record in records:
         if record.get("state") == "concluded":
             continue
         rid = jq_text(record.get("request_id"))
         bound = recorded_checkout(record)
+        here = bound and fleet_name(cfg, jq_text(field(record, "request", "execution_host"))) == box
         if (rid in named
                 or (worker is not None and field(record, "request", "wave") == wave
                     and field(record, "request", "worker") == worker)
-                or (fleet_name(cfg, jq_text(field(record, "request", "execution_host"))) == box and bound
-                    and (same_checkout(bound, path) or bound.startswith(root)))):
+                or (here and refers_to(bound, want))):
             ids.append(rid)
     return ids
 
@@ -264,7 +296,7 @@ def plan(cfg: Config, wave: str, rows: list[tuple[str, dict[str, str]]], chosen:
 def close_on_box(cfg: Config, word: Word, remote: str, fetch_timeout: str, dry: bool, regenerable: list[str]) -> tuple[str, str]:
     """(verdict, why) for a word the near side let through: the far side's line, read as an
     allowlist. A far side that said nothing readable removed something or nothing: KEPT says so."""
-    args = [word.path, remote, fetch_timeout, "1" if dry else "0", *regenerable]
+    args = [word.path, remote, fetch_timeout, "1" if dry else "0", secrets.token_hex(8), *regenerable]
     done = run_on(cfg, word.box, prelude(cfg, word.box) + CLOSE, args, capture=True)
     if done.unreachable:
         return "UNREACHABLE", f"{word.box} did not answer"

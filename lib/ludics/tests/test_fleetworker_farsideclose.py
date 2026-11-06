@@ -61,7 +61,7 @@ class Fixture(unittest.TestCase):
     def close(self, path: Path | str, *regenerable: str, dry: bool = False, remote: str = "origin",
               env: dict[str, str] | None = None) -> tuple[str, str]:
         head = f"STATE={shlex.quote(str(self.state))}\nSKILLS_REPO={shlex.quote(str(ROOT))}\nBOX=box\n"
-        done = subprocess.run([BASH, "-s", "--", str(path), remote, "30", "1" if dry else "0", *regenerable],
+        done = subprocess.run([BASH, "-s", "--", str(path), remote, "30", "1" if dry else "0", "t0k", *regenerable],
                               input=head + HELPERS + farsideclose.CLOSE, text=True, capture_output=True, cwd="/",
                               env={**ENV, **(env or {})})
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -185,6 +185,60 @@ class Far(Fixture):
         self.assertEqual((verdict, why), ("KEPT", "cannot list its ignored paths (git status exit 128)"))
         self.assertTrue((wt / "run.log").exists())
 
+    def test_a_git_operation_under_way_keeps_it_autostash_and_all(self) -> None:
+        wt = self.worktree("w", build=False)
+        (wt / ".gitignore").write_text("changed\n")
+        script = wt.parent / "editor"
+        script.write_text("#!/bin/sh\nprintf 'break\\n' > \"$1\"\n")
+        script.chmod(0o755)
+        self.git(wt, "-c", f"sequence.editor={script}", "rebase", "-i", "--autostash", "HEAD")
+        self.assertEqual(self.git(wt, "status", "--porcelain"), "")
+        verdict, why = self.close(wt)
+        self.assertEqual((verdict, why), ("KEPT", "a Git operation is under way or left behind in it: rebase-merge"))
+        self.git(wt, "rebase", "--abort")
+        self.assertEqual((wt / ".gitignore").read_text(), "changed\n")
+
+    def test_an_edit_hidden_behind_an_index_flag_keeps_it(self) -> None:
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag):
+                wt = self.worktree(flag.strip("-"), build=False)
+                self.git(wt, "update-index", flag, ".gitignore")
+                (wt / ".gitignore").write_text("the only copy\n")
+                self.assertEqual(self.git(wt, "status", "--porcelain"), "")
+                verdict, why = self.close(wt)
+                self.assertEqual(verdict, "KEPT")
+                self.assertIn("hidden from status by an index flag", why)
+                self.assertEqual((wt / ".gitignore").read_text(), "the only copy\n")
+
+    def test_a_private_ref_keeps_it(self) -> None:
+        wt = self.worktree("w", build=False)
+        self.git(wt, "update-ref", "refs/worktree/mine", "HEAD")
+        self.assertEqual(self.close(wt), ("KEPT", "it holds a private ref: refs/worktree/mine"))
+
+    def test_an_index_lock_keeps_it(self) -> None:
+        wt = self.worktree("w", build=False)
+        admin = Path(self.git(wt, "rev-parse", "--absolute-git-dir").strip())
+        (admin / "index.lock").write_text("")
+        self.assertEqual(self.close(wt)[0], "KEPT")
+        self.assertTrue(wt.exists())
+        (admin / "index.lock").unlink()
+
+    def test_an_interrupted_runs_refs_do_not_answer_for_this_one(self) -> None:
+        wt = self.worktree("w", build=False)
+        self.commit_in(wt)
+        self.git(self.co, "update-ref", "refs/fleet-close/old/gone", self.git(wt, "rev-parse", "HEAD").strip())
+        self.assertEqual(self.close(wt)[0], "KEPT")
+        self.assertTrue(wt.exists())
+
+    def test_a_trailing_slash_does_not_hide_a_symlink(self) -> None:
+        wt = self.worktree("w", build=False)
+        link = self.tmp / "alias"
+        link.symlink_to(wt)
+        for spelled in (f"{link}/", f"{link}//"):
+            with self.subTest(spelled=spelled):
+                self.assertEqual(self.close(spelled), ("KEPT", "not a directory"))
+        self.assertTrue(wt.exists())
+
     def test_what_is_no_linked_worktree_top_is_kept(self) -> None:
         wt = self.worktree("w", build=False)
         (wt / "sub").mkdir()
@@ -284,7 +338,9 @@ class Near(unittest.TestCase):
         row = self.row(standing="s1", requests="r1", worker="wk")
         for rec in (record("s1", worker="z", wave="z"), record("r1", worker="z", wave="z", host="mac"),
                     record("x", host="mac"), record("x", worker="z", checkout="/h/wts/w1/"),
-                    record("x", worker="z", checkout="/h/wts/w1/sub")):
+                    record("x", worker="z", checkout="/h/wts/w1/sub"), record("x", worker="z", checkout="/h/wts//w1"),
+                    record("x", worker="z", checkout="/h/wts/./w1"), record("x", worker="z", checkout="//h/wts/w1"),
+                    record("x", worker="z", checkout="/h/other/../wts/w1")):
             with self.subTest(rec=rec):
                 self.assertIn("outstanding reservation", self.held([row], [rec])[0])
         here = self.row(farside="local:/h/wts/w1", worker="wk")
