@@ -120,7 +120,7 @@ def run_record(**over: str) -> dict[str, str]:
 
 def bg_text(**over: str) -> str:
     """FROM_BG_RUN's output for a run whose command returned 0, ``over`` replacing facts."""
-    base = {"wait": "0", "log": "1", "sentinel": "", "said": "rc=0"}
+    base = {"wait": "0", "log": "1", "sentinel": "", "refusal": "", "said": "rc=0"}
     base.update(over)
     return "dir=1\n" + "\n".join(f"{k}={v}" for k, v in base.items())
 
@@ -254,6 +254,18 @@ class FromBgRunFarSide(unittest.TestCase):
         self.assertEqual(self.facts(rc="0\n", log="exit: 1\nexit: 1 (a test)\nx: ssh exit: 5\nr: exit: 142\nr: ssh exit: 142\n")["sentinel"],
                          "r: exit: 142")
         self.assertEqual(self.facts(rc="0\n", log="exit: 1 (a test named exit)\n")["sentinel"], "")
+
+    def test_immediate_slot_refusal_and_command_output_boundary(self) -> None:
+        line = "EXECUTION SLOT REFUSED testbox: a measurement holds the box exclusively"
+        payload = bg_payload(self.far(rc="1\n", log=line + "\n"))
+        self.assertEqual(payload["verdict"], "not-launched")
+        self.assertIn(line, payload["evidence"])
+        self.assertNotIn("observed_sha", payload)
+        for prefix in ("EXECUTION SLOT testbox: slot 1 of 1 held for: test\n",
+                       "EXECUTION SLOT testbox: WARNING: pipeline\n",
+                       "ordinary test output\n"):
+            self.assertEqual(bg_payload(self.far(rc="1\n", log=prefix + line + "\n"))["verdict"], "fail")
+        self.assertEqual(bg_payload(self.far(rc="0\n", log=line + "\n"))["verdict"], "pass")
 
     def test_every_other_verdict(self) -> None:
         dead = subprocess.Popen(["true"])

@@ -251,6 +251,11 @@ SENTINEL = "([A-Za-z0-9._-]+: )?exit: (0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[
 #   log       1 when `log` is a regular file, else 0;
 #   sentinel  the LAST line of `log` that is a whole SENTINEL, or empty -- read only when wait
 #             exits 0, the one verdict whose conclusion reads it (STOPPED's does not);
+#   refusal   the first log line only, when it begins exactly EXECUTION SLOT REFUSED .
+#             Boundary: immediate slot refusals only; never scan past progress, admission or
+#             warning lines into command output. A slot-wrapped test's own text is after its
+#             admission line. Arbitrary unwrapped programs impersonating this protocol are not
+#             authenticated here. Delayed refusals remain the wrapper's nonzero status.
 #   said      LAST, the first line of wait's output (stdout and stderr together), as `head -n1`
 #             reads it: one line, its grammar ludics.bgrun's, read on the near side.
 FROM_BG_RUN_HEAD = r"""dir="$1"
@@ -263,10 +268,13 @@ FROM_BG_RUN_TAIL = r"""wrc=$?
 said=$(head -n1 "$tmp"); rm -f "$tmp"
 log=0; [ -f "$dir/log" ] && log=1
 sentinel=
+refusal=
 if [ "$wrc" = 0 ] && [ "$log" = 1 ]; then
   sentinel=$(LC_ALL=C grep -a -E '^""" + SENTINEL + r"""$' "$dir/log" | tail -n 1)
+  first=$(head -n1 "$dir/log")
+  case "$first" in 'EXECUTION SLOT REFUSED '*) refusal=$first ;; esac
 fi
-printf 'wait=%s\nlog=%s\nsentinel=%s\n' "$wrc" "$log" "$sentinel"
+printf 'wait=%s\nlog=%s\nsentinel=%s\nrefusal=%s\n' "$wrc" "$log" "$sentinel" "$refusal"
 printf 'said=%s\n' "$said"
 """
 
@@ -506,7 +514,7 @@ def conclude_from_run(cfg: Config, run_dir: str, request: str, box: str, sha: st
     )
 
 
-BG_RUN_KEYS = ("wait", "log", "sentinel")
+BG_RUN_KEYS = ("wait", "log", "sentinel", "refusal")
 
 
 def bg_run_facts(text: str) -> dict[str, str] | None:
@@ -528,6 +536,9 @@ def bg_run_facts(text: str) -> dict[str, str] | None:
     if not (re.fullmatch(r"0|[1-9][0-9]*", facts["wait"]) and facts["log"] in ("0", "1")
             and (sentinel == "" or (facts["wait"] == "0" and facts["log"] == "1"
                                     and re.fullmatch(SENTINEL, sentinel) is not None))):  # fmt: skip
+        return None
+    if facts["refusal"] and not (facts["wait"] == "0" and facts["log"] == "1"
+                                 and facts["refusal"].startswith("EXECUTION SLOT REFUSED ")):
         return None
     facts.update(dir="1", said=said)
     return facts
@@ -602,6 +613,12 @@ def conclude_from_bg_run(
     read = bg_run_verdict(facts, run_dir, box)
     if isinstance(read, Refusal):
         return read
+    if read.word is bgrun.Word.RC and facts["refusal"] and read.status == 1:
+        # No revision ran. Keep user evidence, but never let it erase why nothing launched.
+        note = f"bg-run {run_dir} on {box}: {facts['refusal']}; batch not launched"
+        return Payload(compact({"request_id": request, "verdict": "not-launched",
+                                "log": f"{box}:{run_dir}/log",
+                                "evidence": f"{evidence}; {note}" if evidence else note}))
     if read.word is bgrun.Word.STOPPED:
         verdict = "cancelled"
         note = f"bg-run {run_dir} on {box}: STOPPED by bg-run.sh stop before the command returned, no process of it left"
