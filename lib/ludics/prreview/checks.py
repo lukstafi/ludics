@@ -10,6 +10,14 @@ held by a build job that never got a runner (runners.py: NO RUNNER, NEVER STARTE
 in that order, comma-joined (ludics#753): only on exit 4, the verdict's vocabulary unchanged, so
 ``prs`` can tell a starved head from a running one. No field: no such job was found.
 
+Boundary (#990): immediately before the trailer, one fresh ``branchtip.read_tip`` compares the
+PR head with its branch and prints its warning, unless policy refused evaluation or the build
+read ended unread (no further reads after a budget/state-directory failure). This also qualifies a completed ``--wait``;
+the machine verdict and exit still describe the PR head's build, not branch agreement. The gate
+itself does not poll the tip: two reads at reporting time instead of two extra reads per round.
+A push after this comparison is unseen, and a head move between the gate and this comparison is
+not a new build verdict. ``merge`` retains its own final branch-tip refusal.
+
 Exit: the gate's (0 green or a confirmed absence, 1 red, 3 unread -- under --wait, a head,
 check-run or workflow-run read that did not answer is read again until the wait is spent (gate.py,
 ludics-lite#795, ludics#808) --, 4 no verdict yet, 5 superseded),
@@ -33,7 +41,7 @@ import os
 import shlex
 
 from ludics import cli
-from ludics.prreview import ere
+from ludics.prreview import branchtip, ere
 from ludics.prreview.clock import clock_from_env
 from ludics.prreview.core import GhSession, die, fail, pr_arg
 from ludics.prreview.gate import Gate, load_gate_config
@@ -113,5 +121,10 @@ def run(session: GhSession, args: list[str]) -> int:
         verdict = "unknown"
     if verdict not in VERDICTS:
         verdict = "unknown"
+    if policy == 0 and rc != 3:
+        tip = branchtip.read_tip(session, target.repo, target.num)
+        warning = branchtip.warning(tip, target.repo, target.num)
+        if warning:
+            cli.say(warning)
     cli.say(trailer(rc, verdict, kinds))
     return rc
