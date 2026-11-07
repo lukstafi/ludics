@@ -18,7 +18,10 @@ box that holds the run, and read its record with the tools that wrote it. A test
 one far side for both forms that read it, ``FROM_RUN``, which prints its facts and refuses nothing:
 each form's refusals are Python's (ludics-lite#657). A bg-run.sh directory's far side,
 ``FROM_BG_RUN_HEAD``/``_TAIL``, is the same: it prints bg-run.sh wait's exit and line and the log's
-sentinel, and ``bg_run_verdict`` refuses or maps them (ludics-lite#713).
+sentinel, and ``bg_run_verdict`` refuses or maps them (ludics-lite#713). Immediate slot refusals
+are read only from the first log line's exact ``EXECUTION SLOT REFUSED `` prefix beside rc 1;
+no scan crosses admission, progress or warning output into the batch's own text. This boundary
+covers slot-generated logs, not arbitrary unwrapped commands impersonating the slot protocol.
 
 Every commit a payload names is checked before the anchor is asked (ludics-lite#561): what is read,
 where, and the outcomes are ``ludics.fleetworker.revision``'s header.

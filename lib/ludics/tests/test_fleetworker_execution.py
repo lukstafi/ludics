@@ -152,7 +152,7 @@ class FromBgRunFacts(unittest.TestCase):
 
     def test_the_facts_read_key_by_key(self) -> None:
         facts = execution.bg_run_facts(bg_text(sentinel="tests: exit: 3", said="rc=3 (finished earlier, at T)"))
-        self.assertEqual(facts, {"dir": "1", "wait": "0", "log": "1", "sentinel": "tests: exit: 3",
+        self.assertEqual(facts, {"dir": "1", "wait": "0", "log": "1", "sentinel": "tests: exit: 3", "refusal": "",
                                  "said": "rc=3 (finished earlier, at T)"})
         self.assertEqual(execution.bg_run_facts("dir=0"), {"dir": "0"})
         self.assertEqual(execution.bg_run_facts("dir=1\nscratch=0"), {"dir": "1", "scratch": "0"})
