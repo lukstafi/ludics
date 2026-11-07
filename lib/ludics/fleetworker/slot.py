@@ -333,7 +333,8 @@ def unguarded_pipeline(command: Sequence[str]) -> bool:
     Only an initial `set -o pipefail` or `set -euo pipefail` statement (terminated by ; or
     newline) is recognised as enabling pipefail. Quoted/escaped characters are opaque words.
     Deliberately not read: pipes inside quotes, substitutions ($(), ${}, backticks), here-docs,
-    functions/compound commands, eval/source, assignment-leading or expanded command names,
+    functions/compound commands, eval/source/time/command/builtin, other set invocations,
+    assignment-leading or expanded command names,
     redirections, script files, env wrappers, zsh -c, shell paths
     or other shell flags. Any unsupported/ambiguous syntax silences the whole scan; this is a
     warning allowlist, not a shell parser or proof of a batch's exit status.
@@ -348,7 +349,7 @@ def unguarded_pipeline(command: Sequence[str]) -> bool:
     while index < len(script):
         char = script[index]
         # Even inside double quotes these can introduce syntax we do not read.
-        if char == "`" or script[index:index + 2] in ("$(", "${"):
+        if quote != "'" and (char == "`" or script[index:index + 2] in ("$(", "${")):
             return False
         if quote:
             if char == quote:
@@ -388,19 +389,11 @@ def unguarded_pipeline(command: Sequence[str]) -> bool:
         return False
     if word:
         tokens.append(word)
-    if any(token in {"if", "then", "else", "elif", "fi", "for", "while", "until", "do",
-                     "done", "case", "esac", "function", "select", "!", "[[", "]]",
-                     "eval", "source", "."}
-           for token in tokens):
-        return False
     while tokens and tokens[0] == "\n":
         tokens.pop(0)
     if tokens[:3] in (["set", "-o", "pipefail"], ["set", "-euo", "pipefail"]):
         if len(tokens) == 3 or tokens[3] in (";", "\n"):
             return False
-    # Other set invocations may change pipefail dynamically; do not guess.
-    if "set" in tokens:
-        return False
     # Refuse incomplete lists/operators rather than warning on shell syntax errors.
     separators = {";", "\n", "&&", "||", "|"}
     previous = ";"
@@ -408,8 +401,13 @@ def unguarded_pipeline(command: Sequence[str]) -> bool:
         if token in separators and previous in separators:
             if token != "\n" or previous not in (";", "\n"):
                 return False
-        if previous in separators and any(char in token for char in "?$*=["):
-            return False  # an opaque command name/assignment could enable pipefail
+        if previous in separators:
+            if token in {"if", "then", "else", "elif", "fi", "for", "while", "until", "do",
+                         "done", "case", "esac", "function", "select", "!", "[[", "]]",
+                         "eval", "source", ".", "set", "time", "command", "builtin"}:
+                return False  # other set forms and indirect commands are not read
+            if any(char in token for char in "?$*=["):
+                return False  # an opaque command name/assignment could enable pipefail
         previous = token
     if tokens and tokens[-1] in ("|", "&&", "||"):
         return False
