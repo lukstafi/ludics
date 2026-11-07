@@ -370,8 +370,8 @@ def merge_builds(cfg: Config, clock: float | None = None) -> dict[str, str]:
     directory. Running, through ``holders.held_records``, is a held slot whose confirmed record has
     the command ``mergebuild.build_of`` reads and a ``--deadline``, which is the bound. Queued,
     through ``holders.waiting_records`` (its boundary is what it leaves out), is a flocked waiting
-    record whose ``argv`` ``build_of`` reads; its phase is ``window`` or ``slot``. Its wait age uses the wall-clock ``since`` timestamp;
-    an unreadable timestamp leaves only the phase. The waiters are
+    record whose ``argv`` ``build_of`` reads; its phase is ``window`` or ``slot``. Its wait age
+    uses the wall-clock ``since`` timestamp; an unreadable timestamp leaves only the phase. The waiters are
     read first, so a build that takes its slot between the two reads shows as running, and a
     running build wins over a queued one of the same PR. So it does not show a build on another
     box (a CLI worker's), a bare one (a box with no slots), one in a slot its merge already held,

@@ -1804,6 +1804,11 @@ class ReadingListTest(Case):
     def test_obligations(self) -> None:
         R = self.root
         os.remove(f"{R}/{FLEET}")
+        # This case deliberately removes the wave prompt. Its references must not retain links
+        # to that absent file: the obligation under test is the shipping reading list alone.
+        for reference in ("executions.md", "native-claude.md"):
+            rewrite(R, f"issue-wave/references/{reference}",
+                    pattern=r"\[The brief\]\(\.\./SKILL\.md#the-brief\)", repl="The brief", count=0)
         self.expect("without issue-wave, the paragraph alone is held", 0, READ_WHEN_AGREE)
         fresh(R)
         self.lacks(f"a root without {SHIP} carries no reading-list obligation", "What to read when", run(CP, R))
