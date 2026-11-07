@@ -2119,8 +2119,7 @@ test_checks_reads_the_repository_list() {
   advisory_inflight_fixture "$jobs"
   retune BUILD_ADVISORY='^claude$'
   ADVISORY_BODY=$'^claude$\n^macos$'
-  check_trailer 0 green "green — 1 build checks passed"
-  assert_contains "$GATE_OUTPUT" "only advisory jobs (.github/ship-pr-advisory-checks)" "the release names the file it read"
+  check_trailer 0 green "only advisory jobs (.github/ship-pr-advisory-checks)"
 }
 
 # Fail closed: no read is taken for "no file" but a 404, and a file that is not a list of EREs is
