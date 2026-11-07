@@ -385,6 +385,16 @@ class BackendPin(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("line 2 is not one the fleet reads (run-report q)", why)
 
+    def test_project_floor_is_whole_unique_and_parsed_even_for_cpu(self) -> None:
+        for value in ["0", "30", "00030", "999999999999999999999999"]:
+            self.assertEqual(self.pin(f"min-free-gib {value}\n", "0", "true"), (0, ""))
+        for line in ["min-free-gib", "min-free-gib -1", "min-free-gib 1.5", "min-free-gib lots",
+                     "min-free-gib 30 extra", "min-free-gib 30 # comment", "min-free-gib 0\nmin-free-gib 30"]:
+            with self.subTest(line=line):
+                rc, why = self.pin(line, "0", "true")
+                self.assertEqual(rc, 1)
+                self.assertIn("not one the fleet reads", why)
+
     def test_a_line_the_leg_cannot_read_refuses_even_a_cpu_leg(self) -> None:
         for line in ["pin-flagg --x", "pin-flag", "pin-flag x", "pin-flag --", "pin-flag --x=y", "pin-flag --x # c",
                      "pin-env 9X", "pin-env A-B", "pin-env", "slot-plan", "slot-plan /abs/p", "slot-plan ../p",
@@ -397,7 +407,7 @@ class BackendPin(unittest.TestCase):
         rc, why = self.pin("slot-plan p\nslot-plan q\n", "0", "tools/t.sh")
         self.assertEqual(rc, 1)
         self.assertEqual(why, ".github/fleet-leg line 2 is not one the fleet reads (slot-plan q): pin-flag <option>,"
-                              " pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, a # comment"
+                              " pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, one min-free-gib <GiB>, a # comment"
                               " or a blank line")
 
 

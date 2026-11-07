@@ -3018,6 +3018,29 @@ expect "a free-space read that fails is a note, and the run starts" 0 "^TIP-RUN 
 grep -q "^TIP-RUN NOTE testbox: cannot read the free space of $tco (exit 7), so the floor of 999999999 GiB" <<<"$out" && ok "...said on the run's stderr" || ko "no note: $out"
 expect "...to its end" 0 "^TIP-RUN CONCLUDED tip-r pass testbox $tfloor /" -- "${FWT[@]}" execution tip-run --wait tip-r --within 60
 mv "$TMP/dispatcher/scripts/py.real" "$TMP/dispatcher/scripts/py"
+# Project floors are read from the requested commit, even for a CPU/non-loop run.
+for tfvalue in 999999999 0 lots; do
+  mkdir -p "$tsrc/.github" && printf 'min-free-gib %s\n' "$tfvalue" > "$tsrc/.github/fleet-leg" &&
+    git -C "$tsrc" add .github/fleet-leg && git -C "$tsrc" commit -q -m "project floor $tfvalue" &&
+    git -C "$tsrc" push -q origin main || ko "could not stage the project floor (setup)"
+  tfproject=$(git -C "$tsrc" rev-parse HEAD)
+  if [ "$tfvalue" = lots ]; then
+    expect "a malformed project floor refuses even with the harness's site 0" 1 "not one the fleet reads (min-free-gib lots)" -- \
+      "${FWT[@]}" execution tip-run "$(tipreq tip-floor-bad "$tfproject")" --checkout "$tco" --cpu -- true
+  elif [ "$tfvalue" = 999999999 ]; then
+    expect "the project floor refuses with no site knob" 1 "under the floor of 999999999 GiB" -- \
+      env -u FLEET_LEG_MIN_FREE_GIB "${FWT[@]}" execution tip-run "$(tipreq tip-floor-high "$tfproject")" --checkout "$tco" --cpu -- true
+    expect "the harness's site 0 overrides a high project floor" 0 "^TIP-RUN STARTED tip-floor-site " -- \
+      "${FWT[@]}" execution tip-run "$(tipreq tip-floor-site "$tfproject")" --checkout "$tco" --cpu -- true
+    expect "...to its end" 0 "^TIP-RUN CONCLUDED tip-floor-site pass " -- "${FWT[@]}" execution tip-run --wait tip-floor-site --within 60
+  else
+    expect "project 0 disables the default when the site knob is absent" 0 "^TIP-RUN STARTED tip-floor-zero " -- \
+      env -u FLEET_LEG_MIN_FREE_GIB "${FWT[@]}" execution tip-run "$(tipreq tip-floor-zero "$tfproject")" --checkout "$tco" --cpu -- true
+    expect "...to its end" 0 "^TIP-RUN CONCLUDED tip-floor-zero pass " -- "${FWT[@]}" execution tip-run --wait tip-floor-zero --within 60
+    expect "an explicit site floor overrides project 0" 1 "under the floor of 999999999 GiB" -- \
+      env FLEET_LEG_MIN_FREE_GIB=999999999 "${FWT[@]}" execution tip-run "$(tipreq tip-floor-override "$tfproject")" --checkout "$tco" --cpu -- true
+  fi
+done
 # The request is the loop's shape, or a usage refusal before the anchor is asked.
 expect "an abbreviated revision is refused" 2 "requested_revision must be exactly one full 40-hex commit SHA" -- \
   "${FWT[@]}" execution tip-run "$(tipreq tip-h "${tip:0:12}")" --checkout "$tco" -- echo never
@@ -4150,6 +4173,28 @@ expect "a free-space read that fails is a note, and the leg runs" 0 "execution-l
   env FLEET_LEG_MIN_FREE_GIB=999999999 "${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$fwt" -- tools/check.sh
 grep -q "^EXECUTION LEG testbox: NOTE: cannot read the free space of .* (exit 7), so the floor of 999999999 GiB" <<<"$out" && ok "...said on the leg's output" || ko "no note: $out"
 mv "$TMP/dispatcher/scripts/py.real" "$TMP/dispatcher/scripts/py"
+
+# The project floor is resolved at the requested commit, never the worktree's old file.
+for lfvalue in 999999999 0 lots; do
+  git -C "$lsrc" checkout -q -B "floor-$lfvalue" claude/topic && mkdir -p "$lsrc/.github" &&
+    printf 'min-free-gib %s\n' "$lfvalue" > "$lsrc/.github/fleet-leg" && git -C "$lsrc" add .github/fleet-leg &&
+    git -C "$lsrc" commit -q -m "project floor $lfvalue" && git -C "$lsrc" push -q "$lremote" "floor-$lfvalue" || ko "could not stage project floor (setup)"
+  lfproject=$(git -C "$lsrc" rev-parse HEAD)
+  if [ "$lfvalue" = lots ]; then
+    expect "a malformed project floor refuses with site 0" 1 "not one the fleet reads (min-free-gib lots)" -- \
+      "${FWL[@]}" execution leg --request leg-fl --rev "$lfproject" --checkout "$lco" --worktree "$fwt" --cpu -- tools/check.sh
+  elif [ "$lfvalue" = 999999999 ]; then
+    expect "the project floor refuses without a site override" 1 "under the floor of 999999999 GiB" -- \
+      env -u FLEET_LEG_MIN_FREE_GIB "${FWL[@]}" execution leg --request leg-fl --rev "$lfproject" --checkout "$lco" --worktree "$fwt" --cpu -- tools/check.sh
+    expect "site 0 overrides the project's high floor" 0 "execution-leg: exit: 0" -- \
+      "${FWL[@]}" execution leg --request leg-fl --rev "$lfproject" --checkout "$lco" --worktree "$fwt" --cpu -- tools/check.sh
+  else
+    expect "project 0 overrides the default floor" 0 "execution-leg: exit: 0" -- \
+      env -u FLEET_LEG_MIN_FREE_GIB "${FWL[@]}" execution leg --request leg-fl --rev "$lfproject" --checkout "$lco" --worktree "$fwt" --cpu -- tools/check.sh
+    expect "the site floor overrides project 0" 1 "under the floor of 999999999 GiB" -- \
+      env FLEET_LEG_MIN_FREE_GIB=999999999 "${FWL[@]}" execution leg --request leg-fl --rev "$lfproject" --checkout "$lco" --worktree "$fwt" --cpu -- tools/check.sh
+  fi
+done
 
 # farside-close (ludics#981): the board's far-side words through the real registry and board; the
 # gates themselves, each against real git, are test_fleetworker_farsideclose.py's. Worktrees made by

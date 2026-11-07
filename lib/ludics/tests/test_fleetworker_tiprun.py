@@ -421,7 +421,7 @@ class Floor(Starting):
     other. The reading itself is ``test_fleetworker_leg``'s, and the far side's order the shell suite's."""
 
     def test_the_far_side_takes_the_leg_s_floor_and_its_default(self) -> None:
-        for env, floor in (({}, "20"), ({"FLEET_LEG_MIN_FREE_GIB": "7"}, "7"), ({"FLEET_LEG_MIN_FREE_GIB": "0"}, "0")):
+        for env, floor in (({}, ""), ({"FLEET_LEG_MIN_FREE_GIB": "7"}, "7"), ({"FLEET_LEG_MIN_FREE_GIB": "0"}, "0")):
             with self.subTest(env=env):
                 rc, _, far = self.start(request(), "dir=/s/run-1\nslot=held\n", env)
                 self.assertEqual(rc, 0)

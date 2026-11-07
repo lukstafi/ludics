@@ -86,12 +86,15 @@ No other record carries it.
 THE FREE-SPACE FLOOR (ludics#991): ``execution leg``'s (leg.py, THE FREE-SPACE FLOOR; one program,
 ``FLOOR_PY``, and one knob, FLEET_LEG_MIN_FREE_GIB, read where the verb runs and carried to the box as
 an argument; a value that is no whole number is a usage refusal before GitHub or the anchor is asked,
-and 0 turns the check off). #981's first witness was this path: a CUDA integration run cut off at
+and 0 turns the check off). The site knob overrides the tested commit's
+``min-free-gib <GiB>`` directive, then the default 20; the config is parsed even with no backend. An
+explicit site floor precedes the fetch; without it the floor check follows the fetch and config
+reading, before checkout or slot writes. #981's first witness was this path: a CUDA integration run cut off at
 17 MB free, dune exit 2 and no named failure. A disk it reads under the floor refuses the run, naming
 the box, the free space and the floor, so it ends as any far-side refusal does, ``TIP-RUN NOT STARTED
 <id>: only <n> GiB free ...``, its record concluded ``not-launched``, and the loop tries again at its
-next start. The check stands right after the checkout's own (a path that is no clean checkout says
-so, not what the disk under it holds) and before the fetch, the checkout and the slot, each of which
+next start. The check follows the checkout's own checks (a path that is no clean checkout says
+so, not what the disk under it holds) and before the checkout and the slot, each of which
 fails with something else on a full disk; like the leg's it runs outside ``bounded``, whose scratch
 files such a disk would deny. It runs the ``scripts/py`` of the ``fleet-worker.sh`` this run starts,
 the one interpreter the slot needs on the box anyway, and not ``$SKILLS_REPO``'s, which a local box's
@@ -184,27 +187,40 @@ HANDLE = re.compile(r"bg-run:([^:]+):(/.*)", re.DOTALL)
 # and `slot=held|ended|unsettled` (and `said=` for ended), or one TIP-RUN REFUSED line, exit 1, when
 # nothing was started.
 FAR = PIN + FLOOR + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7" min_free="$8"; shift 8
-refuse() { echo "TIP-RUN REFUSED: $*"; exit 1; }
+refuse() { printf '%s\n' "TIP-RUN REFUSED: $*"; exit 1; }
 [ -n "$runs" ] || runs="$(expand_tilde "$STATE")/tip-runs"
 [ -n "$fw" ] || fw="$(expand_tilde "$SKILLS_REPO")/issue-wave/scripts/fleet-worker.sh"
 [ -x "$fw" ] || refuse "no executable fleet-worker.sh at $fw on $BOX"
 cd "$co" 2>/dev/null || refuse "no checkout $co on $BOX"
 dirty=$(git status --porcelain </dev/null 2>/dev/null) || refuse "$co on $BOX is not a git checkout"
 [ -z "$dirty" ] || refuse "$co on $BOX has uncommitted changes ($(printf '%s\n' "$dirty" | grep -c '') path(s)): a run over them verifies nothing, and they are not this run's to discard"
-# THE FREE-SPACE FLOOR (see the header): before this run writes anything on the box.
+# An explicit site floor precedes the fetch; the project floor needs the tested commit.
+check_floor() {
 if [ "$min_free" != 0 ]; then
   room=$("$(dirname "$fw")/../../scripts/py" -c "$FLOOR_PY" "$min_free" "$co" </dev/null 2>/dev/null); frc=$?
   [ "$frc" -ne 3 ] || refuse "only ${room%% *} GiB free on the filesystem of ${room#* } on $BOX, under the floor of $min_free GiB (FLEET_LEG_MIN_FREE_GIB); nothing ran: free space there first (fleet-worker.sh farside-close <wave> removes a closed wave's far-side worktrees), or lower the knob for a run that fits"
   [ "$frc" -eq 0 ] || printf '%s\n' "TIP-RUN NOTE $BOX: cannot read the free space of $co (exit $frc), so the floor of $min_free GiB (FLEET_LEG_MIN_FREE_GIB) is not checked; the run goes on" >&2
 fi
+}
+[ -z "$min_free" ] || check_floor
 if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
   bounded 300 git fetch -q origin >/dev/null; frc=$?
   [ "$frc" -eq 0 ] || refuse "git fetch origin in $co on $BOX failed (exit $frc)"
   git cat-file -e "$sha^{commit}" 2>/dev/null || refuse "$co on $BOX does not have $sha even after fetching origin"
 fi
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the checkout moves.
+pins=$(fleet_leg_read "$co" "$sha"); prc=$?
+[ "$prc" -ne 1 ] || refuse "$pins"
+pin_floor=""
+if [ "$prc" -eq 0 ]; then
+  why=$(pin_grammar "$pins") || refuse "$why (.github/fleet-leg at $sha)"
+  pin_grammar "$pins"
+fi
+if [ -z "$min_free" ]; then
+  min_free=${pin_floor:-20}
+  check_floor
+fi
 if [ -n "$backend" ]; then
-  pins=$(fleet_leg_read "$co" "$sha"); prc=$?
   [ "$prc" -ne 2 ] || refuse "this run is the $backend backend's (its purpose), but $sha has no .github/fleet-leg, so whether its command selects $backend cannot be checked: the project states how its runner pins a backend there (pin-env <NAME>, pin-flag <option>)"
   [ "$prc" -eq 0 ] || refuse "$pins"
   why=$(backend_pin_to "$pins" "$backend" "$@") || refuse "$why (.github/fleet-leg at $sha)"

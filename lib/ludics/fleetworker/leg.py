@@ -76,13 +76,15 @@ THE FREE-SPACE FLOOR (ludics#981). A disk left with 17 MB cut off a CUDA integra
 exit 2 and no named failure, and a leg (``run-29``) spent a slot and died mid-checkout. So a leg is
 refused, ``EXECUTION LEG REFUSED <box>: only <n> GiB free ...`` naming the box, the free space and the
 floor, when the filesystem of ``--checkout`` or of ``--worktree`` (its nearest existing ancestor, for
-one not made yet) has less than FLEET_LEG_MIN_FREE_GIB (a whole number of GiB, default 20: about two
-of the 10 GB ``_build`` trees rog held; 0 turns the check off) free to this user. The knob is read
-where the leg is run, as FLEET_FETCH_TIMEOUT is, so a lower floor for a small box is the caller's or
-the site's (``~/.config/fleet/env.sh``), and a value that is no whole number is a usage error. The
-check is the far shell's first write-free step after the paths are known: before the worktree's
-lock, the fetch, ``git worktree add`` and the slot, since on a full disk each of those fails with
-something else. It reads ``shutil.disk_usage`` through ``scripts/py``, which the worktree's lock
+one not made yet) has less than the selected floor free to this user. A nonempty site knob
+FLEET_LEG_MIN_FREE_GIB overrides ``min-free-gib <GiB>`` in ``.github/fleet-leg`` at the tested
+commit, which overrides the default 20; all are whole numbers, and 0 disables the check. A project
+states its cold-tree requirement; no project tree size is assumed here. The knob is read where
+the leg is run, as FLEET_FETCH_TIMEOUT is (the caller or ``~/.config/fleet/env.sh``), and a malformed
+knob is a usage error. An explicit site floor is checked before the worktree lock and fetch.
+Without it the project/default floor is checked after revision resolution and config parsing,
+before ``git worktree add`` and the slot: the requested commit may need fetching to read its floor.
+It reads ``shutil.disk_usage`` through ``scripts/py``, which the worktree's lock
 needs on the box anyway, rather than ``df``, so no output format and no coreutils are read (GNU,
 uutils and BSD alike), and directly rather than under ``bounded``, whose scratch files a full disk
 would deny, turning the refusal into a note. A read that fails is a NOTE and the leg goes on: the
@@ -154,7 +156,8 @@ grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
     command, a ``bash -c '...'`` composite included (ludics#864: a leading ``env`` pin is how a
     composite carries one);
   - ``slot-plan <path>``, at most one: THE SLOT PLAN below;
-  - ``run-report <path>``, at most one: THE RUN REPORT below.
+  - ``run-report <path>``, at most one: THE RUN REPORT below;
+  - ``min-free-gib <GiB>``, at most one, decimal digits only: THE FREE-SPACE FLOOR above.
 Any other line refuses the leg, naming it: a file the fleet cannot read is never ignored. A leg that
 may hold the GPU -- one that does not declare ``--cpu``, the slot's own fail-closed definition, so a
 measurement's too -- whose repository's file names a pin and whose argv satisfies none is refused
@@ -321,7 +324,6 @@ REMOTE = re.compile(r"[A-Za-z0-9._-]+")
 SECONDS = re.compile(r"[1-9][0-9]*")
 WHOLE = re.compile(r"[0-9]+")
 RUN_BOUND = "86400"  # each run's --deadline when the leg names none: a day, a bound only to reap with
-DEFAULT_MIN_FREE_GIB = "20"  # THE FREE-SPACE FLOOR's default (see the header)
 HELD_BACK = 64  # bytes of an unfinished line kept back for the status line; it is never longer than 45
 
 # A HINT FOR A PATH FROM ANOTHER BOX'S HOME (ludics-lite#669), appended to the far side's refusals of
@@ -356,8 +358,9 @@ NOT_HOME = r"""not_home() {
 #     and nothing else -- every pin it satisfies names exactly <backend> -- and the file names a pin.
 # pin_grammar and pin_scan set the caller's locals (bash scopes dynamically): pin_flags, pin_envs and
 # pin_asks (the file's pins, the asks with `<backend>` for the value), pin_plan (its slot-plan path,
-# or empty), pin_report (its run-report path, or empty), and pin_any (a pin the argv satisfies) and pin_other (the first one naming another
-# backend than pin_target, as `<how>`).
+# or empty), pin_floor (its floor, or empty), pin_report (its run-report path, or empty),
+# and pin_any (a pin the argv satisfies) and pin_other (the first one naming another backend
+# than pin_target, as `<how>`).
 PIN = r"""fleet_leg_read() {
   local co="$1" sha="$2" text
   [ "$(git -C "$co" cat-file -t "$sha:.github/fleet-leg" 2>/dev/null)" = blob ] || return 2
@@ -368,7 +371,7 @@ PIN = r"""fleet_leg_read() {
 }
 pin_grammar() {
   local text="$1" d w extra good n=0
-  pin_flags="" pin_envs="" pin_asks="" pin_plan="" pin_report=""
+  pin_flags="" pin_envs="" pin_asks="" pin_plan="" pin_report="" pin_floor=""
   while read -r d w extra || [ -n "$d" ]; do
     n=$((n + 1))
     case "$d" in ''|'#'*) continue ;; esac
@@ -378,10 +381,11 @@ pin_grammar() {
       pin-env) case "$w" in *[!A-Za-z0-9_]*|[0-9]*|'') ;; *) good=1 ;; esac ;;
       # A path in the worktree: relative, no `..` or `.` component, no empty one, not an option.
       slot-plan) case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;; *) [ -n "$pin_plan" ] || good=1 ;; esac ;;
+      min-free-gib) case "$w" in ''|*[!0-9]*) ;; *) [ -n "$pin_floor" ] || good=1 ;; esac ;;
       run-report) case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;; *) [ -n "$pin_report" ] || good=1 ;; esac ;;
     esac
     if [ -z "$good" ] || [ -n "$extra" ]; then
-      printf '%s' ".github/fleet-leg line $n is not one the fleet reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, a # comment or a blank line"
+      printf '%s' ".github/fleet-leg line $n is not one the fleet reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, one min-free-gib <GiB>, a # comment or a blank line"
       return 1
     fi
     case "$d" in
@@ -389,6 +393,7 @@ pin_grammar() {
       pin-env) pin_envs="$pin_envs $w"; pin_asks="$pin_asks, env $w=<backend>" ;;
       slot-plan) pin_plan=$w ;;
       run-report) pin_report=$w ;;
+      min-free-gib) pin_floor=$w ;;
     esac
   done <<FLEET_LEG_PIN
 $text
@@ -430,7 +435,7 @@ pin_scan() {
   done
 }
 backend_pin() {
-  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_any="" pin_other="" pin_target="" hint="" e
+  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_floor pin_any="" pin_other="" pin_target="" hint="" e
   shift 2
   pin_grammar "$text" || return 1
   [ "$gpu" = 1 ] && [ -n "$pin_flags$pin_envs" ] || return 0
@@ -454,7 +459,7 @@ backend_pin() {
   return 1
 }
 backend_pin_to() {
-  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_any="" pin_other=""
+  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_floor pin_any="" pin_other=""
   shift 2
   pin_grammar "$text" || return 1
   if [ -z "$pin_flags$pin_envs" ]; then
@@ -631,13 +636,15 @@ cdir=$(common "$co"); [ -n "$cdir" ] || refuse "--checkout $co is not a git chec
 # any of it runs -- so this shell dying while the runner runs on (a dropped connection) does not free
 # the worktree.
 wkey=$(canon "$wt") || refuse "cannot resolve --worktree $wt on $BOX$(not_home "$wt")"
-# THE FREE-SPACE FLOOR (see the header): before this leg writes anything on the box. No `bounded`
-# here: it needs scratch files, which a full disk denies.
+# An explicit site floor can be checked before fetching the project config.
+check_floor() {
 if [ "$min_free" != 0 ]; then
   room=$("$SKILLS_REPO/scripts/py" -c "$FLOOR_PY" "$min_free" "$co" "$wkey" </dev/null 2>/dev/null); frc=$?
   [ "$frc" -ne 3 ] || refuse "only ${room%% *} GiB free on the filesystem of ${room#* }, under the floor of $min_free GiB (FLEET_LEG_MIN_FREE_GIB); nothing ran: free space there first (fleet-worker.sh farside-close <wave> removes a closed wave's far-side worktrees), or lower the knob for a run that fits"
   [ "$frc" -eq 0 ] || say "NOTE: cannot read the free space of $co or $wt (exit $frc), so the floor of $min_free GiB (FLEET_LEG_MIN_FREE_GIB) is not checked; the leg goes on"
 fi
+}
+[ -z "$min_free" ] || check_floor
 mkdir -p "$STATE/leg-locks" || refuse "cannot create $STATE/leg-locks on $BOX"
 wlock=$(leg_lock_file "$wkey")
 exec 9>>"$wlock" || refuse "cannot open the worktree lock $wlock on $BOX"
@@ -676,7 +683,7 @@ fi
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the worktree moves.
 pins=$(fleet_leg_read "$co" "$sha"); prc=$?
 [ "$prc" -ne 1 ] || refuse "$pins; nothing ran"
-pin_plan="" pin_report=""
+pin_plan="" pin_report="" pin_floor=""
 if [ "$prc" -eq 0 ]; then
   case " ${nest[*]} " in *" --cpu "*) gpu=0 ;; *) gpu=1 ;; esac
   # --reads-no-config: the caller declares a runner that reads none of the project's configuration, so no
@@ -685,6 +692,11 @@ if [ "$prc" -eq 0 ]; then
   why=$(backend_pin "$pins" "$gpu" "$@") || refuse "$why (.github/fleet-leg at $sha); nothing ran"
   pin_grammar "$pins"
   [ "$no_config" != 1 ] || say "--reads-no-config: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $sha); its result is no backend's evidence"
+fi
+# With no site override, select the project floor (or default) only after parsing the config.
+if [ -z "$min_free" ]; then
+  min_free=${pin_floor:-20}
+  check_floor
 fi
 # The worktree: a linked worktree of the checkout, made or moved to the commit, never overwritten.
 if [ -e "$wt" ] || [ -L "$wt" ]; then
@@ -1013,9 +1025,9 @@ class LegStopped(Exception):
 
 def min_free_gib(cfg: Config) -> str:
     """THE FREE-SPACE FLOOR's knob, as the far side takes it; anything but a whole number is a usage
-    error, in `leg` and in `tip-run` alike."""
-    value = knob(cfg, "FLEET_LEG_MIN_FREE_GIB", DEFAULT_MIN_FREE_GIB)
-    if not WHOLE.fullmatch(value):
+    error, in `leg` and in `tip-run` alike. Empty means select the project/default on the box."""
+    value = knob(cfg, "FLEET_LEG_MIN_FREE_GIB", "")
+    if value and not WHOLE.fullmatch(value):
         die(f"FLEET_LEG_MIN_FREE_GIB must be a whole number of GiB (0 for no floor), not {value!r}")
     return value
 
