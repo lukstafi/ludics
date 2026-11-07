@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from ludics.prreview import budget, buildhistory
 from ludics.prreview.buildhistory import Row, overrun_advice, read, record
@@ -15,6 +16,10 @@ FILE = ".github/ship-pr-merge-build"
 
 class TheRecord(unittest.TestCase):
     def setUp(self) -> None:
+        # The merge command forwards this resolved directory with priority over SHIP_PR_STATE_DIR.
+        # These records belong to each case's scratch tree even under an actual merge build.
+        self.enterContext(mock.patch.dict(os.environ))
+        os.environ.pop(budget.ENV_BUDGET_DIR, None)
         self.dir = tempfile.mkdtemp(prefix="ludics-buildhistory-test.")
         self.was = os.environ.get("SHIP_PR_STATE_DIR")
         os.environ["SHIP_PR_STATE_DIR"] = self.dir
