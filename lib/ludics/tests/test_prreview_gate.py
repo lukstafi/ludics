@@ -643,15 +643,21 @@ class GateLoop(unittest.TestCase):
 
     def test_a_released_run_names_the_advisory_lists_source(self) -> None:
         old = "2025-12-31T23:00:00Z"
-        for from_env, source in ((True, "SHIP_PR_ADVISORY_CHECKS"),
-                                 (False, ".github/ship-pr-advisory-checks")):
-            with self.subTest(from_env=from_env):
+        for mode, source in (("env", "SHIP_PR_ADVISORY_CHECKS"),
+                             ("file", ".github/ship-pr-advisory-checks"), ("default", "built-in defaults")):
+            with self.subTest(mode=mode):
                 gh = FakeGh()
                 gh.on("actions/runs?head_sha=h1",
                       out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t1")
-                gh.on("actions/runs/100/jobs", out=f"build\tsuccess\t{old}\t{old}\nmacos\tpending\t{old}\t-")
-                gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
-                gate.config = replace(gate.config, advisory_from_env=from_env)
+                gh.on("actions/runs/100/jobs", out=f"build\tsuccess\t{old}\t{old}\nclaude\tpending\t{old}\t-")
+                env = {"SHIP_PR_ADVISORY_CHECKS": "^claude$"} if mode == "env" else {}
+                gate = make_gate(gh, FakeClock(), **env)
+                if mode == "file":
+                    gh.on("contents/.github/ship-pr-advisory-checks", out="^claude$")
+                elif mode == "default":
+                    gh.on("contents/.github/ship-pr-advisory-checks", rc=1, err="gh: Not Found (HTTP 404)")
+                    gh.on("contents/.github", out="0")
+                self.assertEqual(gate.advisory_policy(), 0)
                 signal = gate.run_signal("h1", "2026-01-01T00:00:00Z", 1, "b1", "topic", "7")
                 self.assertEqual(signal.rc, 0)
                 self.assertIn(f"only advisory jobs ({source})", signal.reason)

@@ -205,6 +205,7 @@ class Gate:
     # The round's run read that failed, as its failure line: ``run_signal`` reports it rather than
     # asking again, so one failed round is one failed read (ludics#929). None: not failed this round.
     _round_runs_failure: str | None = None
+    _advisory_from_file: bool = False
     _advisory: ere.Matcher | None = None
     _selected: ere.Matcher | None = None
 
@@ -241,6 +242,7 @@ class Gate:
                 if parsed is None:
                     return 2
                 self.advisory = parsed
+                self._advisory_from_file = True
                 warn(f"advisory checks, from {repo}'s {ADVISORY_FILE}: {self.advisory}")
                 return 0
             case GhFailed():
@@ -763,9 +765,11 @@ class Gate:
                 parts = [f"{released} of them still running, but only advisory jobs"] if released else []
                 if stopped_released:
                     parts.append(f"{stopped_released} of them cancelled only in advisory jobs")
+                source = ("SHIP_PR_ADVISORY_CHECKS" if self.config.advisory_from_env else
+                          ADVISORY_FILE if self._advisory_from_file else "built-in defaults")
                 reason = (
                     f"{runs} workflow run(s) for this head are judged — {'; '.join(parts)}"
-                    f" ({'SHIP_PR_ADVISORY_CHECKS' if self.config.advisory_from_env else ADVISORY_FILE})"
+                    f" ({source})"
                 )
             else:
                 reason = f"{runs} workflow run(s) for this head are finished and judged"
