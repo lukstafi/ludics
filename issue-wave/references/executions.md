@@ -890,15 +890,19 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   leg's. What it leaves in the worktree counts as the run's (the main run's `NO CONTROL`, the
   after-run warning). A leg run by a checkout from before this reads a `run-report` line as one it
   cannot read and refuses, so a project adds it once its callers' skills checkout has it.
-- **The free-space floor.** A leg is refused, before its worktree's lock, fetch, checkout and slot,
-  when the filesystem of `--checkout` or `--worktree` has under `FLEET_LEG_MIN_FREE_GIB` free (a whole
-  number of GiB, default 20, read where the leg is run; 0 turns it off): `EXECUTION LEG REFUSED <box>:
-  only <n> GiB free on the filesystem of <path>, under the floor of <m> GiB`, status 1. A run on a
-  fuller disk dies mid-checkout or mid-build with no named failure. Free the box's space
+- **The free-space floor.** A leg is refused before checkout and slot writes when the filesystem
+  of `--checkout` or `--worktree` has under the selected floor free. A nonempty site knob
+  `FLEET_LEG_MIN_FREE_GIB` overrides `min-free-gib <GiB>` in `.github/fleet-leg` at the tested commit,
+  which overrides the default 20 GiB; 0 disables the check. Values are decimal whole numbers; a
+  malformed or duplicate project directive refuses even with a site override. The knob is read
+  where the verb runs. An explicit site floor is checked before the worktree lock and fetch;
+  without it the project/default check follows revision resolution and config parsing, since the
+  tested commit may need fetching first. The refusal is `EXECUTION LEG REFUSED <box>: only <n> GiB
+  free on the filesystem of <path>, under the floor of <m> GiB`, status 1. Free the box's space
   ([`farside-close`](#the-gpu-home-box)), or lower the knob for a run that fits. A read that fails is
-  a `NOTE` on the leg's output, and the leg runs. The same knob covers `execution tip-run`, on the
-  filesystem of its `--checkout`. The default is about one cold OCANNL `@runtest @train` tree (22 GB
-  in 2026-11): a site that runs one in a checkout with no `_build` yet raises the knob.
+  a `NOTE`, and the leg runs. The same precedence and checks cover `execution tip-run`, on its
+  `--checkout` filesystem. Projects should state their cold-tree requirement in their own file;
+  the default is no guarantee that an arbitrary project's build fits.
 - **Stopping a leg.** A leg's far side runs in an ssh session of its own, which nothing on the
   caller's box reaches, so a SIGTERM, SIGINT or SIGHUP the leg gets while it runs (`bg-run.sh stop`
   on its run, a Ctrl-C) ends the far side as well (ludics-lite#767): `EXECUTION LEG STOPPING <box>:

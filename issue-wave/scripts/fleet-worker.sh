@@ -329,7 +329,7 @@
 #   FLEET_FETCH_TIMEOUT: wall-clock bound on skills-checkout and project fetches; 300.
 #   FLEET_LEG_MIN_FREE_GIB: `execution leg` and `execution tip-run` refuse a box with less free on
 #     the filesystem of their checkout, or a leg's worktree (a whole number of GiB, read by the
-#     caller; 0 for no floor); 20.
+#     caller; 0 for no floor). Site knob overrides .github/fleet-leg min-free-gib, then default 20.
 #   FLEET_GH_TIMEOUT: wall-clock bound on each of the GitHub probe's API calls, `gh api user` and
 #     the try of the credential git returns (git's helper gets twice that plus 5 s, the try
 #     inside it included), in the preflight's session and in a tmux session, and on `execution`'s
