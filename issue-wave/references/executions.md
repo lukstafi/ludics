@@ -674,6 +674,13 @@ plus the runner's `exit:` sentinel when the log has one (a whole line `exit:
 N` or `<name>: exit: N`, the last one winning; OCANNL's `test-run.sh` and `machine-verify.sh`
 print one): the code is the sentinel when that is nonzero, else `rc`, so a pass needs both. Then
 0 is pass, 124 or 142 timeout, a signal code (129, 130, 137, 143) cancelled, anything else fail.
+An immediate slot refusal is the exception: rc 1 with the first log line beginning exactly
+`EXECUTION SLOT REFUSED ` concludes `not-launched`, with that line in the evidence and no
+observed revision. The reader does not scan past admission, progress or warning lines: a test
+printing a refusal after slot admission still fails. Delayed refusals require a manual
+`not-launched` conclusion; arbitrary unwrapped commands impersonating slot diagnostics are outside
+this log protocol. `bg-run.sh wait` keeps its generic `rc=` line unchanged: it reports the wrapper's
+status, which alone does not establish that a test ran.
 `STOPPED` (a run `bg-run.sh stop` ended, no process of its tree left) is `cancelled`, the log's
 sentinel unread (ludics-lite#638). `RUNNING`, `STARTING` and `DIED` are refused. A `DIED` task was killed before its
 command returned, and bg-run.sh's header names a window in which the command can outlive it
