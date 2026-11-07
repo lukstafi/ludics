@@ -232,9 +232,9 @@ sprint, settled five more rules (ludics#867):
 - **The pre-push scope** is *The brief*'s (the tests the change reaches, less the slow and
   training members CI runs). A sprint's loaded boxes are where the full set ran into the runner's
   caps.
-- **A cross-cutting change's long run goes to a CPU-only box or to CI.** A change that reaches
-  nearly every test (OCANNL: `low_level.ml`, a backend) has a pre-push run of hundreds of aliases.
-  The worker requests it (*The brief*, Execution handoff) instead of running it under its standing
+- **A cross-cutting change's long run goes to a CPU-only box or to CI.** *The brief* defines
+  its local pre-push scope; the full reach can be hundreds of tests.
+  The worker requests that long run (*The brief*, Execution handoff) instead of running it under its standing
   reservation on a GPU box, and the coordinator assigns it to a box whose GPU no leg of the wave
   needs, or leaves it to CI, never to a box whose GPU tokens the wave's GPU legs need. On a GPU box
   such a run holds a non-standing correctness record, which refuses every measurement window there
@@ -553,9 +553,12 @@ requirements for every transport with transport-specific setup and identity, and
   [native traps](references/linux-boxes.md) for `linux` and [WSL traps](references/wsl-boxes.md)
   for `wsl`. **The pre-push run** is the tests the change reaches (OCANNL: its `affected` set)
   less the slow and training members the project marks, which CI runs; the project's agent notes
-  name those members and the command (wave-20261102: full affected runs blew the runner's 3600 s
-  run cap or its 1500 s per-test cap on loaded boxes, ahrefs/ocannl#1697 on minix-amd-linux,
-  #1769 on tuf-amd-linux).
+  name those members and the command. For a library-module change, expect the project's reach
+  to read `CROSS-CUTTING`: the local run is then the project's first-tier list plus the tests
+  exercising the change; the project's agent notes name that list and its command. The full
+  cross-cutting run follows *Wave mode*'s placement rule (wave-20261102: full affected runs blew
+  the runner's 3600 s run cap or its 1500 s per-test cap on loaded boxes, ahrefs/ocannl#1697 on
+  minix-amd-linux, #1769 on tuf-amd-linux).
 - **The formatter gate**: the formatter batch is the one the project's AGENTS.md names, run last,
   slot-wrapped and read as it says (OCANNL: *Format before the first push*), and the commit is
   gated on that batch's own exit status. The brief carries its worker's one form, to copy, not
