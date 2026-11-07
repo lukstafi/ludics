@@ -1045,6 +1045,7 @@ WORKER = "issue-wave/scripts/fleet-worker.sh"
 # re-scanned in full. A link added to a copied prompt whose target is not named here fails LOUDLY --
 # on every probe of that tree at once, with the path it could not resolve in the message.
 LINK_TARGETS = (
+    "issue-wave/SKILL.md",
     "issue-wave/references/cli-claude.md",
     "issue-wave/references/executions.md",
     "issue-wave/references/native-claude.md",
@@ -1109,7 +1110,7 @@ def slots() -> Slots:
 
 def slots_tree(root: str) -> None:
     shutil.rmtree(root, ignore_errors=True)
-    copy_prompts(root, "README.md", "routines/README.md", "issue-wave/SKILL.md", *LINK_TARGETS, WORKER)
+    copy_prompts(root, "README.md", "routines/README.md", *LINK_TARGETS, WORKER)
 
 
 def count_word(root: str, rel: str, *, to: str, box: str = "mac-studio") -> None:
@@ -1803,6 +1804,11 @@ class ReadingListTest(Case):
     def test_obligations(self) -> None:
         R = self.root
         os.remove(f"{R}/{FLEET}")
+        # This case deliberately removes the wave prompt. Its references must not retain links
+        # to that absent file: the obligation under test is the shipping reading list alone.
+        for reference in ("executions.md", "native-claude.md"):
+            rewrite(R, f"issue-wave/references/{reference}",
+                    pattern=r"\[The brief\]\(\.\./SKILL\.md#the-brief\)", repl="The brief", count=0)
         self.expect("without issue-wave, the paragraph alone is held", 0, READ_WHEN_AGREE)
         fresh(R)
         self.lacks(f"a root without {SHIP} carries no reading-list obligation", "What to read when", run(CP, R))

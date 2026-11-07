@@ -4305,7 +4305,7 @@ for i in $(seq 40); do
   env FLEET_BOXES="testbox other" "$FW" execution slot --holders 2>/dev/null | grep -q '"event":"waiting"' && break
   sleep 0.25
 done
-expect "prs shows a merge build waiting for a slot, on its own PR's line" 4 "o/r#7 rounds=2 ci=pending head=[01]m merge-build=waiting(slot) claude/issue-7: first PR" -- env FLEET_BOX_CORRECTNESS_SLOTS="testbox=1" "$FW" prs o/r --flag-at 7
+expect "prs shows a merge build waiting for a slot, on its own PR's line" 4 "o/r#7 rounds=2 ci=pending head=[01]m merge-build=waiting(slot,[0-9]*s) claude/issue-7: first PR" -- env FLEET_BOX_CORRECTNESS_SLOTS="testbox=1" "$FW" prs o/r --flag-at 7
 grep -q "^o/r#9 .*merge-build=[0-9]*s/300s" <<<"$out" && ok "...beside the build that holds the slot" || ko "the holder's line: $out"
 kill "$prs_wait" 2>/dev/null; wait "$prs_wait" 2>/dev/null
 expect "...and not once it stopped waiting" 4 "o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r --flag-at 7

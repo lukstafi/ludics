@@ -78,7 +78,7 @@ cannot be read. Its lock files live under `FLEET_SLOT_STATE`
 is each coordinator's own directory, and slots kept there would let two workers under different
 coordinators each take slot 1 on one machine. The command after `--` is exec'd, not
 interpreted, so a shell builtin or an `&&` chain goes as `sh -c '...'`, and a pipeline does not:
-its status is its last stage's (*Never pipe a suite*, in SKILL.md's *The brief*). `--bg <parent>`
+its status is its last stage's (*Never pipe a suite*, in [The brief](../SKILL.md#the-brief)). `--bg <parent>`
 (ludics-lite#181) is the same slot-held batch, detached under `bg-run.sh spawn`, whose one
 foreground call prints the run directory at once; `bg-run.sh wait` blocks on it and `execution
 conclude --from-bg-run` reads it.
@@ -1027,7 +1027,7 @@ By default the coordinator takes a second standing reservation at launch, beside
 one, its `checkout` the far-side worktree, on the task's GPU box whenever the plan homes the task there or names a GPU iteration leg
 for it: one per such box, request id `<wave>-<issue>-<box>-iterate`, the agent host still the
 worker's (ludics-lite#621). A change to code that every GPU backend emits or runs (codegen, which
-reaches every staged or hand-built kernel; SKILL.md, *The brief*) takes one on every GPU box the
+reaches every staged or hand-built kernel; [The brief](../SKILL.md#the-brief)) takes one on every GPU box the
 roster has up, whatever the plan's legs say, so the coordinator reads the issue for that as well
 as the plan: ahrefs/ocannl#1661, a rog-homed CLI worker with no standing record on a HIP box, spent
 five request round trips on HIP legs (wave-20261102). A GPU box that IS the agent host (a CLI worker resident there) takes

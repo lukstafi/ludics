@@ -363,14 +363,15 @@ def referencing_read(helper: str, repo: str, issue: Json) -> set[int] | tuple[in
 
 
 def merge_builds(cfg: Config, clock: float | None = None) -> dict[str, str]:
-    """``{owner/name#n, casefolded: its "<elapsed>s/<bound>s" or "waiting(<phase>)"}``: the merge
+    """``{owner/name#n, casefolded: its "<elapsed>s/<bound>s" or "waiting(<phase>,<elapsed>s)"}``: the merge
     builds running now, and those queued for this box's slots. #1735's ran past 15 minutes while
     the coordinator's heartbeat listed it as open, and the maintainer noticed first; a slot wait can
     run longer than that. Boundary, a fail-closed allowlist: what is read is THIS box's slot
     directory. Running, through ``holders.held_records``, is a held slot whose confirmed record has
     the command ``mergebuild.build_of`` reads and a ``--deadline``, which is the bound. Queued,
     through ``holders.waiting_records`` (its boundary is what it leaves out), is a flocked waiting
-    record whose ``argv`` ``build_of`` reads; its phase is ``window`` or ``slot``. The waiters are
+    record whose ``argv`` ``build_of`` reads; its phase is ``window`` or ``slot``. Its wait age
+    uses the wall-clock ``since`` timestamp; an unreadable timestamp leaves only the phase. The waiters are
     read first, so a build that takes its slot between the two reads shows as running, and a
     running build wins over a queued one of the same PR. So it does not show a build on another
     box (a CLI worker's), a bare one (a box with no slots), one in a slot its merge already held,
@@ -388,7 +389,8 @@ def merge_builds(cfg: Config, clock: float | None = None) -> dict[str, str]:
     for waiter in holders.waiting_records(directory):
         build = build_of(waiter.command)
         if build is not None:
-            found[build.casefold()] = f"waiting({waiter.phase})"
+            age = "" if waiter.since is None else f",{max(int(time.time() - waiter.since), 0)}s"
+            found[build.casefold()] = f"waiting({waiter.phase}{age})"
     for holder in holders.held_records(directory, lambda h: build_of(h.command) is not None and h.deadline is not None):
         build, bound = build_of(holder.command), holder.deadline
         if build is not None and bound is not None:
