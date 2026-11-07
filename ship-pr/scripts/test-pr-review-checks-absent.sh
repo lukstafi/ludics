@@ -52,6 +52,7 @@ PAGINATE_LOG="$TEST_ROOT/paginated"
 # --- the fixture transport --------------------------------------------------------------------
 # One canned answer per endpoint, each a list so a round can differ from the next: the wait loop
 # re-reads, and a fixture that could only answer once could not tell a hold from a settle.
+BRANCH_TIP=""
 HEAD_SEQ=()
 CHECK_RUNS_SEQ=()
 RUNS_SEQ=()
@@ -220,6 +221,7 @@ next_base() {
 
 # pr_read_names (test-pr-review-lib.sh) says which PR reads take an entry of HEAD_SEQ or next_base's count.
 reset_fixture() {
+  BRANCH_TIP=""
   HEAD_SEQ=("$HEAD_SHA")
   CHECK_RUNS_SEQ=("$(check_runs_json '[]')")
   RUNS_SEQ=("$(runs_json '[]')")
@@ -296,7 +298,7 @@ gh() {
   # The PR read's projections are not arms: one arm answers them all, pr_read_names classifying each.
   case "$FIXTURE_ENDPOINT" in
   "repos/$REPO/git/ref/heads/topic")
-    response=$(jq -cn --arg s "$(current_of HEAD_SEQ)" '{object:{sha:$s}}')
+    response=$(jq -cn --arg s "${BRANCH_TIP:-$(current_of HEAD_SEQ)}" '{object:{sha:$s}}')
     ;;
   "repos/$REPO/pulls/7")
     # The branch-tip read (#960) reports on the head and reads none: this suite's heads move with
@@ -2257,6 +2259,27 @@ check_trailer() { # <expected rc> <expected verdict> <prose> [checks args]
   assert_eq "$(tail -n 1 <<<"$out")" "checks: verdict=$want" "$want: the trailer is the last line"
 }
 
+# A lag is reported even when --wait settles on green; the build exit and final machine line
+# stay compatible. Only the final comparison reads the tip, not every pending gate round.
+test_checks_warns_when_branch_has_left_the_head() {
+  reset_fixture
+  BRANCH_TIP=feedbeeffeedbeeffeedbeeffeedbeeffeedbeef
+  CHECK_RUNS_SEQ=(
+    "$(check_runs_json '[{"name":"ci","status":"in_progress"}]')"
+    "$(check_runs_json '[{"name":"ci","conclusion":"success"}]')"
+  )
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"completed","conclusion":"success"}]')")
+  local out rc
+  set +e
+  out=$(cmd_checks 7 --wait=30)
+  rc=$?
+  set -e
+  assert_eq "$rc" 0 "lag leaves the PR build exit unchanged"
+  assert_contains "$out" "head $HEAD_SHA is NOT its branch's tip" "lag warning names the judged head"
+  assert_contains "$out" "stands at $BRANCH_TIP" "lag warning names the branch tip"
+  assert_eq "$(tail -n 1 <<<"$out")" "checks: verdict=green" "machine trailer remains last"
+}
+
 test_checks_ends_with_its_verdict_trailer() {
   reset_fixture
   CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"ci","conclusion":"success","html_url":"u"}]')")
@@ -2358,6 +2381,7 @@ test_an_escaped_backslash_before_a_digit_is_refused_too() {
 }
 
 tests=(
+  test_checks_warns_when_branch_has_left_the_head
   test_checks_ends_with_its_verdict_trailer
   test_a_stopped_check_over_judged_runs_is_incomplete
   test_an_unreadable_check_list_is_unknown
