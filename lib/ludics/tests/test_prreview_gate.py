@@ -62,6 +62,21 @@ class ChecksTipTrailer(unittest.TestCase):
                     self.assertEqual(out.getvalue(), "checks: verdict=green\n")
                 read.assert_called_once_with(session, "o/r", "7")
 
+    def test_unread_build_or_policy_refusal_sends_no_tip_request(self) -> None:
+        config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0,
+                        api_attempts=1, api_backoff=0)
+        for policy in (0, 2, 3):
+            with self.subTest(policy=policy), mock.patch.object(checks, "Gate") as gate_type, \
+                    mock.patch.object(branchtip, "read_tip") as read:
+                gate = gate_type.return_value
+                gate.advisory_policy.return_value = policy
+                gate.check.return_value = 3
+                gate.verdict = "unknown"
+                gate.orphans = []
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(checks.run(GhSession(config), ["7"]), policy or 3)
+                read.assert_not_called()
+
 
 class Advisory(unittest.TestCase):
     """The advisory list is grep's to read, as it was the shell's: these pin patterns a translation

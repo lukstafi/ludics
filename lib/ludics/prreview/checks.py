@@ -11,7 +11,8 @@ in that order, comma-joined (ludics#753): only on exit 4, the verdict's vocabula
 ``prs`` can tell a starved head from a running one. No field: no such job was found.
 
 Boundary (#990): immediately before the trailer, one fresh ``branchtip.read_tip`` compares the
-PR head with its branch and prints its warning. This also qualifies a completed ``--wait``;
+PR head with its branch and prints its warning, unless policy refused evaluation or the build
+read ended unread (no further reads after a budget/state-directory failure). This also qualifies a completed ``--wait``;
 the machine verdict and exit still describe the PR head's build, not branch agreement. The gate
 itself does not poll the tip: two reads at reporting time instead of two extra reads per round.
 A push after this comparison is unseen, and a head move between the gate and this comparison is
@@ -120,9 +121,10 @@ def run(session: GhSession, args: list[str]) -> int:
         verdict = "unknown"
     if verdict not in VERDICTS:
         verdict = "unknown"
-    tip = branchtip.read_tip(session, target.repo, target.num)
-    warning = branchtip.warning(tip, target.repo, target.num)
-    if warning:
-        cli.say(warning)
+    if policy == 0 and rc != 3:
+        tip = branchtip.read_tip(session, target.repo, target.num)
+        warning = branchtip.warning(tip, target.repo, target.num)
+        if warning:
+            cli.say(warning)
     cli.say(trailer(rc, verdict, kinds))
     return rc
