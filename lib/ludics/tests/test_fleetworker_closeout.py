@@ -81,6 +81,12 @@ class TheMerge(Refusing):
     def test_the_sha_is_githubs(self) -> None:
         self.assertEqual(self.read({"state": "MERGED", "mergeCommit": {"oid": OID}, "headRefName": "b"}, {"branch": "b"}), OID)
 
+    def test_split_task_remedy_quotes_the_exact_command(self) -> None:
+        self.refuses(1, "fleet-worker.sh board set w t 'branch=split;$x'", self.read,
+                     {"state": "MERGED", "mergeCommit": {"oid": OID}, "headRefName": "split;$x"}, {"branch": "b"})
+        self.assertEqual(self.read({"state": "MERGED", "mergeCommit": {"oid": OID}, "headRefName": "split;$x"},
+                                  {"branch": "split;$x"}), OID)
+
     def test_each_refusal(self) -> None:
         self.refuses(4, "could not be read", self.read, "gh exit 1")
         self.refuses(1, "is OPEN, not merged", self.read, {"state": "OPEN"})

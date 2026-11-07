@@ -43,7 +43,12 @@ THE GATES, in order; the first that fails keeps the worktree, and says why.
     flag: repeatable, no default, the project's to say (OCANNL's AGENTS.md names ``_build``); each value
     ONE top-level directory, here wholly ignored (git reports it as one ``!! <dir>/`` entry, so no
     tracked file is in it, and a symlink never matches). Any other ignored path keeps the worktree.
-  - HEAD is on a branch of the remote: a fresh ``git fetch`` of ``refs/heads/*`` from ``--remote``
+  - HEAD exactly matches a concluded record's observed_sha for this wave and row's nonempty
+    worker, execution host and exact checkout (trailing slash ignored), or is on a remote branch.
+    Only full lowercase object IDs qualify. Requested/resolved revisions express intent, not an
+    observation, and are not evidence; neither are another worker's records or ancestor/patch
+    equivalence. This registry allowlist proves no new commit was made after the recorded run.
+    Missing evidence falls back to the remote proof: a fresh ``git fetch`` of ``refs/heads/*`` from ``--remote``
     (``origin``), into a private ref namespace named by a token of this run, ``refs/fleet-close/<token>/``
     (a pid can come back, and find an interrupted run's refs), removed again, so neither a box's stale
     remote-tracking ref nor a narrow fetch refspec can answer, and the served clone's own refs do not
@@ -107,9 +112,9 @@ CLEARED = ("REMOVED", "GONE", "WOULD-REMOVE")  # the verdicts that leave nothing
 FAR_VERDICTS = ("REMOVED", "TRIMMED", "KEPT", "GONE", "WOULD-REMOVE", "WOULD-TRIM")
 
 # The far side, after the prelude and leg.WORKTREE. Args: the worktree, the remote, the fetch's bound
-# in seconds, dry (0|1), this run's token, then the regenerable directories. Its stdout is one line,
+# in seconds, dry (0|1), this run's token, the space-separated allowed observed SHAs, then the regenerable directories. Its stdout is one line,
 # `<verdict><TAB><why>`, whatever it found; every other word goes to stderr.
-CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5"; shift 5
+CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5" observed="$6"; shift 6
 # No trailing `/`: `[ -L "$wt/" ]` follows the link and reads the directory behind it.
 wt=${wt%"${wt##*[!/]}"}
 ns="refs/fleet-close/$token"; cdir=""
@@ -165,19 +170,29 @@ done < <(git -C "$wt" status --porcelain -z --ignored=traditional --untracked-fi
 [ "$listed" = 0 ] || kept "cannot list its ignored paths (git status exit ${listed:-none})"
 [ "${#other[@]}" -eq 0 ] || kept "ignored data that --regenerable does not name: ${other[*]:0:3}$([ "${#other[@]}" -le 3 ] || printf ' and %s more' "$((${#other[@]} - 3))")"
 head=$(git -C "$wt" rev-parse --verify -q 'HEAD^{commit}') || kept "cannot read HEAD"
+# Exact registry evidence is sufficient even after a rebase removed the old remote branch tip.
+proof=""
+for sha in $observed; do
+  [ "$head" != "$sha" ] || proof="HEAD $head matches a concluded execution observation for this worker and worktree"
+done
 # Into private refs of the repository, with the worktree's lock closed: a transport child the bound
 # outlives must not hold it. `--refmap=`: without it git also updates the remote-tracking refs the
 # configured refspec maps, in a clone served to every session. A fetch that fails leaves the question
 # open, and open reads as not held.
+frc=0
+if [ -z "$proof" ]; then
 ( exec 9>&-; bounded "$fetch_timeout" env GIT_TERMINAL_PROMPT=0 git -C "$wt" fetch -q --no-tags --refmap= "$remote" "+refs/heads/*:$ns/*" >&2 ); frc=$?
 held=""
 [ "$frc" -ne 0 ] || held=$(git -C "$wt" for-each-ref --count=1 --contains "$head" --format='%(refname)' "$ns/" 2>/dev/null)
-if [ -n "$held" ]; then
-  [ "$dry" != 1 ] || verdict WOULD-REMOVE "clean, and HEAD $head is on a branch of $remote"
+[ -z "$held" ] || proof="HEAD $head is on a branch of $remote"
+fi
+if [ -n "$proof" ]; then
+  [ "$dry" != 1 ] || verdict WOULD-REMOVE "clean, and $proof"
   why=$(git --git-dir="$cdir" worktree remove "$wt" 2>&1 </dev/null) || kept "git worktree remove failed: $(printf '%s\n' "$why" | head -n 1)"
-  verdict REMOVED "HEAD $head is on a branch of $remote"
+  verdict REMOVED "$proof"
 fi
 if [ "$frc" -eq 0 ]; then why="HEAD $head is on no branch of $remote"; else why="cannot ask $remote about HEAD $head (git fetch exit $frc)"; fi
+why="$why; no matching concluded execution observation for this worker and worktree"
 [ "${#regen[@]}" -gt 0 ] || kept "$why"
 [ "$dry" != 1 ] || verdict WOULD-TRIM "$why; would remove ${regen[*]}"
 for r in "${regen[@]}"; do
@@ -195,6 +210,7 @@ class Word:
     text: str
     box: str
     path: str
+    observed: tuple[str, ...]  # exact registry evidence, never revision intent
     held: str  # why the near side keeps it without asking the box; empty when it goes on
 
 
@@ -271,6 +287,22 @@ def outstanding(cfg: Config, records: list[dict[str, Any]], wave: str, fields: d
     return ids
 
 
+def observations(cfg: Config, records: list[dict[str, Any]], wave: str, fields: dict[str, str],
+                 box: str, path: str) -> tuple[str, ...]:
+    """The header's registry allowlist; a missing identity or observation never proves ownership."""
+    worker = fields.get("worker")
+    if not worker:
+        return ()
+    return tuple(sorted({sha for record in records
+                         if record.get("state") == "concluded"
+                         and field(record, "request", "wave") == wave
+                         and field(record, "request", "worker") == worker
+                         and fleet_name(cfg, jq_text(field(record, "request", "execution_host"))) == box
+                         and recorded_checkout(record).rstrip("/") == path.rstrip("/")
+                         and isinstance(sha := record.get("observed_sha"), str)
+                         and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)}))
+
+
 def plan(cfg: Config, wave: str, rows: list[tuple[str, dict[str, str]]], chosen: list[str],
          records: list[dict[str, Any]]) -> list[Word]:
     """The chosen rows' words, each with what the near side's gates found (THE GATES' first two)."""
@@ -289,14 +321,14 @@ def plan(cfg: Config, wave: str, rows: list[tuple[str, dict[str, str]]], chosen:
                 ids = outstanding(cfg, records, wave, fields, box, path)
                 if ids:
                     why = f"outstanding reservation: {' '.join(ids)}"
-            out.append(Word(task, word, box, path, why))
+            out.append(Word(task, word, box, path, observations(cfg, records, wave, fields, box, path), why))
     return out
 
 
 def close_on_box(cfg: Config, word: Word, remote: str, fetch_timeout: str, dry: bool, regenerable: list[str]) -> tuple[str, str]:
     """(verdict, why) for a word the near side let through: the far side's line, read as an
     allowlist. A far side that said nothing readable removed something or nothing: KEPT says so."""
-    args = [word.path, remote, fetch_timeout, "1" if dry else "0", secrets.token_hex(8), *regenerable]
+    args = [word.path, remote, fetch_timeout, "1" if dry else "0", secrets.token_hex(8), " ".join(word.observed), *regenerable]
     done = run_on(cfg, word.box, prelude(cfg, word.box) + CLOSE, args, capture=True)
     if done.unreachable:
         return "UNREACHABLE", f"{word.box} did not answer"

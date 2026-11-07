@@ -59,9 +59,9 @@ class Fixture(unittest.TestCase):
         self.git(path, "commit", "-q", "-m", "mine")
 
     def close(self, path: Path | str, *regenerable: str, dry: bool = False, remote: str = "origin",
-              env: dict[str, str] | None = None) -> tuple[str, str]:
+              env: dict[str, str] | None = None, observed: str = "") -> tuple[str, str]:
         head = f"STATE={shlex.quote(str(self.state))}\nSKILLS_REPO={shlex.quote(str(ROOT))}\nBOX=box\n"
-        done = subprocess.run([BASH, "-s", "--", str(path), remote, "30", "1" if dry else "0", "t0k", *regenerable],
+        done = subprocess.run([BASH, "-s", "--", str(path), remote, "30", "1" if dry else "0", "t0k", observed, *regenerable],
                               input=head + HELPERS + farsideclose.CLOSE, text=True, capture_output=True, cwd="/",
                               env={**ENV, **(env or {})})
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -77,6 +77,24 @@ class Far(Fixture):
         self.assertEqual(self.close(wt, "_build")[0], "REMOVED")
         self.assertFalse(wt.exists())
         self.assertNotIn(str(wt), self.git(self.co, "worktree", "list"))
+
+    def test_recorded_old_tip_after_rebase_is_removed_but_new_commit_is_kept(self) -> None:
+        wt = self.worktree("old", build=False)
+        self.commit_in(wt)
+        sha = self.git(wt, "rev-parse", "HEAD").strip()
+        self.git(wt, "push", "-q", "origin", "HEAD:refs/heads/worker")
+        self.git(self.co, "push", "-q", "origin", ":worker")
+        self.assertEqual(self.close(wt, observed=sha, dry=True)[0], "WOULD-REMOVE")
+        (wt / "private.log").write_text("data")
+        self.assertEqual(self.close(wt, observed=sha)[0], "KEPT")
+        (wt / "private.log").unlink()
+        (wt / "mine").write_text("dirty")
+        self.assertEqual(self.close(wt, observed=sha)[0], "KEPT")
+        self.git(wt, "checkout", "--", "mine")
+        self.assertEqual(self.close(wt, observed=sha)[0], "REMOVED")
+        wt = self.worktree("new", build=False)
+        self.commit_in(wt)
+        self.assertEqual(self.close(wt, observed=self.git(self.co, "rev-parse", "HEAD").strip())[0], "KEPT")
 
     def test_a_dry_run_runs_the_gates_and_removes_nothing(self) -> None:
         wt, mine = self.worktree("w"), self.worktree("m")
@@ -308,6 +326,24 @@ class Near(unittest.TestCase):
 
     def held(self, rows: list[tuple[str, dict[str, str]]], records: list[dict[str, Any]] | None = None) -> list[str]:
         return [w.held for w in farsideclose.plan(self.cfg, "w", rows, [], records or [])]
+
+    def test_observations_require_exact_identity_checkout_and_observed_object_id(self) -> None:
+        sha = "a" * 40
+        rec = record("leg", state="concluded", checkout="/h/wts/w1/")
+        rec["observed_sha"] = sha
+        row = self.row(worker="wk")
+        def read(r: dict[str, Any]) -> tuple[str, ...]:
+            return farsideclose.plan(self.cfg, "w", [row], [], [r])[0].observed
+        self.assertEqual(read(rec), (sha,))
+        for key, value in (("state", "running"), ("checkout", "/h/wts/w1/sub"),
+                           ("checkout", "/h/wts/./w1"), ("observed_sha", "a" * 39),
+                           ("observed_sha", None)):
+            with self.subTest(key=key, value=value):
+                self.assertEqual(read({**rec, key: value}), ())
+        for key in ("worker", "wave", "execution_host"):
+            self.assertEqual(read({**rec, "request": {**rec["request"], key: "other"}}), ())
+        self.assertEqual(read({**rec, "observed_sha": None, "resolved_revision": sha}), ())
+        self.assertEqual(farsideclose.plan(self.cfg, "w", [self.row()], [], [rec])[0].observed, ())
 
     def test_only_a_word_of_the_grammar_reaches_a_box(self) -> None:
         for word, why in (("nobox", "not <box>:<path>"), (":/x", "not <box>:<path>"), ("rog:", "not <box>:<path>"),
