@@ -43,6 +43,36 @@ from ludics.fleetworker.transport import UNREACHABLE, Done
 from ludics.tests import fake
 
 
+class PipelineWarning(unittest.TestCase):
+    def test_plain_pipelines(self) -> None:
+        for shell in ("sh", "bash"):
+            for script in ("false | cat", "false|cat; exit 7", "true && false | cat",
+                           "printf '%s' 'a|b' | cat", r'false | cat; printf "%s\n" pipeline-ran',
+                           r'printf "a\"|b" | cat', "python -m pytest . | tee run.log",
+                           "printf set | cat", "echo if | cat", "printf '%s' '${HOME}' | cat",
+                           "printf '%s' '$(false | cat)' | cat", "printf '%s' '`false | cat`' | cat", "true || false | cat", "false |& cat"):
+                with self.subTest(shell=shell, script=script):
+                    self.assertEqual(slot.unguarded_pipeline([shell, "-c", script]), "|&" not in script)
+
+    def test_closed_boundary(self) -> None:
+        for script in ("true", "true || false", "printf 'a|b'", 'printf "a|b"', r"echo a\|b",
+                       "set -o pipefail; false | cat", "\nset -euo pipefail\nfalse | cat",
+                       "echo 'set -o pipefail'", "echo $(false | cat)", "echo `false | cat`",
+                       "cat <<EOF\nfalse | cat\nEOF", "f() { false | cat; }; f",
+                       "if true; then false | cat; fi", "echo ${x} | cat", "false | cat >out",
+                       "# false | cat", "echo 'unterminated | cat", "false & cat",
+                       "set +o pipefail; false | cat", "eval 'set -o pipefail'; false | cat",
+                       "source options.sh; false | cat", "time set -o pipefail; false | cat",
+                       "command set -o pipefail; false | cat", "builtin set -o pipefail; false | cat", "$cmd -o pipefail; false | cat",
+                       'X=x "set" -o pipefail; false | cat', '"set" -o pipefail; false | cat', "false |", "| cat", "false | | cat"):
+            with self.subTest(script=script):
+                self.assertFalse(slot.unguarded_pipeline(["bash", "-c", script]))
+        for command in (["env", "bash", "-c", "false | cat"], ["zsh", "-c", "false | cat"],
+                        ["/bin/bash", "-c", "false | cat"], ["bash", "script.sh"],
+                        ["bash", "-ec", "false | cat"], ["sh", "-c"]):
+            self.assertFalse(slot.unguarded_pipeline(command))
+
+
 class Locks(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = os.path.realpath(tempfile.mkdtemp(prefix="ludics-slot-test."))

@@ -326,6 +326,94 @@ def errline(text: str) -> None:
     sys.stderr.flush()
 
 
+def unguarded_pipeline(command: Sequence[str]) -> bool:
+    """Recognised forms (closed): literal sh -c / bash -c, script in the next argv word,
+    simple command lists with literal unquoted command names separated by ;, newline, && or ||,
+    and an unquoted single-line top-level |.
+    Only an initial `set -o pipefail` or `set -euo pipefail` statement (terminated by ; or
+    newline) is recognised as enabling pipefail. Quoted/escaped characters are opaque words.
+    Deliberately not read: pipes inside quotes, substitutions ($(), ${}, backticks), here-docs,
+    functions/compound commands, eval/source/time/command/builtin, other set invocations,
+    assignment-leading or expanded command names,
+    redirections, script files, env wrappers, zsh -c, shell paths
+    or other shell flags. Any unsupported/ambiguous syntax silences the whole scan; this is a
+    warning allowlist, not a shell parser or proof of a batch's exit status.
+    """
+    if len(command) < 3 or command[0] not in ("sh", "bash") or command[1] != "-c":
+        return False
+    script = command[2]
+    tokens: list[str] = []
+    word = ""
+    quote = ""
+    index = 0
+    while index < len(script):
+        char = script[index]
+        # Even inside double quotes these can introduce syntax we do not read.
+        if quote != "'" and (char == "`" or script[index:index + 2] in ("$(", "${")):
+            return False
+        if quote:
+            if char == quote:
+                quote = ""
+            elif char == "\\" and quote == '"':
+                following = script[index + 1:index + 2]
+                if not following or following == "\n":
+                    return False
+                if following in '"\\$`':
+                    index += 1  # shell-escaped quote/dollar/backslash cannot end the word
+        elif char in "'\"":
+            quote = char
+            word += "?"  # quoted words cannot impersonate keywords or set options
+        elif char == "\\":
+            if index + 1 >= len(script) or script[index + 1] == "\n":
+                return False
+            word += "?"
+            index += 1
+        elif char in "(){}<>" or char == "#":
+            return False
+        elif char in " ;\n\t|&":
+            if word:
+                tokens.append(word)
+                word = ""
+            if char in ";\n|&":
+                if char in "|&" and script[index:index + 2] == char * 2:
+                    tokens.append(char * 2)
+                    index += 1
+                elif char == "&":
+                    return False
+                else:
+                    tokens.append(char)
+        else:
+            word += char
+        index += 1
+    if quote:
+        return False
+    if word:
+        tokens.append(word)
+    while tokens and tokens[0] == "\n":
+        tokens.pop(0)
+    if tokens[:3] in (["set", "-o", "pipefail"], ["set", "-euo", "pipefail"]):
+        if len(tokens) == 3 or tokens[3] in (";", "\n"):
+            return False
+    # Refuse incomplete lists/operators rather than warning on shell syntax errors.
+    separators = {";", "\n", "&&", "||", "|"}
+    previous = ";"
+    for token in tokens:
+        if token in separators and previous in separators:
+            if token != "\n" or previous not in (";", "\n"):
+                return False
+        if previous in separators:
+            if token in {"if", "then", "else", "elif", "fi", "for", "while", "until", "do",
+                         "done", "case", "esac", "function", "select", "!", "[[", "]]",
+                         "eval", "source", ".", "set", "time", "command", "builtin"}:
+                return False  # other set forms and indirect commands are not read
+            if any(char in token for char in "?$*=["):
+                return False  # an opaque command name/assignment could enable pipefail
+        previous = token
+    if tokens and tokens[-1] in ("|", "&&", "||"):
+        return False
+    return "|" in tokens
+
+
 def _is_held(path: str) -> bool | None:
     """Whether some process holds the flock on ``path`` now: a non-blocking exclusive lock on a new
     descriptor fails even for a descendant of the holder. None when the file cannot be opened."""
@@ -693,6 +781,9 @@ def run_command(prefix: str, box: str, command: Sequence[str], inhibitor: Guard 
     deadline starts to count."""
     if shutil.which(command[0]) is None:
         refuse_unrunnable(prefix, box, command, "no such executable")
+    if prefix == SLOT_PREFIX and unguarded_pipeline(command):
+        errline(f"{SLOT_PREFIX} WARNING {box}: shell pipeline without recognised pipefail; "
+                "the last stage can hide a failed batch; never pipe a suite")
     if not (nested and deadline is None):
         group.default_sigchld()  # the guard's helper and the group are this process's to wait for
     if inhibitor:
