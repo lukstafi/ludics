@@ -70,6 +70,7 @@ SECTIONS=(
   "execution leg"
   "prs (the supervision read)"
   "refresh (execution-only boxes)"
+  "execution slot pipeline warning"
   "execution slot"
   "usage"
   "shard selection"
@@ -4519,12 +4520,30 @@ fixture_done rf-e
 git -C "$repo" fetch -q origin && git -C "$repo" merge --ff-only -q origin/main || ko "could not leave the scratch checkout current (teardown)"
 }
 
+# The warning and the broader slot cases share the lease, registry and one-slot testbox.
+# Keep the slow holder/process fixtures in the broader section so warning-only runs stay small.
+need_slot_fixture() {
+  need_lease
+  FWS=(env FLEET_BOXES="testbox other" "$FW")
+}
+
+section "execution slot pipeline warning" && {
+need_slot_fixture
+# The pipeline warning is advisory: one wrapper line, unchanged last-stage status/output.
+expect "a piped failing batch warns but still returns its last stage's status" 0 "EXECUTION SLOT WARNING testbox: shell pipeline without recognised pipefail" -- "${FWS[@]}" execution slot -- sh -c 'false | cat; printf "%s\n" pipeline-ran'
+[ "$(grep -c '^EXECUTION SLOT WARNING ' <<<"$out")" = 1 ] && ok "...one warning line belongs to the slot" || ko "wrong warning count: $out"
+grep -q '^pipeline-ran$' <<<"$out" && ok "...the batch still ran" || ko "the warning blocked the batch: $out"
+expect "pipefail retains the failing pipeline status" 1 "slot 1 of 1" -- "${FWS[@]}" execution slot -- bash -c 'set -o pipefail; false | cat'
+if grep -q '^EXECUTION SLOT WARNING ' <<<"$out"; then ko "warned despite pipefail: $out"; else ok "...pipefail needs no warning"; fi
+expect "a quoted pipe is ordinary batch output" 0 "literal|pipe" -- "${FWS[@]}" execution slot -- sh -c 'printf "%s\n" "literal|pipe"'
+if grep -q '^EXECUTION SLOT WARNING ' <<<"$out"; then ko "warned on a quoted pipe: $out"; else ok "...quoted pipes do not warn"; fi
+}
+
 section "execution slot" && {
-need_lease
+need_slot_fixture
 # The run-time half of the correctness cap (ludics-lite#160): the registry record is ownership,
 # the flock here is what actually bounds concurrent load on the box. testbox has one slot unless
 # the spec says otherwise, and every holder below is killed before the section ends.
-FWS=(env FLEET_BOXES="testbox other" "$FW")
 FWS2=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=2" "$FW")
 # held <log> <pattern>: wait until a background holder has announced the slot it took. The line
 # is written after the flock succeeded, so seeing it proves the lock is held, not merely asked for.
@@ -4567,14 +4586,6 @@ slotreq() { # <id> <kind> [standing] [host] -> a reservation payload file on hos
 expect "a batch runs under one of the box's run-time slots" 0 "EXECUTION SLOT testbox: slot 1 of 1 held for: echo batch-ran" -- "${FWS[@]}" execution slot -- echo batch-ran
 grep -q batch-ran <<<"$out" && ok "...and the command's own output came through" || ko "the wrapped command's output was lost: $out"
 expect "...and the wrapped command's own status is what the slot call returns" 3 "slot 1 of 1" -- "${FWS[@]}" execution slot -- sh -c 'exit 3'
-# The pipeline warning is advisory: one wrapper line, unchanged last-stage status/output.
-expect "a piped failing batch warns but still returns its last stage's status" 0 "EXECUTION SLOT WARNING testbox: shell pipeline without recognised pipefail" -- "${FWS[@]}" execution slot -- sh -c 'false | cat; printf "%s\n" pipeline-ran'
-[ "$(grep -c '^EXECUTION SLOT WARNING ' <<<"$out")" = 1 ] && ok "...one warning line belongs to the slot" || ko "wrong warning count: $out"
-grep -q '^pipeline-ran$' <<<"$out" && ok "...the batch still ran" || ko "the warning blocked the batch: $out"
-expect "pipefail retains the failing pipeline status" 1 "slot 1 of 1" -- "${FWS[@]}" execution slot -- bash -c 'set -o pipefail; false | cat'
-if grep -q '^EXECUTION SLOT WARNING ' <<<"$out"; then ko "warned despite pipefail: $out"; else ok "...pipefail needs no warning"; fi
-expect "a quoted pipe is ordinary batch output" 0 "literal|pipe" -- "${FWS[@]}" execution slot -- sh -c 'printf "%s\n" "literal|pipe"'
-if grep -q '^EXECUTION SLOT WARNING ' <<<"$out"; then ko "warned on a quoted pipe: $out"; else ok "...quoted pipes do not warn"; fi
 expect "a command that cannot be run is a refusal, not a held slot" 127 "cannot run /nonexistent/runner" -- "${FWS[@]}" execution slot -- /nonexistent/runner
 expect "...and the slot it never took is still free" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 0 -- echo still-free
 "${FWS[@]}" execution slot -- sleep 30 > "$TMP/slot-h0.log" 2>&1 &

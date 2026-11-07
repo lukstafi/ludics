@@ -792,6 +792,10 @@ shared with other workers. Arguments
 narrow that, and while iterating they are the lever: each one selects every section whose name
 contains it (`test-fleet-worker.sh unstick`, `test-fleet-worker.sh 'real checkout'`), `--list`
 prints the section names, and an argument matching none of them is refused before anything runs.
+`test-fleet-worker.sh 'execution slot pipeline warning'` runs only the advisory pipeline-warning
+checks (warning count, batch output and last-stage status, pipefail and quoted pipes), with the
+shared lease and one-slot testbox setup. It does not run the broader slot ownership, process,
+deadline or measurement cases. `test-fleet-worker.sh 'execution slot'` still selects both sections.
 Which sections (and which other suites) a change to a `lib/ludics` module reaches is that
 package's map, *Which suites drive each module* in `lib/ludics/README.md`, which check-prompts
 keeps naming only modules, suites and sections that exist (#718).
