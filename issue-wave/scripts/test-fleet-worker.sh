@@ -3414,6 +3414,8 @@ cpr MERGED - claude/close
 expect "...as is one GitHub names no merge commit for" 1 'names no merge commit' -- "$FW" board close cw t1
 cpr MERGED "$MERGE" claude/other
 expect "...and one on another branch: a wrong number typed" 1 "o/r#7's head is claude/other, the row's branch claude/close; nothing closed" -- "$FW" board close cw t1
+grep -Fq 'if this is the verified split-task PR, run: fleet-worker.sh board set cw t1 branch=claude/other; then retry board close' <<<"$out" && ok "...gives the exact split-task repair, without changing the row" || ko "no exact split-task repair: $out"
+
 cpr MERGED "$MERGE" claude/close
 expect "GitHub not answering is exit 4" 4 "could not be read" -- env SHIM_GH=down "$FW" board close cw t1
 "$FW" board set cw t2 repository=o/r pr=7 >/dev/null

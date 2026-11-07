@@ -13,7 +13,9 @@ WHAT IT DOES, in this order, each read before any write:
    never guessed. ``standing`` is ``none`` for a task with no standing reservation.
 2. GitHub, ``gh pr view``: the PR must be MERGED with a merge commit, and its head branch the row's
    ``branch`` when the row has one (a wrong number typed is the slip this catches). The merge SHA is
-   read here and nowhere else; no flag names it.
+   read here and nowhere else; no flag names it. A split task still refuses a different branch:
+   the refusal gives an exact shell-quoted board set, to run only after verifying the split's PR.
+   No branch is inferred or changed by this verb.
 3. The registry: every id ``standing`` names must be this task's own record, with ``"standing": true``,
    a recorded ``checkout``, this wave, the row's ``repository`` (GitHub names compare without case)
    and, with a ``worker`` on the row, that worker: an id typed wrong must not conclude another live
@@ -64,6 +66,7 @@ printed, with the last line of a refused step in it.
 import json
 import os
 import re
+import shlex
 from typing import Any, cast
 
 from ludics import cli
@@ -122,7 +125,13 @@ def merged_sha(cfg: Config, wave: str, task: str, repo: str, pr: str, fields: di
         raise refused(wave, task, f"{repo}#{pr} is {data.get('state')}, not merged; nothing closed")
     branch = fields.get("branch", "")
     if branch and data.get("headRefName") != branch:
-        raise refused(wave, task, f"{repo}#{pr}'s head is {data.get('headRefName')}, the row's branch {branch}; nothing closed")
+        head = data.get("headRefName")
+        remedy = ""
+        if isinstance(head, str) and head:
+            command = shlex.join(["fleet-worker.sh", "board", "set", wave, task, f"branch={head}"])
+            remedy = f"; if this is the verified split-task PR, run: {command}; then retry board close"
+        raise refused(wave, task, f"{repo}#{pr}'s head is {shlex.quote(str(head))}, "
+                      f"the row's branch {shlex.quote(branch)}; nothing closed{remedy}")
     merge: Any = data.get("mergeCommit")
     oid = cast(dict[str, Any], merge).get("oid") if isinstance(merge, dict) else None
     if not (isinstance(oid, str) and OID.fullmatch(oid)):
