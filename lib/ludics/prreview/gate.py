@@ -765,7 +765,7 @@ class Gate:
                     parts.append(f"{stopped_released} of them cancelled only in advisory jobs")
                 reason = (
                     f"{runs} workflow run(s) for this head are judged — {'; '.join(parts)}"
-                    " (SHIP_PR_ADVISORY_CHECKS)"
+                    f" ({'SHIP_PR_ADVISORY_CHECKS' if self.config.advisory_from_env else ADVISORY_FILE})"
                 )
             else:
                 reason = f"{runs} workflow run(s) for this head are finished and judged"

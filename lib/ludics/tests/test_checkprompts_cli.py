@@ -1045,6 +1045,7 @@ WORKER = "issue-wave/scripts/fleet-worker.sh"
 # re-scanned in full. A link added to a copied prompt whose target is not named here fails LOUDLY --
 # on every probe of that tree at once, with the path it could not resolve in the message.
 LINK_TARGETS = (
+    "issue-wave/SKILL.md",
     "issue-wave/references/cli-claude.md",
     "issue-wave/references/executions.md",
     "issue-wave/references/native-claude.md",
@@ -1109,7 +1110,7 @@ def slots() -> Slots:
 
 def slots_tree(root: str) -> None:
     shutil.rmtree(root, ignore_errors=True)
-    copy_prompts(root, "README.md", "routines/README.md", "issue-wave/SKILL.md", *LINK_TARGETS, WORKER)
+    copy_prompts(root, "README.md", "routines/README.md", *LINK_TARGETS, WORKER)
 
 
 def count_word(root: str, rel: str, *, to: str, box: str = "mac-studio") -> None:

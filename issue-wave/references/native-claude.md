@@ -77,7 +77,7 @@ a CLI worker) has no such cap, only the tool's 600 s maximum. So, in a native wo
   While it blocks it writes a `bg-run: still waiting after <e> s ...` line to stderr every 120 s.
   `rc=<n>` (exit 0): the command finished with status `<n>`, and its output is `<dir>/log`.
   Read that with `tail` or `grep` in a later call: a suite piped inside the batch's `sh -c` makes
-  `rc=` the last stage's (*Never pipe a suite*, in SKILL.md's *The brief*). The status is a file of its own, so a review body quoting `rc=` cannot
+  `rc=` the last stage's (*Never pipe a suite*, in [The brief](../SKILL.md#the-brief)). The status is a file of its own, so a review body quoting `rc=` cannot
   end the wait. A wait whose first look finds the run already finished prints `rc=<n> (finished
   earlier, at <UTC time>)`: the same status, not a fresh result. `RUNNING after <e> s of --within <w>` (3): the bound was spent with the run still
   live, the designed return: re-issue it (an `<e>` under `<w>` is a bug worth reporting). A
@@ -168,7 +168,7 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    three on tuf-amd-linux, one on a box the spec does not name) and
    refuses while a measurement is outstanding there; a measurement still needs the box to itself through the registry.
    Its `--wait-window` waits out a coordinator's *measurement
-   window* on the box instead of refusing (SKILL.md, *The brief*, execution handoff).
+   window* on the box instead of refusing ([The brief](../SKILL.md#the-brief), execution handoff).
 2. **Request, for everything else.** A measurement, a one-off cross-box leg, a full suite: the worker
    ends its turn with its final message carrying the block, one per request and each naming one
    execution host, back to back with nothing after the last (ahrefs/ocannl#1168 wrote its four

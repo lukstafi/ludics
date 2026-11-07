@@ -641,6 +641,21 @@ class GateLoop(unittest.TestCase):
         self.assertEqual(gate.check("7", 600, waive=True), 1)
         self.assertEqual((gate.verdict, gate.waived), ("red", {"check:1/ubuntu"}))
 
+    def test_a_released_run_names_the_advisory_lists_source(self) -> None:
+        old = "2025-12-31T23:00:00Z"
+        for from_env, source in ((True, "SHIP_PR_ADVISORY_CHECKS"),
+                                 (False, ".github/ship-pr-advisory-checks")):
+            with self.subTest(from_env=from_env):
+                gh = FakeGh()
+                gh.on("actions/runs?head_sha=h1",
+                      out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t1")
+                gh.on("actions/runs/100/jobs", out=f"build\tsuccess\t{old}\t{old}\nmacos\tpending\t{old}\t-")
+                gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+                gate.config = replace(gate.config, advisory_from_env=from_env)
+                signal = gate.run_signal("h1", "2026-01-01T00:00:00Z", 1, "b1", "topic", "7")
+                self.assertEqual(signal.rc, 0)
+                self.assertIn(f"only advisory jobs ({source})", signal.reason)
+
     def test_a_waived_red_releases_a_run_left_running_only_advisory_jobs(self) -> None:
         # ludics#862: a red the override waived is a verdict read, so beside a queued advisory leg
         # it releases the run as a green job would. The controls hold: no waiver (the plain red

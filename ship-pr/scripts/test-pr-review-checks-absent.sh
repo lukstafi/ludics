@@ -1824,7 +1824,7 @@ test_a_run_with_only_advisory_jobs_left_does_not_hold() {
   run_gate 30
   assert_eq "$GATE_RC" 0 "an in-flight run whose only unfinished job is advisory has no verdict on its way"
   assert_contains "$GATE_OUTPUT" "green — 1 build checks passed" "the check fold's verdict stands"
-  assert_contains "$GATE_OUTPUT" "1 of them still running, but only advisory jobs" \
+  assert_contains "$GATE_OUTPUT" "1 of them still running, but only advisory jobs (.github/ship-pr-advisory-checks)" \
     "the report names the run it did not wait for"
   assert_eq "$(grep -c "actions/runs/101/jobs" "$REQUEST_LOG")" 1 "one jobs read for the one in-flight run"
 }

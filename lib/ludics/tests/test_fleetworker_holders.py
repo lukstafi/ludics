@@ -479,6 +479,17 @@ class MergeBuilds(WaitingDir):
         self.wait(2, "window", *self.WRAPPER, "owner/repo#8")
         self.assertEqual(supervision.merge_builds(self.cfg), {"owner/repo#7": "waiting(slot)", "owner/repo#8": "waiting(window)"})
 
+    def test_wait_age_uses_since_and_unreadable_since_keeps_only_the_phase(self) -> None:
+        self.wait(1, "slot", *self.WRAPPER, "owner/repo#7")
+        for since, want in (("2026-01-01T00:00:00Z", "waiting(slot,90s)"),
+                            ("unreadable", "waiting(slot)"), (None, "waiting(slot)"),
+                            (42, "waiting(slot)"), ("2026-01-01T00:00:00", "waiting(slot)")):
+            with self.subTest(since=since):
+                self.record(1, json.dumps({"phase": "slot", "argv": [*self.WRAPPER, "owner/repo#7"],
+                                           "since": since}), locked=False)
+                with mock.patch.object(supervision.time, "time", return_value=1767225690):
+                    self.assertEqual(supervision.merge_builds(self.cfg), {"owner/repo#7": want})
+
     def test_only_the_shape_of_a_merge_build_names_a_pr(self) -> None:
         self.wait(1, "slot", *self.WRAPPER)
         self.wait(2, "slot", "make", "owner/repo#7")

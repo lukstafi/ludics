@@ -470,12 +470,14 @@ class Waiter:
 
     phase: str
     command: tuple[str, ...]
+    since: float | None = None
 
 
 def waiting_records(directory: str) -> list[Waiter]:
     """The batches waiting here with their commands' words. Its boundary, a fail-closed allowlist:
     of a record whose flock is held now, read through ``slotrecord.read_object``'s bound, it takes
-    ``phase`` (one of WAITING_PHASES) and ``argv`` (a non-empty list of strings), and nothing else.
+    ``phase`` (one of WAITING_PHASES), ``argv`` (a non-empty list of strings), and optionally
+    ``since`` (a timezone-aware ISO timestamp). An unreadable ``since`` leaves the age unknown.
     It never reads ``command``, a text no parser can split (the words are joined unquoted and cut
     to 300 characters). A record without those two is left out, never listed in part: one that a
     fleet-worker older than ``argv`` wrote, one caught mid-rewrite as its phase changes, one past
@@ -486,7 +488,16 @@ def waiting_records(directory: str) -> list[Waiter]:
         command = slotrecord.words_of(record.get("argv")) if record is not None else None
         phase = record.get("phase") if record is not None else None
         if command is not None and phase in WAITING_PHASES:
-            kept.append(Waiter(str(phase), command))
+            since = record.get("since") if record is not None else None
+            stamp: float | None = None
+            if isinstance(since, str):
+                try:
+                    parsed = datetime.fromisoformat(since)
+                    if parsed.tzinfo is not None:
+                        stamp = parsed.timestamp()
+                except (ValueError, OverflowError):
+                    pass
+            kept.append(Waiter(str(phase), command, stamp))
     return kept
 
 
