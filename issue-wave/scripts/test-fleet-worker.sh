@@ -1814,6 +1814,29 @@ section "launch / attach / status / log with a project repo and --repo/--branch"
 expect "launch without a lease refuses" 1 "LAUNCH REFUSED testbox/w1: no coordinator lease" -- \
   "$FW" launch testbox w1 --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/w1
 "$FW" claim >/dev/null
+# --standing reserves only after worktree preparation, before any worker record/session exists.
+jq -n '{request_id:"launch-standing", wave:"w", worker:"w-standing", transport:"cli",
+  purpose:"fixture", agent_host:"testbox", execution_host:"testbox", repository:"example/project",
+  requested_revision:"origin/master", kind:"correctness", standing:true, unexpected:true}' > "$TMP/standing.json"
+expect "a refused standing reservation starts no worker" 1 "LAUNCH REFUSED testbox/w-standing: standing reservation failed; worktree kept" -- \
+  env FLEET_BOXES=testbox "$FW" launch testbox w-standing --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/w-standing --standing "$TMP/standing.json"
+[ -d "$proj-worktrees/w-standing" ] && ok "...keeping the prepared worktree" || ko "reservation refusal lost the worktree"
+[ ! -e "$ISSUE_WAVE_STATE/workers/w-standing" ] && ! "$REAL_TMUX" -L "$FLEET_TMUX_SOCKET" has-session -t iw-w-standing 2>/dev/null &&
+  ok "...with no worker record or session" || ko "reservation refusal started a worker"
+jq 'del(.unexpected)' "$TMP/standing.json" > "$TMP/standing-ok.json"
+expect "a standing launch reuses the prepared worktree and reserves before starting" 0 "LAUNCHED testbox/w-standing " -- \
+  env FLEET_BOXES=testbox "$FW" launch testbox w-standing --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/w-standing --standing "$TMP/standing-ok.json"
+settle w-standing
+"$FW" execution list > "$TMP/standing-record.json"
+jq -e --arg co "$proj-worktrees/w-standing" 'any(.[]; .request_id == "launch-standing" and .state == "launching" and .checkout == $co)' "$TMP/standing-record.json" >/dev/null &&
+  ok "...recording the resolved checkout" || ko "standing checkout was not filled"
+jq -e 'has("checkout") | not' "$TMP/standing-ok.json" >/dev/null && ok "...leaving the input payload unchanged" || ko "launch rewrote the input payload"
+cp "$ISSUE_WAVE_STATE/workers/w-standing/meta" "$TMP/standing-meta"
+expect "--replace does not silently reuse an outstanding standing dispatch" 1 "already dispatched" -- \
+  env FLEET_BOXES=testbox "$FW" launch testbox w-standing --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/w-standing --standing "$TMP/standing-ok.json" --replace
+cmp -s "$TMP/standing-meta" "$ISSUE_WAVE_STATE/workers/w-standing/meta" && ok "...preserving the previous worker record" || ko "refused retry changed the worker record"
+jq -n '{request_id:"launch-standing", verdict:"not-launched", log:"/dev/null", evidence:"fixture complete"}' > "$TMP/standing-done.json"
+"$FW" execution conclude "$TMP/standing-done.json" >/dev/null || ko "could not conclude fixture standing reservation"
 # --repo is a checkout path on the box; --target-repo is owner/repo. A missing --repo shaped like
 # owner/name is the two swapped, refused as usage; an existing relative path of that shape is
 # still a path (here a plain directory, so the launch goes on and fails at its fetch).

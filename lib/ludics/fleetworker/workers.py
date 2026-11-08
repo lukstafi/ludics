@@ -15,12 +15,18 @@ Every verb that changes a worker -- ``launch``, ``unstick``, ``close`` -- requir
 not answer is ``<VERB> UNREACHABLE ...``, exit 4, never a verdict about the worker.
 """
 
+import contextlib
+import json
 import os
+import shlex
+import tempfile
+import sys
+from typing import Any, cast
 import re
 import time
 
 from ludics import cli
-from ludics.fleetworker import farside
+from ludics.fleetworker import execution, farside
 from ludics.fleetworker.config import Config, short_hostname
 from ludics.fleetworker.gate import base_gate
 from ludics.fleetworker.identity import die, gen_uuid
@@ -80,11 +86,32 @@ def preflight_note(pf: str) -> str:
 # --- launch ------------------------------------------------------------------------------------
 
 
+def standing_request(path: str, box: str, target: str) -> dict[str, Any]:
+    """Read one JSON object only; bind standing correctness to this launch's host/repository.
+
+    The registry validates all remaining fields. Checkout is supplied after preparation; the
+    caller's file is never rewritten. No existing dispatch is adopted on retry.
+    """
+    try:
+        with open(path, encoding="utf-8") as source:
+            request = json.load(source)
+    except (OSError, ValueError):
+        die(f"launch: --standing {shlex.quote(path)} must be a readable JSON reservation")
+    if not isinstance(request, dict):
+        die("launch: --standing requires one JSON object")
+    request = cast(dict[str, Any], request)
+    if request.get("standing") is not True or request.get("kind") != "correctness":
+        die("launch: --standing requires standing=true and kind=correctness")
+    if request.get("execution_host") != box or request.get("repository") != target:
+        die("launch: --standing execution_host and repository must match the launch box and --target-repo")
+    return request
+
+
 def cmd_launch(cfg: Config, args: list[str]) -> int:
     box, name = _box_and_name(args, "launch")
     if not valid_name(name):
         die("launch: name must be [A-Za-z0-9._-]+ and not start with a dot")
-    kind = brief = cwd = repo = branch = target = base_branch = reason = ""
+    kind = brief = cwd = repo = branch = target = base_branch = reason = standing = ""
     base = cfg.env.get("FLEET_BASE_REF") or "origin/master"
     force = replace = no_cross = False
     extra: list[str] = []
@@ -103,6 +130,11 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                 i += 1
             case "--kind":
                 kind = _value(rest, i)
+                i += 1
+            case "--standing":
+                standing = _value(rest, i)
+                if not standing:
+                    die("launch: --standing <reserve.json> required")
                 i += 1
             case "--brief":
                 brief = _value(rest, i)
@@ -144,6 +176,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         die("launch: paths and refs must not contain newlines (the record is line-oriented)")
     if not brief or not os.access(brief, os.R_OK):
         die("launch: --brief <readable file>")
+    request = standing_request(standing, fleet_name(cfg, box), target) if standing else None
     label = f"{box}/{name}"
     if not cwd:
         if not repo or not branch:
@@ -218,17 +251,46 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     # The brief lands beside the record, not on it: the far side moves it into place only after
     # the guards pass, so a refused launch leaves a finished worker's brief untouched.
     when = stamp()
+    prefix = prelude(cfg, box) + farside.ghprobe(knob(cfg, "FLEET_GH_TIMEOUT", "30"))
+    far_args = [
+        name, kind, cwd, repo, branch, base, sid, short_hostname(), "1" if replace else "0", when,
+        knob(cfg, "FLEET_FETCH_TIMEOUT", "300"), bid, fleet_name(cfg, box), *extra,
+    ]  # fmt: skip
+    script = prefix + farside.LAUNCH
+    if request is not None:
+        done = run_on(cfg, box, prefix + farside.LAUNCH_PREPARE, far_args, capture=True)
+        if done.unreachable:
+            return _unreachable(f"LAUNCH UNREACHABLE {box}")
+        if done.rc != 0:
+            cli.emit(done.out)
+            return done.rc
+        # Preparation's final line is the resolved absolute checkout, after any git notices.
+        prepared = substitution(done.out).split("\n")[-1]
+        if not prepared.startswith("/"):
+            die("launch: preparation did not return an absolute checkout")
+        request["checkout"] = prepared
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as payload:
+            json.dump(request, payload)
+            payload.flush()
+            # Keep the launch's stdout contract: execution's record is diagnostic here.
+            with contextlib.redirect_stdout(sys.stderr):
+                rc = execution.cmd_execution(cfg, ["run", payload.name])
+        if rc != 0:
+            cli.say(f"LAUNCH REFUSED {label}: standing reservation failed; worktree kept")
+            return rc
+        # A halt/adoption while reserving must still fence startup. A reservation is not a
+        # worker: do not conclude it automatically on a refusal or an ambiguous interruption.
+        rc = anchor_gate(cfg, "LAUNCH", label, force)
+        if rc != 0:
+            return rc
+        check = f'[ "$cwd" = {shlex.quote(prepared)} ] || refuse "worktree path changed after reservation"\n'
+        script = prefix + farside.LAUNCH_WORKTREE + check + farside.LAUNCH_START
     done = put_file(cfg, box, brief, f"{cfg.state}/incoming/{name}-{when}.md")
     if done.unreachable:
         return _unreachable(f"LAUNCH UNREACHABLE {box}")
     if done.rc != 0:
         cli.say(f"LAUNCH REFUSED {label}: cannot stage the brief under the worker state dir on {box} (unwritable, or a file in the way)")
         return 1
-    script = prelude(cfg, box) + farside.ghprobe(knob(cfg, "FLEET_GH_TIMEOUT", "30")) + farside.LAUNCH
-    far_args = [
-        name, kind, cwd, repo, branch, base, sid, short_hostname(), "1" if replace else "0", when,
-        knob(cfg, "FLEET_FETCH_TIMEOUT", "300"), bid, fleet_name(cfg, box), *extra,
-    ]  # fmt: skip
     done = run_on(cfg, box, script, far_args)
     if done.unreachable:
         return _unreachable(f"LAUNCH UNREACHABLE {box}")

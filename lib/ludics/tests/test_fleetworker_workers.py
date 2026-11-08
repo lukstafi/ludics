@@ -15,8 +15,10 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
-from ludics.fleetworker import farside
+from ludics import cli
+from ludics.fleetworker import farside, workers
 from ludics.fleetworker.__main__ import usage_text
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.gate import uri
@@ -36,6 +38,7 @@ from ludics.fleetworker.supervision import (
     wave_workers,
 )
 from ludics.fleetworker.workers import feeder_wait_ok, preflight_note, valid_name
+from ludics.fleetworker.transport import Done
 from ludics.prreview.core import Json, JsonStreamError, json_docs, json_stream
 from ludics.prreview.jqsem import JqError, jstr, tojson
 
@@ -57,6 +60,53 @@ class Names(unittest.TestCase):
             self.assertEqual(feeder_wait_ok(cfg), want, value)
         # `${FLEET_FEEDER_WAIT:-10}`: empty is the default.
         self.assertTrue(feeder_wait_ok(load_config(SCRIPT, {"FLEET_FEEDER_WAIT": ""}, host="h")))
+
+
+class StandingLaunch(unittest.TestCase):
+    def test_reservation_is_between_preparation_and_start_and_refusal_never_starts(self) -> None:
+        cfg = load_config(SCRIPT, {"FLEET_LOCAL_BOX": "box"}, host="box")
+        for result in (0, 1):
+            events: list[str] = []
+            def run(*args: object, **kwargs: object) -> Done:
+                script = str(args[2])
+                if script.endswith(farside.LAUNCH_PREPARE):
+                    events.append("prepare")
+                    return Done(0, "notice: reused\n/checkout\n")
+                events.append("start")
+                self.assertIn('worktree path changed after reservation', script)
+                self.assertIn(farside.LAUNCH_WORKTREE, script)
+                return Done(0, "")
+
+            def reserve(_cfg: object, args: list[str]) -> int:
+                events.append("reserve")
+                self.assertEqual(args[0], "run")
+                with open(args[1]) as payload:
+                    self.assertEqual(json.load(payload)["checkout"], "/checkout")
+                return result
+
+            with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as payload:
+                json.dump({"standing": True, "kind": "correctness", "execution_host": "box", "repository": "o/r"}, payload)
+                payload.flush()
+                with (patch.object(workers, "anchor_gate", return_value=0),
+                      patch.object(workers, "base_gate", return_value=0),
+                      patch.object(workers, "run_preflight", return_value=Done(0, "OK")),
+                      patch.object(workers, "run_on", side_effect=run),
+                      patch.object(workers, "put_file", return_value=Done(0, "")),
+                      patch.object(workers.execution, "cmd_execution", side_effect=reserve),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    self.assertEqual(workers.cmd_launch(cfg, ["local", "w", "--target-repo", "o/r", "--kind", "codex",
+                                                              "--cwd", "/checkout", "--brief", payload.name,
+                                                              "--standing", payload.name]), result)
+            self.assertEqual(events, ["prepare", "reserve"] + (["start"] if result == 0 else []))
+
+    def test_payload_rejects_wrong_host_repo_and_nonstanding_before_launch(self) -> None:
+        good = {"standing": True, "kind": "correctness", "execution_host": "box", "repository": "o/r"}
+        for change in ({"standing": False}, {"kind": "measurement"}, {"execution_host": "other"}, {"repository": "o/other"}):
+            with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as payload:
+                json.dump(good | change, payload)
+                payload.flush()
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit):
+                    workers.standing_request(payload.name, "box", "o/r")
 
 
 class Readings(unittest.TestCase):

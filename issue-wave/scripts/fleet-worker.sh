@@ -87,6 +87,7 @@
 #                          # on the execution host
 #   fleet-worker.sh gate --target-repo <owner/repo> [--base-branch <branch>] [--force --allow-red-base <reason>] # lease + halt read before native dispatch (not a reservation)
 #   fleet-worker.sh launch <box> <name> --target-repo <owner/repo> --kind claude|codex --brief <file>
+#                          [--standing <reserve.json>]
 #                          (--cwd <dir> | --repo <checkout-dir> --branch <branch> [--base <ref>])
 #                          [--base-branch <branch>] [--force --allow-red-base <reason>]
 #                          [--replace] [--no-cross] [-- <extra CLI args>]

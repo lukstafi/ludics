@@ -30,6 +30,19 @@ fleet-worker.sh launch <box> <repo>-<issue> --target-repo <owner/repo> --kind cl
 fleet-worker.sh attach <box> <repo>-<issue>     # Bash run_in_background: the wake signal
 ```
 
+For an iteration reservation, add `--standing <reserve.json>` before `--`: the JSON must name
+`standing: true`, `kind: correctness`, this launch's fleet box as `execution_host`, and its
+`--target-repo` as `repository`. Launch creates or validates the worktree, supplies its resolved
+absolute `checkout` without modifying your file, and runs `execution run` before starting the
+worker. A refusal keeps the worktree and starts no worker. Preparation releases its locks while
+the coordinator reserves; startup repeats the worktree and ownership checks under the name and
+box-wide launch locks, holding them through tmux startup, so another launch cannot slip a second
+writer into the checkout. An interruption after reservation can leave an outstanding standing
+record and the worktree, even with no worker record. Inspect `status` and `execution list` before
+retrying: `--replace` archives a previous worker record but does not adopt or clear an outstanding
+reservation. Conclude that record with evidence of what ran (or did not), then retry with a fresh
+request ID; a live worker must first finish or be stopped through `unstick --kill`.
+
 The args after `--` are the worker's for its whole life: `launch` keeps them in the record
 (`cli-args`), every `unstick` resume reuses them, and its `LAUNCHED` line and the record's `meta`
 name the `model=` and `effort=` they resolve to (from the args, else the box's
