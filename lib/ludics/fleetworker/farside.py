@@ -940,14 +940,26 @@ gh_down=""
 # one, or a `gh auth token` that fails or does not answer in the bound refuses alike.
 # Mode boundary: allow only 0600/0400 with no marker or BSD's optional @ (extended attributes).
 # A + marks an ACL, which may grant others read access despite those mode bits, and refuses.
+# BSD displays @ ahead of + when both exist, so @ also requires an identical `ls -lnde`
+# listing: -e adds ACL entries. Extra output, changed metadata or an unreadable ACL refuses;
+# no ACL grant syntax or xattr payload is interpreted.
 tokf="$HOME/.config/fleet/gh-token.sh"; tokbad=""; tokenv=""; tmux_tok=""; qbox=$(printf '%q' "$BOX")
 storecmd="(. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage"
 case "$BOX_IS_LOCAL" in 1) tokcopy="replace it here with a regular 0600 file holding the fleet PAT (export GH_TOKEN=ghp_...)"; storecmd="in a terminal on this box: $storecmd" ;;
   *) tokcopy="replace it from the anchor: ssh $qbox 'f=~/.config/fleet/gh-token.sh; umask 077; cat > \"\$f.new\" && chmod 600 \"\$f.new\" && mv \"\$f.new\" \"\$f\"' < ~/.config/fleet/gh-token.sh"
      storecmd="ssh $qbox '$storecmd'" ;; esac
 if [ -e "$tokf" ] || [ -L "$tokf" ]; then
-  tokbad=1; tls=$(ls -lnd "$tokf" 2>/dev/null)
+  tokbad=1; tokwhy="the PAT in it may be readable by others"; tls=$(ls -lnd "$tokf" 2>/dev/null)
   case "$tls" in "-rw------- "*|"-r-------- "*|"-rw-------@ "*|"-r--------@ "*) [ "$(printf '%s' "$tls" | awk '{print $3}')" != "$(id -u)" ] || tokbad="" ;; esac
+  if [ -z "$tokbad" ]; then
+    case "${tls%% *}" in *@)
+      if ! tacl=$(ls -lnde "$tokf" 2>/dev/null); then
+        tokbad=1; tokwhy="the file's ACL could not be checked"
+      elif [ "$tacl" != "$tls" ]; then
+        tokbad=1; tokwhy="an ACL or changed metadata may make the PAT in it readable by others"
+      fi ;;
+    esac
+  fi
   if [ -n "$tokbad" ]; then
     # mv replaces only a regular file: onto a directory, or a symlink to one, it moves the new
     # file INTO it. So any path that is not a plain regular file is moved aside first (never
@@ -955,7 +967,6 @@ if [ -e "$tokf" ] || [ -L "$tokf" ]; then
     # The operator reads this on the anchor, so a remote box's move runs over ssh as its copy does.
     tokmv="mv ~/.config/fleet/gh-token.sh ~/.config/fleet/gh-token.sh.aside"; [ "$BOX_IS_LOCAL" = 1 ] || tokmv="ssh $qbox '$tokmv'"
     tokfix=$tokcopy; [ -f "$tokf" ] && [ ! -L "$tokf" ] || tokfix="move the path aside first ($tokmv; a symlink moves as the link), then $tokcopy"
-    tokwhy="the PAT in it may be readable by others"
     case "${tls%% *}" in *+) tokwhy="an ACL may make the PAT in it readable by others" ;; esac
     note "~/.config/fleet/gh-token.sh on $BOX is not a regular mode-0600 file this user owns ($(printf '%s' "$tls" | awk '{print $1, "uid", $3}')): $tokwhy -- repair: $tokfix"
   else

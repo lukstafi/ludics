@@ -1432,16 +1432,22 @@ expect "a rejected token exported in the session names it in the repair" 1 "repa
 # The fleet's PAT file (2026-09-24): its contract is checked whatever gh answers, and a dead PAT
 # is replaced in the file, never by gh auth login.
 mkdir -p "$HOME/.config/fleet"; printf 'export GH_TOKEN=ghp_dead\n' > "$HOME/.config/fleet/gh-token.sh"; chmod 600 "$HOME/.config/fleet/gh-token.sh"
-# Model only ls's mode marker for this token path, leaving every other listing real. Both
+# Model only ls's mode/ACL listings for this token path, leaving every other listing real. Both
 # markers are shimmed so Linux exercises the macOS xattr/ACL distinction without host ACL tools.
 mkdir -p "$TMP/token-ls"
 cat > "$TMP/token-ls/ls" <<'SH'
 #!/bin/bash
-if [ "$#" -eq 2 ] && [ "$1" = -lnd ] && [ "$2" = "$HOME/.config/fleet/gh-token.sh" ]; then
-  printf '%s%s 1 %s 0 0 Jan 1 00:00 %s\n' "$SHIM_TOKEN_MODE" "$SHIM_TOKEN_MARKER" "$(id -u)" "$2"
-else
-  exec /bin/ls "$@"
+if [ "$#" -eq 2 ] && [ "$2" = "$HOME/.config/fleet/gh-token.sh" ]; then
+  case "$1" in -lnd|-lnde)
+    [ "$1" != -lnde ] || [ "${SHIM_TOKEN_ACL:-}" != unreadable ] || exit 1
+    printf '%s%s 1 %s 0 0 Jan 1 00:00 %s\n' "$SHIM_TOKEN_MODE" "$SHIM_TOKEN_MARKER" "$(id -u)" "$2"
+    if [ "$1" = -lnde ] && [ "${SHIM_TOKEN_ACL:-}" = present ]; then
+      printf '%s\n' ' 0: group:everyone allow read'
+    fi
+    exit 0 ;;
+  esac
 fi
+exec /bin/ls "$@"
 SH
 chmod +x "$TMP/token-ls/ls"
 for token_mode in -rw------- -r--------; do
@@ -1449,7 +1455,11 @@ for token_mode in -rw------- -r--------; do
     env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE="$token_mode" SHIM_TOKEN_MARKER=@ GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
   expect "a $token_mode token file with a + ACL marker refuses and names the ACL" 1 "ACL.*repair: replace it here with a regular 0600 file" -- \
     env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE="$token_mode" SHIM_TOKEN_MARKER=+ GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+  expect "a $token_mode token file with @ hiding an ACL refuses" 1 "ACL.*repair: replace it here with a regular 0600 file" -- \
+    env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE="$token_mode" SHIM_TOKEN_MARKER=@ SHIM_TOKEN_ACL=present GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
 done
+expect "an @ token file whose ACL cannot be inspected refuses" 1 "ACL could not be checked.*repair: replace it here" -- \
+  env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE=-rw------- SHIM_TOKEN_MARKER=@ SHIM_TOKEN_ACL=unreadable GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
 # Two states pass (ludics-lite#567): the earlier one, where the session exports the file's token
 # (noted, since every child process sees it), and the target, where the session exports none and
 # gh's stored token is the file's. A session with no working credential in either is refused.

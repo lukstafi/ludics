@@ -17,7 +17,7 @@ TOKEN_CHECK = 'tokf="' + PREFLIGHT.split('tokf="', 1)[1].split('gh_bound=$gh_tim
 
 
 class TokenFile(unittest.TestCase):
-    def check_mode(self, mode: str, *, owned: bool = True) -> tuple[str, bool]:
+    def check_mode(self, mode: str, *, owned: bool = True, acl: str = "") -> tuple[str, bool]:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()
             token = home / ".config/fleet/gh-token.sh"
@@ -30,7 +30,13 @@ class TokenFile(unittest.TestCase):
             script = f"""set -eu
 BOX=testbox BOX_IS_LOCAL=1
 note() {{ printf '%s\\n' "$*"; }}
-ls() {{ printf '%s\\n' {shlex.quote(listing)}; }}
+ls() {{
+  [ "$1" != -lnde ] || [ {shlex.quote(acl)} != unreadable ] || return 1
+  printf '%s\\n' {shlex.quote(listing)}
+  if [ "$1" = -lnde ] && [ {shlex.quote(acl)} = present ]; then
+    printf '%s\\n' ' 0: group:everyone allow read'
+  fi
+}}
 """ + TOKEN_CHECK + '\nprintf "tokbad=%s\\n" "$tokbad"\n'
             result = subprocess.run(["/bin/bash", "-c", script], text=True, capture_output=True,
                                     env={**os.environ, "HOME": str(home), "GH_TOKEN": "fixture"})
@@ -62,3 +68,12 @@ ls() {{ printf '%s\\n' {shlex.quote(listing)}; }}
                 output, sourced = self.check_mode(mode, owned=owned)
                 self.assertIn("tokbad=1\n", output)
                 self.assertFalse(sourced)
+
+    def test_xattr_cannot_hide_an_acl_or_failed_inspection(self) -> None:
+        for mode in ("-rw-------@", "-r--------@"):
+            for acl in ("present", "unreadable"):
+                with self.subTest(mode=mode, acl=acl):
+                    output, sourced = self.check_mode(mode, acl=acl)
+                    self.assertIn("ACL", output)
+                    self.assertIn("tokbad=1\n", output)
+                    self.assertFalse(sourced)
