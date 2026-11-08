@@ -244,11 +244,25 @@ cli_model() {
     prev=$a
   done
   if [ "$kind" = codex ] && [ -f "$HOME/.codex/config.toml" ]; then
-    [ -n "$mf" ] || { m=$(awk '/^\[/ { exit } /^[ \t]*model[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); print; exit }' "$HOME/.codex/config.toml"); [ -z "$m" ] || mf=config; }
-    [ -n "$ef" ] || { e=$(awk '/^\[/ { exit } /^[ \t]*model_reasoning_effort[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); print; exit }' "$HOME/.codex/config.toml"); [ -z "$e" ] || ef=config; }
+    [ -n "$mf" ] || { m=$(toml_top model "$HOME/.codex/config.toml"); [ -z "$m" ] || mf=config; }
+    [ -n "$ef" ] || { e=$(toml_top model_reasoning_effort "$HOME/.codex/config.toml"); [ -z "$e" ] || ef=config; }
   fi
   m=${m#[\"\']}; m=${m%[\"\']}; e=${e#[\"\']}; e=${e%[\"\']}
   printf '%s\n%s\n%s\n%s\n' "${m:-default}" "${mf:-default}" "${e:-default}" "${ef:-default}"
+}
+# toml_top <key> <file>: a top-level key's value (before the first table), as a TOML basic or
+# literal string (the text between its quotes) or a bare value (up to blank or `#`), so an inline
+# comment is not read as part of it. Its boundary: one-line values; no escapes are decoded.
+toml_top() {
+  awk -v k="$1" '/^[ \t]*\[/ { exit }
+    { line = $0; sub(/^[ \t]+/, "", line)
+      if (index(line, k) != 1) next
+      rest = substr(line, length(k) + 1); sub(/^[ \t]*/, "", rest)
+      if (substr(rest, 1, 1) != "=") next
+      v = substr(rest, 2); sub(/^[ \t]*/, "", v); q = substr(v, 1, 1)
+      if (q == "\"" || q == "\047") { v = substr(v, 2); n = index(v, q); if (n == 0) next; v = substr(v, 1, n - 1) }
+      else sub(/[ \t#].*$/, "", v)
+      print v; exit }' "$2"
 }
 # model_meta <dir> <kind> <args...>: cli_model's answer into meta (model, model_from, effort,
 # effort_from).

@@ -2368,6 +2368,13 @@ grep -qF -- " -m gpt-6-astra - < " "$c2/run.sh" && ! grep -q 'gpt-6.1-sol' "$c2/
 expect "a launch whose model this box's codex cannot serve is refused at the preflight" 1 "LAUNCH REFUSED testbox/c3: .*codex cannot run headless in a tmux session with -m gpt-unservable" -- \
   "$FW" launch testbox c3 --target-repo example/project --kind codex --brief "$brief" --cwd "$proj" --no-cross -- -m gpt-unservable
 [ ! -e "$ISSUE_WAVE_STATE/workers/c3" ] && ok "...leaving no record" || ko "a refused launch left $ISSUE_WAVE_STATE/workers/c3"
+# With no flag, the box's config default, read as TOML: an inline comment is not part of the value.
+printf '%s\n' 'model_provider = "openai"' 'model = "gpt-6.1-sol" # worker default' "model_reasoning_effort = 'high'" '[profiles.p]' 'model = "other"' > "$HOME/.codex/config.toml"
+expect "with no model flag, meta takes the config's top-level model and effort" 0 "LAUNCHED testbox/c4 kind=codex session=0199-shim-[^ ]* model=gpt-6.1-sol effort=high " -- \
+  "$FW" launch testbox c4 --target-repo example/project --kind codex --brief "$brief" --cwd "$proj" --no-cross
+grep -qx 'model_from=config' "$ISSUE_WAVE_STATE/workers/c4/meta" && ok "...and says so (model_from=config)" || ko "c4 meta: $(cat "$ISSUE_WAVE_STATE/workers/c4/meta")"
+rm -f "$HOME/.codex/config.toml"
+"$FW" attach testbox c4 --interval 1 >/dev/null
 }
 
 section "log --last-result (fixture streams)" && {
