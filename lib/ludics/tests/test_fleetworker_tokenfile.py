@@ -57,6 +57,10 @@ ls() {{
                 output, sourced = self.check_mode(mode)
                 self.assertIn("ACL", output)
                 self.assertIn("repair: replace it here with a regular 0600 file", output)
+                self.assertIn("if the replacement inherits an ACL", output)
+                self.assertIn("remove the replacement file's ACL on testbox", output)
+                self.assertIn("chmod -N ~/.config/fleet/gh-token.sh", output)
+                self.assertIn("setfacl -b ~/.config/fleet/gh-token.sh", output)
                 self.assertIn("tokbad=1\n", output)
                 self.assertFalse(sourced)
 
@@ -75,5 +79,6 @@ ls() {{
                 with self.subTest(mode=mode, acl=acl):
                     output, sourced = self.check_mode(mode, acl=acl)
                     self.assertIn("ACL", output)
+                    self.assertIn("if the replacement inherits an ACL", output)
                     self.assertIn("tokbad=1\n", output)
                     self.assertFalse(sourced)

@@ -1453,9 +1453,9 @@ chmod +x "$TMP/token-ls/ls"
 for token_mode in -rw------- -r--------; do
   expect "a $token_mode token file with an @ xattr marker passes" 0 "PREFLIGHT OK" -- \
     env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE="$token_mode" SHIM_TOKEN_MARKER=@ GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
-  expect "a $token_mode token file with a + ACL marker refuses and names the ACL" 1 "ACL.*repair: replace it here with a regular 0600 file" -- \
+  expect "a $token_mode token file with a + ACL marker refuses and names the ACL" 1 "ACL.*repair: replace it here with a regular 0600 file.*if the replacement inherits an ACL.*chmod -N.*setfacl -b" -- \
     env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE="$token_mode" SHIM_TOKEN_MARKER=+ GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
-  expect "a $token_mode token file with @ hiding an ACL refuses" 1 "ACL.*repair: replace it here with a regular 0600 file" -- \
+  expect "a $token_mode token file with @ hiding an ACL refuses" 1 "ACL.*repair: replace it here with a regular 0600 file.*if the replacement inherits an ACL" -- \
     env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE="$token_mode" SHIM_TOKEN_MARKER=@ SHIM_TOKEN_ACL=present GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
 done
 expect "an @ token file whose ACL cannot be inspected refuses" 1 "ACL could not be checked.*repair: replace it here" -- \
