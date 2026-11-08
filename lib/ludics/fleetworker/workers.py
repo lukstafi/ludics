@@ -26,7 +26,7 @@ from ludics.fleetworker.gate import base_gate
 from ludics.fleetworker.identity import die, gen_uuid
 from ludics.fleetworker.lease import anchor_gate
 from ludics.fleetworker.preflight import knob, run_preflight, siblings_of
-from ludics.fleetworker.transport import err, is_local, prelude, put_file, run_on, substitution
+from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, put_file, run_on, substitution
 
 _NAME = re.compile(r"[A-Za-z0-9._-]+")
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -86,7 +86,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         die("launch: name must be [A-Za-z0-9._-]+ and not start with a dot")
     kind = brief = cwd = repo = branch = target = base_branch = reason = ""
     base = cfg.env.get("FLEET_BASE_REF") or "origin/master"
-    force = replace = False
+    force = replace = no_cross = False
     extra: list[str] = []
     rest = args[2:]
     i = 0
@@ -128,6 +128,8 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                 force = True
             case "--replace":
                 replace = True
+            case "--no-cross":
+                no_cross = True
             case "--":
                 extra = rest[i + 1 :]
                 break
@@ -167,7 +169,14 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         if not base.startswith("origin/"):
             die("launch: --base-branch required for a non-origin --base")
         base_branch = base[len("origin/") :]
-    done = run_preflight(cfg, box, "1" if kind == "codex" else "0", "1", siblings_of(cfg, box), capture=True)
+    # The Codex probe runs with the worker's own args, so a model this box's codex cannot serve is
+    # refused now rather than found as a worker that died at launch (ludics#539). --no-cross skips
+    # the sibling reach probes, for a wave with no cross-box legs: each sleeping sibling costs one
+    # FLEET_CROSS_TIMEOUT, serially, on every launch.
+    cross = "" if no_cross else siblings_of(cfg, box)
+    done = run_preflight(
+        cfg, box, "1" if kind == "codex" else "0", "1", cross, capture=True, cli_args=extra if kind == "codex" else []
+    )
     if done.unreachable:
         return _unreachable(f"LAUNCH UNREACHABLE {box}")
     pf = substitution(done.out)
@@ -218,7 +227,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     script = prelude(cfg, box) + farside.ghprobe(knob(cfg, "FLEET_GH_TIMEOUT", "30")) + farside.LAUNCH
     far_args = [
         name, kind, cwd, repo, branch, base, sid, short_hostname(), "1" if replace else "0", when,
-        knob(cfg, "FLEET_FETCH_TIMEOUT", "300"), bid, *extra,
+        knob(cfg, "FLEET_FETCH_TIMEOUT", "300"), bid, fleet_name(cfg, box), *extra,
     ]  # fmt: skip
     done = run_on(cfg, box, script, far_args)
     if done.unreachable:
@@ -310,7 +319,7 @@ def cmd_unstick(cfg: Config, args: list[str]) -> int:
     if not valid_name(name):
         die("unstick: name must be [A-Za-z0-9._-]+")
     msg = ""
-    kill = interrupt = False
+    kill = interrupt = given = False
     extra: list[str] = []
     rest = args[2:]
     i = 0
@@ -325,6 +334,7 @@ def cmd_unstick(cfg: Config, args: list[str]) -> int:
                 interrupt = True
             case "--":
                 extra = rest[i + 1 :]
+                given = True
                 break
             case _:
                 die(f"unstick: unknown option {rest[i]}")
@@ -332,7 +342,7 @@ def cmd_unstick(cfg: Config, args: list[str]) -> int:
     if interrupt:
         if kill:
             die("unstick: --interrupt stops the turn and keeps the process, --kill replaces the process; pass one")
-        if extra:
+        if given:
             die("unstick: --interrupt reaches a live process, which takes no CLI arguments (they need --kill)")
         if msg and not os.access(msg, os.R_OK):
             die("unstick: --message <readable file>")
@@ -367,7 +377,9 @@ def cmd_unstick(cfg: Config, args: list[str]) -> int:
     if rc != 0:
         return rc
     script = prelude(cfg, box) + farside.ghprobe(knob(cfg, "FLEET_GH_TIMEOUT", "30")) + farside.UNSTICK
-    done = run_on(cfg, box, script, [name, "1" if kill else "0", when, mid, dwait, rid, *extra])
+    # given: the unstick named its CLI args (`--`, even with none after it), which replace the
+    # recorded ones; without it a resume reuses the launch's (ludics#539).
+    done = run_on(cfg, box, script, [name, "1" if kill else "0", when, mid, dwait, rid, "1" if given else "0", *extra])
     if done.unreachable:
         return _unreachable(f"UNSTICK UNREACHABLE {box}/{name}")
     return done.rc

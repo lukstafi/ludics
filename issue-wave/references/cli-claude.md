@@ -30,6 +30,17 @@ fleet-worker.sh launch <box> <repo>-<issue> --target-repo <owner/repo> --kind cl
 fleet-worker.sh attach <box> <repo>-<issue>     # Bash run_in_background: the wake signal
 ```
 
+The args after `--` are the worker's for its whole life: `launch` keeps them in the record
+(`cli-args`), every `unstick` resume reuses them, and its `LAUNCHED` line and the record's `meta`
+name the `model=` and `effort=` they resolve to (from the args, else the box's
+`~/.codex/config.toml`, else `default`). For `--kind codex` the preflight's live turn runs with
+the same args, in a throwaway session of the box's tmux server, because that session's shell is
+the one that resolves `codex` (2026-10-03: a tmux session's non-login zsh ran a stale Homebrew
+codex that refused the wave's model, while the preflight's own shell passed), and its OK line
+names that binary and its version. `--no-cross` skips the preflight's sibling reach probes:
+a wave with no cross-box legs needs none, and each sleeping sibling costs 20 s on every launch
+(ludics#539).
+
 `launch` creates `<checkout>-worktrees/<name>` off `origin/master` on the box (`FLEET_BASE_REF`
 for another default, `--base <ref>` for one launch, `--cwd` for a worktree that already exists;
 a `--base` that is not an `origin/<branch>` ref, such as a SHA, also takes `--base-branch <branch>`, the
@@ -47,6 +58,30 @@ the issue finished. It prints that message whole and nothing else (a Claude work
 `result`, a Codex worker's last `agent_message` of its last ended turn), or one
 `NO RESULT <box>/<name>: <why>` line with exit 1 when no turn has ended with one; plain `log` is
 the tail of every turn's text, and cuts a long hand-back.
+
+## A Codex CLI worker's brief
+
+SKILL.md's *The brief* holds for every transport; a `codex exec` worker's brief differs from a
+native Claude worker's in these places, and a brief adapted from one must change each
+(wave-20261107 rewrote half of a native brief by hand, ludics#539):
+
+- **Batches run in the foreground** of the turn, `fleet-worker.sh execution slot --wait-window --
+  <batch> > <log> 2>&1`, with no `--bg` and no `bg-run.sh wait`: the every-batch `--bg` rule is the
+  native Claude worker's ~180 s subagent cap, and a Codex exec has no cap to work around. The
+  watch and the merge wait stay in the foreground too (below).
+- **The handoff is turn-ended**: an `EXECUTION_REQUEST`, a question or the hand-back is the
+  turn's final message, and the worker ends its turn there; the coordinator reads it with `log
+  --last-result` and answers with `unstick`. There is no Agent, Read or `mcp__ccd_*` tool, no
+  Auto-fix step, and no channel to message the coordinator mid-turn.
+- **Scratch is the box's own**: a directory under the worker's worktree or the box's
+  `$TMPDIR`, never a coordinator scratchpad path, which is on another machine or another
+  session's.
+- **Ignored data is the coordinator's to remove.** Codex refuses `rm -rf` and `rm -f` outright
+  (`rejected: rm -f style commands are not permitted`, in `stderr.log` only), even under
+  `--yolo`, so the `"${d:?}"` guard that a Claude brief carries does not apply. The brief says
+  the worker leaves its build directory and other ignored files in place. At close-out,
+  `farside-close` keeps a worktree that holds ignored data unless each such top-level directory
+  is named with `--regenerable <dir>` (a `_build`, say), which it then removes with the tree.
 
 ## Blocking in a headless turn
 
@@ -121,7 +156,11 @@ with the wait to run in the foreground.
   same worktree (resume has no `-C`; the script `cd`s first). A worker whose process has ended
   resumes without `--kill`. Without `--kill` the script REFUSES to resume beside a live exec,
   because that gives the branch two writers, one of them possibly a finisher mid-rebase, and a
-  quiet stream does not prove the exec cannot still act. Do NOT reach for `codex queue --thread
+  quiet stream does not prove the exec cannot still act. A resume runs with the launch's
+  recorded CLI args; `unstick ... -- <args>` replaces them for this resume and every later one,
+  and the `RESUMED` line's `args=recorded|given` says which ran. A Codex resume takes exactly
+  one message: the follow-up sent right after it is refused without `--kill`, so put
+  everything in the one message. Do NOT reach for `codex queue --thread
   <id> --message` for an exec worker: an entire `codex exec` run is ONE turn and queued messages
   deliver only at a turn boundary - the message sits undelivered while the worker keeps doing the
   thing you queued it to stop (2026-08-30: a tip-chasing worker ran 50 more minutes past its
