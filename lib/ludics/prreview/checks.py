@@ -10,6 +10,9 @@ held by a build job that never got a runner (runners.py: NO RUNNER, NEVER STARTE
 in that order, comma-joined (ludics#753): only on exit 4, the verdict's vocabulary unchanged, so
 ``prs`` can tell a starved head from a running one. No field: no such job was found.
 
+The final field is always ``branch=current|behind|unread`` (#1011): Clear (including a closed
+PR) is current, Lags is behind, and Gone, Unread or a skipped comparison is unread.
+
 Boundary (#990): immediately before the trailer, one fresh ``branchtip.read_tip`` compares the
 PR head with its branch and prints its warning, unless policy refused evaluation or the build
 read ended unread (no further reads after a budget/state-directory failure). This also qualifies a completed ``--wait``;
@@ -56,10 +59,10 @@ VERDICTS = (
 RUNNER_KINDS = ("no-runner", "never-started")
 
 
-def trailer(rc: int, verdict: str, kinds: set[str]) -> str:
+def trailer(rc: int, verdict: str, kinds: set[str], branch: str = "unread") -> str:
     """The last stdout line: the verdict, and the runner-less kinds found on a no-verdict exit (4)."""
     found = [kind for kind in RUNNER_KINDS if kind in kinds] if rc == 4 else []
-    return f"checks: verdict={verdict}" + (f" runners={','.join(found)}" if found else "")
+    return f"checks: verdict={verdict}" + (f" runners={','.join(found)}" if found else "") + f" branch={branch}"
 
 
 def parse_wait(value: str, command: str) -> int:
@@ -121,10 +124,15 @@ def run(session: GhSession, args: list[str]) -> int:
         verdict = "unknown"
     if verdict not in VERDICTS:
         verdict = "unknown"
+    branch = "unread"
     if policy == 0 and rc != 3:
         tip = branchtip.read_tip(session, target.repo, target.num)
+        if isinstance(tip, branchtip.Clear):
+            branch = "current"
+        elif isinstance(tip, branchtip.Lags):
+            branch = "behind"
         warning = branchtip.warning(tip, target.repo, target.num)
         if warning:
             cli.say(warning)
-    cli.say(trailer(rc, verdict, kinds))
+    cli.say(trailer(rc, verdict, kinds, branch))
     return rc

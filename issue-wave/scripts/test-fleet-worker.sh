@@ -4361,9 +4361,9 @@ printf '0\ngreen — 3 build checks passed\nchecks: verdict=green\n' > "$P/check
 printf '4\nNO VERDICT YET — still running\nchecks: verdict=pending\n' > "$P/checks-7"
 printf '0\nABSENT — no build check ran on this commit: x\nchecks: verdict=absent\n' > "$P/checks-9"
 echo "2026-09-02T00:00:00Z" > "$P/date-c12"; echo "$now" > "$P/date-c7"
-expect "prs flags a PR at five or more rounds, exit 1" 1 "o/r#12 rounds=6 ci=green head=[0-9]*d[0-9]*h draft claude/issue-12: second.tPR -- CONVERGE: 6 review rounds with findings (flag at 5)" -- "$FW" prs o/r
-grep -q "^o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR$" <<<"$out" && ok "...a PR under the flag gets its line, no note, age from the newer of commit and creation" || ko "PR 7's line: $out"
-grep -q "^o/r#9 rounds=? ci=absent head=[01]m claude/issue-9: -$" <<<"$out" && ok "...an unread count reads as ?, never as 0, and an unread commit date leaves the age to the creation time" || ko "PR 9's line: $out"
+expect "prs flags a PR at five or more rounds, exit 1" 1 "o/r#12 rounds=6 ci=green branch=unread head=[0-9]*d[0-9]*h draft claude/issue-12: second.tPR -- CONVERGE: 6 review rounds with findings (flag at 5)" -- "$FW" prs o/r
+grep -q "^o/r#7 rounds=2 ci=pending branch=unread head=[01]m claude/issue-7: first PR$" <<<"$out" && ok "...a PR under the flag gets its line, no note, age from the newer of commit and creation" || ko "PR 7's line: $out"
+grep -q "^o/r#9 rounds=? ci=absent branch=unread head=[01]m claude/issue-9: -$" <<<"$out" && ok "...an unread count reads as ?, never as 0, and an unread commit date leaves the age to the creation time" || ko "PR 9's line: $out"
 [ "$(grep -o '^o/r#[0-9]*' <<<"$out" | tr '\n' ' ')" = "o/r#7 o/r#9 o/r#12 " ] && ok "...in PR order" || ko "order: $out"
 grep -q "rounds o/r#12 threshold=off" "$P/calls" && grep -q "^retry --read pr list --repo o/r --state open .*isCrossRepository" "$P/calls" && ok "...through pr-review.sh, the repo spelled out in every read" || ko "calls: $(cat "$P/calls")"
 expect "--flag-at raises the flag; an unread count alone exits 4" 4 "o/r#9 rounds=?" -- "$FW" prs o/r --flag-at 7
@@ -4380,13 +4380,13 @@ prs_slot() { # <log> <words after the status path...>
   ko "the merge-build fixture took no slot: $(cat "$log")"
 }
 prs_slot "$TMP/prs-slot.log" o/r#7
-expect "prs shows a merge build running in this box's slot" 1 "o/r#7 rounds=2 ci=pending head=[01]m merge-build=[0-9]*s/300s claude/issue-7: first PR" -- "$FW" prs o/r
+expect "prs shows a merge build running in this box's slot" 1 "o/r#7 rounds=2 ci=pending branch=unread head=[01]m merge-build=[0-9]*s/300s claude/issue-7: first PR" -- "$FW" prs o/r
 [ "$(grep -c merge-build= <<<"$out")" = 1 ] && ok "...on its own PR's line alone" || ko "merge-build on other lines: $out"
 kill "$prs_pid" 2>/dev/null; wait "$prs_pid" 2>/dev/null
-expect "...and not once it ended, though the slot's file keeps the record" 1 "o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r
+expect "...and not once it ended, though the slot's file keeps the record" 1 "o/r#7 rounds=2 ci=pending branch=unread head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r
 grep -q merge-build= <<<"$out" && ko "a finished build was shown: $out" || ok "...nowhere"
 prs_slot "$TMP/prs-slot.log"
-expect "...and a dry run's build names no PR" 1 "o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r
+expect "...and a dry run's build names no PR" 1 "o/r#7 rounds=2 ci=pending branch=unread head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r
 kill "$prs_pid" 2>/dev/null; wait "$prs_pid" 2>/dev/null
 # A merge build queued for this box's one slot shows on its own line, from its waiting record's
 # argv (#982). The config's command is past the record's 300-character text, so its PR would be
@@ -4399,10 +4399,10 @@ for i in $(seq 40); do
   env FLEET_BOXES="testbox other" "$FW" execution slot --holders 2>/dev/null | grep -q '"event":"waiting"' && break
   sleep 0.25
 done
-expect "prs shows a merge build waiting for a slot, on its own PR's line" 4 "o/r#7 rounds=2 ci=pending head=[01]m merge-build=waiting(slot,[0-9]*s) claude/issue-7: first PR" -- env FLEET_BOX_CORRECTNESS_SLOTS="testbox=1" "$FW" prs o/r --flag-at 7
+expect "prs shows a merge build waiting for a slot, on its own PR's line" 4 "o/r#7 rounds=2 ci=pending branch=unread head=[01]m merge-build=waiting(slot,[0-9]*s) claude/issue-7: first PR" -- env FLEET_BOX_CORRECTNESS_SLOTS="testbox=1" "$FW" prs o/r --flag-at 7
 grep -q "^o/r#9 .*merge-build=[0-9]*s/300s" <<<"$out" && ok "...beside the build that holds the slot" || ko "the holder's line: $out"
 kill "$prs_wait" 2>/dev/null; wait "$prs_wait" 2>/dev/null
-expect "...and not once it stopped waiting" 4 "o/r#7 rounds=2 ci=pending head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r --flag-at 7
+expect "...and not once it stopped waiting" 4 "o/r#7 rounds=2 ci=pending branch=unread head=[01]m claude/issue-7: first PR" -- "$FW" prs o/r --flag-at 7
 kill "$prs_pid" 2>/dev/null; wait "$prs_pid" 2>/dev/null
 expect "a list that reaches its cap says PRs past it are not shown, exit 4" 4 "PRS INCOMPLETE o/r: the list reached its cap of 3 open PRs" -- env FLEET_PRS_LIMIT=3 "$FW" prs o/r --flag-at 7
 grep -q "^o/r#12 rounds=6" <<<"$out" && ok "...and still lists what it read" || ko "a capped list dropped its rows: $out"
@@ -4419,6 +4419,10 @@ probe '3\n' '0\nnothing ran on this commit -- x\n'
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=3 ci=unknown " <<<"$out" && ok "a reworded ABSENT line with no trailer is ci=unknown, exit 4, never green" || ko "no checks trailer (exit $rc): $out"
 probe '3\n' '0\nnothing ran on this commit -- x\nchecks: verdict=absent\n'
 [ "$rc" -eq 0 ] && grep -q "^o/r#9 rounds=3 ci=absent " <<<"$out" && ok "...and with its trailer it is ci=absent, whatever the prose says" || ko "reworded prose, absent trailer (exit $rc): $out"
+for agreement in current behind unread; do
+  probe '3\n' "0\ngreen -- 3 passed\nchecks: verdict=green branch=$agreement\n"
+  [ "$rc" -eq 0 ] && grep -q "^o/r#9 rounds=3 ci=green branch=$agreement " <<<"$out" && ok "prs shows branch=$agreement beside green CI" || ko "branch=$agreement (exit $rc): $out"
+done
 probe '3\n' '0\ngreen -- 3 passed\nchecks: verdict=red\n'
 [ "$rc" -eq 4 ] && grep -q "^o/r#9 rounds=3 ci=unknown " <<<"$out" && ok "a verdict its exit status cannot carry is ci=unknown" || ko "0:red (exit $rc): $out"
 probe '3\n' '0\ngreen -- 3 passed\nchecks: verdict=green extra\n'

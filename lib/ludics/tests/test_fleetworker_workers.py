@@ -27,6 +27,7 @@ from ludics.fleetworker.preflight import siblings_of, slots_report
 from ludics.fleetworker.supervision import (
     ROUNDS_TRAILER,
     WAVE_ISSUE,
+    branch_of,
     ci_of,
     converge_note,
     each,
@@ -270,6 +271,18 @@ class Prs(unittest.TestCase):
     def test_a_list_that_is_not_an_array_is_jqs_error(self) -> None:
         with self.assertRaises(JqError):
             pr_rows({"number": 1}, None)
+
+    def test_branch_agreement_is_separate_from_ci(self) -> None:
+        for branch in ("current", "behind", "unread"):
+            out = f"checks: verdict=green branch={branch}"
+            self.assertEqual(ci_of(0, out), "green")
+            self.assertEqual(branch_of(out), branch)
+            out = f"checks: verdict=pending runners=no-runner branch={branch}"
+            self.assertEqual(ci_of(4, out), "pending(no-runner)")
+            self.assertEqual(branch_of(out), branch)
+        for out in ("checks: verdict=green", "checks: verdict=green branch=bogus", ""):
+            self.assertEqual(branch_of(out), "unread")
+        self.assertEqual(ci_of(0, "checks: verdict=green branch=bogus"), "unknown")
 
     def test_a_runners_field_shows_on_a_pending_head_only(self) -> None:
         # ludics#753: the checks trailer's runners= field names a job that never got a runner.

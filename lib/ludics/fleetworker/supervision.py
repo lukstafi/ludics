@@ -114,7 +114,9 @@ EARLY_ROUND = 3
 LARGE_FIRST = 5
 # The checks trailer: its verdict, and the runners= field a head held by a job that never got a
 # runner carries (ludics#753; prreview/checks.py writes it, its kinds in that order).
-_VERDICT = re.compile(r"checks: verdict=([a-z]+)(?: runners=(no-runner|never-started|no-runner,never-started))?")
+# Boundary: only this final-line grammar is read, never prose. The optional branch field
+# follows runners; legacy trailers without it remain readable but imply branch=unread.
+_VERDICT = re.compile(r"checks: verdict=([a-z]+)(?: runners=(no-runner|never-started|no-runner,never-started))?(?: branch=(current|behind|unread))?")
 _YEAR = re.compile(r"[0-9]{4}-")
 
 # The verdicts each exit status of `pr-review.sh checks` can carry, and what prs prints for them
@@ -145,6 +147,12 @@ def ci_of(checks_rc: int, checks_out: str) -> str:
     if kinds is None:
         return ci
     return f"pending({kinds})" if ci == "pending" else "unknown"
+
+
+def branch_of(checks_out: str) -> str:
+    """Branch agreement is independent of the build verdict; absence proves no agreement."""
+    trailer = _VERDICT.fullmatch(last_line(checks_out))
+    return (trailer.group(3) or "unread") if trailer else "unread"
 
 
 def last_line(text: str) -> str:
@@ -535,7 +543,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         mark = "draft " if draft == "draft" else ""
         build = building.get(f"{repo}#{n}".casefold())
         running = f"merge-build={build} " if build else ""
-        cli.say(f"{repo}#{n} rounds={rounds} ci={ci} head={age} {running}{mark}{branch}: {title}{note}")
+        cli.say(f"{repo}#{n} rounds={rounds} ci={ci} branch={branch_of(checks_out)} head={age} {running}{mark}{branch}: {title}{note}")
     if not rows:
         cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}, or on a branch of its workers" if wave else ""))
     return worst
