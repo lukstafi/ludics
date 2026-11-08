@@ -173,10 +173,10 @@ class Production(unittest.TestCase):
             with self.subTest(entry=entry[0]):
                 self.route(GREEN)
                 done = self.run_cmd(entry, "checks", "o/r#7")
-                self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (0, "checks: verdict=green"))
+                self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (0, "checks: verdict=green branch=current"))
                 self.route(red)
                 done = self.run_cmd(entry, "checks", "o/r#7")
-                self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (1, "checks: verdict=red"))
+                self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (1, "checks: verdict=red branch=current"))
                 self.assertIn("  RED      ci (failure)  https://u", done.stdout)
 
     def test_the_variable_list_is_the_callers_and_skips_the_file(self) -> None:
@@ -254,7 +254,7 @@ class Production(unittest.TestCase):
         for entry in self.entries():
             with self.subTest(entry=entry[0]):
                 done = self.run_cmd(entry, "checks", "o/r#7", "--wait=")
-                self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (0, "checks: verdict=green"))
+                self.assertEqual((done.returncode, done.stdout.splitlines()[-1]), (0, "checks: verdict=green branch=current"))
 
     def test_an_override_is_announced_only_before_the_merge_call(self) -> None:
         # ludics-lite#684's negative control: "OVERRIDE: merging" printed at the verdict stood above
