@@ -114,7 +114,9 @@ EARLY_ROUND = 3
 LARGE_FIRST = 5
 # The checks trailer: its verdict, and the runners= field a head held by a job that never got a
 # runner carries (ludics#753; prreview/checks.py writes it, its kinds in that order).
-_VERDICT = re.compile(r"checks: verdict=([a-z]+)(?: runners=(no-runner|never-started|no-runner,never-started))?")
+# Boundary: only this final-line grammar is read, never prose. The optional branch field
+# follows runners; legacy trailers without it remain readable but imply branch=unread.
+_VERDICT = re.compile(r"checks: verdict=([a-z]+)(?: runners=(no-runner|never-started|no-runner,never-started))?(?: branch=(current|behind|unread))?")
 _YEAR = re.compile(r"[0-9]{4}-")
 
 # The verdicts each exit status of `pr-review.sh checks` can carry, and what prs prints for them
@@ -133,18 +135,19 @@ CI_OF = {
 }
 
 
-def ci_of(checks_rc: int, checks_out: str) -> str:
-    """What prs prints for one ``pr-review.sh checks`` read: ``CI_OF`` of its status and trailer,
-    and on a pending head the trailer's runner-less kinds, ``pending(no-runner)`` (ludics#753). A
-    runners= field on a head that is not pending is at odds with the status: ci=unknown."""
+def parse_checks(checks_rc: int, checks_out: str) -> tuple[str, str]:
+    """The head's build signal and independent branch agreement from one final-line parse.
+
+    A runners field on a non-pending head makes CI unknown; a missing branch proves no agreement.
+    """
     trailer = _VERDICT.fullmatch(last_line(checks_out))
     if trailer is None:
-        return "unknown"
+        return "unknown", "unread"
     ci = CI_OF.get((str(checks_rc), trailer.group(1)), "unknown")
     kinds = trailer.group(2)
-    if kinds is None:
-        return ci
-    return f"pending({kinds})" if ci == "pending" else "unknown"
+    if kinds is not None:
+        ci = f"pending({kinds})" if ci == "pending" else "unknown"
+    return ci, trailer.group(3) or "unread"
 
 
 def last_line(text: str) -> str:
@@ -405,7 +408,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     showed the count: staging#783 reached round 10 before the coordinator noticed, and ended at 14.
     One line per open PR -- ``pr-review.sh rounds`` (review rounds with findings), ``pr-review.sh
     checks`` (the build signal on the head, never waited for; ``pending(<kinds>)`` when a build job
-    never got a runner, ludics#753) and the head's age, ``merge-build=<elapsed>s/<bound>s`` while
+    never got a runner, ludics#753), branch agreement (branch=current|behind|unread), and the head's
+    age, ``merge-build=<elapsed>s/<bound>s`` while
     its merge build runs or ``merge-build=waiting(<phase>)`` while it queues (``merge_builds``), --
     and a CONVERGE
     note on a PR at --flag-at rounds or more, or at EARLY_ROUND or more when round 1 had LARGE_FIRST
@@ -524,7 +528,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         if (rounds == "?" or first == "unknown") and worst != 1:
             worst = 4
         checks_rc, checks_out = helper_read([helper, "checks", f"{repo}#{n}"])
-        ci = ci_of(checks_rc, checks_out)
+        ci, agreement = parse_checks(checks_rc, checks_out)
         if ci == "unknown" and worst != 1:
             worst = 4
         date_rc, date = helper_read([helper, "retry", "--read", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date"])
@@ -535,7 +539,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         mark = "draft " if draft == "draft" else ""
         build = building.get(f"{repo}#{n}".casefold())
         running = f"merge-build={build} " if build else ""
-        cli.say(f"{repo}#{n} rounds={rounds} ci={ci} head={age} {running}{mark}{branch}: {title}{note}")
+        cli.say(f"{repo}#{n} rounds={rounds} ci={ci} branch={agreement} head={age} {running}{mark}{branch}: {title}{note}")
     if not rows:
         cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}, or on a branch of its workers" if wave else ""))
     return worst

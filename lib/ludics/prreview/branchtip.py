@@ -14,8 +14,9 @@ like every other read here. ``git/ref`` is an exact match (``git/matching-refs``
 so a branch that is a prefix of another does not read the longer one's tip.
 
 BOUNDARY (a fail-closed allowlist). ``Clear`` is exactly: the PR read answered and is not ``open``
-(a merged PR's head is frozen and its branch may be gone or reused, so nothing is compared; merge's
-``confirm`` judges what landed), or it answered ``open`` and both reads answered the same SHA.
+(a merged PR's head is frozen and its branch may be gone or reused, so nothing is compared and
+Clear carries no SHA; merge's ``confirm`` judges what landed), or it answered ``open`` and both
+reads answered the same SHA (carried in Clear.head).
 ``Lags`` is both reads answering, with different SHAs. ``Gone`` is an open PR whose head repository
 reads null, or whose ref read answers 404, which is also what a fork this token cannot see answers,
 so its text says both. Anything else -- a read that failed, a 4xx other than that 404, a 200 of a
@@ -49,7 +50,9 @@ _OWNER_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 @dataclass(frozen=True)
 class Clear:
-    """Agreement, or a PR that is not open."""
+    """Agreement at ``head``, or a closed PR (empty head: no comparison occurred)."""
+
+    head: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,7 +98,7 @@ def read_tip(session: GhSession, repo: str, pr: str) -> Tip:
         case GhOk(stdout=tip):
             if tip in ("", "-") or len(tip.split()) != 1:
                 return Unread(f"the refs API answered no SHA for {branch} on {head_repo}")
-            return Clear() if tip == head else Lags(head, tip, branch, head_repo)
+            return Clear(head) if tip == head else Lags(head, tip, branch, head_repo)
         case GhFailed() if "HTTP 404" in session.err_line():
             return Gone(head, branch, head_repo)
         case GhFailed() | GhUnanswered():

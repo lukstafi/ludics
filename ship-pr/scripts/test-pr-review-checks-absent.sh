@@ -1630,7 +1630,7 @@ test_a_job_no_runner_took_is_named_and_ends_the_wait() {
   assert_contains "$GATE_OUTPUT" "recover: gh run rerun 101 --failed --repo $REPO" "with the command that recovers it"
   assert_contains "$GATE_OUTPUT" "checks: verdict=unjudged" "and the trailer's vocabulary is unchanged"
   # ludics#753: the trailer's own field names the kind, so `fleet-worker.sh prs` can show it.
-  assert_eq "$(tail -n 1 <<<"$GATE_OUTPUT")" "checks: verdict=unjudged runners=no-runner" \
+  assert_eq "$(tail -n 1 <<<"$GATE_OUTPUT")" "checks: verdict=unjudged runners=no-runner branch=current" \
     "the trailer is the last line, with the runner-less kind in its runners= field"
   [ $((SECONDS - start)) -lt 15 ] || bail "the wait should end on it, not at its 20 s ceiling ($((SECONDS - start)) s)"
   JOBS_JSON=$(jobs_json '[{"id":501,"name":"build","status":"completed","conclusion":"cancelled",
@@ -1639,7 +1639,7 @@ test_a_job_no_runner_took_is_named_and_ends_the_wait() {
   run_gate 0
   assert_eq "$GATE_RC" 4 "a cancel after a step ran is still no verdict ($GATE_OUTPUT)"
   assert_not_contains "$GATE_OUTPUT" "NO RUNNER" "but no runner-less job is named"
-  assert_eq "$(tail -n 1 <<<"$GATE_OUTPUT")" "checks: verdict=unjudged" "and the trailer carries no runners= field"
+  assert_eq "$(tail -n 1 <<<"$GATE_OUTPUT")" "checks: verdict=unjudged branch=current" "and the trailer carries no runners= field"
 }
 
 # Round 4, P1: the advisory list is a deny-list of CHECK names, and build_checks applies it per
@@ -2067,7 +2067,7 @@ test_an_unconfirmed_404_is_not_an_absent_file() {
   advisory_read
   assert_eq "$ADVISORY_RC" 2 "a file the listing shows is not absent, whatever its read said"
   assert_contains "$ADVISORY_ERR" "could not be established" "and says so"
-  assert_eq "$(tail -n 1 <<<"$ADVISORY_OUT")" "checks: verdict=unknown" "and judges nothing"
+  assert_eq "$(tail -n 1 <<<"$ADVISORY_OUT")" "checks: verdict=unknown branch=unread" "and judges nothing"
   reset_fixture
   ADVISORY_DIR=404
   ADVISORY_ROOT=404
@@ -2256,7 +2256,10 @@ check_trailer() { # <expected rc> <expected verdict> <prose> [checks args]
   set -e
   assert_eq "$rc" "$want_rc" "$want: the exit status is unchanged"
   assert_contains "$out" "$prose" "$want: the prose line stays"
-  assert_eq "$(tail -n 1 <<<"$out")" "checks: verdict=$want" "$want: the trailer is the last line"
+  local branch=current
+  [ "$want_rc" != 5 ] || branch=behind
+  [ "$want_rc" != 2 ] && [ "$want_rc" != 3 ] || branch=unread
+  assert_eq "$(tail -n 1 <<<"$out")" "checks: verdict=$want branch=$branch" "$want: the trailer is the last line"
 }
 
 # A lag is reported even when --wait settles on green; the build exit and final machine line
@@ -2277,7 +2280,7 @@ test_checks_warns_when_branch_has_left_the_head() {
   assert_eq "$rc" 0 "lag leaves the PR build exit unchanged"
   assert_contains "$out" "head $HEAD_SHA is NOT its branch's tip" "lag warning names the judged head"
   assert_contains "$out" "stands at $BRANCH_TIP" "lag warning names the branch tip"
-  assert_eq "$(tail -n 1 <<<"$out")" "checks: verdict=green" "machine trailer remains last"
+  assert_eq "$(tail -n 1 <<<"$out")" "checks: verdict=green branch=behind" "machine trailer remains last"
 }
 
 test_checks_ends_with_its_verdict_trailer() {

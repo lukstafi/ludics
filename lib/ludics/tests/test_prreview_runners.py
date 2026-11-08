@@ -228,12 +228,12 @@ class Trailer(unittest.TestCase):
 
     def test_the_kinds_are_written_in_order_on_a_no_verdict_exit_only(self) -> None:
         both = {"never-started", "no-runner"}
-        self.assertEqual(checks.trailer(4, "unjudged", {"no-runner"}), "checks: verdict=unjudged runners=no-runner")
-        self.assertEqual(checks.trailer(4, "pending", both), "checks: verdict=pending runners=no-runner,never-started")
-        self.assertEqual(checks.trailer(4, "pending", set()), "checks: verdict=pending", "none found: no field")
+        self.assertEqual(checks.trailer(4, "unjudged", {"no-runner"}, "unread"), "checks: verdict=unjudged runners=no-runner branch=unread")
+        self.assertEqual(checks.trailer(4, "pending", both, "unread"), "checks: verdict=pending runners=no-runner,never-started branch=unread")
+        self.assertEqual(checks.trailer(4, "pending", set(), "unread"), "checks: verdict=pending branch=unread", "none found: no field")
         for rc, verdict in ((0, "green"), (1, "red"), (3, "unknown"), (5, "superseded")):
             with self.subTest(rc=rc):
-                self.assertEqual(checks.trailer(rc, verdict, both), f"checks: verdict={verdict}")
+                self.assertEqual(checks.trailer(rc, verdict, both, "unread"), f"checks: verdict={verdict} branch=unread")
         self.assertEqual(checks.RUNNER_KINDS, typing.get_args(runners.Kind.__value__), "the field's vocabulary is the scan's")
 
 
