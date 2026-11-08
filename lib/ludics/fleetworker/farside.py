@@ -212,6 +212,51 @@ meta_set() {
     mv -f "$d/meta.new" "$d/meta" 2>/dev/null || return 1
   for ((k = 0; k < ${#kv[@]}; k += 2)); do [ "$(meta_get "$d" "${kv[k]}")" = "${kv[k + 1]}" ] || return 1; done
 }
+# A CLI worker's own args (launch's `-- <args>`; ludics#539): cli-args holds them NUL-separated,
+# and every resume reuses them unless the unstick names its own, which then replace them. Before
+# this a resume ran on the config default model unless the coordinator repeated `-m` and `-c ...`.
+# args_save <dir> <args...> writes the file (none: an empty one); args_load <dir> fills the array
+# rec_args from it (no file, a record from before it: none).
+args_save() { local d="$1"; shift; { [ "$#" -eq 0 ] || printf '%s\0' "$@"; } > "$d/cli-args.new" 2>/dev/null && mv -f "$d/cli-args.new" "$d/cli-args" 2>/dev/null; }
+args_load() { local a; rec_args=(); [ -f "$1/cli-args" ] || return 0; while IFS= read -r -d '' a; do rec_args+=("$a"); done < "$1/cli-args"; }
+# cli_model <kind> <args...>: the model and reasoning effort the worker's CLI resolves, for meta
+# (ludics#539: neither model reports its own id reliably, and the stream records none), as four
+# lines: model, where it came from, effort, where it came from. A flag wins (codex: -m/--model, -c
+# model=..., -c model_reasoning_effort=...; claude: --model, --effort); else, for codex, the
+# top-level key of ~/.codex/config.toml on this box (a -p/--profile is not read: `config`); else
+# `default`, the CLI's own. Its boundary: what the args and that file say, not what the CLI did.
+cli_model() {
+  local kind="$1" m="" mf="" e="" ef="" prev="" a v; shift
+  for a in "$@"; do
+    v=""
+    case "$kind:$prev:$a" in
+      codex:-m:*|codex:--model:*|claude:--model:*) m=$a; mf=args ;;
+      claude:--effort:*) e=$a; ef=args ;;
+      codex:-c:*|codex:--config:*) v=$a ;;
+      codex:*:--model=*|claude:*:--model=*) m=${a#--model=}; mf=args ;;
+      claude:*:--effort=*) e=${a#--effort=}; ef=args ;;
+      codex:*:--config=*) v=${a#--config=} ;;
+    esac
+    case "$v" in
+      model=*) m=${v#model=}; mf=args ;;
+      model_reasoning_effort=*) e=${v#model_reasoning_effort=}; ef=args ;;
+    esac
+    prev=$a
+  done
+  if [ "$kind" = codex ] && [ -f "$HOME/.codex/config.toml" ]; then
+    [ -n "$mf" ] || { m=$(awk '/^\[/ { exit } /^[ \t]*model[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); print; exit }' "$HOME/.codex/config.toml"); [ -z "$m" ] || mf=config; }
+    [ -n "$ef" ] || { e=$(awk '/^\[/ { exit } /^[ \t]*model_reasoning_effort[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); print; exit }' "$HOME/.codex/config.toml"); [ -z "$e" ] || ef=config; }
+  fi
+  m=${m#[\"\']}; m=${m%[\"\']}; e=${e#[\"\']}; e=${e%[\"\']}
+  printf '%s\n%s\n%s\n%s\n' "${m:-default}" "${mf:-default}" "${e:-default}" "${ef:-default}"
+}
+# model_meta <dir> <kind> <args...>: cli_model's answer into meta (model, model_from, effort,
+# effort_from).
+model_meta() {
+  local d="$1" kind="$2" r; shift 2
+  r=$(cli_model "$kind" "$@")
+  meta_set "$d" model "$(sed -n 1p <<<"$r")" model_from "$(sed -n 2p <<<"$r")" effort "$(sed -n 3p <<<"$r")" effort_from "$(sed -n 4p <<<"$r")"
+}
 # turn_state <name>: "<turn> <bg> <res>", read from the stream past the current process's start
 # (proc_offset). turn: `ended` when the last turn event is a `result`, `working` when it is a
 # system init, a user or an assistant event, a task_notification, or a background task list
@@ -685,10 +730,11 @@ FLEET_PYTHON_CANDIDATES
 
 
 # Far-side skill-freshness preflight (ludics-lite#3), after FRESHNESS, ghprobe and FLEET_PYTHON.
-# Args: codex probe probe_timeout fetch_timeout cross cross_timeout gh_timeout. Exit 0 with a
+# Args: codex probe probe_timeout fetch_timeout cross cross_timeout gh_timeout [cli args...]. Exit 0 with a
 # PREFLIGHT OK line, 1 with the refusal. `launch` runs it on the box before every worker, so the
 # per-launch refusal the skill promises is enforced here rather than remembered.
-PREFLIGHT = r"""codex="$1" probe="$2" probe_timeout="$3" fetch_timeout="$4" cross="$5" cross_timeout="$6" gh_timeout="$7"
+PREFLIGHT = r"""codex="$1" probe="$2" probe_timeout="$3" fetch_timeout="$4" cross="$5" cross_timeout="$6" gh_timeout="$7"; shift 7
+# "$@" is now the CLI args the worker will run with (launch's `-- <args>`; ludics#539).
 refuse=""
 note() { refuse="$refuse; $*"; }
 # One preflight per box at a time: a parallel group launched together would otherwise race
@@ -723,16 +769,8 @@ if [ "$codex" = 1 ] || [ "$codex" = native ]; then
   if [ "$codex" = 1 ]; then
     command -v codex >/dev/null 2>&1 || note "no codex on PATH"
     codex login status >/dev/null 2>&1 || note "codex not logged in"
-    # A status read is not a proof either way; only a live headless turn is.
-    if [ "$probe" = 1 ] && command -v codex >/dev/null 2>&1; then
-      prompt=$(mktemp "${TMPDIR:-/tmp}/fw-prompt.XXXXXX"); printf 'Reply with the single word ok.' > "$prompt"
-      out=$(cd / && bounded --stdin "$prompt" "$probe_timeout" codex exec --json --ephemeral --skip-git-repo-check -C / -); prc=$?
-      rm -f "$prompt"
-      if [ "$prc" -eq 124 ]; then note "codex headless probe timed out after ${probe_timeout}s"
-      elif ! printf '%s' "$out" | grep -q '"type":"turn.completed"'; then
-        note "codex cannot run headless: $(printf '%s' "$out" | grep -o '"message":"[^"]*"' | head -n1 | cut -c1-120)"
-      fi
-    fi
+    # A status read is not a proof either way; only a live headless turn is, and that turn runs
+    # below, in tmux, once the tmux checks have passed.
   fi
 elif [ "$codex" = 0 ]; then
   command -v claude >/dev/null 2>&1 || note "no claude on PATH"
@@ -762,6 +800,46 @@ case "$codex" in
      elif ! msg=$(tmux_env_check); then note "$msg"
      else tmux_ok=1; fi ;;
 esac
+# The Codex CLI worker's live probe (ludics#539): a headless turn in a throwaway session of the
+# tmux server the worker would start in, with the args it will run with, because that session's
+# shell is the one that resolves `codex`. On 2026-10-03 a tmux session's non-login zsh read only
+# .zshenv, put /opt/homebrew/bin first and ran a stale Homebrew codex that refused the wave's
+# model, while this shell's probe, with no -m, passed. codex_seen names the binary and version
+# that session resolved, on the OK line; a different one on this shell's PATH is said there too.
+codex_seen=""
+if [ "$codex" = 1 ] && [ "$probe" = 1 ] && [ -n "$tmux_ok" ] && command -v codex >/dev/null 2>&1; then
+  cpd=$(mktemp -d "${TMPDIR:-/tmp}/fw-codexprobe.XXXXXX"); cps="fw-codexprobe-$$"
+  printf 'Reply with the single word ok.' > "$cpd/prompt"
+  {
+    printf 'cd / || { echo 97 > %q; exit 97; }\n' "$cpd/rc"
+    printf 'command -v codex > %q 2>/dev/null\n' "$cpd/path"
+    printf 'codex --version < /dev/null > %q 2>&1\n' "$cpd/version"
+    printf 'codex exec --json --ephemeral --skip-git-repo-check -C /'
+    for a in "$@"; do printf ' %q' "$a"; done
+    printf ' - < %q > %q 2>&1\n' "$cpd/prompt" "$cpd/out"
+    printf 'echo $? > %q\n' "$cpd/rc"
+  } > "$cpd/run.sh"
+  if perr=$(tm_new -d -s "$cps" "bash $(printf '%q' "$cpd/run.sh")" 2>&1); then
+    waited=0
+    while [ ! -e "$cpd/rc" ] && [ "$waited" -lt $((probe_timeout * 10)) ] && tm has-session -t "=$cps" 2>/dev/null; do
+      sleep 0.1; waited=$((waited + 1))
+    done
+    tm kill-session -t "=$cps" 2>/dev/null   # a probe past its bound; a finished one has gone itself
+    cpath=$(head -n1 "$cpd/path" 2>/dev/null); cver=$(head -n1 "$cpd/version" 2>/dev/null | cut -c1-60)
+    codex_seen="codex in a tmux session: ${cpath:-not on its PATH}${cver:+ ($cver)}"
+    spath=$(command -v codex)
+    [ -z "$cpath" ] || [ "$cpath" = "$spath" ] || codex_seen="$codex_seen; this shell's is $spath"
+    if [ ! -e "$cpd/rc" ]; then
+      note "codex headless probe in a tmux session timed out after ${probe_timeout}s ($codex_seen)"
+    elif ! grep -q '"type":"turn.completed"' "$cpd/out" 2>/dev/null; then
+      why=$(grep -o '"message":"[^"]*"' "$cpd/out" 2>/dev/null | head -n1 | cut -c1-120)
+      note "codex cannot run headless in a tmux session${1:+ with $*}: ${why:-$(head -n1 "$cpd/out" 2>/dev/null | cut -c1-120)} ($codex_seen)"
+    fi
+  else
+    note "tmux on $BOX refused the codex probe session ($(printf '%s' "$perr" | tail -n1 | cut -c1-120)), so it would refuse a CLI worker's too"
+  fi
+  rm -rf "$cpd"
+fi
 command -v jq >/dev/null 2>&1 || note "no jq"
 # Every correctness batch on this box runs under `execution slot`, whose N-holder lock is a real
 # flock (ludics-lite#160), and since ludics-lite#403 fleet-worker.sh runs it -- and every verb but
@@ -936,7 +1014,7 @@ if [ -n "$refuse" ]; then
   echo "PREFLIGHT REFUSED $BOX: ${refuse#; }${other:+ (changes outside the served tree, ignored: $other)}"
   exit 1
 fi
-echo "PREFLIGHT OK $BOX skills=$(echo "$head" | cut -c1-9)${other:+ (changes outside the served tree, ignored: $other)}${cross_down:+ (cross-box unreachable, asleep or off the network:$cross_down)}${gh_down:+ (GitHub unreachable from $BOX: $gh_down)}${tokenv:+ (this session exports the fleet PAT as $tokenv, so every process it starts sees it: store it in gh and drop the export, ludics-lite#567)}${tmux_tok:+ ($tmux_tok)}${sleep_guard:+ ($sleep_guard)}"
+echo "PREFLIGHT OK $BOX skills=$(echo "$head" | cut -c1-9)${other:+ (changes outside the served tree, ignored: $other)}${cross_down:+ (cross-box unreachable, asleep or off the network:$cross_down)}${gh_down:+ (GitHub unreachable from $BOX: $gh_down)}${tokenv:+ (this session exports the fleet PAT as $tokenv, so every process it starts sees it: store it in gh and drop the export, ludics-lite#567)}${tmux_tok:+ ($tmux_tok)}${sleep_guard:+ ($sleep_guard)}${codex_seen:+ ($codex_seen)}"
 """
 
 
@@ -984,7 +1062,7 @@ git -C "$repo" rev-parse --verify "$base^{commit}"
 # fetch_timeout bid, then the extra CLI args. The brief was staged beside the record
 # ($STATE/incoming/<name>-<stamp>.md) and is moved into place only after the guards pass, so a
 # refused launch leaves a finished worker's brief untouched.
-LAUNCH = r"""name="$1" kind="$2" cwd="$3" repo="$4" branch="$5" base="$6" sid="$7" coord="$8" replace="$9" stamp="${10}" fetch_timeout="${11}" bid="${12}"; shift 12
+LAUNCH = r"""name="$1" kind="$2" cwd="$3" repo="$4" branch="$5" base="$6" sid="$7" coord="$8" replace="$9" stamp="${10}" fetch_timeout="${11}" bid="${12}" fbox="${13}"; shift 13
 d="$WORKERS/$name"; incoming="$STATE/incoming/$name-$stamp.md"
 # Until the lock is held nothing here is ours but the staged brief; `fresh` (this launch
 # creates the record, so a refusal removes it whole) is decided under the lock.
@@ -1092,13 +1170,17 @@ else
   } > "$d/run.sh" || refuse "cannot write $d/run.sh"
 fi
 {
-  echo "kind=$kind"; echo "cwd=$cwd"; echo "box=$(hostname -s)"; echo "coordinator=$coord"
+  # box: the fleet name the coordinator launched on (`local` resolved), host: what the box calls
+  # itself (ludics#539: a `local` launch on mac-studio recorded box=LukaszsacStudio).
+  echo "kind=$kind"; echo "cwd=$cwd"; echo "box=$fbox"; echo "host=$(hostname -s)"; echo "coordinator=$coord"
   echo "launched_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; echo "resumes=0"; echo "turn_offset=0"
   if [ -n "$sid" ]; then echo "session=$sid"; fi
   # proc_offset: where the current process's events start; input_from: its first input line.
   # awaiting: the uuid of the latest message sent, whose reply attach waits for.
   if [ "$kind" = claude ]; then echo "channel=stream-json"; echo "proc_offset=0"; echo "input_from=1"; echo "awaiting=$bid"; fi
 } > "$d/meta" || refuse "cannot write $d/meta"
+args_save "$d" "$@" || refuse "cannot write $d/cli-args"
+model_meta "$d" "$kind" "$@" || refuse "cannot record the model in $d/meta"
 msg=$(tmux_env_check) || refuse "$msg"   # the preflight's read may be minutes old
 tmux_gh_check || refuse "$tmux_gh_msg"   # and so may its GitHub probe of the server
 tm_worker "$name" "$d"; trc=$?
@@ -1121,7 +1203,7 @@ if [ "$kind" = codex ]; then
   done
   [ -n "$sid" ] && echo "session=$sid" >> "$d/meta"
 fi
-echo "LAUNCHED $BOX/$name kind=$kind session=${sid:-unknown} cwd=$cwd stream=$d/stream.jsonl${archive:+ replaced=$archive}"
+echo "LAUNCHED $BOX/$name kind=$kind session=${sid:-unknown} model=$(meta_get "$d" model) effort=$(meta_get "$d" effort) cwd=$cwd stream=$d/stream.jsonl${archive:+ replaced=$archive}"
 """
 
 
@@ -1348,7 +1430,8 @@ printf '%s' "$got" | jq -r '.text'
 
 # `unstick`'s far side, after ghprobe. Args: name kill stamp mid dwait rid, then the extra CLI
 # args. An empty stamp is a bare --interrupt, with no message staged.
-UNSTICK = r"""name="$1" kill="$2" stamp="$3" mid="$4" dwait="$5" rid="$6"; shift 6
+UNSTICK = r"""name="$1" kill="$2" stamp="$3" mid="$4" dwait="$5" rid="$6" given="$7"; shift 7
+# "$@": the CLI args the unstick named; given=1 when it named any (`--`, even with none after it).
 # An empty stamp: a bare --interrupt, with no message staged or to place.
 d="$WORKERS/$name"; staged=""; [ -z "$stamp" ] || staged="$STATE/incoming/$name-$stamp.md"
 unstage() { [ -z "$staged" ] || rm -f "$staged"; }
@@ -1471,6 +1554,10 @@ if [ "$kind" = claude ] && [ "$kill" != 1 ] && alive "$name" && is_stream "$name
 fi
 # An interrupt has no other path: it never falls back to a kill or a resume.
 [ -z "$rid" ] || { echo "UNSTICK REFUSED $BOX/$name: --interrupt reaches only a live claude worker on the stream-json channel, and this is kind=$kind, $(state_of "$name")$(is_stream "$name" || echo ', one process per turn') -- nothing was sent; \`unstick --message\` resumes an ended worker, \`--kill\` stops a live one"; exit 1; }
+# The args this resume runs with (ludics#539): the unstick's own, which replace the record's once
+# it has started, else the launch's, recorded in cli-args -- a resume without them fell back to
+# the config default model.
+if [ "$given" = 1 ]; then argsrc=given; else args_load "$d"; set -- ${rec_args[@]+"${rec_args[@]}"}; argsrc=recorded; fi   # bash 3.2 under set -u: an empty array is unbound
 # The same one-live-worker-per-worktree rule as launch, under the same box-wide lock: a
 # resume must not start beside another worker that took this worktree meanwhile.
 msg=$(take_lock "$STATE/launch.lock" 120 "launch lock") || { echo "UNSTICK REFUSED $BOX/$name: another launch on this box is publishing its record ($msg)"; exit 1; }
@@ -1544,7 +1631,8 @@ if [ "$kind" = claude ]; then
 else
   {
     printf 'cd %q || { echo 97 > %q; exit 97; }\n' "$cwd" "$d/exit"
-    printf 'codex exec resume %q --yolo --json' "$sid"
+    # -o on every resume too, or last-message.md stays the first turn's (ludics#539).
+    printf 'codex exec resume %q --yolo --json -o %q' "$sid" "$d/last-message.md"
     for a in "$@"; do printf ' %q' "$a"; done
     printf ' - < %q >> %q 2>> %q\n' "$d/messages/$stamp.md" "$d/stream.jsonl" "$d/stderr.log"
     printf 'echo $? > %q\n' "$d/exit"
@@ -1583,7 +1671,10 @@ fi
 started=1
 release_lock "$blaunch"; blaunch=""
 rm -f "$d/exit.prev" "$d/meta.prev"
-echo "RESUMED $BOX/$name kind=$kind session=$sid resume=$n message=$d/messages/$stamp.md ($why)"
+if [ "$given" = 1 ]; then
+  { args_save "$d" "$@" && model_meta "$d" "$kind" "$@"; } || argsrc="given, NOT recorded for later resumes (cannot write $d/cli-args or meta)"
+fi
+echo "RESUMED $BOX/$name kind=$kind session=$sid resume=$n model=$(meta_get "$d" model) args=$argsrc message=$d/messages/$stamp.md ($why)"
 """
 
 

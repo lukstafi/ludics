@@ -608,6 +608,12 @@ requirements for every transport with transport-specific setup and identity, and
   free of deprecations before the consumer PR (ahrefs/ocannl#1594's `metal.dev` pin deprecated
   an API master used, and dev-profile alerts are fatal, so every master build on the box broke);
   how to stage the scratch install is the project's agent notes'.
+- **An issue whose acceptance is a measurement is accepted before the merge**: the measurement
+  runs on the PR head, and the coordinator reads its result before the merge, never after it.
+  Code review, Codex review and CI judge correctness, and none of them read a timing: a 2x
+  tuned-performance regression on CUDA passed all of them and two Opus checkpoints, and showed
+  only in the post-merge acceptance measurement, so the PR was reverted (ahrefs/ocannl#934,
+  ludics#539).
 - **Where the evidence goes**, said up front: the PR body, the issue's comments and the project's
   agent notes, never a report file the task did not ask for - a Claude subagent is instructed not
   to write report `.md` files, so a planned `benchmarks/report-*.md` had to move mid-task
@@ -669,12 +675,20 @@ requirements for every transport with transport-specific setup and identity, and
   ends, before any other work: the coordinator concludes a run only from that line, so an
   unreported finished run holds the box's reservation and blocks a sibling's window
   (ahrefs/ocannl#1314 held two boxes for about 2.5 h). Neither the returned turn nor its report
-  releases the box; the conclusion does. The brief's measurement forms are the ones
+  releases the box; the conclusion does. The hand-back names the last batch's run directory
+  and the SHA and dirty state it ran at, apart from the exact-head CI verdict. The last batch
+  often predates the merged head, since review edits come after it. The standing reservation
+  is concluded from that batch, with its dirty list and launch head in the evidence
+  (`--standing-handback`), and CI speaks for the merged head (ludics#539). The brief's measurement forms are the ones
   the verbs accept: on the worker's own box `fleet-worker.sh execution hold --request <id> --
   <runner>` (with `--worktree <dir> --rev <sha>` it first makes or moves that worktree to the
   commit and runs there, as a leg does, ludics-lite#816), on another box an [`execution leg`](references/executions.md#a-leg-on-another-box)
   with no slot flag (`--deadline` alone: a measurement leg refuses `--cpu`, `--gpu`, `--wait`
   and `--wait-window`, and four workers of wave-20261016-ocannl copied them from the brief).
+  A measurement is timing only: the build, the fixtures and a dry run of the session go first,
+  as correctness batches under the standing reservation, so an exclusive window never sits in
+  setup (2026-10-03: a 4-hour minix window died in setup on a missing `rocm-smi`, and a dune
+  build held another window; ludics#539).
   The session fails fast on its first cell, behind the project's own measurement gate, which
   the brief points to rather than paraphrases (OCANNL: `benchmarks/README.md`, *Measurement
   boxes*; two rog windows measured nothing on a session script that predated it,
@@ -852,7 +866,7 @@ transport when a task reaches those paths.
 
 ### Codex model choice
 
-Unless the user specifies otherwise, use Sol / medium (`gpt-5.6-sol`) for bounded
+Unless the user specifies otherwise, use Sol / medium (`gpt-6.1-sol`) for bounded
 implementation and documentation work, including tightly scoped D2s; consider Sol / high for
 broader but bounded workflow and portability work. Prefer Astra / medium (`gpt-6-astra`) for
 coordination and escalations, semantic analysis, cross-platform lifecycle behavior, changes to
@@ -871,6 +885,14 @@ explicit briefs, test evidence, CI gates and coordinator escalation. These defau
 qualitative observations from the OCANNL-staging and ludics-lite waves, not a controlled cost or
 speed comparison; evaluate future assignments by review rounds, coordinator interventions and
 time to merge, separating queueing, CI and dependency waits from active work where possible.
+
+The IDs are the ones `~/.codex/models_cache.json` lists on the worker's box (2026-11-07:
+`gpt-6.1-sol`, and `gpt-6-astra` with no 6.1 Astra); read them there rather than from this
+paragraph when they may have moved. Name the effort as well as the model: the config default
+differs by box (`medium` on mac-studio, `high` on macbook-pro on 2026-11-07), so a CLI worker
+meant to run at medium gets `-- -m <model> -c model_reasoning_effort=medium`. Neither model
+names its own ID reliably when asked, so the record is the check: `launch` prints the `model=`
+and `effort=` its args resolve to, and the worker's `meta` keeps them (ludics#539).
 
 ## Supervise
 

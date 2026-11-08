@@ -57,7 +57,9 @@ def preflight_script(cfg: Config, box: str) -> str:
     )
 
 
-def preflight_args(cfg: Config, box: str, codex: str, probe: str, cross: str) -> list[str]:
+def preflight_args(cfg: Config, box: str, codex: str, probe: str, cross: str, cli_args: list[str]) -> list[str]:
+    """The far side's seven words, then the CLI args the worker will run with (ludics#539): the
+    Codex probe runs with them, so a model the box's codex cannot serve refuses here."""
     return [
         codex,
         probe,
@@ -66,12 +68,16 @@ def preflight_args(cfg: Config, box: str, codex: str, probe: str, cross: str) ->
         cross,
         knob(cfg, "FLEET_CROSS_TIMEOUT", "20"),
         knob(cfg, "FLEET_GH_TIMEOUT", "30"),
+        *cli_args,
     ]
 
 
-def run_preflight(cfg: Config, box: str, codex: str, probe: str, cross: str, *, capture: bool = False) -> Done:
+def run_preflight(
+    cfg: Config, box: str, codex: str, probe: str, cross: str, *, capture: bool = False, cli_args: list[str] | None = None
+) -> Done:
     """The far-side preflight on the box: exit 0 with a PREFLIGHT OK line, 1 with the refusal."""
-    return run_on(cfg, box, preflight_script(cfg, box), preflight_args(cfg, box, codex, probe, cross), capture=capture)
+    words = preflight_args(cfg, box, codex, probe, cross, cli_args or [])
+    return run_on(cfg, box, preflight_script(cfg, box), words, capture=capture)
 
 
 def cmd_preflight(cfg: Config, args: list[str]) -> int:
@@ -79,7 +85,12 @@ def cmd_preflight(cfg: Config, args: list[str]) -> int:
     if not box:
         die("preflight: which box?")
     codex, probe, cross = "0", "1", siblings_of(cfg, box)
-    for arg in args[1:]:
+    cli_args: list[str] = []
+    rest = args[1:]
+    if "--" in rest:
+        cli_args = rest[rest.index("--") + 1 :]
+        rest = rest[: rest.index("--")]
+    for arg in rest:
         match arg:
             case "--codex":
                 codex = "1"
@@ -93,7 +104,9 @@ def cmd_preflight(cfg: Config, args: list[str]) -> int:
                 cross = ""
             case _:
                 die(f"preflight: unknown option {arg}")
-    done = run_preflight(cfg, box, codex, probe, cross)
+    if cli_args and codex != "1":
+        die("preflight: -- <codex args> goes with --codex (the args a Codex CLI worker will run with)")
+    done = run_preflight(cfg, box, codex, probe, cross, cli_args=cli_args)
     if done.unreachable:
         cli.say(f"PREFLIGHT UNREACHABLE {box}")
         slots_report(cfg)

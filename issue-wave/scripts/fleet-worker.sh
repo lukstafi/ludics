@@ -78,7 +78,10 @@
 # Usage:
 #   fleet-worker.sh claim [--take]         # take the fleet's coordinator lease (--take adopts)
 #   fleet-worker.sh coordinator | release  # who holds it (exit 0 me, 1 other, 3 nobody) / give it up
-#   fleet-worker.sh preflight <box> [--codex|--native-codex|--native-claude] [--no-probe] [--no-cross]   # launch runs this itself, too
+#   fleet-worker.sh preflight <box> [--codex|--native-codex|--native-claude] [--no-probe] [--no-cross] [-- <codex args>]
+#                          # launch runs this itself, too; --codex probes a headless turn in a
+#                          # throwaway session of the box's tmux server with the worker's own args
+#                          # and names the codex binary and version that session resolved
 #   fleet-worker.sh refresh <box> [<box> ...]   # fast-forward each box's skills checkout alone, or
 #                          # report why not (never resets); `execution run`/`dispatch` run it
 #                          # on the execution host
@@ -86,7 +89,11 @@
 #   fleet-worker.sh launch <box> <name> --target-repo <owner/repo> --kind claude|codex --brief <file>
 #                          (--cwd <dir> | --repo <checkout-dir> --branch <branch> [--base <ref>])
 #                          [--base-branch <branch>] [--force --allow-red-base <reason>]
-#                          [--replace] [-- <extra CLI args>]
+#                          [--replace] [--no-cross] [-- <extra CLI args>]
+#                          # the args are kept in the record (cli-args) and every resume reuses
+#                          # them; meta records the model and effort they resolve to (model=,
+#                          # effort=, each with *_from= args|config|default); --no-cross skips the
+#                          # preflight's sibling reach probes (a wave with no cross-box legs)
 #   fleet-worker.sh attach <box> <name> [--interval <sec>]
 #   fleet-worker.sh status <box> <name>
 #   fleet-worker.sh log <box> <name> [-n <lines>]   # the tail of every turn's assistant text
@@ -94,7 +101,9 @@
 #                          # and alone (no -n): claude's last `result`, codex's last agent_message
 #                          # of its last ended turn; none yet is `NO RESULT <box>/<name>: <why>`, exit 1
 #   fleet-worker.sh unstick <box> <name> --message <file> [--kill] [-- <extra CLI args>]
-#                          # a live claude worker: append (APPENDED); else kill-and-resume (RESUMED)
+#                          # a live claude worker: append (APPENDED); else kill-and-resume (RESUMED),
+#                          # with the launch's recorded args unless `--` names others, which then
+#                          # replace them for later resumes too (the RESUMED line's args=)
 #   fleet-worker.sh unstick <box> <name> --interrupt [--message <file>]
 #                          # a live claude worker: stop its turn and tool call (INTERRUPTED), then
 #                          # append the message, if any, as its next turn; no restart

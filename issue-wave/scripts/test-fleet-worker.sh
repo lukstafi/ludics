@@ -667,16 +667,20 @@ EOF
 cat > "$TMP/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = login ] && { [ -z "${SHIM_CODEX_LOGIN_DOWN:-}" ]; exit $?; }
+[ "$1" = --version ] && { echo "codex-cli 0.0.0-shim"; exit 0; }
 [ "$1" = exec ] && shift
 case " $* " in *" -C / "*) case " $* " in *" --skip-git-repo-check "*) ;; *) echo "Not inside a trusted directory and --skip-git-repo-check was not specified." >&2; exit 1 ;; esac ;; esac
 if [ -n "${SHIM_CODEX_DOWN:-}" ]; then printf '{"type":"thread.started","thread_id":"x"}\n{"type":"turn.failed","error":{"message":"401 Unauthorized"}}\n'; exit 1; fi
 tid=""; out=""
 resumed=""
 if [ "${1:-}" = resume ]; then shift; tid="$1"; shift; resumed=1; fi
-while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; esac; shift; done
+model=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -m) model="$2"; shift ;; esac; shift; done
 [ -n "$tid" ] || tid="0199-shim-$(date +%s)-$$"
 brief=$(cat)
 [ -n "$brief" ] || { echo "No prompt provided via stdin." >&2; exit 1; }
+# A model this codex cannot serve (ludics#539: a stale Homebrew codex refused gpt-6.1-sol).
+if [ "$model" = gpt-unservable ]; then printf '{"type":"thread.started","thread_id":"x"}\n{"type":"turn.failed","error":{"message":"The %s model is not supported"}}\n' "$model"; exit 1; fi
 if [ -n "${SHIM_CODEX_SILENT_RESUME:-}" ] && [ "$1" != "" ] 2>/dev/null; then :; fi
 if [ -n "${SHIM_CODEX_SILENT_RESUME:-}" ] && [ -n "$resumed" ]; then exit 0; fi
 printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"turn.started"}\n' "$tid"
@@ -1292,6 +1296,11 @@ rmdir "$ISSUE_WAVE_STATE/COORDINATOR"
 section "preflight" && {
 expect "clean main on origin passes (claude, live probe via shim)" 0 "PREFLIGHT OK" -- "$FW" preflight testbox
 expect "clean main passes for codex (live probe via shim)" 0 "PREFLIGHT OK" -- "$FW" preflight testbox --codex
+# ludics#539: the probe is a turn in a tmux session, with the worker's args, and says what it ran.
+expect "...naming the codex a tmux session resolved, and its version" 0 "PREFLIGHT OK.*(codex in a tmux session: .*/bin/codex (codex-cli 0.0.0-shim))" -- "$FW" preflight testbox --codex --no-cross
+expect "a model the box's codex cannot serve refuses the codex preflight given those args" 1 "codex cannot run headless in a tmux session with -m gpt-unservable: \"message\":\"The gpt-unservable model is not supported\"" -- \
+  "$FW" preflight testbox --codex --no-cross -- -m gpt-unservable
+expect "codex args go with --codex only" 2 "goes with --codex" -- "$FW" preflight testbox --no-cross -- -m gpt-6.1-sol
 expect "a stalling skills fetch is bounded and refused" 1 "git fetch in .* timed out after 2s" -- env SHIM_GIT_HANG_FETCH=1 FLEET_FETCH_TIMEOUT=2 "$FW" preflight testbox --no-probe
 # Cross-box reach (ludics-lite#57): a missing credential refuses, a box that is down is noted.
 expect "a sibling refusing the key refuses the preflight" 1 "no non-interactive ssh to otherbox from testbox: .*Permission denied" -- env FLEET_BOXES="testbox otherbox" SHIM_SSH_DENY=otherbox "$FW" preflight testbox --no-probe
@@ -1509,7 +1518,7 @@ expect "the live probe runs the worker's own stream-json mode: a CLI without it 
 expect "native preflight needs neither CLI login nor a model probe" 0 "PREFLIGHT OK" -- env SHIM_CODEX_LOGIN_DOWN=1 SHIM_CODEX_DOWN=1 SHIM_CLAUDE_DOWN=1 "$FW" preflight testbox --native-codex
 expect "native Claude needs no CLI model probe" 0 "PREFLIGHT OK" -- env SHIM_CLAUDE_DOWN=1 SHIM_CODEX_LOGIN_DOWN=1 "$FW" preflight testbox --native-claude
 expect "legacy preflight still requires CLI login" 1 "codex not logged in" -- env SHIM_CODEX_LOGIN_DOWN=1 "$FW" preflight testbox --codex --no-probe
-expect "codex that cannot run headless refuses despite login status" 1 "codex cannot run headless: \"message\":\"401 Unauthorized\"" -- env SHIM_CODEX_DOWN=1 "$FW" preflight testbox --codex
+expect "codex that cannot run headless refuses despite login status" 1 "codex cannot run headless in a tmux session: \"message\":\"401 Unauthorized\"" -- env SHIM_CODEX_DOWN=1 "$FW" preflight testbox --codex
 echo x >> "$repo/ship-pr/SKILL.md"
 expect "a tracked change under the served tree refuses" 1 "1 local change(s) in the served tree" -- "$FW" preflight testbox --no-probe
 git -C "$repo" checkout -q -- .
@@ -1846,7 +1855,7 @@ expect "with no tmux server, a credential that dies after the preflight still re
 "$REAL_TMUX" -L "$nosock" list-sessions >/dev/null 2>&1 && ko "the refused launch started a tmux server on $nosock" || ok "...and starts no server"
 [ -e "$ISSUE_WAVE_STATE/workers/wn" ] && ko "a no-server GitHub refusal left a record behind" || ok "...and leaves no record"
 rm -f "$TMP/gh-dead-now"
-expect "launch creates the worktree and reports the session" 0 "LAUNCHED testbox/w1 kind=claude session=[0-9a-f-]\{36\} cwd=$proj-worktrees/w1" -- \
+expect "launch creates the worktree and reports the session" 0 "LAUNCHED testbox/w1 kind=claude session=[0-9a-f-]\{36\} model=opus effort=default cwd=$proj-worktrees/w1" -- \
   "$FW" launch testbox w1 --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/w1 -- --model opus
 [ -d "$proj-worktrees/w1" ] && [ "$(git -C "$proj-worktrees/w1" rev-parse --abbrev-ref HEAD)" = claude/w1 ] && ok "worktree on the requested branch" || ko "worktree missing or wrong branch"
 grep -q -- "--model opus" "$ISSUE_WAVE_STATE/workers/w1/run.sh" && ok "extra CLI args reach the command line" || ko "extra args lost"
@@ -2341,6 +2350,24 @@ printf 'Watch armed; it wakes me later\n' > "$TMP/cstrand.md"
 "$FW" launch testbox cst --target-repo example/project --kind codex --brief "$TMP/cstrand.md" --cwd "$proj" >/dev/null
 expect "a codex turn's last agent message is read for the strand mark too" 0 \
   'DONE testbox/cst exit=0 turn.completed .* | PROBABLE STRAND: the final message says "wakes me"' -- "$FW" attach testbox cst --interval 1
+# ludics#539: a resume keeps the launch's model args and writes the last message again.
+expect "a codex launch names the model and effort its args resolve to" 0 "LAUNCHED testbox/c2 kind=codex session=0199-shim-[^ ]* model=gpt-6.1-sol effort=medium " -- \
+  "$FW" launch testbox c2 --target-repo example/project --kind codex --brief "$brief" --cwd "$proj" --no-cross -- -m gpt-6.1-sol -c model_reasoning_effort=medium
+c2=$ISSUE_WAVE_STATE/workers/c2
+grep -qx 'box=testbox' "$c2/meta" && grep -q '^host=' "$c2/meta" && grep -qx 'model_from=args' "$c2/meta" && ok "meta records the fleet name, the host and where the model came from" || ko "c2 meta: $(cat "$c2/meta")"
+"$FW" attach testbox c2 --interval 1 >/dev/null
+expect "a resume without args reuses the launch's" 0 "RESUMED testbox/c2 kind=codex .* model=gpt-6.1-sol args=recorded " -- "$FW" unstick testbox c2 --message "$TMP/msg.md"
+grep -qF -- "--yolo --json -o $(printf '%q' "$c2/last-message.md") -m gpt-6.1-sol -c model_reasoning_effort=medium - < " "$c2/run.sh" && ok "the resume's command carries -o and the recorded args" || ko "c2 resume: $(cat "$c2/run.sh")"
+"$FW" attach testbox c2 --interval 1 >/dev/null
+grep -q "codex did: Stop and answer now" "$c2/last-message.md" && ok "last-message.md is the resumed turn's" || ko "last-message.md after a resume: $(cat "$c2/last-message.md")"
+expect "a resume's own args replace the recorded ones" 0 "RESUMED testbox/c2 kind=codex .* model=gpt-6-astra args=given " -- "$FW" unstick testbox c2 --message "$TMP/msg.md" -- -m gpt-6-astra
+"$FW" attach testbox c2 --interval 1 >/dev/null
+expect "...for later resumes too" 0 "RESUMED testbox/c2 kind=codex .* model=gpt-6-astra args=recorded " -- "$FW" unstick testbox c2 --message "$TMP/msg.md"
+grep -qF -- " -m gpt-6-astra - < " "$c2/run.sh" && ! grep -q 'gpt-6.1-sol' "$c2/run.sh" && ok "...with the replacement args alone" || ko "c2 run.sh: $(cat "$c2/run.sh")"
+"$FW" attach testbox c2 --interval 1 >/dev/null
+expect "a launch whose model this box's codex cannot serve is refused at the preflight" 1 "LAUNCH REFUSED testbox/c3: .*codex cannot run headless in a tmux session with -m gpt-unservable" -- \
+  "$FW" launch testbox c3 --target-repo example/project --kind codex --brief "$brief" --cwd "$proj" --no-cross -- -m gpt-unservable
+[ ! -e "$ISSUE_WAVE_STATE/workers/c3" ] && ok "...leaving no record" || ko "a refused launch left $ISSUE_WAVE_STATE/workers/c3"
 }
 
 section "log --last-result (fixture streams)" && {
