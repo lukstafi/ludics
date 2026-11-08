@@ -27,8 +27,7 @@ from ludics.fleetworker.preflight import siblings_of, slots_report
 from ludics.fleetworker.supervision import (
     ROUNDS_TRAILER,
     WAVE_ISSUE,
-    branch_of,
-    ci_of,
+    parse_checks,
     converge_note,
     each,
     head_age,
@@ -275,28 +274,26 @@ class Prs(unittest.TestCase):
     def test_branch_agreement_is_separate_from_ci(self) -> None:
         for branch in ("current", "behind", "unread"):
             out = f"checks: verdict=green branch={branch}"
-            self.assertEqual(ci_of(0, out), "green")
-            self.assertEqual(branch_of(out), branch)
+            self.assertEqual(parse_checks(0, out), ("green", branch))
             out = f"checks: verdict=pending runners=no-runner branch={branch}"
-            self.assertEqual(ci_of(4, out), "pending(no-runner)")
-            self.assertEqual(branch_of(out), branch)
+            self.assertEqual(parse_checks(4, out), ("pending(no-runner)", branch))
         for out in ("checks: verdict=green", "checks: verdict=green branch=bogus", ""):
-            self.assertEqual(branch_of(out), "unread")
-        self.assertEqual(ci_of(0, "checks: verdict=green branch=bogus"), "unknown")
+            self.assertEqual(parse_checks(0, out)[1], "unread")
+        self.assertEqual(parse_checks(0, "checks: verdict=green branch=bogus")[0], "unknown")
 
     def test_a_runners_field_shows_on_a_pending_head_only(self) -> None:
         # ludics#753: the checks trailer's runners= field names a job that never got a runner.
-        self.assertEqual(ci_of(4, "x\nchecks: verdict=unjudged runners=no-runner"), "pending(no-runner)")
-        self.assertEqual(ci_of(4, "checks: verdict=mixed runners=never-started"), "pending(never-started)")
-        self.assertEqual(ci_of(4, "checks: verdict=pending runners=no-runner,never-started"), "pending(no-runner,never-started)")
-        self.assertEqual(ci_of(4, "checks: verdict=pending"), "pending")
-        self.assertEqual(ci_of(0, "checks: verdict=green"), "green")
+        self.assertEqual(parse_checks(4, "x\nchecks: verdict=unjudged runners=no-runner")[0], "pending(no-runner)")
+        self.assertEqual(parse_checks(4, "checks: verdict=mixed runners=never-started")[0], "pending(never-started)")
+        self.assertEqual(parse_checks(4, "checks: verdict=pending runners=no-runner,never-started")[0], "pending(no-runner,never-started)")
+        self.assertEqual(parse_checks(4, "checks: verdict=pending")[0], "pending")
+        self.assertEqual(parse_checks(0, "checks: verdict=green")[0], "green")
         for rc, out in ((0, "checks: verdict=green runners=no-runner"), (1, "checks: verdict=red runners=never-started"),
                         (4, "checks: verdict=pending runners="), (4, "checks: verdict=pending runners=never-started,no-runner"),
                         (4, "checks: verdict=pending runners=no-runner extra"), (4, "checks: verdict=pending runners=asleep"),
                         (4, "checks: verdict=pending runners=no-runner\nafter"), (4, "")):
             with self.subTest(out=out):
-                self.assertEqual(ci_of(rc, out), "unknown")
+                self.assertEqual(parse_checks(rc, out)[0], "unknown")
 
     def test_the_flag_at_rounds_and_the_early_flag_after_a_large_round_1(self) -> None:
         # ludics-lite#650: round 3 after a round 1 of five or more, round 5 (--flag-at) otherwise.

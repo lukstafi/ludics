@@ -38,7 +38,8 @@ class ChecksTipTrailer(unittest.TestCase):
         config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0,
                         api_attempts=1, api_backoff=0)
         for tip, branch, expected in (
-            (branchtip.Clear(), "current", ""),
+            (branchtip.Clear("old"), "current", ""),
+            (branchtip.Clear(), "unread", ""),
             (branchtip.Lags("old", "new", "topic", "o/r"), "behind", "is NOT its branch's tip"),
             (branchtip.Gone("old", "topic", "o/r"), "unread", "has no branch tip"),
             (branchtip.Unread("offline"), "unread", "is UNREAD"),
@@ -49,6 +50,7 @@ class ChecksTipTrailer(unittest.TestCase):
                 gate.advisory_policy.return_value = 0
                 gate.check.return_value = 0
                 gate.verdict = "green"
+                gate.check_sha = "old"
                 gate.orphans = []
                 out = io.StringIO()
                 session = GhSession(config)
@@ -59,7 +61,7 @@ class ChecksTipTrailer(unittest.TestCase):
                 if expected:
                     self.assertIn(expected, out.getvalue())
                 else:
-                    self.assertEqual(out.getvalue(), "checks: verdict=green branch=current\n")
+                    self.assertEqual(out.getvalue(), f"checks: verdict=green branch={branch}\n")
                 read.assert_called_once_with(session, "o/r", "7")
 
     def test_failed_ref_read_reports_unread_beside_green(self) -> None:
@@ -81,6 +83,37 @@ class ChecksTipTrailer(unittest.TestCase):
             self.assertIn("is UNREAD", out.getvalue())
             self.assertEqual(read.call_count, 2)
             self.assertIn("repos/o/r/git/ref/heads/topic", read.call_args.args[1])
+
+    def test_agreement_uses_the_judged_sha_and_closed_prs_are_unread(self) -> None:
+        config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0,
+                        api_attempts=1, api_backoff=0)
+        for judged, state, head, tip, branch in (
+            ("old", "open", "new", "new", "behind"),
+            ("old", "open", "new", "old", "current"),
+            ("old", "open", "new", "other", "behind"),
+            ("", "open", "new", "new", "unread"),
+            ("old", "closed", "old", "", "unread"),
+        ):
+            for rc, verdict in ((0, "green"), (5, "superseded")):
+                with self.subTest(judged=judged, state=state, head=head, tip=tip, rc=rc), \
+                        mock.patch.object(checks, "Gate") as gate_type:
+                    session = GhSession(config)
+                    replies = [GhOk(f"{state}\t{head}\ttopic\to/r")]
+                    if state == "open":
+                        replies.append(GhOk(tip))
+                    gate = gate_type.return_value
+                    gate.advisory_policy.return_value = 0
+                    gate.check.return_value = rc
+                    gate.verdict = verdict
+                    gate.check_sha = judged
+                    gate.orphans = []
+                    with mock.patch.object(session, "retry", side_effect=replies) as read, \
+                            contextlib.redirect_stdout(io.StringIO()) as out:
+                        self.assertEqual(checks.run(session, ["7"]), rc)
+                    self.assertEqual(out.getvalue().splitlines()[-1], f"checks: verdict={verdict} branch={branch}")
+                    self.assertEqual(read.call_count, len(replies))
+                    if state == "closed":
+                        self.assertEqual(out.getvalue(), f"checks: verdict={verdict} branch=unread\n")
 
     def test_unread_build_or_policy_refusal_sends_no_tip_request(self) -> None:
         config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0,

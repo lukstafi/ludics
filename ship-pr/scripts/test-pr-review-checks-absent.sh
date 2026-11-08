@@ -2257,6 +2257,7 @@ check_trailer() { # <expected rc> <expected verdict> <prose> [checks args]
   assert_eq "$rc" "$want_rc" "$want: the exit status is unchanged"
   assert_contains "$out" "$prose" "$want: the prose line stays"
   local branch=current
+  [ "$want_rc" != 5 ] || branch=behind
   [ "$want_rc" != 2 ] && [ "$want_rc" != 3 ] || branch=unread
   assert_eq "$(tail -n 1 <<<"$out")" "checks: verdict=$want branch=$branch" "$want: the trailer is the last line"
 }

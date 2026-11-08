@@ -3,23 +3,26 @@ its trailer.
 
 Ported from the shell's ``cmd_checks`` (ludics-lite#403). The repository's advisory list is read
 first (``Gate.advisory_policy``); a policy that could not be read is the command's status, with
-nothing judged. The last stdout line is always ``checks: verdict=<v>`` from a closed vocabulary
-(ludics-lite#423): ``fleet-worker.sh prs`` reads the verdict from it, never from the prose. A head
+nothing judged. The last stdout line is ``checks: verdict=<v> [runners=<kinds>] branch=<agreement>``;
+the verdict uses a closed vocabulary (ludics-lite#423): ``fleet-worker.sh prs`` reads the verdict
+from it, never from the prose. A head
 held by a build job that never got a runner (runners.py: NO RUNNER, NEVER STARTED) adds one field,
-``checks: verdict=<v> runners=<kinds>``, ``<kinds>`` being ``no-runner``, ``never-started`` or both
+``runners=<kinds>``, ``<kinds>`` being ``no-runner``, ``never-started`` or both
 in that order, comma-joined (ludics#753): only on exit 4, the verdict's vocabulary unchanged, so
 ``prs`` can tell a starved head from a running one. No field: no such job was found.
 
-The final field is always ``branch=current|behind|unread`` (#1011): Clear (including a closed
-PR) is current, Lags is behind, and Gone, Unread or a skipped comparison is unread.
+The final field is always ``branch=current|behind|unread`` (#1011): a read tip equal to the
+gated SHA is current, a differing tip is behind, and no gated SHA or no compared tip (including
+a closed PR, Gone, Unread or a skipped comparison) is unread.
 
 Boundary (#990): immediately before the trailer, one fresh ``branchtip.read_tip`` compares the
 PR head with its branch and prints its warning, unless policy refused evaluation or the build
 read ended unread (no further reads after a budget/state-directory failure). This also qualifies a completed ``--wait``;
 the machine verdict and exit still describe the PR head's build, not branch agreement. The gate
 itself does not poll the tip: two reads at reporting time instead of two extra reads per round.
-A push after this comparison is unseen, and a head move between the gate and this comparison is
-not a new build verdict. ``merge`` retains its own final branch-tip refusal.
+A push after this comparison is unseen. A head move between the gate and this comparison
+is not a new build verdict; branch agreement compares the read tip to the SHA the gate judged.
+``merge`` retains its own final branch-tip refusal.
 
 Exit: the gate's (0 green or a confirmed absence, 1 red, 3 unread -- under --wait, a head,
 check-run or workflow-run read that did not answer is read again until the wait is spent (gate.py,
@@ -59,7 +62,7 @@ VERDICTS = (
 RUNNER_KINDS = ("no-runner", "never-started")
 
 
-def trailer(rc: int, verdict: str, kinds: set[str], branch: str = "unread") -> str:
+def trailer(rc: int, verdict: str, kinds: set[str], branch: str) -> str:
     """The last stdout line: the verdict, and the runner-less kinds found on a no-verdict exit (4)."""
     found = [kind for kind in RUNNER_KINDS if kind in kinds] if rc == 4 else []
     return f"checks: verdict={verdict}" + (f" runners={','.join(found)}" if found else "") + f" branch={branch}"
@@ -127,10 +130,9 @@ def run(session: GhSession, args: list[str]) -> int:
     branch = "unread"
     if policy == 0 and rc != 3:
         tip = branchtip.read_tip(session, target.repo, target.num)
-        if isinstance(tip, branchtip.Clear):
-            branch = "current"
-        elif isinstance(tip, branchtip.Lags):
-            branch = "behind"
+        tip_sha = tip.head if isinstance(tip, branchtip.Clear) else tip.tip if isinstance(tip, branchtip.Lags) else ""
+        if gate.check_sha and tip_sha:
+            branch = "current" if tip_sha == gate.check_sha else "behind"
         warning = branchtip.warning(tip, target.repo, target.num)
         if warning:
             cli.say(warning)
