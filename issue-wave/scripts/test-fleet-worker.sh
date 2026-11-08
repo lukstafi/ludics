@@ -2817,7 +2817,7 @@ bgc() { # <id> <dir> [flags...]: dispatch <id>, then conclude it from <dir>
 }
 # #1012: the same piped detached batch on both sides of admission. A warning must never
 # precede a refusal; after admission it stays advisory, even beside refusal text from the test.
-piped_batch=(sh -c 'printf "%s\n" pipeline-ran "EXECUTION SLOT REFUSED testbox: printed by test" | cat; exit 1')
+piped_batch=(sh -c 'printf "%s\n" "EXECUTION SLOT REFUSED testbox: printed by test" pipeline-ran | cat; exit 1')
 jq -n '{request_id:"bg-measure", wave:"w", worker:"bg-measure", transport:"subagent", issue:"o/r#988",
   purpose:"refusal fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
   requested_revision:"origin/main", kind:"measurement"}' > "$TMP/bg-measure.json"
@@ -2826,8 +2826,7 @@ jq -n '{request_id:"bg-measure", wave:"w", worker:"bg-measure", transport:"subag
 refused_dir="$TMP/bg refused/run-1"
 expect "the refused slot wrapper finishes" 0 '^rc=1' -- bash "$BG" wait "$refused_dir" --within 30
 [ "$(cat "$refused_dir/rc")" = 1 ] &&
-  head -n 1 "$refused_dir/log" > "$TMP/refused-first-line" &&
-  grep -q '^EXECUTION SLOT REFUSED testbox:' "$TMP/refused-first-line" && ok "slot refused before launching the batch" || ko "missing real slot refusal"
+  grep -q '^EXECUTION SLOT REFUSED testbox:' <<<"$(head -n 1 "$refused_dir/log")" && ok "slot refused before launching the batch" || ko "missing real slot refusal"
 if grep -Eq '^(EXECUTION SLOT WARNING |pipeline-ran$)' "$refused_dir/log"; then
   ko "a refused piped batch warned or ran"
 else ok "a refused piped batch neither warns nor runs"; fi
