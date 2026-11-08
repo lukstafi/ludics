@@ -11,9 +11,9 @@ held by a build job that never got a runner (runners.py: NO RUNNER, NEVER STARTE
 in that order, comma-joined (ludics#753): only on exit 4, the verdict's vocabulary unchanged, so
 ``prs`` can tell a starved head from a running one. No field: no such job was found.
 
-The final field is always ``branch=current|behind|unread`` (#1011): a read tip equal to the
-gated SHA is current, a differing tip is behind, and no gated SHA or no compared tip (including
-a closed PR, Gone, Unread or a skipped comparison) is unread.
+The final field is always ``branch=current|behind|unread`` (#1011): current means both reads
+agree on the gated SHA; disagreeing reads or agreement on another SHA means behind. No gated SHA
+or no compared tip (including a closed PR, Gone, Unread or a skipped comparison) means unread.
 
 Boundary (#990): immediately before the trailer, one fresh ``branchtip.read_tip`` compares the
 PR head with its branch and prints its warning, unless policy refused evaluation or the build
@@ -130,9 +130,11 @@ def run(session: GhSession, args: list[str]) -> int:
     branch = "unread"
     if policy == 0 and rc != 3:
         tip = branchtip.read_tip(session, target.repo, target.num)
-        tip_sha = tip.head if isinstance(tip, branchtip.Clear) else tip.tip if isinstance(tip, branchtip.Lags) else ""
-        if gate.check_sha and tip_sha:
-            branch = "current" if tip_sha == gate.check_sha else "behind"
+        if gate.check_sha:
+            if isinstance(tip, branchtip.Clear) and tip.head:
+                branch = "current" if tip.head == gate.check_sha else "behind"
+            elif isinstance(tip, branchtip.Lags):
+                branch = "behind"
         warning = branchtip.warning(tip, target.repo, target.num)
         if warning:
             cli.say(warning)

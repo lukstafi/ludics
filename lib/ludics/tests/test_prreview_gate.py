@@ -88,10 +88,12 @@ class ChecksTipTrailer(unittest.TestCase):
         config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0,
                         api_attempts=1, api_backoff=0)
         for judged, state, head, tip, branch in (
+            ("old", "open", "old", "old", "current"),
             ("old", "open", "new", "new", "behind"),
-            ("old", "open", "new", "old", "current"),
+            ("old", "open", "new", "old", "behind"),
             ("old", "open", "new", "other", "behind"),
             ("", "open", "new", "new", "unread"),
+            ("", "open", "new", "old", "unread"),
             ("old", "closed", "old", "", "unread"),
         ):
             for rc, verdict in ((0, "green"), (5, "superseded")):
@@ -112,6 +114,9 @@ class ChecksTipTrailer(unittest.TestCase):
                         self.assertEqual(checks.run(session, ["7"]), rc)
                     self.assertEqual(out.getvalue().splitlines()[-1], f"checks: verdict={verdict} branch={branch}")
                     self.assertEqual(read.call_count, len(replies))
+                    if state == "open" and head != tip:
+                        self.assertIn("is NOT its branch's tip", out.getvalue())
+                        self.assertNotIn("branch=current", out.getvalue())
                     if state == "closed":
                         self.assertEqual(out.getvalue(), f"checks: verdict={verdict} branch=unread\n")
 

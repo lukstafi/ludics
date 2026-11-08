@@ -872,8 +872,8 @@ A program reads the machine-readable trailer, never the prose above it, which ge
 and on exit 4 a `runners=<no-runner|never-started|no-runner,never-started>` field when a build
 job never got a runner (`prs` shows it as `ci=pending(no-runner)`). It always ends with
 `branch=<current|behind|unread>` (`prs` shows this separately; missing or unread tips and skipped
-comparisons are `unread`; agreement is with the SHA the build verdict judged, while the
-verdict and exit still describe that head's build).
+comparisons are `unread`; `current` requires both reads to agree on the SHA the build verdict
+judged, while the verdict and exit still describe that head's build).
 A `watch` that ends on reviewer activity puts `watch-rounds: from=<b> to=<n> threshold=<T|off>`
 just above its watermark: the window opened rounds b+1 to n, or none when n ≤ b.
 `fleet-worker.sh prs` reads a missing or malformed trailer as unknown, never as green.
