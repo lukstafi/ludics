@@ -1432,6 +1432,24 @@ expect "a rejected token exported in the session names it in the repair" 1 "repa
 # The fleet's PAT file (2026-09-24): its contract is checked whatever gh answers, and a dead PAT
 # is replaced in the file, never by gh auth login.
 mkdir -p "$HOME/.config/fleet"; printf 'export GH_TOKEN=ghp_dead\n' > "$HOME/.config/fleet/gh-token.sh"; chmod 600 "$HOME/.config/fleet/gh-token.sh"
+# Model only ls's mode marker for this token path, leaving every other listing real. Both
+# markers are shimmed so Linux exercises the macOS xattr/ACL distinction without host ACL tools.
+mkdir -p "$TMP/token-ls"
+cat > "$TMP/token-ls/ls" <<'SH'
+#!/bin/bash
+if [ "$#" -eq 2 ] && [ "$1" = -lnd ] && [ "$2" = "$HOME/.config/fleet/gh-token.sh" ]; then
+  printf '%s%s 1 %s 0 0 Jan 1 00:00 %s\n' "$SHIM_TOKEN_MODE" "$SHIM_TOKEN_MARKER" "$(id -u)" "$2"
+else
+  exec /bin/ls "$@"
+fi
+SH
+chmod +x "$TMP/token-ls/ls"
+for token_mode in -rw------- -r--------; do
+  expect "a $token_mode token file with an @ xattr marker passes" 0 "PREFLIGHT OK" -- \
+    env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE="$token_mode" SHIM_TOKEN_MARKER=@ GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+  expect "a $token_mode token file with a + ACL marker refuses and names the ACL" 1 "ACL.*repair: replace it here with a regular 0600 file" -- \
+    env PATH="$TMP/token-ls:$PATH" SHIM_TOKEN_MODE="$token_mode" SHIM_TOKEN_MARKER=+ GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
+done
 # Two states pass (ludics-lite#567): the earlier one, where the session exports the file's token
 # (noted, since every child process sees it), and the target, where the session exports none and
 # gh's stored token is the file's. A session with no working credential in either is refused.
@@ -1479,7 +1497,7 @@ expect "...and so is one that assigns GH_TOKEN without exporting it" 1 "gh-token
   env GH_TOKEN=ghp_dead "$FW" preflight testbox --native-claude --no-cross
 printf 'export GH_TOKEN=ghp_dead\n' > "$HOME/.config/fleet/gh-token.sh"
 chmod 644 "$HOME/.config/fleet/gh-token.sh"
-expect "a group-readable gh-token.sh refuses even with a live token, with the replace-the-file repair" 1 "gh-token.sh on other is not a regular mode-0600 file this user owns (-rw-r--r-- uid [0-9]*).*repair: replace it from the anchor" -- \
+expect "a group-readable gh-token.sh refuses even with a live token, with the replace-the-file repair" 1 "gh-token.sh on other is not a regular mode-0600 file this user owns (-rw-r--r--@\{0,1\} uid [0-9]*).*repair: replace it from the anchor" -- \
   env GH_TOKEN=ghp_dead "${FWO[@]}" preflight other --native-claude --no-cross
 rm "$HOME/.config/fleet/gh-token.sh"; mkdir "$HOME/.config/fleet/gh-token.sh"
 expect "...and a directory, whose repair removes it before the copy" 1 "gh-token.sh on other is not a regular mode-0600 file this user owns (d.*repair: move the path aside first (ssh other 'mv ~/.config/fleet/gh-token.sh ~/.config/fleet/gh-token.sh.aside'" -- \

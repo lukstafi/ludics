@@ -938,6 +938,8 @@ gh_down=""
 # which token it would use with no variable set (hosts.yml or keyring alike), and compared with
 # the file's; `gh api user` below then proves it live. A token other than the file's, an absent
 # one, or a `gh auth token` that fails or does not answer in the bound refuses alike.
+# Mode boundary: allow only 0600/0400 with no marker or BSD's optional @ (extended attributes).
+# A + marks an ACL, which may grant others read access despite those mode bits, and refuses.
 tokf="$HOME/.config/fleet/gh-token.sh"; tokbad=""; tokenv=""; tmux_tok=""; qbox=$(printf '%q' "$BOX")
 storecmd="(. ~/.config/fleet/gh-token.sh; printenv GH_TOKEN) | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login -h github.com --with-token --insecure-storage"
 case "$BOX_IS_LOCAL" in 1) tokcopy="replace it here with a regular 0600 file holding the fleet PAT (export GH_TOKEN=ghp_...)"; storecmd="in a terminal on this box: $storecmd" ;;
@@ -945,7 +947,7 @@ case "$BOX_IS_LOCAL" in 1) tokcopy="replace it here with a regular 0600 file hol
      storecmd="ssh $qbox '$storecmd'" ;; esac
 if [ -e "$tokf" ] || [ -L "$tokf" ]; then
   tokbad=1; tls=$(ls -lnd "$tokf" 2>/dev/null)
-  case "$tls" in "-rw------- "*|"-r-------- "*) [ "$(printf '%s' "$tls" | awk '{print $3}')" != "$(id -u)" ] || tokbad="" ;; esac
+  case "$tls" in "-rw------- "*|"-r-------- "*|"-rw-------@ "*|"-r--------@ "*) [ "$(printf '%s' "$tls" | awk '{print $3}')" != "$(id -u)" ] || tokbad="" ;; esac
   if [ -n "$tokbad" ]; then
     # mv replaces only a regular file: onto a directory, or a symlink to one, it moves the new
     # file INTO it. So any path that is not a plain regular file is moved aside first (never
@@ -953,7 +955,9 @@ if [ -e "$tokf" ] || [ -L "$tokf" ]; then
     # The operator reads this on the anchor, so a remote box's move runs over ssh as its copy does.
     tokmv="mv ~/.config/fleet/gh-token.sh ~/.config/fleet/gh-token.sh.aside"; [ "$BOX_IS_LOCAL" = 1 ] || tokmv="ssh $qbox '$tokmv'"
     tokfix=$tokcopy; [ -f "$tokf" ] && [ ! -L "$tokf" ] || tokfix="move the path aside first ($tokmv; a symlink moves as the link), then $tokcopy"
-    note "~/.config/fleet/gh-token.sh on $BOX is not a regular mode-0600 file this user owns ($(printf '%s' "$tls" | awk '{print $1, "uid", $3}')): the PAT in it may be readable by others -- repair: $tokfix"
+    tokwhy="the PAT in it may be readable by others"
+    case "${tls%% *}" in *+) tokwhy="an ACL may make the PAT in it readable by others" ;; esac
+    note "~/.config/fleet/gh-token.sh on $BOX is not a regular mode-0600 file this user owns ($(printf '%s' "$tls" | awk '{print $1, "uid", $3}')): $tokwhy -- repair: $tokfix"
   else
     # An empty variable is no token to gh: it falls back to the next, GH_TOKEN then GITHUB_TOKEN
     # then its stored login. And an assignment without `export` never reaches gh, so the file's
