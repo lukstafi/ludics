@@ -1628,7 +1628,7 @@ test_a_job_no_runner_took_is_named_and_ends_the_wait() {
   assert_contains "$GATE_OUTPUT" "NO RUNNER      build — run 101, attempt 1: cancelled before any runner took it" \
     "the job is named as one no runner took"
   assert_contains "$GATE_OUTPUT" "recover: gh run rerun 101 --failed --repo $REPO" "with the command that recovers it"
-  assert_contains "$GATE_OUTPUT" "checks: verdict=unjudged branch=current" "and the trailer's vocabulary is unchanged"
+  assert_contains "$GATE_OUTPUT" "checks: verdict=unjudged" "and the trailer's vocabulary is unchanged"
   # ludics#753: the trailer's own field names the kind, so `fleet-worker.sh prs` can show it.
   assert_eq "$(tail -n 1 <<<"$GATE_OUTPUT")" "checks: verdict=unjudged runners=no-runner branch=current" \
     "the trailer is the last line, with the runner-less kind in its runners= field"
