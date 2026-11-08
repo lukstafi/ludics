@@ -2815,23 +2815,32 @@ bgc() { # <id> <dir> [flags...]: dispatch <id>, then conclude it from <dir>
   local id="$1" dir="$2"; shift 2
   bgreq "$id" && "${FWB[@]}" execution conclude --from-bg-run "$dir" --request "$id" --sha "$sha" "$@"
 }
-# #988: a real slot-refused detached batch, using only this suite's registry.
+# #1012: the same piped detached batch on both sides of admission. A warning must never
+# precede a refusal; after admission it stays advisory, even beside refusal text from the test.
+piped_batch=(sh -c 'printf "%s\n" pipeline-ran "EXECUTION SLOT REFUSED testbox: printed by test" | cat; exit 1')
 jq -n '{request_id:"bg-measure", wave:"w", worker:"bg-measure", transport:"subagent", issue:"o/r#988",
   purpose:"refusal fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
   requested_revision:"origin/main", kind:"measurement"}' > "$TMP/bg-measure.json"
 "${FWB[@]}" execution reserve "$TMP/bg-measure.json" >/dev/null || ko "reserve refusal fixture"
-"${FWB[@]}" execution slot --bg "$TMP/bg refused" --cpu --wait 0 -- touch "$TMP/should-not-run" >/dev/null || ko "spawn refusal fixture"
+"${FWB[@]}" execution slot --bg "$TMP/bg refused" --cpu --wait 0 -- "${piped_batch[@]}" >/dev/null || ko "spawn refusal fixture"
 refused_dir="$TMP/bg refused/run-1"
 expect "the refused slot wrapper finishes" 0 '^rc=1' -- bash "$BG" wait "$refused_dir" --within 30
-[ "$(cat "$refused_dir/rc")" = 1 ] && [ ! -e "$TMP/should-not-run" ] &&
-  grep -q '^EXECUTION SLOT REFUSED testbox:' "$refused_dir/log" && ok "slot refused before launching the batch" || ko "missing real slot refusal"
+[ "$(cat "$refused_dir/rc")" = 1 ] &&
+  head -n 1 "$refused_dir/log" > "$TMP/refused-first-line" &&
+  grep -q '^EXECUTION SLOT REFUSED testbox:' "$TMP/refused-first-line" && ok "slot refused before launching the batch" || ko "missing real slot refusal"
+if grep -Eq '^(EXECUTION SLOT WARNING |pipeline-ran$)' "$refused_dir/log"; then
+  ko "a refused piped batch warned or ran"
+else ok "a refused piped batch neither warns nor runs"; fi
 fixture_done bg-measure
 expect "a slot-refused batch concludes not-launched" 0 '"verdict": "not-launched"' -- bgc bg-refused "$refused_dir"
 grep -q 'EXECUTION SLOT REFUSED testbox:' <<<"$out" && ok "the conclusion names the refusal" || ko "refusal missing from evidence: $out"
-"${FWB[@]}" execution slot --bg "$TMP/bg printed refusal" --cpu --wait 0 -- sh -c 'printf "%s\n" "EXECUTION SLOT REFUSED testbox: printed by test"; exit 1' >/dev/null || ko "spawn admitted fixture"
+"${FWB[@]}" execution slot --bg "$TMP/bg printed refusal" --cpu --wait 0 -- "${piped_batch[@]}" >/dev/null || ko "spawn admitted fixture"
 printed_dir="$TMP/bg printed refusal/run-1"
 expect "the admitted batch finishes with its own failure" 0 '^rc=1' -- bash "$BG" wait "$printed_dir" --within 30
-expect "a test printing refusal text still concludes fail" 0 '"verdict": "fail"' -- bgc bg-printed-refusal "$printed_dir"
+[ "$(grep -c '^EXECUTION SLOT WARNING testbox: shell pipeline without recognised pipefail' "$printed_dir/log")" = 1 ] &&
+  ok "the admitted piped batch keeps one warning" || ko "missing or repeated pipeline warning"
+grep -q '^pipeline-ran$' "$printed_dir/log" && ok "the admitted pipeline ran" || ko "the admitted pipeline did not run"
+expect "a warned pipeline printing refusal text still concludes fail" 0 '"verdict": "fail"' -- bgc bg-printed-refusal "$printed_dir"
 ok_dir=$(bgdir pass sh -c 'echo building; echo "exit: 1 (a test named exit)"; echo "x: ssh exit: 5"')
 expect "a bg-run that returned 0 concludes as pass" 0 '"verdict": "pass"' -- bgc bg-pass "$ok_dir"
 for want in "\"observed_sha\": \"$sha\"" "\"handle\": \"bg-run:testbox:$ok_dir\"" "\"log\": \"testbox:$ok_dir/log\"" \
