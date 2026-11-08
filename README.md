@@ -786,7 +786,9 @@ shape with the passing shape beside each, against scratch checkouts that pin the
 scope, and finally against the three suites that rediscovered the fix, each with its resolution
 line removed, where the guard must find what their authors found by accident.
 
-`test-fleet-worker.sh` runs its ~1000 assertions top to bottom in one shell, which takes about
+`test-fleet-worker.sh` launch cases also pin `--standing`: a refused reservation leaves the
+prepared worktree, starts no worker, and a retry cannot silently adopt an outstanding dispatch.
+The suite runs its ~1000 assertions top to bottom in one shell, which takes about
 sixteen minutes on CI's Ubuntu runner, twenty-four on its macOS one, and up to sixteen on a mac
 shared with other workers. Arguments
 narrow that, and while iterating they are the lever: each one selects every section whose name

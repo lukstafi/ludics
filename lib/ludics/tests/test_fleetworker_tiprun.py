@@ -209,7 +209,7 @@ class Race(unittest.TestCase):
             def listing(_cfg: object) -> Done:
                 return Done(0, next(reads))
 
-            def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+            def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
                 calls.append((args, body))
                 return 0
 
@@ -238,7 +238,7 @@ class Race(unittest.TestCase):
             def listing(_cfg: object) -> Done:
                 return Done(0, json.dumps([outstanding("w-gpu-rog-1")]) if calls else "[]")
 
-            def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+            def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
                 calls.append((args, body))
                 return 0
 
@@ -274,7 +274,7 @@ class Tip(unittest.TestCase):
         cfg = load_config(SCRIPT, {}, host="h")
         calls: list[tuple[list[str], dict[str, Any] | None]] = []
 
-        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
             calls.append((args, body))
             return 1  # refused: the test stops at the reservation
 
@@ -312,7 +312,7 @@ class Allocate(unittest.TestCase):
         cfg = load_config(SCRIPT, {}, host="h")
         calls: list[tuple[list[str], dict[str, Any] | None]] = []
 
-        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
             calls.append((args, body))
             return 1  # refused: the test stops at the reservation
 
@@ -361,7 +361,7 @@ class Starting(unittest.TestCase):
         def listing(_cfg: object) -> Done:
             return Done(0, json.dumps([outstanding(req["request_id"])]) if calls else "[]")
 
-        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None) -> int:
+        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
             calls.append((args, body))
             return 0
 
@@ -486,7 +486,7 @@ class Wait(unittest.TestCase):
             assert far is not None, "the box was read"
             return far
 
-        def worker(_cfg: object, argv: list[str], body: dict[str, Any] | None = None) -> int:
+        def worker(_cfg: object, argv: list[str], body: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
             worker_calls.append(argv)
             return conclude_rc
 

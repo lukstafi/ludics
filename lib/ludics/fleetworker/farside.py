@@ -1094,7 +1094,7 @@ git -C "$repo" rev-parse --verify "$base^{commit}"
 # fetch_timeout bid, then the extra CLI args. The brief was staged beside the record
 # ($STATE/incoming/<name>-<stamp>.md) and is moved into place only after the guards pass, so a
 # refused launch leaves a finished worker's brief untouched.
-LAUNCH = r"""name="$1" kind="$2" cwd="$3" repo="$4" branch="$5" base="$6" sid="$7" coord="$8" replace="$9" stamp="${10}" fetch_timeout="${11}" bid="${12}" fbox="${13}"; shift 13
+LAUNCH_WORKTREE = r"""name="$1" kind="$2" cwd="$3" repo="$4" branch="$5" base="$6" sid="$7" coord="$8" replace="$9" stamp="${10}" fetch_timeout="${11}" bid="${12}" fbox="${13}"; shift 13
 d="$WORKERS/$name"; incoming="$STATE/incoming/$name-$stamp.md"
 # Until the lock is held nothing here is ours but the staged brief; `fresh` (this launch
 # creates the record, so a refusal removes it whole) is decided under the lock.
@@ -1166,7 +1166,16 @@ for om in "$WORKERS"/*/meta; do
   [ "$(cd "$ocwd" 2>/dev/null && pwd -P)" = "$canon_cwd" ] || continue
   running "$oname" && refuse "worktree $cwd is already owned by live worker $oname on this box; wait for it, unstick --kill it, or use another worktree"
 done
-mkdir -p "$d" 2>/dev/null || refuse "cannot create the worker record at $d (a file in the way, or unwritable)"
+"""
+
+# Preparation publishes no worker ownership. Startup repeats LAUNCH_WORKTREE under its locks:
+# the reservation gap never lets two starts pass the ownership scan together.
+# Remove only this launch's staged brief when admission or its last gate refuses.
+LAUNCH_DROP_BRIEF = 'rm -f -- "$STATE/incoming/$1"\n'
+
+LAUNCH_PREPARE = LAUNCH_WORKTREE + 'printf \'%s\\n\' "$cwd"\n'
+
+LAUNCH_START = r"""mkdir -p "$d" 2>/dev/null || refuse "cannot create the worker record at $d (a file in the way, or unwritable)"
 if [ -f "$d/meta" ]; then
   # A feeder that outlived its CLI (no tmux, no CLI: both refused above) would follow the archived
   # file forever, out of feeder_of's reach once the record moves: end it first.
@@ -1237,6 +1246,10 @@ if [ "$kind" = codex ]; then
 fi
 echo "LAUNCHED $BOX/$name kind=$kind session=${sid:-unknown} model=$(meta_get "$d" model) effort=$(meta_get "$d" effort) cwd=$cwd stream=$d/stream.jsonl${archive:+ replaced=$archive}"
 """
+
+
+# Without --standing this is the original script, byte for byte.
+LAUNCH = LAUNCH_WORKTREE + LAUNCH_START
 
 
 # The verdict of a finished worker, from its files. Prints one line; exit 0 clean, 1 failed,
