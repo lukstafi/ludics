@@ -405,7 +405,7 @@ def far_facts(text: str) -> dict[str, str]:
     return facts
 
 
-def fleet_worker(cfg: Config, args: list[str], payload: dict[str, Any] | None = None) -> int:
+def fleet_worker(cfg: Config, args: list[str], payload: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
     """Run this fleet-worker.sh with ``args`` (and a payload file appended), its stdout on stderr."""
     script = os.path.join(cfg.here, os.path.basename(cfg.script))
     path = ""
@@ -417,7 +417,7 @@ def fleet_worker(cfg: Config, args: list[str], payload: dict[str, Any] | None = 
             args = [*args, path]
         return run([script, *args], stdout_to_stderr=True).rc
     except OSError as exc:
-        err(f"TIP-RUN: cannot stage a payload: {exc.strerror}")
+        err(f"{verb}: cannot stage a payload: {exc.strerror}")
         return 1
     finally:
         if path:
@@ -427,14 +427,14 @@ def fleet_worker(cfg: Config, args: list[str], payload: dict[str, Any] | None = 
                 pass
 
 
-def not_started(cfg: Config, request_id: str, why: str, log: str) -> int:
+def not_started(cfg: Config, request_id: str, why: str, log: str, *, verb: str = "TIP-RUN") -> int:
     """Conclude the dispatched reservation not-launched, then say so; exit 1, or 4 when the
     conclusion did not land (the record stays dispatched)."""
-    done = {"request_id": request_id, "verdict": "not-launched", "log": log, "evidence": f"tip-run: {why}"}
-    if fleet_worker(cfg, ["execution", "conclude"], done) != 0:
-        cli.say(f"TIP-RUN UNKNOWN {request_id}: nothing started ({why}), but the not-launched conclusion did not land (above); conclude it")
+    done = {"request_id": request_id, "verdict": "not-launched", "log": log, "evidence": f"{verb.lower()}: {why}"}
+    if fleet_worker(cfg, ["execution", "conclude"], done, verb=verb) != 0:
+        cli.say(f"{verb} UNKNOWN {request_id}: nothing started ({why}), but the not-launched conclusion did not land (above); conclude it")
         return 4
-    cli.say(f"TIP-RUN NOT STARTED {request_id}: {why}")
+    cli.say(f"{verb} NOT STARTED {request_id}: {why}")
     return 1
 
 

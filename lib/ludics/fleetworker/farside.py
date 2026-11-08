@@ -1152,6 +1152,9 @@ done
 
 # Preparation publishes no worker ownership. Startup repeats LAUNCH_WORKTREE under its locks:
 # the reservation gap never lets two starts pass the ownership scan together.
+# Remove only this launch's staged brief when admission or its last gate refuses.
+LAUNCH_DROP_BRIEF = 'rm -f -- "$STATE/incoming/$1"\n'
+
 LAUNCH_PREPARE = LAUNCH_WORKTREE + 'printf \'%s\\n\' "$cwd"\n'
 
 LAUNCH_START = r"""mkdir -p "$d" 2>/dev/null || refuse "cannot create the worker record at $d (a file in the way, or unwritable)"

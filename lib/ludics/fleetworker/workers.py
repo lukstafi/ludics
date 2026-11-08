@@ -15,18 +15,15 @@ Every verb that changes a worker -- ``launch``, ``unstick``, ``close`` -- requir
 not answer is ``<VERB> UNREACHABLE ...``, exit 4, never a verdict about the worker.
 """
 
-import contextlib
 import json
 import os
-import shlex
-import tempfile
-import sys
-from typing import Any, cast
 import re
+import shlex
 import time
+from typing import Any, cast
 
 from ludics import cli
-from ludics.fleetworker import execution, farside
+from ludics.fleetworker import farside, tiprun
 from ludics.fleetworker.config import Config, short_hostname
 from ludics.fleetworker.gate import base_gate
 from ludics.fleetworker.identity import die, gen_uuid
@@ -257,6 +254,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         knob(cfg, "FLEET_FETCH_TIMEOUT", "300"), bid, fleet_name(cfg, box), *extra,
     ]  # fmt: skip
     script = prefix + farside.LAUNCH
+    request_id = ""
     if request is not None:
         done = run_on(cfg, box, prefix + farside.LAUNCH_PREPARE, far_args, capture=True)
         if done.unreachable:
@@ -269,29 +267,40 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         if not prepared.startswith("/"):
             die("launch: preparation did not return an absolute checkout")
         request["checkout"] = prepared
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as payload:
-            json.dump(request, payload)
-            payload.flush()
-            # Keep the launch's stdout contract: execution's record is diagnostic here.
-            with contextlib.redirect_stdout(sys.stderr):
-                rc = execution.cmd_execution(cfg, ["run", payload.name])
-        if rc != 0:
-            cli.say(f"LAUNCH REFUSED {label}: standing reservation failed; worktree kept")
-            return rc
-        # A halt/adoption while reserving must still fence startup. A reservation is not a
-        # worker: do not conclude it automatically on a refusal or an ambiguous interruption.
-        rc = anchor_gate(cfg, "LAUNCH", label, force)
-        if rc != 0:
-            return rc
         check = f'[ "$cwd" = {shlex.quote(prepared)} ] || refuse "worktree path changed after reservation"\n'
-        script = prefix + farside.LAUNCH_WORKTREE + check + farside.LAUNCH_START
+        # Revalidation's notices (including reuse of the worktree we just made) are diagnostic.
+        script = prefix + "{\n" + farside.LAUNCH_WORKTREE + "} >&2\n" + check + farside.LAUNCH_START
+    # Stage before admission: failure here cannot leave a dispatched reservation behind.
     done = put_file(cfg, box, brief, f"{cfg.state}/incoming/{name}-{when}.md")
     if done.unreachable:
         return _unreachable(f"LAUNCH UNREACHABLE {box}")
     if done.rc != 0:
         cli.say(f"LAUNCH REFUSED {label}: cannot stage the brief under the worker state dir on {box} (unwritable, or a file in the way)")
         return 1
+    if request is not None:
+        request_id = str(request.get("request_id", ""))
+        rc = tiprun.fleet_worker(cfg, ["execution", "run"], request, verb="LAUNCH")
+        if rc != 0:
+            run_on(cfg, box, prelude(cfg, box) + farside.LAUNCH_DROP_BRIEF, [f"{name}-{when}.md"])
+            if rc == 4:
+                cli.say(f"LAUNCH UNKNOWN {label}: reservation {request_id} outcome unknown; reconcile it; worktree kept")
+            else:
+                cli.say(f"LAUNCH REFUSED {label}: standing reservation failed; worktree kept")
+            return rc
+        # A halt/adoption while reserving still fences startup. No start was attempted here,
+        # so conclude not-launched; a failed conclusion must be reported as unknown.
+        rc = anchor_gate(cfg, "LAUNCH", label, force)
+        if rc != 0:
+            run_on(cfg, box, prelude(cfg, box) + farside.LAUNCH_DROP_BRIEF, [f"{name}-{when}.md"])
+            return tiprun.not_started(cfg, request_id, f"{label}: post-reservation launch gate refused (exit {rc})",
+                                      "none: worker startup was not attempted", verb="LAUNCH")
     done = run_on(cfg, box, script, far_args)
+    if request is not None and done.rc != 0:
+        # Even a reachable refusal may follow run.sh starting (tm_worker's trc=2). Do not
+        # conclude it automatically: preserve that evidence and name the reservation to repair.
+        cli.say(f"LAUNCH UNKNOWN {label}: reservation {request_id} remains dispatched; inspect status and execution list; "
+                "conclude not-launched only if no worker started, otherwise reconcile what ran")
+        return 4
     if done.unreachable:
         return _unreachable(f"LAUNCH UNREACHABLE {box}")
     return done.rc

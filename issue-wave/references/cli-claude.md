@@ -34,12 +34,15 @@ For an iteration reservation, add `--standing <reserve.json>` before `--`: the J
 `standing: true`, `kind: correctness`, this launch's fleet box as `execution_host`, and its
 `--target-repo` as `repository`. Launch creates or validates the worktree, supplies its resolved
 absolute `checkout` without modifying your file, and runs `execution run` before starting the
-worker. A refusal keeps the worktree and starts no worker. Preparation releases its locks while
+worker. A reservation refusal keeps the worktree and starts no worker. Preparation releases its locks while
 the coordinator reserves; startup repeats the worktree and ownership checks under the name and
 box-wide launch locks, holding them through tmux startup, so another launch cannot slip a second
-writer into the checkout. An interruption after reservation can leave an outstanding standing
-record and the worktree, even with no worker record. Inspect `status` and `execution list` before
-retrying: `--replace` archives a previous worker record but does not adopt or clear an outstanding
+writer into the checkout. Brief staging precedes reservation. A post-reservation gate refusal
+concludes `not-launched`; a failed conclusion, an unreachable reservation call, or any failed
+far-side start reports `LAUNCH UNKNOWN` (exit 4) and names the reservation to reconcile. A failed
+start may have run the worker, so it is never concluded automatically. An interruption can also
+leave an outstanding standing record and the worktree. Such records block ordinary measurement
+reservations until reconciled. Inspect `status` and `execution list` before retrying: `--replace` archives a previous worker record but does not adopt or clear an outstanding
 reservation. Conclude that record with evidence of what ran (or did not), then retry with a fresh
 request ID; a live worker must first finish or be stopped through `unstick --kill`.
 

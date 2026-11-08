@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from typing import Any
 
 from ludics import cli
 from ludics.fleetworker import farside, workers
@@ -63,41 +64,68 @@ class Names(unittest.TestCase):
 
 
 class StandingLaunch(unittest.TestCase):
-    def test_reservation_is_between_preparation_and_start_and_refusal_never_starts(self) -> None:
+    def test_admission_order_and_recovery_verdicts(self) -> None:
         cfg = load_config(SCRIPT, {"FLEET_LOCAL_BOX": "box"}, host="box")
-        for result in (0, 1):
+        # reserve, stage, gate, start, conclude, exit, final verdict, ordered side effects
+        cases = [
+            (0, 0, 0, 0, 0, 0, "", ["prepare", "stage", "run", "start"]),
+            (1, 0, 0, 0, 0, 1, "LAUNCH REFUSED", ["prepare", "stage", "run", "cleanup"]),
+            (4, 0, 0, 0, 0, 4, "reservation req outcome unknown; reconcile", ["prepare", "stage", "run", "cleanup"]),
+            (0, 1, 0, 0, 0, 1, "cannot stage the brief", ["prepare", "stage"]),
+            (0, 0, 1, 0, 0, 1, "LAUNCH NOT STARTED req", ["prepare", "stage", "run", "cleanup", "conclude"]),
+            (0, 0, 1, 0, 1, 4, "LAUNCH UNKNOWN req", ["prepare", "stage", "run", "cleanup", "conclude"]),
+            (0, 0, 0, 1, 0, 4, "reservation req remains dispatched", ["prepare", "stage", "run", "start"]),
+            (0, 0, 0, 255, 0, 4, "reservation req remains dispatched", ["prepare", "stage", "run", "start"]),
+        ]
+        for reserve_rc, stage_rc, gate_rc, start_rc, conclude_rc, want, verdict, expected in cases:
             events: list[str] = []
+
             def run(*args: object, **kwargs: object) -> Done:
                 script = str(args[2])
                 if script.endswith(farside.LAUNCH_PREPARE):
                     events.append("prepare")
                     return Done(0, "notice: reused\n/checkout\n")
+                if script.endswith(farside.LAUNCH_DROP_BRIEF):
+                    events.append("cleanup")
+                    return Done(0, "")
                 events.append("start")
                 self.assertIn('worktree path changed after reservation', script)
-                self.assertIn(farside.LAUNCH_WORKTREE, script)
-                return Done(0, "")
+                self.assertIn(farside.LAUNCH_WORKTREE + "} >&2\n", script)
+                return Done(start_rc, "")
 
-            def reserve(_cfg: object, args: list[str]) -> int:
-                events.append("reserve")
-                self.assertEqual(args[0], "run")
-                with open(args[1]) as payload:
-                    self.assertEqual(json.load(payload)["checkout"], "/checkout")
-                return result
+            def stage(*args: object) -> Done:
+                events.append("stage")
+                return Done(stage_rc, "")
+
+            def worker(_cfg: object, args: list[str], payload: dict[str, Any], *, verb: str) -> int:
+                events.append(args[1])
+                self.assertEqual(verb, "LAUNCH")
+                if args[1] == "run":
+                    self.assertEqual(payload["checkout"], "/checkout")
+                    return reserve_rc
+                self.assertEqual(payload["request_id"], "req")
+                self.assertEqual(payload["verdict"], "not-launched")
+                return conclude_rc
 
             with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as payload:
-                json.dump({"standing": True, "kind": "correctness", "execution_host": "box", "repository": "o/r"}, payload)
+                json.dump({"request_id": "req", "standing": True, "kind": "correctness", "execution_host": "box", "repository": "o/r"}, payload)
                 payload.flush()
-                with (patch.object(workers, "anchor_gate", return_value=0),
+                output = io.StringIO()
+                with (self.subTest(expected=expected, verdict=verdict),
+                      patch.object(workers, "anchor_gate", side_effect=[0, 0, gate_rc]),
                       patch.object(workers, "base_gate", return_value=0),
                       patch.object(workers, "run_preflight", return_value=Done(0, "OK")),
                       patch.object(workers, "run_on", side_effect=run),
-                      patch.object(workers, "put_file", return_value=Done(0, "")),
-                      patch.object(workers.execution, "cmd_execution", side_effect=reserve),
-                      contextlib.redirect_stdout(io.StringIO())):
+                      patch.object(workers, "put_file", side_effect=stage),
+                      patch.object(workers.tiprun, "fleet_worker", side_effect=worker),
+                      contextlib.redirect_stdout(output)):
                     self.assertEqual(workers.cmd_launch(cfg, ["local", "w", "--target-repo", "o/r", "--kind", "codex",
                                                               "--cwd", "/checkout", "--brief", payload.name,
-                                                              "--standing", payload.name]), result)
-            self.assertEqual(events, ["prepare", "reserve"] + (["start"] if result == 0 else []))
+                                                              "--standing", payload.name]), want)
+                    self.assertEqual(events, expected)
+                    self.assertIn(verdict, output.getvalue())
+                    if want == 4:
+                        self.assertNotIn("LAUNCH REFUSED", output.getvalue())
 
     def test_payload_rejects_wrong_host_repo_and_nonstanding_before_launch(self) -> None:
         good = {"standing": True, "kind": "correctness", "execution_host": "box", "repository": "o/r"}
