@@ -1343,10 +1343,14 @@ controlled through the tools in your coordinator's file, never through those com
   open sibling is green on its own base, and the scan refuses it only on master
   (lukstafi/ocannl-staging#1611 added a `Tn.label` compare, #1614 the scan refusing it; master
   was red at 388e864a until #1626). So the brief of a task that adds a scan says: before
-  merging, run it on every open wave PR's head merged with the scan's branch (a detached
-  scratch worktree per head), and name each hit to that sibling, so the two land in an order
-  that leaves master green. A worker briefed without it gets that check from the coordinator
-  before its merge.
+  merging, run it on every open wave PR's head merged with the scan's branch, and name each hit
+  to that sibling, so the two land in an order that leaves master green. Each head is fetched
+  by its PR ref, never its branch name: `git fetch origin refs/pull/<PR>/head`, record
+  `git rev-parse FETCH_HEAD` at once, and build a detached scratch worktree from that SHA
+  (`git worktree add --detach <dir> <sha>`). A sibling that merges mid-loop deletes its branch,
+  and its PR ref still resolves (lukstafi/ocannl-staging#1833 met #1834's vanished branch); a
+  failed fetch stops the check with its error, never a skipped head. A worker briefed without
+  it gets that check from the coordinator before its merge.
 - **Relay milestones** to the user as they land - merged PRs with one-line substance, not
   worker-status noise.
 
