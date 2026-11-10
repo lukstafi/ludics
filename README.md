@@ -787,7 +787,9 @@ scope, and finally against the three suites that rediscovered the fix, each with
 line removed, where the guard must find what their authors found by accident.
 
 `test-fleet-worker.sh` launch cases also pin `--standing`: a refused reservation leaves the
-prepared worktree, starts no worker, and a retry cannot silently adopt an outstanding dispatch.
+prepared worktree, starts no worker, and a retry cannot silently adopt an outstanding dispatch;
+a start refused before `run.sh` concludes its reservation `not-launched`, while one after which
+`run.sh` had run stays `LAUNCH UNKNOWN` with its reservation and record kept (#1023).
 The suite runs its ~1000 assertions top to bottom in one shell, which takes about
 sixteen minutes on CI's Ubuntu runner, twenty-four on its macOS one, and up to sixteen on a mac
 shared with other workers. Arguments

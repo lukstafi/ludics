@@ -1865,6 +1865,41 @@ expect "--replace does not silently reuse an outstanding standing dispatch" 1 "a
 cmp -s "$TMP/standing-meta" "$ISSUE_WAVE_STATE/workers/w-standing/meta" && ok "...preserving the previous worker record" || ko "refused retry changed the worker record"
 jq -n '{request_id:"launch-standing", verdict:"not-launched", log:"/dev/null", evidence:"fixture complete"}' > "$TMP/standing-done.json"
 "$FW" execution conclude "$TMP/standing-done.json" >/dev/null || ko "could not conclude fixture standing reservation"
+# ludics#1023: a start refusal proven to precede run.sh (farside's LAUNCH_NOT_STARTED: here tmux
+# refusing the session, the start fence still held) concludes the reservation not-launched itself;
+# a start after which run.sh had run (tm_worker's 2) stays LAUNCH UNKNOWN with its record kept.
+standing_req() { # <request id> <worker> -> a standing reservation payload for testbox
+  jq -n --arg id "$1" --arg w "$2" '{request_id:$id, wave:"w", worker:$w, transport:"cli", purpose:"fixture",
+    agent_host:"testbox", execution_host:"testbox", repository:"example/project", requested_revision:"origin/master",
+    kind:"correctness", standing:true}' > "$TMP/$1.json"
+  printf '%s\n' "$TMP/$1.json"
+}
+expect "a standing start refused before run.sh concludes its reservation not-launched" 1 \
+  "^LAUNCH NOT STARTED launch-standing-nf: testbox/w-standing-nf: far-side startup refused before starting anything$" -- \
+  env FLEET_BOXES=testbox SHIM_TMUX_FAIL_NEW=1 "$FW" launch testbox w-standing-nf --target-repo example/project --kind claude --brief "$brief" \
+    --repo "$proj" --branch claude/w-standing-nf --standing "$(standing_req launch-standing-nf w-standing-nf)"
+grep -q "^LAUNCH REFUSED testbox/w-standing-nf: tmux failed$" <<<"$out" && ! grep -q "LAUNCH UNKNOWN" <<<"$out" &&
+  ok "...after the far side's own refusal line, with no UNKNOWN" || ko "proven pre-start refusal output -- $out"
+"$FW" execution list > "$TMP/standing-nf.json"
+"$FW" execution list --active > "$TMP/standing-nf-active.json"
+jq -e 'any(.[]; .request_id == "launch-standing-nf" and .verdict == "not-launched")' "$TMP/standing-nf.json" >/dev/null &&
+  jq -e 'all(.[]; .request_id != "launch-standing-nf")' "$TMP/standing-nf-active.json" >/dev/null &&
+  ok "...its record concluded and gone from the outstanding list" || ko "proven pre-start record: $(jq -c '.[] | select(.request_id == "launch-standing-nf")' "$TMP/standing-nf.json")"
+[ ! -e "$ISSUE_WAVE_STATE/workers/w-standing-nf" ] && [ -d "$proj-worktrees/w-standing-nf" ] &&
+  ok "...with no worker record, the worktree kept" || ko "proven pre-start refusal: record $(ls "$ISSUE_WAVE_STATE/workers/w-standing-nf" 2>&1 | tr '\n' ' ')"
+echo 1 > "$TMP/exiting-standing"
+expect "a standing start after which run.sh had run stays UNKNOWN" 4 \
+  "^LAUNCH UNKNOWN testbox/w-standing-rs: reservation launch-standing-rs remains dispatched" -- \
+  env FLEET_BOXES=testbox SHIM_TMUX_EXITING="$TMP/exiting-standing" SHIM_TMUX_EXITING_S='iw-w-standing-rs' SHIM_TMUX_EXITING_HOW=ran \
+    "$FW" launch testbox w-standing-rs --target-repo example/project --kind claude --brief "$brief" \
+    --repo "$proj" --branch claude/w-standing-rs --standing "$(standing_req launch-standing-rs w-standing-rs)"
+grep -q "run.sh had started" <<<"$out" && ! grep -q "NOT STARTED" <<<"$out" &&
+  ok "...after the far side's run.sh-started line, concluding nothing" || ko "run.sh-started output -- $out"
+"$FW" execution list --active > "$TMP/standing-rs-active.json"
+jq -e 'any(.[]; .request_id == "launch-standing-rs" and .state == "launching")' "$TMP/standing-rs-active.json" >/dev/null &&
+  [ -f "$ISSUE_WAVE_STATE/workers/w-standing-rs/meta" ] &&
+  ok "...its reservation still outstanding and the worker record kept" || ko "run.sh-started record: $(jq -c '.' "$TMP/standing-rs-active.json")"
+fixture_done launch-standing-rs
 # --repo is a checkout path on the box; --target-repo is owner/repo. A missing --repo shaped like
 # owner/name is the two swapped, refused as usage; an existing relative path of that shape is
 # still a path (here a plain directory, so the launch goes on and fails at its fetch).
