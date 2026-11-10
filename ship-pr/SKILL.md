@@ -1193,8 +1193,12 @@ and leaves an empty file with the refusal on stderr: a `wc -l` of 0 means the fl
 ~168k tokens of progress redraws into one session, and its nonzero exit on a run that concluded
 FAILURE carries no HTTP status, so a retry loop reads a workflow verdict as transport — the
 2026-08-29 wave re-watched a completed FAILED run four times and then reported "the API never
-answered". Use `checks <pr> --wait` for a PR's build signal (it reads every check on the head,
-with a heartbeat that names the checks still running instead of redraws). To wait on one job's
+answered". Use `checks <pr> --wait` for a PR's build signal, with a heartbeat that names the
+checks still running instead of redraws. It settles on the checks `merge` requires, every check
+the advisory list does not name (#1026): green once they are, with an advisory job still queued
+or running; red at the first required red; a required `needs:` job not started yet still waited
+for. Expired, it says the wait is spent and exits 4. So no workflow observer is needed beside it,
+and none is killed by hand when the required checks pass. To wait on one job's
 verdict while a slower one runs, add `--check '<ERE>'`: only the check runs whose name the ERE
 matches are judged, advisory ones included, with the same budget and exit statuses. A selection
 that matches nothing is held while a run is in flight and refused with exit 2 after, never green;

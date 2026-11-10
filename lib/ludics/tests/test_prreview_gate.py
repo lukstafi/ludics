@@ -1063,5 +1063,151 @@ class Selection(unittest.TestCase):
         self.assertTrue(long.endswith("…"))
 
 
+
+# The advisory list as lukstafi/ocannl-staging's .github/ship-pr-advisory-checks names its macOS leg,
+# served from the default branch the way ``merge`` reads it (#1026).
+ADVISORY_BODY = "# the macOS legs of ci\n^Build \\(macos-latest, .*\\)$"
+MACOS = "Build (macos-latest, 5.5.x, main)"
+
+
+@dataclass
+class PhasedGh:
+    """A gh whose answers change with the wait's round: ``rounds[i]`` maps a needle to the answer
+    the i-th round reads (the clock's sleep count; the last round repeats). Every read inside a
+    round sees one moment, however many times it is made."""
+
+    clock: FakeClock
+    rounds: list[dict[str, str]]
+    calls: list[list[str]] = field(default_factory=lambda: list[list[str]]())
+
+    def __call__(self, name: str, args: Sequence[str]) -> proc.Completed:
+        self.calls.append(list(args))
+        joined = " ".join(args)
+        if "contents/.github/ship-pr-advisory-checks" in joined:
+            return proc.Completed(0, ADVISORY_BODY + "\n", "")
+        if "pulls/7" in joined:
+            out = "h1\t2026-01-01T00:00:00Z\tb1\ttopic" if ".updated_at" in joined else "h1\tb1\ttopic"
+            return proc.Completed(0, out + "\n", "")
+        answers = self.rounds[min(len(self.clock.sleeps), len(self.rounds) - 1)]
+        for needle, out in answers.items():
+            if needle in joined:
+                return proc.Completed(0, out + "\n" if out else "", "")
+        raise AssertionError(f"no route for gh {joined}")
+
+
+class ChecksWaitSettlesOnRequired(unittest.TestCase):
+    """#1026: ``checks --wait`` with no ``--check`` settles on the checks ``merge``'s gate requires,
+    the advisory list read from the repository's file as ``merge`` reads it, through ``checks.run``
+    end to end. The witness shape is lukstafi/ocannl-staging's: a non-advisory ``ci`` workflow whose
+    macOS job is advisory and still queued while its ubuntu jobs settle."""
+
+    OLD = "2025-12-31T23:00:00Z"  # an hour before FakeClock's start
+
+    def run_checks(self, rounds: list[dict[str, str]], *args: str, **env: str) -> tuple[int, str, FakeClock]:
+        clock = FakeClock()
+        gh = PhasedGh(clock, rounds)
+        config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=1, api_backoff=0)
+        session = GhSession(config, run=gh, sleep=lambda _s: None)
+        out = io.StringIO()
+        environ = {k: v for k, v in os.environ.items() if not k.startswith(("SHIP_PR_", "LUDICS_PR_"))}
+        environ.update({"SHIP_PR_CHECKS_INTERVAL": "60", **env})
+        with mock.patch.dict(os.environ, environ, clear=True), \
+                mock.patch.object(checks, "clock_from_env", return_value=FuncClock(time=clock.now, sleep=clock.sleep)), \
+                mock.patch.object(branchtip, "read_tip", return_value=branchtip.Clear("h1")), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = checks.run(session, ["7", *args])
+        return rc, out.getvalue(), clock
+
+    def ci(self, status: str, jobs: str, checkruns: str) -> dict[str, str]:
+        return {
+            "check-runs": checkruns,
+            "actions/runs?head_sha=h1": f"2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\t{status}\tpending\t1",
+            "actions/runs/100/jobs": jobs,
+        }
+
+    def test_green_once_every_required_check_is_green_with_the_advisory_job_queued(self) -> None:
+        old = self.OLD
+        macos_job = f"{MACOS}\tpending\t{old}\t-"
+        macos_check = f"{MACOS}\tpending\tm\t1\tqueued"
+        rounds = [
+            self.ci("in_progress", f"ubuntu\tpending\t{old}\t-\n{macos_job}",
+                    f"ubuntu\tpending\tu\t1\tin_progress\n{macos_check}"),
+            self.ci("in_progress", f"ubuntu\tsuccess\t{old}\t{old}\n{macos_job}",
+                    f"ubuntu\tsuccess\tu\t1\tcompleted\n{macos_check}"),
+        ]
+        rc, out, clock = self.run_checks(rounds, "--wait=3600")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.splitlines()[-1], "checks: verdict=green branch=current")
+        self.assertIn("green — 1 build checks passed", out)
+        self.assertIn("still running, but only advisory jobs (.github/ship-pr-advisory-checks) — not waited for", out)
+        self.assertEqual(len(clock.sleeps), 1, "settled on the round the required check went green")
+        self.assertNotIn("the wait is spent", out)
+
+    def test_red_at_the_first_round_that_reads_a_required_red(self) -> None:
+        # A required red ends the wait while another required job and the advisory one still run.
+        old = self.OLD
+        jobs = f"ubuntu 1/2\tfailure\t{old}\t{old}\nubuntu 2/2\tpending\t{old}\t-\n{MACOS}\tpending\t{old}\t-"
+        checkruns = (f"ubuntu 1/2\tfailure\tu1\t1\tcompleted\nubuntu 2/2\tpending\tu2\t1\tin_progress\n"
+                     f"{MACOS}\tpending\tm\t1\tin_progress")
+        rc, out, clock = self.run_checks([self.ci("in_progress", jobs, checkruns)], "--wait=3600")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.splitlines()[-1], "checks: verdict=red branch=current")
+        self.assertEqual(clock.sleeps, [], "no round after the red")
+        # Control: the same red on the advisory job alone is not the verdict.
+        jobs = f"ubuntu\tsuccess\t{old}\t{old}\n{MACOS}\tfailure\t{old}\t{old}"
+        checkruns = f"ubuntu\tsuccess\tu\t1\tcompleted\n{MACOS}\tfailure\tm\t1\tcompleted"
+        done = self.ci("completed", jobs, checkruns)
+        done["actions/runs?head_sha=h1"] = "2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\tcompleted\tfailure\t1"
+        rc, out, _clock = self.run_checks([done], "--wait=3600")
+        self.assertEqual((rc, out.splitlines()[-1]), (0, "checks: verdict=green branch=current"), out)
+
+    def test_a_required_dependent_not_yet_started_is_waited_for(self) -> None:
+        # Round 1: ``build`` finished 5s ago and its ``needs:`` dependent ``test`` has no job and no
+        # check run yet; only the advisory macOS job is unfinished. Inside the settle the run holds.
+        # Round 2: ``test`` is queued. Round 3: green.
+        old, recent = self.OLD, "2025-12-31T23:59:55Z"
+        macos_job = f"{MACOS}\tpending\t{old}\t-"
+        macos_check = f"{MACOS}\tpending\tm\t1\tqueued"
+        rounds = [
+            self.ci("in_progress", f"build\tsuccess\t{old}\t{recent}\n{macos_job}",
+                    f"build\tsuccess\tb\t1\tcompleted\n{macos_check}"),
+            self.ci("in_progress", f"build\tsuccess\t{old}\t{recent}\ntest\tpending\t{recent}\t-\n{macos_job}",
+                    f"build\tsuccess\tb\t1\tcompleted\ntest\tpending\tt\t1\tqueued\n{macos_check}"),
+            self.ci("in_progress", f"build\tsuccess\t{old}\t{recent}\ntest\tsuccess\t{recent}\t{recent}\n{macos_job}",
+                    f"build\tsuccess\tb\t1\tcompleted\ntest\tsuccess\tt\t1\tcompleted\n{macos_check}"),
+        ]
+        rc, out, clock = self.run_checks(rounds, "--wait=3600")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.splitlines()[-1], "checks: verdict=green branch=current")
+        self.assertIn("green — 2 build checks passed", out)
+        self.assertEqual(len(clock.sleeps), 2, "held through the settle and the dependent's run")
+        # Without a wait the first round is the answer: no verdict yet, the settle named.
+        rc, out, _clock = self.run_checks(rounds[:1])
+        self.assertEqual(rc, 4, out)
+        self.assertIn("inside the 1m settle a dependent job may still appear in", out)
+        self.assertEqual(out.splitlines()[-1], "checks: verdict=unjudged branch=current")
+
+    def test_the_bound_is_reported_when_it_expires(self) -> None:
+        old = self.OLD
+        rounds = [self.ci("in_progress", f"ubuntu\tpending\t{old}\t-\n{MACOS}\tpending\t{old}\t-",
+                          f"ubuntu\tpending\tu\t1\tin_progress\n{MACOS}\tpending\tm\t1\tqueued")]
+        for args, env, source in (
+            (("--wait=300",), {}, "--wait=300"),
+            (("--wait",), {"SHIP_PR_CHECKS_WAIT": "300"}, "--wait, from SHIP_PR_CHECKS_WAIT"),
+        ):
+            with self.subTest(args=args):
+                rc, out, clock = self.run_checks(rounds, *args, **env)
+                self.assertEqual(rc, 4, out)
+                lines = out.splitlines()
+                self.assertEqual(lines[-1], "checks: verdict=pending branch=current", "the trailer is unchanged")
+                self.assertEqual(
+                    lines[-2], f"checks: the wait is spent: 5m ({source}) passed with no verdict;"
+                    " exit 4 is no verdict yet, neither green nor red")
+                self.assertGreaterEqual(clock.t - FakeClock().t, 300)
+        # No wait, no bound to report.
+        rc, out, _clock = self.run_checks(rounds)
+        self.assertEqual(rc, 4, out)
+        self.assertNotIn("the wait is spent", out)
+
 if __name__ == "__main__":
     unittest.main()
