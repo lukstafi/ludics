@@ -41,6 +41,22 @@ flight, or a run-less head inside the creation grace), and otherwise refused wit
 that has no check run yet while others it would match have settled (a ``needs:`` dependent not yet
 queued) is not seen, so an ERE meant for several jobs can settle on those that exist. ``merge``
 takes no ``--check``: its gate is every non-advisory check, never a subset (merge.py).
+
+Without ``--check``, ``--wait`` settles on the REQUIRED checks, and required means what ``merge``'s
+gate means (#1026), since both judge through one ``Gate``: every check run and workflow run on the
+head whose name the advisory list does not match, the list being the repository's ADVISORY_FILE on
+its default branch read as ``merge`` reads it (``Gate.advisory_policy``), or SHIP_PR_ADVISORY_CHECKS.
+So the wait ends green once every required check is green while an advisory job is still queued or
+running (its check runs are out of the fold, and its run is released by ``run_inflight_hold`` once
+only advisory jobs are unfinished and the job list has been still for the advisory settle); ends red
+at the first round that reads a required red, whatever else is still running; and holds a run whose
+required ``needs:`` dependent has no job yet for as long as its job list moved inside that settle.
+Boundary: it reads the advisory file once and the check runs, workflow runs and job lists as they
+exist at each read. A dependent job GitHub creates after the settle has passed (a required job that
+``needs:`` an advisory one, which the advisory file's own boundary forbids), a workflow a later
+event starts (``workflow_run``), and a push after the last read are not seen. When the bound
+expires with no verdict, one line before the trailer says the wait was spent, and how long it was;
+the exit stays 4 and the trailer's vocabulary is unchanged.
 """
 
 import os
@@ -48,7 +64,7 @@ import shlex
 
 from ludics import cli
 from ludics.prreview import branchtip, ere
-from ludics.prreview.clock import clock_from_env
+from ludics.prreview.clock import clock_from_env, fmt_age
 from ludics.prreview.core import GhSession, die, fail, pr_arg
 from ludics.prreview.gate import Gate, load_gate_config
 from ludics.prreview.shtext import is_digits
@@ -83,6 +99,7 @@ def run(session: GhSession, args: list[str]) -> int:
         fail(1, USAGE)
     pr = args[0]
     wait_for = 0
+    wait_from = ""  # how the bound was set, for the line that reports its expiry
     select: str | None = None
     rest = args[1:]
     while rest:
@@ -90,8 +107,10 @@ def run(session: GhSession, args: list[str]) -> int:
         rest = rest[1:]
         if arg == "--wait":
             wait_for = config.checks_wait
+            wait_from = "--wait, from SHIP_PR_CHECKS_WAIT"
         elif arg.startswith("--wait="):
             wait_for = parse_wait(arg[len("--wait=") :], "checks")
+            wait_from = arg
         elif arg == "--check" or arg.startswith("--check="):
             if arg == "--check":
                 if not rest:
@@ -122,6 +141,12 @@ def run(session: GhSession, args: list[str]) -> int:
         rc = gate.check(target.num, wait_for)
         verdict: str = gate.verdict
         kinds = {orphan.kind for orphan in gate.orphans}
+        # The bound, reported when it is what ended the wait (a no-runner job ends it early).
+        if rc == 4 and wait_for > 0 and gate.deadline is not None and gate.clock.now() >= gate.deadline:
+            cli.say(
+                f"checks: the wait is spent: {fmt_age(wait_for)} ({wait_from}) passed with no verdict;"
+                " exit 4 is no verdict yet, neither green nor red"
+            )
     else:
         rc = policy
         verdict = "unknown"
