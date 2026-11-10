@@ -375,13 +375,14 @@ A typo in the file is caught by the script itself: it checks that every declared
 unit, so a misspelled local ID dies with `declared measurement box 'm4-max' has no sweep unit`.
 
 Then, if today is Sunday, run the weekly full check
-`OCANNL_TOOL_SWEEP_LOCAL_BOX=$box OCANNL_TOOL_SWEEP_WAKE_LAB=$HOME/.ocannl-sweep/wake-lab-tuf-awake.sh OCANNL_TOOL_SWEEP_CAP=10800 ~/.ocannl-sweep/tools/sweep.sh --slow --force`;
+`OCANNL_TOOL_SWEEP_LOCAL_BOX=$box OCANNL_TOOL_SWEEP_WAKE_LAB=$HOME/.ocannl-sweep/wake-lab-tuf-awake.sh ~/.ocannl-sweep/tools/sweep.sh --slow --force`;
 otherwise `OCANNL_TOOL_SWEEP_LOCAL_BOX=$box OCANNL_TOOL_SWEEP_WAKE_LAB=$HOME/.ocannl-sweep/wake-lab-tuf-awake.sh ~/.ocannl-sweep/tools/sweep.sh`. `--force` is what makes a unit record `pass` with `execution=forced`
 (a `dune clean` plus alias `--force`, so every test action genuinely re-executes); a weekday run
 is incremental and records `incremental-pass`, which is evidence about the changed cone but does
-not refresh execution coverage. The raised cap is for the forced runs only: a cold rebuild plus
-`@slow` legitimately exceeds the default 90-minute unit cap, and cutting it short would file lost
-coverage as `timeout`.
+not refresh execution coverage. Sunday's run sets no cap of its own: `sweep.sh` gives a `--slow`
+run OCANNL's four-hour `SLOW_RUN_CAP_DEFAULT` per unit, where an ordinary run keeps the 90-minute
+unit cap, because a cold rebuild plus `@slow` legitimately exceeds 90 minutes, and cutting it short
+would file lost coverage as `timeout`.
 Run it in the background and wait for it to finish — a cold unit can take tens of minutes.
 Each box's units run as one lane, and the four lanes (three when a run selects no tuf unit) run concurrently (gh-ocannl-976): the remote
 units start within seconds of launch, and the run lasts as long as its longest lane — normally this Mac's, which carries metal's suite. The stdout header's `lanes:` line names each
