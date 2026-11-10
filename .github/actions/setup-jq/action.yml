@@ -1,5 +1,5 @@
 name: setup jq
-description: Put the fleet's pinned jq release ahead of the runner image's own jq, checksum-verified, and print which jq the job runs.
+description: Put the fleet's pinned jq release ahead of the runner image's own jq, checksum-verified whether downloaded or restored from the Actions cache, and print which jq the job runs.
 
 # THE FLEET'S jq IS 1.8 (ludics-lite#508). jq 1.7.1 and 1.8 parse `A and X as $b | B`
 # differently -- `jq -nc '[true and ("x") as $b | ($b == "x")]'` prints [true] on 1.7.1 and
@@ -16,12 +16,25 @@ description: Put the fleet's pinned jq release ahead of the runner image's own j
 # To move the pin: the version and all five sha256 sums below, the same pair in
 # scripts/install-linux.sh, and the minor in scripts/preflight.sh if it changes. Take the sums from
 # the release's sha256sum.txt and check them against the API's asset digests
-# (`gh release view jq-<v> --repo jqlang/jq --json assets`).
+# (`gh release view jq-<v> --repo jqlang/jq --json assets`). The cache key follows the pin: it is
+# built from the version, the runner's OS and architecture and the asset's pinned sum, so moving
+# either the version or a sum moves the key, and the next job downloads afresh.
+#
+# The cache (ludics#1022). Every job used to download the asset from GitHub Releases, and on
+# 2026-11-08 a 90-minute window of release-asset 504/503s failed every job of every PR at this
+# step. So the verified binary is kept in the Actions cache under that key, and a job downloads
+# only on a miss. A restored file is NOT trusted for having been saved verified: it passes the same
+# sha256 check a download does, and a mismatch fails the job rather than falling back, since only a
+# corrupted or tampered entry can mismatch (the save step runs only after the check passed). The
+# save is an explicit step right after the check, not actions/cache's end-of-job post step, so a
+# job that fails later still leaves the asset for the next one; jobs racing on one key leave one
+# entry and a warning from the others.
 
 runs:
   using: composite
   steps:
-    - name: Install the pinned jq release
+    - name: Pick the pinned jq release asset
+      id: pin
       shell: bash
       run: |
         set -euo pipefail
@@ -42,28 +55,79 @@ runs:
           ;;
         esac
         dir="$RUNNER_TEMP/jq-$version"
-        # Under Git Bash RUNNER_TEMP is a Windows path: the shell works in its POSIX spelling, and
-        # GITHUB_PATH takes the Windows one, which is what the runner prepends to PATH.
-        if command -v cygpath >/dev/null 2>&1; then dir=$(cygpath -u "$dir"); fi
-        mkdir -p "$dir"
-        curl --fail --silent --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
-          -o "$dir/$exe" "https://github.com/jqlang/jq/releases/download/jq-$version/$asset"
-        if command -v sha256sum >/dev/null 2>&1; then
-          got=$(sha256sum "$dir/$exe" | cut -d' ' -f1)
-        else
-          got=$(shasum -a 256 "$dir/$exe" | cut -d' ' -f1)
+        # Under Git Bash RUNNER_TEMP is a Windows path: the shell steps work in its POSIX spelling,
+        # and the cache steps and GITHUB_PATH take the Windows one (the runner's own spelling).
+        native=$dir
+        if command -v cygpath >/dev/null 2>&1; then
+          dir=$(cygpath -u "$dir")
+          native=$(cygpath -w "$dir")
         fi
-        if [ "$got" != "$sum" ]; then
-          echo "::error title=jq checksum mismatch::$asset from jq-$version has sha256 $got, pinned $sum"
+        {
+          echo "version=$version"
+          echo "exe=$exe"
+          echo "asset=$asset"
+          echo "sum=$sum"
+          echo "dir=$dir"
+          echo "native_dir=$native"
+          echo "key=setup-jq-$version-$RUNNER_OS-$RUNNER_ARCH-$sum"
+        } >>"$GITHUB_OUTPUT"
+    - name: Restore the cached jq release asset
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.pin.outputs.native_dir }}
+        key: ${{ steps.pin.outputs.key }}
+    - name: Install the pinned jq release
+      shell: bash
+      env:
+        JQ_VERSION: ${{ steps.pin.outputs.version }}
+        JQ_EXE: ${{ steps.pin.outputs.exe }}
+        JQ_ASSET: ${{ steps.pin.outputs.asset }}
+        JQ_SUM: ${{ steps.pin.outputs.sum }}
+        JQ_DIR: ${{ steps.pin.outputs.dir }}
+        JQ_NATIVE_DIR: ${{ steps.pin.outputs.native_dir }}
+        JQ_CACHE_KEY: ${{ steps.pin.outputs.key }}
+        JQ_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        file="$JQ_DIR/$JQ_EXE"
+        if [ "$JQ_CACHE_HIT" = true ]; then
+          from="the cache entry $JQ_CACHE_KEY"
+        else
+          from="jq-$JQ_VERSION's release download"
+          mkdir -p "$JQ_DIR"
+          curl --fail --silent --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
+            -o "$file" "https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION/$JQ_ASSET"
+        fi
+        if [ ! -f "$file" ]; then
+          echo "::error title=no jq asset::$JQ_ASSET is missing at $file after $from"
           exit 1
         fi
-        chmod +x "$dir/$exe"
-        if command -v cygpath >/dev/null 2>&1; then
-          cygpath -w "$dir" >>"$GITHUB_PATH"
+        if command -v sha256sum >/dev/null 2>&1; then
+          got=$(sha256sum "$file" | cut -d' ' -f1)
         else
-          echo "$dir" >>"$GITHUB_PATH"
+          got=$(shasum -a 256 "$file" | cut -d' ' -f1)
         fi
-        echo "JQ_PINNED_VERSION=$version" >>"$GITHUB_ENV"
+        if [ "$got" != "$JQ_SUM" ]; then
+          if [ "$JQ_CACHE_HIT" = true ]; then
+            echo "::error title=jq checksum mismatch::$JQ_ASSET restored from $from has sha256 $got, pinned $JQ_SUM; delete the entry (gh cache delete $JQ_CACHE_KEY --repo $GITHUB_REPOSITORY) and re-run"
+          else
+            echo "::error title=jq checksum mismatch::$JQ_ASSET from jq-$JQ_VERSION has sha256 $got, pinned $JQ_SUM"
+          fi
+          exit 1
+        fi
+        echo "jq checksum: $JQ_ASSET from $from has the pinned sha256 $JQ_SUM"
+        chmod +x "$file"
+        echo "$JQ_NATIVE_DIR" >>"$GITHUB_PATH"
+        echo "JQ_PINNED_VERSION=$JQ_VERSION" >>"$GITHUB_ENV"
+    # Only on a miss, and only once the step above passed the checksum: a hit already has its entry,
+    # and a failed check stops the job before this step.
+    - name: Save the verified jq release asset to the cache
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.pin.outputs.native_dir }}
+        key: ${{ steps.pin.outputs.key }}
     # A step of its own, so it reads PATH as every later step will: the prepend takes effect
     # between steps, and a jq resolved anywhere else would make the job's runs prove nothing about
     # the pin.
