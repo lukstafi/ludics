@@ -95,7 +95,9 @@ waiting up to 30 min for a slot and, for a measurement, THE WINDOW WAIT below, u
 = the timeout) and bare otherwise, bounded either way. The scratch directory is the whole of the build's state:
 it is removed whatever the outcome, and one a SIGKILLed merge leaves is in pr-review's swept
 temporary family (``pr-review-build.<pid>.*``). What the clone keeps is the fetched objects, which
-nothing names, as after any fetch.
+nothing names, as after any fetch. So the revision a build tested outlives it only in the output
+(#1024): before the command runs, one line names the merge commit and its two parents, the base's
+tip first and the gated head second, each in full 40 hex, beside the abbreviated build-start line.
 
 THE WINDOW WAIT (ludics-lite#764). A measurement holding the box (a window) is waited for by the
 slot (``--wait-window=<n>``, fleetworker/slot.py), never by this module, for ``n`` =
@@ -964,6 +966,11 @@ def _build_in_scratch(
         merge_sha, err = _commit_out(quiet, tree, written, tip, gated, f"ship-pr merge build of {subject.label}", "the merge commit")
         if err:
             fail(3, f"{stop}: {err}.")
+        # PROVENANCE (#1024): the scratch goes with the build, so the output is what names it.
+        cli.say(
+            f"merge build {subject.label}: merge commit {merge_sha}, parents {base_ref} at {tip}"
+            f" and the gated head {gated}"
+        )
         runner = _slot_runner()
         ran = _run(
             subject, config, runner, ceiling, tree, scratch, "build", tip, gated,
