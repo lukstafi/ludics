@@ -1354,7 +1354,7 @@ class InterimChain(unittest.TestCase):
             {"jobs": [job(UBUNTU, "success"), job(MAC, "failure")]})
         for rid in (11, 12):
             answers[f"repos/o/r/actions/runs/{rid}/jobs?per_page=100"] = json.dumps({"jobs": [job(UBUNTU, None)]})
-        for sha, (num, _head, _first) in HEAD_OF.items():
+        for num, _head, _first in HEAD_OF.values():
             answers[f"repos/o/r/actions/runs/{8000 + 10 * num + 1}/jobs?per_page=100"] = json.dumps(
                 {"jobs": [job(UBUNTU, "success")]})
         rc, out, _ = self._base(answers, "--advisory-red", "@DIR@/adv.json")
