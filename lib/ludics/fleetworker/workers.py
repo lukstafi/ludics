@@ -269,7 +269,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         request["checkout"] = prepared
         check = f'[ "$cwd" = {shlex.quote(prepared)} ] || refuse "worktree path changed after reservation"\n'
         # Revalidation's notices (including reuse of the worktree we just made) are diagnostic.
-        script = prefix + "{\n" + farside.LAUNCH_WORKTREE + "} >&2\n" + check + farside.LAUNCH_START
+        script = prefix + "{\n" + farside.LAUNCH_STANDING_WORKTREE + "} >&2\n" + check + farside.LAUNCH_STANDING_START
     # Stage before admission: failure here cannot leave a dispatched reservation behind.
     done = put_file(cfg, box, brief, f"{cfg.state}/incoming/{name}-{when}.md")
     if done.unreachable:
@@ -295,9 +295,15 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
             return tiprun.not_started(cfg, request_id, f"{label}: post-reservation launch gate refused (exit {rc})",
                                       "none: worker startup was not attempted", verb="LAUNCH")
     done = run_on(cfg, box, script, far_args)
+    if request is not None and done.rc == farside.LAUNCH_NOT_STARTED:
+        # The one proven pre-start outcome (farside's closed list): the far side's refusal above
+        # says why, and the reservation is concluded not-launched.
+        return tiprun.not_started(cfg, request_id, f"{label}: far-side startup refused before starting anything",
+                                  "none: worker startup refused before run.sh", verb="LAUNCH")
     if request is not None and done.rc != 0:
-        # Even a reachable refusal may follow run.sh starting (tm_worker's trc=2). Do not
-        # conclude it automatically: preserve that evidence and name the reservation to repair.
+        # Anything else may follow run.sh starting (tm_worker's trc=2), or is not proven (a signal,
+        # a shell error, a dropped connection). Do not conclude it automatically:
+        # preserve that evidence and name the reservation to repair.
         cli.say(f"LAUNCH UNKNOWN {label}: reservation {request_id} remains dispatched; inspect status and execution list; "
                 "conclude not-launched only if no worker started, otherwise reconcile what ran")
         return 4

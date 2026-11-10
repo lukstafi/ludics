@@ -38,9 +38,12 @@ worker. A reservation refusal keeps the worktree and starts no worker. Preparati
 the coordinator reserves; startup repeats the worktree and ownership checks under the name and
 box-wide launch locks, holding them through tmux startup, so another launch cannot slip a second
 writer into the checkout. Brief staging precedes reservation. A post-reservation gate refusal
-concludes `not-launched`; a failed conclusion, an unreachable reservation call, or any failed
-far-side start reports `LAUNCH UNKNOWN` (exit 4) and names the reservation to reconcile. A failed
-start may have run the worker, so it is never concluded automatically. An interruption can also
+concludes `not-launched`, and so does a far-side start refusal proven to precede `run.sh` (the start
+phase's own refusals, a closed list in `farside.py`, `LAUNCH_NOT_STARTED`): the far side's
+`LAUNCH REFUSED` line, then `LAUNCH NOT STARTED <id>`, exit 1. A failed conclusion, an unreachable
+reservation call, or any other failed far-side start reports `LAUNCH UNKNOWN` (exit 4) and names
+the reservation to reconcile. Such a start may have run the worker (`run.sh` had started), or was
+cut off by a signal or the connection, so it is never concluded automatically. An interruption can also
 leave an outstanding standing record and the worktree. Such records block ordinary measurement
 reservations until reconciled. Inspect `status` and `execution list` before retrying: `--replace` archives a previous worker record but does not adopt or clear an outstanding
 reservation. Conclude that record with evidence of what ran (or did not), then retry with a fresh

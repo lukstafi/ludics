@@ -76,6 +76,11 @@ class StandingLaunch(unittest.TestCase):
             (0, 0, 1, 0, 1, 4, "LAUNCH UNKNOWN req", ["prepare", "stage", "run", "cleanup", "conclude"]),
             (0, 0, 0, 1, 0, 4, "reservation req remains dispatched", ["prepare", "stage", "run", "start"]),
             (0, 0, 0, 255, 0, 4, "reservation req remains dispatched", ["prepare", "stage", "run", "start"]),
+            # ludics#1023: only the proven pre-start status concludes; 2 or 143 is not proven.
+            (0, 0, 0, farside.LAUNCH_NOT_STARTED, 0, 1, "LAUNCH NOT STARTED req", ["prepare", "stage", "run", "start", "conclude"]),
+            (0, 0, 0, farside.LAUNCH_NOT_STARTED, 1, 4, "LAUNCH UNKNOWN req", ["prepare", "stage", "run", "start", "conclude"]),
+            (0, 0, 0, 2, 0, 4, "reservation req remains dispatched", ["prepare", "stage", "run", "start"]),
+            (0, 0, 0, 143, 0, 4, "reservation req remains dispatched", ["prepare", "stage", "run", "start"]),
         ]
         for reserve_rc, stage_rc, gate_rc, start_rc, conclude_rc, want, verdict, expected in cases:
             events: list[str] = []
@@ -90,7 +95,8 @@ class StandingLaunch(unittest.TestCase):
                     return Done(0, "")
                 events.append("start")
                 self.assertIn('worktree path changed after reservation', script)
-                self.assertIn(farside.LAUNCH_WORKTREE + "} >&2\n", script)
+                self.assertIn(farside.LAUNCH_STANDING_WORKTREE + "} >&2\n", script)
+                self.assertTrue(script.endswith(farside.LAUNCH_STANDING_START), "the standing start phase")
                 return Done(start_rc, "")
 
             def stage(*args: object) -> Done:
@@ -126,6 +132,30 @@ class StandingLaunch(unittest.TestCase):
                     self.assertIn(verdict, output.getvalue())
                     if want == 4:
                         self.assertNotIn("LAUNCH REFUSED", output.getvalue())
+
+    def test_only_the_standing_refusals_exit_not_started(self) -> None:
+        # The no-standing script and preparation keep every refusal at exit 1.
+        self.assertEqual(farside.LAUNCH, farside.LAUNCH_WORKTREE + farside.LAUNCH_START)
+        for text in (farside.LAUNCH, farside.LAUNCH_PREPARE):
+            self.assertNotIn(f"exit {farside.LAUNCH_NOT_STARTED}", text)
+        # The standing texts differ from the originals in exactly the one refuse() exit each.
+        for original, standing in ((farside.LAUNCH_WORKTREE, farside.LAUNCH_STANDING_WORKTREE),
+                                   (farside.LAUNCH_START, farside.LAUNCH_STANDING_START)):
+            changed = [(a, b) for a, b in zip(original.split("\n"), standing.split("\n")) if a != b]
+            self.assertEqual(len(original.split("\n")), len(standing.split("\n")))
+            self.assertEqual(len(changed), 1)
+            self.assertIn("refuse() {", changed[0][0])
+            self.assertEqual(changed[0][1], changed[0][0].replace("; exit 1; }", f"; exit {farside.LAUNCH_NOT_STARTED}; }}"))
+        # run.sh-started (tm_worker's 2) is not proven: it keeps its plain exit 1.
+        self.assertIn("run.sh had started", farside.LAUNCH_STANDING_START)
+        started = next(line for line in farside.LAUNCH_STANDING_START.split("\n") if "run.sh had started" in line)
+        self.assertTrue(started.endswith("; exit 1"), started)
+
+    def test_a_changed_refuse_definition_fails_closed(self) -> None:
+        for text in ("no definition here\n", 'refuse() { echo x; exit 2; }\n',
+                     'refuse() { echo a; exit 1; }\nrefuse() { echo b; exit 1; }\n'):
+            with self.subTest(text=text), self.assertRaises(RuntimeError):
+                farside._proven_refusals(text)  # pyright: ignore[reportPrivateUsage]
 
     def test_payload_rejects_wrong_host_repo_and_nonstanding_before_launch(self) -> None:
         good = {"standing": True, "kind": "correctness", "execution_host": "box", "repository": "o/r"}

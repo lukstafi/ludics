@@ -21,11 +21,13 @@ composition the near side does around it:
                (the registry's interpreter, and the preflight's probe of the box)
   PREFLIGHT    after FRESHNESS, ghprobe and FLEET_PYTHON
   REFRESH      after FRESHNESS
-  LAUNCH_EXISTS, LAUNCH_FETCH, LAUNCH (after ghprobe)
+  LAUNCH_EXISTS, LAUNCH_FETCH, LAUNCH (after ghprobe); --standing's LAUNCH_PREPARE, then
+               LAUNCH_STANDING_WORKTREE + LAUNCH_STANDING_START (exit LAUNCH_NOT_STARTED)
   VERDICT      the verdict of a finished worker, for ATTACH and CLOSE
   ATTACH, STATUS, LOG, LOG_LAST_RESULT, UNSTICK (after ghprobe), CLOSE, LS
 """
 
+import re
 import shlex
 
 
@@ -1250,6 +1252,41 @@ echo "LAUNCHED $BOX/$name kind=$kind session=${sid:-unknown} model=$(meta_get "$
 
 # Without --standing this is the original script, byte for byte.
 LAUNCH = LAUNCH_WORKTREE + LAUNCH_START
+
+
+# THE STANDING START'S PROVEN PRE-START OUTCOME (ludics#1023). A standing launch reserves before
+# its start phase, so a failed start leaves a dispatched reservation that only a proven "nothing
+# started" may conclude not-launched. The proof is the far side's exit status, never its log: the
+# standing start phase exits LAUNCH_NOT_STARTED from `refuse` and from nowhere else. The boundary is
+# a closed list, fail closed:
+#   - proven pre-start: every `refuse` of LAUNCH_WORKTREE and LAUNCH_START, and the near side's
+#     reserved-checkout check, which uses the same `refuse`. Each runs before tm_worker, or (its
+#     "tmux failed") after a tm_worker return of 1, which holds the start fence: the session's
+#     `rmdir <fence> && exec run.sh` can no longer pass, so run.sh never ran;
+#   - everything else is not proven and keeps exit 1 or its own status: tm_worker's 2 (run.sh had
+#     started, the record is the evidence), a TERM/HUP/INT (143), an unbound variable or other
+#     shell error, the prelude, a dropped connection (255).
+# The near side concludes only on LAUNCH_NOT_STARTED; any other non-zero start is LAUNCH UNKNOWN.
+# The script travels on stdin from the coordinator's own package (``transport.run_on``), so a far
+# side always speaks the coordinator's version: no box's served checkout takes part. An older
+# coordinator sends the old script (exit 1) and reads it as UNKNOWN, as it always did.
+# LAUNCH_PREPARE (before the reservation) and LAUNCH (no --standing) keep exit 1.
+LAUNCH_NOT_STARTED = 10
+
+_REFUSE_EXIT = re.compile(r"^(\s*refuse\(\) \{ [^\n]*; exit )1(; \})$", re.MULTILINE)
+
+
+def _proven_refusals(text: str) -> str:
+    """``text`` with its one ``refuse`` definition exiting LAUNCH_NOT_STARTED; fails at import if
+    the definitions moved, so a new refusal shape cannot slip past the closed list."""
+    out, n = _REFUSE_EXIT.subn(rf"\g<1>{LAUNCH_NOT_STARTED}\g<2>", text)
+    if n != 1 or text.count("refuse() {") != 1:
+        raise RuntimeError("farside: launch refuse() definitions changed; restate LAUNCH_NOT_STARTED's boundary")
+    return out
+
+
+LAUNCH_STANDING_WORKTREE = _proven_refusals(LAUNCH_WORKTREE)
+LAUNCH_STANDING_START = _proven_refusals(LAUNCH_START)
 
 
 # The verdict of a finished worker, from its files. Prints one line; exit 0 clean, 1 failed,
