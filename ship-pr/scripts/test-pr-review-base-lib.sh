@@ -91,10 +91,16 @@ SHA_0=0000000000000000000000000000000000000000
 # The name patterns (EREs, anchored whole) of those per-key answers, which is what `reset_fixture`
 # clears: RUNS_<workflow id>, RUNS_<workflow id>_FROM_<round> (set through `runs_from_round`
 # below), JOBS_<run id>, RUN_<run id>, WORKFLOW_PATH_<workflow id>, YAML_OF_<file basename> and
-# FILES_<sha initial>. A pattern must match only names the cases create, and `reset_fixture`
-# refuses one that matches a name in FIXTURE_NAMES_AS_SOURCED.
+# FILES_<sha initial>. And source (a)'s answers for one commit or one PR, where a case gives the
+# merges of the interim's chain (#1016) each its own evidence rather than the shared COMMIT_META,
+# TIP_PULLS, HEAD_PR, HEAD_CHECKS and HEAD_RUNS: META_<sha initial> (`commits/<sha>`),
+# PULLS_<sha initial> (its pull requests), CHECKS_<sha initial> (a head's check runs),
+# RUNS_AT_<sha initial> (`actions/runs?head_sha=<sha>`, a head's runs or a merge's push runs) and
+# PR_<number> (`pulls/<number>`). A pattern must match only names the cases create, and
+# `reset_fixture` refuses one that matches a name in FIXTURE_NAMES_AS_SOURCED.
 FIXTURE_KEYS=('RUNS_[0-9]+' 'RUNS_[0-9]+_FROM_[0-9]+' 'JOBS_[0-9]+' 'RUN_[0-9]+' 'WORKFLOW_PATH_[0-9]+'
-  'YAML_OF_[A-Za-z0-9_]*' 'FILES_[0-9a-z]')
+  'YAML_OF_[A-Za-z0-9_]*' 'FILES_[0-9a-z]' 'META_[0-9a-z]' 'PULLS_[0-9a-z]' 'CHECKS_[0-9a-z]'
+  'RUNS_AT_[0-9a-z]' 'PR_[0-9]+')
 TIP=""
 WORKFLOWS_JSON=""
 JOBS_DEFAULT=""
@@ -249,6 +255,18 @@ jobs_of() { eval "printf '%s' \"\${JOBS_$1:-\$JOBS_DEFAULT}\""; }
 # suite's commits apart (SHA_A, SHA_B, SHA_C, SHA_0 are runs of one character), falling back to
 # FILES_DEFAULT for a case that gives every commit the same diff.
 files_of() { eval "printf '%s' \"\${FILES_${1:0:1}:-\$FILES_DEFAULT}\""; }
+# keyed <prefix> <sha or number> <default>: the case's per-key answer, else the shared one. The key
+# is a SHA's first character (or a PR number), refused unless it is one, so `eval` reads a name.
+keyed() {
+  local key="$2" v=""
+  case "$1" in
+  PR_) key=${key%%[!0-9]*} ;;
+  *) key=${key:0:1} ;;
+  esac
+  case "$key" in '' | *[!0-9a-z]*) key="" ;; esac
+  [ -z "$key" ] || eval "v=\"\${$1$key:-}\""
+  printf '%s' "${v:-$3}"
+}
 
 # The id of the first workflow the list answers with, cached in a file: see FIRST_WID_CACHE.
 first_wid() {
@@ -450,11 +468,18 @@ gh() {
            parents: [{sha: (if $p != null then $p[.key]
                             else (if .key == 0 then $b else $c[.key - 1] end) end)}]}]}')
     ;;
-  "repos/$REPO/commits/"*"/pulls?per_page=100") response="$TIP_PULLS" ;;
-  "repos/$REPO/commits/"*"/check-runs?"*) response="$HEAD_CHECKS" ;;
-  "repos/$REPO/pulls/"*) response="$HEAD_PR" ;;
+  "repos/$REPO/commits/"*"/pulls?per_page=100")
+    sha=${FIXTURE_ENDPOINT#*/commits/}
+    response=$(keyed PULLS_ "$sha" "$TIP_PULLS")
+    ;;
+  "repos/$REPO/commits/"*"/check-runs?"*)
+    sha=${FIXTURE_ENDPOINT#*/commits/}
+    response=$(keyed CHECKS_ "$sha" "$HEAD_CHECKS")
+    ;;
+  "repos/$REPO/pulls/"*) response=$(keyed PR_ "${FIXTURE_ENDPOINT#*/pulls/}" "$HEAD_PR") ;;
   "repos/$REPO/actions/runs?head_sha="*)
-    response="$HEAD_RUNS"
+    sha=${FIXTURE_ENDPOINT#*head_sha=}
+    response=$(keyed RUNS_AT_ "$sha" "$HEAD_RUNS")
     if [ -n "$HEAD_RUNS_LATER" ]; then
       # `|| return 1`, as the round counter's: this runs in a substitution without errexit.
       reads=$(fixture_call_count headruns) || return 1
@@ -464,7 +489,8 @@ gh() {
   "repos/$REPO/commits/"*)
     sha=${FIXTURE_ENDPOINT#*/commits/}
     sha=${sha%%\?*}
-    response=$(jq -cn --argjson f "$(files_of "$sha")" --argjson m "$COMMIT_META" '$m + {files: $f}')
+    response=$(jq -cn --argjson f "$(files_of "$sha")" --argjson m "$(keyed META_ "$sha" "$COMMIT_META")" \
+      '$m + {files: $f}')
     ;;
   *) bail "unexpected fixture endpoint: $FIXTURE_ENDPOINT" ;;
   esac

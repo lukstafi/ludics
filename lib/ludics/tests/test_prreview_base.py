@@ -1200,6 +1200,225 @@ class NamedSources(unittest.TestCase):
         self.assertEqual((rc, err), (2, message + "\n"))
 
 
+# --- the interim's chain (#1016) ---------------------------------------------------------------
+# The tip C (PR #7, head H) with its own ci run in flight; below it the merges B (PR #6, head F)
+# and A (PR #5, head G), each a GitHub merge with its own run in flight; and a green at Z.
+F, G, Z = "f" * 40, "8" * 40, "0" * 40
+HEAD_OF = {C: (7, H, B), B: (6, F, A), A: (5, G, Z)}
+
+
+def gate_by(verdicts: dict[str, str]) -> base.GateRunner:
+    """Source (a)'s gate per PR number: each link's head is judged as itself."""
+    def gate(num: str) -> base.GateSignal | None:
+        return base.GateSignal(verdicts.get(num, "green"), f"o/r#{num}: {verdicts.get(num, 'green')}")
+    return gate
+
+
+def merge(first: str, head: str) -> str:
+    return json.dumps({"parents": [{"sha": first}, {"sha": head}],
+                       "commit": {"committer": {"email": "noreply@github.com"},
+                                  "verification": {"verified": True}}})
+
+
+class InterimChain(unittest.TestCase):
+    """#1016: under --interim, an older run in flight no longer refuses when every merge from the
+    tip's first parent down to its commit is a green roll-forward of its own and none of their push
+    runs is red. Every link is named on the verdict line; anything unreadable is no chain."""
+
+    def _world(self, page: list[dict[str, object]] | None = None, *, deeper: list[dict[str, object]] | None = None,
+               wids: Sequence[tuple[int, str]] = ((1, "ci"),)) -> dict[str, Answer]:
+        def at(sha: str, rid: int, created: str, wid: int = 1, name: str = "ci", **more: object) -> dict[str, object]:
+            return {"conclusion": "success", "head_sha": sha, "id": rid, "created_at": created,
+                    "run_attempt": 1, "workflow_id": wid, "name": name, **more}
+        fly: dict[str, object] = {"status": "in_progress", "conclusion": None}
+        answers = world(C, "")
+        answers["repos/o/r/actions/workflows?per_page=100"] = json.dumps(
+            {"workflows": [{"id": w, "name": n} for w, n in wids]})
+        for w, n in wids:
+            rows = page if page is not None else [
+                at(C, 10 * w, "2026-11-10T10:30:00Z", w, n, **fly),
+                at(B, 10 * w + 1, "2026-11-10T10:20:00Z", w, n, **fly),
+                at(A, 10 * w + 2, "2026-11-10T10:10:00Z", w, n, **fly),
+                at(Z, 10 * w + 3, "2026-11-10T10:00:00Z", w, n)]
+            answers[f"repos/o/r/actions/workflows/{w}/runs?branch=main&event=push&per_page=10"] = runs(*rows[:10])
+            answers[f"repos/o/r/actions/workflows/{w}/runs?branch=main&event=push&per_page=100"] = runs(
+                *(deeper if deeper is not None else rows))
+            answers[f"repos/o/r/actions/workflows/{w}"] = json.dumps({"path": f".github/workflows/{n}.yml"})
+            answers[f"repos/o/r/contents/.github/workflows/{n}.yml?ref={C}"] = DOCS_IGNORED
+            for r in [*rows, *(deeper or [])]:
+                answers[f"repos/o/r/actions/runs/{r['id']}"] = json.dumps(
+                    {"status": r.get("status", "completed"), "run_attempt": 1})
+        for sha, (num, head, first) in HEAD_OF.items():
+            answers[f"repos/o/r/commits/{sha}"] = merge(first, head)
+            answers[f"repos/o/r/commits/{sha}/pulls?per_page=100"] = json.dumps([
+                {"number": num, "merged_at": "2026-11-10T08:00:53Z", "merge_commit_sha": sha,
+                 "head": {"sha": head, "ref": "claude/topic"}, "base": {"ref": "main"}}])
+            answers[f"repos/o/r/actions/runs?head_sha={head}&per_page=100"] = json.dumps({"workflow_runs": [
+                {"created_at": "2026-11-10T07:41:00Z", "id": 8000 + 10 * num + w, "workflow_id": w,
+                 "status": "completed", "conclusion": "success", "run_attempt": 1} for w, _ in wids]})
+            for w, _ in wids:
+                answers[f"repos/o/r/actions/runs/{8000 + 10 * num + w}/jobs?per_page=100"] = json.dumps(
+                    {"jobs": [{"name": "build", "conclusion": "success"}]})
+            answers[self.at(sha)] = json.dumps({"workflow_runs": [
+                r for w, _ in wids for r in json.loads(str(
+                    answers[f"repos/o/r/actions/workflows/{w}/runs?branch=main&event=push&per_page=100"]
+                ))["workflow_runs"] if r["head_sha"] == sha]})
+        return answers
+
+    @staticmethod
+    def at(sha: str) -> str:
+        return f"repos/o/r/actions/runs?head_sha={sha}&event=push&branch=main&per_page=100"
+
+    def _base(self, answers: dict[str, Answer], *flags: str, verdicts: dict[str, str] | None = None,
+              records: str = "") -> tuple[int, str, Endpoints]:
+        with tempfile.TemporaryDirectory() as d:
+            args = ["main", "--wait=120", "--interim", *flags]
+            if records:
+                path = os.path.join(d, "records")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(records)
+                args += ["--integration-records", path]
+            args = [a.replace("@DIR@", d) for a in args]
+            rc, out, err, gh = base_run(answers, args, clock=FakeClock(), gate=gate_by(verdicts or {}),
+                                        knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+        return rc, out + err, gh
+
+    def test_a_chain_of_green_roll_forwards_is_green_and_names_every_link(self) -> None:
+        rc, out, _ = self._base(self._world())
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"o/r main: green, interim (tip {C[:8]}; ci still running at the tip, judged meanwhile by"
+                      " PR #7's head run (roll-forward rule); older runs in flight, every merge below the tip to"
+                      f" them a green roll-forward: {A[:8]} (PR #5, head {G[:8]}), {B[:8]} (PR #6, head {F[:8]}))",
+                      out)
+        self.assertEqual(out.count("  chain    "), 2, out)
+
+    def test_without_interim_nothing_of_the_chain_is_read(self) -> None:
+        rc, out, _, gh = base_run(self._world(), ["main", "--wait=120"], clock=FakeClock(), gate=gate_by({}),
+                                  knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+        self.assertEqual(rc, 4, out)
+        self.assertNotIn("green, interim", out)
+        self.assertFalse([e for e in gh.asked if "/pulls" in e or "head_sha=" in e or e.startswith(f"repos/o/r/commits/{B}")])
+
+    def test_two_workflows_each_merge_named_once(self) -> None:
+        rc, out, _ = self._base(self._world(wids=((1, "ci"), (2, "lint"))))
+        self.assertEqual(rc, 0, out)
+        line = next(ln for ln in out.split("\n") if "green, interim" in ln)
+        self.assertEqual((line.count(A[:8]), line.count(B[:8])), (1, 1), line)
+        self.assertIn(f"  chain    {B[:8]} — ci, lint in flight there;", out)
+
+    def test_a_run_past_the_page_of_ten_and_merges_whose_runs_ended(self) -> None:
+        """The run at A off the page (only the deeper read holds it); B's runs cancelled, or never
+        made: B is a link all the same, judged by its own head."""
+        def row(sha: str, rid: int, minute: int, **more: object) -> dict[str, object]:
+            return {"conclusion": "cancelled", "head_sha": sha, "id": rid,
+                    "created_at": f"2026-11-10T10:{minute:02d}:00Z", "run_attempt": 1, **more}
+        page = [row(C, 50, 59, status="in_progress", conclusion=None)] + [row(B, 40 + i, 50 - i) for i in range(9)]
+        deeper = page + [row(A, 30, 20, status="in_progress", conclusion=None), row(Z, 29, 10, conclusion="success")]
+        answers = self._world(page, deeper=deeper)
+        rc, out, _ = self._base(answers)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"  chain    {B[:8]} — no run in flight there;", out)
+        answers[self.at(B)] = json.dumps({"workflow_runs": []})
+        rc, out, _ = self._base(answers)
+        self.assertEqual(rc, 0, out)
+        answers[f"repos/o/r/commits/{B}/pulls?per_page=100"] = "[]"
+        rc, out, _ = self._base(answers)
+        self.assertEqual(rc, 4, out)
+        self.assertIn(f"(no interim verdict for ci: the merge {B[:8]} between the tip and the run(s) in flight is"
+                      " not a green roll-forward:", out)
+
+    def test_a_link_whose_head_is_not_green_holds(self) -> None:
+        for verdict in ("red", "pending", "absent"):
+            with self.subTest(verdict):
+                rc, out, _ = self._base(self._world(), verdicts={"5": verdict})
+                self.assertEqual(rc, 4, out)
+                self.assertNotIn("green, interim", out)
+                self.assertIn(f"(no interim verdict for ci: ci in flight at the merge {A[:8]} is not a green"
+                              f" roll-forward: ", out)
+
+    def test_a_red_in_the_span_holds_even_under_a_newer_green(self) -> None:
+        answers = self._world()
+        answers[self.at(B)] = runs({"head_sha": B, "id": 11, "status": "in_progress", "conclusion": None},
+                                   {"head_sha": B, "id": 99, "conclusion": "failure", "run_attempt": 2})
+        rc, out, _ = self._base(answers)
+        self.assertEqual(rc, 4, out)
+        self.assertIn(f"(no interim verdict for ci: ci in flight at the merge {B[:8]}: its push run 99 of ci"
+                      " concluded failure, a red in the span)", out)
+
+    def test_an_advisory_only_red_in_the_span_is_released_under_the_flag(self) -> None:
+        answers = self._world()
+        answers[self.at(B)] = runs({"head_sha": B, "id": 11, "status": "in_progress", "conclusion": None},
+                                   {"head_sha": B, "id": 99, "conclusion": "failure", "run_attempt": 1})
+        answers["repos/o/r/contents/.github/ship-pr-advisory-checks"] = ADVISORY
+        answers["repos/o/r/actions/runs/99/attempts/1/jobs?per_page=100"] = json.dumps(
+            {"jobs": [job(UBUNTU, "success"), job(MAC, "failure")]})
+        for rid in (11, 12):
+            answers[f"repos/o/r/actions/runs/{rid}/jobs?per_page=100"] = json.dumps({"jobs": [job(UBUNTU, None)]})
+        for sha, (num, _head, _first) in HEAD_OF.items():
+            answers[f"repos/o/r/actions/runs/{8000 + 10 * num + 1}/jobs?per_page=100"] = json.dumps(
+                {"jobs": [job(UBUNTU, "success")]})
+        rc, out, _ = self._base(answers, "--advisory-red", "@DIR@/adv.json")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"(run 11 of ci at {B[:8]} is still running (job 'fixtures (ubuntu)' is still running (or"
+                      " queued) and is not advisory) — excused by the chain of green roll-forwards below)", out)
+        self.assertNotIn("holds the interim:", out, "an excused run is not also named as holding")
+        rc, out, _ = self._base(answers)
+        self.assertEqual(rc, 4, out)
+        self.assertIn("its push run 99 of ci concluded failure, a red in the span)", out)
+
+    def test_an_integration_record_at_a_link(self) -> None:
+        """A failed record at a link holds; a passed one does not stand in for the link's head."""
+        rc, out, _ = self._base(self._world(), records=f"{B}\tfail\treq-1\t2026-11-10T09:00:00Z\n")
+        self.assertEqual(rc, 4, out)
+        self.assertIn(f"ci in flight at the merge {B[:8]}: integration record req-1 ran it and concluded fail", out)
+        rc, out, _ = self._base(self._world(), verdicts={"6": "red"},
+                                records=f"{B}\tpass\treq-1\t2026-11-10T09:00:00Z\n")
+        self.assertEqual(rc, 4, out)
+        self.assertIn(f"ci in flight at the merge {B[:8]} is not a green roll-forward", out)
+
+    def test_the_walk_fails_closed(self) -> None:
+        cases: list[tuple[str, dict[str, Answer], str]] = [
+            ("a parent unreadable", {f"repos/o/r/commits/{B}": (1, "gh: HTTP 502")},
+             f"ci in flight at the merge {B[:8]}: its PR head could not be judged"),
+            # B itself a green merge (its head is its second parent) whose first parent is no SHA.
+            ("a parent not a SHA", {f"repos/o/r/commits/{B}": merge("x", F)},
+             f"the first parent of {B[:8]} could not be read"),
+            ("a cycle", {f"repos/o/r/commits/{B}": merge(C, F)}, f"meets {C[:8]} twice"),
+            ("the link's runs unreadable", {self.at(B): (1, "gh: HTTP 502")},
+             f"ci in flight at the merge {B[:8]}: its push runs could not be read"),
+            ("a page not a runs page", {self.at(B): json.dumps({"message": "x"})},
+             f"ci in flight at the merge {B[:8]}: its push runs could not be read"),
+        ]
+        for name, more, why in cases:
+            with self.subTest(name):
+                answers = self._world()
+                answers.update(more)
+                rc, out, _ = self._base(answers)
+                self.assertEqual(rc, 4, out)
+                self.assertNotIn("green, interim", out)
+                self.assertIn(why, out)
+
+    def test_the_depth_bound(self) -> None:
+        saved = base.INTERIM_CHAIN_DEPTH
+        base.INTERIM_CHAIN_DEPTH = 1
+        try:
+            rc, out, _ = self._base(self._world())
+        finally:
+            base.INTERIM_CHAIN_DEPTH = saved
+        self.assertEqual(rc, 4, out)
+        self.assertIn(f"the run(s) in flight at {A[:8]} are not within 1 first-parent commits of the tip", out)
+
+    def test_an_excused_run_that_finished_or_was_re_run_is_read_as_itself(self) -> None:
+        for name, doc in (("finished", {"status": "completed", "run_attempt": 1}),
+                          ("re-run", {"status": "in_progress", "run_attempt": 2})):
+            with self.subTest(name):
+                answers = self._world()
+                answers["repos/o/r/actions/runs/12"] = json.dumps(doc)
+                rc, out, _ = self._base(answers)
+                self.assertEqual(rc, 4, out)
+                self.assertIn(f"the run 12 of ci at {A[:8]} finished or was re-run while the chain was read", out)
+
+
 # --- end to end: a fake gh binary that answers by endpoint and applies --jq ----------------------
 
 # --last-green (ludics-lite#602). The red tip R is a merge: first parent P1, second parent X (a PR
