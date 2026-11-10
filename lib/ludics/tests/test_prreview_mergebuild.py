@@ -298,6 +298,25 @@ class Build(Repo):
         self.assertIn("PASSED", out)
         self.assertIn("bare (this box has no run-time slots)", out)
 
+    def test_a_passed_build_names_its_merge_commit_and_both_parents_in_full(self) -> None:
+        """PROVENANCE (#1024): the scratch repository goes with the build, so what the build
+        tested survives only in its output -- the merge commit and both parents, all 40 hex."""
+        head, tip = self.sides("keep", "seam() { :; }")
+        seen = os.path.join(self.dir, "seen")
+        rc, out = self.build(head, f'{{ git rev-parse HEAD; pwd -P; }} > {seen} && sh ./api.sh')
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PASSED", out)
+        with open(seen, encoding="utf-8") as f:
+            merge_sha, tree = f.read().split("\n")[:2]
+        self.assertRegex(merge_sha, r"\A[0-9a-f]{40}\Z")
+        self.assertFalse(os.path.exists(tree), "the scratch repository is removed after the build")
+        self.assertIn(
+            f"merge build owner/repo#7: merge commit {merge_sha}, parents main at {tip} and the gated head {head}\n",
+            out,
+        )
+        self.assertIn(f"({merge_sha[:8]}) bare (this box has no run-time slots)", out, "the abbreviated line stands")
+        self.assertLess(out.index(merge_sha), out.index("; building "), "named before the build runs")
+
     def test_a_process_the_build_leaves_behind_is_ended(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
         survived = os.path.join(self.dir, "survived")
