@@ -217,9 +217,9 @@ land the change, then push the new body to the routine through the `schedule` sk
 action, diffing the live prompt against the previous version of this file first in case someone
 edited it in the web UI.
 
-Deployed baseline: the cloud copy holds this file's body as of `ff8f22b3`, pushed 2026-10-03
-(the live copy had lagged the repo until then); the next sync diffs the live prompt against
-`SKILL.md` at that commit.
+Deployed baseline: the cloud copy holds this file's body as of `941a55a7`, pushed 2026-11-10
+(the live copy had held `ff8f22b3`'s since 2026-10-03, four changes behind); the next sync diffs
+the live prompt against `SKILL.md` at that commit.
 
 Its non-prompt configuration, for re-creating it:
 
