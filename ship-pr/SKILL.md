@@ -201,8 +201,10 @@ runs at older merges going: one, with the tip's run pending behind it, where pus
 concludes `cancelled` and judges nothing, so a verdict covers a span of merges); several beside
 the tip's where each push has its own. With `--interim` such a tip is green meanwhile when it is GitHub's clean merge of
 a PR whose head built that workflow green and no run at an older commit is still in flight (that
-run judges base changes the PR head may never have met); the verdict line says `green, interim`
-and names its source. An integration record at the tip, which the wave gate hands in, is read
+run judges base changes the PR head may never have met), unless every merge from the tip's first
+parent down to that run's commit is such a green roll-forward too, with no push run there red
+(#1016, at most 10 deep, an unreadable link refuses); the verdict line says `green, interim` and
+names its source and every link. An integration record at the tip, which the wave gate hands in, is read
 before the PR head (a `pass` is the interim's source, a `fail` the tip's red), and under the
 gate's `--advisory-red` a merged head or older run going only on advisory jobs holds nothing
 (issue-wave's *Base gate*). That is the wave gate's opt-in and the base watch's; it is never the tip's own verdict, so a

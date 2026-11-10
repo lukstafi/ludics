@@ -503,8 +503,11 @@ built that workflow green, and the verdict line reads `green, interim (...; judg
 PR #N's head run ...)`. An integration record at the tip is read before that head: a pass is the
 interim's source, a fail the tip's red at once. Only a repository whose integration loop is a
 local run has records (OCANNL; not this one, whose loop is its CI run), and a record lifts no
-other hold. A tip with neither source stays pending and refused, and so does one with a run at
-an older merge still going. The advisory file decides there too (ludics-lite#659):
+other hold. A tip with neither source stays pending and refused. A run at an older merge still
+going refuses too, unless every merge from the tip's first parent down to that run's commit is a
+green roll-forward of its own (#1016): GitHub's clean merge of a PR whose head built those
+workflows green, no push run at it red. The verdict line names every link, at most 10
+first-parent steps deep, and a link that cannot be read refuses. The advisory file decides there too (ludics-lite#659):
 a merged head, or an older run, going only on jobs it names, every other job passed, holds
 nothing. Under a push group that keeps one running run and the
 newest pending one (this repository's main since ludics-lite#597), that refusal

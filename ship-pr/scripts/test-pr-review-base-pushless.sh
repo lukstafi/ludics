@@ -582,14 +582,16 @@ test_interim_is_not_asked_outside_its_shape() {
   assert_not_contains "$(cat "$REQUEST_LOG")" "/pulls" "but the tip's own run is not what is coming"
   # And an older run of the SAME workflow still going beside the tip's own (no cancel-in-progress):
   # the fold keeps only the newest row, but every row read counts (review round 5). That older run
-  # judges base changes the PR head may never have met.
+  # judges base changes the PR head may never have met -- unless its merge is a green roll-forward
+  # of its own (#1016), which B is not here: PR #7 merged the tip, and no PR merged B.
   burst_fixture '[{"status":"in_progress","conclusion":null,"head_sha":"cccccccccccccccccccccccccccccccccccccccc","id":7372},
                   {"status":"in_progress","conclusion":null,"head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","id":7371},
                   {"conclusion":"cancelled","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","id":7370}]'
   run_base --interim
   assert_eq "$BASE_RC" 4 "an older run in flight beside the tip's own holds the interim"
   assert_not_contains "$BASE_OUTPUT" "green, interim" "no green over a run still judging"
-  assert_not_contains "$(cat "$REQUEST_LOG")" "/pulls" "and no source is asked"
+  assert_contains "$BASE_OUTPUT" "(no interim verdict for ci: ci in flight at the merge ${SHA_B:0:8} is not a green roll-forward: no single merged pull request has the merge ${SHA_B:0:8} as its merge commit" \
+    "and the note says its merge is no roll-forward"
 }
 
 # A push group that does not cancel a running run (skill-scripts.yml's main since ludics-lite#597,
@@ -606,7 +608,10 @@ test_interim_in_a_group_that_does_not_cancel() {
   run_base --interim
   assert_eq "$BASE_RC" 4 "the tip pending behind an older run still going is pending"
   assert_not_contains "$BASE_OUTPUT" "green, interim" "no interim while the older run judges"
-  assert_not_contains "$(cat "$REQUEST_LOG")" "/pulls" "and no source is asked"
+  # Its merge is no roll-forward of its own (PR #7 merged the tip, not it), so no chain excuses
+  # the older run (#1016): the note says which merge broke it.
+  assert_contains "$BASE_OUTPUT" "(no interim verdict for ci: the merge ${SHA_B:0:8} between the tip and the run(s) in flight is not a green roll-forward: no single merged pull request has the merge ${SHA_B:0:8} as its merge commit" \
+    "and the note names the merge that is no roll-forward"
   burst_fixture '[{"status":"in_progress","conclusion":null,"head_sha":"cccccccccccccccccccccccccccccccccccccccc","id":7512},
                   {"conclusion":"cancelled","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","id":7511},
                   {"conclusion":"success","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","id":7510}]'
@@ -619,6 +624,126 @@ test_interim_in_a_group_that_does_not_cancel() {
   run_base --interim
   assert_eq "$BASE_RC" 1 "the older run red is the span's red"
   assert_not_contains "$BASE_OUTPUT" "green, interim" "the PR head's green does not cover it"
+}
+
+# --- the interim's chain (#1016) -----------------------------------------------------------------
+# A burst where pushes do not cancel: the tip C's run in flight, and the runs of the two merges
+# below it, B and A, still going. Each is GitHub's clean merge of its own PR (#7 head SHA_H, #6
+# head SHA_F, #5 head SHA_G), each head green, over a green at SHA_0. Every commit and every PR has
+# its own answers (the lib's META_/PULLS_/PR_/CHECKS_/RUNS_AT_ keys), so a case that breaks one
+# link breaks that link's evidence alone.
+SHA_F=ffffffffffffffffffffffffffffffffffffffff
+SHA_G=8888888888888888888888888888888888888888
+
+# link <merge sha> <first parent> <head sha> <PR number> <head check conclusion as JSON> <head run id>
+link() {
+  local m="$1" p="$2" h="$3" n="$4" c="$5" rid="$6" status=completed
+  [ "$c" != null ] || status=in_progress
+  eval "META_${m:0:1}=\$(jq -cn --arg p \"\$p\" --arg h \"\$h\" \
+    '{parents: [{sha: \$p}, {sha: \$h}], commit: {committer: {email: \"noreply@github.com\"}, verification: {verified: true}}}')"
+  eval "PULLS_${m:0:1}=\$(jq -cn --arg m \"\$m\" --arg h \"\$h\" --argjson n \"\$n\" \
+    '[{number: \$n, merged_at: \"2026-11-10T08:00:53Z\", merge_commit_sha: \$m, head: {sha: \$h, ref: \"claude/topic\"}, base: {ref: \"main\"}}]')"
+  eval "PR_$n=\$(jq -cn --arg h \"\$h\" --arg p \"\$p\" \
+    '{head: {sha: \$h, ref: \"claude/topic\"}, base: {sha: \$p}, updated_at: \"2026-11-10T07:40:00Z\"}')"
+  eval "CHECKS_${h:0:1}=\$(jq -cn --argjson c \"\$c\" \
+    '{check_runs: [{name: \"build\", conclusion: \$c, html_url: \"https://example.test/check/1\"}]}')"
+  eval "RUNS_AT_${h:0:1}=\$(jq -cn --argjson c \"\$c\" --arg s \"\$status\" --argjson id \"\$rid\" \
+    '{workflow_runs: [{created_at: \"2026-11-10T07:41:00Z\", id: \$id, workflow_id: 1, event: \"pull_request\", name: \"ci\", status: \$s, conclusion: \$c}]}')"
+  eval "JOBS_$rid=\$(jobs_json '[{\"name\":\"build\",\"conclusion\":\"success\"}]')"
+}
+
+# push_runs_at <merge sha> <json array of runs>: the merge's own push runs, as the chain reads them.
+push_runs_at() {
+  eval "RUNS_AT_${1:0:1}=\$(jq -cn --argjson r \"\$2\" '{workflow_runs: \$r}')"
+}
+
+CHAIN_RUNS='[{"status":"in_progress","conclusion":null,"head_sha":"cccccccccccccccccccccccccccccccccccccccc","id":7702},
+             {"status":"in_progress","conclusion":null,"head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","id":7701},
+             {"status":"in_progress","conclusion":null,"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","id":7700},
+             {"conclusion":"success","head_sha":"0000000000000000000000000000000000000000","id":7699}]'
+
+chain_fixture() {
+  burst_fixture "${1:-$CHAIN_RUNS}"
+  link "$SHA_C" "$SHA_B" "$SHA_H" 7 '"success"' 8001
+  link "$SHA_B" "$SHA_A" "$SHA_F" 6 '"success"' 8002
+  link "$SHA_A" "$SHA_0" "$SHA_G" 5 '"success"' 8003
+  push_runs_at "$SHA_B" '[{"id":7701,"workflow_id":1,"name":"ci","status":"in_progress","conclusion":null,"head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","created_at":"2026-09-10T00:58:00Z"}]'
+  push_runs_at "$SHA_A" '[{"id":7700,"workflow_id":1,"name":"ci","status":"in_progress","conclusion":null,"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","created_at":"2026-09-10T00:57:00Z"}]'
+}
+
+# The burst #1016 recorded: the runs of the two merges below the tip still going, each merge a green
+# roll-forward of its own. Under --interim that is green meanwhile, and the verdict line names
+# every link, oldest first. The same fixture under `base --wait` alone still waits for the tip's
+# own run, and asks no link anything.
+test_interim_a_chain_of_green_roll_forwards_is_green_meanwhile() {
+  chain_fixture
+  run_base --wait=2 --interim
+  assert_eq "$BASE_RC" 0 "a two-link chain of green roll-forwards is an interim green"
+  assert_contains "$BASE_OUTPUT" "$REPO $BRANCH: green, interim (tip ${SHA_C:0:8}; ci still running at the tip, judged meanwhile by PR #7's head run (roll-forward rule); older runs in flight, every merge below the tip to them a green roll-forward: ${SHA_A:0:8} (PR #5, head ${SHA_G:0:8}), ${SHA_B:0:8} (PR #6, head ${SHA_F:0:8}))" \
+    "the verdict line names every link, oldest first"
+  assert_contains "$BASE_OUTPUT" "  chain    ${SHA_B:0:8} — ci in flight there; source (a): PR #6's head ${SHA_F:0:8}, which GitHub merged cleanly as the merge ${SHA_B:0:8} (roll-forward rule)" \
+    "and a line per link says what judged it"
+  assert_contains "$BASE_OUTPUT" "  chain    ${SHA_A:0:8} — ci in flight there; source (a): PR #5's head ${SHA_G:0:8}" "both links"
+  chain_fixture
+  run_base --wait=2
+  assert_eq "$BASE_RC" 4 "without --interim the wait is for the tip's own run, as before"
+  assert_contains "$BASE_OUTPUT" "NO VERDICT for the tip ${SHA_C:0:8} — pending: its own run of ci is still in flight" \
+    "and says the tip is pending"
+  assert_not_contains "$(cat "$REQUEST_LOG")" "/pulls" "and no link is asked anything"
+}
+
+# A link whose own PR head is not green breaks the chain, whichever link it is: the interim names
+# the merge and why, and holds. Under `base --wait` alone, as before.
+test_interim_a_chain_with_a_link_whose_head_is_not_green_holds() {
+  local concl
+  for concl in '"failure"' null; do
+    chain_fixture
+    link "$SHA_A" "$SHA_0" "$SHA_G" 5 "$concl" 8003
+    run_base --wait=2 --interim
+    assert_eq "$BASE_RC" 4 "a link whose head is $concl holds the interim"
+    assert_not_contains "$BASE_OUTPUT" "green, interim" "no interim green ($concl)"
+    assert_contains "$BASE_OUTPUT" "(no interim verdict for ci: ci in flight at the merge ${SHA_A:0:8} is not a green roll-forward: PR #5's head ${SHA_G:0:8}" \
+      "the note names the link and its head ($concl)"
+  done
+  # A merge in the span whose runs ended is a link all the same: its head must be green too.
+  chain_fixture '[{"status":"in_progress","conclusion":null,"head_sha":"cccccccccccccccccccccccccccccccccccccccc","id":7702},
+                  {"conclusion":"cancelled","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","id":7701},
+                  {"status":"in_progress","conclusion":null,"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","id":7700},
+                  {"conclusion":"success","head_sha":"0000000000000000000000000000000000000000","id":7699}]'
+  push_runs_at "$SHA_B" '[{"id":7701,"workflow_id":1,"name":"ci","status":"completed","conclusion":"cancelled","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","created_at":"2026-09-10T00:58:00Z"}]'
+  run_base --wait=2 --interim
+  assert_eq "$BASE_RC" 0 "a cancelled merge between is a green link when its head is green"
+  assert_contains "$BASE_OUTPUT" "  chain    ${SHA_B:0:8} — no run in flight there; source (a): PR #6's head" "and is named as a link"
+  link "$SHA_B" "$SHA_A" "$SHA_F" 6 '"failure"' 8002
+  run_base --wait=2 --interim
+  assert_eq "$BASE_RC" 4 "and its head red holds the interim"
+  assert_contains "$BASE_OUTPUT" "(no interim verdict for ci: the merge ${SHA_B:0:8} between the tip and the run(s) in flight is not a green roll-forward" \
+    "naming the merge between"
+  run_base --wait=2
+  assert_eq "$BASE_RC" 4 "without --interim, as before"
+}
+
+# A red push run at a link is the span's red, even under a newer green: the merge B's run green
+# above the merge X's red, with the run at A still in flight below them.
+test_interim_a_chain_with_a_red_link_holds() {
+  local x=9999999999999999999999999999999999999999 i=7777777777777777777777777777777777777777
+  chain_fixture "$(jq -cn --arg x "$x" '[
+    {status: "in_progress", conclusion: null, head_sha: "cccccccccccccccccccccccccccccccccccccccc", id: 7702},
+    {conclusion: "success", head_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", id: 7701},
+    {conclusion: "failure", head_sha: $x, id: 7698},
+    {status: "in_progress", conclusion: null, head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", id: 7700},
+    {conclusion: "success", head_sha: "0000000000000000000000000000000000000000", id: 7699}]')"
+  link "$SHA_B" "$x" "$SHA_F" 6 '"success"' 8002
+  link "$x" "$SHA_A" "$i" 4 '"success"' 8004
+  push_runs_at "$SHA_B" '[{"id":7701,"workflow_id":1,"name":"ci","status":"completed","conclusion":"success","head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","created_at":"2026-09-10T00:58:00Z"}]'
+  push_runs_at "$x" "$(jq -cn --arg x "$x" '[{id: 7698, workflow_id: 1, name: "ci", status: "completed", conclusion: "failure", head_sha: $x, created_at: "2026-09-10T00:57:30Z"}]')"
+  run_base --wait=2 --interim
+  assert_eq "$BASE_RC" 4 "a red in the span holds the interim"
+  assert_not_contains "$BASE_OUTPUT" "green, interim" "no interim green over it"
+  assert_contains "$BASE_OUTPUT" "(no interim verdict for ci: the merge ${x:0:8} between the tip and the run(s) in flight: its push run 7698 of ci concluded failure, a red in the span)" \
+    "the note names the red run and its merge"
+  run_base --wait=2
+  assert_eq "$BASE_RC" 4 "without --interim, as before"
 }
 
 # A burst longer than the runs page: ten replaced merges' `cancelled` rows push the oldest merge's
@@ -1050,6 +1175,9 @@ tests=(
   test_interim_without_a_green_source_stays_pending
   test_interim_is_not_asked_outside_its_shape
   test_interim_in_a_group_that_does_not_cancel
+  test_interim_a_chain_of_green_roll_forwards_is_green_meanwhile
+  test_interim_a_chain_with_a_link_whose_head_is_not_green_holds
+  test_interim_a_chain_with_a_red_link_holds
   test_interim_finds_an_older_run_off_the_page
   test_interim_under_the_repositorys_advisory_list
   test_interim_over_a_green_behind_a_page_of_cancelled_runs

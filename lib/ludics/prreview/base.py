@@ -89,6 +89,25 @@ below it on its first-parent chain with a successful push run created before the
 SHAs; an empty list (or one naming only the red tip) is exit 4 with nothing read. Exit 0 found,
 3 a read failed, 4 none. Its boundary is at ``last_green`` below.
 
+THE INTERIM'S CHAIN (#1016). Under ``--interim`` a run at an older commit still in flight (and not
+released by the advisory list) no longer refuses by itself: through a burst where pushes do not
+cancel, every merge's run is going at once. It is excused when the whole SPAN is a chain of green
+roll-forwards -- every commit from the tip's first parent down to the deepest commit with such a
+run, inclusive, whether its own runs are in flight, ended or never were -- each GitHub's clean
+merge of one PR into this branch whose head built green every workflow those runs are of (source
+(a)'s proof, ``tip_pr_head_verdict``), with no integration record at it but a pass (a pass does
+not stand in for the head), and none of its push runs red (any run, its latest attempt; under
+``--advisory-red`` an advisory-only red is released and written to the file). The verdict line
+names every link. BOUNDARY, fail closed: the span is read at most INTERIM_CHAIN_DEPTH (10)
+first-parent steps below the tip, and an excused commit not met by then -- or a parent that cannot
+be read or is not a SHA, a commit met twice, a root -- is no chain; any read the chain needs that
+fails (a commit, its PRs, its head's gate or runs or jobs, its push runs, paginated whole) is no
+chain: unknown is never green. Each excused run is read again by id after the chain, and one that
+finished or was re-run re-rounds, as the tip's does; the instant after that read is not closed.
+Runs of advisory workflows, which the round does not read, are not read at the links either. The
+hard holds stand as before: an exhausted page, a deeper read that fails, a red newest judged run at
+an older commit. Without ``--interim`` (``base --wait``, the integration loop's) none of it is read.
+
 The merged PR head's build signal (source (a)) is ``gate_checks``, the ``checks`` subcommand's
 gate (gate.Gate), run as ``tip_pr_head_verdict`` ran it: no wait, under this command's advisory
 list (the repository's under ``--advisory-red``), its report captured and its stderr dropped.
@@ -223,6 +242,9 @@ def _items(value: Json) -> list[Json] | None:
 
 # The conclusions that are a verdict (conclusion_class red or green).
 _JUDGED = frozenset(("failure", "timed_out", "startup_failure", "success", "skipped", "neutral"))
+
+# How far below the tip the interim's chain is read (#1016): first-parent steps, each one merge.
+INTERIM_CHAIN_DEPTH = 10
 
 
 def iso_seconds(text: str) -> float | None:
@@ -477,6 +499,19 @@ class Source:
     verdict: SourceVerdict
     why: str
     name: str
+
+
+@dataclass(frozen=True)
+class Link:
+    """One merge of the interim's chain below the tip (#1016): its SHA, the PR it merged and that
+    PR's head, the source sentence that judged it, and the workflows whose runs at it are in
+    flight and excused by it (none for a merge whose runs ended)."""
+
+    sha: str
+    num: str
+    head: str
+    why: str
+    excused: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -903,10 +938,12 @@ class Base:
                      if ln.startswith("build signal ")), "")
         return GateSignal(gate.verdict, line, gate.check_holds)
 
-    def tip_pr_head_verdict(self, branch: str, sha: str, wants: Sequence[Want]) -> TipPr | None:
+    def tip_pr_head_verdict(self, branch: str, sha: str, wants: Sequence[Want], *,
+                            noun: str = "the tip") -> TipPr | None:
         """``tip_pr_head_verdict``, source (a): the tip is GitHub's own clean merge of one merged
         PR into this branch, and that PR head's build signal (and, for each workflow the verdict is
-        FOR, a successful run of it that built something) speaks for it. None is UNKNOWN."""
+        FOR, a successful run of it that built something) speaks for it. None is UNKNOWN. ``noun``
+        names the commit in the sentences: the tip, or a merge of the interim's chain below it."""
         if not sha or not _HEX.fullmatch(sha):
             return TipPr("none", "there is no tip SHA to judge")
         doc = self.gh_json(["api", f"repos/{self.repo}/commits/{sha}"])
@@ -919,10 +956,10 @@ class Base:
         verified = _field(jq_raw(alt(get(doc, "commit", "verification", "verified"), False)))
         s8 = sha[:8]
         if n != "2":
-            return TipPr("none", f"the tip {s8} is not a merge commit ({n} parent(s)), so no PR head's"
+            return TipPr("none", f"{noun} {s8} is not a merge commit ({n} parent(s)), so no PR head's"
                          " run speaks for it")
         if email != "noreply@github.com" or verified != "true":
-            return TipPr("none", f"the tip {s8} is a merge commit GitHub did not make (committer {email},"
+            return TipPr("none", f"{noun} {s8} is a merge commit GitHub did not make (committer {email},"
                          f" verified {verified}), so it may carry a resolution no PR head's run saw")
         pulls = self.gh_json(["api", f"repos/{self.repo}/commits/{sha}/pulls?per_page=100"])
         if isinstance(pulls, (GhFailed, GhUnanswered)) or not isinstance(pulls, list):
@@ -935,17 +972,17 @@ class Base:
             # GitHub made and signed this merge, yet no PR of this repository merged it: it was made
             # for a PR of another repository and pushed here (a fork staging the PRs of the one it
             # mirrors). That PR, and the integration records naming it, are that repository's.
-            return TipPr("none", f"no single merged pull request has the tip {s8} as its merge"
+            return TipPr("none", f"no single merged pull request has {noun} {s8} as its merge"
                          f" commit: GitHub made it, but no pull request of {self.repo} did, so if this"
                          " branch is pushed from another repository's, read that one, where the PR and"
                          " its records are")
         if len(prs) != 1:
-            return TipPr("none", f"no single merged pull request has the tip {s8} as its merge commit")
+            return TipPr("none", f"no single merged pull request has {noun} {s8} as its merge commit")
         num, head, bref = prs[0]
         if not _DIGITS.fullmatch(num):
             return None
         if head != p1 or bref != branch:
-            return TipPr("none", f"PR #{num} merged as the tip {s8}, but its head {head[:8]} is not the"
+            return TipPr("none", f"PR #{num} merged as {noun} {s8}, but its head {head[:8]} is not the"
                          f" merge's second parent or it was merged into '{bref}', not '{branch}'")
         signal = self._gate(num)
         if signal is None:
@@ -963,7 +1000,7 @@ class Base:
             case _:
                 return None
         h8 = head[:8]
-        why = (f"PR #{num}'s head {h8}, which GitHub merged cleanly as the tip {s8} (roll-forward rule):"
+        why = (f"PR #{num}'s head {h8}, which GitHub merged cleanly as {noun} {s8} (roll-forward rule):"
                f" {signal.line}")
         # The held runs the gate's report named under its line (#930): joined on, as the gate's own
         # heartbeat joins them, so every line that carries this source names the run, job and why.
@@ -1022,11 +1059,11 @@ class Base:
             if not built:
                 unbuilt.append(f"{wname} (no job succeeded)")
         if unbuilt:
-            return TipPr("none", f"PR #{num}'s head {h8}, which GitHub merged cleanly as the tip {s8},"
+            return TipPr("none", f"PR #{num}'s head {h8}, which GitHub merged cleanly as {noun} {s8},"
                          f" has no successful run of {', '.join(unbuilt)}: its green is about other"
                          " workflows", num, head)
         if rerun:
-            return TipPr("pending", f"PR #{num}'s head {h8}, which GitHub merged cleanly as the tip {s8},"
+            return TipPr("pending", f"PR #{num}'s head {h8}, which GitHub merged cleanly as {noun} {s8},"
                          f" is being re-run by {', '.join(rerun)}", num, head)
         if released:
             why += (f" ({', '.join(released)} still running there only in jobs the repository's advisory"
@@ -1036,11 +1073,8 @@ class Base:
     def named_source(self, branch: str, sha: str, wants: Sequence[Want]) -> Source | None:
         """``tip_named_source``: (b) the newest integration record at the tip, by its conclusion
         time, else (a). Nothing is remembered between rounds: a PR head's runs can be re-run."""
-        at_tip = [r for r in self.records if r.sha == sha]
-        if at_tip:
-            at_tip.sort(key=lambda r: r.line().encode("utf-8", "surrogateescape"))
-            at_tip.sort(key=lambda r: r.when.encode("utf-8", "surrogateescape"), reverse=True)
-            rec = at_tip[0]
+        rec = self.record_at(sha)
+        if rec is not None:
             return Source(
                 "green" if rec.verdict == "pass" else "red",
                 f"source (b): integration record {rec.rid} ran the tip {rec.sha[:8]} and concluded"
@@ -1054,6 +1088,46 @@ class Base:
         if tp.verdict == "none":
             return Source(tp.verdict, f"no integration record ran the tip {sha[:8]}, and {tp.why}", name)
         return Source(tp.verdict, f"source (a): {tp.why}", name)
+
+    def record_at(self, sha: str) -> Record | None:
+        """The newest integration record at the commit, by its conclusion time, or None."""
+        at = [r for r in self.records if r.sha == sha]
+        if not at:
+            return None
+        at.sort(key=lambda r: r.line().encode("utf-8", "surrogateescape"))
+        at.sort(key=lambda r: r.when.encode("utf-8", "surrogateescape"), reverse=True)
+        return at[0]
+
+    # --- the interim's chain (#1016) ---
+
+    def first_parent(self, sha: str) -> str | None:
+        """The commit's first parent: "" at a root commit, None when the read failed or its
+        answer is not a parent list whose first entry is a full SHA (unknown, never a root)."""
+        doc = self.gh_json(["api", f"repos/{self.repo}/commits/{sha}"])
+        if isinstance(doc, (GhFailed, GhUnanswered)):
+            return None
+        parents = _items(get(doc, "parents"))
+        if parents is None:
+            return None
+        if not parents:
+            return ""
+        first = jq_raw(get(parents[0], "sha"))
+        return first if _FULL_SHA.fullmatch(first) else None
+
+    def runs_at(self, sha: str, ebranch: str) -> list[RunRow] | None:
+        """Every push run on the branch at this commit, every workflow, every page: None when a
+        page could not be read or is not a runs page (an incomplete list is never "no red")."""
+        pages = self.gh_pages(["api", "--paginate", f"repos/{self.repo}/actions/runs?head_sha={sha}"
+                               f"&event=push&branch={ebranch}&per_page=100"])
+        if isinstance(pages, (GhFailed, GhUnanswered)):
+            return None
+        rows: list[RunRow] = []
+        for page in pages:
+            items = _items(get(page, "workflow_runs"))
+            if items is None:
+                return None
+            rows.extend(_run_row(r) for r in items)
+        return rows
 
     # --- the interim's deeper read ---
 
@@ -1479,6 +1553,8 @@ class Wait:
         self.rerounds = 0
         self.interim_name = ""
         self.interim_why = ""
+        # The interim's chain below the tip, newest first (#1016): empty when no older run held it.
+        self.interim_links: list[Link] = []
         self.pushless_name = ""
         # What the earlier rounds of this wait saw (ludics-lite#550): each workflow's newest judged
         # run, and the runs each workflow had at a tip.
@@ -1979,9 +2055,9 @@ class Wait:
         """The INTERIM verdict (ludics-lite#308), under --interim only: nothing red, every workflow
         still owed a verdict at the tip has the tip's own run in flight, and nothing else is in
         flight on the branch (under --advisory-red, a run going only on jobs the repository's
-        advisory list names is not, #659: ``held_by``) -- then a named source's green for exactly
-        those workflows is an interim green. A failed integration record at the tip is the tip's
-        red, read first."""
+        advisory list names is not, #659: ``held_by``) unless the chain below the tip excuses it
+        (#1016: ``chain``) -- then a named source's green for exactly those workflows is an
+        interim green. A failed integration record at the tip is the tip's red, read first."""
         b, repo, branch = self.b, self.repo, self.branch
         if not rnd.tipfly:
             return "no"
@@ -1993,11 +2069,18 @@ class Wait:
                 rnd.red_at_tip += 1
                 rnd.out += f"  RED      {names} — its push run is still in flight, but {src.why}\n"
         pushless_wids = {wid for wid, _ in rnd.pushless}
-        # EVERY row read, not the fold's newest per workflow: an older run beside the tip's.
+        self.interim_links = []
+        # EVERY row read, not the fold's newest per workflow: an older run beside the tip's. A run
+        # that holds is kept aside (``held``) rather than refusing at once: the chain below may
+        # excuse it (#1016). ``older_fly`` counts the holds nothing excuses.
         released: dict[str, bool] = {}
-        older_fly = self.held_by(rnd, [r for r in self.allruns if r.wid != "" and r.status != "completed"
-                                       and r.head_sha != tip and r.wid not in pushless_wids], released)
-        if older_fly == 0 and rnd.exhausted:
+        notes: dict[str, tuple[str, str]] = {}
+        held: dict[str, RunRow] = {}
+        for r in self.held_by(rnd, [r for r in self.allruns if r.wid != "" and r.status != "completed"
+                                    and r.head_sha != tip and r.wid not in pushless_wids], released, notes):
+            held.setdefault(r.run_id, r)
+        older_fly = 0
+        if rnd.exhausted:
             older_fly = 1
             rnd.out += (f"           (no interim verdict: none of the newest 100 push runs of"
                         f" {', '.join(rnd.exhausted)} judged the branch, and nothing past them was read)\n")
@@ -2011,7 +2094,8 @@ class Wait:
                                 f" read past the first page ({b.err_line()}))\n")
                     break
                 still_open, newest, judged = older
-                older_fly += self.held_by(rnd, still_open, released)
+                for r in self.held_by(rnd, still_open, released, notes):
+                    held.setdefault(r.run_id, r)
                 # An advisory-only red is no red here either (--advisory-red): the same run the
                 # fold took out of the verdict, or an older one the page of ten did not hold.
                 if conclusion_class(newest) == "red" and self.args.advisory_red and judged is not None:
@@ -2039,6 +2123,20 @@ class Wait:
         if src.verdict != "green":
             rnd.out += f"           (no interim verdict for {names}: {src.why})\n"
             return "no"
+        excused = list(held.values())
+        if excused:
+            links, why = self.chain(rnd, tip, excused)
+            if why:
+                rnd.out += f"           (no interim verdict for {names}: {why})\n"
+                return "no"
+            # The holds the chain excused are no longer holds: their notes say so instead.
+            for r in excused:
+                if r.run_id in notes:
+                    line, hold = notes[r.run_id]
+                    rnd.out = rnd.out.replace(
+                        line, f"           (run {r.run_id} of {r.name} at {r.head_sha[:8]} is still running"
+                        f" ({hold}) — excused by the chain of green roll-forwards below)\n")
+            self.interim_links = links
         self.interim_name, self.interim_why = src.name, src.why
         hold_why = ""
         moved = False
@@ -2083,6 +2181,23 @@ class Wait:
                                 " the tip's verdict")
                     moved = True
                     break
+        if not hold_why:
+            # And each run the chain excused, by id: one that finished or was re-run meanwhile is
+            # read as itself on the next round, not excused on this one's reading of it (#1016).
+            for r in excused:
+                doc = (b.gh_json(["api", f"repos/{repo}/actions/runs/{r.run_id}"])
+                       if _DIGITS.fullmatch(r.run_id) else GhFailed())
+                status = "" if isinstance(doc, (GhFailed, GhUnanswered)) else tsv(alt(get(doc, "status"), "-"))
+                attempt = 0 if isinstance(doc, (GhFailed, GhUnanswered)) else _attempt(get(doc, "run_attempt"))
+                at = f"run {r.run_id} of {r.name} at {r.head_sha[:8]}"
+                if not status:
+                    hold_why = f"the {at}, which the chain excused, could not be read again ({b.err_line()})"
+                    break
+                if status == "completed" or (attempt and r.attempt and attempt != r.attempt):
+                    hold_why = (f"the {at} finished or was re-run while the chain was read, so its own"
+                                " result is read next")
+                    moved = True
+                    break
         if not hold_why and self.tip_read() != tip:
             hold_why = "the tip moved while the source was read"
             moved = True
@@ -2093,13 +2208,86 @@ class Wait:
         rnd.out += f"           (no interim verdict for {names}: {hold_why})\n"
         return "no"
 
-    def held_by(self, rnd: _Round, rows: Sequence[RunRow], released: dict[str, bool]) -> int:
-        """How many of these runs at an older commit, each not completed, hold the interim. Under
-        ``--advisory-red`` a run going only on jobs the repository's list names, every other job
+    def chain(self, rnd: _Round, tip: str, excused: Sequence[RunRow]) -> tuple[list[Link], str]:
+        """The interim's chain (#1016): the runs in ``excused`` are in flight at older commits and
+        hold the interim, and it may still answer when every merge from the tip's first parent down
+        to the deepest of their commits, inclusive -- the SPAN, every merge in it whether its runs
+        are in flight, ended or never were -- is a green roll-forward of its own: GitHub's clean
+        merge of one PR into this branch whose head built green each workflow ``excused`` holds
+        (``tip_pr_head_verdict``, the tip's own proof), with no integration record at it but a pass,
+        and no push run at it red (the run's latest attempt; under ``--advisory-red`` an
+        advisory-only red is released and recorded, as the newest judged run's is). The links,
+        newest first, or why there is no chain. Fail closed: a read that fails, a parent that is
+        not a SHA, a commit met twice, a root, or more than INTERIM_CHAIN_DEPTH steps before every
+        excused commit is met is no chain."""
+        b, branch = self.b, self.branch
+        wants: list[Want] = []
+        for r in excused:
+            if all(wid != r.wid for wid, _ in wants):
+                wants.append((r.wid, rnd.names.get(r.wid, r.name)))
+        owed = {r.head_sha for r in excused}
+        build = set(rnd.names) - {wid for wid, _ in rnd.pushless}
+        links: list[Link] = []
+        reds: list[tuple[str, str, str, str, str]] = []
+        seen = {tip}
+        cur = tip
+        while owed:
+            if len(links) >= INTERIM_CHAIN_DEPTH:
+                return [], (f"the run(s) in flight at {', '.join(sorted(s[:8] for s in owed))} are not"
+                            f" within {INTERIM_CHAIN_DEPTH} first-parent commits of the tip, so no chain"
+                            " of green roll-forwards reaches them")
+            parent = b.first_parent(cur)
+            if parent is None:
+                return [], f"the first parent of {cur[:8]} could not be read ({b.err_line()}), so no chain"
+            if not parent:
+                return [], (f"the tip's first-parent chain reached its root before"
+                            f" {', '.join(sorted(s[:8] for s in owed))}, where run(s) are in flight")
+            if parent in seen:
+                return [], f"the tip's first-parent chain meets {parent[:8]} twice, so no chain"
+            seen.add(parent)
+            c8 = parent[:8]
+            here = tuple(sorted({r.name for r in excused if r.head_sha == parent}))
+            flying = (f"{', '.join(here)} in flight at the merge {c8}" if here
+                      else f"the merge {c8} between the tip and the run(s) in flight")
+            rec = b.record_at(parent)
+            if rec is not None and rec.verdict != "pass":
+                return [], (f"{flying}: integration record {rec.rid} ran it and concluded {rec.verdict}"
+                            f" ({rec.when})")
+            tp = b.tip_pr_head_verdict(branch, parent, wants, noun="the merge")
+            if tp is None:
+                return [], f"{flying}: its PR head could not be judged ({b.err_line()})"
+            if tp.verdict != "green":
+                return [], f"{flying} is not a green roll-forward: {tp.why}"
+            runs = b.runs_at(parent, self.ebranch)
+            if runs is None:
+                return [], f"{flying}: its push runs could not be read ({b.err_line()})"
+            for r in runs:
+                if r.wid not in build or r.status != "completed" or conclusion_class(r.conclusion) != "red":
+                    continue
+                if self.args.advisory_red:
+                    jobs, standing = b.advisory_red(r.run_id, r.attempt)
+                    if jobs:
+                        reds.extend((r.name, parent, r.run_id, job, concl) for job, concl in jobs)
+                        continue
+                    return [], (f"{flying}: its push run {r.run_id} of {r.name} concluded {r.conclusion},"
+                                f" a red in the span (not an advisory-only red: {standing})")
+                return [], f"{flying}: its push run {r.run_id} of {r.name} concluded {r.conclusion}, a red in the span"
+            links.append(Link(parent, tp.num, tp.head, tp.why, here))
+            owed.discard(parent)
+            cur = parent
+        seen_red = {(run, job) for _, _, run, job, _ in rnd.advisory_red}
+        rnd.advisory_red.extend(x for x in reds if (x[2], x[3]) not in seen_red)
+        return links, ""
+
+    def held_by(self, rnd: _Round, rows: Sequence[RunRow], released: dict[str, bool],
+                notes: dict[str, tuple[str, str]]) -> list[RunRow]:
+        """Which of these runs at an older commit, each not completed, hold the interim. Under
+        ``--advisory-red`` a run going only on jobs the repository's advisory list names, every other job
         of it passed, does not (#659), and one that holds says which job kept it and why (#930's
         reason): either is named on a note line, once per run however many reads hold it
-        (``released`` remembers the answers within the round)."""
-        held = 0
+        (``released`` remembers the answers within the round). A holding run's note line and
+        reason go in ``notes`` by run id, so a chain that excuses the run (#1016) can say so."""
+        held: list[RunRow] = []
         for r in rows:
             if r.run_id not in released:
                 hold = self.b.inflight_hold(r.run_id)
@@ -2108,10 +2296,12 @@ class Wait:
                     rnd.out += (f"           (run {r.run_id} of {r.name} at {r.head_sha[:8]} is still running,"
                                 " but only jobs the repository's advisory list names — not waited for)\n")
                 elif hold:
-                    rnd.out += (f"           (run {r.run_id} of {r.name} at {r.head_sha[:8]} holds the"
-                                f" interim: {hold})\n")
+                    line = (f"           (run {r.run_id} of {r.name} at {r.head_sha[:8]} holds the"
+                            f" interim: {hold})\n")
+                    rnd.out += line
+                    notes[r.run_id] = (line, hold)
             if not released[r.run_id]:
-                held += 1
+                held.append(r)
         return held
 
     def write_advisory_red(self, rnd: _Round) -> None:
@@ -2156,10 +2346,19 @@ class Wait:
         if interim_green:
             self.write_advisory_red(rnd)
             judged = f"; {rnd.pushless_names} judged by {self.pushless_name}" if rnd.pushless else ""
+            # Every link of the chain, oldest first, on the verdict line itself (#1016): an interim
+            # over older runs in flight is weaker evidence than one over the tip's run alone.
+            links = list(reversed(self.interim_links))
+            chained = ("; older runs in flight, every merge below the tip to them a green roll-forward: "
+                       + ", ".join(f"{k.sha[:8]} (PR #{k.num}, head {k.head[:8]})" for k in links)
+                       if links else "")
             cli.say(f"{repo} {branch}: green, interim (tip {t8}; {rnd.tipfly_names} still running at"
-                    f" the tip, judged meanwhile by {self.interim_name}{judged})")
+                    f" the tip, judged meanwhile by {self.interim_name}{judged}{chained})")
             sys.stdout.write(out + f"  interim  {rnd.tipfly_names} — the tip's own run is in flight;"
                              f" {self.interim_why}\n")
+            for k in links:
+                flying = f"{', '.join(k.excused)} in flight there" if k.excused else "no run in flight there"
+                sys.stdout.write(f"  chain    {k.sha[:8]} — {flying}; source (a): {k.why}\n")
             return 0
         if rnd.red > 0:
             cli.say(f"!!! {repo} {branch} is RED — {rnd.red} workflow(s) failed on the tip you are about"
