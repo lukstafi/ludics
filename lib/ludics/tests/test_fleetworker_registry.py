@@ -1228,9 +1228,9 @@ class LoopRunUnderHalt(RegistryCase):
 
     def test_a_tip_run_is_admitted_under_a_halt_and_its_evidence_names_the_halt(self) -> None:
         self.halt()
-        for identity, host, extra in (("gpu-1", "rog", {}), ("cc-1", "mac", {"integration": True})):
+        for identity, host in (("gpu-1", "rog"), ("cc-1", "mac")):
             with self.subTest(identity):
-                rc, out, err = self.loop(identity, host, **extra)
+                rc, out, err = self.loop(identity, host) if identity == "gpu-1" else self.loop(identity, host, integration=True)
                 self.assertEqual(rc, 0, err)
                 self.assertEqual((out["state"], out["tip_run"]), ("launching", True))
                 self.assertNotIn("tip_run", out["request"], "beside the request, never in it")
