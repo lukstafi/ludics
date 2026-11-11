@@ -1150,7 +1150,12 @@ refused after another was admitted, keep the first and retry the second, never r
 change the list, conclude the triage's records: once none is outstanding, the next triage request
 founds a new one. The halt refuses new work only: records dispatched before it keep their slot
 batches and legs. This exception must correspond to the board's named triage worker, not a
-general bypass for ordinary work.
+general bypass for ordinary work. The halt admits one record more, the coordinator's own loop run
+(ludics#1044): a reservation `execution tip-run` makes, its payload marked `"tip_run": true`
+beside the request (taken only by `execution run`, beside a non-standing `correctness` request of
+transport `coordinator`), whose dispatch evidence names the halt and quotes its reason, and which
+is no member of the triage. So the integration loop's next run verifies a fix-forward under the
+halt, before `resume-launches`; a worker's reservation and an unmarked coordinator one stay refused.
 
 Fixtures: `python3 issue-wave/scripts/test-fleet-execution.py` exercises actual temporary anchor
 state and concurrent processes without ssh, accounts or hardware. For live validation reserve

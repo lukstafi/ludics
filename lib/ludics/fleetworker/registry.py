@@ -292,6 +292,29 @@ halt). Once every record of the triage is concluded, the next triage request fou
 later halt's triage ignores this one's records (another generation), which stay outstanding until
 concluded like any record.
 
+THE LOOP RUN UNDER A HALT (ludics#1044). A coordinator's integration-loop run is the verdict a halt
+waits for (issue-wave SKILL.md: the halt is lifted once the loop's run at a tip holding the
+fix-forward is green), so a halt that refused it could never be lifted on evidence. `execution
+tip-run` marks the `execution run` payload it sends with `"tip_run": true` BESIDE the request (as
+THE CHECKOUT is, and for its reason), and the record keeps it as a top-level `tip_run`, fixed for
+the record's life (a retry carries the same mark or is refused). The mark's shape, checked on every
+new reservation whether or not a halt stands: exactly `true`, only on `run` (tip-run's own verb;
+`reserve` and `window` refuse it), and only beside a non-standing `correctness` request of
+transport `coordinator`. Under a halt, a NEW reservation is admitted when its request carries
+`triage_reason` (THE HALT'S TRIAGE, unchanged) or its payload carries that mark; a DISPATCH (the
+one inside `run`, and the `dispatch` action) is admitted for a triage record of the current halt or
+a record holding the mark. An admitted marked record's dispatch evidence names the halt's
+generation and quotes its reason (`halt_reason`), so the record says it ran under the halt. The
+boundary, and nothing else: the halt now admits exactly those marked records. A request without
+the mark is refused as before -- a worker's reservation (transport `subagent`, `app` or `cli`, which
+the mark's shape refuses outright) and the coordinator's own ordinary one alike -- and every other
+check (lease, cap, measurement exclusivity, a window's suspension) applies to a marked one as to
+any. A marked record takes no `halt_identity`, so it is never a member of the halt's triage, whose
+one-owner rule it neither joins nor blocks; a marked request that also carries `triage_reason` is a
+triage request, held to THE HALT'S TRIAGE. The mark is the lease holder's statement, as
+`integration` is: it does not verify that the command is a loop's suite, and `execution tip-run`'s
+own yield (a loop run yields to every non-standing record on its box) stays tip-run's.
+
 THE BACKEND MARK (after ludics-lite#793). `pinned_backend` is a top-level record field saying that
 the run's starter checked its command pins that backend: `execution tip-run` writes it on the
 running record of a GPU-loop run, which starts only once the command's pin is checked (tiprun.py,
@@ -524,6 +547,42 @@ def check_triage(request: Record, boxes: list[str] | None, records: dict[str, Re
         refuse(f"{exists}: the triage already holds {here[0]} on {request['execution_host']} (one triage record per box)")
 
 
+def tip_run_ok(value: Any, action: str, request: Record) -> bool:
+    """THE LOOP RUN UNDER A HALT's mark (see the header), by its shape: exactly true, only on `run`,
+    beside a coordinator's non-standing correctness request."""
+    if value is not True:
+        refuse("tip_run must be true when present")
+    if action != "run":
+        refuse("tip_run marks an execution tip-run reservation, made by execution run only")
+    if request["kind"] != "correctness" or request["transport"] != "coordinator" or request.get("standing"):
+        refuse("only a coordinator's non-standing correctness reservation can be an execution tip-run loop run")
+    return True
+
+
+def halt_reason(marker: str) -> str:
+    """The reason a HALT marker states now: its last line's text after the stamp (and id), or the
+    line itself when it has neither shape."""
+    lines = [line for line in marker.splitlines() if line.strip()]
+    last = lines[-1] if lines else ""
+    found = re.match(r"^\S+ id=\S+ (.*)$", last) or re.match(r"^update \S+ (.*)$", last)
+    return found.group(1) if found else last
+
+
+def check_halt_dispatch(record: Record, halt_identity: str | None, halt_text: str | None) -> str:
+    """A dispatch under the halt, or none: refused unless the record is the current halt's triage or
+    a marked tip-run record (THE LOOP RUN UNDER A HALT); returns the note a marked record's dispatch
+    evidence carries under a halt, else ""."""
+    triage = record["request"].get("triage_reason")
+    if triage and (halt_identity is None or halt_generation(record.get("halt_identity")) != halt_identity):
+        refuse("triage assignment belongs to a different or ended halt")
+    if halt_identity is None or triage:
+        return ""
+    if not record.get("tip_run"):
+        refuse("fleet halted; ordinary dispatch refused")
+    return (f"; admitted under fleet halt {halt_identity} as an execution tip-run loop run (the verdict the halt "
+            f"waits for); the halt's reason: {halt_reason(halt_text or '')}")
+
+
 def check_issue(request: Record) -> None:
     """A NEW request's `issue` (see the header): absent, or one issue spelled `owner/name#N`."""
     if "issue" in request and not ISSUE.fullmatch(request["issue"]):
@@ -562,6 +621,8 @@ def validate_record(data: Any, path: Path) -> Record:
             triage_boxes_ok(record["triage_boxes"], record["request"])
         except ValueError:
             refuse(f"invalid triage boxes: {path}")
+    if "tip_run" in record and record["tip_run"] is not True:
+        refuse(f"invalid tip_run mark: {path}")
     if "pinned_backend" in record:
         try:
             pinned_backend_ok(record["pinned_backend"], record["request"])
@@ -1110,7 +1171,8 @@ def main(argv: list[str]) -> None:
     clock = datetime.now(timezone.utc)
     now = clock.isoformat()
     halt_path = Path(root) / "HALT"
-    halt_identity = halt_generation(halt_path.read_text()) if halt_path.exists() else None
+    halt_text = halt_path.read_text() if halt_path.exists() else None
+    halt_identity = halt_generation(halt_text)
     if halt_identity is not None and not halt_identity.strip():
         refuse("invalid empty halt record")
     record: Record | None = records.get(identity)
@@ -1140,7 +1202,9 @@ def main(argv: list[str]) -> None:
             checkout_ok(checkout)
         # THE HALT'S TRIAGE's box list rides beside the request as the checkout does (see the header).
         triage_boxes: list[str] | None = data.get("triage_boxes")
-        request = {k: v for k, v in data.items() if k not in {"checkout", "triage_boxes"}}
+        # THE LOOP RUN UNDER A HALT's mark rides beside the request too (see the header).
+        tip_run: bool | None = data.get("tip_run")
+        request = {k: v for k, v in data.items() if k not in {"checkout", "triage_boxes", "tip_run"}}
         dispatch_evidence = ("measurement window opened: reserved and dispatched in one step (execution window)"
                              if action == "window" else "reserved and dispatched in one step (execution run)")
         if action in {"run", "window"}:
@@ -1156,6 +1220,8 @@ def main(argv: list[str]) -> None:
                 refuse("a window opens for a measurement: kind must be measurement")
             if request["execution_host"] != window_box:
                 refuse(f"the window is for {window_box}, but the measurement names {request['execution_host']}")
+        if "tip_run" in data:
+            tip_run = tip_run_ok(tip_run, action, request)
         if "triage_boxes" in data:
             triage_boxes = triage_boxes_ok(triage_boxes, request)
             for box in triage_boxes:
@@ -1172,6 +1238,9 @@ def main(argv: list[str]) -> None:
             if record.get("triage_boxes") != triage_boxes:
                 refuse(f"request_id already names different triage_boxes ({json.dumps(record.get('triage_boxes'))});"
                        f" a triage record's boxes are fixed when it is taken")
+            if record.get("tip_run") != tip_run:
+                refuse(f"request_id already names a different tip_run mark ({json.dumps(record.get('tip_run'))});"
+                       f" a record's tip_run mark is fixed when it is taken")
             if action == "reserve":
                 sync_directory(directory.parent)
                 sync_directory(directory)
@@ -1212,11 +1281,14 @@ def main(argv: list[str]) -> None:
             if request["kind"] == "measurement":
                 check_lane_lock(request["execution_host"], map_spec, anchor, lab)
             if halted:
-                if "triage_reason" not in request:
-                    refuse("fleet halted; ordinary reservations refused (only the named triage_reason reservation is admitted)")
-                nonempty(request, ["triage_reason"])
-                # One explicitly named owner, not an unrestricted force flag (THE HALT'S TRIAGE).
-                check_triage(request, triage_boxes, records, halt_identity)
+                if "triage_reason" in request:
+                    nonempty(request, ["triage_reason"])
+                    # One explicitly named owner, not an unrestricted force flag (THE HALT'S TRIAGE).
+                    check_triage(request, triage_boxes, records, halt_identity)
+                elif not tip_run:
+                    # The loop's own run is the verdict the halt waits for (THE LOOP RUN UNDER A HALT).
+                    refuse("fleet halted; ordinary reservations refused (only the named triage_reason reservation"
+                           " and an execution tip-run loop run are admitted)")
             if action == "window":
                 # Last of the admission checks: a gap answer is retried, and only a window every
                 # other check admits may wait for one.
@@ -1240,16 +1312,15 @@ def main(argv: list[str]) -> None:
                 record["checkout"] = checkout
             if triage_boxes is not None:
                 record["triage_boxes"] = triage_boxes
-            beside = {k: v for k, v in (("checkout", checkout), ("triage_boxes", triage_boxes)) if v is not None}
+            if tip_run:
+                record["tip_run"] = True
+            beside = {k: v for k, v in (("checkout", checkout), ("triage_boxes", triage_boxes), ("tip_run", tip_run))
+                      if v is not None}
             events.append(("reserve", {**request, **beside}))
         if dispatch:
-            triage = record["request"].get("triage_reason")
-            if triage and (halt_identity is None or halt_generation(record.get("halt_identity")) != halt_identity):
-                refuse("triage assignment belongs to a different or ended halt")
-            if halt_identity is not None and not triage:
-                refuse("fleet halted; ordinary dispatch refused")
+            under_halt = check_halt_dispatch(record, halt_identity, halt_text)
             record["state"] = "launching"
-            dispatched: Record = {"request_id": identity, "evidence": dispatch_evidence}
+            dispatched: Record = {"request_id": identity, "evidence": dispatch_evidence + under_halt}
             resolve_dispatch(record, data.get("resolved_revision"), dispatched)
             events.append(("dispatch", dispatched))
         if queued:
@@ -1311,11 +1382,9 @@ def main(argv: list[str]) -> None:
                 refuse("dispatch requires reserved state; reconcile an uncertain launch")
             if record["lease_token"] != token:
                 refuse("adopted assignment must be reconciled before dispatch")
-            triage = record["request"].get("triage_reason")
-            if triage and (halt_identity is None or halt_generation(record.get("halt_identity")) != halt_identity):
-                refuse("triage assignment belongs to a different or ended halt")
-            if halt_identity is not None and not triage:
-                refuse("fleet halted; ordinary dispatch refused")
+            under_halt = check_halt_dispatch(record, halt_identity, halt_text)
+            if under_halt:
+                data = {**data, "evidence": data["evidence"] + under_halt}
             # Rechecked at dispatch, the moment the timed work starts: a reservation can wait hours
             # for its launch, and a lane harness that reads no registry can take the box meanwhile.
             if record["request"]["kind"] == "measurement":

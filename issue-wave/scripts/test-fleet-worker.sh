@@ -3118,11 +3118,21 @@ expect "a dirty checkout is refused before anything touches it" 1 "^TIP-RUN NOT 
 rm -f "$tco/stray"
 expect "a revision the origin does not have is refused after one fetch" 1 "^TIP-RUN NOT STARTED tip-f: $tco on testbox does not have $absent even after fetching origin" -- \
   "${FWT[@]}" execution tip-run "$(tipreq tip-f "$absent")" --checkout "$tco" -- echo never
-# A halt refuses the reservation, as for any run outside its one triage reservation.
+# ludics#1044: a halt admits the loop's own run (the verdict it waits for), its record naming the
+# halt, while an unmarked reservation of the same request is refused as before.
 "$FW" halt "cuda red at $tip, rerun pending" >/dev/null
-expect "a halted fleet starts no loop run" 1 "^TIP-RUN NOT STARTED tip-g: the reservation was refused (above)" -- \
-  "${FWT[@]}" execution tip-run "$(tipreq tip-g)" --checkout "$tco" -- echo never
-grep -q "fleet halted" <<<"$out" && ok "...naming the halt" || ko "no halt named: $out"
+expect "a halted fleet starts the loop's own run" 0 "^TIP-RUN STARTED tip-g testbox $tip /" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-g)" --checkout "$tco" --cpu -- sh -c 'echo "exit: 0"'
+tdir=$(sed -n "s/^TIP-RUN STARTED tip-g testbox $tip //p" <<<"$out")
+"$FW" execution list | jq -e --arg tip "$tip" '.[] | select(.request_id == "tip-g") | .tip_run == true and
+  (.history[] | select(.action == "dispatch") | .data.evidence | contains("admitted under fleet halt") and
+   endswith("the halt'"'"'s reason: cuda red at \($tip), rerun pending"))' >/dev/null &&
+  ok "...its record marked as tip-run's, its dispatch evidence naming the halt and quoting its reason" ||
+  ko "tip-g's record: $("$FW" execution list | jq -c '.[] | select(.request_id == "tip-g")')"
+expect "...while the same request reserved without tip-run's mark is refused" 1 "fleet halted; ordinary reservations refused" -- \
+  "${FWT[@]}" execution run "$(tipreq tip-h)"
+bash "$BG" wait "$tdir" --within 30 >/dev/null
+expect "...and the loop run concludes under the halt" 0 '"verdict": "pass"' -- "${FWT[@]}" execution conclude --from-bg-run "$tdir" --request tip-g --sha "$tip"
 "$FW" resume-launches >/dev/null
 # THE FREE-SPACE FLOOR (ludics#991): a floor no disk meets stands for a nearly full one. The commit
 # is one the checkout lacks, so a refusal past the fetch would show as the commit having arrived.

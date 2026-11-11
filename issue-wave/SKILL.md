@@ -1161,6 +1161,10 @@ controlled through the tools in your coordinator's file, never through those com
      the macOS jobs, a Linux box for the Ubuntu ones - under an execution reservation, each step
      through the box's slot. Not a CI run on a temporary ref: that waits in the same macOS
      queue this rule exists to shorten.
+  4. **Verify the fix-forward under the halt**: once the owner's fix merges, the loop's next run
+     at the tip is the verdict the halt waits for, and the halt admits it (`execution tip-run`'s
+     runs, never a worker's reservation: references/executions.md *Adoption and halt*), so
+     `resume-launches` follows its green, never precedes it (ludics#1044).
 - **The GPU integration loop (ludics-lite#615, decided 2026-10-15).** A local integration run
   covers one backend, its box's, so a repository with GPU backends that GitHub CI never builds
   (OCANNL: CUDA on rog-nv-linux, HIP on minix-amd-linux and tuf-amd-linux) gets a second,
@@ -1230,10 +1234,11 @@ controlled through the tools in your coordinator's file, never through those com
     true`: yielding is how it finds a quiet box too.
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
     rerun pending"` (a red that gates nothing may skip it: *On a regression*, below); one rerun
-    at the same SHA on a box of that backend under the halt's triage reservation (the same
-    `tip-run` and pinned command, its request carrying `triage_reason` while a halt stands);
+    at the same SHA on a box of that backend (the same `tip-run` and pinned command, which the
+    halt admits with no `triage_reason`, leaving the halt's triage to its one owner);
     green, a flake, `resume-launches`; red, attribution by `git log --first-parent <last green on that
-    backend>..<red tip>` with one triage owner, as in the order above. The last green on a
+    backend>..<red tip>` with one triage owner, as in the order above, and that backend's next
+    loop run verifies the fix-forward under the halt before `resume-launches`. The last green on a
     backend is the nearest commit below the red tip on its first-parent chain that a pass of
     that backend's loop judged, never just the newest pass (ludics-lite#602, above). Its
     candidates are the passes `tip-run` marked `pinned_backend` (it marks only a run it started
@@ -1290,7 +1295,8 @@ controlled through the tools in your coordinator's file, never through those com
   it iterates there: one record per box, each naming that worker and the same `triage_boxes`, the
   full list named at the first (references/executions.md *Adoption and halt*); everyone else's
   are refused. `resume-launches` when
-  master is verified again, and the wave
+  master is verified again - by the loop's next run at a tip holding the fix-forward, which the
+  halt admits as the verdict it waits for, green before anything launches - and the wave
   resumes with its remaining tasks. `fleet-worker.sh halted` is the check for a coordinator
   resuming after an interruption.
 
