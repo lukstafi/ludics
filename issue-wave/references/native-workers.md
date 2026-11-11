@@ -48,9 +48,10 @@ Residence does not preclude checks on other boxes; each execution is reserved se
    <external-path> <verified-base-sha>`. Record ownership first; do not reuse a checkout with
    an unresolved writer.
 5. Persist the complete brief and a pending entry on the board. Run `fleet-worker.sh gate
-   --target-repo <owner/repo> [--base-branch <branch>]` immediately before spawning (a sprint's
-   plan-first worker: before its GO, SKILL.md's *Wave mode*); nonzero
-   blocks dispatch, and the `--force --allow-red-base` exception, the point-in-time caveat and
+   --target-repo <owner/repo> [--base-branch <branch>] --wait <seconds>` immediately before
+   spawning (a sprint's plan-first worker: before its GO, SKILL.md's *Wave mode*), with
+   `--wait` sized to how long the batch may wait out a merge burst (no hand-written retry loop);
+   nonzero blocks dispatch, and the `--force --allow-red-base` exception, the point-in-time caveat and
    the base-SHA rules are SKILL.md's *Base gate*.
 6. Spawn with that brief, recording the returned agent identity or canonical task name. Do
    not infer a runtime ID from an app thread ID. Validate the worker's startup report before

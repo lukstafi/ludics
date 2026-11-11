@@ -2901,6 +2901,9 @@ printf '%s\n%s\n' "$TMP/int-g-done.json" "$TMP/int-h-done.json" > "$queue"
 expect "a record concluded during the second read too refuses the green" 1 "neither verdict saw them all; re-run the gate" -- \
   env SHIM_BASE_CONCLUDE="$queue" "$FW" gate --target-repo example/project
 : > "$BASE_CALL_LOG"
+expect "...and the next read hands them over" 0 "BASE GREEN" -- "$FW" gate --target-repo example/project
+grep -q "^records: $ran	fail	int-h	" "$BASE_CALL_LOG" && ok "...with the last record in the file" || ko "the concluded record was not offered: $(cat "$BASE_CALL_LOG")"
+[ "$(grep -c -- ' base --wait=' "$BASE_CALL_LOG")" = 1 ] && ok "...in one read, nothing having concluded" || ko "not one read: $(cat "$BASE_CALL_LOG")"
 # That refusal says "re-run the gate", so `gate --wait` (#872) is the re-run: it reads again.
 for int_id in int-i int-j; do
   env FLEET_BOX_CORRECTNESS_SLOTS="testbox=4" "${FWX[@]}" execution run "$(intreq "$int_id" coordinator example/project true)" >/dev/null || ko "could not reserve $int_id (setup)"
@@ -2912,9 +2915,6 @@ expect "gate --wait reads again after a record concluded during both reads" 0 "B
   env SHIM_BASE_CONCLUDE="$queue" FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --wait 600
 grep -q '^GATE WAIT native-worker: example/project default branch: read 1 refused for now (.*re-run the gate)' <<<"$out" \
   && ok "...one GATE WAIT line, naming it" || ko "no GATE WAIT for the concluded records: $out"
-expect "...and the next read hands them over" 0 "BASE GREEN" -- "$FW" gate --target-repo example/project
-grep -q "^records: $ran	fail	int-h	" "$BASE_CALL_LOG" && ok "...with the last record in the file" || ko "the concluded record was not offered: $(cat "$BASE_CALL_LOG")"
-[ "$(grep -c -- ' base --wait=' "$BASE_CALL_LOG")" = 1 ] && ok "...in one read, nothing having concluded" || ko "not one read: $(cat "$BASE_CALL_LOG")"
 # An unreadable registry refuses the gate rather than withholding the source: a failed record
 # there would outrank a green PR head (review round 3 of #401).
 printf 'not json\n' > "$ISSUE_WAVE_STATE/executions/zz-broken.json"

@@ -7,7 +7,7 @@ section; what is here is the reader's allowlist one input at a time.
 
 import unittest
 
-from ludics.fleetworker.gate import advisory_red_jobs
+from ludics.fleetworker.gate import advisory_red_jobs, verdict_line
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -43,6 +43,24 @@ class AdvisoryRedFile(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertIsNone(advisory_red_jobs(text))
+
+
+class VerdictLine(unittest.TestCase):
+    """The reason a ``gate --wait`` that ran out names (#872): shown, never classified by."""
+
+    def test_the_first_line_that_begins_with_the_target(self) -> None:
+        report = (
+            "(--wait ceiling of 6 min reached with a run still unfinished or the tip unjudged)\n"
+            "o/r master: NO VERDICT for the tip abcdef12 — pending\n"
+            "  ci-env  in flight\n"
+            "o/r master: a later line\n"
+        )
+        self.assertEqual(verdict_line(report, "o/r"), "o/r master: NO VERDICT for the tip abcdef12 — pending")
+
+    def test_none_is_empty(self) -> None:
+        for report in ("", "o/rr master: another repository\n", "  o/r master: indented\n"):
+            with self.subTest(report=report):
+                self.assertEqual(verdict_line(report, "o/r"), "")
 
 
 if __name__ == "__main__":

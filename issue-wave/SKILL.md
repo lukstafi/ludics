@@ -535,6 +535,16 @@ never its verdict. This is a bounded pre-dispatch check, not another observer, a
 point-in-time: not atomic with the spawn or launch that follows, so an adoption reconciles
 pending dispatches before replacing anything.
 
+Through a merge burst nearly every first read is a `NO VERDICT` that a read minutes later lifts.
+`gate --wait <seconds>` is that retry (#872): after a refusal a re-read may lift it pauses
+`FLEET_GATE_REREAD_INTERVAL` seconds (60), prints one `GATE WAIT` line, and reads again. Two
+refusals are waited on: the checker's exit 4 (no verdict yet: the tip's run in flight, the tip
+inside the window its first run may still appear in, no interim yet), and the gate's own "re-run
+the gate" after integration records concluded during both of its reads. A red, an unknown, an
+unreadable registry, and a halt or lease refusal (read before every pause) end it at once. No read
+starts after the deadline, but one under way runs to its ceiling; expiry is exit 1 with the last
+read's reason. `lib/ludics/fleetworker/gate.py`'s *THE WAIT* is the boundary.
+
 A known-red regression needs one triage worker: only `--force --allow-red-base "<reason>"`
 admits that red verdict, prints the reason, and still refuses unknown/no-verdict; record the
 reason and the diagnostics on the board. `--force` alone only lifts the halt. For lease-only
