@@ -216,6 +216,104 @@ class FromBgRunFacts(unittest.TestCase):
         self.assertEqual((unreachable.text, unreachable.rc), ("FROM-BG-RUN UNREACHABLE testbox: nothing concluded", 4))
 
 
+class FromBgRunBox(unittest.TestCase):
+    """#1043, THE BOX THAT HOLDS IT: without --box, ``--from-bg-run`` looks on the execution host
+    and on the request's agent host, where a native worker's ``bg-run.sh spawn`` of an
+    ``execution leg`` leaves the directory, and concludes from the one box that holds it."""
+
+    ENV = {"FLEET_BOXES": "rog mac-studio", "FLEET_LOCAL_BOX": "mac-studio"}
+
+    def setUp(self) -> None:
+        self.cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", self.ENV, host="mac-studio")
+        self.bgrun = tempfile.NamedTemporaryFile("w", suffix=".sh")
+        self.bgrun.write("# bg-run.sh\n")
+        self.bgrun.flush()
+        self.addCleanup(self.bgrun.close)
+
+    def rec(self, agent: str = "mac-studio") -> dict[str, Any]:
+        return {"request_id": "leg-1", "state": "launching",
+                "request": {"request_id": "leg-1", "transport": "subagent", "kind": "correctness", "repository": "o/r",
+                            "agent_host": agent, "execution_host": "rog"},
+                "history": [{"action": "dispatch", "data": {}}]}
+
+    def reads(self, outs: dict[str, Done]) -> mock.Mock:
+        """A ``run_on`` that answers each box with its own reading of the directory."""
+        def run_on(_cfg: object, box: str, _script: str, _args: object, capture: bool = False) -> Done:
+            return outs[box]
+        return mock.Mock(side_effect=run_on)
+
+    def conclude(self, args: list[str], outs: dict[str, Done], agent: str = "mac-studio") -> tuple[str, mock.Mock]:
+        """``from_bg_run_payload`` end to end, the anchor's registry holding the leg's record."""
+        run_on = self.reads(outs)
+        with mock.patch.object(execution, "check_identity"), \
+                mock.patch.object(execution, "listing", return_value=Done(0, json.dumps([self.rec(agent)]))), \
+                mock.patch.object(revision, "commit_refusal", return_value=None), \
+                mock.patch.object(execution, "bg_run_path", return_value=self.bgrun.name), \
+                mock.patch.object(execution, "run_on", run_on):
+            out = execution.from_bg_run_payload(
+                self.cfg, ["conclude", "--from-bg-run", "/runs/run-3", "--request", "leg-1", "--sha", SHA, *args])
+        return out, run_on
+
+    def boxes_read(self, run_on: mock.Mock) -> list[str]:
+        return [call.args[1] for call in run_on.call_args_list]
+
+    def test_the_boxes_looked_on(self) -> None:
+        boxes = execution.bg_run_boxes
+        self.assertEqual(boxes(self.cfg, self.rec(), "rog", ""), ("rog", "mac-studio"))
+        self.assertEqual(boxes(self.cfg, self.rec(), "rog", "minix"), ("minix",))  # an explicit --box wins
+        self.assertEqual(boxes(self.cfg, self.rec("rog"), "rog", ""), ("rog",))
+        self.assertEqual(boxes(self.cfg, self.rec("local"), "mac-studio", ""), ("mac-studio",))  # the same box
+        self.assertEqual(boxes(self.cfg, self.rec("local"), "rog", ""), ("rog", "local"))
+        self.assertEqual(boxes(self.cfg, self.rec("-oProxyCommand=x"), "rog", ""), ("rog",))  # outside the roster
+        self.assertEqual(boxes(self.cfg, self.rec(""), "rog", ""), ("rog",))
+
+    def test_a_legs_directory_on_the_agent_host_concludes_naming_that_box(self) -> None:
+        out, run_on = self.conclude([], {"rog": Done(0, "dir=0"), "mac-studio": Done(0, bg_text())})
+        payload = json.loads(out)
+        self.assertEqual(self.boxes_read(run_on), ["rog", "mac-studio"])
+        self.assertEqual(payload["verdict"], "pass")
+        self.assertEqual((payload["handle"], payload["log"]), ("bg-run:mac-studio:/runs/run-3", "mac-studio:/runs/run-3/log"))
+        self.assertTrue(payload["evidence"].endswith(
+            "; directory read on mac-studio, which drove the run on rog"
+            "; no --box: looked for on rog and mac-studio, found on mac-studio alone"), payload["evidence"])
+        out, _ = self.conclude([], {"rog": Done(0, bg_text(said="rc=3")), "mac-studio": Done(0, "dir=0")})
+        self.assertEqual(json.loads(out)["handle"], "bg-run:rog:/runs/run-3")  # on the execution host alone, as before
+
+    def test_an_explicit_box_reads_that_box_alone(self) -> None:
+        out, run_on = self.conclude(["--box", "mac-studio"], {"mac-studio": Done(0, bg_text())})
+        payload = json.loads(out)
+        self.assertEqual(self.boxes_read(run_on), ["mac-studio"])
+        self.assertEqual(payload["handle"], "bg-run:mac-studio:/runs/run-3")
+        self.assertNotIn("no --box", payload["evidence"])
+        self.assertTrue(payload["evidence"].endswith("; directory read on mac-studio, which drove the run on rog"))
+        out, run_on = self.conclude(["--box", "rog"], {"rog": Done(0, bg_text())})
+        self.assertEqual((self.boxes_read(run_on), json.loads(out)["handle"]), (["rog"], "bg-run:rog:/runs/run-3"))
+
+    def test_a_directory_on_neither_or_on_both_is_refused(self) -> None:
+        def refusal(outs: dict[str, Done], rc: int = 1) -> str:
+            said = io.StringIO()
+            with contextlib.redirect_stderr(said), contextlib.redirect_stdout(said), self.assertRaises(cli.Exit) as raised:
+                self.conclude([], outs)
+            self.assertEqual(raised.exception.rc, rc, said.getvalue())
+            return said.getvalue()
+        self.assertIn("FROM-BG-RUN REFUSED: no run directory /runs/run-3 on rog or mac-studio",
+                      refusal({"rog": Done(0, "dir=0"), "mac-studio": Done(0, "dir=0")}))
+        self.assertIn("FROM-BG-RUN REFUSED: a run directory /runs/run-3 is on both rog and mac-studio;"
+                      " --box <box> names the one whose run it is; nothing concluded",
+                      refusal({"rog": Done(0, bg_text()), "mac-studio": Done(0, bg_text(said="rc=1"))}))
+        # A box that cannot be read never lets the other's directory conclude alone.
+        self.assertIn("FROM-BG-RUN UNREACHABLE rog: nothing concluded (no --box: /runs/run-3 is looked for on rog and"
+                      " mac-studio; --box <box> reads that box alone)",
+                      refusal({"rog": Done(UNREACHABLE, ""), "mac-studio": Done(0, bg_text())}, rc=4))
+        self.assertIn("FROM-BG-RUN UNREACHABLE mac-studio: nothing concluded",
+                      refusal({"rog": Done(0, "dir=0"), "mac-studio": Done(UNREACHABLE, "")}, rc=4))
+        self.assertIn("FROM-BG-RUN REFUSED: unreadable run facts from mac-studio (exit 0): junk",
+                      refusal({"rog": Done(0, bg_text()), "mac-studio": Done(0, "junk")}))
+        # A directory present but not finished on the box that holds it keeps its own refusal.
+        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING",
+                      refusal({"rog": Done(0, "dir=0"), "mac-studio": Done(0, bg_text(wait="3", said="RUNNING"))}))
+
+
 class FromBgRunFarSide(unittest.TestCase):
     """``conclude --from-bg-run``'s far side over the real bg-run.sh, its facts read by the near
     side: a run long finished, whose wait prints ``rc=<n> (finished earlier, at ...)``, concludes on

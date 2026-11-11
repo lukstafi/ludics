@@ -684,11 +684,17 @@ status, which alone does not establish that a test ran.
 `STOPPED` (a run `bg-run.sh stop` ended, no process of its tree left) is `cancelled`, the log's
 sentinel unread (ludics-lite#638). `RUNNING`, `STARTING` and `DIED` are refused. A `DIED` task was killed before its
 command returned, and bg-run.sh's header names a window in which the command can outlive it
-unpublished, so check that no process of the run remains and conclude it by JSON (`cancelled`). The directory is read on `--box`, by default the reservation's
-execution host. Name the box that drove the run when the leg went over ssh (a machine-verify trip
-started on the agent host leaves its directory there). Because that box is legitimately not the
-reserved one, this form carries no execution-host binding; the conclusion's `log` and `handle`
-name the box read (`<box>:<path>`), and its evidence says which box drove the run. bg-run keeps no
+unpublished, so check that no process of the run remains and conclude it by JSON (`cancelled`). The directory is read on `--box` alone when it is given.
+Without it, it is looked for on the reservation's execution host and on the request's
+`agent_host`, when that is another box of the roster (#1043): a leg run under `bg-run.sh spawn`,
+which is every leg of a native worker, and a machine-verify trip started on the agent host leave
+their directory on the agent host. Both boxes are read and the one holding the directory
+concludes; a path on both is refused (nothing in a bg-run directory names its request, so the
+box is the only binding), as is one on neither, and a box that does not answer concludes nothing
+(exit 4) even when the other holds the directory: give `--box` to read one box. Because the box
+read is legitimately not always the reserved one, this form carries no execution-host binding;
+the conclusion's `log` and `handle` name the box read (`<box>:<path>`), and its evidence says
+which box drove the run and, without `--box`, which boxes were looked on. bg-run keeps no
 checkout: `--checkout` names one and replaces any the record carries; without it, one already on
 the record is kept, and otherwise the field says it was not recorded.
 
@@ -949,8 +955,9 @@ and its 125 and its abort statuses come back as they left. Any other repository 
 command, building first if its runner does not (`-- sh -c 'make && make check'`, `--
 scripts/test.sh unit`), with `--checkout` its clone on the box. A leg longer than a tool call, which
 for a native Claude worker is every leg ([which form](#exclusivity-and-the-run-time-slots)), runs
-under `bg-run.sh spawn` on the caller's box and concludes with `conclude --from-bg-run <dir> --box
-<that box> --sha <the observed_sha the leg printed>`: not `--observed-from <worktree>`, whose HEAD a
+under `bg-run.sh spawn` on the caller's box and concludes with `conclude --from-bg-run <dir> --sha
+<the observed_sha the leg printed>` (the caller's box is the request's agent host, where the
+directory is looked for without `--box`; name `--box <that box>` when it is not): not `--observed-from <worktree>`, whose HEAD a
 runner may have moved (a bisect) or a later leg may since have. Do not wrap the leg itself in an `execution slot` on the
 caller's box: the slot it needs is the execution host's, which it takes there.
 
@@ -1058,8 +1065,8 @@ caller does so for a leg that can outlast the tool's 600 s
 Each standing reservation is concluded at hand-back from its own box's last batch, with
 `--observed-from <the far-side checkout>`: its runner record in the [standing
 form](#standing-iteration-reservation) (`--from-run`, read on the reservation's execution host, or
-no run and the hand-back's `--verdict`), or the leg's `bg-run.sh` directory with `--from-bg-run
---box <agent host>`. The coordinator records the far-side checkout on the board (`board set <wave>
+no run and the hand-back's `--verdict`), or the leg's `bg-run.sh` directory with `--from-bg-run`
+(looked for on the agent host too; `--box <box>` when that or the execution host does not answer). The coordinator records the far-side checkout on the board (`board set <wave>
 <task> farside=<box>:<path>`) and removes it at close-out with the worker's local one, once that
 conclusion has landed. A conclusion that
 reads a checkout which is not clean (a golden promoted there on hardware) says so in an

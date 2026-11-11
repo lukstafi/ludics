@@ -2890,9 +2890,10 @@ bgdir() { # <name> <command...>: a finished bg-run.sh directory, its path on std
   bash "$BG" start "$d" -- "$@" >/dev/null 2>&1
   printf '%s' "$d"
 }
-bgreq() { # <id> -> a dispatched reservation on testbox
-  jq -n --arg id "$1" '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#405", purpose:"bg-run fixture",
-    agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness"}' > "$TMP/$1.json"
+bgreq() { # <id> [agent host] -> a dispatched reservation on testbox, its worker on testbox unless named
+  jq -n --arg id "$1" --arg agent "${2:-testbox}" '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#405",
+    purpose:"bg-run fixture", agent_host:$agent, execution_host:"testbox", repository:"o/r", requested_revision:"origin/main",
+    kind:"correctness"}' > "$TMP/$1.json"
   "${FWB[@]}" execution run "$TMP/$1.json" >/dev/null 2>&1 || ko "could not dispatch $1 (setup)"
 }
 FWB=(env FLEET_BOXES="testbox other" SHIM_SSH_LOCAL=other "$FW")
@@ -2947,6 +2948,24 @@ grep -q '"verdict": "fail"' <<<"$out" && grep -Fq '"remote_checkout": "testbox:/
 # The box that drove the run over ssh holds the directory; the conclusion names it.
 expect "a directory read on the box that drove the run concludes, naming that box" 0 "read on other, which drove the run on testbox" -- bgc bg-drove "$ok_dir" --box other
 grep -Fq "\"log\": \"other:$ok_dir/log\"" <<<"$out" && ok "...in the log it cites" || ko "the driving box is missing from the log: $out"
+# #1043: without --box, the directory is looked for on the record's agent host too, where a native
+# worker's `bg-run.sh spawn` of an `execution leg` leaves it, and read on the one box holding it.
+# testbox and other share this filesystem, so a directory here is on both of them: refused, never
+# concluded from either. The agent-host-only case is the unit suite's (FromBgRunBox).
+bgreq bg-leg-far far-box
+expect "without --box, an agent host that does not answer concludes nothing, the execution host's directory included" 4 \
+  "^FROM-BG-RUN UNREACHABLE far-box: nothing concluded (no --box: .* is looked for on testbox and far-box; --box <box> reads that box alone)$" -- \
+  env FLEET_BOXES="testbox other far-box" SHIM_SSH_LOCAL=other "$FW" execution conclude --from-bg-run "$ok_dir" --request bg-leg-far --sha "$sha"
+expect "...and one outside the roster is not read" 0 '"handle": "bg-run:testbox:' -- \
+  "${FWB[@]}" execution conclude --from-bg-run "$ok_dir" --request bg-leg-far --sha "$sha"
+bgreq bg-leg other
+expect "without --box, a directory on both the execution host and the agent host is refused" 1 \
+  "^FROM-BG-RUN REFUSED: a run directory .* is on both testbox and other; --box <box> names the one whose run it is; nothing concluded$" -- \
+  "${FWB[@]}" execution conclude --from-bg-run "$ok_dir" --request bg-leg --sha "$sha"
+expect "...a directory on neither is refused, naming both" 1 "^FROM-BG-RUN REFUSED: no run directory .*/nope on testbox or other$" -- \
+  "${FWB[@]}" execution conclude --from-bg-run "$TMP/bg runs/nope" --request bg-leg --sha "$sha"
+expect "...and an explicit --box reads that box alone, as before" 0 "read on other, which drove the run on testbox\"" -- \
+  "${FWB[@]}" execution conclude --from-bg-run "$ok_dir" --request bg-leg --sha "$sha" --box other
 # A checkout already on the record is kept when --checkout is absent, and replaced when it is given.
 bgreq bg-rec && jq -n '{request_id:"bg-rec", state:"running", evidence:"fixture", remote_checkout:"/rec/wt"}' > "$TMP/bg-rec-rec.json" &&
   "${FWB[@]}" execution record "$TMP/bg-rec-rec.json" >/dev/null || ko "could not record bg-rec's checkout (setup)"

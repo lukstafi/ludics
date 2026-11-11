@@ -72,7 +72,7 @@ from typing import Any, assert_never, cast
 
 from ludics import bgrun, cli
 from ludics.fleetworker import cotenants, revision
-from ludics.fleetworker.config import Config
+from ludics.fleetworker.config import Config, in_roster
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
@@ -86,6 +86,7 @@ from ludics.fleetworker.transport import (
     emit_var,
     err,
     fleet_name,
+    is_local,
     prelude,
     run,
     run_on,
@@ -582,6 +583,59 @@ def bg_run_verdict(facts: dict[str, str], run_dir: str, box: str) -> bgrun.Verdi
     return Refusal(f"FROM-BG-RUN REFUSED: {why}", 1)
 
 
+def bg_run_boxes(cfg: Config, record: dict[str, Any], host: str, named: str) -> tuple[str, ...]:
+    """THE BOX THAT HOLDS IT (#1043): the boxes ``--from-bg-run`` looks for its directory on. A
+    named ``--box`` alone; without one, the execution host and, when it is another box of the
+    roster (or this one), the request's ``agent_host``, where a native worker's ``bg-run.sh spawn``
+    of an ``execution leg`` leaves the directory. An agent host outside the roster is not read."""
+    if named:
+        return (named,)
+    agent = jq_text(field(record, "request", "agent_host"))
+    if agent and fleet_name(cfg, agent) != fleet_name(cfg, host) and (in_roster(cfg, agent) or is_local(cfg, agent)):
+        return (host, agent)
+    return (host,)
+
+
+def read_bg_run(cfg: Config, run_dir: str, box: str, bgrun_path: str) -> dict[str, str] | Refusal:
+    """FROM_BG_RUN's facts for the directory on the box, or the refusal of an unreadable reading."""
+    script = prelude(cfg, box) + FROM_BG_RUN_HEAD + carried_bg_run(bgrun_path) + FROM_BG_RUN_TAIL
+    done = run_on(cfg, box, script, [run_dir], capture=True)
+    if done.unreachable:
+        return Refusal(f"FROM-BG-RUN UNREACHABLE {box}: nothing concluded", 4)
+    text = substitution(done.out)
+    facts = bg_run_facts(text) if done.rc == 0 else None
+    if facts is None:
+        return Refusal(f"FROM-BG-RUN REFUSED: unreadable run facts from {box} (exit {done.rc}): {text}", 1)
+    return facts
+
+
+def locate_bg_run(
+    cfg: Config, run_dir: str, boxes: Sequence[str], bgrun_path: str
+) -> tuple[str, dict[str, str]] | Refusal:
+    """The one box of ``boxes`` (``bg_run_boxes``') that holds the directory, and its facts. Every
+    box is read, so a path present on two is refused, never concluded from either: nothing in a
+    bg-run.sh directory names its request, so the box is the only binding there is. A box that
+    does not answer or reads unreadable refuses, so the other's directory is never taken alone."""
+    found: list[tuple[str, dict[str, str]]] = []
+    for box in boxes:
+        facts = read_bg_run(cfg, run_dir, box, bgrun_path)
+        if isinstance(facts, Refusal):
+            if len(boxes) > 1:
+                facts = Refusal(f"{facts.text} (no --box: {run_dir} is looked for on {' and '.join(boxes)};"
+                                " --box <box> reads that box alone)", facts.rc)
+            return facts
+        if len(boxes) == 1:
+            return box, facts
+        if facts["dir"] != "0":
+            found.append((box, facts))
+    if len(found) > 1:
+        return Refusal(f"FROM-BG-RUN REFUSED: a run directory {run_dir} is on both {' and '.join(boxes)};"
+                       " --box <box> names the one whose run it is; nothing concluded", 1)
+    if not found:
+        return Refusal(f"FROM-BG-RUN REFUSED: no run directory {run_dir} on {' or '.join(boxes)}", 1)
+    return found[0]
+
+
 def conclude_from_bg_run(
     cfg: Config,
     run_dir: str,
@@ -593,6 +647,8 @@ def conclude_from_bg_run(
     evidence: str,
     bgrun_path: str,
     source: str = REPORTED,
+    *,
+    also: str = "",
 ) -> Conclusion:
     """The conclude payload read off a bg-run.sh directory. The verdict mapping:
       - the code is the runner's own sentinel when the log carries one and it is nonzero, else rc --
@@ -604,15 +660,13 @@ def conclude_from_bg_run(
       - bg-run's DIED is refused, not mapped, as are RUNNING and STARTING (``bg_run_verdict``).
     The read box need not be the execution host (a trip driven over ssh leaves its directory on
     the box that drove it), so the payload carries no ``execution_host`` binding, and the log and
-    handle name the box read, ``<box>:<path>``."""
-    script = prelude(cfg, box) + FROM_BG_RUN_HEAD + carried_bg_run(bgrun_path) + FROM_BG_RUN_TAIL
-    done = run_on(cfg, box, script, [run_dir], capture=True)
-    if done.unreachable:
-        return Refusal(f"FROM-BG-RUN UNREACHABLE {box}: nothing concluded", 4)
-    text = substitution(done.out)
-    facts = bg_run_facts(text) if done.rc == 0 else None
-    if facts is None:
-        return Refusal(f"FROM-BG-RUN REFUSED: unreadable run facts from {box} (exit {done.rc}): {text}", 1)
+    handle name the box read, ``<box>:<path>``. ``also``, a second box, is looked on too
+    (``locate_bg_run``): the conclusion reads the one of the two that holds the directory."""
+    boxes = (box, also) if also and also != box else (box,)
+    located = locate_bg_run(cfg, run_dir, boxes, bgrun_path)
+    if isinstance(located, Refusal):
+        return located
+    box, facts = located
     read = bg_run_verdict(facts, run_dir, box)
     if isinstance(read, Refusal):
         return read
@@ -642,6 +696,8 @@ def conclude_from_bg_run(
         evidence += f"; revision {sha} {source}"
     if box != host:
         evidence += f"; directory read on {box}, which drove the run on {host}"
+    if len(boxes) > 1:
+        evidence += f"; no --box: looked for on {' and '.join(boxes)}, found on {box} alone"
     return Payload(
         compact(
             {
@@ -1386,10 +1442,11 @@ def from_bg_run_payload(cfg: Config, args: list[str]) -> str:
         checkout = "" if recorded is None or recorded is False else jq_text(recorded)
     if not checkout:
         checkout = "not recorded (bg-run keeps no checkout; the log names what ran)"
-    box = values.get("--box", "") or host
+    boxes = bg_run_boxes(cfg, record, host, values.get("--box", ""))
     return concluded(
         conclude_from_bg_run(
-            cfg, run_dir, request, box, host, sha, checkout, values.get("--evidence", ""), bgrun, source
+            cfg, run_dir, request, boxes[0], host, sha, checkout, values.get("--evidence", ""), bgrun, source,
+            also=boxes[1] if len(boxes) > 1 else "",
         )
     )
 
