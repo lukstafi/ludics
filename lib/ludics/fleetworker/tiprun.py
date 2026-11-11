@@ -29,7 +29,9 @@ In order, each step yielding rather than waiting:
     its window. Standing reservations are a worker's iteration on its own agent host, whose batches
     the slot below sees as they run.
  3. ``execution run`` reserves and dispatches it, with every check the registry makes (lease,
-    halt and its triage exception, cap, measurement exclusivity) and the refresh of the box's
+    halt and the two records it admits: its triage, and a run marked as this verb's -- the payload
+    is sent with ``"tip_run": true`` beside the request, registry.py's THE LOOP RUN UNDER A HALT,
+    since a loop run is the verdict a halt waits for -- cap, measurement exclusivity) and the refresh of the box's
     skills checkout after it; on a remote box that refresh is asked again, and anything but
     ``REFRESH OK`` starts nothing, since the box's own ``fleet-worker.sh`` runs the slot. The
     request id must be one the registry does not hold yet: ``run``
@@ -454,7 +456,6 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     fields = cast(dict[str, Any], request)
     # Until --id-prefix's number is allocated (THE REQUEST ID), a line names the run `<prefix>-?`.
     label = f"{parsed.id_prefix}-?" if parsed.id_prefix else str(fields["request_id"])
-    resolved: dict[str, Any] | None = None
     if parsed.tip:
         repo = str(fields["repository"])
         read = revision.branch_head(repo, parsed.tip, gh_timeout(cfg))
@@ -462,8 +463,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
             cli.say(read[0])
             cli.say(f"TIP-RUN NOT STARTED {label}: the tip of {parsed.tip} in {repo} could not be read (above); nothing reserved")
             return 1
-        resolved = {**fields, "requested_revision": read}
-        fields = resolved
+        fields = {**fields, "requested_revision": read}
         err(f"TIP-RUN TIP {label}: {parsed.tip} is {read} in {repo} on GitHub now; the run checks out that commit")
     box, sha = fields["execution_host"], fields["requested_revision"]
 
@@ -473,8 +473,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         cli.say(f"TIP-RUN UNKNOWN {label}: the anchor's registry could not be read, so whether {box} is free is unknown; nothing reserved")
         return 4
     if parsed.id_prefix:
-        resolved = {**fields, "request_id": next_id(records, parsed.id_prefix)}
-        fields = resolved
+        fields = {**fields, "request_id": next_id(records, parsed.id_prefix)}
         err(f"TIP-RUN ID {fields['request_id']}: allocated under {parsed.id_prefix}-, one past the highest number the registry holds there")
     request_id = str(fields["request_id"])
     # A request id the registry holds is never run again (step 3).
@@ -487,8 +486,9 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         cli.say(f"TIP-RUN NOT STARTED {request_id}: {box} has {', '.join(busy)} outstanding; a loop run yields to it; nothing reserved")
         return 1
 
-    # A resolved request is staged anew: the file names no revision, or no request id.
-    rc = fleet_worker(cfg, ["execution", "run"], resolved) if resolved else fleet_worker(cfg, ["execution", "run", parsed.payload])
+    # The request is staged anew, marked beside it as this verb's (registry.py, THE LOOP RUN UNDER A
+    # HALT: a halt admits it, the verdict the halt waits for), with the revision and id resolved above.
+    rc = fleet_worker(cfg, ["execution", "run"], {**fields, "tip_run": True})
     if rc != 0:
         if rc == 4:
             cli.say(f"TIP-RUN UNKNOWN {request_id}: the reservation's outcome is unknown (above); reconcile it")

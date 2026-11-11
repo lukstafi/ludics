@@ -1204,5 +1204,109 @@ class HaltTriage(RegistryCase):
         self.assertEqual(rc, 0, err)
 
 
+class LoopRunUnderHalt(RegistryCase):
+    """THE LOOP RUN UNDER A HALT (ludics#1044): a halt admits `execution tip-run`'s marked loop runs,
+    the verdict it waits for, and nothing else it refused before."""
+
+    BOXES = "mac rog tuf"
+    REASON = "cuda red at abc, rerun pending"
+
+    def halt(self, generation: str = "h1") -> None:
+        with open(os.path.join(self.root, "HALT"), "w") as f:
+            f.write(f"2026-11-11T00:00:00Z id={generation} {self.REASON}\n")
+
+    def loop(self, identity: str, host: str = "rog", action: str = "run", mark: object = True,
+             **extra: object) -> tuple[int, Any, str]:
+        payload = request(identity, worker="coordinator", transport="coordinator", execution_host=host,
+                          purpose="GPU integration loop, cuda: tip", **extra)
+        if mark is not None:
+            payload["tip_run"] = mark
+        return self.call(action, payload, boxes=self.BOXES)
+
+    def records(self) -> dict[str, Any]:
+        return {r["request_id"]: r for r in self.call("list", {})[1]}
+
+    def test_a_tip_run_is_admitted_under_a_halt_and_its_evidence_names_the_halt(self) -> None:
+        self.halt()
+        for identity, host in (("gpu-1", "rog"), ("cc-1", "mac")):
+            with self.subTest(identity):
+                rc, out, err = self.loop(identity, host) if identity == "gpu-1" else self.loop(identity, host, integration=True)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual((out["state"], out["tip_run"]), ("launching", True))
+                self.assertNotIn("tip_run", out["request"], "beside the request, never in it")
+                self.assertNotIn("halt_identity", out, "a loop run is no member of the halt's triage")
+                self.assertTrue(out["history"][0]["data"]["tip_run"])
+                evidence = out["history"][-1]["data"]["evidence"]
+                self.assertTrue(evidence.startswith("reserved and dispatched in one step (execution run); admitted under"
+                                                    " fleet halt h1 as an execution tip-run loop run"), evidence)
+                self.assertTrue(evidence.endswith(f"the halt's reason: {self.REASON}"), evidence)
+
+    def test_without_a_halt_the_mark_changes_nothing_but_the_record(self) -> None:
+        rc, out, err = self.loop("gpu-1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out["history"][-1]["data"]["evidence"], "reserved and dispatched in one step (execution run)")
+        self.assertTrue(out["tip_run"])
+        rc, _, err = self.loop("gpu-1", mark=None)
+        self.assertEqual((rc, "different tip_run mark" in err), (1, True), "a retry carries the same mark")
+
+    def test_everything_else_the_halt_refused_it_still_refuses(self) -> None:
+        self.halt()
+        worker = request("w-rog", execution_host="rog", tip_run=True)
+        cases = {
+            "an ordinary coordinator run, unmarked": (self.loop("o-rog", mark=None),
+                                                      "fleet halted; ordinary reservations refused"),
+            "a worker's ordinary run": (self.call("run", request("w-tuf", execution_host="tuf"), boxes=self.BOXES),
+                                        "fleet halted; ordinary reservations refused"),
+            "a worker's run, marked": (self.call("run", worker, boxes=self.BOXES),
+                                       "only a coordinator's non-standing correctness reservation"),
+            "a standing coordinator reservation, marked": (self.loop("s-rog", standing=True, checkout="/wt/s"),
+                                                          "only a coordinator's non-standing correctness reservation"),
+            "a measurement, marked": (self.loop("m-rog", kind="measurement"),
+                                      "only a coordinator's non-standing correctness reservation"),
+            "a mark on reserve": (self.loop("r-rog", action="reserve"), "made by execution run only"),
+            "a mark that is not true": (self.loop("f-rog", mark="yes"), "tip_run must be true when present"),
+        }
+        window = {"box": "rog", "request": request("m-win", worker="coordinator", transport="coordinator",
+                                                   execution_host="rog", kind="measurement", tip_run=True)}
+        cases["a mark on a window"] = (self.call("window", window, boxes=self.BOXES), "made by execution run only")
+        for name, ((rc, _, err), why) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(rc, 1)
+                self.assertIn(why, err)
+        self.assertEqual(self.records(), {}, "a refusal writes nothing")
+
+    def test_a_loop_run_neither_joins_nor_blocks_the_triage(self) -> None:
+        self.halt()
+        self.assertEqual(self.loop("gpu-1")[0], 0)
+        triage = request("t-rog", worker="t1", execution_host="rog", triage_reason="red at abc", standing=True)
+        rc, out, err = self.call("run", triage, boxes=self.BOXES)
+        self.assertEqual(rc, 0, "the loop run's record is not a triage the owner must match: " + err)
+        self.assertEqual(out["halt_identity"], "h1")
+        other = request("x-tuf", worker="t2", execution_host="tuf", triage_reason="red at abc", standing=True)
+        rc, _, err = self.call("run", other, boxes=self.BOXES)
+        self.assertEqual((rc, "the halt's triage has one owner, so worker t2 is refused" in err), (1, True))
+
+    def test_the_dispatch_side_check_admits_only_a_marked_record(self) -> None:
+        self.assertEqual(self.call("reserve", request("o-tuf", worker="coordinator", transport="coordinator",
+                                                      execution_host="tuf"), boxes=self.BOXES)[0], 0)
+        self.assertEqual(self.loop("gpu-1")[0], 0)
+        self.assertEqual(self.call("reconcile", dict(request_id="gpu-1", state="reserved", evidence="unit: no launch"),
+                                   boxes=self.BOXES)[0], 0)
+        self.halt()
+        rc, _, err = self.call("dispatch", dict(request_id="o-tuf", evidence="unit"), boxes=self.BOXES)
+        self.assertEqual((rc, "fleet halted; ordinary dispatch refused" in err), (1, True))
+        rc, out, err = self.call("dispatch", dict(request_id="gpu-1", evidence="unit: redispatched"), boxes=self.BOXES)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out["state"], "launching")
+        self.assertTrue(out["history"][-1]["data"]["evidence"].startswith(
+            "unit: redispatched; admitted under fleet halt h1 as an execution tip-run loop run"))
+
+    def test_the_halts_reason_is_its_current_one(self) -> None:
+        self.assertEqual(registry.halt_reason("2026-11-11T00:00:00Z id=h1 cuda red at abc\n"), "cuda red at abc")
+        legacy = "2026-09-01T00:00:00Z legacy reason\nupdate 2026-09-02T00:00:00Z newer reason\n"
+        self.assertEqual(registry.halt_reason(legacy), "newer reason")
+        self.assertEqual(registry.halt_reason("2026-09-01T00:00:00Z legacy reason\n"), "2026-09-01T00:00:00Z legacy reason")
+
+
 if __name__ == "__main__":
     unittest.main()

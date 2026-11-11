@@ -220,7 +220,9 @@ class Race(unittest.TestCase):
                     contextlib.redirect_stdout(out):
                 rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "true"])
         self.assertEqual(rc, 1)
-        self.assertEqual([c[0] for c in calls], [["execution", "run", payload], ["execution", "conclude"]])
+        self.assertEqual([c[0] for c in calls], [["execution", "run"], ["execution", "conclude"]])
+        self.assertEqual(calls[0][1], {**request(), "tip_run": True},
+                         "the payload's request, marked beside it as tip-run's (registry.py, THE LOOP RUN UNDER A HALT)")
         conclusion = calls[1][1] or {}
         self.assertEqual(conclusion.get("verdict"), "not-launched")
         self.assertIn("w-gpu-rog-2 (launching) outstanding, reserved beside this run", conclusion.get("evidence", ""))
@@ -254,7 +256,7 @@ class Race(unittest.TestCase):
                     contextlib.redirect_stdout(out):
                 rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "true"])
         self.assertEqual(rc, 1)
-        self.assertEqual([c[0] for c in calls], [["execution", "run", payload], ["execution", "conclude"]])
+        self.assertEqual([c[0] for c in calls], [["execution", "run"], ["execution", "conclude"]])
         self.assertEqual((calls[1][1] or {}).get("verdict"), "not-launched")
         self.assertIn("the skills checkout on rog-nv-linux was not refreshed", out.getvalue())
 
@@ -287,7 +289,7 @@ class Tip(unittest.TestCase):
                 rc = tiprun.cmd_tip_run(cfg, [payload, "--tip", "main", "--checkout", "/co", "--", "true"])
         self.assertEqual(rc, 1)
         self.assertEqual(head.call_args.args[:2], ("o/r", "main"))
-        self.assertEqual(calls, [(["execution", "run"], {**request(), "requested_revision": SHA})])
+        self.assertEqual(calls, [(["execution", "run"], {**request(), "requested_revision": SHA, "tip_run": True})])
         self.assertIn(f"TIP-RUN TIP w-gpu-rog-1: main is {SHA} in o/r on GitHub now", err.getvalue())
 
     def test_an_unread_tip_reserves_nothing(self) -> None:
@@ -329,7 +331,7 @@ class Allocate(unittest.TestCase):
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()) as err:
                 rc = tiprun.cmd_tip_run(cfg, [payload, "--id-prefix", "w-gpu-rog", "--checkout", "/co", "--", "true"])
         self.assertEqual(rc, 1)
-        self.assertEqual(calls, [(["execution", "run"], {**bare, "request_id": "w-gpu-rog-4"})])
+        self.assertEqual(calls, [(["execution", "run"], {**bare, "request_id": "w-gpu-rog-4", "tip_run": True})])
         self.assertIn("TIP-RUN ID w-gpu-rog-4: allocated under w-gpu-rog-", err.getvalue())
         self.assertIn("TIP-RUN NOT STARTED w-gpu-rog-4: the reservation was refused", out.getvalue())
 
@@ -390,7 +392,7 @@ class Mark(Starting):
         rc, calls, far = self.start(request(purpose="GPU integration loop, hip: tip"), "dir=/s/run-1\nslot=held\n")
         self.assertEqual(rc, 0)
         self.assertEqual(far[6], "hip", "the far side checks the pin of the backend the mark names")
-        self.assertEqual([c[0] for c in calls], [["execution", "run", calls[0][0][2]], ["execution", "record"]])
+        self.assertEqual([c[0] for c in calls], [["execution", "run"], ["execution", "record"]])
         self.assertEqual((calls[1][1] or {}).get("pinned_backend"), "hip")
 
     def test_a_cc_loop_run_is_not_marked(self) -> None:
