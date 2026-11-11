@@ -3524,7 +3524,7 @@ need_lease
 # `execution run` or `window`, then the EXECUTION_ASSIGNED message -- and once sent the message for
 # a window the registry refused. `execution assign` composes those calls and prints an assignment
 # only for a step that exited 0, several requests per call, a `runner` wrapped into the leg form.
-FWA=(env FLEET_BOXES="testbox other" "$FW")
+FWA=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4 other=2" "$FW")
 asha=$(printf 'b%.0s' $(seq 40))
 as_base() { # <transport> -> the coordinator's completion of every request
   jq -n --arg t "$1" '{wave:"w", worker:"/root/w869", transport:$t, agent_host:"testbox", repository:"o/r",

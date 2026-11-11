@@ -26,7 +26,9 @@ BASE = {"wave": "w", "worker": "/root/w", "transport": "subagent", "agent_host":
 
 def block(request_id: str, host: str = "rog", kind: str = "correctness", **fields: Any) -> dict[str, Any]:
     out: dict[str, Any] = {"request_id": request_id, "execution_host": host, "kind": kind, "requested_revision": SHA}
-    out.update(fields or {"command": "tools/test-run.sh run"})
+    if "runner" not in fields and "command" not in fields:
+        out["command"] = "tools/test-run.sh run"
+    out.update(fields)
     return out
 
 
@@ -215,8 +217,12 @@ class Outcomes(unittest.TestCase):
     def test_an_unreadable_registry_asks_nothing(self) -> None:
         requests = self.write("r.txt", message(block("a")))
         out = io.StringIO()
+
+        def call(_cfg: Config, _verb: Sequence[str], _payload: dict[str, Any]) -> Done:
+            self.fail("the registry was asked")
+
         with (mock.patch.object(execution, "listing", return_value=Done(1, "")), contextlib.redirect_stdout(out)):
-            rc = cmd_assign(self.cfg, [self.base, requests], call=lambda *_: self.fail("asked"))
+            rc = cmd_assign(self.cfg, [self.base, requests], call=call)
         self.assertEqual(rc, 4)
         self.assertIn("ASSIGN UNKNOWN: the registry", out.getvalue())
 
