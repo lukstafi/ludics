@@ -1078,8 +1078,11 @@ The removal is `fleet-worker.sh farside-close <wave> [--task <task>]... [--regen
 [--remote <name>] [--dry-run]`, with the lease (a dry run needs none). It reads the board's `farside`
 words and nothing else, and removes a worktree only when its row's state is a done word, no
 outstanding reservation refers to it, no leg holds its lock, the tree is clean, no ignored path
-is left but what `--regenerable` names (the project's to say, as for `post-merge-cleanup.sh`: OCANNL's
-is `_build`), and HEAD is on a branch of the remote, asked afresh. A worktree that fails only that
+is left but what `--regenerable` names, and HEAD is on a branch of the remote, asked afresh. Which
+directories are regenerable is the project's to say, in its AGENTS.md. A `--regenerable` value is a
+directory path inside the worktree (`_build`, `test/config/log_files`) or `**/<path>`, that path at
+any depth (`**/log_files`, quoted against the shell), and it matches only a directory git reports
+as wholly ignored. A worktree that fails only that
 last gate loses its `--regenerable` directories and stays, `TRIMMED`; any other failure is `KEPT`, its
 reason on its line, for you to act on. It prints one line per word, re-runs safely (what went reads
 `GONE`), writes neither board nor registry, and exits 0 when nothing stayed, 3 when something did, 4

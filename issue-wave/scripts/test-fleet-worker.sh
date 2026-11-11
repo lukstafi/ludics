@@ -4396,6 +4396,25 @@ expect "a worktree a leg is running in is kept, by the leg's own lock" 3 "^FARSI
 touch "$fcrun.go"; wait "$fcleg"
 fixture_done leg-busy
 expect "...and goes once the leg has ended" 0 "^FARSIDE REMOVED testbox:.*/fcwts/busy (t2): " -- "${FWC[@]}" fcw --task t2
+# Nested ignored directories (ludics#1049): only `**/<dir>` or the exact path names them; a value
+# that would escape the worktree is a usage error, with no box asked.
+lreq leg-nest
+"${FWL[@]}" execution leg --request leg-nest --rev main --checkout "$lco" --worktree "$TMP/fcwts/n" -- tools/check.sh >/dev/null 2>&1 || ko "could not make worktree n (setup)"
+fixture_done leg-nest
+fcexclude="$(git -C "$lco" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
+mkdir -p "$(dirname "$fcexclude")" && touch "$fcexclude" && cp "$fcexclude" "$TMP/fc-exclude" && printf 'log_files/\n' >> "$fcexclude" || ko "could not ignore log_files (setup)"
+mkdir -p "$TMP/fcwts/n/log_files" "$TMP/fcwts/n/tools/log_files" && touch "$TMP/fcwts/n/log_files/r" "$TMP/fcwts/n/tools/log_files/r"
+"$FW" board set fcw t3 state=done "farside=testbox:$TMP/fcwts/n" >/dev/null
+expect "a top-level value names the top-level directory alone: a nested one keeps it, named" 3 "^FARSIDE KEPT testbox:.*/fcwts/n (t3): ignored data that --regenerable does not name: tools/log_files/$" -- \
+  "${FWC[@]}" fcw --task t3 --regenerable _build --regenerable log_files
+expect "a --regenerable value escaping the worktree is a usage error" 2 "farside-close: --regenerable ../n is neither a directory path inside a worktree" -- \
+  "${FWC[@]}" fcw --task t3 --regenerable ../n
+expect "a --regenerable value matching everything is a usage error" 2 "farside-close: --regenerable '\*\*' is neither" -- "${FWC[@]}" fcw --task t3 --regenerable '**'
+[ -d "$TMP/fcwts/n/tools/log_files" ] && ok "...the worktree whole" || ko "a refused or kept close removed log_files"
+expect "**/log_files names them at every depth, and the worktree goes" 0 "^FARSIDE REMOVED testbox:.*/fcwts/n (t3): HEAD $la is on a branch of origin$" -- \
+  "${FWC[@]}" fcw --task t3 --regenerable '**/log_files'
+[ ! -e "$TMP/fcwts/n" ] && ok "...from the box" || ko "still there: $(ls "$TMP/fcwts")"
+cp "$TMP/fc-exclude" "$fcexclude"
 expect "a wave with no board is refused" 1 "no board" -- "${FWC[@]}" no-such-wave
 unset LEG_MARK
 }
