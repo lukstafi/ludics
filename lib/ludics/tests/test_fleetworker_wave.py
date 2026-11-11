@@ -238,6 +238,15 @@ class Prep(unittest.TestCase):
                 self.assertNotEqual(rc, 0)
                 self.assert_made_nothing(out)
 
+    def test_only_the_stores_own_no_board_line_is_no_board(self) -> None:
+        for rc, said, want in ((1, "noise\nBOARD REFUSED: no board for wave wv on the anchor\n", True),
+                               (1, "BOARD REFUSED: no board for wave wv on the anchor (start it with set or note --create)\n", True),
+                               (1, "BOARD REFUSED: the board of wv is not JSON\n", False),
+                               (1, "BOARD REFUSED: no board for wave wv2 on the anchor\n", False),
+                               (4, "BOARD REFUSED: no board for wave wv on the anchor\n", False)):
+            with self.subTest(said), mock.patch.object(waveprep, "run_on", return_value=Done(rc, said)):
+                self.assertIs(waveprep.no_board(self.cfg, "wv"), want)
+
     def test_a_listed_pr_the_coordinator_passes_is_no_rival_and_near_numbers_are_none(self) -> None:
         prs = [{"number": 7, "title": "Fix #42", "body": "", "headRefName": "x"},
                {"number": 9, "title": "Fix #420 and o/up#4200", "body": "&#42;", "headRefName": "y"}]

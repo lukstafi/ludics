@@ -96,7 +96,7 @@ TASK = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 ISSUE_TASK = re.compile(r"t([0-9]+)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 PR_PAGE = 100
-NO_BOARD = "no board for wave {wave} on the anchor (start it with set or note --create)"  # boardstore.py's refusal
+NO_BOARD = "BOARD REFUSED: no board for wave {wave} on the anchor"  # boardstore.py's refusal, a writer's with a hint after it
 
 
 @dataclass
@@ -287,7 +287,8 @@ def no_board(cfg: Config, wave: str) -> bool:
     raw = json.dumps({"wave": wave, "json": True}, separators=(",", ":"))
     script = prelude(cfg, cfg.anchor) + "shift 3\nexec 2>&1\n" + store_command(raw)
     done = run_on(cfg, cfg.anchor, script, ["BOARD", "x", "x", "show", "x", PAYLOAD_ON_FD], capture=True)
-    return done.rc == 1 and f"BOARD REFUSED: {NO_BOARD.format(wave=wave)}" in done.out.split("\n")
+    line = NO_BOARD.format(wave=wave)
+    return done.rc == 1 and any(said == line or said.startswith(line + " (") for said in done.out.split("\n"))
 
 
 def check_board(cfg: Config, prep: Prep) -> None:
