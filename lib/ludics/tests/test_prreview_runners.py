@@ -544,11 +544,9 @@ class CancelledRecovery(MergeRecovery):
         self.assertIn("cancelled again on its rerun (attempt 2)", recovery.why)
 
 
-class DispatchAndOverride(CancelledRecovery):
-    """#1036: a cancelled ``workflow_dispatch`` run is evidence, not the PR's build -- never rerun,
-    the wait ends at once with 7 -- and ``--override`` waives a check or run that reads cancelled at
-    the gate's first read, as it waives a red, but never a check still running."""
-
+    # #1036: a cancelled ``workflow_dispatch`` run is evidence, not the PR's build -- never rerun,
+    # the wait ends at once with 7 -- and ``--override`` waives a check or run that reads cancelled
+    # at the gate's first read, as it waives a red, but never a check still running.
     DISPATCH = run_row(event="workflow_dispatch", name="windows git bash")
 
     def test_a_cancelled_dispatch_run_is_not_rerun(self) -> None:
@@ -569,7 +567,7 @@ class DispatchAndOverride(CancelledRecovery):
         run_read(gh, "100", out="completed\tcancelled\t1")
         _rc, recovery, _clock = self.run_gate(gh, 7200)
         self.assertEqual(self.writes(gh), ["run rerun 100 --failed --repo o/r"])
-        self.assertEqual(recovery.dispatched, "")
+        self.assertNotIn("workflow_dispatch", recovery.why)
 
     def test_an_override_waives_a_cancel_read_at_the_first_read(self) -> None:
         for runs in ([self.DISPATCH], [run_row()]):
