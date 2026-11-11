@@ -89,7 +89,24 @@ class Combining(Repo):
         _, scan = self.conflicting_head()
         via, refusal = siblingscan.combine(self.repo, scan, scan, ENV)
         self.assertEqual(via, "")
-        self.assertIn("no commits of its own past --base", refusal)
+        self.assertIn("changes nothing past --base", refusal)
+
+    def test_the_cherry_pick_carries_a_merge_on_the_scan_branch_and_what_its_resolution_changed(self) -> None:
+        head, scan = self.conflicting_head()
+        main2 = sh(self.repo, "rev-parse", f"{scan}~1")
+        sh(self.repo, "checkout", "-q", "-b", "side", main2)
+        commit(self.repo, "other.txt", "side\n")
+        sh(self.repo, "checkout", "-q", "scan")
+        sh(self.repo, "merge", "-q", "--no-commit", "side")
+        with open(os.path.join(self.repo, "scan.sh"), "w", encoding="utf-8") as f:
+            f.write("exit 3\n")  # the scanner as the merge left it, in no non-merge commit
+        sh(self.repo, "commit", "-qam", "merge side, the scanner revised")
+        scan = sh(self.repo, "rev-parse", "HEAD")
+        sh(self.repo, "checkout", "-q", "--detach", head)
+        via, refusal = siblingscan.combine(self.repo, scan, main2, ENV)
+        self.assertEqual((via, refusal), ("cherry-pick", ""))
+        self.assertEqual(sh(self.repo, "show", "HEAD:scan.sh"), "exit 3")
+        self.assertEqual(sh(self.repo, "show", "HEAD:other.txt"), "side")
 
 
 class TheScratchWorktree(Repo):

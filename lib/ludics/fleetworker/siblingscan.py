@@ -14,9 +14,10 @@ selected PR's head fetched from the remote by its PR ref ``refs/pull/<N>/head`` 
 name, which a merge deletes -- and the scan command's exit status. What runs: in ONE scratch
 worktree of the caller's repository, detached, reused head after head so a project's build cache
 stays warm, each head checked out, the scan revision merged into it (the cherry-pick of the scan
-branch's own commits, ``<base>..<scan>``, when the merge conflicts), and the scan command, argv as
-given, in that worktree. The scan's own PR (its head branch is --branch) is skipped by name, and
-said. What a head comes to, each on its line: CLEAN (the scan exited 0), HIT (it exited non-zero:
+branch's own changes -- its tree against its fork point from --base, squashed into one commit --
+when the merge conflicts), and the scan command, argv as given, in that worktree. The scan's own
+PR -- its head branch is --branch, in the listed repository itself (``isCrossRepository`` exactly
+false: a fork's branch of the same name is a sibling) -- is skipped by name, and said. What a head comes to, each on its line: CLEAN (the scan exited 0), HIT (it exited non-zero:
 the head and the scan branch cannot land in either order without the hit), or UNCHECKED -- a
 conflict the cherry-pick could not get past either, or no base to cherry-pick from. A failed fetch,
 a fetched ref that names no commit, and a scratch worktree git cannot reset or check out STOP the
@@ -117,6 +118,11 @@ def commit_of(rev: str, cwd: str, env: dict[str, str]) -> str:
     return out_of(done) if done.rc == 0 else ""
 
 
+def tree_of(rev: str, cwd: str, env: dict[str, str]) -> str:
+    done = git(["rev-parse", "-q", "--verify", f"{rev}^{{tree}}"], cwd, env)
+    return out_of(done) if done.rc == 0 else ""
+
+
 def absolute_git_path(what: str, cwd: str, env: dict[str, str]) -> str:
     done = git(["rev-parse", "--path-format=absolute", what], cwd, env)
     return os.path.realpath(out_of(done)) if done.rc == 0 and out_of(done) else ""
@@ -197,18 +203,25 @@ def combine(wt: str, scan: str, base_sha: str, env: dict[str, str]) -> tuple[str
     git(["merge", "--abort"], wt, env)
     reset(wt, env)
     if not base_sha:
-        return "", f"{merge_why}, and no --base to cherry-pick the scan branch's own commits from"
-    listed = git(["rev-list", "--reverse", "--no-merges", f"{base_sha}..{scan}"], wt, env)
-    commits = out_of(listed).split()
-    if listed.rc != 0 or not commits:
-        return "", f"{merge_why}, and the scan branch has no commits of its own past --base to cherry-pick"
-    picked = git([*GIT_SCRATCH, "cherry-pick", "--keep-redundant-commits", *commits], wt, env)
+        return "", f"{merge_why}, and no --base to cherry-pick the scan branch's own changes from"
+    # The scan branch's own changes are its tree against its fork point from --base, squashed into
+    # one commit: a merge on the branch (a resolution that edited the scan) is in that diff, where
+    # a pick of its non-merge commits would leave it out and scan with an older scanner.
+    fork = git(["merge-base", base_sha, scan], wt, env)
+    tree = tree_of(scan, wt, env) if fork.rc == 0 else ""
+    if fork.rc != 0 or not tree or tree_of(out_of(fork), wt, env) == tree:
+        return "", f"{merge_why}, and the scan branch changes nothing past --base to cherry-pick"
+    squashed = git([*GIT_SCRATCH, "commit-tree", tree, "-p", out_of(fork), "-m", "sibling-scan: the scan branch past --base"],
+                   wt, env)  # fmt: skip
+    if squashed.rc != 0:
+        return "", f"{merge_why}, and its changes past --base could not be squashed: {why(squashed)}"
+    picked = git([*GIT_SCRATCH, "cherry-pick", "--keep-redundant-commits", out_of(squashed)], wt, env)
     if picked.rc == 0:
         return "cherry-pick", ""
     paths = conflicted(wt, env)
     pick_why = f"conflicts in {' '.join(paths)}" if paths else why(picked)
     git(["cherry-pick", "--abort"], wt, env)
-    return "", f"{merge_why}, and the cherry-pick of its {len(commits)} commit(s) too: {pick_why}"
+    return "", f"{merge_why}, and the cherry-pick of its changes past --base too: {pick_why}"
 
 
 def run_scan(command: list[str], wt: str, log: str, env: dict[str, str]) -> int:
@@ -318,8 +331,8 @@ def cmd_sibling_scan(cfg: Config, args: list[str]) -> int:
         return 4
     heads: list[Head] = []
     skipped: list[str] = []
-    for number, sha, _created, _draft, branch, title in rows:
-        if branch == opts.branch:
+    for number, sha, _created, _draft, branch, title, same_repo in rows:
+        if branch == opts.branch and same_repo == "same":
             cli.say(f"{LABEL} SKIPPED {opts.repo}#{number}: the scan branch's own PR ({branch})")
             skipped.append(f"{opts.repo}#{number}")
         else:

@@ -4620,6 +4620,7 @@ sib_pr() { # <n> <branch> <from>: commit what the caller staged as PR n's head, 
 git clone -q "$S/remote.git" "$S/seed" 2>/dev/null
 ( cd "$S/seed" && git checkout -q -b main && echo base > a.txt && git add a.txt && git commit -qm base && git push -q origin main \
   && git checkout -q -b sib-clean main && echo fine > clean.txt && git add clean.txt && sib_pr 7 sib-clean main \
+  && git push -q origin "sib-clean:refs/pull/19/head" \
   && git checkout -q -b sib-hit main && echo FORBIDDEN > bad.txt && git add bad.txt && sib_pr 9 sib-hit main \
   && git push -q origin :refs/heads/sib-hit \
   && git checkout -q -b sib-old main && echo sib11 > a.txt && git add a.txt && sib_pr 11 sib-old main \
@@ -4631,13 +4632,15 @@ git clone -q "$S/remote.git" "$S/seed" 2>/dev/null
 git clone -q "$S/remote.git" "$S/work" && git -C "$S/work" checkout -q -b scan origin/main
 printf '%s\n' 'bad=0' 'for f in *.txt; do if grep -q FORBIDDEN "$f"; then echo "scan hit: $f"; bad=1; fi; done' 'exit $bad' > "$S/work/scan.sh"
 git -C "$S/work" add scan.sh && git -C "$S/work" commit -qm "the new scan" || ko "sibling-scan fixture: the scan branch (setup)"
-sib_list() { # <n>...: list.json naming these PRs (5 is the scan branch's own; 7 is listed stale)
-  local n branch oid rows=""
+sib_list() { # <n>...: list.json naming these PRs (5 is the scan branch's own; 7 is listed stale;
+  # 19 is a fork's PR from a branch of the scan branch's name, at PR 7's head)
+  local n branch oid cross rows=""
   for n in "$@"; do
-    case "$n" in 5) branch=scan ;; 7) branch=sib-clean ;; 9) branch=sib-hit ;; 11) branch=sib-old ;; 13) branch=sib-rival ;; *) branch=gone-$n ;; esac
+    cross=false
+    case "$n" in 5) branch=scan ;; 7) branch=sib-clean ;; 9) branch=sib-hit ;; 11) branch=sib-old ;; 13) branch=sib-rival ;; 19) branch=scan cross=true ;; *) branch=gone-$n ;; esac
     oid=$(git -C "$S/remote.git" rev-parse -q --verify "refs/pull/$n/head" || echo "c$n")
     [ "$n" = 7 ] && oid=stale7
-    rows="$rows${rows:+,}{\"number\":$n,\"title\":\"PR $n\",\"headRefName\":\"$branch\",\"headRefOid\":\"$oid\",\"createdAt\":\"2026-11-01T00:00:00Z\",\"isDraft\":false,\"isCrossRepository\":false,\"closingIssuesReferences\":[]}"
+    rows="$rows${rows:+,}{\"number\":$n,\"title\":\"PR $n\",\"headRefName\":\"$branch\",\"headRefOid\":\"$oid\",\"createdAt\":\"2026-11-01T00:00:00Z\",\"isDraft\":false,\"isCrossRepository\":$cross,\"closingIssuesReferences\":[]}"
   done
   printf '[%s]\n' "$rows" > "$S/list.json"
 }
@@ -4654,7 +4657,7 @@ grep -q "^SIBLING-SCAN CLEAN o/r#7 head=$(git -C "$S/remote.git" rev-parse refs/
 grep -q "^SIBLING-SCAN HIT o/r#9 exit=1 head=$(git -C "$S/remote.git" rev-parse refs/pull/9/head) merged=.* via=merge .* -- branch sib-hit: PR 9$" <<<"$out" \
   && grep -q "^  scan hit: bad.txt$" <<<"$out" && ok "...a hit named with its branch and the scan's last lines, fetched by its PR ref though its branch is deleted" || ko "PR 9: $out"
 grep -q "^SIBLING-SCAN CLEAN o/r#11 .* via=cherry-pick " <<<"$out" && ok "...a head the merge conflicts with takes the cherry-pick of the scan branch's own commits" || ko "PR 11: $out"
-grep -q "^SIBLING-SCAN UNCHECKED o/r#13 head=[0-9a-f]*: merge conflicts in scan.sh, and the cherry-pick of its 1 commit(s) too: conflicts in scan.sh -- branch sib-rival: PR 13$" <<<"$out" \
+grep -q "^SIBLING-SCAN UNCHECKED o/r#13 head=[0-9a-f]*: merge conflicts in scan.sh, and the cherry-pick of its changes past --base too: conflicts in scan.sh -- branch sib-rival: PR 13$" <<<"$out" \
   && ok "...and one neither gets past is UNCHECKED, never clean" || ko "PR 13: $out"
 [ -z "$(git -C "$S/work" status --porcelain)" ] && [ "$(git -C "$S/work" symbolic-ref --short HEAD)" = scan ] \
   && [ "$(git -C "$S/work" worktree list --porcelain | grep -c '^worktree ')" = 1 ] \
@@ -4663,6 +4666,8 @@ sib_list 7 9 11
 expect "...hits alone exit 1" 1 "^SIBLING-SCAN DONE o/r clean=o/r#7,o/r#11 hit=o/r#9 unchecked=- skipped=-$" -- sib o/r -- sh scan.sh
 sib_list 5 7 11
 expect "...and every head checked clean exits 0" 0 "^SIBLING-SCAN DONE o/r clean=o/r#7,o/r#11 hit=- unchecked=- skipped=o/r#5$" -- sib o/r -- sh scan.sh
+sib_list 5 19
+expect "...and a fork's PR from a branch of the scan branch's name is a sibling, scanned" 0 "^SIBLING-SCAN DONE o/r clean=o/r#19 hit=- unchecked=- skipped=o/r#5$" -- sib o/r -- sh scan.sh
 sib_list 7 8 9   # PR 8 has no ref on the remote: its fetch fails, in PR order before 9
 expect "a failed fetch stops the check with git's error" 4 "^SIBLING-SCAN FETCH FAILED o/r#8: git fetch origin refs/pull/8/head: .*refs/pull/8/head" -- sib o/r -- sh scan.sh
 grep -q "^SIBLING-SCAN NOT CHECKED o/r#9: the check stopped at o/r#8$" <<<"$out" && grep -q " clean=o/r#7 hit=- unchecked=o/r#8,o/r#9 " <<<"$out" \

@@ -210,7 +210,8 @@ def pr_rows(listing_doc: Json, issues: list[Json] | None, referencing: frozenset
             workers: tuple[str, ...] = ()) -> list[list[str]]:
     """The open PRs in number order, kept when they close an issue of ``issues``, their number is
     in ``referencing`` or their branch is one of ``workers``' (all of them when ``issues`` is None),
-    as the fields the lines print: number, head sha, creation, draft, branch, title."""
+    as the fields the lines print: number, head sha, creation, draft, branch, title, and whether the
+    branch is the repository's own (``same``: ``isCrossRepository`` exactly false; else ``fork``)."""
     rows: list[list[str]] = []
     for pr in sorted_prs(listing_doc):
         number = idx(pr, "number")
@@ -224,6 +225,7 @@ def pr_rows(listing_doc: Json, issues: list[Json] | None, referencing: frozenset
             "draft" if truthy(idx(pr, "isDraft")) else "-",
             idx(pr, "headRefName"),
             idx(pr, "title"),
+            "same" if idx(pr, "isCrossRepository") is False else "fork",
         ]
         rows.append([tsv_field(jstr(f) or "-") for f in fields])
     return rows
@@ -473,7 +475,7 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     rows = selected
     rounds_env = {**cfg.env, "SHIP_PR_ROUND_THRESHOLD": "off"}
     building = merge_builds(cfg) if rows else {}
-    for n, sha, created, draft, branch, title in rows:
+    for n, sha, created, draft, branch, title, _ in rows:
         _, rounds_out = helper_read([helper, "rounds", f"{repo}#{n}"], env=rounds_env)
         found = ROUNDS_TRAILER.fullmatch(last_line(rounds_out))
         rounds = found.group(1) if found else "?"
