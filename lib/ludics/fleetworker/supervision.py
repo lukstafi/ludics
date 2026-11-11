@@ -12,6 +12,7 @@ import math
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import cast
 
 from ludics import cli
@@ -206,28 +207,44 @@ def sorted_prs(listing_doc: Json) -> list[Json]:
     return sort_by(listing_doc, lambda p: idx(p, "number"))
 
 
+@dataclass(frozen=True)
+class PrRow:
+    """One open PR as the supervision lines print it. The text fields are TSV-escaped, ``-`` for a
+    missing or empty value; ``draft`` is the PR's ``isDraft`` read as jq truth, and ``same_repo``
+    is ``isCrossRepository`` exactly false (a row without the field is a fork's)."""
+
+    number: str
+    sha: str
+    created: str
+    draft: bool
+    branch: str
+    title: str
+    same_repo: bool
+
+
 def pr_rows(listing_doc: Json, issues: list[Json] | None, referencing: frozenset[int] = frozenset(),
-            workers: tuple[str, ...] = ()) -> list[list[str]]:
+            workers: tuple[str, ...] = ()) -> list[PrRow]:
     """The open PRs in number order, kept when they close an issue of ``issues``, their number is
     in ``referencing`` or their branch is one of ``workers``' (all of them when ``issues`` is None),
-    as the fields the lines print: number, head sha, creation, draft, branch, title, and whether the
-    branch is the repository's own (``same``: ``isCrossRepository`` exactly false; else ``fork``)."""
-    rows: list[list[str]] = []
+    as ``PrRow``s."""
+    def text(field: Json) -> str:
+        return tsv_field(jstr(field) or "-")
+
+    rows: list[PrRow] = []
     for pr in sorted_prs(listing_doc):
         number = idx(pr, "number")
         if issues is not None and not (closes_one_of(pr, issues) or on_worker_branch(pr, workers)
                                        or (type(number) is int and number in referencing)):
             continue
-        fields: list[Json] = [
-            number,
-            idx(pr, "headRefOid"),
-            idx(pr, "createdAt"),
-            "draft" if truthy(idx(pr, "isDraft")) else "-",
-            idx(pr, "headRefName"),
-            idx(pr, "title"),
-            "same" if idx(pr, "isCrossRepository") is False else "fork",
-        ]
-        rows.append([tsv_field(jstr(f) or "-") for f in fields])
+        rows.append(PrRow(
+            number=text(number),
+            sha=text(idx(pr, "headRefOid")),
+            created=text(idx(pr, "createdAt")),
+            draft=truthy(idx(pr, "isDraft")),
+            branch=text(idx(pr, "headRefName")),
+            title=text(idx(pr, "title")),
+            same_repo=idx(pr, "isCrossRepository") is False,
+        ))
     return rows
 
 
@@ -475,7 +492,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     rows = selected
     rounds_env = {**cfg.env, "SHIP_PR_ROUND_THRESHOLD": "off"}
     building = merge_builds(cfg) if rows else {}
-    for n, sha, created, draft, branch, title, _ in rows:
+    for row in rows:
+        n = row.number
         _, rounds_out = helper_read([helper, "rounds", f"{repo}#{n}"], env=rounds_env)
         found = ROUNDS_TRAILER.fullmatch(last_line(rounds_out))
         rounds = found.group(1) if found else "?"
@@ -486,26 +504,25 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         ci, agreement = parse_checks(checks_rc, checks_out)
         if ci == "unknown" and worst != 1:
             worst = 4
-        date_rc, date = helper_read([helper, "retry", "--read", "api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date"])
-        age = head_age(date if date_rc == 0 else "", created, time.time())
+        date_rc, date = helper_read([helper, "retry", "--read", "api", f"repos/{repo}/commits/{row.sha}", "--jq", ".commit.committer.date"])
+        age = head_age(date if date_rc == 0 else "", row.created, time.time())
         note = converge_note(rounds, first, flag)
         if note:
             worst = 1
-        mark = "draft " if draft == "draft" else ""
+        mark = "draft " if row.draft else ""
         build = building.get(f"{repo}#{n}".casefold())
         running = f"merge-build={build} " if build else ""
-        cli.say(f"{repo}#{n} rounds={rounds} ci={ci} branch={agreement} head={age} {running}{mark}{branch}: {title}{note}")
+        cli.say(f"{repo}#{n} rounds={rounds} ci={ci} branch={agreement} head={age} {running}{mark}{row.branch}: {row.title}{note}")
     if rows:
-        cli.say(listed_line(repo, [row[0] for row in rows]))
+        cli.say(listed_line(repo, [row.number for row in rows]))
     else:
         cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}, or on a branch of its workers" if wave else ""))
     return worst
 
 
-def open_prs(cfg: Config, label: str, repo: str, wave: str, helper: str, limit: str) -> tuple[int, list[list[str]] | None]:
-    """The open PRs of ``repo`` a supervision read is about, as ``pr_rows`` gives them (number, head
-    sha, creation, draft, branch, title): every one, or with ``wave`` the wave's (see cmd_prs and the
-    boundaries above WAVE_ISSUE and WAVE_WORKER). Each line it says starts with ``label`` (``PRS``,
+def open_prs(cfg: Config, label: str, repo: str, wave: str, helper: str, limit: str) -> tuple[int, list[PrRow] | None]:
+    """The open PRs of ``repo`` a supervision read is about, as ``pr_rows`` gives them: every one,
+    or with ``wave`` the wave's (see cmd_prs and the boundaries above WAVE_ISSUE and WAVE_WORKER). Each line it says starts with ``label`` (``PRS``,
     ``SIBLING-SCAN``). With the rows, the worst status of the reads: 0 every read answered, 1 one was
     refused, 4 one did not answer or the list reached its cap. Rows of None, with that status: the
     selection itself could not be made (the registry or the list unread), which a line said."""
