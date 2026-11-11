@@ -498,7 +498,14 @@ case " $* " in *" --interim "*) ;; *) exit 4 ;; esac
 # the jobs SHIM_BASE_ADVISORY_RED names (a JSON array, as the checker writes it), `[]` when it is
 # unset, and nothing at all when it is set empty (a green that never wrote the file).
 [ -n "$advisory_file" ] && [ -f "$advisory_file" ] || exit 4
-if [ "${SHIM_BASE_RC:-0}" = 0 ]; then printf '%s' "${SHIM_BASE_ADVISORY_RED-[]}" > "$advisory_file" || exit 3; fi
+# SHIM_BASE_RCS: a file of exits, one per read: the read takes the first line off it, and reads
+# SHIM_BASE_RC's once it is empty -- a base whose verdict changes between `gate --wait`'s reads (#872).
+base_rc="${SHIM_BASE_RC:-0}"
+if [ -s "${SHIM_BASE_RCS:-}" ]; then
+  base_rc=$(sed -n 1p "$SHIM_BASE_RCS")
+  sed 1d "$SHIM_BASE_RCS" > "$SHIM_BASE_RCS.rest" && mv "$SHIM_BASE_RCS.rest" "$SHIM_BASE_RCS" || exit 3
+fi
+if [ "$base_rc" = 0 ]; then printf '%s' "${SHIM_BASE_ADVISORY_RED-[]}" > "$advisory_file" || exit 3; fi
 # SHIM_BASE_TOUCH: a marker this read leaves behind, so a test can change the world between the
 # preflight and the launch's far side (the tmux shim's SHIM_TMUX_GENV_WHEN reads it).
 [ -z "${SHIM_BASE_TOUCH:-}" ] || touch "$SHIM_BASE_TOUCH"
@@ -521,7 +528,7 @@ if [ -n "${SHIM_BASE_REQUIRE_PREFLIGHT:-}" ] && [ ! -e "$SHIM_BASE_REQUIRE_PREFL
   echo 'base read occurred before preflight'; exit 3
 fi
 echo "${SHIM_BASE_MESSAGE:-BASE GREEN example/project tested abc1234}"
-exit "${SHIM_BASE_RC:-0}"
+exit "$base_rc"
 EOF
 chmod +x "$TMP/dispatcher/ship-pr/scripts/pr-review.sh"
 
@@ -1220,6 +1227,40 @@ expect "target movement refuses new worktree" 1 "differs from fetched base" -- e
 [ ! -e "$proj-worktrees/moved-base" ] && ok "moved base created no worktree" || ko "moved base created worktree"
 expect "unreadable target confirmation blocks" 1 "cannot confirm" -- env SHIM_BASE_TIP_FAIL=1 "$FW" launch testbox unread-base --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/unread-base
 expect "base read follows freshness preflight" 1 "dispatch blocked" -- env SHIM_BASE_REQUIRE_PREFLIGHT="$TMP/preflight-ran" SHIM_BASE_RC=1 "$FW" launch testbox base-order --target-repo example/project --kind claude --brief "$brief" --cwd "$proj"
+# `gate --wait <seconds>` (#872) reads again after a NO VERDICT (the checker's exit 4), the refusal
+# a merge burst hands every first read, until a read passes, a refusal no re-read lifts arrives,
+# or the deadline runs out. FLEET_GATE_REREAD_INTERVAL shortens the pause between reads.
+pending_msg="example/project topic: NO VERDICT YET (tip abcdef12) — pending: a run is in flight"
+reads() { grep -c -- ' base topic --wait=' "$BASE_CALL_LOG"; }
+printf '4\n4\n' > "$TMP/base-rcs"
+: > "$BASE_CALL_LOG"
+expect "gate --wait reads again through a NO VERDICT until the base passes" 0 "BASE GREEN" -- \
+  env SHIM_BASE_RCS="$TMP/base-rcs" FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --base-branch topic --wait 600
+[ "$(reads)" = 3 ] && ok "...three reads, the third green" || ko "not three reads: $(cat "$BASE_CALL_LOG")"
+[ "$(grep -c '^GATE WAIT native-worker: example/project topic: read [12] refused for now' <<<"$out")" = 2 ] \
+  && ok "...one GATE WAIT line per re-read" || ko "GATE WAIT lines: $out"
+for verdict in 1 3; do
+  : > "$BASE_CALL_LOG"
+  expect "gate --wait ends at once on base exit $verdict" 1 "base checker exit $verdict" -- \
+    env SHIM_BASE_RC="$verdict" FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --base-branch topic --wait 600
+  [ "$(reads)" = 1 ] && ! grep -q 'GATE WAIT' <<<"$out" && ok "...after one read, no wait" || ko "exit $verdict was waited on: $out"
+done
+: > "$BASE_CALL_LOG"
+expect "gate --wait runs out with the last read's reason" 1 \
+  "^GATE REFUSED native-worker: example/project topic: --wait 2s ran out after [0-9][0-9]* read(s); the last refused: $pending_msg\$" -- \
+  env SHIM_BASE_RC=4 SHIM_BASE_MESSAGE="$pending_msg" FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --base-branch topic --wait 2
+[ "$(reads)" -ge 2 ] && ok "...having read again before the deadline" || ko "no re-read before the deadline: $(cat "$BASE_CALL_LOG")"
+: > "$BASE_CALL_LOG"
+expect "gate --wait makes no re-read its pause would start past the deadline" 1 "ran out after 1 read(s)" -- \
+  env SHIM_BASE_RC=4 FLEET_GATE_REREAD_INTERVAL=30 "$FW" gate --target-repo example/project --base-branch topic --wait 20
+[ "$(reads)" = 1 ] && ! grep -q 'GATE WAIT' <<<"$out" && ok "...and refuses then, without pausing" || ko "a re-read past the deadline: $out"
+: > "$BASE_CALL_LOG"
+expect "a halt recorded during a --wait read ends the wait at once" 1 "GATE REFUSED native-worker: launches halted -- .*halted mid-wait" -- \
+  env SHIM_BASE_RC=4 SHIM_BASE_HALT="halted mid-wait" FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --base-branch topic --wait 600
+[ "$(reads)" = 1 ] && ! grep -q 'GATE WAIT' <<<"$out" && ok "...before any pause" || ko "the halt was waited through: $out"
+"$FW" resume-launches >/dev/null
+expect "gate --wait refuses a malformed deadline" 2 "gate: --wait takes a whole number of seconds" -- "$FW" gate --target-repo example/project --wait 0
+expect "gate refuses a malformed re-read interval" 2 "FLEET_GATE_REREAD_INTERVAL must be" -- env FLEET_GATE_REREAD_INTERVAL=soon "$FW" gate --target-repo example/project
 "$FW" release >/dev/null
 }
 
@@ -2867,12 +2908,26 @@ expect "a record concluded during the second read too refuses the green" 1 "neit
 expect "...and the next read hands them over" 0 "BASE GREEN" -- "$FW" gate --target-repo example/project
 grep -q "^records: $ran	fail	int-h	" "$BASE_CALL_LOG" && ok "...with the last record in the file" || ko "the concluded record was not offered: $(cat "$BASE_CALL_LOG")"
 [ "$(grep -c -- ' base --wait=' "$BASE_CALL_LOG")" = 1 ] && ok "...in one read, nothing having concluded" || ko "not one read: $(cat "$BASE_CALL_LOG")"
+# That refusal says "re-run the gate", so `gate --wait` (#872) is the re-run: it reads again.
+for int_id in int-i int-j; do
+  env FLEET_BOX_CORRECTNESS_SLOTS="testbox=4" "${FWX[@]}" execution run "$(intreq "$int_id" coordinator example/project true)" >/dev/null || ko "could not reserve $int_id (setup)"
+  jq -n --arg id "$int_id" --arg sha "$ran" --arg wt "$wt" '{request_id:$id, verdict:"fail", log:"/dev/null",
+    evidence:"fixture integration run", observed_sha:$sha, remote_checkout:$wt, handle:"fixture"}' > "$TMP/$int_id-done.json"
+done
+printf '%s\n%s\n' "$TMP/int-i-done.json" "$TMP/int-j-done.json" > "$queue"
+expect "gate --wait reads again after a record concluded during both reads" 0 "BASE GREEN" -- \
+  env SHIM_BASE_CONCLUDE="$queue" FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --wait 600
+grep -q '^GATE WAIT native-worker: example/project default branch: read 1 refused for now (.*re-run the gate)' <<<"$out" \
+  && ok "...one GATE WAIT line, naming it" || ko "no GATE WAIT for the concluded records: $out"
 # An unreadable registry refuses the gate rather than withholding the source: a failed record
 # there would outrank a green PR head (review round 3 of #401).
 printf 'not json\n' > "$ISSUE_WAVE_STATE/executions/zz-broken.json"
 : > "$BASE_CALL_LOG"
 expect "an unreadable registry refuses the gate" 1 "the execution registry could not be read" -- "$FW" gate --target-repo example/project
 [ -s "$BASE_CALL_LOG" ] && ko "the checker ran over an unread registry: $(cat "$BASE_CALL_LOG")" || ok "...before the checker is asked anything"
+expect "...and ends gate --wait at once" 1 "the execution registry could not be read" -- \
+  env FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --wait 600
+grep -q 'GATE WAIT' <<<"$out" && ko "an unreadable registry was waited on: $out" || ok "...with no wait"
 rm -f "$ISSUE_WAVE_STATE/executions/zz-broken.json"
 }
 

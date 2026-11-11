@@ -86,6 +86,9 @@
 #                          # report why not (never resets); `execution run`/`dispatch` run it
 #                          # on the execution host
 #   fleet-worker.sh gate --target-repo <owner/repo> [--base-branch <branch>] [--force --allow-red-base <reason>] # lease + halt read before native dispatch (not a reservation)
+#                          [--wait <seconds>]  # read again after a NO VERDICT (exit 4) until a read passes, a refusal
+#                          # no re-read lifts arrives (red, unknown, halt ...: at once), or no read may start
+#                          # before the deadline; pause FLEET_GATE_REREAD_INTERVAL (60) s; #872, gate.py THE WAIT
 #   fleet-worker.sh launch <box> <name> --target-repo <owner/repo> --kind claude|codex --brief <file>
 #                          [--standing <reserve.json>]
 #                          (--cwd <dir> | --repo <checkout-dir> --branch <branch> [--base <ref>])
