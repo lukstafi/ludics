@@ -214,7 +214,9 @@
 #                          # box's slots, merge-build=<elapsed>s/<bound>s, or one queued for
 #                          # them, merge-build=waiting(window|slot); flags <n> (5) or more rounds, or 3 or more
 #                          # after a round 1 of 5 or more inline findings (read-only); --wave
-#                          # keeps the PRs that close or reference an issue the wave's records name
+#                          # keeps the PRs that close or reference an issue the wave's records name;
+#                          # its last line, PRS <repo>: <n> open PRs listed above: #a ..., names
+#                          # every PR printed, so a tail that cut a line still names its PR
 #   fleet-worker.sh halt <reason> | resume-launches | halted
 #   fleet-worker.sh board set [--create] <wave> <task> <key>=<value>...   # the wave board, one JSON
 #                          # document per wave under FLEET_ANCHOR_STATE/boards (ludics-lite#619): a

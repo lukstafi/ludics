@@ -402,6 +402,21 @@ def merge_builds(cfg: Config, clock: float | None = None) -> dict[str, str]:
     return found
 
 
+# --- prs: the closing tally -------------------------------------------------------------------------
+# lukstafi/ocannl-staging#1877 looked dropped from a wave heartbeat (ludics#1050), but `prs` had
+# printed it: it was the read's first PR line, and the coordinator read the heartbeat's output file
+# through `tail -10`, which cut the timestamp and that line. PR lines go in number order, so a tail
+# loses the oldest PRs, the ones most likely to be deep in review. A read that printed PRs therefore
+# ends with one line naming every PR it printed (`listed_line`). That line is the last thing `prs`
+# writes, so a tail that keeps any of the read keeps it, and a PR it names with no line above was
+# cut by the reader. A read that printed no PRs ends with its `no open PRs` line, as before.
+def listed_line(repo: str, numbers: list[str]) -> str:
+    """``PRS <repo>: <n> open PR(s) listed above: #a #b ...``: the read's last line when it printed
+    PR lines, naming each in the order printed (see the tally's header above)."""
+    noun = "open PR" if len(numbers) == 1 else "open PRs"
+    return f"PRS {repo}: {len(numbers)} {noun} listed above: " + " ".join(f"#{n}" for n in numbers)
+
+
 def cmd_prs(cfg: Config, args: list[str]) -> int:
     """``prs <owner/repo> [--wave <id>] [--flag-at <n>]``: the coordinator's supervision read of open
     PRs (ludics-lite#405). The skill sends the convergence policy "after ~5 rounds", but no view
@@ -418,7 +433,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     prose above it. --wave keeps the PRs that close an issue some execution record of that wave
     names, and those that only reference one (its cross-reference timeline, one paged read per wave
     issue: see the boundary above WAVE_ISSUE), and those on a branch of one of its workers (the
-    boundary above WAVE_WORKER). Exit: 0 read | 1 a PR is at the flag, or refused |
+    boundary above WAVE_WORKER). The last line names every PR printed (``listed_line``, ludics#1050).
+    Exit: 0 read | 1 a PR is at the flag, or refused |
     4 some read did not answer (a flag wins)."""
     repo = wave = ""
     flag = "5"
@@ -540,6 +556,8 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
         build = building.get(f"{repo}#{n}".casefold())
         running = f"merge-build={build} " if build else ""
         cli.say(f"{repo}#{n} rounds={rounds} ci={ci} branch={agreement} head={age} {running}{mark}{branch}: {title}{note}")
-    if not rows:
+    if rows:
+        cli.say(listed_line(repo, [row[0] for row in rows]))
+    else:
         cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}, or on a branch of its workers" if wave else ""))
     return worst
