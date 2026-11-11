@@ -242,11 +242,13 @@ class Prep(unittest.TestCase):
     def test_only_the_stores_no_board_exit_is_no_board(self) -> None:
         """board_status reads the store's exit, never its text: the no-board line under exit 1 is a
         refusal, and no text under exit 5 is needed (#1047's follow-up)."""
-        for rc, said, want in ((NO_BOARD_EXIT, "", NO_BOARD_EXIT),
-                               (1, "BOARD REFUSED: no board for wave wv on the anchor\n", 1),
-                               (1, "BOARD REFUSED: the board of wv is not JSON\n", 1),
-                               (UNREACHABLE, "", 4),
-                               (0, '{"wave": "wv", "tasks": []}', {"wave": "wv", "tasks": []})):
+        cases: list[tuple[int, str, dict[str, Any] | int]] = [
+            (NO_BOARD_EXIT, "", NO_BOARD_EXIT),
+            (1, "BOARD REFUSED: no board for wave wv on the anchor\n", 1),
+            (1, "BOARD REFUSED: the board of wv is not JSON\n", 1),
+            (UNREACHABLE, "", 4),
+            (0, '{"wave": "wv", "tasks": []}', {"wave": "wv", "tasks": []})]
+        for rc, said, want in cases:
             with self.subTest(rc=rc, said=said), mock.patch.object(takeover, "run_on", return_value=Done(rc, said)), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(takeover.board_status(self.cfg, "wv"), want)
