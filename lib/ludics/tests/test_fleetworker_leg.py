@@ -385,6 +385,27 @@ class BackendPin(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("line 2 is not one the fleet reads (run-report q)", why)
 
+    def test_a_fail_lines_line_is_one_command_as_written(self) -> None:
+        """ludics#1040: THE FAILING LINES' command, the rest of its line, at most one."""
+        def read(text: str) -> tuple[int, str]:
+            done = subprocess.run([self.bash, "-c", leg.PIN + 'pin_grammar "$1" && printf "[%s]" "$pin_fail"', "x", text],
+                                  capture_output=True, text=True)
+            return done.returncode, done.stdout
+        cmd = """grep -E 'FAIL:|: false'  "$(tools/t.sh paths run last)/log" # its   own"""
+        for line in [f"fail-lines {cmd}", f"  fail-lines \t {cmd} \t ", f"fail-lines\t{cmd}"]:
+            with self.subTest(line=line):
+                self.assertEqual(read(f"{self.PINS}{line}\nrun-report tools/r.sh\n"), (0, f"[{cmd}]"))
+                self.assertEqual(self.pin(f"{line}\n", "1", "tools/t.sh"), (0, ""))
+        self.assertEqual(read(self.PINS), (0, "[]"))
+        # (A CR comes back as a newline: the output is read in text mode.)
+        for text, bad in [("fail-lines\n", "(fail-lines): "), ("fail-lines   \n", "(fail-lines): "),
+                          ("fail-lines a\nfail-lines b\n", "line 2 is not one the fleet reads (fail-lines b): "),
+                          ("fail-lines grep x log\r\n", "(fail-lines grep x log\n): "), ("fail-linesx y\n", "(fail-linesx y): ")]:
+            with self.subTest(text=text):
+                rc, why = self.pin(text, "0", "tools/t.sh")
+                self.assertEqual(rc, 1)
+                self.assertIn(bad, why)
+
     def test_project_floor_is_whole_unique_and_parsed_even_for_cpu(self) -> None:
         for value in ["0", "30", "00030", "999999999999999999999999"]:
             self.assertEqual(self.pin(f"min-free-gib {value}\n", "0", "true"), (0, ""))
@@ -407,8 +428,86 @@ class BackendPin(unittest.TestCase):
         rc, why = self.pin("slot-plan p\nslot-plan q\n", "0", "tools/t.sh")
         self.assertEqual(rc, 1)
         self.assertEqual(why, ".github/fleet-leg line 2 is not one the fleet reads (slot-plan q): pin-flag <option>,"
-                              " pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, one min-free-gib <GiB>, a # comment"
+                              " pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, one fail-lines <shell command>, one min-free-gib <GiB>, a # comment"
                               " or a blank line")
+
+
+class FailingLines(unittest.TestCase):
+    """THE FAILING LINES (ludics#1040): the far side's runs script copies a failed run's fail-lines
+    output back, bounded by bytes and lines; a passing run, and a project that declares none, copy
+    nothing. The script is LEG's own, cut out of it, with an `execution slot` that runs its command."""
+
+    bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"  # 3.2 on macOS
+
+    def runs(self, fail: str, *runner: str) -> tuple[int, str]:
+        script = leg.LEG.split("<<'FLEET_LEG_RUNS'", 1)[1].split("\n", 1)[1].split("\nFLEET_LEG_RUNS\n", 1)[0]
+        with tempfile.TemporaryDirectory() as d:
+            fw = Path(d, "fw")
+            # The nested slot, for this test: its own words dropped through `--`, the command exec'd.
+            fw.write_text('#!/bin/sh\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n')
+            fw.chmod(0o755)
+            wt = Path(d, "wt")
+            wt.mkdir()
+            Path(wt, "log").write_text("ok: true\nFAIL: claim one\nnoise\nx: false\n")
+            results = Path(d, "results")
+            results.write_text("")
+            done = subprocess.run([self.bash, "-c", script, "x", str(wt), "", str(results), "testbox", str(fw), "h", "",
+                                   fail, "2", "--deadline", "30", *runner], capture_output=True, text=True)
+            self.assertEqual(sorted(p.name for p in Path(d).iterdir()), ["fw", "results", "wt"])
+            return done.returncode, done.stderr
+
+    def block(self, err: str) -> list[str]:
+        lines = err.splitlines()
+        start = [i for i, x in enumerate(lines) if x.startswith("EXECUTION LEG testbox: failing lines ")]
+        end = [i for i, x in enumerate(lines) if x.startswith("EXECUTION LEG testbox: end of the failing lines ")]
+        self.assertEqual((len(start), len(end)), (1, 1), err)
+        return lines[start[0]:end[0] + 1]
+
+    def test_a_failed_run_copies_back_its_declared_lines(self) -> None:
+        rc, err = self.runs("""grep -E 'FAIL:|: false' log; printf 'argv:'; printf ' [%s]' "$@"; echo; echo to-stderr >&2""",
+                            "sh", "-c", "exit 3", "a b")
+        self.assertEqual(rc, 3)
+        self.assertEqual(self.block(err), [
+            "EXECUTION LEG testbox: failing lines (fail-lines in .github/fleet-leg) after the main run (exit 3),"
+            " their command exit 0, 4 line(s):",
+            "FAIL: claim one", "x: false", "argv: [sh] [-c] [exit 3] [a b]", "to-stderr",
+            "EXECUTION LEG testbox: end of the failing lines (main run)"])
+
+    def test_its_command_status_is_said_and_the_runs_stands(self) -> None:
+        rc, err = self.runs("grep -E 'no such claim' log", "false")
+        self.assertEqual(rc, 1)
+        self.assertIn("after the main run (exit 1), their command exit 1, 0 line(s):", err)
+
+    def test_a_passing_run_or_no_declaration_copies_nothing(self) -> None:
+        for fail, runner in [("grep FAIL log", ["true"]), ("", ["false"]), ("", ["true"])]:
+            with self.subTest(fail=fail, runner=runner):
+                rc, err = self.runs(fail, *runner)
+                self.assertEqual(rc, 0 if runner == ["true"] else 1)
+                self.assertNotIn("failing lines", err)
+
+    def test_a_runner_that_never_started_copies_nothing(self) -> None:
+        rc, err = self.runs("grep FAIL log", "no-such-runner-1040")
+        self.assertEqual(rc, 127)
+        self.assertNotIn("failing lines", err)
+
+    def test_the_copy_is_bounded_by_lines_and_bytes_and_says_so(self) -> None:
+        rc, err = self.runs("i=0; while [ $i -lt 250 ]; do i=$((i + 1)); echo \"FAIL: claim $i\"; done", "false")
+        self.assertEqual(rc, 1)
+        got = self.block(err)
+        total = sum(len(f"FAIL: claim {i}\n") for i in range(1, 251))
+        shown = sum(len(f"FAIL: claim {i}\n") for i in range(1, 101))
+        self.assertEqual(got[0], "EXECUTION LEG testbox: failing lines (fail-lines in .github/fleet-leg) after the main"
+                                 f" run (exit 1), their command exit 0, TRUNCATED to the first 100 of its 250 line(s),"
+                                 f" {shown} of its {total} bytes:")
+        self.assertEqual(got[1:-1], [f"FAIL: claim {i}" for i in range(1, 101)])
+        self.assertEqual(got[-1], f"EXECUTION LEG testbox: end of the failing lines (main run; TRUNCATED: {total - shown}"
+                                  " byte(s) not copied)")
+        # One line past the byte bound is cut there, and the closing line still stands on its own.
+        rc, err = self.runs("printf 'FAIL: %s\\n' \"$(head -c 20000 /dev/zero | tr '\\0' x)\"; echo 'FAIL: after'", "false")
+        got = self.block(err)
+        self.assertEqual(got[0].rsplit(", ", 2)[1:], ["TRUNCATED to the first 1 of its 2 line(s)", "16384 of its 20019 bytes:"])
+        self.assertEqual(got[1:-1], ["FAIL: " + "x" * (16384 - 6)])
+        self.assertEqual(got[-1], "EXECUTION LEG testbox: end of the failing lines (main run; TRUNCATED: 3635 byte(s) not copied)")
 
 
 class BackendPinTo(unittest.TestCase):
