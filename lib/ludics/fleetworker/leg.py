@@ -8,7 +8,7 @@ which cannot see the main checkout's ``FETCH_HEAD``; a hard-coded commit re-pinn
 is that script, once, inside the reservation:
 
     execution leg --request <id> [--box <box>] --rev <sha|branch> --checkout <dir> --worktree <dir>
-                  [--remote <name>] [--control <patch>] [--file <local file>] [--reads-no-config]
+                  [--remote <name>] [--base <branch>] [--control <patch>] [--file <local file>] [--reads-no-config]
                   [--cpu|--gpu] [--wait <s>] [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
 
 ``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>]`` is this verb on
@@ -71,6 +71,30 @@ through the control's revert (a flock under ``$STATE/leg-locks``, keyed by the w
 path, held by every process the leg starts, the runner's wrapper included, so it outlives a far
 shell that dies first): a second is refused, never queued, since a worktree moved under a running leg would make it test another commit than the one
 it reports.
+
+THE BASE (ludics#1042). A leg's worktree on macbook-pro computed its reach against a stale
+``origin/master``: the project's ``affected`` counted 65 changed paths where the real diff had 4, and
+the leg ran that scope. The revision's fetch writes only its private ref, and a SHA already in the
+checkout fetches nothing, so a reused far-side checkout's remote-tracking refs stood at whatever its
+last ``git fetch`` left. So, once the commit is resolved and before the worktree moves, the leg
+fetches ONE branch, the base, into its remote-tracking ref of the checkout
+(``+refs/heads/<branch>:refs/remotes/<remote>/<branch>``, which the worktree shares): the branch
+``--base <branch>`` names -- the launch's fact (a project's base, ``main`` or ``master``), checked as a
+branch name -- or, with none, the one the checkout's ``refs/remotes/<remote>/HEAD`` names (the
+remote's default branch, as ``git clone`` recorded it). ``FLEET_BASE_REF`` is not read: it is the
+site's one launch default (``origin/master``), not this project's. It is said, ``EXECUTION LEG <box>:
+base <remote>/<branch> at <sha> (<--base|<remote>/HEAD>), fetched from <remote> before the run; was
+<old sha|unset>``, so the log names the base the runner saw. A fetch that fails (retried once, a
+second later: a concurrent fetch of that ref holds its lock) or reaches FLEET_FETCH_TIMEOUT REFUSES the
+leg, nothing run: the leg exists to keep a wrong scope from reporting green, and a runner whose diff
+reads no base asks only for a reachable remote, which its revision's fetch needs anyway. A checkout
+with no ``<remote>/HEAD`` and no ``--base`` is a WARNING, and the leg goes on: there is no base to
+name, and the warning says how to name one. The boundary: the checkout's remote-tracking ref of that
+one branch is all it writes -- no checkout, reset or branch of the checkout moves (a served clone
+stays on its branch), no other ref is fetched, and ``<remote>/HEAD`` is read, never set. It
+establishes that ``<remote>/<branch>`` is the remote's tip at the leg's start, not that the runner
+diffs against it: which ref a project's reach reads, and how (a merge base, ``FETCH_HEAD``, another
+remote), is the project's. A base that moves during the run is not followed.
 
 THE FREE-SPACE FLOOR (ludics#981). A disk left with 17 MB cut off a CUDA integration run with dune
 exit 2 and no named failure, and a leg (``run-29``) spent a slot and died mid-checkout. So a leg is
@@ -336,7 +360,7 @@ from ludics.fleetworker.transport import fleet_name, far_argv, is_local, prelude
 
 USAGE = (
     "execution leg --request <id> [--box <box>] --rev <sha|branch> --checkout <dir> --worktree <dir>"
-    " [--remote <name>] [--control <patch>] [--file <local file>] [--reads-no-config] [--cpu|--gpu]"
+    " [--remote <name>] [--base <branch>] [--control <patch>] [--file <local file>] [--reads-no-config] [--cpu|--gpu]"
     " [--wait <seconds>] [--wait-window[=<seconds>]] [--deadline <seconds>] -- <runner command...>"
 )
 FILE_WORD = "{file}"  # the runner word THE FILE replaces with the shipped copy's path
@@ -630,17 +654,45 @@ sys.exit(3 if least < floor * 2**30 else 0)
 """
 FLOOR = f"FLOOR_PY={shlex.quote(FLOOR_PY)}\n"
 
+# THE BASE (see the header). refresh_base <checkout> <remote> <branch or empty> <bound in seconds>:
+# fetch the base branch into its remote-tracking ref, `refs/remotes/<remote>/<branch>`, the branch
+# `--base` names or, with none, the one `refs/remotes/<remote>/HEAD` names in the checkout. git's own
+# words go to stderr; one line on stdout, `<branch> <how> <old> <sha>` (how: `--base` or
+# `<remote>/HEAD`; old: the ref's commit before the fetch or `unset`; sha: after it, or `-` when the
+# fetch did not land). Exit 0 fetched, 3 no base to fetch (no branch named and no `<remote>/HEAD`), 124
+# the bound reached, else git's failure, after one retry a second later (a concurrent fetch of the same
+# ref in this checkout holds its lock for a moment). The caller runs it without the worktree lock's
+# descriptor, as the revision's fetch is run.
+BASE = r"""refresh_base() {
+  local co="$1" remote="$2" base="$3" bound="$4" how=--base head old sha=- rc tries=0
+  if [ -z "$base" ]; then
+    head=$(git -C "$co" symbolic-ref -q "refs/remotes/$remote/HEAD" 2>/dev/null) || return 3
+    case "$head" in "refs/remotes/$remote/"?*) base=${head#"refs/remotes/$remote/"} ;; *) return 3 ;; esac
+    how="$remote/HEAD"
+  fi
+  old=$(git -C "$co" rev-parse -q --verify "refs/remotes/$remote/$base^{commit}" 2>/dev/null) || old=unset
+  while :; do
+    bounded "$bound" env GIT_TERMINAL_PROMPT=0 git -C "$co" fetch -q --no-tags "$remote" "+refs/heads/$base:refs/remotes/$remote/$base" >&2; rc=$?
+    [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$tries" -eq 0 ] || break
+    tries=1; sleep 1
+  done
+  [ "$rc" -ne 0 ] || sha=$(git -C "$co" rev-parse -q --verify "refs/remotes/$remote/$base^{commit}" 2>/dev/null) || { sha=-; rc=1; }
+  printf '%s %s %s %s\n' "$base" "$how" "$old" "$sha"
+  return "$rc"
+}
+"""
+
 # The far side, after the prelude. Args: checkout, worktree, remote, rev, want (the assigned commit or
 # empty), patch name (in $STATE/leg-control, or empty), request id, the fetch's bound in seconds
 # (FLEET_FETCH_TIMEOUT), the status token (see the header), the shipped --file's name (in
 # $STATE/leg-files, or empty), the --reads-no-config declaration (0|1), the free-space floor in GiB
-# (FLEET_LEG_MIN_FREE_GIB, 0 for none), the wrapper's word count and words
+# (FLEET_LEG_MIN_FREE_GIB, 0 for none), the --base branch (or empty), the wrapper's word count and words
 # (fleet-worker.sh's own verb and flags, ending before its `--`), each run's nested-slot flags'
 # count and words, then the runner's argv.
-LEG = NOT_HOME + PIN + SWEEP + WORKTREE + FLOOR + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" min_free="${12}" nwrap="${13}"
+LEG = NOT_HOME + PIN + SWEEP + WORKTREE + FLOOR + BASE + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" min_free="${12}" base="${13}" nwrap="${14}"
 # THE STOP (see the header): this shell's pid, first, under the token; the leg keeps it.
 printf 'execution-leg %s: far: %s\n' "$token" "$$"
-shift 13
+shift 14
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
 while [ "$nwrap" -gt 0 ]; do wrap+=("$1"); shift; nwrap=$((nwrap - 1)); done
@@ -713,6 +765,16 @@ else
 fi
 [ -z "$want" ] || [ "$sha" = "$want" ] ||
   refuse "$rev is $sha, but request $request was assigned $want: run --rev $want (a rebase since? its coordinator can rebind $request to the new head: execution rebind, ludics#829)"
+# THE BASE (see the header): the branch the project's reach diffs against, fetched into its
+# remote-tracking ref, so the runner in the worktree reads <remote>/<branch> as the remote has it now.
+binfo=$( exec 9>&-; refresh_base "$co" "$remote" "$base" "$fetch_timeout" ); brc=$?
+read -r bname bhow bold bsha <<<"$binfo"
+case $brc in
+  0) say "base $remote/$bname at $bsha ($bhow), fetched from $remote before the run; was $bold" ;;
+  3) say "WARNING: no base fetched: $co has no $remote/HEAD and the leg names no --base, so a runner that diffs against a branch of $remote reads it as $co last fetched it; name the project's base with --base <branch>" ;;
+  124) refuse "git fetch $remote $bname (the base, $bhow) in $co did not finish in ${fetch_timeout}s (FLEET_FETCH_TIMEOUT); a runner diffing against $remote/$bname would read it stale (ludics#1042), so nothing ran" ;;
+  *) refuse "git fetch $remote $bname (the base, $bhow) in $co failed (above), retried once: no such branch on $remote, or $remote is unreachable from $BOX; a runner diffing against $remote/$bname would read it stale (ludics#1042), so nothing ran" ;;
+esac
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the worktree moves.
 pins=$(fleet_leg_read "$co" "$sha"); prc=$?
 [ "$prc" -ne 1 ] || refuse "$pins; nothing ran"
@@ -1181,7 +1243,7 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
             no_config = True
             i += 1
             continue
-        if arg in ("--request", "--box", "--rev", "--checkout", "--worktree", "--remote", "--control", "--file"):
+        if arg in ("--request", "--box", "--rev", "--checkout", "--worktree", "--remote", "--base", "--control", "--file"):
             if i + 1 >= len(args) or not args[i + 1]:
                 die(f"execution leg: expected a value for {arg}")
             values[arg] = args[i + 1]
@@ -1224,6 +1286,10 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
         die(f"execution leg: --rev must be a full commit SHA or a branch name, not {rev!r}")
     if HEX.fullmatch(rev) and not OBJECT_ID.fullmatch(rev):
         die(f"execution leg: --rev {rev} looks like an abbreviated or uppercase SHA: give the full one (git rev-parse)")
+    # THE BASE (see the header): a branch of --remote, by git's rules and the registry's alphabet.
+    base = values.get("--base", "")
+    if base and (not ref_name_ok(base) or not revision.git_branch_ok(base) or base.startswith("-")):
+        die(f"execution leg: --base must be a branch name of {remote}, not {base!r}")
     control = values.get("--control", "")
     if control and not (os.path.isfile(control) and os.access(control, os.R_OK)):
         die(f"execution leg: --control {control} is not a readable patch file")
@@ -1277,16 +1343,16 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
             # whatever ends it: a heartbeat left to expire would make a window opened just after a
             # short leg wait out the gap for nobody.
             return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
-                           fetch_timeout, hold=hold, shipped=shipped, no_config=no_config)
+                           fetch_timeout, hold=hold, shipped=shipped, no_config=no_config, base=base)
         finally:
             slot.release_waiter(cfg, waiter)
     slot.release_waiter(cfg, waiter)
     return run_leg(cfg, request, record, slot_flags, runner, box, checkout, worktree, remote, rev, control,
-                   fetch_timeout, hold=hold, shipped=shipped, no_config=no_config)
+                   fetch_timeout, hold=hold, shipped=shipped, no_config=no_config, base=base)
 
 
 def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[str], runner: list[str], box: str, checkout: str, worktree: str, remote: str, rev: str, control: str,
-            fetch_timeout: str, *, hold: bool = False, shipped: str = "", no_config: bool = False) -> int:
+            fetch_timeout: str, *, hold: bool = False, shipped: str = "", no_config: bool = False, base: str = "") -> int:
     """The leg on its dispatched record: refuse what the registry would not record, then run it on
     ``box`` (the far side's slot or hold around it) and stream its result."""
     state = execution.jq_text(record.get("state"))
@@ -1358,7 +1424,7 @@ def run_leg(cfg: Config, request: str, record: dict[str, Any], slot_flags: list[
     argv = far_argv(
         cfg, box,
         [checkout, worktree, remote, rev, want, pname, request, fetch_timeout, token, fname, "1" if no_config else "0",
-         min_free_gib(cfg),
+         min_free_gib(cfg), base,
          str(len(wrap)), *wrap,
          str(len(nest)), *nest, *runner],
     )
