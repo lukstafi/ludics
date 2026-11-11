@@ -6,7 +6,8 @@
 # What it pins:
 #   - a finished run reads rc=<its exit status> with exit 0, whatever that status is, and the
 #     background `start` itself exits with it too, its directory left holding new's `.made`, cpid,
-#     log, pid and rc;
+#     log, pid and rc; its command sees BG_RUN_DIR naming that directory, whose cpid is the
+#     command's own pid (ludics#1063);
 #     a wait whose first read finds the rc already there says `(finished earlier, at <time>)` after
 #     it, and one that saw the run live does not (ludics-lite#816);
 #   - `new` allocates: it creates the parent and prints <parent>/run-<N>, holding only its `.made`
@@ -160,6 +161,13 @@ fresh finished0
 fin0=$d
 bg_start "$d" true
 expect "a run exiting 0 reads rc=0" 0 'rc=0' -- "$BG" wait "$d" --within 20
+# ludics#1063: the command runs with BG_RUN_DIR naming its directory, and its cpid is its own pid,
+# whatever BG_RUN_DIR the caller had.
+fresh rundir
+BG_RUN_DIR=/elsewhere bg_start "$d" sh -c 'printf "%s %s\n" "$BG_RUN_DIR" "$$"'
+expect "a run's command sees BG_RUN_DIR" 0 'rc=0' -- "$BG" wait "$d" --within 20
+[ "$(cat "$d/log")" = "$d $(head -n 1 "$d/cpid")" ] && ok "...naming its own directory, whose cpid is the command's pid" \
+  || ko "the command saw /$(cat "$d/log")/, want /$d $(head -n 1 "$d/cpid")/"
 # ludics-lite#816: a wait whose first read already finds the rc says the run finished before it,
 # with the rc's publication time, and exits 0 as ever; a wait that saw the run live prints the
 # bare line.

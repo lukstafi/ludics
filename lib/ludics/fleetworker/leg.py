@@ -274,6 +274,23 @@ under one, so the only records a leg can find newly dispatched there are the hal
 one on each box its triage names (registry.py's THE HALT'S TRIAGE). A record dispatched before the
 halt keeps its legs, as it keeps its slot batches: a halt launches nothing new, and is no pause.
 
+THE RUN'S REQUEST (ludics#1063). A leg run as a ``bg-run.sh`` directory's own command writes the
+request it runs for into that directory, as ``request`` (one line, the ``--request`` given), so
+``execution conclude --from-bg-run`` can tie the directory to its request where the box alone
+cannot (execution.py's THE RUN'S REQUEST). It is the directory's own command when ``BG_RUN_DIR``
+(bg-run.sh's, for the command it starts) is absolute and that directory's ``cpid`` names this
+process's own pid: ``bg-run.sh spawn <parent> -- fleet-worker.sh execution leg ...`` keeps one pid
+from bg-run.sh's publication through the shims' execs to Python. Anything else writes nothing, and
+the directory keeps today's reading: a leg not under bg-run.sh, a leg that inherited BG_RUN_DIR
+from a suite or a wrapper (``sh -c '... && fleet-worker.sh execution leg ...'``, whose pid is not
+cpid), a pid space where bg-run.sh's ``$$`` is not Python's (Git Bash). It is written once the
+arguments are accepted and before the registry is read, so a leg refused by the registry or the box
+still names its request; a ``request`` already there is never replaced, and a write the filesystem
+refuses is a warning on stderr, never the leg's failure. ``hold_in_worktree`` is this verb, so it
+writes one too; ``execution slot --bg`` and a plain ``execution hold -- <command>`` write none:
+their directory is on the box that runs them, the reservation's execution host, where the box
+alone binds it (execution.py's ``bg_run_boxes``).
+
 THE STOP (ludics-lite#767). The far side reports its shell's pid first, under this invocation's
 token (``execution-leg <token>: far: <pid>``, consumed, never passed through). While the leg streams,
 a SIGTERM, SIGINT or SIGHUP to it (``bg-run.sh stop`` signals the run's whole group; a Ctrl-C) ends
@@ -346,7 +363,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import FrameType
 from typing import Any
 
@@ -1162,6 +1179,37 @@ def refused(text: str, rc: int = 1) -> int:
     return rc
 
 
+def mark_run_request(env: Mapping[str, str], request: str) -> None:
+    """THE RUN'S REQUEST: write ``request`` into the bg-run.sh directory this process is the command
+    of, once; nothing for a process that is not that directory's own command."""
+    run_dir = env.get("BG_RUN_DIR", "")
+    if not run_dir or not os.path.isabs(run_dir):
+        return
+    try:
+        with open(os.path.join(run_dir, "cpid"), encoding="utf-8", errors="replace") as f:
+            cpid = f.readline().rstrip("\n")
+    except OSError:
+        return
+    if cpid != str(os.getpid()):
+        return
+    path = os.path.join(run_dir, "request")
+    temporary = os.path.join(run_dir, f".request.{os.getpid()}")
+    try:
+        with open(temporary, "x", encoding="utf-8") as f:
+            f.write(request + "\n")
+        try:
+            os.link(temporary, path)  # complete before it is visible, and never over one already there
+        except FileExistsError:
+            pass
+    except OSError as exc:
+        cli.note("execution leg", f"warning: cannot record request {request} in {shlex.quote(run_dir)}: {exc}")
+    finally:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+
+
 LEG_VOICE = slot.Voice("EXECUTION LEG", "running the leg", "nothing ran")
 
 
@@ -1308,6 +1356,7 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     if not SECONDS.fullmatch(fetch_timeout):
         die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
     min_free_gib(cfg)  # a usage error before the reservation is read; run_leg passes it on
+    mark_run_request(cfg.env, request)  # THE RUN'S REQUEST, before anything can refuse the leg
 
     # The reservation: a dispatched record, whose execution host is the box. A leg that may wait out a
     # window registers as its waiter in this same read, by its request (THE WAITERS, ludics-lite#719):

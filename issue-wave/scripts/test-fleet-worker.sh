@@ -3033,6 +3033,27 @@ expect "...a directory on neither is refused, naming both" 1 "^FROM-BG-RUN REFUS
   "${FWB[@]}" execution conclude --from-bg-run "$TMP/bg runs/nope" --request bg-leg --sha "$sha"
 expect "...and an explicit --box reads that box alone, as before" 0 "read on other, which drove the run on testbox\"" -- \
   "${FWB[@]}" execution conclude --from-bg-run "$ok_dir" --request bg-leg --sha "$sha" --box other
+# ludics#1063, THE RUN'S REQUEST, through the real far side: a directory whose request file names the
+# request concludes, saying so; one naming another is refused, naming both; a malformed one is
+# refused. Both boxes read one file here, so a bound directory on both is two bound, still refused;
+# one box's file settling it is the unit suite's (FromBgRunBox), whose boxes answer apart.
+req_dir=$(bgdir req sh -c 'exit 0') && printf 'bg-req\n' > "$req_dir/request" || ko "could not stage a bound directory (setup)"
+expect "a directory bound to its request by its request file concludes" 0 "its request file binds $req_dir on testbox to bg-req" -- \
+  bgc bg-req "$req_dir" --box testbox
+expect "...one read for another request is refused, naming both" 1 \
+  "^FROM-BG-RUN REFUSED: '$req_dir' on testbox is request bg-req's run (its request file names it), not bg-req2's; nothing concluded$" -- \
+  bgc bg-req2 "$req_dir" --box testbox
+fixture_done bg-req2
+both_dir=$(bgdir req3 true) && printf 'bg-req3\n' > "$both_dir/request" || ko "could not stage a directory bound on both boxes (setup)"
+bgreq bg-req3 other
+expect "...one bound on both boxes (one filesystem here) stays refused, naming what each says" 1 \
+  "^FROM-BG-RUN REFUSED: a run directory .* is on both testbox and other (its request file: on testbox names bg-req3, on other names bg-req3); --box" -- \
+  "${FWB[@]}" execution conclude --from-bg-run "$both_dir" --request bg-req3 --sha "$sha"
+fixture_done bg-req3
+bad_dir=$(bgdir reqbad true) && printf 'bg-reqbad' > "$bad_dir/request" || ko "could not stage a malformed request file (setup)"
+expect "...and a malformed request file is refused" 1 "^FROM-BG-RUN REFUSED: '$bad_dir/request' on testbox is not one line naming a request; nothing concluded$" -- \
+  bgc bg-reqbad "$bad_dir" --box testbox
+fixture_done bg-reqbad
 # A checkout already on the record is kept when --checkout is absent, and replaced when it is given.
 bgreq bg-rec && jq -n '{request_id:"bg-rec", state:"running", evidence:"fixture", remote_checkout:"/rec/wt"}' > "$TMP/bg-rec-rec.json" &&
   "${FWB[@]}" execution record "$TMP/bg-rec-rec.json" >/dev/null || ko "could not record bg-rec's checkout (setup)"
@@ -4292,6 +4313,22 @@ expect "a controlled leg under bg-run concludes pass from its directory" 0 '"ver
   "${FWL[@]}" execution conclude --from-bg-run "$lbg" --request leg-a --sha "$(sed -n 's/.*; observed_sha=//p' "$lbg/log")"
 grep -Fq "runner sentinel 'execution-leg: exit: 0'" <<<"$out" && grep -Fq "\"observed_sha\": \"$lb\"" <<<"$out" &&
   ok "...reading the leg's sentinel, at the observed_sha it printed" || ko "the conclusion read another sentinel or SHA: $out"
+# ludics#1063, THE RUN'S REQUEST: the leg, the directory's own command, wrote its request there, and
+# the conclusion is bound by it; read for another request (on the one box, --box) it is refused.
+[ "$(cat "$lbg/request" 2>/dev/null)" = leg-a ] && [ -z "$(find "$lbg" -name '.request.*')" ] &&
+  ok "...the leg having written its request into the directory" || ko "the leg's directory names no request: $(ls -A "$lbg")"
+grep -Fq "its request file binds $lbg on testbox to leg-a" <<<"$out" && ok "...which binds the conclusion" || ko "the conclusion is not bound: $out"
+lreq leg-1063 >/dev/null
+expect "the directory read for another request is refused, naming both" 1 \
+  "^FROM-BG-RUN REFUSED: '$lbg' on testbox is request leg-a's run (its request file names it), not leg-1063's; nothing concluded$" -- \
+  "${FWL[@]}" execution conclude --from-bg-run "$lbg" --request leg-1063 --sha "$lb" --box testbox
+fixture_done leg-1063
+# A leg that is not the directory's own command (its BG_RUN_DIR inherited, its pid not the cpid) writes nothing.
+lneg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") &&
+  bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" start "$lneg" -- true || ko "could not stage a finished bg-run directory (setup)"
+expect "a leg that inherited another run's BG_RUN_DIR runs as before" 1 "EXECUTION LEG REFUSED: unknown request_id leg-zz" -- \
+  env BG_RUN_DIR="$lneg" "${FWL[@]}" execution leg --request leg-zz --rev main --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+[ ! -e "$lneg/request" ] && ok "...writing no request into it" || ko "a leg wrote into a directory it is not the command of"
 # Over ssh (the shim runs "other" here): every runner word crosses the remote shell intact.
 expect "a leg over ssh passes the runner's words through the remote shell untouched" 0 "runner argv: \\[a b\\] \\['q'\\] \\[\$HOME\\] \\[;\\]" -- \
   env SHIM_SSH_LOCAL=other "${FWL[@]}" execution leg --request leg-o --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh "a b" "'q'" '$HOME' ';'

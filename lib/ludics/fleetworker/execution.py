@@ -47,6 +47,24 @@ gets a summary of the GPU co-tenant record its ``execution hold --request`` left
 host (``cotenants.py``) appended to its evidence, read there by ``GPU_RECORD``. Nothing else is read,
 and a ``not-launched`` conclusion, which describes no run, reads nothing.
 
+THE RUN'S REQUEST (ludics#1063). A bg-run.sh directory may name the request it was made for, in its
+``request`` file, which ``execution leg`` writes when it is the directory's own command (leg.py's
+THE RUN'S REQUEST). ``--from-bg-run`` reads it on every box it reads the directory on, and its
+boundary is a fail-closed allowlist over exactly these readings of ``<dir>/request``:
+  - nothing at the path (no file, no dangling link): today's reading, unbound -- every directory
+    made before #1063, and every one whose command was no leg, keeps the verdict it had;
+  - one regular file, not a link, holding exactly one non-empty line and its newline, byte-equal
+    to ``--request``: bound to it, and the evidence says so;
+  - the same, naming another id: refused, naming both ids;
+  - anything else at the path (a link, a directory, an unreadable or empty file, no final newline,
+    a second line): refused as malformed.
+Which box is read is THE BOX THAT HOLDS IT (``bg_run_boxes``, ``locate_bg_run``); the file
+changes it in one case only: a path found on both boxes, where exactly one of the two directories
+is bound to ``--request``, concludes from that one, its evidence naming the other box. Two bound,
+none bound (unbound, another id or malformed on each), and every refusal of a box that cannot be
+read stay refused as before #1063. The file is never trusted for more than this: it names no box,
+no revision and no verdict, and its id is compared, never looked up.
+
 THE PATHS (ludics#756): a path this module's refusals, warnings and usage deaths name -- a checkout,
 a run directory or a file in it, a worktree, a script or payload file -- is printed through
 ``shown`` (``shlex.quote``: bare when it needs no quoting, else one single-quoted shell word), so it
@@ -260,6 +278,9 @@ SENTINEL = "([A-Za-z0-9._-]+: )?exit: (0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[
 #             warning lines into command output. A slot-wrapped test's own text is after its
 #             admission line. Arbitrary unwrapped programs impersonating this protocol are not
 #             authenticated here. Delayed refusals remain the wrapper's nonzero status.
+#   request   THE RUN'S REQUEST (header): empty when nothing is at `request`; `!` when something
+#             is there but is a link or no regular file; `:<line>` when it is a readable regular
+#             file of exactly one non-empty line and its newline; else `?`. Read on every verdict.
 #   said      LAST, the first line of wait's output (stdout and stderr together), as `head -n1`
 #             reads it: one line, its grammar ludics.bgrun's, read on the near side.
 FROM_BG_RUN_HEAD = r"""dir="$1"
@@ -279,6 +300,18 @@ if [ "$wrc" = 0 ] && [ "$log" = 1 ]; then
   case "$first" in 'EXECUTION SLOT REFUSED '*) refusal=$first ;; esac
 fi
 printf 'wait=%s\nlog=%s\nsentinel=%s\nrefusal=%s\n' "$wrc" "$log" "$sentinel" "$refusal"
+f="$dir/request"
+request=
+if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then
+  request='!'
+elif [ -e "$f" ]; then
+  request='?'
+  if { IFS= read -r line < "$f"; } 2>/dev/null && [ -n "$line" ]; then
+    size=$(LC_ALL=C wc -c < "$f" 2>/dev/null | tr -d ' ')
+    [ "$size" = "$(printf '%s\n' "$line" | LC_ALL=C wc -c | tr -d ' ')" ] && request=":$line"
+  fi
+fi
+printf 'request=%s\n' "$request"
 printf 'said=%s\n' "$said"
 """
 
@@ -518,7 +551,7 @@ def conclude_from_run(cfg: Config, run_dir: str, request: str, box: str, sha: st
     )
 
 
-BG_RUN_KEYS = ("wait", "log", "sentinel", "refusal")
+BG_RUN_KEYS = ("wait", "log", "sentinel", "refusal", "request")
 
 
 def bg_run_facts(text: str) -> dict[str, str] | None:
@@ -544,8 +577,41 @@ def bg_run_facts(text: str) -> dict[str, str] | None:
     if facts["refusal"] and not (facts["wait"] == "0" and facts["log"] == "1"
                                  and facts["refusal"].startswith("EXECUTION SLOT REFUSED ")):
         return None
+    if facts["request"] not in ("", "!", "?") and not re.fullmatch(r":.+", facts["request"]):
+        return None
     facts.update(dir="1", said=said)
     return facts
+
+
+def run_request(facts: dict[str, str]) -> tuple[str, str]:
+    """THE RUN'S REQUEST's reading of FROM_BG_RUN's ``request`` fact: ``("id", <the id>)``, or
+    ``("none", "")`` when nothing is at the path (also for a reading that has no such fact: no
+    directory, no scratch file), ``("irregular", "")`` or ``("malformed", "")``."""
+    value = facts.get("request", "")
+    if value.startswith(":"):
+        return "id", value[1:]
+    return {"": "none", "!": "irregular"}.get(value, "malformed"), ""
+
+
+def request_words(facts: dict[str, str]) -> str:
+    """How a refusal words a directory's ``request`` reading."""
+    kind, named = run_request(facts)
+    return {"id": f"names {shown(named)}", "none": "none", "irregular": "not a regular file"}.get(kind, "malformed")
+
+
+def request_refusal(facts: dict[str, str], run_dir: str, box: str, request: str) -> Refusal | None:
+    """THE RUN'S REQUEST's refusals for the directory ``--from-bg-run`` concludes from: a ``request``
+    file that is no regular file, a malformed one, and one naming another id than ``request``."""
+    kind, named = run_request(facts)
+    if kind == "none" or (kind == "id" and named == request):
+        return None
+    if kind == "id":
+        why = f"{shown(run_dir)} on {box} is request {shown(named)}'s run (its request file names it), not {shown(request)}'s"
+    elif kind == "irregular":
+        why = f"{shown(run_dir + '/request')} on {box} is not a regular file"
+    else:
+        why = f"{shown(run_dir + '/request')} on {box} is not one line naming a request"
+    return Refusal(f"FROM-BG-RUN REFUSED: {why}; nothing concluded", 1)
 
 
 def bg_run_verdict(facts: dict[str, str], run_dir: str, box: str) -> bgrun.Verdict | Refusal:
@@ -610,12 +676,14 @@ def read_bg_run(cfg: Config, run_dir: str, box: str, bgrun_path: str) -> dict[st
 
 
 def locate_bg_run(
-    cfg: Config, run_dir: str, boxes: Sequence[str], bgrun_path: str
-) -> tuple[str, dict[str, str]] | Refusal:
-    """The one box of ``boxes`` (``bg_run_boxes``') that holds the directory, and its facts. Every
-    box is read, so a path present on two is refused, never concluded from either: nothing in a
-    bg-run.sh directory names its request, so the box is the only binding there is. A box that
-    does not answer or reads unreadable refuses, so the other's directory is never taken alone."""
+    cfg: Config, run_dir: str, boxes: Sequence[str], bgrun_path: str, request: str = ""
+) -> tuple[str, dict[str, str], str] | Refusal:
+    """The one box of ``boxes`` (``bg_run_boxes``') that holds the directory, its facts, and the
+    other box that holds the same path, when THE RUN'S REQUEST settled it (else empty). Every box
+    is read, so a path present on two is refused, never concluded from either -- unless exactly one
+    of the two is bound to ``request`` by its ``request`` file, which concludes from that one. A
+    box that does not answer or reads unreadable refuses, so the other's directory is never taken
+    alone."""
     found: list[tuple[str, dict[str, str]]] = []
     for box in boxes:
         facts = read_bg_run(cfg, run_dir, box, bgrun_path)
@@ -625,15 +693,22 @@ def locate_bg_run(
                                 " --box <box> reads that box alone)", facts.rc)
             return facts
         if len(boxes) == 1:
-            return box, facts
+            return box, facts, ""
         if facts["dir"] != "0":
             found.append((box, facts))
     if len(found) > 1:
-        return Refusal(f"FROM-BG-RUN REFUSED: a run directory {run_dir} is on both {' and '.join(boxes)};"
+        bound = [(box, facts) for box, facts in found if request and run_request(facts) == ("id", request)]
+        if len(bound) == 1:
+            box, facts = bound[0]
+            return box, facts, next(other for other, _ in found if other != box)
+        named = ""
+        if any(run_request(facts)[0] != "none" for _, facts in found):
+            named = " (its request file: " + ", ".join(f"on {box} {request_words(facts)}" for box, facts in found) + ")"
+        return Refusal(f"FROM-BG-RUN REFUSED: a run directory {run_dir} is on both {' and '.join(boxes)}{named};"
                        " --box <box> names the one whose run it is; nothing concluded", 1)
     if not found:
         return Refusal(f"FROM-BG-RUN REFUSED: no run directory {run_dir} on {' or '.join(boxes)}", 1)
-    return found[0]
+    return found[0][0], found[0][1], ""
 
 
 def conclude_from_bg_run(
@@ -661,12 +736,17 @@ def conclude_from_bg_run(
     The read box need not be the execution host (a trip driven over ssh leaves its directory on
     the box that drove it), so the payload carries no ``execution_host`` binding, and the log and
     handle name the box read, ``<box>:<path>``. ``also``, a second box, is looked on too
-    (``locate_bg_run``): the conclusion reads the one of the two that holds the directory."""
+    (``locate_bg_run``): the conclusion reads the one of the two that holds the directory, or, where
+    both do, the one THE RUN'S REQUEST binds to ``request``. A directory whose ``request`` file is
+    malformed or names another request is refused (``request_refusal``) before its verdict is read."""
     boxes = (box, also) if also and also != box else (box,)
-    located = locate_bg_run(cfg, run_dir, boxes, bgrun_path)
+    located = locate_bg_run(cfg, run_dir, boxes, bgrun_path, request)
     if isinstance(located, Refusal):
         return located
-    box, facts = located
+    box, facts, beside = located
+    unbound = request_refusal(facts, run_dir, box, request)
+    if unbound is not None:
+        return unbound
     read = bg_run_verdict(facts, run_dir, box)
     if isinstance(read, Refusal):
         return read
@@ -696,7 +776,11 @@ def conclude_from_bg_run(
         evidence += f"; revision {sha} {source}"
     if box != host:
         evidence += f"; directory read on {box}, which drove the run on {host}"
-    if len(boxes) > 1:
+    if run_request(facts) == ("id", request):
+        evidence += f"; its request file binds {run_dir} on {box} to {request}"
+    if beside:
+        evidence += f"; no --box: looked for on {' and '.join(boxes)}, found on both, concluded from {box}, the one bound to it, not from {beside}"
+    elif len(boxes) > 1:
         evidence += f"; no --box: looked for on {' and '.join(boxes)}, found on {box} alone"
     return Payload(
         compact(
