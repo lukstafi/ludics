@@ -117,13 +117,21 @@ base: SKILL.md's loops run ``--tip <base>``), else the one the checkout's ``refs
 names. It is said on stderr, ``TIP-RUN BASE <box>: origin/<branch> at <sha> (<--base|--tip|origin/HEAD>),
 fetched from origin before the run; was <old sha|unset>``, and a started run's record ends its
 evidence with the same words. A fetch that fails (retried once, a second later) or does not finish
-in 300 s (the commit fetch's bound) refuses the run, so it ends as any far-side refusal does,
+in FLEET_FETCH_TIMEOUT seconds (THE FETCH BOUND) refuses the run, so it ends as any far-side refusal does,
 ``TIP-RUN NOT STARTED``, its record concluded ``not-launched``: no slot is taken and nothing runs. A
 checkout with no ``origin/HEAD`` and neither flag is a WARNING on that line, carried into the
 evidence, and the run goes on. The boundary is the leg's: that one remote-tracking ref is all it
 writes (no other ref is fetched, ``origin/HEAD`` is read and never set), and it establishes that
 ``origin/<branch>`` was the remote's tip when the run started, not that the command diffs against
 it; a base that moves during the run is not followed.
+
+THE FETCH BOUND: ``execution leg``'s (leg.py, ``fetch_timeout_s``; one knob, FLEET_FETCH_TIMEOUT,
+default 300, read where the verb runs, the caller or ``~/.config/fleet/env.sh``, and carried to the
+box as an argument; a value that is no positive whole number of seconds is a usage refusal before
+GitHub or the anchor is asked). It bounds both far-side fetches, the commit's and THE BASE's, and a
+fetch it cuts is refused naming it (``did not finish in <n>s (FLEET_FETCH_TIMEOUT)``), so a slow box
+has one place to raise it (the box's skills refresh before them, ``refresh_box``, reads the same
+knob). The slot's settle is ``SETTLE``'s, not this knob's.
 
 THE REQUEST ID (ludics-lite#714). With ``--id-prefix <prefix>`` the payload names no
 ``request_id`` (one source, as for ``--tip``'s revision): the run takes ``<prefix>-<n>``, ``<n>``
@@ -207,7 +215,7 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker import revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.leg import BASE, FLOOR, PIN, min_free_gib
+from ludics.fleetworker.leg import BASE, FLOOR, PIN, fetch_timeout_s, min_free_gib
 from ludics.fleetworker.preflight import refresh_box
 from ludics.fleetworker.registry import halt_generation, halt_reason, ref_name_ok
 from ludics.fleetworker.transport import (
@@ -241,9 +249,9 @@ HALT_TEST = re.compile(r"(?<![^\s(,;])test=([A-Za-z0-9_@./+-]+)")
 # fleet-worker.sh to run there (empty: the box's skills checkout's), cpu|gpu, the settle bound, the
 # backend a GPU-loop purpose names (empty: none, nothing checked), the free-space floor in GiB
 # (FLEET_LEG_MIN_FREE_GIB, 0 for none), the base branch (empty: origin/HEAD's) and the flag it came
-# from, then the command. Prints `base=` (THE BASE's words), `dir=` and `slot=held|ended|unsettled`
+# from, the fetch bound in seconds (FLEET_FETCH_TIMEOUT), then the command. Prints `base=` (THE BASE's words), `dir=` and `slot=held|ended|unsettled`
 # (and `said=` for ended), or one TIP-RUN REFUSED line, exit 1, when nothing was started.
-FAR = PIN + FLOOR + BASE + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7" min_free="$8" base="$9" base_how="${10}"; shift 10
+FAR = PIN + FLOOR + BASE + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7" min_free="$8" base="$9" base_how="${10}" fetch_timeout="${11}"; shift 11
 refuse() { printf '%s\n' "TIP-RUN REFUSED: $*"; exit 1; }
 [ -n "$runs" ] || runs="$(expand_tilde "$STATE")/tip-runs"
 [ -n "$fw" ] || fw="$(expand_tilde "$SKILLS_REPO")/issue-wave/scripts/fleet-worker.sh"
@@ -261,18 +269,19 @@ fi
 }
 [ -z "$min_free" ] || check_floor
 if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
-  bounded 300 git fetch -q origin >/dev/null; frc=$?
+  bounded "$fetch_timeout" git fetch -q origin >/dev/null; frc=$?
+  [ "$frc" -ne 124 ] || refuse "git fetch origin in $co on $BOX did not finish in ${fetch_timeout}s (FLEET_FETCH_TIMEOUT)"
   [ "$frc" -eq 0 ] || refuse "git fetch origin in $co on $BOX failed (exit $frc)"
   git cat-file -e "$sha^{commit}" 2>/dev/null || refuse "$co on $BOX does not have $sha even after fetching origin"
 fi
 # THE BASE (see the header): the base branch's remote-tracking ref, fetched, so a command in the
 # checkout reads origin/<branch> as origin has it now.
-binfo=$(refresh_base "$co" origin "$base" 300 "$base_how"); brc=$?
+binfo=$(refresh_base "$co" origin "$base" "$fetch_timeout" "$base_how"); brc=$?
 read -r bname bhow bold bsha <<<"$binfo"
 case $brc in
   0) said_base="origin/$bname at $bsha ($bhow), fetched from origin before the run; was $bold" ;;
   3) said_base="WARNING: no base fetched: $co has no origin/HEAD and the run names neither --base nor --tip, so a command reading a branch of origin reads it as $co last fetched it; name the project's base with --base <branch>" ;;
-  124) refuse "git fetch origin $bname (the base, $bhow) in $co on $BOX did not finish in 300s; a command reading origin/$bname would read it stale (ludics#1067), so nothing ran" ;;
+  124) refuse "git fetch origin $bname (the base, $bhow) in $co on $BOX did not finish in ${fetch_timeout}s (FLEET_FETCH_TIMEOUT); a command reading origin/$bname would read it stale (ludics#1067), so nothing ran" ;;
   *) refuse "git fetch origin $bname (the base, $bhow) in $co on $BOX failed (above), retried once: no such branch on origin, or origin is unreachable from $BOX; a command reading origin/$bname would read it stale (ludics#1067), so nothing ran" ;;
 esac
 printf '%s\n' "TIP-RUN BASE $BOX: $said_base" >&2
@@ -528,6 +537,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     if problem:
         die(f"execution tip-run: {problem}")
     min_free = min_free_gib(cfg)
+    fetch_timeout = fetch_timeout_s(cfg)
     fields = cast(dict[str, Any], request)
     # Until --id-prefix's number is allocated (THE REQUEST ID), a line names the run `<prefix>-?`.
     label = f"{parsed.id_prefix}-?" if parsed.id_prefix else str(fields["request_id"])
@@ -591,7 +601,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     kind = "cpu" if parsed.cpu else "gpu"
     backend = loop_backend(fields)
     base, base_how = (parsed.base, "--base") if parsed.base else (parsed.tip, "--tip") if parsed.tip else ("", "")
-    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, min_free, base, base_how, *parsed.command]
+    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, min_free, base, base_how, fetch_timeout, *parsed.command]
     done = run_on(cfg, box, prelude(cfg, box) + FAR, far, capture=True)
     text = done.out.rstrip("\n")
     if done.unreachable:

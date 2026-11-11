@@ -744,7 +744,8 @@ runs `execution run`, starts nothing on a remote box whose skills checkout the r
 bring current, checks the SHA out
 detached in the clean checkout on the box (fetching only when it lacks it; before that it fetches
 the base, as the leg does below, into `origin/<branch>`: the branch `--base` names, else `--tip`'s,
-else `origin/HEAD`'s, and a failed fetch refuses the run, ludics#1067), and starts the command
+else `origin/HEAD`'s, and a failed fetch refuses the run, ludics#1067; both fetches are bounded by
+`FLEET_FETCH_TIMEOUT`, 300 s by default, read where the verb runs as the leg reads it), and starts the command
 there under `execution slot --bg <runs> --wait 0` (default `<runs>`: `tip-runs` in the state
 directory, `~/.local/state/issue-wave` on the box unless `ISSUE_WAVE_STATE` names another), so it
 takes a GPU token, unless `--cpu`, only if one is free at once.

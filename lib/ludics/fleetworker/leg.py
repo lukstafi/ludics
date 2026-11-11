@@ -1174,6 +1174,16 @@ def min_free_gib(cfg: Config) -> str:
     return value
 
 
+def fetch_timeout_s(cfg: Config) -> str:
+    """FLEET_FETCH_TIMEOUT, the bound in seconds on every far-side fetch, as the far side takes it
+    (default 300); anything but a positive whole number is a usage error, in `leg` and in `tip-run`
+    alike."""
+    value = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
+    if not SECONDS.fullmatch(value):
+        die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {value!r}")
+    return value
+
+
 def refused(text: str, rc: int = 1) -> int:
     cli.say(f"EXECUTION LEG REFUSED: {text}")
     return rc
@@ -1352,9 +1362,7 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     if not shipped and FILE_WORD in runner:
         die(f"execution leg: the runner word {FILE_WORD} names the leg's --file <local file>, which was not given")
 
-    fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
-    if not SECONDS.fullmatch(fetch_timeout):
-        die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
+    fetch_timeout = fetch_timeout_s(cfg)
     min_free_gib(cfg)  # a usage error before the reservation is read; run_leg passes it on
     mark_run_request(cfg.env, request)  # THE RUN'S REQUEST, before anything can refuse the leg
 
