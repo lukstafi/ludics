@@ -89,8 +89,14 @@ def dispatch(argv: list[str]) -> int:
         # Under a coordinator's far side, a box that would read another registry than the
         # coordinator's refuses every verb before it reads anything (ludics-lite#632).
         cli.exit_with(1, refusal)
-    verb = argv[1] if len(argv) > 1 else ""
-    rest = argv[2:]
+    return run_verb(cfg, argv[1] if len(argv) > 1 else "", argv[2:])
+
+
+def run_verb(cfg: Config, verb: str, rest: list[str]) -> int:
+    """The verb table: each arm hands one verb to the module that serves it, and anything else
+    prints the usage. Kept apart from ``dispatch``'s reads, which every verb passes, so the suite
+    map can send a change to an arm to the ``usage`` section and the arm's own module's line
+    (lib/ludics/README.md, *Which suites drive each module*, ludics#1035)."""
     match verb:
         case "preflight":
             return preflight.cmd_preflight(cfg, rest)

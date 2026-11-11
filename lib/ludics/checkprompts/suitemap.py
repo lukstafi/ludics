@@ -11,8 +11,14 @@ a file. The map is the first fenced block (a line that is exactly three backtick
 line) after the line ``## Which suites drive each module`` and before the next ``## `` line. In
 that block every line is one of:
 - blank (empty, or blanks only), which ends a group;
-- a MODULE line: no leading blank, and blank-separated paths relative to lib/ludics, each
-  ``[A-Za-z0-9_]+(/[A-Za-z0-9_]+)*\\.py``;
+- a MODULE line: no leading blank, and blank-separated words, each a module's path relative to
+  lib/ludics, ``[A-Za-z0-9_]+(/[A-Za-z0-9_]+)*\\.py``, or a PART of a module, that path, ``:`` and
+  a name ``[A-Za-z_][A-Za-z0-9_]*`` the module binds at its top level (#1035). The top-level names
+  are read by ``ast`` from the module file's bytes, as Python reads source (its encoding rules
+  applied), and only these bind one: ``def``, ``async def``, ``class``, and an assignment or
+  annotated assignment whose target is a plain name (``X = ...``, ``X = Y = ...``, ``X: T = ...``).
+  A name bound any other way (a tuple target, an import, a
+  ``for``, a name under an ``if``) is no part, and a module whose source does not parse has none;
 - a SUITE line: exactly four spaces, then words as POSIX ``shlex`` splits
   them. The first is a suite's path from the checkout root, or a glob (``*``, ``?``, ``[``; read
   by ``fnmatch``, whose ``*`` also crosses a ``/``) matching at least one. A suite is a
@@ -26,15 +32,19 @@ that block every line is one of:
 A group is a paragraph: one or more module lines, then one or more suite lines, each suite line
 driving every module of its group. Anything else in the block is refused: a suite line with no
 module line above it in its group, a module line after a suite line, a group with no suite line, a
-module named twice or naming no file, and a module with no line. The modules are every regular
+module or part named twice, a module word naming no file, a part naming a module that is not
+there or a name the module does not bind at its top level, and a module with no line of its own
+(a part's line does not stand for its module's). The modules are every regular
 ``*.py`` file below lib/ludics but each ``__init__.py`` and everything under ``lib/ludics/tests/``
 (and ``__pycache__``).
 
-What it deliberately does NOT claim: that a line is COMPLETE. Whether a suite not named drives a
+What it deliberately does NOT claim: that a line is COMPLETE, or that a part's line is narrower
+than its module's or confined to what the part reaches. Whether a suite not named drives a
 module is a reading of call paths and fixtures that no line-shape scan can make; the map's author
 makes it, and this check keeps that claim from naming a module, suite or section that is not there.
 """
 
+import ast
 import fnmatch
 import os
 import re
@@ -48,6 +58,7 @@ README = "lib/ludics/README.md"
 HEADING = "## Which suites drive each module"
 FENCE = "```"
 MODULE = re.compile(r"[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*\.py")
+PART = re.compile(r"([A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*\.py):([A-Za-z_][A-Za-z0-9_]*)")
 SECTION_NAME = re.compile(r'"([^"$`\\]*)"')
 GLOB_CHARS = ("*", "?", "[")
 
@@ -67,6 +78,25 @@ def modules(tree: Tree) -> list[str]:
                 if os.path.isfile(os.path.join(here, name)):
                     found.append(lat(rel.replace(os.sep, "/")))
     return sorted(found)
+
+
+def top_names(source: bytes) -> set[str] | str:
+    """The names a module's source binds at its top level, as the docstring's allowlist reads
+    them, or why there are none (it does not parse). The source goes in as BYTES, so Python's own
+    encoding rules (a BOM, a coding line, UTF-8) read it, not the checker's Latin-1 view."""
+    try:
+        body = ast.parse(source).body
+    except (SyntaxError, ValueError) as e:
+        return f"it does not parse as Python ({e})"
+    names: set[str] = set()
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
 
 
 def suites(tree: Tree) -> list[str]:
@@ -131,6 +161,7 @@ def check_suite_map(report: Report, tree: Tree) -> None:
     known_modules = set(modules(tree))
     known_suites = suites(tree)
     section_cache: dict[str, list[str] | str | None] = {}
+    part_cache: dict[str, set[str] | str] = {}
     named: dict[str, int] = {}
     bad = False
 
@@ -157,8 +188,25 @@ def check_suite_map(report: Report, tree: Tree) -> None:
                 head = n
             group = True
             for word in line.split():
-                if MODULE.fullmatch(word) is None:
-                    ko(n, f"'{word}' is not a module path relative to lib/ludics")
+                part = PART.fullmatch(word)
+                if part is not None:
+                    module, name = part.groups()
+                    if module not in known_modules:
+                        ko(n, f"names the part '{word}' of '{module}', which is no module of lib/ludics")
+                        continue
+                    if module not in part_cache:
+                        part_cache[module] = top_names(tree.read_bytes(f"{PACKAGE}/{module}") or b"")
+                    names_of = part_cache[module]
+                    if isinstance(names_of, str):
+                        ko(n, f"names the part '{word}', but '{module}' has no top-level names: {names_of}")
+                    elif name not in names_of:
+                        ko(n, f"names the part '{word}', but '{module}' binds no '{name}' at its top level (a def, a class or a plain-name assignment)")
+                    elif word in named:
+                        ko(n, f"names '{word}' again (first on line {first + named[word] + 1})")
+                    else:
+                        named[word] = n
+                elif MODULE.fullmatch(word) is None:
+                    ko(n, f"'{word}' is not a module path relative to lib/ludics, nor a part of one (<module>.py:<name>)")
                 elif word not in known_modules:
                     ko(n, f"names '{word}', which is no module of lib/ludics")
                 elif word in named:

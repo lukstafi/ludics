@@ -3409,7 +3409,8 @@ class VerdictReadsTest(Case):
 # lib/ludics/README.md's map of the suites that drive each module. The scratch package has a module
 # at the top, two in a subpackage and one below that, an __init__.py at each level and a tests/
 # directory (neither owes a line), and the fixture register's suites; alpha/scripts/test-shell.sh
-# declares the SECTIONS=( array that section arguments are read against.
+# declares the SECTIONS=( array that section arguments are read against. a.py binds names at its top
+# level each way the map's parts read (#1035), and each way they do not.
 
 SUITE_MAP_OK = "ok: lib/ludics/README.md: every one of the 4 modules names the suites that drive it"
 SECTIONED = "alpha/scripts/test-shell.sh"
@@ -3429,9 +3430,34 @@ a.py
 pkg/b.py pkg/c.py
 pkg/sub/d.py
     ship-pr/scripts/test-*.sh
+
+a.py:CONST a.py:X a.py:Y a.py:ANN
+a.py:fn a.py:afn a.py:Klass
+    alpha/scripts/test-shell.sh beta
 ```
 
 ## Checking
+"""
+
+
+A_PY = """\
+\"\"\"A module with parts.\"\"\"
+import os
+CONST = 1
+X = Y = 2
+ANN: int = 3
+A, B = 4, 5
+def fn():
+    pass
+async def afn():
+    pass
+class Klass:
+    def method(self):
+        pass
+if os.sep:
+    COND = 6
+for LOOP in ():
+    pass
 """
 
 
@@ -3440,6 +3466,7 @@ def suite_map_tree(root: str, text: str = SUITE_MAP) -> None:
     for rel in ("__init__.py", "a.py", "pkg/__init__.py", "pkg/b.py", "pkg/c.py", "pkg/sub/__init__.py",
                 "pkg/sub/d.py", "tests/__init__.py", "tests/test_x.py", "tests/fake.py"):
         write(os.path.join(root, "lib", "ludics", rel), "")
+    write(os.path.join(root, "lib", "ludics", "a.py"), A_PY)
     write(os.path.join(root, SECTIONED), SECTIONS_TEXT)
     write(os.path.join(root, "lib", "ludics", "README.md"), text)
 
@@ -3455,7 +3482,8 @@ class SuiteMapTest(Case):
 
     def test_a_mapped_package_passes(self) -> None:
         # A section argument is a substring of a section's name, quoted or bare; a glob stands for
-        # the suites it matches; a group's module lines may run over several lines.
+        # the suites it matches; a group's module lines may run over several lines; a part names a
+        # def, async def, class, or plain-name (chained or annotated) assignment at the top level.
         suite_map_tree(self.root, self.BASE)
         self.expect("a package whose every module has a line passes", 0, SUITE_MAP_OK)
 
@@ -3476,6 +3504,36 @@ class SuiteMapTest(Case):
              "names 'pkg/__init__.py', which is no module"),
             ("a word that is no module path", changed(B, "a.py\n", "a.py lib/ludics/a\n"),
              "'lib/ludics/a' is not a module path relative to lib/ludics"),
+            ("a part whose name is no identifier", changed(B, "a.py:Klass", "a.py:Klass a.py:1x"),
+             "'a.py:1x' is not a module path relative to lib/ludics, nor a part of one"),
+            ("a part with no name", changed(B, "a.py:Klass", "a.py:Klass a.py:"),
+             "'a.py:' is not a module path relative to lib/ludics, nor a part of one"),
+            ("a part named twice", changed(B, "a.py:Klass", "a.py:Klass a.py:CONST"),
+             "names 'a.py:CONST' again (first on line"),
+            ("a part of no module", changed(B, "a.py:Klass", "a.py:Klass pkg/zz.py:X"),
+             "names the part 'pkg/zz.py:X' of 'pkg/zz.py', which is no module of lib/ludics"),
+            ("a part of an __init__.py", changed(B, "a.py:Klass", "a.py:Klass pkg/__init__.py:X"),
+             "names the part 'pkg/__init__.py:X' of 'pkg/__init__.py', which is no module"),
+            ("a part bound by a tuple target", changed(B, "a.py:Klass", "a.py:Klass a.py:A"),
+             "names the part 'a.py:A', but 'a.py' binds no 'A' at its top level"),
+            ("a part bound by an import", changed(B, "a.py:Klass", "a.py:Klass a.py:os"),
+             "names the part 'a.py:os', but 'a.py' binds no 'os' at its top level"),
+            ("a part bound under an if", changed(B, "a.py:Klass", "a.py:Klass a.py:COND"),
+             "names the part 'a.py:COND', but 'a.py' binds no 'COND' at its top level"),
+            ("a part bound by a for", changed(B, "a.py:Klass", "a.py:Klass a.py:LOOP"),
+             "names the part 'a.py:LOOP', but 'a.py' binds no 'LOOP' at its top level"),
+            ("a method is no part", changed(B, "a.py:Klass", "a.py:Klass a.py:method"),
+             "names the part 'a.py:method', but 'a.py' binds no 'method' at its top level"),
+            ("a name bound nowhere", changed(B, "a.py:Klass", "a.py:Klass a.py:Nope"),
+             "names the part 'a.py:Nope', but 'a.py' binds no 'Nope' at its top level"),
+            ("a part's line does not stand for its module's",
+             changed(B, 'a.py\n    alpha/scripts/test-shell.sh "alpha one" beta\n    lib/ludics/tests/test_x.py\n\n', ""),
+             "module 'a.py' has no line in the map"),
+            ("a part group with no suite line", changed(B, "a.py:fn a.py:afn a.py:Klass\n    alpha/scripts/test-shell.sh beta\n",
+                                                        "a.py:fn a.py:afn a.py:Klass\n"),
+             "a module line with no suite line under it"),
+            ("a part's section that selects none", changed(B, "    alpha/scripts/test-shell.sh beta\n", "    alpha/scripts/test-shell.sh delta\n"),
+             f"'delta' selects no section of {SECTIONED}"),
             ("a group with no suite line", changed(B, "pkg/b.py pkg/c.py\npkg/sub/d.py\n", "pkg/b.py pkg/c.py\n\npkg/sub/d.py\n"),
              "a module line with no suite line under it"),
             ("a group with no suite line at the end", changed(B, "    ship-pr/scripts/test-*.sh\n", ""),
@@ -3533,6 +3591,23 @@ class SuiteMapTest(Case):
         write(os.path.join(R, "lib", "ludics", "tests", "helper.py"), "")
         write(os.path.join(R, "lib", "ludics", "pkg", "__pycache__", "b.py"), "")
         self.expect("tests/ and __pycache__ owe no line", 0, SUITE_MAP_OK)
+
+    def test_a_part_of_a_module_that_does_not_parse_is_refused(self) -> None:
+        R = self.root
+        suite_map_tree(R, changed(self.BASE, "a.py:Klass", "a.py:Klass pkg/c.py:X"))
+        write(os.path.join(R, "lib", "ludics", "pkg", "c.py"), "X = 1\ndef (\n")
+        result = self.expect("a part of a module that does not parse is refused", 1,
+                             "names the part 'pkg/c.py:X', but 'pkg/c.py' has no top-level names: it does not parse as Python")
+        self.lacks("an unparsable module", SUITE_MAP_OK, result)
+        # The source is read as Python reads it: a BOM and a UTF-8 identifier are no parse error.
+        suite_map_tree(R, changed(self.BASE, "a.py:Klass", "a.py:Klass pkg/c.py:X"))
+        with open(os.path.join(R, "lib", "ludics", "pkg", "c.py"), "wb") as f:
+            f.write(b"\xef\xbb\xbfcaf\xc3\xa9 = 1\nX = 2\n")
+        self.expect("a UTF-8 module with a BOM yields its parts", 0, SUITE_MAP_OK)
+        # Its own module line still stands: the module is mapped, only its parts cannot be read.
+        suite_map_tree(R, self.BASE)
+        write(os.path.join(R, "lib", "ludics", "pkg", "c.py"), "X = 1\ndef (\n")
+        self.expect("an unparsable module named by its own line alone passes", 0, SUITE_MAP_OK)
 
     def test_the_readme_and_the_sections_are_read(self) -> None:
         R = self.root
