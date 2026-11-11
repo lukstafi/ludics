@@ -48,7 +48,7 @@ switch there breaks every wave launch.
   naps. Run it ONLY under the wave's lock, which serializes it across workers, and under
   `bg-run.sh spawn`, since it can outlast the cap:
 
-      cd @@WT@@ && ~/.claude/skills/issue-wave/scripts/bg-run.sh spawn @@SCR@@/runs -- /usr/bin/lockf -k @@WAVE_DIR@@/scratch/test-wake-lab.lock ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot --cpu --wait 3600 -- bash scripts/test-wake-lab.sh
+      cd "@@WT@@" && ~/.claude/skills/issue-wave/scripts/bg-run.sh spawn "@@SCR@@/runs" -- /usr/bin/lockf -k "@@WAVE_DIR@@/scratch/test-wake-lab.lock" ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot --cpu --wait 3600 -- bash scripts/test-wake-lab.sh
 
 - **Your `/bin/bash` runs are the macOS coverage per merge.** The macOS suites run weekly and on
   dispatch in `.github/workflows/macos-weekly.yml`, not on PR heads or pushes (#974). So before

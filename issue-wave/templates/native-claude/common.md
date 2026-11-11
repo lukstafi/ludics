@@ -12,7 +12,7 @@ batches are both `@@HOST@@` unless your task section names a leg elsewhere.
 - Never edit `@@CHECKOUT@@` (the project's main checkout: other sessions read it; it is read,
   never moved: never run checkout/switch/reset/stash/rebase/merge there) or any sibling worktree
   under `@@CHECKOUT@@-worktrees/`.
-- Run every shell command with an explicit cwd: `cd @@WT@@ && ...`, or `git -C @@WT@@`. Every edit
+- Run every shell command with an explicit cwd: `cd "@@WT@@" && ...`, or `git -C "@@WT@@"`. Every edit
   uses an absolute path under `@@WT@@`. An inherited cwd does not isolate you.
 - Scratch files go in your own directory `@@SCR@@/` (create it; every worker of this wave shares
   the parent). Never put scratch inside the worktree. Re-read a body file immediately before the
@@ -75,7 +75,7 @@ cap (180 s today), so a foreground `execution slot -- <batch>` holds nothing. Th
 fit?" judgment to make:
 
     # foreground; prints <dir> at once
-    cd @@WT@@ && ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot --bg @@SCR@@/runs --cpu --wait 1800 --wait-window -- <batch>
+    cd "@@WT@@" && ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot --bg "@@SCR@@/runs" --cpu --wait 1800 --wait-window -- <batch>
     # foreground, Bash timeout 600000, re-issued until it prints rc= (spell the printed <dir> out)
     ~/.claude/skills/issue-wave/scripts/bg-run.sh wait <dir>
 
@@ -93,7 +93,7 @@ A commit gated on a batch (the project section names any such gate) reads that b
 published status once the wait has printed `rc=`, with no edit in between, and never chains the
 commit after the batch with `;`:
 
-    cd @@WT@@ && [ "$(cat <dir>/rc)" = 0 ] && git commit ...; echo "gate exit=$?"; tail -n 20 <dir>/log
+    cd "@@WT@@" && [ "$(cat <dir>/rc)" = 0 ] && git commit ...; echo "gate exit=$?"; tail -n 20 <dir>/log
 
 Your standing reservation `@@WAVE@@-@@T@@-@@HOST@@-iterate` (kind correctness, execution host
 `@@HOST@@`, checkout your worktree) covers these targeted batches, with no per-batch request.
@@ -153,7 +153,7 @@ in particular (never in the foreground), goes through `~/.claude/skills/issue-wa
 in two foreground calls, under one absolute parent for all your runs, `@@SCR@@/runs`:
 
     # foreground; prints the fresh <dir> at once
-    ~/.claude/skills/issue-wave/scripts/bg-run.sh spawn @@SCR@@/runs -- <cmd> [arg...]
+    ~/.claude/skills/issue-wave/scripts/bg-run.sh spawn "@@SCR@@/runs" -- <cmd> [arg...]
     # foreground with Bash timeout 600000, re-issued until it prints rc= (spell the printed <dir> out)
     ~/.claude/skills/issue-wave/scripts/bg-run.sh wait <dir>
 
