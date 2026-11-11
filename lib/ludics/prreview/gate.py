@@ -150,6 +150,8 @@ class Gate:
     check_sha: str = ""
     gate_base: str = ""
     check_red: int = 0
+    # Beside a red fold, the red runs with no build check behind them (``checkless_reds``, #1066).
+    checkless_red: int = 0
     check_waived: int = 0
     run_waived: int = 0
     check_passed: int = 0
@@ -836,6 +838,74 @@ class Gate:
             f"{seen_text} in the {fmt_age(age)} since it appeared — past the {fmt_age(grace)} run-creation grace",
         )
 
+    def checkless_reds(self, rows: list[str]) -> int:
+        """The red runs a ``red`` fold would leave unreported (#1066): ``run_signal`` is not asked
+        once a check is red, so a run that failed before it created any check (a
+        ``startup_failure``) was named only after the next push. Reads the round's run read (made
+        by ``drop_advisory_workflows``; an unread one is one note line and changes nothing) and
+        writes one report line per red run that nothing above explains; returns how many.
+
+        Boundary, fail-closed: a completed, non-advisory run, the newest of its workflow and event
+        as ``run_signal`` keeps it, whose conclusion is red is reported unless (a) its check suite
+        has a red or waived row in the fold -- the fold's own lines already name that red, which is
+        what t1039's attempt counted twice -- (b) its job list says advisory jobs alone explain it
+        (``run_red_is_advisory_only``), or (c) the override waives it, as ``run_signal`` waives a
+        run. A job list that did not answer is a note line, never a 3: the verdict is red already.
+        Runs in flight, stopped runs and green runs are not read here: a red verdict stands
+        without them, and ``run_signal`` judges them when nothing is red. Under ``--check`` the
+        run list is not read at all, as on every other verdict."""
+        if self._round_raw is None:
+            if self._round_runs_failure is not None:
+                self.check_lines += (
+                    f"  unread   the workflow runs for this head could not be read ({self._round_runs_failure}),"
+                    " so a red run with no build check behind it would not be listed\n"
+                )
+            return 0
+        explained_suites = {
+            suite
+            for cls, _name, _concl, _url, suite, _status in (tab_fields(row, 6) for row in rows)
+            if cls in ("red", "waived") and suite and suite != "-"
+        }
+        seen: set[str] = set()
+        red = 0
+        for line in herestring_lines(self._round_raw):
+            _created, rid, wid, event, name, status, concl, suite = tab_fields(line, 8)
+            if not rid or self.is_advisory(name):
+                continue
+            if status != "completed" or conclusion_class(concl) == "pending":
+                continue
+            key = f"{wid}/{event}"
+            if key in seen:
+                continue
+            seen.add(key)
+            if conclusion_class(concl) != "red" or (suite or "-") in explained_suites:
+                continue
+            explained = self.run_red_is_advisory_only(rid, suite or "-")
+            if explained in (0, 2):
+                continue
+            label = f"workflow run {rid} ({shlex.quote(name)}, {concl})"
+            if self.waive_mode == "record" or (self.waive_mode == "apply" and f"run:{rid}" in self.waived):
+                if self.waive_mode == "record":
+                    self.waived.add(f"run:{rid}")
+                self.run_waived += 1
+                self.check_lines += (
+                    f"  RED      {label} (no build check behind it — WAIVED: red when --override was given)\n"
+                )
+                continue
+            if explained == 3:
+                failure = self.session.err_line() or "it did not answer"
+                self.check_lines += (
+                    f"  unread   {label}: its job list could not be read ({failure}), so whether only advisory"
+                    " jobs explain its red is unknown\n"
+                )
+                continue
+            red += 1
+            self.check_lines += (
+                f"  RED      {label} — no build check behind it: a run that fails before its jobs start"
+                " leaves nothing in the check list\n"
+            )
+        return red
+
     # --- the gate -------------------------------------------------------------------------------------
 
     def _failure_of(self, result: GhFailed | GhUnanswered) -> Unread:
@@ -1043,6 +1113,7 @@ class Gate:
                 rows = [row for row in rows if self.selects(tab_fields(row, 6)[1])]
             self.summarize(rows)
             self.run_waived = 0
+            self.checkless_red = 0
             self.gate_base = base_sha
             nomatch = ""
             run_holds = ""
@@ -1131,6 +1202,10 @@ class Gate:
                             self.check_lines += f"  running  {run_why} — not waited for\n"
                         elif "cancelled only in advisory jobs" in run_why:
                             self.check_lines += f"  stopped  {run_why} — not rerun\n"
+            else:
+                # A red fold is the verdict, and the run list cannot overrule it; it is read for the
+                # report alone, so a red no check shows is named beside the checks' (#1066).
+                self.checkless_red = self.checkless_reds(rows)
             if self.waive_mode == "record":
                 self.waive_mode = "apply"
             kind, (current, reread_base, reread_ref) = self._pr_fields(pr, with_updated=False)
@@ -1236,7 +1311,12 @@ class Gate:
             head += f" (--check {shlex.quote(self.select)})"
         match self.verdict:
             case "red":
-                cli.say(f"{head}: RED — {self.check_red} of {self.check_total} build checks failed")
+                also = (
+                    f", and {self.checkless_red} workflow run(s) concluded red with no build check to show for it"
+                    if self.checkless_red
+                    else ""
+                )
+                cli.say(f"{head}: RED — {self.check_red} of {self.check_total} build checks failed{also}")
             case "waived":
                 cli.say(
                     f"{head}: RED, WAIVED — every red ({self.check_waived + self.run_waived}) was red when"
