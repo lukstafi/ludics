@@ -90,7 +90,6 @@ author's fleet (the header of `scripts/fleet-worker.sh` is the authoritative lis
 | State directory on the anchor for the lease and fleet-wide halt | `FLEET_ANCHOR_STATE`; every coordinator must resolve it to the same directory on the anchor |
 | Where a box keeps its run-time correctness slot locks (`execution slot`) | `FLEET_SLOT_STATE`; box-wide, deliberately not under the per-coordinator `ISSUE_WAVE_STATE`, and every agent on the box must resolve it to the same directory |
 | How many correctness executions may share a box AT RUN TIME (measurement is always exclusive) | `FLEET_BOX_CORRECTNESS_SLOTS` (`<box>=<n>` pairs; `mac-studio=6 rog-nv-linux=4 minix-amd-linux=4 tuf-amd-linux=3 macbook-pro=4` with the default roster, one slot otherwise) |
-| The operator's standing word to switch the desktop app's Auto-fix off on wave PRs | `FLEET_AUTOFIX_OFF=standing` in the operator's site file (`~/.config/fleet/env.sh` here); read by the coordinator, not the script, and unset by default, so a copy of this skill carries no one's consent ([native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs)) |
 | How many of those may hold the box's GPU at once | `FLEET_BOX_GPU_TOKENS` (`<box>=<n>` pairs; `rog-nv-linux=2` with the default roster, one per slot otherwise; a batch declared `execution slot --cpu` takes none) |
 
 The rest is prose in this file and is edited in place: the **sequencing plan** path and the
@@ -352,10 +351,7 @@ coordinator a Codex worker's issue pairs like any other. Under any other coordin
 one is a tier-3 question, and the issue plans alone unless the user confirms.
 
 Most waves should have an empty tier 3. If every question keeps landing in tier 3, the
-triage is wrong, not the backlog. A desktop coordinator with native Claude workers, where the
-site sets no standing `FLEET_AUTOFIX_OFF` and the wave request did not settle Auto-fix on worker
-PRs, adds that question to a batch already going out, never opening one for it alone
-([native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs)).
+triage is wrong, not the backlog.
 
 The wave summary names the wave mode (*Wave mode*): regular, with its starting worker count, unless
 the user asked for a sprint, whose summary names its agent count, which workers run as CLI
@@ -747,10 +743,6 @@ placeholder ([coordinator-kit.md](references/coordinator-kit.md)).
   (Supervise: *A returned turn means the turn ended*). The brief states the remedy next to the
   rule: a run still going is waited out, never stopped so the turn can end with nothing running
   (*A running watch is waited out* there; ludics#1045).
-- **Auto-fix on a desktop coordinator's worker PRs stays as the operator left it** unless the
-  operator authorized the switch-off, standing in the site file or for this wave; only then does
-  a bypass-mode native Claude worker's brief carry the step and cite that word, as
-  [native-claude.md](references/native-claude.md#auto-fix-events-on-worker-prs) says.
 - Model-agnostic text: the commit trailer says "credit your own model" (the project's
   `Co-Authored-By` shape with the worker's own model name), never a model the coordinator
   copied from its own instructions (2026-09-15: an Opus worker inherited a Fable line and

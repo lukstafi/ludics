@@ -340,8 +340,8 @@ client, the `<pr-created>` tag renders a PR card, and the review-event feed behi
 session whose app setting "Auto-fix pull requests" was on; elsewhere a PR opened with the tag and
 no other setup drew a review no event announced. `get_status` reports the switch. A PR an
 issue wave owns (a worker's, or its coordinator's) follows issue-wave's
-[native-claude.md](../issue-wave/references/native-claude.md#auto-fix-events-on-worker-prs),
-which says whose word turns it off and who makes the call. If
+[native-claude.md](../issue-wave/references/native-claude.md#auto-fix-events-on-worker-prs):
+its events are log-only, and nobody in the wave switches it. If
 review events do arrive and carry the comment bodies and ids inline, take them as they come and
 stop polling for what they delivered.
 

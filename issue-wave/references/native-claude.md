@@ -291,28 +291,21 @@ One writer per branch (SKILL.md, *Supervise*) rules out acting on its events:
   spent on the PR. A finding the coordinator judges silent (must-fix, SKILL.md *Converge long
   reviews*) and that the worker may have missed is forwarded to the worker with `SendMessage`,
   naming the PR, the round and the thread.
-- **The monitor goes off only on the operator's word, which can be standing.** `set_monitor`'s
-  own contract reads: "The user is asked to approve each call (in auto mode the app may approve
-  without asking, and in bypass permissions mode it does not ask), so only call it when the user
-  asked for that switch." Bypass mode removes the prompt, not the contract (wave-20261016: three
-  of four agents declined the call on that sentence). The word is the operator's own, never this
-  skill's: a standing one is `FLEET_AUTOFIX_OFF=standing` in the site file the operator keeps
-  (SKILL.md, *Site configuration*), which the coordinator reads before the Decision gate with
-  `( . ~/.config/fleet/env.sh 2>/dev/null; printf '%s\n' "${FLEET_AUTOFIX_OFF:-}" )`. When it is
-  unset, the wave asks in the Decision gate's batch, and that answer covers that wave only; the
-  board records which word it acts on. Without either, the first bullet is the whole rule and
-  nobody touches the switch. With one, the brief cites it, and: a session holds one bound PR,
-  and the app binds one whenever the session runs `gh pr create` or pushes a branch that has a
-  PR (`get_status`'s own unbound reply says so), so a sibling's next PR or push can take the
-  binding. The moment a PR is known to be bound is just after the worker's own `gh pr create`.
-  The brief of a worker in bypass permissions mode has it call `mcp__ccd_pr__get_status`
-  (session `"self"`, the default) then, and when it shows the worker's own PR,
-  `mcp__ccd_pr__set_monitor` with `auto_fix: false` and that PR's url as `get_status` reports it
-  (`address_comments` is the same switch). Any other PR there means the binding has already
-  moved, and the worker leaves it alone. Outside bypass mode the call can prompt, and an unseen
-  prompt stalls a worker, so that brief leaves the step out. The coordinator makes the same call
-  whenever `get_status` shows it a wave PR still on, its own takeover or finisher PRs included.
-  The worker's backgrounded `pr-review.sh watch` is that PR's wake source either way.
+- **Nobody in a wave switches the monitor; the operator's app setting does.** The app setting
+  "Auto-fix pull requests" is the switch a newly bound PR starts with (ludics-lite#653 read
+  `auto_fix: true` with it on), and it is the operator's own word on every PR at once. Switching
+  a PR's monitor off from inside the wave cannot be made reliable. A session holds one bound PR.
+  The app rebinds it whenever the session runs `gh pr create` or pushes a branch that has a PR,
+  and `set_monitor` reaches only the bound one. A native worker's `"self"` is the coordinator's
+  session, so a worker's switch-off right after its own `gh pr create` raced its siblings' PRs
+  and pushes, and lost when one landed between the two calls (ludics#1068). No brief carries an
+  Auto-fix step, and no coordinator calls `set_monitor` on a wave PR.
+- **The coordinator reads the setting off the first wave PR.** After the wave's first `gh pr
+  create`, the coordinator calls `mcp__ccd_pr__get_status` (session `"self"`). Any wave PR it
+  shows will do, because every PR starts from the same setting, so the binding race does not
+  matter here. It records `auto_fix` on the board. On `true`, its next report to the operator says
+  once that the setting is on and that events cost coordinator turns. The first bullet stays the
+  rule either way. The worker's backgrounded `pr-review.sh watch` is each PR's wake source.
 
 Why it matters: in wave-20261015 about 40 such events each cost a coordinator turn, and since
 they covered only the ludics-lite PRs they also gave a false picture of review progress

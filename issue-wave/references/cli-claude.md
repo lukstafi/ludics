@@ -90,8 +90,8 @@ native Claude worker's in these places, and a brief adapted from one must change
   watch and the merge wait stay in the foreground too (below).
 - **The handoff is turn-ended**: an `EXECUTION_REQUEST`, a question or the hand-back is the
   turn's final message, and the worker ends its turn there; the coordinator reads it with `log
-  --last-result` and answers with `unstick`. There is no Agent, Read or `mcp__ccd_*` tool, no
-  Auto-fix step, and no channel to message the coordinator mid-turn.
+  --last-result` and answers with `unstick`. There is no Agent, Read or `mcp__ccd_*` tool, and
+  no channel to message the coordinator mid-turn.
 - **Scratch is the box's own**: a directory under the worker's worktree or the box's
   `$TMPDIR`, never a coordinator scratchpad path, which is on another machine or another
   session's.
