@@ -173,6 +173,19 @@ suite does. check-prompts (`checkprompts/suitemap.py`) pins the map's shape: eac
 exactly one line, and every suite, glob and section the line names exists. A new module needs its
 line. A new section, a new suite, or a verb a suite starts to drive needs the lines it reaches.
 
+A module word may name a PART of the module instead, `module.py:NAME`: a function, class or
+plain-name assignment at its top level (check-prompts reads the names from the source). A part's
+line is for a diff confined to the parts it names, their bodies and nothing else in the module:
+such a diff runs the line of each part it changes. Any other change to the module (its imports, an
+unnamed part, a statement between the parts) runs the module's own line, which every module keeps.
+A part's line is the map author's reading of the verbs that part serves, as a module's line is.
+`fleetworker/__main__.py:run_verb` is the verb table: a diff to one of its arms (a new verb, say)
+also runs the line of the module that arm calls, which names the verb's own section.
+`fleetworker/farside.py`'s own line is the whole of `test-fleet-worker.sh` on purpose: its
+`HELPERS` is every far side's prelude (`transport.prelude`), and `FRESHNESS`, `REFRESH` and
+`FLEET_PYTHON` reach the execution actions through `refresh_box` and the registry. A change to one
+verb's script is one of its named parts.
+
 A usage case matches the verb and its positional tail, not the option list between them (the rule
 `test-fleet-worker.sh`'s usage cases follow), so a PR that adds an option does not edit the cases
 of every suite that drives the verb.
@@ -199,9 +212,37 @@ checkprompts/verdicts.py
     lib/ludics/tests/test_checkprompts_cli.py
 
 fleetworker/__main__.py fleetworker/config.py fleetworker/identity.py fleetworker/transport.py
+    issue-wave/scripts/test-fleet-worker.sh
+    issue-wave/scripts/test-fleet-execution.py
+
+fleetworker/__main__.py:VERBS fleetworker/__main__.py:run_verb
+    issue-wave/scripts/test-fleet-worker.sh usage
+
 fleetworker/farside.py
     issue-wave/scripts/test-fleet-worker.sh
     issue-wave/scripts/test-fleet-execution.py
+    scripts/test-py.sh
+
+fleetworker/farside.py:GHPROBE fleetworker/farside.py:ghprobe fleetworker/farside.py:PREFLIGHT
+fleetworker/farside.py:LAUNCH_EXISTS fleetworker/farside.py:LAUNCH_FETCH fleetworker/farside.py:LAUNCH_WORKTREE
+fleetworker/farside.py:LAUNCH_DROP_BRIEF fleetworker/farside.py:LAUNCH_PREPARE fleetworker/farside.py:LAUNCH_START
+fleetworker/farside.py:LAUNCH fleetworker/farside.py:LAUNCH_NOT_STARTED fleetworker/farside.py:_REFUSE_EXIT
+fleetworker/farside.py:_proven_refusals fleetworker/farside.py:LAUNCH_STANDING_WORKTREE
+fleetworker/farside.py:LAUNCH_STANDING_START fleetworker/farside.py:VERDICT fleetworker/farside.py:ATTACH
+fleetworker/farside.py:CLOSE
+    issue-wave/scripts/test-fleet-worker.sh preflight "the real checkout" "base gate" "coordinator lease" halt "launch /" "failure verdicts" unstick "codex workers" usage
+
+fleetworker/farside.py:STATUS
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts" unstick "codex workers" usage
+
+fleetworker/farside.py:LOG fleetworker/farside.py:LOG_LAST_RESULT
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "codex workers" "log --last-result"
+
+fleetworker/farside.py:UNSTICK
+    issue-wave/scripts/test-fleet-worker.sh unstick "failure verdicts" "codex workers" usage
+
+fleetworker/farside.py:LS
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts"
 
 fleetworker/execution.py fleetworker/registry.py
     issue-wave/scripts/test-fleet-worker.sh execution "prs (" refresh "base gate"
