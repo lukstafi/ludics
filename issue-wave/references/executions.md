@@ -723,8 +723,8 @@ targeted batch and is never offered. Its `repository` is the one the PRs merge i
 must name as `--target-repo` to be handed it (SKILL.md's *Base gate*).
 
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
-`fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] --checkout <dir> [--id-prefix
-<prefix>] [--runs <dir>] [--cpu] -- <command...>`. Its request is the coordinator's non-standing
+`fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] [--base <branch>] --checkout <dir>
+[--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command...>`. Its request is the coordinator's non-standing
 `correctness` request whose `requested_revision` is exactly one full SHA, or names none under
 `--tip`, which writes the branch's head on GitHub into it; under `--id-prefix` it names no
 `request_id` either, and the run takes `<prefix>-<n>`, one past the highest `<n>` the registry holds
@@ -738,7 +738,9 @@ fails is a `TIP-RUN NOTE <box>:` on stderr and the run goes on. It yields, reser
 outstanding on the box but standing reservations (read again once its own is published); then it
 runs `execution run`, starts nothing on a remote box whose skills checkout the refresh did not
 bring current, checks the SHA out
-detached in the clean checkout on the box (fetching only when it lacks it), and starts the command
+detached in the clean checkout on the box (fetching only when it lacks it; before that it fetches
+the base, as the leg does below, into `origin/<branch>`: the branch `--base` names, else `--tip`'s,
+else `origin/HEAD`'s, and a failed fetch refuses the run, ludics#1067), and starts the command
 there under `execution slot --bg <runs> --wait 0` (default `<runs>`: `tip-runs` in the state
 directory, `~/.local/state/issue-wave` on the box unless `ISSUE_WAVE_STATE` names another), so it
 takes a GPU token, unless `--cpu`, only if one is free at once.

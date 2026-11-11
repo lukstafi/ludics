@@ -38,8 +38,9 @@ In order, each step yielding rather than waiting:
     hands back an identical request's existing record, concluded or not, and a second run would
     start under the first one's evidence.
  4. On the box (the far side below): the checkout must be clean before anything touches it, must
-    stand on a filesystem above THE FREE-SPACE FLOOR, and is fetched only when it lacks the commit,
-    checked out detached at it, and checked again (HEAD is the SHA, the tree clean). The command then starts in it under ``execution slot --bg
+    stand on a filesystem above THE FREE-SPACE FLOOR, and is fetched only when it lacks the commit;
+    its base branch's remote-tracking ref is fetched then (THE BASE), and the checkout is checked
+    out detached at the commit, and checked again (HEAD is the SHA, the tree clean). The command then starts in it under ``execution slot --bg
     <runs> --wait 0``: one GPU token unless ``--cpu``, taken only if one is free at once, never
     queued behind or among the workers' batches, and with no ``--wait-window``. An enclosing
     slot's or measurement's marker is dropped first: a loop run is never part of another batch.
@@ -105,6 +106,25 @@ floor refuses a disk it has read, never one it could not. Its boundary: one read
 of ``--checkout``, before the run. What the run then writes, and a filesystem the checkout is not on
 (``--runs``, ``$STATE``, a dune cache), is outside it.
 
+THE BASE (ludics#1067): ``execution leg``'s (leg.py, THE BASE; one helper, ``refresh_base``). The
+checkout is reused, and a commit it already holds fetches nothing, so its ``origin/*`` refs stood
+where its last ``git fetch`` left them, and a command reading ``origin/<base>`` (a project's reach
+tool) computed against an old base: the #1042 trap. So once the commit is in the checkout, and
+before the backend pin is read and the checkout moves, the far side fetches ONE branch into its
+remote-tracking ref (``+refs/heads/<branch>:refs/remotes/origin/<branch>``): the branch ``--base
+<branch>`` names (checked as the leg checks its own), else the ``--tip`` branch (a loop's tip is its
+base: SKILL.md's loops run ``--tip <base>``), else the one the checkout's ``refs/remotes/origin/HEAD``
+names. It is said on stderr, ``TIP-RUN BASE <box>: origin/<branch> at <sha> (<--base|--tip|origin/HEAD>),
+fetched from origin before the run; was <old sha|unset>``, and a started run's record ends its
+evidence with the same words. A fetch that fails (retried once, a second later) or does not finish
+in 300 s (the commit fetch's bound) refuses the run, so it ends as any far-side refusal does,
+``TIP-RUN NOT STARTED``, its record concluded ``not-launched``: no slot is taken and nothing runs. A
+checkout with no ``origin/HEAD`` and neither flag is a WARNING on that line, carried into the
+evidence, and the run goes on. The boundary is the leg's: that one remote-tracking ref is all it
+writes (no other ref is fetched, ``origin/HEAD`` is read and never set), and it establishes that
+``origin/<branch>`` was the remote's tip when the run started, not that the command diffs against
+it; a base that moves during the run is not followed.
+
 THE REQUEST ID (ludics-lite#714). With ``--id-prefix <prefix>`` the payload names no
 ``request_id`` (one source, as for ``--tip``'s revision): the run takes ``<prefix>-<n>``, ``<n>``
 one past the highest number the registry holds under ``<prefix>-`` (ignoring case, as the registry
@@ -156,8 +176,9 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker import revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.leg import FLOOR, PIN, min_free_gib
+from ludics.fleetworker.leg import BASE, FLOOR, PIN, min_free_gib
 from ludics.fleetworker.preflight import refresh_box
+from ludics.fleetworker.registry import ref_name_ok
 from ludics.fleetworker.transport import (
     BG_RUN_TAG,
     bg_run_path,
@@ -170,7 +191,7 @@ from ludics.fleetworker.transport import (
 )
 
 USAGE = (
-    "execution tip-run <json-file> [--tip <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command> [args...],"
+    "execution tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command> [args...],"
     " or tip-run --wait <id> [--within <s>] [--tip <branch>]"
 )
 SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -185,10 +206,10 @@ HANDLE = re.compile(r"bg-run:([^:]+):(/.*)", re.DOTALL)
 # stdin is given /dev/null, or it would eat the rest of this script. Args: checkout, sha, runs parent (empty: $STATE/tip-runs), the
 # fleet-worker.sh to run there (empty: the box's skills checkout's), cpu|gpu, the settle bound, the
 # backend a GPU-loop purpose names (empty: none, nothing checked), the free-space floor in GiB
-# (FLEET_LEG_MIN_FREE_GIB, 0 for none), then the command. Prints `dir=`
-# and `slot=held|ended|unsettled` (and `said=` for ended), or one TIP-RUN REFUSED line, exit 1, when
-# nothing was started.
-FAR = PIN + FLOOR + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7" min_free="$8"; shift 8
+# (FLEET_LEG_MIN_FREE_GIB, 0 for none), the base branch (empty: origin/HEAD's) and the flag it came
+# from, then the command. Prints `base=` (THE BASE's words), `dir=` and `slot=held|ended|unsettled`
+# (and `said=` for ended), or one TIP-RUN REFUSED line, exit 1, when nothing was started.
+FAR = PIN + FLOOR + BASE + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7" min_free="$8" base="$9" base_how="${10}"; shift 10
 refuse() { printf '%s\n' "TIP-RUN REFUSED: $*"; exit 1; }
 [ -n "$runs" ] || runs="$(expand_tilde "$STATE")/tip-runs"
 [ -n "$fw" ] || fw="$(expand_tilde "$SKILLS_REPO")/issue-wave/scripts/fleet-worker.sh"
@@ -210,6 +231,18 @@ if ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
   [ "$frc" -eq 0 ] || refuse "git fetch origin in $co on $BOX failed (exit $frc)"
   git cat-file -e "$sha^{commit}" 2>/dev/null || refuse "$co on $BOX does not have $sha even after fetching origin"
 fi
+# THE BASE (see the header): the base branch's remote-tracking ref, fetched, so a command in the
+# checkout reads origin/<branch> as origin has it now.
+binfo=$(refresh_base "$co" origin "$base" 300 "$base_how"); brc=$?
+read -r bname bhow bold bsha <<<"$binfo"
+case $brc in
+  0) said_base="origin/$bname at $bsha ($bhow), fetched from origin before the run; was $bold" ;;
+  3) said_base="WARNING: no base fetched: $co has no origin/HEAD and the run names neither --base nor --tip, so a command reading a branch of origin reads it as $co last fetched it; name the project's base with --base <branch>" ;;
+  124) refuse "git fetch origin $bname (the base, $bhow) in $co on $BOX did not finish in 300s; a command reading origin/$bname would read it stale (ludics#1067), so nothing ran" ;;
+  *) refuse "git fetch origin $bname (the base, $bhow) in $co on $BOX failed (above), retried once: no such branch on origin, or origin is unreachable from $BOX; a command reading origin/$bname would read it stale (ludics#1067), so nothing ran" ;;
+esac
+printf '%s\n' "TIP-RUN BASE $BOX: $said_base" >&2
+printf 'base=%s\n' "$said_base"
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the checkout moves.
 pins=$(fleet_leg_read "$co" "$sha"); prc=$?
 [ "$prc" -ne 1 ] || refuse "$pins"
@@ -260,6 +293,7 @@ class TipRunArgs:
     command: list[str]
     tip: str = ""
     id_prefix: str = ""
+    base: str = ""
 
 
 @dataclass(frozen=True)
@@ -291,14 +325,17 @@ def parse_wait(args: list[str]) -> WaitArgs:
 
 
 def parse(args: list[str]) -> TipRunArgs:
-    payload, checkout, runs, cpu, tip, id_prefix = "", "", "", False, "", ""
+    payload, checkout, runs, cpu, tip, id_prefix, base = "", "", "", False, "", "", ""
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg == "--tip":
+        if arg in ("--tip", "--base"):
             if i + 1 >= len(args) or not args[i + 1] or args[i + 1].startswith("-"):
-                die("execution tip-run: expected a branch for --tip")
-            tip = args[i + 1]
+                die(f"execution tip-run: expected a branch for {arg}")
+            if arg == "--tip":
+                tip = args[i + 1]
+            else:
+                base = args[i + 1]
             i += 2
             continue
         if arg == "--id-prefix":
@@ -326,7 +363,11 @@ def parse(args: list[str]) -> TipRunArgs:
                 die("execution tip-run: a command to run is required, after --")
             if not payload or not checkout:
                 die(USAGE)
-            return TipRunArgs(payload, checkout, runs, cpu, command, tip, id_prefix)
+            # THE BASE (see the header): a branch of origin, by git's rules and the registry's alphabet.
+            named = base or tip
+            if named and not (ref_name_ok(named) and revision.git_branch_ok(named)):
+                die(f"execution tip-run: {'--base' if base else '--tip'} names the base, so it must be a branch name of origin, not {named!r}")
+            return TipRunArgs(payload, checkout, runs, cpu, command, tip, id_prefix, base)
         elif not payload and not arg.startswith("-"):
             payload = arg
         else:
@@ -402,7 +443,7 @@ def far_facts(text: str) -> dict[str, str]:
     facts: dict[str, str] = {}
     for line in text.split("\n"):
         key, sep, value = line.partition("=")
-        if sep and key in ("dir", "slot", "said") and key not in facts:
+        if sep and key in ("base", "dir", "slot", "said") and key not in facts:
             facts[key] = value
     return facts
 
@@ -515,7 +556,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     fw = os.path.join(cfg.here, os.path.basename(cfg.script)) if is_local(cfg, box) else ""
     kind = "cpu" if parsed.cpu else "gpu"
     backend = loop_backend(fields)
-    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, min_free, *parsed.command]
+    base, base_how = (parsed.base, "--base") if parsed.base else (parsed.tip, "--tip") if parsed.tip else ("", "")
+    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, min_free, base, base_how, *parsed.command]
     done = run_on(cfg, box, prelude(cfg, box) + FAR, far, capture=True)
     text = done.out.rstrip("\n")
     if done.unreachable:
@@ -543,7 +585,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
         return 4
     running = {"request_id": request_id, "state": "running",
                "evidence": f"tip-run: {shlex.join(parsed.command)} under execution slot --bg on {box}, at {sha} in a clean checkout"
-                           + (f" (the tip of {parsed.tip} on GitHub when the run started)" if parsed.tip else ""),
+                           + (f" (the tip of {parsed.tip} on GitHub when the run started)" if parsed.tip else "")
+                           + (f"; base {facts['base']}" if facts.get("base") else ""),
                "observed_sha": sha, "remote_checkout": parsed.checkout,
                "handle": f"bg-run:{box}:{run_dir}", "log": f"{box}:{run_dir}/log"}
     if backend:

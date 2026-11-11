@@ -5,13 +5,17 @@ import contextlib
 import io
 import json
 import os
+import shlex
+import shutil
+import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import leg, tiprun
+from ludics.fleetworker import farside, leg, tiprun
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.tiprun import (concluded_line, far_facts, loop_backend, next_id, parse, parse_wait, request_problem,
                                        started_run, yielding_to)
@@ -56,7 +60,7 @@ class Parse(unittest.TestCase):
         self.assertIn("a command to run is required", self.refused(["/p.json", "--checkout", "/co", "--"]))
         for args in (["/p.json", "--", "true"], ["--checkout", "/co", "--", "true"], ["/p.json", "--checkout", "/co", "true"],
                      ["/p.json", "--checkout", "/co", "--oops", "--", "true"], ["/p.json", "/q.json", "--checkout", "/co", "--", "true"]):
-            self.assertIn("execution tip-run <json-file> [--tip <branch>] --checkout <dir>", self.refused(args), args)
+            self.assertIn("execution tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir>", self.refused(args), args)
 
 
 class ParseTipAndWait(unittest.TestCase):
@@ -72,6 +76,18 @@ class ParseTipAndWait(unittest.TestCase):
         self.assertEqual(parse(["/p.json", "--checkout", "/co", "--", "true"]).tip, "")
         for args in (["/p.json", "--tip", "--checkout", "/co", "--", "true"], ["/p.json", "--checkout", "/co", "--tip"]):
             self.assertIn("expected a branch for --tip", self.refused(parse, args), args)
+
+    def test_base_names_the_branch_and_the_base_is_a_branch_name(self) -> None:
+        got = parse(["/p.json", "--base", "dev", "--tip", "main", "--checkout", "/co", "--", "true"])
+        self.assertEqual((got.base, got.tip), ("dev", "main"))
+        self.assertEqual(parse(["/p.json", "--checkout", "/co", "--", "true"]).base, "")
+        self.assertIn("expected a branch for --base", self.refused(parse, ["/p.json", "--base", "--checkout", "/co", "--", "true"]))
+        # THE BASE: --tip names the base too when --base does not, so either must be a branch name.
+        for flag in ("--base", "--tip"):
+            for bad in ("a..b", "HEAD", "a b"):
+                with self.subTest(flag=flag, bad=bad):
+                    self.assertIn(f"{flag} names the base, so it must be a branch name of origin",
+                                  self.refused(parse, ["/p.json", flag, bad, "--checkout", "/co", "--", "true"]))
 
     def test_id_prefix_names_the_ids_leading_part(self) -> None:
         self.assertEqual(parse(["/p.json", "--id-prefix", "w-gpu-rog", "--checkout", "/co", "--", "true"]).id_prefix, "w-gpu-rog")
@@ -187,8 +203,9 @@ class Yield(unittest.TestCase):
 
 class FarFacts(unittest.TestCase):
     def test_the_first_of_each_known_key(self) -> None:
-        text = "dir=/r/run-1\nslot=ended\nsaid=EXECUTION SLOT REFUSED x: a=b\nslot=held\nother=1\nnoise"
-        self.assertEqual(far_facts(text), {"dir": "/r/run-1", "slot": "ended", "said": "EXECUTION SLOT REFUSED x: a=b"})
+        text = "base=origin/main at x (--tip)\ndir=/r/run-1\nslot=ended\nsaid=EXECUTION SLOT REFUSED x: a=b\nslot=held\nother=1\nnoise"
+        self.assertEqual(far_facts(text), {"base": "origin/main at x (--tip)", "dir": "/r/run-1", "slot": "ended",
+                                           "said": "EXECUTION SLOT REFUSED x: a=b"})
 
 
 class Race(unittest.TestCase):
@@ -355,7 +372,8 @@ class Allocate(unittest.TestCase):
 class Starting(unittest.TestCase):
     """A run started with a far side's canned answer; the reservation and the record are mocks."""
 
-    def start(self, req: dict[str, Any], far: str, env: dict[str, str] | None = None) -> tuple[int, list[tuple[list[str], dict[str, Any] | None]], list[str]]:
+    def start(self, req: dict[str, Any], far: str, env: dict[str, str] | None = None,
+              flags: list[str] | None = None) -> tuple[int, list[tuple[list[str], dict[str, Any] | None]], list[str]]:
         cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", env or {}, host="h")
         calls: list[tuple[list[str], dict[str, Any] | None]] = []
         far_args: list[str] = []
@@ -379,8 +397,9 @@ class Starting(unittest.TestCase):
                     mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
                     mock.patch.object(tiprun, "refresh_box", return_value=0), \
                     mock.patch.object(tiprun, "run_on", side_effect=on_box), \
+                    mock.patch.object(tiprun.revision, "branch_head", return_value=SHA), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                rc = tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "env", "OCANNL_BACKEND=hip", "true"])
+                rc = tiprun.cmd_tip_run(cfg, [payload, *(flags or []), "--checkout", "/co", "--", "env", "OCANNL_BACKEND=hip", "true"])
         return rc, calls, far_args
 
 
@@ -427,7 +446,7 @@ class Floor(Starting):
             with self.subTest(env=env):
                 rc, _, far = self.start(request(), "dir=/s/run-1\nslot=held\n", env)
                 self.assertEqual(rc, 0)
-                self.assertEqual(far[7:], [floor, "env", "OCANNL_BACKEND=hip", "true"], "the floor, then the command")
+                self.assertEqual(far[7:], [floor, "", "", "env", "OCANNL_BACKEND=hip", "true"], "the floor, the base, then the command")
 
     def test_the_far_side_carries_the_one_floor_program(self) -> None:
         self.assertIn(leg.FLOOR, tiprun.FAR)
@@ -452,6 +471,123 @@ class Floor(Starting):
                 tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "true"])
         self.assertEqual(raised.exception.rc, 2)
         self.assertIn("FLEET_LEG_MIN_FREE_GIB must be a whole number", str(raised.exception))
+
+
+class BaseNamed(Starting):
+    """THE BASE, near side: which branch the far side fetches and why, the started record's evidence
+    naming the base it saw, and a far-side base refusal concluded as any other. The far side's own
+    fetch is ``FarBase``'s."""
+
+    def test_the_base_is_base_s_branch_else_tip_s_else_none(self) -> None:
+        tip = {k: v for k, v in request().items() if k != "requested_revision"}
+        for req, flags, named in ((request(), [], ["", ""]), (tip, ["--tip", "main"], ["main", "--tip"]),
+                                  (tip, ["--tip", "main", "--base", "dev"], ["dev", "--base"]),
+                                  (request(), ["--base", "dev"], ["dev", "--base"])):
+            with self.subTest(flags=flags):
+                rc, _, far = self.start(req, "dir=/s/run-1\nslot=held\n", flags=flags)
+                self.assertEqual(rc, 0)
+                self.assertEqual(far[8:10], named)
+
+    def test_a_started_run_s_evidence_names_the_base_it_saw(self) -> None:
+        said = f"origin/main at {SHA} (--tip), fetched from origin before the run; was unset"
+        rc, calls, _ = self.start(request(), f"base={said}\ndir=/s/run-1\nslot=held\n")
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls[-1][0], ["execution", "record"])
+        self.assertTrue(str((calls[-1][1] or {}).get("evidence")).endswith(f"; base {said}"), calls[-1][1])
+
+    def test_a_base_fetch_refused_on_the_box_is_concluded_not_launched_and_nothing_recorded_running(self) -> None:
+        why = "git fetch origin main (the base, --tip) in /co on rog-nv-linux failed (above), retried once: ..."
+        rc, calls, _ = self.start(request(), f"TIP-RUN REFUSED: {why}\n")
+        self.assertEqual(rc, 1)
+        self.assertEqual([c[0] for c in calls], [["execution", "run"], ["execution", "conclude"]])
+        self.assertEqual((calls[-1][1] or {}).get("verdict"), "not-launched")
+        self.assertEqual((calls[-1][1] or {}).get("evidence"), f"tip-run: {why}")
+
+
+class FarBase(unittest.TestCase):
+    """THE BASE (ludics#1067), the far side itself, under bash, in a checkout that holds the commit
+    under test and whose ``origin/main`` lags the remote by a commit (the trap: a commit already there
+    fetched nothing before). A stand-in fleet-worker.sh plays the slot and notes what ``origin/main``
+    read when the command would start. The helper's own cases are ``test_fleetworker_leg``'s."""
+
+    bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"  # 3.2 on macOS
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        src, remote, self.co = self.tmp / "src", self.tmp / "remote.git", self.tmp / "co"
+        self.git("init", "-q", "-b", "main", str(src))
+        for args in (["config", "user.email", "t@example.com"], ["config", "user.name", "t"],
+                     ["commit", "-q", "--allow-empty", "-m", "A"]):
+            self.git("-C", str(src), *args)
+        self.git("init", "-q", "--bare", "-b", "main", str(remote))
+        self.git("-C", str(src), "push", "-q", str(remote), "main")
+        self.git("clone", "-q", str(remote), str(self.co))
+        self.sha = self.stale = self.git("-C", str(self.co), "rev-parse", "origin/main")
+        self.git("-C", str(src), "commit", "-q", "--allow-empty", "-m", "B")
+        self.git("-C", str(src), "push", "-q", str(remote), "main")
+        self.tip = self.git("-C", str(src), "rev-parse", "HEAD")
+        self.seen = self.tmp / "seen"
+        self.fw = self.tmp / "fleet-worker.sh"
+        # `execution slot --bg <runs> --wait 0 [--cpu] -- <command...>`, run in the checkout.
+        self.fw.write_text("#!/bin/sh\n"
+                           f"git rev-parse origin/main > {shlex.quote(str(self.seen))}\n"
+                           'd="$4/run-1"; mkdir -p "$d"\n'
+                           "printf 'EXECUTION SLOT box: slot 1 of 1 held for: x\\n' > \"$d/log\"\n"
+                           'printf \'%s\\n\' "$d"\n', encoding="utf-8")
+        self.fw.chmod(0o755)
+
+    def far(self, base: str = "", how: str = "") -> subprocess.CompletedProcess[str]:
+        script = (f"STATE={shlex.quote(str(self.tmp / 'state'))}\nBOX=box\n" + farside.HELPERS
+                  + 'fleet_worker() { "$@"; }\n' + tiprun.FAR)
+        args = [str(self.co), self.sha, str(self.tmp / "runs"), str(self.fw), "cpu", "5", "", "0", base, how, "true"]
+        return subprocess.run([self.bash, "-c", script, "x", *args], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+
+    def test_a_stale_base_is_fetched_before_the_run_starts(self) -> None:
+        self.assertNotEqual(self.stale, self.tip)
+        done = self.far("main", "--tip")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.seen.read_text(encoding="utf-8").strip(), self.tip, "the command reads the remote's base")
+        said = f"origin/main at {self.tip} (--tip), fetched from origin before the run; was {self.stale}"
+        self.assertEqual(far_facts(done.stdout).get("base"), said)
+        self.assertIn(f"TIP-RUN BASE box: {said}", done.stderr)
+        self.assertEqual(far_facts(done.stdout).get("slot"), "held")
+        self.assertEqual(self.git("-C", str(self.co), "rev-parse", "HEAD"), self.sha)
+
+    def test_with_no_base_named_origin_head_s_branch_is_fetched(self) -> None:
+        done = self.far()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(far_facts(done.stdout).get("base"),
+                         f"origin/main at {self.tip} (origin/HEAD), fetched from origin before the run; was {self.stale}")
+        self.assertEqual(self.seen.read_text(encoding="utf-8").strip(), self.tip)
+
+    def test_no_origin_head_and_no_base_named_warns_and_runs(self) -> None:
+        self.git("-C", str(self.co), "remote", "set-head", "origin", "--delete")
+        done = self.far()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertTrue(far_facts(done.stdout).get("base", "").startswith("WARNING: no base fetched: "), done.stdout)
+        self.assertEqual(self.seen.read_text(encoding="utf-8").strip(), self.stale)
+
+    def test_a_failed_base_fetch_refuses_before_anything_runs(self) -> None:
+        self.git("-C", str(self.co), "checkout", "-q", "-b", "other")  # HEAD stays a branch: no checkout moved it
+        for base in ("no-such-1067", "main"):
+            with self.subTest(base=base):
+                if base == "main":
+                    self.git("-C", str(self.co), "remote", "set-url", "origin", str(self.tmp / "gone.git"))
+                done = self.far(base, "--base")
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                refused = [line for line in done.stdout.split("\n") if line.startswith("TIP-RUN REFUSED: ")]
+                self.assertEqual(len(refused), 1, done.stdout)
+                self.assertIn(f"git fetch origin {base} (the base, --base) in {self.co} on box failed", refused[0])
+                self.assertNotIn("dir=", done.stdout)
+                self.assertFalse(self.seen.exists(), "the slot was never asked")
+                self.assertFalse((self.tmp / "runs").exists())
+                self.assertEqual(self.git("-C", str(self.co), "symbolic-ref", "HEAD"), "refs/heads/other")
+                self.assertEqual(self.git("-C", str(self.co), "rev-parse", "origin/main"), self.stale)
 
 
 class Wait(unittest.TestCase):

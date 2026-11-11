@@ -1092,7 +1092,7 @@ USAGE = (
     " integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas], leg --request <id> ... -- <runner>,"
     " run|reserve|dispatch|record|reconcile|rebind|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
-    " tip-run <json-file> [--tip <branch>] --checkout <dir> -- <command>, tip-run --wait <id>,"
+    " tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> -- <command>, tip-run --wait <id>,"
     " or assign <base.json> <requests file|-> [--request <id>]... [--message <file>] [--unstick <box> <name>]"
 )
 CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"

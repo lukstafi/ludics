@@ -3291,7 +3291,7 @@ expect "a measurement is refused" 2 "kind must be correctness" -- \
 expect "a worker's request is refused" 2 "transport must be coordinator" -- \
   "${FWT[@]}" execution tip-run "$(tipreq tip-h "$tip" '{"transport":"subagent"}')" --checkout "$tco" -- echo never
 expect "a relative checkout is refused" 2 "--checkout must be absolute" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" --checkout co -- echo never
-expect "the checkout is required" 2 "execution tip-run <json-file> \[--tip <branch>\] --checkout <dir>" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" -- echo never
+expect "the checkout is required" 2 "execution tip-run <json-file> \[--tip <branch>\] \[--base <branch>\] --checkout <dir>" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" -- echo never
 expect "the command is required" 2 "a command to run is required" -- "${FWT[@]}" execution tip-run "$(tipreq tip-h)" --checkout "$tco" --
 [ -z "$(state_of tip-h)" ] && ok "...each before anything is reserved" || ko "tip-h was reserved: $(state_of tip-h)"
 jq -n '{request_id:"tip-stand", evidence:"fixture: iteration over", verdict:"not-launched", log:"/dev/null"}' > "$TMP/tip-stand-done.json"
