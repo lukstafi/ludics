@@ -61,10 +61,12 @@ _STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z ")
 
 @dataclass(frozen=True)
 class RedJob:
-    """A red check the report names, as the fold read it."""
+    """A red check the report names, as the fold read it, with its check suite ("-" none), which
+    ``merge --wait --rerun-failed-once`` maps to the workflow run that made it (#1065)."""
 
     name: str
     url: str
+    suite: str = "-"
 
 
 def job_of_url(repo: str, url: str) -> tuple[str, str] | None:

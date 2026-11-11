@@ -131,6 +131,8 @@ class RunSignal:
     # On a 3: the read that failed, as "<verb> <the thing read>"; "" the head's workflow runs.
     unread_what: str = ""
     holds: str = ""
+    # On a 1: the ids of the red runs counted, in the run list's order (``Gate.red_runs``).
+    red_ids: list[str] = field(default_factory=lambda: list[str]())
 
 
 # `gate_checks` (with build_checks, summarize_checks, run_signal, apply_waiver), ported once: `checks`,
@@ -197,6 +199,12 @@ class Gate:
     red_jobs: list[RedJob] = field(default_factory=lambda: list[RedJob]())
     orphans: list[Orphan] = field(default_factory=lambda: list[Orphan]())
     recover: Recover | None = None
+    # ``merge --wait --rerun-failed-once`` (#1065): a red round whose fold has no check left running
+    # (a red ``settling`` no longer holds) is handed to ``recover`` too, with no orphan scan, so the
+    # recovery may rerun its failed jobs once. ``red_runs``: the round's red runs no check shows
+    # (``run_signal``'s on a ``runred``, ``checkless_reds``' beside a red fold), by id.
+    recover_red: bool = False
+    red_runs: list[str] = field(default_factory=lambda: list[str]())
     # The last ``check``'s wait deadline on ``clock``, as the wait left it: its start plus the wait,
     # moved later by a recovery's Wait (ludics-lite#764: ``merge``'s build waits behind a
     # measurement window within what is left of it). None before a check.
@@ -396,14 +404,14 @@ class Gate:
         running: list[str] = []
         reds: list[RedJob] = []
         for row in rows:
-            cls, name, concl, url, _suite, status = tab_fields(row, 6)
+            cls, name, concl, url, suite, status = tab_fields(row, 6)
             if not cls:
                 continue
             match cls:
                 case "red":
                     red += 1
                     lines.append(f"  RED      {name} ({concl})  {url}\n")
-                    reds.append(RedJob(name, url))
+                    reds.append(RedJob(name, url, suite or "-"))
                 case "waived" if concl == "cancelled":
                     waived += 1
                     cancelled += 1
@@ -724,6 +732,7 @@ class Gate:
         # wait reads again (``_unread``), the first failure's line its reason, and the most final
         # kind among them how it failed (a refusal, or a budget stop, outranks a transport failure).
         unread_jobs = 0
+        red_ids: list[str] = []
         unread_what = unread_line = ""
         unread_kind: Unread = "unanswered"
         for row in red_rows:
@@ -748,6 +757,7 @@ class Gate:
                     unread_kind = self.read_failure
                 continue
             red += 1
+            red_ids.append(rid)
             red_note = red_note or f"{rname} ({rconcl})"
         if red > 0:
             return RunSignal(
@@ -757,6 +767,7 @@ class Gate:
                 f"{red} workflow run(s) for this head concluded red with no build check"
                 f" to show for it — {red_note}; a run that fails before its jobs start leaves nothing in the"
                 " check list",
+                red_ids=red_ids,
             )
         if unread_jobs > 0:
             return RunSignal(
@@ -938,11 +949,45 @@ class Gate:
                 )
                 continue
             red += 1
+            self.red_runs.append(rid)
             self.check_lines += (
                 f"  RED      {label} — no build check behind it: a run that fails before its jobs start"
                 " leaves nothing in the check list\n"
             )
         return red
+
+    def failed_runs(self) -> tuple[list[tuple[str, str]], str]:
+        """``merge --wait --rerun-failed-once``'s targets (#1065), for a red round: the workflow run
+        of each red check of the fold, by its check suite in the round's run read, then the red runs
+        no check shows (``red_runs``), each once, as "(run id, run name)". Every red must map to a
+        run, or a rerun cannot clear the verdict: then no target, and the reason. Advisory checks
+        and runs are no red here (the fold and ``run_signal`` left them out), so none is a target."""
+        if self._round_raw is None:
+            return [], "the head's workflow runs could not be read, so no red check maps to a run"
+        by_suite: dict[str, tuple[str, str]] = {}
+        names: dict[str, str] = {}
+        for line in herestring_lines(self._round_raw):
+            _created, rid, _wid, _event, name, _status, _concl, suite = tab_fields(line, 8)
+            if not rid:
+                continue
+            names.setdefault(rid, name)
+            if suite and suite != "-":
+                by_suite.setdefault(suite, (rid, name))
+        out: list[tuple[str, str]] = []
+        for job in self.red_jobs:
+            hit = by_suite.get(job.suite)
+            if hit is None:
+                return [], (
+                    f"red check {shlex.quote(job.name)} is of no workflow run of this head (another app's"
+                    " check, or a suite the run list does not show), so no rerun can clear it"
+                )
+            if hit not in out:
+                out.append(hit)
+        for rid in self.red_runs:
+            hit = (rid, names.get(rid, "-"))
+            if hit not in out:
+                out.append(hit)
+        return out, ""
 
     # --- the gate -------------------------------------------------------------------------------------
 
@@ -1153,6 +1198,7 @@ class Gate:
             self.summarize(rows)
             self.run_waived = 0
             self.checkless_red = 0
+            self.red_runs = []
             self.gate_base = base_sha
             nomatch = ""
             run_holds = ""
@@ -1221,6 +1267,7 @@ class Gate:
                     case 1:
                         self.verdict = "runred"
                         self.check_red = sig.red
+                        self.red_runs = list(sig.red_ids)
                     case 3:
                         if not self._runs_unread(
                             sig,
@@ -1292,8 +1339,10 @@ class Gate:
             # hold ``--settle`` to its bound for nothing (``checks`` has no ``recover``).
             keep = False
             self.orphans = []
-            if self.orphans_on and (self.verdict in ("pending", "unjudged", "mixed") or self.settling()):
-                self.orphans = self.find_orphans(sha)
+            red_settled = self.recover_red and self.verdict in ("red", "runred") and self.check_pending == 0
+            if self.orphans_on and (self.verdict in ("pending", "unjudged", "mixed") or self.settling() or red_settled):
+                if not red_settled:
+                    self.orphans = self.find_orphans(sha)
                 for orphan in self.orphans:
                     self.check_lines += report_line(orphan, repo, shlex.quote)
                 if self.recover is not None:

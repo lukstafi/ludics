@@ -121,6 +121,8 @@ MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 
 # cancelled by its job's own timeout-minutes cap: steps ran on a named runner, no red, no NO RUNNER.
 # `advisory-capped` (ludics#958) is run 100 completed cancelled with its `build` job passed and only
 # its advisory `claude` job (the default list's) cancelled at its cap, before a rerun and after it.
+# `red` (#1065) is run 100 completed failure, its `build` job failed, before a rerun and after it;
+# `advisory-red` is run 100 completed failure with `build` passed and only `claude` failed.
 RUNNER_CASE=""
 RUNNER_RECOVERS=""
 RUNNER_EVENT=pull_request              # run 100's event; workflow_dispatch = an evidence dispatch (#1036)
@@ -143,6 +145,8 @@ check_runs_answer() { # <n>
     recovered) rows=$(printf 'green\tbuild\tsuccess\thttps://example/build\t1') ;;
     norunner | capped) rows=$(printf 'nogo\tbuild\tcancelled\thttps://example/build\t1') ;;
     advisory-capped) rows=$(printf 'green\tbuild\tsuccess\thttps://example/build\t1\nnogo\tclaude\tcancelled\thttps://example/claude\t1') ;;
+    red) rows=$(printf 'red\tbuild\tfailure\thttps://example/build\t1') ;;
+    advisory-red) rows=$(printf 'green\tbuild\tsuccess\thttps://example/build\t1\nred\tclaude\tfailure\thttps://example/claude\t1') ;;
     *) rows=$(printf 'pending\tbuild\tpending\thttps://example/build\t1') ;;
     esac
   elif [ -n "$CHECK_ROWS_LATER" ] && [ "$1" -ge 2 ]; then
@@ -168,7 +172,8 @@ check_runs_answer() { # <n>
 runner_state() {
   if [ -e "$TEST_ROOT/runner-rerun" ] && [ -n "$RUNNER_RECOVERS" ]; then
     echo recovered
-  elif [ "$RUNNER_CASE" = capped ] || [ "$RUNNER_CASE" = advisory-capped ]; then
+  elif [ "$RUNNER_CASE" = capped ] || [ "$RUNNER_CASE" = advisory-capped ] || [ "$RUNNER_CASE" = red ] \
+    || [ "$RUNNER_CASE" = advisory-red ]; then
     echo "$RUNNER_CASE"
   elif [ "$RUNNER_CASE" = no-runner ] || { [ -e "$TEST_ROOT/runner-cancel" ] && [ ! -e "$TEST_ROOT/runner-rerun" ]; }; then
     echo norunner
@@ -210,6 +215,15 @@ runner_jobs() { # <run id>
        completed_at:"2026-09-01T00:40:00Z",steps:[{name:"Set up job"},{name:"Run tests"}],
        runner_name:"GitHub Actions 4",labels:["macos-14"],run_attempt:$a}]}'
     ;;
+  red | advisory-red)
+    jq -cn --argjson a "$(runner_attempt)" --arg b "$([ "$RUNNER_CASE" = red ] && echo failure || echo success)" '{jobs:[
+      {id:501,name:"build",status:"completed",conclusion:$b,created_at:"2026-09-01T00:00:00Z",
+       completed_at:"2026-09-01T00:05:00Z",steps:[{name:"Set up job"}],runner_name:"GitHub Actions 3",
+       labels:["ubuntu-latest"],run_attempt:$a},
+      {id:502,name:"claude",status:"completed",conclusion:"failure",created_at:"2026-09-01T00:00:00Z",
+       completed_at:"2026-09-01T00:06:00Z",steps:[{name:"Set up job"}],runner_name:"GitHub Actions 4",
+       labels:["ubuntu-latest"],run_attempt:$a}]}'
+    ;;
   *)
     jq -cn --argjson a "$(runner_attempt)" '{jobs:[{id:501,name:"build",status:"queued",conclusion:null,
       created_at:"2026-09-01T00:00:00Z",steps:[],runner_name:null,labels:["macos-14"],run_attempt:$a}]}'
@@ -225,6 +239,7 @@ runs_answer() {
     case "$(runner_state)" in
     recovered) runner_run completed success ;;
     norunner | capped | advisory-capped) runner_run completed cancelled ;;
+    red | advisory-red) runner_run completed failure ;;
     *) runner_run in_progress null ;;
     esac
   elif [ -n "$MOVED_RUN_RC" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
@@ -592,6 +607,7 @@ gh() {
     case "$(runner_state)" in
     recovered) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"completed",conclusion:"success",run_attempt:$a}')" ;;
     norunner | capped | advisory-capped) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"completed",conclusion:"cancelled",run_attempt:$a}')" ;;
+    red | advisory-red) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"completed",conclusion:"failure",run_attempt:$a}')" ;;
     *) gh_fixture_answer "$(jq -cn --argjson a "$(runner_attempt)" '{status:"in_progress",conclusion:null,run_attempt:$a}')" ;;
     esac
     ;;
@@ -2724,6 +2740,44 @@ test_a_run_cancelled_only_in_advisory_jobs_merges_unrerun() {
   assert_not_contains "$MERGE_CALLS" "CALL run " "and it writes nothing"
 }
 
+# #1065: a flaky red job used to sit until someone hand-rolled a `gh run view` poll for the run to
+# finish and reran it. `merge --wait --rerun-failed-once` settles the red, reruns its failed jobs
+# once and merges a green rerun; a second red is the ordinary 1, naming both attempts. Without the
+# flag a red refuses as before, and a red the advisory list explains is no red to rerun.
+test_a_settled_red_is_rerun_once_with_rerun_failed_once() {
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=red
+  RUNNER_RECOVERS=1
+  run_merge --wait=600 --rerun-failed-once
+  assert_eq "$MERGE_RC" 0 "the rerun's green merges ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c '^CALL run rerun 100 --failed --repo example/repo$' <<<"$MERGE_CALLS")" 1 "after one rerun"
+  assert_contains "$MERGE_OUTPUT" "RERUN: $REPO#7: run 100 (ci) concluded failure at attempt 1" "the rerun is recorded"
+  assert_contains "$MERGE_CALLS" "--match-head-commit head-sha " "bound to the gated head"
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=red
+  run_merge --wait=600 --rerun-failed-once
+  assert_eq "$MERGE_RC" 1 "a second red is the ordinary red ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c '^CALL run rerun 100 --failed --repo example/repo$' <<<"$MERGE_CALLS")" 1 "one rerun, never two"
+  assert_contains "$MERGE_OUTPUT" "run 100 (ci) concluded failure at attempt 1, and failure at attempt 2, its one rerun" \
+    "the refusal names both attempts"
+  assert_no_merge_call
+  reset
+  RUNNER_CASE=red
+  RUNNER_RECOVERS=1
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 1 "without the flag a red refuses as before ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "and nothing is rerun"
+  assert_no_merge_call
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=advisory-red
+  run_merge --wait=600 --rerun-failed-once
+  assert_eq "$MERGE_RC" 0 "a red only an advisory job explains is no red ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "and is not rerun"
+}
+
 # A gate that could not read the checks is UNKNOWN, and no flag merges past it.
 test_an_unread_build_signal_never_merges() {
   reset
@@ -3713,6 +3767,7 @@ tests=(
   test_a_cancelled_head_run_is_rerun_once
   test_a_cancelled_dispatch_run_is_not_rerun_and_override_waives_it
   test_a_run_cancelled_only_in_advisory_jobs_merges_unrerun
+  test_a_settled_red_is_rerun_once_with_rerun_failed_once
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
   test_a_pr_merged_elsewhere_at_an_unjudged_head_is_not_this_merge

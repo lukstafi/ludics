@@ -200,6 +200,17 @@ class Production(unittest.TestCase):
                 done = self.run_cmd(entry, "merge", "7")
                 self.assertEqual(done.returncode, 2, "a bare number with no repo is refused")
                 self.assertEqual(self.calls(), [], "and nothing is read")
+                # --rerun-failed-once (#1065): waited for, and never beside an override or an unread merge.
+                for extra, says in (
+                    ([], "needs a --wait of more than 0 seconds"),
+                    (["--wait=0"], "needs a --wait of more than 0 seconds"),
+                    (["--wait", "--override", "the red is the base's own"], "cannot be combined with --override"),
+                    (["--wait", "--allow-no-verdict"], "cannot be combined with --allow-no-verdict"),
+                ):
+                    done = self.run_cmd(entry, "merge", "o/r#7", "--rerun-failed-once", *extra)
+                    self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                    self.assertIn(says, done.stderr)
+                    self.assertEqual(self.calls(), [], "and nothing is read")
 
     def test_a_checkout_is_checked_before_anything_is_read(self) -> None:
         """``merge -C <dir>`` (ludics-lite#730): the merge build's clone, read first -- a directory

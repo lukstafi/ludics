@@ -1027,6 +1027,15 @@ it holds nothing and is not rerun (#958). A run started by `workflow_dispatch` i
 naming the ways past it: re-push the head, or merge again with `--override` (*The override*). A
 brief that asks for a dispatch on a PR branch should say it sits on the head until a re-push.
 
+**A red you judge a flake** gets one honest retry with `merge --wait --rerun-failed-once`
+(#1065): the wait settles the red (every judged check concluded, as `checks --settle` reads it,
+since GitHub reruns only a finished run), reruns the failed jobs of its runs once, `gh run rerun
+<id> --failed`, said on a `RERUN` line, with the same fresh budget, and merges a green rerun. A red
+again is the ordinary 1, naming both attempts. A run already rerun (attempt above 1, this wait's
+recoveries included) and a red only advisory jobs explain are never rerun, nor is anything when
+a red check is another app's (no rerun can clear it). It takes neither `--override` nor `--allow-no-verdict`: one merges over the red, the other
+would merge an unfinished rerun unread.
+
 **Exit 4 refuses too, by default.** Nothing has failed, but nothing has passed, and a merge that
 waits for neither read nothing — it was a warning until 2026-08-23, when a day-long runner queue
 outran the 30-minute wait and a PR merged unread with a stale test claim (ahrefs/ocannl#745),

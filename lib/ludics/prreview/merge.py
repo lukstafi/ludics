@@ -1,5 +1,5 @@
-"""``pr-review.sh merge <pr> [-C <clone>] [--override <reason>] [--wait[=s]] [--allow-no-verdict]
-[--require-green] [-- <gh pr merge args...>]``: read the build signal, then merge the head it was
+"""``pr-review.sh merge <pr> [-C <clone>] [--override <reason>] [--wait[=s]] [--rerun-failed-once]
+[--allow-no-verdict] [--require-green] [-- <gh pr merge args...>]``: read the build signal, then merge the head it was
 read for. ``-C`` names the clone the merge build uses (mergebuild.py), read first of all. Every
 option may also stand before ``<pr>`` (``merge -C <clone> <pr>``, as ``git -C`` is written), up to a
 ``--``.
@@ -40,6 +40,12 @@ refusal names the rerun commands (#928); or such a run was started by ``workflow
 names the ways past it (a re-push, or ``--override``, which waives a check or run cancelled at the
 gate's first read). Without ``--wait`` such a run is a 4, as before. ``--allow-no-verdict`` still
 merges a 6 or a 7 unread.
+
+``--rerun-failed-once`` (#1065; needs ``--wait``, refused beside ``--override`` and
+``--allow-no-verdict``): the wait settles a red (``checks --settle``'s hold), then reruns the failed
+jobs of its runs once with a fresh budget (``Recovery``, RED), saying so on a ``RERUN`` line. A red
+again after the rerun, or one it does not rerun, is the ordinary 1, the refusal naming both attempts
+or why no rerun was made.
 """
 
 import os
@@ -86,8 +92,8 @@ from ludics.prreview.shtext import tab_fields
 from ludics.prreview.threads import merge_threads_gate
 
 USAGE = (
-    "usage: merge <pr> [-C <clone>] [--override <reason>] [--wait[=seconds]] [--allow-no-verdict]"
-    " [-- <gh pr merge args...>]"
+    "usage: merge <pr> [-C <clone>] [--override <reason>] [--wait[=seconds]] [--rerun-failed-once]"
+    " [--allow-no-verdict] [-- <gh pr merge args...>]"
 )
 
 _SPACE = " \t\n\r\f\v"
@@ -101,6 +107,8 @@ class Options:
     wait_for: int = 0
     allow_no_verdict: bool = False
     require_green: bool = False
+    # ``--rerun-failed-once`` (#1065): a settled red is rerun once under the wait (``Recovery``).
+    rerun_failed_once: bool = False
     gh_args: list[str] = field(default_factory=lambda: list[str]())
     forwarded: bool = False
     # ``-C <dir>``: the clone the merge build uses (mergebuild.py, ludics-lite#730); None is the
@@ -138,6 +146,8 @@ def parse(args: list[str], config: GateConfig) -> Options:
             opts.allow_no_verdict = True
         elif arg == "--require-green":
             opts.require_green = True
+        elif arg == "--rerun-failed-once":
+            opts.rerun_failed_once = True
         elif arg == "--check" or arg.startswith("--check="):
             die(
                 "merge: --check is checks-only. merge's gate is every non-advisory check of the head,",
@@ -164,6 +174,19 @@ def parse(args: list[str], config: GateConfig) -> Options:
                 "merge: --match-head-commit is set by the",
                 "script to the head the build signal was read for, and cannot be forwarded.",
             )
+    if opts.rerun_failed_once:
+        if opts.wait_for <= 0:
+            die("merge: --rerun-failed-once needs a --wait of more than 0 seconds: the rerun is waited for")
+        if opts.override:
+            die(
+                "merge: --rerun-failed-once cannot be combined with --override — the override decides to",
+                "merge over a red, the rerun asks the red again; give one.",
+            )
+        if opts.allow_no_verdict:
+            die(
+                "merge: --rerun-failed-once cannot be combined with --allow-no-verdict — a rerun still",
+                "running at the deadline would merge unread over the red it was asked about.",
+            )
     if opts.require_green:
         for arg in opts.gh_args:
             if arg == "--auto" or arg.startswith("--auto="):
@@ -189,6 +212,17 @@ class _Recovered:
     action: Literal["cancel", "rerun"]
     attempt: int | None
     at: int
+
+
+@dataclass
+class _Red:
+    """One run ``--rerun-failed-once`` reran: its name, and the conclusion and attempt it reran;
+    ``second`` the rerun's attempt and conclusion once it read completed."""
+
+    name: str
+    conclusion: str
+    attempt: int
+    second: tuple[int, str] | None = None
 
 
 class Recovery:
@@ -227,6 +261,25 @@ class Recovery:
     - A run ``--override`` recorded as cancelled at the gate's first read (``cancelled-run:<id>``)
       gets no write either, its jobs that never got a runner included: the override is the
       decision to merge over it.
+    - RED (#1065), under ``--rerun-failed-once`` alone: a red round with no check of the fold left
+      running (``Gate.recover_red``; merge sets ``Gate.settle`` with it, so a red does not end the
+      wait while a check runs). The targets are ``Gate.failed_runs``: each red check's run and each
+      red run no check shows, all or none. Each is re-read; a run not yet ``completed`` waits
+      (GitHub reruns the failed jobs of a finished run only) within the deadline as it stands, and
+      a read that fails waits too. A run at ``run_attempt`` above 1 was rerun already, by anyone
+      (this wait's NO RUNNER or CANCELLED among them), and is never rerun again: no target is
+      rerun, and the red ends the wait. Otherwise every target gets ``gh run rerun <id>
+      --failed``, the same record-then-send write and deadline move as a NO RUNNER, and a
+      ``RERUN`` line on stdout; there is one such rerun per wait. After it, a target still read at
+      the attempt that was rerun waits ``TRANSITION`` seconds, then ends the wait (the rerun did
+      not take); a later attempt waits until it reads completed; once every target has, a red
+      round ends the wait as the ordinary red, exit 1, and merge's refusal names both attempts
+      (``rerun_lines``). Never rerun: a red the advisory list explains (it is no red of the fold or
+      of ``run_signal``, so it is no target), a red only a check of another app shows (it maps to
+      no run), and a red under ``--override`` (merge refuses the combination). Not read: the
+      fleet's launch halt (issue-wave's ``HALT``). It lives on the fleet's anchor box and names a
+      red of the default branch's tip in prose, not a PR head's run, so nothing here could tell
+      which run a halt names; a rerun writes nothing a halt holds back.
 
     Boundary of CANCELLED: it reads the round's run list, one jobs read per completed
     ``cancelled`` run, and one run read per such run, nothing else. It reruns ``cancelled``
@@ -243,7 +296,10 @@ class Recovery:
 
     TRANSITION = 300
 
-    def __init__(self, session: GhSession, repo: str, num: str, gate: Gate, clock: Clock, wait_for: int) -> None:
+    def __init__(
+        self, session: GhSession, repo: str, num: str, gate: Gate, clock: Clock, wait_for: int,
+        rerun_red: bool = False,
+    ) -> None:
         self.session = session
         self.repo = repo
         self.num = num
@@ -258,6 +314,10 @@ class Recovery:
         self.code = 6
         # The id of the dispatched run the wait ended on (#1036), for merge's refusal; "" none.
         self.dispatched = ""
+        # RED (#1065): on under --rerun-failed-once; the runs it reran, by id; why it made none.
+        self.rerun_red = rerun_red
+        self.reds: dict[str, _Red] = {}
+        self.red_skip = ""
 
     def stop(self, why: str, *commands: str, code: int = 6) -> Stop:
         self.why = why
@@ -387,12 +447,94 @@ class Recovery:
             )
         return Wait()
 
+    def rerun_failed(self, now: int) -> Step:
+        """RED for a red round with no check left running (the class docstring): Wait (a rerun
+        sent, a target not finished, or a rerun still to show), Stop (a write that failed or a
+        rerun that did not take), or Idle (the red ends the wait)."""
+        if self.reds:
+            return self.after_rerun(now)
+        self.red_skip = ""
+        targets, why = self.gate.failed_runs()
+        if why or not targets:
+            self.red_skip = why
+            return Idle()
+        sent: list[tuple[str, str, str, int]] = []
+        for rid, name in targets:
+            label = f"run {rid} ({shlex.quote(name)})"
+            state = self.read_run(rid)
+            if state is None:
+                self.red_skip = f"{label} could not be re-read ({self.session.err_line() or 'it answered no attempt'})"
+                return Wait()
+            status, concl, attempt = state
+            if status != "completed":
+                self.red_skip = f"{label} was still {status}, and GitHub reruns the failed jobs of a finished run only"
+                return Wait()
+            if attempt > 1:
+                self.red_skip = f"{label} is at attempt {attempt}: it was rerun already, and a head run is rerun once"
+                return Idle()
+            sent.append((rid, name, concl, attempt))
+        for rid, name, concl, attempt in sent:
+            if not self.write(rid, "rerun", attempt, now, f"it concluded {concl} (--rerun-failed-once)"):
+                return Stop()
+            self.reds[rid] = _Red(name, concl, attempt)
+            cli.say(
+                f"RERUN: {self.repo}#{self.num}: run {rid} ({shlex.quote(name)}) concluded {concl} at attempt"
+                f" {attempt}; its failed jobs re-run once (--rerun-failed-once), with a fresh"
+                f" {self.wait_for // 60} min wait: {rerun_command(rid, self.repo)}"
+            )
+        return Wait(now + self.wait_for)
+
+    def after_rerun(self, now: int) -> Step:
+        """RED after its rerun: Wait until every rerun run reads completed at a later attempt, Stop
+        once one still reads the attempt that was rerun ``TRANSITION`` seconds on, else Idle."""
+        for rid, red in self.reds.items():
+            if red.second is not None:
+                continue
+            state = self.read_run(rid)
+            if state is None:
+                return Wait()
+            status, concl, attempt = state
+            if attempt <= red.attempt:
+                at = self.done[rid].at
+                if now - at >= self.TRANSITION:
+                    self.why = (
+                        f"run {rid} still reads attempt {attempt} {(now - at) // 60} min after its rerun,"
+                        " which did not take"
+                    )
+                    return Stop()
+                return Wait()
+            if status != "completed":
+                return Wait()
+            red.second = (attempt, concl)
+        return Idle()
+
+    def rerun_lines(self) -> list[str]:
+        """What ``--rerun-failed-once`` did, for merge's red refusal: both attempts of each run it
+        reran, or why it made no rerun."""
+        if not self.reds:
+            why = self.why or self.red_skip or (
+                "the red had not settled when the wait ended (a check of it was still running)"
+                if self.gate.check_pending > 0
+                else "nothing was rerun"
+            )
+            return [f"--rerun-failed-once made no rerun: {why}."]
+        lines: list[str] = []
+        for rid, red in self.reds.items():
+            first = f"run {rid} ({shlex.quote(red.name)}) concluded {red.conclusion} at attempt {red.attempt}"
+            if red.second is not None:
+                lines.append(f"--rerun-failed-once: {first}, and {red.second[1]} at attempt {red.second[0]}, its one rerun.")
+            else:
+                lines.append(f"--rerun-failed-once: {first}, rerun once; {self.why or 'its rerun has no verdict yet'}.")
+        return lines
+
     def still_queued(self, rid: str, jid: str) -> bool:
         jobs = read_jobs(self.session, self.repo, rid)
         return jobs is not None and any(j.jid == jid and j.status == "queued" for j in jobs)
 
     def __call__(self, orphans: list[Orphan], runs: list[HeadRun]) -> Step:
         now = self.clock.now()
+        if self.rerun_red and self.gate.verdict in ("red", "runred") and self.gate.check_pending == 0:
+            return self.rerun_failed(now)
         until = 0
         acted = False
         by_run: dict[str, Orphan] = {}
@@ -507,7 +649,7 @@ class Merge:
         self.gate = Gate(session, repo, config, clock, orphans_on=True, images_on=True)
         # The one recovery from a job that never got a runner, under --wait only: a merge that does
         # not wait does not rerun (runners.py; Recovery above).
-        self.recovery = Recovery(session, repo, num, self.gate, clock, opts.wait_for)
+        self.recovery = Recovery(session, repo, num, self.gate, clock, opts.wait_for, opts.rerun_failed_once)
         self.multi = MultiClose(session, repo)
         self.series = SeriesClose(session, repo)
         # What the merge goes over (--override's waived red, --allow-no-verdict's unread signal):
@@ -741,8 +883,11 @@ class Merge:
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
         # The recovery rides on this wait alone; a re-gate after it (absent_base_holds) writes nothing.
         gate.recover = self.recovery if opts.wait_for > 0 else None
+        # --rerun-failed-once (#1065): the wait settles a red before the recovery may rerun it.
+        gate.settle = gate.recover_red = opts.rerun_failed_once
         rc = gate.check(pr, opts.wait_for, waive=bool(opts.override))
         gate.recover = None
+        gate.settle = gate.recover_red = False
         # The gate's verdict is about the moment of its last round. Nothing after it waits a quota
         # hold out: a read here during one is 3, so the merge never lands on a verdict the wait made
         # old (the polling budget, budget.py).
@@ -788,7 +933,9 @@ class Merge:
                     fail(
                         1,
                         f"REFUSING to merge {repo}#{pr}: {gate.check_red} build check(s) concluded failure on the",
-                        "head commit (listed above). Fix it, or — only if that red is genuinely not about this",
+                        "head commit (listed above).",
+                        *(recovery.rerun_lines() if opts.rerun_failed_once else []),
+                        "Fix it, or — only if that red is genuinely not about this",
                         "change — re-run with --override '<why this red is unrelated>'.",
                     )
             case 3:

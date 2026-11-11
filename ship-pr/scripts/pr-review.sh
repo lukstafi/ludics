@@ -196,7 +196,8 @@
 #                                          # reported at once, exit 1 as before
 #                                          # (see prreview/checks.py)
 #   pr-review.sh merge <pr> [--override "<why this red is unrelated>"] [--wait]
-#                           [--allow-no-verdict] [--require-green] [-C <clone>]
+#                           [--rerun-failed-once] [--allow-no-verdict] [--require-green]
+#                           [-C <clone>]
 #                                          # (the options may also stand before <pr>, as in
 #                                          # `merge -C <clone> <pr>`)
 #                                          # checks, then merge; refuses on an open review thread
@@ -245,6 +246,15 @@
 #                                          # with 7 at once, naming a re-push and --override
 #                                          # as the ways past it (#1036). Without --wait
 #                                          # it is a 4, as any stopped run is.
+#                                          # --rerun-failed-once (with --wait; never with
+#                                          # --override or --allow-no-verdict) settles a red,
+#                                          # as checks --settle does, then reruns the failed
+#                                          # jobs of its runs ONCE (gh run rerun <id> --failed,
+#                                          # a RERUN line) with a fresh --wait budget: a green
+#                                          # rerun merges, a red again refuses with 1 naming
+#                                          # both attempts. A run already rerun (attempt > 1)
+#                                          # and a red only advisory jobs explain are never
+#                                          # rerun (#1065; see prreview/merge.py, Recovery).
 #                                          # A PR found merged at another head than the
 #                                          # gated one (gh makes no merge request for a
 #                                          # merged PR) is exit 1, "MERGED at an UNJUDGED
