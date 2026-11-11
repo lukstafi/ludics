@@ -33,7 +33,9 @@ reconnected within about 2 s, and the end-of-turn note arrived. The Mac sleeping
    the CLI login and headless probe do not apply.
 3. Write the self-contained brief and a pending entry to the board. Recheck rival PRs and
    dependencies, then run `fleet-worker.sh gate --target-repo <owner/repo> [--base-branch
-   <branch>]` just before the start (SKILL.md: *Base gate*).
+   <branch>] --wait <seconds>` just before the start, with `--wait` sized to how long the launch
+   may wait out a merge burst (no hand-written retry loop); nonzero blocks the start (SKILL.md:
+   *Base gate*).
 4. Start the worker with `start_session`, passing:
    - `initiation: "user_asked"`, `context: "fresh"`, `target: "ssh"` and the `host`;
    - `cwd`: the box's checkout, and `use_worktree: true`;

@@ -682,7 +682,9 @@ placeholder ([coordinator-kit.md](references/coordinator-kit.md)).
   and after a `;` the last command's: a failed suite reads `rc=0`. Wave-20261106's three workers
   all met this, and two failed unit runs passed as green. The batch writes the whole log, so the
   digest is a later call's `tail` or `grep` of it. Steps that belong together go joined with `&&`,
-  as a script under `set -e`, or as one batch each; a builtin still goes as `sh -c '...'`.
+  as a script under `set -eo pipefail` that pipes nothing, or as one batch each; a builtin still
+  goes as `sh -c '...'`. Plain `set -e` does not cover a pipe: `<suite> | tail` in such a script
+  still exits with `tail`'s status.
 
   In every form `--cpu` goes before the `--` for a batch that holds no GPU, a runner that takes
   the slot itself runs inside the wrapper ([nested
@@ -1428,7 +1430,10 @@ proposal quotes that proposal verbatim under its Evidence, next to your summary 
 the worker's task and PR (a combined issue quotes each): a paraphrase can change the claim, and
 the next worker reads the issue, not the hand-back (#729's item said `merge` reads a stale
 review-record round count where the proposal said it warns on one, and #729's worker found the
-original only in another wave's scratchpad before deferring the item). Before filing a residual a worker drew from a
+original only in another wave's scratchpad before deferring the item). A time the filing names
+comes from the record that holds it (the heartbeat's own timestamp line, a registry or board
+timestamp, a run's log), never from when a tool result came back: an approval-gated or
+backgrounded command's result can land long after it ran (#1050). Before filing a residual a worker drew from a
 measurement, check the wave's merges that landed after the measured SHA: a sibling's may
 already address it (ahrefs/ocannl#1659 was filed from an A/A measured before #1635's beam
 finals merged, and establishing that cost a worker and a measurement window). Every issue the wave files carries the
