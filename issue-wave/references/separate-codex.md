@@ -26,7 +26,9 @@ integration included; an agent host does not reserve execution capacity.
    not prove the app worker will start.
 3. Write the self-contained brief and a pending entry to the board. Recheck rival PRs and
    dependencies, then run `fleet-worker.sh gate --target-repo <owner/repo> [--base-branch
-   <branch>]` immediately before `create_thread` (SKILL.md: *Base gate*, including the
+   <branch>] --wait <seconds>` immediately before `create_thread`, with `--wait` sized to how
+   long the launch may wait out a merge burst (no hand-written retry loop); nonzero blocks the
+   call (SKILL.md: *Base gate*, including the
    `--force --allow-red-base` triage exception, which is recorded on the board). `gate` checks
    the anchor lease and halt at that instant; it does not reserve a worker or atomically fence
    the later app call, so an adoption reconciles pending entries before creating anything.
