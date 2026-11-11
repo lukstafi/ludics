@@ -61,8 +61,9 @@ topic search immediately before the launch.
 
 THE BOARD read: a row is found only on a board that reads. A board that does not answer is unknown
 (exit 4). A board the store refuses to show is taken as no row only when the refusal is the
-store's own line for a wave with no board yet (read again with its stderr; ``board set --create``
-then starts it); any other refusal (a malformed board) refuses, before anything is made. The far-side leg worktree is not read (no ssh): ``execution leg``
+store's own exit for a wave with no board yet (``boardstore.NO_BOARD_EXIT``, never its text;
+``board set --create`` then starts it); any other refusal (a malformed board) refuses, before
+anything is made. The far-side leg worktree is not read (no ssh): ``execution leg``
 makes it on first use.
 
 THE RECOVERY BOUNDARY. Prep is not resumable, and never deletes or concludes anything. A refusal
@@ -82,13 +83,13 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from ludics import cli, proc
+from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import gh_timeout, listing, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import anchor_gate
-from ludics.fleetworker.takeover import board_document, row_of
-from ludics.fleetworker.board import store_command
-from ludics.fleetworker.transport import PAYLOAD_ON_FD, prelude, run, run_on
+from ludics.fleetworker.takeover import board_status, row_of
+from ludics.fleetworker.transport import run
 from ludics.fleetworker.wave import USAGE, Leg, Wave, load_wave, shim
 from ludics.fleetworker.wavebrief import Part, render, write_atomically
 
@@ -97,7 +98,6 @@ TASK = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 ISSUE_TASK = re.compile(r"t([0-9]+)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 PR_PAGE = 100
-NO_BOARD = "BOARD REFUSED: no board for wave {wave} on the anchor"  # boardstore.py's refusal, a writer's with a hint after it
 
 
 @dataclass
@@ -293,21 +293,11 @@ def check_registry(cfg: Config, prep: Prep) -> None:
             raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the registry holds {prep.standing_id(box)} already")
 
 
-def no_board(cfg: Config, wave: str) -> bool:
-    """Whether the store's refusal to show the board is THE one for a wave with no board yet: the
-    show again, its stderr read with its stdout, holding the store's own line for it."""
-    raw = json.dumps({"wave": wave, "json": True}, separators=(",", ":"))
-    script = prelude(cfg, cfg.anchor) + "shift 3\nexec 2>&1\n" + store_command(raw)
-    done = run_on(cfg, cfg.anchor, script, ["BOARD", "x", "x", "show", "x", PAYLOAD_ON_FD], capture=True)
-    line = NO_BOARD.format(wave=wave)
-    return done.rc == 1 and any(said == line or said.startswith(line + " (") for said in done.out.split("\n"))
-
-
 def check_board(cfg: Config, prep: Prep) -> None:
-    doc = board_document(cfg, prep.wave.wave)
+    doc = board_status(cfg, prep.wave.wave)
     if doc == 4:
         raise Stop(4, f"WAVE PREP UNKNOWN {prep.task}: the board of {prep.wave.wave} could not be read; nothing made")
-    if isinstance(doc, int) and not no_board(cfg, prep.wave.wave):
+    if isinstance(doc, int) and doc != NO_BOARD_EXIT:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the board of {prep.wave.wave} could not be read (above), and"
                       " it is not a wave with no board yet; nothing made")
     if isinstance(doc, dict) and row_of(doc, prep.task) is not None:

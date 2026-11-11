@@ -42,6 +42,16 @@ separator (Zl, Zp), not starting with ``-``; a value or a log line is any text t
 newlines included. ``set`` or ``note`` on a wave with no board refuses unless ``create`` is true;
 ``create`` on an existing board is no refusal, so a retried first write is safe. ``log`` refuses a
 wave with no board.
+
+"No board" is a fact, not a sentence (#1047's follow-up): ``show`` of a wave with no board refuses
+with exit NO_BOARD_EXIT (5), its line ``BOARD REFUSED: no board for wave <wave> on the anchor`` on
+stderr for a person, and a reader (``takeover.board_status``) tests the exit, never the text. The
+boundary of that exit, an allowlist: the state root is a directory and its ``boards/<wave>.json``
+does not exist (``lstat`` says ENOENT: no file, no link, the ``boards`` directory absent with it).
+Everything else stays exit 1 -- a root that is no directory, a ``boards`` that is a file, a path
+that cannot be looked up or read, a dangling link, a board that is no board -- and so does a
+writer's no-board refusal, which carries its hint. No other status is 5 on the far side's way
+back: its shell exits 1 (no Python) or 255 (ssh), Python 1 or 2, a signal 128+.
 A board file that does not parse as a board is refused, never overwritten. Every write is exactly
 one ``os.replace`` of the whole document, so a reader without the lock sees the old board or the
 new one, never a part.
@@ -73,6 +83,13 @@ KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
 # What may not appear in a task name, which is a table row's first cell: a control character, or a
 # character that breaks a line (U+0085 is Cc; U+2028 and U+2029 are Zl and Zp).
 NOT_IN_TASK = frozenset({"Cc", "Zl", "Zp"})
+
+
+NO_BOARD_EXIT = 5
+
+
+class NoBoard(ValueError):
+    """``show`` of a wave whose board does not exist: exit NO_BOARD_EXIT (the header)."""
 
 
 def refuse(message: str) -> NoReturn:
@@ -170,7 +187,11 @@ def validate(data: Any, wave: str, path: Path) -> Doc:
 
 
 def load(path: Path, wave: str) -> Doc | None:
-    if not path.exists():
+    """The board at ``path``, or None when nothing is there (``lstat``'s ENOENT, the header's
+    boundary); any other failure to look it up or read it raises (a refusal, exit 1)."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -268,7 +289,9 @@ def main(argv: list[str]) -> None:
     doc = load(path, wave)
     if action == "show":
         if doc is None:
-            refuse(f"no board for wave {wave} on the anchor")
+            if not Path(root).is_dir():
+                refuse(f"the anchor state root {root} is not a directory")
+            raise NoBoard(f"no board for wave {wave} on the anchor")
         sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n" if payload.get("json") else render(doc))
         return
     if action not in ("set", "note", "log"):
@@ -315,16 +338,17 @@ def main(argv: list[str]) -> None:
 
 def run(argv: list[str]) -> int:
     """``main`` with the board's exit: any failure is one ``BOARD REFUSED: <why>`` line on stderr, exit
-    1 (whether a failed write landed is a re-read's to say: the header)."""
+    1 (whether a failed write landed is a re-read's to say: the header), or NO_BOARD_EXIT for show's
+    no board."""
     try:
         main(argv)
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"BOARD REFUSED: {exc}", file=sys.stderr)
-        return 1
+        return NO_BOARD_EXIT if isinstance(exc, NoBoard) else 1
     return 0
 
 
 # A program (``python - <argv>`` on the anchor) or ``runpy.run_path``, never an import.
 if __name__ in ("__main__", "<run_path>"):
-    if run(sys.argv) != 0:
-        sys.exit(1)
+    if (status := run(sys.argv)) != 0:
+        sys.exit(status)

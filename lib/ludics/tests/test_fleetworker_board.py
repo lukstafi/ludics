@@ -171,7 +171,51 @@ class Store(StoreCase):
         self.assertTrue(out.isascii())
 
     def test_show_of_an_unknown_wave_refuses(self) -> None:
-        self.assertEqual(self.call("show", {"wave": "nope"})[:2], (1, ""))
+        self.assertEqual(self.call("show", {"wave": "nope"}),
+                         (boardstore.NO_BOARD_EXIT, "", "BOARD REFUSED: no board for wave nope on the anchor\n"))
+
+    def test_no_board_is_its_own_exit_and_nothing_else_is(self) -> None:
+        """Exit 5 (NO_BOARD_EXIT) means the root is a directory and the board path is absent; a present
+        board shows, and every other failure to read one stays exit 1 (the header's boundary)."""
+        self.assertEqual(boardstore.NO_BOARD_EXIT, 5)
+        self.assertEqual(self.call("show", {"wave": "w"})[0], boardstore.NO_BOARD_EXIT, "missing board, no boards dir")
+        self.set("t", ("k", "v"))
+        self.assertEqual(self.call("show", {"wave": "w"})[0], 0, "present board")
+        self.assertEqual(self.call("show", {"wave": "other"})[0], boardstore.NO_BOARD_EXIT, "missing board, boards dir")
+        os.symlink(os.path.join(self.root, "gone.json"), os.path.join(self.root, "boards", "dangling.json"))
+        self.assertEqual(self.call("show", {"wave": "dangling"})[:2], (1, ""), "a dangling link is no absence")
+        with open(os.path.join(self.root, "boards", "w.json"), "w") as f:
+            f.write("{not json")
+        self.assertEqual(self.call("show", {"wave": "w"})[0], 1, "a corrupt board is a refusal")
+        for root, why in ((os.path.join(self.root, "absent"), "is not a directory"),
+                          (os.path.join(self.root, "boards", "w.json"), "Not a directory")):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = boardstore.run(["-", root, "show", "coord", json.dumps({"wave": "w"})])
+            self.assertEqual(rc, 1, root)
+            self.assertIn(why, err.getvalue())
+        shutil.rmtree(os.path.join(self.root, "boards"))
+        with open(os.path.join(self.root, "boards"), "w") as f:
+            f.write("a file where the boards directory goes")
+        self.assertEqual(self.call("show", {"wave": "w"})[0], 1, "a boards that is a file is no absence")
+        self.assertEqual(self.set("t", ("k", "v"), create=False)[0], 1)
+        self.assertEqual(self.call("log", {"wave": "w", "text": "x"})[0], 1)
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads past permissions")
+    def test_an_unreadable_boards_directory_is_no_absence(self) -> None:
+        self.set("t", ("k", "v"))
+        boards = os.path.join(self.root, "boards")
+        os.chmod(boards, 0)
+        try:
+            rc, _, err = self.call("show", {"wave": "other"})
+        finally:
+            os.chmod(boards, 0o700)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("Permission denied", err)
+
+    def test_a_writer_keeps_exit_1_for_no_board(self) -> None:
+        self.assertEqual(self.set("t", ("k", "v"), create=False)[0], 1)
+        self.assertEqual(self.call("log", {"wave": "w", "text": "x"})[0], 1)
 
 
 class CommandLine(unittest.TestCase):
@@ -284,6 +328,11 @@ class Check(unittest.TestCase):
                 {"wave": "w", "create": True, "fields": [["scope", "x"]]})]), 0)
         self.assertEqual(self.check()[:2], (0, "BOARD CHECK w: 0 rows, 0 done, 0 not done\n"))
         self.assertEqual(self.check("none")[:2], (1, ""))  # the store's refusal is the far side's stderr
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(board.cmd_board(self.cfg, ["show", "none"]), boardstore.NO_BOARD_EXIT,
+                             "show end to end: the store's exit is the verb's")
+            self.assertEqual(board.cmd_board(self.cfg, ["show", "w"]), 0)
 
     def test_usage(self) -> None:
         with self.assertRaises(cli.Exit) as caught:

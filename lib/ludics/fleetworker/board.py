@@ -8,7 +8,9 @@ Its header is the contract: the document, what it accepts, and the markdown view
   board set [--create] <wave> <task> <key=value>...   a task's row (lease)
   board note [--create] <wave> <key=value>...         the wave's own facts (lease)
   board log <wave> <text>...                          one appended log line, the words joined (lease)
-  board show <wave> [--json]                          the markdown view, or the document (no lease)
+  board show <wave> [--json]                          the markdown view, or the document (no lease);
+                                                      exit 5 for a wave with no board (the store's
+                                                      NO_BOARD_EXIT), 1 for any other refusal
   board check <wave>                                  the close-out check: every row done (no lease)
   board takeover <wave> <task>                        a worker's stored brief and its state now (no
                                                       lease; ``ludics.fleetworker.takeover``)

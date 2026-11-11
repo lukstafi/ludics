@@ -67,6 +67,7 @@ from typing import Any, cast
 
 from ludics import bgrun, cli, proc
 from ludics.fleetworker.config import Config
+from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import (
     BG_RUN_TAG,
@@ -196,7 +197,15 @@ done
 
 
 def board_document(cfg: Config, wave: str) -> dict[str, Any] | int:
-    """The wave's board, as ``board show --json`` reads it, or the exit status to end with."""
+    """The wave's board, as ``board show --json`` reads it, or the exit status to end with: 4 when the
+    anchor did not answer, else 1 (a wave with no board included)."""
+    doc = board_status(cfg, wave)
+    return 1 if doc == NO_BOARD_EXIT else doc
+
+
+def board_status(cfg: Config, wave: str) -> dict[str, Any] | int:
+    """``board_document``, but a wave with no board is NO_BOARD_EXIT: the store's own exit for it
+    (boardstore's header), never its text; any other refusal is 1."""
     from ludics.fleetworker.board import store_command
 
     raw = json.dumps({"wave": wave, "json": True}, separators=(",", ":"))
@@ -205,6 +214,8 @@ def board_document(cfg: Config, wave: str) -> dict[str, Any] | int:
     if done.unreachable:
         cli.say(f"BOARD UNREACHABLE {cfg.anchor}")
         return 4
+    if done.rc == NO_BOARD_EXIT:
+        return NO_BOARD_EXIT  # the store said so on stderr
     if done.rc != 0:
         return 1  # the store said why on stderr
     try:
