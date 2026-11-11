@@ -238,7 +238,9 @@ class FromBgRunBox(unittest.TestCase):
 
     def reads(self, outs: dict[str, Done]) -> mock.Mock:
         """A ``run_on`` that answers each box with its own reading of the directory."""
-        return mock.Mock(side_effect=lambda _cfg, box, _script, _args, capture=False: outs[box])  # pyright: ignore[reportUnknownLambdaType]
+        def run_on(_cfg: object, box: str, _script: str, _args: object, capture: bool = False) -> Done:
+            return outs[box]
+        return mock.Mock(side_effect=run_on)
 
     def conclude(self, args: list[str], outs: dict[str, Done], agent: str = "mac-studio") -> tuple[str, mock.Mock]:
         """``from_bg_run_payload`` end to end, the anchor's registry holding the leg's record."""
