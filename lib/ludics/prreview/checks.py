@@ -71,8 +71,8 @@ no check run yet does not hold a red (a red job's dependents are usually skipped
 workflow run around finished checks does not either (an advisory leg can keep a run unfinished long
 after every required check settled). The report is the last round's, as without it: a red check
 there outranks the run list, which is then not read, so a workflow run that concluded red with no
-check behind it (``runred``) is named only when no check is red. Without ``--settle`` a red ends the wait at once: ``merge`` and
-every other caller keep that.
+check behind it (``runred``) is named only when no check is red. Without ``--settle`` a red ends
+the wait at once: ``merge`` and every other caller keep that.
 """
 
 import os
@@ -163,14 +163,16 @@ def run(session: GhSession, args: list[str]) -> int:
         verdict: str = gate.verdict
         kinds = {orphan.kind for orphan in gate.orphans}
         # The bound, reported when it is what ended the wait (a no-runner job ends it early).
-        spent = wait_for > 0 and gate.deadline is not None and gate.clock.now() >= gate.deadline
-        if rc == 4 and spent:
+        def spent() -> bool:
+            return wait_for > 0 and gate.deadline is not None and gate.clock.now() >= gate.deadline
+
+        if rc == 4 and spent():
             cli.say(
                 f"checks: the wait is spent: {fmt_age(wait_for)} ({wait_from}) passed with no verdict;"
                 " exit 4 is no verdict yet, neither green nor red"
             )
         elif settle and rc == 1 and gate.check_pending > 0:
-            why = (f"the wait is spent: {fmt_age(wait_for)} ({wait_from}) passed" if spent
+            why = (f"the wait is spent: {fmt_age(wait_for)} ({wait_from}) passed" if spent()
                    else "a job that never got a runner ended the wait")
             cli.say(
                 f"checks: --settle: {why} with {gate.check_pending} check(s) still running:"

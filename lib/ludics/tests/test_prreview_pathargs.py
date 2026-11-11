@@ -47,7 +47,8 @@ NOT_PATHS: frozenset[tuple[str, str]] = frozenset({
     ("base.py", "--last-green"), ("base.py", "--last-green="), ("base.py", "--wait"), ("base.py", "--wait="),
     ("budget.py", "--job"), ("budget.py", "--job="), ("budget.py", "--repo"), ("budget.py", "--repo="),
     ("budget.py", "-R"), ("budget.py", "-j"),
-    ("checks.py", "--check"), ("checks.py", "--check="), ("checks.py", "--wait"), ("checks.py", "--wait="),
+    ("checks.py", "--check"), ("checks.py", "--check="), ("checks.py", "--settle"), ("checks.py", "--wait"),
+    ("checks.py", "--wait="),
     ("comment.py", "--allow-mention"),
     ("core.py", "--field"), ("core.py", "--raw-field"), ("core.py", "-F"), ("core.py", "-f"),  # gh's, read back
     ("merge.py", "--allow-no-verdict"), ("merge.py", "--auto"), ("merge.py", "--auto="),
