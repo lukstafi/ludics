@@ -1133,7 +1133,12 @@ controlled through the tools in your coordinator's file, never through those com
   would admit a launch onto the red. Merges are not frozen (roll-forward: a merge never waits on
   the base's tip); what lands meanwhile joins the span the next verdict covers. Nor does a PR
   whose own head shows that red, once the red has an owner (below): its worker merges over it as
-  ship-pr's *The override* says (ludics-lite#623). One red skips all of it, checked before the
+  ship-pr's *The override* says (ludics-lite#623). The reason names the red SHA, and each failing
+  test as `test=<name>` once known (`halt` again updates it): a loop's later red at or past that
+  commit, or whose log names that test, ends its `tip-run --wait` with `TIP-RUN HALT <id> matches
+  the standing halt: ...` (`wave loop`'s `LOOP RED` line carries it after ` -- `). That is the
+  owned red, not another to halt and rerun, unless the line adds that its log does not name a
+  halt's test: then it may be a second red (ludics#1064). One red skips all of it, checked before the
   halt: **a red that a later merge fixed**. When `git log --first-parent <red sha>..<tip>` holds
   a merge whose PR names that failing test (or its issue) as the failure it fixes, the red is
   attributed to that fix and verified at the tip instead: no halt and no rerun at the red SHA.

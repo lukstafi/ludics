@@ -161,24 +161,54 @@ is concluded, not that the run passed: the verdict is the line's fourth word. Wi
 a concluded answer adds the loop's next move (ludics-lite#618), read off GitHub as ``--tip`` reads
 it at the start: ``TIP-RUN TIP <branch> <sha> moved`` (the tip is past the run: start the next one
 now), ``... current`` (nothing new to run), or ``TIP-RUN TIP <branch> - unread: <why>``.
+
+THE HALT NOTE (ludics#1064). Three loops (cc, CUDA, HIP) once reported one backend-independent red
+that a halt already owned, as three. So a concluded answer whose verdict is red (``fail`` or
+``timeout``) is followed, when a halt stands, by one line saying how the red matches the halt's
+reason, before any ``TIP-RUN TIP`` line: ``TIP-RUN HALT <id> matches the standing halt: <fact>[;
+<fact>...]; the halt's reason: <reason>``. It is a note and nothing else: it changes no verdict, no
+exit status, no record and no halt. What it reads, a fail-closed allowlist:
+  - the halt: the anchor's ``fleet-worker.sh halted`` answer (lease.py's HALTED), read as the
+    registry reads the marker (``halt_generation``, ``halt_reason``: the reason the marker states
+    now). ``launches open`` is no halt, so no note.
+  - the record: its ``verdict``, its ``observed_sha`` (one full SHA), its ``repository`` and its
+    ``bg-run:<box>:<dir>`` handle, the run's directory, whose ``log`` is read on that box.
+  - in the reason, two shapes and no other words. A COMMIT is a run of 7 to 40 lowercase hex
+    digits with no letter or digit on either side (``red at 67203021, rerun pending``). The run
+    MATCHES it when the run's SHA begins with it (the red is at the halt's commit), or when GitHub
+    compares the two as ``ahead`` (``gh api repos/<repository>/compare/<commit>...<sha>``: the
+    run's commit descends from it, inside the halt's span; ``identical`` reads as at it). A TEST is a word ``test=<name>``
+    (``<name>`` of ``[A-Za-z0-9_@./+-]``, a trailing ``.`` dropped) at the reason's start or after
+    a space, ``(``, ``,`` or ``;``. The run MATCHES it when the log holds ``<name>`` as a fixed
+    string between non-word characters (``grep -F -w``).
+The line is printed when at least one shape matches; it names each match, and each named test the
+log does not hold (a red at the halt's commit that names none of its tests may be a second red).
+Anything not read -- the anchor or the box not answering, a record of another shape, a GitHub
+answer other than a status -- notes nothing about that shape (one ``TIP-RUN NOTE <id>:`` line on
+stderr says what was not read), never a guess. The boundary: a match says the run's commit is in
+the halt's span or its log names the halt's test, not that its failure is only the owned one; and
+the reason is the coordinator's text, so a commit or test it does not spell in those shapes is not
+compared. Issue-wave SKILL.md's *On a red at the tip* says how the halt's reason spells them.
 """
 
 import json
 import os
 import re
 import shlex
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from typing import Any, cast
 
-from ludics import bgrun, cli
+from ludics import bgrun, cli, proc
 from ludics.fleetworker.config import Config
 from ludics.fleetworker import revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.lease import HALTED
 from ludics.fleetworker.leg import BASE, FLOOR, PIN, min_free_gib
 from ludics.fleetworker.preflight import refresh_box
-from ludics.fleetworker.registry import ref_name_ok
+from ludics.fleetworker.registry import halt_generation, halt_reason, ref_name_ok
 from ludics.fleetworker.transport import (
     BG_RUN_TAG,
     bg_run_path,
@@ -201,6 +231,9 @@ LOOP_PURPOSE = re.compile(r"GPU integration loop, ([A-Za-z0-9][A-Za-z0-9_.-]*):"
 SETTLE = 60  # seconds the far side waits for the slot's answer; `--wait 0` answers in about one registry read
 WITHIN = 480  # --wait's default bound on the box: under the 600 s tool cap with the calls around it
 HANDLE = re.compile(r"bg-run:([^:]+):(/.*)", re.DOTALL)
+RED = ("fail", "timeout")  # THE HALT NOTE's verdicts
+HALT_COMMIT = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
+HALT_TEST = re.compile(r"(?<![^\s(,;])test=([A-Za-z0-9_@./+-]+)")
 
 # Far side, on the execution host, read by `bash -s` from stdin: so every child that could read
 # stdin is given /dev/null, or it would eat the rest of this script. Args: checkout, sha, runs parent (empty: $STATE/tip-runs), the
@@ -651,8 +684,7 @@ def cmd_wait(cfg: Config, parsed: WaitArgs) -> int:
         cli.say(f"TIP-RUN REFUSED {request_id}: the registry holds no such request")
         return 1
     if record.get("state") == "concluded":
-        cli.say(concluded_line(record))
-        return next_tip(cfg, record, parsed.tip)
+        return concluded(cfg, record, parsed.tip)
     if record.get("state") != "running":
         cli.say(f"TIP-RUN REFUSED {request_id}: it is {record.get('state')}, not a run tip-run started (running); reconcile it")
         return 1
@@ -694,8 +726,125 @@ def cmd_wait(cfg: Config, parsed: WaitArgs) -> int:
     if not isinstance(record, dict) or record.get("state") != "concluded":
         cli.say(f"TIP-RUN UNKNOWN {request_id}: concluded (above), but its record could not be read back; re-issue the wait to read its verdict")
         return 4
+    return concluded(cfg, record, parsed.tip)
+
+
+def concluded(cfg: Config, record: dict[str, Any], tip: str) -> int:
+    """A concluded record's answer: its line, THE HALT NOTE on a red, and with ``--tip`` the next move."""
     cli.say(concluded_line(record))
-    return next_tip(cfg, record, parsed.tip)
+    halt_note(cfg, record)
+    return next_tip(cfg, record, tip)
+
+
+# Far side of THE HALT NOTE's test match, on the box holding the run's directory. Args: the log,
+# then the names. Prints `log=1` (else `log=0` alone), then `named=<name>` for each name the log
+# holds as a fixed string between non-word characters, `unread=<name>` for one grep could not read.
+LOG_NAMES = r"""log="$1"; shift
+[ -f "$log" ] || { printf 'log=0\n'; exit 0; }
+printf 'log=1\n'
+for name in "$@"; do
+  LC_ALL=C grep -a -F -w -q -e "$name" "$log" </dev/null 2>/dev/null; grc=$?
+  case $grc in 0) printf 'named=%s\n' "$name" ;; 1) ;; *) printf 'unread=%s\n' "$name" ;; esac
+done
+"""
+
+
+def read_halt(cfg: Config) -> str | None | tuple[str]:
+    """THE HALT NOTE's halt: the reason the standing halt's marker states, None with no halt, or
+    (why,) when the anchor's answer could not be read."""
+    done = run_on(cfg, cfg.anchor, prelude(cfg, cfg.anchor) + HALTED, [], capture=True)
+    if done.unreachable:
+        return (f"the anchor {cfg.anchor} did not answer",)
+    text = done.out.rstrip("\n")
+    if done.rc == 0 and text == "launches open":
+        return None
+    if done.rc == 1 and text.startswith("HALTED "):
+        marker = text[len("HALTED "):]
+        generation, reason = halt_generation(marker), halt_reason(marker).strip()
+        if generation and generation.strip() and reason:
+            return reason
+    return (f"an unreadable answer from the anchor {cfg.anchor} (exit {done.rc})",)
+
+
+def halt_shapes(reason: str) -> tuple[list[str], list[str]]:
+    """THE HALT NOTE's two shapes in the halt's reason: its commits and its tests, each once, in order."""
+    commits = list(dict.fromkeys(HALT_COMMIT.findall(reason)))
+    tests = list(dict.fromkeys(name for found in HALT_TEST.findall(reason) if (name := found.rstrip("."))))
+    return commits, tests
+
+
+def commit_match(cfg: Config, repo: str, commit: str, sha: str) -> str | None | tuple[str]:
+    """``at`` when ``sha`` begins with the halt's commit, ``past`` when GitHub says it descends from
+    it, None when it does neither, or (why,) when GitHub's answer could not be read."""
+    if sha.startswith(commit):
+        return "at"
+    if not revision.REPOSITORY.fullmatch(repo):
+        return (f"the record's repository {repo!r} is not <owner>/<name> on GitHub",)
+    done = proc.run_tool("gh", ["api", "--hostname", "github.com", f"repos/{repo}/compare/{commit}...{sha}", "-q", ".status"],
+                         stdin=subprocess.DEVNULL, timeout=gh_timeout(cfg))
+    status = done.stdout.strip()
+    if done.rc == 0 and status in ("ahead", "identical"):
+        return "past" if status == "ahead" else "at"
+    if done.rc == 0 and status in ("behind", "diverged"):
+        return None
+    lines = done.stderr.strip().splitlines()
+    return (f"GitHub's compare answered {status or (lines[-1].strip() if lines else f'gh exit {done.rc}')!r}",)
+
+
+def log_names(cfg: Config, box: str, run_dir: str, names: list[str]) -> set[str] | str:
+    """The names the run's log holds (LOG_NAMES), or why the log could not be read."""
+    done = run_on(cfg, box, prelude(cfg, box) + LOG_NAMES, [f"{run_dir}/log", *names], capture=True)
+    if done.unreachable:
+        return f"{box} did not answer"
+    lines = done.out.rstrip("\n").split("\n")
+    if done.rc != 0 or lines[0] != "log=1":
+        return f"no log {run_dir}/log on {box}" if lines[0] == "log=0" else f"an unreadable answer from {box} (exit {done.rc})"
+    unread = [line[len("unread="):] for line in lines[1:] if line.startswith("unread=")]
+    if unread:
+        return f"grep could not read {run_dir}/log on {box}"
+    return {line[len("named="):] for line in lines[1:] if line.startswith("named=")}
+
+
+def halt_note(cfg: Config, record: dict[str, Any]) -> None:
+    """THE HALT NOTE (see the header): one stdout line when a red record matches the standing halt's
+    reason, else nothing; what could not be read is one stderr note each, never a match."""
+    request_id, sha = record.get("request_id"), record.get("observed_sha")
+    if record.get("verdict") not in RED:
+        return
+    note = f"TIP-RUN NOTE {request_id}:"
+    if not (isinstance(sha, str) and SHA40.fullmatch(sha)):
+        err(f"{note} its observed_sha is {json.dumps(sha)}, not one full SHA, so no match with a halt is noted")
+        return
+    reason = read_halt(cfg)
+    if reason is None:
+        return
+    if isinstance(reason, tuple):
+        err(f"{note} the halt could not be read ({reason[0]}), so no match with it is noted")
+        return
+    commits, tests = halt_shapes(reason)
+    facts: list[str] = []
+    repo = str(field(record, "request", "repository"))
+    for commit in commits:
+        matched = commit_match(cfg, repo, commit, sha)
+        if isinstance(matched, tuple):
+            err(f"{note} whether {sha} descends from {commit} (the halt's reason names it) is unread: {matched[0]}")
+        elif matched == "at":
+            facts.append(f"its commit {sha} is {commit}, which the reason names")
+        elif matched == "past":
+            facts.append(f"its commit {sha} descends from {commit}, which the reason names (inside the halt's span)")
+    missing: list[str] = []
+    if tests:
+        handle = record.get("handle")
+        found = HANDLE.fullmatch(handle) if isinstance(handle, str) else None
+        named = log_names(cfg, found.group(1), found.group(2), tests) if found else f"its handle is {json.dumps(handle)}, not bg-run:<box>:<dir>"
+        if isinstance(named, str):
+            err(f"{note} whether its log names {', '.join('test=' + t for t in tests)} (the halt's reason does) is unread: {named}")
+        else:
+            facts += [f"its log names test={t}, which the reason names" for t in tests if t in named]
+            missing = [f"test={t}" for t in tests if t not in named]
+    if facts:
+        absent = f"; its log does not name {', '.join(missing)}" if missing else ""
+        cli.say(f"TIP-RUN HALT {request_id} matches the standing halt: {'; '.join(facts)}{absent}; the halt's reason: {reason}")
 
 
 def next_tip(cfg: Config, record: dict[str, Any], branch: str) -> int:

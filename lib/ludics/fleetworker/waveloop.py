@@ -48,8 +48,10 @@ bound; a stopped driver leaves its run running, and the next driver resumes it:
      ``LOOP CANCELLED``, exit 1; ``not-launched`` (the slot refused at once) a note and a ``poll``.
      Any other exit, or a line not of that shape, is ``LOOP UNKNOWN``, exit 4.
 What it reads of tip-run: its exit status and those lines (``TIP-RUN STARTED`` and ``TIP-RUN
-CONCLUDED``, by their leading words and field count), nothing else of its output, which passes
-through on stderr. The yield to workers' records, the halt's admission of a loop run and the
+CONCLUDED``, by their leading words and field count), and on a red the ``TIP-RUN HALT <id>`` line
+naming the run (tiprun.py, THE HALT NOTE), whose words after the id end the ``LOOP RED`` line after
+`` -- ``, a note that changes nothing else; nothing else of its output, which passes through on
+stderr. The yield to workers' records, the halt's admission of a loop run and the
 backend pin are tip-run's own.
 
 A RED is the coordinator's: the driver never halts launches. Issue-wave SKILL.md's *On a red at the
@@ -213,8 +215,12 @@ class Driver:
                 self.say(f"PASS {request_id} at {sha}")
                 return True
             if verdict in ("fail", "timeout"):
+                # tip-run's THE HALT NOTE, carried onto the RED line the coordinator reads.
+                halt = f"TIP-RUN HALT {request_id} "
+                note = next((l[len(halt):] for l in done.out.split("\n") if l.startswith(halt)), "")
                 raise self.end(1, f"RED {request_id} ({verdict} at {sha}, log {found.group(5)}): the coordinator's"
-                                  " *On a red at the tip* (SKILL.md), then restart with --resume-after " + request_id)
+                                  " *On a red at the tip* (SKILL.md), then restart with --resume-after " + request_id
+                                  + (f" -- {note}" if note else ""))
             if verdict == "cancelled":
                 raise self.end(1, f"CANCELLED {request_id} at {sha}: restart with --resume-after {request_id} to go on")
             if verdict == "not-launched":
