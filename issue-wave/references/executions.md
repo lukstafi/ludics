@@ -1195,7 +1195,10 @@ general bypass for ordinary work. The halt admits one record more, the coordinat
 beside the request (taken only by `execution run`, beside a non-standing `correctness` request of
 transport `coordinator`), whose dispatch evidence names the halt and quotes its reason, and which
 is no member of the triage. So the integration loop's next run verifies a fix-forward under the
-halt, before `resume-launches`; a worker's reservation and an unmarked coordinator one stay refused.
+halt, before `resume-launches`, and a loop's flake rerun at the red SHA (SKILL.md's red path, step
+1: for the cc loop a targeted `tip-run` whose request carries no `"integration": true`) runs under
+it as such a record, so the coordinator holds no triage and the halt's triage keeps its one owner;
+a worker's reservation and an unmarked coordinator one stay refused.
 
 Fixtures: `python3 issue-wave/scripts/test-fleet-execution.py` exercises actual temporary anchor
 state and concurrent processes without ssh, accounts or hardware. For live validation reserve
