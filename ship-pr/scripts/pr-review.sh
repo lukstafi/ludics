@@ -186,11 +186,14 @@
 #                                          # PR (heads the reviewer left comments on), against
 #                                          # SHIP_PR_ROUND_THRESHOLD; exit 1 past it; ends with a
 #                                          # `rounds: n=… threshold=… first=…` trailer (see prreview/rounds.py)
-#   pr-review.sh checks <pr> [--wait] [--check <ERE>]
+#   pr-review.sh checks <pr> [--wait] [--settle] [--check <ERE>]
 #                                          # the BUILD signal on the head commit: green / red /
 #                                          # no verdict yet / absent; ends with a
 #                                          # `checks: verdict=…` trailer (see prreview/rounds.py).
-#                                          # --check judges only the checks the ERE names
+#                                          # --check judges only the checks the ERE names;
+#                                          # --settle (with --wait) waits past a red until no
+#                                          # judged check is still running, so every red is
+#                                          # reported at once, exit 1 as before
 #                                          # (see prreview/checks.py)
 #   pr-review.sh merge <pr> [--override "<why this red is unrelated>"] [--wait]
 #                           [--allow-no-verdict] [--require-green] [-C <clone>]

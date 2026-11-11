@@ -971,7 +971,11 @@ directory listing confirms counts as no file, since a token without Contents acc
 repository gets a 404 too. A read or listing that did not answer is exit 3. A refusal, an
 unconfirmed 404, a file with no ERE line, a line grep refuses and a line with a backreference
 (which the join would renumber) are each exit 2, and a set `SHIP_PR_ADVISORY_CHECKS` skips the
-read. Two cases run `merge` over the recognition (ludics-lite#523): an absent head whose base
+read. Four cases pin `checks --settle` (ludics#1039): a red beside a sibling still running is
+answered at once without it and, with it, waited out to a report of both reds (exit 1 either way);
+a sibling that outlasts the bound is named on the line before the trailer; an all-green head gets
+the same report and exit as without it; and `--settle` with no `--wait`, or a zero one, is exit 2. Two cases run
+`merge` over the recognition (ludics-lite#523): an absent head whose base
 advances between the gate's read and the merge call, adding a workflow whose `paths:` cover the
 head's diff, is gated again on the new base and refused (exit 4, no merge call), and a base that
 moved without touching what the recognition reads merges after that second read;

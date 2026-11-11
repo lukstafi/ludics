@@ -16,7 +16,7 @@ from unittest import mock
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 
-from ludics import proc
+from ludics import cli, proc
 from ludics.prreview import branchtip, checks, clock, closekw, shtext, workflow_yaml
 from ludics.prreview.core import Config, GhOk, GhSession, GhUnanswered, Json
 from ludics.prreview.drift import compare_file_set, compare_hunks
@@ -1208,6 +1208,107 @@ class ChecksWaitSettlesOnRequired(unittest.TestCase):
         rc, out, _clock = self.run_checks(rounds)
         self.assertEqual(rc, 4, out)
         self.assertNotIn("the wait is spent", out)
+
+
+class ChecksSettle(unittest.TestCase):
+    """#1039: ``checks --wait --settle`` waits past a red while a check the fold judges still runs,
+    so a worker sees every red of a push at once; without it the first red ends the wait."""
+
+    OLD = ChecksWaitSettlesOnRequired.OLD
+    run_checks = ChecksWaitSettlesOnRequired.run_checks
+    ci = ChecksWaitSettlesOnRequired.ci
+
+    def shards(self, second: str) -> dict[str, str]:
+        """``lint`` red, ``ubuntu 2/2`` at ``second`` (a conclusion, or pending), the advisory macOS
+        job queued throughout: the run stays in flight."""
+        old = self.OLD
+        done = "-" if second == "pending" else old
+        status = "in_progress" if second == "pending" else "completed"
+        jobs = f"lint\tfailure\t{old}\t{old}\nubuntu 2/2\t{second}\t{old}\t{done}\n{MACOS}\tpending\t{old}\t-"
+        checkruns = (f"lint\tfailure\tl\t1\tcompleted\nubuntu 2/2\t{second}\tu2\t1\t{status}\n"
+                     f"{MACOS}\tpending\tm\t1\tqueued")
+        return self.ci("in_progress", jobs, checkruns)
+
+    def test_a_red_beside_a_running_sibling_waits_for_it_and_reports_both(self) -> None:
+        rounds = [self.shards("pending"), self.shards("pending"), self.shards("failure")]
+        # The default is unchanged: the first red ends the wait, the sibling still running.
+        rc, out, clock = self.run_checks(rounds, "--wait=3600")
+        self.assertEqual((rc, out.splitlines()[-1]), (1, "checks: verdict=red branch=current"), out)
+        self.assertEqual(clock.sleeps, [], "the default reads no round after the red")
+        self.assertIn("running  ubuntu 2/2 (no verdict yet)", out)
+        # --settle waits the sibling out and reports both reds, with the same exit and trailer.
+        rc, out, clock = self.run_checks(rounds, "--wait=3600", "--settle")
+        self.assertEqual((rc, out.splitlines()[-1]), (1, "checks: verdict=red branch=current"), out)
+        self.assertEqual(len(clock.sleeps), 2, "held until the sibling concluded")
+        self.assertIn("RED — 2 of 2 build checks failed", out)
+        self.assertIn("RED      lint (failure)", out)
+        self.assertIn("RED      ubuntu 2/2 (failure)", out)
+        self.assertNotIn("--settle:", out, "nothing was left running")
+        self.assertNotIn("the wait is spent", out)
+
+    def test_a_red_whose_sibling_never_settles_names_it_at_the_bound(self) -> None:
+        rc, out, clock = self.run_checks([self.shards("pending")], "--wait=300", "--settle")
+        self.assertEqual(rc, 1, out)
+        lines = out.splitlines()
+        self.assertEqual(lines[-1], "checks: verdict=red branch=current", "the trailer is the red's")
+        self.assertEqual(
+            lines[-2], "checks: --settle: the wait is spent: 5m (--wait=300) passed with 1 check(s) still"
+            " running: ubuntu 2/2; the reds above are those read so far")
+        self.assertGreaterEqual(clock.t - FakeClock().t, 300)
+        self.assertIn("RED — 1 of 2 build checks failed", out)
+
+    def test_a_green_sibling_settles_red_and_all_green_is_unchanged(self) -> None:
+        rc, out, clock = self.run_checks([self.shards("pending"), self.shards("success")], "--wait=3600", "--settle")
+        self.assertEqual((rc, out.splitlines()[-1]), (1, "checks: verdict=red branch=current"), out)
+        self.assertEqual(len(clock.sleeps), 1)
+        self.assertIn("RED — 1 of 2 build checks failed", out)
+        # A head with no red waits and answers exactly as without --settle.
+        old = self.OLD
+        macos_job = f"{MACOS}\tpending\t{old}\t-"
+        macos_check = f"{MACOS}\tpending\tm\t1\tqueued"
+        rounds = [
+            self.ci("in_progress", f"ubuntu\tpending\t{old}\t-\n{macos_job}",
+                    f"ubuntu\tpending\tu\t1\tin_progress\n{macos_check}"),
+            self.ci("in_progress", f"ubuntu\tsuccess\t{old}\t{old}\n{macos_job}",
+                    f"ubuntu\tsuccess\tu\t1\tcompleted\n{macos_check}"),
+        ]
+        plain = self.run_checks(rounds, "--wait=3600")
+        settled = self.run_checks(rounds, "--wait=3600", "--settle")
+        self.assertEqual(settled[0], 0, settled[1])
+        self.assertEqual((settled[0], settled[1], settled[2].sleeps), (plain[0], plain[1], plain[2].sleeps))
+
+    def test_a_checkless_red_run_beside_a_running_check_waits_for_it(self) -> None:
+        # A workflow run that failed before its jobs started (runred) while a required check runs:
+        # the default ends at once on the run's red, --settle waits the check out and reports both.
+        old = self.OLD
+
+        def round_(concl: str) -> dict[str, str]:
+            done = "-" if concl == "pending" else old
+            status = "in_progress" if concl == "pending" else "completed"
+            answers = self.ci(status, f"ubuntu\t{concl}\t{old}\t{done}", f"ubuntu\t{concl}\tu\t1\t{status}")
+            answers["actions/runs?head_sha=h1"] = (
+                f"2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\t{status}\t{concl}\t1\n"
+                "2026-01-01T00:00:00Z\t101\t2\tpull_request\tsetup\tcompleted\tstartup_failure\t2"
+            )
+            answers["actions/runs/101/jobs"] = ""
+            return answers
+
+        rounds = [round_("pending"), round_("failure")]
+        rc, out, clock = self.run_checks(rounds, "--wait=3600")
+        self.assertEqual((rc, out.splitlines()[-1]), (1, "checks: verdict=runred branch=current"), out)
+        self.assertEqual(clock.sleeps, [])
+        rc, out, clock = self.run_checks(rounds, "--wait=3600", "--settle")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(len(clock.sleeps), 1, "held until the running check concluded")
+        self.assertIn("RED      ubuntu (failure)", out)
+        self.assertEqual(out.splitlines()[-1], "checks: verdict=red branch=current", "the check's red is read last")
+
+    def test_settle_needs_a_wait(self) -> None:
+        for args in (("--settle",), ("--wait=0", "--settle"), ("--wait=", "--settle")):
+            with self.subTest(args=args), self.assertRaises(cli.Exit) as raised:
+                self.run_checks([self.shards("pending")], *args)
+            self.assertEqual(raised.exception.rc, 2)
+            self.assertIn("--settle needs a --wait of more than 0 seconds", raised.exception.message)
 
 if __name__ == "__main__":
     unittest.main()

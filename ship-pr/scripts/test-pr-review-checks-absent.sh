@@ -1409,6 +1409,86 @@ test_a_selected_check_settles_while_a_slow_one_runs() {
   assert_eq "$GATE_RC" 4 "without the selection the slow check holds the head"
 }
 
+# ludics#1039: `checks --wait` ends at the first red while a sibling shard still runs, so a worker
+# learns of a push's failures one push at a time. `--settle` waits the sibling out and reports every
+# red at once, exit 1 and `verdict=red` as before; the default still answers at the first red.
+settle_rounds() { # <the sibling's conclusion once it settles>
+  CHECK_RUNS_SEQ=(
+    "$(check_runs_json '[{"name":"lint","conclusion":"failure","html_url":"l"},
+                         {"name":"shard 2/2","conclusion":null,"html_url":"s"}]')"
+    "$(check_runs_json '[{"name":"lint","conclusion":"failure","html_url":"l"},
+                         {"name":"shard 2/2","conclusion":null,"html_url":"s"}]')"
+    "$(check_runs_json "$(jq -cn --arg c "$1" '[{name:"lint", conclusion:"failure", html_url:"l"},
+                         {name:"shard 2/2", conclusion:$c, html_url:"s"}]')")"
+  )
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"in_progress","conclusion":null}]')")
+}
+
+test_settle_waits_out_a_running_sibling_and_reports_every_red() {
+  reset_fixture
+  settle_rounds failure
+  run_checks --wait=30
+  assert_eq "$GATE_RC" 1 "without --settle the first red is the answer"
+  assert_contains "$GATE_OUTPUT" "running  shard 2/2 (no verdict yet)" "the sibling was still running"
+  assert_not_contains "$GATE_OUTPUT" "RED      shard 2/2" "the default does not wait for the sibling's red"
+  reset_fixture
+  settle_rounds failure
+  run_checks --wait=30 --settle
+  assert_eq "$GATE_RC" 1 "a settled red is exit 1, as a red is without --settle"
+  assert_contains "$GATE_OUTPUT" "RED — 2 of 2 build checks failed" "both reds are counted"
+  assert_contains "$GATE_OUTPUT" "RED      lint (failure)" "the first red is reported"
+  assert_contains "$GATE_OUTPUT" "RED      shard 2/2 (failure)" "the sibling's red is reported with it"
+  assert_contains "$GATE_OUTPUT" "checks: verdict=red branch=" "the trailer is the red's"
+  assert_not_contains "$GATE_OUTPUT" "checks: --settle:" "nothing was left running"
+}
+
+test_settle_names_the_check_still_running_at_the_bound() {
+  reset_fixture
+  CHECK_RUNS_SEQ=("$(check_runs_json '[{"name":"lint","conclusion":"failure","html_url":"l"},
+                                       {"name":"shard 2/2","conclusion":null,"html_url":"s"}]')")
+  RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"in_progress","conclusion":null}]')")
+  run_checks --wait=2 --settle
+  assert_eq "$GATE_RC" 1 "a red with a check still running at the bound is still exit 1"
+  assert_contains "$GATE_OUTPUT" "checks: --settle: the wait is spent:" "the spent bound is said"
+  assert_contains "$GATE_OUTPUT" "(--wait=2) passed with 1 check(s) still running: shard 2/2;" \
+    "the check still running is named"
+  assert_contains "$GATE_OUTPUT" "checks: verdict=red branch=" "the trailer is the red's"
+}
+
+test_settle_leaves_an_all_green_head_unchanged() {
+  local plain plain_rc flag
+  for flag in "" --settle; do
+    reset_fixture
+    CHECK_RUNS_SEQ=(
+      "$(check_runs_json '[{"name":"lint","conclusion":"success","html_url":"l"},
+                           {"name":"shard 2/2","conclusion":null,"html_url":"s"}]')"
+      "$(check_runs_json '[{"name":"lint","conclusion":"success","html_url":"l"},
+                           {"name":"shard 2/2","conclusion":"success","html_url":"s"}]')"
+    )
+    RUNS_SEQ=("$(runs_json '[{"name":"ci","status":"completed","conclusion":"success"}]')")
+    if [ -z "$flag" ]; then
+      run_checks --wait=30
+      plain="$GATE_OUTPUT" plain_rc="$GATE_RC"
+    else
+      run_checks --wait=30 "$flag"
+    fi
+  done
+  assert_eq "$plain_rc" 0 "the head settles green"
+  assert_eq "$GATE_RC" "$plain_rc" "--settle answers a green head with the same exit"
+  assert_eq "$GATE_OUTPUT" "$plain" "--settle answers a green head with the same report"
+  assert_contains "$GATE_OUTPUT" "green — 2 build checks passed" "both checks passed"
+}
+
+test_settle_without_a_wait_is_a_usage_error() {
+  reset_fixture
+  run_checks --settle
+  assert_eq "$GATE_RC" 2 "--settle with no wait to keep going is a usage error"
+  assert_contains "$GATE_OUTPUT" "--settle needs a --wait of more than 0 seconds" "the refusal says why"
+  reset_fixture
+  run_checks --wait=0 --settle
+  assert_eq "$GATE_RC" 2 "a zero wait has nothing to keep going either"
+}
+
 # ludics-lite#569: an hour on "1 check(s) running" read as a stall. The heartbeat names the
 # check(s) it is still waiting on, a bounded list, and so does the no-verdict headline.
 test_the_progress_line_names_the_running_checks() {
@@ -2484,6 +2564,10 @@ tests=(
   test_wait_ceiling_with_a_queued_run_is_no_verdict
   test_a_selected_check_settles_while_a_slow_one_runs
   test_the_progress_line_names_the_running_checks
+  test_settle_waits_out_a_running_sibling_and_reports_every_red
+  test_settle_names_the_check_still_running_at_the_bound
+  test_settle_leaves_an_all_green_head_unchanged
+  test_settle_without_a_wait_is_a_usage_error
   test_a_selection_matching_nothing_is_refused
   test_a_selection_waits_on_an_advisory_check_it_names
   test_merge_regates_an_absent_verdict_when_the_base_moved

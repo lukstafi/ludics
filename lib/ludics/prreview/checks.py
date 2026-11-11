@@ -1,5 +1,5 @@
-"""``pr-review.sh checks <pr> [--wait[=seconds]] [--check <ERE>]``: the PR head's build signal, and
-its trailer.
+"""``pr-review.sh checks <pr> [--wait[=seconds]] [--settle] [--check <ERE>]``: the PR head's build
+signal, and its trailer.
 
 Ported from the shell's ``cmd_checks`` (ludics-lite#403). The repository's advisory list is read
 first (``Gate.advisory_policy``); a policy that could not be read is the command's status, with
@@ -49,7 +49,8 @@ its default branch read as ``merge`` reads it (``Gate.advisory_policy``), or SHI
 So the wait ends green once every required check is green while an advisory job is still queued or
 running (its check runs are out of the fold, and its run is released by ``run_inflight_hold`` once
 only advisory jobs are unfinished and the job list has been still for the advisory settle); ends red
-at the first round that reads a required red, whatever else is still running; and holds a run whose
+at the first round that reads a required red, whatever else is still running (``--settle``, below,
+waits those out); and holds a run whose
 required ``needs:`` dependent has no job yet for as long as its job list moved inside that settle.
 Boundary: it reads the advisory file once and the check runs, workflow runs and job lists as they
 exist at each read. A dependent job GitHub creates after the settle has passed (a required job that
@@ -57,6 +58,21 @@ exist at each read. A dependent job GitHub creates after the settle has passed (
 event starts (``workflow_run``), and a push after the last read are not seen. When the bound
 expires with no verdict, one line before the trailer says the wait was spent, and how long it was;
 the exit stays 4 and the trailer's vocabulary is unchanged.
+
+``--settle`` (#1039; only with a ``--wait`` of more than 0 seconds) keeps the wait going past a red while a check the fold
+judges -- every required check, or the ``--check`` selection -- is still running, so every red of
+the head is reported in one answer rather than one push at a time (``Gate.settling``). It ends once
+none is running, at the bound, or on a job that never got a runner, and the exit and trailer are the
+red's as without it (1, ``verdict=red`` or ``runred``). A red that ends it with checks still running
+(the bound spent, or a runner-less job) says so on one line before the trailer, naming them: the
+reds above are those read so far. A head that reads no red waits and answers exactly as without it.
+Boundary: it holds on the check runs the fold reads, nothing else -- a required ``needs:`` job with
+no check run yet does not hold a red (a red job's dependents are usually skipped), and an in-flight
+workflow run around finished checks does not either (an advisory leg can keep a run unfinished long
+after every required check settled). The report is the last round's, as without it: a red check
+there outranks the run list, which is then not read, so a workflow run that concluded red with no
+check behind it (``runred``) is named only when no check is red. Without ``--settle`` a red ends
+the wait at once: ``merge`` and every other caller keep that.
 """
 
 import os
@@ -66,10 +82,10 @@ from ludics import cli
 from ludics.prreview import branchtip, ere
 from ludics.prreview.clock import clock_from_env, fmt_age
 from ludics.prreview.core import GhSession, die, fail, pr_arg
-from ludics.prreview.gate import Gate, load_gate_config
+from ludics.prreview.gate import Gate, load_gate_config, running_list
 from ludics.prreview.shtext import is_digits
 
-USAGE = "usage: checks <pr> [--wait[=seconds]] [--check <ERE>]"
+USAGE = "usage: checks <pr> [--wait[=seconds]] [--settle] [--check <ERE>]"
 
 VERDICTS = (
     "green", "absent", "red", "runred", "waived", "pending", "mixed", "unjudged", "superseded", "unknown",
@@ -101,6 +117,7 @@ def run(session: GhSession, args: list[str]) -> int:
     wait_for = 0
     wait_from = ""  # how the bound was set, for the line that reports its expiry
     select: str | None = None
+    settle = False
     rest = args[1:]
     while rest:
         arg = rest[0]
@@ -111,6 +128,8 @@ def run(session: GhSession, args: list[str]) -> int:
         elif arg.startswith("--wait="):
             wait_for = parse_wait(arg[len("--wait=") :], "checks")
             wait_from = arg
+        elif arg == "--settle":
+            settle = True
         elif arg == "--check" or arg.startswith("--check="):
             if arg == "--check":
                 if not rest:
@@ -127,13 +146,15 @@ def run(session: GhSession, args: list[str]) -> int:
             select = value
         else:
             die(f"checks: unknown option '{arg}'")
+    if settle and wait_for == 0:
+        die("checks: --settle needs a --wait of more than 0 seconds: it keeps a wait going past a red")
     target = pr_arg(pr, session.config.repo, session)
     # A --wait is the PR's build observer from its first read on, the advisory list's included
     # (the polling budget, budget.py): a second is refused before it reads anything.
     if session.budget is not None:
         session.budget.observe("build", wait_for, target.repo, target.num)
     gate = Gate(session, target.repo, config, clock_from_env(os.environ), select=select or "", orphans_on=True,
-                images_on=True)
+                images_on=True, settle=settle)
     # A selection names its checks itself; the advisory list has no say in it.
     policy = 0 if select else gate.advisory_policy()
     kinds: set[str] = set()
@@ -142,10 +163,24 @@ def run(session: GhSession, args: list[str]) -> int:
         verdict: str = gate.verdict
         kinds = {orphan.kind for orphan in gate.orphans}
         # The bound, reported when it is what ended the wait (a no-runner job ends it early).
-        if rc == 4 and wait_for > 0 and gate.deadline is not None and gate.clock.now() >= gate.deadline:
+        def spent() -> bool:
+            return wait_for > 0 and gate.deadline is not None and gate.clock.now() >= gate.deadline
+
+        if rc == 4 and spent():
             cli.say(
                 f"checks: the wait is spent: {fmt_age(wait_for)} ({wait_from}) passed with no verdict;"
                 " exit 4 is no verdict yet, neither green nor red"
+            )
+        elif settle and rc == 1 and gate.check_pending > 0:
+            if spent():
+                why = f"the wait is spent: {fmt_age(wait_for)} ({wait_from}) passed"
+            elif gate.orphans:
+                why = "a job that never got a runner ended the wait"
+            else:
+                why = "the wait ended"
+            cli.say(
+                f"checks: --settle: {why} with {gate.check_pending} check(s) still running:"
+                f" {running_list(gate.pending_names)}; the reds above are those read so far"
             )
     else:
         rc = policy
