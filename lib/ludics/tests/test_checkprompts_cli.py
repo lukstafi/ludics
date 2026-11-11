@@ -3599,6 +3599,11 @@ class SuiteMapTest(Case):
         result = self.expect("a part of a module that does not parse is refused", 1,
                              "names the part 'pkg/c.py:X', but 'pkg/c.py' has no top-level names: it does not parse as Python")
         self.lacks("an unparsable module", SUITE_MAP_OK, result)
+        # The source is read as Python reads it: a BOM and a UTF-8 identifier are no parse error.
+        suite_map_tree(R, changed(self.BASE, "a.py:Klass", "a.py:Klass pkg/c.py:X"))
+        with open(os.path.join(R, "lib", "ludics", "pkg", "c.py"), "wb") as f:
+            f.write(b"\xef\xbb\xbfcaf\xc3\xa9 = 1\nX = 2\n")
+        self.expect("a UTF-8 module with a BOM yields its parts", 0, SUITE_MAP_OK)
         # Its own module line still stands: the module is mapped, only its parts cannot be read.
         suite_map_tree(R, self.BASE)
         write(os.path.join(R, "lib", "ludics", "pkg", "c.py"), "X = 1\ndef (\n")

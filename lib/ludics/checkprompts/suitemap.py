@@ -14,9 +14,10 @@ that block every line is one of:
 - a MODULE line: no leading blank, and blank-separated words, each a module's path relative to
   lib/ludics, ``[A-Za-z0-9_]+(/[A-Za-z0-9_]+)*\\.py``, or a PART of a module, that path, ``:`` and
   a name ``[A-Za-z_][A-Za-z0-9_]*`` the module binds at its top level (#1035). The top-level names
-  are read by ``ast`` from the module's source, and only these bind one: ``def``, ``async def``,
-  ``class``, and an assignment or annotated assignment whose target is a plain name (``X = ...``,
-  ``X = Y = ...``, ``X: T = ...``). A name bound any other way (a tuple target, an import, a
+  are read by ``ast`` from the module file's bytes, as Python reads source (its encoding rules
+  applied), and only these bind one: ``def``, ``async def``, ``class``, and an assignment or
+  annotated assignment whose target is a plain name (``X = ...``, ``X = Y = ...``, ``X: T = ...``).
+  A name bound any other way (a tuple target, an import, a
   ``for``, a name under an ``if``) is no part, and a module whose source does not parse has none;
 - a SUITE line: exactly four spaces, then words as POSIX ``shlex`` splits
   them. The first is a suite's path from the checkout root, or a glob (``*``, ``?``, ``[``; read
@@ -79,11 +80,12 @@ def modules(tree: Tree) -> list[str]:
     return sorted(found)
 
 
-def top_names(text: str) -> set[str] | str:
+def top_names(source: bytes) -> set[str] | str:
     """The names a module's source binds at its top level, as the docstring's allowlist reads
-    them, or why there are none (it does not parse)."""
+    them, or why there are none (it does not parse). The source goes in as BYTES, so Python's own
+    encoding rules (a BOM, a coding line, UTF-8) read it, not the checker's Latin-1 view."""
     try:
-        body = ast.parse(text).body
+        body = ast.parse(source).body
     except (SyntaxError, ValueError) as e:
         return f"it does not parse as Python ({e})"
     names: set[str] = set()
@@ -193,7 +195,7 @@ def check_suite_map(report: Report, tree: Tree) -> None:
                         ko(n, f"names the part '{word}' of '{module}', which is no module of lib/ludics")
                         continue
                     if module not in part_cache:
-                        part_cache[module] = top_names(tree.read(f"{PACKAGE}/{module}") or "")
+                        part_cache[module] = top_names(tree.read_bytes(f"{PACKAGE}/{module}") or b"")
                     names_of = part_cache[module]
                     if isinstance(names_of, str):
                         ko(n, f"names the part '{word}', but '{module}' has no top-level names: {names_of}")
