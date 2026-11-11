@@ -212,19 +212,24 @@ class Outcomes(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit) as caught:
             self.assign([self.base, requests, "--request", "nope"], {})
         self.assertIn("--request nope names no block", caught.exception.message)
+        aimless = self.write("aimless.json", json.dumps({k: v for k, v in BASE.items() if k != "purpose"}))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit) as caught:
+            self.assign([aimless, requests], {})
+        self.assertIn("a has no purpose, and the base gives none", caught.exception.message)
         self.assertEqual(self.calls, [])
 
     def test_an_unreadable_registry_asks_nothing(self) -> None:
         requests = self.write("r.txt", message(block("a")))
-        out = io.StringIO()
+        out, said = io.StringIO(), io.StringIO()
 
         def call(_cfg: Config, _verb: Sequence[str], _payload: dict[str, Any]) -> Done:
             self.fail("the registry was asked")
 
-        with (mock.patch.object(execution, "listing", return_value=Done(1, "")), contextlib.redirect_stdout(out)):
+        with (mock.patch.object(execution, "listing", return_value=Done(1, "EXECUTION REFUSED: busy")),
+              contextlib.redirect_stdout(out), contextlib.redirect_stderr(said)):
             rc = cmd_assign(self.cfg, [self.base, requests], call=call)
-        self.assertEqual(rc, 4)
-        self.assertIn("ASSIGN UNKNOWN: the registry", out.getvalue())
+        self.assertEqual((rc, out.getvalue()), (4, ""), "stdout is the message alone")
+        self.assertIn("EXECUTION REFUSED: busy\nASSIGN UNKNOWN: the registry", said.getvalue())
 
 
 class Wiring(unittest.TestCase):

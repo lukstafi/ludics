@@ -32,7 +32,7 @@ the registry is asked, so a malformed request reserves nothing, and neither do i
   (strings), and exactly one of ``command`` (a string, sent as written) or ``runner`` (a string, or
   an array of strings, the box-relative runner command of a leg). Optional: ``checkout`` (absolute;
   kept beside the request as the record's, THE CHECKOUT), ``log`` (a string, ``-`` when absent),
-  ``purpose`` (a string, preferred to the base's), and ``clone``, the leg's ``--checkout``: the
+  ``purpose`` (a string, preferred to the base's; one of the two must give it), and ``clone``, the leg's ``--checkout``: the
   box's git checkout the leg's worktree is made from. An unterminated block, a block in a block,
   no block, two blocks with one ``request_id``, and a ``--request`` naming no block are refused.
 - THE RUNNER (quirk 9): a block with ``runner`` is assigned as the leg form, ``<this fleet-worker.sh>
@@ -383,12 +383,17 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
         die(f"execution assign: --request {', '.join(missing)} names no block; nothing assigned")
     selected = [block for block in blocks if not parsed.only or block["request_id"] in parsed.only]
     base_fields = cast(dict[str, Any], base)
+    aimless = [block["request_id"] for block in selected if not (block.get("purpose") or base_fields.get("purpose"))]
+    if aimless:
+        die(f"execution assign: {', '.join(aimless)} has no purpose, and the base gives none; nothing assigned")
 
     done = execution.listing(cfg)
     records = execution.records_of(done.out) if done.rc == 0 and not done.unreachable else None
     if records is None:
-        cli.emit(done.out)
-        cli.say(f"ASSIGN UNKNOWN: the registry on {cfg.anchor} could not be read; nothing asked")
+        # stdout is the message alone: nothing on it may read as an assignment.
+        if done.out:
+            err(done.out.rstrip("\n"))
+        err(f"ASSIGN UNKNOWN: the registry on {cfg.anchor} could not be read; nothing asked")
         return 4
 
     fw = fleet_worker_word(cfg)
