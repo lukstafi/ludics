@@ -1398,6 +1398,27 @@ class InterimChain(unittest.TestCase):
                 self.assertNotIn("green, interim", out)
                 self.assertIn(why, out)
 
+    def test_each_commit_of_the_walk_is_read_once(self) -> None:
+        """#1037: the tip's source (a) and each link's judge parse the first parent the walk steps
+        to, so no commit is read twice; a tip judged by a record has its parent read by the walk,
+        and a parsed parent that is not a SHA is read again through first_parent and still refuses
+        (twice per round: it waits through rounds, each reading the tip once)."""
+        commits = [f"repos/o/r/commits/{s}" for s in (C, B, A)]
+        rc, out, gh = self._base(self._world())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([gh.asked.count(e) for e in commits], [1, 1, 1], gh.asked)
+        rc, out, gh = self._base(self._world(), records=f"{C}\tpass\treq-1\t2026-11-10T09:00:00Z\n")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([gh.asked.count(e) for e in commits], [1, 1, 1], gh.asked)
+        answers = self._world()
+        answers[f"repos/o/r/commits/{B}"] = merge("x", F)
+        rc, out, gh = self._base(answers)
+        self.assertEqual(rc, 4, out)
+        self.assertIn(f"the first parent of {B[:8]} could not be read", out)
+        rounds = gh.asked.count(f"repos/o/r/commits/{C}")
+        self.assertGreater(rounds, 0, gh.asked)
+        self.assertEqual(gh.asked.count(f"repos/o/r/commits/{B}"), 2 * rounds, gh.asked)
+
     def test_the_depth_bound(self) -> None:
         saved = base.INTERIM_CHAIN_DEPTH
         base.INTERIM_CHAIN_DEPTH = 1

@@ -484,21 +484,27 @@ type SourceVerdict = Literal["green", "red", "pending", "none"]
 @dataclass(frozen=True)
 class TipPr:
     """``tip_pr_head_verdict``'s TIP_PR_*: the verdict, the sentence naming its source or why there
-    is none, and the PR and head when one was found."""
+    is none, and the PR and head when one was found. ``first``: on a verdict that can be green,
+    the judged commit's first parent, parsed from the same commit read by ``first_parent``'s rule,
+    so the interim's chain steps below it without reading the commit again (#1037); None when it
+    was not parsed or is not a full SHA, and the chain then reads it through ``first_parent``."""
 
     verdict: SourceVerdict
     why: str
     num: str = ""
     head: str = ""
+    first: str | None = None
 
 
 @dataclass(frozen=True)
 class Source:
-    """``tip_named_source``'s SRC_*: the verdict, the sentence, the source in a few words."""
+    """``tip_named_source``'s SRC_*: the verdict, the sentence, the source in a few words, and
+    source (a)'s ``TipPr.first`` (None from a record: the chain reads the tip's parent itself)."""
 
     verdict: SourceVerdict
     why: str
     name: str
+    first: str | None = None
 
 
 @dataclass(frozen=True)
@@ -954,6 +960,7 @@ class Base:
         p1 = _field(alt(get(doc, "parents", 1, "sha"), "-"))
         email = _field(alt(get(doc, "commit", "committer", "email"), "-"))
         verified = _field(jq_raw(alt(get(doc, "commit", "verification", "verified"), False)))
+        first = _first_parent_of(doc)
         s8 = sha[:8]
         if n != "2":
             return TipPr("none", f"{noun} {s8} is not a merge commit ({n} parent(s)), so no PR head's"
@@ -1006,7 +1013,7 @@ class Base:
         # heartbeat joins them, so every line that carries this source names the run, job and why.
         why = "; ".join([why, *(h.strip() for h in herestring_lines(signal.holds) if h)])
         if verdict != "green" or not wants:
-            return TipPr(verdict, why, num, head)
+            return TipPr(verdict, why, num, head, first)
         pages = self.gh_pages(["api", "--paginate",
                                f"repos/{self.repo}/actions/runs?head_sha={head}&per_page=100"])
         if isinstance(pages, (GhFailed, GhUnanswered)):
@@ -1068,7 +1075,7 @@ class Base:
         if released:
             why += (f" ({', '.join(released)} still running there only in jobs the repository's advisory"
                     " list names)")
-        return TipPr(verdict, why, num, head)
+        return TipPr(verdict, why, num, head, first)
 
     def named_source(self, branch: str, sha: str, wants: Sequence[Want]) -> Source | None:
         """``tip_named_source``: (b) the newest integration record at the tip, by its conclusion
@@ -1087,7 +1094,7 @@ class Base:
         name = f"PR #{tp.num}'s head run (roll-forward rule)"
         if tp.verdict == "none":
             return Source(tp.verdict, f"no integration record ran the tip {sha[:8]}, and {tp.why}", name)
-        return Source(tp.verdict, f"source (a): {tp.why}", name)
+        return Source(tp.verdict, f"source (a): {tp.why}", name, tp.first)
 
     def record_at(self, sha: str) -> Record | None:
         """The newest integration record at the commit, by its conclusion time, or None."""
@@ -1106,13 +1113,7 @@ class Base:
         doc = self.gh_json(["api", f"repos/{self.repo}/commits/{sha}"])
         if isinstance(doc, (GhFailed, GhUnanswered)):
             return None
-        parents = _items(get(doc, "parents"))
-        if parents is None:
-            return None
-        if not parents:
-            return ""
-        first = jq_raw(get(parents[0], "sha"))
-        return first if _FULL_SHA.fullmatch(first) else None
+        return _first_parent_of(doc)
 
     def runs_at(self, sha: str, ebranch: str) -> list[RunRow] | None:
         """Every push run on the branch at this commit, every workflow, every page: None when a
@@ -1219,6 +1220,18 @@ def _jq_order(value: Json) -> tuple[int, float | str]:
 # 4, never the newest candidate off it (a SHA is printed only for a workflow it was found for).
 LAST_GREEN_DEPTH = 300
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def _first_parent_of(doc: Json) -> str | None:
+    """A commit read's first parent, by ``Base.first_parent``'s rule: "" at a root commit, None
+    when the answer is not a parent list whose first entry is a full SHA."""
+    parents = _items(get(doc, "parents"))
+    if parents is None:
+        return None
+    if not parents:
+        return ""
+    first = jq_raw(get(parents[0], "sha"))
+    return first if _FULL_SHA.fullmatch(first) else None
 _ISO_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
@@ -2125,7 +2138,7 @@ class Wait:
             return "no"
         excused = list(held.values())
         if excused:
-            links, why = self.chain(rnd, tip, excused)
+            links, why = self.chain(rnd, tip, excused, src.first)
             if why:
                 rnd.out += f"           (no interim verdict for {names}: {why})\n"
                 return "no"
@@ -2208,7 +2221,8 @@ class Wait:
         rnd.out += f"           (no interim verdict for {names}: {hold_why})\n"
         return "no"
 
-    def chain(self, rnd: _Round, tip: str, excused: Sequence[RunRow]) -> tuple[list[Link], str]:
+    def chain(self, rnd: _Round, tip: str, excused: Sequence[RunRow],
+              first: str | None = None) -> tuple[list[Link], str]:
         """The interim's chain (#1016): the runs in ``excused`` are in flight at older commits and
         hold the interim, and it may still answer when every merge from the tip's first parent down
         to the deepest of their commits, inclusive -- the SPAN, every merge in it whether its runs
@@ -2219,7 +2233,9 @@ class Wait:
         advisory-only red is released and recorded, as the newest judged run's is). The links,
         newest first, or why there is no chain. Fail closed: a read that fails, a parent that is
         not a SHA, a commit met twice, a root, or more than INTERIM_CHAIN_DEPTH steps before every
-        excused commit is met is no chain."""
+        excused commit is met is no chain. Each commit is read once (#1037): a step's parent is the
+        one its judge parsed (``first``, the tip's source (a); then each link's ``TipPr.first``), and
+        only one not parsed is read through ``first_parent``, so a parent not a SHA still refuses."""
         b, branch = self.b, self.branch
         wants: list[Want] = []
         for r in excused:
@@ -2236,7 +2252,7 @@ class Wait:
                 return [], (f"the run(s) in flight at {', '.join(sorted(s[:8] for s in owed))} are not"
                             f" within {INTERIM_CHAIN_DEPTH} first-parent commits of the tip, so no chain"
                             " of green roll-forwards reaches them")
-            parent = b.first_parent(cur)
+            parent = first if first is not None else b.first_parent(cur)
             if parent is None:
                 return [], f"the first parent of {cur[:8]} could not be read ({b.err_line()}), so no chain"
             if not parent:
@@ -2274,7 +2290,7 @@ class Wait:
                 return [], f"{flying}: its push run {r.run_id} of {r.name} concluded {r.conclusion}, a red in the span"
             links.append(Link(parent, tp.num, tp.head, tp.why, here))
             owed.discard(parent)
-            cur = parent
+            cur, first = parent, tp.first
         seen_red = {(run, job) for _, _, run, job, _ in rnd.advisory_red}
         rnd.advisory_red.extend(x for x in reds if (x[2], x[3]) not in seen_red)
         return links, ""
