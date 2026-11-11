@@ -761,7 +761,7 @@ reservation (ludics-lite#558):
 ```
 fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   --checkout <checkout on the box> --worktree <worktree on the box> [--remote <name>] \
-  [--control <patch>] [--file <local file>] [--reads-no-config] [--cpu|--gpu] [--wait <s>] \
+  [--base <branch>] [--control <patch>] [--file <local file>] [--reads-no-config] [--cpu|--gpu] [--wait <s>] \
   [--wait-window[=<s>]] [--deadline <s>] -- <runner command...>
 ```
 
@@ -805,7 +805,16 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   ref of the checkout and resolved there, never through `FETCH_HEAD`, which a linked worktree
   cannot see (the trap ahrefs/ocannl#1153 hit) and which two legs in one checkout would overwrite.
   `EXECUTION LEG <box>: created|refreshed <worktree> at <sha> ...; observed_sha=<sha>` on stderr is
-  the worktree's `git rev-parse HEAD` before the runner starts. After the run the leg warns when the
+  the worktree's `git rev-parse HEAD` before the runner starts. Before the worktree moves, the leg
+  fetches the base into its remote-tracking ref of the checkout, which the worktree shares
+  (ludics#1042: a reused checkout's stale `origin/master` made a project's `affected` count 65 changed
+  paths where the diff had 4): the branch `--base <branch>` names, or the one the checkout's
+  `<remote>/HEAD` names. `EXECUTION LEG <box>: base <remote>/<branch> at <sha> (<how>), fetched from
+  <remote> before the run; was <old>` says which. A base fetch that fails or times out refuses the
+  leg, nothing run; a checkout with no `<remote>/HEAD` and no `--base` is a `WARNING: no base
+  fetched`, and the leg runs. It writes that one remote-tracking ref, never a checkout, reset or
+  branch of the checkout, so a served clone stays on its branch; which ref a project's reach diffs
+  against is the project's (`leg.py`, THE BASE). After the run the leg warns when the
   runner moved HEAD, and when it left changed or untracked paths (`WARNING: <worktree> has N
   uncommitted path(s) after the run`, ludics-lite#749), which the next leg there refuses: clean
   them, and ask whether the runner wrote what it should only have read (an auto-promoted golden). The fetch is bounded by

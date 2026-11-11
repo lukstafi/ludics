@@ -152,13 +152,15 @@
 #                          # its start and end, which the measurement's conclusion cites in its
 #                          # evidence; --deadline as for `slot`
 #   fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> --checkout <dir>
-#                          --worktree <dir> [--remote <name>] [--control <patch>] [--file <local file>]
+#                          --worktree <dir> [--remote <name>] [--base <branch>] [--control <patch>] [--file <local file>]
 #                          [--reads-no-config] [--cpu|--gpu] [--wait <s>] [--wait-window[=<s>]] [--deadline <s>]
 #                          -- <runner command...>
 #                          # inside that dispatched reservation, on its box: a linked worktree of
 #                          # <checkout> made or moved to the exact commit, the runner run there
 #                          # under `execution slot` (a measurement: `hold --request`), its status
 #                          # returned unchanged; --control: a patch that must then make it fail;
+#                          # --base: the branch fetched into <remote>/<branch> before the run (default:
+#                          # the one <remote>/HEAD names there);
 #                          # --file: a local file the runner's {file} word names on the box;
 #                          # --reads-no-config: a runner that reads no project configuration, asked no
 #                          # backend pin (the contract: lib/ludics/fleetworker/leg.py)
