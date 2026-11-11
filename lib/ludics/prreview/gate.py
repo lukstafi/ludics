@@ -167,6 +167,9 @@ class Gate:
     # ``checks --check <ERE>`` (#569): judge only the check runs whose name the ERE matches, grep
     # reading it as it reads the advisory list. Empty is the whole head. See ``check``.
     select: str = ""
+    # ``checks --settle`` (#1039): a red does not end the wait while a check the fold judges is still
+    # running, so every red of the head is reported at once. See ``settling``.
+    settle: bool = False
     # The round's workflow runs, "<id> <status> <conclusion>" each, what the budget's pause keys
     # on beside the check counts (ludics-lite#551): a run moves before any check row exists.
     run_state: str = ""
@@ -174,9 +177,10 @@ class Gate:
     waived: set[str] = field(default_factory=lambda: set[str]())
     # Jobs that never got a runner (runners.py, ludics-lite#560/#728): looked for only when
     # ``orphans_on`` (``checks`` and ``merge``; ``base`` reads a merged head and leaves it off), on
-    # a round with no verdict. ``orphans`` is the last such round's finding. ``recover`` is
-    # ``merge --wait``'s one recovery (merge.py), given the round's orphans and runs: Stop ends the
-    # wait, Wait keeps it (to a later deadline, after a rerun), Idle leaves the round as it is.
+    # a round with no verdict, or a red that ``settling`` holds. ``orphans`` is the last such round's
+    # finding. ``recover`` is ``merge --wait``'s one recovery (merge.py), given the round's orphans
+    # and runs: Stop ends the wait, Wait keeps it (to a later deadline, after a rerun), Idle leaves
+    # the round as it is.
     # Without it, a round that finds one ends the wait: nothing it waits for moves until someone
     # reruns the run.
     orphans_on: bool = False
@@ -360,6 +364,14 @@ class Gate:
                     cls = "waived"
             out.append(f"{cls}\t{name}\t{concl}\t{url}\t{suite}\t{status}")
         return out
+
+    def settling(self) -> bool:
+        """``--settle``'s hold (#1039): the round read a red (a check, or a checkless run) while a
+        check the fold judges -- every required one, or the ``--check`` selection -- has no
+        conclusion yet. Off, a red ends the wait whatever is still running. Boundary: it reads the
+        fold's check runs alone; a required job with no check run yet (a ``needs:`` dependent not
+        yet queued) does not hold it, as ``--check``'s selection does not see one."""
+        return self.settle and self.verdict in ("red", "runred") and self.check_pending > 0
 
     def summarize(self, rows: list[str]) -> None:
         """``summarize_checks``: the per-check classes folded into ``verdict`` and the report lines."""
@@ -598,7 +610,8 @@ class Gate:
 
     def find_orphans(self, sha: str) -> list[Orphan]:
         """The jobs of the head's runs that never got a runner (runners.py), read on a round with
-        no verdict; the run list is this round's when ``run_signal`` read it, else read here."""
+        no verdict (or a red ``settling`` holds); the run list is this round's when ``run_signal``
+        read it, else read here."""
         if self._round_runs is None and (self._round_runs_failure is not None or self.read_runs(sha) is None):
             return []
         runs = self._round_runs or []
@@ -950,7 +963,7 @@ class Gate:
         """Sleep the budget's next pause (``pause``), clipped at the deadline; the pause taken."""
         budget = self.session.budget
         cap = budget.build_cap if budget is not None else self.config.checks_interval
-        if self.verdict == "pending" and self.check_queued == 0:
+        if (self.verdict == "pending" or self.settling()) and self.check_queued == 0:
             cap = min(cap, 2 * self.config.checks_interval)
         sleep_for = pause(self.config.checks_interval, cap, last_pause, changed)
         self.clock.sleep(min(sleep_for, max(0, deadline - int(self.clock.now()))))
@@ -1155,9 +1168,11 @@ class Gate:
             # a moved head is 5 before ``recover`` writes anything. A round that finds one ends the
             # wait, unless ``recover`` (merge --wait's one recovery) asks to keep waiting -- through
             # a verdict the fold has stopped at (``mixed``) too, since the rerun is what it awaits.
+            # A red ``settling`` holds is looked through too: a pending check with no runner would
+            # hold ``--settle`` to its bound for nothing (``checks`` has no ``recover``).
             keep = False
             self.orphans = []
-            if self.orphans_on and self.verdict in ("pending", "unjudged", "mixed"):
+            if self.orphans_on and (self.verdict in ("pending", "unjudged", "mixed") or self.settling()):
                 self.orphans = self.find_orphans(sha)
                 for orphan in self.orphans:
                     self.check_lines += report_line(orphan, repo, shlex.quote)
@@ -1180,7 +1195,7 @@ class Gate:
                 elif self.orphans:
                     break
             now = self.clock.now()
-            if self.verdict not in ("pending", "unjudged") and not keep:
+            if self.verdict not in ("pending", "unjudged") and not keep and not self.settling():
                 break
             if now >= deadline:
                 break
