@@ -319,14 +319,15 @@ tuf yourself.
 
 Always use origin/master's copy of the script, the checkout is sometimes on a WIP branch. The
 script is NOT standalone: it resolves siblings relative to its own directory
-(`tools/aggregate-skips.sh`, and `benchmarks/fixture_digest.py` for the measurement-box matrix),
-so a lone copy of `tools/sweep.sh` dies with exit 2 before testing anything. Extract the two
-directories together from master instead of copying one file:
+(`tools/aggregate-skips.sh`, `scripts/process-group.sh`, which it sources at startup, and
+`benchmarks/fixture_digest.py` for the measurement-box matrix), so a lone copy of
+`tools/sweep.sh` dies with exit 2 before testing anything. Extract the three directories together
+from master instead of copying one file:
 
     mkdir -p ~/.ocannl-sweep
     git -C ~/ocannl-staging fetch -q origin master
-    rm -rf ~/.ocannl-sweep/tools ~/.ocannl-sweep/benchmarks
-    git -C ~/ocannl-staging archive origin/master tools benchmarks | tar -x -C ~/.ocannl-sweep
+    rm -rf ~/.ocannl-sweep/tools ~/.ocannl-sweep/benchmarks ~/.ocannl-sweep/scripts
+    git -C ~/ocannl-staging archive origin/master tools benchmarks scripts | tar -x -C ~/.ocannl-sweep
     # TEMPORARY (see the top of this routine): every wake-lab.sh verb but `sleep tuf`.
     printf '%s\n' '#!/bin/bash' \
       'if [ "$1" = sleep ] && [ "$2" = tuf ]; then echo "REFUSED: tuf kept awake by the sweep routine until it has wired Wake-on-LAN"; exit 3; fi' \
@@ -337,10 +338,13 @@ The `mkdir` is not redundant on a box where the sweep has run before: `tar -C` r
 directory to exist, and `~/.ocannl-sweep` is also the script's state directory
 (`OCANNL_TOOL_SWEEP_STATE`), so a fresh host, or one where it was cleared, has none.
 
-If a future master grows a dependency outside those two directories, the failure is an exit 2
-during startup: today the missing sibling is reported by the interpreter's own error above the
-`sweep:` line (`cannot parse measurement boxes at <sha>` is what the script itself says when
-`benchmarks/fixture_digest.py` is not there), so read both lines, not just the `sweep:` one.
+If a future master grows a dependency outside those three directories, the failure is an exit 2
+during startup: today the missing sibling is reported by the shell's or interpreter's own error
+above the `sweep:` line, and the `sweep:` line itself can name an unrelated cause, so read both
+lines, not just the `sweep:` one. A missing `scripts/process-group.sh` shows as
+`sweep.sh: line N: .../scripts/process-group.sh: No such file or directory` followed by a
+misleading `endpoint-map gave no map (a wake-lab.sh from before ludics-lite#395?)`; a missing
+`benchmarks/fixture_digest.py` as `cannot parse measurement boxes at <sha>`.
 Widen the pathspec in the `git archive` line above (that is the whole fix), then relaunch once.
 
 The script refuses to run without `OCANNL_TOOL_SWEEP_LOCAL_BOX`, the portable measurement-box ID
