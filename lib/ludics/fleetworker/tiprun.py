@@ -168,9 +168,11 @@ that a halt already owned, as three. So a concluded answer whose verdict is red 
 reason, before any ``TIP-RUN TIP`` line: ``TIP-RUN HALT <id> matches the standing halt: <fact>[;
 <fact>...]; the halt's reason: <reason>``. It is a note and nothing else: it changes no verdict, no
 exit status, no record and no halt. What it reads, a fail-closed allowlist:
-  - the halt: the anchor's ``fleet-worker.sh halted`` answer (lease.py's HALTED), read as the
-    registry reads the marker (``halt_generation``, ``halt_reason``: the reason the marker states
-    now). ``launches open`` is no halt, so no note.
+  - the halt: the anchor's ``$ANCHOR_STATE/HALT`` (HALT_READ), absent only as the registry's
+    ``absent`` is, when nothing at all is there (no file, no link) in a state directory that can be
+    searched; a marker that is there but cannot be read (unreadable, a dangling or looping link) is
+    unread, never no halt. Its text is read as the registry reads the marker (``halt_generation``,
+    ``halt_reason``: the reason the marker states now). No halt, no note.
   - the record: its ``verdict``, its ``observed_sha`` (one full SHA), its ``repository`` and its
     ``bg-run:<box>:<dir>`` handle, the run's directory, whose ``log`` is read on that box.
   - in the reason, two shapes and no other words. A COMMIT is a run of 7 to 40 lowercase hex
@@ -205,7 +207,6 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker import revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.lease import HALTED
 from ludics.fleetworker.leg import BASE, FLOOR, PIN, min_free_gib
 from ludics.fleetworker.preflight import refresh_box
 from ludics.fleetworker.registry import halt_generation, halt_reason, ref_name_ok
@@ -749,20 +750,34 @@ done
 """
 
 
+# Far side of THE HALT NOTE's halt read, on the anchor. Prints `halt=0` (nothing at all at the
+# marker's path, in a state directory that can be searched: the registry's ``absent``), `halt=1`
+# then the marker's text, or `halt=unread` (a state directory that cannot be searched, or a marker
+# there that cannot be read: an unreadable file, a dangling or looping link).
+HALT_READ = r"""f="$ANCHOR_STATE/HALT"
+[ -d "$ANCHOR_STATE" ] && [ -x "$ANCHOR_STATE" ] || { printf 'halt=unread\n'; exit 0; }
+if [ ! -e "$f" ] && [ ! -L "$f" ]; then printf 'halt=0\n'; exit 0; fi
+text=$(cat "$f" 2>/dev/null) || { printf 'halt=unread\n'; exit 0; }
+printf 'halt=1\n%s\n' "$text"
+"""
+
+
 def read_halt(cfg: Config) -> str | None | tuple[str]:
     """THE HALT NOTE's halt: the reason the standing halt's marker states, None with no halt, or
-    (why,) when the anchor's answer could not be read."""
-    done = run_on(cfg, cfg.anchor, prelude(cfg, cfg.anchor) + HALTED, [], capture=True)
+    (why,) when it could not be read (a marker the registry would refuse, as empty, included)."""
+    done = run_on(cfg, cfg.anchor, prelude(cfg, cfg.anchor) + HALT_READ, [], capture=True)
     if done.unreachable:
         return (f"the anchor {cfg.anchor} did not answer",)
-    text = done.out.rstrip("\n")
-    if done.rc == 0 and text == "launches open":
+    said, _, marker = done.out.partition("\n")
+    if done.rc == 0 and said == "halt=0" and not marker:
         return None
-    if done.rc == 1 and text.startswith("HALTED "):
-        marker = text[len("HALTED "):]
+    if done.rc == 0 and said == "halt=1":
         generation, reason = halt_generation(marker), halt_reason(marker).strip()
         if generation and generation.strip() and reason:
             return reason
+        return (f"the marker on the anchor {cfg.anchor} states no halt the registry would read",)
+    if done.rc == 0 and said == "halt=unread":
+        return (f"the marker on the anchor {cfg.anchor} is there but cannot be read",)
     return (f"an unreadable answer from the anchor {cfg.anchor} (exit {done.rc})",)
 
 

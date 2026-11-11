@@ -833,19 +833,49 @@ class HaltNote(unittest.TestCase):
         self.assertEqual([line.split(" ")[1] for line in out.splitlines()], ["CONCLUDED", "HALT", "TIP"])
 
     def test_the_halt_is_read_as_the_registry_reads_its_marker(self) -> None:
-        cfg = load_config(SCRIPT, {}, host="h")
+        cfg = dataclasses.replace(load_config(SCRIPT, {}, host="h"), anchor="mac-studio")
         for done, want in [
-            (Done(0, "launches open\n"), None),
-            (Done(1, "HALTED 2026-11-11T00:00:00Z id=g1 cc red at 67203021, rerun pending\n"), "cc red at 67203021, rerun pending"),
-            (Done(1, "HALTED legacy first line\nupdate 2026-11-11T00:00:00Z test=x owned\n"), "test=x owned"),
+            (Done(0, "halt=0\n"), None),
+            (Done(0, "halt=1\n2026-11-11T00:00:00Z id=g1 cc red at 67203021, rerun pending\n"), "cc red at 67203021, rerun pending"),
+            (Done(0, "halt=1\nlegacy first line\nupdate 2026-11-11T00:00:00Z test=x owned\n"), "test=x owned"),
             (Done(255, ""), ("the anchor mac-studio did not answer",)),
-            (Done(1, "HALTED \n"), ("an unreadable answer from the anchor mac-studio (exit 1)",)),
-            (Done(2, "HALTED x id=g y\n"), ("an unreadable answer from the anchor mac-studio (exit 2)",)),
+            (Done(0, "halt=1\n\n"), ("the marker on the anchor mac-studio states no halt the registry would read",)),
+            (Done(0, "halt=unread\n"), ("the marker on the anchor mac-studio is there but cannot be read",)),
+            (Done(2, "halt=0\n"), ("an unreadable answer from the anchor mac-studio (exit 2)",)),
+            (Done(0, "launches open\n"), ("an unreadable answer from the anchor mac-studio (exit 0)",)),
         ]:
             with mock.patch.object(tiprun, "run_on", return_value=done) as far:
-                got = tiprun.read_halt(dataclasses.replace(cfg, anchor="mac-studio"))
+                got = tiprun.read_halt(cfg)
             self.assertEqual(got, want, done)
-            self.assertIn(tiprun.HALTED, far.call_args.args[2])
+            self.assertEqual(far.call_args.args[1], "mac-studio")
+            self.assertIn(tiprun.HALT_READ, far.call_args.args[2])
+
+    def test_the_anchor_s_marker_is_absent_only_when_nothing_is_there(self) -> None:
+        # The registry's `absent` (#1076): a link that dangles or loops, or a file that cannot be
+        # read, is a halt not read, never no halt.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"
+
+        def far() -> str:
+            return subprocess.run([bash, "-c", f"ANCHOR_STATE={shlex.quote(str(state))}\n" + tiprun.HALT_READ],
+                                  capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+
+        self.assertEqual(far(), "halt=0\n")
+        halt = state / "HALT"
+        halt.write_text("2026-11-11T00:00:00Z id=g1 red at 67203021\n", encoding="utf-8")
+        self.assertEqual(far(), "halt=1\n2026-11-11T00:00:00Z id=g1 red at 67203021\n")
+        halt.unlink()
+        for target in ("nowhere", "HALT"):
+            halt.symlink_to(target)
+            self.assertEqual(far(), "halt=unread\n", target)
+            halt.unlink()
+        if os.geteuid() != 0:  # root reads a mode-000 file
+            halt.write_text("x id=g y\n", encoding="utf-8")
+            halt.chmod(0)
+            self.addCleanup(halt.chmod, 0o644)
+            self.assertEqual(far(), "halt=unread\n")
 
     def test_the_log_is_read_for_whole_names(self) -> None:
         tmp = tempfile.TemporaryDirectory()
