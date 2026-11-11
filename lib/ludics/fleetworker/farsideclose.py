@@ -39,10 +39,21 @@ THE GATES, in order; the first that fails keeps the worktree, and says why.
     since a leg's worktree carries neither); no private ref (``refs/worktree/``, ``refs/bisect/``,
     ``refs/rewritten/``).
   - No ignored data but what ``--regenerable`` names. Ignored files are the class a plain status
-    does not show, and a removal takes them with the tree. ``--regenerable`` is post-merge-cleanup.sh's
-    flag: repeatable, no default, the project's to say (OCANNL's AGENTS.md names ``_build``); each value
-    ONE top-level directory, here wholly ignored (git reports it as one ``!! <dir>/`` entry, so no
-    tracked file is in it, and a symlink never matches). Any other ignored path keeps the worktree.
+    does not show, and a removal takes them with the tree. ``--regenerable`` is repeatable, has no
+    default, and is the project's to say (OCANNL's AGENTS.md names its directories). It matches only
+    the entries git's own status reports as WHOLLY ignored directories (one ``!! <path>/`` entry, so
+    nothing tracked or untracked is in it, and a symlink, listed without the ``/``, never matches);
+    it never walks the tree. A value is one of two shapes, a fail-closed allowlist (ludics#1049):
+    ``<path>``, a relative directory path matching that entry exactly (``_build``,
+    ``test/config/log_files``), or ``**/<path>``, the same at any depth, the top included
+    (``**/log_files``). Each component is a plain name (letters, digits, ``.``, ``_``, ``-``, no
+    leading ``-``, not ``.``, ``..`` or ``.git``); no other glob, no absolute path, no empty component,
+    so no value escapes the worktree and none matches everything. Any other ignored path keeps the
+    worktree, and is named. post-merge-cleanup.sh's ``--regenerable`` takes the first shape with one
+    component only: it resolves the name on the filesystem and removes it before its gates, where a
+    pattern would need this status-based match first. A list the project keeps in the tree being
+    judged (its ``.github/fleet-leg``) is deliberately not read: the worktree would vouch for the
+    removal of its own data.
   - HEAD exactly matches a concluded record's observed_sha for this wave and row's nonempty
     worker, execution host and exact checkout (trailing slash ignored), or is on a remote branch.
     Only full lowercase object IDs qualify. Requested/resolved revisions express intent, not an
@@ -107,12 +118,14 @@ from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run
 from ludics.postmergecleanup.cleanup import ACTIVE_OPERATIONS
 
 USAGE = "farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]"
-REGENERABLE = re.compile(r"\.?[A-Za-z0-9_][A-Za-z0-9._-]*")  # one name: no separator, no `..`, no option
+REGENERABLE = re.compile(r"\.?[A-Za-z0-9_][A-Za-z0-9._-]*")  # one component: no separator, no `..`, no option
+ANY_DEPTH = "**/"  # a --regenerable prefix: the directory path at any depth (the header)
 CLEARED = ("REMOVED", "GONE", "WOULD-REMOVE")  # the verdicts that leave nothing to look at
 FAR_VERDICTS = ("REMOVED", "TRIMMED", "KEPT", "GONE", "WOULD-REMOVE", "WOULD-TRIM")
 
 # The far side, after the prelude and leg.WORKTREE. Args: the worktree, the remote, the fetch's bound
-# in seconds, dry (0|1), this run's token, the space-separated allowed observed SHAs, then the regenerable directories. Its stdout is one line,
+# in seconds, dry (0|1), this run's token, the space-separated allowed observed SHAs, then the --regenerable values (``regenerable``'s
+# shapes: their components hold no glob character, so each is matched literally). Its stdout is one line,
 # `<verdict><TAB><why>`, whatever it found; every other word goes to stderr.
 CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5" observed="$6"; shift 6
 # No trailing `/`: `[ -L "$wt/" ]` follows the link and reads the directory behind it.
@@ -156,7 +169,7 @@ private=$(git -C "$wt" for-each-ref --count=1 --format='%(refname)' refs/worktre
 # The ignored paths, NUL-delimited, no quoting by git. A fully ignored directory is one entry, its
 # name ending in `/` (traditional mode, untracked files not listed one by one); a status that fails
 # must not read as none, so its own exit closes the listing, in a record no status entry can be.
-regen=(); other=(); listed=""
+regen=(); shown=(); other=(); listed=""
 while IFS= read -r -d '' e; do
   case "$e" in
     '!! '*) ;;
@@ -164,8 +177,14 @@ while IFS= read -r -d '' e; do
     *) continue ;;
   esac
   p=${e#\!\! }; hit=""
-  for r in "$@"; do [ "$p" != "$r/" ] || hit=1; done
-  if [ -n "$hit" ]; then regen+=("${p%/}"); else other+=("$(printf '%q' "$p")"); fi
+  # A directory entry only (its `/`): exactly the path, or, for `**/<path>`, the path at any depth.
+  for r in "$@"; do
+    case "$r" in
+      '**/'*) s=${r:3}; case "$p" in "$s/" | */"$s/") hit=1 ;; esac ;;
+      *) [ "$p" != "$r/" ] || hit=1 ;;
+    esac
+  done
+  if [ -n "$hit" ]; then regen+=("${p%/}"); shown+=("$(printf '%q' "${p%/}")"); else other+=("$(printf '%q' "$p")"); fi
 done < <(git -C "$wt" status --porcelain -z --ignored=traditional --untracked-files=normal --ignore-submodules=none 2>/dev/null; printf 'status=%s\0' "$?")
 [ "$listed" = 0 ] || kept "cannot list its ignored paths (git status exit ${listed:-none})"
 [ "${#other[@]}" -eq 0 ] || kept "ignored data that --regenerable does not name: ${other[*]:0:3}$([ "${#other[@]}" -le 3 ] || printf ' and %s more' "$((${#other[@]} - 3))")"
@@ -194,11 +213,13 @@ fi
 if [ "$frc" -eq 0 ]; then why="HEAD $head is on no branch of $remote"; else why="cannot ask $remote about HEAD $head (git fetch exit $frc)"; fi
 why="$why; no matching concluded execution observation for this worker and worktree"
 [ "${#regen[@]}" -gt 0 ] || kept "$why"
-[ "$dry" != 1 ] || verdict WOULD-TRIM "$why; would remove ${regen[*]}"
+[ "$dry" != 1 ] || verdict WOULD-TRIM "$why; would remove ${shown[*]}"
+i=0
 for r in "${regen[@]}"; do
-  rm -rf -- "${wt:?}/${r:?}" || kept "$why; rm of $r failed partway"
+  rm -rf -- "${wt:?}/${r:?}" || kept "$why; rm of ${shown[$i]} failed partway"
+  i=$((i + 1))
 done
-verdict TRIMMED "$why; removed ${regen[*]}, kept the worktree"
+verdict TRIMMED "$why; removed ${shown[*]}, kept the worktree"
 """
 
 
@@ -339,6 +360,13 @@ def close_on_box(cfg: Config, word: Word, remote: str, fetch_timeout: str, dry: 
     return verdict, why
 
 
+def regenerable_value(value: str) -> bool:
+    """A ``--regenerable`` value of the header's two shapes: ``<path>`` or ``**/<path>``, every
+    component of the path a plain name, none ``.git``."""
+    path = value.removeprefix(ANY_DEPTH)
+    return all(REGENERABLE.fullmatch(part) and part.lower() != ".git" for part in path.split("/"))
+
+
 def parse(args: list[str]) -> tuple[str, list[str], list[str], str, bool]:
     wave = ""
     tasks: list[str] = []
@@ -364,8 +392,9 @@ def parse(args: list[str]) -> tuple[str, list[str], list[str], str, bool]:
                     die(f"farside-close: --remote {shlex.quote(value)} is no remote name")
                 remote = value
             else:
-                if not REGENERABLE.fullmatch(value) or value == ".git":
-                    die(f"farside-close: --regenerable {shlex.quote(value)} is not one top-level directory of a worktree")
+                if not regenerable_value(value):
+                    die(f"farside-close: --regenerable {shlex.quote(value)} is neither a directory path inside a worktree "
+                        f"nor {ANY_DEPTH}<path> (the header's shapes)")
                 regenerable.append(value)
             continue
         if arg.startswith("-") or wave:

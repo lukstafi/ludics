@@ -238,7 +238,8 @@
 #                          # remove a closed wave's far-side worktrees, the board's `farside` words,
 #                          # each only past its row's done state, no outstanding reservation, no leg
 #                          # holding it, a clean tree and HEAD on a branch of the remote; else kept,
-#                          # or only --regenerable dirs removed when HEAD alone fails; one line a
+#                          # or only --regenerable dirs (a path, or **/<path> at any depth)
+#                          # removed when HEAD alone fails; one line a
 #                          # word, re-runnable; exit 3 when one stayed, 4 when a box did not answer;
 #                          # needs the lease unless --dry-run (lib/ludics/fleetworker/farsideclose.py)
 #

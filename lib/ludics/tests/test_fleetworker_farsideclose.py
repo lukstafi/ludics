@@ -191,6 +191,82 @@ class Far(Fixture):
         self.assertEqual(self.close(mixed, "keep")[0], "KEPT")
         self.assertTrue((mixed / "keep" / "tracked").exists())
 
+    def nested(self, name: str) -> Path:
+        """A worktree of a main whose tests write ``log_files/`` at three depths (ludics#1049)."""
+        if not (self.co / "deep").exists():
+            for tracked in ("deep/test/t.ml", "conf/c", "keep/log_files/tracked"):
+                (self.co / tracked).parent.mkdir(parents=True, exist_ok=True)
+                (self.co / tracked).write_text("t\n")
+            (self.co / ".gitignore").write_text("_build/\n*.log\nlog_files/\n")
+            self.git(self.co, "add", "-A")
+            self.git(self.co, "add", "-f", "keep/log_files/tracked")
+            self.git(self.co, "commit", "-q", "-m", "nested")
+            self.git(self.co, "push", "-q", "origin", "main")
+        wt = self.worktree(name)
+        for logs in ("log_files", "deep/test/log_files", "conf/log_files"):
+            (wt / logs).mkdir()
+            (wt / logs / "run").write_text("regenerable\n")
+        return wt
+
+    def test_nested_ignored_directories_named_at_any_depth_go_with_the_tree(self) -> None:
+        wt = self.nested("w")
+        verdict, why = self.close(wt, "_build")
+        self.assertEqual(verdict, "KEPT")
+        for logs in ("conf/log_files/", "deep/test/log_files/", "log_files/"):
+            self.assertIn(logs, why)
+        self.assertEqual(self.close(wt, "_build", "**/log_files", dry=True)[0], "WOULD-REMOVE")
+        self.assertEqual(self.close(wt, "_build", "**/log_files")[0], "REMOVED")
+        self.assertFalse(wt.exists())
+
+    def test_an_exact_nested_path_names_that_directory_alone(self) -> None:
+        wt = self.nested("w")
+        verdict, why = self.close(wt, "_build", "conf/log_files", "log_files")
+        self.assertEqual(verdict, "KEPT")
+        self.assertEqual(why, "ignored data that --regenerable does not name: deep/test/log_files/")
+        self.assertEqual(self.close(wt, "_build", "**/test/log_files", "conf/log_files", "log_files")[0], "REMOVED")
+
+    def test_an_ignored_path_a_nested_value_does_not_match_keeps_it_and_is_named(self) -> None:
+        wt = self.nested("w")
+        (wt / "deep" / "test" / "run.log").write_text("the only copy\n")
+        (wt / "deep" / "test" / "log_files_old").mkdir()
+        (wt / "deep" / "test" / "log_files_old" / "x.log").write_text("the only copy\n")
+        verdict, why = self.close(wt, "_build", "**/log_files")
+        self.assertEqual(verdict, "KEPT")
+        self.assertIn("deep/test/run.log", why)
+        self.assertIn("deep/test/log_files_old/", why)
+        self.assertTrue((wt / "deep" / "test" / "log_files" / "run").exists())
+
+    def test_a_matched_name_holding_tracked_or_untracked_files_is_not_regenerable(self) -> None:
+        wt = self.nested("w")
+        (wt / "keep" / "log_files" / "built").write_text("ignored, beside a tracked file\n")
+        verdict, why = self.close(wt, "_build", "**/log_files")
+        self.assertEqual(verdict, "KEPT")
+        self.assertEqual(why, "ignored data that --regenerable does not name: keep/log_files/built")
+        self.assertTrue((wt / "keep" / "log_files" / "tracked").exists())
+        # A name whose directory holds a file the ignore rules let through is untracked data, not
+        # regenerable: the clean-tree gate keeps it first.
+        (self.co / ".gitignore").write_text("_build/\n*.log\nlog_files/\ncache/*\n!cache/notes\n")
+        self.git(self.co, "commit", "-q", "-am", "cache")
+        self.git(self.co, "push", "-q", "origin", "main")
+        loose = self.nested("loose")
+        (loose / "cache").mkdir()
+        (loose / "cache" / "built").write_text("ignored\n")
+        (loose / "cache" / "notes").write_text("untracked, not ignored\n")
+        verdict, why = self.close(loose, "_build", "**/log_files", "**/cache")
+        self.assertEqual(verdict, "KEPT")
+        self.assertIn("uncommitted", why)
+        self.assertTrue((loose / "cache" / "notes").exists())
+
+    def test_a_trimmed_worktree_loses_its_nested_regenerable_directories_only(self) -> None:
+        wt = self.nested("w")
+        self.commit_in(wt)
+        verdict, why = self.close(wt, "_build", "**/log_files")
+        self.assertEqual(verdict, "TRIMMED")
+        self.assertIn("removed _build conf/log_files deep/test/log_files log_files, kept the worktree", why)
+        self.assertFalse((wt / "deep" / "test" / "log_files").exists())
+        self.assertTrue((wt / "deep" / "test" / "t.ml").exists())
+        self.assertTrue((wt / "mine").exists())
+
     def test_a_status_that_fails_on_the_ignored_listing_does_not_read_as_none(self) -> None:
         shim = self.tmp / "bin"
         shim.mkdir()
@@ -456,13 +532,24 @@ class Near(unittest.TestCase):
 
     def test_usage(self) -> None:
         for args in ([], ["--dry-run"], ["w", "x"], ["w", "--bogus"], ["w", "--task"], ["w", "--remote", "a b"], ["w", "--remote", "--upload-pack=x"],
-                     ["w", "--regenerable", "a/b"], ["w", "--regenerable", ".."], ["w", "--regenerable", "."],
+                     ["w", "--regenerable", ".."], ["w", "--regenerable", "."],
                      ["w", "--regenerable", "-x"], ["w", "--regenerable", ".git"], ["w", "--regenerable", ""]):
             with self.subTest(args=args), self.assertRaises(cli.Exit) as raised:
                 farsideclose.parse(args)
             self.assertEqual(raised.exception.rc, 2)
         self.assertEqual(farsideclose.parse(["w", "--regenerable", "_build", "--regenerable", ".cache", "--remote", "up", "--dry-run"]),
                          ("w", [], ["_build", ".cache"], "up", True))
+
+    def test_a_regenerable_value_is_a_path_inside_the_worktree_or_that_path_at_any_depth(self) -> None:
+        # ludics#1049: nested names and `**/` are new; nothing escapes the tree or matches everything.
+        for value in ("/abs", "/", "../x", "a/../b", "a/./b", "a//b", "a/", "./a", "**", "**/", "*", "*/log_files",
+                      "**/**/x", "a/**/b", "a/**", "log_*", "lo?", "[l]og", "**/.git", "x/.git", "x/.GIT", "a/-x",
+                      "a\\b", "a b", "**/..", "**/."):
+            with self.subTest(value=value), self.assertRaises(cli.Exit) as raised:
+                farsideclose.parse(["w", "--regenerable", value])
+            self.assertEqual(raised.exception.rc, 2)
+        values = ["arrayjit/test/log_files", "**/log_files", "**/a/b", ".cache/x"]
+        self.assertEqual(farsideclose.parse(["w", *[w for v in values for w in ("--regenerable", v)]])[2], values)
 
 
 if __name__ == "__main__":

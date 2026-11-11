@@ -99,8 +99,9 @@ native Claude worker's in these places, and a brief adapted from one must change
   (`rejected: rm -f style commands are not permitted`, in `stderr.log` only), even under
   `--yolo`, so the `"${d:?}"` guard that a Claude brief carries does not apply. The brief says
   the worker leaves its build directory and other ignored files in place. At close-out,
-  `farside-close` keeps a worktree that holds ignored data unless each such top-level directory
-  is named with `--regenerable <dir>` (a `_build`, say), which it then removes with the tree.
+  `farside-close` keeps a worktree that holds ignored data unless each such directory is named
+  with `--regenerable <dir>` (a `_build`, say, or `'**/log_files'` at any depth), which it then
+  removes with the tree.
 
 ## Blocking in a headless turn
 
