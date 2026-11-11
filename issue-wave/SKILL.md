@@ -544,7 +544,9 @@ inside the window its first run may still appear in, no interim yet), and the ga
 the gate" after integration records concluded during both of its reads. A red, an unknown, an
 unreadable registry, and a halt or lease refusal (read before every pause) end it at once. No read
 starts after the deadline, but one under way runs to its ceiling; expiry is exit 1 with the last
-read's reason. `lib/ludics/fleetworker/gate.py`'s *THE WAIT* is the boundary.
+read's reason. `lib/ludics/fleetworker/gate.py`'s *THE WAIT* is the boundary. Size `<seconds>` to
+how long the dispatch (a spawn, a start, a launch) may wait out a merge burst, and write no retry
+loop of your own around the gate: any nonzero exit blocks the dispatch.
 
 A known-red regression needs one triage worker: only `--force --allow-red-base "<reason>"`
 admits that red verdict, prints the reason, and still refuses unknown/no-verdict; record the
