@@ -553,7 +553,10 @@ administrative reads use `coordinator`, not the dispatch `gate`.
 ### The brief
 
 The brief is self-contained (workers do not see this conversation), carries the same issue
-requirements for every transport with transport-specific setup and identity, and includes:
+requirements for every transport with transport-specific setup and identity, and includes the
+items below. A native worker's brief is rendered from the wave directory's template parts by
+`fleet-worker.sh wave prep`, and any other brief by `wave render`; either refuses an unrendered
+placeholder ([coordinator-kit.md](references/coordinator-kit.md)).
 
 - Setup: expected host, branch and base, environment script, and docs to read. CLI launch
   supplies the worktree path; a native worker receives the coordinator-created absolute path;
@@ -938,8 +941,9 @@ controlled through the tools in your coordinator's file, never through those com
   inside a native worker does NOT hold the pause. While workers are working and the user may be
   away, keep a coordinator-side heartbeat of about ten minutes whose wake is a command the
   harness tracks, not a timer: a background shell command whose exit re-invokes the coordinator
-  (Claude Code's `run_in_background` on `sleep 600; fleet-worker.sh prs <owner/repo> --wave <id>`,
-  re-armed each tick, so the review-rounds read of *Converge long reviews* arrives with the wake).
+  (Claude Code's `run_in_background` on `fleet-worker.sh wave heartbeat <wave.json>`, one tick:
+  ten minutes' sleep, then `prs --wave` whole, `halted` and each loop's last line, re-armed each
+  tick, so the review-rounds read of *Converge long reviews* arrives with the wake).
   A /loop or ScheduleWakeup tick is a fallback at most: in desktop waves they fire hours late or
   never (2026-09-19: of three ScheduleWakeups, two never surfaced and one five hours late). After
   ANY interruption - pause, restart, dropped remote-control connection, a box that slept
@@ -1243,7 +1247,11 @@ controlled through the tools in your coordinator's file, never through those com
     CONCLUDED <id> <verdict> <box> <sha> <dir>`, then `TIP-RUN TIP <base> <sha> moved` when the
     tip has moved past the run, the cue to start the next one at once; exit 3 is RUNNING, re-issue
     it. The cc loop's local run may take the same calls, its request carrying `"integration":
-    true`: yielding is how it finds a quiet box too.
+    true`: yielding is how it finds a quiet box too. `fleet-worker.sh wave loop <wave.json>
+    <name>` drives the two calls for one of the wave file's loops and is restartable: it waits on
+    its own running run before it starts another. It ends on a red with `LOOP RED`, the cue for
+    *On a red at the tip*; it never halts launches itself, since the later-merge check comes
+    before the halt ([coordinator-kit.md](references/coordinator-kit.md)).
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
     rerun pending"` (a red that gates nothing may skip it: *On a regression*, below); one rerun
     at the same SHA on a box of that backend (the same `tip-run` and pinned command, which the
@@ -1346,7 +1354,9 @@ controlled through the tools in your coordinator's file, never through those com
 - **Re-check for a rival PR before each queued launch.** Per-box waves no longer race each
   other, but user-driven sessions, the CI-red triage routine (`ci-fix/*`), and a previous
   wave's stragglers still open PRs, and the pre-wave `gh pr list` goes stale within hours.
-  Before launching each queued worker, search open PRs for the issue number/topic; on a hit,
+  Before launching each queued worker, search open PRs for the issue number/topic (`wave prep`
+  refuses on an open PR naming the number or the branch; the topic search, and the re-check right
+  before a launch prepped earlier, stay yours); on a hit,
   rebrief the worker to *adopt* the existing PR (take over the branch, answer its review,
   coordinate in PR comments if the original session resumes - merge ownership goes to
   whichever session is actively driving, settled explicitly in the PR thread, never raced)

@@ -74,6 +74,7 @@ SECTIONS=(
   "refresh (execution-only boxes)"
   "execution slot pipeline warning"
   "execution slot"
+  "wave kit"
   "usage"
   "shard selection"
   "section watchdog"
@@ -861,6 +862,11 @@ if [ "$#" -eq 6 ] && [ "$1 $2 $3 $5 $6" = "api --hostname github.com -q .sha" ];
     *" $sha "*) printf '{"message":"No commit found for SHA: %s","status":"422"}' "$sha"; echo "gh: No commit found for SHA: $sha (HTTP 422)" >&2; exit 1 ;;
   esac
   printf '%s\n' "$sha"; exit 0
+fi
+# `pr list`: the file SHIM_GH_PR_LIST names, only when it is set (wave prep's rival read, #1047).
+if [ "$1 $2" = "pr list" ] && [ -n "${SHIM_GH_PR_LIST:-}" ]; then
+  printf '%s\n' "$*" >> "$SHIM_GH_PR_LIST.calls"
+  cat "$SHIM_GH_PR_LIST"; exit 0
 fi
 # `pr view`: the file SHIM_GH_PR_VIEW names (board close, #982).
 if [ "$1 $2" = "pr view" ]; then
@@ -5990,6 +5996,69 @@ kill -9 "$gk" 2>/dev/null; wait "$gk" 2>/dev/null
 expect "--deadline takes a positive whole number of seconds" 2 "--deadline takes a positive whole number of seconds" -- "${FWS[@]}" execution hold --deadline 0 -- true
 expect "...in the slot too" 2 "--deadline takes a positive whole number of seconds" -- "${FWS[@]}" execution slot --deadline 5s -- true
 expect "--probe takes no --deadline" 2 "--probe takes no --deadline" -- "${FWS[@]}" execution slot --probe --deadline 5
+}
+
+section "wave kit" && {
+need_lease
+FWK=(env FLEET_BOXES="testbox other" "$FW")
+# ludics#1047: the coordinator kit, end to end through the shim. Each wave rebuilt it by hand: a
+# sed render whose leftover check ran after the worktree existed, a launch prep that printed rival
+# PRs and refused none, a loop that orphaned its run on a restart.
+K="$TMP/wave kit"; mkdir -p "$K/tasks"
+printf 'Worker @@WORKER@@: @@WT@@ on @@BR@@ at @@BASE@@ (`$(touch "$TMP/pwned")` | & \\1)\n' > "$K/common.md"
+printf '# Task @@T@@: @@ISSUE@@ @@NOPE@@\n' > "$K/tasks/t77.md"
+expect "render refuses an unrendered placeholder, naming its part and line" 1 \
+  "WAVE RENDER REFUSED: $K/tasks/t77.md:1: @@NOPE@@ is not rendered" -- \
+  "${FWK[@]}" wave render --set T=t77 --set ISSUE=o/r#77 --set WORKER=w --set WT=/w --set BR=b --set BASE=x --out "$K/out.md" "$K/common.md" "$K/tasks/t77.md"
+[ ! -e "$K/out.md" ] && ok "...and writes nothing" || ko "a refused render wrote $K/out.md"
+expect "render substitutes literally" 0 "^WAVE RENDER $K/out.md: 1 part(s), 5 value(s)$" -- \
+  "${FWK[@]}" wave render --set WORKER=w --set "WT=/a|b" --set BR=b --set BASE=x --set T=unused --out "$K/out.md" "$K/common.md"
+[ "$(cat "$K/out.md")" = 'Worker w: /a|b on b at x (`$(touch "$TMP/pwned")` | & \1)' ] && [ ! -e "$TMP/pwned" ] &&
+  ok "...every byte of the prose and the values as given" || ko "rendered: $(cat "$K/out.md")"
+printf '# Task @@T@@: @@ISSUE@@\n' > "$K/tasks/t77.md"
+jq -n --arg co "$proj" '{wave:"wkv", repository:"example/project", checkout:$co, worker_prefix:"wk", agent_host:"testbox",
+  transport:"subagent", kind:"claude", standing_purpose:"standing iteration for @@T@@",
+  loops:{cc:{box:"testbox", purpose:"cc integration loop", checkout:"/nowhere", tip:"master", command:["true"], cpu:true, poll:1}}}' > "$K/wave.json"
+export SHIM_GH_PR_LIST="$K/prs.json"; echo '[]' > "$SHIM_GH_PR_LIST"
+pbase=$(git -C "$proj" rev-parse HEAD)
+expect "prep makes the worktree, the standing reservation, the brief and the row" 0 "^WAVE PREP t77: ready: brief $K/briefs/brief-t77.md worktree $proj-worktrees/wk-77 branch claude/wk-77 base $pbase standing wkv-t77-testbox-iterate$" -- \
+  "${FWK[@]}" wave prep "$K/wave.json" t77 --base master
+[ "$(git -C "$proj-worktrees/wk-77" rev-parse HEAD)" = "$pbase" ] && ok "...the worktree at the base" || ko "worktree: $(git -C "$proj-worktrees/wk-77" rev-parse HEAD 2>&1)"
+got=$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t77-testbox-iterate") | "\(.request.standing) \(.checkout) \(.request.purpose)"')
+[ "$got" = "true $proj-worktrees/wk-77 standing iteration for t77" ] && ok "...the standing record on the worktree" || ko "record: $got"
+got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t77") | .fields | "\(.state) \(.issue) \(.worktree) \(.runs)"')
+[ "$got" = "pending example/project#77 $proj-worktrees/wk-77 $K/scratch/t77/runs" ] && ok "...the pending row" || ko "row: $got"
+grep -qx "# Task t77: example/project#77" "$K/briefs/brief-t77.md" && ok "...the brief rendered" || ko "brief: $(cat "$K/briefs/brief-t77.md")"
+# A write that fails after the worktree (here the registry refuses a box outside the default roster)
+# reports each step made and the manifest, writes no row, and a second prep refuses on what it left.
+printf '# T @@T@@\n' > "$K/tasks/t79.md"
+expect "a reservation refused after the worktree is reported, with what was made" 1 "^WAVE PREP FAILED t79 at reservation: execution run " -- \
+  "$FW" wave prep "$K/wave.json" t79 --base master
+grep -q "^WAVE PREP MADE t79: worktree $proj-worktrees/wk-79 on branch claude/wk-79 at $pbase$" <<<"$out" &&
+  grep -q "^WAVE PREP MADE t79: the manifest $K/prep/t79.json$" <<<"$out" && ok "...each step made, and the manifest" || ko "made lines: $out"
+[ -z "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t79") | .task')" ] && ok "...and no board row" || ko "a failed prep wrote its row"
+before=$("${FWK[@]}" execution list | jq length)
+expect "prep on an existing worktree refuses" 1 "^WAVE PREP REFUSED t77: the worktree path $proj-worktrees/wk-77 exists$" -- \
+  "${FWK[@]}" wave prep "$K/wave.json" t77 --base master
+[ "$("${FWK[@]}" execution list | jq length)" = "$before" ] && ok "...reserving nothing" || ko "a refused prep reserved"
+echo '[{"number":5,"title":"Fix #78","body":"","headRefName":"x"}]' > "$SHIM_GH_PR_LIST"
+printf '# Task @@T@@\n' > "$K/tasks/t78.md"
+expect "prep refuses a rival PR" 1 "^WAVE PREP REFUSED t78: open rival PR(s) #5 Fix #78" -- "${FWK[@]}" wave prep "$K/wave.json" t78 --base master
+[ ! -e "$proj-worktrees/wk-78" ] && ok "...before the worktree" || ko "a refused prep made the worktree"
+unset SHIM_GH_PR_LIST
+"${FWK[@]}" execution conclude --standing-handback --request wkv-t77-testbox-iterate --observed-from "$proj-worktrees/wk-77" \
+  --evidence "wave kit fixture" --verdict cancelled >/dev/null 2>&1 || ko "could not conclude the prep's standing reservation (setup)"
+# The loop: a record under its prefix that is no started run stops it, starting nothing.
+jq -n --arg sha "$pbase" '{request_id:"wkv-cc-1", wave:"wkv", worker:"coordinator", transport:"coordinator", purpose:"cc integration loop",
+  agent_host:"testbox", execution_host:"testbox", repository:"example/project", kind:"correctness", requested_revision:$sha}' > "$K/cc-1.json"
+"${FWK[@]}" execution run "$K/cc-1.json" >/dev/null 2>&1 || ko "could not reserve the loop fixture (setup)"
+expect "a loop with an outstanding record that is no started run is unknown, exit 4" 4 "LOOP cc UNKNOWN: outstanding wkv-cc-1 (launching)" -- \
+  "${FWK[@]}" wave loop "$K/wave.json" cc
+[ "$("${FWK[@]}" execution list | jq '[.[] | select(.request_id | startswith("wkv-cc-"))] | length')" = 1 ] && ok "...and starts no second run" || ko "the loop started a run"
+fixture_done wkv-cc-1
+expect "the heartbeat prints its time last" 0 "^HEARTBEAT wkv [0-9T:-]*Z$" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 0
+grep -q "^HEARTBEAT prs exit=" <<<"$out" && grep -q "^HEARTBEAT halted exit=" <<<"$out" && grep -q "^HEARTBEAT loop cc: " <<<"$out" &&
+  [[ "$(tail -n 1 <<<"$out")" == "HEARTBEAT wkv "* ]] && ok "...after each read's exit and the loop's line" || ko "heartbeat: $out"
 }
 
 section "usage" && {
