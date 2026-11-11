@@ -2,6 +2,7 @@
 # The second planner of paired planning (issue-wave/references/paired-planning.md):
 #
 #   peer-plan.sh start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref> [--model <m>] [--effort <e>]
+#   peer-plan.sh save-plan <dir> --from-transcript <file>
 #   peer-plan.sh critique <dir> --plan <file>
 #   peer-plan.sh clean <dir>
 #

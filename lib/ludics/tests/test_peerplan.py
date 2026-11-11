@@ -351,5 +351,158 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(self.entry("start", self.dir, "--issue", "bad", "--checkout", ".", "--base", "x").returncode, 2)
 
 
+def assistant(*blocks: dict[str, object], mid: str = "msg_1", **extra: object) -> dict[str, object]:
+    """One transcript line of an assistant message, in Claude Code's shape: one content block."""
+    message: dict[str, object] = {"id": mid, "type": "message", "role": "assistant", "content": list(blocks)}
+    return {"type": "assistant", "isSidechain": True, "message": message, **extra}
+
+
+def text(body: str) -> dict[str, object]:
+    return {"type": "text", "text": body}
+
+
+def user(content: object) -> dict[str, object]:
+    return {"type": "user", "isSidechain": True, "message": {"role": "user", "content": content}}
+
+
+def tool_result(body: str) -> dict[str, object]:
+    return user([{"type": "tool_result", "tool_use_id": "toolu_1", "content": body}])
+
+
+BRIEF = user("End your turn with the plan:\nPLAN_READY\n<the plan, Markdown>\nEND_PLAN_READY\n")
+
+
+class SavePlan(unittest.TestCase):
+    """``save-plan``: the worker's last PLAN_READY block, from its transcript, to claude-plan.md."""
+
+    def setUp(self) -> None:
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="ludics-peerplan."))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.dir = os.path.join(self.tmp, "plans", "w-7")
+        os.makedirs(self.dir)
+        meta = {k: "x" for k in ("issue", "checkout", "base", "worktree", "model", "effort")}
+        with open(os.path.join(self.dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        self.record = os.path.join(self.dir, "claude-plan.md")
+        self.transcript = os.path.join(self.tmp, "agent-a1.jsonl")
+
+    def save(self, *records: dict[str, object], raw: str = "") -> subprocess.CompletedProcess[str]:
+        with open(self.transcript, "w", encoding="utf-8") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in records) + raw)
+        return subprocess.run(
+            [ENTRY, "save-plan", self.dir, "--from-transcript", self.transcript],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def saved(self) -> str:
+        with open(self.record, encoding="utf-8") as f:
+            return f.read()
+
+    def refused(self, done: subprocess.CompletedProcess[str], why: str) -> None:
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn(why, done.stderr)
+        self.assertFalse(os.path.lexists(self.record))
+        self.assertEqual(sorted(os.listdir(self.dir)), ["meta.json"])
+
+    def test_one_block_is_saved(self) -> None:
+        plan = "PLAN_READY\n## Approach\n\nDo it.\n  PLAN_READY quoted, indented\nEND_PLAN_READY"
+        done = self.save(BRIEF, assistant({"type": "thinking", "thinking": ""}), assistant(text(plan)))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout, f"SAVED {self.record}\n")
+        self.assertEqual(self.saved(), "## Approach\n\nDo it.\n  PLAN_READY quoted, indented\n")
+
+    def test_the_output_file_symlink_is_followed(self) -> None:
+        link = os.path.join(self.tmp, "a1.output")
+        self.save(assistant(text("PLAN_READY\nlinked\nEND_PLAN_READY")))
+        os.symlink(self.transcript, link)
+        done = subprocess.run([ENTRY, "save-plan", self.dir, "--from-transcript", link], capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.saved(), "linked\n")
+
+    def test_the_last_message_with_a_block_wins(self) -> None:
+        done = self.save(
+            assistant(text("PLAN_READY\nfirst\nEND_PLAN_READY"), mid="msg_1"),
+            user("PEER_PLAN /p/astra-plan.md"),
+            assistant(text("PLAN_READY\nsecond\nEND_PLAN_READY\n\nPLAN_READY\nthird\nEND_PLAN_READY"), mid="msg_2"),
+            assistant(text("Reconciled; posting the comment."), mid="msg_3"),
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.saved(), "third\n")
+
+    def test_a_save_replaces_an_earlier_one(self) -> None:
+        with open(self.record, "w", encoding="utf-8") as f:
+            f.write("old\n")
+        self.assertEqual(self.save(assistant(text("PLAN_READY\nnew\nEND_PLAN_READY"))).returncode, 0)
+        self.assertEqual(self.saved(), "new\n")
+        self.assertEqual(sorted(os.listdir(self.dir)), ["claude-plan.md", "meta.json"])
+
+    def test_no_block_is_refused(self) -> None:
+        self.refused(self.save(BRIEF, assistant(text("I have a question first."))), "no PLAN_READY block")
+
+    def test_an_unterminated_block_is_refused(self) -> None:
+        done = self.save(
+            assistant(text("PLAN_READY\nearlier\nEND_PLAN_READY"), mid="msg_1"),
+            assistant(text("PLAN_READY\n## Approach\ncut off here"), mid="msg_2"),
+        )
+        self.refused(done, "unterminated")
+
+    def test_a_malformed_last_block_is_refused(self) -> None:
+        self.refused(self.save(assistant(text("PLAN_READY\na\nPLAN_READY\nb\nEND_PLAN_READY"))), "opens again")
+        self.refused(self.save(assistant(text("done\nEND_PLAN_READY"))), "no PLAN_READY before it")
+        self.refused(self.save(assistant(text("PLAN_READY\n\n  \nEND_PLAN_READY"))), "is empty")
+
+    def test_blocks_outside_the_workers_text_are_not_taken(self) -> None:
+        quoted = "PLAN_READY\nquoted\nEND_PLAN_READY"
+        others: list[dict[str, object]] = [
+            BRIEF,
+            tool_result(quoted),
+            user([{"type": "tool_result", "tool_use_id": "t", "content": [text(quoted)]}]),
+            {"type": "api-request-blob", "message": {"role": "user", "content": [text(quoted)]}},
+            {"type": "attachment", "attachment": {"type": "environment"}, "rendered": quoted},
+            assistant({"type": "thinking", "thinking": quoted}),
+            assistant({"type": "tool_use", "id": "t", "name": "Write", "input": {"content": quoted}}),
+            assistant(text(quoted), isApiErrorMessage=True),
+            {"type": "assistant", "message": {"role": "assistant", "content": quoted}},
+        ]
+        self.refused(self.save(*others), "no PLAN_READY block")
+        done = self.save(assistant(text("PLAN_READY\nmine\nEND_PLAN_READY")), *others)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.saved(), "mine\n")
+
+    def test_a_file_that_is_not_a_transcript_is_refused(self) -> None:
+        self.refused(self.save(raw="PLAN_READY\nplain text\nEND_PLAN_READY\n"), "line 1 is not JSON")
+        block = assistant(text("PLAN_READY\nmine\nEND_PLAN_READY"))
+        self.refused(self.save(block, raw='{"type": "assistant", "mess'), "line 2 is not JSON")
+        self.refused(self.save(block, raw="[1]\n"), "line 2 is not a JSON object")
+
+    def test_refusals_of_the_directory_and_the_file(self) -> None:
+        missing = subprocess.run(
+            [ENTRY, "save-plan", self.dir, "--from-transcript", os.path.join(self.tmp, "nope")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.refused(missing, "cannot read the transcript")
+        block = assistant(text("PLAN_READY\nmine\nEND_PLAN_READY"))
+        with open(self.transcript, "wb") as f:
+            f.write(b"\xff\n")
+        bad = subprocess.run([ENTRY, "save-plan", self.dir, "--from-transcript", self.transcript], capture_output=True, text=True, check=False)
+        self.refused(bad, "cannot read the transcript")
+        open(os.path.join(self.dir, "critique-brief.md"), "w", encoding="utf-8").close()
+        done = self.save(block)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("already has a critique", done.stderr)
+        self.assertFalse(os.path.lexists(self.record))
+        os.remove(os.path.join(self.dir, "meta.json"))
+        self.assertIn("is not a plan directory", self.save(block).stderr)
+
+    def test_usage(self) -> None:
+        self.assertEqual(subprocess.run([ENTRY, "save-plan", self.dir], capture_output=True, check=False).returncode, 2)
+        done = subprocess.run([ENTRY, "save-plan", self.dir, "--plan", "x"], capture_output=True, check=False)
+        self.assertEqual(done.returncode, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
