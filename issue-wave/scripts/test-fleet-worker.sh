@@ -1248,8 +1248,12 @@ done
 : > "$BASE_CALL_LOG"
 expect "gate --wait runs out with the last read's reason" 1 \
   "^GATE REFUSED native-worker: example/project topic: --wait 2s ran out after [0-9][0-9]* read(s); the last refused: $pending_msg\$" -- \
-  env SHIM_BASE_RC=4 SHIM_BASE_MESSAGE="$pending_msg" FLEET_GATE_REREAD_INTERVAL=1 "$FW" gate --target-repo example/project --base-branch topic --wait 2
+  env SHIM_BASE_RC=4 SHIM_BASE_MESSAGE="$pending_msg" FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --base-branch topic --wait 2
 [ "$(reads)" -ge 2 ] && ok "...having read again before the deadline" || ko "no re-read before the deadline: $(cat "$BASE_CALL_LOG")"
+: > "$BASE_CALL_LOG"
+expect "gate --wait makes no re-read its pause would start past the deadline" 1 "ran out after 1 read(s)" -- \
+  env SHIM_BASE_RC=4 FLEET_GATE_REREAD_INTERVAL=30 "$FW" gate --target-repo example/project --base-branch topic --wait 20
+[ "$(reads)" = 1 ] && ! grep -q 'GATE WAIT' <<<"$out" && ok "...and refuses then, without pausing" || ko "a re-read past the deadline: $out"
 : > "$BASE_CALL_LOG"
 expect "a halt recorded during a --wait read ends the wait at once" 1 "GATE REFUSED native-worker: launches halted -- .*halted mid-wait" -- \
   env SHIM_BASE_RC=4 SHIM_BASE_HALT="halted mid-wait" FLEET_GATE_REREAD_INTERVAL=0 "$FW" gate --target-repo example/project --base-branch topic --wait 600

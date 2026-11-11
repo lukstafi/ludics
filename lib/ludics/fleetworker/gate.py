@@ -41,9 +41,10 @@ anchor's read, unreachable included). Some exit-4 shapes never lift by waiting (
 ever ran, the newest 100 runs judge nothing); those run to the deadline, never green. The halt
 and lease are read before every pause, so a halt recorded during a read ends the wait without
 another pause, and once more after the passing read, as without ``--wait``. Between reads the
-gate pauses ``FLEET_GATE_REREAD_INTERVAL`` seconds (default the checker's poll interval, 60; the
-pause is cut to the time left). THE DEADLINE counts from the gate's start and bounds when a read
-may START: no read starts after it, and a read under way at it runs to its own ceiling (one
+gate pauses ``FLEET_GATE_REREAD_INTERVAL`` seconds (default the checker's poll interval, 60).
+THE DEADLINE counts from the gate's start and bounds when a read may START: no read starts at or
+after it -- a re-read the pause would put there is not made, and the gate refuses then, before
+the deadline -- and a read under way at it runs to its own ceiling (one
 ``BASE_WAIT``, two with the integration re-read), so the gate can return that much past the
 deadline. Expiry is a refusal, exit 1, whose line names the last read's reason: the checker's
 verdict line (the first line of its report that begins with the target), or the gate's own
@@ -438,6 +439,7 @@ def cmd_gate(cfg: Config, args: list[str]) -> int:
     interval = cfg.env.get(REREAD) or str(BASE_POLL_INTERVAL)
     if not re.fullmatch(r"[0-9]{1,6}", interval):
         die(f"gate: {REREAD} must be a whole number of seconds")
+    pause = int(interval)
     rc = anchor_gate(cfg, "GATE", "native-worker", force)
     if rc != 0:
         return rc
@@ -450,21 +452,21 @@ def cmd_gate(cfg: Config, args: list[str]) -> int:
             break
         if not (wait and read.pending):
             return 1
+        # The halt and the lease before every pause (THE WAIT): a halt never waits out a deadline.
+        rc = anchor_gate(cfg, "GATE", "native-worker", force)
+        if rc != 0:
+            return rc
+        # No read starts at or past the deadline: one the pause would put there is not made.
         left = started + wait - time.monotonic()
-        if left <= 0:
+        if left <= pause:
             err(
                 f"GATE REFUSED native-worker: {where}: --wait {wait}s ran out after {reads} read(s);"
                 f" the last refused: {read.why}"
             )
             return 1
-        # The halt and the lease before every pause (THE WAIT): a halt never waits out a deadline.
-        rc = anchor_gate(cfg, "GATE", "native-worker", force)
-        if rc != 0:
-            return rc
-        pause = min(float(interval), left)
         err(
             f"GATE WAIT native-worker: {where}: read {reads} refused for now ({read.why}); reading again"
-            f" in {pause:.0f}s, {left:.0f}s of --wait {wait} left"
+            f" in {pause}s, {left:.0f}s of --wait {wait} left"
         )
         time.sleep(pause)
     return anchor_gate(cfg, "GATE", "native-worker", force)
