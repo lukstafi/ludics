@@ -1134,19 +1134,20 @@ controlled through the tools in your coordinator's file, never through those com
      what failed** (the GPU loop's rerun is its own, below): each failing alias or test, three
      times at the red SHA on the same box, as one plain `tip-run`, a loop run the halt admits
      (references/executions.md *Adoption and halt*), so the coordinator holds no triage record and
-     the halt's triage stays free for its one owner, even mid-rerun. Its request is the loop's payload
-     with the red SHA as `requested_revision` (no `--tip`) and WITHOUT `"integration": true`: the
-     targeted batch is no verdict, and the field would make its pass one at the red SHA. It takes
-     its own `--id-prefix <wave>-<name>-rerun`, since an id under the loop's prefix is the loop
-     driver's own record; the loop's checkout, box and `--cpu`; and as its command the loop's,
-     narrowed to the failing aliases and run three times in one `sh -c` loop that exits on the
-     first failure, with no pipe. `tip-run --wait <id>` concludes it; `NOT STARTED` is a busy box
-     (a loop run queues for no slot): re-issue it. Three passes mean a flake, typically load on a box shared with workers'
-     batches (wave-20261102: a `device_init_deadline` timing claim on macbook-pro beside five
-     workers' batches, settled in three minutes). Then `resume-launches` and start the loop's next
-     run at the current tip at once, even when that is still the red SHA: the targeted batch is
-     no verdict, so the base gate keeps reading the loop's fail record there and nothing
-     launches onto that tip until the new run passes. One failure is a regression, as a red CI
+     the halt's triage stays free for its one owner, even mid-rerun. Its request is the loop's
+     payload with the red SHA as `requested_revision` (no `--tip`) and WITHOUT `"integration":
+     true`: the targeted batch is no verdict, and the field would make its pass one at the red
+     SHA. It takes its own `--id-prefix <wave>-<name>-rerun`, since an id under the loop's prefix
+     is the loop driver's own record; the loop's checkout, box and `--cpu`; and as its command the
+     loop's, narrowed to the failing aliases and run three times in one `sh -c` loop that exits on
+     the first failure, with no pipe. `tip-run --wait <id>` concludes it; `NOT STARTED` is a busy
+     box (a loop run queues for no slot): re-issue it. Three passes mean a flake, typically load
+     on a box shared with workers' batches (wave-20261102: a `device_init_deadline` timing claim
+     on macbook-pro beside five workers' batches, settled in three minutes). Then
+     `resume-launches` and start the loop's next run at the current tip at once, even when that
+     is still the red SHA: the targeted batch is no verdict, so the base gate keeps reading the
+     loop's fail record there and nothing launches onto that tip until the new run passes. One
+     failure is a regression, as a red CI
      rerun is below. The CI rerun is a new attempt, so judge that attempt and not the red already read:
      once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
      await it with `pr-review.sh retry run watch <owner/repo>#<run id>`. Green, it was a flake:
