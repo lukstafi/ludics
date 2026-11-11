@@ -1427,6 +1427,60 @@ test_a_body_file_is_the_body() {
   assert_eq "$(cat "$REQUEST_LOG")" "" "with nothing posted"
 }
 
+# `--coordinator <model>` (#1069): a wave coordinator's issue comment, from a body file, ends with
+# the footer issue-wave's Decision gate reads -- the script's, never the caller's typing. A body that
+# already carries a footer line is refused, and so is a usage error, with nothing posted either way.
+test_a_coordinator_comment_ends_with_the_footer() {
+  reset_fixture
+  body_file $'## Recommendation (wave-20261111, tier 2)\n\nRefuse the shape.\n'
+  set +e
+  (cmd_comment "other-owner/other-name#1069" --body-file "$BODY_FILE" --coordinator "Claude Opus 5.5") \
+    >"$TEST_ROOT/out" 2>"$TEST_ROOT/err"
+  RC=$?
+  set -e
+  assert_eq "$RC" 0 "a coordinator comment posts ($(cat "$TEST_ROOT/err"))"
+  assert_eq "$(cat "$REQUEST_LOG")" "repos/other-owner/other-name/issues/1069/comments" \
+    "to the issue the argument names"
+  assert_eq "$(cat "$BODIES/comment")" \
+    $'## Recommendation (wave-20261111, tier 2)\n\nRefuse the shape.\n\n(Posted by the wave coordinator, Claude Opus 5.5)' \
+    "the file's text, then the footer naming the model, and nothing after it"
+  assert_eq "$(cat "$TEST_ROOT/out")" "https://github.com/other-owner/other-name/pull/1069#issuecomment-4242" \
+    "its url is the whole of stdout"
+}
+
+test_a_coordinator_comment_refuses_a_doubled_footer() {
+  reset_fixture
+  body_file $'Landed in #9.\n\n(Posted by the wave coordinator, Claude Opus 5.5)\n'
+  run_cmd cmd_comment --body-file "$BODY_FILE" --coordinator "Claude Opus 5.5"
+  assert_eq "$RC" 2 "a body that already ends with a footer is refused ($ERR)"
+  assert_contains "$ERR" "already carries a '(Posted by the wave coordinator ...)' line" "and says why"
+  assert_eq "$(cat "$REQUEST_LOG")" "" "with nothing posted"
+  # The control: the rule quoted in a sentence is no footer.
+  reset_fixture
+  body_file $'The gate reads `(Posted by the wave coordinator ...)` as a wave\'s own post.\n'
+  run_cmd cmd_comment --body-file "$BODY_FILE" --coordinator "Claude Opus 5.5"
+  assert_eq "$RC" 0 "a quoted footer passes ($ERR)"
+  assert_contains "$(cat "$BODIES/comment")" $'post.\n\n(Posted by the wave coordinator, Claude Opus 5.5)' \
+    "and gets the one footer"
+}
+
+test_a_coordinator_usage_error_posts_nothing() {
+  reset_fixture
+  body_file $'Landed in #9.\n'
+  run_cmd cmd_comment --body-file "$BODY_FILE" --coordinator
+  assert_eq "$RC" 2 "--coordinator with no model is a usage error ($ERR)"
+  assert_contains "$ERR" "--coordinator takes the model" "and says what it takes"
+  assert_eq "$(cat "$REQUEST_LOG")" "" "with nothing posted"
+  reset_fixture
+  run_cmd cmd_comment --body-file "$BODY_FILE" --coordinator "Opus (1M)"
+  assert_eq "$RC" 2 "a model that would close the footer early is a usage error ($ERR)"
+  assert_eq "$(cat "$REQUEST_LOG")" "" "with nothing posted"
+  reset_fixture
+  run_cmd cmd_comment --coordinator "Claude Opus 5.5"
+  assert_eq "$RC" 2 "a coordinator comment with no body is a usage error ($ERR)"
+  assert_eq "$(cat "$REQUEST_LOG")" "" "with nothing posted"
+}
+
 # `--anchor` is spelled either way gh's own flags are, and a bare `--anchor` with nothing after it
 # is an invocation error rather than a reply with no anchor (round 3 of #86 added the flag).
 test_the_anchor_flag_takes_both_spellings() {
@@ -1617,6 +1671,9 @@ tests=(
   test_the_bare_nudge_is_the_one_comment_that_passes
   test_the_posted_bodies_are_exact
   test_a_body_file_is_the_body
+  test_a_coordinator_comment_ends_with_the_footer
+  test_a_coordinator_comment_refuses_a_doubled_footer
+  test_a_coordinator_usage_error_posts_nothing
   test_the_anchor_flag_takes_both_spellings
   test_a_failed_anchored_batch_keeps_its_anchor
   test_an_ambiguous_last_write_leaves_nothing_outstanding

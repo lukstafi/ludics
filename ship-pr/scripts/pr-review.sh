@@ -309,6 +309,11 @@
 #                                          # a review SUMMARY's findings, or a '@codex review' nudge
 #                                          # (the one body that may mention '@codex' without the
 #                                          # flag; see prreview/reply.py). --body-file as `reply`'s
+#   pr-review.sh comment <owner/name#issue> --body-file <path> --coordinator <model>
+#                                          # a wave coordinator's issue (or PR) comment: ends with
+#                                          # "(Posted by the wave coordinator, <model>)" in place of
+#                                          # the marker; a body with a footer line of its own is
+#                                          # refused (#1069, see prreview/comment.py)
 #   pr-review.sh body <pr> <file>          # replace the PR's description with the file's content,
 #                                          # over REST: `gh pr edit --body-file` rides GraphQL and
 #                                          # fails on a repo whose PRs trip the classic-Projects

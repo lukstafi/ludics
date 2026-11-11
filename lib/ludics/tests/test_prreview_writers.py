@@ -243,6 +243,85 @@ class Comment(unittest.TestCase):
                 self.assertEqual(len(gh.calls), calls)
 
 
+class CoordinatorFooter(unittest.TestCase):
+    """``comment --coordinator <model>`` (#1069): a wave coordinator's issue comment ends with the
+    footer issue-wave's Decision gate reads, appended by the script and never doubled."""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.mkdtemp(prefix="coordinator-footer-test.")
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def file(self, text: str) -> str:
+        path = os.path.join(self.dir, "body.md")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def post(self, args: list[str]) -> tuple[int, str, str, Gh]:
+        gh = Gh(lambda call: ok("https://github.com/a/b/issues/8#issuecomment-1\n"))
+        rc, out, errs = invoke(lambda: comment.run(session(gh), args))
+        return rc, out, errs, gh
+
+    def test_the_footer_ends_the_post_in_place_of_the_marker(self) -> None:
+        path = self.file("## Recommendation\n\nRefuse the shape.\n\n")
+        for spelling in (["--coordinator", "Claude Opus 5.5"], ["--coordinator=Claude Opus 5.5"]):
+            with self.subTest(spelling=spelling):
+                rc, out, errs, gh = self.post(["a/b#8", "--body-file", path, *spelling])
+                self.assertEqual((rc, errs), (0, ""))
+                self.assertEqual(out, "https://github.com/a/b/issues/8#issuecomment-1\n")
+                self.assertEqual(gh.calls[0][:4], ["api", "-X", "POST", "repos/a/b/issues/8/comments"])
+                self.assertEqual(
+                    field(gh.calls[0], "body"),
+                    "## Recommendation\n\nRefuse the shape.\n\n(Posted by the wave coordinator, Claude Opus 5.5)")
+        rc, _, errs, gh = self.post(["a/b#8", "Landed in #9.", "--coordinator", "gpt-5.5-codex"])
+        self.assertEqual((rc, errs), (0, ""), "an argument body takes the footer too")
+        self.assertEqual(field(gh.calls[0], "body"),
+                         "Landed in #9.\n\n(Posted by the wave coordinator, gpt-5.5-codex)")
+        self.assertNotIn(reply.MARKER.strip(), field(gh.calls[0], "body"))
+
+    def test_a_body_with_a_footer_line_is_refused(self) -> None:
+        for body in (
+            "Done.\n\n(Posted by the wave coordinator, Claude Opus 5.5)\n",
+            "Done.\n   (posted BY the wave coordinator ...)",
+            "(Posted by the wave coordinator)\nand more",
+            "Done.\r(Posted by the wave coordinator, x)",
+        ):
+            with self.subTest(body=body):
+                rc, _, errs, gh = self.post(["a/b#8", "--body-file", self.file(body), "--coordinator", "M"])
+                self.assertEqual(rc, 2)
+                self.assertIn("already carries a '(Posted by the wave coordinator ...)' line", errs)
+                self.assertEqual(gh.calls, [])
+        # The control: the phrase quoted, in a code span or mid-sentence, is no footer.
+        for body in (
+            "> (Posted by the wave coordinator, Claude Opus 5.5)\n\nThat was a wave's own post.",
+            "The gate reads `(Posted by the wave coordinator ...)` as a wave's own post.",
+        ):
+            with self.subTest(body=body):
+                rc, _, errs, gh = self.post(["a/b#8", "--body-file", self.file(body), "--coordinator", "M"])
+                self.assertEqual((rc, errs), (0, ""))
+                self.assertTrue(field(gh.calls[0], "body").endswith("\n\n(Posted by the wave coordinator, M)"))
+        rc, _, errs, gh = self.post(["a/b#8", "Done.\n(Posted by the wave coordinator, M)"])
+        self.assertEqual((rc, errs), (0, ""), "without the flag, a body is not read for a footer")
+
+    def test_a_usage_error_posts_nothing(self) -> None:
+        path = self.file("Done.")
+        for args, says in (
+            (["a/b#8", "--body-file", path, "--coordinator"], "--coordinator takes the model"),
+            (["a/b#8", "--body-file", path, "--coordinator="], "--coordinator takes the model"),
+            (["a/b#8", "--body-file", path, "--coordinator", "Opus (1M)"], "got 'Opus (1M)'"),
+            (["a/b#8", "--body-file", path, "--coordinator", "Opus\n5"], "--coordinator takes the model"),
+            (["a/b#8", "--body-file", path, "--coordinator", "Opus "], "--coordinator takes the model"),
+            (["a/b#8", "--body-file", path, "--coordinator", "a", "--coordinator", "b"], "given twice"),
+            (["a/b#8", "--coordinator", "M"], "got 1 argument(s)"),
+            (["a/b#8", "Inline.", "--body-file", path, "--coordinator", "M"], "not both"),
+        ):
+            with self.subTest(args=args):
+                rc, _, errs, gh = self.post(args)
+                self.assertEqual(rc, 2)
+                self.assertIn(says, errs)
+                self.assertEqual(gh.calls, [])
+
+
 class BodyFile(unittest.TestCase):
     """``--body-file <path>``: the body read from a file instead of the positional argument, for
     ``reply`` and ``comment`` alike (wave-20261020, post-1-task-2)."""

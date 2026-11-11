@@ -324,7 +324,12 @@ wave coordinator)`, as a tier-3 answer is posted); a later one supersedes an ear
 same question. Not one: anything a wave posted on its own judgment - a tier-2 recommendation, an
 earlier wave's included, a retraction, a reconciled plan, a landing note, an evidence comment -
 which ends `(Posted by the wave coordinator ...)` or carries a wave or task in its heading. A
-comment you cannot place on either side moves the question to tier 3.
+comment you cannot place on either side moves the question to tier 3. So the footer is the
+script's, not your typing: post every issue comment of the wave's own (a tier-2 recommendation, an
+evidence or close-out comment) with `~/.claude/skills/ship-pr/scripts/pr-review.sh comment
+<owner/name#N> --body-file <path> --coordinator '<your model>'`, which appends `(Posted by the wave
+coordinator, <your model>)` and refuses a body that already carries a footer line (#1069). A tier-3
+answer posted for the maintainer is theirs by its `## Decision update (maintainer, ...)` heading.
 
 Then triage into three tiers - the point is to ask the user as little as possible while never
 burying a decision they own:
@@ -1425,7 +1430,7 @@ for a CLI worker; the thread or CLI stream is the full record - arrives carrying
 and reasoned drops; the coordinator's role here is editorial, not generative. Combine
 overlapping proposals across workers into single issues - cross-worker recurrence is the
 strongest priority signal a wave produces - revise drafts against the tracker's style, then do
-the filing and evidence comments yourself. An issue or evidence comment drafted from a worker's
+the filing and evidence comments yourself, each comment through the footer helper (*Decision gate*). An issue or evidence comment drafted from a worker's
 proposal quotes that proposal verbatim under its Evidence, next to your summary and attributed to
 the worker's task and PR (a combined issue quotes each): a paraphrase can change the claim, and
 the next worker reads the issue, not the hand-back (#729's item said `merge` reads a stale
