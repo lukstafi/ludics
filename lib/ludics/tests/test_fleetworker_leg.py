@@ -1034,5 +1034,62 @@ class WorktreeReading(unittest.TestCase):
         self.assertEqual(done.stderr, f"EXECUTION LEG REFUSED box: --checkout {self.plain} is not a git checkout on box\n")
 
 
+class RunRequest(unittest.TestCase):
+    """ludics#1063, THE RUN'S REQUEST: a leg that is its bg-run.sh directory's own command writes
+    the request it runs for there, once; anything else writes nothing."""
+
+    def setUp(self) -> None:
+        self.dir = os.path.realpath(tempfile.mkdtemp(prefix="ludics-run-request."))
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def cpid(self, pid: int) -> None:
+        with open(os.path.join(self.dir, "cpid"), "w") as f:
+            f.write(f"{pid}\nsometime\n")
+
+    def written(self) -> str | None:
+        try:
+            with open(os.path.join(self.dir, "request")) as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    def test_the_directorys_own_command_writes_it_once(self) -> None:
+        self.cpid(os.getpid())
+        leg.mark_run_request({"BG_RUN_DIR": self.dir}, "req-1")
+        self.assertEqual(self.written(), "req-1\n")
+        leg.mark_run_request({"BG_RUN_DIR": self.dir}, "req-2")  # never over one already there
+        self.assertEqual(self.written(), "req-1\n")
+        self.assertEqual(sorted(os.listdir(self.dir)), ["cpid", "request"])  # no temporary left
+
+    def test_anything_else_writes_nothing(self) -> None:
+        leg.mark_run_request({"BG_RUN_DIR": self.dir}, "req-1")  # no cpid
+        self.cpid(os.getpid() + 1)
+        for env in ({"BG_RUN_DIR": self.dir}, {}, {"BG_RUN_DIR": ""}, {"BG_RUN_DIR": os.path.relpath(self.dir)},
+                    {"BG_RUN_DIR": os.path.join(self.dir, "nope")}):
+            leg.mark_run_request(env, "req-1")
+        self.assertIsNone(self.written())
+
+    def test_a_refused_write_is_a_warning(self) -> None:
+        self.cpid(os.getpid())
+        os.chmod(self.dir, 0o500)
+        self.addCleanup(os.chmod, self.dir, 0o700)
+        if os.access(self.dir, os.W_OK):
+            self.skipTest("the directory stays writable (root)")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            leg.mark_run_request({"BG_RUN_DIR": self.dir}, "req-1")
+        self.assertIsNone(self.written())
+        self.assertIn(f"execution leg: warning: cannot record request req-1 in {self.dir}", err.getvalue())
+
+    def test_the_leg_writes_it_before_the_registry_is_read(self) -> None:
+        self.cpid(os.getpid())
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "agent", "BG_RUN_DIR": self.dir},
+                          host="agent")
+        with mock.patch.object(execution, "listing", mock.Mock(return_value=Done(UNREACHABLE, ""))), \
+                contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            rc = leg.leg_command(cfg, ["--request", "it", "--rev", "main", "--checkout", "/c", "--worktree", "/w", "--", "true"])
+        self.assertEqual((rc, self.written()), (4, "it\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -120,7 +120,7 @@ def run_record(**over: str) -> dict[str, str]:
 
 def bg_text(**over: str) -> str:
     """FROM_BG_RUN's output for a run whose command returned 0, ``over`` replacing facts."""
-    base = {"wait": "0", "log": "1", "sentinel": "", "refusal": "", "said": "rc=0"}
+    base = {"wait": "0", "log": "1", "sentinel": "", "refusal": "", "request": "", "said": "rc=0"}
     base.update(over)
     return "dir=1\n" + "\n".join(f"{k}={v}" for k, v in base.items())
 
@@ -153,7 +153,7 @@ class FromBgRunFacts(unittest.TestCase):
     def test_the_facts_read_key_by_key(self) -> None:
         facts = execution.bg_run_facts(bg_text(sentinel="tests: exit: 3", said="rc=3 (finished earlier, at T)"))
         self.assertEqual(facts, {"dir": "1", "wait": "0", "log": "1", "sentinel": "tests: exit: 3", "refusal": "",
-                                 "said": "rc=3 (finished earlier, at T)"})
+                                 "request": "", "said": "rc=3 (finished earlier, at T)"})
         self.assertEqual(execution.bg_run_facts("dir=0"), {"dir": "0"})
         self.assertEqual(execution.bg_run_facts("dir=1\nscratch=0"), {"dir": "1", "scratch": "0"})
         # said is last and whole: what follows its `=` is the line, a `said=` inside it included.
@@ -169,8 +169,13 @@ class FromBgRunFacts(unittest.TestCase):
             self.assertIsNone(execution.bg_run_facts(text), text)
         for over in ({"wait": "x"}, {"wait": "03"}, {"wait": ""}, {"log": "2"}, {"sentinel": "exit: 256"},
                      {"sentinel": "exit: 01"}, {"sentinel": "a b: exit: 1"}, {"sentinel": "exit: 1 tail"},
-                     {"wait": "7", "sentinel": "exit: 0"}, {"log": "0", "sentinel": "exit: 0"}):
+                     {"wait": "7", "sentinel": "exit: 0"}, {"log": "0", "sentinel": "exit: 0"},
+                     {"request": ":"}, {"request": "req-1"}, {"request": "!!"}, {"request": "none"}):
             self.assertIsNone(execution.bg_run_facts(bg_text(**over)), over)
+        # #1063: THE RUN'S REQUEST's four readings are its whole vocabulary.
+        for value in ("", "!", "?", ":req-1", ":!"):
+            facts = execution.bg_run_facts(bg_text(request=value))
+            self.assertEqual(facts and facts["request"], value)
 
     def test_a_command_that_returned_concludes_on_its_status_and_sentinel(self) -> None:
         payload = bg_payload(bg_text())
@@ -214,6 +219,39 @@ class FromBgRunFacts(unittest.TestCase):
         unreachable = bg_conclude("", rc=UNREACHABLE)
         assert isinstance(unreachable, Refusal)
         self.assertEqual((unreachable.text, unreachable.rc), ("FROM-BG-RUN UNREACHABLE testbox: nothing concluded", 4))
+
+
+class FromBgRunRequest(unittest.TestCase):
+    """#1063, THE RUN'S REQUEST: a directory whose ``request`` file names ``--request`` concludes,
+    saying so; one naming another request, or malformed, is refused; one with none reads as
+    before."""
+
+    def test_a_matching_request_file_concludes_saying_so(self) -> None:
+        payload = bg_payload(bg_text(request=":req-1"))
+        self.assertEqual(payload["verdict"], "pass")
+        self.assertEqual(payload["evidence"], f"bg-run /runs/run-3 on testbox: rc=0; the command returned; revision {SHA}"
+                                              f" {execution.REPORTED}; its request file binds /runs/run-3 on testbox to req-1")
+        self.assertEqual(bg_payload(bg_text(request=":req-1", said="rc=3"))["verdict"], "fail")
+
+    def test_no_request_file_reads_as_before(self) -> None:
+        self.assertEqual(bg_payload(bg_text())["evidence"],
+                         f"bg-run /runs/run-3 on testbox: rc=0; the command returned; revision {SHA} {execution.REPORTED}")
+        self.assertEqual(execution.run_request({"dir": "0"}), ("none", ""))  # nothing read past the directory
+
+    def test_another_request_or_a_malformed_file_is_refused(self) -> None:
+        for value, want in (
+            (":req-2", "FROM-BG-RUN REFUSED: /runs/run-3 on testbox is request req-2's run (its request file names it),"
+                       " not req-1's; nothing concluded"),
+            (":req-1 ", "FROM-BG-RUN REFUSED: /runs/run-3 on testbox is request 'req-1 '\'s run"),
+            (":!", "is request '!'\'s run"),  # an id, never a reading word
+            ("!", "FROM-BG-RUN REFUSED: /runs/run-3/request on testbox is not a regular file; nothing concluded"),
+            ("?", "FROM-BG-RUN REFUSED: /runs/run-3/request on testbox is not one line naming a request; nothing concluded"),
+        ):
+            self.assertIn(want, bg_refusal(bg_text(request=value)), value)
+        # Before the verdict: a slot refusal's not-launched, a STOPPED, a RUNNING are another request's too.
+        for over in ({"said": "rc=1", "refusal": "EXECUTION SLOT REFUSED testbox: x"},
+                     {"wait": "7", "said": "STOPPED by bg-run.sh stop"}, {"wait": "3", "said": "RUNNING"}):
+            self.assertIn("is request req-2's run", bg_refusal(bg_text(request=":req-2", **over)), over)
 
 
 class FromBgRunBox(unittest.TestCase):
@@ -313,6 +351,51 @@ class FromBgRunBox(unittest.TestCase):
         self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING",
                       refusal({"rog": Done(0, "dir=0"), "mac-studio": Done(0, bg_text(wait="3", said="RUNNING"))}))
 
+    def refusal(self, outs: dict[str, Done], rc: int = 1) -> str:
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(said), self.assertRaises(cli.Exit) as raised:
+            self.conclude([], outs)
+        self.assertEqual(raised.exception.rc, rc, said.getvalue())
+        return said.getvalue()
+
+    def test_on_both_boxes_the_one_bound_to_the_request_concludes(self) -> None:
+        """#1063: THE RUN'S REQUEST settles the both-boxes case when exactly one is bound to it."""
+        for bound, other in (("mac-studio", "rog"), ("rog", "mac-studio")):
+            out, run_on = self.conclude([], {bound: Done(0, bg_text(request=":leg-1", said="rc=3")), other: Done(0, bg_text())})
+            payload = json.loads(out)
+            self.assertEqual(self.boxes_read(run_on), ["rog", "mac-studio"])
+            self.assertEqual((payload["verdict"], payload["handle"]), ("fail", f"bg-run:{bound}:/runs/run-3"))
+            self.assertTrue(payload["evidence"].endswith(
+                f"; its request file binds /runs/run-3 on {bound} to leg-1"
+                f"; no --box: looked for on rog and mac-studio, found on both, concluded from {bound}, the one bound to it,"
+                f" not from {other}"), payload["evidence"])
+        # The other's file may say anything: only a positive match settles it.
+        for other in (":leg-2", "!", "?"):
+            out, _ = self.conclude([], {"rog": Done(0, bg_text(request=other)), "mac-studio": Done(0, bg_text(request=":leg-1"))})
+            self.assertEqual(json.loads(out)["handle"], "bg-run:mac-studio:/runs/run-3", other)
+        # The bound directory keeps its own verdict's refusal.
+        self.assertIn("FROM-BG-RUN REFUSED: bg-run.sh wait: RUNNING", self.refusal(
+            {"rog": Done(0, bg_text()), "mac-studio": Done(0, bg_text(request=":leg-1", wait="3", said="RUNNING"))}))
+
+    def test_on_both_boxes_with_none_or_two_bound_it_stays_refused(self) -> None:
+        both = "FROM-BG-RUN REFUSED: a run directory /runs/run-3 is on both rog and mac-studio"
+        tail = "; --box <box> names the one whose run it is; nothing concluded"
+        for rog, mac, words in (
+            (":leg-1", ":leg-1", " (its request file: on rog names leg-1, on mac-studio names leg-1)"),
+            (":leg-2", "", " (its request file: on rog names leg-2, on mac-studio none)"),
+            ("!", "?", " (its request file: on rog not a regular file, on mac-studio malformed)"),
+        ):
+            self.assertIn(both + words + tail,
+                          self.refusal({"rog": Done(0, bg_text(request=rog)), "mac-studio": Done(0, bg_text(request=mac))}))
+        # A box that cannot be read still concludes nothing, a bound directory on the other included.
+        self.assertIn("FROM-BG-RUN UNREACHABLE rog: nothing concluded", self.refusal(
+            {"rog": Done(UNREACHABLE, ""), "mac-studio": Done(0, bg_text(request=":leg-1"))}, rc=4))
+
+    def test_one_box_holding_it_bound_to_another_request_is_refused(self) -> None:
+        self.assertIn("FROM-BG-RUN REFUSED: /runs/run-3 on mac-studio is request leg-2's run (its request file names it),"
+                      " not leg-1's; nothing concluded",
+                      self.refusal({"rog": Done(0, "dir=0"), "mac-studio": Done(0, bg_text(request=":leg-2"))}))
+
 
 class FromBgRunFarSide(unittest.TestCase):
     """``conclude --from-bg-run``'s far side over the real bg-run.sh, its facts read by the near
@@ -364,6 +447,32 @@ class FromBgRunFarSide(unittest.TestCase):
                        "ordinary test output\n"):
             self.assertEqual(bg_payload(self.far(rc="1\n", log=prefix + line + "\n"))["verdict"], "fail")
         self.assertEqual(bg_payload(self.far(rc="0\n", log=line + "\n"))["verdict"], "pass")
+
+    def test_the_request_file_is_read_by_its_allowlist(self) -> None:
+        """#1063, THE RUN'S REQUEST: what the far side makes of ``<dir>/request``."""
+        for text, want in (("req-1\n", ":req-1"), ("a b\tc\n", ":a b\tc"), ("req-1", "?"), ("\n", "?"), ("", "?"),
+                           ("a\nb\n", "?"), ("a\n\n", "?"), ("a\0b\n", "?")):
+            self.assertEqual(self.facts(rc="0\n", log="", request=text)["request"], want, repr(text))
+        self.assertEqual(self.facts(rc="0\n", log="")["request"], "")
+        root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-from-bg-run."))
+        self.addCleanup(shutil.rmtree, root)
+        for name in ("rc", "log"):
+            with open(os.path.join(root, name), "w") as f:
+                f.write("0\n" if name == "rc" else "")
+        with open(os.path.join(root, "target"), "w") as f:
+            f.write("req-1\n")
+        path = os.path.join(root, "request")
+        for kind in ("a link to a regular file", "a dangling link", "a directory"):
+            if kind == "a directory":
+                os.mkdir(path)
+            else:
+                os.symlink(os.path.join(root, "target" if kind == "a link to a regular file" else "nope"), path)
+            facts = execution.bg_run_facts(execution.substitution(self.far_at(root)))
+            self.assertEqual(facts and facts["request"], "!", kind)
+            os.rmdir(path) if kind == "a directory" else os.unlink(path)
+        payload = bg_payload(self.far(rc="0\n", log="", request="req-1\n"))
+        self.assertTrue(payload["evidence"].endswith("its request file binds /runs/run-3 on testbox to req-1"), payload)
+        self.assertIn("is request req-2's run", bg_refusal(self.far(rc="0\n", log="", request="req-2\n")))
 
     def test_every_other_verdict(self) -> None:
         dead = subprocess.Popen(["true"])

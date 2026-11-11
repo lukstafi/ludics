@@ -136,6 +136,10 @@
 #           carries a third, the run's stop grace in seconds (THE GRACES);
 #   log  -- the command's stdout and stderr, and the only file the command's output reaches;
 #   rc   -- the command's exit status, published (by rename) after the command returns.
+# The command runs with BG_RUN_DIR=<dir> in its environment (ludics#1063), so a command can tell
+# the directory it runs in. A child of the command inherits it too, so a command that writes there
+# first checks that `cpid` names its own pid (the exec chain keeps it): `fleet-worker.sh execution
+# leg --request <id>` writes `request` (below) that way, and nothing else here reads BG_RUN_DIR.
 #
 # `wait` polls every 5 s (BG_RUN_POLL, whole seconds) and returns the first settled verdict, or
 # the current one once --within seconds are spent (default: under the cap, THE SUBAGENT CAP). It
@@ -200,7 +204,10 @@
 # STOPPED rather than DIED; its lines name the tree's groups, `process group <g>` (the wrapper's)
 # first, then `process group <h> <its leader's start time, or ->` for each other one, which `wait`
 # and a second `stop` read back. `.made` is `new`'s claim (above), left for the directory's life;
-# nothing but `new` reads it.
+# nothing but `new` reads it. `request`, which only the command writes (`execution leg`, above;
+# complete, by link, and never over one already there), is one line, the reservation's request id
+# the run belongs to; `execution conclude --from-bg-run` reads it (ludics#1063), and `wait` and
+# `stop` never do.
 #
 # THE START TOKEN (ludics#786), the start time a pid file and the marker record and every identity
 # check compares. On Linux it is field 22 of /proc/<pid>/stat, the kernel's own start tick since
@@ -395,8 +402,9 @@ cmd_start() {
   # The command's process publishes its own pid before it execs the command, so there is no moment
   # at which the command runs untracked; it then execs perl, which resets the dispositions and
   # execs the command, all in that one process, so cpid and its start time stay the command's.
+  # BG_RUN_DIR (above) is the command's, exported on this one process, never this script's own.
   # shellcheck disable=SC2016 # expanded by the inner sh
-  sh -c 'cpid=$0 pl=$1 kind=$2; shift 2
+  BG_RUN_DIR=$dir sh -c 'cpid=$0 pl=$1 kind=$2; shift 2
     if [ "$kind" = tick ]; then
       t=$( { IFS= read -r l < "/proc/$$/stat"; } 2>/dev/null && set -- ${l##*") "} \
         && [ $# -ge 20 ] && shift 19 && printf "%s" "$1")

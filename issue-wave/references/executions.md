@@ -689,9 +689,13 @@ Without it, it is looked for on the reservation's execution host and on the requ
 `agent_host`, when that is another box of the roster (#1043): a leg run under `bg-run.sh spawn`,
 which is every leg of a native worker, and a machine-verify trip started on the agent host leave
 their directory on the agent host. Both boxes are read and the one holding the directory
-concludes; a path on both is refused (nothing in a bg-run directory names its request, so the
-box is the only binding), as is one on neither, and a box that does not answer concludes nothing
-(exit 4) even when the other holds the directory: give `--box` to read one box. Because the box
+concludes; a path on both is refused, as is one on neither, and a box that does not answer
+concludes nothing (exit 4) even when the other holds the directory: give `--box` to read one box.
+A leg that is its bg-run directory's own command writes its request id there, as `request`
+(#1063), and the conclusion reads it: a match is said in the evidence, another request's id or a
+malformed file is refused, and a path on both boxes of which exactly one is bound to `--request`
+concludes from that one. A directory with no `request` file (every one made before #1063, and any
+command that is no leg) reads as above. Because the box
 read is legitimately not always the reserved one, this form carries no execution-host binding;
 the conclusion's `log` and `handle` name the box read (`<box>:<path>`), and its evidence says
 which box drove the run and, without `--box`, which boxes were looked on. bg-run keeps no
