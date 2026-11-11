@@ -62,7 +62,7 @@ a CLI worker) has no such cap, only the tool's 600 s maximum. So, in a native wo
   ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot --bg <parent> --wait 1800 --wait-window -- <batch>
   # foreground, with Bash timeout: 600000, re-issued until it prints rc=
   ~/.claude/skills/issue-wave/scripts/bg-run.sh wait <dir>
-  # foreground; ends the run's whole tree
+  # foreground; ends the run's whole tree - only for a pause the coordinator asked for
   ~/.claude/skills/issue-wave/scripts/bg-run.sh stop <dir>
   ```
 
@@ -92,6 +92,14 @@ a CLI worker) has no such cap, only the tool's 600 s maximum. So, in a native wo
   SIGQUIT, SIGHUP and SIGTERM at their default dispositions, so a suite that signals its own
   children runs under `spawn` and `execution slot --bg` as it does in the foreground
   (ludics-lite#524).
+
+  **A running watch is waited out, never stopped.** A turn never ends with a run of yours still
+  going, and the way to meet that is to block on the run: for a `pr-review.sh watch` or `merge
+  --wait` that is still `RUNNING`, re-issue `wait <dir>` until it prints `rc=`, however many calls
+  that takes. Never `bg-run.sh stop` your own watch or merge wait so the turn can end "with
+  nothing running": that hands the coordinator a resume and the PR a re-arm (wave-20261110-ocannl:
+  three times, ludics#1045). `stop` is for a pause, or a "do not merge", the coordinator asked for
+  (SKILL.md, *A pause is not a halt*), and nothing else.
 
   A spawned run is no background task of the harness's, so a task-stop does not reach it;
   `bg-run.sh stop <dir>` does (ludics-lite#510). `spawn` gives the run a session of its own, and

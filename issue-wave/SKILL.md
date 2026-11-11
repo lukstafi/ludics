@@ -309,9 +309,26 @@ theory that rebasing will sort it out.
 ## Decision gate (before launch, batched, fatigue-aware)
 
 Scan the scoped issues for open design decisions: plan entries or issue bodies that say
-"decide X vs Y", plus the plan's design-questions section when present. Then triage into
-three tiers - the point is to ask the user as little as possible while never burying a
-decision they own:
+"decide X vs Y", plus the plan's design-questions section when present.
+
+**Read each issue's comments before triaging its question**, as `gh issue view N --repo O/R
+--json number,title,body,comments` (*The brief*'s read form). The plan's entry can be older than
+the issue, and a question the maintainer already decided there is no question: the decision is
+binding, the gate posts no tier-2 comment and asks no tier-3 question for it, and the brief names
+that comment, by URL, as binding (wave-20261110-ocannl posted a tier-2 "refuse" on
+ahrefs/ocannl#2087 over the maintainer's "Decision: define all three specs" and had to retract it,
+ludics#1046). The coordinator posts from the maintainer's account, so the author does not tell
+them apart; the comment's own text does. A maintainer decision is a comment that records a call
+the maintainer made: their own, stating it (`## Decision: <the call>`, or plain prose settling the
+question), or one posted on their behalf that says so (`## Decision update (maintainer, via the
+wave coordinator)`, as a tier-3 answer is posted); a later one supersedes an earlier one on the
+same question. Not one: anything a wave posted on its own judgment - a tier-2 recommendation, an
+earlier wave's included, a retraction, a reconciled plan, a landing note, an evidence comment -
+which ends `(Posted by the wave coordinator ...)` or carries a wave or task in its heading. A
+comment you cannot place on either side moves the question to tier 3.
+
+Then triage into three tiers - the point is to ask the user as little as possible while never
+burying a decision they own:
 
 1. **Agent-decidable** (technical calls with a clear best answer discoverable in the code):
    do not ask. Note in the worker's brief that the call is theirs and must be documented in
@@ -323,8 +340,8 @@ decision they own:
 3. **Genuinely user-owned** (scope, taste with lasting API/workflow impact, anything
    irreversible or milestone-shaping): ask, in ONE batched AskUserQuestion for the whole
    wave, recommendation-first ("(Recommended)" option leading each question). Accept "do
-   what you recommend" as a global answer. Whatever is decided gets posted to the issue
-   before the affected worker launches.
+   what you recommend" as a global answer. Whatever is decided gets posted to the issue,
+   headed as the maintainer's decision (above), before the affected worker launches.
 
 **Planning mode, per issue.** Every D3 gets `paired+critique` and an issue on the D2/D3
 border gets `paired`. Either way GPT Astra plans the issue read-only next to the worker,
@@ -534,11 +551,12 @@ requirements for every transport with transport-specific setup and identity, and
   assigned edit paths, branch/base and a successful harmless Git mutation at startup, and name
   the project's main checkout with Supervise's *The main checkout is read, never moved*.
 - The task: issue number and repo, a summary, and the instruction to read the issue and its
-  comments first - including the decision comment, where the gate POSTED one: only tier-2
-  (recommendation-with-veto) and tier-3 (user-owned) questions get a comment, a tier-1 call is
-  the worker's own and gets none, so the brief names the comment only for the issues that
-  received one (2026-09-04: three workers reported a "promised but absent" comment, one filed
-  it as a residual, because the shared brief promised one on every issue). Spell that read out
+  comments first - including the decision comment, where the gate POSTED or FOUND one: only
+  tier-2 (recommendation-with-veto) and tier-3 (user-owned) questions get a comment, a tier-1 call
+  is the worker's own and gets none, and a maintainer decision the gate found is named as binding
+  (*Decision gate*), so the brief names a comment only for the issues that have one
+  (2026-09-04: three workers reported a "promised but absent" comment, one filed it as a
+  residual, because the shared brief promised one on every issue). Spell that read out
   as `gh issue view N --repo O/R --json number,title,body,comments` (or a plain `gh issue view N
   --repo O/R`, then the same with `--comments`), never as `--comments` alone: that form prints
   ONLY the comments and never the body, so on a comment-less issue it emits zero bytes and
@@ -711,7 +729,9 @@ requirements for every transport with transport-specific setup and identity, and
 - **Block on every run before yielding**, the review watch and the merge wait included: a
   Claude worker as [Blocking on a run](references/native-claude.md#blocking-on-a-run) says, a
   Codex worker by keeping its turn open, because a returned turn says only that the turn ended
-  (Supervise: *A returned turn means the turn ended*).
+  (Supervise: *A returned turn means the turn ended*). The brief states the remedy next to the
+  rule: a run still going is waited out, never stopped so the turn can end with nothing running
+  (*A running watch is waited out* there; ludics#1045).
 - **Auto-fix on a desktop coordinator's worker PRs stays as the operator left it** unless the
   operator authorized the switch-off, standing in the site file or for this wave; only then does
   a bypass-mode native Claude worker's brief carry the step and cite that word, as
