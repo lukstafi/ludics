@@ -555,9 +555,16 @@ administrative reads use `coordinator`, not the dispatch `gate`.
 
 The brief is self-contained (workers do not see this conversation), carries the same issue
 requirements for every transport with transport-specific setup and identity, and includes the
-items below. A native worker's brief is rendered from the wave directory's template parts by
-`fleet-worker.sh wave prep`, and any other brief by `wave render`; either refuses an unrendered
-placeholder ([coordinator-kit.md](references/coordinator-kit.md)).
+items below. A native worker's brief is rendered from template parts by `fleet-worker.sh wave
+prep`, and any other brief by `wave render`; either refuses an unrendered placeholder
+([coordinator-kit.md](references/coordinator-kit.md)). A native Claude worker's common sections
+and paired-planning additions are the reference template the repository ships,
+`issue-wave/templates/native-claude/`, with the project's facts in wave.json values and the
+project's own part ([the shipped brief
+template](references/coordinator-kit.md#the-shipped-brief-template)), so no coordinator copies
+brief text forward from an earlier wave. The template carries the items below: a PR that changes
+one changes the template in the same diff, and a PR that retires a step adds its string to
+check-prompts' retired list (`lib/ludics/checkprompts/brieftemplate.py`).
 
 - Setup: expected host, branch and base, environment script, and docs to read. CLI launch
   supplies the worktree path; a native worker receives the coordinator-created absolute path;
@@ -789,8 +796,9 @@ placeholder ([coordinator-kit.md](references/coordinator-kit.md)).
   ship-pr's *Open*. The brief points the worker to the staged reading list that opens ship-pr's
   SKILL.md, its "What to read when" paragraph, and does not restate it, so the worker reads each
   section where it acts and never the whole file: it is about 1600 lines, most of a worker's
-  context on a PR approved in round 0 (ludics#948). Then close out the tracked issue with a summary comment - `gh issue comment
-  --body-file` first and `gh issue close` only if the merge left it open, per ship-pr's *After
+  context on a PR approved in round 0 (ludics#948). Then close out the tracked issue with a summary comment headed with the wave and task
+  (`## Landed (<wave>, <task>)`, so the decision gate reads it as the wave's, never as a
+  maintainer decision) - `gh issue comment --body-file` first and `gh issue close` only if the merge left it open, per ship-pr's *After
   it lands*, because `gh issue close --comment` on an issue a PR body's `Closes #N` already
   closed posts nothing at all - then the after-merge brainstorm ship-pr ends with, in
   **hand-back mode**: propose issues and chip candidates in the close-out report, file and
