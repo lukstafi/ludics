@@ -331,12 +331,12 @@ def cmd_sibling_scan(cfg: Config, args: list[str]) -> int:
         return 4
     heads: list[Head] = []
     skipped: list[str] = []
-    for number, sha, _created, _draft, branch, title, same_repo in rows:
-        if branch == opts.branch and same_repo == "same":
-            cli.say(f"{LABEL} SKIPPED {opts.repo}#{number}: the scan branch's own PR ({branch})")
-            skipped.append(f"{opts.repo}#{number}")
+    for row in rows:
+        if row.branch == opts.branch and row.same_repo:
+            cli.say(f"{LABEL} SKIPPED {opts.repo}#{row.number}: the scan branch's own PR ({row.branch})")
+            skipped.append(f"{opts.repo}#{row.number}")
         else:
-            heads.append(Head(number, sha, branch, title))
+            heads.append(Head(row.number, row.sha, row.branch, row.title))
     if not heads:
         of_wave = f" of wave {opts.wave}" if opts.wave else ""
         cli.say(f"{LABEL} {opts.repo}: no open sibling PRs{of_wave} to check")

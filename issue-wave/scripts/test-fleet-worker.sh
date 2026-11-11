@@ -925,7 +925,9 @@ readme_block() { # <text>: the first fenced code block of README.md containing t
 }
 real_home="$TMP/real-home"; real_origin="$TMP/real-origin.git"
 mkdir -p "$real_home"
-git init -q --bare "$real_origin"
+# Every fixture repository names its branch (#1073): a plain `git init` takes the box's
+# init.defaultBranch, so a bare remote's HEAD, and with it a clone's origin/HEAD, would differ by box.
+git init -q --bare -b main "$real_origin"
 git -C "$real_top" push -q "$real_origin" HEAD:refs/heads/main || ko "could not push the real checkout's HEAD to the scratch origin (setup, not the launcher)"
 # Use the transport even for a local path: push can leave background object maintenance
 # running, and a local clone's hardlink walk races with repacking (seen in PR #149).
@@ -1127,7 +1129,7 @@ section_left   # here, so the shared setup below is not timed as this section
 
 # --- a scratch skills checkout with an origin, deployed the way the README deploys it --------
 origin="$TMP/origin.git"; repo="$TMP/ludics lite"
-git init -q --bare "$origin"
+git init -q --bare -b main "$origin"
 git init -q -b main "$repo"
 for s in issue-wave ship-pr wait-and-proceed after-merge; do
   mkdir -p "$repo/$s"; echo "# $s" > "$repo/$s/SKILL.md"
@@ -1142,7 +1144,7 @@ export FLEET_SKILLS_REPO="$repo"
 # The project repo and the brief live here, not in the launch section, so a later section selected
 # on its own still finds them; the two helpers below take what only some sections need.
 proj="$TMP/pro j"; git init -q -b master "$proj" && echo a > "$proj/a" && git -C "$proj" add a && git -C "$proj" commit -q -m a
-git init -q --bare "$TMP/proj.git" && git -C "$proj" remote add origin "$TMP/proj.git" && git -C "$proj" push -q -u origin master
+git init -q --bare -b master "$TMP/proj.git" && git -C "$proj" remote add origin "$TMP/proj.git" && git -C "$proj" push -q -u origin master
 export BASE_PROJECT="$proj"
 brief="$TMP/brief.md"; printf 'Fix issue #1: handle `$(rm -rf /)` and `backticks` in prose\n' > "$brief"
 # The unstick message: the unstick, codex and usage sections all pass it to `unstick --message`.
@@ -2678,7 +2680,7 @@ expect "check lists each row not done and exits 3, without the lease or any iden
 expect "...and 0 once every row is done" 0 "^BOARD CHECK ck: 1 rows, 1 done, 0 not done$" -- "$FW" board check ck
 # board takeover (ludics-lite#731): the stored brief, then the state at takeover from the row's keys and
 # the live sources; a read, so no lease and no identity; a missing key printed missing, never guessed.
-tkwt="$TMP/tk wt"; git init -q "$tkwt" && git -C "$tkwt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tk
+tkwt="$TMP/tk wt"; git init -q -b main "$tkwt" && git -C "$tkwt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tk
 git -C "$tkwt" checkout -q -b "claude/tk-1"
 printf '%s\n' "# The brief of tk-1" "$hostile" > "$TMP/tk brief.md"
 "$FW" board set bw tk-1 "worktree=$tkwt" branch=claude/tk-1 agent_host=testbox "brief=$TMP/tk brief.md" brief_host=testbox \

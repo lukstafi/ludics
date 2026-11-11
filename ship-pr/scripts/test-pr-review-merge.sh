@@ -3103,7 +3103,7 @@ build_fixture() { # <kind>
   work="$root/work"
   git init -q --bare "$remote"
   git -C "$remote" symbolic-ref HEAD refs/heads/main
-  git init -q "$work"
+  git init -q -b main "$work"
   printf '%s\n' 'hook() { :; }' '# one' '# two' '# three' '# four' 'keep() { :; }' \
     '# five' '# six' '# seven' '# eight' >"$work/api.sh"
   printf '%s\n' 'Notes' 'a' 'b' 'c' 'd' 'e' 'f' 'g' >"$work/notes.md"

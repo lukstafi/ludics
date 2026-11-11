@@ -113,7 +113,7 @@ class RequestShape(unittest.TestCase):
     def test_a_loop_request_passes(self) -> None:
         self.assertIsNone(request_problem(request()))
         self.assertIsNone(request_problem(request(integration=True)), "the cc loop's request is a loop request too")
-        self.assertIsNone(request_problem(request(triage_reason="rerun of a red")), "a halt's rerun is one too")
+        self.assertIsNone(request_problem(request(triage_reason="rerun of a red")), "a triage-owner run is one too")
 
     def test_what_a_loop_run_is_not(self) -> None:
         cases: list[tuple[Any, str]] = [

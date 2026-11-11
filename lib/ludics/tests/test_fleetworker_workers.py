@@ -33,6 +33,7 @@ from ludics.fleetworker.supervision import (
     head_age,
     length,
     load_line,
+    PrRow,
     pr_rows,
     referencing_prs,
     wave_issues,
@@ -231,25 +232,25 @@ class Prs(unittest.TestCase):
             ' {"number": 7, "title": "", "headRefName": "y", "headRefOid": "c7", "createdAt": "t", "isDraft": false,'
             ' "isCrossRepository": false}]'
         )
-        # The last field is the branch's repository: ``same`` only on an isCrossRepository exactly false.
+        # ``same_repo`` only on an isCrossRepository exactly false.
         self.assertEqual(
             pr_rows(listing, None),
-            [["7", "c7", "t", "-", "y", "-", "same"], ["12", "c12", "t", "draft", "x", "a\\tb", "fork"]],
+            [PrRow("7", "c7", "t", False, "y", "-", True), PrRow("12", "c12", "t", True, "x", "a\\tb", False)],
         )
 
     def test_a_wave_keeps_the_prs_closing_one_of_its_issues(self) -> None:
         ref = {"number": 7, "repository": {"name": "r", "owner": {"login": "o"}}}
         listing = json.loads(json.dumps([{"number": 1, "closingIssuesReferences": [ref]}, {"number": 2, "closingIssuesReferences": None}]))
-        self.assertEqual([row[0] for row in pr_rows(listing, ["o/r#7"])], ["1"])
-        self.assertEqual([row[0] for row in pr_rows(listing, ["o/r#8"])], [])
+        self.assertEqual([row.number for row in pr_rows(listing, ["o/r#7"])], ["1"])
+        self.assertEqual([row.number for row in pr_rows(listing, ["o/r#8"])], [])
         records = json.loads('[{"request": {"wave": "w", "issue": "o/r#7"}}, {"request": {"wave": "w", "issue": "o/r#7"}}, {"request": {"wave": "v", "issue": "x"}}]')
         self.assertEqual(wave_issues(records, "w"), ["o/r#7"])
 
     def test_a_wave_keeps_a_pr_that_only_references_one_of_its_issues(self) -> None:
         # A PR for one item of a multi-item issue says `Refs #N` and closes nothing (ludics-lite#655).
         listing = json.loads('[{"number": 1, "closingIssuesReferences": []}, {"number": 2}, {"number": 3}]')
-        self.assertEqual([row[0] for row in pr_rows(listing, ["o/r#7"], frozenset({2}))], ["2"])
-        self.assertEqual([row[0] for row in pr_rows(listing, None, frozenset({2}))], ["1", "2", "3"])
+        self.assertEqual([row.number for row in pr_rows(listing, ["o/r#7"], frozenset({2}))], ["2"])
+        self.assertEqual([row.number for row in pr_rows(listing, None, frozenset({2}))], ["1", "2", "3"])
 
     def test_a_wave_keeps_a_pr_on_a_branch_of_one_of_its_workers(self) -> None:
         # ludics-lite#664: a post-wave task's records name no issue, and its PR may reference nothing.
@@ -275,7 +276,7 @@ class Prs(unittest.TestCase):
             pr["isCrossRepository"] = False
         listing += json.loads('[{"number": 11, "headRefName": "claude/w1016-p1t2", "isCrossRepository": true},'
                               ' {"number": 12, "headRefName": "claude/w1016-p1t2"}]')
-        kept = [row[0] for row in pr_rows(listing, [], frozenset(), wave_workers(records, "w", "o/r"))]
+        kept = [row.number for row in pr_rows(listing, [], frozenset(), wave_workers(records, "w", "o/r"))]
         self.assertEqual(kept, ["1", "2", "9"], "the branch is the worker, or ends in / and the worker, exactly, never a fork's")
 
     def test_cross_references_count_the_prs_of_the_listed_repository_only(self) -> None:

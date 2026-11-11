@@ -726,6 +726,16 @@ class WindowWait(unittest.TestCase):
 HINT = ": a ~ expanded by the caller's shell? spell far-side paths absolutely, or quote '~/...'"
 
 
+def leg_args(co: str, wt: str, *, remote: str = "origin", rev: str = "main", want: str = "", pname: str = "",
+             request: str = "req", fetch_timeout: str = "5", token: str = "t0k", fname: str = "", no_config: str = "0",
+             min_free: str = "0", base: str = "", wrap: tuple[str, ...] = (), nest: tuple[str, ...] = (),
+             runner: tuple[str, ...] = ("true",)) -> list[str]:
+    """The far side's positional arguments, in ``leg.LEG``'s order (the list ``run_leg`` sends), with
+    a test's defaults: the next argument it takes is added here, not in every test that runs it."""
+    return [co, wt, remote, rev, want, pname, request, fetch_timeout, token, fname, no_config, min_free, base,
+            str(len(wrap)), *wrap, str(len(nest)), *nest, *runner]
+
+
 class ForeignHome(unittest.TestCase):
     """A far-side path under a home directory that is not the box's (ludics-lite#669): the trace of
     a `~` the caller's shell expanded on another box, which the refusal names as such."""
@@ -745,8 +755,7 @@ class ForeignHome(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state:
             script = f"STATE={shlex.quote(state)}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
             done = subprocess.run(
-                [self.bash, "-s", "/home/leg669/ludics", "/home/leg669/wt", "origin", "main", "", "", "req", "5",
-                 "t0k", "", "0", "0", "", "0", "0", "true"],
+                [self.bash, "-s", *leg_args("/home/leg669/ludics", "/home/leg669/wt")],
                 input=script, env={**os.environ, "HOME": "/Users/leg669"}, capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertEqual(done.stderr, "EXECUTION LEG REFUSED box: --checkout /home/leg669/ludics is not a git checkout"
@@ -1019,8 +1028,7 @@ class WorktreeReading(unittest.TestCase):
         root = Path(leg.__file__).resolve().parents[3]
         script = f"STATE={shlex.quote(str(self.tmp / 'state'))}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
         done = subprocess.run(
-            [self.bash, "-s", str(self.plain), str(self.tmp / "new"), "origin", "main", "", "", "req", "5",
-             "t0k", "", "0", "0", "", "0", "0", "true"],
+            [self.bash, "-s", *leg_args(str(self.plain), str(self.tmp / "new"))],
             input=script, env={**os.environ, "HOME": str(self.tmp)}, capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertEqual(done.stderr, f"EXECUTION LEG REFUSED box: --checkout {self.plain} is not a git checkout on box\n")
