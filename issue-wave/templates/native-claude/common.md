@@ -247,7 +247,9 @@ to `@@MAIN@@`.
 
 1. Close out each issue: `gh issue comment <N> --repo @@ISSUE_REPO@@ --body-file <scratch file>`
    with a summary (what landed, the merge SHA, the decisions, and what was deferred and where).
-   Then run `gh issue close <N> --repo @@ISSUE_REPO@@` only if the merge left it open.
+   The body's first line is the heading `## Landed (@@WAVE@@, @@T@@)`: the decision gate tells a
+   wave's own comment from a maintainer decision by a wave or task in its heading, and this
+   comment is posted from the maintainer's account. Then run `gh issue close <N> --repo @@ISSUE_REPO@@` only if the merge left it open.
    (`gh issue close --comment` on an issue that is already closed posts nothing.)
 2. Run the after-merge skill (`~/.claude/skills/after-merge/SKILL.md`) in HAND-BACK MODE: propose
    follow-up issues (a title and a 2-4 line body each, ready to file, with evidence) and task chips

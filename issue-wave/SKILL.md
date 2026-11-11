@@ -796,8 +796,9 @@ check-prompts' retired list (`lib/ludics/checkprompts/brieftemplate.py`).
   ship-pr's *Open*. The brief points the worker to the staged reading list that opens ship-pr's
   SKILL.md, its "What to read when" paragraph, and does not restate it, so the worker reads each
   section where it acts and never the whole file: it is about 1600 lines, most of a worker's
-  context on a PR approved in round 0 (ludics#948). Then close out the tracked issue with a summary comment - `gh issue comment
-  --body-file` first and `gh issue close` only if the merge left it open, per ship-pr's *After
+  context on a PR approved in round 0 (ludics#948). Then close out the tracked issue with a summary comment headed with the wave and task
+  (`## Landed (<wave>, <task>)`, so the *Decision gate* reads it as the wave's, never as a
+  maintainer decision) - `gh issue comment --body-file` first and `gh issue close` only if the merge left it open, per ship-pr's *After
   it lands*, because `gh issue close --comment` on an issue a PR body's `Closes #N` already
   closed posts nothing at all - then the after-merge brainstorm ship-pr ends with, in
   **hand-back mode**: propose issues and chip candidates in the close-out report, file and
