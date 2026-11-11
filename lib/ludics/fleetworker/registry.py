@@ -920,12 +920,17 @@ def fresh_waiters(directory: Path, host: str, map_spec: str, now: datetime) -> l
     """The ids of the waiters on ``host``'s box whose heartbeat has not expired at ``now`` (THE
     WAITERS in the header). Fail-closed toward the gap: a waiter file this cannot read or parse
     counts as a waiter on every box, named by its file, since the cost of a wrong guess either way
-    is a gap paid (60 s) against a batch starved (its whole --wait-window bound)."""
-    if not directory.is_dir():
+    is a gap paid (60 s) against a batch starved (its whole --wait-window bound). A directory this
+    cannot list counts the same way, as one waiter named by the directory (#1076)."""
+    if absent(directory):
         return []
+    try:
+        names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
+    except OSError:
+        return [f"{directory} (unreadable)"]
     wanted = box_key(host, map_spec)
     waiting: list[str] = []
-    for path in sorted(directory.glob("*.json")):
+    for path in (directory / name for name in names):
         try:
             data = as_object(json.loads(path.read_text()))
         except FileNotFoundError:
@@ -1031,13 +1036,27 @@ def payload_word(word: str) -> str:
     return text
 
 
+def absent(path: Path) -> bool:
+    """True only when nothing is at ``path``: ``lstat``'s ENOENT (no file, no link). Any other
+    failure to look it up raises, a refusal (#1076: ``Path.exists()`` is False on EACCES or ELOOP
+    too, and ``Path.glob`` lists an unreadable directory as empty, so either read an unreadable
+    ledger or halt as "nothing there")."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    return False
+
+
 def load_records(directory: Path) -> dict[str, Record]:
     """Every record under ``executions/``, validated: a corrupt record blocks dispatch instead of
-    silently making its box available."""
+    silently making its box available, and so does a directory that cannot be listed (#1076)."""
     records: dict[str, Record] = {}
-    if directory.exists():
-        for path in sorted(directory.glob("*.json")):
-            records[path.stem] = validate_record(json.loads(path.read_text()), path)
+    if absent(directory):
+        return records
+    for name in sorted(name for name in os.listdir(directory) if name.endswith(".json")):
+        path = directory / name
+        records[path.stem] = validate_record(json.loads(path.read_text()), path)
     return records
 
 
@@ -1175,7 +1194,7 @@ def main(argv: list[str]) -> None:
     clock = datetime.now(timezone.utc)
     now = clock.isoformat()
     halt_path = Path(root) / "HALT"
-    halt_text = halt_path.read_text() if halt_path.exists() else None
+    halt_text = None if absent(halt_path) else halt_path.read_text()
     halt_identity = halt_generation(halt_text)
     if halt_identity is not None and not halt_identity.strip():
         refuse("invalid empty halt record")

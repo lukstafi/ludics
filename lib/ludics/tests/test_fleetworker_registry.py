@@ -1317,12 +1317,23 @@ class LoopRunUnderHalt(RegistryCase):
 @unittest.skipIf(os.geteuid() == 0, "root reads past a mode: the EACCES cases need an unprivileged user")
 class NotAbsent(RegistryCase):
     """#1076: a path the registry cannot look up or read is never "nothing there". Only ``lstat``'s
-    ENOENT is absent; an unreadable ledger, halt, waiters directory or lane lock refuses, or (the
-    waiters, THE WAITERS' fail-closed rule) counts against the gap."""
+    ENOENT is absent; an unreadable ledger or halt refuses, and an unlistable waiters directory
+    counts against the gap (THE WAITERS' fail-closed rule). A lane lock that cannot be opened stays
+    free, as the header and wake-lab.sh say: no lane can hold what it cannot open."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.denied: list[str] = []
+
+    def tearDown(self) -> None:
+        for path in self.denied:  # before the scratch root goes: rmtree cannot enter a mode-0 directory
+            if os.path.lexists(path):
+                os.chmod(path, 0o700)
+        super().tearDown()
 
     def unreadable(self, path: str, mode: int = 0) -> None:
         os.chmod(path, mode)
-        self.addCleanup(os.chmod, path, 0o700)
+        self.denied.append(path)
 
     def test_an_unreadable_ledger_is_refused_never_read_as_no_records(self) -> None:
         self.assertEqual(self.call("run", request("m1", kind="measurement"))[0], 0)
@@ -1374,32 +1385,11 @@ class NotAbsent(RegistryCase):
         self.assertEqual(self.call("window", window)[0], 0)
         self.assertEqual(self.call("conclude", {"request_id": "w1", "verdict": "not-launched", "log": "/dev/null",
                                                 "evidence": "unit"})[0], 0)
-        waiters = os.path.join(self.root, "waiters")
-        os.makedirs(waiters)
+        waiters = os.path.join(self.root, "waiters")  # the first window's lock_waiters made it
         self.unreadable(waiters, 0o300)
         rc, out, _ = self.call("window", {**window, "request": request("w2", kind="measurement")})
         self.assertEqual(rc, 3, "a waiter it cannot list may be waiting: the gap is paid")
         self.assertEqual(out["gap"]["waiting"], [f"{waiters} (unreadable)"])
-
-    def test_a_lane_lock_that_cannot_be_opened_refuses_the_measurement(self) -> None:
-        locks = os.path.join(self.root, "locks")
-        os.makedirs(locks)
-        site = os.path.join(self.root, "hosts.sh")
-        open(site, "w").close()
-        lane = os.path.join(locks, "rog.lock")
-        open(lane, "w").close()
-        self.unreadable(lane)
-        payload = request("m", kind="measurement", execution_host="rog-nv")
-        argv = ["-", self.root, "run", "owner", "token", json.dumps(payload), "rog-nv", "", "rog rog-nv", "lab", "lab"]
-        out, err = io.StringIO(), io.StringIO()
-        with (mock.patch.dict(os.environ, {"WAKE_LAB_LOCK_DIR": locks, "WAKE_LAB_HOSTS": site}),
-              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
-            rc = registry.run(argv)
-        while registry.LANE_LOCKS:
-            os.close(registry.LANE_LOCKS.pop())
-        self.assertEqual(rc, 1, "a lane lock nobody can probe cannot rule a sweep lane out")
-        self.assertIn(f"lane lock {lane} could not be opened", err.getvalue())
-        self.assertFalse(os.path.exists(os.path.join(self.root, "executions", "m.json")), "nothing written")
 
 
 if __name__ == "__main__":
