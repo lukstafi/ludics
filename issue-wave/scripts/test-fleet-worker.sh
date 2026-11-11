@@ -4398,6 +4398,9 @@ printf '0\nABSENT — no build check ran on this commit: x\nchecks: verdict=abse
 echo "2026-09-02T00:00:00Z" > "$P/date-c12"; echo "$now" > "$P/date-c7"
 expect "prs flags a PR at five or more rounds, exit 1" 1 "o/r#12 rounds=6 ci=green branch=unread head=[0-9]*d[0-9]*h draft claude/issue-12: second.tPR -- CONVERGE: 6 review rounds with findings (flag at 5)" -- "$FW" prs o/r
 grep -q "^o/r#7 rounds=2 ci=pending branch=unread head=[01]m claude/issue-7: first PR$" <<<"$out" && ok "...a PR under the flag gets its line, no note, age from the newer of commit and creation" || ko "PR 7's line: $out"
+# ludics#1050: a heartbeat read through `tail` lost its first PR line; the last line names them all.
+[ "$(tail -n 1 <<<"$out")" = "PRS o/r: 3 open PRs listed above: #7 #9 #12" ] &&
+  ok "...and the read's last line names every PR it printed, in order" || ko "the closing tally: $out"
 grep -q "^o/r#9 rounds=? ci=absent branch=unread head=[01]m claude/issue-9: -$" <<<"$out" && ok "...an unread count reads as ?, never as 0, and an unread commit date leaves the age to the creation time" || ko "PR 9's line: $out"
 [ "$(grep -o '^o/r#[0-9]*' <<<"$out" | tr '\n' ' ')" = "o/r#7 o/r#9 o/r#12 " ] && ok "...in PR order" || ko "order: $out"
 grep -q "rounds o/r#12 threshold=off" "$P/calls" && grep -q "^retry --read pr list --repo o/r --state open .*isCrossRepository" "$P/calls" && ok "...through pr-review.sh, the repo spelled out in every read" || ko "calls: $(cat "$P/calls")"
