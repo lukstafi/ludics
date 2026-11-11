@@ -37,8 +37,10 @@ IN ORDER, every read before any write:
      first, ``<wave>-<task>-<agent_host>-iterate`` on the worktree; then each leg's
      ``<wave>-<task>-<box>-iterate`` on its far-side worktree, each with its own execution host),
      the brief (``briefs/brief-<task>.md``) and the assign base (``reserve/<task>-base.json``,
-     ``execution assign``'s base: wave, worker, transport, agent_host, repository, issue), then the
-     board row with ``state=pending``. Each step's exit is read, never piped away, and recorded in
+     ``execution assign``'s base: wave, worker, transport, agent_host, repository, and issue for an
+     issue task; a --source task's records and base name no issue), then the
+     board row with ``state=pending`` (and, with a --mode, ``plan_dir=$ISSUE_WAVE_STATE/plans/<wave>-<N>``,
+     ``<wave>-<task>`` for a --source task, so two tasks of one source never share one). Each step's exit is read, never piped away, and recorded in
      the manifest once it is confirmed.
   3. ``WAVE PREP <task>: ready ...`` on stdout, exit 0.
 
@@ -57,8 +59,9 @@ other repositories and a topic that names no number are outside it: SKILL.md kee
 topic search immediately before the launch.
 
 THE BOARD read: a row is found only on a board that reads. A board that does not answer is unknown
-(exit 4); a board the store refuses to show (a wave with no board yet) is taken as no row, and
-``board set --create`` starts it. The far-side leg worktree is not read (no ssh): ``execution leg``
+(exit 4). A board the store refuses to show is taken as no row only when the refusal is the
+store's own line for a wave with no board yet (read again with its stderr; ``board set --create``
+then starts it); any other refusal (a malformed board) refuses, before anything is made. The far-side leg worktree is not read (no ssh): ``execution leg``
 makes it on first use.
 
 THE RECOVERY BOUNDARY. Prep is not resumable, and never deletes or concludes anything. A refusal
@@ -83,7 +86,8 @@ from ludics.fleetworker.execution import gh_timeout, listing, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import anchor_gate
 from ludics.fleetworker.takeover import board_document, row_of
-from ludics.fleetworker.transport import run
+from ludics.fleetworker.board import store_command
+from ludics.fleetworker.transport import PAYLOAD_ON_FD, prelude, run, run_on
 from ludics.fleetworker.wave import USAGE, Leg, Wave, load_wave, shim
 from ludics.fleetworker.wavebrief import Part, render, write_atomically
 
@@ -92,6 +96,7 @@ TASK = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 ISSUE_TASK = re.compile(r"t([0-9]+)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 PR_PAGE = 100
+NO_BOARD = "no board for wave {wave} on the anchor (start it with set or note --create)"  # boardstore.py's refusal
 
 
 @dataclass
@@ -117,10 +122,6 @@ class Prep:
         self.branch = f"{self.wave.kind}/{self.worker}"
         self.worktree = f"{self.wave.checkout}-worktrees/{self.worker}"
         self.scratch = os.path.join(self.wave.directory, "scratch", self.task)
-
-    @property
-    def ref(self) -> str:
-        return self.issue_ref or self.source_ref
 
     def standing_id(self, box: str) -> str:
         return f"{self.wave.wave}-{self.task}-{box}-iterate"
@@ -280,10 +281,22 @@ def check_registry(cfg: Config, prep: Prep) -> None:
             raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the registry holds {prep.standing_id(box)} already")
 
 
+def no_board(cfg: Config, wave: str) -> bool:
+    """Whether the store's refusal to show the board is THE one for a wave with no board yet: the
+    show again, its stderr read with its stdout, holding the store's own line for it."""
+    raw = json.dumps({"wave": wave, "json": True}, separators=(",", ":"))
+    script = prelude(cfg, cfg.anchor) + "shift 3\nexec 2>&1\n" + store_command(raw)
+    done = run_on(cfg, cfg.anchor, script, ["BOARD", "x", "x", "show", "x", PAYLOAD_ON_FD], capture=True)
+    return done.rc == 1 and f"BOARD REFUSED: {NO_BOARD.format(wave=wave)}" in done.out.split("\n")
+
+
 def check_board(cfg: Config, prep: Prep) -> None:
     doc = board_document(cfg, prep.wave.wave)
     if doc == 4:
         raise Stop(4, f"WAVE PREP UNKNOWN {prep.task}: the board of {prep.wave.wave} could not be read; nothing made")
+    if isinstance(doc, int) and not no_board(cfg, prep.wave.wave):
+        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the board of {prep.wave.wave} could not be read (above), and"
+                      " it is not a wave with no board yet; nothing made")
     if isinstance(doc, dict) and row_of(doc, prep.task) is not None:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the board of {prep.wave.wave} has a row for {prep.task}")
 
@@ -347,10 +360,13 @@ def brief_text(prep: Prep) -> str:
 
 
 def reservation(prep: Prep, box: str, checkout: str, purpose: str) -> dict[str, Any]:
-    return {"request_id": prep.standing_id(box), "wave": prep.wave.wave, "worker": prep.worker,
-            "transport": prep.wave.transport, "issue": prep.ref, "purpose": purpose, "agent_host": prep.wave.agent_host,
-            "execution_host": box, "repository": prep.wave.repository, "requested_revision": prep.base,
-            "kind": "correctness", "standing": True, "checkout": checkout}
+    payload: dict[str, Any] = {
+        "request_id": prep.standing_id(box), "wave": prep.wave.wave, "worker": prep.worker, "transport": prep.wave.transport,
+        "purpose": purpose, "agent_host": prep.wave.agent_host, "execution_host": box, "repository": prep.wave.repository,
+        "requested_revision": prep.base, "kind": "correctness", "standing": True, "checkout": checkout}
+    if prep.issue_ref:  # a --source task is no issue's work: its records name none (prs --wave reads them)
+        payload["issue"] = prep.issue_ref
+    return payload
 
 
 def reservations(prep: Prep) -> list[tuple[str, dict[str, Any]]]:
@@ -386,7 +402,8 @@ def board_fields(prep: Prep, brief: str) -> list[str]:
               f"standing={' '.join(prep.standing_id(h) for h in hosts)}", "requests=none",
               f"runs={os.path.join(prep.scratch, 'runs')}", "state=pending"]
     if prep.mode != "none":
-        fields += [f"planning={prep.mode}", f"plan_dir={os.path.join(prep.state, 'plans', f'{prep.wave.wave}-{prep.number}')}"]
+        plan = f"{prep.wave.wave}-{prep.number if prep.issue_ref else prep.task}"
+        fields += [f"planning={prep.mode}", f"plan_dir={os.path.join(prep.state, 'plans', plan)}"]
     if prep.legs:
         fields.append("farside=" + " ".join(f"{leg.box}:{prep.leg_worktree(leg)}" for leg in prep.legs))
     return fields
@@ -423,7 +440,9 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
     brief_path = prep.path("briefs", f"brief-{prep.task}.md")
     base_path = prep.path("reserve", f"{prep.task}-base.json")
     base = {"wave": prep.wave.wave, "worker": prep.worker, "transport": prep.wave.transport,
-            "agent_host": prep.wave.agent_host, "repository": prep.wave.repository, "issue": prep.ref}
+            "agent_host": prep.wave.agent_host, "repository": prep.wave.repository}
+    if prep.issue_ref:
+        base["issue"] = prep.issue_ref
     try:
         write_atomically(brief_path, brief)
         write_atomically(base_path, json.dumps(base, separators=(",", ":"), ensure_ascii=False) + "\n")

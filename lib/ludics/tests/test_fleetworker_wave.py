@@ -142,8 +142,9 @@ class Prep(unittest.TestCase):
 
     @contextlib.contextmanager
     def world(self, prs: list[dict[str, Any]] | None = None, records: list[dict[str, Any]] | None = None,
-              board: Any = 1) -> Generator[FakeTool]:
+              board: Any = 1, no_board: bool = True) -> Generator[FakeTool]:
         with (FakeTool("gh") as gh,
+              mock.patch.object(waveprep, "no_board", return_value=no_board),
               mock.patch.object(waveprep, "anchor_gate", return_value=0),
               mock.patch.object(waveprep, "listing", return_value=Done(0, json.dumps(records or []))),
               mock.patch.object(waveprep, "board_document", return_value=board),
@@ -228,6 +229,7 @@ class Prep(unittest.TestCase):
             ({"prs": [{"number": 7, "title": "Fix o/up#42 at last", "body": "", "headRefName": "x"}]}, "open rival PR(s) #7"),
             ({"prs": [{"number": 8, "title": "t", "body": "", "headRefName": "claude/w1-42"}]}, "open rival PR(s) #8"),
             ({"board": 4}, "WAVE PREP UNKNOWN t42: the board"),
+            ({"board": 1, "no_board": False}, "it is not a wave with no board yet"),
         ]
         for world, word in cases:
             with self.subTest(word), self.world(**world):
@@ -253,13 +255,18 @@ class Prep(unittest.TestCase):
 
     def test_a_source_task_has_no_issue_and_an_issue_template_refuses(self) -> None:
         with self.world() as gh:
-            rc, out, err = self.prep("p8", "--source", "1910", "--base", "main")
+            rc, out, err = self.prep("p8", "--source", "1910", "--base", "main", "--mode", "paired+critique")
             pr_calls = gh.calls()
         self.assertEqual(rc, 0, out + err)
         self.assertIn(["--head", "claude/w1-p8"], [c[6:8] for c in pr_calls])
         board = self.shim_calls[-1]
         self.assertIn("source=o/up#1910", board)
+        self.assertIn(f"plan_dir={self.dir}/state/plans/wv-p8", board)
         self.assertFalse(any(f.startswith("issue=") for f in board))
+        with open(self.shim_calls[0][2]) as f:
+            self.assertNotIn("issue", json.load(f), "a no-issue task's records name no issue")
+        with open(os.path.join(self.wavedir, "reserve", "p8-base.json")) as f:
+            self.assertNotIn("issue", json.load(f))
         self.write("tasks/p9.md", "Closes @@ISSUE@@\n")
         with self.world():
             rc, out, _ = self.prep("p9", "--source", "1911", "--base", "main")
@@ -366,8 +373,8 @@ class Loop(unittest.TestCase):
         self.assertIn("CANCELLED wv-cc-1", out)
 
     def test_a_not_launched_tip_is_run_again_and_a_pass_goes_on(self) -> None:
-        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-3 rog {A} /runs/y\n"),
-                        Done(0, f"TIP-RUN CONCLUDED wv-cc-3 pass rog {A} /runs/y\n")]
+        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-3 rog {A} /runs/a b\n"),
+                        Done(0, f"TIP-RUN CONCLUDED wv-cc-3 pass rog {A} /runs/a b\n")]
         self.tips = [A, A]
         rc, out = self.drive([rec(1, "concluded", "pass", B), rec(2, "concluded", "not-launched", A)])
         self.assertEqual(rc, 0, out)

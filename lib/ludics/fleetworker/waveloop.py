@@ -87,7 +87,7 @@ from ludics.fleetworker.wavebrief import write_atomically
 JUDGED = ("pass", "fail", "timeout")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 STARTED = re.compile(r"TIP-RUN STARTED (\S+) (\S+) ([0-9a-f]{40}) (\S.*)")
-CONCLUDED = re.compile(r"TIP-RUN CONCLUDED (\S+) (\S+) (\S+) (\S+) (\S+)")
+CONCLUDED = re.compile(r"TIP-RUN CONCLUDED (\S+) (\S+) (\S+) (\S+) (\S.*)")  # a run directory may hold spaces
 
 sleep: Callable[[float], None] = time.sleep  # the tests' seam
 
