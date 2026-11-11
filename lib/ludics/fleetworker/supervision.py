@@ -336,7 +336,7 @@ def helper_read(argv: list[str], env: dict[str, str] | None = None) -> tuple[int
     return done.rc, substitution(done.out)
 
 
-def referencing_read(helper: str, repo: str, issue: Json) -> set[int] | tuple[int, str]:
+def referencing_read(helper: str, repo: str, issue: Json, label: str = "PRS") -> set[int] | tuple[int, str]:
     """The open-list candidates one wave issue's cross-references name (see the boundary above
     WAVE_ISSUE), or (exit, line) when the read did not answer (4) or was refused (1). An issue
     spelled other than ``owner/name#N`` names no issue: nothing to read."""
@@ -350,10 +350,10 @@ def referencing_read(helper: str, repo: str, issue: Json) -> set[int] | tuple[in
         capture=True,
     )  # fmt: skip
     if done.rc == 3:
-        return 4, (f"PRS UNREACHABLE: the cross-references of {issue} did not answer, so a PR of {repo}"
+        return 4, (f"{label} UNREACHABLE: the cross-references of {issue} did not answer, so a PR of {repo}"
                    " that only references it is not shown")
     if done.rc != 0:
-        return 1, (f"PRS REFUSED: the cross-references of {issue} were refused (pr-review.sh exit {done.rc}),"
+        return 1, (f"{label} REFUSED: the cross-references of {issue} were refused (pr-review.sh exit {done.rc}),"
                    f" so a PR of {repo} that only references it is not shown")
     try:
         pages = json_stream(done.out)
@@ -361,7 +361,7 @@ def referencing_read(helper: str, repo: str, issue: Json) -> set[int] | tuple[in
             raise JqError("no cross-reference page")
         return referencing_prs(pages, repo)
     except JqError:
-        return 1, (f"PRS REFUSED: the cross-references of {issue} did not parse, so a PR of {repo}"
+        return 1, (f"{label} REFUSED: the cross-references of {issue} did not parse, so a PR of {repo}"
                    " that only references it is not shown")
 
 
@@ -467,73 +467,10 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     if not (os.path.isfile(helper) and os.access(helper, os.X_OK)):
         cli.say(f"PRS REFUSED: ship-pr's pr-review.sh missing: {helper}")
         return 1
-    issues: list[Json] | None = None
-    workers: tuple[str, ...] = ()
-    if wave:
-        done = listing(cfg)
-        if done.unreachable:
-            cli.say(f"PRS UNREACHABLE {cfg.anchor}: the registry naming wave {wave}'s issues did not answer")
-            return 4
-        if done.rc != 0:
-            cli.say(substitution(done.out))
-            cli.say("PRS REFUSED: the anchor's registry could not be read")
-            return 1
-        docs = json_stream(done.out)
-        try:
-            if docs is None or len(docs) != 1:
-                raise JqError("not one registry listing")
-            known = bool(wave_records(docs[0], wave))
-            issues, workers = wave_issues(docs[0], wave), wave_workers(docs[0], wave, repo)
-        except JqError:
-            cli.say("PRS REFUSED: the anchor's registry did not parse")
-            return 1
-        if not known:
-            cli.say(f"PRS REFUSED: no execution record names wave {wave}, so its issues and workers are unknown")
-            return 1
-    # `--limit` is a cap on what gh fetches, not a page size (it pages internally up to it), so a
-    # list that reaches it may have lost PRs past it: said on its own line and read as exit 4.
-    listed = run(
-        [helper, "retry", "--read", "pr", "list", "--repo", repo, "--state", "open", "--limit", limit,
-         "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,isCrossRepository,closingIssuesReferences"],
-        capture=True,
-    )  # fmt: skip
-    if listed.rc == 3:
-        cli.say(f"PRS UNREACHABLE: the open PRs of {repo} did not answer")
-        return 4
-    if listed.rc != 0:
-        cli.say(f"PRS REFUSED: the open-PR list of {repo} was refused (pr-review.sh exit {listed.rc})")
-        return 1
-    worst = 0
-    docs = json_stream(listed.out)
-    try:
-        if docs is None:
-            raise JqError("the list does not parse")
-        counts = [length(doc) for doc in docs]
-        if len(counts) == 1 and isinstance(counts[0], int) and counts[0] >= int(limit):
-            cli.say(f"PRS INCOMPLETE {repo}: the list reached its cap of {limit} open PRs (FLEET_PRS_LIMIT), so PRs past it are not shown")
-            worst = 4
-        pages = [sorted_prs(doc) for doc in docs]
-        unkept = issues is not None and any(not (closes_one_of(pr, issues) or on_worker_branch(pr, workers))
-                                            for page in pages for pr in page)
-    except JqError:
-        cli.say(f"PRS REFUSED: the open-PR list of {repo} did not parse")
-        return 1
-    referencing: set[int] = set()
-    for issue in (issues or []) if unkept else []:
-        read = referencing_read(helper, repo, issue)
-        if isinstance(read, set):
-            referencing |= read
-        else:
-            cli.say(read[1])
-            if read[0] == 1:
-                worst = 1
-            elif worst != 1:
-                worst = 4
-    try:
-        rows = [row for doc in docs for row in pr_rows(doc, issues, frozenset(referencing), workers)]
-    except JqError:
-        cli.say(f"PRS REFUSED: the open-PR list of {repo} did not parse")
-        return 1
+    worst, selected = open_prs(cfg, "PRS", repo, wave, helper, limit)
+    if selected is None:
+        return worst
+    rows = selected
     rounds_env = {**cfg.env, "SHIP_PR_ROUND_THRESHOLD": "off"}
     building = merge_builds(cfg) if rows else {}
     for n, sha, created, draft, branch, title in rows:
@@ -561,3 +498,80 @@ def cmd_prs(cfg: Config, args: list[str]) -> int:
     else:
         cli.say(f"PRS {repo}: no open PRs" + (f" closing or referencing an issue of wave {wave}, or on a branch of its workers" if wave else ""))
     return worst
+
+
+def open_prs(cfg: Config, label: str, repo: str, wave: str, helper: str, limit: str) -> tuple[int, list[list[str]] | None]:
+    """The open PRs of ``repo`` a supervision read is about, as ``pr_rows`` gives them (number, head
+    sha, creation, draft, branch, title): every one, or with ``wave`` the wave's (see cmd_prs and the
+    boundaries above WAVE_ISSUE and WAVE_WORKER). Each line it says starts with ``label`` (``PRS``,
+    ``SIBLING-SCAN``). With the rows, the worst status of the reads: 0 every read answered, 1 one was
+    refused, 4 one did not answer or the list reached its cap. Rows of None, with that status: the
+    selection itself could not be made (the registry or the list unread), which a line said."""
+    issues: list[Json] | None = None
+    workers: tuple[str, ...] = ()
+    if wave:
+        done = listing(cfg)
+        if done.unreachable:
+            cli.say(f"{label} UNREACHABLE {cfg.anchor}: the registry naming wave {wave}'s issues did not answer")
+            return 4, None
+        if done.rc != 0:
+            cli.say(substitution(done.out))
+            cli.say(f"{label} REFUSED: the anchor's registry could not be read")
+            return 1, None
+        docs = json_stream(done.out)
+        try:
+            if docs is None or len(docs) != 1:
+                raise JqError("not one registry listing")
+            known = bool(wave_records(docs[0], wave))
+            issues, workers = wave_issues(docs[0], wave), wave_workers(docs[0], wave, repo)
+        except JqError:
+            cli.say(f"{label} REFUSED: the anchor's registry did not parse")
+            return 1, None
+        if not known:
+            cli.say(f"{label} REFUSED: no execution record names wave {wave}, so its issues and workers are unknown")
+            return 1, None
+    # `--limit` is a cap on what gh fetches, not a page size (it pages internally up to it), so a
+    # list that reaches it may have lost PRs past it: said on its own line and read as exit 4.
+    listed = run(
+        [helper, "retry", "--read", "pr", "list", "--repo", repo, "--state", "open", "--limit", limit,
+         "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,isCrossRepository,closingIssuesReferences"],
+        capture=True,
+    )  # fmt: skip
+    if listed.rc == 3:
+        cli.say(f"{label} UNREACHABLE: the open PRs of {repo} did not answer")
+        return 4, None
+    if listed.rc != 0:
+        cli.say(f"{label} REFUSED: the open-PR list of {repo} was refused (pr-review.sh exit {listed.rc})")
+        return 1, None
+    worst = 0
+    docs = json_stream(listed.out)
+    try:
+        if docs is None:
+            raise JqError("the list does not parse")
+        counts = [length(doc) for doc in docs]
+        if len(counts) == 1 and isinstance(counts[0], int) and counts[0] >= int(limit):
+            cli.say(f"{label} INCOMPLETE {repo}: the list reached its cap of {limit} open PRs (FLEET_PRS_LIMIT), so PRs past it are not shown")
+            worst = 4
+        pages = [sorted_prs(doc) for doc in docs]
+        unkept = issues is not None and any(not (closes_one_of(pr, issues) or on_worker_branch(pr, workers))
+                                            for page in pages for pr in page)
+    except JqError:
+        cli.say(f"{label} REFUSED: the open-PR list of {repo} did not parse")
+        return 1, None
+    referencing: set[int] = set()
+    for issue in (issues or []) if unkept else []:
+        read = referencing_read(helper, repo, issue, label)
+        if isinstance(read, set):
+            referencing |= read
+        else:
+            cli.say(read[1])
+            if read[0] == 1:
+                worst = 1
+            elif worst != 1:
+                worst = 4
+    try:
+        rows = [row for doc in docs for row in pr_rows(doc, issues, frozenset(referencing), workers)]
+    except JqError:
+        cli.say(f"{label} REFUSED: the open-PR list of {repo} did not parse")
+        return 1, None
+    return worst, rows
