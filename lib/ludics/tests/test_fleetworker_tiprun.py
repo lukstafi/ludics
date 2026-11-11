@@ -447,7 +447,8 @@ class Floor(Starting):
             with self.subTest(env=env):
                 rc, _, far = self.start(request(), "dir=/s/run-1\nslot=held\n", env)
                 self.assertEqual(rc, 0)
-                self.assertEqual(far[7:], [floor, "", "", "env", "OCANNL_BACKEND=hip", "true"], "the floor, the base, then the command")
+                self.assertEqual(far[7:], [floor, "", "", "300", "env", "OCANNL_BACKEND=hip", "true"],
+                                 "the floor, the base, the fetch bound, then the command")
 
     def test_the_far_side_carries_the_one_floor_program(self) -> None:
         self.assertIn(leg.FLOOR, tiprun.FAR)
@@ -472,6 +473,35 @@ class Floor(Starting):
                 tiprun.cmd_tip_run(cfg, [payload, "--checkout", "/co", "--", "true"])
         self.assertEqual(raised.exception.rc, 2)
         self.assertIn("FLEET_LEG_MIN_FREE_GIB must be a whole number", str(raised.exception))
+
+
+class FetchBound(Starting):
+    """THE FETCH BOUND: FLEET_FETCH_TIMEOUT reaches the far side as its argument, 300 by default, and a
+    value that is no positive whole number of seconds is a usage refusal before GitHub or the anchor is
+    asked. The far side's use of it is ``FarBase``'s."""
+
+    def test_the_far_side_takes_the_knob_and_its_default(self) -> None:
+        for env, bound in (({}, "300"), ({"FLEET_FETCH_TIMEOUT": "45"}, "45")):
+            with self.subTest(env=env):
+                rc, _, far = self.start(request(), "dir=/s/run-1\nslot=held\n", env)
+                self.assertEqual(rc, 0)
+                self.assertEqual(far[10:], [bound, "env", "OCANNL_BACKEND=hip", "true"], "the fetch bound, then the command")
+
+    def test_a_bound_that_is_no_whole_number_of_seconds_is_a_usage_error_before_anything_is_asked(self) -> None:
+        tip = {k: v for k, v in request().items() if k != "requested_revision"}
+        for value in ("soon", "0", "-5", "1.5", " 30"):
+            with self.subTest(value=value):
+                cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {"FLEET_FETCH_TIMEOUT": value}, host="h")
+                with tempfile.TemporaryDirectory() as tmp:
+                    payload = os.path.join(tmp, "req.json")
+                    with open(payload, "w", encoding="utf-8") as f:
+                        json.dump(tip, f)
+                    with mock.patch.object(tiprun.revision, "branch_head", side_effect=AssertionError("GitHub was asked")), \
+                            mock.patch.object(tiprun, "listing", side_effect=AssertionError("the anchor was asked")), \
+                            self.assertRaises(cli.Exit) as raised:
+                        tiprun.cmd_tip_run(cfg, [payload, "--tip", "main", "--checkout", "/co", "--", "true"])
+                self.assertEqual(raised.exception.rc, 2)
+                self.assertIn("FLEET_FETCH_TIMEOUT must be a positive whole number of seconds", str(raised.exception))
 
 
 class BaseNamed(Starting):
@@ -542,10 +572,10 @@ class FarBase(unittest.TestCase):
                            'printf \'%s\\n\' "$d"\n', encoding="utf-8")
         self.fw.chmod(0o755)
 
-    def far(self, base: str = "", how: str = "") -> subprocess.CompletedProcess[str]:
-        script = (f"STATE={shlex.quote(str(self.tmp / 'state'))}\nBOX=box\n" + farside.HELPERS
+    def far(self, base: str = "", how: str = "", bound: str = "300", stub: str = "") -> subprocess.CompletedProcess[str]:
+        script = (f"STATE={shlex.quote(str(self.tmp / 'state'))}\nBOX=box\n" + farside.HELPERS + stub
                   + 'fleet_worker() { "$@"; }\n' + tiprun.FAR)
-        args = [str(self.co), self.sha, str(self.tmp / "runs"), str(self.fw), "cpu", "5", "", "0", base, how, "true"]
+        args = [str(self.co), self.sha, str(self.tmp / "runs"), str(self.fw), "cpu", "5", "", "0", base, how, bound, "true"]
         return subprocess.run([self.bash, "-c", script, "x", *args], capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
     def test_a_stale_base_is_fetched_before_the_run_starts(self) -> None:
@@ -589,6 +619,27 @@ class FarBase(unittest.TestCase):
                 self.assertFalse((self.tmp / "runs").exists())
                 self.assertEqual(self.git("-C", str(self.co), "symbolic-ref", "HEAD"), "refs/heads/other")
                 self.assertEqual(self.git("-C", str(self.co), "rev-parse", "origin/main"), self.stale)
+
+
+    def test_both_fetches_are_bounded_by_the_knob_and_a_cut_one_names_it(self) -> None:
+        bounds = self.tmp / "bounds"
+        # `bounded`, recording its bound: the commit is not in the checkout yet, so both fetches run.
+        record = f'bounded() {{ printf \'%s\\n\' "$1" >> {shlex.quote(str(bounds))}; shift; "$@"; }}\n'
+        cut = 'bounded() { return 124; }\n'  # every fetch reaches its bound
+        for sha, words in ((self.tip, f"git fetch origin in {self.co} on box did not finish in 7s (FLEET_FETCH_TIMEOUT)"),
+                           (self.stale, f"git fetch origin main (the base, --tip) in {self.co} on box did not finish in 7s"
+                                        " (FLEET_FETCH_TIMEOUT)")):
+            with self.subTest(sha=sha):
+                self.sha = sha
+                done = self.far("main", "--tip", "7", cut)
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn(f"TIP-RUN REFUSED: {words}", done.stdout)
+                self.assertFalse(self.seen.exists(), "the slot was never asked")
+        self.sha = self.tip
+        done = self.far("main", "--tip", "7", record)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(bounds.read_text(encoding="utf-8").split(), ["7", "7"], "the commit's fetch, then the base's")
+        self.assertEqual(self.seen.read_text(encoding="utf-8").strip(), self.tip)
 
 
 class Wait(unittest.TestCase):
