@@ -1483,7 +1483,10 @@ test_settle_without_a_wait_is_a_usage_error() {
   reset_fixture
   run_checks --settle
   assert_eq "$GATE_RC" 2 "--settle with no wait to keep going is a usage error"
-  assert_contains "$GATE_OUTPUT" "--settle needs --wait" "the refusal says why"
+  assert_contains "$GATE_OUTPUT" "--settle needs a --wait of more than 0 seconds" "the refusal says why"
+  reset_fixture
+  run_checks --wait=0 --settle
+  assert_eq "$GATE_RC" 2 "a zero wait has nothing to keep going either"
 }
 
 # ludics-lite#569: an hour on "1 check(s) running" read as a stall. The heartbeat names the

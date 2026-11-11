@@ -1304,10 +1304,11 @@ class ChecksSettle(unittest.TestCase):
         self.assertEqual(out.splitlines()[-1], "checks: verdict=red branch=current", "the check's red is read last")
 
     def test_settle_needs_a_wait(self) -> None:
-        with self.assertRaises(cli.Exit) as raised:
-            self.run_checks([self.shards("pending")], "--settle")
-        self.assertEqual(raised.exception.rc, 2)
-        self.assertIn("--settle needs --wait", raised.exception.message)
+        for args in (("--settle",), ("--wait=0", "--settle"), ("--wait=", "--settle")):
+            with self.subTest(args=args), self.assertRaises(cli.Exit) as raised:
+                self.run_checks([self.shards("pending")], *args)
+            self.assertEqual(raised.exception.rc, 2)
+            self.assertIn("--settle needs a --wait of more than 0 seconds", raised.exception.message)
 
 if __name__ == "__main__":
     unittest.main()

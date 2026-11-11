@@ -974,7 +974,7 @@ unconfirmed 404, a file with no ERE line, a line grep refuses and a line with a 
 read. Four cases pin `checks --settle` (ludics#1039): a red beside a sibling still running is
 answered at once without it and, with it, waited out to a report of both reds (exit 1 either way);
 a sibling that outlasts the bound is named on the line before the trailer; an all-green head gets
-the same report and exit as without it; and `--settle` with no `--wait` is exit 2. Two cases run
+the same report and exit as without it; and `--settle` with no `--wait`, or a zero one, is exit 2. Two cases run
 `merge` over the recognition (ludics-lite#523): an absent head whose base
 advances between the gate's read and the merge call, adding a workflow whose `paths:` cover the
 head's diff, is gated again on the new base and refused (exit 4, no merge call), and a base that

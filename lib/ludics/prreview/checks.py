@@ -59,7 +59,7 @@ event starts (``workflow_run``), and a push after the last read are not seen. Wh
 expires with no verdict, one line before the trailer says the wait was spent, and how long it was;
 the exit stays 4 and the trailer's vocabulary is unchanged.
 
-``--settle`` (#1039; only with a ``--wait``) keeps the wait going past a red while a check the fold
+``--settle`` (#1039; only with a ``--wait`` of more than 0 seconds) keeps the wait going past a red while a check the fold
 judges -- every required check, or the ``--check`` selection -- is still running, so every red of
 the head is reported in one answer rather than one push at a time (``Gate.settling``). It ends once
 none is running, at the bound, or on a job that never got a runner, and the exit and trailer are the
@@ -146,8 +146,8 @@ def run(session: GhSession, args: list[str]) -> int:
             select = value
         else:
             die(f"checks: unknown option '{arg}'")
-    if settle and not wait_from:
-        die("checks: --settle needs --wait: it keeps a wait going past a red, and without one there is none")
+    if settle and wait_for == 0:
+        die("checks: --settle needs a --wait of more than 0 seconds: it keeps a wait going past a red")
     target = pr_arg(pr, session.config.repo, session)
     # A --wait is the PR's build observer from its first read on, the advisory list's included
     # (the polling budget, budget.py): a second is refused before it reads anything.
@@ -172,8 +172,12 @@ def run(session: GhSession, args: list[str]) -> int:
                 " exit 4 is no verdict yet, neither green nor red"
             )
         elif settle and rc == 1 and gate.check_pending > 0:
-            why = (f"the wait is spent: {fmt_age(wait_for)} ({wait_from}) passed" if spent()
-                   else "a job that never got a runner ended the wait")
+            if spent():
+                why = f"the wait is spent: {fmt_age(wait_for)} ({wait_from}) passed"
+            elif gate.orphans:
+                why = "a job that never got a runner ended the wait"
+            else:
+                why = "the wait ended"
             cli.say(
                 f"checks: --settle: {why} with {gate.check_pending} check(s) still running:"
                 f" {running_list(gate.pending_names)}; the reds above are those read so far"
