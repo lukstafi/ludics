@@ -41,8 +41,8 @@ STARTED_MAC = job_row(jid=601, status="in_progress", concl="-", created="2025-12
 
 
 def run_row(rid: int = 100, status: str = "completed", concl: str = "cancelled",
-            created: str = "2025-12-31T23:00:00Z", name: str = "ci") -> str:
-    return f"{created}\t{rid}\t1\tpull_request\t{name}\t{status}\t{concl}\t1"
+            created: str = "2025-12-31T23:00:00Z", name: str = "ci", event: str = "pull_request") -> str:
+    return f"{created}\t{rid}\t1\t{event}\t{name}\t{status}\t{concl}\t1"
 
 
 def jobs(gh: FakeGh, rid: str, out: str | list[str] = "", rc: int = 0, err: str = "") -> None:
@@ -240,14 +240,15 @@ class Trailer(unittest.TestCase):
 class MergeRecovery(Quiet):
     """The recovery as ``merge --wait`` installs it, round by round."""
 
-    def run_gate(self, gh: FakeGh, wait: int, clock: FakeClock | None = None,
+    def run_gate(self, gh: FakeGh, wait: int, clock: FakeClock | None = None, waive: bool = False,
                  **env: str) -> tuple[int, Recovery, FakeClock]:
         clock = clock or FakeClock()
         gate = make_gate(gh, clock, **env)
         gate.orphans_on = True
         recovery = Recovery(gate.session, "o/r", "7", gate, gate.clock, wait)
         gate.recover = recovery
-        return gate.check("7", wait), recovery, clock
+        self.gate = gate
+        return gate.check("7", wait, waive=waive), recovery, clock
 
     @staticmethod
     def writes(gh: FakeGh) -> list[str]:
@@ -541,6 +542,83 @@ class CancelledRecovery(MergeRecovery):
         rc, recovery, _clock = self.run_gate(gh, 7200)
         self.assertEqual((rc, recovery.code, len(self.writes(gh))), (4, 7, 1))
         self.assertIn("cancelled again on its rerun (attempt 2)", recovery.why)
+
+
+class DispatchAndOverride(CancelledRecovery):
+    """#1036: a cancelled ``workflow_dispatch`` run is evidence, not the PR's build -- never rerun,
+    the wait ends at once with 7 -- and ``--override`` waives a check or run that reads cancelled at
+    the gate's first read, as it waives a red, but never a check still running."""
+
+    DISPATCH = run_row(event="workflow_dispatch", name="windows git bash")
+
+    def test_a_cancelled_dispatch_run_is_not_rerun(self) -> None:
+        gh = FakeGh()
+        self.cancelled(gh, runs=[self.DISPATCH])
+        run_read(gh, "100", out="completed\tcancelled\t1")
+        rc, recovery, clock = self.run_gate(gh, 7200)
+        self.assertEqual((rc, recovery.code, recovery.dispatched), (4, 7, "100"))
+        self.assertEqual(self.writes(gh), [], "nothing is rerun")
+        self.assertIn("started by workflow_dispatch", recovery.why)
+        self.assertEqual(recovery.commands, ["gh run rerun 100 --failed --repo o/r"], "the rerun by hand")
+        self.assertEqual(clock.sleeps, [], "the wait ends on the first round, not at its deadline")
+
+    def test_a_cancelled_pull_request_run_is_still_rerun_once(self) -> None:
+        """The control: the same run under a ``pull_request`` event is #928's, rerun once."""
+        gh = FakeGh()
+        self.cancelled(gh)
+        run_read(gh, "100", out="completed\tcancelled\t1")
+        _rc, recovery, _clock = self.run_gate(gh, 7200)
+        self.assertEqual(self.writes(gh), ["run rerun 100 --failed --repo o/r"])
+        self.assertEqual(recovery.dispatched, "")
+
+    def test_an_override_waives_a_cancel_read_at_the_first_read(self) -> None:
+        for runs in ([self.DISPATCH], [run_row()]):
+            with self.subTest(event=runs[0].split("\t")[3]):
+                gh = FakeGh()
+                self.cancelled(gh, runs=runs)
+                run_read(gh, "100", out="completed\tcancelled\t1")
+                rc, recovery, _clock = self.run_gate(gh, 7200, waive=True)
+                gate = self.gate
+                self.assertEqual((rc, gate.verdict, recovery.why), (1, "waived", ""))
+                self.assertEqual(gate.waived, {"cancelled:1/build", "cancelled-run:100"})
+                self.assertEqual((gate.check_waived, gate.run_waived, gate.waived_cancelled), (1, 1, 2))
+                self.assertEqual(self.writes(gh), [], "a waived run is not rerun")
+                self.assertIn("CANCELLED, WAIVED", self.out.getvalue())
+                self.assertNotIn("RED, CANCELLED", self.out.getvalue(), "nothing red was waived")
+
+    def test_an_override_does_not_waive_a_check_still_running(self) -> None:
+        gh = FakeGh()
+        self.head(gh)
+        gh.on("check-runs", out="build\tpending\tu\t1\tin_progress")
+        gh.on("actions/runs?head_sha=h1", out=run_row(status="in_progress", concl="pending"))
+        jobs(gh, "100", out=job_row(status="in_progress", concl="-", steps="2", runner="GitHub Actions 3"))
+        rc, _recovery, _clock = self.run_gate(gh, 300, waive=True)
+        gate = self.gate
+        self.assertEqual((rc, gate.verdict, gate.check_waived), (4, "pending", 0))
+        self.assertEqual(gate.waived, set(), "a check with no verdict is never recorded")
+
+    def test_a_cancel_waived_then_rerun_red_is_not_waived(self) -> None:
+        """The cancel's key is its own: a re-run keeps its suite, and its red is no cancel."""
+        gh = FakeGh()
+        self.cancelled(gh, ["build\tcancelled\tu\t1", "build\tfailure\tu\t1"])
+        rc, _recovery, _clock = self.run_gate(gh, 0, waive=True)
+        self.assertEqual((rc, self.gate.verdict), (1, "waived"))
+        gate = self.gate
+        gate.waive_mode = "apply"
+        rows = gate.apply_waiver(gate.build_checks("h1") or [])
+        gate.summarize(rows)
+        self.assertEqual((gate.verdict, gate.check_red), ("red", 1))
+
+    def test_a_cancel_after_the_first_read_is_not_waived(self) -> None:
+        """A run in flight at the first read and cancelled after it is no cancel the override read:
+        it holds, and as a dispatch it ends the wait with 7."""
+        gh = FakeGh()
+        self.cancelled(gh, ["build\tpending\tu\t1\tin_progress", "build\tcancelled\tu\t1"],
+                       [run_row(status="in_progress", concl="pending", event="workflow_dispatch"), self.DISPATCH])
+        rc, recovery, _clock = self.run_gate(gh, 7200, waive=True)
+        self.assertEqual((rc, recovery.code, recovery.dispatched), (4, 7, "100"))
+        self.assertEqual(self.gate.waived, set())
+        self.assertEqual(self.writes(gh), [])
 
 
 if __name__ == "__main__":
