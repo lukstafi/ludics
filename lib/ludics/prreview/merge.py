@@ -464,11 +464,11 @@ class Recovery:
             state = self.read_run(rid)
             if state is None:
                 self.red_skip = f"{label} could not be re-read ({self.session.err_line() or 'it answered no attempt'})"
-                return Wait()
+                return Wait(why=f"--rerun-failed-once holds the red: {self.red_skip}")
             status, concl, attempt = state
             if status != "completed":
                 self.red_skip = f"{label} was still {status}, and GitHub reruns the failed jobs of a finished run only"
-                return Wait()
+                return Wait(why=f"--rerun-failed-once holds the red: {self.red_skip}")
             if attempt > 1:
                 self.red_skip = f"{label} is at attempt {attempt}: it was rerun already, and a head run is rerun once"
                 return Idle()
@@ -482,7 +482,7 @@ class Recovery:
                 f" {attempt}; its failed jobs re-run once (--rerun-failed-once), with a fresh"
                 f" {self.wait_for // 60} min wait: {rerun_command(rid, self.repo)}"
             )
-        return Wait(now + self.wait_for)
+        return Wait(now + self.wait_for, self.rerun_why())
 
     def after_rerun(self, now: int) -> Step:
         """RED after its rerun: Wait until every rerun run reads completed at a later attempt, Stop
@@ -492,7 +492,7 @@ class Recovery:
                 continue
             state = self.read_run(rid)
             if state is None:
-                return Wait()
+                return Wait(why=self.rerun_why())
             status, concl, attempt = state
             if attempt <= red.attempt:
                 at = self.done[rid].at
@@ -502,11 +502,17 @@ class Recovery:
                         " which did not take"
                     )
                     return Stop()
-                return Wait()
+                return Wait(why=self.rerun_why())
             if status != "completed":
-                return Wait()
+                return Wait(why=self.rerun_why())
             red.second = (attempt, concl)
         return Idle()
+
+    def rerun_why(self) -> str:
+        """The heartbeat's note while the reruns have not finished: no check of the red may read
+        running yet, so the runs rerun are what the wait names."""
+        runs = ", ".join(f"run {rid} ({shlex.quote(red.name)})" for rid, red in self.reds.items() if red.second is None)
+        return f"--rerun-failed-once reran the failed jobs of {runs}; waiting for the rerun to finish"
 
     def rerun_lines(self) -> list[str]:
         """What ``--rerun-failed-once`` did, for merge's red refusal: both attempts of each run it

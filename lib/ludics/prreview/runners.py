@@ -256,9 +256,12 @@ class Stop:
 
 @dataclass(frozen=True)
 class Wait:
-    """Keep waiting, until at least ``until`` (0: the deadline as it stands)."""
+    """Keep waiting, until at least ``until`` (0: the deadline as it stands). ``why``: what the
+    wait is held for when no check of the round is left running (a settled red held for its run,
+    #1065), for the gate's heartbeat in place of its empty check list; "" leaves it as it is."""
 
     until: int = 0
+    why: str = ""
 
 
 @dataclass(frozen=True)
