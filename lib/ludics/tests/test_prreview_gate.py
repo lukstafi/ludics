@@ -1302,6 +1302,10 @@ class ChecksSettle(unittest.TestCase):
         self.assertEqual(len(clock.sleeps), 1, "held until the running check concluded")
         self.assertIn("RED      ubuntu (failure)", out)
         self.assertEqual(out.splitlines()[-1], "checks: verdict=red branch=current", "the check's red is read last")
+        # #1066: the run's red is reported beside the check's, not left for the next push.
+        self.assertIn("RED      workflow run 101 (setup, startup_failure) — no build check behind it", out)
+        self.assertIn(
+            "RED — 1 of 1 build checks failed, and 1 workflow run(s) concluded red with no build check", out)
 
     def test_settle_needs_a_wait(self) -> None:
         for args in (("--settle",), ("--wait=0", "--settle"), ("--wait=", "--settle")):
@@ -1309,6 +1313,84 @@ class ChecksSettle(unittest.TestCase):
                 self.run_checks([self.shards("pending")], *args)
             self.assertEqual(raised.exception.rc, 2)
             self.assertIn("--settle needs a --wait of more than 0 seconds", raised.exception.message)
+
+class ChecklessRedBesideRedCheck(unittest.TestCase):
+    """#1066: a red check no longer hides a workflow run that concluded red with no check behind it;
+    a run whose red the fold's own checks already name is not reported a second time."""
+
+    OLD = ChecksWaitSettlesOnRequired.OLD
+    run_checks = ChecksWaitSettlesOnRequired.run_checks
+
+    def answers(self, runs: str, **jobs: str) -> dict[str, str]:
+        """``ci`` (run 100, check suite 1) completed failure through its red ``lint`` check, beside
+        ``runs``; ``jobs`` maps a run id to its job list."""
+        old = self.OLD
+        out = {
+            "check-runs": "lint\tfailure\tl\t1\tcompleted\nubuntu\tsuccess\tu\t1\tcompleted",
+            "actions/runs?head_sha=h1": "2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\tcompleted\tfailure\t1"
+            + "".join(f"\n{row}" for row in runs.splitlines() if row),
+            "actions/runs/100/jobs": f"lint\tfailure\t{old}\t{old}\nubuntu\tsuccess\t{old}\t{old}",
+        }
+        out.update({f"actions/runs/{rid}/jobs": body for rid, body in jobs.items()})
+        return out
+
+    def test_a_red_check_and_a_checkless_red_run_are_both_reported(self) -> None:
+        setup = "2026-01-01T00:00:00Z\t101\t2\tpull_request\tsetup\tcompleted\tstartup_failure\t2"
+        rc, out, _clock = self.run_checks([self.answers(setup, **{"101": ""})])
+        self.assertEqual((rc, out.splitlines()[-1]), (1, "checks: verdict=red branch=current"), out)
+        self.assertIn("RED      lint (failure)", out)
+        self.assertIn("RED      workflow run 101 (setup, startup_failure) — no build check behind it", out)
+        self.assertIn(
+            "RED — 1 of 2 build checks failed, and 1 workflow run(s) concluded red with no build check", out)
+
+    def test_a_red_check_whose_own_run_is_the_red_one_is_reported_once(self) -> None:
+        rc, out, _clock = self.run_checks([self.answers("")])
+        self.assertEqual((rc, out.splitlines()[-1]), (1, "checks: verdict=red branch=current"), out)
+        self.assertIn("RED      lint (failure)", out)
+        self.assertNotIn("workflow run", out)
+        self.assertIn("RED — 1 of 2 build checks failed\n", out)
+        # A run red through its advisory job alone is explained by its job list, and not listed.
+        old = self.OLD
+        docs = "2026-01-01T00:00:00Z\t102\t3\tpull_request\tdocs\tcompleted\tfailure\t3"
+        rc, out, _clock = self.run_checks([self.answers(docs, **{"102": f"{MACOS}\tfailure\t{old}\t{old}"})])
+        self.assertEqual(rc, 1, out)
+        self.assertNotIn("workflow run", out)
+
+    def test_an_unread_job_list_beside_a_red_check_is_a_note_not_a_3(self) -> None:
+        clock = FakeClock()
+        setup = "2026-01-01T00:00:00Z\t101\t2\tpull_request\tsetup\tcompleted\tstartup_failure\t2"
+        rounds = [self.answers(setup)]
+
+        def gh(name: str, args: Sequence[str]) -> proc.Completed:
+            if "actions/runs/101/jobs" in " ".join(args):
+                return proc.Completed(1, "", "HTTP 502: Bad Gateway")
+            return PhasedGh(clock, rounds)(name, args)
+
+        config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=1, api_backoff=0)
+        session = GhSession(config, run=gh, sleep=lambda _s: None)
+        gate = Gate(session=session, repo="o/r", config=load_gate_config({}), clock=FuncClock(time=clock.now, sleep=clock.sleep))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = gate.check("7", 0)
+        self.assertEqual((rc, gate.verdict, gate.checkless_red), (1, "red", 0), out.getvalue())
+        self.assertIn("unread   workflow run 101 (setup, startup_failure): its job list could not be read",
+                      out.getvalue())
+
+    def test_no_red_check_reads_the_run_list_as_before(self) -> None:
+        # A green fold with a checkless red run is still run_signal's runred, reported once.
+        old = self.OLD
+        answers = {
+            "check-runs": "ubuntu\tsuccess\tu\t1\tcompleted",
+            "actions/runs?head_sha=h1": "2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\tcompleted\tsuccess\t1\n"
+            "2026-01-01T00:00:00Z\t101\t2\tpull_request\tsetup\tcompleted\tstartup_failure\t2",
+            "actions/runs/100/jobs": f"ubuntu\tsuccess\t{old}\t{old}",
+            "actions/runs/101/jobs": "",
+        }
+        rc, out, _clock = self.run_checks([answers])
+        self.assertEqual((rc, out.splitlines()[-1]), (1, "checks: verdict=runred branch=current"), out)
+        self.assertIn("RED — 1 workflow run(s) for this head concluded red with no build check", out)
+        self.assertNotIn("RED      workflow run", out)
+
 
 if __name__ == "__main__":
     unittest.main()
