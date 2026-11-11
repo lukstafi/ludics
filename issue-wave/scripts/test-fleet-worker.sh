@@ -3219,6 +3219,16 @@ expect "...while the same request reserved without tip-run's mark is refused" 1 
   "${FWT[@]}" execution run "$(tipreq tip-h)"
 bash "$BG" wait "$tdir" --within 30 >/dev/null
 expect "...and the loop run concludes under the halt" 0 '"verdict": "pass"' -- "${FWT[@]}" execution conclude --from-bg-run "$tdir" --request tip-g --sha "$tip"
+# THE HALT NOTE (ludics#1064): a red --wait concludes under the halt says how it matches the halt's
+# reason, read off the anchor and the run's log; the halt is not changed by it.
+"$FW" halt "cuda red at ${tip:0:8}: test=golden_x stale, owned by t1" >/dev/null
+expect "a red loop run under the halt starts" 0 "^TIP-RUN STARTED tip-s testbox $tip /" -- \
+  "${FWT[@]}" execution tip-run "$(tipreq tip-s)" --checkout "$tco" --cpu -- sh -c 'echo "FAILED golden_x"; echo "exit: 1"'
+expect "...and its --wait notes that the red matches the halt's commit and test" 0 \
+  "^TIP-RUN HALT tip-s matches the standing halt: its commit $tip is ${tip:0:8}, which the reason names; its log names test=golden_x, which the reason names; the halt's reason: cuda red at ${tip:0:8}: test=golden_x stale, owned by t1$" -- \
+  "${FWT[@]}" execution tip-run --wait tip-s --within 60
+grep -q "^TIP-RUN CONCLUDED tip-s fail testbox $tip /" <<<"$out" && ok "...after its fail verdict" || ko "tip-s: $out"
+expect "...and the halt stands as it was" 1 "^HALTED .* cuda red at ${tip:0:8}: test=golden_x stale, owned by t1$" -- "$FW" halted
 "$FW" resume-launches >/dev/null
 # THE FREE-SPACE FLOOR (ludics#991): a floor no disk meets stands for a nearly full one. The commit
 # is one the checkout lacks, so a refusal past the fetch would show as the commit having arrived.

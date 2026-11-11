@@ -537,6 +537,18 @@ class Loop(unittest.TestCase):
                 self.assertIn("STOPPED (stop file)", out)
                 self.assertEqual(self.starts(), [], "a stopped loop starts nothing")
 
+    def test_a_red_carries_tip_run_s_halt_note_and_ends_as_any_red(self) -> None:
+        note = f"matches the standing halt: its commit {A} is {A[:8]}, which the reason names; the halt's reason: red at {A[:8]}"
+        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-1 rog {A} /r\n"),
+                        Done(0, f"TIP-RUN CONCLUDED wv-cc-1 fail rog {A} /r\nTIP-RUN HALT wv-cc-9 other run\n"
+                                f"TIP-RUN HALT wv-cc-1 {note}\n")]
+        self.tips = [A]
+        rc, out = self.drive([])
+        self.assertEqual(rc, 1)
+        self.assertIn(f"RED wv-cc-1 (fail at {A}, log /r): the coordinator's *On a red at the tip* (SKILL.md), then restart"
+                      f" with --resume-after wv-cc-1 -- {note}\n", out)
+        self.assertNotIn("other run", out, "only the line naming this run is carried")
+
     def test_red_unknown_and_unread_tip_end_distinctly(self) -> None:
         self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-1 rog {A} /r\n"), Done(0, f"TIP-RUN CONCLUDED wv-cc-1 fail rog {A} /r\n")]
         self.tips = [A]

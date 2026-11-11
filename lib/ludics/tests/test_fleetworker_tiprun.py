@@ -2,6 +2,7 @@
 tip-run" section drives the verb end to end, far side included)."""
 
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -635,6 +636,7 @@ class Wait(unittest.TestCase):
         with mock.patch.object(tiprun, "listing", side_effect=listing), \
                 mock.patch.object(tiprun, "run_on", side_effect=far_side), \
                 mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                mock.patch.object(tiprun, "read_halt", return_value=None), \
                 contextlib.redirect_stdout(out):
             rc = tiprun.cmd_tip_run(cfg, ["--wait", "w-gpu-rog-1", *args])
         return rc, out.getvalue(), far_calls, worker_calls
@@ -710,6 +712,185 @@ class Wait(unittest.TestCase):
             rc, out, far, worker = self.wait([records], None)
             self.assertEqual((rc, far, worker), (1, [], []), records)
             self.assertIn(want, out, records)
+
+
+class HaltNote(unittest.TestCase):
+    """THE HALT NOTE (ludics#1064): a red --wait concludes under a halt says how it matches the halt's
+    reason, and nothing else changes; what is not read notes nothing."""
+
+    OTHER = "b" * 40
+    reads = 0  # how many times the last wait read the halt
+
+    def red(self, verdict: str = "fail") -> dict[str, Any]:
+        return running(state="concluded", verdict=verdict,
+                       request={"execution_host": "rog-nv-linux", "repository": "o/r"})
+
+    def wait(self, record: dict[str, Any], halt: Any, named: Any = frozenset(), compare: Any = (0, "diverged"),
+             args: tuple[str, ...] = ()) -> tuple[int, str, str, list[list[str]], list[list[str]]]:
+        """--wait on a concluded record: the halt read, the log read and GitHub's compare stand in."""
+        cfg = load_config(SCRIPT, {}, host="h")
+        logs: list[list[str]] = []
+        gh: list[list[str]] = []
+
+        def log_names(_cfg: object, box: str, run_dir: str, names: list[str]) -> Any:
+            logs.append([box, run_dir, *names])
+            return set(named) if not isinstance(named, str) else named
+
+        def run_tool(name: str, argv: list[str], **_: object) -> Any:
+            self.assertEqual(name, "gh")
+            gh.append(argv)
+            rc, said = compare
+            return tiprun.proc.Completed(rc, said + "\n" if rc == 0 else "", "" if rc == 0 else said + "\n")
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(tiprun, "listing", return_value=Done(0, json.dumps([record]))), \
+                mock.patch.object(tiprun, "run_on", side_effect=AssertionError("a box was read")), \
+                mock.patch.object(tiprun, "read_halt", return_value=halt) as read, \
+                mock.patch.object(tiprun, "log_names", side_effect=log_names), \
+                mock.patch.object(tiprun.proc, "run_tool", side_effect=run_tool), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = tiprun.cmd_tip_run(cfg, ["--wait", "w-gpu-rog-1", *args])
+        self.reads = read.call_count
+        return rc, out.getvalue(), err.getvalue(), logs, gh
+
+    def test_the_reason_s_two_shapes_and_no_other_words(self) -> None:
+        reason = ("cc red at 67203021, rerun pending; test=golden_einsum stale (owned by t1904),"
+                  " (test=test/ops/foo.ml. xtest=no test=golden_einsum origin/abcdef12 deadbeefcafe0123x 1234567")
+        self.assertEqual(tiprun.halt_shapes(reason),
+                         (["67203021", "abcdef12", "1234567"], ["golden_einsum", "test/ops/foo.ml"]))
+        self.assertEqual(tiprun.halt_shapes("ABCDEF12 abcdef1 " + "a" * 41 + " test= test=."), (["abcdef1"], []))
+
+    def test_a_red_whose_log_names_the_halt_s_test_is_noted(self) -> None:
+        reason = f"cuda red at {self.OTHER[:8]}, test=golden_einsum stale, owned by t1904"
+        rc, out, _, logs, gh = self.wait(self.red(), reason, named={"golden_einsum"})
+        self.assertEqual(rc, 0, "a note changes no exit status")
+        self.assertEqual(logs, [["rog-nv-linux", "/s/tip-runs/run-3", "golden_einsum"]], "the log is read on the run's box")
+        self.assertEqual(gh, [["api", "--hostname", "github.com", f"repos/o/r/compare/{self.OTHER[:8]}...{SHA}", "-q", ".status"]])
+        self.assertEqual(out.splitlines(), [
+            f"TIP-RUN CONCLUDED w-gpu-rog-1 fail rog-nv-linux {SHA} /s/tip-runs/run-3",
+            "TIP-RUN HALT w-gpu-rog-1 matches the standing halt: its log names test=golden_einsum, which the reason names;"
+            f" the halt's reason: {reason}"])
+
+    def test_a_red_at_or_past_the_halt_s_commit_is_noted(self) -> None:
+        rc, out, _, _, gh = self.wait(self.red("timeout"), f"red at {SHA[:8]}, rerun pending")
+        self.assertEqual((rc, gh), (0, []), "a red at the commit asks GitHub nothing")
+        self.assertIn(f"matches the standing halt: its commit {SHA} is {SHA[:8]}, which the reason names; the halt's", out)
+        rc, out, _, _, _ = self.wait(self.red(), f"red at {self.OTHER[:8]}, test=gold", named=set(), compare=(0, "ahead"))
+        self.assertEqual(out.splitlines()[-1],
+                         f"TIP-RUN HALT w-gpu-rog-1 matches the standing halt: its commit {SHA} descends from {self.OTHER[:8]},"
+                         " which the reason names (inside the halt's span); its log does not name test=gold;"
+                         f" the halt's reason: red at {self.OTHER[:8]}, test=gold")
+
+    def test_a_red_outside_the_halt_s_match_is_not_noted(self) -> None:
+        for compare in ((0, "diverged"), (0, "behind")):
+            rc, out, err, logs, _ = self.wait(self.red(), f"red at {self.OTHER[:8]}, test=golden_einsum", compare=compare)
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(logs), 1)
+            self.assertNotIn("TIP-RUN HALT", out, compare)
+            self.assertEqual(err, "", compare)
+        rc, out, _, _, _ = self.wait(self.red(), "a red with no commit and no test=")
+        self.assertNotIn("TIP-RUN HALT", out)
+
+    def test_a_green_is_never_noted(self) -> None:
+        for verdict in ("pass", "cancelled", "not-launched"):
+            record = {**self.red(), "verdict": verdict}
+            rc, out, _, logs, gh = self.wait(record, f"red at {SHA[:8]}, test=golden_einsum", named={"golden_einsum"})
+            self.assertEqual((rc, logs, gh, self.reads), (0, [], [], 0), verdict)
+            self.assertNotIn("TIP-RUN HALT", out, verdict)
+
+    def test_no_halt_or_an_unreadable_one_gives_no_note(self) -> None:
+        rc, out, err, logs, _ = self.wait(self.red(), None)
+        self.assertEqual((rc, logs, err), (0, [], ""))
+        self.assertNotIn("TIP-RUN HALT", out)
+        rc, out, err, logs, _ = self.wait(self.red(), ("the anchor mac-studio did not answer",))
+        self.assertEqual((rc, logs), (0, []))
+        self.assertNotIn("TIP-RUN HALT", out)
+        self.assertIn("TIP-RUN NOTE w-gpu-rog-1: the halt could not be read (the anchor mac-studio did not answer)", err)
+
+    def test_what_is_not_read_notes_nothing_of_that_shape(self) -> None:
+        reason = f"red at {self.OTHER[:8]}, test=golden_einsum"
+        rc, out, err, _, _ = self.wait(self.red(), reason, named="rog-nv-linux did not answer", compare=(1, "HTTP 502"))
+        self.assertEqual(rc, 0)
+        self.assertNotIn("TIP-RUN HALT", out)
+        self.assertIn(f"whether {SHA} descends from {self.OTHER[:8]} (the halt's reason names it) is unread: GitHub's compare"
+                      " answered 'HTTP 502'", err)
+        self.assertIn("whether its log names test=golden_einsum (the halt's reason does) is unread: rog-nv-linux did not answer", err)
+        rc, out, _, _, _ = self.wait(self.red(), reason, named={"golden_einsum"}, compare=(1, "HTTP 502"))
+        self.assertIn("matches the standing halt: its log names test=golden_einsum", out, "the other shape still matches")
+        rc, out, err, logs, _ = self.wait({**self.red(), "handle": "test-run:x"}, reason, named={"golden_einsum"})
+        self.assertEqual(logs, [])
+        self.assertNotIn("TIP-RUN HALT", out)
+        self.assertIn('is unread: its handle is "test-run:x", not bg-run:<box>:<dir>', err)
+        rc, out, err, _, gh = self.wait({**self.red(), "observed_sha": None}, f"red at {SHA[:8]}")
+        self.assertEqual((rc, gh), (0, []))
+        self.assertNotIn("TIP-RUN HALT", out)
+        self.assertIn("its observed_sha is null, not one full SHA", err)
+
+    def test_the_note_precedes_the_loop_s_next_move(self) -> None:
+        with mock.patch.object(tiprun.revision, "branch_head", return_value=SHA):
+            rc, out, _, _, _ = self.wait(self.red(), f"red at {SHA[:8]}", args=("--tip", "main"))
+        self.assertEqual(rc, 0)
+        self.assertEqual([line.split(" ")[1] for line in out.splitlines()], ["CONCLUDED", "HALT", "TIP"])
+
+    def test_the_halt_is_read_as_the_registry_reads_its_marker(self) -> None:
+        cfg = dataclasses.replace(load_config(SCRIPT, {}, host="h"), anchor="mac-studio")
+        for done, want in [
+            (Done(0, "halt=0\n"), None),
+            (Done(0, "halt=1\n2026-11-11T00:00:00Z id=g1 cc red at 67203021, rerun pending\n"), "cc red at 67203021, rerun pending"),
+            (Done(0, "halt=1\nlegacy first line\nupdate 2026-11-11T00:00:00Z test=x owned\n"), "test=x owned"),
+            (Done(255, ""), ("the anchor mac-studio did not answer",)),
+            (Done(0, "halt=1\n\n"), ("the marker on the anchor mac-studio states no halt the registry would read",)),
+            (Done(0, "halt=unread\n"), ("the marker on the anchor mac-studio is there but cannot be read",)),
+            (Done(2, "halt=0\n"), ("an unreadable answer from the anchor mac-studio (exit 2)",)),
+            (Done(0, "launches open\n"), ("an unreadable answer from the anchor mac-studio (exit 0)",)),
+        ]:
+            with mock.patch.object(tiprun, "run_on", return_value=done) as far:
+                got = tiprun.read_halt(cfg)
+            self.assertEqual(got, want, done)
+            self.assertEqual(far.call_args.args[1], "mac-studio")
+            self.assertIn(tiprun.HALT_READ, far.call_args.args[2])
+
+    def test_the_anchor_s_marker_is_absent_only_when_nothing_is_there(self) -> None:
+        # The registry's `absent` (#1076): a link that dangles or loops, or a file that cannot be
+        # read, is a halt not read, never no halt.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"
+
+        def far() -> str:
+            return subprocess.run([bash, "-c", f"ANCHOR_STATE={shlex.quote(str(state))}\n" + tiprun.HALT_READ],
+                                  capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+
+        self.assertEqual(far(), "halt=0\n")
+        halt = state / "HALT"
+        halt.write_text("2026-11-11T00:00:00Z id=g1 red at 67203021\n", encoding="utf-8")
+        self.assertEqual(far(), "halt=1\n2026-11-11T00:00:00Z id=g1 red at 67203021\n")
+        halt.unlink()
+        for target in ("nowhere", "HALT"):
+            halt.symlink_to(target)
+            self.assertEqual(far(), "halt=unread\n", target)
+            halt.unlink()
+        if os.geteuid() != 0:  # root reads a mode-000 file
+            halt.write_text("x id=g y\n", encoding="utf-8")
+            halt.chmod(0)
+            self.addCleanup(halt.chmod, 0o644)
+            self.assertEqual(far(), "halt=unread\n")
+
+    def test_the_log_is_read_for_whole_names(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        log = Path(tmp.name) / "log"
+        log.write_text("EXECUTION SLOT box: slot 1 of 1 held for: x\nFAILED golden_einsum (diff in test/ops/foo.ml)\n"
+                       "ok golden_einsum2\nexit: 1\n", encoding="utf-8")
+        bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"
+        names = ["golden_einsum", "test/ops/foo.ml", "golden_einsum2x", "einsum", "golden"]
+        done = subprocess.run([bash, "-c", tiprun.LOG_NAMES, "x", str(log), *names], capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL)
+        self.assertEqual(done.stdout.splitlines(), ["log=1", "named=golden_einsum", "named=test/ops/foo.ml"])
+        done = subprocess.run([bash, "-c", tiprun.LOG_NAMES, "x", str(log) + ".gone", "golden_einsum"], capture_output=True,
+                              text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(done.stdout, "log=0\n")
 
 
 if __name__ == "__main__":
