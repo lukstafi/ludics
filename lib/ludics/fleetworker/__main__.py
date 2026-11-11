@@ -21,7 +21,7 @@ import re
 import sys
 
 from ludics import cli
-from ludics.fleetworker import board, execution, farsideclose, gate, lease, preflight, siblingscan, supervision, workers
+from ludics.fleetworker import board, execution, farsideclose, gate, lease, preflight, siblingscan, supervision, wave, workers
 from ludics.fleetworker.config import Config, load_config, pin_refusal
 from ludics.fleetworker.identity import PROG, die
 
@@ -41,6 +41,7 @@ VERBS = (
     "sibling-scan",
     "board",
     "farside-close",
+    "wave",
     "execution",
     "halt",
     "resume-launches",
@@ -121,6 +122,8 @@ def dispatch(argv: list[str]) -> int:
             return board.cmd_board(cfg, rest)
         case "farside-close":
             return farsideclose.cmd_farside_close(cfg, rest)
+        case "wave":
+            return wave.cmd_wave(cfg, rest)
         case "execution":
             return execution.cmd_execution(cfg, rest)
         case "halt":

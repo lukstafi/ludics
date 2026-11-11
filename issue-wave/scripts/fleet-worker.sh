@@ -259,6 +259,20 @@
 #                          # exit 3 when the brief cannot be read (lib/ludics/fleetworker/takeover.py)
 #                          # (set/note --create starts the board; without it every writer refuses
 #                          # an unknown wave; the contract: lib/ludics/fleetworker/boardstore.py)
+#   fleet-worker.sh wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>...
+#                          # the coordinator kit (ludics#1047, lib/ludics/fleetworker/wave.py): a brief
+#                          # rendered from template parts; an @@NAME@@ left unrendered refuses, nothing
+#                          # written (wavebrief.py)
+#   fleet-worker.sh wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>]
+#                          [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
+#                          # a native worker's launch prep: worktree, standing reservations, brief,
+#                          # assign base and pending board row, every read before any write; refuses
+#                          # a rival PR or an existing worktree/branch; spawns nothing (waveprep.py)
+#   fleet-worker.sh wave loop <wave.json> <name> [--resume-after <request id>]   # an integration
+#                          # loop around execution tip-run, restartable: it waits on its own running
+#                          # run before starting another; ends on a red (waveloop.py)
+#   fleet-worker.sh wave heartbeat <wave.json> [--sleep <seconds>]   # one tick: prs whole, halted,
+#                          # each loop's last line, the timestamp last
 #   fleet-worker.sh farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]
 #                          # remove a closed wave's far-side worktrees, the board's `farside` words,
 #                          # each only past its row's done state, no outstanding reservation, no leg
