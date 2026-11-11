@@ -653,5 +653,125 @@ class CancelledRecovery(MergeRecovery):
         self.assertEqual((rc, recovery.why, self.writes(gh)), (4, "", []))
 
 
+class RedRerun(MergeRecovery):
+    """#1065: ``merge --wait --rerun-failed-once`` reruns the failed jobs of a settled red once,
+    with a fresh budget; a second red is the ordinary 1, naming both attempts."""
+
+    def run_red(self, gh: FakeGh, wait: int = 7200, rerun: bool = True,
+                **env: str) -> tuple[int, Recovery, FakeClock]:
+        clock = FakeClock()
+        gate = make_gate(gh, clock, **env)
+        gate.orphans_on = True
+        recovery = Recovery(gate.session, "o/r", "7", gate, gate.clock, wait, rerun)
+        gate.recover = recovery
+        gate.settle = gate.recover_red = rerun
+        self.gate = gate
+        return gate.check("7", wait), recovery, clock
+
+    def red(self, gh: FakeGh, checks: list[str], runs: list[str], reads: list[str], moved: str = "") -> None:
+        self.head(gh, moved)
+        gh.on("run", "rerun", out="")
+        gh.on("check-runs", out=checks)
+        gh.on("actions/runs?head_sha=h1", out=runs)
+        jobs(gh, "100", out="")
+        run_read(gh, "100", out=reads)
+
+    FAILED = run_row(concl="failure")
+    RUNNING = run_row(status="in_progress", concl="pending")
+
+    def test_a_settled_red_is_rerun_once_and_a_green_rerun_reaches_the_verdict(self) -> None:
+        gh = FakeGh()
+        self.red(gh, ["build\tfailure\tu\t1", "build\tpending\tu\t1", "build\tsuccess\tu\t1"],
+                 [self.FAILED, self.RUNNING, run_row(concl="success")], ["completed\tfailure\t1"])
+        rc, recovery, _clock = self.run_red(gh)
+        self.assertEqual((rc, recovery.why), (0, ""))
+        self.assertEqual(self.writes(gh), ["run rerun 100 --failed --repo o/r"])
+        self.assertIn("RERUN: o/r#7: run 100 (ci) concluded failure at attempt 1", self.out.getvalue())
+
+    def test_a_second_red_ends_the_wait_naming_both_attempts(self) -> None:
+        gh = FakeGh()
+        self.red(gh, ["build\tfailure\tu\t1", "build\tpending\tu\t1", "build\tfailure\tu\t1"],
+                 [self.FAILED, self.RUNNING, self.FAILED], ["completed\tfailure\t1", "completed\tfailure\t2"])
+        rc, recovery, clock = self.run_red(gh)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.writes(gh), ["run rerun 100 --failed --repo o/r"], "one rerun, never two")
+        self.assertEqual(recovery.rerun_lines(), [
+            "--rerun-failed-once: run 100 (ci) concluded failure at attempt 1, and failure at attempt 2, its one rerun."
+        ])
+        self.assertLess(sum(clock.sleeps), 600, "ended on the second red, not at the deadline")
+
+    def test_the_rerun_gets_a_fresh_budget(self) -> None:
+        gh = FakeGh()
+        # Running for two rounds, then red, rerun, running, green: past the 120 s the wait began with.
+        self.red(gh, ["build\tpending\tu\t1"] * 2 + ["build\tfailure\tu\t1", "build\tpending\tu\t1",
+                                                     "build\tsuccess\tu\t1"],
+                 [self.RUNNING] * 2 + [self.FAILED, self.RUNNING, run_row(concl="success")], ["completed\tfailure\t1"])
+        rc, _recovery, clock = self.run_red(gh, wait=120)
+        self.assertEqual(rc, 0, "a wait of 120 s outlived by the rerun's own budget")
+        self.assertGreater(sum(clock.sleeps), 120)
+
+    def test_a_red_waits_for_its_run_to_finish_before_the_rerun(self) -> None:
+        """GitHub refuses a rerun of an unfinished run: a red whose run is still in flight (an
+        advisory job left) waits, and is rerun once the run completes. A check still running holds
+        the red as ``--settle`` does."""
+        gh = FakeGh()
+        self.red(gh, ["build\tfailure\tu\t1\ntest\tpending\tv\t1", "build\tfailure\tu\t1\ntest\tsuccess\tv\t1",
+                      "build\tfailure\tu\t1\ntest\tsuccess\tv\t1", "build\tsuccess\tu\t1\ntest\tsuccess\tv\t1"],
+                 [self.RUNNING, self.RUNNING, self.FAILED, run_row(concl="success")],
+                 ["in_progress\t-\t1", "completed\tfailure\t1"])
+        rc, recovery, _clock = self.run_red(gh)
+        self.assertEqual((rc, recovery.why), (0, ""))
+        self.assertEqual(self.writes(gh), ["run rerun 100 --failed --repo o/r"])
+        reads = [c for c in gh.calls if c[:2] == ["api", "repos/o/r/actions/runs/100"]]
+        self.assertEqual(len(reads), 2, "no run read while a check of the red still ran")
+
+    def test_without_the_flag_nothing_changes(self) -> None:
+        gh = FakeGh()
+        self.red(gh, ["build\tfailure\tu\t1\ntest\tpending\tv\t1", "build\tsuccess\tu\t1"],
+                 [self.FAILED], ["completed\tfailure\t1"])
+        rc, recovery, clock = self.run_red(gh, rerun=False)
+        self.assertEqual((rc, self.writes(gh), clock.sleeps, recovery.reds), (1, [], [], {}))
+        self.assertFalse([c for c in gh.calls if c[:2] == ["api", "repos/o/r/actions/runs/100"]], "no run read")
+
+    def test_what_is_not_rerun(self) -> None:
+        """A run rerun already (attempt 2), a red check of no workflow run of the head, a red the
+        advisory list explains: no write, and the red (or green) stands."""
+        t = "2025-12-31T23:00:00Z"
+        cases: list[tuple[str, str, str, str, int, str]] = [
+            ("rerun already", "build\tfailure\tu\t1", "", "completed\tfailure\t2", 1, "is at attempt 2"),
+            ("another app's check", "lint\tfailure\tu\t9", "", "completed\tfailure\t1", 1, "of no workflow run"),
+            ("advisory-only red", "build\tsuccess\tu\t1\nclaude\tfailure\tu\t1",
+             f"build\tsuccess\t{t}\t{t}\nclaude\tfailure\t{t}\t{t}", "completed\tfailure\t1", 0, ""),
+        ]
+        for name, checks, job_list, read, want_rc, why in cases:
+            with self.subTest(name):
+                gh = FakeGh()
+                self.head(gh)
+                gh.on("run", "rerun", out="")
+                gh.on("check-runs", out=checks)
+                gh.on("actions/runs?head_sha=h1", out=self.FAILED)
+                gh.on("actions/runs/100/jobs", out=job_list)
+                run_read(gh, "100", out=read)
+                rc, recovery, _clock = self.run_red(gh, wait=300)
+                self.assertEqual((rc, self.writes(gh)), (want_rc, []))
+                if why:
+                    self.assertIn(why, " ".join(recovery.rerun_lines()))
+
+    def test_a_rerun_that_does_not_take_ends_the_wait_after_the_window(self) -> None:
+        gh = FakeGh()
+        self.red(gh, ["build\tfailure\tu\t1"], [self.FAILED], ["completed\tfailure\t1"])
+        rc, recovery, clock = self.run_red(gh)
+        self.assertEqual((rc, len(self.writes(gh))), (1, 1))
+        self.assertIn("which did not take", " ".join(recovery.rerun_lines()))
+        self.assertGreaterEqual(sum(clock.sleeps), Recovery.TRANSITION)
+        self.assertLess(sum(clock.sleeps), Recovery.TRANSITION + 600)
+
+    def test_a_moved_head_writes_nothing(self) -> None:
+        gh = FakeGh()
+        self.red(gh, ["build\tfailure\tu\t1"], [self.FAILED], ["completed\tfailure\t1"], moved="h2")
+        rc, recovery, _clock = self.run_red(gh)
+        self.assertEqual((rc, recovery.superseded, self.writes(gh)), (1, "h2", []))
+
+
 if __name__ == "__main__":
     unittest.main()
