@@ -218,12 +218,15 @@ class Recovery:
       RUNNER is, with the same deadline move. A LATER attempt read ``cancelled`` again is the second
       cancellation and ends the wait; the attempt that was rerun still read after ``TRANSITION``
       seconds is a rerun that did not take, and ends it too. These ends are ``code`` 7.
-    - A CANCELLED run whose event is ``workflow_dispatch`` (#1036) is not rerun: a dispatch is
-      evidence someone asked for, not the PR's own build, and a rerun of it spent another full run
-      (90 min on #1028) on something that judges nothing. It ends the wait at once, ``code`` 7 with
-      ``dispatched`` set, before any write of its own; merge's refusal names the ways past it.
-    - A CANCELLED run ``--override`` recorded at the gate's first read (``cancelled-run:<id>``)
-      is waived, not rerun: the override is the decision to merge over it.
+    - A run whose event is ``workflow_dispatch`` gets no write of this recovery (#1036): a
+      dispatch is evidence someone asked for, not the PR's own build, and a rerun of it spent
+      another full run (90 min on #1028) on something that judges nothing. CANCELLED of one,
+      re-read still completed ``cancelled`` (a NO RUNNER of one included: it is completed
+      cancelled too), ends the wait, ``code`` 7 with ``dispatched`` set; merge's refusal names the
+      ways past it. A NEVER STARTED of one ends it as a recovery-less wait would, ``code`` 6.
+    - A run ``--override`` recorded as cancelled at the gate's first read (``cancelled-run:<id>``)
+      gets no write either, its jobs that never got a runner included: the override is the
+      decision to merge over it.
 
     Boundary of CANCELLED: it reads the round's run list, one jobs read per completed
     ``cancelled`` run, and one run read per such run, nothing else. It reruns ``cancelled``
@@ -335,9 +338,14 @@ class Recovery:
         status, concl, attempt = tab_fields(result.stdout, 3)
         return (status, concl, int(attempt)) if re.fullmatch("[0-9]+", attempt) else None
 
-    def not_rerun(self, run: HeadRun) -> Stop:
-        """A CANCELLED run started by ``workflow_dispatch`` (#1036): the wait ends on it, ``code``
-        7, and nothing is written. The command named is the rerun by hand, for its verdict."""
+    def not_rerun(self, run: HeadRun) -> Stop | None:
+        """A CANCELLED run started by ``workflow_dispatch`` (#1036), re-read still completed
+        ``cancelled``: the wait ends on it, ``code`` 7, and nothing is written. The command named
+        is the rerun by hand, for its verdict. None when the re-read fails or reads it moved (a
+        rerun by hand since the round's run list): nothing this round."""
+        state = self.read_run(run.rid)
+        if state is None or state[:2] != ("completed", "cancelled"):
+            return None
         self.dispatched = run.rid
         return self.stop(
             f"run {run.rid} ({shlex.quote(run.name)}) was started by workflow_dispatch, evidence someone asked"
@@ -390,6 +398,20 @@ class Recovery:
         by_run: dict[str, Orphan] = {}
         for orphan in orphans:
             by_run.setdefault(orphan.rid, orphan)
+        # No write on a run the override waived as cancelled, nor on a dispatched one (#1036; the
+        # class docstring): a completed one is CANCELLED's below, a dispatch never started ends here.
+        events = {run.rid: run.event for run in runs}
+        for rid in list(by_run):
+            if f"cancelled-run:{rid}" in self.gate.waived:
+                del by_run[rid]
+            elif events.get(rid) == "workflow_dispatch" and rid not in self.done:
+                orphan = by_run.pop(rid)
+                if orphan.kind == "never-started":
+                    return self.stop(
+                        f"run {rid} was started by workflow_dispatch, evidence someone asked for and not the"
+                        " PR's own build, so merge --wait does not recover its job that never started",
+                        recovery_text(orphan, self.repo),
+                    )
         for rid, orphan in by_run.items():
             done = self.done.get(rid)
             attempt = orphan.job.attempt
@@ -452,7 +474,10 @@ class Recovery:
             if run.rid in by_run or (done is not None and done.action == "cancel"):
                 continue
             if done is None and run.event == "workflow_dispatch":
-                return self.not_rerun(run)
+                stop = self.not_rerun(run)
+                if stop is not None:
+                    return stop
+                continue
             step = self.rerun_cancelled(run, now)
             match step:
                 case None:

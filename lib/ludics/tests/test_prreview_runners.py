@@ -613,10 +613,44 @@ class CancelledRecovery(MergeRecovery):
         gh = FakeGh()
         self.cancelled(gh, ["build\tpending\tu\t1\tin_progress", "build\tcancelled\tu\t1"],
                        [run_row(status="in_progress", concl="pending", event="workflow_dispatch"), self.DISPATCH])
+        run_read(gh, "100", out="completed\tcancelled\t1")
         rc, recovery, _clock = self.run_gate(gh, 7200, waive=True)
         self.assertEqual((rc, recovery.code, recovery.dispatched), (4, 7, "100"))
         self.assertEqual(self.gate.waived, set())
         self.assertEqual(self.writes(gh), [])
+
+    def test_a_dispatch_no_runner_took_is_not_rerun_either(self) -> None:
+        """Local Codex review: a NO RUNNER job of a dispatch (completed cancelled, no step, no
+        runner) went to the orphan recovery's rerun before the dispatch rule saw it."""
+        gh = FakeGh()
+        self.cancelled(gh, runs=[self.DISPATCH])
+        gh.routes = [r for r in gh.routes if "actions/runs/100/jobs" not in r.needles]
+        jobs(gh, "100", out=job_row())
+        run_read(gh, "100", out="completed\tcancelled\t1")
+        rc, recovery, _clock = self.run_gate(gh, 7200)
+        self.assertEqual((rc, recovery.code, recovery.dispatched, self.writes(gh)), (4, 7, "100", []))
+
+    def test_a_dispatch_rerun_by_hand_since_the_round_is_no_refusal(self) -> None:
+        """Local Codex review: the round's run list reads it cancelled, its re-read in flight (a
+        rerun by hand): nothing this round, and the wait goes on."""
+        gh = FakeGh()
+        self.cancelled(gh, runs=[self.DISPATCH])
+        run_read(gh, "100", out="in_progress\t-\t2")
+        rc, recovery, _clock = self.run_gate(gh, 300)
+        self.assertEqual((rc, recovery.why, recovery.dispatched, self.writes(gh)), (4, "", "", []))
+
+    def test_an_override_waived_run_gets_no_orphan_rerun(self) -> None:
+        """Local Codex review: a run the override waived as cancelled, its job one no runner took,
+        was rerun by the orphan recovery while another check kept the gate waiting."""
+        gh = FakeGh()
+        self.cancelled(gh, ["build\tcancelled\tu\t1\nlint\tpending\tl\t2\tin_progress"],
+                       [run_row(rid=101, status="in_progress", concl="pending", name="lint") + "\n" + run_row()])
+        gh.routes = [r for r in gh.routes if "actions/runs/100/jobs" not in r.needles]
+        jobs(gh, "100", out=job_row())
+        jobs(gh, "101", out=job_row(jid=601, name="lint", status="in_progress", concl="-", steps="2", runner="r"))
+        rc, recovery, _clock = self.run_gate(gh, 300, waive=True)
+        self.assertIn("cancelled-run:100", self.gate.waived)
+        self.assertEqual((rc, recovery.why, self.writes(gh)), (4, "", []))
 
 
 if __name__ == "__main__":
