@@ -1200,7 +1200,10 @@ checks still running instead of redraws. It settles on the checks `merge` requir
 the advisory list does not name (#1026): green once they are, with an advisory job still queued
 or running; red at the first required red; a required `needs:` job not started yet still waited
 for. Expired, it says the wait is spent and exits 4. So no workflow observer is needed beside it,
-and none is killed by hand when the required checks pass. To wait on one job's
+and none is killed by hand when the required checks pass. To see every red of a push at once and
+fix them in one push, add `--settle`: a red then waits until no required check is still running,
+exit 1 as before, and a bound that expires first names the checks still running (#1039). Its
+boundary is in `prreview/checks.py`'s header. To wait on one job's
 verdict while a slower one runs, add `--check '<ERE>'`: only the check runs whose name the ERE
 matches are judged, advisory ones included, with the same budget and exit statuses. A selection
 that matches nothing is held while a run is in flight and refused with exit 2 after, never green;
