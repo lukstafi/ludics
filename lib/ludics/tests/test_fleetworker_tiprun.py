@@ -551,11 +551,11 @@ class FarBase(unittest.TestCase):
         self.assertNotEqual(self.stale, self.tip)
         done = self.far("main", "--tip")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(self.seen.read_text(encoding="utf-8").strip(), self.tip, "the command reads the remote's base")
         said = f"origin/main at {self.tip} (--tip), fetched from origin before the run; was {self.stale}"
         self.assertEqual(far_facts(done.stdout).get("base"), said)
         self.assertIn(f"TIP-RUN BASE box: {said}", done.stderr)
         self.assertEqual(far_facts(done.stdout).get("slot"), "held")
-        self.assertEqual(self.seen.read_text(encoding="utf-8").strip(), self.tip, "the command reads the remote's base")
         self.assertEqual(self.git("-C", str(self.co), "rev-parse", "HEAD"), self.sha)
 
     def test_with_no_base_named_origin_head_s_branch_is_fetched(self) -> None:
