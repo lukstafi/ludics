@@ -826,8 +826,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   test, before the worktree moves. Its lines are `# comments`, blanks, `pin-flag <option>` (the
   runner's words hold `<option> <backend>` or `<option>=<backend>` before any `--` of its own) and
   `pin-env <NAME>` (the runner is `env NAME=<backend> ... <command>`, a command after the assignments), and at most
-  one `slot-plan <path>` (*The slot plan* below); any other line refuses the
-  leg. A leg that may hold the GPU -- one that does not declare `--cpu`, a measurement's included --
+  one each of `slot-plan <path>` (*The slot plan* below), `run-report <path>` (*The run report*),
+  `fail-lines <shell command>` (*The failing lines*) and `min-free-gib <GiB>` (*The free-space
+  floor*); any other line refuses the leg. A leg that may hold the GPU -- one that does not declare `--cpu`, a measurement's included --
   whose command satisfies none of the pins is refused before anything runs, saying which it asks
   for. OCANNL's are `pin-flag --expect-backend` and `pin-env OCANNL_BACKEND`, so `-- env
   OCANNL_BACKEND=cuda tools/test-run.sh run --expect-backend cuda <alias>` runs. Only argv words
@@ -897,6 +898,20 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   leg's. What it leaves in the worktree counts as the run's (the main run's `NO CONTROL`, the
   after-run warning). A leg run by a checkout from before this reads a `run-report` line as one it
   cannot read and refuses, so a project adds it once its callers' skills checkout has it.
+- **The failing lines.** A failed leg's log said the verdict and the goldens that differ, not the
+  claims that failed, so each failed leg cost an ssh session to the far side (ludics#1040). Which
+  lines count as failing, and where the runner keeps them, are the project's: it names
+  `fail-lines <shell command>` (the rest of the line) in its `.github/fleet-leg`. After each run that
+  started and exited nonzero (the main run, or the control before its revert), and after its run
+  report, the leg runs that command with `bash -c` in the worktree, the runner's argv as `$1...`,
+  under a nested `execution slot --deadline 300`, and copies its stdout and stderr onto the leg's
+  stderr, bounded to the first 16384 bytes and of those the first 100 lines, between `EXECUTION LEG
+  <box>: failing lines (fail-lines in .github/fleet-leg) after the <main|control> run (exit <n>),
+  their command exit <m>, <count>:` and `EXECUTION LEG <box>: end of the failing lines (<run>
+  run)`. A cut copy says so in both lines (`TRUNCATED to the first <k> of its <N> line(s), <s> of
+  its <B> bytes`; `TRUNCATED: <n> byte(s) not copied`). Its status never changes the leg's. A
+  project that declares none, a passing run and a run that never started copy nothing. A
+  leg run by a checkout from before this refuses a `fail-lines` line, as it does a `run-report` one.
 - **The free-space floor.** A leg is refused before checkout and slot writes when the filesystem
   of `--checkout` or `--worktree` has under the selected floor free. A nonempty site knob
   `FLEET_LEG_MIN_FREE_GIB` overrides `min-free-gib <GiB>` in `.github/fleet-leg` at the tested commit,

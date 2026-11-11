@@ -4022,6 +4022,40 @@ expect "...and a report that fails changes no verdict" 0 "after the main run (ex
 expect "a runner that never started gets no report" 1 "EXECUTION LEG REFUSED testbox: the runner is not an executable command" -- \
   leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- tools/no-such-runner.sh
 grep -q "run report" <<<"$out" && ko "a report ran for a runner that never started: $out" || ok "...none asked"
+# THE FAILING LINES (ludics#1040): a failed run's fail-lines output comes back, bounded, after the
+# run report; a passing run, and a project that declares none, copy nothing.
+git -C "$lsrc" checkout -q -b failing reported &&
+  printf '%s\n' 'fail-lines  grep -E '\''FAIL:|: false'\'' claims.log;  for a in "$@"; do l=$a; done; [ "$l" != long ] || { i=0; while [ $i -lt 150 ]; do i=$((i + 1)); echo "FAIL: extra $i"; done; }  ' \
+    >> "$lsrc/.github/fleet-leg" && printf 'ok: true\nFAIL: claim one\nnoise\nsum: false\n' > "$lsrc/claims.log" &&
+  git -C "$lsrc" add -A && git -C "$lsrc" commit -q -m failing &&
+  git -C "$lsrc" checkout -q -b failing-red && printf '1\n' > "$lsrc/verdict" && git -C "$lsrc" commit -q -am failing-red &&
+  git -C "$lsrc" push -q "$lremote" failing failing-red && git -C "$lsrc" checkout -q main || ko "could not build the fail-lines fixture (setup)"
+expect "a failed run's declared failing lines come back after its run report, before the status line" 1 \
+  "^EXECUTION LEG testbox: failing lines (fail-lines in .github/fleet-leg) after the main run (exit 1), their command exit 0, 2 line(s):$" -- \
+  leg --request leg-a --rev failing-red --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh quick
+fl=$(sed -n '/failing lines (fail-lines in .github\/fleet-leg) after the main run/,/end of the failing lines (main run)$/p' <<<"$out")
+[ "$(sed -n '2,$p' <<<"$fl")" = "$(printf '%s\n' 'FAIL: claim one' 'sum: false' 'EXECUTION LEG testbox: end of the failing lines (main run)')" ] &&
+  [ "$(grep -n 'end of the run report (main run)$' <<<"$out" | cut -d: -f1)" -lt "$(grep -n 'failing lines (fail-lines' <<<"$out" | cut -d: -f1)" ] &&
+  [ "$(last_line)" = "execution-leg: exit: 1" ] &&
+  ok "...the matching lines only, the run's status unchanged" || ko "the failing lines did not come back as stated: $out"
+expect "...bounded to 100 lines, saying it cut them" 1 \
+  "their command exit 0, TRUNCATED to the first 100 of its 152 line(s), [0-9]* of its [0-9]* bytes:$" -- \
+  leg --request leg-a --rev failing-red --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh long
+grep -q "^FAIL: extra 98$" <<<"$out" && ! grep -q "^FAIL: extra 99$" <<<"$out" &&
+  grep -q "^EXECUTION LEG testbox: end of the failing lines (main run; TRUNCATED: [0-9]* byte(s) not copied)$" <<<"$out" &&
+  ok "...its head" || ko "the long copy was not cut to its first 100 lines: $out"
+expect "a passing run copies no failing lines" 0 "^EXECUTION LEG testbox: runner exit 0 at " -- \
+  leg --request leg-a --rev failing --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh quick
+grep -q "failing lines" <<<"$out" && ko "a passing run copied failing lines: $out" || ok "...none copied"
+expect "a control that fails as required copies its failing lines, before its revert" 0 \
+  "after the control run (exit 4), their command exit 0, 2 line(s):$" -- \
+  leg --request leg-a --rev failing --checkout "$lco" --worktree "$lwt" --cpu --control "$TMP/break.patch" -- tools/check.sh
+! grep -q "failing lines (fail-lines in .github/fleet-leg) after the main run" <<<"$out" &&
+  grep -q "control failed as required (exit 4), patch reverted" <<<"$out" &&
+  ok "...the passing main run's none, the control's verdict unchanged" || ko "the control's failing lines were not as stated: $out"
+expect "a project that declares no fail-lines copies nothing from a failed run" 1 "^EXECUTION LEG testbox: runner exit 1 at " -- \
+  leg --request leg-a --rev red --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
+grep -q "failing lines" <<<"$out" && ko "an undeclared project copied failing lines: $out" || ok "...as before"
 # A leg blocked under bg-run concludes from its directory: the leg's sentinel wins over the
 # control run's, which a runner prints last otherwise.
 lbg=$(bash "$TMP/dispatcher/issue-wave/scripts/bg-run.sh" new "$TMP/leg runs") || ko "could not allocate a bg-run directory (setup)"
