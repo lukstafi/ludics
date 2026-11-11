@@ -366,6 +366,7 @@ def nonempty(obj: Record, keys: list[str]) -> None:
 REQUEST_FIELDS = {"request_id", "wave", "worker", "transport", "purpose",
                   "agent_host", "execution_host", "repository", "requested_revision", "kind"}
 OPTIONAL_FIELDS = {"issue", "triage_reason", "standing", "integration"}
+TRANSPORTS = ("subagent", "app", "cli", "coordinator")
 ISSUE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
 STATES = {"reserved", "launching", "running", "uncertain", "suspended", "concluded"}
 SUSPENDABLE = STATES - {"suspended", "concluded"}   # what `suspended_from` may name
@@ -467,8 +468,11 @@ def validate_request(data: Any, *, new: bool) -> None:
             refuse("standing must be true when present")
         if request["kind"] != "correctness":
             refuse("only a correctness reservation can be standing")
-    if request["transport"] not in {"subagent", "app", "cli", "coordinator"}:
-        refuse("invalid transport")
+    if request["transport"] not in TRANSPORTS:
+        # Named, never aliased (ludics#869): every copy of this module validates the whole ledger,
+        # so a new spelling stored by this one would refuse every box whose checkout lags.
+        refuse(f"invalid transport {json.dumps(request['transport'])}: one of {', '.join(TRANSPORTS)}"
+               f" (a native worker, the runtime's own subagent, is subagent; a desktop-app worker app)")
     if "integration" in request:
         # A claim the base gate acts on, so only the shape an integration run has may make it.
         if request["integration"] is not True:

@@ -210,6 +210,14 @@
 #                          # --from-bg-run: TIP-RUN CONCLUDED <id> <verdict> <box> <sha> <dir> (exit
 #                          # 0; with --tip also TIP-RUN TIP <branch> <sha> moved|current), TIP-RUN
 #                          # RUNNING ... (exit 3: re-issue) (lib/ludics/fleetworker/tiprun.py)
+#   fleet-worker.sh execution assign <base.json> <requests file|-> [--request <id>]... [--no-gap]
+#                          [--deadline <seconds>] [--message <file>] [--unstick <box> <name>]
+#                          # a worker's EXECUTION_REQUEST blocks, completed by the base's fields and
+#                          # each `execution run` (a measurement: `window <box>`); stdout is the
+#                          # EXECUTION_ASSIGNED text, printed only for a step that exited 0, a
+#                          # request's `runner` wrapped into the `execution leg` form; one ASSIGN
+#                          # ASSIGNED|REFUSED|ALREADY|UNKNOWN line per request on stderr; --unstick
+#                          # sends the --message file to a CLI worker (lib/ludics/fleetworker/assign.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state (pending(no-runner|never-started): a build job never got a
 #                          # runner), branch agreement (branch=current|behind|unread), head age

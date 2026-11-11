@@ -71,6 +71,12 @@ class Registry(RegistryCase):
         rc, out, err = self.call("reserve", request("bad", kind="other"))
         self.assertEqual((rc, out, err), (1, None, "EXECUTION REFUSED: kind must be correctness or measurement\n"))
 
+    def test_an_unknown_transport_is_refused_naming_the_accepted_values(self) -> None:
+        # ludics#869 (quirk 37): the skill says "native workers"; the refusal says which word that is.
+        rc, out, err = self.call("reserve", request("n", transport="native"))
+        self.assertEqual((rc, out), (1, None))
+        self.assertIn('invalid transport "native": one of subagent, app, cli, coordinator (a native worker', err)
+
     def test_list_validates_the_whole_ledger_before_filtering(self) -> None:
         self.call("reserve", request("a"))
         rc, listed, _ = self.call("list", {"active": True, "compact": True})

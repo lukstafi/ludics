@@ -1092,7 +1092,8 @@ USAGE = (
     " integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas], leg --request <id> ... -- <runner>,"
     " run|reserve|dispatch|record|reconcile|rebind|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
-    " or tip-run <json-file> [--tip <branch>] --checkout <dir> -- <command>, tip-run --wait <id>"
+    " tip-run <json-file> [--tip <branch>] --checkout <dir> -- <command>, tip-run --wait <id>,"
+    " or assign <base.json> <requests file|-> [--request <id>]... [--message <file>] [--unstick <box> <name>]"
 )
 CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"
 
@@ -1672,6 +1673,12 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             from ludics.fleetworker import leg
 
             return leg.cmd_leg(cfg, args[1:])
+        case "assign":
+            # A worker's request blocks reserved and assigned in one call (ludics#869): `run` and
+            # `window` invoked as fleet-worker.sh invokes them, the message printed only on exit 0.
+            from ludics.fleetworker import assign
+
+            return assign.cmd_assign(cfg, args[1:])
         case "conclude":
             mode = args[1] if len(args) > 1 else ""
             if mode == "--from-run":
