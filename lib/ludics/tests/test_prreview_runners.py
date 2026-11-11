@@ -725,6 +725,24 @@ class RedRerun(MergeRecovery):
         reads = [c for c in gh.calls if c[:2] == ["api", "repos/o/r/actions/runs/100"]]
         self.assertEqual(len(reads), 2, "no run read while a check of the red still ran")
 
+    def test_the_heartbeat_names_the_run_a_settled_red_waits_on(self) -> None:
+        """p2 of wave-20261111 (from #1065): a red held for its run read "0 check(s) running: " on
+        its heartbeat, which reads like a hang. It names the run and why; a round with a check
+        still running keeps its check list."""
+        gh = FakeGh()
+        self.red(gh, ["build\tfailure\tu\t1\ntest\tpending\tv\t1", "build\tfailure\tu\t1\ntest\tsuccess\tv\t1",
+                      "build\tfailure\tu\t1\ntest\tsuccess\tv\t1", "build\tsuccess\tu\t1\ntest\tsuccess\tv\t1"],
+                 [self.RUNNING, self.RUNNING, self.FAILED, run_row(concl="success")],
+                 ["in_progress\t-\t1", "completed\tfailure\t1"])
+        rc, _recovery, _clock = self.run_red(gh, SHIP_PR_CHECKS_HEARTBEAT="0")
+        out = self.out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("(1 check(s) running: test)", out, "a check still running: the heartbeat is unchanged")
+        self.assertIn("(--rerun-failed-once holds the red: run 100 (ci) was still in_progress, and GitHub reruns"
+                      " the failed jobs of a finished run only)", out)
+        self.assertIn("(--rerun-failed-once reran the failed jobs of run 100 (ci); waiting for the rerun to finish)", out)
+        self.assertNotIn("0 check(s) running", out)
+
     def test_without_the_flag_nothing_changes(self) -> None:
         gh = FakeGh()
         self.red(gh, ["build\tfailure\tu\t1\ntest\tpending\tv\t1", "build\tsuccess\tu\t1"],

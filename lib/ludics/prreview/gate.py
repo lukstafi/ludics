@@ -186,8 +186,8 @@ class Gate:
     # ``orphans_on`` (``checks`` and ``merge``; ``base`` reads a merged head and leaves it off), on
     # a round with no verdict, or a red that ``settling`` holds. ``orphans`` is the last such round's
     # finding. ``recover`` is ``merge --wait``'s one recovery (merge.py), given the round's orphans
-    # and runs: Stop ends the wait, Wait keeps it (to a later deadline, after a rerun), Idle leaves
-    # the round as it is.
+    # and runs: Stop ends the wait, Wait keeps it (to a later deadline, after a rerun; its ``why``
+    # is the heartbeat's note on a round with no check left running), Idle leaves the round as it is.
     # Without it, a round that finds one ends the wait: nothing it waits for moves until someone
     # reruns the run.
     orphans_on: bool = False
@@ -1338,6 +1338,7 @@ class Gate:
             # A red ``settling`` holds is looked through too: a pending check with no runner would
             # hold ``--settle`` to its bound for nothing (``checks`` has no ``recover``).
             keep = False
+            held = ""
             self.orphans = []
             red_settled = self.recover_red and self.verdict in ("red", "runred") and self.check_pending == 0
             if self.orphans_on and (self.verdict in ("pending", "unjudged", "mixed") or self.settling() or red_settled):
@@ -1350,8 +1351,9 @@ class Gate:
                     match step:
                         case Stop():
                             break
-                        case Wait(until=until):
+                        case Wait(until=until, why=why):
                             keep = True
+                            held = why
                             if until > deadline:
                                 deadline = until
                                 self.deadline = deadline
@@ -1369,11 +1371,14 @@ class Gate:
             if now >= deadline:
                 break
             if now - beat >= self.config.checks_heartbeat:
-                note = (
-                    "; ".join([run_why, *(h.strip() for h in herestring_lines(run_holds) if h)])
-                    if self.verdict == "unjudged"
-                    else f"{self.check_pending} check(s) running: {running_list(self.pending_names)}"
-                )
+                # A recovery's Wait that names what it holds for (a settled red waiting on its run,
+                # #1065) speaks for a round with no check left running, whose list would be empty.
+                if self.verdict == "unjudged":
+                    note = "; ".join([run_why, *(h.strip() for h in herestring_lines(run_holds) if h)])
+                elif held and self.check_pending == 0:
+                    note = held
+                else:
+                    note = f"{self.check_pending} check(s) running: {running_list(self.pending_names)}"
                 warn(
                     f"still waiting on {repo}#{pr} @{sha[:8]}: no verdict after {(now - started) // 60} of",
                     f"{wait_for // 60} min ({note})",
