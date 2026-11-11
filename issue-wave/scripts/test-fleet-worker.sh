@@ -551,6 +551,17 @@ fixture_done() {
   jq -n --arg id "$1" '{request_id:$id, verdict:"not-launched", log:"/dev/null", evidence:"fixture: nothing ran"}' > "$TMP/done-$1.json"
   env FLEET_BOXES="testbox other" "$FW" execution conclude "$TMP/done-$1.json" >/dev/null || ko "could not conclude $1 (setup)"
 }
+# setup_step <message> <cmd...>: run a fixture's setup step with its output held back. When the step
+# fails, ko the message with its status and the last lines of its output (the registry's refusal,
+# say), so a setup failure names its cause rather than reading like the cascade after it. The output
+# goes to a file, not a command substitution: a step that leaves a detached child holding its stdout
+# would hang a $(...). Returns ko's status, as the `cmd >/dev/null 2>&1 || ko` it replaces did.
+setup_step() {
+  local msg="$1" step_rc; shift
+  "$@" >"$TMP/setup-step.out" 2>&1 && return 0
+  step_rc=$?
+  ko "$msg: rc=$step_rc -- $(tail -n 5 "$TMP/setup-step.out")"
+}
 # section_left: after each section (section() runs it for the one before, and the foot for the
 # last), fail THAT section by name for any record it left outstanding on testbox. A leftover
 # otherwise fails some later section's reservation, as a misleading "(setup)" (#417).
@@ -2676,7 +2687,7 @@ expect "check lists each row not done and exits 3, without the lease or any iden
   env -u FLEET_COORDINATOR "${B[@]}" board check ck
 [ "$(jq -r '.tasks[0].fields | "\(.status) \(.state)"' "$ISSUE_WAVE_STATE/boards/ck.json")" = "launched spawned" ] &&
   ok "...each written as given" || ko "ck board: $(cat "$ISSUE_WAVE_STATE/boards/ck.json")"
-"$FW" board set ck ck-1 "state=merged #1" >/dev/null 2>&1 || ko "could not write ck-1's state (setup)"
+setup_step "could not write ck-1's state (setup)" "$FW" board set ck ck-1 "state=merged #1"
 expect "...and 0 once every row is done" 0 "^BOARD CHECK ck: 1 rows, 1 done, 0 not done$" -- "$FW" board check ck
 # board takeover (ludics-lite#731): the stored brief, then the state at takeover from the row's keys and
 # the live sources; a read, so no lease and no identity; a missing key printed missing, never guessed.
@@ -2754,7 +2765,7 @@ for want in "\"observed_sha\": \"$ran\"" "\"remote_checkout\": \"$wt\"" "\"handl
 done
 jq -e '.history[-1].data | has("execution_host") | not' <<<"$out" >/dev/null && ok "...and the box check left no field behind" || ko "the box bound to the evidence leaked into the record: $out"
 grep -Fq "the record has no head or dirty" <<<"$out" && ok "...and says the record named no revision of its own" || ko "a record without head/dirty concluded silently: $out"
-"${FWX[@]}" execution run "$(reqjson run-gh)" >/dev/null 2>&1 || ko "could not reserve run-gh (setup)"
+setup_step "could not reserve run-gh (setup)" "${FWX[@]}" execution run "$(reqjson run-gh)"
 expect "--from-run refuses a --sha its checkout holds but the request's repository does not (another repository's run)" 1 "EXECUTION REFUSED: --sha $ran is no commit of o/r" -- \
   env SHIM_GH_NO_COMMIT="$ran" "${FWX[@]}" execution conclude --from-run "$run1" --request run-gh --sha "$ran" --box testbox
 fixture_done run-gh
@@ -2961,7 +2972,7 @@ bgreq() { # <id> [agent host] -> a dispatched reservation on testbox, its worker
   jq -n --arg id "$1" --arg agent "${2:-testbox}" '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#405",
     purpose:"bg-run fixture", agent_host:$agent, execution_host:"testbox", repository:"o/r", requested_revision:"origin/main",
     kind:"correctness"}' > "$TMP/$1.json"
-  "${FWB[@]}" execution run "$TMP/$1.json" >/dev/null 2>&1 || ko "could not dispatch $1 (setup)"
+  setup_step "could not dispatch $1 (setup)" "${FWB[@]}" execution run "$TMP/$1.json"
 }
 FWB=(env FLEET_BOXES="testbox other" SHIM_SSH_LOCAL=other "$FW")
 sha=$(printf 'b%.0s' $(seq 40))
@@ -3116,7 +3127,7 @@ FWT=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=2" FLE
 # A worker's standing reservation on the box is no reason to yield: its batches take slots as they run.
 jq -n '{request_id:"tip-stand", wave:"w", worker:"w1", transport:"subagent", issue:"o/r#1", purpose:"iterate",
   agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true, checkout:"/wt/fixture"}' > "$TMP/tip-stand.json"
-"${FWT[@]}" execution run "$TMP/tip-stand.json" >/dev/null 2>&1 || ko "could not take the standing reservation (setup)"
+setup_step "could not take the standing reservation (setup)" "${FWT[@]}" execution run "$TMP/tip-stand.json"
 expect "a loop run starts at the tip, beside a standing reservation, on a GPU token" 0 "^TIP-RUN STARTED tip-a testbox $tip /" -- \
   "${FWT[@]}" execution tip-run "$(tipreq tip-a)" --checkout "$tco" -- sh -c 'echo "ran at $(git rev-parse HEAD)"; echo "exit: 0"'
 tdir=$(sed -n "s/^TIP-RUN STARTED tip-a testbox $tip //p" <<<"$out")
@@ -3198,7 +3209,7 @@ expect "a GPU-loop purpose that does not name its backend is refused" 2 "names i
 # THE YIELD: a worker's assigned leg (any non-standing record) on the box, and nothing is reserved.
 jq -n '{request_id:"tip-leg", wave:"w", worker:"w1", transport:"subagent", issue:"o/r#1", purpose:"cuda leg",
   agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness"}' > "$TMP/tip-leg.json"
-"${FWT[@]}" execution run "$TMP/tip-leg.json" >/dev/null 2>&1 || ko "could not dispatch the worker's leg (setup)"
+setup_step "could not dispatch the worker's leg (setup)" "${FWT[@]}" execution run "$TMP/tip-leg.json"
 expect "a loop run yields to a worker's leg on the box" 1 "^TIP-RUN NOT STARTED tip-b: testbox has tip-leg (launching) outstanding; a loop run yields to it; nothing reserved$" -- \
   "${FWT[@]}" execution tip-run "$(tipreq tip-b)" --checkout "$tco" -- echo never
 [ -z "$(state_of tip-b)" ] && ok "...reserving nothing" || ko "tip-b was reserved: $(state_of tip-b)"
@@ -3365,7 +3376,7 @@ grep -q f8e0721f0 "$SHIM_GH_COMMIT_LOG" && ko "an abbreviation was sent to GitHu
 : > "$SHIM_GH_COMMIT_LOG"
 # `run` dispatches a record still reserved: one reserved before this check existed (staged here by
 # reserving while GitHub still answers for the SHA) is checked then, not waved through as a retry.
-"${FWR[@]}" execution reserve "$(rv_req rv-old "$typo")" >/dev/null 2>&1 || ko "could not reserve rv-old (setup)"
+setup_step "could not reserve rv-old (setup)" "${FWR[@]}" execution reserve "$(rv_req rv-old "$typo")"
 expect "run of a reservation still reserved checks its requested_revision" 1 "requested_revision $typo is no commit of o/r" -- \
   env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution run "$(rv_req rv-old "$typo")"
 [ "$(state_of rv-old)" = reserved ] && ok "...and does not dispatch it" || ko "rv-old was dispatched: $(state_of rv-old)"
@@ -3401,7 +3412,7 @@ expect "a SHA-256 observed_sha is refused: GitHub cannot hold one" 1 "is a SHA-2
 [ "$(state_of rv-ref)" = launching ] && ok "every refusal left the assignment dispatched" || ko "a refusal changed rv-ref: $(state_of rv-ref)"
 # THE REBIND (ludics#829): the commit a coordinator rebinds a bound record to is checked on GitHub too.
 rebound=$(printf 'a%.0s' $(seq 40))
-"${FWR[@]}" execution run "$(rv_req rv-rb "$good" other)" >/dev/null 2>&1 || ko "could not run rv-rb (setup)"
+setup_step "could not run rv-rb (setup)" "${FWR[@]}" execution run "$(rv_req rv-rb "$good" other)"
 rv_rb() { jq -n --arg sha "$1" '{request_id:"rv-rb", evidence:"rebased onto main; the worker reported its new head", rebound_revision:$sha}' > "$TMP/rv-rb.json"; printf '%s' "$TMP/rv-rb.json"; }
 expect "a rebind to a commit GitHub does not have is refused" 1 "EXECUTION REFUSED: rebound_revision $typo is no commit of o/r (checked on GitHub" -- \
   env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution rebind "$(rv_rb "$typo")"
@@ -3437,7 +3448,7 @@ grep -Fq "\"observed_sha\": \"$head\"" <<<"$out" && ok "...at the SHA the conclu
 git -C "$obs" reset -q --hard "$head"
 # A reservation that landed with its answer lost is retried while GitHub is down: the registry holds
 # the request id, so GitHub is not asked and the registry answers (the identical request returned).
-"${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good")" >/dev/null 2>&1 || ko "could not reserve rv-rsv (setup)"
+setup_step "could not reserve rv-rsv (setup)" "${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good")"
 expect "a retry of a landed reservation naming a SHA is the registry's idempotent answer, whatever GitHub says" 0 '"state": "reserved"' -- \
   env SHIM_GH=down "${FWR[@]}" execution reserve "$(rv_req rv-rsv "$good")"
 expect "...and a changed request under that id is still the registry's refusal" 1 "already names a different assignment" -- \
@@ -3450,7 +3461,7 @@ expect "a dispatch whose observed_sha resolves to no commit is refused" 1 "obser
 fixture_done rv-rsv
 # A conclusion naming no observed_sha inherits the record's, which a record written before this
 # check may hold mistyped (staged here by recording it while GitHub still answers for it).
-"${FWR[@]}" execution run "$(rv_req rv-inh origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-inh (setup)"
+setup_step "could not reserve rv-inh (setup)" "${FWR[@]}" execution run "$(rv_req rv-inh origin/main)"
 jq -n --arg sha "$typo" '{request_id:"rv-inh", state:"running", evidence:"before the check", observed_sha:$sha}' > "$TMP/rv-inh-rec.json"
 "${FWR[@]}" execution record "$TMP/rv-inh-rec.json" >/dev/null || ko "could not record rv-inh's SHA (setup)"
 expect "a conclusion inheriting a record's observed_sha that resolves to no commit is refused" 1 "inherited observed_sha $typo is no commit of o/r" -- \
@@ -3459,12 +3470,12 @@ expect "a conclusion inheriting a record's observed_sha that resolves to no comm
 fixture_done rv-inh
 # A conclusion that landed with its answer lost is retried while GitHub is down: the record is
 # concluded, so GitHub is not asked again and the registry takes the identical retry.
-"${FWR[@]}" execution run "$(rv_req rv-gh origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-gh (setup)"
+setup_step "could not reserve rv-gh (setup)" "${FWR[@]}" execution run "$(rv_req rv-gh origin/main)"
 "${FWR[@]}" execution conclude "$(rv_done rv-gh "$good")" >/dev/null || ko "could not conclude rv-gh (setup)"
 expect "a retry of a landed conclusion is the registry's harmless retry, whatever GitHub says" 0 '"state": "concluded"' -- \
   env SHIM_GH=down "${FWR[@]}" execution conclude "$(rv_done rv-gh "$good")"
 # THE CHECKOUT (ludics-lite#731), plain form: a record naming its checkout reads only that one.
-"${FWR[@]}" execution run "$(rv_req rv-bound origin/main testbox "$obs")" >/dev/null 2>&1 || ko "could not reserve rv-bound (setup)"
+setup_step "could not reserve rv-bound (setup)" "${FWR[@]}" execution run "$(rv_req rv-bound origin/main testbox "$obs")"
 jq -n '{request_id:"rv-bound", verdict:"pass", log:"/logs/x", evidence:"fixture run", handle:"fixture"}' > "$TMP/rv-bound.json"
 expect "a plain conclusion's --observed-from that is not the record's checkout is refused" 1 \
   "EXECUTION REFUSED: --observed-from $TMP is not rv-bound's recorded checkout '$obs' on testbox" -- \
@@ -3476,14 +3487,14 @@ expect "...as is a payload whose remote_checkout is not the checkout read" 1 "th
 expect "...and its own checkout concludes it, unchecked nowhere" 0 "\"remote_checkout\": \"$obs\"" -- \
   "${FWR[@]}" execution conclude "$TMP/rv-bound.json" --observed-from "$obs"
 grep -Fq unchecked <<<"$out" && ko "a bound record was concluded as unchecked: $out" || ok "...its evidence saying nothing unchecked"
-"${FWR[@]}" execution run "$(rv_req rv-far origin/main far-box)" >/dev/null 2>&1 || ko "could not reserve rv-far (setup)"
+setup_step "could not reserve rv-far (setup)" "${FWR[@]}" execution run "$(rv_req rv-far origin/main far-box)"
 expect "--observed-from on an execution host that does not answer concludes nothing (exit 4)" 4 "^OBSERVED-FROM UNREACHABLE far-box: nothing concluded$" -- \
   "${FWR[@]}" execution conclude "$(rv_done rv-far -)" --observed-from "$obs"
 fixture_done rv-far
 # --from-bg-run: --sha is checked on GitHub, or --observed-from replaces it.
 BG="$TMP/dispatcher/issue-wave/scripts/bg-run.sh"
 bgd=$(bash "$BG" new "$TMP/bg runs/rv-pass"); bash "$BG" start "$bgd" -- true >/dev/null 2>&1
-"${FWR[@]}" execution run "$(rv_req rv-bg origin/main testbox "$obs")" >/dev/null 2>&1 || ko "could not reserve rv-bg (setup)"
+setup_step "could not reserve rv-bg (setup)" "${FWR[@]}" execution run "$(rv_req rv-bg origin/main testbox "$obs")"
 expect "--from-bg-run refuses a --sha that resolves to no commit" 1 "EXECUTION REFUSED: --sha $typo is no commit of o/r" -- \
   env SHIM_GH_NO_COMMIT="$typo" "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --sha "$typo"
 expect "--from-bg-run --observed-from refuses a --sha that is not HEAD" 1 "--sha $good is not HEAD $head of '$obs' on testbox" -- \
@@ -3503,16 +3514,16 @@ git -C "$obs" commit -q --allow-empty -m "moved on"
 expect "...and a retry once the checkout has moved on is the registry's harmless retry" 0 "\"observed_sha\": \"$head\"" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg --observed-from "$obs"
 git -C "$obs" reset -q --hard "$head"
-"${FWR[@]}" execution run "$(rv_req rv-bg3 origin/main)" >/dev/null 2>&1 || ko "could not reserve rv-bg3 (setup)"
+setup_step "could not reserve rv-bg3 (setup)" "${FWR[@]}" execution run "$(rv_req rv-bg3 origin/main)"
 "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg3 --sha "$good" >/dev/null || ko "could not conclude rv-bg3 (setup)"
 expect "--from-bg-run: a retry of a landed --sha conclusion asks GitHub nothing" 0 '"state": "concluded"' -- \
   env SHIM_GH=down "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg3 --sha "$good"
-"${FWR[@]}" execution run "$(rv_req rv-bg2 origin/main testbox "$obs")" >/dev/null 2>&1 || ko "could not reserve rv-bg2 (setup)"
+setup_step "could not reserve rv-bg2 (setup)" "${FWR[@]}" execution run "$(rv_req rv-bg2 origin/main testbox "$obs")"
 expect "--from-bg-run --observed-from keeps the provenance beside an --evidence of its own" 0 "\"evidence\": \"leg green; revision $head read as HEAD of $obs on testbox\"" -- \
   "${FWR[@]}" execution conclude --from-bg-run "$bgd" --request rv-bg2 --observed-from "$obs" --evidence "leg green"
 # ludics-lite#732: a checkout left with edits after its last run (a golden promoted on the GPU box)
 # is named on stderr, never refused, and kept out of the payload a retry must compose identically.
-"${FWR[@]}" execution run "$(rv_req rv-dirt origin/main testbox "$obs")" >/dev/null 2>&1 || ko "could not reserve rv-dirt (setup)"
+setup_step "could not reserve rv-dirt (setup)" "${FWR[@]}" execution run "$(rv_req rv-dirt origin/main testbox "$obs")"
 printf 'promoted\n' > "$obs/promoted golden.log"
 expect "--observed-from names a checkout left with uncommitted paths, and still concludes" 0 \
   "^OBSERVED-FROM WARNING: '$obs' on testbox is not clean: it has 1 uncommitted path(s)" -- \
@@ -3670,7 +3681,7 @@ hreq() { # <id> [standing: true|false] -> a reservation payload file, requested 
   jq -n --arg id "$1" --arg rev "$hbase" --argjson standing "${2:-true}" --arg co "$hwt" '{request_id:$id, wave:"w", worker:$id, transport:"subagent",
     issue:"o/r#605", purpose:"standing fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
     requested_revision:$rev, kind:"correctness"} + (if $standing then {standing:true, checkout:$co} else {} end)' > "$TMP/$1.json"
-  "${FWH[@]}" execution run "$TMP/$1.json" >/dev/null 2>&1 || ko "could not reserve $1 (setup)"
+  setup_step "could not reserve $1 (setup)" "${FWH[@]}" execution run "$TMP/$1.json"
 }
 hb() { local id="$1"; shift; "${FWH[@]}" execution conclude --standing-handback --request "$id" --observed-from "$hwt" "$@"; }
 hstate() { "$FW" execution list | jq -r --arg id "$1" '[.[] | select(.request_id == $id) | .state] | join(",")'; }
@@ -3750,7 +3761,7 @@ printf 'main %s\n' "$hbase" > "$TMP/hb-heads"
 jq -n --arg co "$hwt" '{request_id:"hb-head-of", wave:"w", worker:"hb-head-of", transport:"subagent", issue:"o/r#703",
   purpose:"standing fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"head-of:main",
   kind:"correctness", standing:true, checkout:$co}' > "$TMP/hb-head-of.json"
-env SHIM_GH_HEADS="$TMP/hb-heads" "${FWH[@]}" execution run "$TMP/hb-head-of.json" >/dev/null 2>&1 || ko "could not run hb-head-of (setup)"
+setup_step "could not run hb-head-of (setup)" env SHIM_GH_HEADS="$TMP/hb-heads" "${FWH[@]}" execution run "$TMP/hb-head-of.json"
 expect "a standing head-of:main record concludes at the worker's head, past main's commit at launch" 0 "\"observed_sha\": \"$hhead\"" -- \
   hb hb-head-of --evidence "all green" --verdict pass
 grep -Fq "\"resolved_revision\": \"$hbase\"" <<<"$out" && ok "...keeping the base its launch resolved" || ko "hb-head-of lost its resolution: $out"
@@ -3772,7 +3783,7 @@ creq() { # <id> <checkout> [standing: true|false]: a reservation of worker w-clo
   jq -n --arg id "$1" --arg co "$2" --arg rev "$hbase" --argjson standing "${3:-true}" '{request_id:$id, wave:"cw", worker:"w-close", transport:"subagent",
     issue:"o/r#982", purpose:"close fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
     requested_revision:$rev, kind:"correctness"} + (if $standing then {standing:true, checkout:$co} else {} end)' > "$TMP/$1.json"
-  "${FWC[@]}" execution run "$TMP/$1.json" >/dev/null 2>&1 || ko "could not reserve $1 (setup)"
+  setup_step "could not reserve $1 (setup)" "${FWC[@]}" execution run "$TMP/$1.json"
 }
 cpr() { # <state> <merge oid or -> <head branch>: what gh pr view answers
   jq -n --arg s "$1" --arg m "$2" --arg b "$3" '{number:7, state:$s, headRefName:$b, mergeCommit:(if $m == "-" then null else {oid:$m} end)}' > "$TMP/pr-view.json"
@@ -3886,7 +3897,7 @@ lreq() { # <id> [host] [kind] [revision] -> run it, print the payload path
   jq -n --arg id "$1" --arg host "${2:-testbox}" --arg kind "${3:-correctness}" --arg rev "${4:-origin/main}" '{request_id:$id, wave:"w", worker:$id,
     transport:"subagent", issue:"o/r#558", purpose:"leg fixture", agent_host:"testbox", execution_host:$host, repository:"o/r",
     requested_revision:$rev, kind:$kind}' > "$TMP/$1.json"
-  "${FWL[@]}" execution run "$TMP/$1.json" >/dev/null 2>&1 || ko "could not run $1 (setup)"
+  setup_step "could not run $1 (setup)" "${FWL[@]}" execution run "$TMP/$1.json"
 }
 leg() { "${FWL[@]}" execution leg "$@"; }
 marks() { grep -c '' "$LEG_MARK"; }
@@ -4049,8 +4060,8 @@ git -C "$lsrc" checkout -q -b subbed main && git -C "$lsrc" -c protocol.file.all
   git -C "$lsrc/sub" checkout -q main && git -C "$lsrc" commit -q -am "sub at S2" && git -C "$lsrc" push -q "$lremote" HEAD~1:refs/heads/sub1 HEAD:refs/heads/sub2 &&
   git -C "$lsrc" checkout -q main || ko "could not build the submodule fixture (setup)"
 lwt2="$TMP/leg wts/sub"
-leg --request leg-a --rev sub1 --checkout "$lco" --worktree "$lwt2" -- true >/dev/null 2>&1 || ko "could not make the submodule worktree (setup)"
-git -C "$lwt2" -c protocol.file.allow=always submodule update -q --init >/dev/null 2>&1 || ko "could not initialize the submodule (setup)"
+setup_step "could not make the submodule worktree (setup)" leg --request leg-a --rev sub1 --checkout "$lco" --worktree "$lwt2" -- true
+setup_step "could not initialize the submodule (setup)" git -C "$lwt2" -c protocol.file.allow=always submodule update -q --init
 expect "a submodule the checkout moved past is refused, never updated" 1 "is not clean at $(git -C "$lremote" rev-parse sub2) ( M sub;)" -- \
   leg --request leg-a --rev sub2 --checkout "$lco" --worktree "$lwt2" -- tools/check.sh
 n=$(marks)
@@ -4125,7 +4136,7 @@ grep -q "uncommitted path" <<<"$out" && ko "a clean run warned of dirt: $out" ||
 # --observed-from does, before anything is copied to the box.
 jq -n --arg wt "$lwt" '{request_id:"leg-c", wave:"w", worker:"leg-c", transport:"subagent", issue:"o/r#749", purpose:"leg fixture", agent_host:"testbox",
   execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true, checkout:$wt}' > "$TMP/leg-c.json"
-"${FWL[@]}" execution run "$TMP/leg-c.json" >/dev/null 2>&1 || ko "could not take the standing reservation leg-c (setup)"
+setup_step "could not take the standing reservation leg-c (setup)" "${FWL[@]}" execution run "$TMP/leg-c.json"
 n=$(marks)
 expect "a leg under a record's checkout refuses another worktree, naming the recorded one" 1 \
   "^EXECUTION LEG REFUSED: --worktree '$TMP/leg wts/w 2' is not leg-c's recorded checkout '$lwt' on testbox (ludics-lite#749" -- \
@@ -4318,7 +4329,7 @@ grep -Fq "runner sentinel 'execution-leg: exit: 0'" <<<"$out" && grep -Fq "\"obs
 [ "$(cat "$lbg/request" 2>/dev/null)" = leg-a ] && [ -z "$(find "$lbg" -name '.request.*')" ] &&
   ok "...the leg having written its request into the directory" || ko "the leg's directory names no request: $(ls -A "$lbg")"
 grep -Fq "its request file binds $lbg on testbox to leg-a" <<<"$out" && ok "...which binds the conclusion" || ko "the conclusion is not bound: $out"
-lreq leg-1063 >/dev/null
+lreq leg-1063
 expect "the directory read for another request is refused, naming both" 1 \
   "^FROM-BG-RUN REFUSED: '$lbg' on testbox is request leg-a's run (its request file names it), not leg-1063's; nothing concluded$" -- \
   "${FWL[@]}" execution conclude --from-bg-run "$lbg" --request leg-1063 --sha "$lb" --box testbox
@@ -4424,7 +4435,7 @@ fixture_done leg-h
 jq -n --arg wt "$lwt" '{request_id:"leg-hs", wave:"w", worker:"leg-hs", transport:"subagent", issue:"o/r#703", purpose:"leg fixture",
   agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"head-of:claude/topic", kind:"correctness",
   standing:true, checkout:$wt}' > "$TMP/leg-hs.json"
-SHIM_GH_HEADS="$TMP/leg-heads" "${FWL[@]}" execution run "$TMP/leg-hs.json" >/dev/null 2>&1 || ko "could not run leg-hs (setup)"
+setup_step "could not run leg-hs (setup)" env SHIM_GH_HEADS="$TMP/leg-heads" "${FWL[@]}" execution run "$TMP/leg-hs.json"
 expect "a standing head-of leg runs the branch past the assigned commit" 0 "execution-leg: exit: 0" -- \
   leg --request leg-hs --rev claude/topic --checkout "$lco" --worktree "$lwt" -- tools/check.sh
 fixture_done leg-hs
@@ -4501,11 +4512,11 @@ fixture_done leg-hc
 legwin() { # <id> -> open a measurement window on testbox under that id
   jq -n --arg id "$1" '{request_id:$id, wave:"w", worker:$id, transport:"subagent", issue:"o/r#666", purpose:"leg window fixture",
     agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"measurement"}' > "$TMP/$1.json"
-  "${FWL[@]}" execution window --no-gap testbox "$TMP/$1.json" >/dev/null 2>&1 || ko "could not open window $1 (setup)"
+  setup_step "could not open window $1 (setup)" "${FWL[@]}" execution window --no-gap testbox "$TMP/$1.json"
 }
 jq -n --arg wt "$lwt" '{request_id:"leg-s", wave:"w", worker:"leg-s", transport:"subagent", issue:"o/r#666", purpose:"leg fixture", agent_host:"testbox",
   execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true, checkout:$wt}' > "$TMP/leg-s.json"
-"${FWL[@]}" execution run "$TMP/leg-s.json" >/dev/null 2>&1 || ko "could not take the standing reservation leg-s (setup)"
+setup_step "could not take the standing reservation leg-s (setup)" "${FWL[@]}" execution run "$TMP/leg-s.json"
 legwin leg-w1
 n=$(marks)
 expect "a leg of a standing record a window suspended is refused at once without --wait-window, naming the window" 1 \
@@ -4567,8 +4578,8 @@ trq() { # <id> <host> <worker> <boxes JSON> [triage reason] -> a payload path
 }
 "$FW" halt "red on two backends, owner: triage" >/dev/null || ko "could not halt (setup)"
 for lbox in testbox other; do
-  "${FWL[@]}" execution run "$(trq "leg-tr-$lbox" "$lbox" triage '["testbox","other"]' "red on two backends")" >/dev/null 2>&1 ||
-    ko "could not run leg-tr-$lbox under the halt (setup)"
+  setup_step "could not run leg-tr-$lbox under the halt (setup)" \
+    "${FWL[@]}" execution run "$(trq "leg-tr-$lbox" "$lbox" triage '["testbox","other"]' "red on two backends")"
 done
 n=$(marks)
 expect "under a halt, the triage owner's leg runs on a box its triage names" 0 "execution-leg: exit: 0" -- \
@@ -4645,7 +4656,7 @@ done
 # real legs, so the lock and the layout are a leg's own.
 FWC=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4 other=2" FLEET_SKILLS_REPO="$TMP/dispatcher" "$FW" farside-close)
 "$FW" board set --create fcw t1 state=reviewing "farside=testbox:$TMP/fcwts/a" >/dev/null || ko "could not start the board (setup)"
-"${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$TMP/fcwts/a" -- tools/check.sh >/dev/null 2>&1 || ko "could not make worktree a (setup)"
+setup_step "could not make worktree a (setup)" "${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$TMP/fcwts/a" -- tools/check.sh
 expect "a row that is not done keeps its far-side worktree" 3 "^FARSIDE KEPT testbox:.*/fcwts/a (t1): the row's state is not a done word (reviewing)$" -- "${FWC[@]}" fcw
 "$FW" board set fcw t1 state=merged requests=leg-fl >/dev/null
 expect "an outstanding reservation the row names keeps it" 3 "^FARSIDE KEPT testbox:.*/fcwts/a (t1): outstanding reservation: leg-fl$" -- "${FWC[@]}" fcw
@@ -4678,7 +4689,7 @@ expect "...and goes once the leg has ended" 0 "^FARSIDE REMOVED testbox:.*/fcwts
 # Nested ignored directories (ludics#1049): only `**/<dir>` or the exact path names them; a value
 # that would escape the worktree is a usage error, with no box asked.
 lreq leg-nest
-"${FWL[@]}" execution leg --request leg-nest --rev main --checkout "$lco" --worktree "$TMP/fcwts/n" -- tools/check.sh >/dev/null 2>&1 || ko "could not make worktree n (setup)"
+setup_step "could not make worktree n (setup)" "${FWL[@]}" execution leg --request leg-nest --rev main --checkout "$lco" --worktree "$TMP/fcwts/n" -- tools/check.sh
 fixture_done leg-nest
 fcexclude="$(git -C "$lco" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
 mkdir -p "$(dirname "$fcexclude")" && touch "$fcexclude" && cp "$fcexclude" "$TMP/fc-exclude" && printf 'log_files/\n' >> "$fcexclude" || ko "could not ignore log_files (setup)"
@@ -4823,7 +4834,7 @@ jq -n --arg now "$now" '[{number: 7, title: "first PR", headRefName: "claude/iss
   closingIssuesReferences: [{number: 12, repository: {name: "r", owner: {login: "o"}}}]}]' > "$P/list.json"
 jq -n '{request_id:"prs-7", wave:"wv", worker:"prs-7", transport:"subagent", issue:"o/other#7", purpose:"prs fixture",
   agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness", standing:true, checkout:"/wt/fixture"}' > "$TMP/prs-7.json"
-env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-7.json" >/dev/null 2>&1 || ko "could not reserve prs-7 (setup)"
+setup_step "could not reserve prs-7 (setup)" env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-7.json"
 xref() { # <issue file suffix> <PR source repo> <number...>: one cross-reference page naming those PRs
   local f="$P/xref-$1" r="$2"; shift 2
   printf '%s\n' "$@" | jq -n --arg r "$r" '{data: {repository: {issue: {timelineItems: {pageInfo: {hasNextPage: false, endCursor: null},
@@ -4859,7 +4870,7 @@ jq -n '{request_id:"prs-p", wave:"wvp", worker:"wvp-p1t2", transport:"subagent",
 jq '.request_id = "prs-q" | .issue = "o/r#post-1"' "$TMP/prs-p.json" > "$TMP/prs-q.json"
 expect "reserve refuses an issue that names no issue" 1 "issue 'o/r#post-1' is not one issue spelled owner/name#N" -- \
   env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-q.json"
-env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-p.json" >/dev/null 2>&1 || ko "could not reserve prs-p without an issue (setup)"
+setup_step "could not reserve prs-p without an issue (setup)" env FLEET_BOXES="testbox other" "$FW" execution reserve "$TMP/prs-p.json"
 jq -n --arg now "$now" '[{number: 7, title: "post-wave PR", headRefName: "claude/wvp-p1t2", headRefOid: "c7", createdAt: $now, isDraft: false,
   isCrossRepository: false, closingIssuesReferences: []},
   {number: 12, title: "second", headRefName: "claude/xwvp-p1t2", headRefOid: "c12", createdAt: $now, isDraft: false, isCrossRepository: false,
@@ -5847,7 +5858,7 @@ fixture_done win-iterate
 # it. `execution list --host` selects one box's records, an alias selecting its roster entry's.
 "${FWS[@]}" execution run "$(slotreq ww-iterate correctness true)" >/dev/null || ko "could not take the standing reservation (setup)"
 # --no-gap: win-measure concluded a moment ago, and the gap after it is THE GAP's case, below.
-"${FWS[@]}" execution window --no-gap testbox "$(slotreq ww-measure measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+setup_step "could not open the window (setup)" "${FWS[@]}" execution window --no-gap testbox "$(slotreq ww-measure measurement)"
 expect "a --bg batch with --wait-window returns its run directory at once during a window" 0 "^$TMP/slot-ww/run-1$" -- \
   env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-ww" --wait-window=60 --wait 0 -- echo after-window-wait
 bgd="$TMP/slot-ww/run-1"
@@ -5870,7 +5881,7 @@ bgkill "$bgd"
 # CUDA leg was refused an hour into a longer window. Now a window may record when it will have been
 # concluded (`execution window --deadline <seconds>`), and a bare --wait-window waits to that, past
 # the hour or short of it; 3600 s is only the bound behind a measurement that records none.
-"${FWS[@]}" execution window --no-gap --deadline 7200 testbox "$(slotreq dl-long measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+setup_step "could not open the window (setup)" "${FWS[@]}" execution window --no-gap --deadline 7200 testbox "$(slotreq dl-long measurement)"
 expect "a bare --wait-window batch returns its run directory at once behind a window due in two hours" 0 "^$TMP/slot-dl/run-1$" -- \
   env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-dl" --wait-window --wait 0 -- echo after-the-long-window
 dbd="$TMP/slot-dl/run-1"
@@ -5883,7 +5894,7 @@ if held "$dbd/log" "waiting up to 7[12][0-9][0-9]s (--wait-window, to measuremen
   grep -q "^after-the-long-window$" "$dbd/log" && ok "...with its output in the run's log" || ko "the waited batch's log: $(cat "$dbd/log")"
 else ko "the bare --wait-window batch never said it waits to the deadline: $(cat "$dbd/log" 2>/dev/null)"; fixture_done dl-long; fi
 bgkill "$dbd"
-"${FWS[@]}" execution window --no-gap --deadline 2 testbox "$(slotreq dl-short measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+setup_step "could not open the window (setup)" "${FWS[@]}" execution window --no-gap --deadline 2 testbox "$(slotreq dl-short measurement)"
 expect "a bare --wait-window batch behind a window still open at its deadline is refused at it, naming it" 1 \
   "^EXECUTION SLOT REFUSED testbox: measurement dl-short still holds testbox after [0-2]s (--wait-window, to measurement dl-short's deadline [^ ]*); no slot taken$" -- \
   env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --wait-window -- echo past-the-deadline
@@ -5892,7 +5903,7 @@ expect "...while an explicit --wait-window=<seconds> keeps its own bound" 1 \
   "^EXECUTION SLOT REFUSED testbox: measurement dl-short still holds testbox after 1s (--wait-window); no slot taken$" -- \
   env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --wait-window=1 -- echo explicit
 fixture_done dl-short
-"${FWS[@]}" execution window --no-gap testbox "$(slotreq dl-none measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+setup_step "could not open the window (setup)" "${FWS[@]}" execution window --no-gap testbox "$(slotreq dl-none measurement)"
 env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-dn" --wait-window --wait 0 -- echo after-no-deadline >/dev/null
 dnd="$TMP/slot-dn/run-1"
 held "$dnd/log" "waiting up to 3600s (--wait-window) for it to conclude, then for a slot, for: echo after-no-deadline$" &&
@@ -5911,7 +5922,7 @@ expect "...only right after window (and its --no-gap)" 2 "execution window \[--n
 # waits out FLEET_WINDOW_GAP after the last measurement there concluded, and says so; the waiting
 # batch takes its slot and runs in that gap. With nobody waiting, a window opens at once.
 # The window waits above released their heartbeats once they held their slots or were refused.
-"${FWS[@]}" execution window --no-gap testbox "$(slotreq gap-0 measurement)" >/dev/null 2>&1 || ko "could not open the window (setup)"
+setup_step "could not open the window (setup)" "${FWS[@]}" execution window --no-gap testbox "$(slotreq gap-0 measurement)"
 fixture_done gap-0
 expect "a window right after a measurement, with standing reservations but nobody waiting, opens at once (#719)" 0 \
   "EXECUTION WINDOW testbox: gap-a open; suspended ww-iterate" -- env FLEET_WINDOW_GAP=5 "${FWS[@]}" execution window testbox "$(slotreq gap-a measurement)"
@@ -5939,7 +5950,7 @@ if held "$gbd/log" "waiting up to 60s (--wait-window) for it to conclude, then f
   fixture_done gap-b
 else ko "the --wait-window batch never said it waits: $(cat "$gbd/log" 2>/dev/null)"; fixture_done gap-a; fi
 bgkill "$gbd"
-"${FWS[@]}" execution window other "$(slotreq ww-other measurement false other)" >/dev/null 2>&1 || ko "could not open the other box's window (setup)"
+setup_step "could not open the other box's window (setup)" "${FWS[@]}" execution window other "$(slotreq ww-other measurement false other)"
 expect "a window on another box does not block a --wait-window batch" 0 "slot 1 of 1 held for: echo not-blocked" -- \
   "${FWS[@]}" execution slot --wait-window=60 --wait 0 -- echo not-blocked
 grep -q "waiting up to" <<<"$out" && ko "the batch waited for another box's window: $out" || ok "...nor make it wait"
@@ -6099,12 +6110,13 @@ expect "prep refuses a rival PR" 1 "^WAVE PREP REFUSED t78: open rival PR(s) #5 
 grep -q -- "--head claude/wk-78 " "$SHIM_GH_PR_LIST.calls" && grep -q -- "--search 78 " "$SHIM_GH_PR_LIST.calls" &&
   ok "...after reading the open PRs by head branch and by number" || ko "pr list calls: $(cat "$SHIM_GH_PR_LIST.calls")"
 unset SHIM_GH_PR_LIST
-"${FWK[@]}" execution conclude --standing-handback --request wkv-t77-testbox-iterate --observed-from "$proj-worktrees/wk-77" \
-  --evidence "wave kit fixture" --verdict cancelled >/dev/null 2>&1 || ko "could not conclude the prep's standing reservation (setup)"
+setup_step "could not conclude the prep's standing reservation (setup)" \
+  "${FWK[@]}" execution conclude --standing-handback --request wkv-t77-testbox-iterate --observed-from "$proj-worktrees/wk-77" \
+  --evidence "wave kit fixture" --verdict cancelled
 # The loop: a record under its prefix that is no started run stops it, starting nothing.
 jq -n --arg sha "$pbase" '{request_id:"wkv-cc-1", wave:"wkv", worker:"coordinator", transport:"coordinator", purpose:"cc integration loop",
   agent_host:"testbox", execution_host:"testbox", repository:"example/project", kind:"correctness", requested_revision:$sha}' > "$K/cc-1.json"
-"${FWK[@]}" execution run "$K/cc-1.json" >/dev/null 2>&1 || ko "could not reserve the loop fixture (setup)"
+setup_step "could not reserve the loop fixture (setup)" "${FWK[@]}" execution run "$K/cc-1.json"
 expect "a loop with an outstanding record that is no started run is unknown, exit 4" 4 "LOOP cc UNKNOWN: outstanding wkv-cc-1 (launching)" -- \
   "${FWK[@]}" wave loop "$K/wave.json" cc
 [ "$("${FWK[@]}" execution list | jq '[.[] | select(.request_id | startswith("wkv-cc-"))] | length')" = 1 ] && ok "...and starts no second run" || ko "the loop started a run"
