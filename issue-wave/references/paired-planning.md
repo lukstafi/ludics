@@ -50,9 +50,16 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    coordinator runs `bg-run.sh start <run> -- peer-plan.sh _run plan <plan-dir>` (`critique`
    for the critique) in a managed foreground session it keeps. Record the mode and `<plan-dir>` on the board (`board set <wave>
    <task> planning=<mode> plan_dir=<plan-dir>`). The worker's brief carries the addition below.
-2. **On `PLAN_READY`** (the worker's handoff): save the block's plan to `<plan-dir>/claude-plan.md`,
-   from the task notification or, for a CLI worker, `fleet-worker.sh log <box> <name>
-   --last-result`. Block on the planning run with `bg-run.sh wait <run>`, re-issued while it
+2. **On `PLAN_READY`** (the worker's handoff): save the block's plan to `<plan-dir>/claude-plan.md`.
+   For a native Claude worker, give `save-plan` the task notification's output file (a symlink to
+   the worker's transcript). It takes the last `PLAN_READY` block of the worker's own messages, and
+   refuses with no file written when there is none or it is unterminated:
+
+   ```bash
+   ~/.claude/skills/issue-wave/scripts/peer-plan.sh save-plan <plan-dir> --from-transcript <output file>
+   ```
+
+   For a CLI worker, save it from `fleet-worker.sh log <box> <name> --last-result`. Block on the planning run with `bg-run.sh wait <run>`, re-issued while it
    prints `RUNNING` or a first `STARTING`. Any other verdict is final: `rc=0` is a plan, and every
    other one (`rc=<n>`, `DIED`, `STOPPED`, a second `STARTING`) makes the plan unavailable (step
    3). For `paired+critique`, after `rc=0`:

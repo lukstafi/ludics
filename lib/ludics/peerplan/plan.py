@@ -2,6 +2,7 @@
 
     peer-plan.sh start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref>
                        [--model <m>] [--effort <e>] [--managed]
+    peer-plan.sh save-plan <dir> --from-transcript <file>
     peer-plan.sh critique <dir> --plan <file> [--managed]
     peer-plan.sh clean <dir>
 
@@ -10,7 +11,11 @@ of ``<checkout>`` at ``<base>`` under ``<dir>``, and starts one read-only ``code
 the background under ``bg-run.sh spawn``: the planner's plan lands in ``<dir>/astra-plan.md`` and
 its session id in ``<dir>/thread``. ``critique`` resumes that session, still read-only and in the
 same worktree (a resumed session runs where it is started, so the run ``cd``s there), with the
-Claude worker's plan, and the critique lands in ``<dir>/critique.md``. Each prints the run's
+Claude worker's plan, and the critique lands in ``<dir>/critique.md``. ``save-plan`` writes that
+plan to its record path, ``<dir>/claude-plan.md``, from a native Claude worker's transcript (the
+task notification's output file): the last ``PLAN_READY`` block of the worker's own messages,
+read as ``ludics.peerplan.transcript`` states, or a refusal and no file. It replaces the file
+whole (never a partial plan), and refuses once a critique has read it. Each prints the run's
 bg-run directory, to block on with ``bg-run.sh wait``; ``<dir>/plan-run`` and
 ``<dir>/critique-run`` keep them for a coordinator that lost track. ``clean`` removes the worktree
 once no run is live, and keeps every other file: they are the record of the planning. A run has
@@ -38,6 +43,7 @@ from pathlib import Path
 from typing import cast
 
 from ludics import bgrun, cli, proc
+from ludics.peerplan import transcript
 
 PROG = "peer-plan.sh"
 ROOT = Path(__file__).resolve().parents[3]
@@ -48,6 +54,7 @@ DEFAULT_EFFORT = "medium"
 
 USAGE = f"""\
 usage: {PROG} start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref> [--model <m>] [--effort <e>] [--managed]
+       {PROG} save-plan <dir> --from-transcript <file>
        {PROG} critique <dir> --plan <file> [--managed]
        {PROG} clean <dir>"""
 
@@ -324,6 +331,36 @@ def launch(
     return 0
 
 
+def save_plan(args: Sequence[str]) -> int:
+    d, values = parse(args, {"--from-transcript"})
+    required(values, "--from-transcript")
+    load_meta(d)
+    source = os.path.abspath(values["--from-transcript"])
+    if os.path.lexists(os.path.join(d, "critique-brief.md")):
+        raise cli.Exit(1, f"{d} already has a critique: it read the saved plan, which stays as it is")
+    try:
+        with open(source, encoding="utf-8", newline="") as f:
+            lines = f.read().split("\n")
+    except (OSError, UnicodeDecodeError) as err:
+        raise cli.Exit(1, f"cannot read the transcript {source}: {err}") from None
+    try:
+        plan = transcript.last_plan(lines)
+    except transcript.Refused as err:
+        raise cli.Exit(1, f"{source}: {err}") from None
+    # A temporary file renamed over the record: a reader sees the old plan or the new one, whole.
+    record = os.path.join(d, "claude-plan.md")
+    partial = record + ".partial"
+    try:
+        write(partial, plan)
+        os.replace(partial, record)
+    except OSError as err:
+        if os.path.lexists(partial):
+            os.remove(partial)
+        raise cli.Exit(1, f"cannot write {record}: {err}") from None
+    cli.say(f"SAVED {record}")
+    return 0
+
+
 def critique(args: Sequence[str]) -> int:
     d, values = parse(args, {"--plan"}, frozenset({"--managed"}))
     required(values, "--plan")
@@ -420,6 +457,8 @@ def run(argv: list[str]) -> int:
     match verb:
         case "start":
             return start(rest)
+        case "save-plan":
+            return save_plan(rest)
         case "critique":
             return critique(rest)
         case "clean":

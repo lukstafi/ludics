@@ -244,7 +244,7 @@ fleetworker/farsideclose.py
 fleetworker/tiprun.py
     issue-wave/scripts/test-fleet-worker.sh "launch /" tip-run
 
-peerplan/__main__.py peerplan/plan.py
+peerplan/__main__.py peerplan/plan.py peerplan/transcript.py
     lib/ludics/tests/test_peerplan.py
 
 postmergecleanup/__main__.py postmergecleanup/cleanup.py postmergecleanup/options.py
