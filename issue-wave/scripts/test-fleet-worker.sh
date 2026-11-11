@@ -6045,6 +6045,8 @@ echo '[{"number":5,"title":"Fix #78","body":"","headRefName":"x"}]' > "$SHIM_GH_
 printf '# Task @@T@@\n' > "$K/tasks/t78.md"
 expect "prep refuses a rival PR" 1 "^WAVE PREP REFUSED t78: open rival PR(s) #5 Fix #78" -- "${FWK[@]}" wave prep "$K/wave.json" t78 --base master
 [ ! -e "$proj-worktrees/wk-78" ] && ok "...before the worktree" || ko "a refused prep made the worktree"
+grep -q -- "--head claude/wk-78 " "$SHIM_GH_PR_LIST.calls" && grep -q -- "--search 78 " "$SHIM_GH_PR_LIST.calls" &&
+  ok "...after reading the open PRs by head branch and by number" || ko "pr list calls: $(cat "$SHIM_GH_PR_LIST.calls")"
 unset SHIM_GH_PR_LIST
 "${FWK[@]}" execution conclude --standing-handback --request wkv-t77-testbox-iterate --observed-from "$proj-worktrees/wk-77" \
   --evidence "wave kit fixture" --verdict cancelled >/dev/null 2>&1 || ko "could not conclude the prep's standing reservation (setup)"

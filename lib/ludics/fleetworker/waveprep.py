@@ -50,10 +50,11 @@ identity is the runtime's), or run the provider preflight (``preflight <box> --n
 ``--native-codex``, once per box per wave: a prerequisite, not a step).
 
 THE RIVAL PR read, a preliminary check and not the coordinator's whole search: ``gh pr list --state
-open`` in the repository, ``--search <N> --limit 100`` for an issue task (``--head <branch>`` for a
---source task). A rival is an open PR whose head is the branch, or (issue tasks) whose title or body
+open --limit 100`` in the repository, ``--head <branch>`` for every task and ``--search <N>`` beside
+it for an issue task (a number search misses a PR whose head is the branch and whose text names no
+number). A rival is an open PR whose head is the branch, or (issue tasks) whose title or body
 holds the token ``#<N>`` -- after a line start, a non-word character or an ``<owner>/<name>`` -- not
-followed by a digit. A full page of 100 hits is refused as unread, never taken as no rival.
+followed by a digit. A full page of 100 hits on either read is refused as unread, never taken as no rival.
 ``--allow-rival <pr>`` passes one listed PR the coordinator has judged no rival. Closed PRs, comments,
 other repositories and a topic that names no number are outside it: SKILL.md keeps the coordinator's
 topic search immediately before the launch.
@@ -230,8 +231,8 @@ def rivals_of(prs: list[dict[str, Any]], prep: Prep) -> list[str]:
     return found
 
 
-def check_rivals(cfg: Config, prep: Prep) -> None:
-    select = ["--search", prep.number] if prep.issue_ref else ["--head", prep.branch]
+def open_prs(cfg: Config, prep: Prep, select: list[str]) -> list[dict[str, Any]]:
+    """One ``gh pr list --state open`` read, or Stop: unread, or a full page (never taken as all)."""
     done = proc.run_tool("gh", ["pr", "list", "--repo", prep.wave.repository, "--state", "open", *select, "--limit",
                                 str(PR_PAGE), "--json", "number,title,body,headRefName"], timeout=gh_timeout(cfg))
     try:
@@ -240,10 +241,21 @@ def check_rivals(cfg: Config, prep: Prep) -> None:
         prs = None
     if not isinstance(prs, list):
         raise Stop(4, f"WAVE PREP UNKNOWN {prep.task}: the open PRs of {prep.wave.repository} could not be read"
-                      f" (gh exit {done.rc}: {done.stderr.strip()[-200:]}); nothing made")
+                      f" (gh {' '.join(select)}: exit {done.rc}: {done.stderr.strip()[-200:]}); nothing made")
     listed = [cast(dict[str, Any], p) for p in cast(list[Any], prs) if isinstance(p, dict)]
     if len(listed) >= PR_PAGE:
-        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: {len(listed)} open PRs match {prep.number}, a full page; read them by hand")
+        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: {len(listed)} open PRs match {' '.join(select)}, a full page;"
+                      " read them by hand")
+    return listed
+
+
+def check_rivals(cfg: Config, prep: Prep) -> None:
+    # The head read always, since a search for the number does not find a PR whose head is the
+    # branch and whose text names no number; an issue task's number search beside it.
+    listed = open_prs(cfg, prep, ["--head", prep.branch])
+    if prep.issue_ref:
+        seen = {str(p.get("number")) for p in listed}
+        listed += [p for p in open_prs(cfg, prep, ["--search", prep.number]) if str(p.get("number")) not in seen]
     rivals = rivals_of(listed, prep)
     if rivals:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: open rival PR(s) {'; '.join(rivals)} -- adopt one instead of"

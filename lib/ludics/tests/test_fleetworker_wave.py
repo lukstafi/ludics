@@ -142,14 +142,15 @@ class Prep(unittest.TestCase):
 
     @contextlib.contextmanager
     def world(self, prs: list[dict[str, Any]] | None = None, records: list[dict[str, Any]] | None = None,
-              board: Any = 1, no_board: bool = True) -> Generator[FakeTool]:
+              board: Any = 1, no_board: bool = True, head_prs: list[dict[str, Any]] | None = None) -> Generator[FakeTool]:
         with (FakeTool("gh") as gh,
               mock.patch.object(waveprep, "no_board", return_value=no_board),
               mock.patch.object(waveprep, "anchor_gate", return_value=0),
               mock.patch.object(waveprep, "listing", return_value=Done(0, json.dumps(records or []))),
               mock.patch.object(waveprep, "board_document", return_value=board),
               mock.patch.object(waveprep, "run", side_effect=self.fake_run)):
-            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))))
+            gh.route((When(prefix=("pr", "list"), has=("--head",)), Answer(stdout=json.dumps(head_prs or []))),
+                     (When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))))
             yield gh
 
     def prep(self, *args: str) -> tuple[int, str, str]:
@@ -164,7 +165,7 @@ class Prep(unittest.TestCase):
         self.assertIn(f"WAVE PREP t42: ready: brief {self.wavedir}/briefs/brief-t42.md worktree {wt} branch claude/w1-42", out)
         self.assertEqual(git("-C", wt, "rev-parse", "HEAD"), self.base)
         self.assertEqual(git("-C", wt, "branch", "--show-current"), "claude/w1-42")
-        self.assertEqual(pr_calls[0][:7], ["pr", "list", "--repo", "o/staging", "--state", "open", "--search"])
+        self.assertEqual([c[6:8] for c in pr_calls], [["--head", "claude/w1-42"], ["--search", "42"]])
         verbs = [c[:2] for c in self.shim_calls]
         self.assertEqual(verbs, [["execution", "run"], ["execution", "run"], ["board", "set"]])
         with open(self.shim_calls[0][2]) as f:
@@ -227,7 +228,7 @@ class Prep(unittest.TestCase):
             ({"records": [{"request_id": "WV-t42-mac-iterate"}]}, "the registry holds wv-t42-mac-iterate"),
             ({"board": {"tasks": [{"task": "t42", "fields": {}}]}}, "has a row for t42"),
             ({"prs": [{"number": 7, "title": "Fix o/up#42 at last", "body": "", "headRefName": "x"}]}, "open rival PR(s) #7"),
-            ({"prs": [{"number": 8, "title": "t", "body": "", "headRefName": "claude/w1-42"}]}, "open rival PR(s) #8"),
+            ({"head_prs": [{"number": 8, "title": "t", "body": "", "headRefName": "claude/w1-42"}]}, "open rival PR(s) #8"),
             ({"board": 4}, "WAVE PREP UNKNOWN t42: the board"),
             ({"board": 1, "no_board": False}, "it is not a wave with no board yet"),
         ]
