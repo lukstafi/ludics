@@ -1055,6 +1055,7 @@ LINK_TARGETS = (
     "issue-wave/references/app-claude.md",
     "issue-wave/references/post-wave.md",
     "issue-wave/references/paired-planning.md",
+    "issue-wave/references/coordinator-kit.md",
     "issue-wave/references/linux-boxes.md",
     "issue-wave/references/wsl-boxes.md",
     "ship-pr/SKILL.md",

@@ -251,6 +251,10 @@ fleetworker/tiprun.py
 fleetworker/assign.py
     issue-wave/scripts/test-fleet-worker.sh "execution assign"
 
+fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker/waveloop.py
+    issue-wave/scripts/test-fleet-worker.sh "wave kit"
+    lib/ludics/tests/test_fleetworker_wave.py
+
 peerplan/__main__.py peerplan/plan.py peerplan/transcript.py
     lib/ludics/tests/test_peerplan.py
 

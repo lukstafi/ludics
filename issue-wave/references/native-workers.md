@@ -43,11 +43,14 @@ Residence does not preclude checks on other boxes; each execution is reserved se
 3. Run `fleet-worker.sh preflight <agent-box> --native-codex` for Codex or `--native-claude`
    for Claude (SKILL.md: *Skill-freshness preflight*), then confirm the runtime's actual tools
    and mutation permissions.
-4. Create one external worktree and branch per issue before spawning. For example, with
-   resolved absolute paths and a verified base: `git -C <repo> worktree add -b codex/<issue>
-   <external-path> <verified-base-sha>`. Record ownership first; do not reuse a checkout with
-   an unresolved writer.
-5. Persist the complete brief and a pending entry on the board. Run `fleet-worker.sh gate
+4. Create one external worktree and branch per issue before spawning, then persist the complete
+   brief and a pending entry on the board. `fleet-worker.sh wave prep <wave.json> <task> --base
+   <verified-base-sha>` does all of it in one call, with the standing reservations, after
+   refusing a rival PR, an existing worktree or branch, or an unrendered placeholder
+   ([coordinator-kit.md](coordinator-kit.md)). By hand: `git -C <repo> worktree add -b
+   codex/<issue> <external-path> <verified-base-sha>` with resolved absolute paths. Either way,
+   record ownership first, and do not reuse a checkout with an unresolved writer.
+5. Run `fleet-worker.sh gate
    --target-repo <owner/repo> [--base-branch <branch>] --wait <seconds>` immediately before
    spawning (a sprint's plan-first worker: before its GO, SKILL.md's *Wave mode*), with
    `--wait` sized to how long the batch may wait out a merge burst (no hand-written retry loop);
@@ -75,7 +78,10 @@ two constraints of their own:
   worktree - which must be clean of local and ignored data at close-out - and a body file
   re-read immediately before the `gh` command that consumes it (2026-09-16: two workers
   overwrote each other's `pr-body.md` minutes apart, and only timing kept the wrong body off
-  a PR).
+  a PR). One exception, named in the brief only: a probe that can only live in the tree (a
+  compile against the project's libraries) gets a task-specific, uncommitted spot the brief
+  names, removed before commit and hand-back, with the project's marker line beside it when its
+  output must show a backend (lukstafi/ludics#1047).
 
 Workers ask the coordinator for a reservation before any fleet test or experiment beyond their
 [standing reservation](executions.md#standing-iteration-reservation), return the actual runner
