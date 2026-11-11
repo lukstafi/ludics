@@ -247,7 +247,8 @@
 #                          # warns on a `state` with no state word and on `status` (takeover.py)
 #   fleet-worker.sh board note [--create] <wave> <key>=<value>...   # the wave's own facts
 #   fleet-worker.sh board log <wave> <text>...   # one line appended to its log, stamped
-#   fleet-worker.sh board show <wave> [--json]   # the markdown view (or the document); no lease
+#   fleet-worker.sh board show <wave> [--json]   # the markdown view (or the document); no lease;
+#                          # exit 5 for a wave with no board, 1 for any other refusal (boardstore.py)
 #   fleet-worker.sh board check <wave>   # the close-out check: exit 0 when every row's state is a
 #                          # done word, 3 listing each row that is not; no lease (ludics#810)
 #   fleet-worker.sh board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>]
@@ -291,7 +292,8 @@
 # coordinator's own machine.
 #
 # Exit: 0 ok | 1 the fact does not hold (refused, worker failed, stale) | 2 usage |
-#       3 worker vanished without an exit record | 4 the box never answered.
+#       3 worker vanished without an exit record | 4 the box never answered |
+#       5 (board show) the wave has no board.
 #
 # Env:
 #   FLEET_COORDINATOR: lease identity; defaults to inherited CLAUDE_CODE_SESSION_ID or

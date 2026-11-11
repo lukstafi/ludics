@@ -2660,7 +2660,9 @@ rmdir "$ISSUE_WAVE_STATE/COORDINATOR.lock"
 [ "$(jq '.log | length' "$ISSUE_WAVE_STATE/boards/bw.json")" = 1 ] && ok "no refused write reached the board" || ko "board after refusals: $(cat "$ISSUE_WAVE_STATE/boards/bw.json")"
 expect "a key outside the grammar is refused by the store" 1 "^BOARD REFUSED: a key must be" -- "$FW" board set bw t "bad key=1"
 expect "a field without = is a usage error" 2 "board set: expected <key>=<value>" -- "$FW" board set bw t novalue
-expect "show of a wave with no board refuses" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
+expect "show of a wave with no board refuses with its own exit, 5" 5 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
+expect "...but a state root that is no directory is a plain refusal, never no board" 1 "is not a directory$" -- \
+  env FLEET_ANCHOR_STATE="$TMP/no-such-state" "$FW" board show none
 expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show, check, takeover or close" -- "$FW" board edit bw
 # A row's state grammar (ludics#810): set warns on status= and on a state with no state word, and writes
 # both as given; check, a read, exits 3 listing each row not done and 0 when every row is.

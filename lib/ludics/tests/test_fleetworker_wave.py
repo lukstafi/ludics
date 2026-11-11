@@ -13,9 +13,10 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import revision, wave, waveloop, waveprep
+from ludics.fleetworker import revision, takeover, wave, waveloop, waveprep
+from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
-from ludics.fleetworker.transport import Done
+from ludics.fleetworker.transport import UNREACHABLE, Done
 from ludics.fleetworker.wavebrief import Part, cmd_render, render
 from ludics.tests.fake import Answer, FakeTool, When
 
@@ -142,12 +143,11 @@ class Prep(unittest.TestCase):
 
     @contextlib.contextmanager
     def world(self, prs: list[dict[str, Any]] | None = None, records: list[dict[str, Any]] | None = None,
-              board: Any = 1, no_board: bool = True, head_prs: list[dict[str, Any]] | None = None) -> Generator[FakeTool]:
+              board: Any = NO_BOARD_EXIT, head_prs: list[dict[str, Any]] | None = None) -> Generator[FakeTool]:
         with (FakeTool("gh") as gh,
-              mock.patch.object(waveprep, "no_board", return_value=no_board),
               mock.patch.object(waveprep, "anchor_gate", return_value=0),
               mock.patch.object(waveprep, "listing", return_value=Done(0, json.dumps(records or []))),
-              mock.patch.object(waveprep, "board_document", return_value=board),
+              mock.patch.object(waveprep, "board_status", return_value=board),
               mock.patch.object(waveprep, "run", side_effect=self.fake_run)):
             gh.route((When(prefix=("pr", "list"), has=("--head",)), Answer(stdout=json.dumps(head_prs or []))),
                      (When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))))
@@ -230,7 +230,7 @@ class Prep(unittest.TestCase):
             ({"prs": [{"number": 7, "title": "Fix o/up#42 at last", "body": "", "headRefName": "x"}]}, "open rival PR(s) #7"),
             ({"head_prs": [{"number": 8, "title": "t", "body": "", "headRefName": "claude/w1-42"}]}, "open rival PR(s) #8"),
             ({"board": 4}, "WAVE PREP UNKNOWN t42: the board"),
-            ({"board": 1, "no_board": False}, "it is not a wave with no board yet"),
+            ({"board": 1}, "it is not a wave with no board yet"),
         ]
         for world, word in cases:
             with self.subTest(word), self.world(**world):
@@ -239,14 +239,21 @@ class Prep(unittest.TestCase):
                 self.assertNotEqual(rc, 0)
                 self.assert_made_nothing(out)
 
-    def test_only_the_stores_own_no_board_line_is_no_board(self) -> None:
-        for rc, said, want in ((1, "noise\nBOARD REFUSED: no board for wave wv on the anchor\n", True),
-                               (1, "BOARD REFUSED: no board for wave wv on the anchor (start it with set or note --create)\n", True),
-                               (1, "BOARD REFUSED: the board of wv is not JSON\n", False),
-                               (1, "BOARD REFUSED: no board for wave wv2 on the anchor\n", False),
-                               (4, "BOARD REFUSED: no board for wave wv on the anchor\n", False)):
-            with self.subTest(said), mock.patch.object(waveprep, "run_on", return_value=Done(rc, said)):
-                self.assertIs(waveprep.no_board(self.cfg, "wv"), want)
+    def test_only_the_stores_no_board_exit_is_no_board(self) -> None:
+        """board_status reads the store's exit, never its text: the no-board line under exit 1 is a
+        refusal, and no text under exit 5 is needed (#1047's follow-up)."""
+        cases: list[tuple[int, str, dict[str, Any] | int]] = [
+            (NO_BOARD_EXIT, "", NO_BOARD_EXIT),
+            (1, "BOARD REFUSED: no board for wave wv on the anchor\n", 1),
+            (1, "BOARD REFUSED: the board of wv is not JSON\n", 1),
+            (UNREACHABLE, "", 4),
+            (0, '{"wave": "wv", "tasks": []}', {"wave": "wv", "tasks": []})]
+        for rc, said, want in cases:
+            with self.subTest(rc=rc, said=said), mock.patch.object(takeover, "run_on", return_value=Done(rc, said)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(takeover.board_status(self.cfg, "wv"), want)
+                self.assertEqual(takeover.board_document(self.cfg, "wv"), 1 if want == NO_BOARD_EXIT else want,
+                                 "board_document's callers keep exit 1 for no board")
 
     def test_a_listed_pr_the_coordinator_passes_is_no_rival_and_near_numbers_are_none(self) -> None:
         prs = [{"number": 7, "title": "Fix #42", "body": "", "headRefName": "x"},
