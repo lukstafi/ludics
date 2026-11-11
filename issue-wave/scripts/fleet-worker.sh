@@ -194,7 +194,7 @@
 #                          # read off the checkout; the verdict the run record's, else --verdict (no
 #                          # default); the record's dirty list, launch head and gone worktree go into
 #                          # the evidence, not a refusal (executions.md, Standing iteration reservation)
-#   fleet-worker.sh execution tip-run <json-file> [--tip <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command...>
+#   fleet-worker.sh execution tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command...>
 #                          # one integration-loop run (ludics-lite#615): yield to anything outstanding
 #                          # on the box but standing reservations, `execution run` the request (its
 #                          # requested_revision one full SHA, or with --tip the branch's head on

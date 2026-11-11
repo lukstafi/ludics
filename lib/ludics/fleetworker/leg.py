@@ -654,17 +654,18 @@ sys.exit(3 if least < floor * 2**30 else 0)
 """
 FLOOR = f"FLOOR_PY={shlex.quote(FLOOR_PY)}\n"
 
-# THE BASE (see the header). refresh_base <checkout> <remote> <branch or empty> <bound in seconds>:
-# fetch the base branch into its remote-tracking ref, `refs/remotes/<remote>/<branch>`, the branch
-# `--base` names or, with none, the one `refs/remotes/<remote>/HEAD` names in the checkout. git's own
-# words go to stderr; one line on stdout, `<branch> <how> <old> <sha>` (how: `--base` or
-# `<remote>/HEAD`; old: the ref's commit before the fetch or `unset`; sha: after it, or `-` when the
-# fetch did not land). Exit 0 fetched, 3 no base to fetch (no branch named and no `<remote>/HEAD`), 124
-# the bound reached, else git's failure, after one retry a second later (a concurrent fetch of the same
-# ref in this checkout holds its lock for a moment). The caller runs it without the worktree lock's
-# descriptor, as the revision's fetch is run.
+# THE BASE (see the header). refresh_base <checkout> <remote> <branch or empty> <bound in seconds>
+# [<how>]: fetch the base branch into its remote-tracking ref, `refs/remotes/<remote>/<branch>`, the
+# branch `--base` names or, with none, the one `refs/remotes/<remote>/HEAD` names in the checkout.
+# `execution tip-run` runs it too (tiprun.py, THE BASE), naming the flag a named branch came from
+# as <how> (default `--base`). git's own words go to stderr; one line on stdout, `<branch> <how> <old>
+# <sha>` (how: that flag or `<remote>/HEAD`; old: the ref's commit before the fetch or `unset`; sha:
+# after it, or `-` when the fetch did not land). Exit 0 fetched, 3 no base to fetch (no branch named
+# and no `<remote>/HEAD`), 124 the bound reached, else git's failure, after one retry a second later (a
+# concurrent fetch of the same ref in this checkout holds its lock for a moment). The leg runs it
+# without the worktree lock's descriptor, as the revision's fetch is run.
 BASE = r"""refresh_base() {
-  local co="$1" remote="$2" base="$3" bound="$4" how=--base head old sha=- rc tries=0
+  local co="$1" remote="$2" base="$3" bound="$4" how="${5:---base}" head old sha=- rc tries=0
   if [ -z "$base" ]; then
     head=$(git -C "$co" symbolic-ref -q "refs/remotes/$remote/HEAD" 2>/dev/null) || return 3
     case "$head" in "refs/remotes/$remote/"?*) base=${head#"refs/remotes/$remote/"} ;; *) return 3 ;; esac
