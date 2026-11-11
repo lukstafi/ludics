@@ -402,6 +402,19 @@ class Loop(unittest.TestCase):
             self.assertEqual(json.load(f)["integration"], True)
         self.assertIn(f"PASS wv-cc-3 at {A}", out)
 
+    def test_a_stop_file_that_is_a_dangling_or_looping_link_stops_the_loop(self) -> None:
+        # #1076: os.path.exists() follows the link and reads either as no stop file.
+        for name, target in (("loops.stop", "nowhere"), ("loop-cc.stop", "loop-cc.stop")):
+            with self.subTest(name):
+                link = os.path.join(self.dir, name)
+                os.symlink(target, link)
+                self.answers, self.tips, self.calls = [Done(0, f"TIP-RUN STARTED wv-cc-1 rog {A} /r\n")], [A], []
+                rc, out = self.drive([])
+                os.unlink(link)
+                self.assertEqual(rc, 0, out)
+                self.assertIn("STOPPED (stop file)", out)
+                self.assertEqual(self.starts(), [], "a stopped loop starts nothing")
+
     def test_red_unknown_and_unread_tip_end_distinctly(self) -> None:
         self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-1 rog {A} /r\n"), Done(0, f"TIP-RUN CONCLUDED wv-cc-1 fail rog {A} /r\n")]
         self.tips = [A]

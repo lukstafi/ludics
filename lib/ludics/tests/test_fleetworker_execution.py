@@ -912,6 +912,51 @@ class WindowGap(unittest.TestCase):
         self.assertEqual((rc, out, slept), (1, "", []), "a refusal is no gap")
 
 
+class EndpointMap(unittest.TestCase):
+    """#1076: only lstat's ENOENT is "no wake-lab.sh", the one case that degrades to an empty map
+    (no alias check, no lane lock); anything else at that path, or a lookup that fails, refuses."""
+
+    def setUp(self) -> None:
+        self.checkout = os.path.realpath(tempfile.mkdtemp(prefix="ludics-endpoint-map."))
+        os.makedirs(os.path.join(self.checkout, "scripts"))
+        self.wake = os.path.join(self.checkout, "scripts", "wake-lab.sh")
+        self.cfg = load_config(os.path.join(self.checkout, "issue-wave", "scripts", "fleet-worker.sh"), {},
+                               host="testbox")
+
+    def tearDown(self) -> None:
+        os.chmod(os.path.join(self.checkout, "scripts"), 0o700)
+        shutil.rmtree(self.checkout)
+
+    def endpoint_map(self) -> tuple[str | None, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            found = execution.endpoint_map(self.cfg)
+        return found, err.getvalue()
+
+    def test_a_missing_wake_lab_degrades_loudly(self) -> None:
+        found, err = self.endpoint_map()
+        self.assertEqual(found, "")
+        self.assertIn("EXECUTION WARNING: no endpoint map (", err)
+
+    def test_a_looping_or_dangling_link_is_a_map_that_refuses(self) -> None:
+        for target in ("wake-lab.sh", "nowhere"):
+            with self.subTest(target):
+                os.symlink(target, self.wake)
+                found, err = self.endpoint_map()
+                os.unlink(self.wake)
+                self.assertIsNone(found, err)
+                self.assertIn("EXECUTION REFUSED:", err)
+                self.assertNotIn("EXECUTION WARNING", err)
+
+    @unittest.skipIf(os.geteuid() == 0, "root searches past a mode: the EACCES case needs an unprivileged user")
+    def test_a_wake_lab_that_cannot_be_looked_up_refuses(self) -> None:
+        open(self.wake, "w").close()
+        os.chmod(os.path.join(self.checkout, "scripts"), 0o600)  # readable, not searchable
+        found, err = self.endpoint_map()
+        self.assertIsNone(found, err)
+        self.assertIn("cannot be looked up (Permission denied)", err)
+
+
 class CallerPythonpath(unittest.TestCase):
     """scripts/py's notes put the caller's PYTHONPATH and PYTHONCOERCECLOCALE back for every child
     of an entry point."""
