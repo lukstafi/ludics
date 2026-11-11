@@ -3826,7 +3826,8 @@ chmod +x "$lsrc/tools/check.sh"
 git -C "$lsrc" add -A && git -C "$lsrc" commit -q -m A && la=$(git -C "$lsrc" rev-parse HEAD)
 git -C "$lsrc" checkout -q -b claude/topic && printf 'b\n' > "$lsrc/b" && git -C "$lsrc" add b && git -C "$lsrc" commit -q -m B && lb=$(git -C "$lsrc" rev-parse HEAD)
 git -C "$lsrc" checkout -q -b red main && printf '1\n' > "$lsrc/verdict" && git -C "$lsrc" commit -q -am C && lred=$(git -C "$lsrc" rev-parse HEAD)
-git init -q --bare "$lremote" && git -C "$lsrc" push -q "$lremote" main claude/topic red
+# The remote's HEAD names main, so the clone records origin/HEAD (THE BASE, ludics#1042).
+git init -q --bare -b main "$lremote" && git -C "$lsrc" push -q "$lremote" main claude/topic red
 # A tag named like the branch `red`, at another commit: a leg at the branch must not take it.
 git -C "$lsrc" tag red-tag main && git -C "$lsrc" push -q "$lremote" "refs/tags/red-tag:refs/tags/red" && git -C "$lsrc" tag -d red-tag >/dev/null
 git clone -q -b main "$lremote" "$lco" || ko "could not clone the leg checkout (setup)"
@@ -3882,6 +3883,44 @@ grep -q "^runner slot: testbox [2-4] 4 cpu$" <<<"$out" && ok "...inside executio
 [ "$(git -C "$lco" rev-parse HEAD)" = "$la" ] && ok "...the main checkout untouched" || ko "the main checkout moved"
 expect "a full SHA the checkout has refreshes the worktree there, nothing fetched" 0 "refreshed $lwt at $la ($la, already in $lco)" -- \
   leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+# ludics#1042, THE BASE: the remote's main moves on by a commit the checkout never fetched, so its
+# origin/main lags. A leg at a SHA the checkout has fetches nothing for the revision, yet its runner
+# must read origin/main at the remote's tip: the leg fetches the base into the remote-tracking ref.
+git -C "$lsrc" checkout -q -b base-next main && printf 'n\n' > "$lsrc/next" && git -C "$lsrc" add next &&
+  git -C "$lsrc" commit -q -m N && lnext=$(git -C "$lsrc" rev-parse HEAD) && git -C "$lsrc" checkout -q main
+git -C "$lsrc" push -q "$lremote" "$lnext:refs/heads/main" || ko "could not move the remote's main (setup)"
+[ "$(git -C "$lco" rev-parse origin/main)" = "$la" ] || ko "the checkout's origin/main does not lag (setup)"
+n=$(marks)
+expect "a stale origin/main is fetched to the remote's tip before the runner reads it (the remote's default branch)" 0 "^$lnext$" -- \
+  leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" -- sh -c 'git rev-parse origin/main; tools/check.sh'
+grep -q "^EXECUTION LEG testbox: base origin/main at $lnext (origin/HEAD), fetched from origin before the run; was $la$" <<<"$out" &&
+  ok "...naming the base it fetched, how it chose it, and what the checkout had" || ko "no base line: $out"
+[ "$(git -C "$lco" rev-parse HEAD)" = "$la" ] && [ "$(git -C "$lco" symbolic-ref HEAD)" = refs/heads/main ] &&
+  [ "$(git -C "$lco" rev-parse main)" = "$la" ] && ok "...the checkout's branch and HEAD unmoved" || ko "the checkout moved"
+git -C "$lsrc" push -q "$lremote" base-next || ko "could not push base-next (setup)"
+expect "a --base names a branch the checkout never fetched" 0 "^$lnext$" -- \
+  leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" --base base-next -- sh -c 'git rev-parse origin/base-next'
+grep -q "^EXECUTION LEG testbox: base origin/base-next at $lnext (--base), fetched from origin before the run; was unset$" <<<"$out" &&
+  ok "...said as the --base it was" || ko "no --base line: $out"
+expect "a --base that is no branch name is a usage error" 2 "execution leg: --base must be a branch name of origin" -- \
+  leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" --base 'a..b' -- tools/check.sh
+m=$(marks)
+expect "a base fetch that fails refuses the leg before the worktree moves" 1 \
+  "EXECUTION LEG REFUSED testbox: git fetch origin claude/none-1042 (the base, --base) in $lco failed (above), retried once" -- \
+  leg --request leg-a --rev "$lb" --checkout "$lco" --worktree "$lwt" --base claude/none-1042 -- tools/check.sh
+[ "$(marks)" = "$m" ] && [ "$(git -C "$lwt" rev-parse HEAD)" = "$la" ] && [ -z "$(git -C "$lco" for-each-ref refs/fleet-leg)" ] &&
+  ok "...the runner never ran, the worktree still at its commit, no private ref left" || ko "a refused base fetch moved on: $(git -C "$lwt" rev-parse HEAD)"
+grep -q "execution-leg: exit" <<<"$out" && ko "a base refusal printed the runner's sentinel: $out" || ok "...with no sentinel"
+git -C "$lco" remote set-head origin --delete || ko "could not delete origin/HEAD (setup)"
+expect "a checkout with no origin/HEAD and no --base is warned about, and the leg runs" 0 \
+  "EXECUTION LEG testbox: WARNING: no base fetched: $lco has no origin/HEAD and the leg names no --base" -- \
+  leg --request leg-a --rev "$la" --checkout "$lco" --worktree "$lwt" -- tools/check.sh
+[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...to its sentinel" || ko "last line: $(last_line)"
+git -C "$lco" remote set-head origin main || ko "could not restore origin/HEAD (setup)"
+# The remote's main back where the cases below expect it, and the checkout's view of it.
+git -C "$lsrc" push -q -f "$lremote" "$la:refs/heads/main" && git -C "$lco" fetch -q origin "+refs/heads/main:refs/remotes/origin/main" ||
+  ko "could not restore the remote's main (setup)"
+[ "$(marks)" = $((n + 2)) ] && ok "...the runner ran once per leg that ran it" || ko "runs $(marks) (from $n)"
 expect "the runner's 125 survives the trip unchanged" 125 "execution-leg: exit: 125" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" -- sh -c 'exit 125'
 expect "...and so does a status of 128 or more" 130 "execution-leg: exit: 130" -- leg --request leg-a --rev main --checkout "$lco" --worktree "$lwt" -- sh -c 'exit 130'
 expect "a runner whose output ends without a newline still reports its status, the sentinel on a line of its own" 255 "^partial$" -- \

@@ -746,7 +746,7 @@ class ForeignHome(unittest.TestCase):
             script = f"STATE={shlex.quote(state)}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
             done = subprocess.run(
                 [self.bash, "-s", "/home/leg669/ludics", "/home/leg669/wt", "origin", "main", "", "", "req", "5",
-                 "t0k", "", "0", "0", "0", "0", "true"],
+                 "t0k", "", "0", "0", "", "0", "0", "true"],
                 input=script, env={**os.environ, "HOME": "/Users/leg669"}, capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertEqual(done.stderr, "EXECUTION LEG REFUSED box: --checkout /home/leg669/ludics is not a git checkout"
@@ -771,6 +771,70 @@ class ForeignHome(unittest.TestCase):
             link = os.path.join(tmp, "home")
             os.symlink(real, link)
             self.assertEqual(self.hint(link, os.path.join(real, "ludics-lite")), "")
+
+
+class Base(unittest.TestCase):
+    """THE BASE (ludics#1042): the far side's refresh of the base branch's remote-tracking ref in a
+    checkout whose ``origin/main`` lags the remote by a commit. The leg's line, its refusal and their
+    place before the worktree moves are the shell suite's."""
+
+    bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"  # 3.2 on macOS
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        src, self.remote, self.co = self.tmp / "src", self.tmp / "remote.git", self.tmp / "co"
+        self.git("init", "-q", "-b", "main", str(src))
+        for args in (["config", "user.email", "t@example.com"], ["config", "user.name", "t"],
+                     ["commit", "-q", "--allow-empty", "-m", "A"]):
+            self.git("-C", str(src), *args)
+        self.git("init", "-q", "--bare", "-b", "main", str(self.remote))
+        self.git("-C", str(src), "push", "-q", str(self.remote), "main")
+        self.git("clone", "-q", str(self.remote), str(self.co))
+        self.stale = self.git("-C", str(self.co), "rev-parse", "origin/main")
+        # The remote moves on, by a commit on main and a branch the checkout never fetched.
+        self.git("-C", str(src), "commit", "-q", "--allow-empty", "-m", "B")
+        self.git("-C", str(src), "push", "-q", str(self.remote), "main", "main:dev")
+        self.tip = self.git("-C", str(src), "rev-parse", "HEAD")
+
+    def refresh(self, base: str = "") -> tuple[int, str, str]:
+        script = (f"STATE={shlex.quote(str(self.tmp / 'state'))}\nBOX=box\n" + farside.HELPERS + leg.BASE
+                  + 'refresh_base "$@"\n')
+        done = subprocess.run([self.bash, "-c", script, "x", str(self.co), "origin", base, "30"],
+                              capture_output=True, text=True)
+        return done.returncode, done.stdout, done.stderr
+
+    def test_a_stale_default_branch_is_fetched_to_the_remotes_tip(self) -> None:
+        self.assertNotEqual(self.stale, self.tip)
+        rc, out, err = self.refresh()
+        self.assertEqual((rc, out), (0, f"main origin/HEAD {self.stale} {self.tip}\n"), err)
+        self.assertEqual(self.git("-C", str(self.co), "rev-parse", "origin/main"), self.tip)
+        # The checkout itself never moves: its branch and HEAD are the clone's.
+        self.assertEqual(self.git("-C", str(self.co), "rev-parse", "HEAD"), self.stale)
+        self.assertEqual(self.git("-C", str(self.co), "symbolic-ref", "HEAD"), "refs/heads/main")
+
+    def test_a_named_base_is_fetched_even_when_the_checkout_never_had_it(self) -> None:
+        rc, out, err = self.refresh("dev")
+        self.assertEqual((rc, out), (0, f"dev --base unset {self.tip}\n"), err)
+        self.assertEqual(self.git("-C", str(self.co), "rev-parse", "origin/dev"), self.tip)
+        self.assertEqual(self.git("-C", str(self.co), "rev-parse", "origin/main"), self.stale)
+
+    def test_no_remote_head_and_no_named_base_fetches_nothing(self) -> None:
+        self.git("-C", str(self.co), "remote", "set-head", "origin", "--delete")
+        rc, out, _ = self.refresh()
+        self.assertEqual((rc, out), (3, ""))
+        self.assertEqual(self.git("-C", str(self.co), "rev-parse", "origin/main"), self.stale)
+
+    def test_a_failed_fetch_is_retried_once_and_lands_nothing(self) -> None:
+        rc, out, err = self.refresh("no-such-1042")
+        self.assertNotIn(rc, (0, 3, 124))
+        self.assertEqual(out, "no-such-1042 --base unset -\n")
+        self.assertEqual(err.count("no-such-1042"), 2, err)
+        self.assertEqual(self.git("-C", str(self.co), "rev-parse", "origin/main"), self.stale)
 
 
 class FreeSpaceFloor(unittest.TestCase):
@@ -956,7 +1020,7 @@ class WorktreeReading(unittest.TestCase):
         script = f"STATE={shlex.quote(str(self.tmp / 'state'))}\nSKILLS_REPO={shlex.quote(str(root))}\nBOX=box\n" + farside.HELPERS + leg.LEG
         done = subprocess.run(
             [self.bash, "-s", str(self.plain), str(self.tmp / "new"), "origin", "main", "", "", "req", "5",
-             "t0k", "", "0", "0", "0", "0", "true"],
+             "t0k", "", "0", "0", "", "0", "0", "true"],
             input=script, env={**os.environ, "HOME": str(self.tmp)}, capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertEqual(done.stderr, f"EXECUTION LEG REFUSED box: --checkout {self.plain} is not a git checkout on box\n")
