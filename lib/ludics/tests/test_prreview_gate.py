@@ -745,6 +745,29 @@ class GateLoop(unittest.TestCase):
                 gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
                 self.assertEqual((gate.check("7", 0, waive=waive), gate.verdict), want)
 
+    def test_a_waived_cancel_releases_a_run_left_running_only_advisory_jobs(self) -> None:
+        # #1036 (review round 1): a cancelled check the override waived releases the run beside a
+        # queued advisory leg, as a waived red does (#862). The controls hold: no waiver, a waived
+        # name two jobs share, and a non-advisory job still running.
+        old = "2025-12-31T23:00:00Z"
+        cases = (
+            (True, f"ubuntu\tcancelled\t{old}\t{old}", (1, "waived")),
+            (False, f"ubuntu\tcancelled\t{old}\t{old}", (4, "unjudged")),
+            (True, f"ubuntu\tcancelled\t{old}\t{old}\nubuntu\tcancelled\t{old}\t{old}", (4, "unjudged")),
+            (True, f"ubuntu\tcancelled\t{old}\t{old}\ntest\tpending\t{old}\t-", (4, "unjudged")),
+        )
+        for waive, jobs, want in cases:
+            gh = FakeGh()
+            gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+            gh.on("pulls/7", out="h1\tb1\ttopic")
+            gh.on("check-runs", out="ubuntu\tcancelled\tu\t1\tcompleted\nmacos\tpending\tm\t1\tqueued")
+            gh.on("actions/runs?head_sha=h1",
+                  out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t1")
+            gh.on("actions/runs/100/jobs", out=f"{jobs}\nmacos\tpending\t{old}\t-")
+            with self.subTest(waive=waive, jobs=jobs):
+                gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
+                self.assertEqual((gate.check("7", 0, waive=waive), gate.verdict), want)
+
     def test_an_inflight_hold_names_its_run_job_and_reason(self) -> None:
         # ludics#930: a hold that named no cause got #862 filed against the wrong one. Each way the
         # advisory release fails names the run, the first job in list order that kept it, and why;

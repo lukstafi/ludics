@@ -506,7 +506,7 @@ class Gate:
 
     def run_inflight_hold(self, run_id: str, suite: str = "-") -> str | None:
         """``run_inflight_hold``: None when every unfinished job is advisory, every finished
-        non-advisory job green -- or red with its check WAIVED by ``--override`` (ludics#862), the
+        non-advisory job green -- or red (or cancelled, #1036) with its check WAIVED by ``--override`` (ludics#862), the
         key ``run_red_is_advisory_only`` reads, under the same one-job-of-that-name rule -- and the
         job list still for ADVISORY_SETTLE seconds; else why the release did not apply, naming the
         first job in the list's order that kept it (ludics#930: a hold that named no cause got
@@ -551,6 +551,14 @@ class Gate:
                 if names.count(jname) != 1:
                     return (
                         f"{job} concluded {jconcl}, red, and the waiver cannot single it out:"
+                        f" {names.count(jname)} jobs of the run share its name"
+                    )
+                continue
+            if klass == "nogo" and jconcl == "cancelled" and f"cancelled:{suite or '-'}/{jname}" in self.waived:
+                # A cancel --override waived (#1036), under the one-job-of-that-name rule as a red.
+                if names.count(jname) != 1:
+                    return (
+                        f"{job} concluded cancelled, and the waiver cannot single it out:"
                         f" {names.count(jname)} jobs of the run share its name"
                     )
                 continue
