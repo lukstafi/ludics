@@ -21,15 +21,44 @@ else -- an empty, unwritten or malformed file refuses the gate.
 ``execution integration-records`` (ludics-lite#811) prints the same records, so the coordinator's
 last-green reads (issue-wave SKILL.md, *On a regression* and the GPU loop) take the gate's selection
 rather than a hand-written second one: a read of the listing, never a write.
+
+THE WAIT (#872). ``gate --wait <seconds>`` reads the base again after a refusal the next read may
+lift, until a read passes, a refusal that no later read lifts arrives, or the deadline runs out.
+Through a merge burst nearly every first read was refused for minutes and passed on a re-read, and
+coordinators retried around the gate by hand (wave-20261110-ocannl's ``gate-retry.sh``).
+BOUNDARY, a fail-closed allowlist of the refusals it waits on, each told by an exit status or by
+which refusal the gate itself made, never by reading prose:
+  - the checker's exit 4, NO VERDICT (``prreview/base.py``: nothing judged the tip yet -- a tip
+    run in flight, the tip inside the window its first run may still appear in, no interim yet,
+    or its own ``--wait`` ceiling reached); and
+  - the gate's own refusal of a green after an integration record concluded during each of its
+    two reads (its words: "re-run the gate").
+Every other refusal ends the wait at once: a red (exit 1, the triage override applying as
+without ``--wait``), UNKNOWN (exit 3: a read the verdict rests on failed, and re-reading through
+a quota hold would only spend it), a usage or configuration exit, any other exit, an unreadable
+registry, a file the gate could not stage or read, a moved tip, and the lease or halt (the
+anchor's read, unreachable included). Some exit-4 shapes never lift by waiting (no workflow
+ever ran, the newest 100 runs judge nothing); those run to the deadline, never green. The halt
+and lease are read before every pause, so a halt recorded during a read ends the wait without
+another pause, and once more after the passing read, as without ``--wait``. Between reads the
+gate pauses ``FLEET_GATE_REREAD_INTERVAL`` seconds (default the checker's poll interval, 60; the
+pause is cut to the time left). THE DEADLINE counts from the gate's start and bounds when a read
+may START: no read starts after it, and a read under way at it runs to its own ceiling (one
+``BASE_WAIT``, two with the integration re-read), so the gate can return that much past the
+deadline. Expiry is a refusal, exit 1, whose line names the last read's reason: the checker's
+verdict line (the first line of its report that begins with the target), or the gate's own
+refusal line when it has none.
 """
 
 import json
 import os
 import shlex
 import re
+import sys
 import tempfile
+import time
 import urllib.parse
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from ludics import cli
 from ludics.fleetworker.config import Config
@@ -61,9 +90,19 @@ def _checker_env(cfg: Config) -> dict[str, str]:
     return env
 
 
-def base_checker(cfg: Config, argv: list[str]) -> int:
-    """Run the checker with the gate's own policy, its stdout on our stderr."""
-    return run(argv, env=_checker_env(cfg), stdout_to_stderr=True).rc
+def base_checker(cfg: Config, argv: list[str]) -> tuple[int, str]:
+    """Run the checker with the gate's own policy, its stdout on our stderr once it returns (its
+    progress lines are stderr, and stream), and returned as well: its exit and its report."""
+    done = run(argv, env=_checker_env(cfg), capture=True)
+    sys.stderr.write(done.out)
+    sys.stderr.flush()
+    return done.rc, done.out
+
+
+def verdict_line(report: str, target: str) -> str:
+    """The checker's verdict line, for a refusal to name: the first line of its report that begins
+    with ``<target> ``, or "" when none does. A line to show, never one to classify by."""
+    return next((line for line in report.splitlines() if line.startswith(f"{target} ")), "")
 
 
 def base_checker_read(cfg: Config, argv: list[str]) -> str | None:
@@ -233,9 +272,9 @@ def _remove(path: str) -> None:
         pass
 
 
-def checker_read(cfg: Config, helper: str, target: str, branch: str, where: str, rows: str) -> tuple[int, str | None] | None:
-    """One read of the checker over the records ``rows``: its exit and its --advisory-red file's
-    text, or None (having refused) when a file it needs could not be staged. The ordinary base read
+def checker_read(cfg: Config, helper: str, target: str, branch: str, where: str, rows: str) -> tuple[int, str | None, str] | None:
+    """One read of the checker over the records ``rows``: its exit, its --advisory-red file's
+    text and its report, or None (having refused) when a file it needs could not be staged. The ordinary base read
     may carry an older green while the tip is running: --wait, bounded by the derived ceiling, and
     --interim (ludics-lite#308), which names a green PR head meanwhile. And --advisory-red
     (ludics-lite#651): the repository's own advisory file decides a red that is only in jobs it
@@ -255,17 +294,32 @@ def checker_read(cfg: Config, helper: str, target: str, branch: str, where: str,
             return None
         records = staged
         argv += ["--integration-records", records]
-    rc = base_checker(cfg, argv)
+    rc, report = base_checker(cfg, argv)
     if records:
         _remove(records)
     text = _read(advisory)
     _remove(advisory)
-    return rc, text
+    return rc, text, report
 
 
-def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, expected: str = "") -> int:
-    """0 the base may be built on, 1 refused (its line on stderr); a usage error dies (2). With
-    ``expected`` (launch's fetched base), the branch's tip must still be that commit."""
+class Read(NamedTuple):
+    """One base read: ``rc`` 0 the base may be built on, 1 refused (its line already on stderr);
+    ``pending`` a refusal of the module's BOUNDARY allowlist (THE WAIT), which a later read may
+    lift; ``why`` the refusal's reason, for the line that ends a wait."""
+
+    rc: int
+    pending: bool = False
+    why: str = ""
+
+
+def _refused(line: str, *, pending: bool = False, why: str = "") -> Read:
+    err(line)
+    return Read(1, pending, why or line)
+
+
+def base_read(cfg: Config, target: str, branch: str, force: bool, reason: str, expected: str = "") -> Read:
+    """``base_gate``'s read, with whether its refusal is one a later read may lift; a usage error
+    dies (2)."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", target):
         die("base gate: --target-repo <owner/repo> required")
     if reason and not force:
@@ -274,17 +328,16 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
         die("base gate: invalid --base-branch")
     helper = os.path.join(cfg.checkout, "ship-pr", "scripts", "pr-review.sh")
     if not (os.path.exists(helper) and os.access(helper, os.X_OK)):
-        err(f"BASE REFUSED: coordinator base checker missing: {helper}")
-        return 1
+        return _refused(f"BASE REFUSED: coordinator base checker missing: {helper}")
     where = f"{target} {branch or 'default branch'}"
     rows = integration_records(cfg, target)
     if rows is None:
-        err(
+        return _refused(
             f"BASE REFUSED: {where}: the execution registry could not be read, so whether an integration"
             " record judges its tip is unknown; dispatch blocked"
         )
-        return 1
     rc = 0
+    report = ""
     admitted: list[tuple[str, str]] = []
     # The records were a snapshot, and the read can wait minutes: a green is taken only over the
     # records it was given (review round 6 of #401). With integration loops running a record often
@@ -295,57 +348,67 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
     for attempt in (1, 2):
         read = checker_read(cfg, helper, target, branch, where, rows)
         if read is None:
-            return 1
-        rc, text = read
+            return Read(1)
+        rc, text, report = read
         if rc != 0:
             break
         later = integration_records(cfg, target)
         if later is None:
-            err(f"BASE REFUSED: {where}: the execution registry could not be re-read after the verdict; dispatch blocked")
-            return 1
+            return _refused(f"BASE REFUSED: {where}: the execution registry could not be re-read after the verdict; dispatch blocked")
         if later != rows:
             if attempt == 1:
                 err(f"BASE: {where}: an integration record concluded during the read; reading once more over it")
                 rows = later
                 continue
-            err(
+            return _refused(
                 f"BASE REFUSED: {where}: an integration record for it concluded during the read, and another"
-                " during the one more read the gate makes; neither verdict saw them all; re-run the gate"
+                " during the one more read the gate makes; neither verdict saw them all; re-run the gate",
+                pending=True,
             )
-            return 1
         jobs = advisory_red_jobs(text) if text is not None else None
         if jobs is None:
-            err(
+            return _refused(
                 f"BASE REFUSED: {where}: the checker's green came without a readable advisory-red record"
                 " (its --advisory-red file is empty, unwritten or malformed); dispatch blocked"
             )
-            return 1
         admitted = jobs
         break
     if rc == 1 and force and reason:
         err(f"BASE TRIAGE OVERRIDE: {where}: {reason}")
         rc = 0
     if rc != 0:
-        err(f"BASE REFUSED: {where} (base checker exit {rc}); dispatch blocked")
-        return 1
+        # Exit 4 is the checker's NO VERDICT, the one exit a later read may turn (THE WAIT).
+        return _refused(
+            f"BASE REFUSED: {where} (base checker exit {rc}); dispatch blocked",
+            pending=rc == 4,
+            why=verdict_line(report, target),
+        )
     if expected:
         tip = base_checker_read(cfg, [helper, "--repo", target, "retry", "--read", "api", f"repos/{target}/commits/{uri(branch)}", "--jq", ".sha"])
         if tip is None:
-            err(f"BASE REFUSED: cannot confirm {target} {branch} after verdict")
-            return 1
+            return _refused(f"BASE REFUSED: cannot confirm {target} {branch} after verdict")
         if not re.fullmatch(r"[0-9a-f]{40}", tip):
-            err("BASE REFUSED: invalid target tip")
-            return 1
+            return _refused("BASE REFUSED: invalid target tip")
         if tip != expected:
-            err(f"BASE REFUSED: {target} {branch} moved or differs from fetched base {expected} (now {tip}); dispatch blocked")
-            return 1
+            return _refused(f"BASE REFUSED: {target} {branch} moved or differs from fetched base {expected} (now {tip}); dispatch blocked")
     for job, sha in admitted:
         err(f"ADVISORY-RED: {shlex.quote(job)} at {sha}; launching")
-    return 0
+    return Read(0)
+
+
+def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, expected: str = "") -> int:
+    """0 the base may be built on, 1 refused (its line on stderr); a usage error dies (2). With
+    ``expected`` (launch's fetched base), the branch's tip must still be that commit."""
+    return base_read(cfg, target, branch, force, reason, expected).rc
+
+
+GATE_USAGE = "gate: expected --target-repo <owner/repo> [--base-branch <branch>] [--wait <seconds>] [--force]"
+REREAD = "FLEET_GATE_REREAD_INTERVAL"
 
 
 def cmd_gate(cfg: Config, args: list[str]) -> int:
-    force, target, branch, reason = False, "", "", ""
+    started = time.monotonic()
+    force, target, branch, reason, wait = False, "", "", "", 0
     i = 0
     while i < len(args):
         arg = args[i]
@@ -356,6 +419,11 @@ def cmd_gate(cfg: Config, args: list[str]) -> int:
             i += 1
         elif arg == "--force":
             force = True
+        elif arg == "--wait":
+            if i + 1 >= len(args) or not re.fullmatch(r"[1-9][0-9]{0,6}", args[i + 1]):
+                die("gate: --wait takes a whole number of seconds, 1 to 9999999")
+            wait = int(args[i + 1])
+            i += 1
         elif arg in ("--target-repo", "--base-branch"):
             if i + 1 >= len(args) or not args[i + 1]:
                 die(f"gate: expected value for {arg}")
@@ -365,13 +433,38 @@ def cmd_gate(cfg: Config, args: list[str]) -> int:
                 branch = args[i + 1]
             i += 1
         else:
-            die("gate: expected --target-repo <owner/repo> [--base-branch <branch>] [--force]")
+            die(GATE_USAGE)
         i += 1
+    interval = cfg.env.get(REREAD) or str(BASE_POLL_INTERVAL)
+    if not re.fullmatch(r"[0-9]{1,6}", interval):
+        die(f"gate: {REREAD} must be a whole number of seconds")
     rc = anchor_gate(cfg, "GATE", "native-worker", force)
     if rc != 0:
         return rc
-    rc = base_gate(cfg, target, branch, force, reason)
-    if rc != 0:
-        return rc
+    where = f"{target} {branch or 'default branch'}"
+    reads = 0
+    while True:
+        read = base_read(cfg, target, branch, force, reason)
+        reads += 1
+        if read.rc == 0:
+            break
+        if not (wait and read.pending):
+            return 1
+        left = started + wait - time.monotonic()
+        if left <= 0:
+            err(
+                f"GATE REFUSED native-worker: {where}: --wait {wait}s ran out after {reads} read(s);"
+                f" the last refused: {read.why}"
+            )
+            return 1
+        # The halt and the lease before every pause (THE WAIT): a halt never waits out a deadline.
+        rc = anchor_gate(cfg, "GATE", "native-worker", force)
+        if rc != 0:
+            return rc
+        pause = min(float(interval), left)
+        err(
+            f"GATE WAIT native-worker: {where}: read {reads} refused for now ({read.why}); reading again"
+            f" in {pause:.0f}s, {left:.0f}s of --wait {wait} left"
+        )
+        time.sleep(pause)
     return anchor_gate(cfg, "GATE", "native-worker", force)
-
