@@ -192,8 +192,8 @@ bgrun.py
     lib/ludics/tests/test_bgrun.py
     lib/ludics/tests/test_peerplan.py
 
-checkprompts/__main__.py checkprompts/bytes_view.py checkprompts/cleanup.py checkprompts/drift.py
-checkprompts/frontmatter.py checkprompts/links.py checkprompts/readwhen.py checkprompts/registers.py
+checkprompts/__main__.py checkprompts/brieftemplate.py checkprompts/bytes_view.py checkprompts/cleanup.py
+checkprompts/drift.py checkprompts/frontmatter.py checkprompts/links.py checkprompts/readwhen.py checkprompts/registers.py
 checkprompts/roster.py checkprompts/slots.py checkprompts/suitemap.py checkprompts/tree.py
 checkprompts/verdicts.py
     lib/ludics/tests/test_checkprompts_cli.py
@@ -254,6 +254,7 @@ fleetworker/assign.py
 fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker/waveloop.py
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
     lib/ludics/tests/test_fleetworker_wave.py
+    lib/ludics/tests/test_checkprompts_cli.py
 
 peerplan/__main__.py peerplan/plan.py peerplan/transcript.py
     lib/ludics/tests/test_peerplan.py

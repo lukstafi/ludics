@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from ludics import cli
+from ludics.checkprompts.brieftemplate import check_brief_template
 from ludics.checkprompts.bytes_view import lat
 from ludics.checkprompts.cleanup import check_cleanup_options
 from ludics.checkprompts.drift import check_drift_guard
@@ -132,6 +133,7 @@ def run(argv: list[str]) -> int:
     check_verdict_reads(report, tree)
     check_suite_map(report, tree)
     check_reading_list(report, tree)
+    check_brief_template(report, tree)
     cli.say("")
     cli.say(f"{PROG}: {report.passed} passed, {report.failed} failed")
     return 0 if report.failed == 0 else 1

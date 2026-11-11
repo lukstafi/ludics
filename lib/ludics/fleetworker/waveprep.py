@@ -15,14 +15,35 @@ than give a no-issue task a closing keyword. The worker is ``<worker_prefix>-<N>
 for a --source task), its branch ``<kind>/<worker>``, its worktree
 ``<checkout>-worktrees/<worker>``, its scratch ``<wave dir>/scratch/<task>``.
 
-THE BRIEF is wavebrief.py's render of these parts of the wave directory, in this order: ``common.md``;
-``tasks/<task>.md``; with --legs, ``legs.md``, whose ``@@LEGLINES@@`` is ``leg.md`` rendered once per
-leg; with a --mode other than none, ``planning-<mode>.md``; and ``tail.md`` when it exists. Every
-part but tail.md is required. The NAMEs every part is given: WAVE, T (the task), N, ISSUE
-(``<issue_repository>#<N>``, issue tasks only) or SOURCE (--source tasks only), REPO, WT, BR, BASE
-(the full SHA), SCR, WORKER, HOST (the agent host), MODE, and the wave file's ``vars``; ``leg.md``
-is given LEG (the box), LEG_ID (its reservation id), LEG_WT (the far-side worktree), LEG_CHECKOUT
-and the leg's ``vars`` besides. The reservations' purposes are rendered with the same NAMEs.
+THE BRIEF is wavebrief.py's render of these parts, in this order: ``common.md``; ``tasks/<task>.md``;
+with --legs, ``legs.md``, whose ``@@LEGLINES@@`` is ``leg.md`` rendered once per leg; with a --mode
+other than none, ``planning-<mode>.md``; and ``tail.md`` when it exists. Every part but tail.md is
+required. The NAMEs every part is given: WAVE, T (the task), N, ISSUE (``<issue_repository>#<N>``,
+issue tasks only) or SOURCE (--source tasks only), REPO, ISSUE_REPO (the wave file's
+issue_repository, every task), CHECKOUT (the wave file's checkout), WAVE_DIR, WT, BR, BASE (the full
+SHA), SCR, WORKER, HOST (the agent host), MODE, PROJECT (THE PROJECT PART, only where a part names
+it), and the wave file's ``vars``; ``leg.md`` is given LEG (the box), LEG_ID (its reservation id),
+LEG_WT (the far-side worktree), LEG_CHECKOUT and the leg's ``vars`` besides. The reservations'
+purposes are rendered with the same NAMEs, PROJECT aside.
+
+THE PARTS, where each is found (ludics#1072): the wave directory's part wins; for the three parts
+the repository ships, ``SHIPPED`` (``common.md``, ``planning-paired.md``,
+``planning-paired+critique.md``), the shipped one under ``issue-wave/templates/native-<kind>/`` of
+this checkout stands in when the wave directory has none; any other part, and a shipped part for a
+kind with no shipped template (codex today), is the wave directory's or refuses. The shipped parts
+are the reference native-Claude brief, kept in step with issue-wave SKILL.md's *The brief* and read
+by check-prompts (checkprompts/brieftemplate.py). They hold no project fact: the NAMEs they use are
+the built-ins above plus ``SHIPPED_VARS`` (COORDINATOR, the coordinator's session id, and MAIN, the
+main branch), which the wave file's ``vars`` supply, and PROJECT. ``common.md`` speaks of no issue
+(no ISSUE, no SOURCE), so it renders for a --source task; the planning parts name ISSUE, so a paired
+--source task refuses on them unless the wave directory gives its own.
+
+THE PROJECT PART, the value of PROJECT, read only when some part names ``@@PROJECT@@``: the wave
+directory's ``project.md`` when it exists, else the file the wave file's ``project_part`` names,
+read from the checkout at the task's base (``git show <base>:<path>``, so a project's own brief
+section is the one its worker starts from, never a branch someone has checked out there). Either is
+rendered first with every NAME above but PROJECT and the legs', and its result is the value. Neither
+existing, or the path absent at the base, refuses.
 
 IN ORDER, every read before any write:
   1. THE READS. The anchor gate (the lease and the halt, ``launch``'s ``anchor_gate``), so no
@@ -91,13 +112,18 @@ from ludics.fleetworker.lease import anchor_gate
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import run
 from ludics.fleetworker.wave import USAGE, Leg, Wave, load_wave, shim
-from ludics.fleetworker.wavebrief import Part, render, write_atomically
+from ludics.fleetworker.wavebrief import PLACEHOLDER, Part, render, write_atomically
 
 MODES = ("none", "paired", "paired+critique")
 TASK = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 ISSUE_TASK = re.compile(r"t([0-9]+)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 PR_PAGE = 100
+# THE PARTS: the shipped reference template, four directories above this module (lib/ludics/fleetworker/).
+TEMPLATES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+                         "issue-wave", "templates")
+SHIPPED = ("common.md", "planning-paired.md", "planning-paired+critique.md")
+SHIPPED_VARS = ("COORDINATOR", "MAIN")
 
 
 @dataclass
@@ -309,7 +335,8 @@ def check_board(cfg: Config, prep: Prep) -> None:
 def values_of(prep: Prep) -> dict[str, str]:
     values = dict(prep.wave.vars)
     values.update({"WAVE": prep.wave.wave, "T": prep.task, "N": prep.number, "REPO": prep.wave.repository,
-                   "WT": prep.worktree, "BR": prep.branch, "BASE": prep.base, "SCR": prep.scratch, "WORKER": prep.worker,
+                   "ISSUE_REPO": prep.wave.issue_repository, "CHECKOUT": prep.wave.checkout,
+                   "WAVE_DIR": prep.wave.directory, "WT": prep.worktree, "BR": prep.branch, "BASE": prep.base, "SCR": prep.scratch, "WORKER": prep.worker,
                    "HOST": prep.wave.agent_host, "MODE": prep.mode})
     if prep.issue_ref:
         values["ISSUE"] = prep.issue_ref
@@ -323,17 +350,53 @@ def leg_values(prep: Prep, leg: Leg) -> dict[str, str]:
             "LEG_WT": prep.leg_worktree(leg), "LEG_CHECKOUT": leg.checkout}
 
 
-def part(prep: Prep, *name: str, required: bool = True) -> Part | None:
-    path = prep.path(*name)
+def shipped_dir(kind: str) -> str:
+    return os.path.join(TEMPLATES, f"native-{kind}")
+
+
+def read_or_none(prep: Prep, path: str) -> Part | None:
     try:
         with open(path, encoding="utf-8", errors="surrogateescape") as f:
             return Part(path, f.read())
     except FileNotFoundError:
-        if required:
-            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the template part {path} does not exist")
         return None
     except OSError as exc:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: cannot read {path} ({exc.strerror})")
+
+
+def part(prep: Prep, *name: str, required: bool = True) -> Part | None:
+    """The wave directory's part, else (a SHIPPED part) the shipped one, else None or Stop (THE PARTS)."""
+    path = prep.path(*name)
+    found = read_or_none(prep, path)
+    if found is not None:
+        return found
+    rel = "/".join(name)
+    shipped = os.path.join(shipped_dir(prep.wave.kind), rel) if rel in SHIPPED else ""
+    found = read_or_none(prep, shipped) if shipped else None
+    if found is None and required:
+        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the template part {path} does not exist"
+                      + (f", nor the shipped {shipped}" if shipped else ""))
+    return found
+
+
+def names(parts: list[Part]) -> set[str]:
+    return {m.group(1) for p in parts for m in PLACEHOLDER.finditer(p.text)}
+
+
+def project_value(prep: Prep) -> str:
+    """THE PROJECT PART, rendered: the wave directory's project.md, else project_part at the base."""
+    own = read_or_none(prep, prep.path("project.md"))
+    if own is None:
+        where = prep.wave.project_part
+        if not where:
+            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: a part names @@PROJECT@@, and neither"
+                          f" {prep.path('project.md')} exists nor does the wave file name a project_part")
+        shown = git(prep, "show", f"{prep.base}:{where}")
+        if shown.rc != 0:
+            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the project part {where} cannot be read in"
+                          f" {prep.wave.checkout} at {prep.base} ({shown.stderr.strip()[-200:]})")
+        own = Part(f"{os.path.join(prep.wave.checkout, where)} at {prep.base[:12]}", shown.stdout)
+    return rendered(prep, [own], values_of(prep)).rstrip("\n")
 
 
 def rendered(prep: Prep, parts: list[Part], values: dict[str, str]) -> str:
@@ -359,7 +422,10 @@ def brief_text(prep: Prep) -> str:
     tail = part(prep, "tail.md", required=False)
     if tail is not None:
         parts.append(tail)
-    return rendered(prep, parts, values_of(prep))
+    values = values_of(prep)
+    if "PROJECT" in names(parts):
+        values["PROJECT"] = project_value(prep)
+    return rendered(prep, parts, values)
 
 
 def reservation(prep: Prep, box: str, checkout: str, purpose: str) -> dict[str, Any]:

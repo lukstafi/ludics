@@ -88,11 +88,16 @@ class WaveFile(unittest.TestCase):
         good = wave_data("/tmp/x")
         parsed = wave.parse_wave("/tmp/x/wave.json", good)
         self.assertEqual((parsed.directory, parsed.issue_repository, parsed.loops["cc"].poll), ("/tmp/x", "o/up", 5))
+        self.assertEqual(wave.parse_wave("/tmp/x/wave.json", {**good, "project_part": ".github/wave-brief.md"}).project_part,
+                         ".github/wave-brief.md")
         cases: list[tuple[dict[str, Any], str]] = [({**good, "extra": 1}, "unknown key"), ({k: v for k, v in good.items() if k != "kind"}, "lacks kind"),
                              ({**good, "kind": "gpt"}, "claude or codex"), ({**good, "vars": {"WT": "x"}}, "gives itself"),
                              ({**good, "checkout": "rel"}, "absolute"), ({**good, "legs": {"b": {"checkout": "/c"}}}, "lacks"),
                              ({**good, "loops": {"cc": {**good["loops"]["cc"], "command": []}}}, "argv words"),
-                             ({**good, "loops": {"cc": {**good["loops"]["cc"], "poll": True}}}, "poll")]
+                             ({**good, "loops": {"cc": {**good["loops"]["cc"], "poll": True}}}, "poll"),
+                             ({**good, "vars": {"CHECKOUT": "x"}}, "gives itself"),
+                             ({**good, "project_part": "/abs/brief.md"}, "relative to the checkout"),
+                             ({**good, "project_part": "docs/../../brief.md"}, "no .. component")]
         for broken, word in cases:
             with self.subTest(word):
                 with self.assertRaises(ValueError) as caught:
@@ -303,6 +308,123 @@ class Prep(unittest.TestCase):
             rc, out, _ = self.prep("t42", "--base", "main")
         self.assertEqual(rc, 1)
         self.assertIn("the worktree path", out)
+
+    # --- THE PARTS and THE PROJECT PART (ludics#1072) ---------------------------------------------
+
+    def rewave(self, **more: Any) -> None:
+        with open(self.path, "w") as f:
+            json.dump(wave_data(self.dir, **more), f)
+
+    def commit(self, rel: str, text: str) -> str:
+        repo = os.path.join(self.dir, "repo")
+        os.makedirs(os.path.dirname(os.path.join(repo, rel)), exist_ok=True)
+        with open(os.path.join(repo, rel), "w") as f:
+            f.write(text)
+        git("-C", repo, "add", rel)
+        git("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "project part")
+        return git("-C", repo, "rev-parse", "HEAD")
+
+    def brief(self) -> str:
+        with open(os.path.join(self.wavedir, "briefs", "brief-t42.md")) as f:
+            return f.read()
+
+    def test_a_part_the_wave_lacks_is_the_shipped_one_and_the_wave_part_wins(self) -> None:
+        # The wave's common.md wins; planning-paired.md, which the wave directory lacks, is the
+        # shipped one, rendered with the task's issue.
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main", "--mode", "paired")
+        self.assertEqual(rc, 0, out + err)
+        brief = self.brief()
+        self.assertTrue(brief.startswith("Worker w1-42 of wv (session-1)"), brief[:200])
+        self.assertIn("## Paired planning (mode: paired)", brief)
+        self.assertIn("one comment on o/up#42 (`gh issue comment 42 --repo\n  o/up --body-file <file>`)", brief)
+        with open(os.path.join(waveprep.shipped_dir("claude"), "planning-paired.md")) as f:
+            self.assertIn("@@ISSUE@@", f.read(), "the fixture reads the shipped part, not a copy")
+
+    def test_the_shipped_common_part_renders_with_the_project_part_at_the_base(self) -> None:
+        os.unlink(os.path.join(self.wavedir, "common.md"))
+        base = self.commit("docs/brief.md", "## This project\n\nWork in @@WT@@ of @@CHECKOUT@@.\n")
+        self.commit("docs/brief.md", "## A later edit, past the base\n")
+        self.rewave(vars={"COORDINATOR": "local_1", "MAIN": "trunk"}, project_part="docs/brief.md")
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", base)
+        self.assertEqual(rc, 0, out + err)
+        brief, wt = self.brief(), os.path.join(self.dir, "repo-worktrees", "w1-42")
+        self.assertIn("coordinator session `local_1` on `mac`", brief)
+        self.assertIn(f"## This project\n\nWork in {wt} of {self.dir}/repo.\n\n## Running tests", brief)
+        self.assertNotIn("A later edit", brief)
+        self.assertIn("gh issue view <N> --repo o/up --json number,title,body,comments", brief)
+        self.assertIn("pr-review.sh merge o/staging#<pr> --wait", brief)
+        self.assertNotIn("@@", brief)
+
+    def test_the_wave_directorys_project_part_wins_and_a_missing_one_refuses(self) -> None:
+        os.unlink(os.path.join(self.wavedir, "common.md"))
+        self.rewave(vars={"COORDINATOR": "local_1", "MAIN": "main"})
+        with self.world():
+            rc, out, _ = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 1)
+        self.assertIn("a part names @@PROJECT@@, and neither", out)
+        self.assert_made_nothing(out)
+        self.rewave(vars={"COORDINATOR": "local_1", "MAIN": "main"}, project_part="docs/absent.md")
+        with self.world():
+            rc, out, _ = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 1)
+        self.assertIn("the project part docs/absent.md cannot be read in", out)
+        self.assert_made_nothing(out)
+        self.write("project.md", "## The wave's own project part, @@T@@\n")
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("## The wave's own project part, t42\n", self.brief())
+
+    def test_a_part_neither_the_wave_nor_the_repository_has_refuses(self) -> None:
+        os.unlink(os.path.join(self.wavedir, "common.md"))
+        self.rewave(kind="codex")
+        with self.world():
+            rc, out, _ = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 1)
+        self.assertIn(f"the template part {self.wavedir}/common.md does not exist, nor the shipped "
+                      f"{waveprep.shipped_dir('codex')}/common.md", out)
+        self.assert_made_nothing(out)
+        self.write("common.md", "C\n")
+        os.unlink(os.path.join(self.wavedir, "legs.md"))
+        with self.world():
+            rc, out, _ = self.prep("t42", "--base", "main", "--legs", "gpu-box")
+        self.assertEqual(rc, 1)
+        self.assertIn(f"the template part {self.wavedir}/legs.md does not exist", out)
+        self.assertNotIn("nor the shipped", out, "the repository ships no legs part")
+        self.assert_made_nothing(out)
+
+
+class ShippedTemplate(unittest.TestCase):
+    """The shipped template renders for a minimal ludics wave file with this checkout's project
+    part, for an issue task in each planning mode and for a --source task: no placeholder left."""
+
+    def test_a_minimal_ludics_wave_renders_every_shipped_part(self) -> None:
+        root = os.path.dirname(os.path.dirname(waveprep.TEMPLATES))
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "tasks"))
+            with open(os.path.join(root, ".github", "wave-brief.md")) as f, open(os.path.join(d, "project.md"), "w") as g:
+                g.write(f.read())
+            for task in ("t7", "p8"):
+                with open(os.path.join(d, "tasks", f"{task}.md"), "w") as f:
+                    f.write("# Task @@T@@\n")
+            w = wave.parse_wave(os.path.join(d, "wave.json"), {
+                "wave": "wave-x-ludics", "repository": "lukstafi/ludics", "checkout": "/home/u/ludics",
+                "worker_prefix": "wx", "agent_host": "mac-studio", "transport": "subagent", "kind": "claude",
+                "standing_purpose": "standing iteration for @@T@@", "project_part": ".github/wave-brief.md",
+                "vars": {"COORDINATOR": "local_c", "MAIN": "main"}})
+            cases = [("t7", "7", "lukstafi/ludics#7", "", mode) for mode in waveprep.MODES]
+            cases.append(("p8", "9", "", "lukstafi/ludics#9", "none"))
+            for task, number, issue, source, mode in cases:
+                with self.subTest(task=task, mode=mode):
+                    prep = waveprep.Prep(w, task, number, issue, source, A, mode, [], set(), "/state")
+                    brief = waveprep.brief_text(prep)
+                    self.assertNotIn("@@", brief)
+                    self.assertIn("## Project conventions (read before editing)", brief)
+                    self.assertIn("`wave-x-ludics-" + task + "-mac-studio-iterate`", brief)
+                    self.assertEqual("## Paired planning" in brief, mode != "none")
+                    self.assertEqual("PEER_CRITIQUE" in brief, mode == "paired+critique")
 
 
 def rec(n: int, state: str, verdict: str | None = None, sha: str = A, handle: str | None = None) -> dict[str, Any]:

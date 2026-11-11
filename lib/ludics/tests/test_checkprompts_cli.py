@@ -3551,6 +3551,105 @@ class SuiteMapTest(Case):
                             f"FAIL: {SECTIONED}: cannot read the sections of '{SECTIONED}': {want}")
 
 
+# --- the brief template (ludics#1072) ------------------------------------------------------------
+
+
+BRIEF_OK = "ok: the brief template (4 parts) renders, its references exist, and it holds no retired step"
+BRIEF_COMMON = """\
+## Who you are
+
+Worker of `@@WAVE@@` in `@@WT@@`, run by `@@COORDINATOR@@` on `@@MAIN@@`.
+
+@@PROJECT@@
+
+Read `issue-wave/references/notes.md`, *Blocking on a run*, and run
+`~/.claude/skills/issue-wave/scripts/bg-run.sh wait <dir>` and `~/ludics/scripts/run-*.sh`.
+"""
+BRIEF_PLANNING = "## Paired planning (mode: @@MODE@@)\n\nComment on @@ISSUE@@.\n"
+BRIEF_PROJECT = "## This project\n\nRead `lib/ludics/README.md`, *Which suites drive\n  each module*.\n"
+
+
+def brief_tree(root: str) -> None:
+    """A passing layout with the issue-wave skill, its shipped template and the project part."""
+    fresh(root)
+    skill(root, "issue-wave", "name: issue-wave", "description: Waves.")
+    row_after_beta(root, row="| `issue-wave` | Waves. |")
+    write(os.path.join(root, "issue-wave", "references", "notes.md"), "# Notes\n\n## Blocking on a run\n")
+    write(os.path.join(root, "issue-wave", "scripts", "bg-run.sh"), "")
+    write(os.path.join(root, "scripts", "run-against-base.sh"), "")
+    write(os.path.join(root, "lib", "ludics", "README.md"), "# lib\n\n## Which suites drive each module\n")
+    write(os.path.join(root, "lib", "ludics", "fleetworker", "waveprep.py"), "")
+    template = os.path.join(root, "issue-wave", "templates", "native-claude")
+    write(os.path.join(template, "common.md"), BRIEF_COMMON)
+    write(os.path.join(template, "planning-paired.md"), BRIEF_PLANNING)
+    write(os.path.join(template, "planning-paired+critique.md"), BRIEF_PLANNING)
+    write(os.path.join(root, ".github", "wave-brief.md"), BRIEF_PROJECT)
+
+
+class BriefTemplateTest(Case):
+    T = "issue-wave/templates/native-claude/"
+
+    def test_a_well_formed_template_passes(self) -> None:
+        brief_tree(self.root)
+        self.expect("the shipped template, its references and the project part pass", 0, BRIEF_OK)
+        self.expect("...and nothing else fails", 0, "0 failed")
+
+    def test_no_prep_no_obligation(self) -> None:
+        brief_tree(self.root)
+        shutil.rmtree(os.path.join(self.root, "issue-wave", "templates"))
+        os.remove(os.path.join(self.root, "lib", "ludics", "fleetworker", "waveprep.py"))
+        result = self.expect("a root without waveprep.py owes no template", 0, "0 failed")
+        self.lacks("no prep", "brief template", result)
+
+    def test_each_defect_is_refused(self) -> None:
+        R, T = self.root, self.T
+        cases: tuple[tuple[str, Callable[[], None], str], ...] = (
+            ("a missing template directory", lambda: shutil.rmtree(os.path.join(R, "issue-wave", "templates")),
+             "FAIL: lib/ludics/fleetworker/waveprep.py: issue-wave/templates/ is missing"),
+            ("a missing shipped part", lambda: os.remove(os.path.join(R, T, "planning-paired.md")),
+             f"FAIL: {T}planning-paired.md: is missing, or no regular file"),
+            ("a file prep never reads", lambda: write(os.path.join(R, T, "planning-pair.md"), "x\n"),
+             f"FAIL: {T}planning-pair.md: is no part wave prep reads"),
+            ("a directory for no kind", lambda: write(os.path.join(R, "issue-wave", "templates", "native-gpt", "common.md"), ""),
+             "FAIL: issue-wave/templates/native-gpt: is no native-<kind> template directory"),
+            ("no native-claude", lambda: os.rename(os.path.join(R, T), os.path.join(R, "issue-wave", "templates", "native-codex")),
+             "FAIL: issue-wave/templates: has no native-claude/"),
+            ("an issue name in common.md", lambda: append(os.path.join(R, T, "common.md"), "Closes @@ISSUE@@\n"),
+             f"FAIL: {T}common.md: {T}common.md:9: @@ISSUE@@ is not rendered (no value for ISSUE)"),
+            ("a name no wave file supplies", lambda: append(os.path.join(R, T, "planning-paired.md"), "@@COORD@@\n"),
+             f"FAIL: {T}planning-paired.md: {T}planning-paired.md:4: @@COORD@@ is not rendered"),
+            ("PROJECT in the project part", lambda: append(os.path.join(R, ".github", "wave-brief.md"), "@@PROJECT@@\n"),
+             "FAIL: .github/wave-brief.md: .github/wave-brief.md:5: @@PROJECT@@ is not rendered"),
+            ("a reference to no file", lambda: append(os.path.join(R, T, "common.md"), "See `issue-wave/references/gone.md`.\n"),
+             f"FAIL: {T}common.md: `issue-wave/references/gone.md` names no file of this tree"),
+            ("a skills path to no file", lambda: append(os.path.join(R, T, "common.md"), "Run `~/.claude/skills/ship-pr/x.sh`.\n"),
+             f"FAIL: {T}common.md: `~/.claude/skills/ship-pr/x.sh` names no file of this tree"),
+            ("a glob that matches nothing", lambda: append(os.path.join(R, T, "common.md"), "Run `~/ludics/scripts/nope-*.sh`.\n"),
+             f"FAIL: {T}common.md: `~/ludics/scripts/nope-*.sh` names no file"),
+            ("a heading the file lacks", lambda: append(os.path.join(R, T, "common.md"), "`issue-wave/references/notes.md`, *Idle*\n"),
+             f"FAIL: {T}common.md: `issue-wave/references/notes.md`, *Idle*: issue-wave/references/notes.md has no heading"),
+            ("a heading across a line break", lambda: write(os.path.join(R, "lib", "ludics", "README.md"), "# lib\n"),
+             "*Which suites drive each module*: lib/ludics/README.md has no heading with that text"),
+            ("a retired step", lambda: append(os.path.join(R, T, "planning-paired+critique.md"), "Call `set_monitor` with auto_fix off.\n"),
+             f"FAIL: {T}planning-paired+critique.md: line 4 holds 'set_monitor', a retired brief step (#1078"),
+            ("a retired step in the project part", lambda: append(os.path.join(R, ".github", "wave-brief.md"), "**Auto-fix off on your PR**\n"),
+             "FAIL: .github/wave-brief.md: line 5 holds 'Auto-fix off', a retired brief step"),
+        )
+        for label, damage, want in cases:
+            with self.subTest(case=label):
+                brief_tree(R)
+                damage()
+                result = self.expect(f"{label} is refused", 1, want)
+                self.lacks(label, BRIEF_OK, result)
+
+    def test_words_of_other_shapes_are_not_read(self) -> None:
+        # The boundary: only ~/.claude/skills/, ~/ludics/ and top-level-entry words are references.
+        brief_tree(self.root)
+        append(os.path.join(self.root, self.T, "common.md"),
+               "`/usr/bin/lockf`, `../x/y.md`, `@@WT@@/z.md`, `fleetworker/`, `nowhere/a.md`, `README.md`\n")
+        self.expect("words outside the reference grammar pass unread", 0, BRIEF_OK)
+
+
 # --- this checkout -------------------------------------------------------------------------------
 
 

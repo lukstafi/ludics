@@ -17,12 +17,43 @@ a coordinator puts in the wave directory and when it calls each verb.
 
 ```
 <wave>/wave.json              the wave's facts, the only place a project's facts enter the kit
-<wave>/common.md              the brief's common sections (copied from the newest wave of the same transport)
 <wave>/tasks/<task>.md        each task's section
 <wave>/legs.md, leg.md        the GPU-home-box legs section; leg.md is rendered once per leg into @@LEGLINES@@
-<wave>/planning-<mode>.md     the paired-planning section, one file per mode (paired, paired+critique)
 <wave>/tail.md                optional, last: e.g. "where the task section differs, it wins"
+<wave>/common.md              optional: overrides the shipped common sections
+<wave>/planning-<mode>.md     optional: overrides a shipped paired-planning section (paired, paired+critique)
+<wave>/project.md             optional: overrides the project part the wave file's project_part names
 ```
+
+## The shipped brief template
+
+A native Claude wave copies no brief text forward. The repository ships the reference template in
+`issue-wave/templates/native-claude/`:
+
+- `common.md`, the sections every worker's brief shares;
+- `planning-paired.md` and `planning-paired+critique.md`, the paired-planning additions.
+
+`wave prep` uses a shipped part whenever the wave directory has no part of that name, and the wave
+directory's part wins when it has one (waveprep.py's header, *THE PARTS*). Nothing is shipped for
+`codex` yet, so a native Codex wave still writes its own `common.md` and planning parts.
+
+The template holds no project fact. It takes them from three places:
+
+- **Built-in values.** `REPO`, `ISSUE_REPO`, `CHECKOUT`, `HOST` and the task's own values come from
+  the wave file and the task.
+- **Two `vars`.** `COORDINATOR` is the coordinator's session id. `MAIN` is the main branch.
+- **The project part.** `@@PROJECT@@` is the project's own section: its conventions, its test
+  commands and traps, its formatter gate, its pre-merge coverage. The wave file's `project_part`
+  names it, a path in the project's checkout read at the task's base. That way the project keeps
+  its section in its own repository and reviews it there. A wave directory's `project.md`
+  overrides it for one wave.
+
+This repository's own project part is `.github/wave-brief.md`.
+
+The template is kept in step with issue-wave SKILL.md's *The brief*. A PR that
+changes a brief rule changes the template in the same diff. `scripts/check-prompts.sh` reads the
+template (checkprompts/brieftemplate.py). It checks that every placeholder in it is one prep gives,
+that every path and heading it names exists, and that no step a PR retired is still in it.
 
 Prep writes these:
 
@@ -36,15 +67,24 @@ prep/<task>.json         prep's manifest
 
 The loop driver writes `logs/loop-<name>.{json,log,lock}`.
 
-`wave.json` is a fail-closed allowlist (wave.py's header lists every key). A minimal native
-Claude wave, with one GPU home box and one loop, looks like this:
+`wave.json` is a fail-closed allowlist (wave.py's header lists every key). A minimal ludics wave
+on the shipped template:
+
+```json
+{"wave": "wave-20261111-ludics", "repository": "lukstafi/ludics", "checkout": "/Users/lukstafi/ludics",
+ "worker_prefix": "w1111", "agent_host": "mac-studio", "transport": "subagent", "kind": "claude",
+ "standing_purpose": "standing iteration: targeted ludics suites and lint for @@T@@, slot-wrapped (--cpu)",
+ "project_part": ".github/wave-brief.md", "vars": {"COORDINATOR": "local_...", "MAIN": "main"}}
+```
+
+A native Claude wave with one GPU home box and one loop looks like this:
 
 ```json
 {"wave": "wave-20261110-ocannl", "repository": "lukstafi/ocannl-staging", "issue_repository": "ahrefs/ocannl",
  "checkout": "/Users/lukstafi/ocannl-staging", "worker_prefix": "w1110", "agent_host": "mac-studio",
  "transport": "subagent", "kind": "claude",
  "standing_purpose": "standing iteration: targeted aliases for @@T@@, slot-wrapped",
- "vars": {"COORDINATOR": "local_..."},
+ "vars": {"COORDINATOR": "local_...", "MAIN": "master"},
  "legs": {"rog-nv-linux": {"checkout": "/home/lukstafi/ocannl-staging", "suffix": "rog",
                            "purpose": "standing GPU home box for @@T@@ via execution leg", "vars": {"BACKEND": "cuda"}}},
  "loops": {"cuda-rog": {"box": "rog-nv-linux", "purpose": "GPU integration loop, cuda: @runtest @train at master tip",

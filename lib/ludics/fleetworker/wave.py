@@ -34,7 +34,12 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     rendered with the task's placeholders (waveprep.py)
   issue_repository  <owner>/<name> the issues live in                 default: repository
   vars              {NAME: text}: wave-wide placeholder values (the   default: {}
-                    coordinator's session id, a lock path); a built-in NAME is refused
+                    coordinator's session id, a lock path); a built-in NAME is refused.
+                    The shipped template (waveprep.py, THE PARTS) names COORDINATOR
+                    (the coordinator's session id) and MAIN (the main branch)
+  project_part      the project's own brief part, a path relative to  default: none
+                    the checkout and read at the task's base (waveprep.py,
+                    THE PROJECT PART); no leading ``/``, no ``..`` component
   legs              {<box>: {checkout, suffix, purpose[, vars]}}: a   default: {}
                     GPU home box --legs may name; its far-side worktree is
                     ``<checkout>-worktrees/<worker>-<suffix>``, ``vars`` are the leg's own NAMEs
@@ -72,10 +77,11 @@ WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
 # The NAMEs wave prep gives every part (waveprep.py's header says what each is); a wave's own vars
 # may not shadow one.
-BUILTIN = frozenset({"WAVE", "T", "N", "ISSUE", "SOURCE", "REPO", "WT", "BR", "BASE", "SCR", "WORKER", "HOST",
-                     "MODE", "LEGLINES", "LEG", "LEG_ID", "LEG_WT", "LEG_CHECKOUT"})
+BUILTIN = frozenset({"WAVE", "T", "N", "ISSUE", "SOURCE", "REPO", "ISSUE_REPO", "CHECKOUT", "WAVE_DIR", "WT", "BR",
+                     "BASE", "SCR", "WORKER", "HOST", "MODE", "PROJECT", "LEGLINES", "LEG", "LEG_ID", "LEG_WT",
+                     "LEG_CHECKOUT"})
 TOP_REQUIRED = ("wave", "repository", "checkout", "worker_prefix", "agent_host", "transport", "kind", "standing_purpose")
-TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops")
+TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part")
 LEG_REQUIRED, LEG_OPTIONAL = ("checkout", "suffix", "purpose"), ("vars",)
 LOOP_REQUIRED, LOOP_OPTIONAL = ("box", "purpose", "checkout", "tip", "command"), ("cpu", "integration", "poll")
 
@@ -115,6 +121,7 @@ class Wave:
     kind: str
     standing_purpose: str
     issue_repository: str
+    project_part: str = ""  # relative to checkout; "" when the wave file names none
     vars: dict[str, str] = field(default_factory=lambda: {})
     legs: dict[str, Leg] = field(default_factory=lambda: {})
     loops: dict[str, Loop] = field(default_factory=lambda: {})
@@ -159,6 +166,14 @@ def var_map(value: Any, what: str) -> dict[str, str]:
             raise ValueError(f"{what}.{name} must be text")
         out[name] = given
     return out
+
+
+def relative(obj: dict[str, Any], key: str, what: str) -> str:
+    value = text(obj, key, what)
+    if value.startswith("/") or ".." in value.split("/") or "\\" in value:
+        raise ValueError(f"{what}.{key} must be a path relative to the checkout, with no .. component,"
+                         f" not {json.dumps(value)}")
+    return value
 
 
 def objects(value: Any, what: str) -> dict[str, dict[str, Any]]:
@@ -225,6 +240,7 @@ def parse_wave(path: str, data: Any) -> Wave:
         kind=kind,
         standing_purpose=text(top, "standing_purpose", w),
         issue_repository=text(top, "issue_repository", w, REPOSITORY) if "issue_repository" in top else repository,
+        project_part=relative(top, "project_part", w) if "project_part" in top else "",
         vars=var_map(top.get("vars", {}), "vars"),
         legs=legs,
         loops=loops,
