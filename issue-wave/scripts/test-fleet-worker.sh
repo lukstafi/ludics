@@ -66,6 +66,7 @@ SECTIONS=(
   "execution conclude --from-bg-run"
   "execution tip-run"
   "execution revisions resolve"
+  "execution assign"
   "execution conclude --standing-handback"
   "execution leg"
   "prs (the supervision read)"
@@ -3515,6 +3516,88 @@ expect "a malformed head-of is refused at reserve" 1 "is not head-of:<one branch
 expect "head-of:HEAD names no branch, refused at reserve" 1 "is not head-of:<one branch name>" -- \
   "${FWR[@]}" execution reserve "$(rv_req rv-head6 'head-of:HEAD')"
 unset SHIM_GH_HEADS
+}
+
+section "execution assign" && {
+need_lease
+# ludics#869: a coordinator answered each EXECUTION_REQUEST by hand -- the reservation completed,
+# `execution run` or `window`, then the EXECUTION_ASSIGNED message -- and once sent the message for
+# a window the registry refused. `execution assign` composes those calls and prints an assignment
+# only for a step that exited 0, several requests per call, a `runner` wrapped into the leg form.
+FWA=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4 other=2" "$FW")
+asha=$(printf 'b%.0s' $(seq 40))
+as_base() { # <transport> -> the coordinator's completion of every request
+  jq -n --arg t "$1" '{wave:"w", worker:"/root/w869", transport:$t, agent_host:"testbox", repository:"o/r",
+    issue:"o/r#869", purpose:"assign fixture"}' > "$TMP/as-base-$1.json"
+  printf '%s' "$TMP/as-base-$1.json"
+}
+as_block() { # <id> <host> <kind> <revision> [jq object merged in] -> one request block's JSON
+  jq -c -n --arg id "$1" --arg host "$2" --arg kind "$3" --arg rev "$4" --argjson more "${5:-"{}"}" \
+    '{request_id:$id, execution_host:$host, kind:$kind, requested_revision:$rev, log:"-"} + $more'
+}
+as_msg() { # <name> <block JSON>... -> a worker's final message carrying the blocks, as a file
+  local f="$TMP/as-$1.txt" b; shift
+  { echo "Two legs for the next step:"; for b in "$@"; do printf '    EXECUTION_REQUEST\n%s\n    END_EXECUTION_REQUEST\n' "$b"; done; } > "$f"
+  printf '%s' "$f"
+}
+as_run() { # <args...>: assign, its stdout in $msg and its stderr in $said, its status in $rc
+  msg=$("${FWA[@]}" execution assign "$@" 2>"$TMP/as-said"); rc=$?; said=$(cat "$TMP/as-said")
+}
+state_as() { "$FW" execution list | jq -r --arg id "$1" '[.[] | select(.request_id == $id) | .state] | join(",")'; }
+leg_run='{"runner":"tools/test-run.sh run --suite b","clone":"/srv/proj","checkout":"/srv/wt b"}'
+two=$(as_msg two "$(as_block as-1 testbox correctness "$asha" '{"command":"tools/test-run.sh run a","checkout":"/w/as-1"}')" \
+  "$(as_block as-2 other correctness "$asha" "$leg_run")")
+as_run "$(as_base subagent)" "$two"
+[ "$rc" -eq 0 ] && [ "$(grep -c '^EXECUTION_ASSIGNED ' <<<"$msg")" -eq 2 ] && grep -qx 'EXECUTION_ASSIGNED as-1' <<<"$msg" &&
+  grep -qx 'EXECUTION_ASSIGNED as-2' <<<"$msg" && ok "two requests on distinct boxes are assigned in one call" ||
+  ko "two requests did not make two assignments (rc=$rc): $msg -- $said"
+grep -qx "ASSIGN ASSIGNED as-1 correctness testbox $asha" <<<"$said" && grep -qx "ASSIGN ASSIGNED as-2 correctness other $asha" <<<"$said" &&
+  ok "...one outcome line each" || ko "outcome lines: $said"
+[ "$(state_as as-1),$(state_as as-2)" = "launching,launching" ] && ok "...each reserved and dispatched by execution run" ||
+  ko "states: $(state_as as-1),$(state_as as-2)"
+grep -Fqx "command: tools/test-run.sh run a" <<<"$msg" && grep -Fqx "checkout: /w/as-1" <<<"$msg" && grep -Fqx "revision: $asha" <<<"$msg" &&
+  ok "...a command sent as written, with its revision and checkout" || ko "as-1's assignment: $msg"
+grep -Fq "execution leg --request as-2 --rev $asha --checkout /srv/proj --worktree '/srv/wt b' --wait-window -- tools/test-run.sh run --suite b" <<<"$msg" &&
+  ok "...a runner wrapped into the leg form, --wait-window added for correctness" || ko "as-2's leg form: $msg"
+grep -q '"request_id"' <<<"$msg" && ko "a record reached the message: $msg" || ok "...and the records stay on stderr"
+as_run "$(as_base subagent)" "$two"
+[ "$rc" -eq 0 ] && [ -z "$msg" ] && [ "$(grep -c '^ASSIGN ALREADY as-[12]: the registry holds it launching' <<<"$said")" -eq 2 ] &&
+  ok "the same call again assigns nothing twice: each answers ALREADY" || ko "a retry (rc=$rc): $msg -- $said"
+# One refused among two: a measurement window on `other`, which as-2 holds (not standing), is refused.
+mixed=$(as_msg mixed "$(as_block as-3 testbox correctness "$asha" '{"command":"tools/test-run.sh run c"}')" \
+  "$(as_block as-4 other measurement "$asha" '{"command":"tools/bench.sh"}')")
+as_run "$(as_base subagent)" "$mixed" --no-gap
+[ "$rc" -eq 1 ] && grep -qx 'EXECUTION_ASSIGNED as-3' <<<"$msg" && ! grep -q 'as-4' <<<"$msg" &&
+  ok "one refused among two leaves the other assigned, exit 1" || ko "a partial refusal (rc=$rc): $msg -- $said"
+grep -q '^ASSIGN REFUSED as-4: the window exited 1' <<<"$said" && grep -qx "ASSIGN ASSIGNED as-3 correctness testbox $asha" <<<"$said" &&
+  ok "...each line stating its own outcome" || ko "outcome lines: $said"
+[ -z "$(state_as as-4)" ] && ok "...and the refused window recorded nothing" || ko "as-4 left a record: $(state_as as-4)"
+as_run "$(as_base subagent)" "$mixed" --no-gap --request as-4
+[ "$rc" -eq 1 ] && [ -z "$msg" ] && grep -q '^ASSIGN REFUSED as-4' <<<"$said" &&
+  ok "a refused window alone prints no assignment, exit nonzero" || ko "a refused window (rc=$rc): $msg -- $said"
+# A head-of request is assigned at the commit the branch names at assignment.
+export SHIM_GH_HEADS="$TMP/as-heads"
+amoved="${asha%??}ee"; printf 'claude/w869 %s\n' "$amoved" > "$SHIM_GH_HEADS"
+as_run "$(as_base subagent)" "$(as_msg head "$(as_block as-5 testbox correctness head-of:claude/w869 "$leg_run")")"
+[ "$rc" -eq 0 ] && grep -Fqx "revision: $amoved" <<<"$msg" && grep -Fq -- "--rev $amoved --checkout" <<<"$msg" &&
+  ok "a head-of request is assigned at the resolved SHA, in the leg's --rev too" || ko "a head-of assignment (rc=$rc): $msg -- $said"
+unset SHIM_GH_HEADS
+# THE TRANSPORT (quirk 37): "native" is refused, naming the accepted values.
+as_run "$(as_base native)" "$(as_msg native "$(as_block as-6 testbox correctness "$asha" '{"command":"true"}')")"
+[ "$rc" -eq 1 ] && [ -z "$msg" ] && grep -Fq 'invalid transport "native": one of subagent, app, cli, coordinator' <<<"$said" &&
+  ok "a native transport is refused, naming the accepted values" || ko "a native transport (rc=$rc): $msg -- $said"
+# The boundary: a malformed block refuses the whole call before the registry is asked.
+expect "a block naming a field outside the allowlist refuses the call, nothing assigned" 2 "block 2 (as-8) names standing" -- \
+  "${FWA[@]}" execution assign "$(as_base subagent)" "$(as_msg bad "$(as_block as-7 testbox correctness "$asha" '{"command":"true"}')" \
+    "$(as_block as-8 testbox correctness "$asha" '{"command":"true","standing":true}')")"
+[ -z "$(state_as as-7)" ] && ok "...not even its well-formed sibling" || ko "as-7 was reserved: $(state_as as-7)"
+expect "a runner without its clone is refused" 2 "a runner needs clone" -- \
+  "${FWA[@]}" execution assign "$(as_base subagent)" "$(as_msg noclone "$(as_block as-9 testbox correctness "$asha" '{"runner":"true","checkout":"/w"}')")"
+expect "a message with no block is refused" 2 "no EXECUTION_REQUEST ... END_EXECUTION_REQUEST block" -- \
+  "${FWA[@]}" execution assign "$(as_base subagent)" "$TMP/as-base-subagent.json"
+expect "--unstick needs the --message file it sends" 2 "--unstick sends the --message file" -- \
+  "${FWA[@]}" execution assign "$(as_base subagent)" "$two" --unstick testbox w869
+for id in as-1 as-2 as-3 as-5; do fixture_done "$id"; done
 }
 
 section "execution conclude --standing-handback" && {

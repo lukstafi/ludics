@@ -1126,18 +1126,24 @@ there are no request or result files to place, name in the brief, or read over s
 The coordinator observes the tracked `attach` exit, reads the turn's final message with
 `fleet-worker.sh log <agent-box> <worker> --last-result`, which prints it whole, and confirms
 through `status` that the turn has ended: a Claude worker `IDLE`, a Codex exec exited.
-Queue the request until the execution host is available. Reserve it with `transport: "cli"` and
-the actual `agent_host`, then call `execution dispatch`. Only after successful dispatch, send the
-continuation with `fleet-worker.sh unstick <agent-box> <worker> --message <brief-file>` (an
-append to the idle Claude process, a resume of the Codex thread). The continuation is the
+Queue the request until the execution host is available. Then save the turn's final message to
+a file and run `fleet-worker.sh execution assign <base.json> <message file> --message <file>
+--unstick <agent-box> <worker>`, its base naming `transport: "cli"` and the actual `agent_host`
+([native-claude.md](native-claude.md#worker-channel), step 3, says what it reads). It reserves
+and dispatches each block, and only when some step exited 0 does it write the continuation to the
+`--message` file and send it with `fleet-worker.sh unstick <agent-box> <worker> --message <file>`
+(an append to the idle Claude process, a resume of the Codex thread). The continuation is the
 channel's `EXECUTION_ASSIGNED <request_id>` with the assigned command/batch, revision, checkout and
-log; it instructs the worker to run only that assignment and end its turn with the
-`EXECUTION_RESULT` line (its run, exit and observed SHA) before additional fleet work.
+log for each assigned block. It instructs the worker to run only those assignments and end its
+turn with one `EXECUTION_RESULT` line for each (its run, exit and observed SHA) before additional
+fleet work.
 Start a new tracked `attach` waiter and record the unstick/runner evidence on the board.
 
 Dispatch preceding the unstick is a point-in-time gate just as it precedes an ssh runner call.
-If the unstick fails or its outcome is unclear, retain ownership and reconcile whether anything
-started; never blindly dispatch or unstick twice. When the result turn ends, verify actual runner
+If the unstick fails or its outcome is unclear (`ASSIGN UNSTICK FAILED`, exit 4), retain ownership
+and reconcile whether anything started; never blindly dispatch or unstick twice. The kept
+`--message` file is what a resend sends, and a second `assign` dispatches nothing it already
+dispatched. When the result turn ends, verify actual runner
 termination and conclude with its evidence before resuming ordinary implementation/review. An
 `IDLE` or `DONE` turn carrying a request or a result is a handoff, not issue completion (SKILL.md,
 Supervise: *A returned turn means the turn ended*). A new execution needs a new request and

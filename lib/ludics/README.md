@@ -248,6 +248,9 @@ fleetworker/farsideclose.py
 fleetworker/tiprun.py
     issue-wave/scripts/test-fleet-worker.sh "launch /" tip-run
 
+fleetworker/assign.py
+    issue-wave/scripts/test-fleet-worker.sh "execution assign"
+
 peerplan/__main__.py peerplan/plan.py peerplan/transcript.py
     lib/ludics/tests/test_peerplan.py
 

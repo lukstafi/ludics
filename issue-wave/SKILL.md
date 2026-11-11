@@ -981,9 +981,10 @@ controlled through the tools in your coordinator's file, never through those com
   before yielding). Read it by the worker's final message: an `EXECUTION_REQUEST` or
   `EXECUTION_RESULT` is a handoff, a ship-pr hand-back report is completion, and anything else
   is read against the PR feed and the agent listing before it is called a stall. On a request,
-  `fleet-worker.sh execution run <reserve.json>` reserves and dispatches in one call, then the
-  SAME worker is resumed with the assignment - by session for CLI, by agent ID for native;
-  never a second writer. On a result, `execution conclude --from-run <run-dir> --request <id>
+  `fleet-worker.sh execution assign <base.json> <message file>` reserves and dispatches every
+  block (`run`, a measurement `window`) and prints the `EXECUTION_ASSIGNED` text only for a step
+  that exited 0; then the SAME worker is resumed with that text - by session for CLI (`--message
+  <file> --unstick <box> <name>`), by agent ID for native; never a second writer. On a result, `execution conclude --from-run <run-dir> --request <id>
   --sha <sha>` reads verdict, log and checkout off the record on the reserved box and refuses an
   unfinished run (`--from-bg-run <dir>` for a run blocked under `bg-run.sh`, see
   [executions.md](references/executions.md#reserve-launch-observe-conclude)); then resume

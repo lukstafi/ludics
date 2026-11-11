@@ -198,26 +198,32 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    execution leg --request <id> --rev <sha|branch> --checkout <dir> --worktree <dir> -- <runner
    args>` ([executions.md](executions.md#a-leg-on-another-box)), run from the worker's own box;
    its `checkout` is the leg's `--worktree`, not the box's clone, since a leg under a record that
-   names a checkout refuses any other worktree (ludics-lite#749).
+   names a checkout refuses any other worktree (ludics-lite#749). Or the block names the leg's
+   box-relative runner instead of `command`: `"runner": "<runner args>"` with `"clone": "<the box's
+   checkout>"`, and the assignment wraps it into that leg form, with `--wait-window` for correctness
+   (ludics#869).
 
-   The task notification that follows is this handoff, not completion. Several blocks are a
-   queue: the coordinator assigns them one at a time, in order, each after the previous one's
-   result is concluded, so a resumed worker holds one assignment and owes one result line.
-3. **Assign.** The coordinator completes the reservation (wave, worker, `transport:
-   "subagent"`, agent host, repository, issue, purpose - the request supplies the rest, its
-   `checkout` kept beside the request as the record's, and its `command` and `log` dropped: a
-   reservation has no such fields and refuses them (`unknown reservation fields`, wave-20261028),
-   so the command goes into the dispatch's `evidence` if anywhere), runs
-   `execution run <reserve.json>` - or, for a measurement on a box where workers hold standing
-   reservations, `execution window --deadline <seconds> <box> <reserve.json>`, batching the
-   box's pending measurements and setting the deadline as
-   [executions.md](executions.md#exclusivity-and-the-run-time-slots) says - and
-   on exit 0 resumes the worker by its agent ID (the
-   runtime's continue-an-agent form: SendMessage to the agent's name or ID, never a fresh
-   Agent call) with one line, `EXECUTION_ASSIGNED <request_id>`, followed by the exact
-   command, revision, checkout and log to use. For a `head-of:` request the revision is the
-   record's `resolved_revision` (the `EXECUTION RESOLVED` line), never the branch. On a refusal, hold the worker idle
-   ([Idle workers](#idle-workers)) or answer `EXECUTION_REFUSED <reason>` so it keeps implementing.
+   The task notification that follows is this handoff, not completion. Several blocks are
+   assigned together, each on its own outcome (step 3), so a resumed worker holds every assignment
+   its message names, runs them, and owes one result line for each; a block not assigned stays
+   queued for a later assignment.
+3. **Assign.** The coordinator saves the worker's final message to a file and runs
+   `fleet-worker.sh execution assign <base.json> <message file> [--request <id>]... [--deadline
+   <seconds>]` (lib/ludics/fleetworker/assign.py, ludics#869). `base.json` is its completion of
+   every block: `wave`, `worker`, `transport` (`"subagent"`; the registry's refusal names the
+   accepted values), `agent_host`, `repository`, and `issue` and `purpose`. Each block is reserved
+   and dispatched with `execution run`, a measurement with `execution window --deadline <seconds>
+   <box>`, setting the deadline as [executions.md](executions.md#exclusivity-and-the-run-time-slots)
+   says. Its stdout is the message: an `EXECUTION_ASSIGNED <request_id>` paragraph (command,
+   revision, checkout, log) for each block whose step exited 0, and nothing for one refused, so a
+   refused window can never be assigned. A `head-of:` request is assigned at the record's
+   `resolved_revision`, never the branch. Its stderr has one `ASSIGN ASSIGNED|REFUSED|ALREADY|UNKNOWN
+   <id>` line per block. The coordinator resumes the worker by its agent ID (the runtime's
+   continue-an-agent form: SendMessage to the agent's name or ID, never a fresh Agent call) with
+   that stdout, when it is not empty. For a block refused, hold the worker idle ([Idle
+   workers](#idle-workers)) and run the same call again later: a block already assigned answers
+   `ALREADY` and is neither dispatched nor printed again. Or answer `EXECUTION_REFUSED <reason>`
+   so the worker keeps implementing. An `UNKNOWN` is reconciled, never retried blind.
 4. **Result.** The resumed worker runs only the assigned command, in the form of [Blocking on a
    run](#blocking-on-a-run). Correctness uses
    `fleet-worker.sh execution slot --bg <parent> --wait 1800 --wait-window -- <command>`, which is what bounds the box's
