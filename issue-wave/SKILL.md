@@ -1384,13 +1384,17 @@ controlled through the tools in your coordinator's file, never through those com
   (lukstafi/ocannl-staging#1611 added a `Tn.label` compare, #1614 the scan refusing it; master
   was red at 388e864a until #1626). So the brief of a task that adds a scan says: before
   merging, run it on every open wave PR's head merged with the scan's branch, and name each hit
-  to that sibling, so the two land in an order that leaves master green. Each head is fetched
-  by its PR ref, never its branch name: `git fetch origin refs/pull/<PR>/head`, record
-  `git rev-parse FETCH_HEAD` at once, and build a detached scratch worktree from that SHA
-  (`git worktree add --detach <dir> <sha>`). A sibling that merges mid-loop deletes its branch,
-  and its PR ref still resolves (lukstafi/ocannl-staging#1833 met #1834's vanished branch); a
-  failed fetch stops the check with its error, never a skipped head. A worker briefed without
-  it gets that check from the coordinator before its merge.
+  to that sibling, so the two land in an order that leaves master green. The check is
+  `fleet-worker.sh sibling-scan <owner/repo> --wave <id> -- <scan command>`, run from the scan
+  branch's worktree under `execution slot` like any batch; its header in fleet-worker.sh and
+  `lib/ludics/fleetworker/siblingscan.py` state what it does and refuses. It fetches each head
+  by its PR ref, never its branch name, and records the SHA it got. A sibling that merges
+  mid-loop deletes its branch, and its PR ref still resolves (lukstafi/ocannl-staging#1833 met
+  #1834's vanished branch). A failed fetch stops the check with its error, never a skipped
+  head. Exit 0 is every head clean, 1 names each `SIBLING-SCAN HIT` to tell its sibling, and 4
+  is a check that did not reach every head (a failed fetch, a conflict the cherry-pick could not
+  get past either, an unread list): never merge on it as clean. A worker briefed without the
+  check gets it from the coordinator before its merge.
 - **Relay milestones** to the user as they land - merged PRs with one-line substance, not
   worker-status noise.
 

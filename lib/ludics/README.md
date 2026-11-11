@@ -226,7 +226,11 @@ fleetworker/workers.py
     issue-wave/scripts/test-fleet-worker.sh "the real checkout" "base gate" "coordinator lease" halt "launch /" "failure verdicts" unstick "codex workers" "log --last-result" usage
 
 fleetworker/supervision.py
-    issue-wave/scripts/test-fleet-worker.sh load "prs ("
+    issue-wave/scripts/test-fleet-worker.sh load "prs (" sibling-scan
+
+fleetworker/siblingscan.py
+    issue-wave/scripts/test-fleet-worker.sh sibling-scan
+    lib/ludics/tests/test_fleetworker_siblingscan.py
 
 fleetworker/board.py fleetworker/boardstore.py fleetworker/takeover.py
     issue-wave/scripts/test-fleet-worker.sh board
@@ -257,7 +261,7 @@ prreview/__main__.py
 
 prreview/core.py prreview/jqsem.py
     ship-pr/scripts/test-pr-review-*.sh
-    issue-wave/scripts/test-fleet-worker.sh load "prs ("
+    issue-wave/scripts/test-fleet-worker.sh load "prs (" sibling-scan
 
 prreview/knobs.py prreview/shtext.py prreview/clock.py
     ship-pr/scripts/test-pr-review-*.sh

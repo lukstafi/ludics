@@ -228,11 +228,13 @@ class Prs(unittest.TestCase):
     def test_rows_are_in_number_order_with_placeholders_and_tsv_escapes(self) -> None:
         listing = json.loads(
             '[{"number": 12, "title": "a\\tb", "headRefName": "x", "headRefOid": "c12", "createdAt": "t", "isDraft": true},'
-            ' {"number": 7, "title": "", "headRefName": "y", "headRefOid": "c7", "createdAt": "t", "isDraft": false}]'
+            ' {"number": 7, "title": "", "headRefName": "y", "headRefOid": "c7", "createdAt": "t", "isDraft": false,'
+            ' "isCrossRepository": false}]'
         )
+        # The last field is the branch's repository: ``same`` only on an isCrossRepository exactly false.
         self.assertEqual(
             pr_rows(listing, None),
-            [["7", "c7", "t", "-", "y", "-"], ["12", "c12", "t", "draft", "x", "a\\tb"]],
+            [["7", "c7", "t", "-", "y", "-", "same"], ["12", "c12", "t", "draft", "x", "a\\tb", "fork"]],
         )
 
     def test_a_wave_keeps_the_prs_closing_one_of_its_issues(self) -> None:

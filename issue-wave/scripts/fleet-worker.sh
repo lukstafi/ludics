@@ -220,6 +220,16 @@
 #                          # keeps the PRs that close or reference an issue the wave's records name;
 #                          # its last line, PRS <repo>: <n> open PRs listed above: #a ..., names
 #                          # every PR printed, so a tail that cut a line still names its PR
+#   fleet-worker.sh sibling-scan <owner/repo> [--wave <id>] [--branch <scan branch>] [--remote <name>]
+#                          [--base <rev>] [--worktree <dir>] [--logs <dir>] -- <scan command> [arg...]
+#                          # from a checkout of the repo: each open PR (prs' selection; --wave
+#                          # the wave's) fetched by refs/pull/<N>/head, the scan branch (default
+#                          # the current one; its own PR skipped) merged in -- or its changes past
+#                          # --base (<remote>/HEAD) cherry-picked, squashed -- in one reused detached scratch
+#                          # worktree, and the scan command run there: SIBLING-SCAN CLEAN|HIT|
+#                          # UNCHECKED <repo>#<N> per head; a failed fetch stops, the rest NOT
+#                          # CHECKED; exit 0 no hits, 1 hits, 4 a head unchecked or the list
+#                          # incomplete (lib/ludics/fleetworker/siblingscan.py)
 #   fleet-worker.sh halt <reason> | resume-launches | halted
 #   fleet-worker.sh board set [--create] <wave> <task> <key>=<value>...   # the wave board, one JSON
 #                          # document per wave under FLEET_ANCHOR_STATE/boards (ludics-lite#619): a
