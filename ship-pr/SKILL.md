@@ -1022,7 +1022,10 @@ by itself, `gh run rerun <id> --failed`, with the same fresh budget, and a secon
 the wait with 7 (#928). A job its cap cancelled twice is likely a hang to read, not a queue to wait
 out. `stale` and `action_required` are not rerun (an approval answers them), and without `--wait`
 the run stays a 4. A run cancelled only in advisory jobs, every other job of it passed, is neither:
-it holds nothing and is not rerun (#958).
+it holds nothing and is not rerun (#958). A run started by `workflow_dispatch` is not rerun either
+(#1036): it is evidence someone asked for, not the PR's own build, so the wait ends at once with 7,
+naming the ways past it: re-push the head, or merge again with `--override` (*The override*). A
+brief that asks for a dispatch on a PR branch should say it sits on the head until a re-push.
 
 **Exit 4 refuses too, by default.** Nothing has failed, but nothing has passed, and a merge that
 waits for neither read nothing — it was a warning until 2026-08-23, when a day-long runner queue
@@ -1408,6 +1411,12 @@ the override for, so the merge refuses on it with exit 1; open it, and if it is 
 run `merge` again with a reason that covers it (the new run's first read is the new set). A waived
 check that is re-run is waited for while it runs and stays waived if it fails again (a re-run
 keeps its suite).
+
+A check or run that reads **cancelled** at that first read is waived the same way (#1036), under a
+key of its own, and marked `WAIVED` as cancelled: an evidence dispatch cancelled at its cap is the
+case it is for. It is waived while it reads cancelled: re-run and red, it is a red nobody gave the
+override for. A cancel is still not a red, so give a reason that covers it, and read the report: the
+override goes over every cancel it read, the PR's own build's included.
 
 It is legitimate when you have **established** that the failure is neither about your change nor
 about the tree you are merging into: the identical red is on `master` from before your branch

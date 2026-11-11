@@ -212,7 +212,10 @@
 #                                          # with no verdict yet: that one is waited for under
 #                                          # --wait and refused with 4 without it, and a check
 #                                          # that turns red during the wait was never waived, so
-#                                          # it refuses with 1 (ludics-lite#392). Where the
+#                                          # it refuses with 1 (ludics-lite#392). A check or
+#                                          # run that reads CANCELLED at that first read is
+#                                          # waived the same way, while it reads cancelled
+#                                          # (#1036). Where the
 #                                          # repository's default branch has a
 #                                          # .github/ship-pr-merge-build and its trigger holds
 #                                          # (by default: a path both sides changed is one of
@@ -237,7 +240,10 @@
 #                                          # timeout-minutes cap among the causes) gets ONE
 #                                          # rerun per run under --wait; cancelled again, it
 #                                          # refuses with 7 naming the rerun commands (#928;
-#                                          # see prreview/merge.py, Recovery). Without --wait
+#                                          # see prreview/merge.py, Recovery). A run started
+#                                          # by workflow_dispatch is never rerun: it refuses
+#                                          # with 7 at once, naming a re-push and --override
+#                                          # as the ways past it (#1036). Without --wait
 #                                          # it is a 4, as any stopped run is.
 #                                          # A PR found merged at another head than the
 #                                          # gated one (gh makes no merge request for a
@@ -362,8 +368,9 @@
 #             rerun `--wait` makes per head run is spent or failed, or there was no wait to make
 #             it in (`checks` names the same jobs and stays 4). --allow-no-verdict still merges.
 #             `merge` adds 7: no verdict because a head run was cancelled with no red, and the one
-#             rerun `--wait` makes of it was cancelled again, did not take, or failed (#928;
-#             without --wait, and from `checks`, that run is a 4). --allow-no-verdict still merges.
+#             rerun `--wait` makes of it was cancelled again, did not take, or failed (#928), or
+#             it is a workflow_dispatch run, which `--wait` does not rerun (#1036; without --wait,
+#             and from `checks`, that run is a 4). --allow-no-verdict still merges.
 #
 # Env: REPO=owner/name, overridden by a repo spelled out in the <pr> argument or by --repo; those
 #      three are the ONLY sources, for every subcommand including `retry run watch`, but two that

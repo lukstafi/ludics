@@ -35,8 +35,11 @@ one recovery ``--wait`` makes per head run (``Recovery``) is spent or failed, or
 to make it in -- the refusal names the commands; 7 no verdict because a head run completed
 ``cancelled`` with no red (a job's ``timeout-minutes`` cap, a person's or a concurrency cancel), and
 ``--wait``'s one rerun of it (``Recovery``) was cancelled again, did not take, or failed -- the
-refusal names the rerun commands (#928). Without ``--wait`` such a run is a 4, as before.
-``--allow-no-verdict`` still merges a 6 or a 7 unread.
+refusal names the rerun commands (#928); or such a run was started by ``workflow_dispatch``, which
+``--wait`` never reruns (#1036: evidence someone asked for, not the PR's own build), and the refusal
+names the ways past it (a re-push, or ``--override``, which waives a check or run cancelled at the
+gate's first read). Without ``--wait`` such a run is a 4, as before. ``--allow-no-verdict`` still
+merges a 6 or a 7 unread.
 """
 
 import os
@@ -171,8 +174,8 @@ def parse(args: list[str], config: GateConfig) -> Options:
     # grep reads lines: a reason is two words on ONE line of it.
     if opts.override and not any(_REASON.search(line) for line in opts.override.split("\n")):
         die(
-            f"merge: --override takes a REASON in words, not '{opts.override}'. Say why this red is",
-            "known-unrelated to this PR — e.g. --override 'ci Deps step fails on an opam solve,",
+            f"merge: --override takes a REASON in words, not '{opts.override}'. Say why this red (or",
+            "cancelled) check is known-unrelated to this PR — e.g. --override 'ci Deps step fails on an opam solve,",
             "same red on master before this branch existed'.",
         )
     return opts
@@ -215,14 +218,23 @@ class Recovery:
       RUNNER is, with the same deadline move. A LATER attempt read ``cancelled`` again is the second
       cancellation and ends the wait; the attempt that was rerun still read after ``TRANSITION``
       seconds is a rerun that did not take, and ends it too. These ends are ``code`` 7.
+    - A run whose event is ``workflow_dispatch`` gets no write of this recovery (#1036): a
+      dispatch is evidence someone asked for, not the PR's own build, and a rerun of it spent
+      another full run (90 min on #1028) on something that judges nothing. CANCELLED of one,
+      re-read still completed ``cancelled`` (a NO RUNNER of one included: it is completed
+      cancelled too), ends the wait, ``code`` 7 with ``dispatched`` set; merge's refusal names the
+      ways past it. A NEVER STARTED of one ends it as a recovery-less wait would, ``code`` 6.
+    - A run ``--override`` recorded as cancelled at the gate's first read (``cancelled-run:<id>``)
+      gets no write either, its jobs that never got a runner included: the override is the
+      decision to merge over it.
 
     Boundary of CANCELLED: it reads the round's run list, one jobs read per completed
     ``cancelled`` run, and one run read per such run, nothing else. It reruns ``cancelled``
     alone: ``stale`` and ``action_required`` stop a run too, but a rerun answers neither (an
     approval does), so they stay the 4 they were. A jobs read or run read that fails, or a run
     read that answers no attempt, classifies nothing that round: no write, and the gate's wait
-    goes on as it would without a recovery. A run a person cancelled on purpose is rerun too; stop the merge,
-    not the run, to keep it from landing.
+    goes on as it would without a recovery. A run a person cancelled on purpose is rerun too (a
+    dispatched one aside); stop the merge, not the run, to keep it from landing.
 
     Before each write the PR head is re-read: a head that moved is ``superseded`` (5), and nothing
     is written; one that could not be re-read is ``unread`` (3). Every other end leaves ``why`` and
@@ -244,6 +256,8 @@ class Recovery:
         self.superseded = ""
         self.unread = False
         self.code = 6
+        # The id of the dispatched run the wait ended on (#1036), for merge's refusal; "" none.
+        self.dispatched = ""
 
     def stop(self, why: str, *commands: str, code: int = 6) -> Stop:
         self.why = why
@@ -289,7 +303,7 @@ class Recovery:
         workflow and event, completed ``cancelled``, not advisory, no newer run of the key in
         flight, and held by the gate (``Gate.run_stopped_hold``): a run cancelled only in advisory
         jobs holds nothing, so it is not rerun (ludics#958), and one whose job list did not answer
-        classifies nothing that round."""
+        classifies nothing that round. A run the override waived (#1036) is left out."""
         seen: set[str] = set()
         out: list[HeadRun] = []
         for run in runs:
@@ -299,6 +313,8 @@ class Recovery:
             if key in seen:
                 continue
             seen.add(key)
+            if f"cancelled-run:{run.rid}" in self.gate.waived:
+                continue
             if run.status == "completed" and run.conclusion == "cancelled":
                 hold = self.gate.run_stopped_hold(run.rid)
                 if hold is not None and not hold[1]:
@@ -321,6 +337,22 @@ class Recovery:
             return None
         status, concl, attempt = tab_fields(result.stdout, 3)
         return (status, concl, int(attempt)) if re.fullmatch("[0-9]+", attempt) else None
+
+    def not_rerun(self, run: HeadRun) -> Stop | None:
+        """A CANCELLED run started by ``workflow_dispatch`` (#1036), re-read still completed
+        ``cancelled``: the wait ends on it, ``code`` 7, and nothing is written. The command named
+        is the rerun by hand, for its verdict. None when the re-read fails or reads it moved (a
+        rerun by hand since the round's run list): nothing this round."""
+        state = self.read_run(run.rid)
+        if state is None or state[:2] != ("completed", "cancelled"):
+            return None
+        self.dispatched = run.rid
+        return self.stop(
+            f"run {run.rid} ({shlex.quote(run.name)}) was started by workflow_dispatch, evidence someone asked"
+            " for and not the PR's own build, so merge --wait does not rerun it",
+            rerun_command(run.rid, self.repo),
+            code=7,
+        )
 
     def rerun_cancelled(self, run: HeadRun, now: int) -> Step | None:
         """CANCELLED for one run: Stop, Wait (a rerun sent, or one still to show), or None (nothing
@@ -366,6 +398,20 @@ class Recovery:
         by_run: dict[str, Orphan] = {}
         for orphan in orphans:
             by_run.setdefault(orphan.rid, orphan)
+        # No write on a run the override waived as cancelled, nor on a dispatched one (#1036; the
+        # class docstring): a completed one is CANCELLED's below, a dispatch never started ends here.
+        events = {run.rid: run.event for run in runs}
+        for rid in list(by_run):
+            if f"cancelled-run:{rid}" in self.gate.waived:
+                del by_run[rid]
+            elif events.get(rid) == "workflow_dispatch" and rid not in self.done:
+                orphan = by_run.pop(rid)
+                if orphan.kind == "never-started":
+                    return self.stop(
+                        f"run {rid} was started by workflow_dispatch, evidence someone asked for and not the"
+                        " PR's own build, so merge --wait does not recover its job that never started",
+                        recovery_text(orphan, self.repo),
+                    )
         for rid, orphan in by_run.items():
             done = self.done.get(rid)
             attempt = orphan.job.attempt
@@ -426,6 +472,11 @@ class Recovery:
         for run in self.cancelled_runs(runs):
             done = self.done.get(run.rid)
             if run.rid in by_run or (done is not None and done.action == "cancel"):
+                continue
+            if done is None and run.event == "workflow_dispatch":
+                stop = self.not_rerun(run)
+                if stop is not None:
+                    return stop
                 continue
             step = self.rerun_cancelled(run, now)
             match step:
@@ -660,6 +711,16 @@ class Merge:
 
     def announce_override(self, waived: int) -> None:
         repo, pr, why = self.repo, self.num, self.opts.override
+        cancelled = self.gate.waived_cancelled
+        if cancelled:
+            self.announced.append((
+                f"OVERRIDE: merging {repo}#{pr} over a RED or CANCELLED build signal — {why}",
+                (
+                    f"OVERRIDE: merging {repo}#{pr} over {waived} red or cancelled build check(s)/run(s)",
+                    f"({cancelled} cancelled), each so when the override was given (marked WAIVED above) — {why}",
+                ),
+            ))
+            return
         self.announced.append((
             f"OVERRIDE: merging {repo}#{pr} over a RED build signal — {why}",
             (
@@ -760,10 +821,11 @@ class Merge:
                 elif waived > 0:
                     fail(
                         4,
-                        f"REFUSING to merge {repo}#{pr}: --override waives the red marked WAIVED above, but",
+                        f"REFUSING to merge {repo}#{pr}: --override waives what is marked WAIVED above, but",
                         f"no verdict after {opts.wait_for // 60} min on the rest (listed above) — a check still",
-                        "running, or stopped without a verdict, is not a red, and no override covers it. Wait",
-                        f"for it (--wait holds up to {self.config.checks_wait // 60} min, SHIP_PR_CHECKS_WAIT).",
+                        "running, or stopped after the gate's first read, is not what the override read, and no",
+                        "override covers it. Wait for it (--wait holds up to",
+                        f"{self.config.checks_wait // 60} min, SHIP_PR_CHECKS_WAIT).",
                     )
                 else:
                     fail(
@@ -821,8 +883,18 @@ class Merge:
 
     def refuse_cancelled(self) -> None:
         """Exit 7: no verdict because a head run was cancelled with no red, and ``--wait``'s one
-        rerun of it is spent, did not take, or failed (#928). Names the commands."""
+        rerun of it is spent, did not take, or failed (#928) -- or it is a dispatched run, which
+        ``--wait`` does not rerun (#1036). Names the commands, and for a dispatch the ways past it."""
         repo, pr, recovery = self.repo, self.num, self.recovery
+        if recovery.dispatched:
+            fail(
+                7,
+                f"NOT merging {repo}#{pr}: a workflow_dispatch run of the head was cancelled before its jobs were",
+                f"judged (listed above) — {recovery.why}. Two ways past it: re-push the head, so the dispatch",
+                "no longer sits on it; or merge again with --override '<why this cancelled run is not about",
+                "this PR>', which waives a check or run that reads cancelled at the gate's first read. For",
+                f"its verdict instead, rerun it by hand: {'; '.join(recovery.commands)}; then merge again (--wait).",
+            )
         fail(
             7,
             f"NOT merging {repo}#{pr}: a workflow run of the head was cancelled before its jobs were judged",

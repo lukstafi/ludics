@@ -2,7 +2,7 @@
 
 Ported from pr-review.sh's ``gate_checks`` and everything it reads through (ludics-lite#403):
 the advisory list and the repository's own advisory file (``advisory_policy``, #530), the
-override's waiver (``apply_waiver``/``is_waived``, #392), the check fold (``build_checks``,
+override's waiver (``apply_waiver``/``is_waived``, #392; a cancel read at the first read too, #1036), the check fold (``build_checks``,
 ``summarize_checks``), and the run list that overrules it (``run_signal`` with its job reads,
 #24/#38/#500) -- whose run-less head, inside the grace, asks the paths-ignore recognition
 (``workflows.head_within_paths_ignore``, #176). On a round with no verdict, ``checks`` and
@@ -114,7 +114,7 @@ type Unread = Literal["refused", "held", "unanswered", "unusable"]
 class RunSignal:
     """``run_signal``'s answer: its status (0 the fold stands, 1 red at the run level, 3 unread,
     4 no verdict yet), the run-level red count, the runs the waiver took out of it (one
-    "<run id> <run|job> <name>" per line), and the reason line. ``stopped``: the 4 is a run that
+    "<run id> <run|job|cancelled> <name>" per line), and the reason line. ``stopped``: the 4 is a run that
     stopped without a verdict, with nothing in flight -- no new check run comes of it unless
     someone re-runs it, which ``checks --check`` reads as final (#569). ``unread``: on a 3, how the
     read failed (``Unread``). ``holds``: on a 4 for runs in flight, one report line per held run,
@@ -154,6 +154,9 @@ class Gate:
     checkless_red: int = 0
     check_waived: int = 0
     run_waived: int = 0
+    # How many of those waivers (``check_waived`` + ``run_waived``) are of a CANCELLED check or run
+    # rather than a red one (#1036), for the report's wording.
+    waived_cancelled: int = 0
     check_passed: int = 0
     check_pending: int = 0
     check_total: int = 0
@@ -347,19 +350,30 @@ class Gate:
 
     def apply_waiver(self, rows: list[str]) -> list[str]:
         """``apply_waiver``: the red rows the waiver covers marked ``waived`` -- recorded first on the
-        recording read -- and only while their key names exactly ONE row."""
+        recording read -- and only while their key names exactly ONE row. A row that concluded
+        ``cancelled`` is waived the same way under its own key, ``cancelled:<suite>/<name>`` (#1036):
+        the waiver covers it while it reads cancelled, so a cancelled check re-run red (a re-run keeps
+        its suite) is a red nobody gave the override for. Boundary, a fail-closed allowlist: red and
+        ``cancelled`` alone; a check with no conclusion yet, ``stale`` and ``action_required`` are
+        never waived."""
         keys: list[str] = []
         for row in rows:
             cls, name, _concl, _url, suite, _status = tab_fields(row, 6)
             if cls:
-                keys.append(f"check:{suite}/{name}")
+                keys.append(f"{suite}/{name}")
         out: list[str] = []
         for row in rows:
             cls, name, concl, url, suite, status = tab_fields(row, 6)
             if not cls:
                 continue
-            key = f"check:{suite}/{name}"
-            if cls == "red" and keys.count(key) == 1:
+            ident = f"{suite}/{name}"
+            if cls == "red":
+                key = f"check:{ident}"
+            elif cls == "nogo" and concl == "cancelled":
+                key = f"cancelled:{ident}"
+            else:
+                key = ""
+            if key and keys.count(ident) == 1:
                 if self.waive_mode == "record":
                     self.waived.add(key)
                 if key in self.waived:
@@ -377,7 +391,7 @@ class Gate:
 
     def summarize(self, rows: list[str]) -> None:
         """``summarize_checks``: the per-check classes folded into ``verdict`` and the report lines."""
-        red = waived = pending = queued = nogo = green = passed = 0
+        red = waived = cancelled = pending = queued = nogo = green = passed = 0
         lines: list[str] = []
         running: list[str] = []
         reds: list[RedJob] = []
@@ -390,6 +404,12 @@ class Gate:
                     red += 1
                     lines.append(f"  RED      {name} ({concl})  {url}\n")
                     reds.append(RedJob(name, url))
+                case "waived" if concl == "cancelled":
+                    waived += 1
+                    cancelled += 1
+                    lines.append(
+                        f"  stopped  {name} (cancelled — WAIVED: cancelled when --override was given)  {url}\n"
+                    )
                 case "waived":
                     waived += 1
                     lines.append(f"  RED      {name} ({concl} — WAIVED: red when --override was given)  {url}\n")
@@ -411,6 +431,7 @@ class Gate:
         self.pending_names = running
         self.check_red = red
         self.check_waived = waived
+        self.waived_cancelled = cancelled
         self.check_passed = passed
         self.check_pending = pending
         self.check_queued = queued
@@ -485,7 +506,7 @@ class Gate:
 
     def run_inflight_hold(self, run_id: str, suite: str = "-") -> str | None:
         """``run_inflight_hold``: None when every unfinished job is advisory, every finished
-        non-advisory job green -- or red with its check WAIVED by ``--override`` (ludics#862), the
+        non-advisory job green -- or red (or cancelled, #1036) with its check WAIVED by ``--override`` (ludics#862), the
         key ``run_red_is_advisory_only`` reads, under the same one-job-of-that-name rule -- and the
         job list still for ADVISORY_SETTLE seconds; else why the release did not apply, naming the
         first job in the list's order that kept it (ludics#930: a hold that named no cause got
@@ -530,6 +551,14 @@ class Gate:
                 if names.count(jname) != 1:
                     return (
                         f"{job} concluded {jconcl}, red, and the waiver cannot single it out:"
+                        f" {names.count(jname)} jobs of the run share its name"
+                    )
+                continue
+            if klass == "nogo" and jconcl == "cancelled" and f"cancelled:{suite or '-'}/{jname}" in self.waived:
+                # A cancel --override waived (#1036), under the one-job-of-that-name rule as a red.
+                if names.count(jname) != 1:
+                    return (
+                        f"{job} concluded cancelled, and the waiver cannot single it out:"
                         f" {names.count(jname)} jobs of the run share its name"
                     )
                 continue
@@ -676,6 +705,12 @@ class Gate:
                 case "nogo":
                     if concl == "cancelled":
                         cancelled_ids.append(f"{rid}\t{name}")
+                        # --override's record of a run cancelled at the first read (#1036), made
+                        # here so a run in flight beside it, which ends this read early, does not
+                        # keep it from the record. Keyed by run id, apart from a red run's key:
+                        # the waiver covers the run while it reads cancelled, never a red of it.
+                        if self.waive_mode == "record":
+                            self.waived.add(f"cancelled-run:{rid}")
                     else:
                         nogo += 1
                 case "green" | "pending":
@@ -754,13 +789,16 @@ class Gate:
             )
         # Cancelled runs are asked about their jobs only now, with nothing red or in flight left to
         # decide the round first (ludics#958). A held one is the stopped 4 it always was, with a
-        # held line; an unread job list holds as well, the old reading, and says so.
+        # held line; an unread job list holds as well, the old reading, and says so. A held one
+        # --override recorded at the first read (#1036) is waived instead: a "cancelled" entry.
         stopped_released = 0
         for entry in cancelled_ids:
             rid, rname = tab_fields(entry, 2)
             stopped_hold = self.run_stopped_hold(rid)
             if stopped_hold is None:
                 stopped_released += 1
+            elif f"cancelled-run:{rid}" in self.waived:
+                waived_runs += f"{rid} cancelled {rname}\n"
             else:
                 nogo += 1
                 holds += f"  held     workflow run {rid} ({shlex.quote(rname)}): {stopped_hold[0]}\n"
@@ -1064,6 +1102,7 @@ class Gate:
         self.waived = set()
         self.run_waived = 0
         self.check_waived = 0
+        self.waived_cancelled = 0
         self.waive_mode = "record" if waive else ""
         self.unread = []
         last_pause: int | None = None
@@ -1164,6 +1203,12 @@ class Gate:
                     if _before_space(rest) == "job":
                         self.check_lines += (
                             f"  RED      workflow run {_after_space(rest)} (red through a check above that is WAIVED)\n"
+                        )
+                    elif _before_space(rest) == "cancelled":
+                        self.waived_cancelled += 1
+                        self.check_lines += (
+                            f"  stopped  workflow run {_after_space(rest)} (cancelled — WAIVED: cancelled when"
+                            " --override was given)\n"
                         )
                     else:
                         if self.waive_mode == "record":
@@ -1317,6 +1362,13 @@ class Gate:
                     else ""
                 )
                 cli.say(f"{head}: RED — {self.check_red} of {self.check_total} build checks failed{also}")
+            case "waived" if self.waived_cancelled:
+                n = self.check_waived + self.run_waived
+                cli.say(
+                    f"{head}: {'RED, ' if n > self.waived_cancelled else ''}CANCELLED, WAIVED — every red or"
+                    f" cancelled check or run ({n}, {self.waived_cancelled} of them cancelled) was so when"
+                    " --override was given; everything else has a verdict and none is red"
+                )
             case "waived":
                 cli.say(
                     f"{head}: RED, WAIVED — every red ({self.check_waived + self.run_waived}) was red when"

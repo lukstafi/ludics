@@ -123,6 +123,7 @@ MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 
 # its advisory `claude` job (the default list's) cancelled at its cap, before a rerun and after it.
 RUNNER_CASE=""
 RUNNER_RECOVERS=""
+RUNNER_EVENT=pull_request              # run 100's event; workflow_dispatch = an evidence dispatch (#1036)
 # The "from the SECOND read on" switches above are counted by the lib's fixture_call_count, under
 # the names body, base and default-branch: every call runs the fixture in a fresh bash of its own
 # (the forward's bridge), so a variable it increments dies with that shell, and the count has to travel
@@ -177,8 +178,8 @@ runner_state() {
 }
 runner_attempt() { if [ -e "$TEST_ROOT/runner-rerun" ]; then echo 2; else echo 1; fi; }
 runner_run() { # <status> <conclusion|null>
-  printf '{"workflow_runs":[{"id":100,"workflow_id":1,"event":"pull_request","name":"ci","status":"%s","conclusion":%s,"created_at":"2026-09-01T00:00:00Z","check_suite_id":1}]}\n' \
-    "$1" "$([ "$2" = null ] && echo null || printf '"%s"' "$2")"
+  printf '{"workflow_runs":[{"id":100,"workflow_id":1,"event":"%s","name":"ci","status":"%s","conclusion":%s,"created_at":"2026-09-01T00:00:00Z","check_suite_id":1}]}\n' \
+    "$RUNNER_EVENT" "$1" "$([ "$2" = null ] && echo null || printf '"%s"' "$2")"
 }
 # The jobs of run <id>: the head run's one job as the story has it, or the newer run's started one.
 runner_jobs() { # <run id>
@@ -704,6 +705,7 @@ reset() {
   MERGE_QUEUE_FAIL=""
   RUNNER_CASE=""
   RUNNER_RECOVERS=""
+  RUNNER_EVENT=pull_request
   rm -f "$TEST_ROOT/runner-cancel" "$TEST_ROOT/runner-rerun"
 }
 
@@ -2669,6 +2671,39 @@ test_a_cancelled_head_run_is_rerun_once() {
   assert_no_merge_call
 }
 
+# #1036: an evidence dispatch (windows-git-bash.yml on #1028) cancelled at its job's cap got a
+# 90-minute rerun from #928's recovery, and --override could not waive it, cancelled not being red.
+# A dispatched run is never rerun: the wait ends at once with 7, naming a re-push and --override.
+# --override then waives the cancel it read at the gate's first read, and the merge lands.
+test_a_cancelled_dispatch_run_is_not_rerun_and_override_waives_it() {
+  local start
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=capped
+  RUNNER_EVENT=workflow_dispatch
+  start=$SECONDS
+  run_merge --wait=600
+  assert_eq "$MERGE_RC" 7 "a cancelled dispatch is no verdict, and not rerun ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "nothing is rerun"
+  assert_contains "$MERGE_OUTPUT" "was started by workflow_dispatch" "the line names the dispatch"
+  assert_contains "$MERGE_OUTPUT" "re-push the head" "and a re-push as a way past it"
+  assert_contains "$MERGE_OUTPUT" "merge again with --override" "and the override as the other"
+  [ $((SECONDS - start)) -lt 120 ] || bail "the wait should end at once, not at its 600 s ceiling ($((SECONDS - start)) s)"
+  assert_no_merge_call
+  reset
+  retune CHECKS_INTERVAL=1
+  RUNNER_CASE=capped
+  RUNNER_EVENT=workflow_dispatch
+  run_merge --wait=600 --override 'the Windows dispatch is evidence only, cancelled at its cap as nightly'
+  assert_eq "$MERGE_RC" 0 "the override waives the cancel it read ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_CALLS" "CALL run " "and nothing is rerun"
+  assert_contains "$MERGE_OUTPUT" "CANCELLED, WAIVED" "the verdict says what was waived"
+  assert_contains "$MERGE_OUTPUT" "WAIVED: cancelled when --override was given" "each cancel marked"
+  assert_contains "$MERGE_OUTPUT" "OVERRIDE: merging $REPO#7 over a RED or CANCELLED build signal" \
+    "the override is announced"
+  assert_contains "$MERGE_CALLS" "--match-head-commit head-sha " "bound to the gated head"
+}
+
 # ludics#958: a run cancelled only in an advisory job -- the macOS legs of this repository's
 # non-advisory `skill scripts` workflow, cancelled at their cap -- held the gate as a stopped run,
 # and since #928 `merge --wait` reran it and refused 7 on its second cap-cancel. Every other job
@@ -3676,6 +3711,7 @@ tests=(
   test_a_never_started_job_ends_the_wait_early_with_its_commands
   test_a_job_no_runner_took_is_rerun_once_and_merges
   test_a_cancelled_head_run_is_rerun_once
+  test_a_cancelled_dispatch_run_is_not_rerun_and_override_waives_it
   test_a_run_cancelled_only_in_advisory_jobs_merges_unrerun
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
