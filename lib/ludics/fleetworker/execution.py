@@ -1017,9 +1017,13 @@ def with_gpu_record(cfg: Config, payload: str) -> str:
 def endpoint_map(cfg: Config) -> str | None:
     """The lab's endpoint map as ``wake-lab.sh endpoint-map`` prints it, read from THIS checkout's
     wake-lab.sh; None when that refuses its own map (the reservation is refused: a map that is
-    there and wrong is a defect to fix). No wake-lab.sh degrades loudly to an empty map."""
+    there and wrong is a defect to fix). No wake-lab.sh degrades loudly to an empty map: only
+    ``lstat``'s ENOENT is "no wake-lab.sh" (#1076). Any other failure to look it up refuses, and
+    whatever is there runs, so a link that dangles or loops, or a directory, is a map that refuses."""
     wake = os.path.join(cfg.checkout, "scripts", "wake-lab.sh")
-    if not os.path.isfile(wake):
+    try:
+        os.lstat(wake)
+    except FileNotFoundError:
         err(
             "EXECUTION WARNING: no endpoint map ("
             + shown(wake)
@@ -1027,6 +1031,12 @@ def endpoint_map(cfg: Config) -> str | None:
             " is not checked against its box's lab lane lock"
         )
         return ""
+    except OSError as exc:
+        err(
+            f"EXECUTION REFUSED: {shown(wake)} cannot be looked up ({exc.strerror}), so FLEET_BOXES cannot"
+            " be checked for two aliases of one box, nor a measurement against its box's lab lane lock"
+        )
+        return None
     done = run(["bash", wake, "endpoint-map"], capture=True)
     if done.rc != 0:
         err(

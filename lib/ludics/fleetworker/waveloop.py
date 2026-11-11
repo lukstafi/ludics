@@ -125,7 +125,9 @@ class Driver:
         return End(rc)
 
     def stopped(self) -> bool:
-        return any(os.path.exists(os.path.join(self.wave.directory, f))
+        # lexists (#1076): a stop file that is a dangling or looping link is there; exists() said
+        # it was not. The wave directory is searchable, since this loop's log is open under it.
+        return any(os.path.lexists(os.path.join(self.wave.directory, f))
                    for f in ("loops.stop", f"loop-{self.loop.name}.stop"))
 
     def fleet(self, *args: str) -> Done:

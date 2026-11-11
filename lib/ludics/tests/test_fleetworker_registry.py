@@ -1314,5 +1314,83 @@ class LoopRunUnderHalt(RegistryCase):
         self.assertEqual(registry.halt_reason("2026-09-01T00:00:00Z legacy reason\n"), "2026-09-01T00:00:00Z legacy reason")
 
 
+@unittest.skipIf(os.geteuid() == 0, "root reads past a mode: the EACCES cases need an unprivileged user")
+class NotAbsent(RegistryCase):
+    """#1076: a path the registry cannot look up or read is never "nothing there". Only ``lstat``'s
+    ENOENT is absent; an unreadable ledger or halt refuses, and an unlistable waiters directory
+    counts against the gap (THE WAITERS' fail-closed rule). A lane lock that cannot be opened stays
+    free, as the header and wake-lab.sh say: no lane can hold what it cannot open."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.denied: list[str] = []
+
+    def tearDown(self) -> None:
+        for path in self.denied:  # before the scratch root goes: rmtree cannot enter a mode-0 directory
+            if os.path.lexists(path):
+                os.chmod(path, 0o700)
+        super().tearDown()
+
+    def unreadable(self, path: str, mode: int = 0) -> None:
+        os.chmod(path, mode)
+        self.denied.append(path)
+
+    def test_an_unreadable_ledger_is_refused_never_read_as_no_records(self) -> None:
+        self.assertEqual(self.call("run", request("m1", kind="measurement"))[0], 0)
+        executions = os.path.join(self.root, "executions")
+        self.unreadable(executions, 0o300)  # writable and searchable, not listable
+        rc, out, err = self.call("list", {})
+        self.assertEqual((rc, out), (1, None), "a listing that cannot read the ledger is no empty listing")
+        self.assertIn("EXECUTION REFUSED: [Errno 13] Permission denied", err)
+        rc, _, err = self.call("run", request("m2", kind="measurement"))
+        self.assertEqual(rc, 1, "m1 holds the box: an unreadable ledger must not make it free")
+        self.assertIn("Permission denied", err)
+        self.assertFalse(os.path.exists(os.path.join(executions, "m2.json")), "nothing written")
+        self.unreadable(executions, 0)
+        self.assertEqual(self.call("list", {})[0], 1)
+
+    def test_a_halt_that_cannot_be_looked_up_or_read_halts(self) -> None:
+        halt = os.path.join(self.root, "HALT")
+        os.symlink("HALT", halt)  # ELOOP: os.stat fails, so Path.exists() said "not halted"
+        rc, _, err = self.call("run", request("a"))
+        self.assertEqual(rc, 1, "a looping HALT link must not read as no halt")
+        self.assertIn("Too many levels of symbolic links", err)
+        os.unlink(halt)
+        os.symlink("nowhere", halt)  # dangling: a link is there, so this is no absent halt
+        self.assertEqual(self.call("run", request("a"))[0], 1)
+        os.unlink(halt)
+        with open(halt, "w") as f:
+            f.write("2026-11-11T00:00:00Z id=h1 unit\n")
+        self.unreadable(halt)
+        rc, _, err = self.call("run", request("a"))
+        self.assertEqual((rc, "Permission denied" in err), (1, True))
+        os.chmod(halt, 0o600)
+        os.unlink(halt)
+        # EACCES on the lookup itself needs an unsearchable state root, which `executions.lock`
+        # (opened in it first) rules out on a plain mode; an ACL or a mount can still deny it.
+        def denied(real: Any) -> Any:
+            def lookup(path: Any, *args: Any, **kwargs: Any) -> Any:
+                if os.fspath(path) == halt:
+                    raise PermissionError(13, "Permission denied", halt)
+                return real(path, *args, **kwargs)
+            return lookup
+
+        with mock.patch("os.lstat", side_effect=denied(os.lstat)), mock.patch("os.stat", side_effect=denied(os.stat)):
+            rc, _, err = self.call("run", request("a"))
+        self.assertEqual((rc, "Permission denied" in err), (1, True), err)
+        self.assertEqual(self.call("run", request("a"))[0], 0, "no HALT at all: not halted")
+
+    def test_an_unlistable_waiters_directory_counts_as_waiting(self) -> None:
+        window: dict[str, object] = {"box": "mac", "request": request("w1", kind="measurement"), "gap": 60}
+        self.assertEqual(self.call("window", window)[0], 0)
+        self.assertEqual(self.call("conclude", {"request_id": "w1", "verdict": "not-launched", "log": "/dev/null",
+                                                "evidence": "unit"})[0], 0)
+        waiters = os.path.join(self.root, "waiters")  # the first window's lock_waiters made it
+        self.unreadable(waiters, 0o300)
+        rc, out, _ = self.call("window", {**window, "request": request("w2", kind="measurement")})
+        self.assertEqual(rc, 3, "a waiter it cannot list may be waiting: the gap is paid")
+        self.assertEqual(out["gap"]["waiting"], [f"{waiters} (unreadable)"])
+
+
 if __name__ == "__main__":
     unittest.main()
