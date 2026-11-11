@@ -4386,7 +4386,7 @@ fcexclude="$(git -C "$lco" rev-parse --path-format=absolute --git-common-dir)/in
 mkdir -p "$(dirname "$fcexclude")" && touch "$fcexclude" && cp "$fcexclude" "$TMP/fc-exclude" && printf 'log_files/\n' >> "$fcexclude" || ko "could not ignore log_files (setup)"
 mkdir -p "$TMP/fcwts/n/log_files" "$TMP/fcwts/n/tools/log_files" && touch "$TMP/fcwts/n/log_files/r" "$TMP/fcwts/n/tools/log_files/r"
 "$FW" board set fcw t3 state=done "farside=testbox:$TMP/fcwts/n" >/dev/null
-expect "nested ignored directories no value names keep it, each named" 3 "^FARSIDE KEPT testbox:.*/fcwts/n (t3): ignored data that --regenerable does not name: log_files/ tools/log_files/$" -- \
+expect "a top-level value names the top-level directory alone: a nested one keeps it, named" 3 "^FARSIDE KEPT testbox:.*/fcwts/n (t3): ignored data that --regenerable does not name: tools/log_files/$" -- \
   "${FWC[@]}" fcw --task t3 --regenerable _build --regenerable log_files
 expect "a --regenerable value escaping the worktree is a usage error" 2 "farside-close: --regenerable ../n is neither a directory path inside a worktree" -- \
   "${FWC[@]}" fcw --task t3 --regenerable ../n
