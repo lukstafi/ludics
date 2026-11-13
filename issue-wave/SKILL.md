@@ -1182,11 +1182,11 @@ controlled through the tools in your coordinator's file, never through those com
      what failed** (the GPU loop's rerun is its own, below): each failing alias or test, three
      times at the red SHA on the same box, as one plain `tip-run`, a loop run the halt admits
      (references/executions.md *Adoption and halt*), so the coordinator holds no triage record and
-     the halt's triage stays free for its one owner, even mid-rerun. Its request is the loop's
-     payload with the red SHA as `requested_revision` (no `--tip`) and WITHOUT `"integration":
-     true`: the targeted batch is no verdict, and the field would make its pass one at the red
-     SHA. It takes its own `--id-prefix <wave>-<name>-rerun`, since an id under the loop's prefix
-     is the loop driver's own record; the loop's checkout, box and `--cpu`; and as its command the
+     the halt's triage stays free for its one owner, even mid-rerun. Use
+     `wave loop <wave.json> <name> --rerun <red id> -- <narrowed command>`: it derives the red SHA
+     from that loop's concluded red record, uses the loop's checkout, box and `--cpu`, and allocates
+     under `<wave>-<name>-rerun`. Its separate payload never carries `"integration": true`:
+     the targeted batch is no verdict at the red SHA. As its command use the
      loop's, narrowed to the failing aliases and run three times, exiting on the first failure,
      with no pipe, through a runner that forces each run to execute: a build system reads a second
      `build` of a target that passed as up to date and runs nothing (ludics#1106: three `dune build
@@ -1195,8 +1195,8 @@ controlled through the tools in your coordinator's file, never through those com
      box (a loop run queues for no slot): re-issue it. Three passes mean a flake, typically load
      on a box shared with workers' batches (wave-20261102: a `device_init_deadline` timing claim
      on macbook-pro beside five workers' batches, settled in three minutes). Then
-     `resume-launches` and start the loop's next run at the current tip at once, even when that
-     is still the red SHA: the targeted batch is no verdict, so the base gate keeps reading the
+     `resume-launches` and restart `wave loop` with `--resume-after <red id>` to run at the current
+     tip at once, even when that is still the red SHA: the targeted batch is no verdict, so the base gate keeps reading the
      loop's fail record there and nothing launches onto that tip until the new run passes. One
      failure is a regression, as a red CI
      rerun is below. The CI rerun is a new attempt, so judge that attempt and not the red already read:
@@ -1309,7 +1309,8 @@ controlled through the tools in your coordinator's file, never through those com
     rerun pending"` (a red that gates nothing may skip it: *On a regression*, below); one rerun
     at the same SHA on a box of that backend (the same `tip-run` and pinned command, which the
     halt admits with no `triage_reason`, leaving the halt's triage to its one owner);
-    green, a flake, `resume-launches`; red, attribution by `git log --first-parent <last green on that
+    green, a flake, `resume-launches` and restart the loop with `--resume-after <red id>`
+    to judge the current tip at once, even at the red SHA; red, attribution by `git log --first-parent <last green on that
     backend>..<red tip>` with one triage owner, as in the order above, and that backend's next
     loop run verifies the fix-forward under the halt before `resume-launches`. The last green on a
     backend is the nearest commit below the red tip on its first-parent chain that a pass of
