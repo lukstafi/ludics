@@ -688,9 +688,7 @@ through the tools in your coordinator's file, never through those commands.
 What the driver leaves to you while it runs: starting it and the heartbeat as background commands
 (one driver per wave: a second refuses on its lock), re-arming the heartbeat each tick, reading
 each merge off GitHub (a closed row is the driver's report, not your verification), launching the
-native tasks that follow a CLI task's merge (*Launch*), and stopping it. The driver does not end
-when its queue is empty and every row is done: `touch <wave dir>/drive.stop` once the last
-hand-back is in and every attention line is answered (*Close out*).
+native tasks that follow a CLI task's merge (*Launch*), and stopping it (*Close out*).
 
 - **Stay alive, but design for dying.** A Claude Desktop coordinator is paused by the app about
   fifteen minutes after its last main-conversation activity, and a background waiter held
@@ -818,7 +816,6 @@ hand-back is in and every attention line is answered (*Close out*).
     head's run through, then one batched push carrying the held fixes. A worker told to freeze
     holds locally-verified commits unpushed with their threads deliberately unresolved (resolving
     would claim work not visible on the PR).
-  would claim work not visible on the PR).
 - **Roll-forward merges and the integration loop (ahrefs/ocannl#861, decided 2026-08-30).**
   The merge gate is ship-pr's (*How stale the base has grown*): one build verdict for the PR's
   own head, never the base's tip. `pr-review.sh merge` warns loudly on a stale base but no longer

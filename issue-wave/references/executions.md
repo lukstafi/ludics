@@ -1068,7 +1068,9 @@ By default the coordinator takes a second standing reservation at launch, beside
 one, its `checkout` the far-side worktree, on the task's GPU box whenever the plan homes the task there or names a GPU iteration leg
 for it: one per such box, request id `<wave>-<issue>-<box>-iterate`, the agent host still the
 worker's (ludics-lite#621). A change to code that every GPU backend emits or runs (codegen, which
-reaches every staged or hand-built kernel, as the project's agent notes say) takes one on every GPU box the
+reaches every staged or hand-built kernel, not only the tests that pin emitted text:
+lukstafi/ocannl-staging#1491 ran only the text pins and a staged kernel failed on CUDA, #1497; OCANNL's
+`.github/wave-brief.md` and its *Codegen text inventory* notes name those tests) takes one on every GPU box the
 roster has up, whatever the plan's legs say, so the coordinator reads the issue for that as well
 as the plan: ahrefs/ocannl#1661, a rog-homed CLI worker with no standing record on a HIP box, spent
 five request round trips on HIP legs (wave-20261102). A GPU box that IS the agent host (a CLI worker resident there) takes

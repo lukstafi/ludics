@@ -145,7 +145,7 @@ kit invents none.
 ## When to call each verb
 
 A queued CLI task needs only its part, its `queue.json` entry and a running driver (step 9): the
-driver reads the launch gate, preps, launches and answers it: steps 2, 4 and 8 are its calls, and
+driver reads the launch gate, preps, launches and answers it. Steps 2, 4 and 8 are its calls, and
 it launches through `wave launch` where step 3 would spawn. The steps below
 are otherwise yours: for a native task, for a CLI task you launch yourself, and for any turn the
 driver hands you as an attention line.
