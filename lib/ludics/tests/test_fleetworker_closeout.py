@@ -90,7 +90,7 @@ class NoPR(Refusing):
     def write(self, _cfg: Any, args: list[str]) -> tuple[int, str]:
         self.calls.append(args)
         if args[:2] == ["execution", "conclude"]:
-            data = json.loads(args[2])
+            data = json.loads(ex.read_payload("conclude", args[1:]))
             target = next(r for r in self.records if r["request_id"] == data["request_id"])
             target.update(data, state="concluded", history=[{"data": data}])
             return 0, json.dumps(target)
@@ -127,6 +127,7 @@ class NoPR(Refusing):
         self.assertEqual(self.records[0]["verdict"], verdict)
         self.assertEqual(self.doc["tasks"][0]["fields"]["state"], "done, no PR")
         self.assertNotIn("pr", self.doc["tasks"][0]["fields"])
+        self.assertFalse(os.path.exists(self.calls[0][2]), "staged payload removed after conclude returns")
 
     def test_a_passed_run_closes_with_pass(self) -> None:
         self.assert_run_closes("0", "pass")
@@ -189,6 +190,44 @@ class NoPR(Refusing):
             self.assertEqual(json.loads(closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")["a"]), data)
             read.assert_not_called()
             head.assert_not_called()
+
+    def test_matching_keeps_each_records_read_refusal_and_exit_code(self) -> None:
+        for refusal in (ex.Refusal("checkout is missing", 1), ex.Refusal("execution host did not answer", 4),
+                        ex.Refusal("two\nlines", 1)):
+            output = io.StringIO()
+            with (mock.patch.object(ex, "observed_sha_of", return_value=refusal),
+                  contextlib.redirect_stdout(output), self.assertRaises(cli.Exit) as caught):
+                closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/run"], "evidence")
+            self.assertEqual(caught.exception.rc, refusal.rc)
+            self.assertIn("record a: " + " ".join(refusal.text.splitlines()), output.getvalue())
+            self.assertEqual(len(output.getvalue().splitlines()), 1)
+
+    def test_unreachable_run_reader_stays_exit_four(self) -> None:
+        output = io.StringIO()
+        with (mock.patch.object(ex, "observed_sha_of", return_value=OID),
+              mock.patch.object(ex, "read_run", return_value=ex.Refusal("test-run host unreachable", 4)),
+              mock.patch.object(ex, "read_bg_run", return_value=ex.Refusal("bg-run host unreachable", 4)),
+              contextlib.redirect_stdout(output), self.assertRaises(cli.Exit) as caught):
+            closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/run"], "evidence")
+        self.assertEqual(caught.exception.rc, 4)
+        self.assertIn("record a: bg-run host unreachable", output.getvalue())
+
+    def test_one_match_does_not_hide_an_unreachable_second_record(self) -> None:
+        other = record("b", checkout="/other")
+        other["request"]["execution_host"] = "otherbox"
+        self.records.append(other)
+
+        def observed(_cfg: Any, _record: Any, host: str, _checkout: str) -> str | ex.Refusal:
+            return OID if host == "box" else ex.Refusal("second host unreachable", 4)
+
+        output = io.StringIO()
+        with (mock.patch.object(ex, "observed_sha_of", side_effect=observed),
+              mock.patch.object(ex, "read_run", return_value=run_record(wt="/wt", whead=OID, launched=OID)),
+              contextlib.redirect_stdout(output), self.assertRaises(cli.Exit) as caught):
+            closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a", "b"], ["/run"], "evidence")
+        self.assertEqual(caught.exception.rc, 4)
+        self.assertIn("matches 1 standing records", output.getvalue())
+        self.assertIn("record b: second host unreachable", output.getvalue())
 
     def test_standing_none_needs_no_run(self) -> None:
         self.records = []

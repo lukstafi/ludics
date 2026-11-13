@@ -2699,6 +2699,38 @@ expect "check lists each row not done and exits 3, without the lease or any iden
   ok "...each written as given" || ko "ck board: $(cat "$ISSUE_WAVE_STATE/boards/ck.json")"
 setup_step "could not write ck-1's state (setup)" "$FW" board set ck ck-1 "state=merged #1"
 expect "...and 0 once every row is done" 0 "^BOARD CHECK ck: 1 rows, 1 done, 0 not done$" -- "$FW" board check ck
+# #1123: use the real conclude CLI and registry, so a JSON string mistaken for a payload-file
+# argument cannot pass a mock writer. Both verdicts finish the row; a retry writes nothing.
+FNP=(env FLEET_BOXES="testbox other" "$FW")
+npwt="$TMP/no-pr close wt"; git clone -q "$TMP/proj.git" "$npwt"
+nphead=$(git -C "$npwt" rev-parse HEAD)
+for npcode in 0 1; do
+  npid="np-r-$npcode"; npdir="$TMP/no-pr close runs/$npcode"; mkdir -p "$npdir"
+  printf '%s\n' "$npcode" > "$npdir/exit"
+  printf 'exit: %s\n' "$npcode" > "$npdir/log"
+  printf '%s\n' "$npwt" > "$npdir/wt"
+  printf '%s\n' true > "$npdir/cmd"
+  printf '%s\n' "$nphead" > "$npdir/head"; : > "$npdir/dirty"
+  jq -n --arg id "$npid" --arg co "$npwt" --arg rev "$nphead" \
+    '{request_id:$id, wave:"npw", worker:$id, transport:"subagent", issue:"o/r#1123", purpose:"no PR close fixture",
+      agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:$rev,
+      kind:"correctness", standing:true, checkout:$co}' > "$TMP/np-request.json"
+  setup_step "could not reserve no-PR record (setup)" "${FNP[@]}" execution run "$TMP/np-request.json"
+  setup_step "could not create no-PR row (setup)" "${FNP[@]}" board set --create --new-row npw "$npid" \
+    repository=o/r "worker=$npid" "standing=$npid" state=implementing
+  expect "no-PR close concludes a real standing record (run exit $npcode)" 0 'done, no PR; 1 standing concluded' -- \
+    "${FNP[@]}" board close npw "$npid" --no-pr --run "$npdir"
+  npverdict=pass; [ "$npcode" = 0 ] || npverdict=fail
+  "${FNP[@]}" execution list > "$TMP/np-records.json"
+  jq -e --arg id "$npid" --arg verdict "$npverdict" --arg co "$npwt" \
+    'any(.[]; .request_id == $id and .state == "concluded" and .verdict == $verdict and .remote_checkout == $co)' \
+    "$TMP/np-records.json" >/dev/null && ok "...the real registry keeps $npverdict on its checkout" || ko "no-PR record not concluded $npverdict"
+  expect "...the board's done word passes check (run exit $npcode)" 0 '0 not done$' -- "${FNP[@]}" board check npw
+  npbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/npw.json")
+  expect "...the completed no-PR close is a no-op (run exit $npcode)" 0 'already closed$' -- \
+    "${FNP[@]}" board close npw "$npid" --no-pr --run "$npdir"
+  [ "$npbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/npw.json")" ] && ok "...no board write on retry" || ko "no-PR retry rewrote the board"
+done
 # board takeover (ludics-lite#731): the stored brief, then the state at takeover from the row's keys and
 # the live sources; a read, so no lease and no identity; a missing key printed missing, never guessed.
 tkwt="$TMP/tk wt"; git init -q -b main "$tkwt" && git -C "$tkwt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tk

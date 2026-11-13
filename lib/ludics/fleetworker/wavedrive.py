@@ -710,9 +710,9 @@ class Driver:
         kept = self.path("handbacks", f"{worker.task}.md")
         os.makedirs(os.path.dirname(kept), exist_ok=True)
         with open(message, encoding="utf-8", errors="surrogateescape") as f:
-            write_atomically(kept, f.read())
-        with open(message, encoding="utf-8", errors="surrogateescape") as f:
-            runs = re.findall(r"^RUN (/[^\r\n]+)$", f.read(), re.MULTILINE)
+            contents = f.read()
+        write_atomically(kept, contents)
+        runs = re.findall(r"^RUN (/[^\r\n]+)$", contents, re.MULTILINE)
         if not pr and not runs:
             return self.attention(worker, turn, "handback", "the hand-back names no PR (the row has none, the message no"
                                                             " /pull/<n>); close the task by hand", kept)

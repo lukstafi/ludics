@@ -71,13 +71,15 @@ a merged PR or matching run evidence keeps the steps by hand.
 Exit: 0 closed (or already closed); 1 refused, or a write refused -- the line says what landed, and a
 re-run resumes; 2 usage; 4 the anchor or GitHub did not answer. The steps run through this
 fleet-worker.sh, as ``execution tip-run``'s do, with their output captured: only this verb's line is
-printed, with the last line of a refused step in it.
+printed, with the last line of a refused step in it. Matching names each record's read refusal;
+an unreachable host remains exit 4, even if another record matched (uniqueness is unverified).
 """
 
 import json
 import os
 import re
 import shlex
+import tempfile
 from typing import Any, cast
 
 from ludics import cli
@@ -216,6 +218,24 @@ def step(cfg: Config, args: list[str]) -> tuple[int, str]:
     return rc, lines[-1] if lines else ""
 
 
+def conclude_payload(cfg: Config, payload: str) -> tuple[int, str]:
+    """The conclude CLI takes a file, never JSON text in argv; remove it after the child exits."""
+    path = ""
+    try:
+        descriptor, path = tempfile.mkstemp(prefix="fw-board-close.", suffix=".json", dir=os.environ.get("TMPDIR") or "/tmp")
+        with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+            f.write(payload + "\n")
+        return stepped(cfg, ["execution", "conclude", path])
+    except OSError as exc:
+        return 1, f"cannot stage conclusion payload: {exc.strerror}"
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def never_ran(out: str) -> bool:
     """Whether a conclusion's output, the registry's record, reads ``not-launched``: a standing leg
     no batch ran under (step 4). Output that is no JSON object reads as a run."""
@@ -233,6 +253,7 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
     matched: dict[str, str] = {}
     for directory in runs:
         candidates: list[tuple[str, str]] = []
+        failures: list[tuple[str, ex.Refusal]] = []
         for request in ids:
             record = record_of(records, request)
             assert record is not None  # to_conclude validated the row's ownership
@@ -253,26 +274,41 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
                 continue
             head = ex.observed_sha_of(cfg, record, host, checkout)
             if isinstance(head, ex.Refusal):
+                failures.append((request, head))
                 continue
             facts = ex.read_run(cfg, host, directory, head)
-            payload: ex.Conclusion = ex.Refusal("no matching test-run", 1)
+            why = facts if isinstance(facts, ex.Refusal) else ex.Refusal(
+                f"run checkout {shlex.quote(facts.get('wt', ''))} is not recorded checkout {shlex.quote(checkout)}", 1)
+            payload: ex.Conclusion = why
             if not isinstance(facts, ex.Refusal) and ex.same_checkout(facts.get("wt", ""), checkout):
                 clause = ex.standing_run_clause(facts, directory, host)
-                if not isinstance(clause, ex.Refusal):
+                if isinstance(clause, ex.Refusal):
+                    why = clause
+                else:
                     payload = ex.Payload(ex.standing_handback(request, host, checkout, head, evidence,
                                                              clause[0], (directory, clause[1])))
             if isinstance(payload, ex.Refusal):
                 bgrun = ex.bg_run_path(cfg)
                 bg = ex.read_bg_run(cfg, directory, host, bgrun)
-                if not isinstance(bg, ex.Refusal) and ex.run_request(bg) == ("id", request):
+                if isinstance(bg, ex.Refusal):
+                    if bg.rc == 4:
+                        why = bg
+                elif ex.run_request(bg) == ("id", request):
                     payload = ex.conclude_from_bg_run(cfg, directory, request, host, host, head, checkout, evidence, bgrun)
+                    if isinstance(payload, ex.Refusal):
+                        why = payload
             if isinstance(payload, ex.Payload):
                 data = cast(dict[str, Any], json.loads(payload.json))
                 if data.get("verdict") == "not-launched" or ex.same_checkout(str(data.get("remote_checkout", "")), checkout):
                     candidates.append((request, payload.json))
-        if len(candidates) != 1:
+                    continue
+            failures.append((request, why))
+        unreachable = any(why.rc == 4 for _, why in failures)
+        if len(candidates) != 1 or unreachable:
+            detail = "; ".join(f"record {shlex.quote(request)}: {' '.join(why.text.splitlines())}" for request, why in failures)
             raise refused(wave, task, f"run {shlex.quote(directory)} matches {len(candidates)} standing records;"
-                          " need exactly one box and checkout (bg-run requires its request file); nothing closed")
+                          " need exactly one box and checkout (bg-run requires its request file)"
+                          + (f"; {detail}" if detail else "") + "; nothing closed", 4 if unreachable else 1)
         request, serialized = candidates[0]
         if request in matched:
             raise refused(wave, task, f"multiple runs name standing record {shlex.quote(request)}; nothing closed")
@@ -330,10 +366,11 @@ def cmd_close(cfg: Config, args: list[str]) -> int:
 
     unused: list[str] = []
     for request, checkout in todo:
-        command = (["execution", "conclude", payloads[request]] if no_pr else
-                   ["execution", "conclude", "--standing-handback", "--request", request, "--observed-from", checkout,
-                    "--evidence", evidence, "--verdict", "pass"])
-        rc, out = stepped(cfg, command)
+        if no_pr:
+            rc, out = conclude_payload(cfg, payloads[request])
+        else:
+            rc, out = stepped(cfg, ["execution", "conclude", "--standing-handback", "--request", request,
+                                    "--observed-from", checkout, "--evidence", evidence, "--verdict", "pass"])
         if rc != 0:
             raise stopped(f"conclude {request}", rc, out.splitlines()[-1] if out else "")
         landed.append(request)
