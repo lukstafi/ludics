@@ -22,6 +22,14 @@ class JobSteps(unittest.TestCase):
         self.assertEqual(read.call_args.args[0], "read")
         self.assertIn("repos/o/r/actions/jobs/34", read.call_args.args[1])
 
+    def test_fractional_and_offset_stamps_are_preserved(self) -> None:
+        session = self.session()
+        url = "https://github.com/o/r/actions/runs/12/job/34"
+        for stamp in ("2026-11-13T12:34:56.000Z", "2026-11-13T12:34:56.123456+01:00",
+                      "2026-11-13T12:34:56.000-07:00", "2026-11-13T12:34:56+01:00"):
+            with self.subTest(stamp=stamp), mock.patch.object(session, "retry", return_value=GhOk(stamp)):
+                self.assertIn(f"steps finished successfully at {stamp};", diagnostic(session, "o/r", [("build", url)]))
+
     def test_repository_case_does_not_hide_evidence(self) -> None:
         session = self.session()
         with mock.patch.object(session, "retry", return_value=GhOk("2026-11-13T12:34:56Z")):

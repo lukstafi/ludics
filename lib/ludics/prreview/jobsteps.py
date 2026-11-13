@@ -3,7 +3,7 @@
 Boundary: only pending checks retained by the gate's advisory/selection fold, with an exact
 GitHub Actions job URL in this repository, are read. One budgeted job-endpoint read per unique
 job per heartbeat, none between heartbeats. A still-pending job with an array of steps containing
-a completed, successful ``Complete job`` and a UTC completion timestamp gets prose only,
+a completed, successful ``Complete job`` and an RFC 3339 completion timestamp gets prose only,
 provided every step is completed with conclusion success or skipped. Repository case is ignored.
 Missing fields, failed reads, external checks, finished jobs and incomplete steps add nothing.
 No run-job listing, logs, annotations, retries of other attempts, or verdict changes.
@@ -24,7 +24,9 @@ FINISHED_JQ = (
     'select(.name == "Complete job" and .status == "completed" and .conclusion == "success") | '
     '.completed_at // empty'
 )
-_STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+_STAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})"
+)
 
 
 def diagnostic(session: GhSession, repo: str, jobs: list[tuple[str, str]]) -> str:

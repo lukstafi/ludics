@@ -268,7 +268,7 @@ gh() {
   "repos/$REPO/actions/jobs/201")
     body=$(jq -cn --arg complete "$JOB_STEPS_COMPLETE" --arg earlier "$JOB_EARLIER_CONCLUSION" '{name:"build",status:"in_progress",conclusion:null,
       steps:[{name:"Build",status:"completed",conclusion:$earlier}, {name:"Complete job",status:(if $complete == "yes" then "completed" else "in_progress" end),
-        conclusion:(if $complete == "yes" then "success" else null end),completed_at:"2026-11-13T12:34:56Z"}]}')
+        conclusion:(if $complete == "yes" then "success" else null end),completed_at:"2026-11-13T12:34:56.000Z"}]}')
     ;;
   "repos/$REPO/actions/runs/101/jobs?per_page=100")
     body='{"jobs":[{"name":"build","status":"in_progress","conclusion":null,"created_at":"2026-10-04T00:00:00Z","completed_at":null}]}'
@@ -1109,7 +1109,7 @@ test_completed_steps_annotate_without_a_green_verdict() {
   run wait cmd_checks "$REPO#7" --wait=300
   assert_eq "$(rc wait)" 4 "successful steps never publish a verdict ($(err wait))"
   assert_contains "$(out wait)" "checks: verdict=pending" "the trailer stays pending"
-  assert_contains "$(err wait)" "steps finished successfully at 2026-11-13T12:34:56Z" "heartbeat carries the finish time"
+  assert_contains "$(err wait)" "steps finished successfully at 2026-11-13T12:34:56.000Z" "heartbeat carries the finish time"
   assert_contains "$(err wait)" "conclusion has not been published; this is a GitHub-side delay" "explains the delay"
   assert_eq "$(tr '\n' ' ' <"$SLEEP_LOG")" "60 120 120 " "polling and ceiling unchanged"
 }

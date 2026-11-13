@@ -39,6 +39,7 @@ from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.budget import pause
 from ludics.prreview.clock import Clock, FuncClock, age_of, fmt_age, freshest_age
 from ludics.prreview.images import RedJob, report_lines as image_lines
+from ludics.prreview.jobsteps import diagnostic as step_diagnostic
 from ludics.prreview.runners import HeadRun, Idle, Orphan, Recover, Stop, Wait, report_line, scan
 from ludics.prreview.shtext import herestring_lines, is_digits, placeholder, tab_fields
 from ludics.prreview.workflows import RecognitionLimits, Reads, head_within_paths_ignore
@@ -1484,9 +1485,7 @@ class Gate:
                 else:
                     note = f"{self.check_pending} check(s) running: {running_list(self.pending_names)}"
                 if self.steps_on and self.pending_jobs:
-                    from ludics.prreview.jobsteps import diagnostic
-
-                    detail = diagnostic(self.session, repo, self.pending_jobs)
+                    detail = step_diagnostic(self.session, repo, self.pending_jobs)
                     if detail:
                         note += f"; {detail}"
                 warn(
