@@ -65,8 +65,9 @@ The template holds no project fact. It takes them from three places:
 
 This repository's own project part is `.github/wave-brief.md`.
 
-The template is kept in step with issue-wave SKILL.md's *The brief*. A PR that
-changes a brief rule changes the template in the same diff. `scripts/check-prompts.sh` reads the
+The template is where a worker's rules live; issue-wave SKILL.md's *The brief* says what the
+coordinator still writes into a task part and points here for the rest. A PR that changes a
+worker's rule changes the template in the same diff. `scripts/check-prompts.sh` reads the
 template (checkprompts/brieftemplate.py). It checks that every placeholder in it is one prep gives,
 that every path and heading it names exists, and that no step a PR retired is still in it.
 
@@ -143,8 +144,16 @@ kit invents none.
 
 ## When to call each verb
 
-1. **Once per box per wave,** before the first prep, run the provider preflight
-   (`fleet-worker.sh preflight <box> --native-claude|--native-codex`).
+A queued CLI task needs only its part, its `queue.json` entry and a running driver (step 9): the
+driver reads the launch gate, preps, launches and answers it. Steps 2, 4 and 8 are its calls, and
+it launches through `wave launch` where step 3 would spawn. The steps below
+are otherwise yours: for a native task, for a CLI task you launch yourself, and for any turn the
+driver hands you as an attention line.
+
+1. **Once per box per wave,** before the first prep, run the provider preflight: `fleet-worker.sh
+   preflight <box> --native-claude|--native-codex` for a native worker's box, and `preflight <box>
+   --codex` as the early check of a Codex CLI host. `launch` runs the box's preflight itself on
+   every CLI launch, so the early check only finds a refusal before a launch meets it.
 2. **Per task:**
 
    ```
@@ -208,6 +217,10 @@ kit invents none.
               "project_part": ".github/review-checkpoint.md"}
    ```
 
+   `project_part` is optional: it names a project's own review part in its checkout (OCANNL has
+   `.github/review-checkpoint.md`; this repository has none), and a wave file without the key
+   reviews with the shipped parts alone.
+
    A worker's request for its review, or for the confirm before it merges, is answered with one
    call, run in the background since a review takes minutes:
 
@@ -225,9 +238,10 @@ kit invents none.
    (it rebutted and pushed nothing), add `--again`. `--dry-run` posts nothing, for trying a
    reviewer or a project part on a PR that already merged.
 9. **The handoff driver.** A CLI worker ends its turn for every handoff, and most of those turns
-   need no judgment. Start one driver per wave, in the background, once the first Codex CLI
-   worker is launched (it serves Codex CLI workers; a Claude CLI worker's turns, like a native
-   worker's, are yours to answer with the same verbs):
+   need no judgment. Start one driver per wave, in the background, as soon as it has something to
+   serve: with a `queue.json` that is before any worker exists, since the driver launches what is
+   queued; without one, once the first Codex CLI worker is launched. It serves Codex CLI workers; a
+   Claude CLI worker's turns, like a native worker's, are yours to answer with the same verbs:
 
    ```
    fleet-worker.sh wave drive <wave.json>
@@ -245,7 +259,9 @@ kit invents none.
    of its head covers.
    The heartbeat prints each new attention line and returns early when one arrives. Answer the
    turn by hand; the worker's next turn is the driver's again. `wave turn <wave.json> <task>`
-   answers one worker's turn, once, when no driver runs. A stop file `drive.stop` ends the driver.
+   answers one worker's turn, once, when no driver runs. The driver does not end when its queue is
+   empty and every row is done: once the last hand-back is in and every attention line answered,
+   `touch <wave dir>/drive.stop` ends it at its next tick.
    The markers, the answers and what is deliberately left to you are `wavedrive.py`'s header.
 
    The driver also launches what you queue. Write each CLI task's part (`tasks/<task>.md`) and

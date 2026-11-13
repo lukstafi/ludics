@@ -96,7 +96,7 @@ The rest is prose in this file and is edited in place: the **sequencing plan** p
 task that maintains it (Inputs, just below), the **fleet roster** with its hardware and the
 placement rule (Inputs), the **project** whose conventions, test suites and tracker the
 Supervise and Brief sections cite (OCANNL, with PRs on a staging fork and issues upstream), and
-the per-box **environmental traps** in the brief template. None of those are read by the
+the per-box **environmental traps** in the project's brief part. None of those are read by the
 script; they are what the coordinator tells its workers.
 
 ## Inputs
@@ -232,12 +232,12 @@ sprint, settled five more rules (ludics#867):
   batches take that box's slots. The agent host's correctness slots do not cap the native count.
   The wave summary says which workers run where. Under an explicit native choice the sprint stops
   at the native limit (*Launch*).
-- **The pre-push scope** is *The brief*'s (the tests the change reaches, less the slow and
+- **The pre-push scope** is the project part's (the tests the change reaches, less the slow and
   training members CI runs). A sprint's loaded boxes are where the full set ran into the runner's
   caps.
-- **A cross-cutting change's long run goes to a CPU-only box or to CI.** *The brief* defines
+- **A cross-cutting change's long run goes to a CPU-only box or to CI.** The project part defines
   its local pre-push scope; the full reach can be hundreds of tests.
-  The worker requests that long run (*The brief*, Execution handoff) instead of running it under its standing
+  The worker requests that long run (the shipped `requests.md`) instead of running it under its standing
   reservation on a GPU box, and the coordinator assigns it to a box whose GPU no leg of the wave
   needs, or leaves it to CI, never to a box whose GPU tokens the wave's GPU legs need. On a GPU box
   such a run holds a non-standing correctness record, which refuses every measurement window there
@@ -320,7 +320,7 @@ Scan the scoped issues for open design decisions: plan entries or issue bodies t
 "decide X vs Y", plus the plan's design-questions section when present.
 
 **Read each issue's comments before triaging its question**, as `gh issue view N --repo O/R
---json number,title,body,comments` (*The brief*'s read form). The plan's entry can be older than
+--json number,title,body,comments` (the brief's read form, `templates/shared/task.md`). The plan's entry can be older than
 the issue, and a question the maintainer already decided there is no question: the decision is
 binding, the gate posts no tier-2 comment and asks no tier-3 question for it, and the brief names
 that comment, by URL, as binding (wave-20261110-ocannl posted a tier-2 "refuse" on
@@ -406,76 +406,90 @@ section; a Claude Code coordinator launching only Claude workers can skip it.
 | Transport | Provider and agent host | Launch and supervision |
 | --- | --- | --- |
 | Native worker | Coordinator's provider; the agent host is wherever the runtime runs its subagents, never a box that is merely reachable ([native-workers.md](references/native-workers.md#placement-and-launch)) | Coordinator-created external worktree, the runtime's spawn/message/wait tools and the board: [native-workers.md](references/native-workers.md) plus your coordinator's file, [native-claude.md](references/native-claude.md) or [native-codex.md](references/native-codex.md). |
-| CLI worker | Claude or Codex, independent of the coordinator; any reachable fleet box | `fleet-worker.sh launch --kind claude` or `--kind codex`, then `attach/status/unstick`: [cli-claude.md](references/cli-claude.md). |
+| CLI worker | Claude or Codex, independent of the coordinator; any reachable fleet box | `wave launch`, or `queue.json` and `wave drive`; by hand `fleet-worker.sh launch --kind claude` or `--kind codex`, then `attach/status/unstick`: [cli-claude.md](references/cli-claude.md), with [cli-codex.md](references/cli-codex.md) for a Codex coordinator. |
 | App worker (Codex) | Codex, on a box the app has as a project host; the user's explicit choice | [separate-codex.md](references/separate-codex.md). An ordinary supervised wave never implies it. |
 | App worker (Claude) | Claude, on a box that is one of the user's saved SSH connections in the Claude desktop app, with the coordinator in that app; the user's explicit choice | `start_session` with `target: "ssh"`: [app-claude.md](references/app-claude.md). An ordinary supervised wave never implies it. |
+
+**What you decide, and which verb launches.** Per task you decide its profile and host (the
+plan's placement table), its legs and planning mode, its order and what it waits for, and you
+search the open PRs by its topic first (prep's own check covers only the issue number and the
+branch). The verbs do the rest, on one of three routes
+([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb)):
+
+- **A queued CLI task**: its part in `tasks/<task>.md` and an entry in the wave directory's
+  `queue.json` (file order, `after`, a `capacity` per host), served by `fleet-worker.sh wave drive
+  <wave.json>`. Each tick the driver reads the launch gate, prepares the first due task at the main
+  branch's tip as fetched then (so a dependent starts from the base its prerequisite merged into),
+  and launches it. A prep that refuses, or a launch that ended in doubt, is an attention line, and
+  that task is then yours.
+- **A CLI task you launch yourself**: `fleet-worker.sh wave prep <wave.json> <task> --base <sha>
+  --profile <name> [--host <box>]`, then `wave launch <wave.json> <task>`, which runs `launch` (the
+  box's preflight, the base gate, the worktree and the standing reservation in one fenced step)
+  from what prep recorded. The raw `launch` and its recovery are
+  [cli-claude.md](references/cli-claude.md#launch).
+- **A native task**: `wave prep`, then `fleet-worker.sh gate --target-repo <owner/repo> --wait
+  <seconds>` right before the runtime's spawn, then `agent=` and `state=launched` on its row
+  ([native-workers.md](references/native-workers.md#placement-and-launch)).
+
+The driver's launches shape yours in two ways. It reads the launch gate itself, synchronously
+inside its tick (a `base --wait=360` read), so through a merge burst it answers no worker's turn
+until that read ends; and while it reads, your own `gate` for a native spawn is refused because the
+branch already has a base observer ("Nothing was read"): run it again. And the queue launches CLI
+tasks only, so a native task that follows a queued CLI task is yours to launch on that task's
+merge: its board row turning `merged`, read off the heartbeat, is the cue.
 
 ### Skill-freshness preflight
 
 Per launch, on the launching box (ludics-lite#3): `launch` runs it itself before every worker,
-and `fleet-worker.sh preflight <box>` (`--codex` for a Codex CLI worker) runs it alone for
-diagnosis. Native workers use `preflight <box> --native-codex` or `--native-claude` for their
-provider: the same freshness, skill-link and cross-box checks, without CLI login, a headless
-model probe, or tmux; native startup is verified through the runtime's own tools instead. Both
-modes bring that box's `~/ludics` to upstream main and refuse on anything short of it: any
-local change, tracked or untracked, anywhere in the checkout (the whole tree is served; the one
-exception, a stray `.claude/` left by running claude inside it, is reported, not refused, and
-still refuses if it blocks the fast-forward), a branch other than main, a HEAD that is not
-origin/main after the fast-forward (an unpushed local commit is divergence to surface, not text
-to deploy), a deployed skill symlink that does not point into the checkout (and, for Codex, the
-three `~/.codex/skills` links the README's Codex loop installs), and, for CLI workers only, a
-live one-word headless turn. `claude auth status` cannot stand in for that probe (2026-09-02:
-it reported `loggedIn:true` on minix while every `claude -p` there failed with an expired,
-unrefreshable OAuth session). Every mode refuses a box with no Python >= 3.12 in `scripts/py`'s
-order, under which every `fleet-worker.sh` verb there but the slot probe runs (ludics-lite#403).
-Every mode also makes the box's GitHub call, `gh api user`, in the
-session kind a worker or leg uses, a non-interactive ssh (a local shell on the anchor), and
-refuses a token that call rejects (ludics-lite#360: on 2026-09-23 a dead keyring token surfaced
-an hour into a worker's task, and on 2026-09-24 minix's token answered HTTP 401 over ssh while
-`gh auth status` at its desktop console was green - the console and the status read prove
-nothing about the worker's session). It also asks git for github.com's HTTPS credential as a
-push does (`git credential fill`) and tries what comes back against GitHub, never printing it,
-refusing when none comes back, GitHub refuses it, or it is another account's than gh's, with
-`gh auth setup-git` as the repair; and
-for a CLI worker it repeats the probe in a throwaway tmux session, of the running server (whose
-environment the worker inherits) or of one started from its own shell as the worker's would be,
-refusing a session whose credential does not work or answers as another account (repair: restart
-that server once its workers finish, or fix the default shell's startup; ludics-lite#374).
-`launch` and `unstick` repeat that probe just before they create the worker's session. A GitHub that does not
-answer (no reply within `FLEET_GH_TIMEOUT`, 30 s per call; a connection error; an HTTP 5xx) is
-noted on the OK line, not refused, as a sleeping sibling is. A refusal names its reason; surface it rather than launching
-stale, and never reset a dirty checkout silently - a divergent local edit may be a fix worth
-keeping. Every launch, not just the first: upstream main advancing mid-wave is normal,
-after-merge's push-side fast-forward is best-effort, and the deployed skills are symlinks into
-that checkout, so a stale checkout runs stale skill text silently (the ludics-classic gh-609 failure
-class; two consecutive merge cycles once stranded three boxes). Three refusals are user-side
-repairs: an expired Claude login on a box needs an interactive `claude auth login` there, a
-refused GitHub token needs the fleet PAT in the box's `~/.config/fleet/gh-token.sh` replaced from
-the anchor's and stored in gh there (the refusal prints both commands; no session exports the
-token, ludics-lite#567), and missing `~/.codex/skills` links need the README loop
-run once on that box. A box the fleet only executes on hosts no launch, so it is refreshed where
-the fleet reaches it for work instead: every `execution run`/`dispatch` and the daily sweep's
-wake step run `fleet-worker.sh refresh <box>...`, this same freshness check alone, and report a
-divergent checkout without resetting it (ludics-lite#362, [executions.md](references/executions.md)).
+and `fleet-worker.sh preflight <box>` runs it alone: `--codex` for a Codex CLI host, as the early
+check before its first launch, and `--native-codex` or `--native-claude` once per box for native
+workers, which take the same freshness, skill-link and cross-box checks without CLI login, a
+headless model probe, or tmux. Every mode brings that box's `~/ludics` to upstream main and
+refuses on anything short of it:
 
-**Cross-box legs need cross-box ssh, and the fleet has it.** The brief tells a GPU-box worker
-to drive the other GPU box over ssh for a one-off leg (2026-09-04: minix had no credential for
-rog and the CUDA arm of ahrefs/ocannl#892 went unmeasured, lukstafi/ludics-lite#57). Since
-2026-09-08 every box reaches the other two non-interactively: each has its own
-`~/.ssh/id_ed25519` (rog's existing one, minix's minted for this), its public key sits in the
-other boxes' `authorized_keys` (the Mac's included, Remote Login being on), and `~/.ssh/config`
-on the boxes carries the site's canonical GPU aliases over Tailscale
-MagicDNS with that key, so the same names work from every box. `fleet-worker.sh preflight`
-probes it on every launch: `ssh -o BatchMode=yes <sibling> exit 0` from the box to each fleet
-sibling (the `FLEET_BOXES` roster minus the box itself), refusing on a missing credential
-(`Permission denied`, an unverifiable host key) and only noting a sibling that does not answer -
-that one is asleep or off the network, which `wake-lab.sh` owns, and a worker whose task has no
-leg there still launches; `--no-cross` skips the probe, and `FLEET_CROSS_TIMEOUT` (20 s) bounds
-each one. A new box joins in both directions: mint its key and append the public key to every
-existing box's `authorized_keys`; append every existing box's public key to ITS
-`authorized_keys`; add the aliases for the others on it AND its own alias on each existing box;
-then run the preflight on the new box and on each existing one, since a box's preflight checks
-only its outbound reach.
+- any local change, tracked or untracked, anywhere in the checkout (the whole tree is served; a
+  stray `.claude/` left by running claude inside it is reported, not refused, unless it blocks
+  the fast-forward), a branch other than main, or a HEAD that is not origin/main after the
+  fast-forward (an unpushed local commit is divergence to surface, not text to deploy);
+- a deployed skill symlink that does not point into the checkout (and, for Codex, the three
+  `~/.codex/skills` links the README's Codex loop installs);
+- no Python >= 3.12 in `scripts/py`'s order (ludics-lite#403);
+- a GitHub token that `gh api user` rejects in the session kind a worker or leg uses, a
+  non-interactive ssh (ludics-lite#360: the console's `gh auth status` was green while minix's
+  token answered 401 over ssh), and a git HTTPS credential (`git credential fill`) that is
+  missing, refused, or another account's than gh's (repair: `gh auth setup-git`);
+- for CLI workers only, a live one-word headless turn (`claude auth status` cannot stand in for
+  it: on 2026-09-02 it reported `loggedIn:true` while every `claude -p` on minix failed), and the
+  GitHub probe again in a throwaway tmux session of the server the worker inherits (repair:
+  restart that server once its workers finish, or fix the default shell's startup;
+  ludics-lite#374). `launch` and `unstick` repeat that probe just before they create the session.
+
+A GitHub that does not answer (no reply within `FLEET_GH_TIMEOUT`, 30 s per call; a connection
+error; an HTTP 5xx) is noted on the OK line, not refused, as a sleeping sibling is. A refusal names
+its reason: surface it rather than launching stale, and never reset a dirty checkout silently - a
+divergent local edit may be a fix worth keeping. Every launch, not just the first: upstream main
+advances mid-wave and the deployed skills are symlinks into that checkout, so a stale checkout runs
+stale skill text silently (the ludics-classic gh-609 failure class). Three refusals are user-side
+repairs: an expired Claude login needs an interactive `claude auth login` on that box; a refused
+GitHub token needs the fleet PAT in the box's `~/.config/fleet/gh-token.sh` replaced from the
+anchor's and stored in gh there (the refusal prints both commands; no session exports the token,
+ludics-lite#567); missing `~/.codex/skills` links need the README loop run once on that box. A box
+the fleet only executes on hosts no launch, so every `execution run`/`dispatch` and the daily
+sweep's wake step run `fleet-worker.sh refresh <box>...`, this same freshness check alone, which
+reports a divergent checkout without resetting it (ludics-lite#362,
+[executions.md](references/executions.md)).
+
+**Cross-box legs need cross-box ssh, and the fleet has it** (since 2026-09-08,
+lukstafi/ludics-lite#57). Each box has its own `~/.ssh/id_ed25519`, its public key in the other
+boxes' `authorized_keys` (the Mac's included, Remote Login being on), and `~/.ssh/config` carrying
+the site's canonical aliases over Tailscale MagicDNS. The preflight probes `ssh -o BatchMode=yes
+<sibling> exit 0` to each fleet sibling, refusing on a missing credential (`Permission denied`, an
+unverifiable host key) and only noting a sibling that does not answer, which is asleep and
+`wake-lab.sh`'s; `--no-cross` skips the probe, and `FLEET_CROSS_TIMEOUT` (20 s) bounds each one. A
+new box joins in both directions: mint its key and append the public key to every existing box's
+`authorized_keys`; append every existing box's public key to ITS `authorized_keys`; add the aliases
+for the others on it AND its own alias on each existing box; then run the preflight on the new box
+and on each existing one, since a box's preflight checks only its outbound reach.
 
 ### One worker per issue
 
@@ -483,447 +497,134 @@ Never two issues in one brief, even a sequential pair (2026-09-15: the #977-then
 never sent the interim hand-back it was asked for and ran straight into phase two). A
 sequential pair, which the plan writes as "one owner, sequential workers" (an older plan's
 "#A + #B, one owner" reads the same), is two workers, the second a stacked launch off the
-first's branch once that is approved (Supervise: *Stacked launches*). Worktrees live outside the repo per project
-convention; a parallel group launches together. Native launch is in
-[native-workers.md](references/native-workers.md); CLI launch, attach, status, unstick and
-recovery are in [cli-claude.md](references/cli-claude.md).
+first's branch once that is approved (Supervise: *Stacked launches*), or a queued task with the
+first in its `after`. Worktrees live outside the repo per project convention; a parallel group
+launches together.
 
 ### Base gate
 
-Both CLI `launch` and native `gate` require `--target-repo owner/repo` (the GitHub repository,
-distinct from the far-side `--repo` checkout path). Each runs the sibling
-`ship-pr/scripts/pr-review.sh base` on the coordinator with its local `gh` authentication and
-prints its complete verdict, failing job and first-red-commit diagnostics. Exit codes: a CI
-refusal is fleet exit 1 (the diagnostic retains the helper's original exit); fleet exit 4 stays
-a worker-box transport failure. Unknown, no verdict and a missing checker never mean green.
+Every launch route reads it: CLI `launch` (and so `wave launch` and the driver) and native `gate`.
+Both require `--target-repo owner/repo`, the GitHub repository the PRs merge in and the
+integration runs record (distinct from the far-side `--repo` checkout path; for OCANNL its staging
+fork, not the upstream master is pushed to, where the gate finds neither and reads `NO VERDICT`).
+Each runs the sibling `ship-pr/scripts/pr-review.sh base` on the coordinator, under its default
+policy and its own pinned clocks, and prints the complete verdict with its failing job and
+first-red-commit diagnostics. A CI refusal is fleet exit 1; exit 4 stays a worker-box transport
+failure. Unknown, no verdict and a missing checker never mean green. What a verdict rests on - the
+settle on a tip with no run of its own, `--interim` through a merge burst, the roll-forward chain
+past an older run still going (#1016), the integration records for a workflow retired from push,
+and the advisory file's jobs (`ADVISORY-RED`) - is ship-pr's *Read the base before you branch* and
+`lib/ludics/fleetworker/gate.py`'s header, and the verdict line names the source it used. A branch
+can carry both kinds (OCANNL's master: `ci-env` on push, `ci` retired from push): it is green only
+with each workflow's own source, and `ci-env`'s green never speaks for `ci`. The integration loop
+reads `base --wait` WITHOUT `--interim`: an interim is never its verdict (*Supervise*).
 
-The helper runs with its default advisory policy, source-only test mode and API/check polling
-bounds: the coordinator's repository-specific `SHIP_PR_ADVISORY_CHECKS` and those overrides are
-cleared for the read, while connection/authentication and state paths stay the coordinator's.
-A red only in jobs the repository's own `.github/ship-pr-advisory-checks` names (the file
-`checks` and `merge` read) is decided by that file: the gate passes `--advisory-red`, and a
-workflow whose red run failed only in those jobs, with every other job passed, is no red; the
-gate admits and prints `ADVISORY-RED: <job> at <sha>; launching` per job. A red in any other
-job, or a list or jobs read that fails, still refuses (ludics-lite#651).
-Which branch is checked: for a new worktree, `origin/<branch>`, with `--base-branch` for any
-other base; for `--cwd` and for native dispatch, the repository default branch unless
-`--base-branch` names the intended base. The coordinator names the repository and base that
-match the worker's brief and checkout. A sprint's plan-first native worker takes the gate at its
-GO, not at its spawn (*Wave mode*).
+What stays yours:
 
-A new worktree is pinned to an immutable SHA: `launch` fetches and resolves the base to a SHA
-before the verdict, confirms that SHA still matches the target CI branch after the verdict, and
-creates the worktree from it; a mismatch or an unreadable confirmation blocks dispatch, and the
-retry is explicit, after reconciling the branch. For an existing worktree and for native
-dispatch the recorded startup SHA stays the coordinator's responsibility.
-
-The read runs after the worker-box freshness preflight and uses the checker's bounded `--wait`
-mode with both of its clocks pinned: the absence grace at 300 seconds and the poll interval at 60.
-The ceiling is DERIVED from those two, `--wait=360`, and never spelled beside them: the grace is
-tested once per round, so a ceiling less than a whole round past it gets exactly one chance at the
-settle - the round the ceiling cap schedules - and loses it to a tip that moves, which restamps
-the grace. That is what the hand-spelled `--wait=301` was, and the checker now says so in a loud
-line (ludics-lite#175). A covered green exits at once, a pending base
-blocks at the ceiling (unless the interim below answers), and a tip with no run of its own settles for the older verdict - at once
-when the checker recognizes the tip's diff as entirely within the workflow's `paths-ignore`,
-otherwise once that absence outlives the grace (ludics-lite#156). A run in flight or stopped at
-the tip keeps the refusal. A workflow that no longer runs on push (its file at the tip names no
-`push`) never settles for its old push verdict: the gate
-reads the execution registry's integration records for the target - concluded records marked
-`"integration": true`, with a pass or fail at an exact SHA - and hands them to the checker,
-which takes the tip's verdict from a record at the tip first, else from the PR the tip is
-GitHub's clean merge of, when that workflow ran green on its head (roll-forward), and names the
-source it used. A tip with neither reads `NO VERDICT` at once, and dispatch waits; an unreadable
-registry refuses too, since a failed record there would outrank the PR head (ludics-lite#401).
-A branch can carry both kinds: OCANNL's master has `ci-env` as its per-merge push verdict and
-`ci` retired from push, so a tip is green only with `ci-env`'s own green at it AND a named source
-for `ci` - the integration records, or the roll-forward head - and `ci-env`'s green never
-speaks for `ci`. The records and the PRs are the `--target-repo`'s: name the repository the PRs
-merge in and the integration runs record (for OCANNL its staging fork, not the upstream that
-master is pushed to, where the gate finds neither and reads `NO VERDICT`).
-Through a merge burst the tip's own run is always in flight, and the wait used to reach its
-ceiling and refuse every launch (20-40 min per launch on 09-24 and 09-25). The gate now passes
-`--interim` (ludics-lite#308): a tip whose own push run is in flight, with nothing red and
-nothing else in flight, is green meanwhile when it is GitHub's clean merge of a PR whose head
-built that workflow green, and the verdict line reads `green, interim (...; judged meanwhile by
-PR #N's head run ...)`. An integration record at the tip is read before that head: a pass is the
-interim's source, a fail the tip's red at once. Only a repository whose integration loop is a
-local run has records (OCANNL; not this one, whose loop is its CI run), and a record lifts no
-other hold. A tip with neither source stays pending and refused. A run at an older merge still
-going refuses too, unless every merge from the tip's first parent down to that run's commit is a
-green roll-forward of its own (#1016): GitHub's clean merge of a PR whose head built those
-workflows green, no push run at it red. The verdict line names every link, at most 10
-first-parent steps deep, and a link that cannot be read refuses. The advisory file decides there too (ludics-lite#659):
-a merged head, or an older run, going only on jobs it names, every other job passed, holds
-nothing. Under a push group that keeps one running run and the
-newest pending one (this repository's main since ludics-lite#597), that refusal
-comes only from the one running run, and runs cancelled while pending never hold it (ship-pr's
-*Read the base before you branch*). The integration
-loop, which reads `base --wait` WITHOUT `--interim`, still waits for the tip's own run: an interim is
-never its verdict. This is a bounded pre-dispatch check, not another observer, and it is
-point-in-time: not atomic with the spawn or launch that follows, so an adoption reconciles
-pending dispatches before replacing anything.
-
-Through a merge burst nearly every first read is a `NO VERDICT` that a read minutes later lifts.
-`gate --wait <seconds>` is that retry (#872): after a refusal a re-read may lift it pauses
-`FLEET_GATE_REREAD_INTERVAL` seconds (60), prints one `GATE WAIT` line, and reads again. Two
-refusals are waited on: the checker's exit 4 (no verdict yet: the tip's run in flight, the tip
-inside the window its first run may still appear in, no interim yet), and the gate's own "re-run
-the gate" after integration records concluded during both of its reads. A red, an unknown, an
-unreadable registry, and a halt or lease refusal (read before every pause) end it at once. No read
-starts after the deadline, but one under way runs to its ceiling; expiry is exit 1 with the last
-read's reason. `lib/ludics/fleetworker/gate.py`'s *THE WAIT* is the boundary. Size `<seconds>` to
-how long the dispatch (a spawn, a start, a launch) may wait out a merge burst, and write no retry
-loop of your own around the gate: any nonzero exit blocks the dispatch.
-
-A known-red regression needs one triage worker: only `--force --allow-red-base "<reason>"`
-admits that red verdict, prints the reason, and still refuses unknown/no-verdict; record the
-reason and the diagnostics on the board. `--force` alone only lifts the halt. For lease-only
-administrative reads use `coordinator`, not the dispatch `gate`.
+- **The branch.** For a new worktree the gate reads `origin/<branch>`, with `--base-branch` for any
+  other base; for `--cwd` and for native dispatch, the repository default branch unless
+  `--base-branch` names the intended base. Name the repository and base that match the worker's
+  brief and checkout. A sprint's plan-first native worker takes the gate at its GO, not at its
+  spawn (*Wave mode*).
+- **The SHA.** A new CLI worktree is pinned to the SHA the verdict judged (`launch` refuses a tip
+  that moved meanwhile; the retry is explicit, after reconciling the branch). For an existing
+  worktree and for native dispatch the recorded startup SHA is yours. The gate is point-in-time,
+  not atomic with the spawn or launch that follows, so an adoption reconciles pending dispatches
+  before replacing anything.
+- **How long to wait.** `gate --wait <seconds>` re-reads a refusal a later read may lift (no
+  verdict yet, or its own "re-run the gate") every `FLEET_GATE_REREAD_INTERVAL` seconds (60), and
+  ends at once on a red, an unknown, an unreadable registry, a halt or the lease (gate.py's *THE
+  WAIT*, #872). Size it to how long the dispatch may wait out a merge burst, and write no retry loop
+  of your own around the gate: any nonzero exit blocks the dispatch.
+- **A known red.** One triage worker: only `--force --allow-red-base "<reason>"` admits that red
+  verdict, prints the reason, and still refuses unknown/no-verdict; record the reason and the
+  diagnostics on the board. `--force` alone only lifts the halt. For lease-only administrative
+  reads use `coordinator`, not the dispatch `gate`.
 
 ### The brief
 
-The brief is self-contained (workers do not see this conversation), carries the same issue
-requirements for every transport with transport-specific setup and identity, and includes the
-items below. A native worker's brief is rendered from template parts by `fleet-worker.sh wave
-prep`, and any other brief by `wave render`; either refuses an unrendered placeholder
-([coordinator-kit.md](references/coordinator-kit.md)). A native Claude worker's and a Codex CLI
-worker's common sections, and the paired-planning additions, are the reference template the
-repository ships, `issue-wave/templates/`, with the project's facts in wave.json values and the
-project's own part ([the shipped brief
-template](references/coordinator-kit.md#the-shipped-brief-template)), so no coordinator copies
-brief text forward from an earlier wave. The template carries the items below: a PR that changes
-one changes the template in the same diff, and a PR that retires a step adds its string to
-check-prompts' retired list (`lib/ludics/checkprompts/brieftemplate.py`).
+A worker's brief is rendered, never copied forward from an earlier wave: `fleet-worker.sh wave
+prep` renders a launched task's from template parts, `wave render` any other, and either refuses an
+unrendered placeholder ([coordinator-kit.md](references/coordinator-kit.md#the-shipped-brief-template)).
+The worker's rules live in the template, `issue-wave/templates/`, and are not restated here:
 
-- Setup: expected host, branch and base, environment script, and docs to read. CLI launch
-  supplies the worktree path; a native worker receives the coordinator-created absolute path;
-  an app worker verifies its app-created path. Require an explicit command cwd, absolute
-  assigned edit paths, branch/base and a successful harmless Git mutation at startup, and name
-  the project's main checkout with Supervise's *The main checkout is read, never moved*.
-- The task: issue number and repo, a summary, and the instruction to read the issue and its
-  comments first - including the decision comment, where the gate POSTED or FOUND one: only
-  tier-2 (recommendation-with-veto) and tier-3 (user-owned) questions get a comment, a tier-1 call
-  is the worker's own and gets none, and a maintainer decision the gate found is named as binding
-  (*Decision gate*), so the brief names a comment only for the issues that have one
-  (2026-09-04: three workers reported a "promised but absent" comment, one filed it as a
-  residual, because the shared brief promised one on every issue). Spell that read out
-  as `gh issue view N --repo O/R --json number,title,body,comments` (or a plain `gh issue view N
-  --repo O/R`, then the same with `--comments`), never as `--comments` alone: that form prints
-  ONLY the comments and never the body, so on a comment-less issue it emits zero bytes and
-  exits 0 - the worker then holds nothing of its task and reconstructs it from the brief's
-  summary (ludics-lite#70 and #76, 2026-09-10).
-- Paired planning, for an issue the gate paired: the brief addition in
-  [paired-planning.md](references/paired-planning.md#the-brief-addition), with its mode. The
-  coordinator starts the second planner on the worker's startup SHA as soon as the launch succeeds.
-- Verification expectations: scoped test runs, negative controls where the work is a checker
-  (new fixtures shown to FAIL on base: `~/ludics/scripts/run-against-base.sh <suite>` as the batch,
-  [slot-wrapped](#the-brief) as the execution handoff below says;
-  a project runner through `--command ... -- <runner> <args>`, and the head with the fix undone
-  through `--revert <commit> <path>`, both in the README's negative-control paragraph),
-  and the box's known environmental traps: the bullets below, plus the box kind's durable traps,
-  [native traps](references/linux-boxes.md) for `linux` and [WSL traps](references/wsl-boxes.md)
-  for `wsl`. **The pre-push run** is the tests the change reaches (OCANNL: its `affected` set)
-  less the slow and training members the project marks, which CI runs; the project's agent notes
-  name those members and the command. For a library-module change, expect the project's reach
-  to read `CROSS-CUTTING`: the local run is then the project's first-tier list plus the tests
-  exercising the change; the project's agent notes name that list and its command. The full
-  cross-cutting run follows *Wave mode*'s placement rule (wave-20261102: full affected runs blew
-  the runner's 3600 s run cap or its 1500 s per-test cap on loaded boxes, ahrefs/ocannl#1697 on
-  minix-amd-linux, #1769 on tuf-amd-linux).
-- **The formatter gate**: the formatter batch is the one the project's AGENTS.md names, run last,
-  slot-wrapped and read as it says (OCANNL: *Format before the first push*), and the commit is
-  gated on that batch's own exit status. The brief carries its worker's one form, to copy, not
-  compose. A batch that runs in the foreground gates in the same command:
+- `shared/`: where the worker works (the main checkout it never moves, explicit cwd and absolute
+  paths, no `git stash`, the credentials line), its startup check, the task and the read form
+  that prints body and comments together, negative controls and where evidence goes, requests and
+  the measurement forms, landing through ship-pr (the local review, stall recovery, the convergence
+  policy, credit for its own model, verification ending at its own merge), the review checkpoint,
+  and the after-merge hand-back;
+- each kind's own four parts, `native-claude/` and `cli-codex/`: who it is and its shell traps,
+  the slot-wrapped batch and the commit gate read off the batch's own status (*Never pipe a
+  suite*), blocking on every run before yielding, and context discipline;
+- the paired-planning parts, `planning-paired.md` and `planning-paired+critique.md`;
+- the project part (`@@PROJECT@@`, the file the wave file's `project_part` names, read at the
+  task's base): the project's commands, box traps, formatter gate, pre-push scope and backend
+  legs. This repository's is `.github/wave-brief.md`; OCANNL's is its own `.github/wave-brief.md`
+  with its AGENTS.md and agent notes.
 
-      <formatter batch> > <log> 2>&1 && git commit ...; echo "gate exit=$?"; tail -n 20 <log>
+A PR that changes a worker's rule changes the template in the same diff, and a PR that retires one
+adds its string to check-prompts' retired list (`lib/ludics/checkprompts/brieftemplate.py`), which
+also holds every part to the placeholders prep gives and the paths and headings it names.
 
-  A native Claude worker's batch has no status in any command: `--bg` prints a directory, and
-  `bg-run.sh wait` exits 0 on a batch that failed, so `wait <dir> && git commit` gates nothing.
-  Once the wait has printed `rc=`, its next call reads the status that batch published, with no
-  edit in between (an edit needs a new batch):
+What no template can know is the coordinator's, written in the task's part (`tasks/<task>.md`):
 
-      [ "$(cat <dir>/rc)" = 0 ] && git commit ...; echo "gate exit=$?"; tail -n 20 <dir>/log
+- **The task**: issue number and repository, a summary, and the decision comment where the gate
+  POSTED or FOUND one, by URL - a tier-2 recommendation as one the worker may overturn with
+  evidence, a maintainer decision as binding (*Decision gate*). A tier-1 call is named as the
+  worker's own and has no comment, so name a comment only for the issues that have one
+  (2026-09-04: three workers reported a "promised but absent" comment).
+- **Planning mode** (`wave prep --mode`): its addition is the planning part
+  ([paired-planning.md](references/paired-planning.md#the-brief-addition)), and the coordinator
+  starts the second planner on the worker's startup SHA as soon as the launch succeeds.
+- **Acceptance and coverage**: what done looks like; the negative control a checker owes; the
+  backends a claim's tests run on, since a claim's backend set is where its tests run, not where
+  its diff is (the project part says which tests those are). **An issue whose acceptance is a
+  measurement is accepted before the merge**: the measurement runs on the PR head, and the
+  coordinator reads its result before the merge, never after it, since code review, Codex review
+  and CI judge correctness and none of them reads a timing (a 2x CUDA regression passed all of
+  them and two Opus checkpoints, and the PR was reverted: ahrefs/ocannl#934, ludics#539).
+- **A scan boundary, for an issue whose natural implementation reads free text** (a rule over a
+  PR body, a commit message, a workflow file or Markdown): say which reading the requirement
+  needs. Where a best-effort reading satisfies it (a warning, a lint), the task part prescribes a
+  line-shaped scan with its boundary stated up front, best as a fail-closed allowlist of the forms
+  it accepts, listed in the first PR body under "Recognised forms (closed)": a denylist of
+  spellings never closes (ahrefs/ocannl#1095: 14 rounds; PR #274: 17 rounds and 1,800 lines for
+  a warning). Where the requirement needs structure (a nested key hierarchy, a block grammar), say
+  so and do not substitute a scan; a reduction of the requirement is a decision-gate item, never
+  the brief's alone.
+- **Siblings and news**: the files sibling tasks edit, what earlier merges landed (*Gate later
+  waves*), and for a task that adds a scan, the sibling-scan check before its merge.
+- **The variant, where there is one**: an experiment-only item (*Supervise*); in a sprint, the
+  placement of a cross-cutting change's long run (*Wave mode*) and the **plan gate**, which has no
+  shipped part: plan first, alone, under the headings of
+  [paired-planning.md](references/paired-planning.md#the-brief-addition), and end the turn with the
+  plan in its `PLAN_READY` ... `END_PLAN_READY` block (a paired worker reconciles as that addition
+  says, then ends its turn with `PLAN_RECONCILED <the plan comment's URL>`). No edit and no batch
+  before GO. Resumed with `GO_IMPLEMENT <sha>`, the worker rebases onto that SHA, re-checks the
+  plan against what landed since its base (`git diff --stat <base> <sha>`), notes in the PR body
+  any change that forces, and implements and ships as the rest of the brief says.
+- **Encouragement**: name why the issue matters and express confidence. It is cheap and the user
+  asked for it: workers visibly do their best work when the brief treats them as trusted
+  colleagues.
 
-  A batch the slot refused fails that test, and so does one with no `rc` yet. The log stands in
-  for the pipe a worker reaches for to keep the readout short, which no batch takes (*Never pipe
-  a suite*, below): here the commit would run after a failed check
-  (ahrefs/ocannl#1442 pushed after a FAILED check; two wave-20261103 workers piped `fmt-check`
-  through `tail` in their first commit, ludics#948). `gate exit` is the commit's status when the
-  batch passed; when it failed it is the batch's status in the first form and 1 in the second
-  (`rc=` has the batch's). Never chain the commit after the batch with `;`.
-- **On mac-studio**: Gatekeeper/XProtect stalls fresh executables for minutes - sample the pid
-  before assuming a hang; never start a second dune against a running _build; and **targeted
-  test aliases only** (`dune build @<dir>/runtest-<name>` for the tests the change reaches, plus
-  the scanners), never a full directory suite, full suites are CI's - the XProtect scanner is one
-  single-threaded service for the machine and each worktree links its own copies of every test
-  exe, so N parallel full suites queue N x ~200 fresh binaries behind it and every worker's run
-  freezes (2026-08-22: 34 exes parked in dlopen, logs frozen, load 2.5); `dune -j 4` when more
-  than ~4 workers share the box.
-- **GPU-box legs**: name the backend and how to prove the run executed on it (a backend-uniform
-  golden proves nothing), and keep one dune per _build. A claim gated on several GPU backends
-  gets a leg on each backend it names before merge, recorded in the PR body (wave-20261018o:
-  three tests whose CUDA and HIP arms had run only on CUDA merged three HIP reds); what each
-  backend's leg must enable is the project's agent notes'. A claim's backend set is where its
-  tests run, not where its diff is: a value test that runs on every backend needs every
-  backend's leg (lukstafi/ocannl-staging#1441 merged on cc and Metal codegen alone, since its GPU
-  codegen was unchanged, and its bitwise claims failed on CUDA, HIP and Metal,
-  ahrefs/ocannl#1647); a test whose golden comes from a separate off-CPU branch needs a non-CPU
-  leg even for a CPU-only change (lukstafi/ocannl-staging#1483's cc-only change reordered every
-  GPU golden, fixed forward in #1488); and a codegen change reaches every test that executes
-  staged or hand-built kernel text, not only the ones that pin emitted text
-  (lukstafi/ocannl-staging#1491 ran only the text pins, and a staged kernel failed on CUDA,
-  #1497). Which tests those are is the project's agent notes'.
-- **A pin on a box's shared package environment is additive**: an environment every worktree
-  builds against (OCANNL's opam switch) is master's build too, so build a master-based worktree
-  against the new version in a scratch install before pinning, and land the dependency's change
-  free of deprecations before the consumer PR (ahrefs/ocannl#1594's `metal.dev` pin deprecated
-  an API master used, and dev-profile alerts are fatal, so every master build on the box broke);
-  how to stage the scratch install is the project's agent notes'.
-- **An issue whose acceptance is a measurement is accepted before the merge**: the measurement
-  runs on the PR head, and the coordinator reads its result before the merge, never after it.
-  Code review, Codex review and CI judge correctness, and none of them read a timing: a 2x
-  tuned-performance regression on CUDA passed all of them and two Opus checkpoints, and showed
-  only in the post-merge acceptance measurement, so the PR was reverted (ahrefs/ocannl#934,
-  ludics#539).
-- **Where the evidence goes**, said up front: the PR body, the issue's comments and the project's
-  agent notes, never a report file the task did not ask for - a Claude subagent is instructed not
-  to write report `.md` files, so a planned `benchmarks/report-*.md` had to move mid-task
-  (ahrefs/ocannl#1190).
-- Execution handoff: the worker's own targeted correctness batches on its agent host run under
-  the [standing reservation](references/executions.md#standing-iteration-reservation) the
-  coordinator took at launch - name its request id, the bounded aliases and `-j` width it
-  covers, and that every batch goes through the project runner, in the spelling the project's
-  runner or agent notes give, copied rather than composed (OCANNL: `tools/test-run.sh run
-  --targets-file F build -j 4`; a wave-20261102 worker lost a run to the refused `run
-  --targets-file F -j 4`), is slot-wrapped, and is reported by run directory.
-  **Slot-wrapped**, in every bullet here, is one form per transport, which the brief spells out
-  and no worker chooses ([which form](references/executions.md#exclusivity-and-the-run-time-slots)):
-  - **A native Claude worker**, every batch, with no "can it outlast the cap?" judgment, since
-    its ~180 s subagent cap fits almost none (ludics#980): `fleet-worker.sh execution slot --bg
-    <parent> --wait 1800 --wait-window -- <batch>`, which prints a run directory to block on
-    with `bg-run.sh wait <dir>` ([Blocking on a
-    run](references/native-claude.md#blocking-on-a-run)). Its `execution leg` and `execution
-    hold` are the same two calls with `bg-run.sh spawn <parent> -- <the command>`: they take no
-    slot on its own box, and either can outlast the cap.
-  - **A CLI or app Claude worker**: foreground `fleet-worker.sh execution slot --wait-window --
-    <batch>`, with `--bg <parent>` and `bg-run.sh wait` for a batch that can outlast the tool's
-    600 s maximum, a window's wait included.
-  - **A Codex worker**: that same foreground command, kept in its turn. Local native Codex with
-    managed exec sessions uses `bg-run.sh new <parent>`, then foreground `bg-run.sh start <dir>
-    -- fleet-worker.sh execution slot --wait-window -- <batch>`, and retains and observes that
-    session to completion, as [local managed command
-    sessions](references/native-codex.md#local-managed-command-sessions) says.
+A wave directory may override a shipped part (`common/<part>`, `project.md`,
+`planning-<mode>.md`: the kit's *The wave directory*). Nothing is shipped for a native Codex or a
+Claude CLI worker's own four parts, so such a wave writes them, and they state what the shipped
+kinds' parts state in that transport's form: the slot-wrapped batch ([which
+form](references/executions.md#exclusivity-and-the-run-time-slots)), the commit gate read off the
+batch's own status, never a pipe, and blocking on every run before yielding
+([native-codex.md](references/native-codex.md#local-managed-command-sessions), [Blocking in a
+headless turn](references/cli-claude.md#blocking-in-a-headless-turn)). Every tool name in a brief
+is one the worker's runtime exposes ([native-workers.md](references/native-workers.md)).
 
-  **Never pipe a suite**, in any form (ludics#989). A batch's status
-  is the status of the one command it runs, so in `sh -c '<suite> | tail -n 20'` it is `tail`'s,
-  and after a `;` the last command's: a failed suite reads `rc=0`. Wave-20261106's three workers
-  all met this, and two failed unit runs passed as green. The batch writes the whole log, so the
-  digest is a later call's `tail` or `grep` of it. Steps that belong together go joined with `&&`,
-  as a script under `set -eo pipefail` that pipes nothing, or as one batch each; a builtin still
-  goes as `sh -c '...'`. Plain `set -e` does not cover a pipe: `<suite> | tail` in such a script
-  still exits with `tail`'s status.
-
-  In every form `--cpu` goes before the `--` for a batch that holds no GPU, a runner that takes
-  the slot itself runs inside the wrapper ([nested
-  slots](references/executions.md#exclusivity-and-the-run-time-slots)), and `--wait-window` waits
-  out a [measurement window](references/executions.md#exclusivity-and-the-run-time-slots) on the
-  box instead of refusing, so the brief needs no waiter loop and no retry rule. Where the
-  coordinator also took one on the task's [GPU home
-  box](references/executions.md#the-gpu-home-box), name that request id too, the far-side
-  checkout that is the worker's to prepare, and the batch's form there as that section gives it
-  (over ssh, the checkout moved to the pushed SHA under test, the runner under `execution slot
-  --wait-window` on that box), concluded at hand-back with the agent-host one. Every other run - a
-  measurement (only for a timing-grade claim or a run that needs the box to itself, a
-  [rule](references/executions.md#exclusivity-and-the-run-time-slots) the brief carries), a
-  one-off cross-box leg, a full suite - needs a request first, in the transport's shape:
-  the [Claude Code worker channel](references/native-claude.md#worker-channel), the
-  [Codex worker channel](references/native-codex.md#worker-channel), or the
-  [CLI reservation handoff](references/executions.md#cli-reservation-handoff). A batch that can
-  hold a slot past about 20 minutes (a cold tuned search) is requested too, never run under the
-  standing reservation: a window's drain waits for it with the box's other slots idle
-  (ludics-lite#668). A resumed worker
-  runs only the assigned command, at the exact revision `EXECUTION_ASSIGNED` names (a leg at a
-  newer SHA is refused, ahrefs/ocannl#1278; after a rebase it asks for a
-  [rebind](references/native-claude.md#worker-channel) first, ludics#829), and reports `EXECUTION_RESULT` as soon as the run
-  ends, before any other work: the coordinator concludes a run only from that line, so an
-  unreported finished run holds the box's reservation and blocks a sibling's window
-  (ahrefs/ocannl#1314 held two boxes for about 2.5 h). Neither the returned turn nor its report
-  releases the box; the conclusion does. The hand-back names the last batch's run directory
-  and the SHA and dirty state it ran at, apart from the exact-head CI verdict. The last batch
-  often predates the merged head, since review edits come after it. The standing reservation
-  is concluded from that batch, with its dirty list and launch head in the evidence
-  (`--standing-handback`), and CI speaks for the merged head (ludics#539). The brief's measurement forms are the ones
-  the verbs accept: on the worker's own box `fleet-worker.sh execution hold --request <id> --
-  <runner>` (with `--worktree <dir> --rev <sha>` it first makes or moves that worktree to the
-  commit and runs there, as a leg does, ludics-lite#816), on another box an [`execution leg`](references/executions.md#a-leg-on-another-box)
-  with no slot flag (`--deadline` alone: a measurement leg refuses `--cpu`, `--gpu`, `--wait`
-  and `--wait-window`, and four workers of wave-20261016-ocannl copied them from the brief).
-  A measurement is timing only: the build, the fixtures and a dry run of the session go first,
-  as correctness batches under the standing reservation, so an exclusive window never sits in
-  setup (2026-10-03: a 4-hour minix window died in setup on a missing `rocm-smi`, and a dune
-  build held another window; ludics#539).
-  The session fails fast on its first cell, behind the project's own measurement gate, which
-  the brief points to rather than paraphrases (OCANNL: `benchmarks/README.md`, *Measurement
-  boxes*; two rog windows measured nothing on a session script that predated it,
-  ahrefs/ocannl#1324 and #1326). Every leg spells its far-side paths absolutely: an unquoted
-  `~` is expanded by the caller's shell to the caller's home (a leg from rog reached mac-studio
-  as `/home/lukstafi/...` and was refused). Every leg's command names its backend, a CPU leg's
-  included, as words of its own argv in one of the forms the leg accepts: the runner's pin flag, a
-  leading `env` pin (a `bash -c` composite goes after it, never around it), a long alias list as
-  `--file <local file>` with the runner word `{file}`, and `--reads-no-config` for a runner that reads none
-  of the project's configuration (ludics#864: six workers of wave-20261102 lost turns to refused
-  forms). It leans on none of the checkout's ignored setup, which a leg's fresh worktree lacks
-  ([*The backend pin*, *The file* and *The worktree*](references/executions.md#a-leg-on-another-box)). A
-  base-against-head A/B goes through the project's two-revision tooling where it has one, never
-  two checkouts paired by hand, and the brief points to that tooling's own constraints as it does
-  to the gate (OCANNL: `benchmarks/ab.py` and `bin_cells.py --arm-exe`; ludics-lite#794: three
-  wave-20261024 workers lost windows to these traps).
-- **Block on every run before yielding**, the review watch and the merge wait included: a
-  Claude worker as [Blocking on a run](references/native-claude.md#blocking-on-a-run) says, a
-  Codex worker by keeping its turn open, because a returned turn says only that the turn ended
-  (Supervise: *A returned turn means the turn ended*). The brief states the remedy next to the
-  rule: a run still going is waited out, never stopped so the turn can end with nothing running
-  (*A running watch is waited out* there; ludics#1045).
-- Model-agnostic text: the commit trailer says "credit your own model" (the project's
-  `Co-Authored-By` shape with the worker's own model name), never a model the coordinator
-  copied from its own instructions (2026-09-15: an Opus worker inherited a Fable line and
-  rightly corrected it). Every tool name in the brief is one the worker's runtime exposes
-  ([native-workers.md](references/native-workers.md)).
-- Shell traps the brief names outright, because each cost a worker a control run that lied
-  (2026-09-16): the worker's shell tool runs **zsh**, where an unbraced `"$var:suffix"` is
-  parsed as a parameter modifier when the suffix starts with a modifier letter (`s`, `h`, `t`,
-  `r`, `e`, `p`, `a`, `l`, `u`, `q`, `c`, ...), so `git show "$sha:scripts/x.sh"` silently
-  drops the path and prints the commit - always brace it, `"${sha}:scripts/x.sh"`; and native
-  workers share the coordinator's scratchpad, so scratch files carry the issue number as a
-  prefix and never sit inside the worktree ([native-workers.md](references/native-workers.md)
-  states the rule). zsh also expands a word starting with `=` as a command path, so
-  `echo =====` fails, and a reading command with that separator hid the brief's output from five
-  workers of the 2026-10-05 post-waves: a native Claude worker reads the brief file with its Read
-  tool, a CLI worker gets it on the launcher's input, and a shell command that reads it (a
-  Codex worker's) prints no separator. And Claude Code's Bash tool asks the user before any `rm`
-  of a path built on a variable that may be empty (`rm -f $D/*.out`), in every permission mode,
-  `bypassPermissions` included, past any allow rule or hook: write `rm -f "${D:?}"/*.out` or the
-  literal path (a worker of the 2026-10-13 OCANNL wave stopped twice on it, ludics#605).
-- Credentials, one line the brief carries verbatim: never borrow, copy or export a credential
-  from another box, file or account to get past an authentication failure; a failed `gh`, push
-  or login is a gate to report and stop on (2026-09-23: a worker on minix, whose `gh` token was
-  dead, pushed with a token it copied off tuf; ludics-lite#360). The preflight's `gh api user`
-  call now catches the dead token before launch, so this line covers what it cannot: a token
-  that dies mid-task, and a leg's box.
-- **The local review before the PR opens**: ship-pr's `pr-review.sh local-review <base>` (its
-  *Open*; the brief names that verb, whose prompt carries the do-not-run-tests line, and does not
-  restate its command: two of wave-20261020's six reviews, whose prompts lacked that line, ran
-  tests unasked and outside any slot, ludics-lite#742 and #738). The worker fixes or rebuts every finding and
-  lists them in a "Local Codex review" section of the PR body, and never runs the review while a
-  batch of its own is in flight: its slot-wrapped batches are the evidence, and the review's
-  sandbox takes no slot. It catches local defects (0-2 per PR over three waves, real P1s among
-  them) and does not substitute for the convergence policy on open-ended machinery:
-  ludics-lite#625's found nothing, and the remote reviewer then found 11 run-twice and resume
-  corners over six rounds (ludics-lite#609).
-- Landing: the ship-pr skill through review to merge; for a PR that fully resolves the issue,
-  include `Closes #N` in its body (`Closes owner/repo#N` for a separate upstream tracker), per
-  ship-pr's *Open*. The brief points the worker to the staged reading list that opens ship-pr's
-  SKILL.md, its "What to read when" paragraph, and does not restate it, so the worker reads each
-  section where it acts and never the whole file: it is about 1600 lines, most of a worker's
-  context on a PR approved in round 0 (ludics#948). Then close out the tracked issue with a summary comment headed with the wave and task
-  (`## Landed (<wave>, <task>)`, so the decision gate reads it as the wave's, never as a
-  maintainer decision) - `gh issue comment --body-file` first and `gh issue close` only if the merge left it open, per ship-pr's *After
-  it lands*, because `gh issue close --comment` on an issue a PR body's `Closes #N` already
-  closed posts nothing at all - then the after-merge brainstorm ship-pr ends with, in
-  **hand-back mode**: propose issues and chip candidates in the close-out report, file and
-  spawn nothing - the coordinator combines across workers, does the filing, and routes chips
-  through the selected mode. Workers do not start their own post-waves. Worktree removal
-  is NOT the worker's: the brainstorm's diff and tracker reads run in that worktree, the
-  worker's shell sits inside it (removing your own cwd is the "Unable to read current working
-  directory" failure ship-pr warns about), and the coordinator may still resume the session
-  there for the hand-back. The coordinator removes worktrees at close-out.
-- **In a ludics wave, the worker's own `/bin/bash` runs are the macOS coverage per merge.** The
-  macOS suites run weekly and on dispatch in `.github/workflows/macos-weekly.yml`, not on PR
-  heads or pushes (ludics#974). Before merging, the worker runs, slot-wrapped with `/bin/bash
-  <suite>` as the batch (3.2, the macOS runner's shell), every suite its change reaches: the suites whose
-  files it changes, the suites `lib/ludics/README.md` maps to each module it changes, and the
-  `test-fleet-worker.sh` sections the change reaches. It then merges with the plain
-  `pr-review.sh merge lukstafi/ludics#<pr> --wait`, blocked on as any merge wait. Those macOS
-  jobs stay advisory where a dispatch puts them on a head: `.github/ship-pr-advisory-checks` on
-  `main`, which `checks` and `merge` read (ludics-lite#530), names them, so the brief sets no
-  `SHIP_PR_ADVISORY_CHECKS` and the command keeps the shape the maintainer's standing merge
-  rule clears. A dispatch (`gh workflow run macos-weekly.yml --ref <branch>`) is only for what a
-  local `/bin/bash` run cannot show, a clean `macos-latest` image or a tool difference (image
-  drift, ludics#953); a change those runs cover and negative-test needs none. `merge` does not
-  wait for a dispatch and nothing else reads its result, so a worker whose PR claims that result
-  waits itself, `pr-review.sh checks lukstafi/ludics#<pr> --wait --check '\(macos\)$'` blocked on
-  as any wait, says so in the PR and cites the run. Nothing runs the full macOS set at the merged
-  tip until #964: a weekly red opens an issue (`base` reads push runs only), and the integration
-  loop owns it, bisecting on mac-studio as below.
-- **The worker's verification ends at its own merge** (2026-08-30: seven workers chased
-  master's moving tip for 100-120 minutes each): after `merge` confirms `merged`, the worker
-  does NOT watch master's subsequent CI - "the latest tip's workflows" is a moving target under
-  concurrent sibling merges and that wait never terminates. Post-merge master verification is
-  the coordinator's integration loop, full stop. If a worker checks anything after merging, it
-  is the run for its OWN merge commit, once, without waiting out reruns triggered by later
-  merges.
-- Process discipline, stated explicitly because workers re-derive it badly under load: never
-  end a turn with only an unobserved detached process outstanding - use the harness's tracked
-  wait mechanism (a native Codex worker keeps the turn open or schedules an authorized
-  heartbeat, using [local managed command sessions](references/native-codex.md#local-managed-command-sessions)
-  where available; a native Claude worker blocks as [Blocking on a run](references/native-claude.md#blocking-on-a-run) says; a CLI
-  worker as [Blocking in a headless turn](references/cli-claude.md#blocking-in-a-headless-turn) says); if a review watch goes quiet
-  suspiciously long, read the PR feed directly (`gh pr view --comments`) rather than re-arming
-  the watch (reactions persist across rounds and strand it); commit early and often - commits
-  are what survives every failure mode below - and park work in progress as WIP commits, never
-  `git stash`: the stash stack is shared by every worktree of the repository, and a worker's
-  `stash pop` applied a stranger's (ahrefs/ocannl#1161). Squash them onto the merge base
-  (`git reset --soft "$(git merge-base HEAD origin/<main>)"`) or after a rebase, never with
-  `git reset --soft origin/<main>` once main has moved: that squash records main's newer changes
-  reverted (lukstafi/ocannl-staging#1417).
-- **Stall recovery: read the feed, then nudge once; never while an approval may stand**
-  (ludics-lite#760, as ship-pr's `stalled` row states it). `pr-review.sh watch` nudges a
-  STALLED round itself, once per head, when no 👍, no verdict and no request stands for the
-  head, and keeps watching; under `--no-nudge` it waits the window out and prints the advice.
-  When `status` or a watch's exit reads STALLED, the worker reads the full PR feed first: the
-  Codex reviewer's no-findings verdict can arrive as a PR COMMENT ("Didn't find any major
-  issues... Reviewed commit: <sha>") rather than the 👍. If the feed holds no verdict and no 👍
-  for the current head, the worker posts ONE `@codex review` (`pr-review.sh comment`) without
-  asking the coordinator. Never while an approval may stand: a re-request CLEARS the existing
-  👍, destroying the approval the worker failed to see (2026-08-29). The watch's other automatic
-  requests keep the same rule, once per head: a summary row marking the run Failed
-  (ludics-lite#453) and a head no round started on (#570).
-- **The convergence policy**, Supervise's *Converge long reviews* whole (the rounds it starts
-  at, silent vs loud, removal, merge-on-substance), for the worker to apply itself.
-- **A scan boundary, for an issue whose natural implementation reads free text.** When the task
-  is a rule over a PR body, a commit message, a workflow file or Markdown, the brief says which
-  reading the issue's requirement actually needs. Where a best-effort reading satisfies it (a
-  warning, a lint), the brief prescribes a line-shaped scan in the README's ludics-lite#75
-  convention and states the boundary up front - what it reads, and what it deliberately does not -
-  and every finding is then classified against that boundary: an in-scope form the scanner misses
-  is a silent defect and stays must-fix under the convergence policy (Supervise: *Converge long
-  reviews*), while a corner outside the declared boundary is deferred to one follow-up issue, not
-  fixed. Where the scan models an external language (a dune stanza, a bash command line), the
-  brief names the structural alternative up front: a fail-closed allowlist of the forms it
-  accepts, refusing the rest, or the language's own tool. A denylist of spellings never closes,
-  and the review finds the next exotic one every round (ahrefs/ocannl#1095: 14 rounds;
-  ahrefs/ocannl#1220: three to five in each of rounds 4-7); under an allowlist a missed
-  spelling is a refusal, a loud finding. The first PR body lists that closed set in a
-  "Recognised forms (closed)" section, so round 1 reviews against it (lukstafi/ocannl-staging#1089
-  ran 13 rounds as a coverage hunt until it was stated). Where the requirement needs structure (a nested key
-  hierarchy, a block grammar), say so and do not substitute a scan; a reduction of the
-  requirement is a decision-gate item, never the brief's alone. Left to the review, an unbounded reader draws one corner per round for as long as
-  it exists (2026-09-19: PR #274 went 17 rounds and 1,800 lines for a warning, and the reduction
-  had to be filed afterwards as ludics-lite#295).
-- Wave mode: a regular wave's brief carries the context-discipline lines of *Wave mode*, and a
-  sprint's carries its placement of a cross-cutting change's long run.
-- **Plan gate**, only for a sprint's plan-first worker (*Wave mode*): plan first, alone, under the
-  headings of [paired-planning.md](references/paired-planning.md#the-brief-addition), and end the
-  turn with the plan in its `PLAN_READY` ... `END_PLAN_READY` block. A paired worker reconciles as
-  that addition says, then ends its turn with `PLAN_RECONCILED <the plan comment's URL>` instead
-  of implementing. No edit and no batch before GO. Resumed with `GO_IMPLEMENT <sha>`, the worker
-  rebases onto that SHA, re-checks the plan against what landed since its base (`git diff --stat
-  <base> <sha>`), notes in the PR body any change that forces, and implements and ships as the
-  rest of the brief says.
-- Encouragement. It is cheap and the user asked for it: name why the issue matters and
-  express confidence. Workers visibly do their best work when the brief treats them as
-  trusted colleagues.
+- Landing: the shipped `landing.md` points the worker to the staged reading list that opens
+  ship-pr's SKILL.md (its "What to read when" paragraph) and does not restate it, so the worker
+  reads each section where it acts, never the whole file (ludics#948); its local review before the
+  PR opens is ship-pr's *Open*. Its close-out comment is
+  headed `## Landed (<wave>, <task>)`, so the decision gate reads it as the wave's, and its
+  after-merge brainstorm runs in hand-back mode: the coordinator combines the proposals, does the
+  filing, routes the chips and removes the worktrees.
 
 ### Native workers
 
@@ -969,9 +670,25 @@ and `effort=` its args resolve to, and the worker's `meta` keeps them (ludics#53
 
 ## Supervise
 
-The coordinator's job between launch and last merge. Where a bullet names `attach`, `status`,
-`log` or `unstick`, it is speaking of CLI workers; native and app workers are observed and
-controlled through the tools in your coordinator's file, never through those commands.
+The coordinator's job between launch and last merge. **Who answers a returned turn** is set by
+the worker's kind. The handoff driver, `fleet-worker.sh wave drive <wave.json>`, answers every
+turn of a Codex CLI worker that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
+worker, concludes an `EXECUTION_RESULT`, runs `wave review` for a `REVIEW_REQUEST` or
+`CONFIRM_REQUEST`, and saves a `HANDBACK` under `handbacks/` and closes its row with `board close`
+([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 9;
+`lib/ludics/fleetworker/wavedrive.py`'s header). Everything else is yours, with the same verbs:
+each attention line the driver writes (a design question, a plan, a refused or partial assignment,
+a review with no verdict, a merge no clearance covers, a worker that vanished), every turn of a
+native or Claude CLI worker, and every turn while no driver runs (`wave turn <wave.json> <task>`
+answers one, once). An attention turn is final for the driver: answer it by hand, and the worker's
+next turn is the driver's again. Where a bullet below names `attach`, `status`, `log` or
+`unstick`, it is speaking of CLI workers; native and app workers are observed and controlled
+through the tools in your coordinator's file, never through those commands.
+
+What the driver leaves to you while it runs: starting it and the heartbeat as background commands
+(one driver per wave: a second refuses on its lock), re-arming the heartbeat each tick, reading
+each merge off GitHub (a closed row is the driver's report, not your verification), launching the
+native tasks that follow a CLI task's merge (*Launch*), and stopping it (*Close out*).
 
 - **Stay alive, but design for dying.** A Claude Desktop coordinator is paused by the app about
   fifteen minutes after its last main-conversation activity, and a background waiter held
@@ -979,8 +696,9 @@ controlled through the tools in your coordinator's file, never through those com
   away, keep a coordinator-side heartbeat of about ten minutes whose wake is a command the
   harness tracks, not a timer: a background shell command whose exit re-invokes the coordinator
   (Claude Code's `run_in_background` on `fleet-worker.sh wave heartbeat <wave.json>`, one tick:
-  ten minutes' sleep, then `prs --wave` whole, `halted` and each loop's last line, re-armed each
-  tick, so the review-rounds read of *Converge long reviews* arrives with the wake).
+  ten minutes' sleep, then `prs --wave` whole, `halted`, each loop's last line and the driver's new
+  attention lines, returning early when one arrives; re-armed each tick, so the review-rounds read
+  of *Converge long reviews* arrives with the wake).
   A /loop or ScheduleWakeup tick is a fallback at most: in desktop waves they fire hours late or
   never (2026-09-19: of three ScheduleWakeups, two never surfaced and one five hours late). After
   ANY interruption - pause, restart, dropped remote-control connection, a box that slept
@@ -1021,15 +739,16 @@ controlled through the tools in your coordinator's file, never through those com
   with the worker's dune still running, which is why every brief requires blocking on each run
   before yielding). Read it by the worker's final message: an `EXECUTION_REQUEST` or
   `EXECUTION_RESULT` is a handoff, a ship-pr hand-back report is completion, and anything else
-  is read against the PR feed and the agent listing before it is called a stall. On a request,
-  `fleet-worker.sh execution assign <base.json> <message file>` reserves and dispatches every
-  block (`run`, a measurement `window`) and prints the `EXECUTION_ASSIGNED` text only for a step
-  that exited 0; then the SAME worker is resumed with that text - by session for CLI (`--message
-  <file> --unstick <box> <name>`), by agent ID for native; never a second writer. On a result, `execution conclude --from-run <run-dir> --request <id>
-  --sha <sha>` reads verdict, log and checkout off the record on the reserved box and refuses an
-  unfinished run (`--from-bg-run <dir>` for a run blocked under `bg-run.sh`, see
-  [executions.md](references/executions.md#reserve-launch-observe-conclude)); then resume
-  implementation or review. Formats and the per-transport sides:
+  is read against the PR feed and the agent listing before it is called a stall. A turn you
+  answer yourself takes the driver's verbs: on a request, `fleet-worker.sh execution assign
+  <base.json> <message file>` reserves and dispatches every block (`run`, a measurement `window`)
+  and prints the `EXECUTION_ASSIGNED` text only for a step that exited 0, and the SAME worker is
+  resumed with that text, never a second writer; on a result, `execution conclude --from-run
+  <run-dir> --request <id> --sha <sha>` (`--from-bg-run <dir>` for a run blocked under
+  `bg-run.sh`) reads the verdict off the record and refuses an unfinished run
+  ([executions.md](references/executions.md#reserve-launch-observe-conclude)); then resume
+  implementation or review. Formats and the per-transport sides, the CLI resume by `--unstick`
+  included:
   [native Claude](references/native-claude.md#worker-channel),
   [native Codex](references/native-codex.md#worker-channel),
   [CLI](references/executions.md#cli-reservation-handoff).
@@ -1060,62 +779,43 @@ controlled through the tools in your coordinator's file, never through those com
   exemption for the same red conflicted at the next integration run).
 - **Converge long reviews.** An automated reviewer keeps finding members of any open-ended
   artifact (a scanner, a property table) indefinitely (2026-08-22: two workers went 9 and 13
-  rounds; 2026-08-27: three went 11-18). A PR that writes tracker-mutating or multi-step
+  rounds; 2026-08-27: three went 11-18), and a PR that writes tracker-mutating or multi-step
   procedures (`gh` sequences, wait loops, recovery paths) is such an artifact too, so the brief
-  has it state its recovery or readiness boundary on its first push ("recovery re-reads by
-  content", "`--wait` is a point-in-time check"), and a finding past that boundary is rebutted
-  on it or deferred to the one follow-up issue below (ludics-lite#625: five rounds of resume
-  corners until the boundary was written down). The brief carries the policy, and the worker
-  applies it itself from round 3 when round 1 had five or more findings, and from round 5
-  otherwise: sent by the coordinator, it landed only when a heartbeat was read (wave-20261018o:
-  lukstafi/ocannl-staging#1200 and #1216 reached rounds 12-13 between heartbeats, and
-  ahrefs/ocannl#1281's PR round 8 while the heartbeat's output showed it climbing from round 5).
-  The count is read on every heartbeat with `fleet-worker.sh prs <owner/repo> --wave <id>` (which
-  also shows a merge build running in this box's slots, `merge-build=<elapsed>s/<bound>s`, or
-  queued for them, `merge-build=waiting(window|slot)`; its last line names every PR it printed, so
-  a PR named there with no line above was cut by the reader's `tail`, ludics#1050) for
-  EACH wave repository - the PR repository (`lukstafi/ocannl-staging` for an ahrefs/ocannl
-  wave), not the tracker - and no wake event (a
-  desktop CI-monitor event, a worker's notification) stands in for that read. It lists each open
-  PR's round count, CI and head age and flags the PRs due (ludics-lite#405: one reached 10
-  unnoticed; ludics-lite#650: lukstafi/ocannl-staging#1170 ran 12 rounds with no note, its rounds
-  never read, while every note that removed machinery or stated a boundary ended its loop within
-  one or two rounds). The policy's axis is **silent vs loud**: a silent defect (a claim that
-  cannot fail, a sweep that deletes what it shouldn't, an oracle a scheduler accident satisfies)
-  is must-fix through round twelve, while a loud one (a false refusal or error on
-  valid-but-absent shapes) defers to ONE follow-up issue; a silent finding only reachable by code nobody has written defers too (reachability
-  qualifier); and defects in machinery the review itself introduced are the worker's to fix,
-  not to defer ("filing bugs against myself") - through the twelfth round; past it ship-pr's
-  threshold applies and they defer unless they meet its blocking criteria. When a
-  reviewer approves only by finding nothing and the last rounds are confined to
-  review-requested machinery, pre-authorize merge-on-substance: CI green on the final head,
-  every thread answered with its classification, and a review-record paragraph in the PR body.
-  Ship-pr carries the exits a worker reaches WITHOUT you (its *When the loop ends*, from
-  ludics-lite#12): a round rebutted in full ends the loop, and from the thirteenth round with
-  findings (`pr-review.sh rounds` reads the count off the PR) only BLOCKING findings are fixed
-  under ship-pr's narrow criteria: a consequential defect introduced or materially worsened by
-  the PR, an invalidated central claim or its evidence, or failed build-relevant checks
-  (every non-advisory check, as the merge gate defines them).
-  A severe pre-existing defect merely exposed by the PR gets an appropriately prioritized bug
-  report, not a merge block; correcting a central claim does not require fixing that defect here.
-  The rest are deferred to one follow-up issue, linking existing reports, so the loop ends on
-  the first round with nothing to push. Your pre-authorization moves that earlier, never later. The option to name explicitly
-  is *removal* - delete the lock or rollback a round introduced rather than harden it a fourth
-  time - because a worker fixing "bugs against itself" does not take it on its own. Expect
-  good workers to push back on your framing with verified evidence - the wave's best worker
-  corrected the coordinator's premise three times, correctly each time; endorse that, don't
-  override it. Pair it with **one push per CI cycle** in late rounds - every push supersedes
-  the ubuntu leg (~28 min when the runners are free; 1h20m with six PRs queued), so a fix that
-  only x86 can confirm stays unconfirmed for as long as pushes keep coming - and with "rebase
-  before opening": CI builds the MERGE commit, so a repo-wide scan green on the branch can be
-  red against what landed on master meanwhile. Before merging, a green head is not rebased
-  (ship-pr's *How stale the base has grown*). Where the ci workflow has NO concurrency group,
-  pushes do not supersede - they queue serially behind runs
-  for commits nobody will merge (2026-08-28: 13 queued runs starved one PR's head for an hour).
-  The play: freeze pushes, cancel exactly the runs for superseded intermediate commits, let the
-  head's run through, then one batched push carrying the held fixes. A worker told to freeze
-  holds locally-verified commits unpushed with their threads deliberately unresolved (resolving
-  would claim work not visible on the PR).
+  has it state its recovery or readiness boundary on its first push, and a finding past it is
+  rebutted on it or deferred (ludics-lite#625: five rounds of resume corners until the boundary
+  was written down). The policy is the brief's, which the worker applies itself (the shipped
+  `templates/shared/landing.md`: from round 3 when round 1 had five or more findings, else from
+  round 5; **silent vs loud**, a silent defect must-fix through round twelve and a loud one
+  deferred to ONE follow-up issue; the review's own machinery the worker's to fix; from the
+  thirteenth round with findings ship-pr's *When the loop ends*): sent by the coordinator, it
+  landed only when a heartbeat was read (wave-20261018o: lukstafi/ocannl-staging#1200 and #1216
+  reached rounds 12-13 between heartbeats). What stays yours:
+  - **Read the rounds on every heartbeat**, with `fleet-worker.sh prs <owner/repo> --wave <id>`
+    for EACH wave repository - the PR repository (`lukstafi/ocannl-staging` for an ahrefs/ocannl
+    wave), not the tracker. It lists each open PR's round count, CI and head age, flags the PRs
+    due, and shows a merge build running in this box's slots (`merge-build=<elapsed>s/<bound>s`)
+    or queued for them (`merge-build=waiting(window|slot)`); its last line names every PR it
+    printed, so a PR named there with no line above was cut by the reader's `tail` (ludics#1050).
+    No wake event (a desktop CI-monitor event, a worker's notification) stands in for that read
+    (ludics-lite#650: a PR ran 12 rounds with no note, while every note that removed machinery or
+    stated a boundary ended its loop within one or two rounds).
+  - **Pre-authorize merge-on-substance** when a reviewer approves only by finding nothing and the
+    last rounds are confined to review-requested machinery: CI green on the final head, every
+    thread answered with its classification, and a review-record paragraph in the PR body. Your
+    pre-authorization moves ship-pr's exits earlier, never later. Name *removal* explicitly -
+    delete the lock or rollback a round introduced rather than harden it a fourth time - because a
+    worker fixing "bugs against itself" does not take it on its own. Expect good workers to push
+    back on your framing with verified evidence; endorse that, don't override it.
+  - **One push per CI cycle** in late rounds: every push supersedes the ubuntu leg (~28 min when
+    the runners are free; 1h20m with six PRs queued), so a fix only x86 can confirm stays
+    unconfirmed while pushes keep coming. CI builds the MERGE commit, so a worker rebases before
+    opening; before merging, a green head is not rebased (ship-pr's *How stale the base has
+    grown*). Where the ci workflow has NO concurrency group, pushes queue serially behind runs for
+    commits nobody will merge (2026-08-28: 13 queued runs starved one PR's head for an hour). The
+    play: freeze pushes, cancel exactly the runs for superseded intermediate commits, let the
+    head's run through, then one batched push carrying the held fixes. A worker told to freeze
+    holds locally-verified commits unpushed with their threads deliberately unresolved (resolving
+    would claim work not visible on the PR).
 - **Roll-forward merges and the integration loop (ahrefs/ocannl#861, decided 2026-08-30).**
   The merge gate is ship-pr's (*How stale the base has grown*): one build verdict for the PR's
   own head, never the base's tip. `pr-review.sh merge` warns loudly on a stale base but no longer
@@ -1161,20 +861,20 @@ controlled through the tools in your coordinator's file, never through those com
   **On a red at the tip, halt launches at once** (`fleet-worker.sh halt "<red at <sha>, rerun
   pending>"`): the rerun below puts the tip's run back in flight, where the base gate's interim
   would admit a launch onto the red. Merges are not frozen (roll-forward: a merge never waits on
-  the base's tip); what lands meanwhile joins the span the next verdict covers. Nor does a PR
-  whose own head shows that red, once the red has an owner (below): its worker merges over it as
+  the base's tip); what lands meanwhile joins the span the next verdict covers. Nor does a PR whose
+  own head shows that red, once the red has an owner (below): its worker merges over it as
   ship-pr's *The override* says (ludics-lite#623). The reason names the red SHA, and each failing
   test as `test=<name>` once known (`halt` again updates it): a loop's later red at or past that
   commit, or whose log names that test, ends its `tip-run --wait` with `TIP-RUN HALT <id> matches
   the standing halt: ...` (`wave loop`'s `LOOP RED` line carries it after ` -- `). That is the
   owned red, not another to halt and rerun, unless the line adds that its log does not name a
-  halt's test: then it may be a second red (ludics#1064). One red skips all of it, checked before the
-  halt: **a red that a later merge fixed**. When `git log --first-parent <red sha>..<tip>` holds
-  a merge whose PR names that failing test (or its issue) as the failure it fixes, the red is
-  attributed to that fix and verified at the tip instead: no halt and no rerun at the red SHA.
-  The loop's next run, on that backend for a GPU red, judges the tip, and starts at once since
-  the tip has moved. Only a red there takes the path below. A run that predates the merged fix
-  of a known flake is not a regression to re-prove (wave-20261102: a GPU-loop red at a SHA below
+  halt's test: then it may be a second red (ludics#1064). One red skips all of it, checked before
+  the halt: **a red that a later merge fixed**. When `git log --first-parent <red sha>..<tip>`
+  holds a merge whose PR names that failing test (or its issue) as the failure it fixes, the red is
+  attributed to that fix and verified at the tip instead: no halt and no rerun at the red SHA. The
+  loop's next run, on that backend for a GPU red, judges the tip, and starts at once since the tip
+  has moved. Only a red there takes the path below. A run that predates the merged fix of a known
+  flake is not a regression to re-prove (wave-20261102: a GPU-loop red at a SHA below
   ahrefs/ocannl#1773's merge). Without such a merge, in order:
   1. **Rerun the failed jobs once** (`gh run rerun <run id> --failed --repo <owner/repo>`,
      without `--failed` when the report names no failed job, a startup failure) to rule out a
@@ -1182,48 +882,47 @@ controlled through the tools in your coordinator's file, never through those com
      what failed** (the GPU loop's rerun is its own, below): each failing alias or test, three
      times at the red SHA on the same box, as one plain `tip-run`, a loop run the halt admits
      (references/executions.md *Adoption and halt*), so the coordinator holds no triage record and
-     the halt's triage stays free for its one owner, even mid-rerun. Use
-     `wave loop <wave.json> <name> --rerun <red id> -- <narrowed command>`: it derives the red SHA
-     from that loop's concluded red record, uses the loop's checkout, box and `--cpu`, and allocates
-     under `<wave>-<name>-rerun`. Its separate payload never carries `"integration": true`:
-     the targeted batch is no verdict at the red SHA. As its command use the
-     loop's, narrowed to the failing aliases and run three times, exiting on the first failure,
-     with no pipe, through a runner that forces each run to execute: a build system reads a second
-     `build` of a target that passed as up to date and runs nothing (ludics#1106: three `dune build
-     @alias` in one `sh -c` loop ran the test once), so use the project's own repeat command, which
-     its agent notes name. `tip-run --wait <id>` concludes it; `NOT STARTED` is a busy
-     box (a loop run queues for no slot): re-issue it. Three passes mean a flake, typically load
-     on a box shared with workers' batches (wave-20261102: a `device_init_deadline` timing claim
-     on macbook-pro beside five workers' batches, settled in three minutes). Then
-     `resume-launches` and restart `wave loop` with `--resume-after <red id>` to run at the current
-     tip at once, even when that is still the red SHA: the targeted batch is no verdict, so the base gate keeps reading the
-     loop's fail record there and nothing launches onto that tip until the new run passes. One
-     failure is a regression, as a red CI
-     rerun is below. The CI rerun is a new attempt, so judge that attempt and not the red already read:
-     once `gh run view <run id> --repo <owner/repo> --json attempt` shows the attempt gone up,
-     await it with `pr-review.sh retry run watch <owner/repo>#<run id>`. Green, it was a flake:
-     `resume-launches` on the integration loop's next green verdict, which is about the
-     CURRENT tip by the rule above (the tip's own run, or an integration record at it), so every
-     merge landed meanwhile is in it. Red, it is a regression: the rest of stop-the-world
-     (below) follows, and the next two steps are its owner's.
+     the halt's triage stays free for its one owner, even mid-rerun. Use `wave loop <wave.json>
+     <name> --rerun <red id> -- <narrowed command>`: it derives the red SHA from that loop's
+     concluded red record, uses the loop's checkout, box and `--cpu`, and allocates under
+     `<wave>-<name>-rerun`. Its separate payload never carries `"integration": true`: the targeted
+     batch is no verdict at the red SHA. As its command use the loop's, narrowed to the failing
+     aliases and run three times, exiting on the first failure, with no pipe, through a runner that
+     forces each run to execute: a build system reads a second `build` of a target that passed as
+     up to date and runs nothing (ludics#1106: three `dune build @alias` in one `sh -c` loop ran
+     the test once), so use the project's own repeat command, which its agent notes name. `tip-run
+     --wait <id>` concludes it; `NOT STARTED` is a busy box (a loop run queues for no slot):
+     re-issue it. Three passes mean a flake, typically load on a box shared with workers' batches
+     (wave-20261102: a `device_init_deadline` timing claim on macbook-pro beside five workers'
+     batches, settled in three minutes). Then `resume-launches` and restart `wave loop` with
+     `--resume-after <red id>` to run at the current tip at once, even when that is still the red
+     SHA: the targeted batch is no verdict, so the base gate keeps reading the loop's fail record
+     there and nothing launches onto that tip until the new run passes. One failure is a
+     regression, as a red CI rerun is below. The CI rerun is a new attempt, so judge that attempt
+     and not the red already read: once `gh run view <run id> --repo <owner/repo> --json attempt`
+     shows the attempt gone up, await it with `pr-review.sh retry run watch <owner/repo>#<run id>`.
+     Green, it was a flake: `resume-launches` on the integration loop's next green verdict, which
+     is about the CURRENT tip by the rule above (the tip's own run, or an integration record at
+     it), so every merge landed meanwhile is in it. Red, it is a regression: the rest of
+     stop-the-world (below) follows, and the next two steps are its owner's.
   2. **Attribute** by the failing job (`pr-review.sh base` names it, and `red since` where its
-     streak starts) against `git log --first-parent <last green>..<red tip>`. The last green is
-     the nearest commit below the red tip on its first-parent chain that a green judged, never
-     just the newest green: a merge that lands during the rerun and goes green descends from the
-     red tip, so the range comes out empty and `git bisect` refuses the endpoints
-     (ludics-lite#602). `pr-review.sh base <owner/repo> <base> --last-green <red tip>` prints it
-     for each workflow red there, from the successful push runs created before the red run. For
-     a local integration run, its candidates are the `pass` records of those the base gate reads
-     (ludics-lite#811), saved first, since a pipe would hand a failed registry read on as an empty list:
+     streak starts) against `git log --first-parent <last green>..<red tip>`. The last green is the
+     nearest commit below the red tip on its first-parent chain that a green judged, never just the
+     newest green: a merge that lands during the rerun and goes green descends from the red tip, so
+     the range comes out empty and `git bisect` refuses the endpoints (ludics-lite#602).
+     `pr-review.sh base <owner/repo> <base> --last-green <red tip>` prints it for each workflow red
+     there, from the successful push runs created before the red run. For a local integration run,
+     its candidates are the `pass` records of those the base gate reads (ludics-lite#811), saved
+     first, since a pipe would hand a failed registry read on as an empty list:
 
          fleet-worker.sh execution integration-records <owner/repo> --verdict pass --shas > <greens>
          pr-review.sh base <owner/repo> --last-green <red tip> --greens <greens>
 
-     It never guesses: exit 3 (a read failed) prints nothing, and exit 4 (nothing red at that
-     SHA, no candidate given, or a red workflow with no green on the chain within 300 first
-     parents) prints a SHA only for a workflow it found one for. A nonzero `integration-records`
-     (exit 3: the registry was not read) is unknown too: read it again, never take it for no candidates. A merge in that range whose diff reaches the failing suite,
-     alone, owns it.
+     It never guesses: exit 3 (a read failed) prints nothing, and exit 4 (nothing red at that SHA,
+     no candidate given, or a red workflow with no green on the chain within 300 first parents)
+     prints a SHA only for a workflow it found one for. A nonzero `integration-records` (exit 3:
+     the registry was not read) is unknown too: read it again, never take it for no candidates. A
+     merge in that range whose diff reaches the failing suite, alone, owns it.
   3. **Bisect only when that is still ambiguous**: run the failing suite at the range's
      intermediate merges (`git bisect start --first-parent <red tip> <last green>`) in a detached
      worktree, locally, on a box of the failing job's OS - mac-studio under `/bin/bash` 3.2 for
@@ -1272,39 +971,23 @@ controlled through the tools in your coordinator's file, never through those com
     are `<wave>-gpu-<box>-<n>`, and its `purpose` begins `GPU integration loop, <backend>:`
     (`cuda`, `hip`), the prefix the reads below select on.
   - **One call per run**, in a checkout on the box that is the coordinator's own (never a
-    worker's):
-
-        fleet-worker.sh execution tip-run <reserve.json> --tip <base> --id-prefix <wave>-gpu-<box> --checkout <dir> -- <command...>
-        fleet-worker.sh execution tip-run --wait <id> --tip <base>
-
-    The request is an ordinary non-standing `correctness` request of transport `coordinator`
-    with no `requested_revision` and no `request_id`: `--tip` reads `<base>`'s head on GitHub and
-    runs exactly that SHA (a rerun names the red SHA as `requested_revision` instead, without
-    `--tip`), and `--id-prefix` takes the next `<n>`, one past the highest the registry holds under
-    the prefix, so no counter is kept by hand (ludics-lite#714). It yields
-    as above, reserves and dispatches (`execution run`, with every check that makes, a halt's
-    included), checks the SHA out detached in the clean checkout, starts the command under
-    `execution slot --bg` on a GPU token (`--cpu` for a CPU backend), records it running, and
-    prints `TIP-RUN STARTED <id> <box> <sha> <dir>`; or `TIP-RUN NOT STARTED <id>: <why>` (exit
-    1), with anything it reserved concluded `not-launched`. For OCANNL the command is
-    `env OCANNL_BACKEND=<backend> tools/test-run.sh run --test-cap 0 build @runtest @train`, with
-    `<backend>` the loop's own (`cuda` on rog, `hip` on tuf and minix): the runner takes its
-    backend from `OCANNL_BACKEND` or else OCANNL's test config, which pins cc, so an unpinned
-    command runs cc on a GPU box (two waves' GPU-loop records were cc runs, ludics-lite#793).
-    `tip-run` refuses a run whose purpose names a backend unless its command pins exactly that
-    one, by the project's `.github/fleet-leg` at the commit (`execution leg`'s pin). `--wait
-    <id>` (the id `TIP-RUN STARTED` printed) is the rest of the run, in one foreground call: it
-    reads the box,
-    directory and SHA off the record (nothing copied by hand, so the id and the directory cannot
-    drift apart), blocks up to 480 s, and concludes it `--from-bg-run`, printing `TIP-RUN
-    CONCLUDED <id> <verdict> <box> <sha> <dir>`, then `TIP-RUN TIP <base> <sha> moved` when the
-    tip has moved past the run, the cue to start the next one at once; exit 3 is RUNNING, re-issue
-    it. The cc loop's local run may take the same calls, its request carrying `"integration":
-    true`: yielding is how it finds a quiet box too. `fleet-worker.sh wave loop <wave.json>
-    <name>` drives the two calls for one of the wave file's loops and is restartable: it waits on
-    its own running run before it starts another. It ends on a red with `LOOP RED`, the cue for
-    *On a red at the tip*; it never halts launches itself, since the later-merge check comes
-    before the halt ([coordinator-kit.md](references/coordinator-kit.md)).
+    worker's): `fleet-worker.sh wave loop <wave.json> <name>` drives one of the wave file's loops
+    and is restartable - it waits on its own running run before it starts another - through the
+    two calls a run is by hand, `execution tip-run <reserve.json> --tip <base> --id-prefix
+    <wave>-gpu-<box> --checkout <dir> -- <command...>` and `execution tip-run --wait <id> --tip
+    <base>` ([executions.md](references/executions.md#reserve-launch-observe-conclude) states
+    both: the yield, the next `<n>` under the prefix, the detached checkout, the GPU token only if
+    one is free, `TIP-RUN STARTED`/`NOT STARTED`/`CONCLUDED`, and `TIP-RUN TIP <base> <sha> moved`,
+    the cue to start the next run at once). The command pins its backend: `tip-run` refuses a run
+    whose purpose names a backend unless its command pins exactly that one, by the project's
+    `.github/fleet-leg` at the commit. For OCANNL it is `env OCANNL_BACKEND=<backend>
+    tools/test-run.sh run --test-cap 0 build @runtest @train`, with `<backend>` the loop's own
+    (`cuda` on rog, `hip` on tuf and minix), since the runner otherwise takes OCANNL's test config,
+    which pins cc (two waves' GPU-loop records were cc runs, ludics-lite#793). The cc loop's local
+    run may take the same calls, its request carrying `"integration": true`: yielding is how it
+    finds a quiet box too. `wave loop` ends on a red with `LOOP RED`, the cue for *On a red at the
+    tip*; it never halts launches itself, since the later-merge check comes before the halt
+    ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 5).
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
     rerun pending"` (a red that gates nothing may skip it: *On a regression*, below); one rerun
     at the same SHA on a box of that backend (the same `tip-run` and pinned command, which the
@@ -1408,9 +1091,9 @@ controlled through the tools in your coordinator's file, never through those com
 - **Re-check for a rival PR before each queued launch.** Per-box waves no longer race each
   other, but user-driven sessions, the CI-red triage routine (`ci-fix/*`), and a previous
   wave's stragglers still open PRs, and the pre-wave `gh pr list` goes stale within hours.
-  Before launching each queued worker, search open PRs for the issue number/topic (`wave prep`
-  refuses on an open PR naming the number or the branch; the topic search, and the re-check right
-  before a launch prepped earlier, stay yours); on a hit,
+  Before each launch, search open PRs for the issue's topic: `wave prep`, the driver's included,
+  refuses on an open PR naming the number or the branch, so the topic search stays yours - before
+  you queue a task, and again right before a launch prepped earlier; on a hit,
   rebrief the worker to *adopt* the existing PR (take over the branch, answer its review,
   coordinate in PR comments if the original session resumes - merge ownership goes to
   whichever session is actively driving, settled explicitly in the PR thread, never raced)
@@ -1433,7 +1116,9 @@ controlled through the tools in your coordinator's file, never through those com
   implemented or recommended; no standing reservation, which would refuse the item's own
   exclusive measurement on its box, so every run, correctness batches included, goes through a
   request; no ship-pr landing - the deliverable is an issue comment a later session can act on,
-  the issue stays open, and a hand-back linking that comment is completion. A harness PR, if the
+  the issue stays open, and a hand-back linking that comment is completion (the row closes with
+  `board close --no-pr`, which the driver also runs for a hand-back naming its runs and no PR:
+  `lib/ludics/fleetworker/closeout.py`'s header). A harness PR, if the
   item needs one, lands through ship-pr, and its review finds real instrument defects (#444: a
   device readback inside the timed region, worth up to 1.7x) - worth its rounds; cap it with the
   convergence policy after, not before.
@@ -1451,15 +1136,10 @@ controlled through the tools in your coordinator's file, never through those com
   merging, run it on every open wave PR's head merged with the scan's branch, and name each hit
   to that sibling, so the two land in an order that leaves master green. The check is
   `fleet-worker.sh sibling-scan <owner/repo> --wave <id> -- <scan command>`, run from the scan
-  branch's worktree under `execution slot` like any batch; its header in fleet-worker.sh and
-  `lib/ludics/fleetworker/siblingscan.py` state what it does and refuses. It fetches each head
-  by its PR ref, never its branch name, and records the SHA it got. A sibling that merges
-  mid-loop deletes its branch, and its PR ref still resolves (lukstafi/ocannl-staging#1833 met
-  #1834's vanished branch). A failed fetch stops the check with its error, never a skipped
-  head. Exit 0 is every head clean, 1 names each `SIBLING-SCAN HIT` to tell its sibling, and 4
-  is a check that did not reach every head (a failed fetch, a conflict the cherry-pick could not
-  get past either, an unread list): never merge on it as clean. A worker briefed without the
-  check gets it from the coordinator before its merge.
+  branch's worktree under `execution slot` like any batch; `lib/ludics/fleetworker/siblingscan.py`'s
+  header states what it does and refuses. Exit 0 is every head clean, 1 names each `SIBLING-SCAN
+  HIT` to tell its sibling, and 4 is a check that did not reach every head: never merge on it as
+  clean. A worker briefed without the check gets it from the coordinator before its merge.
 - **Relay milestones** to the user as they land - merged PRs with one-line substance, not
   worker-status noise.
 
@@ -1470,10 +1150,15 @@ When the last gate clears: every worker on the board has finished its work and i
 [cli-claude.md](references/cli-claude.md#close-out)), write the completed wave's board (issue or
 task -> box -> PR -> merge state; `fleet-worker.sh board check <wave>` exits 0 once every row's
 `state` is a done word), residuals and follow-up issues, and any gates left for the next
-invocation. Workers ran `after-merge` in hand-back mode, so each close-out - collected through
-the transport's channel: the coordinator file's messages and waits for a native worker,
+invocation. A driver-served task's row was closed by the driver's `board close`, which verified
+its merge on GitHub (or, for a hand-back naming runs and no PR, concluded them with `--no-pr`);
+the merged-tip integration read and a one-item task's checkbox on its issue are still yours.
+Once the last hand-back is in and every attention line answered, stop the driver (`touch <wave
+dir>/drive.stop`; it does not end on its own). Workers ran `after-merge` in
+hand-back mode, so each close-out - collected through the transport's channel: `handbacks/<task>.md`
+for a task the driver served, the coordinator file's messages and waits for a native worker,
 `read_thread` or `list_events` for an app worker, `fleet-worker.sh log <box> <name> --last-result`
-for a CLI worker; the thread or CLI stream is the full record - arrives carrying proposed issues, chip candidates,
+for any other CLI worker; the thread or CLI stream is the full record - arrives carrying proposed issues, chip candidates,
 and reasoned drops; the coordinator's role here is editorial, not generative. Combine
 overlapping proposals across workers into single issues - cross-worker recurrence is the
 strongest priority signal a wave produces - revise drafts against the tracker's style, then do
