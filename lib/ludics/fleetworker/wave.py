@@ -14,6 +14,9 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
   wave heartbeat <wave.json> [--sleep <seconds>]                                             here
   wave drive <wave.json> [--poll <seconds>] [--once]                                         wavedrive.py
   wave turn <wave.json> <task>                                                              wavedrive.py
+  wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file>      wavedecide.py
+              --by <model> [--task <task>] [--posted <url>]
+  wave decisions <wave.json>                                                                wavedecide.py
   wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                          wavereview.py
               [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]
 
@@ -106,6 +109,8 @@ USAGE = (
     "wave loop <wave.json> <name> [--resume-after <request id>] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "
     "wave drive <wave.json> [--poll <seconds>] [--once] | wave turn <wave.json> <task> | "
+    "wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file> --by <model> [--task <task>]"
+    " [--posted <url>] | wave decisions <wave.json> | "
     "wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm [--issue <N> | --source <N>]"
     " [--dry-run | --posted <url> | --again]"
 )
@@ -490,7 +495,7 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
 
 
 def cmd_wave(cfg: Config, args: list[str]) -> int:
-    from ludics.fleetworker import wavedrive, wavelaunch, waveloop, waveprep, wavereview
+    from ludics.fleetworker import wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview
 
     match args[:1]:
         case ["render"]:
@@ -505,6 +510,10 @@ def cmd_wave(cfg: Config, args: list[str]) -> int:
             return cmd_heartbeat(cfg, args[1:])
         case ["review"]:
             return wavereview.cmd_review(cfg, args[1:])
+        case ["decide"]:
+            return wavedecide.cmd_decide(cfg, args[1:])
+        case ["decisions"]:
+            return wavedecide.cmd_decisions(cfg, args[1:])
         case ["drive"]:
             return wavedrive.cmd_drive(cfg, args[1:])
         case ["turn"]:

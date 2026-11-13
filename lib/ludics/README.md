@@ -294,7 +294,7 @@ fleetworker/tiprun.py
 fleetworker/assign.py
     issue-wave/scripts/test-fleet-worker.sh "execution assign"
 
-fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker/waveloop.py fleetworker/wavereview.py fleetworker/wavelaunch.py fleetworker/wavedrive.py
+fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker/waveloop.py fleetworker/wavereview.py fleetworker/wavelaunch.py fleetworker/wavedrive.py fleetworker/wavedecide.py
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
     lib/ludics/tests/test_fleetworker_wave.py
     lib/ludics/tests/test_checkprompts_cli.py

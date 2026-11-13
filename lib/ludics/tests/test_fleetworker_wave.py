@@ -17,7 +17,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import revision, takeover, wave, wavedrive, wavelaunch, waveloop, waveprep, wavereview
+from ludics.fleetworker import revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -1400,6 +1400,161 @@ class Loop(unittest.TestCase):
             rc, out = self.drive([])
         self.assertEqual(rc, 1)
         self.assertIn("another driver holds", out)
+
+
+class Decide(WaveDirCase):
+    """wave decide: a decision posted under the right heading, labelled, and recorded for the ledger."""
+
+    URL = "https://github.com/o/up/issues/2154#issuecomment-7"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.comment = Done(0, self.URL + "\n")
+        self.body = os.path.join(self.dir, "body.md")
+
+    def helper(self, argv: list[str], **_: Any) -> Done:
+        self.shim_calls.append([os.path.basename(argv[0]), *argv[1:]])
+        return self.comment
+
+    @contextlib.contextmanager
+    def world(self, label_rc: int = 0, gate: int = 0) -> Generator[FakeTool]:
+        with (FakeTool("gh") as gh, mock.patch.object(wavedecide, "anchor_gate", return_value=gate),
+              mock.patch.object(wavedecide, "run", side_effect=self.helper)):
+            gh.route((When(prefix=("issue", "edit")), Answer(rc=label_rc, stderr="label not found" if label_rc else "")))
+            yield gh
+
+    def decide(self, text: str, *args: str, tier: str = "mid-wave", call: str = "part 2 may add a bounded replay") -> tuple[int, str, str]:
+        with open(self.body, "w") as f:
+            f.write(text)
+        return captured(wavedecide.cmd_decide, self.cfg, [self.path, "2154", "--tier", tier, "--call", call, "--body-file", self.body,
+                                                          "--by", "Claude Fable 5.2", *args])
+
+    def records(self) -> list[dict[str, Any]]:
+        with open(os.path.join(self.wavedir, "decisions.jsonl")) as f:
+            return [json.loads(line) for line in f]
+
+    def test_a_mid_wave_call_is_posted_as_the_waves_own_labelled_and_recorded_unreviewed(self) -> None:
+        with self.world() as gh:
+            rc, out, err = self.decide("**Coordinator decision (wv)**: part 2 may add a bounded replay.\n", "--task", "t2154")
+            self.assertEqual(rc, 0, out + err)
+            self.assertEqual(self.shim_calls, [["pr-review.sh", "comment", "o/up#2154", "--body-file", self.body, "--coordinator", "Claude Fable 5.2"]])
+            self.assertEqual(gh.calls(), [["issue", "edit", "2154", "--repo", "o/up", "--add-label", "design-joint"]])
+            self.assertEqual(out, f"WAVE DECIDE o/up#2154: tier mid-wave recorded as unreviewed: part 2 may add a bounded replay ({self.URL})\n")
+            got = self.records()[0]
+            self.assertEqual({k: got[k] for k in ("issue", "tier", "task", "call", "who", "url", "status")},
+                             {"issue": "o/up#2154", "tier": "mid-wave", "task": "t2154", "call": "part 2 may add a bounded replay",
+                              "who": "coordinator of wv (Claude Fable 5.2)", "url": self.URL, "status": "unreviewed"})
+            self.shim_calls.clear()
+            rc, out, _ = self.decide("**Coordinator decision (wv)**: again.\n")
+            self.assertEqual((rc, self.shim_calls, len(self.records())), (0, [], 1), "the same issue and call is the decision already made")
+            self.assertIn("already recorded", out)
+            rc, out, _ = self.decide("## Recommendation\n\nx\n", tier="2")
+            self.assertEqual((rc, self.shim_calls, len(self.records())), (0, [], 1), "the wave's call under its other tier is the same decision")
+
+    def test_a_retry_that_overlaps_the_first_calls_post_waits_and_reads_its_record(self) -> None:
+        """The check, the post and the record are one locked step: a second call made while the first is posting cannot read an
+        empty ledger. The overlapping call here is made from inside the first one's post, so it must wait, and it is seen to."""
+        import fcntl
+        probes: list[bool] = []
+
+        def posting(argv: list[str], **_: Any) -> Done:
+            self.shim_calls.append([os.path.basename(argv[0]), *argv[1:]])
+            with open(os.path.join(self.wavedir, "decisions.lock"), "a") as other:
+                try:
+                    fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    probes.append(False)
+                except OSError:
+                    probes.append(True)
+            return self.comment
+
+        with self.world(), mock.patch.object(wavedecide, "run", side_effect=posting):
+            rc, out, _ = self.decide("**Coordinator decision (wv)**: x.\n")
+            self.assertEqual((rc, probes), (0, [True]), out + ": the lock is held across the post")
+            rc, out, _ = self.decide("**Coordinator decision (wv)**: x.\n")
+            self.assertEqual((rc, len(self.shim_calls), len(self.records())), (0, 1, 1), "the retry, once it has the lock, finds the record")
+
+    def test_the_maintainers_answer_to_a_call_the_wave_recorded_is_posted_and_is_the_ledgers_row(self) -> None:
+        heading = "## Decision update (maintainer, via the wave coordinator)"
+        with self.world():
+            self.decide("## Recommendation (wv decision gate, veto-able)\n\nx\n", tier="2")
+            self.shim_calls.clear()
+            rc, out, _ = self.decide(f"{heading}\n\nYes.\n", tier="3")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(len(self.shim_calls), 1, "the maintainer's approval is no retry of the wave's recommendation")
+            self.assertEqual([(e["tier"], e["status"]) for e in self.records()], [("2", "unreviewed"), ("3", "ok")])
+            self.shim_calls.clear()
+            self.assertEqual((self.decide(f"{heading}\n\nYes.\n", tier="3")[0], self.shim_calls, len(self.records())), (0, [], 2))
+            self.decide("**Coordinator decision (wv)**: y.\n", call="another call")
+        _, out, _ = captured(wavedecide.cmd_decisions, self.cfg, [self.path])
+        rows = out.splitlines()[2:]
+        self.assertEqual([r.split(" | ")[2:4] for r in rows], [["another call", "coordinator of wv (Claude Fable 5.2)"],
+                                                              ["part 2 may add a bounded replay", "maintainer"]],
+                         "the wave's row that the maintainer answered is not printed beside the maintainer's")
+
+    def test_the_tier_and_the_heading_must_agree_on_whose_decision_it_is(self) -> None:
+        heading = "## Decision update (maintainer, via the wave coordinator)"
+        with self.world():
+            rc, out, _ = self.decide(f"{heading}\n\nDefine all three specs.\n", tier="3", call="define all three specs")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.shim_calls[0][1:], ["comment", "o/up#2154", "--body-file", self.body], "the maintainer's answer carries no wave footer")
+            self.assertEqual((self.records()[0]["who"], self.records()[0]["status"]), ("maintainer", "ok"))
+            self.shim_calls.clear()
+            for text, tier, why in (("## Recommendation\n\nx\n", "3", "a tier-3 body starts with the line"),
+                                    (f"{heading}\n\nx\n", "2", "which reads as the maintainer's decision"),
+                                    ("## Decision: refuse\n", "mid-wave", "which reads as the maintainer's decision"),
+                                    ("\n\n### Decision\nx", "2", "which reads as the maintainer's decision")):
+                rc, out, _ = self.decide(text, tier=tier, call="another call")
+                self.assertEqual((rc, self.shim_calls), (1, []), text)
+                self.assertIn(why, out)
+            self.assertEqual(len(self.records()), 1)
+
+    def test_a_post_that_fails_records_nothing_and_a_missing_label_is_a_note(self) -> None:
+        with self.world(label_rc=1):
+            self.comment = Done(1, "")
+            rc, out, _ = self.decide("## Recommendation (wv decision gate, veto-able)\n\nx\n", tier="2")
+            self.assertEqual(rc, 1)
+            self.assertIn("pr-review.sh comment exit 1: nothing posted, nothing recorded", out)
+            self.assertFalse(os.path.exists(os.path.join(self.wavedir, "decisions.jsonl")))
+            self.comment = Done(3, "")
+            rc, out, _ = self.decide("## Recommendation\n\nx\n", tier="2")
+            self.assertEqual(rc, 4)
+            self.assertIn("re-run with --posted <its URL>", out)
+            self.shim_calls.clear()
+            rc, out, _ = self.decide("## Recommendation\n\nx\n", "--posted", self.URL, tier="2")
+            self.assertEqual((rc, self.shim_calls), (0, []), out)
+            self.assertIn("WAVE DECIDE NOTE o/up#2154: the label design-joint was not added (gh exit 1: label not found)", out)
+            self.assertEqual(self.records()[0]["url"], self.URL)
+        with self.world(gate=1):
+            self.assertEqual((self.decide("## Recommendation\n", tier="2", call="a third call")[0], self.shim_calls), (1, []))
+
+    def test_decisions_prints_the_ledgers_rows_newest_first(self) -> None:
+        rc, out, _ = captured(wavedecide.cmd_decisions, self.cfg, [self.path])
+        self.assertEqual((rc, out), (0, "WAVE DECISIONS wv: none recorded\n"))
+        with open(os.path.join(self.wavedir, "decisions.jsonl"), "w") as f:
+            f.write(json.dumps({"at": "2026-11-11T16:00:00Z", "issue": "o/up#2134", "call": "a multiple | a floor", "who": "coordinator of wv (M)",
+                                "url": "https://x/1", "status": "unreviewed"}) + "\nnot json\n")
+            f.write(json.dumps({"at": "2026-11-11T22:40:00Z", "issue": "o/up#2154", "call": "bounded replay", "who": "maintainer",
+                                "url": "https://x/2", "status": "ok"}) + "\n")
+        rc, out, _ = captured(wavedecide.cmd_decisions, self.cfg, [self.path])
+        self.assertEqual(out, wavedecide.HEADER + "\n| 2026-11-11 | o/up#2154 | bounded replay | maintainer | [comment](https://x/2) | ok |\n"
+                              "| 2026-11-11 | o/up#2134 | a multiple \\| a floor | coordinator of wv (M) | [comment](https://x/1) | unreviewed |\n")
+
+    def test_usage(self) -> None:
+        with open(self.body, "w") as f:
+            f.write("x\n")
+        good = [self.path, "2154", "--tier", "2", "--call", "c", "--body-file", self.body, "--by", "M"]
+        for args, why in (([self.path], "name the wave file and the issue's number"), ([self.path, "t42"], "name the wave file and the issue's number"),
+                          ([*good[:2], "--tier", "1", *good[4:]], "--tier is one of 2, mid-wave, 3"),
+                          ([*good[:4], "--call", "  ", *good[6:]], "--call takes the decision in one line"),
+                          ([*good[:8], "--by", "Opus (5.5)"], "--by takes the coordinator's model"),
+                          ([*good, "--task", "7x"], "--task '7x' does not match"),
+                          ([*good[:6], "--body-file", "/nonexistent/body.md", *good[8:]], "cannot be read"),
+                          ([*good, "--task"], "--task needs a value"), ([*good, "--force", "1"], "unknown option --force")):
+            rc, _, err = captured(wavedecide.cmd_decide, self.cfg, args)
+            self.assertEqual(rc, 2, args)
+            self.assertIn(why, err)
+        rc, _, err = captured(wavedecide.cmd_decisions, self.cfg, [])
+        self.assertIn("name the wave file", err)
 
 
 def row(task: str, **fields: str) -> dict[str, Any]:

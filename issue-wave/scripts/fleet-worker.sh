@@ -289,6 +289,12 @@
 #                          # turn once (a ledger), one driver per wave, and anything no marker
 #                          # answers an attention line for the coordinator (wavedrive.py)
 #   fleet-worker.sh wave turn <wave.json> <task>   # the same, one worker's returned turn, once
+#   fleet-worker.sh wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file>
+#                          --by <model> [--task <task>] [--posted <url>]   # a design decision
+#                          # surfaced: posted on the issue under the heading its tier needs (a
+#                          # wave's own post, or the maintainer's answer), labelled design-joint,
+#                          # and recorded for the project's ledger (wavedecide.py)
+#   fleet-worker.sh wave decisions <wave.json>   # the wave's recorded decisions as ledger rows
 #   fleet-worker.sh wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm
 #                          [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]   # the review
 #                          # checkpoint: the wave file's reviewer reads the PR headless, with a
