@@ -74,7 +74,7 @@ from ludics.prreview.core import (
 )
 from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
-from ludics.prreview.gate import Gate, GateConfig, load_gate_config
+from ludics.prreview.gate import Gate, GateConfig, RunKey, load_gate_config
 from ludics.prreview.mergebuild import Ceiling, clone_of, clone_preflight, merge_build
 from ludics.prreview.runners import (
     HeadRun,
@@ -373,7 +373,7 @@ class Recovery:
             if key in seen:
                 continue
             seen.add(key)
-            if f"cancelled-run:{run.rid}" in self.gate.waived:
+            if self.gate.waives(RunKey("cancelled-run", run.rid)):
                 continue
             if run.status == "completed" and run.conclusion == "cancelled":
                 hold = self.gate.run_stopped_hold(run.rid)
@@ -550,7 +550,7 @@ class Recovery:
         # class docstring): a completed one is CANCELLED's below, a dispatch never started ends here.
         events = {run.rid: run.event for run in runs}
         for rid in list(by_run):
-            if f"cancelled-run:{rid}" in self.gate.waived:
+            if self.gate.waives(RunKey("cancelled-run", rid)):
                 del by_run[rid]
             elif events.get(rid) == "workflow_dispatch" and rid not in self.done:
                 orphan = by_run.pop(rid)
