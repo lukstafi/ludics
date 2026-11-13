@@ -450,7 +450,8 @@ whitespace paths as unsafe cleanup words: both writers now reject those words be
 keeping valid placements and reporting reconciliation instead of publishing a path prefix.
 The two whitespace regression cases fail against the pre-guard commit 4c0158d7 and pass with it.
 Review round 1 also rejects repeated launch-line cwd/stream delimiters before publishing any
-placement; a missing board-writer identity becomes an assignment NOTE rather than aborting the
+placement. Only LF separates launch output lines, so Unicode separators cannot forge a second
+LAUNCHED line. A missing board-writer identity becomes an assignment NOTE rather than aborting the
 remaining requests. Board mutations share one lease-protocol helper.
 
 ```sh

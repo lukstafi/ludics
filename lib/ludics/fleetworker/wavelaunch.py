@@ -45,7 +45,8 @@ WHAT IT DOES, in this order:
    with a NOTE (exit 3, reconcile by hand), never split into a different cleanup target.
 7. The manifest records the launch.
 
-THE RECOVERY BOUNDARY. LAUNCHED is read only when its line has exactly one `` cwd=`` and one
+THE RECOVERY BOUNDARY. Only protocol LF separates output lines: Unicode separators inside a
+path remain path data. LAUNCHED is read only when its line has exactly one `` cwd=`` and one
 `` stream=`` delimiter; repeated delimiters (including inside either path) are ambiguous and
 return UNKNOWN before any cleanup target is published. No quoted/escaped launch-line grammar
 is inferred. A launch refused before it started anything (exit 1 from step 4: a gate, a
@@ -222,7 +223,7 @@ def launched(cfg: Config, path: str, task: str) -> int:
     cli.emit(said)
     if started.rc != 0:
         return started.rc
-    found = [(line, match) for line in said.splitlines() if (match := LAUNCHED.match(line))]
+    found = [(line, match) for line in said.split("\n") if (match := LAUNCHED.match(line))]
     if not found:
         cli.say(f"WAVE LAUNCH UNKNOWN {task}: launch exited 0 and printed no LAUNCHED line with its cwd; read status"
                 f" {record.host} {record.worker} before anything else")
