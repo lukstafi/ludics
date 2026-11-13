@@ -38,7 +38,9 @@ life ending, and this form concludes it only for a task whose PR GitHub says mer
 With ``--no-pr``, each repeated absolute ``--run`` is read on the standing records' execution
 hosts, first as test-run, then bg-run. Exactly one record must match its host and checkout; bg-run
 records no checkout, so its request file must bind it to that record. Its own verdict (including
-fail) concludes that record. An unmatched open record requires its own run unless THE UNUSED LEG
+fail or an admission refusal's not-launched) concludes that record. Test-run uses standing-handback
+semantics: dirty edits and a changed HEAD are recorded in evidence, not refused as certification
+of one commit. An unmatched open record requires its own run unless THE UNUSED LEG
 proves it never launched. ``standing=none`` needs no run. The row becomes ``done, no PR``; a row
 already naming a PR or merge refuses this form. No verdict comes from hand-back prose.
 
@@ -47,7 +49,8 @@ and does only what is missing, so a close interrupted anywhere -- between two co
 write whose answer was lost (a board write that fails may or may not have landed) -- ends the same
 when run again, and a finished close run again writes nothing and says so. It rests on three reads:
 a record's ``state``, the board's log text, and the row's values. Both forms skip concluded records
-on retry; the no-PR form matches their recorded handle, log and checkout without re-reading the run.
+on retry; the no-PR form matches their recorded handle, log and checkout without re-reading the run
+(or just the bound bg-run log for a not-launched admission refusal, which has no handle/checkout).
 Runs for open records must remain readable. The log line carries no timestamp or count, so a re-run
 composes the same line. Not recovered: a close whose worktree was removed
 before its record was concluded (``conclude`` reads the checkout's HEAD there, and its refusal stands;
@@ -240,10 +243,13 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
             if record.get("state") == "concluded":
                 handles = ("test-run:" + ex.basename(directory), f"bg-run:{host}:{directory}")
                 landed = ex.retried(record)
-                if (landed is not None and landed.get("handle") in handles
-                        and landed.get("log") in (directory + "/log", f"{host}:{directory}/log")
-                        and ex.same_checkout(str(landed.get("remote_checkout", "")), checkout)):
-                    candidates.append((request, json.dumps(landed)))
+                if landed is not None:
+                    ran = (landed.get("handle") in handles
+                           and landed.get("log") in (directory + "/log", f"{host}:{directory}/log")
+                           and ex.same_checkout(str(landed.get("remote_checkout", "")), checkout))
+                    unlaunched = landed.get("verdict") == "not-launched" and landed.get("log") == f"{host}:{directory}/log"
+                    if ran or unlaunched:
+                        candidates.append((request, json.dumps(landed)))
                 continue
             head = ex.observed_sha_of(cfg, record, host, checkout)
             if isinstance(head, ex.Refusal):
@@ -251,7 +257,10 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
             facts = ex.read_run(cfg, host, directory, head)
             payload: ex.Conclusion = ex.Refusal("no matching test-run", 1)
             if not isinstance(facts, ex.Refusal) and ex.same_checkout(facts.get("wt", ""), checkout):
-                payload = ex.conclude_from_run(cfg, directory, request, host, head, evidence)
+                clause = ex.standing_run_clause(facts, directory, host)
+                if not isinstance(clause, ex.Refusal):
+                    payload = ex.Payload(ex.standing_handback(request, host, checkout, head, evidence,
+                                                             clause[0], (directory, clause[1])))
             if isinstance(payload, ex.Refusal):
                 bgrun = ex.bg_run_path(cfg)
                 bg = ex.read_bg_run(cfg, directory, host, bgrun)
@@ -259,7 +268,7 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
                     payload = ex.conclude_from_bg_run(cfg, directory, request, host, host, head, checkout, evidence, bgrun)
             if isinstance(payload, ex.Payload):
                 data = cast(dict[str, Any], json.loads(payload.json))
-                if ex.same_checkout(str(data.get("remote_checkout", "")), checkout):
+                if data.get("verdict") == "not-launched" or ex.same_checkout(str(data.get("remote_checkout", "")), checkout):
                     candidates.append((request, payload.json))
         if len(candidates) != 1:
             raise refused(wave, task, f"run {shlex.quote(directory)} matches {len(candidates)} standing records;"

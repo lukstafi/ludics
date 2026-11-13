@@ -85,6 +85,7 @@ class NoPR(Refusing):
         self.calls: list[list[str]] = []
         self.code = "0"
         self.stop = ""
+        self.run_over: dict[str, str] = {}
 
     def write(self, _cfg: Any, args: list[str]) -> tuple[int, str]:
         self.calls.append(args)
@@ -114,7 +115,7 @@ class NoPR(Refusing):
               mock.patch.object(closeout, "listing", side_effect=self.listed),
               mock.patch.object(closeout, "stepped", side_effect=self.write),
               mock.patch.object(ex, "observed_sha_of", return_value=OID),
-              mock.patch.object(ex, "read_run", return_value=run_record(wt="/wt", whead=OID, launched=OID, exit=self.code)),
+              mock.patch.object(ex, "read_run", return_value=run_record(**{"wt": "/wt", "whead": OID, "launched": OID, "exit": self.code, **self.run_over})),
               mock.patch.object(ex, "read_bg_run", return_value=ex.Refusal("absent", 1)),
               mock.patch.object(ex, "unused_leg", side_effect=self.unused),
               contextlib.redirect_stdout(io.StringIO())):
@@ -132,6 +133,13 @@ class NoPR(Refusing):
 
     def test_a_failed_run_closes_with_fail(self) -> None:
         self.assert_run_closes("1", "fail")
+
+    def test_standing_runs_record_dirty_edits_and_a_changed_revision(self) -> None:
+        self.run_over = {"dirty": "2", "launched": "b" * 40, "rel": "ancestor"}
+        self.assert_run_closes("1", "fail")
+        self.assertIn("2 uncommitted", self.records[0]["evidence"])
+        self.assertIn("b" * 40, self.records[0]["evidence"])
+        self.assertEqual(self.records[0]["observed_sha"], OID)
 
     def test_one_run_never_lends_its_verdict_to_another_record(self) -> None:
         other = record("unused", checkout="/other")
@@ -166,6 +174,21 @@ class NoPR(Refusing):
                     with self.assertRaises(cli.Exit):
                         closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
                     read.assert_not_called()
+
+    def test_request_bound_admission_refusal_and_its_retry_need_no_checkout_in_the_payload(self) -> None:
+        data = {"request_id": "a", "verdict": "not-launched", "log": "box:/bg/log", "evidence": "slot refused"}
+        with (mock.patch.object(ex, "read_run", return_value=ex.Refusal("absent", 1)) as read,
+              mock.patch.object(ex, "read_bg_run", return_value={"request": ":a"}),
+              mock.patch.object(ex, "observed_sha_of", return_value=OID) as head,
+              mock.patch.object(ex, "conclude_from_bg_run", return_value=ex.Payload(json.dumps(data)))):
+            payloads = closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
+            self.assertEqual(json.loads(payloads["a"]), data)
+            self.records[0].update(state="concluded", history=[{"data": data}])
+            read.reset_mock()
+            head.reset_mock()
+            self.assertEqual(json.loads(closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")["a"]), data)
+            read.assert_not_called()
+            head.assert_not_called()
 
     def test_standing_none_needs_no_run(self) -> None:
         self.records = []
