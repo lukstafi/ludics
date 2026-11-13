@@ -313,13 +313,13 @@ fleetworker/workers.py:cmd_close
     issue-wave/scripts/test-fleet-worker.sh "base gate" "launch /" "failure verdicts" unstick "codex workers" halt "wave kit" usage
 
 fleetworker/workers.py:cmd_status
-    issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts" unstick "codex workers" usage
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts" unstick "codex workers" usage "wave kit"
 
 fleetworker/workers.py:cmd_log
-    issue-wave/scripts/test-fleet-worker.sh "launch /" "codex workers" "log --last-result"
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "codex workers" "log --last-result" "wave kit"
 
 fleetworker/workers.py:cmd_unstick
-    issue-wave/scripts/test-fleet-worker.sh "failure verdicts" unstick "codex workers" usage
+    issue-wave/scripts/test-fleet-worker.sh "failure verdicts" unstick "codex workers" usage "wave kit"
 
 fleetworker/workers.py:cmd_ls
     issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts"
