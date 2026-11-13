@@ -73,10 +73,9 @@ prreview/mergebuild.py     merge's build of the would-be merge commit (.github/s
 prreview/mergedry.py       merge-build, that build alone as a dry run for two revisions (#751)
 prreview/buildhistory.py   what a repository's merge build has taken on this box, for an overrun's advice (#982)
 prreview/localreview.py    local-review, the local Codex review before a PR opens (#750)
-prreview/rerun.py          rerun, the head's workflow runs, jobs/log readers and run completion wait;
-                           read_jobs(session, repo, rid) is the reusable paginated latest-attempt reader;
-                           the re-run of their failed jobs,
-                           inside the polling budget (#1111)
+prreview/rerun.py          rerun, the head's workflow runs, their jobs/log tails, a run's completion
+                           wait, and the re-run of failed jobs inside the polling budget (#1111);
+                           read_jobs is the shared paginated latest-attempt reader
 prreview/checkruns.py      conclusion_class, newest_first
 prreview/ere.py            the advisory list, asked of grep (is_advisory, ere_valid)
 prreview/gate.py           gate_checks (checks, merge, and base's merged-head source)

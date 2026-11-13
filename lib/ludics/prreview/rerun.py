@@ -16,6 +16,8 @@ list until the named run completes (any conclusion), disappears from the current
 a read fails, or its ceiling (default 900 seconds) expires. It never reruns or cancels.
 It claims the PR's build observer before reading, waits holds within its ceiling, and
 backs off on unchanged status. Exit 0 means finished, not green; 4 means unfinished.
+This does not reuse runwatch: completion is readiness to rerun here, rather than a
+workflow verdict, and membership in the current PR head must be revalidated each poll.
 A second build observer is refused before any read. Non-wait reads exit 3 under a hold.
 
 WHAT IT DOES. With no run id it lists the head's runs and writes nothing: one line a run, newest
@@ -56,7 +58,7 @@ from ludics.prreview.budget import pause
 from ludics.prreview.clock import clock_from_env
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, api_rejection, die, fail, pr_arg
-from ludics.prreview.knobs import checks_timing, is_digits
+from ludics.prreview.knobs import INTMAX, checks_timing, is_digits
 from ludics.prreview.runners import rerun_command
 from ludics.prreview.shtext import herestring_lines, placeholder, tab_fields
 
@@ -192,15 +194,15 @@ def recovery_read(session: GhSession, args: list[str]) -> int:
     """Budgeted recovery reads; see the module header for the readiness boundary."""
     verb = args[1]
     expected = (4, 5) if verb == "job-log" else (3, 4) if verb == "wait" else (3,)
-    if len(args) not in expected or not is_digits(args[2]) or args[2] == "0":
+    if len(args) not in expected or not is_digits(args[2]) or not args[2].strip("0"):
         die("usage: rerun <pr> jobs|failed-jobs <run-id>; job-log <run-id> <job-id> [tail-lines]; wait <run-id> [seconds]")
     extra = args[3:]
     # GitHub identifiers are not signed 32-bit counters; only sizes/durations are bounded.
     bounds = extra[1:] if verb == "job-log" else extra
     if verb == "job-log" and (not is_digits(extra[0]) or not extra[0].strip("0")):
         die("rerun: job id must be a positive integer")
-    if any(not is_digits(x) or not 0 < int(x) <= 2147483647 for x in bounds):
-        die("rerun: tail lines and wait seconds must be positive integers up to 2147483647")
+    if any(not is_digits(x) or not 0 < int(x) <= INTMAX for x in bounds):
+        die(f"rerun: tail lines and wait seconds must be positive integers up to {INTMAX}")
     target = pr_arg(args[0], session.config.repo, session)
     repo, pr, rid = target.repo, target.num, args[2]
     clock = clock_from_env(os.environ)
@@ -215,10 +217,16 @@ def recovery_read(session: GhSession, args: list[str]) -> int:
         head = session.retry("read", ["api", f"repos/{repo}/pulls/{pr}", "--jq", '.head.sha // "-"'])
         if not isinstance(head, GhOk) or head.stdout in ("", "-"):
             _unread(session, "the PR head")
+        # A head read that waited answers the current head; a later held read may be
+        # addressed with that now-stale SHA. Repeat from the head before judging it.
+        if session.budget is not None:
+            session.budget.waited = False
         listed = session.retry("read", ["api", "--paginate",
             f"repos/{repo}/actions/runs?head_sha={head.stdout}&per_page=100", "--jq", RUNS_JQ])
         if not isinstance(listed, GhOk):
             _unread(session, "the head's runs")
+        if session.budget is not None and session.budget.waited:
+            continue
         found = next((r for r in parse_runs(listed.stdout) if r.rid == rid), None)
         if found is None:
             fail(1, f"rerun: run {rid} is not on {repo}#{pr}'s current head")

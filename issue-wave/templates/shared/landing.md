@@ -38,7 +38,8 @@ to `@@MAIN@@`.
   prints a failed job's log tail (all after `rerun <pr>`). For an unfinished red run,
   `rerun <pr> wait <run-id> [seconds]` waits for completion, read-only, before rerunning;
   its default ceiling is 900 seconds. It shares the PR's build observer: stop an existing
-  `checks --wait` or `merge --wait` first. Then wait with `checks --wait` again. Never call `gh run rerun` yourself.
+  `checks --wait` or `merge --wait` first. Then wait with `checks --wait` again. Never call
+  `gh run rerun` yourself.
 - Review loop: `pr-review.sh watch` (a long run) waits for the reviewer's round. Answer every
   thread with a fix or a rebuttal, `reply` and `resolve` per thread, and push once per CI cycle. If
   the watch goes quiet suspiciously long, read the feed directly (`gh pr view <pr> --repo @@REPO@@

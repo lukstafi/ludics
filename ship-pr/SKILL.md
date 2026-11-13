@@ -1047,7 +1047,8 @@ drained the fleet token's quota while the hold was stopping every observer):
 ```
 
 It re-runs only a finished red or cancelled run of the PR's current head, sends nothing when any
-id it was given is not one, and exits 3 without a call while a quota hold stands. `checks --wait` reads the re-run's verdict. For recovery, use these budgeted reads:
+id it was given is not one, and exits 3 without a call while a quota hold stands.
+`checks --wait` reads the re-run's verdict. For recovery, use these budgeted reads:
 
 ```bash
 pr-review.sh rerun <pr> jobs <run-id>              # latest attempt's job status and conclusion

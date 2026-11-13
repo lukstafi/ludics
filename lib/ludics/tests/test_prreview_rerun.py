@@ -92,6 +92,13 @@ class Rerun(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertFalse(any("/logs" in " ".join(c) for c in gh.calls))
 
+    def test_recovery_zero_run_ids_are_usage_errors(self) -> None:
+        for rid in ("0", "00", "000"):
+            gh = Gh(runs=row("101"))
+            rc, _, _ = rerun_with(gh, "7", "jobs", rid)
+            self.assertEqual(rc, 2)
+            self.assertEqual(gh.calls, [])
+
     def test_wait_completion_is_not_a_green_verdict(self) -> None:
         for conclusion in ("failure", "success", "cancelled"):
             rc, out, err = rerun_with(Gh(runs=row("101", conclusion=conclusion)), "7", "wait", "101", "1")

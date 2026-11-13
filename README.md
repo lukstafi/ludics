@@ -1074,10 +1074,6 @@ one call. `watch` used to hold its window blind and exit 3, the code that says r
 `test-pr-review-merge.sh` holds the merge call's half: the script's own flags refused is exit 2,
 and with the caller's flags forwarded after `--` the same refusal stays the ambiguous exit 3.
 
-`test-pr-review-budget.sh` also pins `rerun`'s recovery readers (jobs, failed jobs and log
-tails): each sends nothing under a hold, and its read-only run wait sleeps until completion
-or its ceiling, sharing the build observer.
-
 `test-pr-review-budget.sh` drives the polling budget (ludics-lite#543) on a clock kept in a file
 (exported as `SHIP_PR_TEST_CLOCK`, with the suite's `sleep` bridged to the Python), so the hold's
 end, its probes and the pauses are exact and nothing sleeps. Every case drives a command, and the
@@ -1106,6 +1102,11 @@ review window, reset by a new head inside one state, and `test-pr-review-base-ve
 for `base --wait`, with its one observer per branch. What no command reaches (lock_reap's race, a
 run view's options before its id, the lift writing `quota-last` first) is in
 `lib/ludics/tests/test_prreview_budget.py`. A transport failure (a 502) stays exit 3 with no merge and sets no hold.
+
+`test-pr-review-budget.sh` also pins `rerun`'s recovery readers (jobs, failed jobs and log
+tails): each sends nothing under a hold, and its read-only run wait sleeps until completion
+or its ceiling, sharing the build observer. A finite hold is slept through before a probe
+and resumed read, with no request before the hold ends.
 
 `test-pr-review-status.sh` drives `status` and `watch` against canned reactions, reviews,
 comments and PR reads, and pins the mergeability that rides on every state line: a PR whose merge
