@@ -39,7 +39,7 @@ class Gh:
         if args[:2] == ["run", "rerun"]:
             return self.writes.get(args[2], proc.Completed(0, "", ""))
         joined = " ".join(args)
-        if "actions/jobs/201/logs" in joined:
+        if "actions/jobs/201/logs" in joined or "actions/jobs/98765432100/logs" in joined:
             return proc.Completed(0, "first\nlast\n", "")
         if "actions/runs/101/jobs?" in joined:
             return proc.Completed(0, self.jobs, "")
@@ -78,6 +78,12 @@ class Rerun(unittest.TestCase):
             if verb == "failed-jobs":
                 self.assertNotIn("202", out)
             self.assertEqual(gh.sent(), [])
+
+    def test_job_ids_are_not_limited_to_signed_32_bit(self) -> None:
+        gh = Gh(runs=row("101"), jobs='{"id":98765432100,"name":"build","status":"completed","conclusion":"failure"}')
+        rc, out, err = rerun_with(gh, "7", "job-log", "101", "98765432100", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "last\n")
 
     def test_recovery_refuses_wrong_run_or_nonfailed_job(self) -> None:
         for args in (("jobs", "999"), ("job-log", "101", "202")):
