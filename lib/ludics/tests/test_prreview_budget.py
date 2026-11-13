@@ -176,6 +176,36 @@ class Probe(Scratch):
 
 
 class Holds(Scratch):
+    def test_unread_holds_refuse_before_any_call_or_sleep(self) -> None:
+        b = self.budget()
+        os.symlink("missing", b.holds_dir)
+        b.wait_until = T0 + 3600
+        why = b.gate("read")
+        self.assertIsNotNone(why)
+        self.assertIn("cannot read", why or "")
+        self.assertEqual((self.gh.calls, self.clock.slept), ([], []))
+
+    def test_unlistable_holds_refuse(self) -> None:
+        b = self.budget()
+        os.mkdir(b.holds_dir)
+        with mock.patch.object(budget.os, "listdir", side_effect=PermissionError(13, "denied")):
+            self.assertIsNotNone(b.gate("read"))
+        self.assertEqual((self.gh.calls, self.clock.slept), ([], []))
+
+    def test_unread_hold_entry_refuses(self) -> None:
+        b = self.budget()
+        os.mkdir(b.holds_dir)
+        os.symlink("missing", os.path.join(b.holds_dir, f"{T0 + 60}.x"))
+        self.assertIsNotNone(b.gate("write"))
+        self.assertEqual(self.gh.calls, [])
+
+    def test_missing_child_of_dangling_state_is_unread(self) -> None:
+        link = os.path.join(self.dir, "state")
+        os.symlink("missing", link)
+        b = Budget(link, self.clock, env={}, run=self.gh)
+        self.assertIsNotNone(b.gate("read"))
+        self.assertEqual(self.gh.calls, [])
+
     def test_a_later_refusal_never_shortens_the_hold(self) -> None:
         b = self.budget()
         self.plant(T0 + 3600, "graphql", 3600)

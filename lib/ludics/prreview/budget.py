@@ -40,6 +40,12 @@ A quota failure is never the API's answer about the PR. ``GhSession.retry`` retu
 ``GhUnanswered`` (exit 3) for it, read or write, so it reads as UNKNOWN everywhere and can never
 permit a merge.
 
+STATE READ BOUNDARY (#1092). Lock owners and quota-holds are filesystem reads, not evidence
+of absence when an I/O error occurs. Only lstat's ENOENT is absent; present links must be readable.
+Unread owners return lock status 2; unread holds return a gate refusal (session exit 3), including
+inside an observer, without sleeping or probing. Malformed readable hold lines retain the shell's
+existing parse boundary below; unrelated names (not <digits>.<suffix>) are not hold entries.
+
 BOUNDARY. The quota reader is a fail-closed ALLOWLIST over the FIRST line of gh's stderr, with
 these shapes: ``API rate limit exceeded`` or ``API rate limit already exceeded`` (the primary limit,
 in its REST and GraphQL spellings), ``secondary rate limit``, and ``(HTTP 429)``; and two BODILESS
@@ -92,7 +98,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from ludics import proc
+from ludics import fs, proc
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import die, quota_failure, warn
 from ludics.prreview.knobs import poll_caps
@@ -206,9 +212,7 @@ def _first_line(path: str) -> str:
 
 def _owner(path: str) -> tuple[str, str]:
     """Only lstat's ENOENT is ownerless. A present unread owner refuses immediately (#1092)."""
-    try:
-        os.lstat(path)
-    except FileNotFoundError:
+    if fs.absent(path):
         return "", ""
     with open(path, encoding="utf-8", errors="surrogateescape") as f:
         return f.readline().rstrip("\n"), f.readline().rstrip("\n")
@@ -230,8 +234,11 @@ def _tab_read(path: str, n: int) -> list[str] | None:
     try:
         with open(path, encoding="utf-8", errors="surrogateescape") as f:
             line = f.readline()
-    except OSError:
-        return None
+    except FileNotFoundError:
+        # An absent entry may have been lifted between list and read. A dangling link is unread.
+        if fs.absent(path):
+            return None
+        raise
     if not line.endswith("\n"):
         return None
     line = line[:-1].strip("\t")
@@ -328,6 +335,7 @@ class Budget:
         self.observer = ""
         # ``budget_waited``: a read of this process waited a hold out since the last reset.
         self.waited = False
+        self._probe_owned = False
 
     # --- paths ---
 
@@ -382,15 +390,15 @@ class Budget:
         order the shell's glob lists them."""
         try:
             names = sorted(os.listdir(self.holds_dir))
-        except OSError:
-            return []
+        except FileNotFoundError:
+            if fs.absent(self.holds_dir):
+                return []
+            raise
         out: list[tuple[int, str]] = []
         for name in names:
             if not name[:1].isdigit():
                 continue
             path = os.path.join(self.holds_dir, name)
-            if not os.path.isfile(path):
-                continue
             until = name.split(".", 1)[0]
             if not _DIGITS.fullmatch(until):
                 continue
@@ -400,7 +408,7 @@ class Budget:
     def hold_read(self) -> Hold | None:
         """``hold_read``: the standing hold, its latest-ending entry; None when there is none. A
         latest entry whose line this module did not write is no hold at all, as in the shell."""
-        if not self.dir or not os.path.isdir(self.holds_dir):
+        if not self.dir:
             return None
         best = ""
         best_until = 0
@@ -418,6 +426,12 @@ class Budget:
         return Hold(best_until, ep, int(length), src)
 
     def hold_set(self, ep: str, verdict: str) -> bool:
+        try:
+            return self._hold_set(ep, verdict)
+        except OSError:
+            return False
+
+    def _hold_set(self, ep: str, verdict: str) -> bool:
         """``hold_set <endpoint> <probe verdict>``: adds the entry a quota (or an unreadable probe)
         calls for. With no reset in the headers it backs off: a minute, doubling from the last
         hold's length while the quota keeps refusing, up to an hour. False when the entry could not
@@ -427,7 +441,7 @@ class Budget:
         standing = self.hold_read()
         if standing is not None:
             prev = standing.length
-        elif os.path.isfile(self.last_file):
+        else:
             last = _tab_read(self.last_file, 2)
             if last is not None and _DIGITS.fullmatch(last[0]) and _DIGITS.fullmatch(last[1]):
                 if now - int(last[0]) <= 3600:
@@ -652,10 +666,19 @@ class Budget:
 
     def _drop_probe_lock(self) -> None:
         shutil.rmtree(self.probe_lock, ignore_errors=True)
+        self._probe_owned = False
 
     # --- the gate before every call ---
 
     def gate(self, mode: str) -> str | None:
+        try:
+            return self._gate(mode)
+        except OSError as exc:
+            if self._probe_owned:
+                self._drop_probe_lock()
+            return f"quota hold: cannot read {self.dir!r} (SHIP_PR_STATE_DIR): {exc}; no call was made"
+
+    def _gate(self, mode: str) -> str | None:
         """``budget_gate <read|write>``: run before every call the session makes. None when no hold
         stands (lifting an ended one first, by probing its endpoint); otherwise why no call was made
         (the session's 3). A READ within ``wait_until`` waits a standing hold out instead, and says
@@ -693,6 +716,7 @@ class Budget:
                     " no call was made"
                 )
             if lock.rc == 0:
+                self._probe_owned = True
                 # Again under the lock: the prober before this one may have lifted this hold, or set
                 # a new one, while this process waited for the lock.
                 again = self.hold_read()
@@ -741,8 +765,12 @@ class Budget:
         ep = endpoint(args, self.env.get("GH_REPO", ""))
         if not ep:
             return None
-        if self._quota_hit(ep):
-            return None
+        try:
+            if self._quota_hit(ep):
+                return None
+        except OSError:
+            if self._probe_owned:
+                self._drop_probe_lock()
         return (
             f"{ep} was refused on quota, and the hold it calls for could not be recorded in"
             f" {self.dir} (SHIP_PR_STATE_DIR), so no other process on this host is held by it; make"
@@ -760,6 +788,7 @@ class Budget:
             pass
         if self.lock_take(self.probe_lock).rc != 0:
             return self.hold_set(ep, "unprobed")
+        self._probe_owned = True
         # Again under the lock: another refusal may have probed and set a hold meanwhile.
         standing = self.hold_read()
         if standing is not None and standing.until > self.clock.now():
