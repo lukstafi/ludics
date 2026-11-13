@@ -39,7 +39,9 @@ WHAT IT DOES, in this order:
    worktree a leg will make.
 6. The row: ``worktree`` (the path launch made, read off its ``LAUNCHED`` line), ``state=launched``,
    ``standing`` and ``exec_hosts`` naming what was reserved, and ``farside`` naming the worker's
-   own host/worktree plus each reserved leg. The worker path is read off ``LAUNCHED`` too.
+   own host/worktree plus each reserved leg. The worker host/path is read off ``LAUNCHED``.
+   A placement with whitespace, or a host with a colon, cannot fit one cleanup word: it is omitted
+   with a NOTE (exit 3, reconcile by hand), never split into a different cleanup target.
 7. The manifest records the launch.
 
 THE RECOVERY BOUNDARY. A launch refused before it started anything (exit 1 from step 4: a gate, a
@@ -57,10 +59,12 @@ Exit: 0 launched; 1 refused; 2 usage; 3 launched, with a NOTE to reconcile; 4 un
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Any, cast
 
 from ludics import cli
+from ludics.fleetworker.boardstore import placement_word
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import prelude, run, run_on, substitution
@@ -229,7 +233,13 @@ def launched(cfg: Config, path: str, task: str) -> int:
             reserved.append(leg)
         else:
             notes.append(f"the standing leg on {leg.box} is not reserved (execution run exit {rc})")
-    far = " ".join(dict.fromkeys([f"{host}:{worktree}", *(f"{leg.box}:{leg.worktree}" for leg in reserved)]))
+    far_words: list[str] = []
+    for box, checkout in [(host, worktree), *((leg.box, leg.worktree) for leg in reserved)]:
+        try:
+            far_words.append(placement_word(box, checkout))
+        except ValueError as exc:
+            notes.append(f"cannot record farside placement {shlex.quote(box + ':' + checkout)} ({exc}); reconcile by hand")
+    far = " ".join(dict.fromkeys(far_words))
     standing = " ".join([record.standing, *(leg.standing for leg in reserved)])
     rc = run([script, "board", "set", record.wave, task, f"worktree={worktree}", "state=launched", f"standing={standing}",
               f"exec_hosts={','.join([record.host, *(leg.box for leg in reserved)])}", f"farside={far or 'none'}"],

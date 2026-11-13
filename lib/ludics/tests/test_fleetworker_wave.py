@@ -659,6 +659,17 @@ class MixedWave(WaveDirCase):
         self.assertIn("worktree=/actual/wt", board)
         self.assertIn("farside=actual:/actual/wt", board)
 
+    def test_launch_never_publishes_a_whitespace_path_as_a_cleanup_prefix(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex cwd=/actual/wt old stream=/s\n")
+            rc, out, _ = self.start()
+        self.assertEqual(rc, 3)
+        self.assertIn("cannot record farside placement", out)
+        self.assertIn("worktree=/actual/wt old", self.shim_calls[-1])
+        self.assertIn("farside=gpu-box:/home/u/repo-worktrees/w1-42-gpu", self.shim_calls[-1])
+        self.assertEqual(self.manifest()["done"][-1], "launched far/w1-42")
+
     def test_launch_refuses_a_worktree_on_the_host_that_is_not_preps(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)

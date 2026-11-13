@@ -277,7 +277,7 @@ fleetworker/siblingscan.py
     lib/ludics/tests/test_fleetworker_siblingscan.py
 
 fleetworker/board.py fleetworker/boardstore.py fleetworker/takeover.py
-    issue-wave/scripts/test-fleet-worker.sh board
+    issue-wave/scripts/test-fleet-worker.sh board "execution assign" "wave kit"
 
 fleetworker/closeout.py
     issue-wave/scripts/test-fleet-worker.sh "execution conclude --standing-handback" board
@@ -444,6 +444,11 @@ one copy of each host/checkout across partial writes and retries. It matches the
 to an existing row and creates neither rows nor boards. The manifest and row schema are unchanged;
 `exec_hosts` stays comma-separated and `farside` uses the existing whitespace-separated words.
 Unit cases in the wave, assign and board suites pin those paths and the recovery boundary.
+The new launch/assignment regressions fail on c0f3b07f (four selected tests, ten subtest failures)
+and pass with the fix; the mapped macOS sections passed 686 assertions. Local review identified
+whitespace paths as unsafe cleanup words: both writers now reject those words before publication,
+keeping valid placements and reporting reconciliation instead of publishing a path prefix.
+The two whitespace regression cases fail against the pre-guard commit 4c0158d7 and pass with it.
 
 ```sh
 npx --yes pyright@1.1.414 --pythonplatform Linux                  # from the repo root

@@ -38,7 +38,9 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         serves work without a wave board); ambiguous worker rows refuse. Existing words retain
         their order, duplicates and the placeholder none disappear. exec_hosts accepts commas
         or whitespace and is written comma-separated; farside is whitespace-separated, as
-        farside-close reads it. No row or board is created.
+        farside-close reads it. A new host/checkout containing whitespace, or a host containing
+        a colon, refuses before either field changes: it cannot fit one cleanup word.
+        No row or board is created.
   note  {"wave", "create", "fields": [[key, value], ...]}           the wave's own facts (coordinator,
         scope, base, ...), shown above the table
   log   {"wave", "text"}                                            one line appended to the log,
@@ -289,6 +291,13 @@ def payload_word(word: str) -> str:
     return text
 
 
+def placement_word(host: str, checkout: str) -> str:
+    """One cleanup word; never let split() reinterpret a path's prefix as another worktree."""
+    if not host or ":" in host or any(c.isspace() for c in host + checkout):
+        refuse("host/checkout cannot fit one whitespace-separated farside word")
+    return f"{host}:{checkout}"
+
+
 def main(argv: list[str]) -> None:
     root, action, coordinator, word = argv[1:5]
     raw = payload_word(word)
@@ -316,9 +325,10 @@ def main(argv: list[str]) -> None:
         if not rows:
             print(f"BOARD PLACEMENT NOTE {wave}: no row for worker {json.dumps(worker)}; nothing written")
             return
+        word = placement_word(host, checkout)
         row = rows[0]
         fields = cast(dict[str, str], row["fields"])
-        for key, value, sep in (("exec_hosts", host, ","), ("farside", f"{host}:{checkout}", " ")):
+        for key, value, sep in (("exec_hosts", host, ","), ("farside", word, " ")):
             old = fields.get(key, "")
             words = (old.replace(",", " ") if key == "exec_hosts" else old).split()
             fields[key] = sep.join(dict.fromkeys([*(word for word in words if word != "none"), value]))

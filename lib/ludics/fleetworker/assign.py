@@ -73,6 +73,8 @@ its lease lock across read/union/write, preserves other placements, and is safe 
 an interrupted write or dispatch. No board or no matching worker row is a noted no-op: assign
 also serves workers without boards. An ambiguous row or a failed write is a NOTE and exit 1;
 the assignment still prints, and the same call repairs the board via ALREADY without redispatch.
+The existing farside format cannot encode whitespace in a path or a colon in a host: such a
+placement refuses without changing either field; reconcile it by hand, never record its prefix.
 An ALREADY write also requires the registry's wave, worker, execution_host and checkout to match
 the base/block; a mismatched retry cannot register an unrelated cleanup path.
 Blocks without checkout and nonzero dispatch outcomes add nothing. Checkout is explicit data,

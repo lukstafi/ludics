@@ -3638,6 +3638,11 @@ as_run "$(as_base subagent)" "$two" --request as-1
 as_run "$(as_base subagent)" "$two" --request as-1
 got=$("$FW" board show w --json | jq -r '.tasks[] | select(.task == "as-row") | .fields | "\(.farside)|\(.exec_hosts)"')
 [ "$got" = "testbox:/worker testbox:/w/as-1|testbox" ] && ok "assignment retry preserves worker placement and one copy of its leg" || ko "placement: $got"
+as_run "$(as_base subagent)" "$two" --request as-2
+[ "$rc" -eq 1 ] && [ -z "$msg" ] && grep -q 'ASSIGN BOARD NOTE' <<<"$said" && ok "a whitespace checkout is not published as a cleanup prefix" || ko "unsafe word: $rc $msg $said"
+got=$("$FW" board show w --json | jq -r '.tasks[] | select(.task == "as-row") | .fields.farside')
+[ "$got" = "testbox:/worker testbox:/w/as-1" ] && ok "the refused placement leaves earlier words intact" || ko "unsafe words: $got"
+"$FW" board set w as-row worker=completed-fixture >/dev/null || ko "could not retire assignment fixture row"
 # One refused among two: a measurement window on `other`, which as-2 holds (not standing), is refused.
 mixed=$(as_msg mixed "$(as_block as-3 testbox correctness "$asha" '{"command":"tools/test-run.sh run c"}')" \
   "$(as_block as-4 other measurement "$asha" '{"command":"tools/bench.sh"}')")
@@ -6199,25 +6204,28 @@ expect "a real review needs the PR's head to be the one asked at" 1 "^WAVE REVIE
 expect "review takes a kind" 2 "wave review: --kind is one of at-open, confirm" -- "${FWR[@]}" wave review "$K/wave.json" t77 12 "$pbase"
 # A mixed wave: a CLI task takes a profile, is prepared with nothing made, and wave launch starts it
 # through launch --standing, which makes the worktree and takes the reservation.
-jq '. + {profiles:{sol:{transport:"cli", kind:"codex"}}}' "$K/wave.json" > "$K/wave-mixed.json" && mv "$K/wave-mixed.json" "$K/wave.json"
+# The shared project path contains a space. Automatic board placement uses whitespace words;
+# its successful case uses a clone alias without spaces, while unit cases pin the NOTE boundary.
+cli_proj="$TMP/cli-project"; ln -s "$proj" "$cli_proj"
+jq --arg co "$cli_proj" '. + {checkout:$co, profiles:{sol:{transport:"cli", kind:"codex"}}}' "$K/wave.json" > "$K/wave-mixed.json" && mv "$K/wave-mixed.json" "$K/wave.json"
 printf '# Task @@T@@\n' > "$K/tasks/t80.md"
 export SHIM_GH_PR_LIST="$K/prs.json"; echo '[]' > "$SHIM_GH_PR_LIST"
 expect "prep of a CLI task says wave launch starts it" 0 "standing wkv-t80-testbox-iterate (a CLI worker on testbox, nothing made or reserved yet: wave launch starts it)$" -- \
   "${FWK[@]}" wave prep "$K/wave.json" t80 --base master --profile sol
-[ ! -e "$proj-worktrees/wk-80" ] && [ -z "$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t80-testbox-iterate") | .request_id')" ] &&
+[ ! -e "$cli_proj-worktrees/wk-80" ] && [ -z "$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t80-testbox-iterate") | .request_id')" ] &&
   ok "...making no worktree and reserving nothing" || ko "a CLI prep made its worktree or reserved"
 got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t80") | .fields | "\(.state) \(.transport) \(.kind) \(.branch)"')
 [ "$got" = "pending cli codex codex/wk-80" ] && ok "...its row pending, a codex CLI worker's" || ko "row: $got"
-expect "wave launch starts the worker on the worktree launch made" 0 "^WAVE LAUNCH t80: launched testbox/wk-80 worktree $proj-worktrees/wk-80 standing wkv-t80-testbox-iterate$" -- \
+expect "wave launch starts the worker on the worktree launch made" 0 "^WAVE LAUNCH t80: launched testbox/wk-80 worktree $cli_proj-worktrees/wk-80 standing wkv-t80-testbox-iterate$" -- \
   "${FWK[@]}" wave launch "$K/wave.json" t80
 grep -q "notice: reusing existing worktree" <<<"$out" && ko "fresh standing launch claimed reuse: $out" || ok "fresh standing launch prints no reuse notice"
 grep -q "^LAUNCHED testbox/wk-80 kind=codex " <<<"$out" && ok "...printing launch's own line" || ko "launch output: $out"
 got=$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t80-testbox-iterate") | "\(.request.standing) \(.request.transport) \(.checkout)"')
-[ "$got" = "true cli $proj-worktrees/wk-80" ] && ok "...the standing record on that worktree" || ko "record: $got"
+[ "$got" = "true cli $cli_proj-worktrees/wk-80" ] && ok "...the standing record on that worktree" || ko "record: $got"
 got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t80") | .fields | "\(.state) \(.worktree) \(.standing) \(.farside)"')
-[ "$got" = "launched $proj-worktrees/wk-80 wkv-t80-testbox-iterate testbox:$proj-worktrees/wk-80" ] && ok "...and the row launched" || ko "row: $got"
-[ "$(git -C "$proj-worktrees/wk-80" branch --show-current)" = codex/wk-80 ] && [ "$(git -C "$proj-worktrees/wk-80" rev-parse HEAD)" = "$pbase" ] &&
-  ok "...on its branch at prep's base" || ko "worktree: $(git -C "$proj-worktrees/wk-80" status -sb 2>&1 | head -n 1)"
+[ "$got" = "launched $cli_proj-worktrees/wk-80 wkv-t80-testbox-iterate testbox:$cli_proj-worktrees/wk-80" ] && ok "...and the row launched" || ko "row: $got"
+[ "$(git -C "$cli_proj-worktrees/wk-80" branch --show-current)" = codex/wk-80 ] && [ "$(git -C "$cli_proj-worktrees/wk-80" rev-parse HEAD)" = "$pbase" ] &&
+  ok "...on its branch at prep's base" || ko "worktree: $(git -C "$cli_proj-worktrees/wk-80" status -sb 2>&1 | head -n 1)"
 settle wk-80
 fixture_done wkv-t80-testbox-iterate
 expect "a second launch of the task is refused on the manifest" 1 "^WAVE LAUNCH REFUSED t80: $K/prep/t80.json records a launch already$" -- "${FWK[@]}" wave launch "$K/wave.json" t80
