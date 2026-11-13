@@ -53,7 +53,8 @@ class Grammar(unittest.TestCase):
     def test_the_trigger_defaults_to_same_input(self) -> None:
         config, _ = parsed("command make\ninput *.c\n")
         self.assertEqual(config and config.trigger, "same-input")
-        values: tuple[mergebuild.Trigger, ...] = ("same-input", "any-input")
+        values: tuple[mergebuild.Trigger, ...] = ("same-input", "any-input", "always")
+        self.assertEqual(values, mergebuild.TRIGGERS, "every trigger word, and no other")
         for value in values:
             with self.subTest(value=value):
                 config, err = parsed(f"command make\ninput *.c\ntrigger {value}\n")
@@ -63,6 +64,10 @@ class Grammar(unittest.TestCase):
     def test_every_other_line_refuses_naming_it(self) -> None:
         for text, named in (
             ("command make\ninput *.c\ntrigger both-sides\n", "trigger both-sides"),
+            ("command make\ninput *.c\ntrigger Always\n", "trigger Always"),
+            ("command make\ninput *.c\ntrigger always now\n", "trigger always now"),
+            ("command make\ninput *.c\ntrigger every-merge\n", "trigger every-merge"),
+            ("command make\ninput *.c\ntrigger always\ntrigger always\n", "a second trigger line"),
             ("command make\ninput *.c\ntrigger Any-Input\n", "trigger Any-Input"),
             ("command make\ninput *.c\ntrigger\n", "trigger"),
             ("command make\ninput *.c\ntrigger any-input\ntrigger same-input\n", "trigger same-input"),
@@ -88,7 +93,25 @@ class Grammar(unittest.TestCase):
             with self.subTest(text=text):
                 config, err = parsed(text)
                 self.assertIsNone(config)
-                self.assertIn("needs one `command` line and at least one `input` line", err)
+                self.assertIn("needs one `command` line and, unless its trigger is `always`, at least one `input`", err)
+
+    def test_trigger_always_needs_no_input_and_takes_no_comments(self) -> None:
+        # ``always`` builds every merge, so no input decides it and no comments line could apply.
+        config, err = parsed("command make check\ntrigger always\n")
+        self.assertEqual(config, BuildConfig("make check", (), mergebuild.DEFAULT_TIMEOUT, "always"))
+        self.assertEqual(err, "")
+        config, _ = parsed("trigger always\ninput *.ml\ncommand make\ntimeout 90\n")
+        self.assertEqual(config, BuildConfig("make", ("*.ml",), 90, "always"), "inputs are allowed, and unused")
+        config, err = parsed("command make\ntrigger always\ncomments *.mli\n")
+        self.assertIsNone(config)
+        self.assertIn("has `trigger always` and 1 `comments` line(s)", err)
+        # The controls: the same lines under the other triggers keep their rules.
+        config, err = parsed("command make\ntrigger any-input\n")
+        self.assertIsNone(config, "an input is still required")
+        config, _ = parsed("command make\ninput *.ml\ntrigger any-input\ncomments *.mli\n")
+        self.assertEqual(config and config.comments, ("*.mli",))
+        config, err = parsed("trigger always\n")
+        self.assertIsNone(config, "a command is required under every trigger")
 
 
 class Inputs(unittest.TestCase):
@@ -134,6 +157,32 @@ class Inputs(unittest.TestCase):
         # A long side is named in part.
         why, _ = reason(anyi, [f"m{i}.ml" for i in range(25)], ["a.ml"])
         self.assertIn("(and 15 more)", why or "")
+
+    def test_trigger_always_builds_whatever_the_sides_and_the_others_need_both(self) -> None:
+        always = BuildConfig("make", (), trigger="always")
+        same = BuildConfig("make", ("*.ml",))
+        anyi = BuildConfig("make", ("*.ml",), trigger="any-input")
+
+        def reason(config: BuildConfig, pr: list[str] | None, base: list[str] | None) -> tuple[str | None, str]:
+            overlap = None if pr is None or base is None else sorted(set(pr) & set(base))
+            return build_reason(drift.Drift(0, "main", "h", "t", overlap, {}, pr, base), config)
+
+        forced = ("trigger always: every merge of this repository is built", "")
+        # A base that has not moved, a PR that changed nothing, no shared path, no build input,
+        # and UNKNOWN sides: each builds.
+        for pr, base in ((["a.ml"], []), ([], ["a.ml"]), ([], []), (["notes.md"], ["x.txt"]), (["a.ml"], ["a.ml"]),
+                         (None, None)):
+            with self.subTest(pr=pr, base=base):
+                self.assertEqual(reason(always, pr, base), forced)
+        # The controls: under the other two a side that changed nothing builds nothing.
+        for config in (same, anyi):
+            with self.subTest(trigger=config.trigger):
+                self.assertEqual(reason(config, ["a.ml"], []), (
+                    None, f"the base changed no path since their merge base, so no build is possible (trigger {config.trigger})"))
+                self.assertEqual(reason(config, [], ["a.ml"]), (
+                    None, f"the PR changed no path since their merge base, so no build is possible (trigger {config.trigger})"))
+        self.assertIsNone(mergebuild.comment_candidates(
+            drift.Drift(0, "main", "h", "t", ["a.ml"], {}, ["a.ml"], ["a.ml"]), always), "nothing is read again")
 
     def test_the_drift_maps_renames_on_both_sides(self) -> None:
         forward: Json = {"files": [{"filename": "a.ml", "previous_filename": "a.txt"}, {"filename": "x"}]}
@@ -290,6 +339,22 @@ class Build(Repo):
         self.assertIn("does not build", out)
         self.assertIn("main alone PASSED", out, "the base alone was built, and the failure is the merge's")
         self.assertIn("though each side is green on its own", out)
+
+    def test_a_base_that_has_not_moved_builds_the_heads_own_tree(self) -> None:
+        # THE FORCED BUILD's new case: the base's tip is the head's parent, so the merge commit's
+        # tree is the head's, and the command still sees both parents (base first).
+        self.write([*API, "keep"])
+        git(self.work, "commit", "-q", "-a", "-m", "pr")
+        git(self.work, "push", "-q", self.remote, "HEAD:refs/pull/7/head")
+        head = git(self.work, "rev-parse", "HEAD")
+        self.tip = git(self.work, "rev-parse", "HEAD~1")
+        rc, out = self.build(head, 'test "$(git rev-parse HEAD^{tree})" = "$(git rev-parse HEAD^2^{tree})"'
+                                   ' && test "$(git rev-parse HEAD^1)" = "$SHIP_PR_MERGE_BASE_SHA" && sh ./api.sh')
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PASSED", out)
+        rc, out = self.build(head, "false")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAILED", out)
 
     def test_a_merge_that_builds_passes(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
@@ -1090,7 +1155,8 @@ class DryRun(Repo):
         self.assertIn("no build — none of the 1 path(s) changed on both sides is a build input (*.ml)", done.stdout)
         done = self.dry("--base", tip, "--head", tip, "--config", cfg)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertIn("no build — the head changed no path since their merge base", done.stdout)
+        self.assertIn("no build — the PR changed no path since their merge base, so no build is possible"
+                      " (trigger same-input)", done.stdout)
 
     def test_a_rename_counts_by_its_other_name(self) -> None:
         git(self.work, "mv", "api.sh", "lib.sh")
@@ -1126,13 +1192,34 @@ class DryRun(Repo):
         self.assertIn("is a shallow or partial clone", done.stderr)
         git(self.clone, "config", "--unset", "remote.origin.promisor")
 
-    def test_a_side_that_changed_nothing_reads_no_config(self) -> None:
-        _, tip = self.sides("hook", "seam() { :; }")
+    def test_a_side_that_changed_nothing_builds_only_under_trigger_always(self) -> None:
+        # The config is read first, as in merge: its trigger decides whether an empty side builds.
+        head, tip = self.sides("keep", "seam() { :; }")
         self.fetched()
+        merge_base = git(self.clone, "merge-base", tip, head)
+        marker = os.path.join(self.dir, "ran")
+        for trigger, built in (("always", True), ("same-input", False), ("any-input", False)):
+            cfg = self.config(f"command sh ./api.sh && : >{marker}\ninput *.sh\ntrigger {trigger}\n")
+            if os.path.exists(marker):
+                os.remove(marker)
+            with self.subTest(trigger=trigger):
+                done = self.dry("--base", merge_base, "--head", head, "--config", cfg)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertEqual(os.path.exists(marker), built)
+                if built:
+                    self.assertIn("trigger always: every merge of this repository is built", done.stdout)
+                    self.assertIn("PASSED", done.stdout)
+                else:
+                    self.assertIn(f"no build — the base changed no path since their merge base, so no build is"
+                                  f" possible (trigger {trigger})", done.stdout)
+        # A forced build that fails refuses, as any build does.
+        cfg = self.config("command false\ntrigger always\n")
+        done = self.dry("--base", merge_base, "--head", head, "--config", cfg)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        # And with no --config the default branch's copy is read even then.
         done = self.dry("--base", tip, "--head", tip, repo="owner/repo")
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertIn("no build — the head changed no path since their merge base", done.stdout)
-        self.assertEqual(self.gh_calls(), "", "as merge: no config is read")
+        self.assertIn(done.returncode, (2, 3), done.stdout + done.stderr)
+        self.assertIn("contents/.github/ship-pr-merge-build", self.gh_calls())
 
     def test_the_default_branch_copy_is_read_when_no_config_is_given(self) -> None:
         head, tip = self.sides("hook", "seam() { :; }")

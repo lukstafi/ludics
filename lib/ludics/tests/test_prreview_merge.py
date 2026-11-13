@@ -328,9 +328,13 @@ class Production(unittest.TestCase):
     def test_a_wait_from_no_clone_refuses_before_the_wait_when_the_repository_builds(self) -> None:
         """#944: ``merge --wait`` without ``-C``, run where no checkout has a remote naming o/r, while
         o/r's default branch has a merge-build config: exit 2 before the gate reads anything, naming
-        ``-C``. No config (a 404) or an unread one waits and merges as before; a clone of o/r as the
-        working directory reads no config before the gate; no --wait reads nothing early."""
+        ``-C``. No config (a 404) waits and merges as before; a clone of o/r as the working directory
+        reads no config before the gate; no --wait reads nothing early. After the gate the build
+        step reads the config on every merge (its trigger may be ``always``), so an unread one is
+        then exit 3, and a config whose trigger does not hold builds nothing and needs no clone."""
+        # The preflight does not read the body's grammar: this one has a line the build step refuses.
         config = [(["ship-pr-merge-build"], 0, "command sh ./build.sh\ninputs *.ml\n", ""), *GREEN]
+        valid = [(["ship-pr-merge-build"], 0, "command sh ./build.sh\ninput *.ml\n", ""), *GREEN]
         unread = [(["ship-pr-merge-build"], 1, "", "gh: Service Unavailable (HTTP 503)\n"), *GREEN]
         remote = os.path.join(self.dir, "remotes", "o", "r.git")
         subprocess.run(["git", "init", "-q", "--bare", remote], check=True)
@@ -339,6 +343,12 @@ class Production(unittest.TestCase):
 
         def gated(calls: list[list[str]]) -> bool:
             return any("check-runs" in " ".join(c) for c in calls)
+
+        def config_reads(calls: list[list[str]]) -> list[int]:
+            return [i for i, c in enumerate(calls) if "ship-pr-merge-build" in " ".join(c)]
+
+        def gate_read(calls: list[list[str]]) -> int:
+            return next(i for i, c in enumerate(calls) if "check-runs" in " ".join(c))
 
         for entry in self.entries():
             with self.subTest(entry=entry[0], config="present"):
@@ -351,27 +361,40 @@ class Production(unittest.TestCase):
                 self.assertFalse(gated(self.calls()), "the gate read nothing")
                 self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
             with self.subTest(entry=entry[0], config="present, from a clone"):
-                self.route(config)
+                self.route(valid)
                 done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30", cwd=clone)
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-                self.assertFalse(any("ship-pr-merge-build" in " ".join(c) for c in self.calls()), "no config read")
+                reads = config_reads(self.calls())
+                self.assertEqual(len(reads), 1, "the build step's read alone")
+                self.assertGreater(reads[0], gate_read(self.calls()), "after the gate, never before the wait")
+                self.assertIn("changed no path since their merge base, so no build is possible", done.stdout)
             if entry != self.entries()[0]:
                 continue  # The rest is the Python's alone; the forward is pinned by the two above.
             with self.subTest(entry=entry[0], config="absent"):
                 self.route(GREEN)
                 done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-                self.assertEqual(sum("ship-pr-merge-build" in " ".join(c) for c in self.calls()), 1, "read once")
+                self.assertEqual(len(config_reads(self.calls())), 2, "before the wait, and at the build step")
             with self.subTest(entry=entry[0], config="unread"):
                 self.route(unread)
                 done = self.run_cmd(entry, "merge", "o/r#7", "--wait=30")
-                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
                 self.assertIn("could not be read before the wait", done.stderr)
+                self.assertIn("Whether the merge needs a build is UNKNOWN", done.stderr)
+                self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
             with self.subTest(entry=entry[0], config="present, no wait"):
-                self.route(config)
+                self.route(valid)
                 done = self.run_cmd(entry, "merge", "o/r#7")
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-                self.assertFalse(any("ship-pr-merge-build" in " ".join(c) for c in self.calls()), "no config read")
+                reads = config_reads(self.calls())
+                self.assertEqual(len(reads), 1, "the build step's read alone")
+                self.assertGreater(reads[0], gate_read(self.calls()), "nothing is read early")
+            with self.subTest(entry=entry[0], config="unparseable, no wait"):
+                self.route(config)
+                done = self.run_cmd(entry, "merge", "o/r#7")
+                self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+                self.assertIn("is not a merge-build config", done.stderr)
+                self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
 
 
 if __name__ == "__main__":

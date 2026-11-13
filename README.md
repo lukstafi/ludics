@@ -1004,8 +1004,11 @@ hunks are disjoint (the drift read says so) and whose merge commit does not run 
 build's output (exit 1, no merge call), and the same layout whose merge runs merges; a base that
 moved with no build input among the paths both sides changed merges unbuilt, and with no path
 changed on both sides the config is read and nothing is built, and with a side that changed nothing
-it is not even read; a clash across paths only one side changed merges unbuilt under the default
-trigger and is built and refused under `trigger any-input` (ludics-lite#635); a repository without
+it is read and nothing is built either; a clash across paths only one side changed merges unbuilt
+under the default trigger and is built and refused under `trigger any-input` (ludics-lite#635);
+under `trigger always` that clash is built and refused with no path changed on both sides, a base
+that has not moved is built and merges, a failing build there refuses, and a trigger word outside
+the three is exit 2; a repository without
 `.github/ship-pr-merge-build` merges the clash unbuilt, as before; a failed build whose failure the
 base alone shares (the same command on the base tip's tree, the merge's parents) is refused naming
 `--override` and merges under a cited one, and one with a failure of its own beside that red is
@@ -1016,7 +1019,7 @@ grammar is exit 2, an unread config exit 3 and a merge outside a clone exit 2 --
 before the wait, naming `-C`, while with no config it merges and with an unread one it waits (#944). Each build case then
 checks the clone: its working tree, its worktree list and its refs are as they were. Under Git Bash
 the merge build is POSIX-only by design, so the cases that would build (the clash, its control, the
-single-side clash under `any-input`, the two base-red cases, the two `comments` cases and the merge outside a clone) assert its refusal there instead
+single-side clash under `any-input`, the first `trigger always` case, the two base-red cases, the two `comments` cases and the merge outside a clone) assert its refusal there instead
 (exit 2, why the merge needed a build and where to run it, nothing built or merged, the clone
 untouched; ludics-lite#515). `lib/ludics/tests/test_prreview_mergebuild.py` pins the grammar, the
 glob boundary, the trigger's decision on the two sides, the remote match, a textual conflict, a

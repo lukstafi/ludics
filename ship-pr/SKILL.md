@@ -1314,7 +1314,8 @@ five shared paths changed "all in DISJOINT hunks" — and the merge did not comp
 red for an hour. A repository that names a build in `.github/ship-pr-merge-build` on its default
 branch (read like the advisory list: only a 404 the listing confirms is "no file") gets one local
 check before the merge call. When the file's trigger holds (by default, a path in the drift read's
-intersection matches one of its `input` globs) or the two sides are UNKNOWN, `merge` builds the
+intersection matches one of its `input` globs; under `trigger always`, on every merge) or the two
+sides are UNKNOWN, `merge` builds the
 gated head merged with the base's tip in a scratch repository that borrows the objects of the clone
 it runs in (nothing is registered in the clone, and nothing of the build outlives it), inside the
 box's run-time slot where it has slots, bounded by the file's timeout, and refuses with exit 1 and
@@ -1324,7 +1325,7 @@ the build's output when it fails:
 # pr-review.sh merge's build of the would-be merge commit (ludics-lite#611). A path is a build
 # input when an `input` glob matches the whole repository path (fnmatch: `*` crosses `/`).
 # The command is trusted as a developer's build is: its scratch repository is a place to build,
-# not a sandbox. timeout: 1 to 86400 seconds. trigger: same-input (default) or any-input.
+# not a sandbox. timeout: 1 to 86400 seconds. trigger: same-input (default), any-input or always.
 # The command runs at the merged tree's root; HEAD^1 is the base's tip and HEAD^2 the PR's head,
 # also named by $SHIP_PR_MERGE_BASE_SHA and $SHIP_PR_MERGE_HEAD_SHA. comments: build inputs whose
 # comments the command does not read (#861), so a side changing only their comments counts not.
@@ -1355,7 +1356,15 @@ refusal says the failure is the base's, and only `--override` goes over it (*The
 the flag that merge waits for the base's fix. By default the boundary is the intersection: a clash across paths only one side
 changed (a caller in a file the base never touched) is still the integration loop's. `trigger
 any-input` widens it to a build whenever EACH side changed some build input, which catches that
-clash at about three times the builds (ludics-lite#635), so it suits a cheap command. A `comments
+clash at about three times the builds (ludics-lite#635), so it suits a cheap command. `trigger
+always` builds every merge, a base that has not moved included, and needs no `input` line (it takes
+no `comments` line): the build is then the repository's merge gate, run where the merge is. Such a
+repository may take off its `pull_request` CI the jobs that command covers, the same build and tests
+on the merging boxes' platform, and move them to a schedule; jobs the command does not cover
+(another platform or toolchain, a clean-room install) stay per PR. Any other trigger word refuses
+the merge. An older `pr-review.sh` refuses the word where it reads the config and merges an unmoved
+base unbuilt, so a repository adds the line only once every fleet box's skills checkout has it
+(#936). A `comments
 <glob>` line (any number) makes a build input a side changed in comments alone not count for that
 side, read before the slot is taken, so a doc-comment edit on one side builds nothing (#861). Only
 OCaml (`*.ml`, `*.mli`) and dune files have comments there (anything else is code); name only paths

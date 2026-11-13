@@ -3535,7 +3535,62 @@ test_no_build_input_on_both_sides_builds_nothing() {
   COMPARE_REVERSE=$(jq -cn '{behind_by:1, ahead_by:0, merge_base_commit:{sha:"merge-base"}, files:[]}')
   FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   assert_eq "$MERGE_RC" 0 "a base whose advance changed no path merges ($MERGE_OUTPUT)"
-  assert_not_contains "$MERGE_CALLS" "CALL merge-build-config" "and the config is not read"
+  assert_contains "$MERGE_CALLS" "CALL merge-build-config" "the config is read first: its trigger may be always"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: no build — the base changed no path since their merge base, so no build is possible (trigger same-input)" \
+    "and under the default trigger nothing is built"
+}
+
+# `trigger always`: the merge build is the repository's merge gate, so it runs on every merge,
+# whatever the two sides changed. The split fixture has no path changed on both sides, which the
+# default trigger merges unbuilt (above). Then a base that has not moved at all: before this
+# directive that merge read no config, so the build, a failing one and an unknown trigger word are
+# each shown there.
+test_trigger_always_builds_every_merge() {
+  local why="trigger always: every merge of this repository is built" unmoved
+  reset
+  build_fixture split
+  MERGE_BUILD_CONFIG=$'trigger always\n'"$MERGE_BUILD_SPLIT"
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge under trigger always" "$why"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "the forced build refuses a clash no shared path shows ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: $why" "says why it builds"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: FAILED" "says the build failed"
+  assert_no_merge_call
+  assert_clone_untouched
+  unmoved() { # <config>: the compatible fixture, its base where the PR branched from it
+    reset
+    build_fixture compatible
+    BASE_TIP=$(git -C "$TEST_ROOT/build-compatible/work" merge-base "$BUILD_TIP" "$BUILD_HEAD")
+    COMPARE_REVERSE=$(jq -cn '{behind_by:0, ahead_by:0, merge_base_commit:{sha:"merge-base"}, files:[]}')
+    MERGE_BUILD_CONFIG=$1
+    FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  }
+  unmoved $'command sh ./api.sh\ntrigger always\ntimeout 120'
+  assert_eq "$MERGE_RC" 0 "a base that has not moved is built too, and merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: $why" "says why it builds"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: PASSED" "and that the build passed"
+  assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
+  assert_clone_untouched
+  unmoved $'command sh ./api.sh; exit 3\ntrigger always\ntimeout 120'
+  assert_eq "$MERGE_RC" 1 "a forced build that fails refuses the merge ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: FAILED (exit 3)" "naming the failure"
+  assert_no_merge_call
+  # The controls. The default trigger builds nothing there; a trigger word outside the three
+  # refuses the merge, exit 2, and so does a comments line under always.
+  unmoved "$MERGE_BUILD_SH"
+  assert_eq "$MERGE_RC" 0 "the default trigger still merges an unmoved base unbuilt ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_STDOUT" "building" "nothing was built"
+  unmoved $'command sh ./api.sh\ninput *.sh\ntrigger sometimes'
+  assert_eq "$MERGE_RC" 2 "an unknown trigger word refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "trigger is none of \`same-input\`, \`any-input\`, \`always\`: trigger sometimes" "naming the line"
+  assert_no_merge_call
+  unmoved $'command sh ./api.sh\ntrigger always\ncomments *.sh'
+  assert_eq "$MERGE_RC" 2 "a comments line under always refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "has \`trigger always\` and 1 \`comments\` line(s)" "saying why"
+  assert_no_merge_call
 }
 
 # A clash across paths only ONE side changed (ludics-lite#635): the base renames hook() in api.sh,
@@ -3965,6 +4020,7 @@ tests=(
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges
   test_any_input_catches_a_single_side_clash
+  test_trigger_always_builds_every_merge
   test_a_merge_build_failure_the_base_shares_merges_under_override
   test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override
   test_a_comment_only_shared_change_merges_without_a_build
