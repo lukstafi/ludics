@@ -1419,6 +1419,44 @@ class InterimChain(unittest.TestCase):
         self.assertGreater(rounds, 0, gh.asked)
         self.assertEqual(gh.asked.count(f"repos/o/r/commits/{B}"), 2 * rounds, gh.asked)
 
+    def test_mixed_workflows_share_the_tip_proof_only_within_a_round(self) -> None:
+        """#1094: judge's pushless proof and interim's push proof share only the common reads.
+        A second round at the same tip must judge the head again."""
+        for rounds in (1, 2):
+            with self.subTest(rounds=rounds):
+                answers = self._world(wids=((1, "ci"), (2, "nightly")))
+                answers[f"repos/o/r/contents/.github/workflows/nightly.yml?ref={C}"] = PUSHLESS
+                # Only the tip's push run is in flight; no older chain needs judging.
+                page = runs({"head_sha": C, "id": 10, "workflow_id": 1,
+                             "status": "in_progress", "conclusion": None,
+                             "created_at": "2026-11-10T10:30:00Z", "run_attempt": 1})
+                for size in (10, 100):
+                    answers[f"repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page={size}"] = page
+                if rounds == 2:
+                    # The confirmation forces one immediate re-round, whose feed still has the
+                    # run in flight. Both rounds therefore exercise judge AND interim.
+                    answers["repos/o/r/actions/runs/10"] = [
+                        json.dumps({"status": "completed", "run_attempt": 1}),
+                        json.dumps({"status": "in_progress", "run_attempt": 1})]
+                gates: list[str] = []
+                def gate(num: str) -> base.GateSignal:
+                    gates.append(num)
+                    return base.GateSignal("green", "green")
+                rc, out, err, gh = base_run(answers, ["main", "--wait=120", "--interim"],
+                                            gate=gate, knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+                self.assertEqual(rc, 0, out + err)
+                num, head, _ = HEAD_OF[C]
+                self.assertEqual(gates, [str(num)] * rounds)
+                for endpoint in (f"repos/o/r/commits/{C}",
+                                 f"repos/o/r/commits/{C}/pulls?per_page=100"):
+                    self.assertEqual(gh.asked.count(endpoint), rounds, gh.asked)
+                # The workflow-dependent run and job reads are still separate for each source.
+                self.assertEqual(gh.asked.count(
+                    f"repos/o/r/actions/runs?head_sha={head}&per_page=100"), 2 * rounds)
+                for wid in (1, 2):
+                    self.assertEqual(gh.asked.count(
+                        f"repos/o/r/actions/runs/{8000 + 10 * num + wid}/jobs?per_page=100"), rounds)
+
     def test_the_depth_bound(self) -> None:
         saved = base.INTERIM_CHAIN_DEPTH
         base.INTERIM_CHAIN_DEPTH = 1
