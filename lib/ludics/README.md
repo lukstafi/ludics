@@ -157,6 +157,15 @@ the markers. Two remain, in `postmergecleanup/`, on purpose (`git grep SHARED-CA
 them with their reasons): its `printf %q` (bash 5's rules, computed) beside `core.shell_quote`
 (which asks the running bash), and its signal-safe process runner beside `proc.run_tool`.
 
+## Wave prep host paths
+
+For a lock shared by a wave's workers on one host, use prep's `SCR_PARENT`: the parent of that
+worker's `SCR`, including `hosts.<box>.scratch` for a remote CLI worker. Launch creates the task
+scratch directory and therefore its parent. `WAVE_DIR` belongs to the coordinator; prep refuses
+that placeholder in parts rendered for a remote worker (the exact boundary is in waveprep.py's
+header). The MixedWave unit cases cover both hosts and an agent-host `WAVE_DIR` control; on the
+base they fail on the missing built-in and the accepted remote path (ludics#1134).
+
 ## Which suites drive each module
 
 The unit tests (`lib/ludics/tests/test_*.py`) run whole, by discovery, before every push that

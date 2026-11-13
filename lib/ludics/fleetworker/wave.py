@@ -119,7 +119,7 @@ REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
 # The NAMEs wave prep gives every part (waveprep.py's header says what each is); a wave's own vars
 # may not shadow one.
 BUILTIN = frozenset({"WAVE", "T", "N", "ISSUE", "SOURCE", "REPO", "ISSUE_REPO", "CHECKOUT", "WAVE_DIR", "WT", "BR",
-                     "BASE", "SCR", "WORKER", "HOST", "MODE", "PROJECT", "LEGLINES", "LEG", "LEG_ID", "LEG_WT",
+                     "BASE", "SCR", "SCR_PARENT", "WORKER", "HOST", "MODE", "PROJECT", "LEGLINES", "LEG", "LEG_ID", "LEG_WT",
                      "LEG_CHECKOUT"})
 TOP_REQUIRED = ("wave", "repository", "checkout", "worker_prefix", "agent_host", "transport", "kind", "standing_purpose")
 TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part", "review", "profiles", "hosts")

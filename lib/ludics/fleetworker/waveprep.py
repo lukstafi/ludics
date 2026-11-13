@@ -37,10 +37,17 @@ other than none, ``planning-<mode>.md``; and ``tail.md`` when it exists. Every p
 required. The NAMEs every part is given: WAVE, T (the task), N, ISSUE (``<issue_repository>#<N>``,
 issue tasks only) or SOURCE (--source tasks only), REPO, ISSUE_REPO (the wave file's
 issue_repository, every task), CHECKOUT (the repository's clone on the worker's host), WAVE_DIR, WT, BR, BASE (the full
-SHA), SCR, WORKER, HOST (the agent host), MODE, PROJECT (THE PROJECT PART, only where a part names
-it), and the wave file's ``vars``; ``leg.md`` is given LEG (the box), LEG_ID (its reservation id),
+SHA), SCR, SCR_PARENT (the host-local, wave-shared parent of SCR), WORKER, HOST (the agent host),
+MODE, PROJECT (THE PROJECT PART, only where a part names it), and the wave file's ``vars``; ``leg.md`` is given LEG (the box), LEG_ID (its reservation id),
 LEG_WT (the far-side worktree), LEG_CHECKOUT and the leg's ``vars`` besides. The reservations'
 purposes are rendered with the same NAMEs, PROJECT aside.
+
+THE HOST PATH BOUNDARY. For a worker outside the wave's agent host, prep refuses the exact
+``@@WAVE_DIR@@`` placeholder in every part it renders (including the selected project part,
+leg parts and reservation purposes). WAVE_DIR is the coordinator's path; SCR_PARENT is shared
+by this wave's workers on the worker's host. This checks placeholders in selected parts only:
+not literal paths, prose, unused parts or the meaning of values supplied by wave/leg vars.
+Agent-host workers may still name WAVE_DIR. Generic ``wave render`` has no host and is unchanged.
 
 THE COMMON PARTS, the sections every worker's brief opens with. A wave directory's ``common.md`` is
 all of them, whole, when it exists (a wave that writes its own brief). Else they are ``COMMON``, in
@@ -129,6 +136,7 @@ Exit: 0 ready; 1 refused or failed; 2 usage; 4 unknown.
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -444,7 +452,7 @@ def values_of(prep: Prep) -> dict[str, str]:
     values.update({"WAVE": prep.wave.wave, "T": prep.task, "N": prep.number, "REPO": prep.wave.repository,
                    "ISSUE_REPO": prep.wave.issue_repository, "CHECKOUT": prep.host_checkout,
                    "WAVE_DIR": prep.wave.directory, "WT": prep.worktree, "BR": prep.branch, "BASE": prep.base, "SCR": prep.scratch, "WORKER": prep.worker,
-                   "HOST": prep.host, "MODE": prep.mode})
+                   "SCR_PARENT": os.path.dirname(prep.scratch), "HOST": prep.host, "MODE": prep.mode})
     if prep.issue_ref:
         values["ISSUE"] = prep.issue_ref
     else:
@@ -526,6 +534,12 @@ def project_value(prep: Prep) -> str:
 
 
 def rendered(prep: Prep, parts: list[Part], values: dict[str, str]) -> str:
+    if prep.remote:
+        for item in parts:
+            if "WAVE_DIR" in names([item]):
+                raise Stop(1, f"WAVE PREP REFUSED {prep.task}: {shlex.quote(item.name)} names @@WAVE_DIR@@, a path on"
+                              f" {shlex.quote(prep.wave.agent_host)}, but this worker runs on {shlex.quote(prep.host)};"
+                              " use @@SCR_PARENT@@ for the host-local wave scratch parent; nothing made")
     result = render(parts, values)
     if isinstance(result, list):
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: " + "; ".join(result) + "; nothing made")
