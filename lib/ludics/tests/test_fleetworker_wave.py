@@ -603,7 +603,7 @@ class MixedWave(WaveDirCase):
                 else:
                     with self.assertRaises(waveprep.Stop) as caught:
                         waveprep.rendered(prep, [unsafe], waveprep.values_of(prep))
-                    self.assertIn("'project.md' names @@WAVE_DIR@@", caught.exception.line)
+                    self.assertIn("project.md names @@WAVE_DIR@@", caught.exception.line)
                     self.assertIn("far", caught.exception.line)
                     self.assertIn("mac", caught.exception.line)
                     self.assertEqual(waveprep.rendered(prep, [Part("safe", "literal /elsewhere/lock")],

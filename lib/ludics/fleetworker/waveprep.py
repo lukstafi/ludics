@@ -136,6 +136,7 @@ Exit: 0 ready; 1 refused or failed; 2 usage; 4 unknown.
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -536,8 +537,8 @@ def rendered(prep: Prep, parts: list[Part], values: dict[str, str]) -> str:
     if prep.remote:
         for item in parts:
             if "WAVE_DIR" in names([item]):
-                raise Stop(1, f"WAVE PREP REFUSED {prep.task}: {item.name!r} names @@WAVE_DIR@@, a path on"
-                              f" {prep.wave.agent_host!r}, but this worker runs on {prep.host!r};"
+                raise Stop(1, f"WAVE PREP REFUSED {prep.task}: {shlex.quote(item.name)} names @@WAVE_DIR@@, a path on"
+                              f" {shlex.quote(prep.wave.agent_host)}, but this worker runs on {shlex.quote(prep.host)};"
                               " use @@SCR_PARENT@@ for the host-local wave scratch parent; nothing made")
     result = render(parts, values)
     if isinstance(result, list):
