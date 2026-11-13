@@ -420,6 +420,8 @@ for arg in "$@"; do
   prev="$arg"
 done
 printf '%s\n' "$logged grace=${SHIP_PR_BASE_ABSENT_GRACE:-unset} interval=${SHIP_PR_CHECKS_INTERVAL:-unset}" >> "$BASE_CALL_LOG"
+# `comment <owner/name#N> --body-file <file> ...` (wave review's post): the comment's URL.
+if [ "$1" = comment ]; then echo "https://github.com/${2%%#*}/pull/${2##*#}#issuecomment-1"; exit 0; fi
 # `prs` reads (SHIM_PRS names a fixture directory): the open-PR list, `rounds`, `checks` and the
 # head commit's date, each answered from a file there, or 3 (the API never answered) without one.
 # `rounds-N` holds the count, then optionally the trailer line to print instead of the real shape
@@ -708,6 +710,13 @@ if [ -n "${SHIM_CODEX_SILENT_RESUME:-}" ] && [ -n "$resumed" ]; then exit 0; fi
 printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"turn.started"}\n' "$tid"
 sleep 1
 text="codex did: $(LC_ALL=C; printf '%s' "${brief:0:40}" | tr '\n' ' ')"
+# SHIM_CODEX_SAY names a file whose content is this turn's final message, whole (a marker a driver reads).
+if [ -n "${SHIM_CODEX_SAY:-}" ] && [ -s "$SHIM_CODEX_SAY" ]; then
+  text=$(cat "$SHIM_CODEX_SAY")
+  jq -cn --arg t "$text" '{type:"item.completed",item:{type:"agent_message",text:$t}}'; printf '{"type":"turn.completed"}\n'
+  [ -n "$out" ] && printf '%s\n' "$text" > "$out"
+  exit 0
+fi
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n{"type":"turn.completed"}\n' "$text"
 [ -n "$out" ] && printf '%s\n' "$text" > "$out"
 exit 0
@@ -6203,6 +6212,44 @@ settle wk-80
 fixture_done wkv-t80-testbox-iterate
 expect "a second launch of the task is refused on the manifest" 1 "^WAVE LAUNCH REFUSED t80: $K/prep/t80.json records a launch already$" -- "${FWK[@]}" wave launch "$K/wave.json" t80
 expect "a native task is no wave launch's" 1 "^WAVE LAUNCH REFUSED t77: a subagent worker is spawned by its coordinator's runtime" -- "${FWK[@]}" wave launch "$K/wave.json" t77
+# wave drive: a CLI worker's returned turns answered without the coordinator. The fake codex says
+# what $K/say holds as each turn's final message: a review request, then the hand-back. The review
+# runs for real under bg-run.sh (the fake claude, the canned comment), and board close closes the task.
+printf '# Task @@T@@\n' > "$K/tasks/t81.md"
+"${FWK[@]}" board set wkv t80 state=dropped >/dev/null   # the launch case's worker is closed: its row is no live worker's
+export SHIM_CODEX_SAY="$K/say"
+printf 'The PR is open.\n\nREVIEW_REQUEST 14 %s\n' "$pbase" > "$K/say"
+setup_step "could not prepare t81 (setup)" "${FWK[@]}" wave prep "$K/wave.json" t81 --base master --profile sol
+setup_step "could not launch t81 (setup)" "${FWK[@]}" wave launch "$K/wave.json" t81
+"$FW" attach testbox wk-81 --interval 1 >/dev/null 2>&1
+jq -n --arg h "$pbase" '{state:"OPEN", headRefOid:$h}' > "$K/pr-view.json"
+FWD=(env PATH="$K/bin:$PATH" REVIEW_STDIN="$K/review-stdin" SHIM_GH_PR_VIEW="$K/pr-view.json" FLEET_BOXES="testbox other"
+     REVIEW_SAYS=$'### Review checkpoint (at-open): head x\n\nLooks right.\n\nVERDICT: clean' "$FW")
+expect "the driver starts the review a worker's turn asked for" 0 "^DRIVE t81 turn 0: review reviewing: wave review at-open of #14 at ${pbase:0:8} started in $K/logs/drive-runs/" -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+printf 'HANDBACK t81\nMerged https://github.com/example/project/pull/14. Nothing to propose.\n' > "$K/say"
+answered=""
+for _ in $(seq 30); do
+  out=$("${FWD[@]}" wave drive "$K/wave.json" --once 2>&1)
+  grep -q "^DRIVE t81 turn 0: review answered: decision=merge, resumed with $K/reviews/14-at-open-${pbase:0:12}.message.md$" <<<"$out" && { answered=1; break; }
+  sleep 1
+done
+[ -n "$answered" ] && ok "...and resumes the worker with the review's message once it ends" || ko "the review turn was not answered: $out $(cat "$K"/logs/drive-runs/*/log 2>&1 | tail -n 5)"
+grep -q "^REVIEW_POSTED 14 $pbase$" "$ISSUE_WAVE_STATE/workers/wk-81/messages/"*.md && ok "...the message the worker got is the review's" || ko "the resume message: $(ls "$ISSUE_WAVE_STATE/workers/wk-81/messages" 2>&1)"
+[ "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t81") | .fields.review')" = "clean@${pbase:0:8}" ] && ok "...and the row carries the verdict" || ko "row review: $("${FWK[@]}" board show wkv --json | jq -c '.tasks[] | select(.task == "t81") | .fields')"
+"$FW" attach testbox wk-81 --interval 1 >/dev/null 2>&1
+jq -n --arg m "$(printf 'a%.0s' $(seq 40))" '{number:14, state:"MERGED", headRefName:"codex/wk-81", mergeCommit:{oid:$m}}' > "$K/pr-view.json"
+expect "the hand-back turn closes the task: the merge read from GitHub, the standing record concluded, the row merged" 0 \
+  '^DRIVE t81 turn 1: handback answered: BOARD CLOSE wkv: "t81" merged example/project#14 at aaaaaaaaaaaa; 1 standing concluded, 0 already; row set' -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+grep -q '^HANDBACK t81$' "$K/handbacks/t81.md" && ok "...the hand-back kept for the close-out's editorial pass" || ko "handbacks: $(ls "$K/handbacks" 2>&1)"
+[ "$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t81-testbox-iterate") | .state')" = concluded ] && ok "...its standing record concluded" || ko "t81's standing record is not concluded"
+expect "a turn answered is never read again, and a closed task is no longer served" 0 "^$" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+[ "$(jq -r '[.kind, .status] | join(" ")' "$K/logs/drive.jsonl" | tr '\n' ';')" = "review reviewing;review answered;handback answered;" ] && ok "...the ledger one line per step" || ko "ledger: $(cat "$K/logs/drive.jsonl")"
+expect "the heartbeat says the driver's state, and no attention when every turn was answered" 0 "^HEARTBEAT drive: NOT RUNNING; .* DRIVE t81 turn 1: handback answered" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 0
+grep -q "^HEARTBEAT attention" <<<"$out" && ko "attention where none was raised: $out" || ok "...and prints no attention line"
+"$FW" close testbox wk-81 >/dev/null 2>&1
+unset SHIM_CODEX_SAY
 }
 
 section "usage" && {
