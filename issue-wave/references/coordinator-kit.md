@@ -258,7 +258,9 @@ kit invents none.
    refuses (a rival PR, say) is an attention line and that task is yours; a launch its own gates
    refuse (a preflight) is told once and tried again every five minutes. A task you prepared
    yourself is launched where and at what its prep recorded: on another host than its queue
-   entry's, or with the main branch moved since, it is an attention line and yours. You may add
+   entry's, or with the main branch moved since, it is an attention line and yours. A launch
+   that ended in doubt (a NOTE, an unknown outcome, a driver stopped inside it) is an attention
+   line too, and keeps its host's slot until you set its row `launched` or close it. You may add
    tasks to the file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
    task that is not queued is one you launch yourself (a native worker's). A task whose `after`
    task ended without a merge is an attention line too, since it will never come due. The

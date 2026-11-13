@@ -2190,7 +2190,8 @@ class Queue(DriveCase):
             tick()
             self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"], "the gate passed: prepared at the tip as it is now, and launched")
         self.assertEqual(len(self.attention()), 2)
-        self.assertEqual(self.ledger(), [(-1, "launch", "answered")], "a closed gate is no line of the task's: nothing of it was made")
+        self.assertEqual(self.ledger(), [(-1, "launch", "launching"), (-1, "launch", "answered")],
+                         "a closed gate is no line of the task's: nothing of it was made")
 
     def test_a_prepared_task_is_launched_by_its_own_record_or_left_to_the_coordinator(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "mac"}, {"task": "t51", "profile": "sol", "host": "far"},
@@ -2273,6 +2274,49 @@ class Queue(DriveCase):
             rc, out = self.once()
             self.assertEqual(rc, 1)
             self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's", out)
+
+    def test_a_launch_that_may_have_started_a_worker_holds_its_hosts_slot_until_its_row_says(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"},
+                   {"task": "t52", "profile": "sol", "host": "far"}, capacity={"far": 1})
+        with self.world():
+            self.rc, self.out = {"wave launch": 3}, {"wave launch": "WAVE LAUNCH NOTE t50: the row is not set (board set exit 1)\n"
+                                                                    "WAVE LAUNCH t50: launched far/w1-50 worktree /w standing x\n"}
+            self.assertIn("DRIVE ATTENTION t50 launch: wave launch exit 3", self.once()[1])
+            self.rc, self.out = {}, {}
+            for rows in ([], [row("t50", state="pending")]):
+                self.rows = rows
+                self.assertEqual((self.once()[1], self.launched()), ("", []), f"t50's worker may be running, and its row does not say so: {rows}")
+            self.rows = [row("t50", state="launched")]
+            self.state = "RUNNING"
+            self.assertEqual((self.once()[1], self.launched()), ("", []), "the coordinator set the row: it holds the slot itself, once")
+            self.rows = [row("t50", state="merged #9")]
+            self.rc, self.out = {"wave launch": 1}, {"wave launch": "WAVE LAUNCH REFUSED t51: its prep did not finish\n"}
+            self.assertIn("DRIVE ATTENTION t51 launch: wave launch exit 1: WAVE LAUNCH REFUSED t51", self.once()[1])
+            self.rc, self.out = {}, {}
+            self.once()
+            self.assertEqual([c[3] for c in self.launched()], ["t52", "t52"], "the verb's own refusal started nothing, and holds no slot")
+
+    def test_a_launch_a_stopped_driver_left_unfinished_is_told_and_holds_its_slot(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"}, capacity={"far": 1})
+
+        def dies(argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
+            if argv[1:3] == ["wave", "launch"]:
+                raise KeyboardInterrupt
+            return self.execute(argv, timeout)
+
+        with self.world(), mock.patch.object(wavedrive, "execute", side_effect=dies), self.assertRaises(KeyboardInterrupt):
+            self.once()
+        self.assertEqual(self.ledger(), [(-1, "launch", "launching")], "the launch is on record before it is made")
+        self.rows = [row("t50", state="pending")]
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t50 launch: a launch of the task was begun and its end was not recorded (the driver stopped"
+                          " meanwhile): read its worker's status on far; the task is yours from here", out)
+            self.assertEqual(self.launched(), [], "not launched again, and its slot is held: t51 waits")
+            self.assertEqual((self.once()[1], self.launched()), ("", []))
+            self.rows = [row("t50", state="dropped")]
+            self.once()
+            self.assertEqual([c[3] for c in self.launched()], ["t51", "t51"])
 
     def test_the_queue_file_is_a_fail_closed_allowlist_said_once(self) -> None:
         good = {"task": "t50", "profile": "sol", "host": "far"}

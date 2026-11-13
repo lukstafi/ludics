@@ -143,10 +143,18 @@ A prep that refuses (a rival PR, a branch that exists, a missing task part) is a
 the coordinator launches that task by hand. A launch its own gates refuse started no worker and
 may clear: ``LAUNCH REFUSED`` as its last line (a preflight, a halt) or the base gate's ``BASE
 REFUSED:`` on its stderr (a base that turned red after THE GATE read it), with exit 1. It is told
-once and tried again each ``RETRY`` seconds, while its base is still the branch's tip. Any other end of ``wave launch`` (its own refusal, exit 3 with
-a NOTE, exit 4) is attention, final. An anchor, a remote or GitHub that does not answer is the next tick's.
+once and tried again each ``RETRY`` seconds, while its base is still the branch's tip. Any other
+end of ``wave launch`` (its own refusal, exit 3 with a NOTE, exit 4) is attention, final.
+A SLOT HELD: such an end may have started a worker whose row still says ``pending`` (exit 3 with
+the row not set, exit 4 with the reservation dispatched), so it holds a slot on the task's host
+until the row leaves ``pending`` (the coordinator set it ``launched``, where the row itself then
+counts, or closed it). Only ``WAVE LAUNCH REFUSED``, the verb's own reads refusing before it
+starts anything, holds none. The launch is written to the ledger (``launching``) before it is
+made: a driver that stops inside one leaves that line, and the next driver makes it attention,
+final, holding the slot, since it cannot know how the launch ended. An anchor, a remote or GitHub that does not answer is the next tick's.
 
-WHAT IT DOES NOT DO. It scopes nothing and orders nothing (the queue is the coordinator's), reads no hand-back's proposals (the editorial pass is the
+WHAT IT DOES NOT DO. It scopes nothing and orders nothing (the queue is the coordinator's), reads
+no hand-back's proposals (the editorial pass is the
 coordinator's, at close-out, over ``handbacks/``), and decides nothing a marker does not state. It
 proves the lease through the lease-gated verbs it calls (``unstick``, ``execution assign`` and
 ``conclude``, ``board close``, and ``wave review`` in its run): one of them refused with a lease
@@ -455,11 +463,11 @@ class Driver:
         if status != "attention":
             self.say(f"DRIVE {worker.task} {label(turn)}: {kind} {status}: {text}")
 
-    def attention(self, worker: Worker, turn: int, kind: str, why: str, file: str = "") -> None:
+    def attention(self, worker: Worker, turn: int, kind: str, why: str, file: str = "", **more: Any) -> None:
         """The coordinator is told first, and the turn made final after: a driver that dies between
         the two tells it again on its restart, never not at all."""
         self.tell(worker, turn, why, file)
-        self.note(worker, turn, kind, "attention", why, file=file)
+        self.note(worker, turn, kind, "attention", why, file=file, **more)
 
     def tell(self, worker: Worker, turn: int, why: str, file: str = "") -> None:
         """The attention line itself, with no ledger entry: what must reach the coordinator before a
@@ -729,11 +737,21 @@ class Driver:
         capacity, tasks = queue
         rows = dict(rows_of(doc))
         live = slots_held(doc)
+        # A SLOT HELD (the header): a launch that may have started a worker whose row does not say so yet.
+        launch_ends: dict[str, dict[str, Any]] = {str(e.get("task")): e for e in self.ledger if e.get("turn") == LAUNCH}
+        for task, entry in launch_ends.items():
+            if entry.get("holds") and state_word(rows.get(task, {}).get("state", "pending")) == "pending":
+                live[str(entry["holds"])] = live.get(str(entry["holds"]), 0) + 1
         for queued in tasks:
             slot = Worker(queued.task, "", queued.host, {})
             last = self.last(slot, LAUNCH)
             row = rows.get(queued.task)
             if (last is not None and last.get("status") in FINAL) or (row is not None and state_word(row.get("state", "")) != "pending"):
+                continue
+            if last is not None and last.get("status") == "launching":
+                self.attention(slot, LAUNCH, "launch", "a launch of the task was begun and its end was not recorded (the driver stopped"
+                                                       f" meanwhile): read its worker's status on {last.get('holds')}; the task is yours from here",
+                               holds=last.get("holds"))
                 continue
             states = {dep: state_word(rows.get(dep, {}).get("state", "")) for dep in queued.after}
             ended = sorted(dep for dep, word in states.items() if word in DONE_STATES and word not in LANDED)
@@ -804,6 +822,10 @@ class Driver:
             if done.rc != 0:
                 said = (substitution(done.out).splitlines() or [f"wave prep exit {done.rc}"])[-1]
                 return self.attention(slot, LAUNCH, "launch", f"the queued task was not prepared: {said[:300]}; launch it by hand")
+        host = record.host if record is not None else queued.host
+        # A SLOT HELD (the header): the launch is on record before it is made, so a driver that stops
+        # inside it leaves a line the next one reads.
+        self.note(slot, LAUNCH, "launch", "launching", f"wave launch on {host}", holds=host)
         done = self.call("wave", "launch", self.wave.path, queued.task, gated="both")
         said = (substitution(done.out).splitlines() or [f"wave launch exit {done.rc}"])[-1]
         if done.rc == 0:
@@ -815,7 +837,10 @@ class Driver:
             if tries == 1:
                 self.tell(slot, LAUNCH, f"the queued launch was refused and is tried again every {RETRY} s: {said[:300]}")
             return self.note(slot, LAUNCH, "launch", "retry", said[:300], tries=tries, next=now() + RETRY)
-        self.attention(slot, LAUNCH, "launch", f"wave launch exit {done.rc}: {said[:300]}; the task is yours from here")
+        # A SLOT HELD (the header): only wave launch's own refusal is known to have started nothing.
+        started_nothing = done.rc == 1 and said.startswith("WAVE LAUNCH REFUSED ")
+        self.attention(slot, LAUNCH, "launch", f"wave launch exit {done.rc}: {said[:300]}; the task is yours from here",
+                       **({} if started_nothing else {"holds": host}))
 
     # --- the loop -----------------------------------------------------------------------------------
 
