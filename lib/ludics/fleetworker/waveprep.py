@@ -140,6 +140,7 @@ TEMPLATES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
                          "issue-wave", "templates")
 SHIPPED = ("common.md", "planning-paired.md", "planning-paired+critique.md")
 SHIPPED_VARS = ("COORDINATOR", "MAIN")
+READY = "ready"  # the manifest's last step: every write of prep landed (wave launch starts nothing without it)
 
 
 @dataclass
@@ -522,6 +523,7 @@ def record(prep: Prep, step: str) -> None:
         "task": prep.task, "wave": prep.wave.wave, "worker": prep.worker, "branch": prep.branch, "base": prep.base,
         "worktree": prep.worktree, "standing": [prep.standing_id(b) for b in prep.boxes],
         "transport": prep.transport, "kind": prep.kind, "host": prep.host, "scratch": prep.scratch,
+        "legs": [{"box": leg.box, "suffix": leg.suffix, "worktree": prep.leg_worktree(leg)} for leg in prep.legs],
         # What ``wave launch`` rebuilds the task from (wavelaunch.py): prep's own options, as given.
         "opts": {"base": prep.base, "issue": prep.number if prep.issue_ref else "", "source": prep.number if prep.source_ref else "",
                  "mode": prep.mode, "legs": ",".join(leg.box for leg in prep.legs), "allow_rival": sorted(prep.allow_rival),
@@ -599,6 +601,7 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
     if rc != 0:
         raise fail("board", f"board set exited {rc} (above)", 4 if rc == 4 else 1)
     record(prep, f"board row {prep.wave.wave} {prep.task} (state=pending)")
+    record(prep, READY)
 
 
 def cmd_prep(cfg: Config, args: list[str]) -> int:
@@ -624,7 +627,7 @@ def cmd_prep(cfg: Config, args: list[str]) -> int:
         line = stop.line if isinstance(stop, Stop) else f"WAVE PREP FAILED {task}: {stop}"
         cli.say(line)
         for step in prep.done:
-            if step != "manifest":
+            if step not in ("manifest", READY):
                 cli.say(f"WAVE PREP MADE {task}: {step}")
         cli.say(f"WAVE PREP MADE {task}: the manifest {prep.manifest}" if prep.done else f"WAVE PREP MADE {task}: nothing")
         return stop.rc if isinstance(stop, Stop) else 1

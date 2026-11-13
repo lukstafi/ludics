@@ -12,10 +12,12 @@ WHAT IT DOES, in this order:
 1. The task's prep manifest (``<wave dir>/prep/<task>.json``), which names prep's own options: the
    task is rebuilt from them as prep built it. No manifest, a task that is no CLI worker's (a
    native worker is spawned by its coordinator's runtime), or a manifest that records a launch
-   refuses. So does a wave file that changed under the prep: the rebuilt worker, branch, worktree,
-   scratch, transport, kind or host differing from what the manifest recorded, since the brief,
-   the payloads and the row carry the recorded ones. The wave file's ``vars.MAIN`` is the base
-   branch ``launch`` reads CI for.
+   refuses. So does a prep that did not finish: the manifest's last step must be prep's ``ready``,
+   written after its last write, since a prep that failed part-way left a brief with no assign
+   base or no row. And so does a wave file that changed under the prep: the rebuilt worker,
+   branch, worktree, scratch, transport, kind, host or legs (each one's box, suffix and far-side
+   worktree) differing from what the manifest recorded, since the brief, the payloads and the row
+   carry the recorded ones. The wave file's ``vars.MAIN`` is the base branch ``launch`` reads CI for.
 2. The rival PRs, read again as prep read them (a queued task can wait hours for its launch).
 3. The worktree path on the worker's host (``WORKTREE_STATE``): nothing there, or a clean worktree
    whose HEAD is prep's base (an earlier launch that made it and started nothing: the retry). Any
@@ -56,7 +58,7 @@ from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import prelude, run, run_on, substitution
 from ludics.fleetworker.wave import USAGE, load_wave, shim
 from ludics.fleetworker.wavebrief import write_atomically
-from ludics.fleetworker.waveprep import Prep, Stop, build, check_rivals
+from ludics.fleetworker.waveprep import READY, Prep, Stop, build, check_rivals
 
 # Far side of step 3's read, after the prelude. Arg: the worktree path. Prints `worktree=absent`, or
 # `worktree=<HEAD or unreadable> dirty=<count of git status --porcelain entries, or unreadable>`.
@@ -116,11 +118,17 @@ def launched(cfg: Config, path: str, task: str) -> int:
     done = [str(step) for step in cast(list[Any], manifest["done"])]
     if any(step.startswith("launched ") for step in done):
         raise Stop(1, f"WAVE LAUNCH REFUSED {task}: {manifest_path} records a launch already")
+    if not done or done[-1] != READY:
+        raise Stop(1, f"WAVE LAUNCH REFUSED {task}: its prep did not finish ({manifest_path} ends at"
+                      f" {done[-1] if done else 'nothing'!r}, not {READY!r}): reconcile what that prep made, and prepare the task again")
     if "MAIN" not in wave.vars:
         die(f"wave launch: {path} names no vars.MAIN, the base branch launch reads CI for")
     recorded = {key: str(manifest.get(key, "")) for key in ("worker", "branch", "worktree", "scratch", "transport", "kind", "host")}
+    recorded["legs"] = json.dumps(manifest.get("legs", []), sort_keys=True)
     rebuilt_now = {"worker": prep.worker, "branch": prep.branch, "worktree": prep.worktree, "scratch": prep.scratch,
-                   "transport": prep.transport, "kind": prep.kind, "host": prep.host}
+                   "transport": prep.transport, "kind": prep.kind, "host": prep.host,
+                   "legs": json.dumps([{"box": leg.box, "suffix": leg.suffix, "worktree": prep.leg_worktree(leg)} for leg in prep.legs],
+                                      sort_keys=True)}
     changed = [f"{key} was {recorded[key]}, is now {value}" for key, value in rebuilt_now.items() if recorded[key] != value]
     if changed:
         raise Stop(1, f"WAVE LAUNCH REFUSED {task}: the wave file changed since the task was prepared ({'; '.join(changed)});"

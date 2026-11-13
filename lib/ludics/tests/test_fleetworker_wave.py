@@ -543,11 +543,38 @@ class MixedWave(WaveDirCase):
             self.assertTrue(out.endswith("WAVE LAUNCH t42: launched far/w1-42 worktree /home/u/repo-worktrees/w1-42"
                                          " standing wv-t42-far-iterate wv-t42-gpu-box-iterate\n"), out)
             self.assertIn("LAUNCHED far/w1-42", out)
-            self.assertEqual(self.manifest()["done"][-1], "launched far/w1-42")
+            self.assertEqual(self.manifest()["done"][-2:], ["ready", "launched far/w1-42"])
             self.shim_calls.clear()
             rc, out, _ = self.start()
             self.assertEqual((rc, self.shim_calls), (1, []))
             self.assertIn("records a launch already", out)
+
+    def test_launch_refuses_a_prep_that_did_not_finish_and_legs_that_changed(self) -> None:
+        with self.world():
+            self.shim_rc = {"board set": 1}
+            rc, out, _ = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("WAVE PREP FAILED t42 at board", out)
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual((rc, self.shim_calls, self.far_calls), (1, [], []), out)
+            self.assertIn("WAVE LAUNCH REFUSED t42: its prep did not finish", out)
+            self.assertIn("not 'ready'", out)
+            self.shim_rc = {}
+            self.write("tasks/t44.md", "# Task @@T@@\n")
+            self.assertEqual(self.prep("t44", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            self.assertEqual(self.manifest("t44")["legs"], [{"box": "gpu-box", "suffix": "gpu", "worktree": "/home/u/repo-worktrees/w1-44-gpu"}])
+            with open(self.path) as f:
+                data = json.load(f)
+            for key, value in (("checkout", "/srv/repo"), ("suffix", "g2")):
+                changed = json.loads(json.dumps(data))
+                changed["legs"]["gpu-box"][key] = value
+                with open(self.path, "w") as f:
+                    json.dump(changed, f)
+                self.shim_calls.clear()
+                rc, out, _ = self.start("t44")
+                self.assertEqual((rc, self.shim_calls), (1, []), out)
+                self.assertIn("the wave file changed since the task was prepared (legs was", out)
 
     def test_a_launch_that_is_refused_makes_nothing_and_a_leg_or_row_that_fails_is_a_note(self) -> None:
         with self.world():
