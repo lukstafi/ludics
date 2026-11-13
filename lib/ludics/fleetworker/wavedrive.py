@@ -54,10 +54,13 @@ attention, named by the last line's first word.
 
 THE ANSWERS:
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
-            <worker>``: it reserves, dispatches and resumes in one call. Exit 0 with no message
-            printed means every block was dispatched by an earlier call that did not get to
-            resume the worker (a driver that died in between): the worker is resumed with that
-            call's saved message, and where none was saved the turn is attention. Exit 1 with nothing
+            <worker>``: it reserves, dispatches and resumes in one call. A block an earlier call
+            dispatched (assign's ``ASSIGN ALREADY`` line: a driver that died before it resumed
+            the worker) is not assigned again, so its text is not in this call's message. Exit 0
+            with no message printed means every block was such: the worker is resumed with that
+            call's saved message, and where none was saved the turn is attention. Exit 0 with a
+            message and such a block beside it has resumed the worker with part of its
+            assignments, which is attention at once. Exit 1 with nothing
             assigned (every block refused: a busy box, a window; assign prints no message then)
             is tried again each ``RETRY`` seconds, ``TRIES`` times, then attention. Exit 1 with
             some blocks assigned has resumed the worker with those, so the turn is over and the
@@ -98,8 +101,11 @@ next turn is a new turn.
 
 WHAT IT DOES NOT DO. It launches nothing, reads no hand-back's proposals (the editorial pass is the
 coordinator's, at close-out, over ``handbacks/``), and decides nothing a marker does not state. It
-proves the lease through the verbs it calls: a call refused because the lease is another
-coordinator's ends the driver (exit 1), since a takeover is not a refusal to retry.
+proves the lease through the lease-gated verbs it calls (``unstick``, ``execution assign`` and
+``conclude``, ``board close``, and ``wave review`` in its run): one of them refused with a lease
+refusal line (``LEASE_LOST``) ends the driver (exit 1), since a takeover is not a refusal to retry.
+The refusal is read off those verbs' failures only, never off what a worker wrote: a final message
+that quotes the phrase is a message.
 
 It stops on a stop file (``<wave dir>/drive.stop``, read before each tick) with exit 0, on a board
 it cannot read as this wave's (exit 1; an anchor that does not answer is tried again), and on a
@@ -159,7 +165,11 @@ PULL = re.compile(r"/pull/([1-9][0-9]*)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 REF = re.compile(r"[^#\s]+#([1-9][0-9]*)")
 REVIEWED = re.compile(r"WAVE REVIEW \S+: .* decision=([a-z]+) comment=\S+ message=(.+?\.message\.md)(?: \(already reviewed.*)?")
-LEASE_LOST = "coordinator lease held by"
+# A lease refusal as lease.py's gates print it, whole on its line: `<VERB> REFUSED <label>: coordinator lease
+# held by ...`. Read only off a lease-gated verb that exited nonzero (``Driver.call``'s ``gated``) and off
+# a failed review's log, never off a worker's own words (its final message, its status summary).
+LEASE_LOST = re.compile(r"[A-Z][A-Z -]* REFUSED [^:\n]*: coordinator lease held by .*")
+ALREADY = re.compile(r"ASSIGN ALREADY (\S+):")
 
 
 class LeaseLost(Exception):
@@ -236,6 +246,7 @@ class Driver:
         self.script = shim(cfg)
         self.ledger_path = self.path("logs", "drive.jsonl")
         self.ledger: list[dict[str, Any]] = []
+        self.err = ""  # the last call's stderr
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.wave.directory, *parts)
@@ -289,12 +300,14 @@ class Driver:
         with open(self.path("logs", "drive.log"), "a", encoding="utf-8") as f:
             f.write(f"{utc_now()} {line}\n")
 
-    def call(self, *args: str, timeout: float | None = None) -> Done:
-        """This fleet-worker.sh with ``args``, its stdout captured; a lost lease ends the driver."""
-        rc, out, err = execute([self.script, *args], timeout)
-        for text in (out, err):
-            if LEASE_LOST in text:
-                raise LeaseLost(next(line for line in text.splitlines() if LEASE_LOST in line))
+    def call(self, *args: str, timeout: float | None = None, gated: bool = False) -> Done:
+        """This fleet-worker.sh with ``args``, its stdout captured and its stderr kept in ``self.err``.
+        ``gated`` names a verb that proves the lease: refused there (LEASE_LOST), the driver ends."""
+        rc, out, self.err = execute([self.script, *args], timeout)
+        if gated and rc != 0:
+            for line in (out + "\n" + self.err).splitlines():
+                if LEASE_LOST.fullmatch(line.strip()):
+                    raise LeaseLost(line.strip())
         return Done(rc, out)
 
     # --- one worker, one tick ---------------------------------------------------------------------
@@ -347,7 +360,7 @@ class Driver:
                 self.attention(worker, turn, "turn", what.why, message)
 
     def resume(self, worker: Worker, turn: int, kind: str, message: str, text: str, **more: Any) -> bool:
-        done = self.call("unstick", worker.box, worker.name, "--message", message)
+        done = self.call("unstick", worker.box, worker.name, "--message", message, gated=True)
         if done.rc != 0:
             self.attention(worker, turn, kind, f"{text}, and the worker was NOT resumed (unstick exit {done.rc}:"
                                                f" {substitution(done.out)[-200:]}); resume it with {message}", message)
@@ -358,7 +371,8 @@ class Driver:
     def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None) -> None:
         out = self.turn_file(worker, turn, "assigned.md")
         done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
-                         "--message", out, "--unstick", worker.box, worker.name)
+                         "--message", out, "--unstick", worker.box, worker.name, gated=True)
+        earlier = ALREADY.findall(self.err)
         if done.rc == 0 and not done.out.strip():
             # Nothing assigned by this call: an earlier one dispatched every block and never resumed the worker.
             if os.path.isfile(out):
@@ -366,6 +380,11 @@ class Driver:
                 return
             return self.attention(worker, turn, "request", "every block was dispatched by an earlier call, the worker was not"
                                   " resumed, and no assignment message was saved: resume it by hand with its assignments", message)
+        if done.rc == 0 and earlier:
+            # Some blocks assigned now and some by an earlier call whose message never reached the worker.
+            return self.attention(worker, turn, "request", f"the worker was resumed with part of its assignments ({out}): an"
+                                  f" earlier call had dispatched {', '.join(earlier)} and its message is not in this one; send"
+                                  " the worker those assignments", message)
         if done.rc == 0:
             return self.note(worker, turn, "request", "answered", f"assigned and resumed with {out}")
         if done.rc == 1 and done.out.strip():
@@ -394,7 +413,7 @@ class Driver:
                                                               " 40-hex observed_sha; nothing more concluded", message)
             verdict = ""
             for form in ("--from-run", "--from-bg-run"):
-                done = self.call("execution", "conclude", form, where, "--request", request, "--sha", sha)
+                done = self.call("execution", "conclude", form, where, "--request", request, "--sha", sha, gated=True)
                 if done.rc == 0:
                     try:
                         record: Any = json.loads(done.out)
@@ -411,8 +430,10 @@ class Driver:
         self.resume(worker, turn, "result", out, "; ".join(lines))
 
     def review(self, worker: Worker, turn: int, what: Turn) -> None:
-        again = any(e.get("task") == worker.task and e.get("turn") != turn and e.get("status") == "answered"
-                    and e.get("kind") == what.kind and e.get("pr") == what.pr and e.get("sha") == what.sha for e in self.ledger)
+        mine = (worker.name, worker.session, turn)
+        again = any(e.get("task") == worker.task and (e.get("worker"), e.get("session"), e.get("turn")) != mine
+                    and e.get("status") == "answered" and e.get("kind") == what.kind and e.get("pr") == what.pr
+                    and e.get("sha") == what.sha for e in self.ledger)
         subject: list[str] = []
         for key, flag in (("issue", "--issue"), ("source", "--source")):
             ref = REF.fullmatch(worker.fields.get(key, ""))
@@ -449,7 +470,7 @@ class Driver:
         if said is None:
             try:
                 with open(log, encoding="utf-8", errors="replace") as f:
-                    lost = next((text.strip() for text in f if LEASE_LOST in text), "")
+                    lost = next((text.strip() for text in f if LEASE_LOST.fullmatch(text.strip())), "")
             except OSError:
                 lost = ""
             if lost:
@@ -501,7 +522,7 @@ class Driver:
         if not pr:
             return self.attention(worker, turn, "handback", "the hand-back names no PR (the row has none, the message no"
                                                             " /pull/<n>); close the task by hand", kept)
-        done = self.call("board", "close", self.wave.wave, worker.task, "--pr", pr, "--evidence", f"hand-back {kept}")
+        done = self.call("board", "close", self.wave.wave, worker.task, "--pr", pr, "--evidence", f"hand-back {kept}", gated=True)
         said = substitution(done.out).splitlines()[-1] if done.out.strip() else f"board close exit {done.rc}"
         if done.rc != 0:
             return self.attention(worker, turn, "handback", f"board close refused: {said}", kept)

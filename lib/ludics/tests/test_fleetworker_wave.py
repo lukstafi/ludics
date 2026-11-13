@@ -1427,9 +1427,47 @@ class Drive(WaveDirCase):
             self.rows = [row("t42", worker="w1-42b")]  # a finisher under another name, its session reused by chance
             self.assertIn("DRIVE ATTENTION t42 turn 0", self.once()[1])
             self.assertEqual((self.once()[1], self.calls), ("", []))
+            # A confirm the predecessor was answered at turn 0 is another turn than the replacement's turn 0: a new round.
+            self.rows, self.session, self.message = [row("t42")], "0199-c", f"CONFIRM_REQUEST 7 {A}\n"
+            self.once()
+            self.assertNotIn("--again", self.calls[1])
+            self.review_log("findings", "confirm")
+            self.assertIn("confirm answered", self.once()[1])
+            self.session = "0199-d"
+            self.once()
+            self.assertEqual(self.calls[1][-1], "--again", "the replacement's request at the same head and count is a new round")
         with open(os.path.join(self.wavedir, "logs", "drive.jsonl")) as f:
-            self.assertEqual([(e["worker"], e["session"], e["turn"]) for e in map(json.loads, f)],
+            self.assertEqual([(e["worker"], e["session"], e["turn"]) for e in map(json.loads, f)][:3],
                              [("w1-42", "0199-a", 0), ("w1-42", "0199-b", 0), ("w1-42b", "0199-b", 0)])
+
+    def test_an_assignment_that_mixes_an_earlier_dispatch_with_a_new_one_is_handed_up(self) -> None:
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        self.out["execution assign"] = "EXECUTION_ASSIGNED b\n"
+        self.out["execution assign stderr"] = ("ASSIGN ALREADY a: the registry holds it launching; an earlier call dispatched it\n"
+                                               "ASSIGN ASSIGNED b correctness far abc\n")
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t42 turn 0: the worker was resumed with part of its assignments", out)
+            self.assertIn("an earlier call had dispatched a and its message is not in this one", out)
+        self.assertEqual(self.ledger(), [(0, "request", "attention")])
+
+    def test_a_workers_own_words_are_never_a_lease_refusal(self) -> None:
+        refusal = "EXECUTION REFUSED fleet: coordinator lease held by session-other -- not you (adopted since your gate?)"
+        self.message = f"NEEDS_DESIGN my unstick printed:\n{refusal}\n"
+        self.out["attach"] = f"DONE far/w1-42 exit=0 turn.completed | {refusal}\n"
+        with self.world():
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertIn("DRIVE ATTENTION t42 turn 0: no marker this driver answers", out)
+            # The same line from a lease-gated verb that failed is the refusal; from one that succeeded, or mid-line, it is text.
+            self.resumes, self.message = 1, f"REVIEW_REQUEST 7 {A}\n"
+            self.out = {"execution assign": f"quoted: {refusal}\n"}
+            self.assertEqual(self.once()[0], 0)
+            self.resumes, self.message = 2, "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+            self.rc["execution assign"], self.out["execution assign"] = 1, refusal + "\n"
+            rc, out = self.once()
+            self.assertEqual(rc, 1)
+            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's", out)
 
     def test_a_replacement_is_never_resumed_with_its_predecessors_saved_assignment(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
