@@ -479,10 +479,23 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-jq
       - name: Install tmux
+        # Prefer the runner image; only a missing tmux permits apt. Bound the entire fallback
+        # (update AND install, including DNS stalls) to 45s plus a 5s kill grace, not per mirror.
+        # A failed/timed-out fallback stops the step; even a successful one must provide tmux.
+        timeout-minutes: 1
         run: |
           set -e
-          sudo apt-get update -q && sudo apt-get install -y -q tmux
-          command -v tmux && command -v jq
+          if command -v tmux >/dev/null 2>&1; then
+            printf '%s\n' 'Using tmux from the runner image'
+          else
+            timeout --kill-after=5s 45s sudo bash -c 'apt-get update -q && apt-get install -y -q tmux'
+          fi
+          if ! command -v tmux; then
+            printf '%s\n' '::error::tmux is missing after setup'
+            exit 1
+          fi
+          tmux -V
+          command -v jq
       - name: Exercise the fleet launcher against the local box
         # The suite's per-section watchdog (ludics-lite#640), tighter than its 600 s default so a
         # hang in its last section still fails by name inside this job's cap: the slowest section
@@ -509,10 +522,23 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-jq
       - name: Install tmux
+        # Prefer the runner image; only a missing tmux permits apt. Bound the entire fallback
+        # (update AND install, including DNS stalls) to 45s plus a 5s kill grace, not per mirror.
+        # A failed/timed-out fallback stops the step; even a successful one must provide tmux.
+        timeout-minutes: 1
         run: |
           set -e
-          sudo apt-get update -q && sudo apt-get install -y -q tmux
-          command -v tmux && command -v jq
+          if command -v tmux >/dev/null 2>&1; then
+            printf '%s\n' 'Using tmux from the runner image'
+          else
+            timeout --kill-after=5s 45s sudo bash -c 'apt-get update -q && apt-get install -y -q tmux'
+          fi
+          if ! command -v tmux; then
+            printf '%s\n' '::error::tmux is missing after setup'
+            exit 1
+          fi
+          tmux -V
+          command -v jq
       - name: Exercise execution reservations
         run: python3 issue-wave/scripts/test-fleet-execution.py
       - name: Exercise the background-run waiter
