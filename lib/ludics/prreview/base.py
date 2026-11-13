@@ -571,6 +571,8 @@ class _Round:
     tip_unjudged: int = 0
     unrun: list[tuple[str, str, str]] = field(default_factory=lambda: [])
     pushless: list[Want] = field(default_factory=lambda: [])
+    # Owned by this round: never retain a PR head signal across tip reads (#1094).
+    tip_proofs: dict[tuple[str, str, str], TipPr | None] = field(default_factory=lambda: {})
     src_pending: bool = False
     src_none: bool = False
     tipfly: list[Want] = field(default_factory=lambda: [])
@@ -944,12 +946,8 @@ class Base:
                      if ln.startswith("build signal ")), "")
         return GateSignal(gate.verdict, line, gate.check_holds)
 
-    def tip_pr_head_verdict(self, branch: str, sha: str, wants: Sequence[Want], *,
-                            noun: str = "the tip") -> TipPr | None:
-        """``tip_pr_head_verdict``, source (a): the tip is GitHub's own clean merge of one merged
-        PR into this branch, and that PR head's build signal (and, for each workflow the verdict is
-        FOR, a successful run of it that built something) speaks for it. None is UNKNOWN. ``noun``
-        names the commit in the sentences: the tip, or a merge of the interim's chain below it."""
+    def _tip_pr_head_proof(self, branch: str, sha: str, noun: str) -> TipPr | None:
+        """The workflow-independent part of source (a), including failed or absent proof."""
         if not sha or not _HEX.fullmatch(sha):
             return TipPr("none", "there is no tip SHA to judge")
         doc = self.gh_json(["api", f"repos/{self.repo}/commits/{sha}"])
@@ -1012,8 +1010,26 @@ class Base:
         # The held runs the gate's report named under its line (#930): joined on, as the gate's own
         # heartbeat joins them, so every line that carries this source names the run, job and why.
         why = "; ".join([why, *(h.strip() for h in herestring_lines(signal.holds) if h)])
-        if verdict != "green" or not wants:
-            return TipPr(verdict, why, num, head, first)
+        return TipPr(verdict, why, num, head, first)
+
+    def tip_pr_head_verdict(self, branch: str, sha: str, wants: Sequence[Want], *,
+                            noun: str = "the tip",
+                            proofs: dict[tuple[str, str, str], TipPr | None] | None = None) -> TipPr | None:
+        """Source (a): a clean merge's head signal, then the requested workflows' own builds.
+        ``proofs`` belongs to one _Round, shared by judge and interim; it remembers only the
+        commit, /pulls and aggregate gate proof. Runs and jobs remain specific to each request.
+        Callers outside a round read afresh. ``noun`` names the tip or a merge below it."""
+        key = (branch, sha, noun)
+        if proofs is None:
+            proof = self._tip_pr_head_proof(branch, sha, noun)
+        else:
+            if key not in proofs:
+                proofs[key] = self._tip_pr_head_proof(branch, sha, noun)
+            proof = proofs[key]
+        if proof is None or proof.verdict != "green" or not wants:
+            return proof
+        verdict, why, num, head, first = (proof.verdict, proof.why, proof.num, proof.head, proof.first)
+        s8, h8 = sha[:8], head[:8]
         pages = self.gh_pages(["api", "--paginate",
                                f"repos/{self.repo}/actions/runs?head_sha={head}&per_page=100"])
         if isinstance(pages, (GhFailed, GhUnanswered)):
@@ -1077,7 +1093,8 @@ class Base:
                     " list names)")
         return TipPr(verdict, why, num, head, first)
 
-    def named_source(self, branch: str, sha: str, wants: Sequence[Want]) -> Source | None:
+    def named_source(self, branch: str, sha: str, wants: Sequence[Want], *,
+                     proofs: dict[tuple[str, str, str], TipPr | None] | None = None) -> Source | None:
         """``tip_named_source``: (b) the newest integration record at the tip, by its conclusion
         time, else (a). Nothing is remembered between rounds: a PR head's runs can be re-run."""
         rec = self.record_at(sha)
@@ -1088,7 +1105,7 @@ class Base:
                 f" {rec.verdict} ({rec.when})",
                 f"integration record {rec.rid}",
             )
-        tp = self.tip_pr_head_verdict(branch, sha, wants)
+        tp = self.tip_pr_head_verdict(branch, sha, wants, proofs=proofs)
         if tp is None:
             return None
         name = f"PR #{tp.num}'s head run (roll-forward rule)"
@@ -2040,7 +2057,7 @@ class Wait:
         # The retired workflows get the tip's verdict from a NAMED source, once for all of them.
         if rnd.pushless:
             names = rnd.pushless_names
-            src = b.named_source(branch, tip, rnd.pushless)
+            src = b.named_source(branch, tip, rnd.pushless, proofs=rnd.tip_proofs)
             if src is None:
                 fail(3, f"could not read a verdict source for {repo} {branch}'s tip {tip[:8]}",
                      f"({b.err_line()}): the tip's verdict is UNKNOWN, which is NOT 'green'.")
@@ -2076,7 +2093,7 @@ class Wait:
             return "no"
         names = rnd.tipfly_names
         if any(r.sha == tip for r in self.records):
-            src = b.named_source(branch, tip, rnd.tipfly)
+            src = b.named_source(branch, tip, rnd.tipfly, proofs=rnd.tip_proofs)
             if src is not None and src.verdict == "red":
                 rnd.red += 1
                 rnd.red_at_tip += 1
@@ -2128,7 +2145,7 @@ class Wait:
                 and rnd.inflight == len(rnd.tipfly) and rnd.uncov_nofly == 0 and older_fly == 0
                 and (self.args.wait_for > 0 or rnd.pend > 0)):
             return "no"
-        src = b.named_source(branch, tip, rnd.tipfly)
+        src = b.named_source(branch, tip, rnd.tipfly, proofs=rnd.tip_proofs)
         if src is None:
             rnd.out += (f"           (no interim verdict for {names}: a verdict source could not be read"
                         f" ({b.err_line()}))\n")
