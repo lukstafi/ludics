@@ -28,6 +28,7 @@ file and the heartbeat, `wavebrief.py`, `waveprep.py`, `wavelaunch.py`, `waveloo
 <wave>/common.md              optional: the common sections whole, in place of every shipped one
 <wave>/planning-<mode>.md     optional: overrides a shipped paired-planning section (paired, paired+critique)
 <wave>/project.md             optional: overrides the project part the wave file's project_part names
+<wave>/queue.json             optional: the launches left to the handoff driver (step 9)
 <wave>/review/<part>          optional: overrides a shipped review part; review/project.md overrides the
                               project's own review part (the wave file's review.project_part)
 ```
@@ -238,6 +239,26 @@ kit invents none.
    turn by hand; the worker's next turn is the driver's again. `wave turn <wave.json> <task>`
    answers one worker's turn, once, when no driver runs. A stop file `drive.stop` ends the driver.
    The markers, the answers and what is deliberately left to you are `wavedrive.py`'s header.
+
+   The driver also launches what you queue. Write each CLI task's part (`tasks/<task>.md`) and
+   list the tasks in `queue.json`, in the order you want them started:
+
+   ```json
+   {"capacity": {"mac-studio": 4, "rog-nv-linux": 2},
+    "tasks": [{"task": "t2130", "profile": "sol", "host": "mac-studio"},
+              {"task": "t2136", "profile": "sol", "host": "mac-studio", "after": ["t2130"]},
+              {"task": "t2151", "profile": "sol", "host": "rog-nv-linux", "legs": ["minix-amd-linux"]}]}
+   ```
+
+   Each tick it starts the first task that is due: its `after` tasks merged, its host under its
+   capacity, launches not halted. It prepares the task at the main branch's tip as fetched then,
+   so a dependent starts from the base its prerequisite merged into, and launches it. A prep that
+   refuses (a rival PR, say) is an attention line and that task is yours; a launch its own gates
+   refuse (a red base) is told once and tried again every five minutes. You may add tasks to the
+   file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
+   task that is not queued is one you launch yourself (a native worker's). A task whose `after`
+   task ended without a merge is an attention line too, since it will never come due. The
+   rival-PR check by topic stays yours, before you queue a task.
 10. **A design decision the wave takes** is surfaced with one call, whether it is a
     recommendation before launch, a call you make mid-wave, or the maintainer's answer you post
     for them:

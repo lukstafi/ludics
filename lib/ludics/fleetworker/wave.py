@@ -460,7 +460,8 @@ def driver_lines(wave: Wave) -> list[str]:
             if isinstance(record, dict):
                 entry = cast(dict[str, Any], record)
                 where = f" ({entry.get('file')})" if entry.get("file") else ""
-                lines.append(f"HEARTBEAT attention {entry.get('task')} turn {entry.get('turn')}: {entry.get('why')}{where}")
+                turn = "launch" if entry.get("turn") == -1 else f"turn {entry.get('turn')}"  # wavedrive.LAUNCH
+                lines.append(f"HEARTBEAT attention {entry.get('task')} {turn}: {entry.get('why')}{where}")
         with open(seen, "w", encoding="ascii") as f:
             f.write(f"{size}\n")
     return lines

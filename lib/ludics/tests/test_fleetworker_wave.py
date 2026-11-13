@@ -1600,8 +1600,8 @@ class Markers(unittest.TestCase):
         self.assertEqual(wavedrive.workers_of(doc)[0], wavedrive.Worker("t1", "w1-1", "far", row("t1")["fields"]))
 
 
-class Drive(WaveDirCase):
-    """wave drive: each returned turn answered once, by its marker, and everything else handed up."""
+class DriveCase(WaveDirCase):
+    """One scripted world for the driver: a board, a worker's status and final message, each verb's answer."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -1617,7 +1617,10 @@ class Drive(WaveDirCase):
 
     def execute(self, argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
         tool, args = os.path.basename(argv[0]), list(argv[1:])
-        key = f"{tool} {args[0]}" if tool == "bg-run.sh" else " ".join(args[:3] if args[:2] == ["execution", "conclude"] else args[:2] if args[0] in ("execution", "board") else args[:1])
+        if tool == "git":
+            return self.rc.get(f"git {args[2]}", 0), self.out.get(f"git {args[2]}", B + "\n" if args[2] == "rev-parse" else ""), ""
+        key = f"{tool} {args[0]}" if tool == "bg-run.sh" else " ".join(
+            args[:3] if args[:2] == ["execution", "conclude"] else args[:2] if args[0] in ("execution", "board", "wave") else args[:1])
         if key == "attach":
             self.attach_waits.append(timeout)
             return self.rc.get(key, 0), self.out.get(key, "DONE far/w1-42 exit=0 turn.completed | x\n"), ""
@@ -1662,6 +1665,10 @@ class Drive(WaveDirCase):
                 return found
         except FileNotFoundError:
             return []
+
+
+class Drive(DriveCase):
+    """wave drive: each returned turn answered once, by its marker, and everything else handed up."""
 
     def test_a_request_is_assigned_and_resumed_in_one_call_and_never_twice(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
@@ -2081,6 +2088,170 @@ class Drive(WaveDirCase):
             rc, _, err = captured(verb, self.cfg, args)
             self.assertEqual(rc, 2)
             self.assertIn(why, err)
+
+
+class Queue(DriveCase):
+    """wave drive launches what the coordinator queued: the first due task, one a tick."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        with open(self.path, "w") as f:
+            json.dump(wave_data(self.dir, vars={"COORD": "s", "MAIN": "main"}, **MIXED), f)
+        self.rows = []
+        self.out["wave launch"] = "LAUNCHED far/w1-50 kind=codex\nWAVE LAUNCH t50: launched far/w1-50 worktree /w standing wv-t50-far-iterate\n"
+
+    def queue(self, *tasks: dict[str, Any], capacity: dict[str, int] | None = None) -> None:
+        with open(os.path.join(self.wavedir, "queue.json"), "w") as f:
+            json.dump({"capacity": capacity or {"far": 2, "mac": 1}, "tasks": list(tasks)}, f)
+
+    def launched(self) -> list[list[str]]:
+        return [c for c in self.calls if c[0] == "wave"]
+
+    def test_the_first_due_task_is_prepared_at_the_fetched_tip_and_launched(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far", "legs": ["gpu-box"], "mode": "paired"},
+                   {"task": "t51", "profile": "sol", "host": "mac", "issue": "777"})
+        with self.world():
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.launched(), [
+                ["wave", "prep", self.path, "t50", "--base", B, "--profile", "sol", "--host", "far", "--legs", "gpu-box", "--mode", "paired"],
+                ["wave", "launch", self.path, "t50"]])
+            self.assertEqual(self.calls[0], ["halted"])
+            self.assertIn("DRIVE t50 launch: launch answered: WAVE LAUNCH t50: launched far/w1-50", out)
+            self.rows = [row("t50")]  # launched: its row is live
+            self.once()
+            self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--issue", "777"],
+                                               ["wave", "launch", self.path, "t51"]], "one launch a tick, in file order; the agent host takes no --host")
+            self.rows = [row("t50"), row("t51", agent_host="mac")]
+            self.state = "RUNNING"
+            self.assertEqual((self.once()[1], self.launched()), ("", []), "a task with a row is not started again")
+
+    def test_a_task_waits_for_its_prerequisites_its_hosts_capacity_and_a_halt(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far", "after": ["t42", "t43"]}, capacity={"far": 1})
+        self.state = "RUNNING"
+        with self.world():
+            for rows in ([], [row("t42", state="merged #7 at abc")], [row("t42", state="merged #7"), row("t43", state="reviewing")]):
+                self.rows = rows
+                self.assertEqual((self.once()[1], self.launched()), ("", []), rows)
+            self.rows = [row("t42", state="merged #7"), row("t43", state="done: measured"), row("t44")]
+            self.assertEqual(self.launched() if self.once() else [], [], "far has one worker live, and capacity for one")
+            for other in (row("t45", kind="claude"), row("t46", kind="claude", state="no state word"), row("t47", worker="")):
+                self.rows = [*self.rows[:2], other]
+                self.assertEqual(self.launched() if self.once() else [], [], f"a CLI row this driver does not serve holds a slot too: {other}")
+            self.rows = [*self.rows[:2], row("t48", transport="subagent"), row("t49", state="pending"), row("t40", agent_host="mac")]
+            self.rc["halted"] = 1
+            self.assertEqual((self.once()[1], self.launched()), ("", []), "a halt is waited out, silently")
+            self.rc = {}
+            self.once()
+            self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"], "a native row, a pending one and another host's hold no slot here")
+            os.remove(os.path.join(self.wavedir, "logs", "drive.jsonl"))
+            self.rows = self.rows[:2]
+            self.rc["halted"] = 1
+            self.assertEqual((self.once()[1], self.launched()), ("", []), "a halt is waited out, silently")
+            self.rc["halted"] = 4
+            self.assertEqual(self.launched() if self.once() else [], [])
+            self.rc = {}
+            self.once()
+            self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"])
+
+    def test_a_task_whose_prerequisite_ended_without_a_merge_is_told_once_and_the_next_is_served(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far", "after": ["t42", "t43"]}, {"task": "t51", "profile": "sol", "host": "far"})
+        self.rows = [row("t42", state="closed: superseded"), row("t43", state="dropped")]
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t50 launch: the queued task cannot come due: t42, t43, which it comes after, ended without a"
+                          " merge (closed); launch it by hand, or take it off the queue", out)
+            self.assertEqual([c[3] for c in self.launched()], ["t51", "t51"], "a task that cannot come due does not hold the queue")
+            self.rows.append(row("t51"))
+            self.state = "RUNNING"
+            self.assertEqual((self.once()[1], self.launched()), ("", []), "final: said once")
+        self.assertEqual(len(self.attention()), 1)
+
+    def test_a_refused_prep_is_final_a_refused_launch_is_told_once_and_retried(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"})
+        with self.world():
+            self.rc["wave prep"], self.out["wave prep"] = 1, "WAVE PREP REFUSED t50: open rival PR(s) #9 Fix #50\n"
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t50 launch: the queued task was not prepared: WAVE PREP REFUSED t50: open rival PR(s) #9", out)
+            self.assertEqual([c[1] for c in self.launched()], ["prep"])
+            self.rc, self.out = {"wave launch": 1}, {"wave launch": "LAUNCH REFUSED far/w1-51: base red at abc\n"}
+            out = self.once()[1]
+            self.assertEqual([c[3] for c in self.launched()], ["t51", "t51"], "t50 is final: the next task is the first due")
+            self.assertIn("DRIVE ATTENTION t51 launch: the queued launch was refused and is tried again every 300 s: LAUNCH REFUSED far/w1-51: base red", out)
+            self.rows = [row("t51", state="pending")]
+            self.assertEqual((self.once()[1], self.launched()), ("", []), "not before its retry time")
+            self.clock += wavedrive.RETRY
+            self.out = {"wave launch stderr": "fetching\nBASE REFUSED: o/up main: red at abc (base checker exit 1); dispatch blocked\n"}
+            out = self.once()[1]
+            self.assertEqual([c[1] for c in self.launched()], ["launch"], "a prepared task is launched, not prepared again")
+            self.assertNotIn("ATTENTION", out, "told once")
+            self.assertEqual(self.ledger()[-1], (-1, "launch", "retry"), "the base gate's refusal is on stderr, and is retried like the launch's own")
+            with open(os.path.join(self.wavedir, "logs", "drive.jsonl")) as f:
+                self.assertIn("BASE REFUSED: o/up main: red at abc", f.read().splitlines()[-1])
+            self.clock += wavedrive.RETRY
+            self.rc, self.out["wave launch"] = {}, "WAVE LAUNCH t51: launched far/w1-51 worktree /w standing x\n"
+            self.assertIn("launch answered", self.once()[1])
+        self.assertEqual(len(self.attention()), 2)
+
+    def test_any_other_end_of_a_launch_is_final_and_transient_reads_are_the_next_ticks(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"},
+                   {"task": "t52", "profile": "sol", "host": "far"}, capacity={"far": 9})
+        with self.world():
+            for transient in ({"git fetch": 1}, {"git rev-parse": 1}, {"wave prep": 4}):
+                self.rc = dict(transient)
+                self.assertEqual(self.once()[1], "", transient)
+            self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")))
+            for task, rc, said, why in (("t50", 3, "WAVE LAUNCH t50: launched far/w1-50 worktree /w standing x\n", "wave launch exit 3"),
+                                        ("t51", 4, "LAUNCH UNKNOWN far/w1-51: reservation remains dispatched\n", "wave launch exit 4"),
+                                        ("t52", 1, "WAVE LAUNCH REFUSED t52: its prep did not finish\n", "wave launch exit 1: WAVE LAUNCH REFUSED t52")):
+                self.rc, self.out["wave launch"] = {"wave launch": rc}, said
+                out = self.once()[1]
+                self.assertIn(f"DRIVE ATTENTION {task} launch: {why}", out)
+            self.assertEqual((self.once()[1], self.launched()), ("", []))
+            self.rc, self.out = {"wave prep": 1}, {"wave prep stderr": "WAVE PREP REFUSED fleet: coordinator lease held by session-other\n"}
+            os.remove(os.path.join(self.wavedir, "logs", "drive.jsonl"))
+            rc, out = self.once()
+            self.assertEqual(rc, 1)
+            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's", out)
+
+    def test_the_queue_file_is_a_fail_closed_allowlist_said_once(self) -> None:
+        good = {"task": "t50", "profile": "sol", "host": "far"}
+        with self.world():
+            self.assertEqual(self.once()[1], "", "no queue file: nothing is launched")
+            for tasks, capacity, why in (([{**good, "extra": 1}], None, "takes task, profile, host and optionally"),
+                                         ([{"task": "t50", "profile": "sol"}], None, "takes task, profile, host"),
+                                         ([good, good], None, "is queued twice"), ([{**good, "task": "5x"}], None, "is no task id"),
+                                         ([{**good, "profile": "opus"}], None, "is no cli profile of the wave file"),
+                                         ([{**good, "profile": "astra"}], None, "is no cli profile of the wave file"),
+                                         ([{**good, "host": "rog"}], None, "host 'rog' has no capacity"),
+                                         ([{**good, "issue": "1", "source": "2"}], None, "names both an issue and a source"),
+                                         ([{**good, "after": "t42"}], None, "legs and after lists of text"),
+                                         ([{**good, "after": ["42"]}], None, "after takes task ids"),
+                                         ([{**good, "after": ["t50"]}], None, "comes after itself"),
+                                         ([{**good, "task": "t49", "after": ["t50"]}, good], None, "is queued after a task that waits on it"),
+                                         ([good], {"far": 0}, "capacity.far must be a whole number of workers, at least 1")):
+                self.queue(*tasks, capacity=capacity)
+                driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+                os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+                self.calls.clear()
+                _, out, _ = captured(lambda d=driver: d.round() + d.round() + d.round())
+                self.assertEqual(out.count("DRIVE QUEUE REFUSED wv: "), 1, "a driver says a refused queue once")
+                self.assertIn(why, out)
+                self.assertEqual(self.launched(), [], "and launches nothing")
+            with open(os.path.join(self.wavedir, "queue.json"), "w") as f:
+                f.write('{"tasks": [], "queue": 1}')
+            self.assertIn("is one object with the keys capacity, tasks and no other", self.once()[1])
+            self.queue(good)
+            with open(self.path, "w") as f:
+                json.dump(wave_data(self.dir, vars={"COORD": "s"}, **MIXED), f)
+            self.calls.clear()
+            self.assertIn("names no vars.MAIN, the branch a queued task is prepared at", self.once()[1])
+            self.assertEqual(self.launched(), [])
+            with open(self.path, "w") as f:
+                json.dump(wave_data(self.dir, vars={"COORD": "s", "MAIN": "main"}, **MIXED), f)
+            self.queue(good)
+            self.once()
+            self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"], "a queue that reads again is served")
 
 
 class Heartbeat(unittest.TestCase):

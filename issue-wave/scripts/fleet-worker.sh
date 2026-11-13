@@ -287,7 +287,8 @@
 #                          # worker's returned turns by their marker: an execution request assigned, a result
 #                          # concluded, a review or confirm run beside it, a hand-back closed; each
 #                          # turn once (a ledger), one driver per wave, and anything no marker
-#                          # answers an attention line for the coordinator (wavedrive.py)
+#                          # answers an attention line for the coordinator; it also starts the
+#                          # tasks of <wave dir>/queue.json as each comes due (wavedrive.py)
 #   fleet-worker.sh wave turn <wave.json> <task>   # the same, one worker's returned turn, once
 #   fleet-worker.sh wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file>
 #                          --by <model> [--task <task>] [--posted <url>]   # a design decision

@@ -104,7 +104,39 @@ prints the new attention lines and returns early when one arrives, so it stays t
 one wake source. An attention turn is final: the coordinator answers it by hand, and the worker's
 next turn is a new turn.
 
-WHAT IT DOES NOT DO. It launches nothing, reads no hand-back's proposals (the editorial pass is the
+THE QUEUE, ``<wave dir>/queue.json``, is the launches the coordinator decided and left to the driver:
+
+    {"capacity": {"<box>": <n>, ...},
+     "tasks": [{"task", "profile", "host"[, "legs": [<box>, ...]][, "mode"][, "after": [<task>, ...]]
+                [, "issue" | "source"]}, ...]}
+
+A fail-closed allowlist, read each tick (the coordinator may add tasks while the driver runs): any
+other key, a task named twice, a profile that is no ``cli`` profile of the wave file, a host with
+no ``capacity``, an ``after`` that is no task id, or one that names the task itself or a task
+queued LATER (the file's order is the launch order, so no two queued tasks can wait on each other)
+refuses the whole file, said once as ``DRIVE QUEUE REFUSED`` and launching nothing until it reads.
+So does a wave file with no ``vars.MAIN``, the branch a queued task is prepared at. An ``after``
+task that is not queued needs no row yet: it may be a native task the coordinator has still to
+launch. With no file the driver launches nothing. After the workers' turns, each tick takes
+the FIRST task in file order that is due and starts it, one a tick:
+  due       no row yet, or a ``pending`` row (prepared, its launch refused so far); every ``after``
+            task's row ``merged`` or ``done``; fewer CLI rows of this wave holding a slot on its
+            host (``slots_held``: any kind, past ``pending`` and not done) than the host's
+            capacity; no final ``launch`` line in the ledger; launches not halted (``halted``,
+            read once a tick: a halt is waited out, silently)
+  started   with no row, ``wave prep <task> --base <origin/MAIN, fetched now> --profile ... [--host]
+            [--legs] [--mode] [--issue|--source]`` (a dependent starts from the base its
+            prerequisite merged into), then ``wave launch``
+A task whose ``after`` task's row ended without a merge (``closed``, ``dropped``) can never come
+due: that is attention, final, since nothing else would say the task is not going to start.
+A prep that refuses (a rival PR, a branch that exists, a missing task part) is attention, final:
+the coordinator launches that task by hand. A launch its own gates refuse started no worker and
+may clear: ``LAUNCH REFUSED`` as its last line (a preflight, a halt) or the base gate's ``BASE
+REFUSED:`` on its stderr (a red base, a base it could not read), with exit 1. It is told once and
+tried again each ``RETRY`` seconds. Any other end of ``wave launch`` (its own refusal, exit 3 with
+a NOTE, exit 4) is attention, final. An anchor, a remote or GitHub that does not answer is the next tick's.
+
+WHAT IT DOES NOT DO. It scopes nothing and orders nothing (the queue is the coordinator's), reads no hand-back's proposals (the editorial pass is the
 coordinator's, at close-out, over ``handbacks/``), and decides nothing a marker does not state. It
 proves the lease through the lease-gated verbs it calls (``unstick``, ``execution assign`` and
 ``conclude``, ``board close``, and ``wave review`` in its run): one of them refused with a lease
@@ -134,7 +166,7 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
 from ludics.fleetworker.transport import Done, substitution
-from ludics.fleetworker.wave import USAGE, Wave, load_wave, shim, utc_now
+from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.waveprep import TASK
 
@@ -195,6 +227,88 @@ def append_line(path: str, record: dict[str, Any]) -> None:
         os.fsync(f.fileno())
 
 
+LAUNCH = -1  # the ledger's turn for a queued task's launch, which is no worker's turn
+LANDED = ("merged", "done")  # the row states of an ``after`` task that let its dependents start
+# A launch its own gates refused before anything started, which may clear (THE QUEUE): the launch
+# verb's refusal as stdout's last line, or the base gate's, which it writes to stderr.
+PRESTART = re.compile(r"^(?:LAUNCH REFUSED |BASE REFUSED: ).*$", re.M)
+QUEUE_KEYS, QUEUED_REQUIRED = ("capacity", "tasks"), ("task", "profile", "host")
+QUEUED_OPTIONAL = ("legs", "mode", "after", "issue", "source")
+
+
+@dataclass(frozen=True)
+class Queued:
+    task: str
+    profile: str
+    host: str
+    legs: tuple[str, ...]
+    mode: str
+    after: tuple[str, ...]
+    issue: str
+    source: str
+
+
+def label(turn: int) -> str:
+    return "launch" if turn == LAUNCH else f"turn {turn}"
+
+
+def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
+    """THE QUEUE (the header): the capacities and the tasks, None with no file, or why it is refused."""
+    path = os.path.join(wave.directory, "queue.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data: Any = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        return f"{path} is not readable JSON ({exc})"
+    if not isinstance(data, dict) or set(cast(dict[str, Any], data)) - set(QUEUE_KEYS):
+        return f"{path} is one object with the keys {', '.join(QUEUE_KEYS)} and no other"
+    top = cast(dict[str, Any], data)
+    raw_capacity: Any = top.get("capacity", {})
+    raw_tasks: Any = top.get("tasks", [])
+    if not isinstance(raw_capacity, dict) or not isinstance(raw_tasks, list):
+        return f"{path}: capacity is an object of <box>: <n>, and tasks a list"
+    capacity: dict[str, int] = {}
+    for box, n in cast(dict[str, Any], raw_capacity).items():
+        if not WORD.fullmatch(box) or not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            return f"{path}: capacity.{box} must be a whole number of workers, at least 1"
+        capacity[box] = n
+    tasks: list[Queued] = []
+    later: set[str] = set()  # the tasks an entry so far comes after: none of them may be queued from here on, or be the entry
+    for entry in cast(list[Any], raw_tasks):
+        if not isinstance(entry, dict):
+            return f"{path}: a task is an object"
+        item = cast(dict[str, Any], entry)
+        name = item.get("task")
+        what = f"{path}: task {json.dumps(name)}"
+        if set(item) - set(QUEUED_REQUIRED) - set(QUEUED_OPTIONAL) or any(key not in item for key in QUEUED_REQUIRED):
+            return f"{what} takes {', '.join(QUEUED_REQUIRED)} and optionally {', '.join(QUEUED_OPTIONAL)}"
+        lists = {key: item.get(key, []) for key in ("legs", "after")}
+        texts = {key: item.get(key, "") for key in ("task", "profile", "host", "mode", "issue", "source")}
+        if not all(isinstance(v, str) for v in texts.values()) or not all(
+                isinstance(v, list) and all(isinstance(x, str) and x for x in cast(list[Any], v)) for v in lists.values()):
+            return f"{what}: its values are text, and legs and after lists of text"
+        if not TASK.fullmatch(texts["task"]) or any(q.task == texts["task"] for q in tasks):
+            return f"{what} is no task id ({TASK.pattern}), or is queued twice"
+        chosen = wave.profiles.get(texts["profile"])
+        if chosen is None or chosen.transport != "cli":
+            return f"{what}: profile {texts['profile']!r} is no cli profile of the wave file (the driver launches CLI workers)"
+        if texts["host"] not in capacity:
+            return f"{what}: host {texts['host']!r} has no capacity"
+        if texts["issue"] and texts["source"]:
+            return f"{what} names both an issue and a source"
+        if any(not TASK.fullmatch(dep) for dep in cast(list[str], lists["after"])):
+            return f"{what}: after takes task ids ({TASK.pattern})"
+        later.update(cast(list[str], lists["after"]))
+        if texts["task"] in later:
+            return (f"{what} comes after itself, or is queued after a task that waits on it: the file's order is the launch"
+                    " order, so a task's queued prerequisites are above it")
+        tasks.append(Queued(texts["task"], texts["profile"], texts["host"], tuple(cast(list[str], lists["legs"])), texts["mode"],
+                            tuple(cast(list[str], lists["after"])), texts["issue"], texts["source"]))
+    return capacity, tasks
+
+
 class LeaseLost(Exception):
     """A verb refused because the lease is another coordinator's: the driver's to stop on."""
 
@@ -245,22 +359,41 @@ def classify(message: str) -> Turn:
     return Turn("other", f"no marker this driver answers; the last line starts {lines[-1].split()[0][:40]!r}")
 
 
-def workers_of(doc: dict[str, Any]) -> list[Worker]:
-    """WHO IT SERVES (the header)."""
-    out: list[Worker] = []
+def rows_of(doc: dict[str, Any]) -> list[tuple[str, dict[str, str]]]:
+    """The board's rows as (task, fields), a row with no fields object left out."""
+    out: list[tuple[str, dict[str, str]]] = []
     tasks: Any = doc.get("tasks")
     for row in cast(list[Any], tasks) if isinstance(tasks, list) else []:
         raw: Any = cast(dict[str, Any], row).get("fields") if isinstance(row, dict) else None
-        if not isinstance(raw, dict):
-            continue
-        fields = {str(k): str(v) for k, v in cast(dict[Any, Any], raw).items()}
+        if isinstance(raw, dict):
+            out.append((str(cast(dict[str, Any], row).get("task")), {str(k): str(v) for k, v in cast(dict[Any, Any], raw).items()}))
+    return out
+
+
+def workers_of(doc: dict[str, Any]) -> list[Worker]:
+    """WHO IT SERVES (the header)."""
+    out: list[Worker] = []
+    for task, fields in rows_of(doc):
         word = state_word(fields.get("state", ""))
         if fields.get("transport") != "cli" or fields.get("kind") != "codex" or not fields.get("worker") or not fields.get("agent_host"):
             continue
         if word is None or word == "pending" or word in DONE_STATES:
             continue
-        out.append(Worker(str(cast(dict[str, Any], row).get("task")), fields["worker"], fields["agent_host"], fields))
+        out.append(Worker(task, fields["worker"], fields["agent_host"], fields))
     return out
+
+
+def slots_held(doc: dict[str, Any]) -> dict[str, int]:
+    """THE QUEUE's capacity count: for each host, the wave's CLI rows that hold a slot there. That is
+    every CLI row of ANY kind that is not ``pending`` and not done, whether or not this driver answers
+    its turns (a Claude CLI worker fills a slot too), and a row whose state it cannot read counts:
+    an unreadable row frees no slot."""
+    held: dict[str, int] = {}
+    for _, fields in rows_of(doc):
+        word = state_word(fields.get("state", ""))
+        if fields.get("transport") == "cli" and fields.get("agent_host") and word != "pending" and word not in DONE_STATES:
+            held[fields["agent_host"]] = held.get(fields["agent_host"], 0) + 1
+    return held
 
 
 class Driver:
@@ -270,6 +403,7 @@ class Driver:
         self.ledger_path = self.path("logs", "drive.jsonl")
         self.ledger: list[dict[str, Any]] = []
         self.err = ""  # the last call's stderr
+        self.queue_refusal = ""  # the queue's refusal last said, so it is said once
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.wave.directory, *parts)
@@ -307,7 +441,7 @@ class Driver:
         append_line(self.ledger_path, entry)
         self.ledger.append(entry)
         if status != "attention":
-            self.say(f"DRIVE {worker.task} turn {turn}: {kind} {status}: {text}")
+            self.say(f"DRIVE {worker.task} {label(turn)}: {kind} {status}: {text}")
 
     def attention(self, worker: Worker, turn: int, kind: str, why: str, file: str = "") -> None:
         """The coordinator is told first, and the turn made final after: a driver that dies between
@@ -319,7 +453,7 @@ class Driver:
         """The attention line itself, with no ledger entry: what must reach the coordinator before a
         step that would stop this turn from being read again (a resume, a close)."""
         append_line(self.path("logs", "attention.jsonl"), {"at": utc_now(), "task": worker.task, "turn": turn, "why": why, "file": file})
-        self.say(f"DRIVE ATTENTION {worker.task} turn {turn}: {why}" + (f" ({file})" if file else ""))
+        self.say(f"DRIVE ATTENTION {worker.task} {label(turn)}: {why}" + (f" ({file})" if file else ""))
 
     def say(self, line: str) -> None:
         cli.say(line)
@@ -565,6 +699,78 @@ class Driver:
             return self.note(worker, turn, "handback", "attention", f"{uncovered} ({said})", file=kept)
         self.note(worker, turn, "handback", "answered", said)
 
+    # --- the queue ----------------------------------------------------------------------------------
+
+    def launches(self, doc: dict[str, Any]) -> None:
+        """THE QUEUE (the header): the first due task started, at most one a tick."""
+        queue = read_queue(self.wave)
+        if queue is None:
+            return
+        if not self.wave.vars.get("MAIN"):
+            queue = f"{self.wave.path} names no vars.MAIN, the branch a queued task is prepared at"
+        if isinstance(queue, str):
+            if queue != self.queue_refusal:
+                self.say(f"DRIVE QUEUE REFUSED {self.wave.wave}: {queue}; nothing is launched until it reads")
+            self.queue_refusal = queue
+            return
+        self.queue_refusal = ""
+        capacity, tasks = queue
+        rows = dict(rows_of(doc))
+        live = slots_held(doc)
+        for queued in tasks:
+            slot = Worker(queued.task, "", queued.host, {})
+            last = self.last(slot, LAUNCH)
+            row = rows.get(queued.task)
+            if (last is not None and last.get("status") in FINAL) or (row is not None and state_word(row.get("state", "")) != "pending"):
+                continue
+            states = {dep: state_word(rows.get(dep, {}).get("state", "")) for dep in queued.after}
+            ended = sorted(dep for dep, word in states.items() if word in DONE_STATES and word not in LANDED)
+            if ended:
+                self.attention(slot, LAUNCH, "launch", f"the queued task cannot come due: {', '.join(ended)}, which it comes after, ended"
+                                                       f" without a merge ({states[ended[0]]}); launch it by hand, or take it off the queue")
+                continue
+            if any(word not in LANDED for word in states.values()):
+                continue
+            if live.get(queued.host, 0) >= capacity[queued.host]:
+                continue
+            if last is not None and last.get("status") == "retry" and now() < float(last.get("next", 0)):
+                continue
+            if self.call("halted").rc == 0:
+                self.start(queued, slot, row is not None, last)
+            return  # one launch a tick, and a halt or an unreachable anchor is the next tick's
+
+    def start(self, queued: Queued, slot: Worker, prepared: bool, last: dict[str, Any] | None) -> None:
+        if not prepared:
+            main = self.wave.vars["MAIN"]
+            checkout = self.wave.checkout
+            fetched = execute(["git", "-C", checkout, "fetch", "-q", "origin", main])[0]
+            rc, sha, _ = execute(["git", "-C", checkout, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{main}^{{commit}}"])
+            if fetched != 0 or rc != 0 or not SHA40.fullmatch(sha.strip()):
+                return  # the remote did not answer: the next tick's
+            done = self.call("wave", "prep", self.wave.path, queued.task, "--base", sha.strip(), "--profile", queued.profile,
+                             *(["--host", queued.host] if queued.host != self.wave.agent_host else []),
+                             *(["--legs", ",".join(queued.legs)] if queued.legs else []),
+                             *(["--mode", queued.mode] if queued.mode else []),
+                             *(["--issue", queued.issue] if queued.issue else []),
+                             *(["--source", queued.source] if queued.source else []), gated="both")
+            if done.rc == 4:
+                return
+            if done.rc != 0:
+                said = (substitution(done.out).splitlines() or [f"wave prep exit {done.rc}"])[-1]
+                return self.attention(slot, LAUNCH, "launch", f"the queued task was not prepared: {said[:300]}; launch it by hand")
+        done = self.call("wave", "launch", self.wave.path, queued.task, gated="both")
+        said = (substitution(done.out).splitlines() or [f"wave launch exit {done.rc}"])[-1]
+        if done.rc == 0:
+            return self.note(slot, LAUNCH, "launch", "answered", said)
+        gate = PRESTART.search(said) or PRESTART.search(self.err)
+        if done.rc == 1 and gate:
+            said = gate.group(0).strip()
+            tries = int(last.get("tries", 0)) + 1 if last is not None and last.get("status") == "retry" else 1
+            if tries == 1:
+                self.tell(slot, LAUNCH, f"the queued launch was refused and is tried again every {RETRY} s: {said[:300]}")
+            return self.note(slot, LAUNCH, "launch", "retry", said[:300], tries=tries, next=now() + RETRY)
+        self.attention(slot, LAUNCH, "launch", f"wave launch exit {done.rc}: {said[:300]}; the task is yours from here")
+
     # --- the loop -----------------------------------------------------------------------------------
 
     def round(self, only: str = "") -> int:
@@ -583,6 +789,8 @@ class Driver:
         for worker in workers:
             if not only or worker.task == only:
                 self.tick(worker)
+        if not only:
+            self.launches(doc)
         return 0
 
 
