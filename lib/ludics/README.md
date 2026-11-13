@@ -167,6 +167,15 @@ that placeholder in parts rendered for a remote worker (the exact boundary is in
 header). The MixedWave unit cases cover both hosts and an agent-host `WAVE_DIR` control; on the
 base they fail on the missing built-in and the accepted remote path (ludics#1134).
 
+## Stacked wave prep briefs
+
+Prep reads a project's brief part at its task base first, then at the local
+`origin/<vars.MAIN>` commit if absent. It reports the path, SHA and source; no fetch or checkout
+read supplies a fallback. BASE_ORIGIN identifies the default tip only on a SHA match and otherwise
+names the explicit revision, so a stacked launch keeps its own base (#1099).
+The Prep unit cases and the "wave kit" shell section pin this boundary; the new cases fail
+against the pre-change implementation (missing fallback, provenance and BASE_ORIGIN).
+
 ## Which suites drive each module
 
 The unit tests (`lib/ludics/tests/test_*.py`) run whole, by discovery, before every push that

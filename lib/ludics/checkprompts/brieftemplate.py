@@ -20,7 +20,7 @@ without it has no template to keep, as the suites' trees of copied prompts do no
   missing or extra fails.
 - THE NAMES. Each shipped part, and the project part, renders through wavebrief's own ``render``
   with one value for each NAME it may use: a common part the built-ins every task is given (no
-  ISSUE, no SOURCE, no leg NAME), waveprep's ``SHIPPED_VARS`` and PROJECT; a planning part those and
+  ISSUE, no SOURCE, no leg NAME; BASE_ORIGIN describes the resolved base), waveprep's ``SHIPPED_VARS`` and PROJECT; a planning part those and
   ISSUE; the project part those of a common part but PROJECT; a ``review`` part the NAMEs
   wavereview's ``PART_NAMES`` gives it, and this repository's own review part,
   ``.github/review-checkpoint.md`` when it has one, wavereview's ``COMMON_NAMES``. A placeholder

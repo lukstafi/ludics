@@ -36,11 +36,13 @@ with --legs, ``legs.md``, whose ``@@LEGLINES@@`` is ``leg.md`` rendered once per
 other than none, ``planning-<mode>.md``; and ``tail.md`` when it exists. Every part but tail.md is
 required. The NAMEs every part is given: WAVE, T (the task), N, ISSUE (``<issue_repository>#<N>``,
 issue tasks only) or SOURCE (--source tasks only), REPO, ISSUE_REPO (the wave file's
-issue_repository, every task), CHECKOUT (the repository's clone on the worker's host), WAVE_DIR, WT, BR, BASE (the full
-SHA), SCR, SCR_PARENT (the host-local, wave-shared parent of SCR), WORKER, HOST (the agent host),
-MODE, PROJECT (THE PROJECT PART, only where a part names it), and the wave file's ``vars``; ``leg.md`` is given LEG (the box), LEG_ID (its reservation id),
-LEG_WT (the far-side worktree), LEG_CHECKOUT and the leg's ``vars`` besides. The reservations'
-purposes are rendered with the same NAMEs, PROJECT aside.
+issue_repository, every task), CHECKOUT (the repository's clone on the worker's host), WAVE_DIR,
+WT, BR, BASE (the full SHA), BASE_ORIGIN (the verified origin at prep time, or the explicit base
+revision), SCR, SCR_PARENT (the host-local, wave-shared parent of SCR), WORKER, HOST (the agent
+host), MODE, PROJECT (THE PROJECT PART, only where a part names it), and the wave file's ``vars``;
+``leg.md`` is given LEG (the box), LEG_ID (its reservation id), LEG_WT (the far-side worktree),
+LEG_CHECKOUT and the leg's ``vars`` besides. The reservations' purposes are rendered with the same
+NAMEs, PROJECT aside.
 
 THE HOST PATH BOUNDARY. For a worker outside the wave's agent host, prep refuses the exact
 ``@@WAVE_DIR@@`` placeholder in every part it renders (including the selected project part,
@@ -74,10 +76,13 @@ task refuses on them unless the wave directory gives its own.
 
 THE PROJECT PART, the value of PROJECT, read only when some part names ``@@PROJECT@@``: the wave
 directory's ``project.md`` when it exists, else the file the wave file's ``project_part`` names,
-read from the checkout at the task's base (``git show <base>:<path>``, so a project's own brief
-section is the one its worker starts from, never a branch someone has checked out there). Either is
+read from the checkout at the task's base, else at the local remote-tracking default-branch tip
+(``origin/<vars.MAIN>``). Prep never fetches or reads the checked-out tree. It reports the selected
+path and revision. A fallback needs vars.MAIN and its remote-tracking commit; neither available
+refuses. BASE_ORIGIN calls a base the default tip only when its SHA equals that local tip;
+otherwise it names the explicit revision, without guessing which sibling branch owns it. Either is
 rendered first with every NAME above but PROJECT and the legs', and its result is the value. Neither
-existing, or the path absent at the base, refuses.
+existing, or the path absent at both revisions, refuses.
 
 IN ORDER, every read before any write:
   1. THE READS. The anchor gate (the lease and the halt, ``launch``'s ``anchor_gate``), so no
@@ -192,6 +197,7 @@ class Prep:
     model: str = ""
     effort: str = ""
     host_checkout: str = ""  # the repository's clone on the host
+    base_origin: str = ""
     done: list[str] = field(default_factory=lambda: [])
 
     def __post_init__(self) -> None:
@@ -339,7 +345,13 @@ def resolve_base(prep: Prep) -> None:
     sha = done.stdout.strip()
     if done.rc != 0 or not SHA40.fullmatch(sha):
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: --base {prep.base} is no commit in {prep.wave.checkout} (fetch first?)")
+    prep.base_origin = f"explicit revision {prep.base} at prep"
     prep.base = sha
+    main = prep.wave.vars.get("MAIN")
+    if main:
+        tip = git(prep, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{main}^{{commit}}")
+        if tip.rc == 0 and tip.stdout.strip() == sha:
+            prep.base_origin = f"origin/{main} at prep"
 
 
 def rival_token(number: str) -> re.Pattern[str]:
@@ -451,7 +463,8 @@ def values_of(prep: Prep) -> dict[str, str]:
     values = dict(prep.wave.vars)
     values.update({"WAVE": prep.wave.wave, "T": prep.task, "N": prep.number, "REPO": prep.wave.repository,
                    "ISSUE_REPO": prep.wave.issue_repository, "CHECKOUT": prep.host_checkout,
-                   "WAVE_DIR": prep.wave.directory, "WT": prep.worktree, "BR": prep.branch, "BASE": prep.base, "SCR": prep.scratch, "WORKER": prep.worker,
+                   "WAVE_DIR": prep.wave.directory, "WT": prep.worktree, "BR": prep.branch, "BASE": prep.base,
+                   "BASE_ORIGIN": prep.base_origin or f"explicit commit {prep.base}", "SCR": prep.scratch, "WORKER": prep.worker,
                    "SCR_PARENT": os.path.dirname(prep.scratch), "HOST": prep.host, "MODE": prep.mode})
     if prep.issue_ref:
         values["ISSUE"] = prep.issue_ref
@@ -518,18 +531,32 @@ def names(parts: list[Part]) -> set[str]:
 
 
 def project_value(prep: Prep) -> str:
-    """THE PROJECT PART, rendered: the wave directory's project.md, else project_part at the base."""
+    """THE PROJECT PART: wave project.md, else project_part at the base, else the default tip."""
     own = read_or_none(prep, prep.path("project.md"))
     if own is None:
         where = prep.wave.project_part
         if not where:
             raise Stop(1, f"WAVE PREP REFUSED {prep.task}: a part names @@PROJECT@@, and neither"
                           f" {prep.path('project.md')} exists nor does the wave file name a project_part")
-        shown = git(prep, "show", f"{prep.base}:{where}")
+        revision, source = prep.base, "base"
+        shown = git(prep, "show", f"{revision}:{where}")
         if shown.rc != 0:
-            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the project part {where} cannot be read in"
-                          f" {prep.wave.checkout} at {prep.base} ({shown.stderr.strip()[-200:]})")
-        own = Part(f"{os.path.join(prep.wave.checkout, where)} at {prep.base[:12]}", shown.stdout)
+            main = prep.wave.vars.get("MAIN")
+            tip = git(prep, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{main}^{{commit}}") if main else None
+            if tip is None or tip.rc != 0 or not SHA40.fullmatch(tip.stdout.strip()):
+                raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the project part {shlex.quote(where)} cannot be read in"
+                              f" {shlex.quote(prep.wave.checkout)} at base {prep.base}; fallback needs vars.MAIN"
+                              " and its origin remote-tracking commit (fetch first?)")
+            revision, source = tip.stdout.strip(), f"origin/{main} fallback"
+            shown = git(prep, "show", f"{revision}:{where}")
+            if shown.rc != 0:
+                raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the project part {shlex.quote(where)} cannot be read in"
+                              f" {shlex.quote(prep.wave.checkout)} at base {prep.base} or {source} {revision}"
+                              f" ({shown.stderr.strip()[-200:]})")
+        own = Part(f"{os.path.join(prep.wave.checkout, where)} at {revision}", shown.stdout)
+        cli.say(f"WAVE PREP {prep.task}: project part {shlex.quote(where)} at {revision} ({source})")
+    else:
+        cli.say(f"WAVE PREP {prep.task}: project part {shlex.quote(own.name)} (wave override)")
     return rendered(prep, [own], values_of(prep)).rstrip("\n")
 
 
