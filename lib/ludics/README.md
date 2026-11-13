@@ -210,7 +210,7 @@ cli.py proc.py
     scripts/test-py.sh
 
 bgrun.py
-    issue-wave/scripts/test-fleet-worker.sh 'conclude --from-bg-run' tip-run board
+    issue-wave/scripts/test-fleet-worker.sh "conclude --from-bg-run" tip-run board
     lib/ludics/tests/test_bgrun.py
     lib/ludics/tests/test_peerplan.py
 
@@ -239,19 +239,19 @@ fleetworker/farside.py:LAUNCH fleetworker/farside.py:LAUNCH_NOT_STARTED fleetwor
 fleetworker/farside.py:_proven_refusals fleetworker/farside.py:LAUNCH_STANDING_WORKTREE
 fleetworker/farside.py:LAUNCH_STANDING_START fleetworker/farside.py:VERDICT fleetworker/farside.py:ATTACH
 fleetworker/farside.py:CLOSE
-    issue-wave/scripts/test-fleet-worker.sh preflight 'the real checkout' 'base gate' 'coordinator lease' halt 'launch /' 'failure verdicts' unstick 'codex workers' usage
+    issue-wave/scripts/test-fleet-worker.sh preflight "the real checkout" "base gate" "coordinator lease" halt "launch /" "failure verdicts" unstick "codex workers" usage
 
 fleetworker/farside.py:STATUS
-    issue-wave/scripts/test-fleet-worker.sh 'launch /' 'failure verdicts' unstick 'codex workers' usage
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts" unstick "codex workers" usage
 
 fleetworker/farside.py:LOG fleetworker/farside.py:LOG_LAST_RESULT
-    issue-wave/scripts/test-fleet-worker.sh 'launch /' 'codex workers' 'log --last-result'
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "codex workers" "log --last-result"
 
 fleetworker/farside.py:UNSTICK
-    issue-wave/scripts/test-fleet-worker.sh unstick 'failure verdicts' 'codex workers' usage
+    issue-wave/scripts/test-fleet-worker.sh unstick "failure verdicts" "codex workers" usage
 
 fleetworker/farside.py:LS
-    issue-wave/scripts/test-fleet-worker.sh 'launch /' 'failure verdicts'
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts"
 
 fleetworker/execution.py fleetworker/registry.py
     issue-wave/scripts/test-fleet-worker.sh execution 'prs (' refresh 'base gate' 'launch /' 'wave kit'
@@ -276,31 +276,34 @@ fleetworker/execution.py:window_payload
 fleetworker/execution.py:with_gap
 fleetworker/execution.py:window_lines
     issue-wave/scripts/test-fleet-worker.sh 'execution run and conclude --from-run' 'execution assign' 'execution leg' 'execution slot'
+    issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/execution.py:checked_rebind
     issue-wave/scripts/test-fleet-worker.sh 'execution revisions resolve'
 
 fleetworker/execution.py:execution_refresh
 fleetworker/execution.py:refresh_host
-    issue-wave/scripts/test-fleet-worker.sh 'execution run and conclude --from-run' 'execution conclude --from-bg-run' 'execution tip-run' 'execution revisions resolve' 'execution assign' 'execution conclude --standing-handback' 'execution leg' refresh 'execution slot' 'wave kit'
+    issue-wave/scripts/test-fleet-worker.sh 'execution run and conclude --from-run' 'execution conclude --from-bg-run' 'execution tip-run' 'execution revisions resolve' 'execution assign' 'execution conclude --standing-handback' 'execution leg' refresh 'execution slot' 'wave kit' 'launch /'
+    issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/execution.py:with_resolution
-    issue-wave/scripts/test-fleet-worker.sh 'execution run and conclude --from-run' 'execution conclude --from-bg-run' 'execution tip-run' 'execution revisions resolve' 'execution assign' 'execution conclude --standing-handback' 'execution leg' refresh 'execution slot' 'wave kit'
+    issue-wave/scripts/test-fleet-worker.sh 'execution run and conclude --from-run' 'execution conclude --from-bg-run' 'execution tip-run' 'execution revisions resolve' 'execution assign' 'execution conclude --standing-handback' 'execution leg' refresh 'execution slot' 'wave kit' 'launch /'
+    issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/revision.py fleetworker/cotenants.py
     issue-wave/scripts/test-fleet-worker.sh execution refresh
     issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/lease.py
-    issue-wave/scripts/test-fleet-worker.sh 'coordinator lease' halt 'base gate' 'the real checkout' 'launch /' board execution
+    issue-wave/scripts/test-fleet-worker.sh "coordinator lease" halt "base gate" "the real checkout" "launch /" board execution
     issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/preflight.py
-    issue-wave/scripts/test-fleet-worker.sh preflight refresh 'the real checkout' 'launch /' execution
+    issue-wave/scripts/test-fleet-worker.sh preflight refresh "the real checkout" "launch /" execution
     issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/gate.py
-    issue-wave/scripts/test-fleet-worker.sh 'base gate' halt 'execution run and conclude' 'the real checkout' 'coordinator lease' 'launch /' 'failure verdicts' unstick 'codex workers' usage
+    issue-wave/scripts/test-fleet-worker.sh "base gate" halt "execution run and conclude" "the real checkout" "coordinator lease" "launch /" "failure verdicts" unstick "codex workers" usage
 
 fleetworker/workers.py
     issue-wave/scripts/test-fleet-worker.sh 'the real checkout' 'base gate' 'coordinator lease' halt 'launch /' 'failure verdicts' unstick 'codex workers' 'log --last-result' 'wave kit' usage
@@ -312,10 +315,10 @@ fleetworker/workers.py:cmd_attach
     issue-wave/scripts/test-fleet-worker.sh 'base gate' 'launch /' 'failure verdicts' unstick 'codex workers' halt 'wave kit' usage
 
 fleetworker/workers.py:cmd_status
-    issue-wave/scripts/test-fleet-worker.sh 'launch /' 'failure verdicts' unstick 'codex workers' usage
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts" unstick "codex workers" usage
 
 fleetworker/workers.py:cmd_log
-    issue-wave/scripts/test-fleet-worker.sh 'launch /' 'codex workers' 'log --last-result'
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "codex workers" "log --last-result"
 
 fleetworker/workers.py:cmd_unstick
     issue-wave/scripts/test-fleet-worker.sh 'failure verdicts' unstick 'codex workers' usage
@@ -324,14 +327,14 @@ fleetworker/workers.py:cmd_close
     issue-wave/scripts/test-fleet-worker.sh 'base gate' 'launch /' 'failure verdicts' unstick 'codex workers' halt 'wave kit' usage
 
 fleetworker/workers.py:cmd_ls
-    issue-wave/scripts/test-fleet-worker.sh 'launch /' 'failure verdicts'
+    issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts"
 
 fleetworker/suitecalls.py
     issue-wave/scripts/test-fleet-worker.sh 'section call listing'
     lib/ludics/tests/test_fleetworker_suitecalls.py
 
 fleetworker/supervision.py
-    issue-wave/scripts/test-fleet-worker.sh load 'prs (' sibling-scan
+    issue-wave/scripts/test-fleet-worker.sh load "prs (" sibling-scan
 
 fleetworker/siblingscan.py
     issue-wave/scripts/test-fleet-worker.sh sibling-scan
@@ -341,23 +344,23 @@ fleetworker/board.py fleetworker/boardstore.py fleetworker/takeover.py
     issue-wave/scripts/test-fleet-worker.sh board
 
 fleetworker/closeout.py
-    issue-wave/scripts/test-fleet-worker.sh 'execution conclude --standing-handback' board
+    issue-wave/scripts/test-fleet-worker.sh "execution conclude --standing-handback" board
 
 fleetworker/slot.py fleetworker/holders.py fleetworker/group.py fleetworker/slotrecord.py
 fleetworker/graces.py fleetworker/leg.py
-    issue-wave/scripts/test-fleet-worker.sh 'execution slot' 'execution leg' tip-run
+    issue-wave/scripts/test-fleet-worker.sh "execution slot" "execution leg" tip-run
 
 fleetworker/farsideclose.py
-    issue-wave/scripts/test-fleet-worker.sh 'execution leg'
+    issue-wave/scripts/test-fleet-worker.sh "execution leg"
 
 fleetworker/tiprun.py
-    issue-wave/scripts/test-fleet-worker.sh 'launch /' tip-run
+    issue-wave/scripts/test-fleet-worker.sh "launch /" tip-run
 
 fleetworker/assign.py
-    issue-wave/scripts/test-fleet-worker.sh 'execution assign'
+    issue-wave/scripts/test-fleet-worker.sh "execution assign"
 
 fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker/waveloop.py fleetworker/wavereview.py fleetworker/wavelaunch.py fleetworker/wavedrive.py fleetworker/wavedecide.py
-    issue-wave/scripts/test-fleet-worker.sh 'wave kit'
+    issue-wave/scripts/test-fleet-worker.sh "wave kit"
     lib/ludics/tests/test_fleetworker_wave.py
     lib/ludics/tests/test_checkprompts_cli.py
 
@@ -374,7 +377,7 @@ prreview/__main__.py
 
 prreview/core.py prreview/jqsem.py
     ship-pr/scripts/test-pr-review-*.sh
-    issue-wave/scripts/test-fleet-worker.sh load 'prs (' sibling-scan
+    issue-wave/scripts/test-fleet-worker.sh load "prs (" sibling-scan
 
 prreview/knobs.py prreview/shtext.py prreview/clock.py
     ship-pr/scripts/test-pr-review-*.sh
