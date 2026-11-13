@@ -204,6 +204,16 @@ def _first_line(path: str) -> str:
         return ""
 
 
+def _owner(path: str) -> tuple[str, str]:
+    """Only lstat's ENOENT is ownerless. A present unread owner refuses immediately (#1092)."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return "", ""
+    with open(path, encoding="utf-8", errors="surrogateescape") as f:
+        return f.readline().rstrip("\n"), f.readline().rstrip("\n")
+
+
 def _second_line(path: str) -> str:
     try:
         with open(path, encoding="utf-8", errors="surrogateescape") as f:
@@ -582,17 +592,21 @@ class Budget:
             if tries > 5:
                 return Lock(2)
             owner = os.path.join(directory, "owner")
-            holder = _first_line(owner)
+            try:
+                holder, since = _owner(owner)
+            except OSError:
+                return Lock(2)
             if holder == str(self.pid):
                 return Lock(0)
             if holder and self._alive(holder):
-                return Lock(1, holder, _second_line(owner))
+                return Lock(1, holder, since)
             if not holder and not seen:
                 seen = True
                 self.clock.sleep(1)
                 continue
             seen = False
-            self.lock_reap(directory, holder)
+            if not self.lock_reap(directory, holder):
+                return Lock(2)
         try:
             with open(os.path.join(directory, "owner"), "w", encoding="utf-8", newline="\n") as f:
                 f.write(f"{self.pid}\n{self.clock.now()}\n")
@@ -604,7 +618,7 @@ class Budget:
             return Lock(2)
         return Lock(0)
 
-    def lock_reap(self, directory: str, judged: str) -> None:
+    def lock_reap(self, directory: str, judged: str) -> bool:
         """``lock_reap <dir> <the owner it was judged by>``: removes a stale lock, but only the one
         that was judged. The lock is renamed aside first (atomic), and the renamed directory's owner
         compared with the one judged; a lock that turns out to be someone else's is put back,
@@ -613,8 +627,17 @@ class Budget:
         try:
             os.rename(directory, aside)
         except OSError:
-            return
-        now_owner = _first_line(os.path.join(aside, "owner"))
+            return False
+        try:
+            now_owner, _ = _owner(os.path.join(aside, "owner"))
+        except OSError:
+            # Keep the unread lock, including when another claimant has taken the old name.
+            # Failed restoration leaves the evidence aside; never delete an unknown owner.
+            try:
+                os.rename(aside, directory)
+            except OSError:
+                pass
+            return False
         if now_owner == judged:
             shutil.rmtree(aside, ignore_errors=True)
         elif not os.path.exists(directory):
@@ -624,6 +647,8 @@ class Budget:
                 shutil.rmtree(aside, ignore_errors=True)
         else:
             shutil.rmtree(aside, ignore_errors=True)
+
+        return True
 
     def _drop_probe_lock(self) -> None:
         shutil.rmtree(self.probe_lock, ignore_errors=True)

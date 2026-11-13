@@ -253,6 +253,21 @@ class Holds(Scratch):
 
 
 class Locks(Scratch):
+    def test_unread_owner_never_reaps_or_waits(self) -> None:
+        lock = os.path.join(self.dir, "lock")
+        os.mkdir(lock)
+        os.symlink("missing", os.path.join(lock, "owner"))
+        self.assertEqual(self.budget().lock_take(lock).rc, 2)
+        self.assertTrue(os.path.islink(os.path.join(lock, "owner")))
+        self.assertEqual(self.clock.slept, [])
+
+    def test_reap_restores_an_owner_it_cannot_read(self) -> None:
+        lock = os.path.join(self.dir, "lock")
+        os.mkdir(lock)
+        os.symlink("missing", os.path.join(lock, "owner"))
+        self.budget().lock_reap(lock, "")
+        self.assertTrue(os.path.islink(os.path.join(lock, "owner")))
+
     def test_a_reap_keeps_a_lock_retaken_meanwhile(self) -> None:
         lock = os.path.join(self.dir, "lock")
         os.makedirs(lock)
