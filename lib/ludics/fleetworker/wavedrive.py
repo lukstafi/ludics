@@ -24,11 +24,16 @@ restarted driver answers nothing twice. ONE DRIVER per wave: an exclusive ``floc
 ``logs/drive.lock``, taken without waiting; ``wave turn`` takes it too, so it refuses while a
 driver runs.
 
-EACH TICK, for each worker: ``status`` on its box. ``RUNNING`` is left alone. ``EXITED`` (a Codex
-turn that ended) or ``IDLE`` (a Claude one) with no final ledger line is a returned turn: its final
-message is read with ``log --last-result``, saved to ``msgs/<task>-<turn>.md``, and classified by
-THE MARKERS. ``ORPHANED``, ``VANISHED`` and ``UNKNOWN``, and a turn with no final message, are
-attention. A box that does not answer, and a status line this driver cannot read, are tried again
+EACH TICK, for each worker: ``status`` on its box. ``RUNNING`` is left alone. ``EXITED`` with no
+final ledger line is a returned turn, and THE TURN'S OWN MESSAGE is read before anything is
+answered: ``attach`` (which returns at once for a process that has exited) must say ``DONE``, its
+verdict for a turn that ended in ``turn.completed`` past the worker's turn offset. Only then is the
+final message read with ``log --last-result``, saved to ``msgs/<task>-<turn>.md``, and classified by
+THE MARKERS. ``log --last-result`` alone would not do: it skips a turn that never completed and
+prints the message of the turn before it, so a resumed worker that died at startup would be
+answered with its previous handoff again. A verdict other than ``DONE`` (``FAILED``: killed, no
+terminal event, a failed turn), the states ``ORPHANED``, ``VANISHED`` and ``UNKNOWN``, and a turn
+with no final message are attention. A box that does not answer, and a status line this driver cannot read, are tried again
 next tick and recorded nowhere: only a state the worker is really in ends a turn's reading.
 
 THE MARKERS, a fail-closed allowlist over the final message's non-blank lines. Exactly one of these
@@ -43,7 +48,10 @@ attention, named by the last line's first word.
 
 THE ANSWERS:
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
-            <worker>``: it reserves, dispatches and resumes in one call. Exit 1 with nothing
+            <worker>``: it reserves, dispatches and resumes in one call. Exit 0 with no message
+            printed means every block was dispatched by an earlier call that did not get to
+            resume the worker (a driver that died in between): the worker is resumed with that
+            call's saved message, and where none was saved the turn is attention. Exit 1 with nothing
             assigned (every block refused: a busy box, a window; assign prints no message then)
             is tried again each ``RETRY`` seconds, ``TRIES`` times, then attention. Exit 1 with
             some blocks assigned has resumed the worker with those, so the turn is over and the
@@ -60,7 +68,8 @@ THE ANSWERS:
             meanwhile); the ledger keeps the run directory, and a later tick reads it with
             ``bg-run.sh wait``. Finished with exit 0, its line names the message file the worker is
             resumed with; ``decision=unreadable`` is attention besides (the worker is resumed, the
-            review is the coordinator's to read). Any other end is attention. ``--again`` is passed
+            review is the coordinator's to read). Any other end is attention, but for a review
+            its log shows refused on the lease: that ends the driver as any lost lease does. ``--again`` is passed
             when the ledger holds an answered review of the same PR, kind and head in an earlier
             turn: a new request from the worker is a new round (wavereview.py).
   handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` in the message. The message
@@ -115,11 +124,14 @@ sleep: Callable[[float], None] = time.sleep  # the tests' seam, as waveloop's
 now: Callable[[], float] = time.time
 
 
-def execute(argv: Sequence[str]) -> tuple[int, str, str]:
+def execute(argv: Sequence[str], timeout: float | None = None) -> tuple[int, str, str]:
     """A command's status, stdout and stderr (the tests' seam for every command the driver runs). Its
-    stderr is passed on to ours, so a verb's own lines stay in the driver's output."""
+    stderr is passed on to ours, so a verb's own lines stay in the driver's output. With ``timeout``
+    (seconds), a command still running then is killed and completes 124, timeout(1)'s status."""
     try:
-        done = subprocess.run(list(argv), capture_output=True, check=False)
+        done = subprocess.run(list(argv), capture_output=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{argv[0]}: no answer in {timeout}s\n"
     except OSError as exc:
         return 127, "", f"{argv[0]}: {exc.strerror}\n"
     err = done.stderr.decode("utf-8", "replace")
@@ -127,6 +139,7 @@ def execute(argv: Sequence[str]) -> tuple[int, str, str]:
     return done.returncode, done.stdout.decode("utf-8", "replace"), err
 
 POLL = 30
+ATTACH_WAIT = 60.0  # attach answers at once for an exited worker; one that started running since is left for the next tick
 RETRY, TRIES = 300, 6
 FINAL = ("answered", "attention")
 RETURNED = re.compile(r"(EXITED\([0-9]+\)|IDLE)")
@@ -256,9 +269,9 @@ class Driver:
         with open(self.path("logs", "drive.log"), "a", encoding="utf-8") as f:
             f.write(f"{utc_now()} {line}\n")
 
-    def call(self, *args: str) -> Done:
+    def call(self, *args: str, timeout: float | None = None) -> Done:
         """This fleet-worker.sh with ``args``, its stdout captured; a lost lease ends the driver."""
-        rc, out, err = execute([self.script, *args])
+        rc, out, err = execute([self.script, *args], timeout)
         for text in (out, err):
             if LEASE_LOST in text:
                 raise LeaseLost(next(line for line in text.splitlines() if LEASE_LOST in line))
@@ -286,6 +299,12 @@ class Driver:
             return self.collect(worker, turn, last)
         if last is not None and last.get("status") == "retry" and now() < float(last.get("next", 0)):
             return
+        ended = self.call("attach", worker.box, worker.name, timeout=ATTACH_WAIT)
+        if ended.rc in (4, 124):
+            return  # the box did not answer, or the worker runs again: next tick
+        verdict = substitution(ended.out).splitlines()[-1] if ended.out.strip() else ""
+        if not verdict.startswith("DONE "):
+            return self.attention(worker, turn, "turn", f"the turn did not complete: {verdict[:300] or f'attach exit {ended.rc}'}")
         message = self.path("msgs", f"{worker.task}-{turn}.md")
         read_log = self.call("log", worker.box, worker.name, "--last-result")
         if read_log.rc == 4:
@@ -319,6 +338,13 @@ class Driver:
         out = self.path("msgs", f"{worker.task}-{turn}.assigned.md")
         done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
                          "--message", out, "--unstick", worker.box, worker.name)
+        if done.rc == 0 and not done.out.strip():
+            # Nothing assigned by this call: an earlier one dispatched every block and never resumed the worker.
+            if os.path.isfile(out):
+                self.resume(worker, turn, "request", out, f"dispatched by an earlier call; resumed with its saved message {out}")
+                return
+            return self.attention(worker, turn, "request", "every block was dispatched by an earlier call, the worker was not"
+                                  " resumed, and no assignment message was saved: resume it by hand with its assignments", message)
         if done.rc == 0:
             return self.note(worker, turn, "request", "answered", f"assigned and resumed with {out}")
         if done.rc == 1 and done.out.strip():
@@ -400,6 +426,13 @@ class Driver:
                 found = []
             said = found[-1] if found else None
         if said is None:
+            try:
+                with open(log, encoding="utf-8", errors="replace") as f:
+                    lost = next((text.strip() for text in f if LEASE_LOST in text), "")
+            except OSError:
+                lost = ""
+            if lost:
+                raise LeaseLost(lost)
             return self.attention(worker, turn, kind, f"the review did not end with a verdict ({line or 'no wait line'}); its log"
                                                       " says why, and the worker waits", log)
         decision, message = said.group(1), said.group(2)

@@ -1348,11 +1348,15 @@ class Drive(WaveDirCase):
         self.out: dict[str, str] = {}
         self.calls: list[list[str]] = []
         self.clock = 1000.0
+        self.attach_waits: list[float | None] = []
         self.runs = os.path.join(self.wavedir, "logs", "drive-runs", "run-1")
 
-    def execute(self, argv: list[str]) -> tuple[int, str, str]:
+    def execute(self, argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
         tool, args = os.path.basename(argv[0]), list(argv[1:])
         key = f"{tool} {args[0]}" if tool == "bg-run.sh" else " ".join(args[:3] if args[:2] == ["execution", "conclude"] else args[:2] if args[0] in ("execution", "board") else args[:1])
+        if key == "attach":
+            self.attach_waits.append(timeout)
+            return self.rc.get(key, 0), self.out.get(key, "DONE far/w1-42 exit=0 turn.completed | x\n"), ""
         if key != "status":
             self.calls.append([tool, *args] if tool == "bg-run.sh" else args)
         rc = self.rc.get(key, 0)
@@ -1391,6 +1395,7 @@ class Drive(WaveDirCase):
 
     def test_a_request_is_assigned_and_resumed_in_one_call_and_never_twice(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
@@ -1408,6 +1413,41 @@ class Drive(WaveDirCase):
             self.state = "EXITED(0)"
             self.assertEqual((self.once()[0], [c[0] for c in self.calls]), (0, ["log", "execution"]), "the next turn is a new turn")
         self.assertEqual(self.ledger(), [(0, "request", "answered"), (1, "request", "answered")])
+
+    def test_only_a_turn_that_completed_is_read_and_never_the_turn_before_it(self) -> None:
+        """log --last-result skips a turn that never completed and prints the one before: a resumed
+        worker that died at startup must not be answered with its previous handoff again."""
+        self.message = f"REVIEW_REQUEST 7 {A}\n"
+        with self.world():
+            self.rc["attach"], self.out["attach"] = 1, "FAILED far/w1-42 exit=137 no terminal event in the stream killed\n"
+            out = self.once()[1]
+            self.assertEqual(self.calls, [], "neither the message is read nor anything answered")
+            self.assertIn("DRIVE ATTENTION t42 turn 0: the turn did not complete: FAILED far/w1-42 exit=137 no terminal event", out)
+            self.assertEqual(self.attach_waits, [wavedrive.ATTACH_WAIT], "attach is bounded: a worker running again is next tick's")
+            self.resumes = 1
+            for rc in (4, 124):
+                self.rc["attach"] = rc
+                self.assertEqual((self.once()[1], self.calls), ("", []), rc)
+            self.rc["attach"], self.out["attach"] = 3, "VANISHED far/w1-42: no exit record\n"
+            self.assertIn("the turn did not complete: VANISHED far/w1-42", self.once()[1])
+            self.resumes, self.rc, self.out = 2, {}, {}
+            self.assertEqual([c[0] for c in (self.once(), self.calls)[1]], ["log", "bg-run.sh"], "a DONE turn is read and answered")
+        self.assertEqual([e[:2] for e in self.ledger()], [(0, "turn"), (1, "turn"), (2, "review")])
+
+    def test_an_assignment_dispatched_earlier_and_never_resumed_is_resumed_with_its_saved_message(self) -> None:
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        saved = f"{self.wavedir}/msgs/t42-0.assigned.md"
+        with self.world():
+            # assign exits 0 and prints nothing: every block ALREADY, its unstick skipped.
+            out = self.once()[1]
+            self.assertIn("every block was dispatched by an earlier call, the worker was not resumed, and no assignment message was saved", out)
+            self.resumes = 1
+            os.makedirs(os.path.dirname(saved), exist_ok=True)
+            with open(saved.replace("t42-0", "t42-1"), "w") as f:
+                f.write("EXECUTION_ASSIGNED x\n")
+            out = self.once()[1]
+            self.assertEqual(self.calls[-1], ["unstick", "far", "w1-42", "--message", saved.replace("t42-0", "t42-1")])
+            self.assertIn("request answered: dispatched by an earlier call; resumed with its saved message", out)
 
     def test_a_refused_assignment_is_tried_again_then_handed_up_and_exit_4_at_once(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
@@ -1515,6 +1555,17 @@ class Drive(WaveDirCase):
                 self.assertNotIn("unstick", [c[0] for c in self.calls])
             self.resumes, self.rc["bg-run.sh spawn"] = 4, 1
             self.assertIn("the review could not be started (bg-run.sh spawn exit 1)", self.once()[1])
+            # A review refused on the lease is a takeover: the driver ends, and the turn is not made final.
+            self.resumes, self.rc = 5, {}
+            self.out["bg-run.sh wait"] = "rc=0\n"
+            self.once()
+            with open(os.path.join(self.runs, "log"), "w") as f:
+                f.write("WAVE REVIEW REFUSED fleet: coordinator lease held by session-other\n")
+            self.out["bg-run.sh wait"] = "rc=1\n"
+            rc, out = self.once()
+            self.assertEqual(rc, 1)
+            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (WAVE REVIEW REFUSED fleet: coordinator lease held by session-other)", out)
+            self.assertEqual(self.ledger()[-1], (5, "review", "reviewing"))
 
     def test_a_hand_back_closes_the_task_and_an_unconfirmed_blocking_review_is_said(self) -> None:
         self.message = "HANDBACK t42\nMerged https://github.com/o/staging/pull/7 at abc. Proposals: ...\n"
@@ -1600,7 +1651,7 @@ class Drive(WaveDirCase):
             self.assertEqual(rc, 1)
             self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (EXECUTION REFUSED fleet: coordinator lease held by session-other)", out)
             self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "a takeover is no turn's verdict")
-            self.rc, self.out = {}, {}
+            self.rc, self.out = {}, {"execution assign": "EXECUTION_ASSIGNED x\n"}
             naps: list[float] = []
 
             def nap(seconds: float) -> None:
