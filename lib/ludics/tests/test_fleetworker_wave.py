@@ -2139,7 +2139,9 @@ class Queue(DriveCase):
         with self.world():
             for rows in ([], [row("t42", state="merged #7 at abc")], [row("t42", state="merged #7"), row("t43", state="reviewing")]):
                 self.rows = rows
-                self.assertEqual((self.once()[1], self.launched()), ("", []), rows)
+                out = self.once()[1]
+                self.assertEqual(self.launched(), [], rows)
+                self.assertEqual("no row or queue entry" in out, len(rows) < 2, rows)
             self.rows = [row("t42", state="merged #7"), row("t43", state="done: measured"), row("t44")]
             self.assertEqual(self.launched() if self.once() else [], [], "far has one worker live, and capacity for one")
             for other in (row("t45", kind="claude"), row("t46", kind="claude", state="no state word"), row("t47", worker="")):
@@ -2160,6 +2162,58 @@ class Queue(DriveCase):
             self.rc = {}
             self.once()
             self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"])
+
+    def test_missing_after_is_told_once_per_list_and_is_not_final(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far", "after": ["t43", "t42"]})
+        os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        self.state = "RUNNING"
+        with self.world():
+            out = captured(lambda: driver.round())[1]
+            self.assertIn("DRIVE ATTENTION t50 launch: the queued task waits only on after tasks with no row or queue entry: t42, t43;", out)
+            self.assertEqual(self.launched(), [])
+            self.assertEqual(driver.ledger, [], "the notice does not finalize the launch")
+            self.assertEqual(captured(lambda: driver.round())[1], "", "the same missing list is told once")
+            self.rows = [row("t42", state="merged #7")]
+            self.assertIn("no row or queue entry: t43;", captured(lambda: driver.round())[1])
+            self.assertEqual(captured(lambda: driver.round())[1], "")
+            self.rows.append(row("t43", state="done: measured"))
+            captured(lambda: driver.round())
+            self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"], "the task still starts after its prerequisites appear and land")
+        self.assertEqual(len(self.attention()), 2, "only the two distinct missing lists were told")
+        self.assertEqual(self.ledger(), [(-1, "launch", "launching"), (-1, "launch", "answered")])
+
+    def test_missing_after_stays_silent_when_not_otherwise_due(self) -> None:
+        task: dict[str, Any] = {"task": "t50", "profile": "sol", "host": "far", "after": ["t42", "t43"]}
+        self.state = "RUNNING"
+        cases: list[tuple[str, list[dict[str, Any]], dict[str, int], list[dict[str, Any]]]] = [
+            ("capacity", [row("t44")], {}, [task]),
+            ("halt", [], {"halted": 1}, [task]),
+            ("unreachable halt", [], {"halted": 4}, [task]),
+            ("gate", [], {"gate": 1}, [task]),
+            ("unreachable gate", [], {"gate": 4}, [task]),
+            ("prerequisite with a row", [row("t42", state="reviewing", transport="subagent")], {}, [task]),
+            ("queued prerequisite", [], {}, [{"task": "t42", "profile": "sol", "host": "far", "after": ["t43"]}, task]),
+            ("already launched", [row("t50")], {}, [task]),
+        ]
+        with self.world():
+            for why, rows, rc, tasks in cases:
+                with self.subTest(why=why):
+                    self.rows, self.rc = rows, rc
+                    self.queue(*tasks, capacity={"far": 1})
+                    out = self.once()[1]
+                    self.assertNotIn("DRIVE ATTENTION t50 launch: the queued task waits only", out)
+                    self.assertEqual(self.launched(), [])
+
+    def test_missing_after_does_not_hold_up_another_due_task(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far", "after": ["t42"]},
+                   {"task": "t51", "profile": "sol", "host": "far", "after": ["t43"]},
+                   {"task": "t52", "profile": "sol", "host": "far"})
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t50 launch: the queued task waits only", out)
+            self.assertIn("DRIVE ATTENTION t51 launch: the queued task waits only", out)
+            self.assertEqual([c[3] for c in self.launched()], ["t52", "t52"])
 
     def test_nothing_is_prepared_while_the_launch_gate_refuses_and_the_coordinator_is_told_once(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"})

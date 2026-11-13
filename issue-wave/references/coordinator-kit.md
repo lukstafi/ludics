@@ -264,7 +264,9 @@ kit invents none.
    tasks to the file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
    task that is not queued is one you launch yourself (a native worker's). A task whose `after`
    task ended without a merge is an attention line too, since it will never come due. The
-   rival-PR check by topic stays yours, before you queue a task.
+   rival-PR check by topic stays yours, before you queue a task. When a task is otherwise due
+   and waits only on `after` tasks with neither rows nor queue entries, you are told their names
+   once per unchanged list per task (in memory); this is non-final, and it still starts when they merge.
 10. **A design decision the wave takes** is surfaced with one call, whether it is a
     recommendation before launch, a call you make mid-wave, or the maintainer's answer you post
     for them:
