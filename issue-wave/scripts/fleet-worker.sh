@@ -281,7 +281,14 @@
 #                          # loop around execution tip-run, restartable: it waits on its own running
 #                          # run before starting another; ends on a red (waveloop.py)
 #   fleet-worker.sh wave heartbeat <wave.json> [--sleep <seconds>]   # one tick: prs whole, halted,
-#                          # each loop's last line, the timestamp last
+#                          # each loop's last line, the driver's state and each new attention line,
+#                          # the timestamp last; a new attention line ends the sleep early
+#   fleet-worker.sh wave drive <wave.json> [--poll <seconds>] [--once]   # answer every Codex CLI
+#                          # worker's returned turns by their marker: an execution request assigned, a result
+#                          # concluded, a review or confirm run beside it, a hand-back closed; each
+#                          # turn once (a ledger), one driver per wave, and anything no marker
+#                          # answers an attention line for the coordinator (wavedrive.py)
+#   fleet-worker.sh wave turn <wave.json> <task>   # the same, one worker's returned turn, once
 #   fleet-worker.sh wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm
 #                          [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]   # the review
 #                          # checkpoint: the wave file's reviewer reads the PR headless, with a

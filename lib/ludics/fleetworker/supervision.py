@@ -132,6 +132,8 @@ CI_OF = {
     ("4", "pending"): "pending",
     ("4", "mixed"): "pending",
     ("4", "unjudged"): "pending",
+    # A PR that conflicts with its base (ludics#1110): no wait resolves it, so it is named, not pending.
+    ("4", "conflict"): "conflict",
     ("5", "superseded"): "moved",
 }
 

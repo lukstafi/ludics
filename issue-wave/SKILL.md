@@ -204,7 +204,9 @@ context lean:
   has).
 - **After each returned turn, first:** every `EXECUTION_RESULT` is concluded and its worker resumed
   in the same coordinator turn, with `EXECUTION_CONCLUDED` or its next assignment (the first miss
-  above was a conclusion with no resume); every `EXECUTION_REQUEST` is assigned or refused.
+  above was a conclusion with no resume); every `EXECUTION_REQUEST` is assigned or refused. For Codex
+  CLI workers the handoff driver does this, and you read its attention lines
+  ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 9).
 - **Context discipline, carried by the brief.** Workers keep the full model and context (no cutoff:
   the maintainer's call) and keep what they re-read small: wide reads, log digests and review-thread
   sweeps go to their own subagents, which return conclusions; logs are read by `tail` or `grep`,

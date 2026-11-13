@@ -1,19 +1,20 @@
 # Coordinator kit
 
 `fleet-worker.sh wave` is the per-wave tooling every coordinator used to rewrite under
-`$ISSUE_WAVE_STATE/<wave>/` (ludics#1047). It has six verbs:
+`$ISSUE_WAVE_STATE/<wave>/` (ludics#1047). It has these verbs:
 
 - a brief renderer;
 - a worker's launch prep;
 - a CLI worker's launch;
 - a restartable integration-loop driver;
 - a heartbeat;
-- the review checkpoint.
+- the review checkpoint;
+- the handoff driver.
 
 With the kit, the wave directory holds data only: no script is copied forward from the last
 wave. The contracts are the module headers in `lib/ludics/fleetworker/`: `wave.py` for the wave
-file and the heartbeat, `wavebrief.py`, `waveprep.py`, `wavelaunch.py`, `waveloop.py` and
-`wavereview.py`. This page covers what a coordinator puts in the wave directory and when it calls each verb.
+file and the heartbeat, `wavebrief.py`, `waveprep.py`, `wavelaunch.py`, `waveloop.py`,
+`wavereview.py` and `wavedrive.py`. This page covers what a coordinator puts in the wave directory and when it calls each verb.
 
 ## The wave directory
 
@@ -203,7 +204,29 @@ kit invents none.
    with the verdict, the decision and the path of the message that resumes the worker. Send the
    worker that file as it is. `decision=unreadable` means the review ended on no verdict line: it
    is treated as blocking, and the review is yours to read. The verdict's grammar, the decisions
-   and what a re-run recovers are `wavereview.py`'s header. The same call run twice replays its
+   and what a re-run recovers are `wavereview.py`'s header. Under the driver (step 9) this call
+   is the driver's for a CLI worker, and yours for a native one. The same call run twice replays its
    record and buys no second review, so when a worker asks for a confirm again at the same head
    (it rebutted and pushed nothing), add `--again`. `--dry-run` posts nothing, for trying a
    reviewer or a project part on a PR that already merged.
+9. **The handoff driver.** A CLI worker ends its turn for every handoff, and most of those turns
+   need no judgment. Start one driver per wave, in the background, once the first Codex CLI
+   worker is launched (it serves Codex CLI workers; a Claude CLI worker's turns, like a native
+   worker's, are yours to answer with the same verbs):
+
+   ```
+   fleet-worker.sh wave drive <wave.json>
+   ```
+
+   It reads each such worker's returned turn by the marker in its final message and answers it:
+   an `EXECUTION_REQUEST` is assigned and the worker resumed, an `EXECUTION_RESULT` concluded, a
+   `REVIEW_REQUEST` or `CONFIRM_REQUEST` reviewed (step 8) while it serves the other workers, and
+   a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Each turn is
+   answered once: the ledger is `logs/drive.jsonl`. Anything a marker does not answer becomes an
+   attention line and is yours: a design question, a plan, a worker that vanished, an assignment
+   refused six times or in part, a review with no verdict, a merge that no posted clearance
+   of its head covers.
+   The heartbeat prints each new attention line and returns early when one arrives. Answer the
+   turn by hand; the worker's next turn is the driver's again. `wave turn <wave.json> <task>`
+   answers one worker's turn, once, when no driver runs. A stop file `drive.stop` ends the driver.
+   The markers, the answers and what is deliberately left to you are `wavedrive.py`'s header.

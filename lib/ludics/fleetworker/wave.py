@@ -12,6 +12,8 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
   wave launch <wave.json> <task>                                                            wavelaunch.py
   wave loop <wave.json> <name> [--resume-after <request id>]                                waveloop.py
   wave heartbeat <wave.json> [--sleep <seconds>]                                             here
+  wave drive <wave.json> [--poll <seconds>] [--once]                                         wavedrive.py
+  wave turn <wave.json> <task>                                                              wavedrive.py
   wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                          wavereview.py
               [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]
 
@@ -70,11 +72,20 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
 ``wave heartbeat`` is one tick, re-armed by the coordinator (issue-wave SKILL.md, the heartbeat):
 it sleeps, then prints, in order and nothing piped, ``prs <repository> --wave <wave>`` whole and
 ``HEARTBEAT prs exit=<n>``, ``halted`` and ``HEARTBEAT halted exit=<n>``, a ``HEARTBEAT loop <name>:
-<last line>`` for each configured loop (``no log yet`` when it has none), and last ``HEARTBEAT
-<wave> <UTC time>``. It decides nothing: what the lines mean is the coordinator's. It exits 0
-after a tick whatever its reads exited (each status is printed), 2 on usage.
+<last line>`` for each configured loop (``no log yet`` when it has none), THE DRIVER's lines, and
+last ``HEARTBEAT <wave> <UTC time>``. It decides nothing: what the lines mean is the coordinator's.
+It exits 0 after a tick whatever its reads exited (each status is printed), 2 on usage.
+
+THE DRIVER's lines (``wave drive``, wavedrive.py), printed only for a wave directory that has a
+driver's files: ``HEARTBEAT drive: running|not running`` (whether a process holds
+``logs/drive.lock``) with the last line of ``logs/drive.log``, then one ``HEARTBEAT attention``
+line per record of ``logs/attention.jsonl`` not printed by an earlier heartbeat (a byte offset kept
+in ``logs/attention.seen``; the first heartbeat prints every record there is). The sleep ends early
+when the attention file grows past that offset, so a turn the driver cannot answer wakes the
+coordinator within ``ATTENTION_POLL`` seconds, not at the next ten-minute tick.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -94,6 +105,7 @@ USAGE = (
     " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] | wave launch <wave.json> <task> | "
     "wave loop <wave.json> <name> [--resume-after <request id>] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "
+    "wave drive <wave.json> [--poll <seconds>] [--once] | wave turn <wave.json> <task> | "
     "wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm [--issue <N> | --source <N>]"
     " [--dry-run | --posted <url> | --again]"
 )
@@ -389,6 +401,66 @@ def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+ATTENTION_POLL = 5
+
+
+def attention_state(wave: Wave) -> tuple[str, str, int, int]:
+    """The attention file, the cursor file, the offset already printed, and the file's size."""
+    path, seen = os.path.join(wave.directory, "logs", "attention.jsonl"), os.path.join(wave.directory, "logs", "attention.seen")
+    try:
+        with open(seen, encoding="ascii") as f:
+            offset = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        offset = 0
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    return path, seen, min(offset, size), size
+
+
+def nap(wave: Wave, seconds: int) -> None:
+    """The heartbeat's sleep, ended early by a new attention record (THE DRIVER's lines)."""
+    deadline = time.monotonic() + seconds
+    while (left := deadline - time.monotonic()) > 0:
+        _, _, offset, size = attention_state(wave)
+        if size > offset:
+            return
+        time.sleep(min(ATTENTION_POLL, left))
+
+
+def driver_lines(wave: Wave) -> list[str]:
+    """THE DRIVER's lines (the header); none for a wave no driver has served."""
+    lock = os.path.join(wave.directory, "logs", "drive.lock")
+    if not os.path.exists(lock):
+        return []
+    running = False
+    with open(lock, "a", encoding="utf-8") as held:
+        try:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            running = True
+    last = last_line(os.path.join(wave.directory, "logs", "drive.log"))
+    lines = [f"HEARTBEAT drive: {'running' if running else 'NOT RUNNING'}; {last if last is not None else 'no log yet'}"]
+    path, seen, offset, size = attention_state(wave)
+    if size > offset:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            fresh = f.read(size - offset)
+        for raw in fresh.decode("utf-8", "replace").splitlines():
+            try:
+                record: Any = json.loads(raw)
+            except ValueError:
+                record = None
+            if isinstance(record, dict):
+                entry = cast(dict[str, Any], record)
+                where = f" ({entry.get('file')})" if entry.get("file") else ""
+                lines.append(f"HEARTBEAT attention {entry.get('task')} turn {entry.get('turn')}: {entry.get('why')}{where}")
+        with open(seen, "w", encoding="ascii") as f:
+            f.write(f"{size}\n")
+    return lines
+
+
 def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
     if not args or args[0].startswith("--"):
         die(f"wave heartbeat: name the wave file; usage: {USAGE}")
@@ -400,7 +472,7 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
         seconds = int(rest[1])
     wave = load_wave(args[0], "heartbeat")
     if seconds:
-        time.sleep(seconds)
+        nap(wave, seconds)
     script = shim(cfg)
     # Each read prints straight to our stdout, whole: no tail can cut a PR line (#1050), and its
     # exit is printed after it rather than lost in a pipe.
@@ -411,12 +483,14 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
     for name in wave.loops:
         line = last_line(loop_log(wave, name))
         cli.say(f"HEARTBEAT loop {name}: {line if line is not None else 'no log yet'}")
+    for line in driver_lines(wave):
+        cli.say(line)
     cli.say(f"HEARTBEAT {wave.wave} {utc_now()}")
     return 0
 
 
 def cmd_wave(cfg: Config, args: list[str]) -> int:
-    from ludics.fleetworker import wavelaunch, waveloop, waveprep, wavereview
+    from ludics.fleetworker import wavedrive, wavelaunch, waveloop, waveprep, wavereview
 
     match args[:1]:
         case ["render"]:
@@ -431,5 +505,9 @@ def cmd_wave(cfg: Config, args: list[str]) -> int:
             return cmd_heartbeat(cfg, args[1:])
         case ["review"]:
             return wavereview.cmd_review(cfg, args[1:])
+        case ["drive"]:
+            return wavedrive.cmd_drive(cfg, args[1:])
+        case ["turn"]:
+            return wavedrive.cmd_turn(cfg, args[1:])
         case _:
             die(f"usage: {USAGE}")
