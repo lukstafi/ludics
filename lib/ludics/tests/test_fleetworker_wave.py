@@ -1321,6 +1321,9 @@ class Markers(unittest.TestCase):
                              (f"REVIEW_REQUEST 7 {A}\nThanks!", "the last line starts 'Thanks!'"),
                              (f"I will send REVIEW_REQUEST 7 {A} soon", "the last line starts 'I'"),
                              ("Result: EXECUTION_RESULT {}", "the last line starts 'Result:'"),
+                             ('EXECUTION_RESULT {"request_id":"a"}\nEXECUTION_RESULT {"request_id":"b"', "an EXECUTION_RESULT line that is not"),
+                             ('EXECUTION_RESULT\n{"request_id":"a"}', "an EXECUTION_RESULT line that is not"),
+                             (f'EXECUTION_RESULT {{}} done\nREVIEW_REQUEST 7 {A}', "an EXECUTION_RESULT line that is not"),
                              ("The HANDBACK follows\nPR 7", "the last line starts 'PR'"),
                              (f"HANDBACK t42\n...\nREVIEW_REQUEST 7 {A}", "more than one marker: review, handback"),
                              (f"EXECUTION_REQUEST\n{{}}\nEND_EXECUTION_REQUEST\nEXECUTION_RESULT {{}}", "more than one marker: request, result")):
@@ -1399,10 +1402,10 @@ class Drive(WaveDirCase):
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
-            msg = f"{self.wavedir}/msgs/t42-0.md"
+            msg = f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.md"
             self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"],
                                           ["execution", "assign", f"{self.wavedir}/reserve/t42-base.json", msg, "--message",
-                                           f"{self.wavedir}/msgs/t42-0.assigned.md", "--unstick", "far", "w1-42"]])
+                                           f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.assigned.md", "--unstick", "far", "w1-42"]])
             with open(msg) as f:
                 self.assertEqual(f.read(), self.message)
             self.assertIn("DRIVE t42 turn 0: request answered: assigned and resumed", out)
@@ -1428,6 +1431,17 @@ class Drive(WaveDirCase):
             self.assertEqual([(e["worker"], e["session"], e["turn"]) for e in map(json.loads, f)],
                              [("w1-42", "0199-a", 0), ("w1-42", "0199-b", 0), ("w1-42b", "0199-b", 0)])
 
+    def test_a_replacement_is_never_resumed_with_its_predecessors_saved_assignment(self) -> None:
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        os.makedirs(os.path.join(self.wavedir, "msgs"))
+        with open(f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.assigned.md", "w") as f:
+            f.write("EXECUTION_ASSIGNED old-request\n")
+        self.session = "0199-b"  # the task's worker was replaced; its turn 0 asks for something else
+        with self.world():
+            out = self.once()[1]  # assign: exit 0, nothing printed (dispatched earlier, no message saved for THIS turn)
+            self.assertNotIn("unstick", [c[0] for c in self.calls])
+            self.assertIn("no assignment message was saved", out)
+
     def test_only_a_turn_that_completed_is_read_and_never_the_turn_before_it(self) -> None:
         """log --last-result skips a turn that never completed and prints the one before: a resumed
         worker that died at startup must not be answered with its previous handoff again."""
@@ -1450,17 +1464,17 @@ class Drive(WaveDirCase):
 
     def test_an_assignment_dispatched_earlier_and_never_resumed_is_resumed_with_its_saved_message(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
-        saved = f"{self.wavedir}/msgs/t42-0.assigned.md"
+        saved = f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.assigned.md"
         with self.world():
             # assign exits 0 and prints nothing: every block ALREADY, its unstick skipped.
             out = self.once()[1]
             self.assertIn("every block was dispatched by an earlier call, the worker was not resumed, and no assignment message was saved", out)
             self.resumes = 1
             os.makedirs(os.path.dirname(saved), exist_ok=True)
-            with open(saved.replace("t42-0", "t42-1"), "w") as f:
+            with open(saved.replace(".0.assigned", ".1.assigned"), "w") as f:
                 f.write("EXECUTION_ASSIGNED x\n")
             out = self.once()[1]
-            self.assertEqual(self.calls[-1], ["unstick", "far", "w1-42", "--message", saved.replace("t42-0", "t42-1")])
+            self.assertEqual(self.calls[-1], ["unstick", "far", "w1-42", "--message", saved.replace(".0.assigned", ".1.assigned")])
             self.assertIn("request answered: dispatched by an earlier call; resumed with its saved message", out)
 
     def test_a_refused_assignment_is_tried_again_then_handed_up_and_exit_4_at_once(self) -> None:
@@ -1493,8 +1507,8 @@ class Drive(WaveDirCase):
         with self.world():
             out = self.once()[1]
             self.assertEqual(self.calls[1:], [["execution", "conclude", "--from-run", "/runs/7", "--request", "wv-t42-rog-1", "--sha", A],
-                                              ["unstick", "far", "w1-42", "--message", f"{self.wavedir}/msgs/t42-0.concluded.md"]])
-            with open(f"{self.wavedir}/msgs/t42-0.concluded.md") as f:
+                                              ["unstick", "far", "w1-42", "--message", f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.concluded.md"]])
+            with open(f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.concluded.md") as f:
                 self.assertEqual(f.read(), "EXECUTION_CONCLUDED wv-t42-rog-1 pass\n\nContinue with your task.\n")
             # A bg-run directory is no test-run record: the first read refuses, the second concludes.
             self.resumes = 1
@@ -1634,7 +1648,15 @@ class Drive(WaveDirCase):
             record("at-open", C, "merge", "2026-11-11T12:00:00Z")
             self.out["pr"] = "unrelated\n"
             self.assertIn("handback answered", closed(9), "the newest at-open review does not block: nothing to confirm")
-            self.resumes, self.message = 10, "HANDBACK t42\nNo PR: a measurement task.\n"
+            # A blocking round --again set aside is still on the PR: a new round that never posted does not hide it.
+            reviews = os.path.join(self.wavedir, "reviews")
+            for path in glob.glob(os.path.join(reviews, "7-*.json")):
+                os.remove(path)
+            with open(os.path.join(reviews, f"7-at-open-{A[:12]}.r1.json"), "w") as f:
+                json.dump({"decision": "confirm", "at": "2026-11-11T13:00:00Z", "sha": A, "comment": "https://x/c"}, f)
+            record("at-open", A, "merge", "2026-11-11T14:00:00Z", comment="")
+            self.assertIn(said, closed(10), "the archived blocking round is the newest posted one")
+            self.resumes, self.message = 11, "HANDBACK t42\nNo PR: a measurement task.\n"
             self.assertIn("the hand-back names no PR", self.once()[1])
 
     def test_what_no_marker_answers_is_attention_and_what_is_not_a_state_is_read_again(self) -> None:
@@ -1642,7 +1664,7 @@ class Drive(WaveDirCase):
             self.message = "NEEDS_DESIGN the solver needs a replay search; options A, B, C\n"
             out = self.once()[1]
             self.assertIn(f"DRIVE ATTENTION t42 turn 0: no marker this driver answers; the last line starts 'NEEDS_DESIGN'"
-                          f" ({self.wavedir}/msgs/t42-0.md)", out)
+                          f" ({self.wavedir}/msgs/t42.w1-42.0199-a.0.md)", out)
             self.assertEqual([c[0] for c in self.calls], ["log"], "nothing is answered")
             self.resumes, self.rc["log"] = 1, 1
             self.assertIn("the turn ended with no final message (NO RESULT far/w1-42", self.once()[1])

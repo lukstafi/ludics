@@ -31,7 +31,8 @@ EACH TICK, for each worker: ``status`` on its box. ``RUNNING`` is left alone. ``
 final ledger line is a returned turn, and THE TURN'S OWN MESSAGE is read before anything is
 answered: ``attach`` (which returns at once for a process that has exited) must say ``DONE``, its
 verdict for a turn that ended in ``turn.completed`` past the worker's turn offset. Only then is the
-final message read with ``log --last-result``, saved to ``msgs/<task>-<turn>.md``, and classified by
+final message read with ``log --last-result``, saved to ``msgs/<task>.<worker>.<session>.<turn>.md``
+(every file of a turn is named by the turn's whole identity), and classified by
 THE MARKERS. ``log --last-result`` alone would not do: it skips a turn that never completed and
 prints the message of the turn before it, so a resumed worker that died at startup would be
 answered with its previous handoff again. A verdict other than ``DONE`` (``FAILED``: killed, no
@@ -42,7 +43,9 @@ next tick and recorded nowhere: only a state the worker is really in ends a turn
 THE MARKERS, a fail-closed allowlist over the final message's non-blank lines. Exactly one of these
 holds, or the turn is attention:
   request   a line that is exactly ``EXECUTION_REQUEST``
-  result    one or more lines ``EXECUTION_RESULT {json}``
+  result    one or more lines ``EXECUTION_RESULT {json}``, and no line that starts with
+            ``EXECUTION_RESULT`` and is not that, whole (a wrapped or cut result is never dropped
+            beside a good one: the turn is attention)
   review    the last line is ``REVIEW_REQUEST <pr> <40-hex sha>``
   confirm   the last line is ``CONFIRM_REQUEST <pr> <40-hex sha>``
   handback  the first line starts with ``HANDBACK``
@@ -81,7 +84,8 @@ THE ANSWERS:
             that THE CONFIRM does not cover: the row closes, and the coordinator is told.
 
 THE CONFIRM, read off ``wave review``'s records of the PR that were posted (a record with no
-comment, a dry run's, is no review): when the newest at-open review blocks (``confirm`` or
+comment, a dry run's, is no review), the rounds ``--again`` set aside included (``<stem>.r<n>.json``:
+their comments stay on the PR): when the newest at-open review blocks (``confirm`` or
 ``unreadable``), a merge is covered only by a ``cleared`` confirm made after that review, at the
 head the PR merged at (``gh pr view --json headRefOid``). A clearance of an earlier head, one
 older than the blocking review, and a head GitHub does not answer for are all not covered.
@@ -188,7 +192,11 @@ def classify(message: str) -> Turn:
     found: list[Turn] = []
     if "EXECUTION_REQUEST" in lines:
         found.append(Turn("request"))
-    results = tuple(m.group(1) for m in (RESULT.fullmatch(line) for line in lines) if m)
+    claimed = [line for line in lines if line.startswith("EXECUTION_RESULT")]
+    results = tuple(m.group(1) for m in (RESULT.fullmatch(line) for line in claimed) if m)
+    if len(results) != len(claimed):
+        # One result read and another dropped would conclude part of a turn and resume the worker.
+        return Turn("other", "an EXECUTION_RESULT line that is not `EXECUTION_RESULT {json}` whole on its own line")
     if results:
         found.append(Turn("result", results=results))
     ask = ASK.fullmatch(lines[-1])
@@ -231,6 +239,12 @@ class Driver:
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.wave.directory, *parts)
+
+    def turn_file(self, worker: Worker, turn: int, suffix: str) -> str:
+        """A file of one turn under ``msgs/``, named by the turn's whole identity (A TURN, the header):
+        a worker launched in a task's place never reads, or is resumed with, its predecessor's file."""
+        session = re.sub(r"[^A-Za-z0-9._-]", "_", worker.session) or "nosession"
+        return self.path("msgs", f"{worker.task}.{worker.name}.{session}.{turn}.{suffix}")
 
     # --- the ledger and the lines -----------------------------------------------------------------
 
@@ -312,7 +326,7 @@ class Driver:
         verdict = substitution(ended.out).splitlines()[-1] if ended.out.strip() else ""
         if not verdict.startswith("DONE "):
             return self.attention(worker, turn, "turn", f"the turn did not complete: {verdict[:300] or f'attach exit {ended.rc}'}")
-        message = self.path("msgs", f"{worker.task}-{turn}.md")
+        message = self.turn_file(worker, turn, "md")
         read_log = self.call("log", worker.box, worker.name, "--last-result")
         if read_log.rc == 4:
             return
@@ -342,7 +356,7 @@ class Driver:
         return True
 
     def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None) -> None:
-        out = self.path("msgs", f"{worker.task}-{turn}.assigned.md")
+        out = self.turn_file(worker, turn, "assigned.md")
         done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
                          "--message", out, "--unstick", worker.box, worker.name)
         if done.rc == 0 and not done.out.strip():
@@ -392,7 +406,7 @@ class Driver:
                 return self.attention(worker, turn, "result", f"{request} could not be concluded off {where} (neither run record"
                                                               " reads); conclude it by hand, then resume the worker", message)
             lines.append(f"EXECUTION_CONCLUDED {request} {verdict}")
-        out = self.path("msgs", f"{worker.task}-{turn}.concluded.md")
+        out = self.turn_file(worker, turn, "concluded.md")
         write_atomically(out, "\n".join(lines) + "\n\nContinue with your task.\n")
         self.resume(worker, turn, "result", out, "; ".join(lines))
 
@@ -455,7 +469,7 @@ class Driver:
         def records(kind: str) -> list[dict[str, Any]]:
             out: list[dict[str, Any]] = []
             for path in glob.glob(glob.escape(self.path("reviews")) + f"/{pr}-{kind}-*.json"):
-                if not re.fullmatch(re.escape(pr) + "-" + kind + r"-[0-9a-f]{12}\.json", os.path.basename(path)):
+                if not re.fullmatch(re.escape(pr) + "-" + kind + r"-[0-9a-f]{12}(\.r[0-9]+)?\.json", os.path.basename(path)):
                     continue
                 try:
                     with open(path, encoding="utf-8") as f:
