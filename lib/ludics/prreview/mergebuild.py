@@ -1,7 +1,7 @@
 """``merge``'s build of the would-be merge commit (ludics-lite#611): when the base has moved since
 the head's CI run AND the config's trigger holds (by default, a path both sides changed is a build
-input), build the PR merged with the current base locally, before the merge call, and refuse the
-merge when that build fails.
+input), or on every merge under ``trigger always``, build the PR merged with the current base
+locally, before the merge call, and refuse the merge when that build fails.
 
 Why. On 2026-10-15 lukstafi/ocannl-staging#1142 and #1139 merged minutes apart, each on its own
 green head, five paths changed on both sides "all in DISJOINT hunks": the merge was textually clean
@@ -21,12 +21,15 @@ naming it:
 
     # a comment (first non-blank character `#`), and blank lines, are ignored
     command <shell command>    exactly one: run by `sh -c` at the root of the merged tree
-    input <glob>               one or more: the BUILD INPUTS (below)
+    input <glob>               one or more: the BUILD INPUTS (below); under `trigger always`
+                               any number, since no input decides that build
     comments <glob>            any number: a build input a side changed in comments only does
-                               not count for that side (COMMENTS ONLY, below)
+                               not count for that side (COMMENTS ONLY, below); refused under
+                               `trigger always`, where no line of it could apply
     timeout <seconds>          at most one, 1 to 86400 (default 1200): the build's bound
-    trigger same-input         at most one trigger line, default same-input: WHEN IT BUILDS
-    trigger any-input
+    trigger same-input         at most one trigger line, default same-input: WHEN IT BUILDS.
+    trigger any-input          The value is one of these three words; any other refuses.
+    trigger always
 
 BUILD INPUTS -- the boundary. A path is a build input when one ``input`` glob matches the WHOLE
 repository-relative path (``/``-separated) under Python's ``fnmatch.fnmatchcase``: case-sensitive,
@@ -34,11 +37,12 @@ and ``*``, ``?`` and ``[...]`` match ``/`` too, so ``*.ml`` matches an ``.ml`` f
 ``dune`` only the root ``dune``, and ``*/dune`` every nested one. Nothing else counts: no path is a
 build input by its contents, by being generated, or by a default list.
 
-WHEN IT BUILDS. Only when the merge's own base-drift read (drift.py) leaves a build possible. It
+WHEN IT BUILDS. Under ``trigger always``, on every merge: THE FORCED BUILD, below. Otherwise only
+when the merge's own base-drift read (drift.py) leaves a build possible. It
 reads two sides: the paths the PR changed and the paths the base's advance changed since their
 merge base (old names of renames included; a path a rename on either side touched counts by its
 other name too, since git carries an edit of the old name into the new). When either side is
-empty, no build is possible and the config is not even read. Otherwise the trigger decides:
+empty, no build is possible under these two triggers. Otherwise the trigger decides:
 ``same-input`` (the default) builds when a path BOTH sides changed is a build input;
 ``any-input`` builds when EACH side changed some build input, the same one or not, which also
 catches a clash across paths only one side changed (the PR calls, in ``b.ml``, a name the base
@@ -50,6 +54,19 @@ the drift read's own anchor: a ``pull_request`` run that already built the merge
 makes the build redundant, never wrong. Under ``same-input``, a semantic conflict across paths only
 ONE side changed is outside this boundary, and stays the integration loop's to catch on the merged
 tip.
+
+THE FORCED BUILD. ``trigger always`` builds the merge commit on EVERY merge of the repository,
+whatever the two sides changed, a base that has not moved included (the merged tree is then the
+head's own). It is what lets a repository make this build its merge gate and take the jobs the
+command covers off its ``pull_request`` CI (ship-pr's SKILL.md says which; the OCANNL wave of
+2026-11-11 paid a 25 to 40 minute remote cycle for every head move). The command still runs at the
+merged tree with both sides named (THE COMMAND'S CONTRACT), so it can pick its own tiers by what
+changed. Because the trigger is in the config, the config is read on every merge, before the
+sides are looked at: a config that cannot be read or parsed refuses a merge the drift read alone
+would have let through. The boundary: an OLDER reader does not know the word and refuses the
+config (exit 2) on a merge whose two sides both changed something, and reads no config at all on
+a merge where one side changed nothing, so that merge lands UNBUILT. A repository therefore adds
+the line only once every checkout that merges for it has this reader (ludics#936).
 
 COMMENTS ONLY (#861). A doc-comment edit to an ``.mli`` on one side cost a 30-minute slot wait
 and a 434 s build: a change of comments alone cannot clash with the other side's code, unless the
@@ -113,9 +130,8 @@ is parsed from them; the verdict is the status file's, as below.
 THE CONFIG NOTE (ludics-lite#730). The config is the DEFAULT BRANCH's copy, so a PR that adds or
 changes it is never judged by its own copy (#738 added the file and printed no merge-build line at
 all). When the drift read's PR side names ``CONFIG_FILE`` (by either name of a rename), merge says
-so in one ``NOTE`` line naming the copy that judged it -- absent there, read below, or not read
-because one side changed nothing -- and the dry run (below) that shows the PR's own copy judging
-the same pair. The boundary is that PR side: an UNKNOWN one (a compare that did not answer,
+so in one ``NOTE`` line naming the copy that judged it -- absent there, or read below -- and the
+dry run (below) that shows the PR's own copy judging the same pair. The boundary is that PR side: an UNKNOWN one (a compare that did not answer,
 GitHub's 300-file cap) says nothing, and no read is made for the note.
 
 THE DRY RUN (ludics-lite#751, ``pr-review.sh merge-build``, prreview/mergedry.py): this build
@@ -247,7 +263,7 @@ NAMED_LINES = 20  # THE BASE ALONE: the merge's lines the base's log lacks, show
 COMPARED_BYTES = 16 * 1024 * 1024  # THE BASE ALONE: a log over this is never read as "the same"
 COMMENT_PATHS = 200  # COMMENTS ONLY: a side's paths past this many are read as changed in code
 COMMENT_BYTES = 4 * 1024 * 1024  # COMMENTS ONLY: a blob over this is read as changed in code
-TRIGGERS = ("same-input", "any-input")
+TRIGGERS = ("same-input", "any-input", "always")
 BASE_SHA_VAR = "SHIP_PR_MERGE_BASE_SHA"  # THE COMMAND'S CONTRACT: the merge commit's first parent
 HEAD_SHA_VAR = "SHIP_PR_MERGE_HEAD_SHA"  # and its second
 
@@ -263,7 +279,7 @@ _WRAPPER_NAME = "merge-build"
 _BUILD_OF = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
 
 
-type Trigger = Literal["same-input", "any-input"]
+type Trigger = Literal["same-input", "any-input", "always"]
 
 
 @dataclass(frozen=True)
@@ -320,22 +336,34 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
             if trigger is not None:
                 warn(f"{where} names a second trigger line: {line}")
                 return None
+            # A fail-closed allowlist of whole words: an unknown one refuses, never a default.
             if value == "same-input":
                 trigger = "same-input"
             elif value == "any-input":
                 trigger = "any-input"
+            elif value == "always":
+                trigger = "always"
             else:
-                warn(f"{where}'s trigger is neither `same-input` nor `any-input`: {line}")
+                warn(f"{where}'s trigger is none of `same-input`, `any-input`, `always`: {line}")
                 return None
         else:
             warn(
                 f"{where} holds a line that is none of `command <shell command>`, `input <glob>`,",
-                f"`comments <glob>`, `timeout <seconds>`, `trigger same-input|any-input`, a # comment or a",
+                f"`comments <glob>`, `timeout <seconds>`, `trigger same-input|any-input|always`, a # comment or a",
                 f"blank line: {line}",
             )
             return None
-    if command is None or not inputs:
-        warn(f"{where} needs one `command` line and at least one `input` line; it has", f"{'a' if command else 'no'} command and {len(inputs)} input(s).")
+    if command is None or (not inputs and trigger != "always"):
+        warn(
+            f"{where} needs one `command` line and, unless its trigger is `always`, at least one `input`",
+            f"line; it has {'a' if command else 'no'} command and {len(inputs)} input(s).",
+        )
+        return None
+    if trigger == "always" and comments:
+        warn(
+            f"{where} has `trigger always` and {len(comments)} `comments` line(s): every merge is built,",
+            "so no `comments` line could apply. Drop them, or name another trigger.",
+        )
         return None
     return BuildConfig(
         command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout, trigger or "same-input", tuple(comments)
@@ -357,8 +385,13 @@ def _named(paths: list[str]) -> str:
 
 def build_reason(drift: Drift, config: BuildConfig) -> tuple[str | None, str]:
     """Whether the config's trigger holds on the drift read (the module docstring's WHEN IT
-    BUILDS): ``(why, "")`` to build, or ``(None, why not)``. Called only once both sides are known
-    to be nonempty, or unknown."""
+    BUILDS): ``(why, "")`` to build, or ``(None, why not)``. ``always`` holds whatever the sides;
+    under the other two a side that changed nothing builds nothing."""
+    if config.trigger == "always":
+        return "trigger always: every merge of this repository is built", ""
+    if drift.pr_paths is not None and drift.base_paths is not None and not (drift.pr_paths and drift.base_paths):
+        side = "the PR" if not drift.pr_paths else "the base"
+        return None, f"{side} changed no path since their merge base, so no build is possible (trigger {config.trigger})"
     if drift.overlap is None or drift.pr_paths is None or drift.base_paths is None:
         return "the paths each side changed are UNKNOWN (above), which is never none", ""
     if config.trigger == "same-input":
@@ -815,10 +848,7 @@ def merge_build(
                 f" --config <the PR's copy of {CONFIG_FILE}>"
             )
 
-    if drift.pr_paths is not None and drift.base_paths is not None and not (drift.pr_paths and drift.base_paths):
-        # A side that changed nothing: no build is possible under either trigger, and the config is not read.
-        note("not read: one side changed nothing, so no build is possible")
-        return None
+    # The config first, on every merge: its trigger may be `always` (THE FORCED BUILD).
     config = read_config(session, repo, cap)
     if config is None:
         note("absent there: nothing is built")

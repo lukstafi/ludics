@@ -16,8 +16,8 @@ or, without it, the copy on the default branch of the repository ``--repo``/``RE
 exactly as merge reads it; with neither, exit 2. When a repository is named, the checkout must have
 a remote naming it, as merge's clone must; with ``--config`` alone any checkout serves. It must be a
 FULL clone (neither shallow nor partial), checked before any diff: rename detection in a partial
-clone would fetch the blobs it lacks. As in merge, a side that changed nothing is ``no build``
-before any config is read.
+clone would fetch the blobs it lacks. As in merge, the config is read first, and a side that
+changed nothing is ``no build`` unless its trigger is ``always``.
 
 THE TWO SIDES stand in for merge's drift read: ``git diff --name-status -M`` from the two
 revisions' merge base to the head (the PR's side) and to the base (the base's advance), each with
@@ -175,13 +175,6 @@ def run(session: GhSession, args: list[str]) -> int:
         f"merge build {label}: base {base_arg} = {base}, head {head_arg} = {head}, merge base {merge_base[:8]};"
         f" the head changed {len(drift.pr_paths)} path(s), the base {len(drift.base_paths)}, both {len(drift.overlap or [])}"
     )
-    if not (drift.pr_paths and drift.base_paths):
-        # As merge: a side that changed nothing builds under no trigger, and no config is read.
-        side = "the head" if not drift.pr_paths else "the base"
-        cli.say(f"merge build {label}: no build — {side} changed no path since their merge base")
-        return 0
-    if os.name == "nt":
-        fail(2, "merge-build: the merge build runs on POSIX hosts only (the fleet's macOS and Linux boxes).")
     config: BuildConfig | None
     if config_file is not None:
         try:
@@ -203,5 +196,7 @@ def run(session: GhSession, args: list[str]) -> int:
     if why is None:
         cli.say(f"merge build {label}: no build — {why_not} ({source})")
         return 0
+    if os.name == "nt":
+        fail(2, "merge-build: the merge build runs on POSIX hosts only (the fleet's macOS and Linux boxes).")
     dry_build(repo, head, base_arg, base, config, f"{why} ({source})", root, comment_candidates(drift, config))
     return 0
