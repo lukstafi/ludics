@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from ludics import bgrun, cli, proc
+from ludics import bgrun, cli, fs, proc
 from ludics.peerplan import transcript
 
 PROG = "peer-plan.sh"
@@ -400,10 +400,17 @@ def clean(args: Sequence[str]) -> int:
     # Every run directory, not only the ones the markers name: a start or critique interrupted
     # between `bg-run.sh spawn` and its marker leaves a run no marker names.
     runs = os.path.join(d, "runs")
-    for name in sorted(os.listdir(runs)) if os.path.isdir(runs) else []:
-        run = os.path.join(runs, name)
-        if re.fullmatch(r"run-[0-9]+", name) and os.path.isdir(run) and live(run):
-            raise cli.Exit(1, f"the run {run} is still live: bg-run.sh stop {run} first")
+    try:
+        names = [] if fs.absent(runs) else sorted(os.listdir(runs))
+        for name in names:
+            run = os.path.join(runs, name)
+            if re.fullmatch(r"run-[0-9]+", name):
+                # stat must succeed even for links: an unread run cannot be declared finished.
+                os.stat(run)
+                if live(run):
+                    raise cli.Exit(1, f"the run {run!r} is still live: bg-run.sh stop {run!r} first")
+    except OSError as exc:
+        raise cli.Exit(1, f"cannot read runs under {runs!r}: {exc}; worktree kept") from exc
     if os.path.isdir(meta.worktree):
         done = proc.run_tool(
             "git", ["-C", meta.checkout, "worktree", "remove", "--force", meta.worktree], stdin=subprocess.DEVNULL
