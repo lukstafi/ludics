@@ -26,8 +26,12 @@ Argv: <state root> <action> <coordinator> <json payload>
 The payload word `-` says the payload is on file descriptor 3 (ludics-lite#636), one JSON string,
 as ``registry.py``'s header states it for the registry; any other word is the payload itself.
 
-  set   {"wave", "create", "task", "fields": [[key, value], ...]}   a task's row: each key set, in
-        order (a new key joins the row's end; a task not yet on the board joins the table's end)
+  set   {"wave", "create", "new_row", "task", "fields": [[key, value], ...]}   a task's row: each key
+        set, in order (a new key joins the row's end). A task with no row yet refuses unless
+        ``new_row`` is true, when it joins the table's end (#1114: a task typed wrong, ``2032`` for
+        ``t2032``, made an empty second row each time); the refusal names the nearest task the
+        board has. ``new_row`` on a task that has its row is no refusal, as ``create`` is none on
+        a board that exists, so a retried first write is safe.
   note  {"wave", "create", "fields": [[key, value], ...]}           the wave's own facts (coordinator,
         scope, base, ...), shown above the table
   log   {"wave", "text"}                                            one line appended to the log,
@@ -66,6 +70,7 @@ a code span such a doubled backslash shows doubled. Nothing else is escaped, so 
 markdown (backticks, links, emphasis) renders as markdown. Columns are the keys in the order the
 rows first name them.
 """
+import difflib
 import json
 import os
 import re
@@ -309,6 +314,10 @@ def main(argv: list[str]) -> None:
             tasks = cast(list[Doc], doc["tasks"])
             row: Doc | None = next((entry for entry in tasks if entry["task"] == task), None)
             if row is None:
+                if payload.get("new_row") is not True:
+                    near = difflib.get_close_matches(task, [cast(str, entry["task"]) for entry in tasks], n=1)
+                    hint = f"; the nearest is {json.dumps(near[0])}" if near else ""
+                    refuse(f"no task {json.dumps(task)} on the board of {wave}{hint} (a new row takes set --new-row)")
                 row = {"task": task, "fields": {}, "updated_at": now}
                 tasks.append(row)
             fields = cast(dict[str, str], row["fields"])

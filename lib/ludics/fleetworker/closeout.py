@@ -24,7 +24,8 @@ WHAT IT DOES, in this order, each read before any write:
    the fix is a ``board set``. Both of a row's records (the agent host's and the GPU home box's) are
    read the same way.
 4. Each standing record not yet concluded: ``execution conclude --standing-handback``, ``--verdict
-   pass``, off the record's own ``checkout``.
+   pass``, off the record's own ``checkout``. A GPU-home-box leg no batch ran under concludes
+   ``not-launched`` there (execution.py's THE UNUSED LEG, #1109), and the line counts it.
 5. ``board log``, one line, unless the board already holds that exact line.
 6. ``board set``: ``state`` ``merged #<n> at <sha>``, ``merge`` the full SHA, ``pr``, and ``agent`` when
    given. It comes last, so a row reads done only once every step before it landed. A row already
@@ -178,11 +179,27 @@ def to_conclude(wave: str, task: str, records: list[dict[str, Any]], ids: list[s
     return todo, [str(r.get("request_id")) for r in left]
 
 
-def step(cfg: Config, args: list[str]) -> tuple[int, str]:
-    """This fleet-worker.sh with ``args``: its status and its last line of output, captured."""
+def stepped(cfg: Config, args: list[str]) -> tuple[int, str]:
+    """This fleet-worker.sh with ``args``: its status and its output, captured."""
     done = run([os.path.join(cfg.here, os.path.basename(cfg.script)), *args], capture=True)
-    lines = substitution(done.out).splitlines()
-    return done.rc, lines[-1] if lines else ""
+    return done.rc, substitution(done.out)
+
+
+def step(cfg: Config, args: list[str]) -> tuple[int, str]:
+    """``stepped``, with the last line of the output only."""
+    rc, out = stepped(cfg, args)
+    lines = out.splitlines()
+    return rc, lines[-1] if lines else ""
+
+
+def never_ran(out: str) -> bool:
+    """Whether a conclusion's output, the registry's record, reads ``not-launched``: a standing leg
+    no batch ran under (step 4). Output that is no JSON object reads as a run."""
+    try:
+        record: Any = json.loads(out)
+    except ValueError:
+        return False
+    return isinstance(record, dict) and cast(dict[str, Any], record).get("verdict") == "not-launched"
 
 
 def cmd_close(cfg: Config, args: list[str]) -> int:
@@ -217,12 +234,15 @@ def cmd_close(cfg: Config, args: list[str]) -> int:
         where = f"{len(landed)} concluded here, " if landed else ""
         return refused(wave, task, f"{what} exit {rc} ({said}); {where}the row is not set; a re-run resumes", 4 if rc == 4 else 1)
 
+    unused: list[str] = []
     for request, checkout in todo:
-        rc, said = step(cfg, ["execution", "conclude", "--standing-handback", "--request", request, "--observed-from", checkout,
-                              "--evidence", evidence, "--verdict", "pass"])
+        rc, out = stepped(cfg, ["execution", "conclude", "--standing-handback", "--request", request, "--observed-from", checkout,
+                                "--evidence", evidence, "--verdict", "pass"])
         if rc != 0:
-            raise stopped(f"conclude {request}", rc, said)
+            raise stopped(f"conclude {request}", rc, out.splitlines()[-1] if out else "")
         landed.append(request)
+        if never_ran(out):
+            unused.append(request)
     line = f"{task}: closed, {repo}#{pr} merged at {sha}; standing: {' '.join(ids) or 'none'}"
     log: Any = doc.get("log")
     logged = isinstance(log, list) and any(isinstance(e, dict) and cast(dict[str, Any], e).get("text") == line for e in cast(list[Any], log))
@@ -237,7 +257,8 @@ def cmd_close(cfg: Config, args: list[str]) -> int:
         if rc != 0:
             raise stopped("board set", rc, said)
     wrote = landed or not logged or changed
-    tail = (f"{len(landed)} standing concluded, {len(ids) - len(todo)} already; row {'set' if changed else 'as it was'}"
+    idle = f" ({len(unused)} never used: not-launched)" if unused else ""
+    tail = (f"{len(landed)} standing concluded{idle}, {len(ids) - len(todo)} already; row {'set' if changed else 'as it was'}"
             if wrote else "already closed")
     note = f"; NOTE still open: {' '.join(others)}" if others else ""
     far = [word for word in fields.get("farside", "").split() if word != "none"]

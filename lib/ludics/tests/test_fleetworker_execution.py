@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -13,7 +14,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli, proc
-from ludics.fleetworker import execution, revision
+from ludics.fleetworker import execution, leg, revision
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.execution import (
     Payload,
@@ -1288,6 +1289,116 @@ class CheckoutBinding(unittest.TestCase):
         rc, text, _ = self.handback(self.rec(checkout=None), "/wt/r2")
         self.assertEqual(rc, 0)
         self.assertIn("HEAD of /wt/r2 on testbox, --observed-from unchecked: r records no checkout", json.loads(text)["evidence"])
+
+
+class UnusedLeg(unittest.TestCase):
+    """#1109: THE UNUSED LEG -- a standing GPU-home-box leg no batch ran under concludes
+    ``not-launched`` at the hand-back; every other record is read as before."""
+
+    MISSING = Refusal("OBSERVED-FROM REFUSED: no checkout /wt/r on rog", 1)
+
+    def setUp(self) -> None:
+        self.cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="testbox")
+
+    def rec(self, agent: str | None = "mac-studio", **over: Any) -> dict[str, Any]:
+        request = {"request_id": "r", "kind": "correctness", "execution_host": "rog", "repository": "o/r", "standing": True}
+        base: dict[str, Any] = {"request_id": "r", "state": "running", "checkout": "/wt/r",
+                                "request": {**request, **({"agent_host": agent} if agent else {})},
+                                "history": [{"action": "dispatch", "data": {}}]}
+        base.update(over)
+        return base
+
+    def handback(self, record: dict[str, Any], probe: Done, *more: str, checkout: str = "/wt/r") -> tuple[int, str, str, int]:
+        """The hand-back's exit, payload, output (stdout then stderr) and how many times the box was asked."""
+        out, err = io.StringIO(), io.StringIO()
+        args = ["conclude", "--standing-handback", "--request", "r", "--observed-from", checkout, "--evidence", "ok", *more]
+        with mock.patch.object(execution, "record_to_check", return_value=record), \
+                mock.patch.object(execution, "check_identity"), \
+                mock.patch.object(execution, "run_on", return_value=probe) as asked, \
+                mock.patch.object(execution, "observed_head", return_value=self.MISSING), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                text = execution.standing_handback_payload(self.cfg, args)
+            except cli.Exit as exc:
+                return exc.rc, "", out.getvalue() + err.getvalue(), asked.call_count
+        return 0, text, out.getvalue() + err.getvalue(), asked.call_count
+
+    def test_an_unused_leg_concludes_not_launched_and_says_so(self) -> None:
+        rc, text, said, asked = self.handback(self.rec(), Done(0, "leg=unused\n"), "--verdict", "pass")
+        self.assertEqual((rc, asked), (0, 1))
+        found = "no worktree /wt/r on rog, and no leg ever opened its lock"
+        self.assertEqual(json.loads(text), {"request_id": "r", "verdict": "not-launched", "log": "none: no leg ran under r",
+                                            "evidence": f"ok; standing leg never used: {found}"})
+        self.assertEqual(said, f"STANDING LEG UNUSED r: {found}; concluded not-launched\n")
+
+    def test_only_the_far_sides_unused_is_unused(self) -> None:
+        """The allowlist: any other answer of the box is today's reading, the refusal for a missing
+        worktree included (a leg that ran and whose worktree was removed)."""
+        for probe in (Done(0, "leg=present\n"), Done(0, "leg=locked\n"), Done(0, "leg=unresolved\n"), Done(0, ""),
+                      Done(0, "leg=unused\nleg=locked\n"), Done(1, "leg=unused\n"), Done(UNREACHABLE, "")):
+            rc, text, said, asked = self.handback(self.rec(), probe, "--verdict", "pass")
+            self.assertEqual((rc, text, asked), (1, "", 1), probe)
+            self.assertEqual(said, "OBSERVED-FROM REFUSED: no checkout /wt/r on rog\n", probe)
+
+    def test_the_agent_hosts_own_record_and_a_named_run_are_outside_the_rule(self) -> None:
+        unused = Done(0, "leg=unused\n")
+        for record, more in ((self.rec(agent="rog"), ["--verdict", "pass"]), (self.rec(agent=None), ["--verdict", "pass"]),
+                             (self.rec(), ["--from-run", "/runs/1"])):
+            rc, _, said, asked = self.handback(record, unused, *more)
+            self.assertEqual((rc, asked), (1, 0), (record["request"], more))
+            self.assertIn("OBSERVED-FROM REFUSED: no checkout", said)
+        # A record naming no checkout is read off the path the caller typed: a typo is missing too.
+        rc, _, said, asked = self.handback(self.rec(checkout=None), unused, "--verdict", "pass", checkout="/wt/typo")
+        self.assertEqual((rc, asked), (1, 0))
+        self.assertIn("OBSERVED-FROM REFUSED: no checkout", said)
+        rc, _, said, asked = self.handback(self.rec(), unused, "--verdict", "pass", checkout="/wt/other")
+        self.assertEqual((rc, asked), (1, 0))
+        self.assertIn("EXECUTION REFUSED: --observed-from /wt/other is not r's recorded checkout /wt/r", said)
+
+    def test_a_retry_gets_what_landed_and_reads_nothing(self) -> None:
+        landed = {"request_id": "r", "verdict": "not-launched", "log": "none: no leg ran under r",
+                  "evidence": "ok; standing leg never used: no worktree /wt/r on rog, and no leg ever opened its lock"}
+        done = self.rec(state="concluded", history=[{"action": "conclude", "data": landed}])
+        rc, text, said, asked = self.handback(done, Done(0, "leg=locked\n"), "--verdict", "pass")
+        self.assertEqual((rc, json.loads(text), said, asked), (0, landed, "", 0))
+        other = self.rec(state="concluded", history=[{"action": "conclude", "data": {**landed, "evidence": "else; x"}}])
+        self.assertEqual(self.handback(other, Done(0, "leg=unused\n"), "--verdict", "pass")[::3], (1, 0),
+                         "another conclusion is not re-read as unused")
+
+    def far_side(self, state: str, path: str) -> str:
+        script = f"STATE={shlex.quote(state)}\n" + leg.WORKTREE + execution.LEG_UNUSED
+        done = subprocess.run(["bash", "-c", script, "probe", path], capture_output=True, text=True, check=False)
+        self.assertEqual((done.returncode, done.stderr), (0, ""))
+        return done.stdout
+
+    def test_the_far_side_reads_the_path_and_the_legs_own_lock(self) -> None:
+        root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-unused-leg."))
+        self.addCleanup(shutil.rmtree, root)
+        state, wt = os.path.join(root, "state"), os.path.join(root, "co-worktrees", "w1-rog")
+        self.assertEqual(self.far_side(state, wt), "leg=unused\n")
+        # The lock a leg opens, named as the leg names it (leg.py's far side: canon, then leg_lock_file).
+        name = "printf '%s' \"$(leg_lock_file \"$(canon \"$1\")\")\""
+        lock = subprocess.run(["bash", "-c", f"STATE={shlex.quote(state)}\n" + leg.WORKTREE + name, "lock", wt],
+                              capture_output=True, text=True, check=True).stdout
+        self.assertTrue(lock.startswith(os.path.join(state, "leg-locks") + os.sep), lock)
+        os.makedirs(os.path.dirname(lock))
+        open(lock, "w").close()
+        self.assertEqual(self.far_side(state, wt), "leg=locked\n")
+        os.unlink(lock)
+        os.makedirs(os.path.dirname(wt))
+        os.symlink(os.path.join(root, "nowhere"), wt)
+        self.assertEqual(self.far_side(state, wt), "leg=present\n", "a dangling link is something at the path")
+        for spelling in (wt + "/", wt + "//"):
+            self.assertEqual(self.far_side(state, spelling), "leg=present\n", "...whatever separators the record ends in")
+        os.unlink(wt)
+        for spelling in (wt + "/", wt + "//"):
+            self.assertEqual(self.far_side(state, spelling), "leg=unused\n", spelling)
+            open(lock, "w").close()
+            self.assertEqual(self.far_side(state, spelling), "leg=locked\n", "the lock is the bare path's, as a leg names it")
+            os.unlink(lock)
+        os.makedirs(wt)
+        self.assertEqual(self.far_side(state, wt + "/"), "leg=present\n")
+        self.assertEqual(self.far_side(state, "/"), "leg=present\n", "the root keeps its separator")
 
 
 class GpuClause(unittest.TestCase):

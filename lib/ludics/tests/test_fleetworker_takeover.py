@@ -47,7 +47,7 @@ class Takeover(unittest.TestCase):
         shutil.rmtree(self.root)
 
     def board(self, task: str, **fields: str) -> None:
-        payload = {"wave": "w", "create": True, "task": task, "fields": [[k, v] for k, v in fields.items()]}
+        payload = {"wave": "w", "create": True, "new_row": True, "task": task, "fields": [[k, v] for k, v in fields.items()]}
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(boardstore.run(["-", self.root, "set", "coord", json.dumps(payload)]), 0)
 

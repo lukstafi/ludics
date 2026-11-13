@@ -89,7 +89,8 @@ handle, log and verdict, and leave worktree cleanup to the coordinator.
 ## Supervision, recovery and evidence
 
 Maintain the board on the anchor with `fleet-worker.sh board`: `board set [--create] <wave>
-<task> key=value ...` for a worker's row, `board note <wave> key=value ...` for wave-level facts,
+<task> key=value ...` for a worker's row (`--new-row` on its first write: a task with no row is
+refused, naming the nearest one, so a task typed wrong adds no row), `board note <wave> key=value ...` for wave-level facts,
 `board log <wave> <text>` for the append-only log, and `board show <wave> [--json]` to read it
 (the store and its grammar: `lib/ludics/fleetworker/boardstore.py`). A wave whose board predates
 the verb (a markdown file under `FLEET_ANCHOR_STATE`, such as `<wave>-board.md`) keeps that file

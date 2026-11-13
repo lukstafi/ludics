@@ -5,7 +5,8 @@ The board is one JSON document per wave under FLEET_ANCHOR_STATE, kept by
 Python >= 3.12 the far side finds, as the execution registry's does (``execution.registry_command``).
 Its header is the contract: the document, what it accepts, and the markdown view's boundary.
 
-  board set [--create] <wave> <task> <key=value>...   a task's row (lease)
+  board set [--create] [--new-row] <wave> <task> <key=value>...   a task's row (lease); a task with
+                                                      no row yet refuses without ``--new-row``
   board note [--create] <wave> <key=value>...         the wave's own facts (lease)
   board log <wave> <text>...                          one appended log line, the words joined (lease)
   board show <wave> [--json]                          the markdown view, or the document (no lease);
@@ -32,9 +33,10 @@ argument travels inside one JSON payload, ASCII-escaped, so no cell text is a sh
 pattern or a delimiter on the near side, over ssh, or on the anchor; the payload rides the far-side
 script to the store's fd 3, never one argv word, so no length of it fails execve (ludics-lite#636,
 ``transport.shipped_python``). A ``key=value`` splits at its
-FIRST ``=``: the value is everything after it, ``=`` included. ``--create`` is read only right after
-``set`` or ``note``, so no value can be mistaken for it; ``log`` takes none and never starts a board,
-since an append is not idempotent and a retried first write must be.
+FIRST ``=``: the value is everything after it, ``=`` included. ``--create`` (the board) and ``--new-row``
+(``set`` only: the task's row) are read only right after the action, in either order, so no value can
+be mistaken for one; ``log`` takes neither and never starts a board, since an append is not idempotent
+and a retried first write must be.
 """
 
 import json
@@ -51,7 +53,7 @@ from ludics.fleetworker.takeover import DONE_STATES, LIVE_STATES, board_document
 from ludics.fleetworker.transport import PAYLOAD_ON_FD, err, prelude, run_on, shipped_python
 
 USAGE = (
-    "board set [--create] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
+    "board set [--create] [--new-row] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
     "board log <wave> <text>... | board show <wave> [--json] | board check <wave> | board takeover <wave> <task> | "
     "board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>]"
 )
@@ -96,16 +98,22 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
         return action, {"wave": rest[0], "json": rest[1:] == ["--json"]}
     if action not in ("set", "note", "log"):
         die(f"board: expected set, note, log, show, check, takeover or close ({USAGE})")
-    create = bool(rest) and rest[0] == "--create"
+    flags: set[str] = set()
+    while rest and rest[0] in ("--create", "--new-row") and rest[0] not in flags:
+        flags.add(rest[0])
+        rest = rest[1:]
+    create = "--create" in flags
     if create and action == "log":
         die(f"board log: takes no --create; start the board with set or note --create ({USAGE})")
-    if create:
-        rest = rest[1:]
+    if "--new-row" in flags and action != "set":
+        die(f"board {action}: takes no --new-row; a row is a task's, written with set ({USAGE})")
     if not rest:
         die(f"board {action}: expected <wave> ({USAGE})")
     payload: dict[str, object] = {"wave": rest[0]}
     if action != "log":
         payload["create"] = create
+    if action == "set":
+        payload["new_row"] = "--new-row" in flags
     rest = rest[1:]
     match action:
         case "set":

@@ -2651,10 +2651,10 @@ expect "a writer refuses a wave with no board" 1 "^BOARD REFUSED: no board for w
   "$FW" board set bw "ll#1" state=x
 expect "log never starts a board" 1 "^BOARD REFUSED: no board for wave bw on the anchor" -- "$FW" board log bw x
 expect "...and takes no --create" 2 "board log: takes no --create" -- "$FW" board log --create bw x
-expect "set --create starts the board" 0 '^BOARD SET bw: "ll#1" state pr$' -- "$FW" board set --create bw "ll#1" "state=$hostile" pr=
+expect "set --create starts the board" 0 '^BOARD SET bw: "ll#1" state pr$' -- "$FW" board set --create --new-row bw "ll#1" "state=$hostile" pr=
 expect "a note takes any text" 0 "^BOARD NOTE bw: base scope$" -- "$FW" board note bw base=abc "scope=$hostile"
 expect "a log line is appended" 0 "^BOARD LOG bw: line 1 at " -- "$FW" board log bw "$hostile"
-expect "a task name takes the same text" 0 "^BOARD SET bw: " -- "$FW" board set bw "$hostile" "pr=#12 (draft)"
+expect "a task name takes the same text" 0 "^BOARD SET bw: " -- "$FW" board set --new-row bw "$hostile" "pr=#12 (draft)"
 "$FW" board show bw --json > "$TMP/board.json"
 got=$(jq -r '[.tasks[0].task, .tasks[0].fields.state, .notes.scope, .log[0].text, .tasks[1].task, .tasks[1].fields.pr] | join("\n")' "$TMP/board.json")
 want=$(printf '%s\n' "ll#1" "$hostile" "$hostile" "$hostile" "$hostile" "#12 (draft)")
@@ -2680,7 +2680,7 @@ expect "an unknown board action is a usage error" 2 "board: expected set, note, 
 # A row's state grammar (ludics#810): set warns on status= and on a state with no state word, and writes
 # both as given; check, a read, exits 3 listing each row not done and 0 when every row is.
 expect "set warns on status=, and writes it" 0 "^BOARD WARNING: task \"ck-1\": a row's state is its state key, not status; written as given$" -- \
-  "$FW" board set --create ck ck-1 status=launched
+  "$FW" board set --create --new-row ck ck-1 status=launched
 expect "...and on a state with no state word" 0 '^BOARD WARNING: task "ck-1": state="spawned" starts with no state word' -- \
   "$FW" board set ck ck-1 state=spawned
 expect "check lists each row not done and exits 3, without the lease or any identity" 3 '^- "ck-1": state="spawned" (no state word' -- \
@@ -2694,8 +2694,12 @@ expect "...and 0 once every row is done" 0 "^BOARD CHECK ck: 1 rows, 1 done, 0 n
 tkwt="$TMP/tk wt"; git init -q -b main "$tkwt" && git -C "$tkwt" -c user.name=t -c user.email=t@t commit -q --allow-empty -m tk
 git -C "$tkwt" checkout -q -b "claude/tk-1"
 printf '%s\n' "# The brief of tk-1" "$hostile" > "$TMP/tk brief.md"
-"$FW" board set bw tk-1 "worktree=$tkwt" branch=claude/tk-1 agent_host=testbox "brief=$TMP/tk brief.md" brief_host=testbox \
+"$FW" board set --new-row bw tk-1 "worktree=$tkwt" branch=claude/tk-1 agent_host=testbox "brief=$TMP/tk brief.md" brief_host=testbox \
   worker=tk-1 requests=none >/dev/null || ko "could not write tk-1's row (setup)"
+# #1114: a task typed wrong is refused, naming the row it is nearest to, and adds no row.
+expect "set refuses a task with no row, naming the nearest" 1 '^BOARD REFUSED: no task "tk1" on the board of bw; the nearest is "tk-1" (a new row takes set --new-row)$' -- \
+  "$FW" board set bw tk1 state=merged
+[ "$("$FW" board show bw --json | jq '[.tasks[] | select(.task == "tk1")] | length')" = 0 ] && ok "...and writes none" || ko "the refused set added a row"
 expect "takeover prints the stored brief first, without the lease or any identity" 0 "^# The brief of tk-1$" -- \
   env -u FLEET_COORDINATOR "${B[@]}" board takeover bw tk-1
 [ "$(head -n 2 <<<"$out" | tail -n 1)" = "$hostile" ] && ok "...byte for byte" || ko "brief: $(head -n 3 <<<"$out")"
@@ -2706,7 +2710,7 @@ for want in "^## State at takeover$" "^- pr: missing$" "^- repository: missing$"
 done
 [ ! -e "$TMP/pwned" ] && ok "...and nothing in the brief ran" || ko "the brief was run as a command"
 expect "a row whose brief cannot be read still prints its state, and exits 3" 3 "^- BRIEF UNREADABLE: no readable file $TMP/gone.md on testbox" -- \
-  sh -c '"$1" board set bw tk-2 "brief=$2" >/dev/null && "$1" board takeover bw tk-2' - "$FW" "$TMP/gone.md"
+  sh -c '"$1" board set --new-row bw tk-2 "brief=$2" >/dev/null && "$1" board takeover bw tk-2' - "$FW" "$TMP/gone.md"
 expect "takeover of a task the board does not hold is refused" 1 '^BOARD REFUSED: no task "tk-9" on the board of bw$' -- "$FW" board takeover bw tk-9
 expect "...as is one of a wave with no board" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board takeover none tk-1
 expect "takeover takes a wave and a task" 2 "board takeover: expected <wave> <task>" -- "$FW" board takeover bw
@@ -3791,7 +3795,7 @@ cpr() { # <state> <merge oid or -> <head branch>: what gh pr view answers
 export SHIM_GH_PR_VIEW="$TMP/pr-view.json"
 cfield() { "$FW" board show cw --json | jq -r --arg t "$1" --arg k "$2" '.tasks[] | select(.task == $t) | .fields[$k] // ""'; }
 clog() { "$FW" board show cw --json | jq -r '.log | length'; }
-"$FW" board set --create cw t1 repository=o/r pr=7 branch=claude/close standing="c-1 c-2" worker=w-close agent=agent-1 >/dev/null
+"$FW" board set --create --new-row cw t1 repository=o/r pr=7 branch=claude/close standing="c-1 c-2" worker=w-close agent=agent-1 >/dev/null
 creq c-1 "$cwt"; creq c-2 "$cwt2"
 expect "board close needs a wave and a task" 2 "board close: expected <wave> <task>" -- "$FW" board close cw
 expect "...takes a PR number" 2 "--pr takes a PR number" -- "$FW" board close cw t1 --pr x
@@ -3807,7 +3811,7 @@ grep -Fq 'if this is the verified split-task PR, run: fleet-worker.sh board set 
 
 cpr MERGED "$MERGE" claude/close
 expect "GitHub not answering is exit 4" 4 "could not be read" -- env SHIM_GH=down "$FW" board close cw t1
-"$FW" board set cw t2 repository=o/r pr=7 >/dev/null
+"$FW" board set --new-row cw t2 repository=o/r pr=7 >/dev/null
 expect "a row with no standing key is refused, never guessed" 1 "standing: the row has no standing; nothing closed" -- "$FW" board close cw t2
 "$FW" board set cw t2 standing=c-unknown >/dev/null
 expect "...and one naming a record the registry does not hold" 1 "c-unknown, which the registry does not hold" -- "$FW" board close cw t2
@@ -3816,7 +3820,7 @@ creq c-plain "$cwt" false
 expect "...or a record that is no standing reservation" 1 "c-plain, which is no standing reservation" -- "$FW" board close cw t2
 "$FW" board set cw t2 standing=c-1 worker=w-other >/dev/null
 expect "...or another worker's record, which a wrong id must not conclude" 1 "c-1, whose worker is w-close, not w-other" -- "$FW" board close cw t2
-"$FW" board set cw t3 repository=o/r pr=7 "standing=c-1" worker=w-close >/dev/null
+"$FW" board set --new-row cw t3 repository=o/r pr=7 "standing=c-1" worker=w-close >/dev/null
 expect "a standing record of the worker the row does not name is refused" 1 "standing record(s) of worker w-close the row does not name: c-2" -- "$FW" board close cw t3
 [ "$(hstate c-1)" != concluded ] && ok "...nothing concluded by any refusal" || ko "a refusal concluded c-1"
 [ "$(clog)" = 0 ] && [ -z "$(cfield t1 state)" ] && ok "...nothing written to the board" || ko "a refusal wrote the board: $(clog) $(cfield t1 state)"
@@ -3840,12 +3844,36 @@ expect "a close run again writes nothing and says so" 0 '^BOARD CLOSE cw: "t1" m
 "$FW" board set cw t1 state=reviewing >/dev/null
 expect "a close that lost its last write is finished by a re-run" 0 '; 0 standing concluded, 2 already; row set; NOTE' -- "$FW" board close cw t1
 [ "$(clog)" = 1 ] && [ "$(cfield t1 state)" = "merged #7 at ${MERGE:0:12}" ] && ok "...with no second log line" || ko "log $(clog) state $(cfield t1 state)"
-"$FW" board set cw t4 repository=o/r pr=7 standing=none "farside=none" >/dev/null
+"$FW" board set --new-row cw t4 repository=o/r pr=7 standing=none "farside=none" >/dev/null
 expect "standing=none closes a task with no reservation" 0 '"t4" merged o/r#7 at aaaaaaaaaaaa; 0 standing concluded, 0 already; row set$' -- "$FW" board close cw t4
-"$FW" board set cw t5 repository=o/r pr=7 standing=none "farside=other:/wt/a other:/wt/b" >/dev/null
+"$FW" board set --new-row cw t5 repository=o/r pr=7 standing=none "farside=other:/wt/a other:/wt/b" >/dev/null
 expect "...and a far-side worktree is named for farside-close, not removed here" 0 '; row set; NOTE 2 far-side worktree(s): farside-close cw --task t5$' -- "$FW" board close cw t5
 expect "...and without the lease the close writes nothing" 1 "." -- env -u FLEET_COORDINATOR FLEET_COORDINATOR=somebody-else "$FW" board close cw t1 --agent agent-3
 [ "$(cfield t1 agent)" = agent-2 ] && ok "...its row as it was" || ko "a close with no lease set the row: $(cfield t1 agent)"
+# #1109, THE UNUSED LEG: a standing GPU-home-box leg no batch ran under has no worktree to read, and
+# closes not-launched by itself; one a leg locked (it ran, and its worktree is gone) keeps the refusal.
+lreq() { # <id> <checkout>: a standing leg of worker w-leg, its agent on another box than the leg
+  jq -n --arg id "$1" --arg co "$2" --arg rev "$hbase" '{request_id:$id, wave:"cw", worker:"w-leg", transport:"subagent",
+    issue:"o/r#1109", purpose:"leg fixture", agent_host:"other", execution_host:"testbox", repository:"o/r",
+    requested_revision:$rev, kind:"correctness", standing:true, checkout:$co}' > "$TMP/$1.json"
+  setup_step "could not reserve $1 (setup)" "${FWC[@]}" execution run "$TMP/$1.json"
+}
+lroot=$(cd "$TMP" && pwd -P)
+lreq l-used "$lroot/leg used wt"
+mkdir -p "$ISSUE_WAVE_STATE/leg-locks" && : > "$ISSUE_WAVE_STATE/leg-locks/$(printf '%s' "$lroot/leg used wt" | cksum | tr ' ' -)"
+expect "a leg that ran, its worktree gone since, keeps the refusal" 1 "^OBSERVED-FROM REFUSED: no checkout '$lroot/leg used wt' on testbox$" -- \
+  "${FWC[@]}" execution conclude --standing-handback --request l-used --observed-from "$lroot/leg used wt" --evidence x --verdict pass
+[ "$(hstate l-used)" != concluded ] && ok "...and concludes nothing" || ko "l-used: $(hstate l-used)"
+jq -n '{request_id:"l-used", verdict:"not-launched", log:"-", evidence:"fixture cleanup"}' > "$TMP/l-used-done.json"
+"${FWC[@]}" execution conclude "$TMP/l-used-done.json" >/dev/null || ko "could not conclude l-used (cleanup)"
+lreq l-leg "$lroot/leg never made"
+"$FW" board set --new-row cw t6 repository=o/r pr=7 standing=l-leg worker=w-leg >/dev/null
+expect "a standing leg never used closes not-launched, and the line says so" 0 '"t6" merged o/r#7 at aaaaaaaaaaaa; 1 standing concluded (1 never used: not-launched), 0 already; row set$' -- \
+  "$FW" board close cw t6
+"$FW" execution list | jq -e '.[] | select(.request_id == "l-leg") | .state == "concluded" and .verdict == "not-launched" and
+  (.history[-1].data.evidence | contains("standing leg never used: no worktree ") and contains(", and no leg ever opened its lock"))' >/dev/null \
+  && ok "...its record not-launched, the evidence saying what was read" || ko "l-leg: $("$FW" execution list | jq -c '.[] | select(.request_id == "l-leg") | {state, verdict}')"
+expect "...and a re-run is already closed" 0 '"t6" merged o/r#7 at aaaaaaaaaaaa; already closed$' -- "$FW" board close cw t6
 jq -n --arg sha "$(git -C "$cwt" rev-parse HEAD)" --arg wt "$cwt" '{request_id:"c-plain", verdict:"pass", log:"/dev/null",
   evidence:"fixture", observed_sha:$sha, remote_checkout:$wt, handle:"fixture"}' > "$TMP/c-plain-done.json"
 "${FWC[@]}" execution conclude "$TMP/c-plain-done.json" >/dev/null || ko "could not conclude c-plain (cleanup)"
@@ -4655,7 +4683,7 @@ done
 # gates themselves, each against real git, are test_fleetworker_farsideclose.py's. Worktrees made by
 # real legs, so the lock and the layout are a leg's own.
 FWC=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4 other=2" FLEET_SKILLS_REPO="$TMP/dispatcher" "$FW" farside-close)
-"$FW" board set --create fcw t1 state=reviewing "farside=testbox:$TMP/fcwts/a" >/dev/null || ko "could not start the board (setup)"
+"$FW" board set --create --new-row fcw t1 state=reviewing "farside=testbox:$TMP/fcwts/a" >/dev/null || ko "could not start the board (setup)"
 setup_step "could not make worktree a (setup)" "${FWL[@]}" execution leg --request leg-fl --rev main --checkout "$lco" --worktree "$TMP/fcwts/a" -- tools/check.sh
 expect "a row that is not done keeps its far-side worktree" 3 "^FARSIDE KEPT testbox:.*/fcwts/a (t1): the row's state is not a done word (reviewing)$" -- "${FWC[@]}" fcw
 "$FW" board set fcw t1 state=merged requests=leg-fl >/dev/null
@@ -4674,7 +4702,7 @@ expect "a re-run says it is gone" 0 "^FARSIDE GONE testbox:.*/fcwts/a (t1): " --
 grep -q "^FARSIDE CLOSE fcw: 1 gone$" <<<"$out" && ok "...and counts it" || ko "no count line: $out"
 # A leg running in a worktree the row does not otherwise tie to any record: the leg's own lock keeps it.
 lreq leg-busy
-"$FW" board set fcw t2 state=done "farside=testbox:$TMP/fcwts/busy" >/dev/null
+"$FW" board set --new-row fcw t2 state=done "farside=testbox:$TMP/fcwts/busy" >/dev/null
 fcrun="$TMP/fc-running"; rm -f "$fcrun" "$fcrun.go"
 "${FWL[@]}" execution leg --request leg-busy --rev main --checkout "$lco" --worktree "$TMP/fcwts/busy" --cpu -- \
   sh -c 'touch "$0"; while [ ! -e "$0.go" ]; do sleep 0.1; done' "$fcrun" >/dev/null 2>&1 &
@@ -4694,7 +4722,7 @@ fixture_done leg-nest
 fcexclude="$(git -C "$lco" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
 mkdir -p "$(dirname "$fcexclude")" && touch "$fcexclude" && cp "$fcexclude" "$TMP/fc-exclude" && printf 'log_files/\n' >> "$fcexclude" || ko "could not ignore log_files (setup)"
 mkdir -p "$TMP/fcwts/n/log_files" "$TMP/fcwts/n/tools/log_files" && touch "$TMP/fcwts/n/log_files/r" "$TMP/fcwts/n/tools/log_files/r"
-"$FW" board set fcw t3 state=done "farside=testbox:$TMP/fcwts/n" >/dev/null
+"$FW" board set --new-row fcw t3 state=done "farside=testbox:$TMP/fcwts/n" >/dev/null
 expect "a top-level value names the top-level directory alone: a nested one keeps it, named" 3 "^FARSIDE KEPT testbox:.*/fcwts/n (t3): ignored data that --regenerable does not name: tools/log_files/$" -- \
   "${FWC[@]}" fcw --task t3 --regenerable _build --regenerable log_files
 expect "a --regenerable value escaping the worktree is a usage error" 2 "farside-close: --regenerable ../n is neither a directory path inside a worktree" -- \
