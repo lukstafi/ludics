@@ -189,7 +189,9 @@ context lean:
 
 - **An adaptive worker count, not a fixed cap.** Start with up to about 12 workers. Launch the next
   queued one only while every returned turn has been answered within a few minutes; while any
-  returned turn has waited more than 10 minutes for its answer, launch nothing.
+  returned turn has waited more than 10 minutes for its answer, launch nothing. The count is of
+  the workers whose turns you answer yourself: a CLI worker under the handoff driver waits on no
+  coordinator for a routine turn, so its bound is its box's slots.
 - **A measurement window does not strand its requester.** When the home box is contended
   and its window will not open within the hour, the coordinator refuses the request with an offer:
   `EXECUTION_REFUSED <request_id>` naming another box that runs the same backend and when it is free
@@ -271,6 +273,11 @@ sprint, settled five more rules (ludics#867):
 **Every wave includes at least some issues from the lowest open versioned milestone,** unless the
 user names the scope. The rest is the coordinator's call.
 
+**Size the scope by what the coordinator can carry, not by a small cap**: 40 to 50 issues, one
+or two coordinator contexts' worth, when the handoff driver answers the CLI workers' routine
+turns (wave-20261111-ocannl closed 48 issues in 61 PRs in a night; the maintainer's call of
+2026-11-13 is to keep that reach).
+
 Propose a wave to the user in one exchange: the issues, each with its box, the parallel groups,
 and what is deferred to a later wave and why. Take the plan's Parallelism and Dependencies
 sections as the starting truth, then adjust for churn surfaces the plan does not model: two
@@ -340,14 +347,25 @@ burying a decision they own:
    do not ask. Note in the worker's brief that the call is theirs and must be documented in
    the PR and the issue-closing comment.
 2. **Recommendation-with-veto** (a judgment call where you have a confident recommendation):
-   do not ask either. Post the recommendation as a comment on the issue before launch - that
-   comment survives interruptions and briefs the worker - and list these in the wave summary
-   so the user can veto in passing. Silence is consent for this tier.
+   do not ask either. Post the recommendation as a comment on the issue before launch
+   (`fleet-worker.sh wave decide ... --tier 2`) - that comment survives interruptions and briefs
+   the worker - and list these in the wave summary so the user can veto in passing. Silence is
+   consent for this tier.
 3. **Genuinely user-owned** (scope, taste with lasting API/workflow impact, anything
    irreversible or milestone-shaping): ask, in ONE batched AskUserQuestion for the whole
    wave, recommendation-first ("(Recommended)" option leading each question). Accept "do
    what you recommend" as a global answer. Whatever is decided gets posted to the issue,
-   headed as the maintainer's decision (above), before the affected worker launches.
+   headed as the maintainer's decision (above), before the affected worker launches
+   (`wave decide ... --tier 3`).
+
+**A design call that arises mid-wave is taken and recorded, never held** (the maintainer's
+decision of 2026-11-13). When a worker escalates a design question, or a reconciled plan adds a
+mechanism, decide it on the evidence as you would a tier-2 question, and let the work go on to
+its merge: the wave does not wait for the maintainer. What it owes is the record, `wave decide
+... --tier mid-wave`: the decision on the issue under the wave's own heading, the `design-joint`
+label, and a row for the project's decisions ledger, where it stands `unreviewed` until the
+maintainer has read it ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb),
+step 10).
 
 **Planning mode, per issue.** Every D3 gets `paired+critique` and an issue on the D2/D3
 border gets `paired`. Either way GPT Astra plans the issue read-only next to the worker,
@@ -371,8 +389,16 @@ separately. A Codex or Claude Code coordinator can use its own provider's native
 launch either provider as CLI workers; cross-provider delegation is the CLI route, since native
 tools expose the coordinator's own provider and not a provider switch. **Preserve the user's
 explicit provider, model and transport choices** - this is the one statement of that rule, and
-every reference defers to it. When transport is unspecified, prefer native workers for a
-same-provider wave and recommend CLI when cross-provider work or host-resident iteration calls
+every reference defers to it. **Where the user left them open, a Claude Code coordinator runs a
+mixed wave** (the maintainer's default of 2026-11-13, a cost split, to be revisited when the
+budget changes): a D1 or plain D2 issue goes to a Codex CLI worker on its home box (Sol, *Codex
+model choice*), a D3 or D2/D3-border issue to a native Claude Opus worker with its paired
+planning, and the wave file names a Claude Opus reviewer, so every PR of the wave gets the review
+checkpoint and the handoff driver answers the CLI workers' routine turns
+([coordinator-kit.md](references/coordinator-kit.md#a-mixed-wave)). That spends the Claude
+subscription on design and review and leaves the volume of implementation to Codex. Name each
+task's profile in the wave summary. Any other coordinator prefers native workers for a
+same-provider wave and recommends CLI when cross-provider work or host-resident iteration calls
 for it. **Never substitute a transport to get past a missing capability or a permission gate**:
 report the gate instead. Codex model tiers are in *Codex model choice* at the end of this
 section; a Claude Code coordinator launching only Claude workers can skip it.
@@ -1469,10 +1495,19 @@ where an "already exists" refusal is success; file with `gh issue create -R <tra
 wave-followup ...`; and add it to the follow-up issues workers filed during the wave (the ones
 their hand-backs and PRs name) with `gh issue edit <n> -R <tracker> --add-label wave-followup`.
 **Give each one a milestone** where the tracker uses them (`--milestone <title>` on either command).
+It takes `nitpick`, if the tracker has that milestone, when it is polish with no behaviour change
+that one worker raised and that cost nobody reported time (the value floor of
+[post-wave.md](references/post-wave.md)); the wave's checklist issue takes it too. `nitpick` is
+worked in batches when someone is nearby, and nothing presses to drain it.
 It takes `process`, if the tracker has that milestone, when all three hold: a release's users could
 not tell whether it is fixed, no release claim rests on it, and more of its kind will keep being
 filed. Otherwise it takes the lowest open versioned milestone whose scope fits. This is the one
 statement of the rule; daily planning applies it too.
+**File judiciously.** There is no cap on what a worker may propose, and an item that could change
+a result is always an issue. A proposal that is polish goes to the checklist or into a batched
+post-wave task, since every issue filed is one the maintainer reads and the next wave schedules.
+**Add the wave's decisions to the project's ledger**: `fleet-worker.sh wave decisions <wave.json>`
+prints the rows, and they go into the file the project's agent notes name, in one commit.
 Route the remaining chips through the selected mode:
 spawn task chips only in the explicit spawn mode; in the default mode, collect the
 non-discarded tasks without their own issue for [Post-wave coordination](references/post-wave.md).

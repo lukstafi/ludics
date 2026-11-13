@@ -52,8 +52,8 @@ issue or checklist and compare by content before writing to it; the reconciliati
        gh issue list -R <tracker> --state all --json number,title,state \
          --search '"<wave ID> small follow-ups" in:title'
        gh issue create -R <tracker> --label wave-followup --title '<wave ID> small follow-ups' \
-         --milestone process --body-file <file>   # only when no hit has the exact title; drop
-                                                  # --milestone on a tracker without `process`
+         --milestone nitpick --body-file <file>   # only when no hit has the exact title; `process`
+                                                  # on a tracker without `nitpick`, none without both
        gh issue reopen <n> -R <tracker>   # only when the exact-title hit is closed
        gh issue view <n> -R <tracker> --json body --jq .body > <file>   # then append the items
        gh issue edit <n> -R <tracker> --body-file <file>
@@ -93,11 +93,16 @@ workflow to this explicit task list, with these adaptations for tasks without is
 - Derive dependencies and execution placement from the task's actual requirements and its
   source hand-back. Summarize the next wave and proceed under the selected mode; use the
   existing decision gate for unresolved user-owned choices.
-- Use one worker and worktree per task. The coordinator continues to sequence and supervise;
-  it does not implement the chips itself. All lease, base, reservation and single-writer gates
-  still apply, including the rival-PR check by topic before launch.
+- **Batch the tasks by area: one worker, one worktree and one PR for each group** of tasks that
+  touch the same files or subsystem. A task of a few lines does not earn a brief, a CI cycle and
+  a review of its own (wave-20261111-ocannl ran eleven such tasks as eleven PRs). A task stays
+  alone when it needs evidence of its own (a measurement, a reproduction) or would hold its group
+  up. The coordinator continues to sequence and supervise; it does not implement the chips
+  itself. All lease, base, reservation and single-writer gates still apply, including the
+  rival-PR check by topic before launch.
 - Put the local task ID and full task text in the brief and board where an issue number and
-  body would normally go. Record decision-gate recommendations and decisions there too; do
+  body would normally go; a group's brief carries each of its tasks that way, and its PR body
+  says which commit answers which task. Record decision-gate recommendations and decisions there too; do
   not send `gh issue` calls or fabricate closing keywords for these tasks. Use the task ID in
   worker names and scratch paths; omit optional issue metadata in tools that provide it. A task's
   execution records name the chip's source issue (`owner/repo#N`, the issue of the PR whose
