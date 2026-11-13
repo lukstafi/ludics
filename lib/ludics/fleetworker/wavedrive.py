@@ -9,13 +9,16 @@ answers those turns, so the coordinator is asked only what a rule cannot answer.
     wave drive <wave.json> [--poll <seconds>] [--once]   every CLI worker of the wave, until stopped
     wave turn <wave.json> <task>                          one worker's returned turn, once
 
-WHO IT SERVES. The board's rows whose ``transport`` is ``cli``, with a ``worker`` and an
-``agent_host``, in a live state past ``pending``. A native worker's turn returns to its
-coordinator's own runtime and no process can resume it: the coordinator answers those with the
-same verbs (``wave review``, ``execution assign``).
+WHO IT SERVES. The board's rows whose ``transport`` is ``cli`` and ``kind`` is ``codex``, with a
+``worker`` and an ``agent_host``, in a live state past ``pending``. Two kinds of worker are outside
+it, and the coordinator answers their turns with the same verbs (``wave review``, ``execution
+assign``): a native worker, whose turn returns to its coordinator's own runtime where no process
+can resume it; and a Claude CLI worker, whose process outlives its turns, so a message is appended
+to it and its ``resumes`` count does not move: nothing ``status`` prints names its turns one by
+one, and a driver that cannot tell two turns apart would answer one twice or never.
 
-A TURN is one worker's ``resumes`` count (``status``'s field: 0 for its launch, one more for each
-resume). The ledger, ``<wave dir>/logs/drive.jsonl``, holds one line per step taken for a task and
+A TURN is one Codex worker's ``resumes`` count (``status``'s field: 0 for its launch, one more for
+each resume: a Codex turn is one process). The ledger, ``<wave dir>/logs/drive.jsonl``, holds one line per step taken for a task and
 turn, and a turn whose last line is final (``answered`` or ``attention``) is never read again, so a
 restarted driver answers nothing twice. ONE DRIVER per wave: an exclusive ``flock`` on
 ``logs/drive.lock``, taken without waiting; ``wave turn`` takes it too, so it refuses while a
@@ -40,10 +43,13 @@ attention, named by the last line's first word.
 
 THE ANSWERS:
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
-            <worker>``: it reserves, dispatches and resumes in one call. Exit 1 (a block refused: a
-            busy box, a window) is tried again each ``RETRY`` seconds, ``TRIES`` times, then
-            attention; any other nonzero exit is attention at once (exit 4 above all: assign's own
-            line says never to assign again).
+            <worker>``: it reserves, dispatches and resumes in one call. Exit 1 with nothing
+            assigned (every block refused: a busy box, a window; assign prints no message then)
+            is tried again each ``RETRY`` seconds, ``TRIES`` times, then attention. Exit 1 with
+            some blocks assigned has resumed the worker with those, so the turn is over and the
+            refused blocks are attention at once: the worker waits for them in a turn this
+            driver will read as new. Any other nonzero exit is attention at once (exit 4 above
+            all: assign's own line says never to assign again).
   result    each line needs ``request_id``, an absolute ``run`` and a 40-hex ``observed_sha``, and is
             concluded off the run record: ``execution conclude --from-run``, and when that refuses,
             ``--from-bg-run`` (a refused conclusion concludes nothing, so trying both reads is
@@ -60,8 +66,13 @@ THE ANSWERS:
   handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` in the message. The message
             is saved as ``handbacks/<task>.md`` and the task closed with ``board close``, which
             verifies the merge on GitHub itself. A close that refuses is attention. So is a merge
-            whose blocking at-open review has no cleared confirm on record: the row closes, and the
-            coordinator is told.
+            that THE CONFIRM does not cover: the row closes, and the coordinator is told.
+
+THE CONFIRM, read off ``wave review``'s records of the PR that were posted (a record with no
+comment, a dry run's, is no review): when the newest at-open review blocks (``confirm`` or
+``unreadable``), a merge is covered only by a ``cleared`` confirm made after that review, at the
+head the PR merged at (``gh pr view --json headRefOid``). A clearance of an earlier head, one
+older than the blocking review, and a head GitHub does not answer for are all not covered.
 
 ATTENTION is a line appended to ``<wave dir>/logs/attention.jsonl`` and printed as ``DRIVE ATTENTION
 <task> turn <n>: <why> (<file>)``. The driver goes on serving the other workers; ``wave heartbeat``
@@ -186,7 +197,7 @@ def workers_of(doc: dict[str, Any]) -> list[Worker]:
             continue
         fields = {str(k): str(v) for k, v in cast(dict[Any, Any], raw).items()}
         word = state_word(fields.get("state", ""))
-        if fields.get("transport") != "cli" or not fields.get("worker") or not fields.get("agent_host"):
+        if fields.get("transport") != "cli" or fields.get("kind") != "codex" or not fields.get("worker") or not fields.get("agent_host"):
             continue
         if word is None or word == "pending" or word in DONE_STATES:
             continue
@@ -310,6 +321,10 @@ class Driver:
                          "--message", out, "--unstick", worker.box, worker.name)
         if done.rc == 0:
             return self.note(worker, turn, "request", "answered", f"assigned and resumed with {out}")
+        if done.rc == 1 and done.out.strip():
+            return self.attention(worker, turn, "request", "execution assign refused some of the turn's blocks and resumed the"
+                                  f" worker with the rest ({out}); its lines name the refused ones, which the worker still waits for",
+                                  message)
         tries = int(last.get("tries", 0)) + 1 if last is not None and last.get("status") == "retry" else 1
         if done.rc == 1 and tries < TRIES:
             return self.note(worker, turn, "request", "retry", f"execution assign refused a block (try {tries} of {TRIES})",
@@ -396,7 +411,7 @@ class Driver:
                                                " the review is yours to read", message)
 
     def unconfirmed(self, pr: str) -> bool:
-        """A blocking at-open review of the PR on record, and no cleared confirm."""
+        """THE CONFIRM (the header): whether the PR's merge is one no posted clearance covers."""
         def records(kind: str) -> list[dict[str, Any]]:
             out: list[dict[str, Any]] = []
             for path in glob.glob(glob.escape(self.path("reviews")) + f"/{pr}-{kind}-*.json"):
@@ -407,12 +422,21 @@ class Driver:
                         data: Any = json.load(f)
                 except (OSError, ValueError):
                     continue
-                if isinstance(data, dict):
+                if isinstance(data, dict) and cast(dict[str, Any], data).get("comment") and isinstance(cast(dict[str, Any], data).get("at"), str):
                     out.append(cast(dict[str, Any], data))
             return out
 
-        blocking = any(r.get("decision") in ("confirm", "unreadable") for r in records("at-open"))
-        return blocking and not any(r.get("decision") == "cleared" for r in records("confirm"))
+        opened = records("at-open")
+        if not opened:
+            return False
+        newest = max(opened, key=lambda r: str(r["at"]))
+        if newest.get("decision") not in ("confirm", "unreadable"):
+            return False
+        cleared = [r for r in records("confirm") if r.get("decision") == "cleared" and str(r["at"]) > str(newest["at"])]
+        if not cleared:
+            return True
+        rc, out, _ = execute(["gh", "pr", "view", pr, "--repo", self.wave.repository, "--json", "headRefOid", "--jq", ".headRefOid"])
+        return rc != 0 or out.strip() not in {str(r.get("sha")) for r in cleared}
 
     def handback(self, worker: Worker, turn: int, message: str, what: Turn) -> None:
         pr = worker.fields.get("pr", "") or what.pr

@@ -283,8 +283,8 @@
 #   fleet-worker.sh wave heartbeat <wave.json> [--sleep <seconds>]   # one tick: prs whole, halted,
 #                          # each loop's last line, the driver's state and each new attention line,
 #                          # the timestamp last; a new attention line ends the sleep early
-#   fleet-worker.sh wave drive <wave.json> [--poll <seconds>] [--once]   # answer every CLI worker's
-#                          # returned turns by their marker: an execution request assigned, a result
+#   fleet-worker.sh wave drive <wave.json> [--poll <seconds>] [--once]   # answer every Codex CLI
+#                          # worker's returned turns by their marker: an execution request assigned, a result
 #                          # concluded, a review or confirm run beside it, a hand-back closed; each
 #                          # turn once (a ledger), one driver per wave, and anything no marker
 #                          # answers an attention line for the coordinator (wavedrive.py)

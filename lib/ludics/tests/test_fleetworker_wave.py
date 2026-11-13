@@ -3,6 +3,7 @@ shell suite's "wave kit" section drives the verbs end to end through fleet-worke
 
 import contextlib
 import fcntl
+import glob
 import io
 import json
 import os
@@ -1329,7 +1330,8 @@ class Markers(unittest.TestCase):
 
     def test_only_live_cli_rows_past_pending_are_served(self) -> None:
         doc = {"tasks": [row("t1"), row("t2", state="pending"), row("t3", state="merged #7 at abc"), row("t4", transport="subagent"),
-                         row("t5", state="reviewing round 2"), row("t6", worker=""), row("t7", state="spawned"), "x", {"task": "t8"}]}
+                         row("t5", state="reviewing round 2"), row("t6", worker=""), row("t7", state="spawned"), "x", {"task": "t8"},
+                         row("t9", kind="claude")]}
         self.assertEqual([w.task for w in wavedrive.workers_of(doc)], ["t1", "t5"])
         self.assertEqual(wavedrive.workers_of(doc)[0], wavedrive.Worker("t1", "w1-1", "far", row("t1")["fields"]))
 
@@ -1423,7 +1425,12 @@ class Drive(WaveDirCase):
             self.assertEqual((self.once()[1], self.calls), ("", []))
             self.resumes, self.rc["execution assign"] = 1, 4
             self.assertIn("DRIVE ATTENTION t42 turn 1: execution assign exit 4: read its lines before anything else", self.once()[1])
-        self.assertEqual(len(self.attention()), 2)
+            # Some blocks assigned (assign prints its message) and some refused: the worker is resumed, so the turn is over.
+            self.resumes, self.rc["execution assign"], self.out["execution assign"] = 2, 1, "EXECUTION_ASSIGNED x\n"
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t42 turn 2: execution assign refused some of the turn's blocks and resumed the worker with the rest", out)
+            self.assertEqual((self.once()[1], self.calls), ("", []), "a partly assigned turn is final: its worker runs a new one")
+        self.assertEqual(len(self.attention()), 3)
 
     def test_a_result_is_concluded_off_its_run_and_the_worker_told_the_verdict(self) -> None:
         line = 'EXECUTION_RESULT {"request_id":"wv-t42-rog-1","run":"/runs/7","exit":0,"observed_sha":"' + A + '"}'
@@ -1525,17 +1532,44 @@ class Drive(WaveDirCase):
             out = self.once()[1]
             self.assertEqual(self.calls[1][4:6], ["--pr", "9"], "the row's PR is read before the message's")
             self.assertIn("DRIVE ATTENTION t42 turn 1: board close refused: BOARD CLOSE REFUSED", out)
-            self.resumes, self.rc, self.rows = 2, {}, [row("t42")]
-            os.makedirs(os.path.join(self.wavedir, "reviews"))
-            with open(os.path.join(self.wavedir, "reviews", f"7-at-open-{A[:12]}.json"), "w") as f:
-                json.dump({"decision": "confirm"}, f)
+            self.rc, self.rows = {}, [row("t42")]
             self.out["board close"] = "BOARD CLOSE wv: closed\n"
-            self.assertIn("#7 merged with a blocking review and no cleared confirm on record; the task is closed", self.once()[1])
-            with open(os.path.join(self.wavedir, "reviews", f"7-confirm-{B[:12]}.json"), "w") as f:
-                json.dump({"decision": "cleared"}, f)
-            self.resumes = 3
-            self.assertIn("handback answered", self.once()[1])
-            self.resumes, self.message = 4, "HANDBACK t42\nNo PR: a measurement task.\n"
+            os.makedirs(os.path.join(self.wavedir, "reviews"))
+
+            def record(kind: str, sha: str, decision: str, at: str, comment: str = "https://x/c") -> None:
+                with open(os.path.join(self.wavedir, "reviews", f"7-{kind}-{sha[:12]}.json"), "w") as f:
+                    json.dump({"decision": decision, "at": at, "sha": sha, "comment": comment}, f)
+
+            def closed(turn: int) -> str:
+                self.resumes = turn
+                return self.once()[1]
+
+            said = "#7 merged with a blocking review and no cleared confirm on record; the task is closed"
+            record("at-open", A, "confirm", "2026-11-11T10:00:00Z", comment="")
+            self.assertIn("handback answered", closed(2), "a dry run's review is no review")
+            record("at-open", A, "confirm", "2026-11-11T10:00:00Z")
+            self.assertIn(said, closed(3))
+            self.out["pr"] = B + "\n"
+            for turn, (at, comment, sha) in enumerate((("2026-11-11T09:00:00Z", "https://x/c", B),   # cleared before the blocking review
+                                                       ("2026-11-11T11:00:00Z", "", B),              # a dry run's clearance
+                                                       ("2026-11-11T11:00:00Z", "https://x/c", C)),  # cleared at another head than merged
+                                                      start=4):
+                for path in glob.glob(os.path.join(self.wavedir, "reviews", "7-confirm-*.json")):
+                    os.remove(path)
+                record("confirm", sha, "cleared", at, comment)
+                self.assertIn(said, closed(turn), (at, comment, sha))
+            os.remove(os.path.join(self.wavedir, "reviews", f"7-confirm-{C[:12]}.json"))
+            record("confirm", B, "cleared", "2026-11-11T11:00:00Z")
+            self.rc["pr"] = 1
+            self.assertIn(said, closed(7), "a head GitHub does not answer for is not covered")
+            self.rc = {}
+            out = closed(8)
+            self.assertIn("handback answered", out)
+            self.assertEqual(self.calls[-1][:6], ["pr", "view", "7", "--repo", "o/staging", "--json"])
+            record("at-open", C, "merge", "2026-11-11T12:00:00Z")
+            self.out["pr"] = "unrelated\n"
+            self.assertIn("handback answered", closed(9), "the newest at-open review does not block: nothing to confirm")
+            self.resumes, self.message = 10, "HANDBACK t42\nNo PR: a measurement task.\n"
             self.assertIn("the hand-back names no PR", self.once()[1])
 
     def test_what_no_marker_answers_is_attention_and_what_is_not_a_state_is_read_again(self) -> None:

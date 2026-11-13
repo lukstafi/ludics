@@ -210,20 +210,22 @@ kit invents none.
    (it rebutted and pushed nothing), add `--again`. `--dry-run` posts nothing, for trying a
    reviewer or a project part on a PR that already merged.
 9. **The handoff driver.** A CLI worker ends its turn for every handoff, and most of those turns
-   need no judgment. Start one driver per wave, in the background, once the first CLI worker is
-   launched:
+   need no judgment. Start one driver per wave, in the background, once the first Codex CLI
+   worker is launched (it serves Codex CLI workers; a Claude CLI worker's turns, like a native
+   worker's, are yours to answer with the same verbs):
 
    ```
    fleet-worker.sh wave drive <wave.json>
    ```
 
-   It reads each CLI worker's returned turn by the marker in its final message and answers it:
+   It reads each such worker's returned turn by the marker in its final message and answers it:
    an `EXECUTION_REQUEST` is assigned and the worker resumed, an `EXECUTION_RESULT` concluded, a
    `REVIEW_REQUEST` or `CONFIRM_REQUEST` reviewed (step 8) while it serves the other workers, and
    a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Each turn is
    answered once: the ledger is `logs/drive.jsonl`. Anything a marker does not answer becomes an
    attention line and is yours: a design question, a plan, a worker that vanished, an assignment
-   refused six times, a review with no verdict, a merge whose blocking review was never cleared.
+   refused six times or in part, a review with no verdict, a merge that no posted clearance
+   of its head covers.
    The heartbeat prints each new attention line and returns early when one arrives. Answer the
    turn by hand; the worker's next turn is the driver's again. `wave turn <wave.json> <task>`
    answers one worker's turn, once, when no driver runs. A stop file `drive.stop` ends the driver.
