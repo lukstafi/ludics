@@ -127,6 +127,12 @@ the FIRST task in file order that is due and starts it, one a tick:
   started   with no row, ``wave prep <task> --base <origin/MAIN, fetched now> --profile ... [--host]
             [--legs] [--mode] [--issue|--source]`` (a dependent starts from the base its
             prerequisite merged into), then ``wave launch``
+When otherwise due, a task waiting only on ``after`` tasks with neither rows nor queue entries
+is told through a non-final attention line naming those tasks; it still starts when they merge.
+The last missing-task list told for each task is kept in memory (as the queue's and gate's
+refusals are): an unchanged list is said once, an empty list clears it, and a restarted driver
+tells it again. A task also
+waiting on capacity, a halt, THE GATE or a prerequisite with a row or queue entry stays silent.
 THE GATE is the launch gate, ``gate --target-repo <repository> --base-branch <MAIN>``, read BEFORE
 a task is prepared. A launch needs the branch's tip to be the prepared base, and a prep is not
 done twice, so a task prepared under a red base would be stale the moment the fix merged. While the
@@ -423,6 +429,7 @@ class Driver:
         self.ledger: list[dict[str, Any]] = []
         self.err = ""  # the last call's stderr
         self.queue_refusal = ""  # the queue's refusal last said, so it is said once
+        self.queue_missing: dict[str, tuple[str, ...]] = {}  # each task's missing prerequisites last told
         self.gate_refusal, self.gate_next = "", 0.0  # THE GATE's refusal last told, and when it is read again
 
     def path(self, *parts: str) -> str:
@@ -735,6 +742,7 @@ class Driver:
             return
         self.queue_refusal = ""
         capacity, tasks = queue
+        queued_tasks = {task.task for task in tasks}
         rows = dict(rows_of(doc))
         live = slots_held(doc)
         # A SLOT HELD (the header): a launch that may have started a worker whose row does not say so yet.
@@ -759,7 +767,10 @@ class Driver:
                 self.attention(slot, LAUNCH, "launch", f"the queued task cannot come due: {', '.join(ended)}, which it comes after, ended"
                                                        f" without a merge ({states[ended[0]]}); launch it by hand, or take it off the queue")
                 continue
-            if any(word not in LANDED for word in states.values()):
+            missing = tuple(sorted(dep for dep in states if dep not in rows and dep not in queued_tasks))
+            if not missing:
+                self.queue_missing.pop(queued.task, None)
+            if any(word not in LANDED and dep not in missing for dep, word in states.items()):
                 continue
             record = self.prepared(queued.task) if row is not None else None
             if record is not None and record.host != queued.host:
@@ -770,7 +781,14 @@ class Driver:
                 continue
             if last is not None and last.get("status") == "retry" and now() < float(last.get("next", 0)):
                 continue
+            if missing and self.queue_missing.get(queued.task) == missing:
+                continue  # already told: do not spend another potentially blocking gate read on it
             if self.call("halted").rc == 0 and self.gate_open(slot):
+                if missing:
+                    self.tell(slot, LAUNCH, f"the queued task waits only on after tasks with no row or queue entry: {', '.join(missing)};"
+                                           " check their names, or launch them when ready; this task will still start when they merge")
+                    self.queue_missing[queued.task] = missing
+                    continue  # a missing prerequisite must not hold up another due task
                 self.start(queued, slot, row is not None, record, last)
             return  # one launch a tick, and a halt, a closed gate or an unreachable anchor is the next tick's
 
