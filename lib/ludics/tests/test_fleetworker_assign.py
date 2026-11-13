@@ -216,11 +216,14 @@ class Outcomes(unittest.TestCase):
         requests = self.write("r.txt", message(block("a", checkout="/wt"), block("b", checkout="/other")))
         records = [{"request_id": "a", "state": "launching", "checkout": "/wt",
                     "request": {**BASE, "execution_host": "rog"}}]
+        def call(_cfg: Config, _verb: Sequence[str], _payload: dict[str, Any]) -> Done:
+            return Done(0, "{}")
+
         out, err = io.StringIO(), io.StringIO()
         with (mock.patch.object(execution, "listing", return_value=Done(0, json.dumps(records))),
               mock.patch.object(assign, "record_placement", side_effect=[cli.Exit(2, "no coordinator identity"), 0]),
               contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
-            rc = cmd_assign(self.cfg, [self.base, requests], call=lambda *_: Done(0, "{}"))
+            rc = cmd_assign(self.cfg, [self.base, requests], call=call)
         self.assertEqual(rc, 1)
         self.assertIn("ASSIGN BOARD NOTE a: no coordinator identity", err.getvalue())
         self.assertIn("EXECUTION_ASSIGNED b", out.getvalue())
