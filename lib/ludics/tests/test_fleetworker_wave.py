@@ -388,14 +388,35 @@ class Prep(WaveDirCase):
         self.assertEqual(rc, 0, out + err)
         self.assertIn("## The wave's own project part, t42\n", self.brief())
 
+    def test_a_kind_with_no_shipped_directory_takes_its_own_parts_from_the_wave(self) -> None:
+        os.unlink(os.path.join(self.wavedir, "common.md"))
+        # A kind with no shipped directory takes its own parts from the wave directory, one by one,
+        # and the shared ones from the repository; a wave directory's part wins over a shipped one.
+        os.makedirs(os.path.join(self.wavedir, "common"))
+        for name in waveprep.OWN:
+            self.write(f"common/{name}", f"## The wave's own {name} for @@WORKER@@\n")
+        self.write("common/startup.md", "## Startup, as this wave words it\n")
+        self.rewave(kind="codex", vars={"COORDINATOR": "local_1", "MAIN": "main"}, project_part="docs/absent.md")
+        self.write("project.md", "## The project\n")
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 0, out + err)
+        brief = self.brief()
+        self.assertTrue(brief.startswith("## The wave's own who.md for w1-42\n\n- Repository: `o/staging`"), brief[:120])
+        self.assertIn("## Startup, as this wave words it\n\n## The task\n", brief)
+        self.assertNotIn("## Startup (first thing", brief)
+        self.assertIn("## The wave's own blocking.md for w1-42\n\n## The wave's own context.md for w1-42\n\n## Landing: ship-pr\n", brief)
+        self.assertNotIn("## The review checkpoint", brief, "a wave file with no review asks for none")
+
     def test_a_part_neither_the_wave_nor_the_repository_has_refuses(self) -> None:
         os.unlink(os.path.join(self.wavedir, "common.md"))
         self.rewave(kind="codex")
         with self.world():
             rc, out, _ = self.prep("t42", "--base", "main")
         self.assertEqual(rc, 1)
-        self.assertIn(f"the template part {self.wavedir}/common.md does not exist, nor the shipped "
-                      f"{waveprep.shipped_dir('codex')}/common.md", out)
+        self.assertIn(f"WAVE PREP REFUSED t42: the common part who.md exists nowhere: not {self.wavedir}/common.md (the whole of"
+                      f" them), nor {self.wavedir}/common/who.md, nor {waveprep.shipped_dir('codex')}/who.md, nor"
+                      f" {waveprep.TEMPLATES}/shared/who.md", out)
         self.assert_made_nothing(out)
         self.write("common.md", "C\n")
         os.unlink(os.path.join(self.wavedir, "legs.md"))
@@ -539,6 +560,22 @@ class MixedWave(WaveDirCase):
                 self.assertFalse(os.path.exists(os.path.join(self.wavedir, "prep", f"{task}.json")))
             with open(os.path.join(self.wavedir, "reserve", "t42-gpu.json")) as f:
                 self.assertEqual(f.read(), leg, "t42's leg payload is the one its launch reserves")
+
+    def test_a_cli_task_with_no_common_part_of_the_waves_gets_the_shipped_cli_brief(self) -> None:
+        os.unlink(os.path.join(self.wavedir, "common.md"))
+        with open(self.path, "w") as f:
+            json.dump(wave_data(self.dir, vars={"COORDINATOR": "session-1", "MAIN": "main"}, **MIXED), f)
+        self.write("project.md", "## The project\n\nIts clone is @@CHECKOUT@@.\n")
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")
+        self.assertEqual(rc, 0, out + err)
+        with open(os.path.join(self.wavedir, "briefs", "brief-t42.md")) as f:
+            brief = f.read()
+        self.assertTrue(brief.startswith("## Who you are and where you work\n\nYou are a Codex CLI worker of wave `wv`, task `t42`"), brief[:120])
+        self.assertIn("Its clone is /home/u/repo.", brief, "CHECKOUT is the clone on the worker's host")
+        self.assertIn('cd "/home/u/repo-worktrees/w1-42" && ~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution slot', brief)
+        self.assertIn("`wv-t42-far-iterate`", brief)
+        self.assertNotIn("@@", brief)
 
     def test_profile_and_host_usage(self) -> None:
         for args, why in ((["--profile", "astra"], "--profile names 'astra', which the wave file's profiles do not (it has: sol, opus)"),
@@ -1113,9 +1150,78 @@ class Review(WaveDirCase):
         self.assertIn("a PR is its number", err)
 
 
+HEADINGS = ("## Who you are and where you work", "## Startup (first thing, before reading the issue)", "## The task",
+            "## Running tests", "## Requests: anything beyond your standing reservations",
+            "## Blocking rule (the one that costs the most when broken)", "## Keeping your context lean (this is a regular-mode wave)",
+            "## Landing: ship-pr", "## The review checkpoint", "## After the merge")
+
+
 class ShippedTemplate(unittest.TestCase):
     """The shipped template renders for a minimal ludics wave file with this checkout's project
     part, for an issue task in each planning mode and for a --source task: no placeholder left."""
+
+    def test_each_shipped_kind_renders_whole_with_every_section_in_order(self) -> None:
+        """A native Claude worker's brief and a Codex CLI worker's: the kind's own parts and the shared
+        ones, an issue task and a --source task, with the review checkpoint and without."""
+        root = os.path.dirname(os.path.dirname(waveprep.TEMPLATES))
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "tasks"))
+            with open(os.path.join(root, ".github", "wave-brief.md")) as f, open(os.path.join(d, "project.md"), "w") as g:
+                g.write(f.read())
+            for task in ("t7", "p8"):
+                with open(os.path.join(d, "tasks", f"{task}.md"), "w") as f:
+                    f.write("# Task @@T@@\n")
+            data: dict[str, Any] = {
+                "wave": "wave-x-ludics", "repository": "lukstafi/ludics", "checkout": "/home/u/ludics",
+                "worker_prefix": "wx", "agent_host": "mac-studio", "transport": "subagent", "kind": "claude",
+                "standing_purpose": "standing iteration for @@T@@", "vars": {"COORDINATOR": "local_c", "MAIN": "main"},
+                "profiles": {"sol": {"transport": "cli", "kind": "codex"}},
+                "hosts": {"rog": {"checkout": "/srv/ludics", "scratch": "/srv/scratch"}}}
+            for review in (False, True):
+                w = wave.parse_wave(os.path.join(d, "wave.json"), {**data, **({"review": {"kind": "claude", "model": "opus"}} if review else {})})
+                for profile, host in (("", ""), ("sol", "rog")):
+                    for task, number, issue, source in (("t7", "7", "lukstafi/ludics#7", ""), ("p8", "9", "", "lukstafi/ludics#9")):
+                        with self.subTest(review=review, profile=profile, task=task):
+                            prep = waveprep.Prep(w, task, number, issue, source, A, "none", [], set(), "/state", profile, host)
+                            brief = waveprep.brief_text(prep)
+                            self.assertNotIn("@@", brief)
+                            found = [line for line in brief.split("\n") if line.startswith("## ") and line in HEADINGS]
+                            self.assertEqual(found, [h for h in HEADINGS if review or h != "## The review checkpoint"])
+                            self.assertEqual(brief.count("REVIEW_REQUEST <PR number> <head sha>"), 1 if review else 0)
+                            self.assertIn(f"`HANDBACK {task}`", brief)
+                            self.assertIn('"purpose":"<what the run is for, in one line>"', brief)
+                            self.assertIn("never borrow, copy or export a credential from another box, file or account", brief)
+                            self.assertIn("fails on authentication or", brief)
+                            self.assertIn("Any other failed push is not that gate.", brief)
+                            self.assertIn("`pr-review.sh rerun lukstafi/ludics#<pr> <run id>...`", brief)
+                            self.assertEqual(brief.count("- Credentials:"), 1, "a rule both transports follow is stated once")
+                            if profile:
+                                self.assertIn("You are a Codex CLI worker of wave `wave-x-ludics`, task `" + task + "`", brief)
+                                self.assertIn("tmux session on `rog`", brief)
+                                self.assertIn("Never edit `/srv/ludics` (the project's main checkout", brief)
+                                self.assertIn(f'> "/srv/scratch/wave-x-ludics/{task}/runs/<label>.log" 2>&1; echo "exit=$?"', brief)
+                                self.assertIn("run in the\nforeground of your turn", brief)
+                                own = brief.split("## Startup")[0] + brief.split("## Running tests")[1].split("## Requests")[0]
+                                for word in ("bg-run.sh", "Claude Code", "subagent"):
+                                    self.assertNotIn(word, own, "a Codex CLI worker's own parts speak of its own runtime")
+                            else:
+                                self.assertIn("You are a native worker (a Claude Code subagent)", brief)
+                                self.assertIn("Never edit `/home/u/ludics` (the project's main checkout", brief)
+                                self.assertIn('bg-run.sh spawn "' + os.path.join(d, "scratch", task) + '/runs" -- <cmd> [arg...]', brief)
+                                self.assertNotIn("Codex", brief.split("## Landing: ship-pr")[0])
+
+    def test_the_parts_are_split_as_the_code_says_and_no_kind_restates_a_shared_one(self) -> None:
+        listed = {name: sorted(os.listdir(os.path.join(waveprep.TEMPLATES, name))) for name in ("shared", "native-claude", "cli-codex")}
+        self.assertEqual(listed["shared"], sorted(waveprep.SHARED))
+        self.assertEqual(listed["native-claude"], sorted(waveprep.OWN + waveprep.PLANNING))
+        self.assertEqual(listed["cli-codex"], sorted(waveprep.OWN))
+        self.assertEqual(set(waveprep.OWN) | set(waveprep.SHARED), set(waveprep.COMMON))
+        # The shared parts name neither transport's mechanism for holding a run: that is each kind's blocking.md.
+        for name in waveprep.SHARED:
+            with open(os.path.join(waveprep.TEMPLATES, "shared", name)) as f:
+                text = f.read()
+            for word in ("bg-run.sh spawn", "bg-run.sh wait", "subagent", "codex exec"):
+                self.assertNotIn(word, text, name)
 
     def test_a_minimal_ludics_wave_renders_every_shipped_part(self) -> None:
         root = os.path.dirname(os.path.dirname(waveprep.TEMPLATES))

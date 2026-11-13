@@ -80,28 +80,25 @@ the tail of every turn's text, and cuts a long hand-back.
 
 ## A Codex CLI worker's brief
 
-SKILL.md's *The brief* holds for every transport; a `codex exec` worker's brief differs from a
-native Claude worker's in these places, and a brief adapted from one must change each
-(wave-20261107 rewrote half of a native brief by hand, ludics#539):
+SKILL.md's *The brief* holds for every transport, and `wave prep` renders a Codex CLI worker's
+from the shipped template: `issue-wave/templates/cli-codex/` for what differs from a native Claude
+worker's, and `issue-wave/templates/shared/` for the rest
+([coordinator-kit.md](coordinator-kit.md#the-shipped-brief-template)). What differs is in those
+four parts, so read them there and restate none of it in a wave's own text (wave-20261107 rewrote
+half of a native brief by hand, ludics#539): batches, the watch and the merge wait run in the
+foreground of the turn; every handoff is the turn's final message; the scratch is the box's own;
+Codex refuses `rm -rf` and `rm -f`, so the worker leaves its build directory in place.
 
-- **Batches run in the foreground** of the turn, `fleet-worker.sh execution slot --wait-window --
-  <batch> > <log> 2>&1`, with no `--bg` and no `bg-run.sh wait`: the every-batch `--bg` rule is the
-  native Claude worker's ~180 s subagent cap, and a Codex exec has no cap to work around. The
-  watch and the merge wait stay in the foreground too (below).
-- **The handoff is turn-ended**: an `EXECUTION_REQUEST`, a question or the hand-back is the
-  turn's final message, and the worker ends its turn there; the coordinator reads it with `log
-  --last-result` and answers with `unstick`. There is no Agent, Read or `mcp__ccd_*` tool, and
-  no channel to message the coordinator mid-turn.
-- **Scratch is the box's own**: a directory under the worker's worktree or the box's
-  `$TMPDIR`, never a coordinator scratchpad path, which is on another machine or another
-  session's.
-- **Ignored data is the coordinator's to remove.** Codex refuses `rm -rf` and `rm -f` outright
-  (`rejected: rm -f style commands are not permitted`, in `stderr.log` only), even under
-  `--yolo`, so the `"${d:?}"` guard that a Claude brief carries does not apply. The brief says
-  the worker leaves its build directory and other ignored files in place. At close-out,
-  `farside-close` keeps a worktree that holds ignored data unless each such directory is named
-  with `--regenerable <dir>` (a `_build`, say, or `'**/log_files'` at any depth), which it then
-  removes with the tree.
+What that leaves to the coordinator:
+
+- **The handoff is read and answered from outside.** The turn's final message is read with `log
+  --last-result` and answered with `unstick`, by the handoff driver for the turns a marker names
+  ([coordinator-kit.md](coordinator-kit.md#when-to-call-each-verb), step 9) and by you for the rest.
+- **The scratch directory is on the worker's box**, under the wave file's `hosts.<box>.scratch`,
+  never a coordinator scratchpad path, which is on another machine or another session's.
+- **Ignored data is yours to remove.** At close-out, `farside-close` keeps a worktree that holds
+  ignored data unless each such directory is named with `--regenerable <dir>` (a `_build`, say, or
+  `'**/log_files'` at any depth), which it then removes with the tree.
 
 ## Blocking in a headless turn
 

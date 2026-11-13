@@ -3629,7 +3629,9 @@ class SuiteMapTest(Case):
 # --- the brief template (ludics#1072) ------------------------------------------------------------
 
 
-BRIEF_OK = "ok: the brief template (4 parts) renders, its references exist, and it holds no retired step"
+BRIEF_OK = "ok: the brief template (14 parts) renders, its references exist, and it holds no retired step"
+BRIEF_OWN = ("who.md", "tests.md", "blocking.md", "context.md")
+BRIEF_SHARED = ("where.md", "startup.md", "task.md", "requests.md", "landing.md", "checkpoint.md", "after-merge.md")
 BRIEF_COMMON = """\
 ## Who you are
 
@@ -3655,7 +3657,11 @@ def brief_tree(root: str) -> None:
     write(os.path.join(root, "lib", "ludics", "README.md"), "# lib\n\n## Which suites drive each module\n")
     write(os.path.join(root, "lib", "ludics", "fleetworker", "waveprep.py"), "")
     template = os.path.join(root, "issue-wave", "templates", "native-claude")
-    write(os.path.join(template, "common.md"), BRIEF_COMMON)
+    write(os.path.join(template, "who.md"), BRIEF_COMMON)
+    for part in BRIEF_OWN[1:]:
+        write(os.path.join(template, part), f"## {part}, for `@@WORKER@@`\n")
+    for part in BRIEF_SHARED:
+        write(os.path.join(root, "issue-wave", "templates", "shared", part), f"## {part}, in `@@WT@@`\n")
     write(os.path.join(template, "planning-paired.md"), BRIEF_PLANNING)
     write(os.path.join(template, "planning-paired+critique.md"), BRIEF_PLANNING)
     write(os.path.join(root, ".github", "wave-brief.md"), BRIEF_PROJECT)
@@ -3676,33 +3682,56 @@ class BriefTemplateTest(Case):
         result = self.expect("a root without waveprep.py owes no template", 0, "0 failed")
         self.lacks("no prep", "brief template", result)
 
+    def test_a_cli_kind_ships_its_own_parts_and_need_not_ship_planning_ones(self) -> None:
+        brief_tree(self.root)
+        for part in BRIEF_OWN:
+            write(os.path.join(self.root, "issue-wave", "templates", "cli-codex", part), f"## {part} on `@@HOST@@`\n")
+        self.expect("a CLI kind with its four own parts passes", 0, BRIEF_OK.replace("14 parts", "18 parts"))
+
     def test_each_defect_is_refused(self) -> None:
-        R, T = self.root, self.T
+        R, T, S = self.root, self.T, "issue-wave/templates/shared/"
         cases: tuple[tuple[str, Callable[[], None], str], ...] = (
             ("a missing template directory", lambda: shutil.rmtree(os.path.join(R, "issue-wave", "templates")),
              "FAIL: lib/ludics/fleetworker/waveprep.py: issue-wave/templates/ is missing"),
             ("a missing shipped part", lambda: os.remove(os.path.join(R, T, "planning-paired.md")),
              f"FAIL: {T}planning-paired.md: is missing, or no regular file"),
             ("a file prep never reads", lambda: write(os.path.join(R, T, "planning-pair.md"), "x\n"),
-             f"FAIL: {T}planning-pair.md: is no part wave prep reads"),
-            ("a directory for no kind", lambda: write(os.path.join(R, "issue-wave", "templates", "native-gpt", "common.md"), ""),
-             "FAIL: issue-wave/templates/native-gpt: is no native-<kind> template directory (kinds: claude, codex), nor review"),
+             f"FAIL: {T}planning-pair.md: is no part wave prep reads there"),
+            ("the old whole common part", lambda: write(os.path.join(R, T, "common.md"), "x\n"),
+             f"FAIL: {T}common.md: is no part wave prep reads there (it reads who.md, tests.md, blocking.md, context.md,"),
+            ("a directory for no kind", lambda: write(os.path.join(R, "issue-wave", "templates", "native-gpt", "who.md"), ""),
+             "FAIL: issue-wave/templates/native-gpt: is no template directory: native-<kind> or cli-<kind> (kinds: claude, codex),"
+             " shared or review"),
             ("no native-claude", lambda: os.rename(os.path.join(R, T), os.path.join(R, "issue-wave", "templates", "native-codex")),
              "FAIL: issue-wave/templates: has no native-claude/"),
-            ("an issue name in common.md", lambda: append(os.path.join(R, T, "common.md"), "Closes @@ISSUE@@\n"),
-             f"FAIL: {T}common.md: {T}common.md:9: @@ISSUE@@ is not rendered (no value for ISSUE)"),
+            ("no shared parts", lambda: shutil.rmtree(os.path.join(R, S)),
+             "FAIL: issue-wave/templates: has no shared/: the parts every transport's brief shares"),
+            ("a missing shared part", lambda: os.remove(os.path.join(R, S, "landing.md")),
+             f"FAIL: {S}landing.md: is missing, or no regular file"),
+            ("a kind's own part among the shared", lambda: write(os.path.join(R, S, "who.md"), "x\n"),
+             f"FAIL: {S}who.md: is no part wave prep reads there (it reads where.md, startup.md,"),
+            ("a shared part restated in a kind", lambda: write(os.path.join(R, T, "landing.md"), "x\n"),
+             f"FAIL: {T}landing.md: is no part wave prep reads there"),
+            ("a kind's missing own part", lambda: os.remove(os.path.join(R, T, "blocking.md")),
+             f"FAIL: {T}blocking.md: is missing, or no regular file"),
+            ("half a CLI brief", lambda: write(os.path.join(R, "issue-wave", "templates", "cli-codex", "who.md"), "## Who\n"),
+             "FAIL: issue-wave/templates/cli-codex/tests.md: is missing, or no regular file"),
+            ("an issue name in a common part", lambda: append(os.path.join(R, T, "who.md"), "Closes @@ISSUE@@\n"),
+             f"FAIL: {T}who.md: {T}who.md:9: @@ISSUE@@ is not rendered (no value for ISSUE)"),
+            ("a leg name in a shared part", lambda: append(os.path.join(R, S, "requests.md"), "@@LEG_WT@@\n"),
+             f"FAIL: {S}requests.md: {S}requests.md:2: @@LEG_WT@@ is not rendered"),
             ("a name no wave file supplies", lambda: append(os.path.join(R, T, "planning-paired.md"), "@@COORD@@\n"),
              f"FAIL: {T}planning-paired.md: {T}planning-paired.md:4: @@COORD@@ is not rendered"),
             ("PROJECT in the project part", lambda: append(os.path.join(R, ".github", "wave-brief.md"), "@@PROJECT@@\n"),
              "FAIL: .github/wave-brief.md: .github/wave-brief.md:5: @@PROJECT@@ is not rendered"),
-            ("a reference to no file", lambda: append(os.path.join(R, T, "common.md"), "See `issue-wave/references/gone.md`.\n"),
-             f"FAIL: {T}common.md: `issue-wave/references/gone.md` names no file of this tree"),
-            ("a skills path to no file", lambda: append(os.path.join(R, T, "common.md"), "Run `~/.claude/skills/ship-pr/x.sh`.\n"),
-             f"FAIL: {T}common.md: `~/.claude/skills/ship-pr/x.sh` names no file of this tree"),
-            ("a glob that matches nothing", lambda: append(os.path.join(R, T, "common.md"), "Run `~/ludics/scripts/nope-*.sh`.\n"),
-             f"FAIL: {T}common.md: `~/ludics/scripts/nope-*.sh` names no file"),
-            ("a heading the file lacks", lambda: append(os.path.join(R, T, "common.md"), "`issue-wave/references/notes.md`, *Idle*\n"),
-             f"FAIL: {T}common.md: `issue-wave/references/notes.md`, *Idle*: issue-wave/references/notes.md has no heading"),
+            ("a reference to no file", lambda: append(os.path.join(R, T, "who.md"), "See `issue-wave/references/gone.md`.\n"),
+             f"FAIL: {T}who.md: `issue-wave/references/gone.md` names no file of this tree"),
+            ("a skills path to no file", lambda: append(os.path.join(R, S, "task.md"), "Run `~/.claude/skills/ship-pr/x.sh`.\n"),
+             f"FAIL: {S}task.md: `~/.claude/skills/ship-pr/x.sh` names no file of this tree"),
+            ("a glob that matches nothing", lambda: append(os.path.join(R, T, "who.md"), "Run `~/ludics/scripts/nope-*.sh`.\n"),
+             f"FAIL: {T}who.md: `~/ludics/scripts/nope-*.sh` names no file"),
+            ("a heading the file lacks", lambda: append(os.path.join(R, T, "who.md"), "`issue-wave/references/notes.md`, *Idle*\n"),
+             f"FAIL: {T}who.md: `issue-wave/references/notes.md`, *Idle*: issue-wave/references/notes.md has no heading"),
             ("a heading across a line break", lambda: write(os.path.join(R, "lib", "ludics", "README.md"), "# lib\n"),
              "*Which suites drive each module*: lib/ludics/README.md has no heading with that text"),
             ("a retired step", lambda: append(os.path.join(R, T, "planning-paired+critique.md"), "Call `set_monitor` with auto_fix off.\n"),
@@ -3729,7 +3758,7 @@ class BriefTemplateTest(Case):
             write(os.path.join(R, ".github", "review-checkpoint.md"), "## This project\n\nRead `lib/ludics/README.md` at @@MAIN@@.\n")
 
         review_tree()
-        self.expect("the review parts and the project's review part pass", 0, BRIEF_OK.replace("4 parts", "10 parts"))
+        self.expect("the review parts and the project's review part pass", 0, BRIEF_OK.replace("14 parts", "20 parts"))
         cases: tuple[tuple[str, Callable[[], None], str], ...] = (
             ("a missing review part", lambda: os.remove(os.path.join(R, V, "confirm.md")),
              f"FAIL: {V}confirm.md: is missing, or no regular file: wave review looks this shipped part up"),
@@ -3751,7 +3780,7 @@ class BriefTemplateTest(Case):
     def test_words_of_other_shapes_are_not_read(self) -> None:
         # The boundary: only ~/.claude/skills/, ~/ludics/ and top-level-entry words are references.
         brief_tree(self.root)
-        append(os.path.join(self.root, self.T, "common.md"),
+        append(os.path.join(self.root, self.T, "who.md"),
                "`/usr/bin/lockf`, `../x/y.md`, `@@WT@@/z.md`, `fleetworker/`, `nowhere/a.md`, `README.md`\n")
         self.expect("words outside the reference grammar pass unread", 0, BRIEF_OK)
 

@@ -23,7 +23,8 @@ file and the heartbeat, `wavebrief.py`, `waveprep.py`, `wavelaunch.py`, `waveloo
 <wave>/tasks/<task>.md        each task's section
 <wave>/legs.md, leg.md        the GPU-home-box legs section; leg.md is rendered once per leg into @@LEGLINES@@
 <wave>/tail.md                optional, last: e.g. "where the task section differs, it wins"
-<wave>/common.md              optional: overrides the shipped common sections
+<wave>/common/<part>          optional: overrides one shipped common section (who.md, landing.md, ...)
+<wave>/common.md              optional: the common sections whole, in place of every shipped one
 <wave>/planning-<mode>.md     optional: overrides a shipped paired-planning section (paired, paired+critique)
 <wave>/project.md             optional: overrides the project part the wave file's project_part names
 <wave>/review/<part>          optional: overrides a shipped review part; review/project.md overrides the
@@ -32,15 +33,22 @@ file and the heartbeat, `wavebrief.py`, `waveprep.py`, `wavelaunch.py`, `waveloo
 
 ## The shipped brief template
 
-A native Claude wave copies no brief text forward. The repository ships the reference template in
-`issue-wave/templates/native-claude/`:
+A wave copies no brief text forward. The repository ships the reference template in
+`issue-wave/templates/`, one section to a part, and a rule every transport follows is in one file:
 
-- `common.md`, the sections every worker's brief shares;
-- `planning-paired.md` and `planning-paired+critique.md`, the paired-planning additions.
+- `shared/`: where the worker works, its startup check, the task, requests, landing through
+  ship-pr, the review checkpoint (only for a wave file that names a `review`) and the steps after
+  the merge;
+- `native-claude/` and `cli-codex/`: what differs by the worker's kind. That is who it is, how it
+  runs tests, how it holds a long run, and how it keeps its context lean;
+- `native-claude/planning-paired.md` and `planning-paired+critique.md`, the paired-planning
+  additions.
 
-`wave prep` uses a shipped part whenever the wave directory has no part of that name, and the wave
-directory's part wins when it has one (waveprep.py's header, *THE PARTS*). Nothing is shipped for
-`codex` yet, so a native Codex wave still writes its own `common.md` and planning parts.
+`wave prep` puts the common sections in a fixed order and takes each from the wave directory's
+`common/<part>` when it has one, else from the worker's own kind, else from `shared/`
+(waveprep.py's header, *THE COMMON PARTS*). A wave directory's `common.md` replaces all of them.
+Nothing is shipped for a native Codex or a Claude CLI worker's own four parts, so such a wave
+writes them under `common/`, and its planning parts.
 
 The template holds no project fact. It takes them from three places:
 
@@ -114,8 +122,7 @@ as a host:
 task. For a CLI task it makes nothing on the box and reserves nothing: `fleet-worker.sh launch`
 makes a CLI worker's worktree and takes its standing reservation in one fenced step. `wave launch
 <wave.json> <task>` runs that launch from what prep recorded, then reserves the task's legs and
-sets its row. Nothing is shipped for a CLI worker's brief yet, so the wave directory supplies its
-`common.md`.
+sets its row. A Codex CLI worker's brief is the shipped one (`cli-codex/` with `shared/`).
 
 ## Templates
 

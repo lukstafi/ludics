@@ -21,7 +21,7 @@ worker's agent on another box than the wave's agent host (a native worker runs w
 coordinator does, so ``--host`` with a ``subagent`` transport refuses). A host that is not the
 agent host is one of the wave file's ``hosts``: the worktree is then
 ``<hosts.<box>.checkout>-worktrees/<worker>`` and the scratch ``<hosts.<box>.scratch>/<wave>/<task>``,
-both on that box. HOST, WT and SCR are the task's own.
+both on that box. HOST, WT, SCR and CHECKOUT (the host's clone) are the task's own.
 
 A CLI TASK (transport ``cli``) is prepared and not made. ``fleet-worker.sh launch`` makes a CLI
 worker's worktree on its box and takes its standing reservation in one fenced step, so prep makes
@@ -31,28 +31,39 @@ launch fills in; unreserved), the assign base and the pending row, and its manif
 only the host can answer (a remote host's worktree path and local branch); ``launch`` refuses those
 on the box. Its shipped template directory is ``cli-<kind>``.
 
-THE BRIEF is wavebrief.py's render of these parts, in this order: ``common.md``; ``tasks/<task>.md``;
+THE BRIEF is wavebrief.py's render of these parts, in this order: THE COMMON PARTS; ``tasks/<task>.md``;
 with --legs, ``legs.md``, whose ``@@LEGLINES@@`` is ``leg.md`` rendered once per leg; with a --mode
 other than none, ``planning-<mode>.md``; and ``tail.md`` when it exists. Every part but tail.md is
 required. The NAMEs every part is given: WAVE, T (the task), N, ISSUE (``<issue_repository>#<N>``,
 issue tasks only) or SOURCE (--source tasks only), REPO, ISSUE_REPO (the wave file's
-issue_repository, every task), CHECKOUT (the wave file's checkout), WAVE_DIR, WT, BR, BASE (the full
+issue_repository, every task), CHECKOUT (the repository's clone on the worker's host), WAVE_DIR, WT, BR, BASE (the full
 SHA), SCR, WORKER, HOST (the agent host), MODE, PROJECT (THE PROJECT PART, only where a part names
 it), and the wave file's ``vars``; ``leg.md`` is given LEG (the box), LEG_ID (its reservation id),
 LEG_WT (the far-side worktree), LEG_CHECKOUT and the leg's ``vars`` besides. The reservations'
 purposes are rendered with the same NAMEs, PROJECT aside.
 
-THE PARTS, where each is found (ludics#1072): the wave directory's part wins; for the three parts
-the repository ships, ``SHIPPED`` (``common.md``, ``planning-paired.md``,
-``planning-paired+critique.md``), the shipped one under ``issue-wave/templates/native-<kind>/`` of
-this checkout stands in when the wave directory has none; any other part, and a shipped part for a
-kind with no shipped template (codex today), is the wave directory's or refuses. The shipped parts
-are the reference native-Claude brief, kept in step with issue-wave SKILL.md's *The brief* and read
-by check-prompts (checkprompts/brieftemplate.py). They hold no project fact: the NAMEs they use are
-the built-ins above plus ``SHIPPED_VARS`` (COORDINATOR, the coordinator's session id, and MAIN, the
-main branch), which the wave file's ``vars`` supply, and PROJECT. ``common.md`` speaks of no issue
-(no ISSUE, no SOURCE), so it renders for a --source task; the planning parts name ISSUE, so a paired
---source task refuses on them unless the wave directory gives its own.
+THE COMMON PARTS, the sections every worker's brief opens with. A wave directory's ``common.md`` is
+all of them, whole, when it exists (a wave that writes its own brief). Else they are ``COMMON``, in
+order: ``who.md``, ``where.md``, ``startup.md``, ``task.md``, ``tests.md``, ``requests.md``,
+``blocking.md``, ``context.md``, ``landing.md``, ``checkpoint.md`` (only for a wave file that names
+a ``review``: the review checkpoint's protocol, wavereview.py) and ``after-merge.md``. Each is the
+first of: the wave directory's ``common/<part>``; the shipped part of the worker's own kind,
+``issue-wave/templates/<native|cli>-<kind>/<part>``; the shipped ``issue-wave/templates/shared/<part>``.
+The repository ships a kind's ``OWN`` parts (who it is, how it runs tests, how it holds a long run,
+its context) for ``native-claude`` and ``cli-codex``, and the ``SHARED`` parts once, so a rule both
+transports follow is stated in one file. A part found nowhere refuses, naming it: a kind with no
+shipped directory (``native-codex``, ``cli-claude``) takes its own parts from the wave directory.
+
+THE PARTS, where each other part is found (ludics#1072): the wave directory's part wins; for the
+two ``PLANNING`` parts (``planning-paired.md``, ``planning-paired+critique.md``) the shipped one of
+the worker's kind stands in when the wave directory has none (``native-claude`` ships them); any
+other part is the wave directory's or refuses. The shipped parts are the reference brief, kept in
+step with issue-wave SKILL.md's *The brief* and read by check-prompts
+(checkprompts/brieftemplate.py). They hold no project fact: the NAMEs they use are the built-ins
+above plus ``SHIPPED_VARS`` (COORDINATOR, the coordinator's session id, and MAIN, the main branch),
+which the wave file's ``vars`` supply, and PROJECT. The common parts speak of no issue (no ISSUE,
+no SOURCE), so they render for a --source task; the planning parts name ISSUE, so a paired --source
+task refuses on them unless the wave directory gives its own.
 
 THE PROJECT PART, the value of PROJECT, read only when some part names ``@@PROJECT@@``: the wave
 directory's ``project.md`` when it exists, else the file the wave file's ``project_part`` names,
@@ -140,7 +151,12 @@ PR_PAGE = 100
 # THE PARTS: the shipped reference template, four directories above this module (lib/ludics/fleetworker/).
 TEMPLATES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
                          "issue-wave", "templates")
-SHIPPED = ("common.md", "planning-paired.md", "planning-paired+critique.md")
+# THE COMMON PARTS, in the brief's order; OWN are a kind's own, the rest are shipped once, shared.
+COMMON = ("who.md", "where.md", "startup.md", "task.md", "tests.md", "requests.md", "blocking.md", "context.md",
+          "landing.md", "checkpoint.md", "after-merge.md")
+OWN = ("who.md", "tests.md", "blocking.md", "context.md")
+SHARED = tuple(name for name in COMMON if name not in OWN)
+PLANNING = ("planning-paired.md", "planning-paired+critique.md")
 SHIPPED_VARS = ("COORDINATOR", "MAIN")
 READY = "ready"  # the manifest's last step: every write of prep landed (wave launch starts nothing without it)
 
@@ -426,7 +442,7 @@ def check_board(cfg: Config, prep: Prep) -> None:
 def values_of(prep: Prep) -> dict[str, str]:
     values = dict(prep.wave.vars)
     values.update({"WAVE": prep.wave.wave, "T": prep.task, "N": prep.number, "REPO": prep.wave.repository,
-                   "ISSUE_REPO": prep.wave.issue_repository, "CHECKOUT": prep.wave.checkout,
+                   "ISSUE_REPO": prep.wave.issue_repository, "CHECKOUT": prep.host_checkout,
                    "WAVE_DIR": prep.wave.directory, "WT": prep.worktree, "BR": prep.branch, "BASE": prep.base, "SCR": prep.scratch, "WORKER": prep.worker,
                    "HOST": prep.host, "MODE": prep.mode})
     if prep.issue_ref:
@@ -455,14 +471,33 @@ def read_or_none(prep: Prep, path: str) -> Part | None:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: cannot read {path} ({exc.strerror})")
 
 
+def common_parts(prep: Prep) -> list[Part]:
+    """THE COMMON PARTS (the header)."""
+    whole = read_or_none(prep, prep.path("common.md"))
+    if whole is not None:
+        return [whole]
+    parts: list[Part] = []
+    for name in COMMON:
+        if name == "checkpoint.md" and prep.wave.review is None:
+            continue
+        places = [prep.path("common", name), os.path.join(shipped_dir(prep.kind, prep.cli), name),
+                  os.path.join(TEMPLATES, "shared", name)]
+        found = next((p for p in (read_or_none(prep, place) for place in places) if p is not None), None)
+        if found is None:
+            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the common part {name} exists nowhere: not {prep.path('common.md')}"
+                          f" (the whole of them), nor {', nor '.join(places)}")
+        parts.append(found)
+    return parts
+
+
 def part(prep: Prep, *name: str, required: bool = True) -> Part | None:
-    """The wave directory's part, else (a SHIPPED part) the shipped one, else None or Stop (THE PARTS)."""
+    """The wave directory's part, else (a PLANNING part) the shipped one, else None or Stop (THE PARTS)."""
     path = prep.path(*name)
     found = read_or_none(prep, path)
     if found is not None:
         return found
     rel = "/".join(name)
-    shipped = os.path.join(shipped_dir(prep.kind, prep.cli), rel) if rel in SHIPPED else ""
+    shipped = os.path.join(shipped_dir(prep.kind, prep.cli), rel) if rel in PLANNING else ""
     found = read_or_none(prep, shipped) if shipped else None
     if found is None and required:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the template part {path} does not exist"
@@ -498,7 +533,7 @@ def rendered(prep: Prep, parts: list[Part], values: dict[str, str]) -> str:
 
 
 def brief_text(prep: Prep) -> str:
-    parts = [p for p in (part(prep, "common.md"), part(prep, "tasks", f"{prep.task}.md")) if p]
+    parts = [*common_parts(prep), *(p for p in (part(prep, "tasks", f"{prep.task}.md"),) if p)]
     if prep.legs:
         item = part(prep, "leg.md")
         assert item is not None
