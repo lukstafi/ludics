@@ -1451,6 +1451,28 @@ class Decide(WaveDirCase):
             rc, out, _ = self.decide("## Recommendation\n\nx\n", tier="2")
             self.assertEqual((rc, self.shim_calls, len(self.records())), (0, [], 1), "the wave's call under its other tier is the same decision")
 
+    def test_a_retry_that_overlaps_the_first_calls_post_waits_and_reads_its_record(self) -> None:
+        """The check, the post and the record are one locked step: a second call made while the first is posting cannot read an
+        empty ledger. The overlapping call here is made from inside the first one's post, so it must wait, and it is seen to."""
+        import fcntl
+        probes: list[bool] = []
+
+        def posting(argv: list[str], **_: Any) -> Done:
+            self.shim_calls.append([os.path.basename(argv[0]), *argv[1:]])
+            with open(os.path.join(self.wavedir, "decisions.lock"), "a") as other:
+                try:
+                    fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    probes.append(False)
+                except OSError:
+                    probes.append(True)
+            return self.comment
+
+        with self.world(), mock.patch.object(wavedecide, "run", side_effect=posting):
+            rc, out, _ = self.decide("**Coordinator decision (wv)**: x.\n")
+            self.assertEqual((rc, probes), (0, [True]), out + ": the lock is held across the post")
+            rc, out, _ = self.decide("**Coordinator decision (wv)**: x.\n")
+            self.assertEqual((rc, len(self.shim_calls), len(self.records())), (0, 1, 1), "the retry, once it has the lock, finds the record")
+
     def test_the_maintainers_answer_to_a_call_the_wave_recorded_is_posted_and_is_the_ledgers_row(self) -> None:
         heading = "## Decision update (maintainer, via the wave coordinator)"
         with self.world():

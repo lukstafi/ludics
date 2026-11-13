@@ -24,6 +24,10 @@ WHAT ``decide`` DOES, in this order:
    the other two) in ``<wave dir>/decisions.jsonl`` is the decision already made: it is printed
    again, and nothing is posted twice. The maintainer's answer to a call the wave recorded is
    another decision, in the wave's own words or not: it is posted and recorded.
+   ONE CALL AT A TIME per wave: steps 2 to 6 run under an exclusive ``flock`` on
+   ``<wave dir>/decisions.lock``, WAITED for, so a retry that overlaps the first call's post reads
+   the record that call wrote instead of an empty ledger. The wait is bounded by the holder's own
+   bounds (``pr-review.sh comment``'s retries, the ``gh`` timeout).
 3. The lease (not the halt).
 4. The comment, on ``<issue_repository>#<N>`` through ``pr-review.sh comment``: with
    ``--coordinator <model>``, whose footer marks the wave's own post, for tiers 2 and mid-wave;
@@ -47,6 +51,7 @@ What neither verb reads: the decision's merits, the body past its first line, or
 Exit: 0 recorded (or already); 1 refused; 2 usage; 4 the anchor or GitHub did not answer.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -129,6 +134,13 @@ def cmd_decide(cfg: Config, args: list[str]) -> int:
     if tier != "3" and re.match(r"#+\s*Decision\b", first):
         return refused(issue, f"a tier-{tier} body starts {first[:60]!r}, which reads as the maintainer's decision; head it as the"
                               " wave's own (a recommendation, the coordinator's decision)")
+    with open(os.path.join(wave.directory, "decisions.lock"), "a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        return decided(cfg, wave, issue, tier, call, by, task, opts["--body-file"], opts["--posted"])
+
+
+def decided(cfg: Config, wave: Wave, issue: str, tier: str, call: str, by: str, task: str, body_file: str, url: str) -> int:
+    """Steps 2 to 6, under the wave's decisions lock."""
     for entry in records_of(wave):
         if entry.get("issue") == issue and entry.get("call") == call and maintainers(entry) == (tier == "3"):
             cli.say(f"WAVE DECIDE {issue}: already recorded ({entry.get('url')}); nothing posted")
@@ -136,10 +148,9 @@ def cmd_decide(cfg: Config, args: list[str]) -> int:
     gated = anchor_gate(cfg, "WAVE DECIDE", issue, True)
     if gated != 0:
         return gated
-    url = opts["--posted"]
     if not url:
         helper = os.path.join(cfg.checkout, "ship-pr", "scripts", "pr-review.sh")
-        done = run([helper, "comment", issue, "--body-file", opts["--body-file"], *([] if tier == "3" else ["--coordinator", by])],
+        done = run([helper, "comment", issue, "--body-file", body_file, *([] if tier == "3" else ["--coordinator", by])],
                    capture=True)
         lines = substitution(done.out).splitlines()
         url = lines[-1].strip() if lines else ""
