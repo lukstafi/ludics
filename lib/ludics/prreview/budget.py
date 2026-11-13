@@ -49,9 +49,11 @@ commands, on an error status with no readable body), and a 403 or 429 an own ``g
 ``gh_unreadable_answer`` boundary). A 403 with any message is still the API's answer. The probe reads its own answer: the headers up to the
 first blank line, and the body after it in ``quota_failure``'s words (GraphQL answers an exhausted
 quota with a 200). A probe addresses the call's own endpoint: the one positional of ``api``,
-``repos/<repo>/actions/runs/<id>`` (or ``.../jobs/<id>`` with ``--job``) for ``run view``, and
-``graphql`` for every other gh command, since gh's pr and issue commands ride GraphQL, which has its
-own quota. A call whose endpoint cannot be told sets no hold. The budget covers this script's OWN
+``repos/<repo>/actions/runs/<id>`` (or ``.../jobs/<id>`` with ``--job``) for ``run view`` and for
+``run rerun`` and ``run cancel`` (ludics#1111: both are REST writes on that run, so the run's own
+GET carries the quota that refused them, where a GraphQL probe would answer and lift the hold),
+and ``graphql`` for every other gh command, since gh's pr and issue commands ride GraphQL, which
+has its own quota. A call whose endpoint cannot be told sets no hold. The budget covers this script's OWN
 calls, and they go to github.com alone: a GH_HOST naming another server, or a run await whose -R
 names one (HOST/OWNER/REPO), is refused with exit 2 before any call (ludics-lite#551; it used to put
 the calls silently outside the budget), and every probe names github.com. A ``retry`` caller's call
@@ -141,7 +143,7 @@ def endpoint(args: Sequence[str], gh_repo: str = "") -> str:
                 return a[1:] if a.startswith("/") else a
         return ""
     if first == "run":
-        if (args[1] if len(args) > 1 else "") != "view":
+        if (args[1] if len(args) > 1 else "") not in ("view", "rerun", "cancel"):
             return "graphql"
         repo = run_id = job = ""
         pending = ""

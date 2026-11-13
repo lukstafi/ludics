@@ -94,6 +94,15 @@ class Endpoint(unittest.TestCase):
         self.assertEqual(endpoint(["run", "view", "123", "-R", "github.com/a/b"], "o/r"),
                          "repos/a/b/actions/runs/123")
 
+    def test_a_rerun_and_a_cancel_are_probed_on_their_runs_rest_endpoint(self) -> None:
+        # ludics#1111: both ride REST, so a GraphQL probe would answer while the quota that
+        # refused them is still spent. The flags of each are not read as the id.
+        self.assertEqual(endpoint(["run", "rerun", "123", "--failed", "--repo", "o/r"]), "repos/o/r/actions/runs/123")
+        self.assertEqual(endpoint(["run", "rerun", "--failed", "-R", "o/r", "123"]), "repos/o/r/actions/runs/123")
+        self.assertEqual(endpoint(["run", "cancel", "123", "--repo", "o/r"]), "repos/o/r/actions/runs/123")
+        self.assertEqual(endpoint(["run", "rerun", "123", "--failed"]), "", "no repository named: no endpoint")
+        self.assertEqual(endpoint(["run", "watch", "123", "--repo", "o/r"]), "graphql", "every other run command")
+
     def test_an_endpoint_that_cannot_be_told_is_empty(self) -> None:
         self.assertEqual(endpoint(["run", "view", "123"]), "")
         self.assertEqual(endpoint(["api", "-X", "GET"]), "")
