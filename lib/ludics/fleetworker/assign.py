@@ -66,6 +66,18 @@ not dispatched or printed again, a refused request is asked afresh, and an unkno
 the registry's retry rule (``run`` refuses a dispatched record, so it is never launched twice). The
 message for an earlier call's assignment is not recomposed: keep it with ``--message``.
 
+THE BOARD / RECOVERY BOUNDARY. For a selected block with an explicit checkout, a successful
+run/window, or ASSIGN ALREADY from the registry, unions execution_host:checkout into the unique
+row whose worker matches the base, and its host into exec_hosts. This internal board write holds
+its lease lock across read/union/write, preserves other placements, and is safe to retry after
+an interrupted write or dispatch. No board or no matching worker row is a noted no-op: assign
+also serves workers without boards. An ambiguous row or a failed write is a NOTE and exit 1;
+the assignment still prints, and the same call repairs the board via ALREADY without redispatch.
+An ALREADY write also requires the registry's wave, worker, execution_host and checkout to match
+the base/block; a mismatched retry cannot register an unrelated cleanup path.
+Blocks without checkout and nonzero dispatch outcomes add nothing. Checkout is explicit data,
+never inferred from command text; this records a requested checkout, not proof a leg made it.
+
 stdout is the message, the assignments only, and a closing line asking for one ``EXECUTION_RESULT``
 line per assignment; for a native worker it is what the coordinator sends with SendMessage.
 ``--message <file>`` writes the same text to the file, and only when something was assigned, so a
@@ -75,7 +87,7 @@ once, only when something was assigned; a failed unstick leaves the records disp
 with the command that resends the file (exit 4): never assign again.
 
 Exit: 0 every selected request ASSIGNED or ALREADY (and the unstick, if asked, landed); 1 one or
-more REFUSED, none UNKNOWN; 2 usage, nothing asked; 4 one or more UNKNOWN, a registry that could not
+more REFUSED or BOARD NOTE failures, none UNKNOWN; 2 usage, nothing asked; 4 one or more UNKNOWN, a registry that could not
 be read first, or an unstick that did not land. What the steps print themselves (the record, the
 refresh line, a refusal) goes to stderr.
 """
@@ -92,6 +104,7 @@ from typing import Any, cast
 
 from ludics import cli
 from ludics.fleetworker import execution
+from ludics.fleetworker.board import record_placement
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import Done, err, run
@@ -396,6 +409,23 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
         err(f"ASSIGN UNKNOWN: the registry on {cfg.anchor} could not be read; nothing asked")
         return 4
 
+    def placement(block: dict[str, Any], record: dict[str, Any] | None = None) -> bool:
+        if "checkout" not in block:
+            return True
+        if record is not None and (
+            any(execution.field(record, "request", key) != base_fields[key] for key in ("wave", "worker"))
+            or execution.field(record, "request", "execution_host") != block["execution_host"]
+            or execution.recorded_checkout(record) != block["checkout"]
+        ):
+            err(f"ASSIGN BOARD NOTE {execution.shown(block['request_id'])}: the registry's placement or owner"
+                " differs from this request; reconcile it before recording a checkout")
+            return False
+        rc = record_placement(cfg, base_fields["wave"], base_fields["worker"], block["execution_host"], block["checkout"])
+        if rc:
+            err(f"ASSIGN BOARD NOTE {execution.shown(block['request_id'])}: placement write exit {rc};"
+                " retry this assign call to repair the row without dispatching again")
+        return rc == 0
+
     fw = fleet_worker_word(cfg)
     texts: list[str] = []
     refused = unknown = False
@@ -403,6 +433,8 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
         request_id, kind, box = block["request_id"], block["kind"], block["execution_host"]
         record = execution.record_of(records, request_id)
         if record is not None and record.get("state") != "reserved":
+            if not placement(block, record):
+                refused = True
             err(f"ASSIGN ALREADY {request_id}: the registry holds it {execution.jq_text(record.get('state'))};"
                 " an earlier call dispatched it, so it is not asked or assigned again")
             continue
@@ -418,6 +450,8 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
             err(f"ASSIGN REFUSED {request_id}: the {verb[1]} exited {answer.rc} (above); nothing assigned")
             refused = True
             continue
+        if not placement(block):
+            refused = True
         revision = assigned_revision(answer.out, block)
         if revision is None:
             err(f"ASSIGN UNKNOWN {request_id}: dispatched, but no resolved_revision could be read off its record (above);"

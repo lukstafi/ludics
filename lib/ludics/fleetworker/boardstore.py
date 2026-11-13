@@ -32,6 +32,13 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``t2032``, made an empty second row each time); the refusal names the nearest task the
         board has. ``new_row`` on a task that has its row is no refusal, as ``create`` is none on
         a board that exists, so a retried first write is safe.
+  placement {"wave", "worker", "host", "checkout"}                internal to execution assign:
+        union the host and host:checkout into exec_hosts and farside on the unique worker row,
+        under the same lease lock as set. No board or no matching row is a no-op (assign also
+        serves work without a wave board); ambiguous worker rows refuse. Existing words retain
+        their order, duplicates and the placeholder none disappear. exec_hosts accepts commas
+        or whitespace and is written comma-separated; farside is whitespace-separated, as
+        farside-close reads it. No row or board is created.
   note  {"wave", "create", "fields": [[key, value], ...]}           the wave's own facts (coordinator,
         scope, base, ...), shown above the table
   log   {"wave", "text"}                                            one line appended to the log,
@@ -298,6 +305,28 @@ def main(argv: list[str]) -> None:
                 refuse(f"the anchor state root {root} is not a directory")
             raise NoBoard(f"no board for wave {wave} on the anchor")
         sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False) + "\n" if payload.get("json") else render(doc))
+        return
+    if action == "placement":
+        worker = text_ok(payload.get("worker"), "worker")
+        host = text_ok(payload.get("host"), "host")
+        checkout = text_ok(payload.get("checkout"), "checkout")
+        rows = [row for row in cast(list[Doc], doc["tasks"]) if row["fields"].get("worker") == worker] if doc else []
+        if len(rows) > 1:
+            refuse(f"worker {json.dumps(worker)} names multiple rows; nothing written")
+        if not rows:
+            print(f"BOARD PLACEMENT NOTE {wave}: no row for worker {json.dumps(worker)}; nothing written")
+            return
+        row = rows[0]
+        fields = cast(dict[str, str], row["fields"])
+        for key, value, sep in (("exec_hosts", host, ","), ("farside", f"{host}:{checkout}", " ")):
+            old = fields.get(key, "")
+            words = (old.replace(",", " ") if key == "exec_hosts" else old).split()
+            fields[key] = sep.join(dict.fromkeys([*(word for word in words if word != "none"), value]))
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert doc is not None
+        row["updated_at"] = doc["updated_at"] = now
+        publish(path, doc)
+        print(f"BOARD PLACEMENT {wave}: {json.dumps(worker)}")
         return
     if action not in ("set", "note", "log"):
         refuse(f"unknown action {action}")

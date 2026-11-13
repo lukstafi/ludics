@@ -18,6 +18,9 @@ Its header is the contract: the document, what it accepts, and the markdown view
   board close <wave> <task> [--pr <n>] ...            a merged task's close-out, in one line (lease;
                                                       ``ludics.fleetworker.closeout``)
 
+``record_placement`` is assign's internal writer: the store unions a requested host/checkout
+into the unique worker row under the lease lock (boardstore.py's placement contract).
+
 A row's state is its ``state`` key, a STATE WORD first (``takeover``'s header states the vocabulary,
 ludics#810). ``set`` writes any value as given, and warns on stderr (``BOARD WARNING: ...``, the exit
 unchanged) for a ``state`` whose first word is no state word and for a ``status`` key, the name
@@ -208,3 +211,14 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
         cli.say(f"BOARD UNREACHABLE {cfg.anchor}")
         return 4
     return done.rc
+
+
+def record_placement(cfg: Config, wave: str, worker: str, host: str, checkout: str) -> int:
+    """Assign's idempotent placement union, performed inside the board writer's lease lock."""
+    check_identity(cfg)
+    raw = json.dumps({"wave": wave, "worker": worker, "host": host, "checkout": checkout})
+    script = prelude(cfg, cfg.anchor) + LEASE_MUTATION + store_command(raw)
+    done = run_on(cfg, cfg.anchor, script,
+                  ["BOARD", my_token(cfg), cfg.lock_wait, "placement", coordinator_id(cfg), PAYLOAD_ON_FD],
+                  stdout_to_stderr=True)
+    return 4 if done.unreachable else done.rc

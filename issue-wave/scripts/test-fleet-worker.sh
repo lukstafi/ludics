@@ -1920,12 +1920,14 @@ jq -n '{request_id:"launch-standing", wave:"w", worker:"w-standing", transport:"
   requested_revision:"origin/master", kind:"correctness", standing:true, unexpected:true}' > "$TMP/standing.json"
 expect "a refused standing reservation starts no worker" 1 "LAUNCH REFUSED testbox/w-standing: standing reservation failed; worktree kept" -- \
   env FLEET_BOXES=testbox "$FW" launch testbox w-standing --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/w-standing --standing "$TMP/standing.json"
+grep -q "notice: reusing existing worktree" <<<"$out" && ko "fresh preparation claimed reuse: $out" || ok "fresh preparation prints no reuse notice"
 [ -d "$proj-worktrees/w-standing" ] && ok "...keeping the prepared worktree" || ko "reservation refusal lost the worktree"
 [ ! -e "$ISSUE_WAVE_STATE/workers/w-standing" ] && ! "$REAL_TMUX" -L "$FLEET_TMUX_SOCKET" has-session -t iw-w-standing 2>/dev/null &&
   ok "...with no worker record or session" || ko "reservation refusal started a worker"
 jq 'del(.unexpected)' "$TMP/standing.json" > "$TMP/standing-ok.json"
 expect "a standing launch reuses the prepared worktree and reserves before starting" 0 "LAUNCHED testbox/w-standing " -- \
   env FLEET_BOXES=testbox "$FW" launch testbox w-standing --target-repo example/project --kind claude --brief "$brief" --repo "$proj" --branch claude/w-standing --standing "$TMP/standing-ok.json"
+grep -q "notice: reusing existing worktree" <<<"$out" && ok "pre-existing preparation prints its reuse notice" || ko "reuse notice missing: $out"
 settle w-standing
 "$FW" execution list > "$TMP/standing-record.json"
 jq -e --arg co "$proj-worktrees/w-standing" 'any(.[]; .request_id == "launch-standing" and .state == "launching" and .checkout == $co)' "$TMP/standing-record.json" >/dev/null &&
@@ -3629,6 +3631,13 @@ grep -q '"request_id"' <<<"$msg" && ko "a record reached the message: $msg" || o
 as_run "$(as_base subagent)" "$two"
 [ "$rc" -eq 0 ] && [ -z "$msg" ] && [ "$(grep -c '^ASSIGN ALREADY as-[12]: the registry holds it launching' <<<"$said")" -eq 2 ] &&
   ok "the same call again assigns nothing twice: each answers ALREADY" || ko "a retry (rc=$rc): $msg -- $said"
+# A board added after dispatch is repaired through ALREADY, under the board lease lock.
+"$FW" board set --create --new-row w as-row worker=/root/w869 farside=testbox:/worker exec_hosts=testbox >/dev/null || ko "could not create assignment row"
+as_run "$(as_base subagent)" "$two" --request as-1
+[ "$rc" -eq 0 ] && [ -z "$msg" ] && ok "ALREADY records a dispatched checkout without another assignment" || ko "board retry: $rc $msg $said"
+as_run "$(as_base subagent)" "$two" --request as-1
+got=$("$FW" board show w --json | jq -r '.tasks[] | select(.task == "as-row") | .fields | "\(.farside)|\(.exec_hosts)"')
+[ "$got" = "testbox:/worker testbox:/w/as-1|testbox" ] && ok "assignment retry preserves worker placement and one copy of its leg" || ko "placement: $got"
 # One refused among two: a measurement window on `other`, which as-2 holds (not standing), is refused.
 mixed=$(as_msg mixed "$(as_block as-3 testbox correctness "$asha" '{"command":"tools/test-run.sh run c"}')" \
   "$(as_block as-4 other measurement "$asha" '{"command":"tools/bench.sh"}')")
@@ -6201,11 +6210,12 @@ got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t80
 [ "$got" = "pending cli codex codex/wk-80" ] && ok "...its row pending, a codex CLI worker's" || ko "row: $got"
 expect "wave launch starts the worker on the worktree launch made" 0 "^WAVE LAUNCH t80: launched testbox/wk-80 worktree $proj-worktrees/wk-80 standing wkv-t80-testbox-iterate$" -- \
   "${FWK[@]}" wave launch "$K/wave.json" t80
+grep -q "notice: reusing existing worktree" <<<"$out" && ko "fresh standing launch claimed reuse: $out" || ok "fresh standing launch prints no reuse notice"
 grep -q "^LAUNCHED testbox/wk-80 kind=codex " <<<"$out" && ok "...printing launch's own line" || ko "launch output: $out"
 got=$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t80-testbox-iterate") | "\(.request.standing) \(.request.transport) \(.checkout)"')
 [ "$got" = "true cli $proj-worktrees/wk-80" ] && ok "...the standing record on that worktree" || ko "record: $got"
 got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t80") | .fields | "\(.state) \(.worktree) \(.standing) \(.farside)"')
-[ "$got" = "launched $proj-worktrees/wk-80 wkv-t80-testbox-iterate none" ] && ok "...and the row launched" || ko "row: $got"
+[ "$got" = "launched $proj-worktrees/wk-80 wkv-t80-testbox-iterate testbox:$proj-worktrees/wk-80" ] && ok "...and the row launched" || ko "row: $got"
 [ "$(git -C "$proj-worktrees/wk-80" branch --show-current)" = codex/wk-80 ] && [ "$(git -C "$proj-worktrees/wk-80" rev-parse HEAD)" = "$pbase" ] &&
   ok "...on its branch at prep's base" || ko "worktree: $(git -C "$proj-worktrees/wk-80" status -sb 2>&1 | head -n 1)"
 settle wk-80

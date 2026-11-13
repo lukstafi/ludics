@@ -1099,9 +1099,12 @@ form](#standing-iteration-reservation) (`--from-run`, read on the reservation's 
 no run and the hand-back's `--verdict`), or the leg's `bg-run.sh` directory with `--from-bg-run`
 (looked for on the agent host too; `--box <box>` when that or the execution host does not answer).
 A leg no batch ran under has no far-side worktree to read, and its hand-back concludes it
-`not-launched` by itself (`execution.py`'s THE UNUSED LEG). The coordinator records the far-side checkout on the board (`board set <wave>
-<task> farside=<box>:<path>`) and removes it at close-out with the worker's local one, once that
-conclusion has landed. A conclusion that
+`not-launched` by itself (`execution.py`'s THE UNUSED LEG). `wave launch` records the CLI worker's
+own checkout and reserved legs on the board. `execution assign` adds each requested explicit
+checkout as a `farside` word and its box to `exec_hosts`, including an ALREADY retry after dispatch;
+it preserves earlier words. These writes serve the coordinator: once the conclusions have landed,
+`farside-close` is the one removal call for those checkouts. For work launched outside these verbs,
+the coordinator still records its checkouts on the row before close-out. A conclusion that
 reads a checkout which is not clean (a golden promoted there on hardware) says so in an
 `OBSERVED-FROM WARNING` line and still concludes: resume the worker to commit or revert it before
 the removal discards it. A measurement

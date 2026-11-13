@@ -38,7 +38,8 @@ WHAT IT DOES, in this order:
 5. Each leg's standing reservation (``execution run`` of the payload prep wrote), on the far-side
    worktree a leg will make.
 6. The row: ``worktree`` (the path launch made, read off its ``LAUNCHED`` line), ``state=launched``,
-   and ``standing``, ``exec_hosts`` and ``farside`` naming only what was reserved.
+   ``standing`` and ``exec_hosts`` naming what was reserved, and ``farside`` naming the worker's
+   own host/worktree plus each reserved leg. The worker path is read off ``LAUNCHED`` too.
 7. The manifest records the launch.
 
 THE RECOVERY BOUNDARY. A launch refused before it started anything (exit 1 from step 4: a gate, a
@@ -77,7 +78,7 @@ else dirty=unreadable; fi
 printf 'worktree=%s dirty=%s\n' "$head" "$dirty"
 """
 STATE = re.compile(r"worktree=(\S+) dirty=(\S+)")
-LAUNCHED = re.compile(r"LAUNCHED \S+ .*?\bcwd=(/.*?) stream=")  # farside.py's line; a path may hold blanks
+LAUNCHED = re.compile(r"LAUNCHED ([^/\s]+)/\S+ .*?\bcwd=(/.*?) stream=")  # farside.py's line; a path may hold blanks
 MKDIR = 'mkdir -p -- "$1"\n'
 TEXTS = ("wave", "repository", "main", "transport", "kind", "model", "effort", "host", "host_checkout", "scratch", "worker",
          "branch", "base", "worktree", "number", "issue_ref", "standing")
@@ -218,7 +219,7 @@ def launched(cfg: Config, path: str, task: str) -> int:
         cli.say(f"WAVE LAUNCH UNKNOWN {task}: launch exited 0 and printed no LAUNCHED line with its cwd; read status"
                 f" {record.host} {record.worker} before anything else")
         return 4
-    worktree = found[-1].group(1)
+    host, worktree = found[-1].group(1, 2)
     notes: list[str] = []
     reserved: list[Leg] = []
     for leg in record.legs:
@@ -228,7 +229,7 @@ def launched(cfg: Config, path: str, task: str) -> int:
             reserved.append(leg)
         else:
             notes.append(f"the standing leg on {leg.box} is not reserved (execution run exit {rc})")
-    far = " ".join(f"{leg.box}:{leg.worktree}" for leg in reserved)
+    far = " ".join(dict.fromkeys([f"{host}:{worktree}", *(f"{leg.box}:{leg.worktree}" for leg in reserved)]))
     standing = " ".join([record.standing, *(leg.standing for leg in reserved)])
     rc = run([script, "board", "set", record.wave, task, f"worktree={worktree}", "state=launched", f"standing={standing}",
               f"exec_hosts={','.join([record.host, *(leg.box for leg in reserved)])}", f"farside={far or 'none'}"],

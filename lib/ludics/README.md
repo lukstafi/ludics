@@ -293,7 +293,7 @@ fleetworker/tiprun.py
     issue-wave/scripts/test-fleet-worker.sh "launch /" tip-run
 
 fleetworker/assign.py
-    issue-wave/scripts/test-fleet-worker.sh "execution assign"
+    issue-wave/scripts/test-fleet-worker.sh "execution assign" board
 
 fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker/waveloop.py fleetworker/wavereview.py fleetworker/wavelaunch.py fleetworker/wavedrive.py fleetworker/wavedecide.py
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
@@ -436,6 +436,14 @@ prreview/rerun.py
 ```
 
 ## Checking
+
+Placement recovery (#1133): `wave launch` reads the worker's host/path from `LAUNCHED` and
+records it beside reserved legs. `execution assign` calls the board store's internal `placement`
+operation under the lease lock, including for matching `ASSIGN ALREADY` records: a union keeps
+one copy of each host/checkout across partial writes and retries. It matches the base's worker
+to an existing row and creates neither rows nor boards. The manifest and row schema are unchanged;
+`exec_hosts` stays comma-separated and `farside` uses the existing whitespace-separated words.
+Unit cases in the wave, assign and board suites pin those paths and the recovery boundary.
 
 ```sh
 npx --yes pyright@1.1.414 --pythonplatform Linux                  # from the repo root

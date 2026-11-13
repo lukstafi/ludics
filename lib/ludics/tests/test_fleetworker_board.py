@@ -75,6 +75,23 @@ class Store(StoreCase):
         self.assertEqual(self.set("2032", ("state", "dropped"))[0], 0)
         self.assertEqual([row["task"] for row in self.doc()["tasks"]], ["t2032", "t2040", "2032"])
 
+    def test_placement_is_an_idempotent_union_and_missing_rows_are_not_created(self) -> None:
+        payload = {"wave": "w", "worker": "wk", "host": "gpu", "checkout": "/leg"}
+        self.assertEqual(self.call("placement", payload)[0], 0)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "boards")))
+        self.set("t1", ("worker", "wk"), ("exec_hosts", "mac,mac"), ("farside", "none"), ("state", "launched"))
+        for _ in range(2):
+            self.assertEqual(self.call("placement", payload)[0], 0)
+        fields = self.doc()["tasks"][0]["fields"]
+        self.assertEqual(fields, {"worker": "wk", "exec_hosts": "mac,gpu", "farside": "gpu:/leg", "state": "launched"})
+        before = self.doc()
+        self.assertEqual(self.call("placement", {**payload, "worker": "absent"})[0], 0)
+        self.assertEqual(self.doc(), before)
+        self.set("t2", ("worker", "wk"))
+        before = self.doc()
+        self.assertEqual(self.call("placement", payload)[0], 1)
+        self.assertEqual(self.doc(), before, "an ambiguous identity writes nothing")
+
     def test_hostile_text_round_trips_in_every_field(self) -> None:
         self.assertEqual(self.set(HOSTILE, ("state", HOSTILE), ("multi", "one\ntwo"))[0], 0)
         self.assertEqual(self.call("note", {"wave": "w", "fields": [["scope", HOSTILE]]})[0], 0)

@@ -1148,7 +1148,9 @@ if [ -z "$cwd" ]; then
     common=$(cd "$cwd" 2>/dev/null && d=$(git rev-parse --git-common-dir 2>/dev/null) && cd "$d" 2>/dev/null && pwd -P)
     want=$(cd "$repo" 2>/dev/null && d=$(git rev-parse --git-common-dir 2>/dev/null) && cd "$d" 2>/dev/null && pwd -P)
     [ -n "$common" ] && [ "$common" = "$want" ] || refuse "$cwd exists but is not a worktree of $repo (common dir ${common:-unknown}); remove it, or pass it explicitly with --cwd"
-    echo "notice: reusing existing worktree $cwd (on $branch)"
+    if [ "${launch_revalidation:-0}" != 1 ]; then
+      printf '%s\n' "notice: reusing existing worktree $(printf '%q' "$cwd") (on $(printf '%q' "$branch"))"
+    fi
   fi
 else
   cwd=$(expand_tilde "$cwd")
