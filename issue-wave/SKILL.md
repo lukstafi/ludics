@@ -1196,8 +1196,7 @@ controlled through the tools in your coordinator's file, never through those com
      on a box shared with workers' batches (wave-20261102: a `device_init_deadline` timing claim
      on macbook-pro beside five workers' batches, settled in three minutes). Then
      `resume-launches` and restart `wave loop` with `--resume-after <red id>` to run at the current
-     tip at once, even when that
-     is still the red SHA: the targeted batch is no verdict, so the base gate keeps reading the
+     tip at once, even when that is still the red SHA: the targeted batch is no verdict, so the base gate keeps reading the
      loop's fail record there and nothing launches onto that tip until the new run passes. One
      failure is a regression, as a red CI
      rerun is below. The CI rerun is a new attempt, so judge that attempt and not the red already read:

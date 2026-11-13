@@ -33,7 +33,9 @@ THE TARGETED RERUN: ``wave loop <wave.json> <name> --rerun <red id> -- <command>
 this loop's numbered records, requiring the named record to be concluded fail/timeout with a full
 observed SHA. It starts one plain tip-run at that SHA, with the configured loop's box, checkout,
 purpose and CPU setting, a separate ``<wave>-<name>-rerun`` id prefix and payload file, and NEVER
-an integration field. It accepts no payload overrides. The caller supplies the narrowed command;
+an integration field. It accepts no payload overrides. GPU-loop purposes are refused: their
+``pinned_backend`` mark also makes a record last-green evidence, independently of integration;
+use the existing full pinned-command GPU rerun path instead. The caller supplies the narrowed command;
 its coverage and repeat semantics are the coordinator's judgment, not inspected here. Wait with
 ``execution tip-run --wait <id>``. No automatic retry or resume-launches: triage must finish first.
 
@@ -89,7 +91,7 @@ from ludics.fleetworker import revision
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import field, gh_timeout, listing, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.tiprun import started_run
+from ludics.fleetworker.tiprun import LOOP as GPU_LOOP, started_run
 from ludics.fleetworker.transport import Done, run
 from ludics.fleetworker.wave import USAGE, Loop, Wave, load_wave, loop_log, shim
 from ludics.fleetworker.wavebrief import write_atomically
@@ -187,6 +189,8 @@ class Driver:
         return None
 
     def rerun(self, red_id: str, command: list[str]) -> int:
+        if self.loop.purpose.startswith(GPU_LOOP):
+            die("wave loop --rerun: targeted GPU reruns could become backend integration evidence; use the full pinned-command path")
         red = next((r for r in self.mine() if str(r.get("request_id")).lower() == red_id.lower()), None)
         if (red is None or red.get("state") != "concluded" or red.get("verdict") not in ("fail", "timeout")
                 or not isinstance(red.get("observed_sha"), str) or not SHA40.fullmatch(red["observed_sha"])):

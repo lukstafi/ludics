@@ -184,7 +184,8 @@ kit invents none.
      `execution tip-run --wait <id>`; the verb derives the red SHA and a separate rerun prefix,
      using the configured loop's placement with no integration verdict. It requires a concluded
      fail/timeout record of that loop; the caller still judges the narrowed command and triage
-     before restarting. Unknown or unfinished records must be reconciled first.
+     before restarting. GPU-loop purposes refuse this targeted form: rerun their full pinned
+     command through the existing GPU path. Unknown or unfinished records must be reconciled first.
    - `LOOP UNKNOWN`: reconcile the record it names.
    - A stop file (`loops.stop`, or `loop-<name>.stop`) ends it with its run left running. The
      next driver resumes that run rather than starting another.

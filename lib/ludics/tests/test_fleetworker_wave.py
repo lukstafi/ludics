@@ -1361,6 +1361,17 @@ class Loop(unittest.TestCase):
         self.assertEqual(payload["execution_host"], "rog")
         self.assertIn("TIP-RUN STARTED", out)
 
+    def test_targeted_gpu_rerun_refuses_before_it_can_become_backend_evidence(self) -> None:
+        data = wave_data(self.dir)
+        data["loops"]["cc"]["purpose"] = "GPU integration loop, hip: tests"
+        with open(self.path, "w") as f:
+            json.dump(data, f)
+        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-rerun-1 rog {A} /r\n")]
+        rc, out = self.drive([rec(2, "concluded", "fail", A)], "--rerun", "wv-cc-2", "--", "tools/repeat")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("GPU", out)
+        self.assertEqual(self.calls, [], "a targeted pass must not gain pinned_backend evidence")
+
     def test_rerun_refuses_a_missing_non_red_or_unreadable_revision(self) -> None:
         for records in ([], [rec(2, "concluded", "pass", A)], [rec(2, "running", "fail", A)],
                         [rec(2, "concluded", "fail", "bad")]):
