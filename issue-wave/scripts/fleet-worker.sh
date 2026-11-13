@@ -241,9 +241,10 @@
 #                          # CHECKED; exit 0 no hits, 1 hits, 4 a head unchecked or the list
 #                          # incomplete (lib/ludics/fleetworker/siblingscan.py)
 #   fleet-worker.sh halt <reason> | resume-launches | halted
-#   fleet-worker.sh board set [--create] <wave> <task> <key>=<value>...   # the wave board, one JSON
-#                          # document per wave under FLEET_ANCHOR_STATE/boards (ludics-lite#619): a
+#   fleet-worker.sh board set [--create] [--new-row] <wave> <task> <key>=<value>...   # the wave board,
+#                          # one JSON document per wave under FLEET_ANCHOR_STATE/boards (ludics-lite#619): a
 #                          # task's row, each key set; any text in a value, split at the first `=`;
+#                          # a task with no row yet is refused, naming the nearest, without --new-row;
 #                          # warns on a `state` with no state word and on `status` (takeover.py)
 #   fleet-worker.sh board note [--create] <wave> <key>=<value>...   # the wave's own facts
 #   fleet-worker.sh board log <wave> <text>...   # one line appended to its log, stamped

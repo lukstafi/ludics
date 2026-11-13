@@ -183,7 +183,7 @@ class Prep(unittest.TestCase):
         self.assertEqual((leg["request_id"], leg["execution_host"], leg["checkout"], leg["purpose"]),
                          ("wv-t42-gpu-box-iterate", "gpu-box", "/home/u/repo-worktrees/w1-42-gpu", "GPU cuda for t42"))
         board = self.shim_calls[2]
-        self.assertEqual(board[2:5], ["--create", "wv", "t42"])
+        self.assertEqual(board[2:6], ["--create", "--new-row", "wv", "t42"])
         for want in ("issue=o/up#42", f"worktree={wt}", "exec_hosts=mac,gpu-box", "state=pending", "requests=none",
                      "standing=wv-t42-mac-iterate wv-t42-gpu-box-iterate", "planning=paired+critique",
                      f"plan_dir={self.dir}/state/plans/wv-42", "farside=gpu-box:/home/u/repo-worktrees/w1-42-gpu"):

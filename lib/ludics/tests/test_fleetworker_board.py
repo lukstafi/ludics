@@ -40,8 +40,9 @@ class StoreCase(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         return json.loads(out)
 
-    def set(self, task: str, *pairs: tuple[str, str], create: bool = True) -> tuple[int, str, str]:
-        return self.call("set", {"wave": "w", "create": create, "task": task, "fields": [list(p) for p in pairs]})
+    def set(self, task: str, *pairs: tuple[str, str], create: bool = True, new_row: bool = True) -> tuple[int, str, str]:
+        return self.call("set", {"wave": "w", "create": create, "new_row": new_row, "task": task,
+                                 "fields": [list(p) for p in pairs]})
 
 
 class Store(StoreCase):
@@ -54,6 +55,25 @@ class Store(StoreCase):
         self.assertEqual(self.set("t", ("k", "w"))[0], 0, "create on an existing board is no refusal")
         self.assertEqual(self.doc()["tasks"][0]["fields"], {"k": "w"})
         self.assertEqual(self.call("log", {"wave": "w", "text": " "})[2], "BOARD REFUSED: a log line must not be empty\n")
+
+    def test_a_task_with_no_row_is_refused_unless_new_row(self) -> None:
+        """#1114: `2032` typed for `t2032` made an empty second row each time."""
+        self.set("t2032", ("state", "launched"))
+        self.set("t2040", ("state", "launched"))
+        before = self.doc()
+        rc, out, err = self.set("2032", ("state", "merged"), new_row=False)
+        self.assertEqual((rc, out), (1, ""))
+        self.assertEqual(err, 'BOARD REFUSED: no task "2032" on the board of w; the nearest is "t2032"'
+                              " (a new row takes set --new-row)\n")
+        rc, _, err = self.set("zz", ("state", "merged"), new_row=False)
+        self.assertEqual((rc, err), (1, 'BOARD REFUSED: no task "zz" on the board of w (a new row takes set --new-row)\n'))
+        self.assertEqual(self.call("set", {"wave": "w", "create": False, "task": "2032", "fields": [["k", "v"]]})[0], 1,
+                         "a payload that does not say new_row does not add one")
+        self.assertEqual(self.doc(), before, "a refusal writes nothing")
+        self.assertEqual(self.set("t2032", ("state", "merged"), new_row=False)[0], 0, "a row that exists needs no flag")
+        self.assertEqual(self.set("t2032", ("pr", "7"))[0], 0, "new_row on a row that exists is no refusal")
+        self.assertEqual(self.set("2032", ("state", "dropped"))[0], 0)
+        self.assertEqual([row["task"] for row in self.doc()["tasks"]], ["t2032", "t2040", "2032"])
 
     def test_hostile_text_round_trips_in_every_field(self) -> None:
         self.assertEqual(self.set(HOSTILE, ("state", HOSTILE), ("multi", "one\ntwo"))[0], 0)
@@ -231,8 +251,20 @@ class CommandLine(unittest.TestCase):
     def test_a_field_splits_at_its_first_equals_sign(self) -> None:
         self.assertEqual(
             self.payload("set", "--create", "w", "ll#1", "state=a=b", "pr="),
-            ("set", {"wave": "w", "create": True, "task": "ll#1", "fields": [["state", "a=b"], ["pr", ""]]}),
+            ("set", {"wave": "w", "create": True, "new_row": False, "task": "ll#1", "fields": [["state", "a=b"], ["pr", ""]]}),
         )
+
+    def test_new_row_is_sets_alone_and_read_with_create_in_either_order(self) -> None:
+        for flags in (["--create", "--new-row"], ["--new-row", "--create"]):
+            got = self.payload("set", *flags, "w", "t", "k=v")[1]
+            self.assertEqual((got["create"], got["new_row"]), (True, True), flags)
+        self.assertEqual(self.payload("set", "--new-row", "w", "t", "k=v")[1],
+                         {"wave": "w", "create": False, "new_row": True, "task": "t", "fields": [["k", "v"]]})
+        self.assertIn("board note: takes no --new-row", self.refused("note", "--new-row", "w", "k=v"))
+        self.assertIn("board log: takes no --new-row", self.refused("log", "--new-row", "w", "x"))
+        self.assertEqual(self.payload("set", "--new-row", "--new-row", "t", "k=v")[1]["wave"], "--new-row",
+                         "a flag is read once; a second is the wave, which the store's grammar refuses")
+        self.assertIn('expected <key>=<value>, got "--new-row"', self.refused("set", "w", "t", "k=v", "--new-row"))
 
     def test_create_is_read_only_right_after_the_action(self) -> None:
         self.assertEqual(self.payload("log", "w", "--create", "x")[1], {"wave": "w", "text": "--create x"})
@@ -285,7 +317,7 @@ class Check(unittest.TestCase):
         shutil.rmtree(self.root)
 
     def row(self, task: str, **fields: str) -> None:
-        payload = {"wave": "w", "create": True, "task": task, "fields": [[k, v] for k, v in fields.items()]}
+        payload = {"wave": "w", "create": True, "new_row": True, "task": task, "fields": [[k, v] for k, v in fields.items()]}
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(boardstore.run(["-", self.root, "set", "coord", json.dumps(payload)]), 0)
 

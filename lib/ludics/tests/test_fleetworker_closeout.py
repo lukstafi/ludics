@@ -112,3 +112,13 @@ class TheFlags(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NeverRan(unittest.TestCase):
+    """#1109: a conclusion's output, the registry's record, says whether the leg ever ran."""
+
+    def test_only_a_not_launched_record_reads_as_never_run(self) -> None:
+        self.assertTrue(closeout.never_ran('{\n  "request_id": "l",\n  "verdict": "not-launched"\n}'))
+        for out in ('{"verdict": "pass"}', '{"request_id": "l"}', '["not-launched"]', "", "EXECUTION REFUSED: not-launched",
+                    'NOTE\n{"verdict": "not-launched"}'):
+            self.assertFalse(closeout.never_ran(out), out)

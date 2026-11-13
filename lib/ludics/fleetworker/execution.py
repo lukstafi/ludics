@@ -42,6 +42,28 @@ evidence saying ``--observed-from unchecked``; so a conclusion that landed befor
 note, retried after it, composes another payload and meets the registry's "already concluded".
 A caller on an older checkout ships its older near side, which checks nothing.
 
+THE UNUSED LEG (ludics#1109). A worker's standing reservation on a GPU home box is taken at launch,
+and a task that merges without running one leg there left ``--standing-handback`` nothing to read:
+``execution leg`` makes the far-side worktree, so ``--observed-from`` refused it as missing, and the
+coordinator hand-wrote a ``not-launched`` conclusion. Now the hand-back concludes that record
+``not-launched`` by itself, saying so on stderr (``STANDING LEG UNUSED ...``). Its boundary, a
+fail-closed allowlist, every clause read here or by ``LEG_UNUSED`` on the execution host:
+  - the record is standing and its request names an ``agent_host`` that is not its execution host
+    (the worker's own worktree is made at launch, never by a leg, so the agent host's record is
+    outside the rule);
+  - the call names no ``--from-run`` (a run record is evidence of a run);
+  - the record names its ``checkout``, and ``--observed-from`` is it (THE CHECKOUT): a record that
+    names none is read off whatever path the caller typed, and a path typed wrong is missing too;
+  - nothing is at that path, a dangling link included;
+  - no leg ever opened that worktree's lock (leg.py's WORKTREE: a leg opens the lock file before it
+    makes the worktree, and nothing removes the file).
+Anything else is today's reading, its refusals unchanged: a leg that ran and whose worktree was
+removed since keeps ``OBSERVED-FROM REFUSED``, and so does a leg refused after it took the lock and
+before it made the worktree, and a worktree ``farside-close`` was pointed at first (it opens the
+same lock); a box that does not answer, or answers anything but ``leg=unused``, is read as before.
+The caller's ``--verdict`` is not recorded: nothing ran. A retry of a hand-back that landed this way
+gets the landed payload back (THE RETRY RULE), with nothing read on the box.
+
 THE CO-TENANT EVIDENCE (ludics-lite#566): a conclusion of a MEASUREMENT, in any of its forms,
 gets a summary of the GPU co-tenant record its ``execution hold --request`` left on the execution
 host (``cotenants.py``) appended to its evidence, read there by ``GPU_RECORD``. Nothing else is read,
@@ -798,6 +820,40 @@ def conclude_from_bg_run(
 
 
 HANDBACK_VERDICTS = ("pass", "fail", "timeout", "cancelled")  # not-launched names no run, so no observed_sha
+
+# Far side of THE UNUSED LEG, on the execution host, after the prelude and leg.WORKTREE. Arg: the
+# record's checkout. Prints one `leg=` line and exits 0: `unused` when nothing is at the path and no
+# leg ever opened its lock, else what it found (`present`, `unresolved`, `locked`).
+LEG_UNUSED = r"""co="$1"
+if [ -e "$co" ] || [ -L "$co" ]; then printf 'leg=present\n'; exit 0; fi
+key=$(canon "$co") || { printf 'leg=unresolved\n'; exit 0; }
+lock=$(leg_lock_file "$key")
+if [ -e "$lock" ] || [ -L "$lock" ]; then printf 'leg=locked\n'; exit 0; fi
+printf 'leg=unused\n'
+"""
+
+
+def unused_leg(cfg: Config, record: dict[str, Any], request: str, host: str, checkout: str, evidence: str) -> str | None:
+    """THE UNUSED LEG (the header): the ``not-launched`` payload of a standing leg no batch ran
+    under, or None for every other record, which is read as before."""
+    agent = field(record, "request", "agent_host")
+    if not (isinstance(agent, str) and agent and agent != host):
+        return None
+    lead = f"{evidence}; standing leg never used: "
+    log = f"none: no leg ran under {request}"
+    landed = retried(record, {"request_id": request, "verdict": "not-launched", "log": log}, lambda said: said.startswith(lead))
+    if landed is not None:
+        return json.dumps(landed, separators=(",", ":"), ensure_ascii=False)
+    if record.get("state") == "concluded":
+        return None
+    from ludics.fleetworker.leg import WORKTREE  # leg.py imports this module
+
+    done = run_on(cfg, host, prelude(cfg, host) + WORKTREE + LEG_UNUSED, [checkout], capture=True)
+    if done.unreachable or done.rc != 0 or facts_of(substitution(done.out), "leg") != "unused":
+        return None
+    found = f"no worktree {checkout} on {host}, and no leg ever opened its lock"
+    err(f"STANDING LEG UNUSED {request}: {found}; concluded not-launched")
+    return compact({"request_id": request, "verdict": "not-launched", "log": log, "evidence": f"{lead}{found}"})
 
 
 def standing_run_clause(facts: dict[str, str], run_dir: str, host: str) -> tuple[str, str] | Refusal:
@@ -1596,6 +1652,10 @@ def standing_handback_payload(cfg: Config, args: list[str]) -> str:
         )
         raise cli.Exit(1)
     host = jq_text(field(record, "request", "execution_host"))
+    if not run_dir and recorded_checkout(record) and checkout_refusal(record, host, observed_from) is None:
+        unused = unused_leg(cfg, record, request, host, recorded_checkout(record), evidence)
+        if unused is not None:
+            return unused
     head = observed_sha_of(cfg, record, host, observed_from)
     if isinstance(head, Refusal):
         return concluded(head)

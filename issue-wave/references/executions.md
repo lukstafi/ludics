@@ -1097,7 +1097,9 @@ Each standing reservation is concluded at hand-back from its own box's last batc
 `--observed-from <the far-side checkout>`: its runner record in the [standing
 form](#standing-iteration-reservation) (`--from-run`, read on the reservation's execution host, or
 no run and the hand-back's `--verdict`), or the leg's `bg-run.sh` directory with `--from-bg-run`
-(looked for on the agent host too; `--box <box>` when that or the execution host does not answer). The coordinator records the far-side checkout on the board (`board set <wave>
+(looked for on the agent host too; `--box <box>` when that or the execution host does not answer).
+A leg no batch ran under has no far-side worktree to read, and its hand-back concludes it
+`not-launched` by itself (`execution.py`'s THE UNUSED LEG). The coordinator records the far-side checkout on the board (`board set <wave>
 <task> farside=<box>:<path>`) and removes it at close-out with the worker's local one, once that
 conclusion has landed. A conclusion that
 reads a checkout which is not clean (a golden promoted there on hardware) says so in an

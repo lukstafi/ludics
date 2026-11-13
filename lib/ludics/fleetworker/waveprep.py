@@ -519,7 +519,7 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
         raise fail("brief", f"cannot write the brief or the assign base ({exc.strerror})")
     record(prep, f"brief {brief_path} and assign base {base_path}")
     fields = board_fields(prep, brief_path)
-    rc = run([script, "board", "set", "--create", prep.wave.wave, prep.task, *fields], stdout_to_stderr=True).rc
+    rc = run([script, "board", "set", "--create", "--new-row", prep.wave.wave, prep.task, *fields], stdout_to_stderr=True).rc
     if rc != 0:
         raise fail("board", f"board set exited {rc} (above)", 4 if rc == 4 else 1)
     record(prep, f"board row {prep.wave.wave} {prep.task} (state=pending)")
