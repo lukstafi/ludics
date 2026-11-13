@@ -181,5 +181,7 @@ kit invents none.
    with the verdict, the decision and the path of the message that resumes the worker. Send the
    worker that file as it is. `decision=unreadable` means the review ended on no verdict line: it
    is treated as blocking, and the review is yours to read. The verdict's grammar, the decisions
-   and what a re-run recovers are `wavereview.py`'s header. `--dry-run` posts nothing, for trying
-   a reviewer or a project part on a PR that already merged.
+   and what a re-run recovers are `wavereview.py`'s header. The same call run twice replays its
+   record and buys no second review, so when a worker asks for a confirm again at the same head
+   (it rebutted and pushed nothing), add `--again`. `--dry-run` posts nothing, for trying a
+   reviewer or a project part on a PR that already merged.

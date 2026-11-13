@@ -544,7 +544,7 @@ class Review(WaveDirCase):
             self.shim_calls.clear()
             rc, out, _ = self.review()
             self.assertEqual((rc, len(self.claude.calls()), self.shim_calls), (0, 1, []))
-            self.assertTrue(out.endswith(" (already reviewed)\n") and f"comment={COMMENT}" in out, out)
+            self.assertTrue(out.endswith(" (already reviewed; --again starts a new round on this head)\n") and f"comment={COMMENT}" in out, out)
 
     def test_a_post_that_failed_is_posted_by_the_rerun_without_another_review(self) -> None:
         with self.world() as (gh, _):
@@ -667,6 +667,39 @@ class Review(WaveDirCase):
             message = self.read(stem + ".message.md")
             self.assertTrue(message.startswith(f"MERGE NOT CLEARED 7 {fixed}\n"))
             self.assertIn("CONFIRM_REQUEST 7 <head sha>", message)
+
+    def test_a_new_round_on_the_same_head_is_asked_for_and_never_inferred(self) -> None:
+        """A rebuttal moves no head: the worker's next confirm request names the SHA already reviewed."""
+        with self.world():
+            self.assertEqual(self.review()[0], 0)
+        with self.world(verdict="VERDICT: blocking (1 blocking, 0 suggestions)"):
+            rc, out, _ = self.review(kind="confirm")
+            self.assertIn("decision=findings", out)
+        with self.world(verdict="VERDICT: clean"):
+            rc, out, _ = self.review(kind="confirm")
+            self.assertEqual((rc, self.claude.calls()), (0, []), "the same call replays: a lost line buys no review")
+            self.assertIn("decision=findings", out)
+            self.shim_calls.clear()
+            rc, out, _ = self.review("--again", kind="confirm")
+            self.assertEqual((rc, len(self.claude.calls())), (0, 1), out)
+            self.assertIn("verdict=clean blocking=0 suggestions=0 decision=cleared", out)
+            self.assertEqual(self.shim_calls[0][:2], ["pr-review.sh", "comment"], "the new round is posted")
+            self.assertTrue(self.read(self.stem("confirm") + ".message.md").startswith(f"MERGE CLEARED 7 {self.base}\n"))
+            earlier = json.loads(self.read(self.stem("confirm") + ".r1.json"))
+            self.assertEqual((earlier["decision"], earlier["comment"]), ("findings", COMMENT), "the earlier round is kept, set aside")
+            self.assertTrue(os.path.exists(self.stem("confirm") + ".r1.md") and os.path.exists(self.stem("confirm") + ".r1.prompt.md"))
+            rc, out, _ = self.review("--again", kind="confirm")
+            self.assertEqual((rc, len(self.claude.calls())), (0, 2), "each --again is a round")
+            self.assertTrue(os.path.exists(self.stem("confirm") + ".r2.json"))
+        os.remove(self.stem() + ".json")
+        with self.world():
+            rc, out, _ = self.review("--again")
+            self.assertEqual((rc, self.claude.calls()), (1, []))
+            self.assertIn("--again starts a new round after a posted review, and this head has none posted", out)
+        for args in (["--again", "--dry-run"], ["--again", "--posted", "https://x"]):
+            rc, _, err = self.review(*args)
+            self.assertEqual(rc, 2)
+            self.assertIn("--again starts a new round, to be reviewed and posted", err)
 
     def test_a_confirm_after_a_review_that_did_not_block_clears_without_a_reviewer(self) -> None:
         with self.world(verdict="VERDICT: suggestions (0 blocking, 1 suggestions)"):

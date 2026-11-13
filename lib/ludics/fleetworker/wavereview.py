@@ -9,7 +9,7 @@ matched inside ``blocking (1 blocking, 2 suggestions)``, and five blocking verdi
 merge. This verb is those steps, the verdict parsed:
 
     wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm [--issue <N> | --source <N>]
-                [--dry-run | --posted <url>]
+                [--dry-run | --posted <url> | --again]
 
 WHAT IT DOES, in this order:
 
@@ -69,6 +69,14 @@ and a ``--dry-run``'s review is the one a later real call posts. Not recovered: 
 answer was lost (``pr-review.sh comment`` exit 3 may have posted; the refusal says to read the PR,
 and ``--posted <url>`` records the comment found there), and a board write that failed (a NOTE; the
 record, not the row, is what a later step reads).
+
+A NEW ROUND ON THE SAME HEAD is asked for, never inferred. A worker that answers a blocking confirm
+with a rebuttal and no commit asks again at the same SHA, and so does a retry of a call whose line
+was lost; nothing here can tell the two apart, and the second must not buy a review. So the same
+call replays its record, and ``--again`` starts the new round: it needs a posted record of this
+PR, kind and head, moves that record's files aside as ``<stem>.r<n>.*`` (the comment stays on the
+PR), and reviews as a first call does. Whoever resumes the worker knows which it is: a new request
+from the worker is a new round.
 
 ``--dry-run`` renders, runs the reviewer and writes the files; it takes no lease, checks the PR's
 head only as a NOTE (so a merged PR can be reviewed for a trial), posts nothing and sets no row.
@@ -187,6 +195,7 @@ class Call:
     number: str
     dry_run: bool
     posted: str  # --posted <url>: the comment an ambiguous post left, found on the PR
+    again: bool = False  # --again: a new round on a head already reviewed and posted
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.wave.directory, *parts)
@@ -209,13 +218,13 @@ def parse(args: list[str]) -> Call:
         die(f"wave review: name the wave file, the task, the PR and its head; usage: {USAGE}")
     path, task, pr, sha = args[:4]
     opts = {"--kind": "", "--issue": "", "--source": "", "--posted": ""}
-    dry_run = False
+    dry_run = again = False
     rest = args[4:]
     i = 0
     while i < len(rest):
         word = rest[i]
-        if word == "--dry-run":
-            dry_run = True
+        if word in ("--dry-run", "--again"):
+            dry_run, again = dry_run or word == "--dry-run", again or word == "--again"
             i += 1
             continue
         if word not in opts or i + 1 >= len(rest):
@@ -237,9 +246,11 @@ def parse(args: list[str]) -> Call:
         die(f"wave review: --kind is one of {', '.join(KINDS)}, not {opts['--kind']!r}")
     if opts["--posted"] and dry_run:
         die("wave review: --posted records a comment a real call left; it takes no --dry-run")
+    if again and (dry_run or opts["--posted"]):
+        die("wave review: --again starts a new round, to be reviewed and posted; it takes no --dry-run and no --posted")
     number, issue_ref, source_ref = subject(wave, task, opts["--issue"], opts["--source"], "review")
     return Call(wave, wave.review, task, pr.lstrip("#"), sha, opts["--kind"], issue_ref, source_ref, number, dry_run,
-                opts["--posted"])
+                opts["--posted"], again)
 
 
 # --- the record -----------------------------------------------------------------------------------
@@ -294,6 +305,17 @@ def at_open_record(call: Call) -> dict[str, Any] | None:
         if record is not None and isinstance(record.get("sha"), str) and isinstance(record.get("at"), str):
             found.append(record)
     return max(found, key=lambda r: str(r["at"])) if found else None
+
+
+def set_aside(call: Call) -> None:
+    """A NEW ROUND (the header): this stem's files moved to ``<stem>.r<n>.*``, the lock aside."""
+    directory, base = os.path.split(call.stem)
+    n = 1
+    while glob.glob(glob.escape(call.stem) + f".r{n}.*"):
+        n += 1
+    for name in sorted(os.listdir(directory)):
+        if name.startswith(base + ".") and name != base + ".lock" and not re.fullmatch(r"r[0-9]+\..*", name[len(base) + 1:]):
+            os.replace(os.path.join(directory, name), os.path.join(directory, f"{base}.r{n}.{name[len(base) + 1:]}"))
 
 
 # --- the reads ------------------------------------------------------------------------------------
@@ -473,8 +495,17 @@ def reviewed_locked(cfg: Config, call: Call) -> int:
     comment = str(record.get("comment") or "") if record is not None else ""
     if call.posted and record is None:
         raise call.refused(f"--posted names a comment, and no review of this head is recorded ({call.stem}.json)")
+    if call.again:
+        if not comment:
+            raise call.refused("--again starts a new round after a posted review, and this head has none posted"
+                               f" ({call.stem}.json); run the call without it")
+        try:
+            set_aside(call)
+        except OSError as exc:
+            raise call.refused(f"cannot set the earlier round's files aside ({exc.strerror}); nothing reviewed") from None
+        record, comment = None, ""
     if record is not None and (comment or call.dry_run):
-        cli.say(line_of(call, verdict_of(record), comment) + " (already reviewed)")
+        cli.say(line_of(call, verdict_of(record), comment) + " (already reviewed; --again starts a new round on this head)")
         return 0
     if not call.dry_run:
         gated = anchor_gate(cfg, "WAVE REVIEW", call.task, True)

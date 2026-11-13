@@ -11,7 +11,7 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
   wave loop <wave.json> <name> [--resume-after <request id>]                                waveloop.py
   wave heartbeat <wave.json> [--sleep <seconds>]                                             here
   wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                          wavereview.py
-              [--issue <N> | --source <N>] [--dry-run | --posted <url>]
+              [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]
 
 It wraps the mechanisms that exist and re-implements none: ``execution run`` takes the
 reservations, ``board set`` writes the row, ``execution tip-run`` runs and concludes each loop run,
@@ -81,7 +81,7 @@ USAGE = (
     " [--legs <box,...>] [--allow-rival <pr>]... | wave loop <wave.json> <name> [--resume-after <request id>] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "
     "wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm [--issue <N> | --source <N>]"
-    " [--dry-run | --posted <url>]"
+    " [--dry-run | --posted <url> | --again]"
 )
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")

@@ -276,7 +276,7 @@
 #   fleet-worker.sh wave heartbeat <wave.json> [--sleep <seconds>]   # one tick: prs whole, halted,
 #                          # each loop's last line, the timestamp last
 #   fleet-worker.sh wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm
-#                          [--issue <N> | --source <N>] [--dry-run | --posted <url>]   # the review
+#                          [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]   # the review
 #                          # checkpoint: the wave file's reviewer reads the PR headless, with a
 #                          # read-only tool list, its verdict line is
 #                          # parsed whole (anything else is unreadable, which blocks), the review is
