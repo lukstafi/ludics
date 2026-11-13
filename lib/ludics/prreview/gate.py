@@ -106,7 +106,7 @@ def load_gate_config(env: Mapping[str, str]) -> GateConfig:
 # one place a conclusion maps to a kind), and a reader that words or counts by kind matches on
 # ``WaiverKey.kind`` with no default arm, so the repository's ``reportMatchNotExhaustive`` names it
 # when a kind is missed. ``Gate.waived`` is the record, in the spelling above; only ``Gate``'s
-# ``_waive_*``/``waives`` methods read or write it (test_prreview_gate's guard checks gate.py and
+# ``_waive_record``/``waives`` methods read or write it (test_prreview_gate's guard checks gate.py and
 # merge.py). A FIFTH KIND: add it to ``JobWaiver`` or ``RunWaiver`` and to that subject's
 # classifier; pyright then lists every reader that branches on the subject's kinds. Not checked by
 # the type: the one-row/one-job-of-that-name rules (each reader counts its own population), the
@@ -303,7 +303,7 @@ class Gate:
     run_state: str = ""
     waive_mode: Literal["", "record", "apply"] = ""
     # The override's record, ``str()`` of each ``WaiverKey`` (the waiver-key block above): read and
-    # written only by ``_waive_record``, ``waives`` and ``_waive_take``, and reset by ``check``.
+    # written only by ``_waive_record`` and ``waives``, and reset by ``check``.
     waived: set[str] = field(default_factory=lambda: set[str]())
     # Jobs that never got a runner (runners.py, ludics-lite#560/#728): looked for only when
     # ``orphans_on`` (``checks`` and ``merge``; ``base`` reads a merged head and leaves it off), on
@@ -499,11 +499,6 @@ class Gate:
         sees (it is recorded where its reader records it), and what the record holds on a read
         that applies it. With no override, nothing."""
         return self.waive_mode == "record" or (self.waive_mode == "apply" and self.waives(key))
-
-    def _waive_take(self, key: WaiverKey) -> bool:
-        """``_waive_record`` then ``_waive_eligible``."""
-        self._waive_record(key)
-        return self._waive_eligible(key)
 
     def apply_waiver(self, rows: list[str]) -> list[str]:
         """``apply_waiver``: the red rows the waiver covers marked ``waived`` -- recorded first on the
@@ -1122,8 +1117,14 @@ class Gate:
         for run in self._judged_runs(self._round_raw):
             rid = run.rid
             key = run_waiver(rid, run.concl)
-            if run.inflight or key is None or key.kind != "run" or run.suite in explained_suites:
+            if run.inflight or key is None or run.suite in explained_suites:
                 continue
+            match key.kind:
+                case "run":
+                    pass
+                case "cancelled-run":
+                    # Stopped runs are ``run_signal``'s to judge (the docstring's boundary).
+                    continue
             judged = self._judge_red_run(rid, run.suite)
             label = f"workflow run {rid} ({shlex.quote(run.name)}, {run.concl})"
             match judged.outcome:

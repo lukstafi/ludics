@@ -1254,8 +1254,7 @@ class WaiverKeys(unittest.TestCase):
                 self.assertEqual(gate.waived, recorded)
         gate.waive_mode = "apply"
         gate.waived = {"run:100"}
-        self.assertTrue(gate._waive_take(key))  # pyright: ignore[reportPrivateUsage]
-        self.assertEqual(gate.waived, {"run:100"})
+        self.assertTrue(gate._waive_eligible(key))  # pyright: ignore[reportPrivateUsage]
 
     def red_run_gate(self, rows: str) -> tuple[Gate, FakeGh]:
         """Run 101 (suite 2) concluded red and its job list does not answer, beside ``rows``."""
@@ -1307,19 +1306,27 @@ class WaiverKeys(unittest.TestCase):
 
     def test_only_the_record_methods_touch_the_record(self) -> None:
         # The guard behind the type: in gate.py and merge.py, ``.waived`` is read or written only
-        # by the record's methods (and reset by ``check``). Boundary: those two modules, by their
-        # syntax tree; another module reaching the record is outside it.
-        allowed = {"_waive_record", "waives", "check"}
+        # by the record's methods, plus ``Gate.check``'s reset (a plain assignment to it, nothing
+        # else in ``check``). Boundary: those two modules, by their syntax tree; another module
+        # reaching the record is outside it.
+        methods = {"_waive_record", "waives"}
         for module in (gate_module, merge_module):
             tree = ast.parse(inspect.getsource(module))
-            reached: set[str] = set()
+            resets: set[int] = set()
+            if module is gate_module:
+                for fn in ast.walk(tree):
+                    if isinstance(fn, ast.FunctionDef) and fn.name == "check":
+                        resets |= {id(t) for n in ast.walk(fn) if isinstance(n, ast.Assign) for t in n.targets}
+            stray: set[str] = set()
             for fn in ast.walk(tree):
-                if isinstance(fn, ast.FunctionDef):
+                if isinstance(fn, ast.FunctionDef) and fn.name not in methods:
                     for node in ast.walk(fn):
-                        if isinstance(node, ast.Attribute) and node.attr == "waived":
-                            reached.add(fn.name)
+                        if isinstance(node, ast.Attribute) and node.attr == "waived" and id(node) not in resets:
+                            stray.add(fn.name)
             with self.subTest(module=module.__name__):
-                self.assertLessEqual(reached, allowed)
+                self.assertEqual(stray, set[str]())
+                if module is gate_module:
+                    self.assertTrue(resets, "check's reset is where the guard looks for it")
         self.assertIn("waives", {n.name for n in ast.walk(ast.parse(inspect.getsource(gate_module)))
                                  if isinstance(n, ast.FunctionDef)}, "the guard reads the right tree")
 
