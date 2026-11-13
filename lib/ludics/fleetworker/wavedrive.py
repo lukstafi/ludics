@@ -89,9 +89,11 @@ THE ANSWERS:
 THE CONFIRM, read off ``wave review``'s records of the PR that were posted (a record with no
 comment, a dry run's, is no review), the rounds ``--again`` set aside included (``<stem>.r<n>.json``:
 their comments stay on the PR): when the newest at-open review blocks (``confirm`` or
-``unreadable``), a merge is covered only by a ``cleared`` confirm made after that review, at the
-head the PR merged at (``gh pr view --json headRefOid``). A clearance of an earlier head, one
-older than the blocking review, and a head GitHub does not answer for are all not covered.
+``unreadable``), a merge is covered only when the newest confirm made after that review is
+``cleared``, at the head the PR merged at (``gh pr view --json headRefOid``). A clearance of an
+earlier head, one older than the blocking review, one a later confirm round took back (``findings``
+after ``cleared``, at the same head or another), and a head GitHub does not answer for are all
+not covered.
 
 ATTENTION is a line appended to ``<wave dir>/logs/attention.jsonl`` and printed as ``DRIVE ATTENTION
 <task> turn <n>: <why> (<file>)``. The driver goes on serving the other workers; ``wave heartbeat``
@@ -170,6 +172,21 @@ REVIEWED = re.compile(r"WAVE REVIEW \S+: .* decision=([a-z]+) comment=\S+ messag
 # a failed review's log, never off a worker's own words (its final message, its status summary).
 LEASE_LOST = re.compile(r"[A-Z][A-Z -]* REFUSED [^:\n]*: coordinator lease held by .*")
 ALREADY = re.compile(r"ASSIGN ALREADY (\S+):")
+
+
+def append_line(path: str, record: dict[str, Any]) -> None:
+    """One JSON record appended as a whole line, fsynced. A file whose last write was cut (a driver
+    killed mid-line: no final newline) gets its newline first, so the torn piece stays a line of its
+    own, which every reader skips, and never swallows the record appended after it."""
+    with open(path, "a+b") as f:
+        f.seek(0, os.SEEK_END)
+        if f.tell() > 0:
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
+        f.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
 
 
 class LeaseLost(Exception):
@@ -281,18 +298,14 @@ class Driver:
     def note(self, worker: Worker, turn: int, kind: str, status: str, text: str, **more: Any) -> None:
         entry = {"at": utc_now(), "task": worker.task, "worker": worker.name, "session": worker.session, "turn": turn,
                  "kind": kind, "status": status, "note": text, **more}
-        with open(self.ledger_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        append_line(self.ledger_path, entry)
         self.ledger.append(entry)
         if status != "attention":
             self.say(f"DRIVE {worker.task} turn {turn}: {kind} {status}: {text}")
 
     def attention(self, worker: Worker, turn: int, kind: str, why: str, file: str = "") -> None:
         self.note(worker, turn, kind, "attention", why, file=file)
-        with open(self.path("logs", "attention.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps({"at": utc_now(), "task": worker.task, "turn": turn, "why": why, "file": file}, ensure_ascii=False) + "\n")
+        append_line(self.path("logs", "attention.jsonl"), {"at": utc_now(), "task": worker.task, "turn": turn, "why": why, "file": file})
         self.say(f"DRIVE ATTENTION {worker.task} turn {turn}: {why}" + (f" ({file})" if file else ""))
 
     def say(self, line: str) -> None:
@@ -507,11 +520,12 @@ class Driver:
         newest = max(opened, key=lambda r: str(r["at"]))
         if newest.get("decision") not in ("confirm", "unreadable"):
             return False
-        cleared = [r for r in records("confirm") if r.get("decision") == "cleared" and str(r["at"]) > str(newest["at"])]
-        if not cleared:
-            return True
+        since = [r for r in records("confirm") if str(r["at"]) > str(newest["at"])]
+        latest = max(since, key=lambda r: str(r["at"])) if since else None
+        if latest is None or latest.get("decision") != "cleared":
+            return True  # no confirm since, or the last word of the confirms withholds the clearance
         rc, out, _ = execute(["gh", "pr", "view", pr, "--repo", self.wave.repository, "--json", "headRefOid", "--jq", ".headRefOid"])
-        return rc != 0 or out.strip() not in {str(r.get("sha")) for r in cleared}
+        return rc != 0 or out.strip() != str(latest.get("sha"))
 
     def handback(self, worker: Worker, turn: int, message: str, what: Turn) -> None:
         pr = worker.fields.get("pr", "") or what.pr

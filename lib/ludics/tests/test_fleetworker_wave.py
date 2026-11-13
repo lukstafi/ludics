@@ -1392,7 +1392,13 @@ class Drive(WaveDirCase):
     def attention(self) -> list[str]:
         try:
             with open(os.path.join(self.wavedir, "logs", "attention.jsonl")) as f:
-                return [json.loads(line)["why"] for line in f]
+                found: list[str] = []
+                for line in f:
+                    try:
+                        found.append(json.loads(line)["why"])
+                    except (ValueError, KeyError):
+                        pass  # a torn line, as every reader skips it
+                return found
         except FileNotFoundError:
             return []
 
@@ -1468,6 +1474,20 @@ class Drive(WaveDirCase):
             rc, out = self.once()
             self.assertEqual(rc, 1)
             self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's", out)
+
+    def test_a_ledger_line_cut_short_never_swallows_the_record_after_it(self) -> None:
+        self.message = "NEEDS_DESIGN x\n"
+        os.makedirs(os.path.join(self.wavedir, "logs"))
+        for name in ("drive.jsonl", "attention.jsonl"):
+            with open(os.path.join(self.wavedir, "logs", name), "w") as f:
+                f.write('{"task": "t1", "turn": 0, "status": "answered"}\n{"task": "t42", "tu')  # killed mid-line
+        with self.world():
+            self.assertIn("DRIVE ATTENTION t42 turn 0", self.once()[1])
+            self.assertEqual((self.once()[1], self.calls), ("", []), "the record written after the torn line is read back")
+        with open(os.path.join(self.wavedir, "logs", "drive.jsonl")) as f:
+            lines = f.read().split("\n")
+        self.assertEqual((lines[1], json.loads(lines[2])["status"], lines[3]), ('{"task": "t42", "tu', "attention", ""))
+        self.assertEqual(self.attention(), ["no marker this driver answers; the last line starts 'NEEDS_DESIGN'"])
 
     def test_a_replacement_is_never_resumed_with_its_predecessors_saved_assignment(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
@@ -1694,7 +1714,14 @@ class Drive(WaveDirCase):
                 json.dump({"decision": "confirm", "at": "2026-11-11T13:00:00Z", "sha": A, "comment": "https://x/c"}, f)
             record("at-open", A, "merge", "2026-11-11T14:00:00Z", comment="")
             self.assertIn(said, closed(10), "the archived blocking round is the newest posted one")
-            self.resumes, self.message = 11, "HANDBACK t42\nNo PR: a measurement task.\n"
+            # A later confirm round takes an earlier clearance back, at the same head too.
+            self.out["pr"] = B + "\n"
+            with open(os.path.join(reviews, f"7-confirm-{B[:12]}.r1.json"), "w") as f:
+                json.dump({"decision": "cleared", "at": "2026-11-11T15:00:00Z", "sha": B, "comment": "https://x/c"}, f)
+            self.assertIn("handback answered", closed(11))
+            record("confirm", B, "findings", "2026-11-11T16:00:00Z")
+            self.assertIn(said, closed(12), "the newest confirm withholds the clearance")
+            self.resumes, self.message = 13, "HANDBACK t42\nNo PR: a measurement task.\n"
             self.assertIn("the hand-back names no PR", self.once()[1])
 
     def test_what_no_marker_answers_is_attention_and_what_is_not_a_state_is_read_again(self) -> None:
