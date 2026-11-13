@@ -178,6 +178,9 @@ class Gate:
     check_holds: str = ""
     # The names of the checks the fold left running, for the wait's progress line (#569).
     pending_names: list[str] = field(default_factory=lambda: list[str]())
+    # Heartbeat-only job evidence (#1112), enabled by checks, never folded into the verdict.
+    steps_on: bool = False
+    pending_jobs: list[tuple[str, str]] = field(default_factory=lambda: list[tuple[str, str]]())
     # ``checks --check <ERE>`` (#569): judge only the check runs whose name the ERE matches, grep
     # reading it as it reads the advisory list. Empty is the whole head. See ``check``.
     select: str = ""
@@ -414,6 +417,7 @@ class Gate:
         lines: list[str] = []
         running: list[str] = []
         reds: list[RedJob] = []
+        pending_jobs: list[tuple[str, str]] = []
         for row in rows:
             cls, name, concl, url, suite, status = tab_fields(row, 6)
             if not cls:
@@ -437,6 +441,7 @@ class Gate:
                     if status != "in_progress":
                         queued += 1
                     running.append(name)
+                    pending_jobs.append((name, url))
                     lines.append(f"  running  {name} (no verdict yet)  {url}\n")
                 case "nogo":
                     nogo += 1
@@ -448,6 +453,7 @@ class Gate:
         self.check_lines = "".join(lines)
         self.red_jobs = reds
         self.pending_names = running
+        self.pending_jobs = pending_jobs
         self.check_red = red
         self.check_waived = waived
         self.waived_cancelled = cancelled
@@ -1477,6 +1483,12 @@ class Gate:
                     note = held
                 else:
                     note = f"{self.check_pending} check(s) running: {running_list(self.pending_names)}"
+                if self.steps_on and self.pending_jobs:
+                    from ludics.prreview.jobsteps import diagnostic
+
+                    detail = diagnostic(self.session, repo, self.pending_jobs)
+                    if detail:
+                        note += f"; {detail}"
                 warn(
                     f"still waiting on {repo}#{pr} @{sha[:8]}: no verdict after {(now - started) // 60} of",
                     f"{wait_for // 60} min ({note})",
