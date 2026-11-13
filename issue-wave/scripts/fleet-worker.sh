@@ -275,6 +275,13 @@
 #                          # run before starting another; ends on a red (waveloop.py)
 #   fleet-worker.sh wave heartbeat <wave.json> [--sleep <seconds>]   # one tick: prs whole, halted,
 #                          # each loop's last line, the timestamp last
+#   fleet-worker.sh wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm
+#                          [--issue <N> | --source <N>] [--dry-run | --posted <url>]   # the review
+#                          # checkpoint: the wave file's reviewer reads the PR headless, with a
+#                          # read-only tool list, its verdict line is
+#                          # parsed whole (anything else is unreadable, which blocks), the review is
+#                          # posted on the PR, and the message that resumes the worker is written;
+#                          # a re-run never buys a second review (wavereview.py)
 #   fleet-worker.sh farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]
 #                          # remove a closed wave's far-side worktrees, the board's `farside` words,
 #                          # each only past its row's done state, no outstanding reservation, no leg

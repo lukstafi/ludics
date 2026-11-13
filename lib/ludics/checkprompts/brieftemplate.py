@@ -11,13 +11,17 @@ WHAT IT READS, a fail-closed allowlist. The obligation exists when
 ``lib/ludics/fleetworker/waveprep.py``, the code that looks the template up, is a file (a tree
 without it has no template to keep, as the suites' trees of copied prompts do not).
 - THE FILES. ``issue-wave/templates/`` holds directories ``native-<kind>`` for a kind wave.json
-  takes (claude, codex) and nothing else; ``native-claude`` is required; each holds exactly the
-  parts waveprep's ``SHIPPED`` names, as regular files. Anything missing or extra fails.
+  takes (claude, codex), optionally ``review`` (the review checkpoint's prompt, wavereview.py),
+  and nothing else; ``native-claude`` is required; each ``native-<kind>`` holds exactly the parts
+  waveprep's ``SHIPPED`` names and ``review`` exactly wavereview's, as regular files. Anything
+  missing or extra fails.
 - THE NAMES. Each shipped part, and the project part, renders through wavebrief's own ``render``
   with one value for each NAME it may use: ``common.md`` the built-ins every task is given (no
   ISSUE, no SOURCE, no leg NAME), waveprep's ``SHIPPED_VARS`` and PROJECT; a planning part those and
-  ISSUE; the project part those of ``common.md`` but PROJECT. A placeholder outside its set fails,
-  named by its part and line, as prep would refuse it.
+  ISSUE; the project part those of ``common.md`` but PROJECT; a ``review`` part the NAMEs
+  wavereview's ``PART_NAMES`` gives it, and this repository's own review part,
+  ``.github/review-checkpoint.md`` when it has one, wavereview's ``COMMON_NAMES``. A placeholder
+  outside its set fails, named by its part and line, as prep (or ``wave review``) would refuse it.
 - THE REFERENCES. In a backticked span, each blank-separated word that begins ``~/.claude/skills/``
   or ``~/ludics/`` (both read as this tree's root) or with a top-level entry of the tree and a
   ``/``, and is made of ``[A-Za-z0-9_.+*/-]`` only, names an existing file or directory (a ``*``
@@ -41,11 +45,14 @@ from ludics.checkprompts.tree import Report, Tree
 from ludics.fleetworker.wave import BUILTIN
 from ludics.fleetworker.waveprep import SHIPPED, SHIPPED_VARS
 from ludics.fleetworker.wavebrief import Part, render
+from ludics.fleetworker.wavereview import COMMON_NAMES as REVIEW_NAMES, PART_NAMES as REVIEW_PART_NAMES
 
 PREP = "lib/ludics/fleetworker/waveprep.py"
 TEMPLATES = "issue-wave/templates"
 KINDS = ("claude", "codex")
 PROJECT_PART = ".github/wave-brief.md"
+REVIEW = "review"
+REVIEW_PROJECT_PART = ".github/review-checkpoint.md"
 NOT_COMMON = frozenset({"ISSUE", "SOURCE", "LEGLINES", "LEG", "LEG_ID", "LEG_WT", "LEG_CHECKOUT"})
 COMMON_NAMES = (BUILTIN - NOT_COMMON) | frozenset(SHIPPED_VARS)
 PLANNING_NAMES = COMMON_NAMES | {"ISSUE"}
@@ -70,6 +77,8 @@ def check_brief_template(report: Report, tree: Tree) -> None:
         return
     if tree.is_file(PROJECT_PART):
         parts.append((PROJECT_PART, PROJECT_NAMES))
+    if tree.is_file(REVIEW_PROJECT_PART):
+        parts.append((REVIEW_PROJECT_PART, REVIEW_NAMES))
     bad = False
     for rel, allowed in parts:
         text = tree.read(rel)
@@ -92,8 +101,9 @@ def template_files(report: Report, tree: Tree) -> list[tuple[str, frozenset[str]
     out: list[tuple[str, frozenset[str]]] = []
     bad = False
     for name in sorted(listed):
-        if name not in {f"native-{k}" for k in KINDS} or tree.is_link(f"{TEMPLATES}/{name}"):
-            report.ko(f"{TEMPLATES}/{name}", f"is no native-<kind> template directory (kinds: {', '.join(KINDS)})")
+        review = name == REVIEW
+        if (not review and name not in {f"native-{k}" for k in KINDS}) or tree.is_link(f"{TEMPLATES}/{name}"):
+            report.ko(f"{TEMPLATES}/{name}", f"is no native-<kind> template directory (kinds: {', '.join(KINDS)}), nor {REVIEW}")
             bad = True
             continue
         inside = tree.names(f"{TEMPLATES}/{name}")
@@ -101,16 +111,17 @@ def template_files(report: Report, tree: Tree) -> list[tuple[str, frozenset[str]
             report.ko(f"{TEMPLATES}/{name}", "is not a directory")
             bad = True
             continue
-        for extra in sorted(set(inside) - set(SHIPPED)):
-            report.ko(f"{TEMPLATES}/{name}/{extra}", f"is no part wave prep reads (it reads {', '.join(SHIPPED)})")
+        shipped, reader = (tuple(REVIEW_PART_NAMES), "wave review") if review else (SHIPPED, "wave prep")
+        for extra in sorted(set(inside) - set(shipped)):
+            report.ko(f"{TEMPLATES}/{name}/{extra}", f"is no part {reader} reads (it reads {', '.join(shipped)})")
             bad = True
-        for part in SHIPPED:
+        for part in shipped:
             rel = f"{TEMPLATES}/{name}/{part}"
             if not tree.is_file(rel) or tree.is_link(rel):
-                report.ko(rel, "is missing, or no regular file: wave prep looks this shipped part up")
+                report.ko(rel, f"is missing, or no regular file: {reader} looks this shipped part up")
                 bad = True
                 continue
-            out.append((rel, COMMON_NAMES if part == "common.md" else PLANNING_NAMES))
+            out.append((rel, REVIEW_PART_NAMES[part] if review else COMMON_NAMES if part == "common.md" else PLANNING_NAMES))
     if "native-claude" not in listed:
         report.ko(TEMPLATES, "has no native-claude/: the reference native-Claude brief")
         bad = True
