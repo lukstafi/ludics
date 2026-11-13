@@ -218,7 +218,7 @@ class Production(unittest.TestCase):
         remote = os.path.join(self.dir, "remotes", "o", "r.git")
         other = os.path.join(self.dir, "remotes", "o", "other.git")
         for bare in (remote, other):
-            subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", "--bare", bare], check=True)
         clone = os.path.join(self.dir, "clone")
         stranger = os.path.join(self.dir, "stranger")
         subprocess.run(["git", "clone", "-q", remote, clone], check=True, capture_output=True)
@@ -337,7 +337,7 @@ class Production(unittest.TestCase):
         valid = [(["ship-pr-merge-build"], 0, "command sh ./build.sh\ninput *.ml\n", ""), *GREEN]
         unread = [(["ship-pr-merge-build"], 1, "", "gh: Service Unavailable (HTTP 503)\n"), *GREEN]
         remote = os.path.join(self.dir, "remotes", "o", "r.git")
-        subprocess.run(["git", "init", "-q", "--bare", remote], check=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", "--bare", remote], check=True)
         clone = os.path.join(self.dir, "clone")
         subprocess.run(["git", "clone", "-q", remote, clone], check=True, capture_output=True)
 

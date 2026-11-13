@@ -20,6 +20,7 @@ from ludics.fleetworker import farside
 from ludics.fleetworker.config import (
     GPU_TOKENS_DEFAULT,
     Config,
+    fetch_timeout_s,
     SpecError,
     box_correctness_slots_text,
     box_gpu_tokens_text,
@@ -64,7 +65,7 @@ def preflight_args(cfg: Config, box: str, codex: str, probe: str, cross: str, cl
         codex,
         probe,
         knob(cfg, "FLEET_PROBE_TIMEOUT", "120"),
-        knob(cfg, "FLEET_FETCH_TIMEOUT", "300"),
+        fetch_timeout_s(cfg),
         cross,
         knob(cfg, "FLEET_CROSS_TIMEOUT", "20"),
         knob(cfg, "FLEET_GH_TIMEOUT", "30"),

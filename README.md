@@ -1498,7 +1498,10 @@ of both scripts mid-run (with a negative control that strips the parse guard), a
 case that `set -e` ends after failing in each guarded shape that must stay quiet. A case passes
 only by returning 0 with a PASS or SKIP line: under bash 3.2 a shell that an unbound variable ends
 exits with the previous command's status, so a case shell that exits 0 before its case returned is
-failed as such (ludics#705).
+failed as such (ludics#705). The sentinel self-test covers absent process groups (`-1` and its
+unsigned spellings): the `ps` reader and Cygwin `/proc/PID/pgid` reader normalize them as gone,
+so the case's status decides its result. Git for Windows skips the `ps -o` probe and exercises
+the shared normalizer through the Cygwin reader fixture (PR #1131).
 
 **The Python rewrite (ludics-lite#403).** The core scripts are moving to type-checked,
 standard-library-only Python 3.12 in one package, `lib/ludics/`, one script (and for `pr-review.sh`

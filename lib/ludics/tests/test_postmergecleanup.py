@@ -265,7 +265,7 @@ class Transaction(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = os.path.realpath(tempfile.mkdtemp(prefix="ludics-pmc-tx."))
         self.repo = f"{self.dir}/repo"
-        self.git("init", "-q", self.repo)
+        self.git("init", "-q", "-b", "main", self.repo)
         self.git("-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@e.invalid",
                  "commit", "-q", "--allow-empty", "-m", "base")
         self.oid = self.git("-C", self.repo, "rev-parse", "HEAD").strip()
@@ -328,7 +328,7 @@ class FastForwardCollision(unittest.TestCase):
     def setUp(self) -> None:
         self.owner = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.owner, ignore_errors=True)
-        self.git("init", "-q")
+        self.git("init", "-q", "-b", "main")
         self.write("value", "base\n")
         self.git("add", "value")
         self.git("commit", "-q", "-m", "base")
@@ -492,7 +492,7 @@ class Interrupted(unittest.TestCase):
         self.session = f"{self.dir}/session"
         remote = f"{self.dir}/remote.git"
         ident = ["-c", "user.name=t", "-c", "user.email=t@e.invalid"]
-        self.git("init", "-q", "--bare", remote)
+        self.git("init", "-q", "-b", "main", "--bare", remote)
         self.git("init", "-q", "-b", "master", self.main)
         self.git("-C", self.main, *ident, "commit", "-q", "--allow-empty", "-m", "base")
         self.git("-C", self.main, "remote", "add", "origin", remote)

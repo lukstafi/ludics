@@ -904,7 +904,7 @@ class Sweep(unittest.TestCase):
         self.co = Path(tmp.name, "co")
         for sub in ("leg-control", "leg-files"):
             (self.state / sub).mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", str(self.co)], check=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.co)], check=True)
         subprocess.run(["git", "-C", str(self.co), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
                         "--allow-empty", "-m", "c"], check=True)
 
@@ -999,7 +999,7 @@ class WorktreeReading(unittest.TestCase):
         self.plain.mkdir()
         self.co = self.tmp / "co"
         git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(self.co)]
-        subprocess.run(["git", "init", "-q", str(self.co)], capture_output=True, check=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.co)], capture_output=True, check=True)
         subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "a"], capture_output=True, check=True)
         self.wt = self.tmp / "wt"
         subprocess.run([*git, "worktree", "add", "-q", str(self.wt), "-b", "topic"], capture_output=True, check=True)

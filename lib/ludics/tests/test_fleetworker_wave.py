@@ -123,7 +123,7 @@ class WaveDirCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         d = self.dir = os.path.realpath(self.tmp.name)
         repo = os.path.join(d, "repo")
-        git("init", "-q", "--bare", os.path.join(d, "origin.git"))
+        git("init", "-q", "-b", "main", "--bare", os.path.join(d, "origin.git"))
         git("init", "-q", "-b", "main", repo)
         git("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
         git("-C", repo, "remote", "add", "origin", os.path.join(d, "origin.git"))

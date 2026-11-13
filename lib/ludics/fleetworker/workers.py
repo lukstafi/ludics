@@ -24,7 +24,7 @@ from typing import Any, cast
 
 from ludics import cli
 from ludics.fleetworker import farside, tiprun
-from ludics.fleetworker.config import Config, short_hostname
+from ludics.fleetworker.config import Config, fetch_timeout_s, short_hostname
 from ludics.fleetworker.gate import base_gate
 from ludics.fleetworker.identity import die, gen_uuid
 from ludics.fleetworker.lease import anchor_gate
@@ -173,6 +173,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         die("launch: paths and refs must not contain newlines (the record is line-oriented)")
     if not brief or not os.access(brief, os.R_OK):
         die("launch: --brief <readable file>")
+    fetch_timeout = fetch_timeout_s(cfg)
     request = standing_request(standing, fleet_name(cfg, box), target) if standing else None
     label = f"{box}/{name}"
     if not cwd:
@@ -222,7 +223,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     if not cwd:
         # Fetch before reading CI, and carry an immutable object into worktree add.
         done = run_on(
-            cfg, box, prelude(cfg, box) + farside.LAUNCH_FETCH, [repo, base, knob(cfg, "FLEET_FETCH_TIMEOUT", "300")],
+            cfg, box, prelude(cfg, box) + farside.LAUNCH_FETCH, [repo, base, fetch_timeout],
             capture=True,
         )
         if done.unreachable:
@@ -251,7 +252,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     prefix = prelude(cfg, box) + farside.ghprobe(knob(cfg, "FLEET_GH_TIMEOUT", "30"))
     far_args = [
         name, kind, cwd, repo, branch, base, sid, short_hostname(), "1" if replace else "0", when,
-        knob(cfg, "FLEET_FETCH_TIMEOUT", "300"), bid, fleet_name(cfg, box), *extra,
+        fetch_timeout, bid, fleet_name(cfg, box), *extra,
     ]  # fmt: skip
     script = prefix + farside.LAUNCH
     request_id = ""
