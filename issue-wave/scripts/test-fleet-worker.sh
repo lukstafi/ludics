@@ -6302,7 +6302,8 @@ expect "a copy of the script away from its checkout names the missing scripts/py
 }
 
 section "section call listing" && {
-expect "listing finds direct calls and helper callers" 0 "^unstick$" -- /bin/bash "$0" --sections-calling launch
+expect "listing finds direct calls" 0 "^unstick$" -- /bin/bash "$0" --sections-calling launch
+expect "listing finds helper callers" 0 "^base gate$" -- /bin/bash "$0" --sections-calling attach
 expect "listing finds wrapped execution calls" 0 "^execution revisions resolve$" -- /bin/bash "$0" --sections-calling execution rebind
 expect "listing refuses an unrecognised verb" 1 "no recognised call" -- /bin/bash "$0" --sections-calling no-such-verb
 expect "listing requires a verb" 2 "usage:" -- /bin/bash "$0" --sections-calling

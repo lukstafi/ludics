@@ -55,7 +55,7 @@ def sections_calling(source: str, query: tuple[str, ...]) -> list[str]:
 
 def main() -> int:
     args = sys.argv[1:]
-    if len(args) < 2 or not 1 <= len(args[1:]) <= 3:
+    if not 2 <= len(args) <= 4:
         print("usage: --sections-calling <verb> [action [--mode]]", file=sys.stderr)
         return 2
     names = sections_calling(Path(args[0]).read_text(), tuple(args[1:]))
