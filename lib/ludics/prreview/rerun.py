@@ -7,6 +7,19 @@ observer; what drained the quota beside them was workers' own ``gh run view`` an
 loops, which pass no budget (a ``retry`` caller's call is outside it too, budget.py). This verb is
 those two calls as this script's OWN: gated by the hold, and setting it on a quota refusal.
 
+RECOVERY READ BOUNDARY. `rerun <pr> jobs|failed-jobs <run-id>` reads only jobs of
+that PR's current head run, latest attempt, paginated. Failed means a red conclusion, not
+cancelled/skipped. `job-log <run-id> <job-id> [tail-lines]` reads a completed red job's
+full text log and prints its last 80 lines by default; it does not inspect artifacts or
+other attempts. `wait <run-id> [seconds]` is read-only: it reads the PR head and its run
+list until the named run completes (any conclusion), disappears from the current head,
+a read fails, or its ceiling (default 900 seconds) expires. It never reruns or cancels.
+It claims the PR's build observer before reading, waits holds within its ceiling, and
+backs off on unchanged status. Exit 0 means finished, not green; 4 means unfinished.
+This does not reuse runwatch: completion is readiness to rerun here, rather than a
+workflow verdict, and membership in the current PR head must be revalidated each poll.
+A second build observer is refused before any read. Non-wait reads exit 3 under a hold.
+
 WHAT IT DOES. With no run id it lists the head's runs and writes nothing: one line a run, newest
 first, with its status, conclusion and attempt, and which of them it would re-run. With run ids it
 sends ``gh run rerun <id> --failed`` for each, the call ``merge --wait``'s recovery sends
@@ -23,9 +36,9 @@ Every id is checked before any write, so one refused id sends nothing. Not read:
 failed, whether a job is advisory, and the run's attempt as a limit (it is printed; ``merge
 --wait --rerun-failed-once`` is the path that re-runs once and stops).
 
-THE BUDGET. Three kinds of call, all own calls (``GhSession.retry``): the PR's head (a read), the
-head's run list (a read), and each re-run (a write). This command is no observer, so under a hold
-no call is made and it exits 3 at once, saying when the hold ends; a write is never repeated on an
+THE BUDGET. All calls are own calls (``GhSession.retry``): the PR head, its runs,
+jobs and logs (reads), and each re-run (a write). Except for the read-only ``wait`` observer
+described above, under a hold no call is made and it exits 3 at once, saying when the hold ends; a write is never repeated on an
 ambiguous failure (a 500, a 504), whose exit 3 says it may have landed.
 
 Stdout: the lines above, then the trailer ``rerun: head=<sha> sent=<n>``, ``<n>`` being how many
@@ -34,13 +47,18 @@ not one this re-runs (the boundary), with nothing sent, or GitHub rejected a re-
 read did not answer, the hold stands, or a write failed without saying whether it landed.
 """
 
+import json
+import os
+import shlex
 from dataclasses import dataclass
-from typing import NoReturn, assert_never
+from typing import NoReturn, assert_never, cast
 
 from ludics import cli
+from ludics.prreview.budget import pause
+from ludics.prreview.clock import clock_from_env
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, api_rejection, die, fail, pr_arg
-from ludics.prreview.knobs import is_digits
+from ludics.prreview.knobs import INTMAX, checks_timing, is_digits
 from ludics.prreview.runners import rerun_command
 from ludics.prreview.shtext import herestring_lines, placeholder, tab_fields
 
@@ -96,6 +114,8 @@ def _unread(session: GhSession, what: str) -> NoReturn:
 def run(session: GhSession, args: list[str]) -> int:
     if not args or not args[0]:
         die(USAGE)
+    if len(args) > 1 and args[1] in ("jobs", "failed-jobs", "job-log", "wait"):
+        return recovery_read(session, args)
     ids = args[1:]
     for rid in ids:
         if not is_digits(rid):
@@ -168,3 +188,95 @@ def run(session: GhSession, args: list[str]) -> int:
     cli.say(f"rerun {repo}#{pr}: await the verdict with: pr-review.sh checks {repo}#{pr} --wait")
     cli.say(f"rerun: head={sha} sent={sent}")
     return 0
+
+
+def recovery_read(session: GhSession, args: list[str]) -> int:
+    """Budgeted recovery reads; see the module header for the readiness boundary."""
+    verb = args[1]
+    expected = (4, 5) if verb == "job-log" else (3, 4) if verb == "wait" else (3,)
+    if len(args) not in expected or not is_digits(args[2]) or not args[2].strip("0"):
+        die("usage: rerun <pr> jobs|failed-jobs <run-id>; job-log <run-id> <job-id> [tail-lines]; wait <run-id> [seconds]")
+    extra = args[3:]
+    # GitHub identifiers are not signed 32-bit counters; only sizes/durations are bounded.
+    bounds = extra[1:] if verb == "job-log" else extra
+    if verb == "job-log" and (not is_digits(extra[0]) or not extra[0].strip("0")):
+        die("rerun: job id must be a positive integer")
+    if any(not is_digits(x) or not 0 < int(x) <= INTMAX for x in bounds):
+        die(f"rerun: tail lines and wait seconds must be positive integers up to {INTMAX}")
+    target = pr_arg(args[0], session.config.repo, session)
+    repo, pr, rid = target.repo, target.num, args[2]
+    clock = clock_from_env(os.environ)
+    timing = checks_timing(os.environ)
+    seconds = int(extra[0]) if verb == "wait" and extra else 900
+    deadline = clock.now() + seconds
+    if verb == "wait" and session.budget is not None:
+        session.budget.observe("build", seconds, repo, pr)
+    last: str | None = None
+    delay: int | None = None
+    while True:
+        head = session.retry("read", ["api", f"repos/{repo}/pulls/{pr}", "--jq", '.head.sha // "-"'])
+        if not isinstance(head, GhOk) or head.stdout in ("", "-"):
+            _unread(session, "the PR head")
+        # A head read that waited answers the current head; a later held read may be
+        # addressed with that now-stale SHA. Repeat from the head before judging it.
+        if session.budget is not None:
+            session.budget.waited = False
+        listed = session.retry("read", ["api", "--paginate",
+            f"repos/{repo}/actions/runs?head_sha={head.stdout}&per_page=100", "--jq", RUNS_JQ])
+        if not isinstance(listed, GhOk):
+            _unread(session, "the head's runs")
+        if session.budget is not None and session.budget.waited:
+            continue
+        found = next((r for r in parse_runs(listed.stdout) if r.rid == rid), None)
+        if found is None:
+            fail(1, f"rerun: run {rid} is not on {repo}#{pr}'s current head")
+        if verb != "wait":
+            break
+        cli.say(f"rerun wait: run {rid} {found.state()}")
+        if found.status == "completed":
+            return 0
+        if clock.now() >= deadline:
+            fail(4, f"rerun wait: run {rid} still unfinished; wait spent")
+        cap = session.budget.build_cap if session.budget is not None else timing.interval
+        delay = pause(timing.interval, cap, delay, last != found.state())
+        last = found.state()
+        clock.sleep(min(delay, max(0, deadline - clock.now())))
+    jobs = read_jobs(session, repo, rid)
+    if verb == "job-log":
+        jid = extra[0]
+        job = next((j for j in jobs if str(j.get("id")) == jid), None)
+        if job is None or job.get("status") != "completed" or conclusion_class(str(job.get("conclusion"))) != "red":
+            fail(1, f"rerun: job {jid} is not a completed failed job of run {rid}")
+        log = session.retry("read", ["api", f"repos/{repo}/actions/jobs/{jid}/logs"])
+        if not isinstance(log, GhOk):
+            _unread(session, f"job {jid}'s log")
+        lines = int(extra[1]) if len(extra) > 1 else 80
+        cli.say("\n".join(log.stdout.splitlines()[-lines:]))
+    else:
+        for job in jobs:
+            if verb == "failed-jobs" and conclusion_class(str(job.get("conclusion"))) != "red":
+                continue
+            cli.say(f"job {job.get('id')} {shlex.quote(str(job.get('name')))} "
+                    f"{job.get('status')}/{job.get('conclusion')}")
+    return 0
+
+
+def read_jobs(session: GhSession, repo: str, rid: str) -> list[dict[str, object]]:
+    """Current attempt's jobs, paginated; reusable by other recovery readers."""
+    result = session.retry("read", ["api", "--paginate",
+        f"repos/{repo}/actions/runs/{rid}/jobs?filter=latest&per_page=100", "--jq", '.jobs[] | @json'])
+    if not isinstance(result, GhOk):
+        _unread(session, f"run {rid}'s jobs")
+    jobs: list[dict[str, object]] = []
+    try:
+        for line in result.stdout.splitlines():
+            value: object = json.loads(line)
+            if not isinstance(value, dict):
+                raise ValueError("not a job object")
+            job = cast(dict[str, object], value)
+            if not isinstance(job.get("id"), int):
+                raise ValueError("missing job id")
+            jobs.append(job)
+    except (ValueError, TypeError):
+        fail(3, "rerun: unreadable jobs response")
+    return jobs

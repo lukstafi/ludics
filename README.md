@@ -1108,6 +1108,11 @@ for `base --wait`, with its one observer per branch. What no command reaches (lo
 run view's options before its id, the lift writing `quota-last` first) is in
 `lib/ludics/tests/test_prreview_budget.py`. A transport failure (a 502) stays exit 3 with no merge and sets no hold.
 
+`test-pr-review-budget.sh` also pins `rerun`'s recovery readers (jobs, failed jobs and log
+tails): each sends nothing under a hold, and its read-only run wait sleeps until completion
+or its ceiling, sharing the build observer. A finite hold is slept through before a probe
+and resumed read, with no request before the hold ends.
+
 `test-pr-review-status.sh` drives `status` and `watch` against canned reactions, reviews,
 comments and PR reads, and pins the mergeability that rides on every state line: a PR whose merge
 commit GitHub cannot build says `CONFLICTS` on every state and never "the next move is yours",

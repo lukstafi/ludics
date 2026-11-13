@@ -1047,9 +1047,23 @@ drained the fleet token's quota while the hold was stopping every observer):
 ```
 
 It re-runs only a finished red or cancelled run of the PR's current head, sends nothing when any
-id it was given is not one, and exits 3 without a call while a quota hold stands. It waits for
-nothing: `checks --wait` reads the re-run's verdict. A raw `gh run` call, and one sent through
-`retry`, are outside the budget, so never loop either.
+id it was given is not one, and exits 3 without a call while a quota hold stands.
+`checks --wait` reads the re-run's verdict. For recovery, use these budgeted reads:
+
+```bash
+pr-review.sh rerun <pr> jobs <run-id>              # latest attempt's job status and conclusion
+pr-review.sh rerun <pr> failed-jobs <run-id>       # red jobs only
+pr-review.sh rerun <pr> job-log <run-id> <job-id> [tail-lines]  # default 80 lines
+pr-review.sh rerun <pr> wait <run-id> [seconds]    # default 900, then rerun <pr> <run-id>
+```
+
+The read-only `wait` reads the current PR head and its runs until the named run completes
+(any conclusion), leaves the head, a read fails, or its ceiling expires. Exit 0 means
+finished, 4 means unfinished. It is a build observer: stop the existing `checks --wait`
+or `merge --wait` before starting it; a second observer is refused before reading.
+The job log is restricted to a completed red job of that head run's latest attempt.
+A raw `gh run` call is neither intercepted nor counted. A `retry` caller's call is outside
+the budget by design, for a one-off read; never loop either.
 
 **Exit 4 refuses too, by default.** Nothing has failed, but nothing has passed, and a merge that
 waits for neither read nothing — it was a warning until 2026-08-23, when a day-long runner queue
@@ -1087,7 +1101,7 @@ check running, the run list holding the head) for `SHIP_PR_BASE_ABSENT_GRACE`. `
 Beside running checks a conflict is still the merge call's to refuse (*What `merge` absorbs*, below).
 
 **The polling budget** (ludics-lite#543) is shared by every observer: `watch`, `checks --wait`,
-`merge --wait` and `base --wait`. Each one reads at once, then pauses for its interval (`WATCH_INTERVAL`,
+`merge --wait`, `rerun <pr> wait` and `base --wait`. Each one reads at once, then pauses for its interval (`WATCH_INTERVAL`,
 `SHIP_PR_CHECKS_INTERVAL`). While nothing moves, the pause doubles up to 300 s for a review and
 600 s for a build (`SHIP_PR_REVIEW_POLL_CAP`, `SHIP_PR_BUILD_POLL_CAP`), except that `checks --wait`
 and `merge --wait` stop at twice the interval while every check they wait for has its runner

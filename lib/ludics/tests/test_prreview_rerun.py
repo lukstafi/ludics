@@ -27,6 +27,7 @@ def row(rid: str, status: str = "completed", conclusion: str = "failure", attemp
 class Gh:
     """An in-process gh: the head read, the run list, and the re-run write, each answered as set."""
 
+    jobs: str = '{"id":201,"name":"build","status":"completed","conclusion":"failure"}\n{"id":202,"name":"docs","status":"completed","conclusion":"success"}'
     runs: str = ""
     head: proc.Completed = field(default_factory=lambda: proc.Completed(0, HEAD + "\n", ""))
     listed: proc.Completed | None = None
@@ -38,6 +39,10 @@ class Gh:
         if args[:2] == ["run", "rerun"]:
             return self.writes.get(args[2], proc.Completed(0, "", ""))
         joined = " ".join(args)
+        if "actions/jobs/201/logs" in joined or "actions/jobs/98765432100/logs" in joined:
+            return proc.Completed(0, "first\nlast\n", "")
+        if "actions/runs/101/jobs?" in joined:
+            return proc.Completed(0, self.jobs, "")
         if f"actions/runs?head_sha={HEAD}" in joined:
             return self.listed or proc.Completed(0, self.runs + "\n" if self.runs else "", "")
         if "pulls/7" in joined and ".head.sha" in joined:
@@ -62,6 +67,44 @@ def rerun_with(gh: Gh, *args: str) -> tuple[int, str, str]:
 
 
 class Rerun(unittest.TestCase):
+    def test_recovery_readers(self) -> None:
+        for verb, extra, wanted in (("jobs", [], "job 202 docs"),
+                                    ("failed-jobs", [], "job 201 build"),
+                                    ("job-log", ["201", "1"], "last\n")):
+            gh = Gh(runs=row("101"))
+            rc, out, err = rerun_with(gh, "7", verb, "101", *extra)
+            self.assertEqual(rc, 0, err)
+            self.assertIn(wanted, out)
+            if verb == "failed-jobs":
+                self.assertNotIn("202", out)
+            self.assertEqual(gh.sent(), [])
+
+    def test_job_ids_are_not_limited_to_signed_32_bit(self) -> None:
+        gh = Gh(runs=row("101"), jobs='{"id":98765432100,"name":"build","status":"completed","conclusion":"failure"}')
+        rc, out, err = rerun_with(gh, "7", "job-log", "101", "98765432100", "1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out, "last\n")
+
+    def test_recovery_refuses_wrong_run_or_nonfailed_job(self) -> None:
+        for args in (("jobs", "999"), ("job-log", "101", "202")):
+            gh = Gh(runs=row("101"))
+            rc, _, _ = rerun_with(gh, "7", *args)
+            self.assertEqual(rc, 1)
+            self.assertFalse(any("/logs" in " ".join(c) for c in gh.calls))
+
+    def test_recovery_zero_run_ids_are_usage_errors(self) -> None:
+        for rid in ("0", "00", "000"):
+            gh = Gh(runs=row("101"))
+            rc, _, _ = rerun_with(gh, "7", "jobs", rid)
+            self.assertEqual(rc, 2)
+            self.assertEqual(gh.calls, [])
+
+    def test_wait_completion_is_not_a_green_verdict(self) -> None:
+        for conclusion in ("failure", "success", "cancelled"):
+            rc, out, err = rerun_with(Gh(runs=row("101", conclusion=conclusion)), "7", "wait", "101", "1")
+            self.assertEqual(rc, 0, err)
+            self.assertIn("completed/" + conclusion, out)
+
     def test_no_run_id_lists_the_heads_runs_and_writes_nothing(self) -> None:
         gh = Gh(runs="\n".join([
             row("101"),
