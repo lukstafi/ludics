@@ -34,6 +34,22 @@ def parsed(text: str) -> tuple[BuildConfig | None, str]:
 
 
 class SlotRunner(unittest.TestCase):
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO needs POSIX")
+    def test_fifo_runner_refuses_without_opening_it(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ludics-fifo-runner.") as tmp:
+            source = os.path.join(tmp, "lib", "ludics", "prreview", "mergebuild.py")
+            os.makedirs(os.path.dirname(source))
+            scripts = os.path.join(tmp, "issue-wave", "scripts")
+            os.makedirs(scripts)
+            os.mkfifo(os.path.join(scripts, "fleet-worker.sh"))
+            with (
+                mock.patch.object(mergebuild, "__file__", source),
+                mock.patch.object(mergebuild.Path, "open", side_effect=AssertionError("FIFO opened: would block")),
+                self.assertRaises(cli.Exit) as refused,
+            ):
+                mergebuild._slot_runner()  # pyright: ignore[reportPrivateUsage]
+            self.assertEqual(refused.exception.rc, 3)
+
     def test_dangling_slot_runner_refuses_instead_of_running_bare(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ludics-slot-runner.") as tmp:
             source = os.path.join(tmp, "lib", "ludics", "prreview", "mergebuild.py")

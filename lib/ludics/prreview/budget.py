@@ -41,7 +41,8 @@ A quota failure is never the API's answer about the PR. ``GhSession.retry`` retu
 permit a merge.
 
 STATE READ BOUNDARY (#1092). Lock owners and quota-holds are filesystem reads, not evidence
-of absence when an I/O error occurs. Only lstat's ENOENT is absent; present links must be readable.
+of absence when an I/O error occurs. Only lstat's ENOENT is absent; present links must lead to
+readable regular files. Nonregular state is refused before opening it, so FIFOs cannot block.
 Unread owners return lock status 2; unread holds return a gate refusal (session exit 3), including
 inside an observer, without sleeping or probing. Malformed readable hold lines retain the shell's
 existing parse boundary below; unrelated names (neither <digits> nor <digits>.<suffix>) are ignored.
@@ -215,6 +216,7 @@ def _owner(path: str) -> tuple[str, str]:
     """Only lstat's ENOENT is ownerless. A present unread owner refuses immediately (#1092)."""
     if fs.absent(path):
         return "", ""
+    fs.require_regular(path)
     with open(path, encoding="utf-8", errors="surrogateescape") as f:
         return f.readline().rstrip("\n"), f.readline().rstrip("\n")
 
@@ -224,6 +226,7 @@ def _tab_read(path: str, n: int) -> list[str] | None:
     one separator, the last field taking the rest). None for an absent file or a readable line
     without its newline; I/O failures raise, never masquerade as an absent hold."""
     try:
+        fs.require_regular(path)
         with open(path, encoding="utf-8", errors="surrogateescape") as f:
             line = f.readline()
     except FileNotFoundError:
@@ -662,13 +665,16 @@ class Budget:
 
     # --- the gate before every call ---
 
+    def read_error(self, exc: OSError) -> str:
+        return f"quota hold: cannot read {shlex.quote(self.dir)} (SHIP_PR_STATE_DIR): {exc}; no further call was made"
+
     def gate(self, mode: str) -> str | None:
         try:
             return self._gate(mode)
         except OSError as exc:
             if self._probe_owned:
                 self._drop_probe_lock()
-            return f"quota hold: cannot read {shlex.quote(self.dir)} (SHIP_PR_STATE_DIR): {exc}; no call was made"
+            return self.read_error(exc)
 
     def _gate(self, mode: str) -> str | None:
         """``budget_gate <read|write>``: run before every call the session makes. None when no hold

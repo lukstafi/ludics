@@ -23,3 +23,9 @@ def absent(path: str | os.PathLike[str]) -> bool:
             raise PermissionError(errno.EACCES, "directory is not searchable", parent)
         return True
     return False
+
+
+def require_regular(path: str | os.PathLike[str]) -> None:
+    """Refuse a device, directory or FIFO before a safety-file open can block."""
+    if not stat.S_ISREG(os.stat(path).st_mode):
+        raise OSError(errno.EINVAL, "safety state is not a regular file", os.fspath(path))

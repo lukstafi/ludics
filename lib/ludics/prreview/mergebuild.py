@@ -619,10 +619,9 @@ def _slot_runner() -> str | None:
         if fs.absent(here):
             return None
         # A present runner must be readable; a broken link or I/O error cannot opt out of slots.
+        fs.require_regular(here)
         with here.open("rb") as source:
             source.read(1)
-        if not here.is_file():
-            raise OSError("slot runner is not a regular file")
     except OSError as exc:
         raise cli.Exit(3, f"merge build: cannot read slot runner {shlex.quote(str(here))}: {exc}; nothing started") from exc
     probe = _supervised(["bash", str(here), "execution", "slot", "--probe"], os.getcwd(), PROBE_TIMEOUT, dict(os.environ))

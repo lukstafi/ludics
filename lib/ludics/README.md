@@ -494,7 +494,9 @@ builds exit 3 on an unread present slot runner; genuinely absent runners and uns
 answers retain the existing bare-build policy. Peer-plan clean exits 1 and keeps the worktree
 when its run directory or a named run cannot be read. Lease HALT reads follow `tiprun.HALT_READ`:
 absent is open, readable is halted, unread refuses (exit 1), with the explicit force gate retained.
-These failures return immediately; observers do not retry unread state within their wait.
+These failures return immediately; observers do not retry unread state within their wait,
+including a hold read after a quota response (`core.GhSession`). Numeric hold entries and lock
+owners, like the merge-build runner, must be regular files before open: FIFOs cannot block a read.
 Readable malformed quota lines keep the existing shell-format boundary; this change does not
 redesign lock ownership or harden unrelated evidence writers. #551 covers hold writes, while
 #1092 covers the reads.

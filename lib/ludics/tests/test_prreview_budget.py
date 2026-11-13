@@ -206,6 +206,15 @@ class Holds(Scratch):
         self.assertIsNotNone(b.gate("read"))
         self.assertEqual(self.gh.calls, [])
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO needs POSIX")
+    def test_fifo_hold_refuses_without_opening_it(self) -> None:
+        b = self.budget()
+        os.mkdir(b.holds_dir)
+        os.mkfifo(os.path.join(b.holds_dir, f"{T0 + 60}.fifo"))
+        with mock.patch("builtins.open", side_effect=AssertionError("FIFO opened: would block")):
+            self.assertIsNotNone(b.gate("read"))
+        self.assertEqual((self.gh.calls, self.clock.slept), ([], []))
+
     def test_a_later_refusal_never_shortens_the_hold(self) -> None:
         b = self.budget()
         self.plant(T0 + 3600, "graphql", 3600)
@@ -283,6 +292,15 @@ class Holds(Scratch):
 
 
 class Locks(Scratch):
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO needs POSIX")
+    def test_fifo_owner_refuses_without_opening_it(self) -> None:
+        lock = os.path.join(self.dir, "lock")
+        os.mkdir(lock)
+        os.mkfifo(os.path.join(lock, "owner"))
+        with mock.patch("builtins.open", side_effect=AssertionError("FIFO opened: would block")):
+            self.assertEqual(self.budget().lock_take(lock).rc, 2)
+        self.assertEqual(self.clock.slept, [])
+
     def test_unread_owner_never_reaps_or_waits(self) -> None:
         lock = os.path.join(self.dir, "lock")
         os.mkdir(lock)
@@ -367,6 +385,21 @@ class Session(Scratch):
     def session(self, b: Budget) -> GhSession:
         config = core.load_config({"SHIP_PR_API_ATTEMPTS": "4", "SHIP_PR_API_BACKOFF": "5"})
         return GhSession(config, run=self.gh, sleep=self.clock.sleep, budget=b)
+
+    def test_observer_unread_hold_after_quota_is_unknown(self) -> None:
+        b = self.budget()
+        b.wait_until = T0 + 600
+        self.gh = Gh(proc.Completed(1, "", "gh: API rate limit exceeded for user\n"))
+        s = self.session(b)
+        with (
+            mock.patch.object(b, "gate", return_value=None),
+            mock.patch.object(b, "quota_hit", return_value=None),
+            mock.patch.object(b, "hold_read", side_effect=PermissionError(13, "denied")),
+        ):
+            self.assertEqual(s.retry("read", ["api", "repos/o/r/pulls/7"]), GhUnanswered())
+        self.assertIn("cannot read", s.err_line())
+        self.assertTrue(s.quota_stopped())
+        self.assertEqual((len(self.gh.calls), self.clock.slept), (1, []))
 
     def test_a_write_never_waits_a_hold_inside_an_observer(self) -> None:
         # The one write an observer makes is watch's re-request, sent with the window's ceiling set.
