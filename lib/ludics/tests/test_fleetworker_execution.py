@@ -1388,9 +1388,17 @@ class UnusedLeg(unittest.TestCase):
         os.makedirs(os.path.dirname(wt))
         os.symlink(os.path.join(root, "nowhere"), wt)
         self.assertEqual(self.far_side(state, wt), "leg=present\n", "a dangling link is something at the path")
+        for spelling in (wt + "/", wt + "//"):
+            self.assertEqual(self.far_side(state, spelling), "leg=present\n", "...whatever separators the record ends in")
         os.unlink(wt)
+        for spelling in (wt + "/", wt + "//"):
+            self.assertEqual(self.far_side(state, spelling), "leg=unused\n", spelling)
+            open(lock, "w").close()
+            self.assertEqual(self.far_side(state, spelling), "leg=locked\n", "the lock is the bare path's, as a leg names it")
+            os.unlink(lock)
         os.makedirs(wt)
-        self.assertEqual(self.far_side(state, wt), "leg=present\n")
+        self.assertEqual(self.far_side(state, wt + "/"), "leg=present\n")
+        self.assertEqual(self.far_side(state, "/"), "leg=present\n", "the root keeps its separator")
 
 
 class GpuClause(unittest.TestCase):

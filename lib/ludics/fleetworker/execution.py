@@ -54,7 +54,8 @@ fail-closed allowlist, every clause read here or by ``LEG_UNUSED`` on the execut
   - the call names no ``--from-run`` (a run record is evidence of a run);
   - the record names its ``checkout``, and ``--observed-from`` is it (THE CHECKOUT): a record that
     names none is read off whatever path the caller typed, and a path typed wrong is missing too;
-  - nothing is at that path, a dangling link included;
+  - nothing is at that path, a dangling link included, however many separators the record's
+    spelling ends in;
   - no leg ever opened that worktree's lock (leg.py's WORKTREE: a leg opens the lock file before it
     makes the worktree, and nothing removes the file).
 Anything else is today's reading, its refusals unchanged: a leg that ran and whose worktree was
@@ -823,8 +824,11 @@ HANDBACK_VERDICTS = ("pass", "fail", "timeout", "cancelled")  # not-launched nam
 
 # Far side of THE UNUSED LEG, on the execution host, after the prelude and leg.WORKTREE. Arg: the
 # record's checkout. Prints one `leg=` line and exits 0: `unused` when nothing is at the path and no
-# leg ever opened its lock, else what it found (`present`, `unresolved`, `locked`).
+# leg ever opened its lock, else what it found (`present`, `unresolved`, `locked`). The path is read
+# without its trailing separators (the registry keeps a checkout as spelled, `wt/` too): with one, a
+# dangling link is neither `-e` nor `-L`, and would read as nothing there.
 LEG_UNUSED = r"""co="$1"
+while [ "$co" != / ] && [ "${co%/}" != "$co" ]; do co=${co%/}; done
 if [ -e "$co" ] || [ -L "$co" ]; then printf 'leg=present\n'; exit 0; fi
 key=$(canon "$co") || { printf 'leg=unresolved\n'; exit 0; }
 lock=$(leg_lock_file "$key")
