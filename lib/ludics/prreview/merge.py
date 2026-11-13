@@ -652,7 +652,7 @@ class Merge:
         self.config = config
         self.clock = clock
         self.opts = opts
-        self.gate = Gate(session, repo, config, clock, orphans_on=True, images_on=True)
+        self.gate = Gate(session, repo, config, clock, orphans_on=True, images_on=True, conflicts_on=True)
         # The one recovery from a job that never got a runner, under --wait only: a merge that does
         # not wait does not rerun (runners.py; Recovery above).
         self.recovery = Recovery(session, repo, num, self.gate, clock, opts.wait_for, opts.rerun_failed_once)
@@ -747,10 +747,13 @@ class Merge:
         gate's, not this one's). Anything else -- a read that failed, a shape outside those
         words, or still computing after the last read -- is said on stderr and the wait goes on:
         this read can only refuse early, so not knowing refuses nothing, and it never says clean.
-        Not read: a conflict that arises DURING the wait. That one is the drift read's warning
-        after the gate and the merge call's own refusal, decided by the mergeable field
-        (``await_mergeable``) as before. A merge with no wait reads nothing here: its gate is one
-        read, and the call's refusal answers a conflict at once."""
+        Not read: a conflict that arises DURING the wait. The gate reads that one on a round with
+        nothing to wait for (``Gate.conflicting``, ludics#1110: this read's ``unknown`` in an outage
+        left a conflicting head waiting for runs GitHub never creates), ``judge`` refusing on it;
+        beside running checks it is the drift read's warning after the gate and the merge call's
+        own refusal, decided by the mergeable field (``await_mergeable``) as before. A merge with
+        no wait reads nothing here: its gate is one read, and the call's refusal answers a conflict
+        at once."""
         repo, pr, clock = self.repo, self.num, self.clock
         started = clock.now()
         budget = self.session.budget
@@ -916,6 +919,15 @@ class Merge:
             fail(
                 3,
                 f"NOT merging {repo}#{pr}: {recovery.why}; nothing was written. Retry.",
+            )
+        # The gate's own conflict read (``Gate.conflicting``, ludics#1110), exit 1 as the
+        # preflight's: no --allow-no-verdict goes over it, since the merge call would refuse.
+        if gate.verdict == "conflict":
+            fail(
+                1,
+                f"REFUSING to merge {repo}#{pr}: it CONFLICTS with its base (mergeable_state=dirty), so",
+                "GitHub builds no pull_request run for this head and no build verdict can end in a merge.",
+                "Merge or rebase the base in, resolve, push, then run merge again for the new head.",
             )
         if rc == 4 and recovery.why and recovery.code == 7 and not opts.allow_no_verdict:
             self.refuse_cancelled()

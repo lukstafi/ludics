@@ -57,7 +57,9 @@ exist at each read. A dependent job GitHub creates after the settle has passed (
 ``needs:`` an advisory one, which the advisory file's own boundary forbids), a workflow a later
 event starts (``workflow_run``), and a push after the last read are not seen. When the bound
 expires with no verdict, one line before the trailer says the wait was spent, and how long it was;
-the exit stays 4 and the trailer's vocabulary is unchanged.
+the exit stays 4 and the trailer's vocabulary is unchanged. What no wait resolves ends it before
+the bound, exit 4 too (``Gate.check``): a PR that conflicts with its base, ``verdict=conflict``
+(ludics#1110), and a head held by stopped runs alone, ``verdict=unjudged`` (ludics#1097).
 
 ``--settle`` (#1039; only with a ``--wait`` of more than 0 seconds) keeps the wait going past a red while a check the fold
 judges -- every required check, or the ``--check`` selection -- is still running, so every red of
@@ -89,6 +91,7 @@ USAGE = "usage: checks <pr> [--wait[=seconds]] [--settle] [--check <ERE>]"
 
 VERDICTS = (
     "green", "absent", "red", "runred", "waived", "pending", "mixed", "unjudged", "superseded", "unknown",
+    "conflict",
 )
 # The trailer's ``runners=`` kinds, in the order they are written (runners.Kind).
 RUNNER_KINDS = ("no-runner", "never-started")
@@ -154,7 +157,7 @@ def run(session: GhSession, args: list[str]) -> int:
     if session.budget is not None:
         session.budget.observe("build", wait_for, target.repo, target.num)
     gate = Gate(session, target.repo, config, clock_from_env(os.environ), select=select or "", orphans_on=True,
-                images_on=True, settle=settle)
+                images_on=True, conflicts_on=True, settle=settle)
     # A selection names its checks itself; the advisory list has no say in it.
     policy = 0 if select else gate.advisory_policy()
     kinds: set[str] = set()

@@ -24,6 +24,7 @@ from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.budget import Budget
 from ludics.prreview.clock import FuncClock
 from ludics.prreview.gate import Gate, advisory_parse, load_gate_config, running_list
+from ludics.prreview.runners import Idle
 
 
 def grep_refuses_in(locale: str, pattern: str) -> bool:
@@ -890,6 +891,188 @@ class GateLoop(unittest.TestCase):
             with self.subTest(jobs=jobs):
                 self.assertEqual((gate.check("7", 0), gate.verdict), rc)
                 self.assertIn(want, self.out.getvalue())
+
+    # --- what no wait resolves (ludics#1107, #1110, #1097) -------------------------------------------
+
+    def quiet_head(self, gh: FakeGh, mergeable: str | None = "", checks: str | list[str] = "") -> None:
+        """A head whose PR reads answer; ``mergeable``: what the conflict read answers (None: a
+        503; "": it has no route of its own, so the plain head read answers it, which is no
+        ``dirty``)."""
+        gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+        if mergeable is None:
+            gh.on("pulls/7", ".mergeable_state", rc=1, err="gh: HTTP 503")
+        elif mergeable:
+            gh.on("pulls/7", ".mergeable_state", out=mergeable)
+        gh.on("pulls/7", out="h1\tb1\ttopic")
+        gh.on("check-runs", out=checks)
+
+    def conflict_reads(self, gh: FakeGh) -> int:
+        return len([c for c in gh.calls if any(".mergeable_state" in a for a in c)])
+
+    def test_a_never_started_run_beside_a_later_completed_one_is_superseded(self) -> None:
+        # ludics#1107: pull_request run 100 sat queued with no job while run 200, of the same
+        # workflow and event on the same head and created after it, completed. The controls keep
+        # today's hold: the run alone; one with a job (it started); one in progress; another
+        # workflow's; another event's; a workflow_dispatch or push pair (invocations of their own);
+        # one created after the completed run; one whose job list did not answer.
+        def old(status: str = "queued", wid: str = "1", event: str = "pull_request", at: str = "00:00") -> str:
+            return f"2026-01-01T00:{at}Z\t100\t{wid}\t{event}\tci\t{status}\tpending\t1"
+
+        def later(conclusion: str = "success", event: str = "pull_request") -> str:
+            return f"2026-01-01T00:05:00Z\t200\t1\t{event}\tci\tcompleted\t{conclusion}\t2"
+
+        job = "build\tpending\t2026-01-01T00:00:00Z\t-"
+        passed, failed = "ci\tsuccess\tu\t2\tcompleted", "ci\tfailure\tu\t2\tcompleted"
+        cases: tuple[tuple[str, str | None, str, tuple[int, str], bool], ...] = (
+            (f"{later()}\n{old()}", "", passed, (0, "green"), True),
+            (f"{later('failure')}\n{old()}", "", failed, (1, "red"), False),
+            (f"{later('failure')}\n{old()}", "", "", (1, "runred"), False),
+            (old(), "", passed, (4, "unjudged"), False),
+            (f"{later()}\n{old()}", job, passed, (4, "unjudged"), False),
+            (f"{later()}\n{old(status='in_progress')}", "", passed, (4, "unjudged"), False),
+            (f"{later()}\n{old(wid='2')}", "", passed, (4, "unjudged"), False),
+            (f"{later()}\n{old(event='push')}", "", passed, (4, "unjudged"), False),
+            (f"{later(event='push')}\n{old(event='push')}", "", passed, (4, "unjudged"), False),
+            (f"{later(event='workflow_dispatch')}\n{old(event='workflow_dispatch')}", "", passed,
+             (4, "unjudged"), False),
+            (f"{later()}\n{old(at='09:00')}", "", passed, (4, "unjudged"), False),
+            (f"{later()}\n{old()}", None, passed, (4, "unjudged"), False),
+        )
+        for runs, jobs, checks, want, named in cases:
+            gh = FakeGh()
+            self.quiet_head(gh, checks=checks)
+            gh.on("actions/runs?head_sha=h1", out=runs)
+            if jobs is None:
+                gh.on("actions/runs/100/jobs", rc=1, err="gh: HTTP 503")
+            else:
+                gh.on("actions/runs/100/jobs", out=jobs)
+            gh.on("actions/runs/200/jobs", out="build\tfailure\t2026-01-01T00:05:00Z\t2026-01-01T00:06:00Z")
+            gate = make_gate(gh, FakeClock())
+            self.out.truncate(0)
+            self.out.seek(0)
+            with self.subTest(runs=runs, jobs=jobs, checks=checks):
+                self.assertEqual((gate.check("7", 0), gate.verdict), want)
+                line = (
+                    "\n  superseded  workflow run 100 (ci): queued with no job, never started; run 200 of the"
+                    " same workflow and event completed on this head after it — not waited for\n"
+                )
+                (self.assertIn if named else self.assertNotIn)(line, self.out.getvalue())
+
+    def test_a_quiet_wait_ends_on_a_conflict_and_only_on_one_that_was_read(self) -> None:
+        # ludics#1110: the head's run has no job, wait or no. Past the grace (300s) each quiet round
+        # reads the PR's mergeable_state: dirty is the conflict verdict; unknown, clean and a read
+        # that did not answer keep the wait, and the next round reads again.
+        queued = "2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\tqueued\tpending\t1"
+        for state, want, sleeps, reads in (
+            ("dirty", (4, "conflict"), 5, 1),
+            ("unknown", (4, "unjudged"), 20, 16),
+            ("clean", (4, "unjudged"), 20, 16),
+            (None, (4, "unjudged"), 20, 16),
+        ):
+            gh = FakeGh()
+            self.quiet_head(gh, state)
+            gh.on("actions/runs?head_sha=h1", out=queued)
+            gh.on("actions/runs/100/jobs", out="")
+            clock = FakeClock()
+            gate = make_gate(gh, clock)
+            gate.conflicts_on = True
+            self.out.truncate(0)
+            self.out.seek(0)
+            with self.subTest(state=state):
+                self.assertEqual((gate.check("7", 1200), gate.verdict), want)
+                self.assertEqual(clock.sleeps, [60] * sleeps)
+                self.assertEqual(self.conflict_reads(gh), reads, "none inside the grace, one a round after it")
+                said = "CONFLICTS with its base (mergeable_state=dirty)"
+                (self.assertIn if state == "dirty" else self.assertNotIn)(said, self.out.getvalue())
+                if state == "dirty":
+                    self.assertIn("Merge the base in, resolve, push", self.out.getvalue())
+
+    def test_the_conflict_read_is_made_only_on_a_round_with_nothing_to_wait_for(self) -> None:
+        # The controls: a check still running (its verdict comes), a single read (no grace has
+        # passed), and a gate that does not ask (``base``'s, of a merged head).
+        queued = "2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\tqueued\tpending\t1"
+        for checks, wait, on, want in (
+            ("ci\tpending\tu\t1\tin_progress", 1200, True, (4, "pending")),
+            ("", 0, True, (4, "unjudged")),
+            ("", 1200, False, (4, "unjudged")),
+        ):
+            gh = FakeGh()
+            self.quiet_head(gh, "dirty", checks)
+            gh.on("actions/runs?head_sha=h1", out=queued)
+            gh.on("actions/runs/100/jobs", out="")
+            gate = make_gate(gh, FakeClock())
+            gate.conflicts_on = on
+            with self.subTest(checks=checks, wait=wait, on=on):
+                self.assertEqual((gate.check("7", wait), gate.verdict), want)
+                self.assertEqual(self.conflict_reads(gh), 0)
+
+    def test_an_absent_head_that_conflicts_is_a_conflict_at_once(self) -> None:
+        # A head GitHub cannot build has no run at all, which past the creation grace reads ABSENT:
+        # that round asks before it answers, with no wait and no further grace.
+        for state, want in (("dirty", (4, "conflict")), ("unknown", (0, "absent")), ("clean", (0, "absent")),
+                            (None, (0, "absent"))):
+            gh = FakeGh()
+            self.quiet_head(gh, state)
+            gh.on("actions/runs?head_sha=h1", out="")
+            gh.on("commits/h1", out="2026-01-01T00:00:00Z")
+            gate = make_gate(gh, FakeClock(t=1767225600.0 + 3600))
+            gate.conflicts_on = True
+            with self.subTest(state=state):
+                self.assertEqual((gate.check("7", 0), gate.verdict), want)
+                self.assertEqual(self.conflict_reads(gh), 1)
+
+    def test_a_checks_wait_ends_on_a_stopped_run_nothing_reruns(self) -> None:
+        # ludics#1097: a cancelled run with no build check behind it holds the head, and nothing
+        # moves until someone re-runs it. With no recovery the wait ends once that has lasted the
+        # grace; ``merge --wait``'s recovery (here one that has nothing to do) keeps its own wait.
+        t = "2025-12-31T23:00:00Z"
+        stopped = "2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\tcompleted\tcancelled\t1"
+        for recovers, sleeps in ((False, 5), (True, 60)):
+            gh = FakeGh()
+            self.quiet_head(gh)
+            gh.on("actions/runs?head_sha=h1", out=stopped)
+            gh.on("actions/runs/100/jobs", out=f"build\tcancelled\t{t}\t{t}")
+            clock = FakeClock()
+            gate = make_gate(gh, clock)
+            if recovers:
+                gate.orphans_on = True
+                gate.recover = lambda _orphans, _runs: Idle()
+            self.out.truncate(0)
+            self.out.seek(0)
+            with self.subTest(recovers=recovers):
+                self.assertEqual((gate.check("7", 3600), gate.verdict), (4, "unjudged"))
+                self.assertEqual(clock.sleeps, [60] * sleeps)
+                self.assertIn("completed stopped-not-judged", self.out.getvalue())
+
+    def test_the_stopped_grace_is_counted_from_the_first_stopped_round(self) -> None:
+        # A head quiet for longer than the grace on a run with no job, which is then cancelled: the
+        # stopped rounds get a grace of their own, not what is left of the quiet one (the local
+        # review's finding on this change). Six rounds queued (to 300 s), then cancelled for good.
+        t = "2025-12-31T23:00:00Z"
+        run = "2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\t"
+        gh = FakeGh()
+        self.quiet_head(gh)
+        gh.on("actions/runs?head_sha=h1", out=[f"{run}queued\tpending\t1"] * 6 + [f"{run}completed\tcancelled\t1"])
+        gh.on("actions/runs/100/jobs", out=[""] * 6 + [f"build\tcancelled\t{t}\t{t}"])
+        clock = FakeClock()
+        gate = make_gate(gh, clock)
+        self.assertEqual((gate.check("7", 3600), gate.verdict), (4, "unjudged"))
+        self.assertEqual(clock.sleeps, [60] * 11, "six queued rounds, then five more before the stopped grace ends it")
+
+    def test_a_stopped_run_rerun_inside_the_grace_is_waited_for(self) -> None:
+        # The grace is what a re-run just sent needs: the run reads cancelled for four more rounds,
+        # then in flight, then green. Ending on the first stopped round would have missed it.
+        t = "2025-12-31T23:00:00Z"
+        run = "2026-01-01T00:00:00Z\t100\t1\tpull_request\tci\t"
+        gh = FakeGh()
+        self.quiet_head(gh, checks=[""] * 5 + ["ci\tpending\tu\t1\tin_progress", "ci\tsuccess\tu\t1\tcompleted"])
+        gh.on("actions/runs?head_sha=h1", out=[f"{run}completed\tcancelled\t1"] * 5
+              + [f"{run}in_progress\tpending\t1", f"{run}completed\tsuccess\t1"])
+        gh.on("actions/runs/100/jobs", out=[f"build\tcancelled\t{t}\t{t}"] * 5 + [f"build\tpending\t{t}\t-"])
+        clock = FakeClock()
+        gate = make_gate(gh, clock)
+        self.assertEqual((gate.check("7", 3600), gate.verdict), (0, "green"))
+        self.assertEqual(clock.sleeps, [60] * 6)
 
 
 T0 = 1767225600
