@@ -33,7 +33,12 @@ to `@@MAIN@@`.
   drains the fleet's quota (ludics#1111).
 - A red you judge a flake: `pr-review.sh rerun @@REPO@@#<pr>` lists the head's runs, and
   `pr-review.sh rerun @@REPO@@#<pr> <run id>...` re-runs the failed jobs of the ones you name,
-  inside that budget. Then wait with `checks --wait` again. Never call `gh run rerun` yourself.
+  inside that budget. `rerun <pr> jobs <run-id>` lists job status and conclusion;
+  `failed-jobs <run-id>` lists red jobs and `job-log <run-id> <job-id> [tail-lines]`
+  prints a failed job's log tail (all after `rerun <pr>`). For an unfinished red run,
+  `rerun <pr> wait <run-id> [seconds]` waits for completion, read-only, before rerunning;
+  its default ceiling is 900 seconds. It shares the PR's build observer: stop an existing
+  `checks --wait` or `merge --wait` first. Then wait with `checks --wait` again. Never call `gh run rerun` yourself.
 - Review loop: `pr-review.sh watch` (a long run) waits for the reviewer's round. Answer every
   thread with a fix or a rebuttal, `reply` and `resolve` per thread, and push once per CI cycle. If
   the watch goes quiet suspiciously long, read the feed directly (`gh pr view <pr> --repo @@REPO@@

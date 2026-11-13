@@ -248,6 +248,13 @@ gh() {
   "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100")
     body=$(workflow_runs "$(cat "$TEST_ROOT/state")")
     ;;
+  "repos/$REPO/actions/runs/101/jobs?filter=latest&per_page=100")
+    body='{"jobs":[{"id":201,"name":"build","status":"completed","conclusion":"failure"}]}'
+    ;;
+  "repos/$REPO/actions/jobs/201/logs")
+    printf 'first\nlast\n'
+    return 0
+    ;;
   "repos/$REPO/contents/.github/ship-pr-advisory-checks")
     body='^claude$'
     ;;
@@ -637,6 +644,68 @@ rerun 101" "two reads and the write, in that order"
   assert_contains "$(requests)" "probe repos/$REPO/actions/runs/101" "and its refusal probed on the run"
   assert_not_contains "$(requests)" "probe graphql" "not on GraphQL"
   assert_eq "$(standing | cut -f1-2)" "$((T0 + 900))	repos/$REPO/actions/runs/101" "the hold is that endpoint's"
+}
+
+# Recovery readers own their requests; the wait is the PR's build observer.
+test_recovery_reads_and_wait_use_the_budget() {
+  local verb
+  for verb in jobs failed-jobs job-log; do
+    reset_fixture
+    printf red >"$TEST_ROOT/state"
+    if [ "$verb" = job-log ]; then
+      run read cmd_rerun "$REPO#7" "$verb" 101 201 1
+      assert_eq "$(out read)" last "only the requested log tail"
+    else
+      run read cmd_rerun "$REPO#7" "$verb" 101
+      assert_contains "$(out read)" "job 201 build completed/failure" "job status listed"
+    fi
+    assert_eq "$(rc read)" 0 "reader answered ($(err read))"
+    : >"$CALL_LOG"
+    plant_hold "$((T0 + 600))" "repos/$REPO/pulls/7" 600
+    if [ "$verb" = job-log ]; then
+      run held cmd_rerun "$REPO#7" "$verb" 101 201
+    else
+      run held cmd_rerun "$REPO#7" "$verb" 101
+    fi
+    assert_eq "$(rc held)" 3 "held reader exits unknown"
+    assert_eq "$(requests)" "" "held reader makes no call"
+    reset_fixture
+    printf red >"$TEST_ROOT/state"
+    QUOTA_UNTIL=$((T0 + 900))
+    QUOTA_ENDPOINT="repos/$REPO/actions/runs/101/jobs?filter=latest&per_page=100"
+    if [ "$verb" = job-log ]; then
+      QUOTA_ENDPOINT="repos/$REPO/actions/jobs/201/logs"
+      run quota cmd_rerun "$REPO#7" "$verb" 101 201
+    else
+      run quota cmd_rerun "$REPO#7" "$verb" 101
+    fi
+    assert_eq "$(rc quota)" 3 "reader quota refusal is unknown"
+    assert_eq "$(standing | cut -f2)" "$QUOTA_ENDPOINT" "reader refusal sets endpoint hold"
+  done
+  reset_fixture
+  mkdir -p "$STATE_DIR/observers/example~repo#7.build"
+  printf '%s\n%s\n' "$$" "$T0" >"$STATE_DIR/observers/example~repo#7.build/owner"
+  run second cmd_rerun "$REPO#7" wait 101 1
+  assert_eq "$(rc second)" 2 "second build observer refused"
+  assert_eq "$(requests)" "" "second observer reads nothing"
+  reset_fixture
+  printf running >"$TEST_ROOT/state"
+  SLEEP_HOOK='printf red >"$TEST_ROOT/state"'
+  run waited cmd_rerun "$REPO#7" wait 101 600
+  assert_eq "$(rc waited)" 0 "wait sees a finished red run ($(err waited))"
+  assert_contains "$(out waited)" "in_progress" "first reads unfinished"
+  assert_contains "$(out waited)" "completed/failure" "then reads finished"
+  assert_eq "$(cat "$SLEEP_LOG")" "60" "wait sleeps between reads"
+  assert_not_contains "$(requests)" "rerun 101" "wait is read-only"
+  reset_fixture
+  printf running >"$TEST_ROOT/state"
+  run spent cmd_rerun "$REPO#7" wait 101 1
+  assert_eq "$(rc spent)" 4 "unfinished run spends its ceiling"
+  reset_fixture
+  plant_hold "$((T0 + 600))" "repos/$REPO/pulls/7" 600
+  run held cmd_rerun "$REPO#7" wait 101 1
+  assert_eq "$(rc held)" 3 "hold spends wait ceiling"
+  assert_eq "$(requests)" "" "wait does not read through a hold"
 }
 
 # A prober that died between taking the lock and writing its owner leaves an ownerless lock. It is
@@ -1187,6 +1256,7 @@ run_tests \
   test_a_later_refusal_never_shortens_the_hold \
   test_a_write_never_waits_a_hold \
   test_rerun_goes_through_the_budget \
+  test_recovery_reads_and_wait_use_the_budget \
   test_an_ownerless_probe_lock_is_recovered \
   test_a_hold_at_the_start_counts_toward_the_ceiling \
   test_resolving_the_repo_passes_the_hold \

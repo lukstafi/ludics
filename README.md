@@ -1074,6 +1074,10 @@ one call. `watch` used to hold its window blind and exit 3, the code that says r
 `test-pr-review-merge.sh` holds the merge call's half: the script's own flags refused is exit 2,
 and with the caller's flags forwarded after `--` the same refusal stays the ambiguous exit 3.
 
+`test-pr-review-budget.sh` also pins `rerun`'s recovery readers (jobs, failed jobs and log
+tails): each sends nothing under a hold, and its read-only run wait sleeps until completion
+or its ceiling, sharing the build observer.
+
 `test-pr-review-budget.sh` drives the polling budget (ludics-lite#543) on a clock kept in a file
 (exported as `SHIP_PR_TEST_CLOCK`, with the suite's `sleep` bridged to the Python), so the hold's
 end, its probes and the pauses are exact and nothing sleeps. Every case drives a command, and the
