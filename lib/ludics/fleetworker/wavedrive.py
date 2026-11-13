@@ -84,7 +84,8 @@ THE ANSWERS:
   handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` in the message. The message
             is saved as ``handbacks/<task>.md`` and the task closed with ``board close``, which
             verifies the merge on GitHub itself. A close that refuses is attention. So is a merge
-            that THE CONFIRM does not cover: the row closes, and the coordinator is told.
+            that THE CONFIRM does not cover: the coordinator is told, and then the row closes
+            (in that order: a closed row is served no more).
 
 THE CONFIRM, read off ``wave review``'s records of the PR that were posted (a record with no
 comment, a dry run's, is no review), the rounds ``--again`` set aside included (``<stem>.r<n>.json``:
@@ -311,9 +312,14 @@ class Driver:
     def attention(self, worker: Worker, turn: int, kind: str, why: str, file: str = "") -> None:
         """The coordinator is told first, and the turn made final after: a driver that dies between
         the two tells it again on its restart, never not at all."""
+        self.tell(worker, turn, why, file)
+        self.note(worker, turn, kind, "attention", why, file=file)
+
+    def tell(self, worker: Worker, turn: int, why: str, file: str = "") -> None:
+        """The attention line itself, with no ledger entry: what must reach the coordinator before a
+        step that would stop this turn from being read again (a resume, a close)."""
         append_line(self.path("logs", "attention.jsonl"), {"at": utc_now(), "task": worker.task, "turn": turn, "why": why, "file": file})
         self.say(f"DRIVE ATTENTION {worker.task} turn {turn}: {why}" + (f" ({file})" if file else ""))
-        self.note(worker, turn, kind, "attention", why, file=file)
 
     def say(self, line: str) -> None:
         cli.say(line)
@@ -502,11 +508,8 @@ class Driver:
         decision, message = said.group(1), said.group(2)
         if decision == "unreadable":
             # Told before the worker is resumed and the turn made final, so no crash in between loses it.
-            append_line(self.path("logs", "attention.jsonl"), {
-                "at": utc_now(), "task": worker.task, "turn": turn, "file": message,
-                "why": "the review ended on no verdict line: the worker is told to ask for a confirm; the review is yours to read"})
-            self.say(f"DRIVE ATTENTION {worker.task} turn {turn}: the review ended on no verdict line (the worker is told to ask"
-                     f" for a confirm; the review is yours to read) ({message})")
+            self.tell(worker, turn, "the review ended on no verdict line: the worker is told to ask for a confirm; the review"
+                                    " is yours to read", message)
         # pr and sha on the answered line are what a later turn's --again reads.
         self.resume(worker, turn, kind, message, f"decision={decision}, resumed with {message}", pr=last.get("pr"), sha=last.get("sha"))
 
@@ -548,13 +551,18 @@ class Driver:
         if not pr:
             return self.attention(worker, turn, "handback", "the hand-back names no PR (the row has none, the message no"
                                                             " /pull/<n>); close the task by hand", kept)
+        # THE CONFIRM is read, and the coordinator told, before the close: a closed row is served no
+        # more, so a driver killed after the close could never come back to say it.
+        uncovered = (f"the hand-back reports #{pr} merged, with a blocking review and no cleared confirm of the merged head on"
+                     " record; the task is being closed") if self.unconfirmed(pr) else ""
+        if uncovered:
+            self.tell(worker, turn, uncovered, kept)
         done = self.call("board", "close", self.wave.wave, worker.task, "--pr", pr, "--evidence", f"hand-back {kept}", gated="both")
         said = substitution(done.out).splitlines()[-1] if done.out.strip() else f"board close exit {done.rc}"
         if done.rc != 0:
             return self.attention(worker, turn, "handback", f"board close refused: {said}", kept)
-        if self.unconfirmed(pr):
-            return self.attention(worker, turn, "handback", f"#{pr} merged with a blocking review and no cleared confirm on"
-                                                            f" record; the task is closed ({said})", kept)
+        if uncovered:
+            return self.note(worker, turn, "handback", "attention", f"{uncovered} ({said})", file=kept)
         self.note(worker, turn, "handback", "answered", said)
 
     # --- the loop -----------------------------------------------------------------------------------

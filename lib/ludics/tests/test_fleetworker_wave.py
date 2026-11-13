@@ -1714,11 +1714,16 @@ class Drive(WaveDirCase):
                 self.resumes = turn
                 return self.once()[1]
 
-            said = "#7 merged with a blocking review and no cleared confirm on record; the task is closed"
+            said = "the hand-back reports #7 merged, with a blocking review and no cleared confirm of the merged head on record"
             record("at-open", A, "confirm", "2026-11-11T10:00:00Z", comment="")
             self.assertIn("handback answered", closed(2), "a dry run's review is no review")
             record("at-open", A, "confirm", "2026-11-11T10:00:00Z")
-            self.assertIn(said, closed(3))
+            out = closed(3)
+            self.assertIn(said, out)
+            self.assertEqual([c[:2] for c in self.calls if c[0] in ("board", "pr")][-1], ["board", "close"],
+                             "the coordinator is told, then the row is closed: a closed row is served no more")
+            # A driver killed after the close has told already: the notification does not depend on the ledger.
+            self.assertEqual(self.attention()[-1][:len(said)], said)
             self.out["pr"] = B + "\n"
             for turn, (at, comment, sha) in enumerate((("2026-11-11T09:00:00Z", "https://x/c", B),   # cleared before the blocking review
                                                        ("2026-11-11T11:00:00Z", "", B),              # a dry run's clearance
@@ -1735,7 +1740,7 @@ class Drive(WaveDirCase):
             self.rc = {}
             out = closed(8)
             self.assertIn("handback answered", out)
-            self.assertEqual(self.calls[-1][:6], ["pr", "view", "7", "--repo", "o/staging", "--json"])
+            self.assertIn(["pr", "view", "7", "--repo", "o/staging", "--json"], [c[:6] for c in self.calls])
             record("at-open", C, "merge", "2026-11-11T12:00:00Z")
             self.out["pr"] = "unrelated\n"
             self.assertIn("handback answered", closed(9), "the newest at-open review does not block: nothing to confirm")
