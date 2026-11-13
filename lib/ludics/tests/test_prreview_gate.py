@@ -1285,6 +1285,19 @@ class WaiverKeys(unittest.TestCase):
         self.assertIn("RED      workflow run 101 (setup, failure) (no build check behind it — WAIVED", gate.check_lines)
         self.assertNotIn("unread", gate.check_lines)
 
+    def test_both_readers_judge_the_newest_completed_run_of_a_workflow_and_event(self) -> None:
+        newer = "\n2026-01-01T00:00:05Z\t102\t2\t{event}\tsetup\tcompleted\tsuccess\t3"
+        for event, rc, checkless in (("pull_request", 0, ""), ("push", 3, "unread   workflow run 101")):
+            with self.subTest(event=event):
+                gate, gh = self.red_run_gate(newer.format(event=event))
+                sig = gate.run_signal("h1", "2026-01-01T00:00:00Z", 1, "b1", "topic", "7")
+                self.assertEqual(sig.rc, rc, sig.reason)
+                gate.check_lines = ""
+                self.assertEqual(gate.checkless_reds(["red\tlint\tfailure\tl\t1\tcompleted"]), 0)
+                self.assertIn(checkless, gate.check_lines)
+                if not checkless:
+                    self.assertFalse([c for c in gh.calls if "actions/runs/101/jobs" in " ".join(c)], gh.calls)
+
     def test_checkless_reds_reads_no_job_list_of_a_suite_the_fold_shows(self) -> None:
         gate, gh = self.red_run_gate("")
         self.assertIsNotNone(gate.read_runs("h1"))
