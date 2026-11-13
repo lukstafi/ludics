@@ -4,14 +4,17 @@ in issue-wave/scripts/test-fleet-worker.sh's "execution conclude --standing-hand
 
 import contextlib
 import io
+import json
 import os
 import unittest
 from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import closeout
+from ludics.fleetworker import closeout, execution as ex
 from ludics.fleetworker.config import load_config
+from ludics.fleetworker.transport import Done
+from ludics.tests.test_fleetworker_execution import run_record
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 CFG = load_config(os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh"), {"FLEET_ANCHOR": "local"}, host="testbox")
@@ -73,6 +76,192 @@ class TheRecords(Refusing):
         self.assertEqual(closeout.to_conclude("w", "t", records, ["x"], "o/r", "w1"), ([("x", "/wt")], ["leg"]))
 
 
+class NoPR(Refusing):
+    def setUp(self) -> None:
+        self.records = [record("a")]
+        self.records[0]["request"]["execution_host"] = "box"
+        self.doc: dict[str, Any] = {"tasks": [{"task": "t", "fields": {
+            "repository": "o/r", "standing": "a", "worker": "w1"}}], "log": []}
+        self.calls: list[list[str]] = []
+        self.code = "0"
+        self.stop = ""
+        self.run_over: dict[str, str] = {}
+
+    def write(self, _cfg: Any, args: list[str]) -> tuple[int, str]:
+        self.calls.append(args)
+        if args[:2] == ["execution", "conclude"]:
+            data = json.loads(ex.read_payload("conclude", args[1:]))
+            target = next(r for r in self.records if r["request_id"] == data["request_id"])
+            target.update(data, state="concluded", history=[{"data": data}])
+            return 0, json.dumps(target)
+        if args[:2] == ["board", "log"]:
+            if self.stop == "log":
+                return 1, "interrupted"
+            self.doc["log"].append({"text": args[3]})
+        if args[:2] == ["board", "set"]:
+            for arg in args[4:]:
+                key, _, value = arg.partition("=")
+                self.doc["tasks"][0]["fields"][key] = value
+        return 0, "ok"
+
+    def listed(self, _cfg: Any) -> Done:
+        return Done(0, json.dumps(self.records))
+
+    def unused(self, _cfg: Any, _record: Any, request: str, *_args: Any) -> str | None:
+        return json.dumps({"request_id": request, "verdict": "not-launched"}) if request == "unused" else None
+
+    def close(self, *runs: str) -> int:
+        with (mock.patch.object(closeout, "board_document", return_value=self.doc),
+              mock.patch.object(closeout, "listing", side_effect=self.listed),
+              mock.patch.object(closeout, "stepped", side_effect=self.write),
+              mock.patch.object(ex, "observed_sha_of", return_value=OID),
+              mock.patch.object(ex, "read_run", return_value=run_record(**{"wt": "/wt", "whead": OID, "launched": OID, "exit": self.code, **self.run_over})),
+              mock.patch.object(ex, "read_bg_run", return_value=ex.Refusal("absent", 1)),
+              mock.patch.object(ex, "unused_leg", side_effect=self.unused),
+              contextlib.redirect_stdout(io.StringIO())):
+            return closeout.cmd_close(CFG, ["w", "t", "--no-pr", *[a for r in runs for a in ("--run", r)]])
+
+    def assert_run_closes(self, code: str, verdict: str) -> None:
+        self.code = code
+        self.assertEqual(self.close("/run"), 0)
+        self.assertEqual(self.records[0]["verdict"], verdict)
+        self.assertEqual(self.doc["tasks"][0]["fields"]["state"], "done, no PR")
+        self.assertNotIn("pr", self.doc["tasks"][0]["fields"])
+        self.assertFalse(os.path.exists(self.calls[0][2]), "staged payload removed after conclude returns")
+
+    def test_a_passed_run_closes_with_pass(self) -> None:
+        self.assert_run_closes("0", "pass")
+
+    def test_a_failed_run_closes_with_fail(self) -> None:
+        self.assert_run_closes("1", "fail")
+
+    def test_standing_runs_record_dirty_edits_and_a_changed_revision(self) -> None:
+        self.run_over = {"dirty": "2", "launched": "b" * 40, "rel": "ancestor"}
+        self.assert_run_closes("1", "fail")
+        self.assertIn("2 uncommitted", self.records[0]["evidence"])
+        self.assertIn("b" * 40, self.records[0]["evidence"])
+        self.assertEqual(self.records[0]["observed_sha"], OID)
+
+    def test_one_run_never_lends_its_verdict_to_another_record(self) -> None:
+        other = record("unused", checkout="/other")
+        other["request"]["execution_host"] = "otherbox"
+        self.records.append(other)
+        self.doc["tasks"][0]["fields"]["standing"] = "a unused"
+        self.assertEqual(self.close("/run"), 0)
+        self.assertEqual(other["verdict"], "not-launched")
+        self.setUp()
+        other = record("used", checkout="/other")
+        other["request"]["execution_host"] = "otherbox"
+        self.records.append(other)
+        self.doc["tasks"][0]["fields"]["standing"] = "a used"
+        with self.assertRaises(cli.Exit):
+            self.close("/run")
+        self.assertEqual(self.calls, [], "all evidence is checked before any write")
+
+    def test_bg_run_needs_its_own_request_binding(self) -> None:
+        for binding in ("a", "other", ""):
+            self.setUp()
+            with (mock.patch.object(ex, "read_run", return_value=ex.Refusal("absent", 1)),
+                  mock.patch.object(ex, "read_bg_run", return_value={"request": binding}),
+                  mock.patch.object(ex, "run_request", return_value=("id", binding) if binding else ("none", "")),
+                  mock.patch.object(ex, "observed_sha_of", return_value=OID),
+                  mock.patch.object(ex, "conclude_from_bg_run", return_value=ex.Payload('{"verdict":"fail","remote_checkout":"/wt"}')) as read,
+                  contextlib.redirect_stdout(io.StringIO())):
+                if binding == "a":
+                    payloads = closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
+                    self.assertEqual(json.loads(payloads["a"])["verdict"], "fail")
+                    self.assertEqual(read.call_args.args[3:7], ("box", "box", OID, "/wt"))
+                else:
+                    with self.assertRaises(cli.Exit):
+                        closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
+                    read.assert_not_called()
+
+    def test_request_bound_admission_refusal_and_its_retry_need_no_checkout_in_the_payload(self) -> None:
+        data = {"request_id": "a", "verdict": "not-launched", "log": "box:/bg/log", "evidence": "slot refused"}
+        with (mock.patch.object(ex, "read_run", return_value=ex.Refusal("absent", 1)) as read,
+              mock.patch.object(ex, "read_bg_run", return_value={"request": ":a"}),
+              mock.patch.object(ex, "observed_sha_of", return_value=OID) as head,
+              mock.patch.object(ex, "conclude_from_bg_run", return_value=ex.Payload(json.dumps(data)))):
+            payloads = closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")
+            self.assertEqual(json.loads(payloads["a"]), data)
+            self.records[0].update(state="concluded", history=[{"data": data}])
+            read.reset_mock()
+            head.reset_mock()
+            self.assertEqual(json.loads(closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/bg"], "evidence")["a"]), data)
+            read.assert_not_called()
+            head.assert_not_called()
+
+    def test_matching_keeps_each_records_read_refusal_and_exit_code(self) -> None:
+        for refusal in (ex.Refusal("checkout is missing", 1), ex.Refusal("execution host did not answer", 4),
+                        ex.Refusal("two\nlines", 1)):
+            output = io.StringIO()
+            with (mock.patch.object(ex, "observed_sha_of", return_value=refusal),
+                  contextlib.redirect_stdout(output), self.assertRaises(cli.Exit) as caught):
+                closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/run"], "evidence")
+            self.assertEqual(caught.exception.rc, refusal.rc)
+            self.assertIn("record a: " + " ".join(refusal.text.splitlines()), output.getvalue())
+            self.assertEqual(len(output.getvalue().splitlines()), 1)
+
+    def test_unreachable_run_reader_stays_exit_four(self) -> None:
+        output = io.StringIO()
+        with (mock.patch.object(ex, "observed_sha_of", return_value=OID),
+              mock.patch.object(ex, "read_run", return_value=ex.Refusal("test-run host unreachable", 4)),
+              mock.patch.object(ex, "read_bg_run", return_value=ex.Refusal("bg-run host unreachable", 4)),
+              contextlib.redirect_stdout(output), self.assertRaises(cli.Exit) as caught):
+            closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a"], ["/run"], "evidence")
+        self.assertEqual(caught.exception.rc, 4)
+        self.assertIn("record a: bg-run host unreachable", output.getvalue())
+
+    def test_one_match_does_not_hide_an_unreachable_second_record(self) -> None:
+        other = record("b", checkout="/other")
+        other["request"]["execution_host"] = "otherbox"
+        self.records.append(other)
+
+        def observed(_cfg: Any, _record: Any, host: str, _checkout: str) -> str | ex.Refusal:
+            return OID if host == "box" else ex.Refusal("second host unreachable", 4)
+
+        output = io.StringIO()
+        with (mock.patch.object(ex, "observed_sha_of", side_effect=observed),
+              mock.patch.object(ex, "read_run", return_value=run_record(wt="/wt", whead=OID, launched=OID)),
+              contextlib.redirect_stdout(output), self.assertRaises(cli.Exit) as caught):
+            closeout.no_pr_payloads(CFG, "w", "t", self.records, ["a", "b"], ["/run"], "evidence")
+        self.assertEqual(caught.exception.rc, 4)
+        self.assertIn("matches 1 standing records", output.getvalue())
+        self.assertIn("record b: second host unreachable", output.getvalue())
+
+    def test_standing_none_needs_no_run(self) -> None:
+        self.records = []
+        self.doc["tasks"][0]["fields"]["standing"] = "none"
+        self.assertEqual(self.close(), 0)
+        self.assertEqual([c[:2] for c in self.calls], [["board", "log"], ["board", "set"]])
+
+    def test_partial_close_resumes_and_finished_close_writes_nothing(self) -> None:
+        self.stop = "log"
+        with self.assertRaises(cli.Exit):
+            self.close("/run")
+        self.assertEqual(self.records[0]["state"], "concluded")
+        self.stop = ""
+        self.calls.clear()
+        self.assertEqual(self.close("/run"), 0)
+        self.assertEqual([c[:2] for c in self.calls], [["board", "log"], ["board", "set"]])
+        self.calls.clear()
+        self.assertEqual(self.close("/run"), 0)
+        self.assertEqual(self.calls, [])
+
+    def test_ambiguous_or_unmatched_run_refuses_before_writing(self) -> None:
+        for checkout in ("/wt", "/elsewhere"):
+            self.setUp()
+            other = record("b", checkout=checkout)
+            other["request"]["execution_host"] = "box"
+            self.records.append(other)
+            self.doc["tasks"][0]["fields"]["standing"] = "b" if checkout != "/wt" else "a b"
+            if checkout != "/wt":
+                self.records = [other]
+            with self.assertRaises(cli.Exit):
+                self.close("/run")
+            self.assertEqual(self.calls, [])
+
+
 class TheMerge(Refusing):
     def read(self, answer: Any, fields: dict[str, str] | None = None) -> str:
         with mock.patch.object(closeout, "gh_json", return_value=answer):
@@ -101,6 +290,14 @@ class TheFlags(unittest.TestCase):
         self.assertEqual(closeout.parsed(["w", "t"]), ("w", "t", {}))
         self.assertEqual(closeout.parsed(["w", "t", "--pr", "7", "--agent", "a", "--evidence", "e f"]),
                          ("w", "t", {"pr": "7", "agent": "a", "evidence": "e f"}))
+
+    def test_no_pr_flags_are_explicit_and_runs_repeat(self) -> None:
+        self.assertEqual(closeout.parsed(["w", "t", "--no-pr", "--run", "/a", "--run", "/b"]),
+                         ("w", "t", {"no-pr": "true", "runs": '["/a", "/b"]'}))
+        for args in (["--no-pr", "--pr", "7"], ["--run", "/a"], ["--no-pr", "--run", "relative"]):
+            with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises((cli.Exit, SystemExit)):
+                    closeout.parsed(["w", "t", *args])
 
     def test_a_usage_error(self) -> None:
         for args in ([], ["w"], ["w", "--pr"], ["w", "t", "--pr"], ["w", "t", "--pr", "x"], ["w", "t", "--pr", "0"],

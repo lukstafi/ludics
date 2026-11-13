@@ -83,7 +83,9 @@ THE ANSWERS:
             turn: a new request from the worker is a new round (wavereview.py).
   handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` in the message. The message
             is saved as ``handbacks/<task>.md`` and the task closed with ``board close``, which
-            verifies the merge on GitHub itself. A close that refuses is attention. So is a merge
+            verifies the merge on GitHub itself. Without a PR, each exact ``RUN /absolute/path``
+            line supplies a repeated ``--run`` to ``board close --no-pr``; no such line is attention.
+            Paths consume the whole line, with no quoting or prose; relative paths are not read. A close that refuses is attention. So is a merge
             that THE CONFIRM does not cover: the coordinator is told, and then the row closes
             (in that order: a closed row is served no more).
 
@@ -708,17 +710,20 @@ class Driver:
         kept = self.path("handbacks", f"{worker.task}.md")
         os.makedirs(os.path.dirname(kept), exist_ok=True)
         with open(message, encoding="utf-8", errors="surrogateescape") as f:
-            write_atomically(kept, f.read())
-        if not pr:
+            contents = f.read()
+        write_atomically(kept, contents)
+        runs = re.findall(r"^RUN (/[^\r\n]+)$", contents, re.MULTILINE)
+        if not pr and not runs:
             return self.attention(worker, turn, "handback", "the hand-back names no PR (the row has none, the message no"
                                                             " /pull/<n>); close the task by hand", kept)
         # THE CONFIRM is read, and the coordinator told, before the close: a closed row is served no
         # more, so a driver killed after the close could never come back to say it.
         uncovered = (f"the hand-back reports #{pr} merged, with a blocking review and no cleared confirm of the merged head on"
-                     " record; the task is being closed") if self.unconfirmed(pr) else ""
+                     " record; the task is being closed") if pr and self.unconfirmed(pr) else ""
         if uncovered:
             self.tell(worker, turn, uncovered, kept)
-        done = self.call("board", "close", self.wave.wave, worker.task, "--pr", pr, "--evidence", f"hand-back {kept}", gated="both")
+        form = ["--pr", pr] if pr else ["--no-pr", *[arg for directory in runs for arg in ("--run", directory)]]
+        done = self.call("board", "close", self.wave.wave, worker.task, *form, "--evidence", f"hand-back {kept}", gated="both")
         said = substitution(done.out).splitlines()[-1] if done.out.strip() else f"board close exit {done.rc}"
         if done.rc != 0:
             return self.attention(worker, turn, "handback", f"board close refused: {said}", kept)

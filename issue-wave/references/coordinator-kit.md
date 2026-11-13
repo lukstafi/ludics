@@ -236,7 +236,9 @@ kit invents none.
    It reads each such worker's returned turn by the marker in its final message and answers it:
    an `EXECUTION_REQUEST` is assigned and the worker resumed, an `EXECUTION_RESULT` concluded, a
    `REVIEW_REQUEST` or `CONFIRM_REQUEST` reviewed (step 8) while it serves the other workers, and
-   a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Each turn is
+   a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Without a PR,
+   exact `RUN /absolute/path` lines select `board close --no-pr --run` (one flag per line);
+   without either a PR or a run line the hand-back stays attention. Each turn is
    answered once: the ledger is `logs/drive.jsonl`. Anything a marker does not answer becomes an
    attention line and is yours: a design question, a plan, a worker that vanished, an assignment
    refused six times or in part, a review with no verdict, a merge that no posted clearance
