@@ -251,11 +251,15 @@ kit invents none.
    ```
 
    Each tick it starts the first task that is due: its `after` tasks merged, its host under its
-   capacity, launches not halted. It prepares the task at the main branch's tip as fetched then,
-   so a dependent starts from the base its prerequisite merged into, and launches it. A prep that
+   capacity, launches not halted, and the launch gate open. It reads the gate before it prepares
+   anything, so under a red base the queued tasks wait unprepared (you are told once) and none is
+   left with a stale base. It then prepares the task at the main branch's tip as fetched then, so
+   a dependent starts from the base its prerequisite merged into, and launches it. A prep that
    refuses (a rival PR, say) is an attention line and that task is yours; a launch its own gates
-   refuse (a red base) is told once and tried again every five minutes. You may add tasks to the
-   file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
+   refuse (a preflight) is told once and tried again every five minutes. A task you prepared
+   yourself is launched where and at what its prep recorded: on another host than its queue
+   entry's, or with the main branch moved since, it is an attention line and yours. You may add
+   tasks to the file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
    task that is not queued is one you launch yourself (a native worker's). A task whose `after`
    task ended without a merge is an attention line too, since it will never come due. The
    rival-PR check by topic stays yours, before you queue a task.

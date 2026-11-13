@@ -2107,6 +2107,13 @@ class Queue(DriveCase):
     def launched(self) -> list[list[str]]:
         return [c for c in self.calls if c[0] == "wave"]
 
+    def manifest(self, task: str, host: str, base: str) -> None:
+        """What wave prep left for a CLI task: its launch record, the host and the base being what a launch reads."""
+        record: dict[str, Any] = {**{key: "x" for key in wavelaunch.TEXTS}, "host": host, "base": base, "remote": True, "allow_rival": [], "legs": []}
+        os.makedirs(os.path.join(self.wavedir, "prep"), exist_ok=True)
+        with open(os.path.join(self.wavedir, "prep", f"{task}.json"), "w") as f:
+            json.dump({"launch": record, "done": ["ready"]}, f)
+
     def test_the_first_due_task_is_prepared_at_the_fetched_tip_and_launched(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far", "legs": ["gpu-box"], "mode": "paired"},
                    {"task": "t51", "profile": "sol", "host": "mac", "issue": "777"})
@@ -2153,6 +2160,59 @@ class Queue(DriveCase):
             self.rc = {}
             self.once()
             self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"])
+
+    def test_nothing_is_prepared_while_the_launch_gate_refuses_and_the_coordinator_is_told_once(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"})
+        red = "BASE REFUSED: o/staging main: red at abc (base checker exit 1); dispatch blocked\n"
+        os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+
+        def tick() -> str:
+            self.calls.clear()
+            return captured(lambda: driver.round())[1]
+
+        with self.world():
+            self.rc, self.out = {"gate": 1}, {"gate stderr": "reading\n" + red}
+            out = tick()
+            self.assertEqual(self.calls, [["halted"], ["gate", "--target-repo", "o/staging", "--base-branch", "main"]], "the gate, and nothing prepared")
+            self.assertIn("DRIVE ATTENTION t50 launch: the launch gate refuses, so no queued task is prepared or launched until it passes"
+                          " (read again every 300 s): BASE REFUSED: o/staging main: red at abc", out)
+            self.assertEqual((tick(), self.calls), ("", [["halted"]]), "not read again before its time: one base read each RETRY")
+            self.clock += wavedrive.RETRY
+            self.assertEqual((tick(), [c[0] for c in self.calls]), ("", ["halted", "gate"]), "the same refusal is told once")
+            self.clock += wavedrive.RETRY
+            self.out["gate stderr"] = "BASE REFUSED: o/staging main: red at def (base checker exit 1); dispatch blocked\n"
+            self.assertIn("red at def", tick(), "another refusal is told")
+            self.rc = {"gate": 4}
+            self.clock += wavedrive.RETRY
+            self.assertEqual((tick(), self.launched()), ("", []), "an anchor that does not answer is the next tick's")
+            self.rc = {}
+            tick()
+            self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"], "the gate passed: prepared at the tip as it is now, and launched")
+        self.assertEqual(len(self.attention()), 2)
+        self.assertEqual(self.ledger(), [(-1, "launch", "answered")], "a closed gate is no line of the task's: nothing of it was made")
+
+    def test_a_prepared_task_is_launched_by_its_own_record_or_left_to_the_coordinator(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "mac"}, {"task": "t51", "profile": "sol", "host": "far"},
+                   {"task": "t52", "profile": "sol", "host": "far"}, capacity={"far": 1, "mac": 1})
+        self.rows = [row("t50", state="pending"), row("t51", state="pending"), row("t52", state="pending"), row("t44")]
+        self.state = "RUNNING"
+        self.manifest("t50", "far", B)
+        self.manifest("t51", "far", A)
+        self.manifest("t52", "far", B)
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t50 launch: the task is prepared on far, and the queue names mac for it: a prepared task launches"
+                          " where it was prepared; launch it by hand", out)
+            self.assertEqual(self.launched(), [], "far is full, and mac's free slot is not the one this task would take")
+            self.rows = self.rows[:3]
+            out = self.once()[1]
+            self.assertIn(f"DRIVE ATTENTION t51 launch: main moved since the task was prepared at {A[:12]} (now {B[:12]}), and a prepared"
+                          " task launches at its base only; it is yours: prepare it again under a new task id", out)
+            self.assertEqual(self.launched(), [], "a stale base is not sent to a launch that can only refuse it")
+            self.once()
+            self.assertEqual(self.launched(), [["wave", "launch", self.path, "t52"]], "a task prepared at the tip is launched, not prepared again")
+        self.assertEqual(len(self.attention()), 2)
 
     def test_a_task_whose_prerequisite_ended_without_a_merge_is_told_once_and_the_next_is_served(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far", "after": ["t42", "t43"]}, {"task": "t51", "profile": "sol", "host": "far"})

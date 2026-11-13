@@ -123,17 +123,27 @@ the FIRST task in file order that is due and starts it, one a tick:
             task's row ``merged`` or ``done``; fewer CLI rows of this wave holding a slot on its
             host (``slots_held``: any kind, past ``pending`` and not done) than the host's
             capacity; no final ``launch`` line in the ledger; launches not halted (``halted``,
-            read once a tick: a halt is waited out, silently)
+            read once a tick: a halt is waited out, silently); THE GATE open
   started   with no row, ``wave prep <task> --base <origin/MAIN, fetched now> --profile ... [--host]
             [--legs] [--mode] [--issue|--source]`` (a dependent starts from the base its
             prerequisite merged into), then ``wave launch``
+THE GATE is the launch gate, ``gate --target-repo <repository> --base-branch <MAIN>``, read BEFORE
+a task is prepared. A launch needs the branch's tip to be the prepared base, and a prep is not
+done twice, so a task prepared under a red base would be stale the moment the fix merged. While the
+gate refuses, nothing is prepared or launched; the coordinator is told once for each refusal it
+has not been told (kept in memory: a restarted driver tells it again), and the gate is read again
+after ``RETRY`` seconds.
+A PREPARED task (a ``pending`` row) is launched where and at what its prep recorded, the manifest's
+launch record (wavelaunch.py), never the queue's entry: an entry that names another host than the
+record's is attention, final, and so is a record whose base is no longer the branch's tip (it was
+prepared, its launch was refused, and the branch moved). Both leave the task to the coordinator.
 A task whose ``after`` task's row ended without a merge (``closed``, ``dropped``) can never come
 due: that is attention, final, since nothing else would say the task is not going to start.
 A prep that refuses (a rival PR, a branch that exists, a missing task part) is attention, final:
 the coordinator launches that task by hand. A launch its own gates refuse started no worker and
 may clear: ``LAUNCH REFUSED`` as its last line (a preflight, a halt) or the base gate's ``BASE
-REFUSED:`` on its stderr (a red base, a base it could not read), with exit 1. It is told once and
-tried again each ``RETRY`` seconds. Any other end of ``wave launch`` (its own refusal, exit 3 with
+REFUSED:`` on its stderr (a base that turned red after THE GATE read it), with exit 1. It is told
+once and tried again each ``RETRY`` seconds, while its base is still the branch's tip. Any other end of ``wave launch`` (its own refusal, exit 3 with
 a NOTE, exit 4) is attention, final. An anchor, a remote or GitHub that does not answer is the next tick's.
 
 WHAT IT DOES NOT DO. It scopes nothing and orders nothing (the queue is the coordinator's), reads no hand-back's proposals (the editorial pass is the
@@ -168,7 +178,8 @@ from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
 from ludics.fleetworker.transport import Done, substitution
 from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
-from ludics.fleetworker.waveprep import TASK
+from ludics.fleetworker.wavelaunch import Record, read_manifest
+from ludics.fleetworker.waveprep import TASK, Stop
 
 sleep: Callable[[float], None] = time.sleep  # the tests' seam, as waveloop's
 now: Callable[[], float] = time.time
@@ -404,6 +415,7 @@ class Driver:
         self.ledger: list[dict[str, Any]] = []
         self.err = ""  # the last call's stderr
         self.queue_refusal = ""  # the queue's refusal last said, so it is said once
+        self.gate_refusal, self.gate_next = "", 0.0  # THE GATE's refusal last told, and when it is read again
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.wave.directory, *parts)
@@ -731,22 +743,56 @@ class Driver:
                 continue
             if any(word not in LANDED for word in states.values()):
                 continue
+            record = self.prepared(queued.task) if row is not None else None
+            if record is not None and record.host != queued.host:
+                self.attention(slot, LAUNCH, "launch", f"the task is prepared on {record.host}, and the queue names {queued.host} for it:"
+                                                       " a prepared task launches where it was prepared; launch it by hand")
+                continue
             if live.get(queued.host, 0) >= capacity[queued.host]:
                 continue
             if last is not None and last.get("status") == "retry" and now() < float(last.get("next", 0)):
                 continue
-            if self.call("halted").rc == 0:
-                self.start(queued, slot, row is not None, last)
-            return  # one launch a tick, and a halt or an unreachable anchor is the next tick's
+            if self.call("halted").rc == 0 and self.gate_open(slot):
+                self.start(queued, slot, row is not None, record, last)
+            return  # one launch a tick, and a halt, a closed gate or an unreachable anchor is the next tick's
 
-    def start(self, queued: Queued, slot: Worker, prepared: bool, last: dict[str, Any] | None) -> None:
+    def prepared(self, task: str) -> Record | None:
+        """A prepared task's launch record, or None when its manifest does not read (``wave launch`` says why)."""
+        try:
+            return read_manifest(self.path("prep", f"{task}.json"), task)[1]
+        except Stop:
+            return None
+
+    def gate_open(self, slot: Worker) -> bool:
+        """THE GATE (the header)."""
+        if now() < self.gate_next:
+            return False
+        done = self.call("gate", "--target-repo", self.wave.repository, "--base-branch", self.wave.vars["MAIN"], gated="both")
+        if done.rc == 0:
+            self.gate_refusal = ""
+            return True
+        if done.rc == 4:
+            return False  # the anchor did not answer: the next tick's
+        self.gate_next = now() + RETRY
+        lines = [line for line in (substitution(done.out) + "\n" + self.err).splitlines() if line.strip()]
+        why = (lines[-1].strip() if lines else f"gate exit {done.rc}")[:300]
+        if why != self.gate_refusal:
+            self.tell(slot, LAUNCH, f"the launch gate refuses, so no queued task is prepared or launched until it passes (read again every {RETRY} s): {why}")
+        self.gate_refusal = why
+        return False
+
+    def start(self, queued: Queued, slot: Worker, prepared: bool, record: Record | None, last: dict[str, Any] | None) -> None:
+        main = self.wave.vars["MAIN"]
+        checkout = self.wave.checkout
+        fetched = execute(["git", "-C", checkout, "fetch", "-q", "origin", main])[0]
+        rc, sha, _ = execute(["git", "-C", checkout, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{main}^{{commit}}"])
+        if fetched != 0 or rc != 0 or not SHA40.fullmatch(sha.strip()):
+            return  # the remote did not answer: the next tick's
+        if record is not None and record.base != sha.strip():
+            return self.attention(slot, LAUNCH, "launch", f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]}),"
+                                                          " and a prepared task launches at its base only; it is yours: prepare it again"
+                                                          " under a new task id (wavelaunch.py's header)")
         if not prepared:
-            main = self.wave.vars["MAIN"]
-            checkout = self.wave.checkout
-            fetched = execute(["git", "-C", checkout, "fetch", "-q", "origin", main])[0]
-            rc, sha, _ = execute(["git", "-C", checkout, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{main}^{{commit}}"])
-            if fetched != 0 or rc != 0 or not SHA40.fullmatch(sha.strip()):
-                return  # the remote did not answer: the next tick's
             done = self.call("wave", "prep", self.wave.path, queued.task, "--base", sha.strip(), "--profile", queued.profile,
                              *(["--host", queued.host] if queued.host != self.wave.agent_host else []),
                              *(["--legs", ",".join(queued.legs)] if queued.legs else []),
