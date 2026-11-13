@@ -157,7 +157,6 @@ class Prep:
     state: str  # ISSUE_WAVE_STATE, as the config reads it: the plans directory's parent
     profile: str = ""  # --profile: one of the wave file's profiles; "" for the wave's own transport and kind
     host: str = ""  # --host: the worker's agent host; "" for the wave's
-    verb: str = "WAVE PREP"  # how a refusal of the shared reads names its caller (wave launch re-reads the rivals)
     worker: str = ""
     branch: str = ""
     worktree: str = ""
@@ -207,6 +206,23 @@ class Prep:
     @property
     def manifest(self) -> str:
         return self.path("prep", f"{self.task}.json")
+
+
+@dataclass(frozen=True)
+class Rivalry:
+    """What the rival-PR read needs of a task: prep's own (``rivalry_of``), or for ``wave launch`` the
+    one its manifest recorded."""
+    task: str
+    verb: str  # how a refusal names its caller: WAVE PREP, WAVE LAUNCH
+    repository: str
+    branch: str
+    number: str
+    issue_ref: str  # "" for a --source task
+    allow_rival: frozenset[str]
+
+
+def rivalry_of(prep: Prep) -> Rivalry:
+    return Rivalry(prep.task, "WAVE PREP", prep.wave.repository, prep.branch, prep.number, prep.issue_ref, frozenset(prep.allow_rival))
 
 
 class Stop(Exception):
@@ -304,7 +320,7 @@ def rival_token(number: str) -> re.Pattern[str]:
     return re.compile(rf"(?:^|[^\w&]|[\w.-]/[\w.-]+)#{number}(?![0-9])")
 
 
-def rivals_of(prs: list[dict[str, Any]], prep: Prep) -> list[str]:
+def rivals_of(prs: list[dict[str, Any]], prep: Rivalry) -> list[str]:
     token = rival_token(prep.number)
     found: list[str] = []
     for pr in prs:
@@ -318,16 +334,16 @@ def rivals_of(prs: list[dict[str, Any]], prep: Prep) -> list[str]:
     return found
 
 
-def open_prs(cfg: Config, prep: Prep, select: list[str]) -> list[dict[str, Any]]:
+def open_prs(cfg: Config, prep: Rivalry, select: list[str]) -> list[dict[str, Any]]:
     """One ``gh pr list --state open`` read, or Stop: unread, or a full page (never taken as all)."""
-    done = proc.run_tool("gh", ["pr", "list", "--repo", prep.wave.repository, "--state", "open", *select, "--limit",
+    done = proc.run_tool("gh", ["pr", "list", "--repo", prep.repository, "--state", "open", *select, "--limit",
                                 str(PR_PAGE), "--json", "number,title,body,headRefName"], timeout=gh_timeout(cfg))
     try:
         prs: Any = json.loads(done.stdout) if done.rc == 0 else None
     except ValueError:
         prs = None
     if not isinstance(prs, list):
-        raise Stop(4, f"{prep.verb} UNKNOWN {prep.task}: the open PRs of {prep.wave.repository} could not be read"
+        raise Stop(4, f"{prep.verb} UNKNOWN {prep.task}: the open PRs of {prep.repository} could not be read"
                       f" (gh {' '.join(select)}: exit {done.rc}: {done.stderr.strip()[-200:]}); nothing made")
     listed = [cast(dict[str, Any], p) for p in cast(list[Any], prs) if isinstance(p, dict)]
     if len(listed) >= PR_PAGE:
@@ -336,7 +352,7 @@ def open_prs(cfg: Config, prep: Prep, select: list[str]) -> list[dict[str, Any]]
     return listed
 
 
-def check_rivals(cfg: Config, prep: Prep) -> None:
+def check_rivals(cfg: Config, prep: Rivalry) -> None:
     # The head read always, since a search for the number does not find a PR whose head is the
     # branch and whose text names no number; an issue task's number search beside it.
     listed = open_prs(cfg, prep, ["--head", prep.branch])
@@ -522,12 +538,18 @@ def record(prep: Prep, step: str) -> None:
     write_atomically(prep.manifest, json.dumps({
         "task": prep.task, "wave": prep.wave.wave, "worker": prep.worker, "branch": prep.branch, "base": prep.base,
         "worktree": prep.worktree, "standing": [prep.standing_id(b) for b in prep.boxes],
-        "transport": prep.transport, "kind": prep.kind, "host": prep.host, "scratch": prep.scratch,
-        "legs": [{"box": leg.box, "suffix": leg.suffix, "worktree": prep.leg_worktree(leg)} for leg in prep.legs],
-        # What ``wave launch`` rebuilds the task from (wavelaunch.py): prep's own options, as given.
-        "opts": {"base": prep.base, "issue": prep.number if prep.issue_ref else "", "source": prep.number if prep.source_ref else "",
-                 "mode": prep.mode, "legs": ",".join(leg.box for leg in prep.legs), "allow_rival": sorted(prep.allow_rival),
-                 "profile": prep.profile, "host": "" if prep.host == prep.wave.agent_host else prep.host},
+        # THE LAUNCH RECORD: everything ``wave launch`` does for a CLI task, as prepared here. It reads
+        # this and re-derives nothing from the wave file, so no later edit of that file can make it
+        # launch one thing and reserve or record another (wavelaunch.py).
+        "launch": {
+            "wave": prep.wave.wave, "repository": prep.wave.repository, "main": prep.wave.vars.get("MAIN", ""),
+            "transport": prep.transport, "kind": prep.kind, "model": prep.model, "effort": prep.effort,
+            "host": prep.host, "remote": prep.remote, "host_checkout": prep.host_checkout, "scratch": prep.scratch,
+            "worker": prep.worker, "branch": prep.branch, "base": prep.base, "worktree": prep.worktree,
+            "number": prep.number, "issue_ref": prep.issue_ref, "allow_rival": sorted(prep.allow_rival),
+            "standing": prep.standing_id(prep.host),
+            "legs": [{"box": leg.box, "suffix": leg.suffix, "worktree": prep.leg_worktree(leg), "standing": prep.standing_id(leg.box)}
+                     for leg in prep.legs]},
         "done": prep.done}, indent=1) + "\n")
 
 
@@ -613,7 +635,7 @@ def cmd_prep(cfg: Config, args: list[str]) -> int:
             return gated
         resolve_base(prep)
         check_fresh(prep)
-        check_rivals(cfg, prep)
+        check_rivals(cfg, rivalry_of(prep))
         check_registry(cfg, prep)
         check_board(cfg, prep)
         brief = brief_text(prep)

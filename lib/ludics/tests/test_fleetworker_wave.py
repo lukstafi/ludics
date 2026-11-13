@@ -493,8 +493,15 @@ class MixedWave(WaveDirCase):
             self.assertIn(want, board)
         with open(os.path.join(self.wavedir, "briefs", "brief-t42.md")) as f:
             self.assertIn("/home/u/repo-worktrees/w1-42 on codex/w1-42", f.read())
-        self.assertEqual(self.manifest()["opts"], {"base": self.base, "issue": "42", "source": "", "mode": "none", "legs": "gpu-box",
-                                                   "allow_rival": [], "profile": "sol", "host": "far"})
+        launch = self.manifest()["launch"]
+        self.assertEqual({k: launch[k] for k in ("wave", "repository", "main", "transport", "kind", "model", "effort", "host", "remote",
+                                                 "host_checkout", "scratch", "worker", "branch", "base", "number", "issue_ref", "standing")},
+                         {"wave": "wv", "repository": "o/staging", "main": "main", "transport": "cli", "kind": "codex", "model": "gpt-6.1-sol",
+                          "effort": "medium", "host": "far", "remote": True, "host_checkout": "/home/u/repo",
+                          "scratch": "/home/u/wave-scratch/wv/t42", "worker": "w1-42", "branch": "codex/w1-42", "base": self.base,
+                          "number": "42", "issue_ref": "o/up#42", "standing": "wv-t42-far-iterate"})
+        self.assertEqual(launch["legs"], [{"box": "gpu-box", "suffix": "gpu", "worktree": "/home/u/repo-worktrees/w1-42-gpu",
+                                           "standing": "wv-t42-gpu-box-iterate"}])
 
     def test_a_cli_task_on_the_agent_host_keeps_the_local_reads_and_a_native_profile_is_made_as_ever(self) -> None:
         os.makedirs(os.path.join(self.dir, "repo-worktrees", "w1-42"))
@@ -549,7 +556,7 @@ class MixedWave(WaveDirCase):
             self.assertEqual((rc, self.shim_calls), (1, []))
             self.assertIn("records a launch already", out)
 
-    def test_launch_refuses_a_prep_that_did_not_finish_and_legs_that_changed(self) -> None:
+    def test_launch_refuses_a_prep_that_did_not_finish(self) -> None:
         with self.world():
             self.shim_rc = {"board set": 1}
             rc, out, _ = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")
@@ -560,21 +567,6 @@ class MixedWave(WaveDirCase):
             self.assertEqual((rc, self.shim_calls, self.far_calls), (1, [], []), out)
             self.assertIn("WAVE LAUNCH REFUSED t42: its prep did not finish", out)
             self.assertIn("not 'ready'", out)
-            self.shim_rc = {}
-            self.write("tasks/t44.md", "# Task @@T@@\n")
-            self.assertEqual(self.prep("t44", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
-            self.assertEqual(self.manifest("t44")["legs"], [{"box": "gpu-box", "suffix": "gpu", "worktree": "/home/u/repo-worktrees/w1-44-gpu"}])
-            with open(self.path) as f:
-                data = json.load(f)
-            for key, value in (("checkout", "/srv/repo"), ("suffix", "g2")):
-                changed = json.loads(json.dumps(data))
-                changed["legs"]["gpu-box"][key] = value
-                with open(self.path, "w") as f:
-                    json.dump(changed, f)
-                self.shim_calls.clear()
-                rc, out, _ = self.start("t44")
-                self.assertEqual((rc, self.shim_calls), (1, []), out)
-                self.assertIn("the wave file changed since the task was prepared (legs was", out)
 
     def test_a_launch_that_is_refused_makes_nothing_and_a_leg_or_row_that_fails_is_a_note(self) -> None:
         with self.world():
@@ -601,7 +593,7 @@ class MixedWave(WaveDirCase):
             self.assertIn("farside=none", self.shim_calls[-1])
             self.assertEqual(self.manifest()["done"][-1], "launched far/w1-42", "the worker runs: the launch is recorded")
 
-    def test_launch_refuses_a_worktree_that_is_not_preps_and_a_wave_file_that_changed(self) -> None:
+    def test_launch_refuses_a_worktree_on_the_host_that_is_not_preps(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
             self.shim_calls.clear()
@@ -618,28 +610,61 @@ class MixedWave(WaveDirCase):
                 rc, out, _ = self.start()
                 self.assertEqual((rc, self.shim_calls), (4, []), out)
                 self.assertIn(f"WAVE LAUNCH UNKNOWN t42: the worktree path {wt} on far could not be read", out)
-            with open(self.path) as f:
-                data = json.load(f)
-            data["hosts"]["far"]["checkout"] = "/srv/repo"
-            with open(self.path, "w") as f:
-                json.dump(data, f)
-            self.far_state = Done(0, "worktree=absent\n")
-            rc, out, _ = self.start()
-            self.assertEqual((rc, self.shim_calls), (1, []), out)
-            self.assertIn("WAVE LAUNCH REFUSED t42: the wave file changed since the task was prepared (worktree was"
-                          " /home/u/repo-worktrees/w1-42, is now /srv/repo-worktrees/w1-42)", out)
-            data["hosts"]["far"]["checkout"] = "/home/u/repo"
-            data["profiles"]["sol"]["kind"] = "claude"
-            with open(self.path, "w") as f:
-                json.dump(data, f)
-            rc, out, _ = self.start()
-            self.assertIn("branch was codex/w1-42, is now claude/w1-42; kind was codex, is now claude", out)
-            data["profiles"]["sol"]["kind"] = "codex"
-            with open(self.path, "w") as f:
-                json.dump(data, f)
             self.far_state = Done(0, f"worktree={self.base} dirty=0\n")
             rc, out, _ = self.start()
             self.assertEqual(rc, 0, "a clean worktree at prep's base is an earlier launch's: the retry goes on\n" + out)
+
+    def test_the_manifest_is_the_task_whatever_the_wave_file_says_later(self) -> None:
+        """A profile, a host or a leg edited after the prep changes nothing a launch does."""
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            with open(self.path) as f:
+                data = json.load(f)
+            data["hosts"]["far"] = {"checkout": "/srv/repo", "scratch": "/srv/scratch"}
+            data["profiles"]["sol"] = {"transport": "cli", "kind": "claude", "model": "opus"}
+            data["legs"]["gpu-box"].update(checkout="/srv/gpu", suffix="g2")
+            data["repository"], data["vars"]["MAIN"] = "o/elsewhere", "trunk"
+            with open(self.path, "w") as f:
+                json.dump(data, f)
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual(rc, 0, out)
+            launch, leg, board = self.shim_calls
+            self.assertEqual(launch[launch.index("--target-repo") + 1:launch.index("--brief")], ["o/staging", "--kind", "codex"])
+            self.assertEqual(launch[launch.index("--repo"):], ["--repo", "/home/u/repo", "--branch", "codex/w1-42", "--base", self.base,
+                                                              "--base-branch", "main", "--standing", f"{self.wavedir}/reserve/t42.json",
+                                                              "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
+            self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
+            self.assertIn("farside=gpu-box:/home/u/repo-worktrees/w1-42-gpu", board)
+            self.assertEqual(self.far_calls, [["far", "/home/u/wave-scratch/wv/t42/runs"]])
+
+    def test_launch_refuses_another_waves_manifest_one_with_no_record_and_one_with_no_base_branch(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol")[0], 0)
+            with open(self.path) as f:
+                data = json.load(f)
+            with open(self.path, "w") as f:
+                json.dump({**data, "wave": "wv2"}, f)
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual((rc, self.shim_calls), (1, []), out)
+            self.assertIn("was prepared for wave wv, and", out)
+            self.assertIn("names wv2; its reservations and row are wv's", out)
+            with open(self.path, "w") as f:
+                json.dump(data, f)
+            path = os.path.join(self.wavedir, "prep", "t42.json")
+            kept = self.manifest()
+            for damage, why in (({**kept, "launch": {**kept["launch"], "main": ""}}, "its prep recorded no base branch"),
+                                ({k: v for k, v in kept.items() if k != "launch"}, "holds no launch record wave prep wrote"),
+                                ({**kept, "launch": {**kept["launch"], "extra": 1}}, "holds no launch record"),
+                                ({**kept, "launch": {**kept["launch"], "remote": "no"}}, "holds no launch record"),
+                                ({**kept, "launch": {**kept["launch"], "legs": [{"box": "gpu-box"}]}}, "holds no launch record"),
+                                ({**kept, "launch": {k: v for k, v in kept["launch"].items() if k != "worktree"}}, "holds no launch record")):
+                with open(path, "w") as f:
+                    json.dump(damage, f)
+                rc, out, _ = self.start()
+                self.assertEqual((rc, self.shim_calls), (1, []), out)
+                self.assertIn(why, out)
 
     def test_the_far_side_reads_the_worktree_path_as_it_is(self) -> None:
         def state(path: str) -> str:
