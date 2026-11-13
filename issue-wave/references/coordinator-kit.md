@@ -266,7 +266,8 @@ kit invents none.
    task ended without a merge is an attention line too, since it will never come due. The
    rival-PR check by topic stays yours, before you queue a task. When a task is otherwise due
    and waits only on `after` tasks with neither rows nor queue entries, you are told their names
-   once per unchanged list per task (in memory); this is non-final, and it still starts when they merge.
+   once per unchanged list per task (in memory, reset when none are missing); this is non-final,
+   and it still starts when they merge.
 10. **A design decision the wave takes** is surfaced with one call, whether it is a
     recommendation before launch, a call you make mid-wave, or the maintainer's answer you post
     for them:

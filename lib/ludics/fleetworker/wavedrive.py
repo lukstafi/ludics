@@ -130,7 +130,8 @@ the FIRST task in file order that is due and starts it, one a tick:
 When otherwise due, a task waiting only on ``after`` tasks with neither rows nor queue entries
 is told through a non-final attention line naming those tasks; it still starts when they merge.
 The last missing-task list told for each task is kept in memory (as the queue's and gate's
-refusals are): an unchanged list is said once, and a restarted driver tells it again. A task also
+refusals are): an unchanged list is said once, an empty list clears it, and a restarted driver
+tells it again. A task also
 waiting on capacity, a halt, THE GATE or a prerequisite with a row or queue entry stays silent.
 THE GATE is the launch gate, ``gate --target-repo <repository> --base-branch <MAIN>``, read BEFORE
 a task is prepared. A launch needs the branch's tip to be the prepared base, and a prep is not
@@ -767,6 +768,8 @@ class Driver:
                                                        f" without a merge ({states[ended[0]]}); launch it by hand, or take it off the queue")
                 continue
             missing = tuple(sorted(dep for dep in states if dep not in rows and dep not in queued_tasks))
+            if not missing:
+                self.queue_missing.pop(queued.task, None)
             if any(word not in LANDED and dep not in missing for dep, word in states.items()):
                 continue
             record = self.prepared(queued.task) if row is not None else None

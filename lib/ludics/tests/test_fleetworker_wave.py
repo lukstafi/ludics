@@ -2185,6 +2185,29 @@ class Queue(DriveCase):
         self.assertEqual(len(self.attention()), 2, "only the two distinct missing lists were told")
         self.assertEqual(self.ledger(), [(-1, "launch", "launching"), (-1, "launch", "answered")])
 
+    def test_missing_after_is_told_again_after_the_list_clears(self) -> None:
+        task: dict[str, Any] = {"task": "t50", "profile": "sol", "host": "far", "after": ["t42"]}
+        os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+        self.state = "RUNNING"
+        with self.world():
+            for presence in ("row", "queue"):
+                with self.subTest(presence=presence):
+                    self.rows = []
+                    self.queue(task)
+                    driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+                    self.assertIn("no row or queue entry: t42;", captured(lambda: driver.round())[1])
+                    if presence == "row":
+                        self.rows = [row("t42", state="reviewing", transport="subagent")]
+                    else:
+                        self.rows = [row("t44", transport="subagent")]
+                        self.queue({"task": "t42", "profile": "sol", "host": "far", "after": ["t44"]}, task)
+                    self.assertEqual(captured(lambda: driver.round())[1], "", "a known prerequisite clears the missing list and waits silently")
+                    self.rows = []
+                    self.queue(task)
+                    self.assertIn("no row or queue entry: t42;", captured(lambda: driver.round())[1], "the same names are told again after the list clears")
+                    self.assertEqual(captured(lambda: driver.round())[1], "", "the renewed notice is still once per unchanged list")
+                    self.assertEqual(driver.ledger, [])
+
     def test_missing_after_stays_silent_when_not_otherwise_due(self) -> None:
         task: dict[str, Any] = {"task": "t50", "profile": "sol", "host": "far", "after": ["t42", "t43"]}
         self.state = "RUNNING"
@@ -2196,7 +2219,7 @@ class Queue(DriveCase):
             ("unreachable gate", [], {"gate": 4}, [task]),
             ("prerequisite with a row", [row("t42", state="reviewing", transport="subagent")], {}, [task]),
             ("queued prerequisite", [], {}, [{"task": "t42", "profile": "sol", "host": "far", "after": ["t43"]}, task]),
-            ("already launched", [row("t50")], {}, [task]),
+            ("already launched", [row("t50", transport="subagent")], {}, [task]),
         ]
         with self.world():
             for why, rows, rc, tasks in cases:
