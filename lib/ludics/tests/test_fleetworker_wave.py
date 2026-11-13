@@ -577,6 +577,38 @@ class MixedWave(WaveDirCase):
         self.assertIn("`wv-t42-far-iterate`", brief)
         self.assertNotIn("@@", brief)
 
+    def test_scratch_parent_is_shared_on_the_workers_host(self) -> None:
+        w = wave.load_wave(self.path, "prep")
+        for host, parent in (("mac", os.path.join(self.wavedir, "scratch")),
+                             ("far", "/home/u/wave-scratch/wv")):
+            for task in ("t42", "t43"):
+                with self.subTest(host=host, task=task):
+                    prep = waveprep.Prep(w, task, task[1:], f"o/up#{task[1:]}", "", self.base,
+                                         "none", [], set(), self.cfg.path(self.cfg.state), "sol", host)
+                    text = waveprep.rendered(prep, [Part("lock", "@@SCR_PARENT@@/test-wake-lab.lock")],
+                                             waveprep.values_of(prep))
+                    self.assertEqual(text, parent + "/test-wake-lab.lock\n")
+                    self.assertEqual(os.path.dirname(prep.scratch), parent)
+
+    def test_wave_dir_is_refused_only_for_a_remote_workers_rendered_parts(self) -> None:
+        w = wave.load_wave(self.path, "prep")
+        for host in ("mac", "far"):
+            prep = waveprep.Prep(w, "t42", "42", "o/up#42", "", self.base, "none", [], set(),
+                                 self.cfg.path(self.cfg.state), "sol", host)
+            unsafe = Part("project.md", "@@WAVE_DIR@@/scratch/lock")
+            with self.subTest(host=host):
+                if host == "mac":
+                    self.assertEqual(waveprep.rendered(prep, [unsafe], waveprep.values_of(prep)),
+                                     self.wavedir + "/scratch/lock\n")
+                else:
+                    with self.assertRaises(waveprep.Stop) as caught:
+                        waveprep.rendered(prep, [unsafe], waveprep.values_of(prep))
+                    self.assertIn("'project.md' names @@WAVE_DIR@@", caught.exception.line)
+                    self.assertIn("far", caught.exception.line)
+                    self.assertIn("mac", caught.exception.line)
+                    self.assertEqual(waveprep.rendered(prep, [Part("safe", "literal /elsewhere/lock")],
+                                                      waveprep.values_of(prep)), "literal /elsewhere/lock\n")
+
     def test_profile_and_host_usage(self) -> None:
         for args, why in ((["--profile", "astra"], "--profile names 'astra', which the wave file's profiles do not (it has: sol, opus)"),
                           (["--host", "far"], "--host far needs a cli transport: a subagent worker runs on the agent host, mac"),
