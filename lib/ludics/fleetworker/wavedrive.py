@@ -18,7 +18,10 @@ to it and its ``resumes`` count does not move: nothing ``status`` prints names i
 one, and a driver that cannot tell two turns apart would answer one twice or never.
 
 A TURN is one Codex worker's ``resumes`` count (``status``'s field: 0 for its launch, one more for
-each resume: a Codex turn is one process). The ledger, ``<wave dir>/logs/drive.jsonl``, holds one line per step taken for a task and
+each resume: a Codex turn is one process), of one worker and session: a worker launched again in
+a task's place, under another name or the same one (``launch --replace``), has a new session and
+counts from 0 again, and it does not inherit the turns its predecessor was answered. The ledger,
+``<wave dir>/logs/drive.jsonl``, holds one line per step taken for a task, worker, session and
 turn, and a turn whose last line is final (``answered`` or ``attention``) is never read again, so a
 restarted driver answers nothing twice. ONE DRIVER per wave: an exclusive ``flock`` on
 ``logs/drive.lock``, taken without waiting; ``wave turn`` takes it too, so it refuses while a
@@ -108,7 +111,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 from ludics import bgrun, cli
@@ -145,7 +148,7 @@ FINAL = ("answered", "attention")
 RETURNED = re.compile(r"(EXITED\([0-9]+\)|IDLE)")
 GONE = ("ORPHANED", "VANISHED", "UNKNOWN")  # states that are no returned turn and will not become one
 WORKING = "RUNNING"  # the worker's state while its turn runs (farside.py's state_of), not bg-run.sh's verdict word
-STATUS = re.compile(r"(\S+) \S+/\S+ .*\bresumes=([0-9]*)")
+STATUS = re.compile(r"(\S+) \S+/\S+ .*?\bsession=(\S*) .*\bresumes=([0-9]*)")
 ASK = re.compile(r"(REVIEW|CONFIRM)_REQUEST #?([1-9][0-9]*) ([0-9a-f]{40})")
 RESULT = re.compile(r"EXECUTION_RESULT (\{.*\})")
 PULL = re.compile(r"/pull/([1-9][0-9]*)")
@@ -165,6 +168,7 @@ class Worker:
     name: str
     box: str
     fields: dict[str, str]
+    session: str = ""  # status's session= (a Codex thread id), read each tick: part of a turn's identity
 
 
 @dataclass(frozen=True)
@@ -244,12 +248,14 @@ class Driver:
         except FileNotFoundError:
             pass
 
-    def last(self, task: str, turn: int) -> dict[str, Any] | None:
-        mine = [e for e in self.ledger if e.get("task") == task and e.get("turn") == turn]
+    def last(self, worker: Worker, turn: int) -> dict[str, Any] | None:
+        mine = [e for e in self.ledger if e.get("task") == worker.task and e.get("worker") == worker.name
+                and e.get("session") == worker.session and e.get("turn") == turn]
         return mine[-1] if mine else None
 
     def note(self, worker: Worker, turn: int, kind: str, status: str, text: str, **more: Any) -> None:
-        entry = {"at": utc_now(), "task": worker.task, "turn": turn, "kind": kind, "status": status, "note": text, **more}
+        entry = {"at": utc_now(), "task": worker.task, "worker": worker.name, "session": worker.session, "turn": turn,
+                 "kind": kind, "status": status, "note": text, **more}
         with open(self.ledger_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             f.flush()
@@ -285,10 +291,11 @@ class Driver:
             return  # the box did not answer: next tick
         read = STATUS.match(substitution(done.out).splitlines()[-1] if done.out.strip() else "")
         state = read.group(1) if read else (done.out.split() or [""])[0]
-        turn = int(read.group(2) or 0) if read else 0
+        turn = int(read.group(3) or 0) if read else 0
         if state == WORKING:
             return
-        last = self.last(worker.task, turn)
+        worker = replace(worker, session=read.group(2) if read else "")
+        last = self.last(worker, turn)
         if last is not None and last.get("status") in FINAL:
             return
         if state in GONE:

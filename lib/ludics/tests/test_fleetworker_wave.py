@@ -1342,7 +1342,7 @@ class Drive(WaveDirCase):
     def setUp(self) -> None:
         super().setUp()
         self.rows = [row("t42")]
-        self.state, self.resumes = "EXITED(0)", 0
+        self.state, self.resumes, self.session = "EXITED(0)", 0, "0199-a"
         self.message = ""
         self.rc: dict[str, int] = {}
         self.out: dict[str, str] = {}
@@ -1361,7 +1361,7 @@ class Drive(WaveDirCase):
             self.calls.append([tool, *args] if tool == "bg-run.sh" else args)
         rc = self.rc.get(key, 0)
         if key == "status":
-            return rc, self.out.get(key, f"{self.state} far/w1-42 kind=codex session=s stream: 9 events, 3s quiet, last=x | head=abc | resumes={self.resumes} stderr=0B\n"), ""
+            return rc, self.out.get(key, f"{self.state} far/{args[2]} kind=codex session={self.session} stream: 9 events, 3s quiet, last=x | head=abc | resumes={self.resumes} stderr=0B\n"), ""
         if key == "log":
             return rc, self.message if rc == 0 else "NO RESULT far/w1-42: latest turn ended turn.failed\n", ""
         if key == "bg-run.sh spawn":
@@ -1413,6 +1413,20 @@ class Drive(WaveDirCase):
             self.state = "EXITED(0)"
             self.assertEqual((self.once()[0], [c[0] for c in self.calls]), (0, ["log", "execution"]), "the next turn is a new turn")
         self.assertEqual(self.ledger(), [(0, "request", "answered"), (1, "request", "answered")])
+
+    def test_a_worker_launched_in_a_tasks_place_does_not_inherit_its_predecessors_turns(self) -> None:
+        self.message = "NEEDS_DESIGN x\n"
+        with self.world():
+            self.assertIn("DRIVE ATTENTION t42 turn 0", self.once()[1])
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+            self.session = "0199-b"  # launch --replace: the same name, a new session, counting from 0 again
+            self.assertIn("DRIVE ATTENTION t42 turn 0", self.once()[1], "the replacement's turn 0 is its own")
+            self.rows = [row("t42", worker="w1-42b")]  # a finisher under another name, its session reused by chance
+            self.assertIn("DRIVE ATTENTION t42 turn 0", self.once()[1])
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+        with open(os.path.join(self.wavedir, "logs", "drive.jsonl")) as f:
+            self.assertEqual([(e["worker"], e["session"], e["turn"]) for e in map(json.loads, f)],
+                             [("w1-42", "0199-a", 0), ("w1-42", "0199-b", 0), ("w1-42b", "0199-b", 0)])
 
     def test_only_a_turn_that_completed_is_read_and_never_the_turn_before_it(self) -> None:
         """log --last-result skips a turn that never completed and prints the one before: a resumed
