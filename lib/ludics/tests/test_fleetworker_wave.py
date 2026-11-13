@@ -1469,11 +1469,36 @@ class Drive(WaveDirCase):
             self.resumes, self.message = 1, f"REVIEW_REQUEST 7 {A}\n"
             self.out = {"execution assign": f"quoted: {refusal}\n"}
             self.assertEqual(self.once()[0], 0)
+            # assign's stdout is the assignment message, built from the worker's request: its words too.
             self.resumes, self.message = 2, "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
-            self.rc["execution assign"], self.out["execution assign"] = 1, refusal + "\n"
+            self.rc["execution assign"], self.out["execution assign"] = 1, f"EXECUTION_ASSIGNED x\ncommand: echo '{refusal}'\n"
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertIn("refused some of the turn's blocks", out)
+            self.resumes, self.out = 3, {"execution assign stderr": refusal + "\n"}
             rc, out = self.once()
             self.assertEqual(rc, 1)
             self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's", out)
+
+    def test_the_coordinator_is_told_before_a_turn_is_made_final(self) -> None:
+        self.message = "NEEDS_DESIGN x\n"
+        real = wavedrive.append_line
+        died: list[str] = []
+
+        def dying(path: str, record: dict[str, Any]) -> None:
+            if path.endswith("drive.jsonl") and not died:
+                died.append(path)
+                raise KeyboardInterrupt  # the driver is killed between the notification and the ledger line
+            real(path, record)
+
+        with self.world(), mock.patch.object(wavedrive, "append_line", side_effect=dying):
+            with self.assertRaises(KeyboardInterrupt):
+                self.once()
+            self.assertEqual(len(self.attention()), 1, "the notification is written first")
+            self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")))
+            self.assertIn("DRIVE ATTENTION t42 turn 0", self.once()[1], "the restart reads the turn again and tells again")
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+        self.assertEqual((len(self.attention()), self.ledger()), (2, [(0, "turn", "attention")]))
 
     def test_a_ledger_line_cut_short_never_swallows_the_record_after_it(self) -> None:
         self.message = "NEEDS_DESIGN x\n"
@@ -1663,7 +1688,15 @@ class Drive(WaveDirCase):
             with open(kept) as f:
                 self.assertEqual(f.read(), self.message)
             self.assertIn('handback answered: BOARD CLOSE wv: "t42" merged o/staging#7', out)
+            # A lease refusal that board close wraps in its own line is the takeover it is.
             self.resumes = 1
+            self.rc["board close"] = 1
+            self.out["board close"] = ('BOARD CLOSE REFUSED wv: "t42": board log exit 1 (BOARD REFUSED fleet: coordinator lease held by'
+                                       " session-other -- not you (adopted since your gate?)); the row is not set; a re-run resumes\n")
+            rc, out = self.once()
+            self.assertEqual(rc, 1)
+            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (BOARD REFUSED fleet: coordinator lease held by session-other", out)
+            self.assertEqual([e[0] for e in self.ledger()], [0], "a takeover is no verdict on the turn")
             self.rows = [row("t42", pr="9")]
             self.rc["board close"], self.out["board close"] = 1, "BOARD CLOSE REFUSED wv: \"t42\": o/staging#9 is OPEN, not merged; nothing closed\n"
             out = self.once()[1]

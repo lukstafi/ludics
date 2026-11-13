@@ -96,7 +96,9 @@ after ``cleared``, at the same head or another), and a head GitHub does not answ
 not covered.
 
 ATTENTION is a line appended to ``<wave dir>/logs/attention.jsonl`` and printed as ``DRIVE ATTENTION
-<task> turn <n>: <why> (<file>)``. The driver goes on serving the other workers; ``wave heartbeat``
+<task> turn <n>: <why> (<file>)``, written before the turn is made final in the ledger: a driver
+killed between the two tells the coordinator again on its restart (the turn is read again), and
+never leaves a final turn nobody was told of. The driver goes on serving the other workers; ``wave heartbeat``
 prints the new attention lines and returns early when one arrives, so it stays the coordinator's
 one wake source. An attention turn is final: the coordinator answers it by hand, and the worker's
 next turn is a new turn.
@@ -167,10 +169,13 @@ PULL = re.compile(r"/pull/([1-9][0-9]*)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 REF = re.compile(r"[^#\s]+#([1-9][0-9]*)")
 REVIEWED = re.compile(r"WAVE REVIEW \S+: .* decision=([a-z]+) comment=\S+ message=(.+?\.message\.md)(?: \(already reviewed.*)?")
-# A lease refusal as lease.py's gates print it, whole on its line: `<VERB> REFUSED <label>: coordinator lease
-# held by ...`. Read only off a lease-gated verb that exited nonzero (``Driver.call``'s ``gated``) and off
-# a failed review's log, never off a worker's own words (its final message, its status summary).
-LEASE_LOST = re.compile(r"[A-Z][A-Z -]* REFUSED [^:\n]*: coordinator lease held by .*")
+# A lease refusal as lease.py's gates print it: `<VERB> REFUSED <label>: coordinator lease held by ...`,
+# on a line of its own or inside the line of a verb that wraps a step's refusal (`board close`: `...
+# board log exit 1 (BOARD REFUSED fleet: coordinator lease held by ...)`). Read only where no worker's
+# words are: the output of a lease-gated verb that exited nonzero (``Driver.call``'s ``gated``; of
+# ``execution assign`` its stderr alone, since its stdout is the assignment message, built from the
+# worker's request) and a failed review's log. Never a final message or a status summary.
+LEASE_LOST = re.compile(r"\b[A-Z][A-Z -]* REFUSED [^:\n]*: coordinator lease held by [^\n]*")
 ALREADY = re.compile(r"ASSIGN ALREADY (\S+):")
 
 
@@ -304,23 +309,26 @@ class Driver:
             self.say(f"DRIVE {worker.task} turn {turn}: {kind} {status}: {text}")
 
     def attention(self, worker: Worker, turn: int, kind: str, why: str, file: str = "") -> None:
-        self.note(worker, turn, kind, "attention", why, file=file)
+        """The coordinator is told first, and the turn made final after: a driver that dies between
+        the two tells it again on its restart, never not at all."""
         append_line(self.path("logs", "attention.jsonl"), {"at": utc_now(), "task": worker.task, "turn": turn, "why": why, "file": file})
         self.say(f"DRIVE ATTENTION {worker.task} turn {turn}: {why}" + (f" ({file})" if file else ""))
+        self.note(worker, turn, kind, "attention", why, file=file)
 
     def say(self, line: str) -> None:
         cli.say(line)
         with open(self.path("logs", "drive.log"), "a", encoding="utf-8") as f:
             f.write(f"{utc_now()} {line}\n")
 
-    def call(self, *args: str, timeout: float | None = None, gated: bool = False) -> Done:
+    def call(self, *args: str, timeout: float | None = None, gated: str = "") -> Done:
         """This fleet-worker.sh with ``args``, its stdout captured and its stderr kept in ``self.err``.
-        ``gated`` names a verb that proves the lease: refused there (LEASE_LOST), the driver ends."""
+        ``gated`` names a verb that proves the lease, and which of its streams hold no worker's words
+        (``both``, or ``stderr``): a lease refusal there (LEASE_LOST), on a failure, ends the driver."""
         rc, out, self.err = execute([self.script, *args], timeout)
         if gated and rc != 0:
-            for line in (out + "\n" + self.err).splitlines():
-                if LEASE_LOST.fullmatch(line.strip()):
-                    raise LeaseLost(line.strip())
+            lost = LEASE_LOST.search(self.err if gated == "stderr" else out + "\n" + self.err)
+            if lost:
+                raise LeaseLost(lost.group(0).strip())
         return Done(rc, out)
 
     # --- one worker, one tick ---------------------------------------------------------------------
@@ -373,7 +381,7 @@ class Driver:
                 self.attention(worker, turn, "turn", what.why, message)
 
     def resume(self, worker: Worker, turn: int, kind: str, message: str, text: str, **more: Any) -> bool:
-        done = self.call("unstick", worker.box, worker.name, "--message", message, gated=True)
+        done = self.call("unstick", worker.box, worker.name, "--message", message, gated="both")
         if done.rc != 0:
             self.attention(worker, turn, kind, f"{text}, and the worker was NOT resumed (unstick exit {done.rc}:"
                                                f" {substitution(done.out)[-200:]}); resume it with {message}", message)
@@ -384,7 +392,7 @@ class Driver:
     def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None) -> None:
         out = self.turn_file(worker, turn, "assigned.md")
         done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
-                         "--message", out, "--unstick", worker.box, worker.name, gated=True)
+                         "--message", out, "--unstick", worker.box, worker.name, gated="stderr")
         earlier = ALREADY.findall(self.err)
         if done.rc == 0 and not done.out.strip():
             # Nothing assigned by this call: an earlier one dispatched every block and never resumed the worker.
@@ -426,7 +434,7 @@ class Driver:
                                                               " 40-hex observed_sha; nothing more concluded", message)
             verdict = ""
             for form in ("--from-run", "--from-bg-run"):
-                done = self.call("execution", "conclude", form, where, "--request", request, "--sha", sha, gated=True)
+                done = self.call("execution", "conclude", form, where, "--request", request, "--sha", sha, gated="both")
                 if done.rc == 0:
                     try:
                         record: Any = json.loads(done.out)
@@ -483,7 +491,8 @@ class Driver:
         if said is None:
             try:
                 with open(log, encoding="utf-8", errors="replace") as f:
-                    lost = next((text.strip() for text in f if LEASE_LOST.fullmatch(text.strip())), "")
+                    found = LEASE_LOST.search(f.read())
+                    lost = found.group(0).strip() if found else ""
             except OSError:
                 lost = ""
             if lost:
@@ -491,12 +500,15 @@ class Driver:
             return self.attention(worker, turn, kind, f"the review did not end with a verdict ({line or 'no wait line'}); its log"
                                                       " says why, and the worker waits", log)
         decision, message = said.group(1), said.group(2)
+        if decision == "unreadable":
+            # Told before the worker is resumed and the turn made final, so no crash in between loses it.
+            append_line(self.path("logs", "attention.jsonl"), {
+                "at": utc_now(), "task": worker.task, "turn": turn, "file": message,
+                "why": "the review ended on no verdict line: the worker is told to ask for a confirm; the review is yours to read"})
+            self.say(f"DRIVE ATTENTION {worker.task} turn {turn}: the review ended on no verdict line (the worker is told to ask"
+                     f" for a confirm; the review is yours to read) ({message})")
         # pr and sha on the answered line are what a later turn's --again reads.
-        resumed = self.resume(worker, turn, kind, message, f"decision={decision}, resumed with {message}",
-                              pr=last.get("pr"), sha=last.get("sha"))
-        if resumed and decision == "unreadable":
-            self.attention(worker, turn, kind, "the review ended on no verdict line: the worker was told to ask for a confirm;"
-                                               " the review is yours to read", message)
+        self.resume(worker, turn, kind, message, f"decision={decision}, resumed with {message}", pr=last.get("pr"), sha=last.get("sha"))
 
     def unconfirmed(self, pr: str) -> bool:
         """THE CONFIRM (the header): whether the PR's merge is one no posted clearance covers."""
@@ -536,7 +548,7 @@ class Driver:
         if not pr:
             return self.attention(worker, turn, "handback", "the hand-back names no PR (the row has none, the message no"
                                                             " /pull/<n>); close the task by hand", kept)
-        done = self.call("board", "close", self.wave.wave, worker.task, "--pr", pr, "--evidence", f"hand-back {kept}", gated=True)
+        done = self.call("board", "close", self.wave.wave, worker.task, "--pr", pr, "--evidence", f"hand-back {kept}", gated="both")
         said = substitution(done.out).splitlines()[-1] if done.out.strip() else f"board close exit {done.rc}"
         if done.rc != 0:
             return self.attention(worker, turn, "handback", f"board close refused: {said}", kept)
