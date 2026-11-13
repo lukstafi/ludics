@@ -1992,6 +1992,19 @@ class Drive(DriveCase):
             self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (WAVE REVIEW REFUSED fleet: coordinator lease held by session-other)", out)
             self.assertEqual(self.ledger()[-1], (5, "review", "reviewing"))
 
+    def test_no_pr_handback_uses_only_absolute_run_lines(self) -> None:
+        with self.world():
+            self.message = "HANDBACK t42\nRUN /absolute/run with spaces\nRUN /second\n"
+            self.out["board close"] = "BOARD CLOSE done, no PR\n"
+            self.assertIn("handback answered", self.once()[1])
+            kept = f"{self.wavedir}/handbacks/t42.md"
+            self.assertEqual(self.calls[1], ["board", "close", "wv", "t42", "--no-pr", "--run", "/absolute/run with spaces",
+                                             "--run", "/second", "--evidence", f"hand-back {kept}"])
+            for turn, text in enumerate(("No run", "RUN relative/path", "text RUN /path"), 1):
+                self.resumes, self.message = turn, f"HANDBACK t42\n{text}\n"
+                self.assertIn("the hand-back names no PR", self.once()[1])
+                self.assertFalse(any(c[:2] == ["board", "close"] for c in self.calls))
+
     def test_a_hand_back_closes_the_task_and_an_unconfirmed_blocking_review_is_said(self) -> None:
         self.message = "HANDBACK t42\nMerged https://github.com/o/staging/pull/7 at abc. Proposals: ...\n"
         self.out["board close"] = 'BOARD CLOSE wv: "t42" merged o/staging#7 at aaaaaaaaaaaa; 1 standing concluded, 0 already; row set\n'
