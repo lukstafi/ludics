@@ -20,10 +20,10 @@ from ludics.fleetworker import farside
 from ludics.fleetworker.config import (
     GPU_TOKENS_DEFAULT,
     Config,
-    fetch_timeout_s,
     SpecError,
     box_correctness_slots_text,
     box_gpu_tokens_text,
+    fetch_timeout_s,
 )
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import Done, err, is_local, prelude, run_on

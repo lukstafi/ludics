@@ -125,13 +125,14 @@ writes (no other ref is fetched, ``origin/HEAD`` is read and never set), and it 
 ``origin/<branch>`` was the remote's tip when the run started, not that the command diffs against
 it; a base that moves during the run is not followed.
 
-THE FETCH BOUND: ``execution leg``'s (leg.py, ``fetch_timeout_s``; one knob, FLEET_FETCH_TIMEOUT,
+THE FETCH BOUND: config.py's ``fetch_timeout_s``, shared with ``execution leg``, preflight, launch
+and farside-close (one knob, FLEET_FETCH_TIMEOUT,
 default 300, read where the verb runs, the caller or ``~/.config/fleet/env.sh``, and carried to the
 box as an argument; a value that is no positive whole number of seconds is a usage refusal before
 GitHub or the anchor is asked). It bounds both far-side fetches, the commit's and THE BASE's, and a
 fetch it cuts is refused naming it (``did not finish in <n>s (FLEET_FETCH_TIMEOUT)``), so a slow box
-has one place to raise it (the box's skills refresh before them, ``refresh_box``, reads the same
-knob). The slot's settle is ``SETTLE``'s, not this knob's.
+has one place to raise it. The skills preflight shares this fetch bound; ``refresh_box`` reads
+FLEET_REFRESH_TIMEOUT instead. The slot's settle is ``SETTLE``'s, not this knob's.
 
 THE REQUEST ID (ludics-lite#714). With ``--id-prefix <prefix>`` the payload names no
 ``request_id`` (one source, as for ``--tip``'s revision): the run takes ``<prefix>-<n>``, ``<n>``
@@ -211,11 +212,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from ludics import bgrun, cli, proc
-from ludics.fleetworker.config import Config
+from ludics.fleetworker.config import Config, fetch_timeout_s
 from ludics.fleetworker import revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.leg import BASE, FLOOR, PIN, fetch_timeout_s, min_free_gib
+from ludics.fleetworker.leg import BASE, FLOOR, PIN, min_free_gib
 from ludics.fleetworker.preflight import refresh_box
 from ludics.fleetworker.registry import halt_generation, halt_reason, ref_name_ok
 from ludics.fleetworker.transport import (

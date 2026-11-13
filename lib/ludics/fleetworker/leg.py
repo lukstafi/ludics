@@ -369,7 +369,7 @@ from typing import Any
 
 from ludics import cli
 from ludics.fleetworker import execution, graces, revision, slot
-from ludics.fleetworker.config import Config, fetch_timeout_s as fetch_timeout_s
+from ludics.fleetworker.config import Config, fetch_timeout_s
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.preflight import knob
 from ludics.fleetworker.registry import bound_commit, ref_name_ok
