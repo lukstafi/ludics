@@ -2173,7 +2173,9 @@ class Queue(DriveCase):
             self.assertIn("DRIVE ATTENTION t50 launch: the queued task waits only on after tasks with no row or queue entry: t42, t43;", out)
             self.assertEqual(self.launched(), [])
             self.assertEqual(driver.ledger, [], "the notice does not finalize the launch")
+            self.calls.clear()
             self.assertEqual(captured(lambda: driver.round())[1], "", "the same missing list is told once")
+            self.assertEqual(self.calls, [], "an already-reported missing list needs no more potentially blocking gate reads")
             self.rows = [row("t42", state="merged #7")]
             self.assertIn("no row or queue entry: t43;", captured(lambda: driver.round())[1])
             self.assertEqual(captured(lambda: driver.round())[1], "")

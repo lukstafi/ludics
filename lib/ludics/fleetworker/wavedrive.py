@@ -778,12 +778,13 @@ class Driver:
                 continue
             if last is not None and last.get("status") == "retry" and now() < float(last.get("next", 0)):
                 continue
+            if missing and self.queue_missing.get(queued.task) == missing:
+                continue  # already told: do not spend another potentially blocking gate read on it
             if self.call("halted").rc == 0 and self.gate_open(slot):
                 if missing:
-                    if self.queue_missing.get(queued.task) != missing:
-                        self.tell(slot, LAUNCH, f"the queued task waits only on after tasks with no row or queue entry: {', '.join(missing)};"
-                                               " check their names, or launch them when ready; this task will still start when they merge")
-                        self.queue_missing[queued.task] = missing
+                    self.tell(slot, LAUNCH, f"the queued task waits only on after tasks with no row or queue entry: {', '.join(missing)};"
+                                           " check their names, or launch them when ready; this task will still start when they merge")
+                    self.queue_missing[queued.task] = missing
                     continue  # a missing prerequisite must not hold up another due task
                 self.start(queued, slot, row is not None, record, last)
             return  # one launch a tick, and a halt, a closed gate or an unreachable anchor is the next tick's
