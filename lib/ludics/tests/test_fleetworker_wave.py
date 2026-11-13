@@ -523,6 +523,21 @@ class MixedWave(WaveDirCase):
             self.assertEqual([c[:2] for c in self.shim_calls], [["execution", "run"], ["board", "set"]])
             self.assertEqual(git("-C", os.path.join(self.dir, "repo-worktrees", "w1-43"), "branch", "--show-current"), "claude/w1-43")
 
+    def test_a_file_another_task_wrote_is_never_overwritten(self) -> None:
+        """A task id that ends in a leg's suffix, or in -base, names another task's payload file."""
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            with open(os.path.join(self.wavedir, "reserve", "t42-gpu.json")) as f:
+                leg = f.read()
+            for task, name in (("t42-gpu", "reserve/t42-gpu.json"), ("t42-base", "reserve/t42-base.json")):
+                self.shim_calls.clear()
+                rc, out, _ = self.prep(task, "--source", "42", "--base", "main", "--profile", "sol")
+                self.assertEqual((rc, self.shim_calls), (1, []), out)
+                self.assertIn(f"WAVE PREP REFUSED {task}: {self.wavedir}/{name} exists, a file this prep would write", out)
+                self.assertFalse(os.path.exists(os.path.join(self.wavedir, "prep", f"{task}.json")))
+            with open(os.path.join(self.wavedir, "reserve", "t42-gpu.json")) as f:
+                self.assertEqual(f.read(), leg, "t42's leg payload is the one its launch reserves")
+
     def test_profile_and_host_usage(self) -> None:
         for args, why in ((["--profile", "astra"], "--profile names 'astra', which the wave file's profiles do not (it has: sol, opus)"),
                           (["--host", "far"], "--host far needs a cli transport: a subagent worker runs on the agent host, mac"),

@@ -66,7 +66,9 @@ IN ORDER, every read before any write:
      worktree is made under another coordinator's wave. ``--base`` resolved to a full SHA in the
      checkout. The rival PRs. The worktree path, the branch in ``git worktree list``, the local
      branch and origin's branch: any one existing refuses. A prep manifest for the task refuses
-     (THE RECOVERY BOUNDARY). The registry holding any of the task's standing ids, and the board
+     (THE RECOVERY BOUNDARY), and so does any file this prep would write that exists already (a
+     payload, the assign base, the brief): the names are built from the task id and the legs'
+     suffixes, and a CLI task's files must still be its own at its launch. The registry holding any of the task's standing ids, and the board
      holding the task's row, refuse. Every template part read and rendered, in memory, with the
      purposes: an unrendered placeholder refuses here, before anything is made.
   2. THE WRITES: the manifest (the identities about to be made), ``git worktree add -b``, the
@@ -384,6 +386,17 @@ def check_fresh(prep: Prep) -> None:
     if os.path.lexists(prep.manifest):
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: a prep manifest {prep.manifest} exists (an earlier prep; its"
                       " WAVE PREP MADE lines say what it made)")
+    for path in artifacts(prep):
+        if os.path.lexists(path):
+            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: {path} exists, a file this prep would write: another task's"
+                          " (a task id that ends in a leg's suffix or in -base shares the name) or an earlier prep's; nothing made")
+
+
+def artifacts(prep: Prep) -> list[str]:
+    """Every file prep writes under the wave directory besides its manifest: the payloads, the assign
+    base and the brief. A CLI task's must last until its launch, so none may be another task's."""
+    names = [f"{prep.task}.json", *(f"{prep.task}-{leg.suffix}.json" for leg in prep.legs), f"{prep.task}-base.json"]
+    return [*(prep.path("reserve", name) for name in names), prep.path("briefs", f"brief-{prep.task}.md")]
 
 
 def check_registry(cfg: Config, prep: Prep) -> None:
