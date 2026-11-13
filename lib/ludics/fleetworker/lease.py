@@ -20,17 +20,33 @@ from ludics.fleetworker.config import Config, short_hostname
 from ludics.fleetworker.identity import check_identity, die, my_token
 from ludics.fleetworker.transport import prelude, run_on
 
+# tiprun.HALT_READ's rule: only no entry in a searchable state directory is open. A present
+# marker must be a readable regular file (links to such files work). Unread state returns at once.
+HALT_STATE = r"""read_halt() {
+  halt_present=0 halt_text=
+  f="$ANCHOR_STATE/HALT"
+  [ -d "$ANCHOR_STATE" ] && [ -x "$ANCHOR_STATE" ] || return 1
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then return 0; fi
+  [ -f "$f" ] || return 1
+  halt_text=$(cat "$f" 2>/dev/null) || return 1
+  halt_present=1
+}
+"""
+
 # Far side for the anchor: lease + halt checks. Args: verb label force token. Prints nothing when
 # the coordinator may proceed; otherwise one refusal line, exit 1.
-ANCHOR_GATE = r"""verb="$1" label="$2" force="$3" token="$4"
+ANCHOR_GATE = HALT_STATE + r"""verb="$1" label="$2" force="$3" token="$4"
 lease="$ANCHOR_STATE/COORDINATOR"
 if [ ! -f "$lease" ]; then echo "$verb REFUSED $label: no coordinator lease on the anchor -- run \`fleet-worker.sh claim\` first"; exit 1; fi
 held=$(sed -n 's/^token=//p' "$lease"); host=$(sed -n 's/^host=//p' "$lease"); since=$(sed -n 's/^since=//p' "$lease")
 if [ -z "$token" ] || [ "$held" != "$token" ]; then
   echo "$verb REFUSED $label: coordinator lease held by $host since $since -- adopt it with \`fleet-worker.sh claim --take\` only if that coordinator is gone"; exit 1
 fi
-if [ "$force" != 1 ] && [ -f "$ANCHOR_STATE/HALT" ]; then
-  echo "$verb REFUSED $label: launches halted -- $(cat "$ANCHOR_STATE/HALT")"; exit 1
+if [ "$force" != 1 ]; then
+  read_halt || { printf '%s\n' "$verb REFUSED $label: cannot read HALT on $BOX; launches refused"; exit 1; }
+  if [ "$halt_present" = 1 ]; then
+    printf '%s\n' "$verb REFUSED $label: launches halted -- $halt_text"; exit 1
+  fi
 fi
 """
 
@@ -100,8 +116,9 @@ echo "COORDINATOR: $hhost since $since (not you)"; exit 1
 # After LEASE_MUTATION. Args: reason halt-id. A halt keeps the identity of the halt it updates (the
 # generation the registry binds a triage reservation to); a legacy marker with no id keeps its
 # first line as the generation and has the update appended.
-HALT = r"""halt="$ANCHOR_STATE/HALT"; halt_id="$2"
-if [ -f "$halt" ]; then
+HALT = HALT_STATE + r"""halt="$ANCHOR_STATE/HALT"; halt_id="$2"
+read_halt || { printf '%s\n' "HALT FAILED: cannot read HALT on $BOX; marker kept"; exit 1; }
+if [ "$halt_present" = 1 ]; then
   existing_id=$(sed -n '1s/^[^ ]* id=\([^ ]*\) .*/\1/p' "$halt")
   if [ -z "$existing_id" ]; then
     # Legacy markers have no ID: retain their first line as the generation, append the update.
@@ -112,7 +129,7 @@ if [ -f "$halt" ]; then
   fi
   halt_id="$existing_id"
 fi
-if ! printf '%s id=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$halt_id" "$1" > "$ANCHOR_STATE/HALT" 2>/dev/null || [ ! -f "$ANCHOR_STATE/HALT" ]; then
+if ! printf '%s id=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$halt_id" "$1" > "$ANCHOR_STATE/HALT" 2>/dev/null || ! read_halt || [ "$halt_present" != 1 ]; then
   echo "HALT FAILED: cannot write $ANCHOR_STATE/HALT on $BOX -- the fleet is NOT halted"; exit 1
 fi
 echo "HALTED: launches refused until resume-launches -- $1"
@@ -127,8 +144,9 @@ if [ -f "$f" ]; then
 else echo "launches were not halted"; fi
 """
 
-HALTED = r"""f="$ANCHOR_STATE/HALT"
-if [ -f "$f" ]; then echo "HALTED $(cat "$f")"; exit 1; else echo "launches open"; exit 0; fi
+HALTED = HALT_STATE + r"""read_halt || { printf '%s\n' "HALTED: cannot read HALT on $BOX; launches refused"; exit 1; }
+if [ "$halt_present" = 1 ]; then printf '%s\n' "HALTED $halt_text"; exit 1; fi
+printf '%s\n' "launches open"
 """
 
 

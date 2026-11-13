@@ -767,7 +767,13 @@ class GhSession:
                         self._quota = True
                         return GhUnanswered()
                     if mode == "read" and budget.waiting():
-                        if budget.hold_read() is not None:
+                        try:
+                            standing = budget.hold_read()
+                        except OSError as exc:
+                            self._err_line = budget.read_error(exc)
+                            self._quota = True
+                            return GhUnanswered()
+                        if standing is not None:
                             continue
                         quota_unheld += 1
                         if quota_unheld < 2:

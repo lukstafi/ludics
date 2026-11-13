@@ -124,6 +124,17 @@ class NestedSlot(Locks):
 
 
 class MeasurementHold(Locks):
+    def test_unlistable_drain_refuses_before_command(self) -> None:
+        with (
+            mock.patch.object(slot.os, "listdir", side_effect=PermissionError(13, "denied")),
+            mock.patch.object(slot, "run_command", side_effect=RuntimeError("command started")) as run,
+            self.assertRaises(cli.Exit) as refused,
+        ):
+            slot.hold("testbox", None, "test", os.path.join(self.dir, "measurement.lock"),
+                      "testbox m1", 0, ["true"], None)
+        self.assertEqual(refused.exception.rc, 1)
+        run.assert_not_called()
+
     def test_the_one_outstanding_measurement_under_a_live_hold_covers_the_batch(self) -> None:
         self.hold("measurement.lock", fcntl.LOCK_SH)
         self.assertEqual(judge_measurement("testbox", self.dir, "testbox m1", "m1"), Covered("m1", ""))

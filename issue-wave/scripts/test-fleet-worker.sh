@@ -2606,7 +2606,7 @@ expect "a codex stream with no ended turn is NO RESULT" 1 "^NO RESULT testbox/lr
 section "halt" && {
 need_lease
 mkdir -p "$ISSUE_WAVE_STATE/HALT"
-expect "halt that cannot write its marker fails loudly" 1 "HALT FAILED: cannot write" -- "$FW" halt "unwritable"
+expect "halt refuses an unread existing marker before writing" 1 "HALT FAILED: cannot read" -- "$FW" halt "unwritable"
 rmdir "$ISSUE_WAVE_STATE/HALT"
 expect "native gate accepts the lease holder" 0 "" -- "$FW" gate --target-repo example/project
 expect "native gate refuses another coordinator" 1 "coordinator lease held" -- "${B[@]}" gate --target-repo example/project

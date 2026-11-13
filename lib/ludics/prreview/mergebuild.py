@@ -224,6 +224,7 @@ log is the evidence. The dry run (THE DRY RUN) takes no override, so a shared fa
 import contextlib
 import fnmatch
 import os
+import shlex
 import re
 import shutil
 import signal
@@ -238,7 +239,7 @@ from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn, assert_never
 
-from ludics import cli, proc
+from ludics import cli, fs, proc
 from ludics.prreview import buildhistory, commentonly
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
@@ -614,8 +615,15 @@ def _slot_runner() -> str | None:
     """fleet-worker.sh beside this package, when this box has run-time slots (its probe answers the
     PROBE line); None to run bare (issue-wave/references/executions.md: any other answer)."""
     here = Path(__file__).resolve().parents[3] / "issue-wave" / "scripts" / "fleet-worker.sh"
-    if not here.is_file():
-        return None
+    try:
+        if fs.absent(here):
+            return None
+        # A present runner must be readable; a broken link or I/O error cannot opt out of slots.
+        fs.require_regular(here)
+        with here.open("rb") as source:
+            source.read(1)
+    except OSError as exc:
+        raise cli.Exit(3, f"merge build: cannot read slot runner {shlex.quote(str(here))}: {exc}; nothing started") from exc
     probe = _supervised(["bash", str(here), "execution", "slot", "--probe"], os.getcwd(), PROBE_TIMEOUT, dict(os.environ))
     if probe.rc == 0 and probe.stdout.startswith("EXECUTION SLOT PROBE "):
         return str(here)

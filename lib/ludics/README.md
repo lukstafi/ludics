@@ -220,6 +220,11 @@ cli.py proc.py
     lib/ludics/tests/test_peerplan.py
     scripts/test-py.sh
 
+fs.py
+    lib/ludics/tests/test_prreview_budget.py
+    lib/ludics/tests/test_prreview_mergebuild.py
+    lib/ludics/tests/test_peerplan.py
+
 bgrun.py
     issue-wave/scripts/test-fleet-worker.sh "conclude --from-bg-run" tip-run board
     lib/ludics/tests/test_bgrun.py
@@ -538,3 +543,26 @@ Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its 
 `lib/ludics/fleetworker/farside.py`: a box needs no Python for a worker's record, only for the
 batches it runs (`execution slot`) and, on the anchor, the registry. The one verb `fleet-worker.sh`
 still answers itself is `execution slot --probe`, which must answer on a box without Python 3.12.
+
+### Safety state reads (#1092)
+
+At the six read sites below, only ENOENT beneath searchable directories means absent
+(`fs.absent`); a present dangling or looping link and any read/list error refuse. The budget returns lock status 2 for unread
+owners and a gate reason (session exit 3) for unread quota state, without sleeping or probing.
+The hold drain exits 1 before starting its command when its directory cannot be listed. Merge
+builds exit 3 on an unread present slot runner; genuinely absent runners and unsupported probe
+answers retain the existing bare-build policy. Peer-plan clean exits 1 and keeps the worktree
+when its run directory or a named run cannot be read. Lease HALT reads follow `tiprun.HALT_READ`:
+absent is open, readable is halted, unread refuses (exit 1), with the explicit force gate retained.
+These failures return immediately; observers do not retry unread state within their wait,
+including a hold read after a quota response (`core.GhSession`). Numeric hold entries and lock
+owners, like the merge-build runner, must be regular files before open: FIFOs cannot block a read.
+Readable malformed quota lines keep the existing shell-format boundary; this change does not
+redesign lock ownership or harden unrelated evidence writers. #551 covers hold writes, while
+#1092 covers the reads.
+
+The new unit fixtures use dangling links and injected EACCES. Each site's fixture fails against
+launch base d794b0e: lock success, no quota hold, command started after an unread drain, bare slot
+runner, git worktree removal, and all three open HALT checks respectively. Task t1092's batch logs
+are under `~/.local/state/issue-wave/wave-20261113b-ludics/scratch/t1092/runs/`; the PR records the
+commands and outcomes.

@@ -15,9 +15,12 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from dataclasses import dataclass
 from typing import cast
 
+from ludics import cli
+from ludics.peerplan import plan
 from ludics.tests.fake import Answer, FakeTool, When
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
@@ -72,6 +75,21 @@ def running(pid: int) -> bool:
 def git(*args: str) -> str:
     done = subprocess.run(["git", *args], capture_output=True, text=True, check=True)
     return done.stdout.strip()
+
+
+class CleanUnread(unittest.TestCase):
+    def test_dangling_runs_never_removes_worktree(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ludics-clean.") as tmp:
+            os.symlink("missing", os.path.join(tmp, "runs"))
+            meta = plan.Meta("o/r#7", tmp, "main", tmp, "m", "high")
+            with (
+                mock.patch.object(plan, "load_meta", return_value=meta),
+                mock.patch.object(plan.proc, "run_tool") as git_call,
+                self.assertRaises(cli.Exit) as refused,
+            ):
+                plan.clean([tmp])
+            self.assertEqual(refused.exception.rc, 1)
+            git_call.assert_not_called()
 
 
 class PeerPlan(unittest.TestCase):
