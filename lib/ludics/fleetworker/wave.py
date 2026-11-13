@@ -10,7 +10,7 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
             [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
             [--profile <name>] [--host <box>]
   wave launch <wave.json> <task>                                                            wavelaunch.py
-  wave loop <wave.json> <name> [--resume-after <request id>]                                waveloop.py
+  wave loop <wave.json> <name> [--resume-after <request id> | --rerun <red id> -- <command>]                                waveloop.py
   wave heartbeat <wave.json> [--sleep <seconds>]                                             here
   wave drive <wave.json> [--poll <seconds>] [--once]                                         wavedrive.py
   wave turn <wave.json> <task>                                                              wavedrive.py
@@ -106,7 +106,7 @@ USAGE = (
     "wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>... | "
     "wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]"
     " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] | wave launch <wave.json> <task> | "
-    "wave loop <wave.json> <name> [--resume-after <request id>] | "
+    "wave loop <wave.json> <name> [--resume-after <request id> | --rerun <red id> -- <command>] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "
     "wave drive <wave.json> [--poll <seconds>] [--once] | wave turn <wave.json> <task> | "
     "wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file> --by <model> [--task <task>]"

@@ -27,8 +27,16 @@ THE RECOVERY, before anything starts. Read: the registry records whose id is
   - Nothing outstanding: the newest concluded record that is not ``not-launched``, when its verdict
     is not ``pass``, refuses (``LOOP RED <id> (recorded) ...`` or ``LOOP CANCELLED``, exit 1) unless
     ``--resume-after <id>`` names that record: a restart alone is no permission to pass a red or a
-    run someone stopped. Past a red, the next run waits for the tip to move past its commit (a
-    rerun at the same commit is SKILL.md's, by hand).
+    run someone stopped. Past that record, the next run judges the current tip at once, even at the red SHA.
+    A targeted rerun pass is no integration verdict and does not clear this explicit restart gate.
+THE TARGETED RERUN: ``wave loop <wave.json> <name> --rerun <red id> -- <command>`` reads only
+this loop's numbered records, requiring the named record to be concluded fail/timeout with a full
+observed SHA. It starts one plain tip-run at that SHA, with the configured loop's box, checkout,
+purpose and CPU setting, a separate ``<wave>-<name>-rerun`` id prefix and payload file, and NEVER
+an integration field. It accepts no payload overrides. The caller supplies the narrowed command;
+its coverage and repeat semantics are the coordinator's judgment, not inspected here. Wait with
+``execution tip-run --wait <id>``. No automatic retry or resume-launches: triage must finish first.
+
 THE LAST JUDGED commit is the ``observed_sha`` of the newest record whose verdict is ``pass``,
 ``fail`` or ``timeout``, a fail-closed allowlist: a ``not-launched`` record (a yield, which carries
 the tip's SHA all the same) and a ``cancelled`` one judged nothing, so their commit is run again.
@@ -173,9 +181,25 @@ class Driver:
                 raise self.end(1, f"{word} {rid} (recorded, {verdict} at {latest[-1].get('observed_sha')}): triage it"
                                   f" (SKILL.md, *On a red at the tip*), then restart with --resume-after {rid}")
             self.say(f"RESUME past {rid} ({verdict}), as --resume-after names it")
+            self.last = ""  # explicit recovery judges the current tip again
         if self.last:
             self.say(f"RESUME last judged {self.last}")
         return None
+
+    def rerun(self, red_id: str, command: list[str]) -> int:
+        red = next((r for r in self.mine() if str(r.get("request_id")).lower() == red_id.lower()), None)
+        if (red is None or red.get("state") != "concluded" or red.get("verdict") not in ("fail", "timeout")
+                or not isinstance(red.get("observed_sha"), str) or not SHA40.fullmatch(red["observed_sha"])):
+            die("wave loop --rerun: name this loop's concluded fail/timeout record with a full observed SHA")
+        payload = payload_of(self.wave, self.loop)
+        payload.pop("integration", None)
+        payload["requested_revision"] = red["observed_sha"]
+        path = os.path.join(self.wave.directory, "logs", f"loop-{self.loop.name}-rerun.json")
+        write_atomically(path, json.dumps(payload, separators=(",", ":")) + "\n")
+        done = self.fleet("execution", "tip-run", path, "--id-prefix", self.prefix + "-rerun",
+                          "--checkout", self.loop.checkout, *(["--cpu"] if self.loop.cpu else []), "--", *command)
+        cli.say(done.out.rstrip("\n"))
+        return done.rc
 
     # --- the steps ----------------------------------------------------------------------------
 
@@ -267,9 +291,13 @@ def cmd_loop(cfg: Config, args: list[str]) -> int:
     if len(args) < 2 or args[0].startswith("--") or args[1].startswith("--"):
         die(f"wave loop: name the wave file and the loop; usage: {USAGE}")
     resume_after = ""
-    if args[2:]:
+    rerun_id = ""
+    command: list[str] = []
+    if len(args) >= 6 and args[2] == "--rerun" and args[3] and args[4] == "--":
+        rerun_id, command = args[3], args[5:]
+    elif args[2:]:
         if len(args) != 4 or args[2] != "--resume-after" or not args[3]:
-            die(f"wave loop: takes only --resume-after <request id>; usage: {USAGE}")
+            die(f"wave loop: takes --resume-after <request id> or --rerun <red id> -- <command>; usage: {USAGE}")
         resume_after = args[3]
     wave = load_wave(args[0], "loop")
     loop = wave.loops.get(args[1])
@@ -289,5 +317,10 @@ def cmd_loop(cfg: Config, args: list[str]) -> int:
             return 1
         with open(loop_log(wave, loop.name), "a", encoding="utf-8") as log:
             driver = Driver(cfg, wave, loop, log)
+            if rerun_id:
+                try:
+                    return driver.rerun(rerun_id, command)
+                except End as end:
+                    return end.rc
             write_atomically(driver.payload, json.dumps(payload_of(wave, loop), separators=(",", ":")) + "\n")
             return driver.drive(resume_after)

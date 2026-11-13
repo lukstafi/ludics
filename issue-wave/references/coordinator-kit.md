@@ -179,7 +179,12 @@ kit invents none.
 
    The driver ends in one of three ways:
    - `LOOP RED`: take SKILL.md's *On a red at the tip*, then restart the driver with
-     `--resume-after <id>`.
+     `--resume-after <id>` to judge the current tip at once, even at the red SHA. For the targeted
+     batch use `wave loop <wave.json> <name> --rerun <red id> -- <narrowed command>` and then
+     `execution tip-run --wait <id>`; the verb derives the red SHA and a separate rerun prefix,
+     using the configured loop's placement with no integration verdict. It requires a concluded
+     fail/timeout record of that loop; the caller still judges the narrowed command and triage
+     before restarting. Unknown or unfinished records must be reconciled first.
    - `LOOP UNKNOWN`: reconcile the record it names.
    - A stop file (`loops.stop`, or `loop-<name>.stop`) ends it with its run left running. The
      next driver resumes that run rather than starting another.

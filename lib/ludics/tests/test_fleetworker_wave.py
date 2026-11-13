@@ -1325,14 +1325,49 @@ class Loop(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("RED wv-cc-2 (recorded, fail at", out)
         self.assertEqual(self.calls, [])
-        self.tips = [A]  # the red's own commit: past it, the loop waits for the tip to move
+        self.tips = [A, A]  # explicit recovery judges even the red commit again
+        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-4 rog {A} /r\n"),
+                        Done(0, f"TIP-RUN CONCLUDED wv-cc-4 pass rog {A} /r\n")]
         rc, out = self.drive(records, "--resume-after", "wv-cc-2")
         self.assertEqual(rc, 0, out)
-        self.assertEqual(self.starts(), [])
+        self.assertEqual(len(self.starts()), 1)
         os.unlink(os.path.join(self.dir, "loops.stop"))
         rc, out = self.drive([rec(1, "concluded", "cancelled", A)])
         self.assertEqual(rc, 1)
         self.assertIn("CANCELLED wv-cc-1", out)
+
+    def test_resume_after_a_targeted_pass_still_judges_the_red_sha(self) -> None:
+        rerun = rec(1, "concluded", "pass", A)
+        rerun["request_id"] = "wv-cc-rerun-1"
+        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-3 rog {A} /r\n"),
+                        Done(0, f"TIP-RUN CONCLUDED wv-cc-3 pass rog {A} /r\n")]
+        self.tips = [A, A]
+        rc, out = self.drive([rec(2, "concluded", "fail", A), rerun], "--resume-after", "wv-cc-2")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.starts()), 1)
+        self.assertIn("--tip", self.starts()[0])
+
+    def test_rerun_derives_a_non_integration_payload_and_separate_prefix(self) -> None:
+        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-rerun-1 rog {A} /r\n")]
+        rc, out = self.drive([rec(2, "concluded", "fail", A)], "--rerun", "wv-cc-2", "--", "tools/repeat", "failed")
+        self.assertEqual(rc, 0, out)
+        start = self.starts()[0]
+        self.assertEqual(start[3:], ["--id-prefix", "wv-cc-rerun", "--checkout", "/home/u/integ", "--cpu",
+                                     "--", "tools/repeat", "failed"])
+        with open(start[2]) as f:
+            payload = json.load(f)
+        self.assertNotIn("integration", payload, "a targeted pass must never replace the integration fail")
+        self.assertEqual(payload["requested_revision"], A)
+        self.assertEqual(payload["execution_host"], "rog")
+        self.assertIn("TIP-RUN STARTED", out)
+
+    def test_rerun_refuses_a_missing_non_red_or_unreadable_revision(self) -> None:
+        for records in ([], [rec(2, "concluded", "pass", A)], [rec(2, "running", "fail", A)],
+                        [rec(2, "concluded", "fail", "bad")]):
+            with self.subTest(records=records):
+                rc, out = self.drive(records, "--rerun", "wv-cc-2", "--", "tools/repeat")
+                self.assertEqual(rc, 2, out)
+                self.assertEqual(self.calls, [])
 
     def test_a_not_launched_tip_is_run_again_and_a_pass_goes_on(self) -> None:
         self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-3 rog {A} /runs/a b\n"),
