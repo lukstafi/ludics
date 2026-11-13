@@ -46,7 +46,9 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     THE PROJECT PART); no leading ``/``, no ``..`` component
   legs              {<box>: {checkout, suffix, purpose[, vars]}}: a   default: {}
                     GPU home box --legs may name; its far-side worktree is
-                    ``<checkout>-worktrees/<worker>-<suffix>``, ``vars`` are the leg's own NAMEs
+                    ``<checkout>-worktrees/<worker>-<suffix>``, ``vars`` are the leg's own NAMEs;
+                    each suffix is its leg's alone and none is ``base``, since a leg's payload
+                    file is ``reserve/<task>-<suffix>.json``
   loops             {<name>: {box, purpose, checkout, tip, command    default: {}
                     [, cpu][, integration][, poll]}}: an integration loop (waveloop.py)
   profiles          {<name>: {transport, kind[, model][, effort]}}: a  default: {}
@@ -302,7 +304,13 @@ def parse_wave(path: str, data: Any) -> Wave:
         problem = keys_problem(entry, what, LEG_REQUIRED, LEG_OPTIONAL)
         if problem:
             raise ValueError(problem)
-        legs[box] = Leg(box, absolute(entry, "checkout", what), text(entry, "suffix", what, WORD), text(entry, "purpose", what),
+        suffix = text(entry, "suffix", what, WORD)
+        # A leg's payload is reserve/<task>-<suffix>.json, kept from prep to a CLI worker's launch: two
+        # legs with one suffix would share a file, and `base` is the assign base's own name.
+        if suffix == "base" or any(leg.suffix == suffix for leg in legs.values()):
+            raise ValueError(f"{what}.suffix {json.dumps(suffix)} is another leg's, or the reserved name base: each leg's payload"
+                             " file is named by its suffix")
+        legs[box] = Leg(box, absolute(entry, "checkout", what), suffix, text(entry, "purpose", what),
                         var_map(entry.get("vars", {}), f"{what}.vars"))
     loops: dict[str, Loop] = {}
     for name, entry in objects(top.get("loops", {}), "loops").items():
