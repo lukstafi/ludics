@@ -7,15 +7,40 @@ that ran out names, and the wait's deadline against a clock the suite cannot mov
 """
 
 import types
+import os
+import subprocess
+import tempfile
 import unittest
 from typing import cast
 from unittest import mock
 
-from ludics.fleetworker import gate
+from ludics.fleetworker import gate, lease
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.gate import Read, advisory_red_jobs, verdict_line
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+class HaltUnread(unittest.TestCase):
+    def test_dangling_halt_refuses_all_three_readers(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ludics-halt.") as tmp:
+            marker = os.path.join(tmp, "HALT")
+            os.symlink("missing", marker)
+            with open(os.path.join(tmp, "COORDINATOR"), "w", encoding="utf-8") as f:
+                f.write("token=mine\nhost=test\nsince=now\n")
+            for script, args in (
+                (lease.HALTED, []),
+                (lease.ANCHOR_GATE, ["LAUNCH", "test", "0", "mine"]),
+                (lease.HALT, ["reason", "id"]),
+            ):
+                with self.subTest(script=script):
+                    done = subprocess.run(["/bin/bash", "-c", script, "bash", *args],
+                                          env={**os.environ, "ANCHOR_STATE": tmp, "BOX": "test"},
+                                          capture_output=True, text=True, check=False)
+                    self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                    self.assertIn("cannot read", done.stdout)
+                    self.assertTrue(os.path.islink(marker))
+                    self.assertFalse(os.path.exists(os.path.join(tmp, "missing")))
 
 
 class AdvisoryRedFile(unittest.TestCase):
