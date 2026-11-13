@@ -802,6 +802,12 @@ shared with other workers. Arguments
 narrow that, and while iterating they are the lever: each one selects every section whose name
 contains it (`test-fleet-worker.sh unstick`, `test-fleet-worker.sh 'real checkout'`), `--list`
 prints the section names, and an argument matching none of them is refused before anything runs.
+`test-fleet-worker.sh --sections-calling log` (or `--sections-calling execution rebind`)
+lists sections containing recognised verb calls without running fixtures. Its closed lexical
+boundary is the header of `lib/ludics/fleetworker/suitecalls.py`; it expands `need_worker` and
+`settle`, reads wrapper-array call sites, and refuses a query with no recognised call. The
+"section call listing" cases and package unit tests pin this listing, including a calling
+section omitted from a scratch map still appearing in the source-derived output.
 `test-fleet-worker.sh 'execution slot pipeline warning'` runs only the advisory pipeline-warning
 checks (warning count, batch output and last-stage status, pipefail and quoted pipes), with the
 shared lease and one-slot testbox setup. It does not run the broader slot ownership, process,

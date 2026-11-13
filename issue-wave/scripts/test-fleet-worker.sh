@@ -8,6 +8,8 @@
 #                                          when tmux is not installed, which is the CI runner's
 #                                          state unless the workflow installs it)
 #        test-fleet-worker.sh --shard I/N  (part I, 0-based, of N contiguous parts; see below)
+#        test-fleet-worker.sh --sections-calling <verb> [action [--mode]]
+#          lexical listing only; closed reader boundary: lib/ludics/fleetworker/suitecalls.py
 #        test-fleet-worker.sh --list [...]  (the section names the same arguments would run)
 #
 # With no arguments every section runs; each argument selects every section whose name contains
@@ -45,6 +47,10 @@ set -uo pipefail
 {
 HERE=$(cd "$(dirname "$0")" && pwd)
 FW="$HERE/fleet-worker.sh"
+if [ "${1:-}" = --sections-calling ]; then
+  shift
+  exec "$HERE/../../scripts/py" -m ludics.fleetworker.suitecalls "$0" "$@"
+fi
 
 # --- section selection ------------------------------------------------------------------------
 # The `--- name` headers below, in the order they run. Arguments are matched against these, and a
@@ -76,6 +82,7 @@ SECTIONS=(
   "execution slot"
   "wave kit"
   "usage"
+  "section call listing"
   "shard selection"
   "section watchdog"
 )
@@ -83,6 +90,10 @@ SECTIONS=(
 usage() {
   cat <<'USAGE'
 usage: test-fleet-worker.sh [--list] [section ... | --shard I/N]
+       test-fleet-worker.sh --sections-calling <verb> [action [--mode]]
+
+--sections-calling lists lexical calls without running fixtures. Its closed reader
+boundary is in lib/ludics/fleetworker/suitecalls.py; no match exits 1 with a warning.
 
 With no arguments every section runs. Each argument selects every section whose
 name contains it, so a prefix or any distinctive substring ("coord", "unstick",
@@ -6288,6 +6299,13 @@ mkdir -p "$TMP/stray/issue-wave/scripts" && cp "$FW" "$TMP/stray/issue-wave/scri
 expect "a copy of the script away from its checkout names the missing scripts/py, exit 2" 2 \
   "^fleet-worker.sh: no .*/stray/scripts/py: run this script from its skills checkout" -- \
   bash "$TMP/stray/issue-wave/scripts/fleet-worker.sh" status testbox w1
+}
+
+section "section call listing" && {
+expect "listing finds direct calls and helper callers" 0 "^unstick$" -- /bin/bash "$0" --sections-calling launch
+expect "listing finds wrapped execution calls" 0 "^execution revisions resolve$" -- /bin/bash "$0" --sections-calling execution rebind
+expect "listing refuses an unrecognised verb" 1 "no recognised call" -- /bin/bash "$0" --sections-calling no-such-verb
+expect "listing requires a verb" 2 "usage:" -- /bin/bash "$0" --sections-calling
 }
 
 section "shard selection" && {
