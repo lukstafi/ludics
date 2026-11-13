@@ -870,7 +870,7 @@ merge is still the build gate's to allow.
 A program reads the machine-readable trailer, never the prose above it, which gets reworded
 (ludics-lite#423). `rounds` ends with `rounds: n=<N|unknown> threshold=<T|off> first=<K|unknown>`,
 `first` being round 1's inline findings (ludics-lite#650). `checks` ends with
-`checks: verdict=<green|absent|red|runred|waived|pending|mixed|unjudged|superseded|unknown>`,
+`checks: verdict=<green|absent|red|runred|waived|pending|mixed|unjudged|superseded|unknown|conflict>`,
 and on exit 4 a `runners=<no-runner|never-started|no-runner,never-started>` field when a build
 job never got a runner (`prs` shows it as `ci=pending(no-runner)`). It always ends with
 `branch=<current|behind|unread>` (`prs` shows this separately; missing or unread tips and skipped
@@ -1004,6 +1004,7 @@ The other verdicts are not refusals, and none of them is a green light either:
 | 3 | unknown | the checks or the head's runs could not be read — refused |
 | 5 | superseded | the PR head moved from the observed SHA — refused; re-run to judge the successor |
 | 4 | no verdict | still running, every finished job was `cancelled`, or a run for the head is queued, stopped without a verdict, or has yet to create its checks — refused without `--allow-no-verdict` |
+| 4 (`merge`: 1) | conflict | the PR conflicts with its base, so GitHub builds no `pull_request` run for the head and no verdict is coming — merge the base in, resolve, push; `--allow-no-verdict` does not go over it |
 | 6 | no verdict (`merge` only) | a build job never got a runner, and the one rerun below is spent or failed (or `merge` ran without `--wait`) — refused without `--allow-no-verdict`, naming the commands |
 | 7 | no verdict (`merge --wait` only) | a head run was cancelled with no red, and the one rerun below was cancelled again, did not take, or failed — refused without `--allow-no-verdict`, naming the rerun commands |
 
@@ -1063,8 +1064,13 @@ surfaced at the merge call, 120 min in). `--wait` first reads the PR's `mergeabl
 `mergeable_state`: `false` or `dirty` exits 1 at once with the rebase hint, so merge or rebase the
 base in, push, and run `merge --wait` again. GitHub computes the answer lazily, so `null` or
 `unknown` is read again (up to eight reads 5 s apart, inside the wait's ceiling) and never taken as
-clean or as conflicting; still uncomputed, or unread, it is said on stderr and the wait goes on. A
-conflict that arises during the wait is the merge call's to refuse (*What `merge` absorbs*, below).
+clean or as conflicting; still uncomputed, or unread, it is said on stderr and the wait goes on.
+The gate asks again where a conflict is what holds the head (#1110: ocannl-staging#1955 waited over
+two hours for runs GitHub never creates): `checks` and `merge` read `mergeable_state` on every
+round that would answer `absent`, and on each round of a wait that has had nothing to wait for (no
+check running, the run list holding the head) for `SHIP_PR_BASE_ABSENT_GRACE`. `dirty` is the
+`conflict` verdict; `unknown` is read again on the next such round and never taken as a conflict.
+Beside running checks a conflict is still the merge call's to refuse (*What `merge` absorbs*, below).
 
 **The polling budget** (ludics-lite#543) is shared by every observer: `watch`, `checks --wait`,
 `merge --wait` and `base --wait`. Each one reads at once, then pauses for its interval (`WATCH_INTERVAL`,
@@ -1098,10 +1104,14 @@ checks leave nothing to wait for (green as well as absent), the gate reads
   workflow's green says nothing about a sibling that has not judged the head. A run whose every
   unfinished job is advisory does not hold (ludics-lite#500), queued or running, beside a red
   `--override` waived too (#862); `SHIP_PR_ADVISORY_CHECKS` in
-  `pr-review.sh`'s usage text says when, and the `needs:` boundary that comes with it;
+  `pr-review.sh`'s usage text says when, and the `needs:` boundary that comes with it. A
+  `pull_request` run still `queued` with no job is not waited for once a later `pull_request` run
+  of its workflow on the head has completed (#1107): the later run is the one judged, and the
+  report names the other `superseded`. A run with any job started, and holds;
 - a run that completed `cancelled`/`stale`/`action_required` with nothing behind it is exit 4,
   stopped-not-judged like everywhere else, as is one reported `completed` with no conclusion
-  recorded yet;
+  recorded yet. `checks --wait` ends on stopped runs, nothing in flight, once that has stood for
+  `SHIP_PR_BASE_ABSENT_GRACE` (#1097): re-run the run, then wait again;
 - a head with no Actions run to back its checks holds too: the gate reads every provider's
   check runs, so an early Codecov green is not evidence that Actions has created its rows;
 - a **checkless** head holds while it is inside `SHIP_PR_BASE_ABSENT_GRACE` (300s, measured from

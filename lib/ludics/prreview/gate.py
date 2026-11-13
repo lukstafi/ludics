@@ -10,7 +10,10 @@ override's waiver (``apply_waiver``/``is_waived``, #392; a cancel read at the fi
 they end the wait, unless ``merge --wait``'s one recovery keeps it. Under a wait, a round's read
 that did not answer -- the head's (ludics-lite#795), the check runs' or the workflow runs'
 (ludics#808), a red run's jobs (ludics#929) -- is one failed poll, read again within the wait's
-budget (``_unread``, which states what rides out and what does not).
+budget (``_unread``, which states what rides out and what does not). A wait also notices what no
+wait resolves (``Gate.check``): a PR that conflicts with its base (``conflicting``, ludics#1110), a
+run that never started beside a later one that completed (``run_signal``, ludics#1107), and under
+``checks`` a stopped run nothing reruns (ludics#1097).
 
 The shell's comments above each of those functions carry the incident history and every review
 round's reason; read them there before changing a rule here. What changed in the port is the
@@ -42,6 +45,8 @@ from ludics.prreview.workflows import RecognitionLimits, Reads, head_within_path
 
 DEFAULT_ADVISORY = knobs.DEFAULT_ADVISORY
 ADVISORY_FILE = ".github/ship-pr-advisory-checks"
+# ``Gate.conflicting``'s projection: the one PR read that ends in this filter.
+MERGEABLE_STATE_JQ = '.mergeable_state // "-"'
 
 
 @dataclass(frozen=True)
@@ -99,7 +104,7 @@ def _after_space(text: str) -> str:
 
 type Verdict = Literal[
     "", "green", "absent", "red", "runred", "waived", "pending", "mixed", "unjudged",
-    "superseded", "unknown",
+    "superseded", "unknown", "conflict",
 ]
 
 # How a read of the gate's failed (``_unread``): ``refused`` GitHub answered with a refusal no retry
@@ -119,7 +124,8 @@ class RunSignal:
     someone re-runs it, which ``checks --check`` reads as final (#569). ``unread``: on a 3, how the
     read failed (``Unread``). ``holds``: on a 4 for runs in flight, one report line per held run,
     naming the job that kept the advisory release from applying and why (``run_inflight_hold``,
-    ludics#930)."""
+    ludics#930). ``superseded``: whatever the status, one report line per run in flight the read
+    did not wait for (``run_signal``'s never-started boundary, ludics#1107)."""
 
     rc: int
     red: int
@@ -133,6 +139,7 @@ class RunSignal:
     holds: str = ""
     # On a 1: the ids of the red runs counted, in the run list's order (``Gate.red_runs``).
     red_ids: list[str] = field(default_factory=lambda: list[str]())
+    superseded: str = ""
 
 
 # `gate_checks` (with build_checks, summarize_checks, run_signal, apply_waiver), ported once: `checks`,
@@ -196,6 +203,10 @@ class Gate:
     # head and leaves it off), once, for the report of a ``red`` verdict. ``red_jobs`` is the
     # fold's red checks, in its order.
     images_on: bool = False
+    # Whether a round with nothing to wait for asks if the PR conflicts with its base
+    # (``conflicting``, ludics#1110): ``checks`` and ``merge``; ``base`` reads a merged head and
+    # leaves it off.
+    conflicts_on: bool = False
     red_jobs: list[RedJob] = field(default_factory=lambda: list[RedJob]())
     orphans: list[Orphan] = field(default_factory=lambda: list[Orphan]())
     recover: Recover | None = None
@@ -524,7 +535,10 @@ class Gate:
         #1612 and #1625: a master red shared by ``main 1/2`` beside a macOS leg queued 100 min).
         A jobs read that failed holds the run too, and says so: the run is in flight either way,
         so it stays a 4 rather than #929's 3, and the reason names the failed read."""
-        raw = self.run_jobs(run_id)
+        return self._inflight_hold(self.run_jobs(run_id), suite)
+
+    def _inflight_hold(self, raw: str | None, suite: str) -> str | None:
+        """``run_inflight_hold`` over a job list already read (None: the read just failed)."""
         if raw is None:
             failure = self.session.err_line() or "it did not answer"
             return f"its job list could not be read ({failure}), so whether only advisory jobs are left is unknown"
@@ -686,9 +700,13 @@ class Gate:
         self.run_state = " ".join(
             f"{f[1]}:{f[5]}:{f[6]}" for f in (tab_fields(line, 8) for line in herestring_lines(raw)) if f[1]
         )
-        seen: set[str] = set()
+        # The newest completed run of each workflow and event, by id: the one the fold judges.
+        seen: dict[str, str] = {}
         red_rows: list[str] = []
-        inflight_ids: list[str] = []
+        # Each run in flight: its id, suite and name, and the id of a completed run of its workflow
+        # and event listed above it (created after it) when it is a ``queued`` ``pull_request``
+        # run, else "".
+        inflight_ids: list[tuple[str, str, str, str]] = []
         cancelled_ids: list[str] = []
         runs = nogo = 0
         for line in herestring_lines(raw):
@@ -697,14 +715,14 @@ class Gate:
                 continue
             if self.is_advisory(name):
                 continue
-            if status != "completed" or conclusion_class(concl) == "pending":
-                runs += 1
-                inflight_ids.append(f"{rid}\t{suite or '-'}\t{name}")
-                continue
             key = f"{wid}/{event}"
+            if status != "completed" or conclusion_class(concl) == "pending":
+                later = seen.get(key, "") if status == "queued" and event == "pull_request" else ""
+                inflight_ids.append((rid, suite or "-", name, later))
+                continue
             if key in seen:
                 continue
-            seen.add(key)
+            seen[key] = rid
             runs += 1
             cls = conclusion_class(concl)
             match cls:
@@ -779,11 +797,32 @@ class Gate:
                 unread=unread_kind,
                 unread_what=unread_what,
             )
+        # A run that never started, beside a later run that completed (ludics#1107: in the Actions
+        # outage of 2026-11-11 such runs sat queued for hours, refused cancel and rerun alike, and
+        # held heads whose reopened PR had drawn fresh runs that passed). BOUNDARY, a fail-closed
+        # allowlist: the run's event is ``pull_request`` and it reads exactly ``queued``; its job
+        # list was READ this round and lists no job; and a ``pull_request`` run of the same
+        # workflow on this head, created after it, has completed -- that run is the one judged,
+        # whatever it concluded. Such a run is named and not waited for. Everything else in flight
+        # keeps ``run_inflight_hold``: a run with any job (it started, so a later green run does
+        # not hide what it ran), any other status, a job list that did not answer, a never-started
+        # run with no later completed run, and every other event -- a second ``pull_request`` run
+        # on one head is the same build asked for again (a reopen), while two ``workflow_dispatch``
+        # or ``push`` runs are invocations of their own, and a queued one of those is superseded
+        # by nothing.
         inflight = released = 0
-        holds = ""
-        for entry in inflight_ids:
-            rid, rsuite, rname = tab_fields(entry, 3)
-            hold = self.run_inflight_hold(rid, rsuite)
+        holds = superseded = ""
+        for rid, rsuite, rname, later in inflight_ids:
+            jobs = self.run_jobs(rid)
+            if later and jobs is not None and not any(tab_fields(job, 4)[0] for job in herestring_lines(jobs)):
+                superseded += (
+                    f"  superseded  workflow run {rid} ({shlex.quote(rname)}): queued with no job, never"
+                    f" started; run {later} of the same workflow and event completed on this head after it"
+                    " — not waited for\n"
+                )
+                continue
+            runs += 1
+            hold = self._inflight_hold(jobs, rsuite)
             if hold is None:
                 released += 1
             else:
@@ -797,6 +836,7 @@ class Gate:
                 f"{inflight} workflow run(s) for this head have no conclusion yet (queued,"
                 " running, or completed with none recorded) — their check runs may not exist yet",
                 holds=holds,
+                superseded=superseded,
             )
         # Cancelled runs are asked about their jobs only now, with nothing red or in flight left to
         # decide the round first (ludics#958). A held one is the stopped 4 it always was, with a
@@ -823,6 +863,7 @@ class Gate:
                 " not a verdict: re-run the workflow",
                 stopped=True,
                 holds=holds,
+                superseded=superseded,
             )
         if checks > 0 and runs > 0:
             if released > 0 or stopped_released > 0:
@@ -837,7 +878,7 @@ class Gate:
                 )
             else:
                 reason = f"{runs} workflow run(s) for this head are finished and judged"
-            return RunSignal(0, 0, waived_runs, reason)
+            return RunSignal(0, 0, waived_runs, reason, superseded=superseded)
         pushed = self.session.retry("read", ["api", f"repos/{repo}/commits/{sha}", "--jq", ".commit.committer.date"])
         pushed_at = pushed.stdout if isinstance(pushed, GhOk) else ""
         age = freshest_age(pushed_at, pr_at, now=self.clock.time())
@@ -852,6 +893,7 @@ class Gate:
                 # The PR's updated_at came from a head read that answered, so only a commit read
                 # that failed can still change: an answered one decides nothing again (``unusable``).
                 unread="unusable" if isinstance(pushed, GhOk) else self._failure_of(pushed),
+                superseded=superseded,
             )
         if runs > 0:
             seen_text = f"{runs} workflow run(s) for this head finished and left no build check behind"
@@ -870,6 +912,7 @@ class Gate:
                     f" {why}: every trigger of theirs that this change fires is either filtered"
                     " out by its own paths-ignore — every commit from the merge base up changes only ignored"
                     " paths — or cannot reach this branch at all",
+                    superseded=superseded,
                 )
         if age < grace:
             return RunSignal(
@@ -879,12 +922,14 @@ class Gate:
                 f"{seen_text}, and the head has been in place at most {fmt_age(age)} — inside the"
                 f" {fmt_age(grace)} run-creation grace (SHIP_PR_BASE_ABSENT_GRACE), so a run"
                 " may still appear",
+                superseded=superseded,
             )
         return RunSignal(
             0,
             0,
             waived_runs,
             f"{seen_text} in the {fmt_age(age)} since it appeared — past the {fmt_age(grace)} run-creation grace",
+            superseded=superseded,
         )
 
     def checkless_reds(self, rows: list[str]) -> int:
@@ -1112,6 +1157,23 @@ class Gate:
             return True
         return False
 
+    def conflicting(self, pr: str) -> bool:
+        """Does the PR conflict with its base (ludics#1110)? GitHub creates no ``pull_request`` run
+        for a head it cannot merge with its base, so such a head reads as one whose runs have not
+        started, and no wait ends that: lukstafi/ocannl-staging#1955 waited over two hours for jobs
+        that were never created.
+
+        BOUNDARY, a fail-closed allowlist. One REST read of the PR's ``mergeable_state``, made by
+        ``check`` only on a round with nothing to wait for. True for exactly ``dirty``. GitHub
+        computes the field lazily, so ``unknown`` is "not computed yet" and never a conflict; it, any
+        other state, and a read that did not answer are all False, and the next such round reads
+        again. The read names neither the head nor the base: it follows the round's head re-read,
+        and a head pushed between the two reads ``unknown`` while GitHub recomputes."""
+        result = self.session.retry(
+            "read", ["api", f"repos/{self.repo}/pulls/{pr}", "--jq", MERGEABLE_STATE_JQ]
+        )
+        return isinstance(result, GhOk) and result.stdout == "dirty"
+
     def _pause(self, deadline: int, last_pause: int | None, changed: bool) -> int:
         """Sleep the budget's next pause (``pause``), clipped at the deadline; the pause taken."""
         budget = self.session.budget
@@ -1127,7 +1189,20 @@ class Gate:
         report. 0 green or a confirmed absence; 1 red (a check, a checkless run, or every red
         waived); 3 unread; 4 no verdict yet; 5 the head was superseded. Under ``select`` (``checks
         --check``, #569) the fold is over the matching checks alone, and 2 is a selection that
-        matches no check run while none can still appear."""
+        matches no check run while none can still appear.
+
+        What no wait resolves ends it, still 4. A QUIET round is one whose verdict is ``unjudged``:
+        no check of the fold is running, and the run list holds the head (a run with no job yet, a
+        head with no run inside the creation grace, a stopped run). Once the rounds of this wait
+        have been quiet for ABSENT_GRACE seconds on end:
+        - under ``conflicts_on``, each quiet round asks ``conflicting``; a conflict is the verdict
+          ``conflict`` (ludics#1110). A round that reads ``absent`` asks at once, grace or no: the
+          creation grace has already passed for it, and a conflict is why no run exists.
+        - with no ``recover`` (``checks``; ``merge --wait``'s recovery reruns a cancelled run
+          itself), a round held by stopped runs alone, nothing in flight, ends the wait
+          (ludics#1097) once the rounds have been held THAT way for the grace, counted apart from
+          the quiet time before it: no check run comes of a stopped run until someone re-runs it,
+          and the grace is what lets a re-run just sent show as a run in flight first."""
         repo = self.repo
         budget = self.session.budget
         # A wait is the PR's build observer (the polling budget, budget.py): one at a time, and it
@@ -1166,9 +1241,12 @@ class Gate:
         beat = started
         run_why = ""
         last_sig = ""
+        quiet_since: float | None = None
+        stopped_since: float | None = None
         while True:
             if budget is not None:
                 budget.waited = False
+            stopped = False
             self.run_state = ""
             self._round_runs = None
             self._round_raw = None
@@ -1222,6 +1300,7 @@ class Gate:
                         return 5
                     last_pause = self._pause(deadline, last_pause, False)
                     continue
+                self.check_lines += sig.superseded
                 match sig.rc:
                     case 4 if not sig.stopped:
                         self.verdict = "unjudged"
@@ -1240,6 +1319,7 @@ class Gate:
                 sig = self.run_signal(sha, pr_at, self.check_total, base_sha, head_ref, pr)
                 run_why = sig.reason
                 run_holds = sig.holds
+                self.check_lines += sig.superseded
                 for entry in herestring_lines(sig.waived_runs):
                     if not entry:
                         continue
@@ -1287,6 +1367,7 @@ class Gate:
                             self.verdict = "unjudged"
                             self.check_lines += run_holds
                             self.check_holds = run_holds
+                            stopped = sig.stopped
                     case _:
                         if self.run_waived and self.verdict in ("green", "absent"):
                             self.verdict = "waived"
@@ -1319,11 +1400,26 @@ class Gate:
             if current != sha:
                 self._superseded(pr, sha, current)
                 return 5
+            # What no wait resolves (the docstring), asked before the hold check below so a hold
+            # waited out inside the conflict read re-reads the round like any other.
+            if self.verdict != "unjudged":
+                quiet_since = None
+            elif quiet_since is None:
+                quiet_since = self.clock.now()
+            quiet = quiet_since is not None and self.clock.now() - quiet_since >= self.config.absent_grace
+            if not stopped:
+                stopped_since = None
+            elif stopped_since is None:
+                stopped_since = self.clock.now()
+            conflict = self.conflicts_on and (quiet or self.verdict == "absent") and self.conflicting(pr)
             # A round that waited a quota hold out between its reads is two moments, not one: a
             # check read green before the wait may have been re-run since. Read the round again.
             if budget is not None and budget.waited:
                 warn("a quota hold was waited out inside this round's reads; reading the round again")
                 continue
+            if conflict:
+                self.verdict = "conflict"
+                break
             if nomatch:
                 warn(
                     f"REFUSING: no check run of {repo}#{pr} @{sha[:8]} matches --check {shlex.quote(self.select)},",
@@ -1369,6 +1465,8 @@ class Gate:
             if self.verdict not in ("pending", "unjudged") and not keep and not self.settling():
                 break
             if now >= deadline:
+                break
+            if stopped_since is not None and now - stopped_since >= self.config.absent_grace and self.recover is None:
                 break
             if now - beat >= self.config.checks_heartbeat:
                 # A recovery's Wait that names what it holds for (a settled red waiting on its run,
@@ -1441,6 +1539,12 @@ class Gate:
                 cli.say(f"{head}: NO VERDICT YET — {run_why}{note}")
             case "absent":
                 cli.say(f"{head}: ABSENT — no build check ran on this commit: {run_why}")
+            case "conflict":
+                cli.say(
+                    f"{head}: CONFLICTS with its base (mergeable_state=dirty) — GitHub builds no"
+                    f" pull_request run for a head it cannot merge with its base, so no verdict comes of"
+                    f" waiting ({run_why}). Merge the base in, resolve, push, and judge the new head"
+                )
             case "green":
                 cli.say(f"{head}: green — {self.check_green} build checks passed")
             case "" | "superseded" | "unknown":
@@ -1456,7 +1560,7 @@ class Gate:
         match self.verdict:
             case "red" | "runred" | "waived":
                 return 1
-            case "pending" | "mixed" | "unjudged":
+            case "pending" | "mixed" | "unjudged" | "conflict":
                 return 4
             case _:
                 return 0

@@ -422,7 +422,9 @@
 #      SHIP_PR_CHECKS_INTERVAL=seconds between re-reads (60), SHIP_PR_CHECKS_HEARTBEAT=seconds
 #      between the one-line "still waiting" progress notes a `--wait` prints (600),
 #      SHIP_PR_BASE_ABSENT_GRACE=seconds a commit with no workflow run yet is allowed before its
-#      absence is read as a fact (300; paths-ignore pushes never get one). `base --wait` applies
+#      absence is read as a fact (300; paths-ignore pushes never get one). A `checks` or `merge`
+#      wait that has had nothing to wait for that long reads whether the PR conflicts with its
+#      base, and `checks --wait` then ends on a stopped run nothing reruns. `base --wait` applies
 #      it to the tip — from the first READ of it, not from that round's last answer — and then
 #      SETTLES for the older verdict the plain read settles for, once nothing is in flight on the
 #      branch and no run for the tip exists to judge it. It settles at once, without the grace,

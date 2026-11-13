@@ -108,6 +108,10 @@ MERGEABLE=true                         # what the mergeable read answers; FAIL =
 # FAIL = the read does not answer.
 MERGEABILITY=$'true\tclean'
 MERGEABILITY_LATER=""
+# The gate's own conflict read (ludics#1110): the mergeable_state it answers; FAIL = it does not answer.
+CONFLICT_STATE=clean
+HEAD_RUNS=""                           # nonempty = the head's workflow runs, as the feed's JSON
+RUN_JOBS=""                            # nonempty = every run's jobs, as the feed's JSON (no RUNNER_CASE)
 STATE_FAIL=""                          # nonempty = the merged-state read after the call does not answer
 DISABLE_AUTO_FAIL=""                   # nonempty = `pr merge --disable-auto` is refused
 MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 503
@@ -242,6 +246,8 @@ runs_answer() {
     red | advisory-red) runner_run completed failure ;;
     *) runner_run in_progress null ;;
     esac
+  elif [ -n "$HEAD_RUNS" ]; then
+    printf '%s\n' "$HEAD_RUNS"
   elif [ -n "$MOVED_RUN_RC" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
     printf '%s\n' '{"workflow_runs":[{"id":101,"workflow_id":1,"event":"pull_request","name":"ci","status":"queued","conclusion":null,"created_at":"2026-09-01T00:00:00Z","check_suite_id":1}]}'
   elif [ -n "$NO_CHECKS" ]; then
@@ -331,6 +337,16 @@ gh() {
       gh_fixture_parse "$@"
       gh_fixture_answer "$(series_answer "$reads" |
         jq -c --arg c "$SERIES_COUNT" '{commits: (if $c == "" then length else ($c | tonumber) end), head: {sha: .[-1].sha}}')"
+      ;;
+    # The gate's conflict read (ludics#1110), told by its bare projection, which ends the call;
+    # above the drift read's, whose projection carries the field too.
+    *'--jq .mergeable_state // "-"')
+      fixture_call_count conflict-read >/dev/null || return 1
+      if [ "$CONFLICT_STATE" = FAIL ]; then
+        printf 'gh: 503 No server is currently available to service your request\n' >&2
+        return 1
+      fi
+      printf '%s\n' "$CONFLICT_STATE"
       ;;
     # The base-drift read (its projection is the one carrying mergeable_state): logged, so a case
     # can count the drift reads and see where they fall among the merge's other calls.
@@ -489,6 +505,8 @@ gh() {
       if [ -n "$RUNNER_CASE" ]; then
         reads=${FIXTURE_ENDPOINT#repos/"$REPO"/actions/runs/}
         gh_fixture_answer "$(runner_jobs "${reads%%/*}")"
+      elif [ -n "$RUN_JOBS" ]; then
+        gh_fixture_answer "$RUN_JOBS"
       else
         gh_fixture_answer '{"jobs":[]}'
       fi
@@ -642,12 +660,17 @@ run_merge() { run_merge_argv "$REPO#7" "$@"; }
 
 # run_merge_argv <merge's whole argument list>: run_merge with the PR placed by the case, for an
 # option that stands before it.
-run_merge_argv() {
+run_merge_argv() { run_captured cmd_merge "$@"; }
+
+# run_checks <checks' options>: `checks` over the same fixture, into the same captures.
+run_checks() { run_captured cmd_checks "$REPO#7" "$@"; }
+
+run_captured() { # <command> <its arguments>
   local rc
   fixture_call_reset
   : >"$CALLS_FILE"
   set +e
-  (if [ -n "$MERGE_CWD" ]; then cd "$MERGE_CWD" || exit 99; fi; cmd_merge "$@") >"$OUT_FILE" 2>"$ERR_FILE"
+  (if [ -n "$MERGE_CWD" ]; then cd "$MERGE_CWD" || exit 99; fi; "$@") >"$OUT_FILE" 2>"$ERR_FILE"
   rc=$?
   set -e
   MERGE_STDOUT=$(cat "$OUT_FILE")
@@ -716,6 +739,9 @@ reset() {
   MERGEABLE=true
   MERGEABILITY=$'true\tclean'
   MERGEABILITY_LATER=""
+  CONFLICT_STATE=clean
+  HEAD_RUNS=""
+  RUN_JOBS=""
   STATE_FAIL=""
   DISABLE_AUTO_FAIL=""
   MERGE_QUEUE_FAIL=""
@@ -2905,6 +2931,150 @@ test_a_conflicting_pr_is_refused_before_the_wait() {
   assert_not_contains "$MERGE_OUTPUT" "mergeab" "which says nothing"
 }
 
+# --- what no wait resolves (ludics#1110, #1107, #1097) ---------------------------------------------
+# One head run as the runs feed serves it.
+head_run() { # <id> <status> <conclusion|null> <created_at> [check suite]
+  jq -cn --argjson id "$1" --arg s "$2" --arg c "$3" --arg at "$4" --argjson suite "${5:-1}" \
+    '{id: $id, workflow_id: 1, event: "pull_request", name: "ci", status: $s,
+      conclusion: (if $c == "null" then null else $c end), created_at: $at, check_suite_id: $suite}'
+}
+head_runs() { printf '%s\n' "$@" | jq -cs '{workflow_runs: .}'; }
+slept() { paste -sd+ "$TEST_ROOT/sleeps" | bc; }
+
+# ludics#1110: GitHub creates no pull_request run for a head that conflicts with its base, so
+# lukstafi/ocannl-staging#1955 waited over two hours on runs with no jobs. Once a wait has had
+# nothing to wait for through the grace, the gate reads the PR's mergeable_state: dirty ends the
+# wait as a conflict, which no --allow-no-verdict goes over; unknown, clean and an unread answer
+# keep the wait. On the test clock, so the grace and the pauses are logged rather than waited.
+test_a_jobless_wait_ends_on_a_conflict_and_only_on_one() (
+  local state
+  export SHIP_PR_TEST_CLOCK="$TEST_ROOT/clock"
+  date +%s >"$SHIP_PR_TEST_CLOCK"
+  sleep() {
+    printf '%s\n' "$1" >>"$TEST_ROOT/sleeps"
+    printf '%s\n' "$(($(cat "$SHIP_PR_TEST_CLOCK") + $1))" >"$SHIP_PR_TEST_CLOCK"
+  }
+  jobless() {
+    reset
+    : >"$TEST_ROOT/sleeps"
+    NO_CHECKS=1
+    HEAD_RUNS=$(head_runs "$(head_run 100 queued null 2026-09-01T00:00:00Z)")
+  }
+  jobless
+  CONFLICT_STATE=dirty
+  run_merge --wait=3600
+  assert_eq "$MERGE_RC" 1 "a conflict read during the wait is refused ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "CONFLICTS with its base (mergeable_state=dirty)" "the gate's verdict says it"
+  assert_contains "$MERGE_STDOUT" "Merge the base in, resolve, push" "with what to do"
+  assert_contains "$MERGE_STDERR" "REFUSING to merge $REPO#7: it CONFLICTS with its base" "and merge refuses on it"
+  assert_eq "$(fixture_call_total conflict-read)" 1 "on the first read"
+  [ "$(slept)" -ge 300 ] && [ "$(slept)" -lt 1200 ] ||
+    bail "the read comes once the grace has passed, and ends the wait there (slept $(slept) s)"
+  assert_no_merge_call
+  jobless
+  CONFLICT_STATE=dirty
+  run_merge --wait=3600 --allow-no-verdict
+  assert_eq "$MERGE_RC" 1 "--allow-no-verdict does not go over a conflict ($MERGE_OUTPUT)"
+  assert_no_merge_call
+  jobless
+  CONFLICT_STATE=dirty
+  run_checks --wait=3600
+  assert_eq "$MERGE_RC" 4 "checks ends the same wait with no verdict ($MERGE_OUTPUT)"
+  assert_eq "$(tail -n 1 <<<"$MERGE_STDOUT")" "checks: verdict=conflict branch=current" "and its own trailer word"
+  for state in unknown clean FAIL; do
+    jobless
+    CONFLICT_STATE=$state
+    run_merge --wait=1200
+    assert_eq "$MERGE_RC" 4 "$state is no conflict: the wait runs to its bound ($MERGE_OUTPUT)"
+    assert_not_contains "$MERGE_OUTPUT" "CONFLICTS" "$state is never said as one"
+    [ "$(fixture_call_total conflict-read)" -ge 2 ] || bail "$state is read again on a later round"
+    assert_eq "$(slept)" 1200 "to the bound"
+    assert_no_merge_call
+  done
+  # The control: a check still running is something to wait for, and nothing is asked.
+  reset
+  : >"$TEST_ROOT/sleeps"
+  CHECK_ROWS="$(row pending ci pending)"
+  CONFLICT_STATE=dirty
+  run_merge --wait=1200
+  assert_eq "$MERGE_RC" 4 "a running check is waited for ($MERGE_OUTPUT)"
+  assert_eq "$(fixture_call_total conflict-read)" 0 "with no conflict read"
+)
+
+# A head GitHub cannot build has no run at all, which past the creation grace read ABSENT, "no
+# build check ran": the round that would say so asks first, wait or no.
+test_an_absent_head_that_conflicts_is_refused_as_a_conflict() {
+  local state
+  reset
+  NO_CHECKS=1
+  CONFLICT_STATE=dirty
+  run_merge
+  assert_eq "$MERGE_RC" 1 "a conflict explains the absence ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "CONFLICTS with its base (mergeable_state=dirty)" "and is the verdict"
+  assert_not_contains "$MERGE_STDOUT" "ABSENT" "in place of the absence"
+  assert_no_merge_call
+  for state in unknown clean FAIL; do
+    reset
+    NO_CHECKS=1
+    CONFLICT_STATE=$state
+    run_merge
+    assert_eq "$MERGE_RC" 0 "$state leaves the absent head as it was ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDOUT" "ABSENT" "$state: still an absence"
+  done
+}
+
+# ludics#1107: in the Actions outage of 2026-11-11 runs sat queued with no job, refusing cancel and
+# rerun alike, and held heads whose reopened PR had drawn fresh runs that passed
+# (lukstafi/ocannl-staging#1948). Such a run beside a later completed run of its workflow and event
+# is named and not waited for. Alone it is pending still, and so is one that has a job.
+test_a_never_started_run_does_not_hold_a_head_a_later_run_judged() {
+  local never later
+  never=$(head_run 100 queued null 2026-09-01T00:00:00Z)
+  later=$(head_run 200 completed success 2026-09-01T00:30:00Z 2)
+  reset
+  HEAD_RUNS=$(head_runs "$later" "$never")
+  run_merge
+  assert_eq "$MERGE_RC" 0 "the later run's green merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "  superseded  workflow run 100 (ci): queued with no job, never started; run 200" \
+    "naming the run it did not wait for"
+  reset
+  HEAD_RUNS=$(head_runs "$never")
+  run_merge
+  assert_eq "$MERGE_RC" 4 "alone it is no verdict yet ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_OUTPUT" "superseded  workflow run" "and not superseded"
+  assert_no_merge_call
+  reset
+  HEAD_RUNS=$(head_runs "$later" "$never")
+  RUN_JOBS='{"jobs":[{"name":"build","conclusion":null,"created_at":"2026-09-01T00:00:00Z"}]}'
+  run_merge
+  assert_eq "$MERGE_RC" 4 "a run with a job started, and is waited for ($MERGE_OUTPUT)"
+  assert_not_contains "$MERGE_OUTPUT" "superseded  workflow run" "so it is not superseded"
+  assert_no_merge_call
+}
+
+# ludics#1097: a cancelled run with no build check behind it holds the head until someone re-runs
+# it, and `checks --wait` held to its bound on it. It ends once that has lasted the grace, exit 4.
+# (`merge --wait` reruns such a run itself: test_a_cancelled_head_run_is_rerun_once.)
+test_a_checks_wait_ends_on_a_stopped_run_nothing_reruns() (
+  export SHIP_PR_TEST_CLOCK="$TEST_ROOT/clock"
+  date +%s >"$SHIP_PR_TEST_CLOCK"
+  sleep() {
+    printf '%s\n' "$1" >>"$TEST_ROOT/sleeps"
+    printf '%s\n' "$(($(cat "$SHIP_PR_TEST_CLOCK") + $1))" >"$SHIP_PR_TEST_CLOCK"
+  }
+  reset
+  : >"$TEST_ROOT/sleeps"
+  NO_CHECKS=1
+  HEAD_RUNS=$(head_runs "$(head_run 100 completed cancelled 2026-09-01T00:00:00Z)")
+  RUN_JOBS='{"jobs":[{"name":"build","conclusion":"cancelled","created_at":"2026-09-01T00:00:00Z","completed_at":"2026-09-01T00:10:00Z"}]}'
+  run_checks --wait=3600
+  assert_eq "$MERGE_RC" 4 "no verdict ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "completed stopped-not-judged" "naming the stopped run"
+  assert_eq "$(tail -n 1 <<<"$MERGE_STDOUT")" "checks: verdict=unjudged branch=current" "the trailer unchanged"
+  assert_not_contains "$MERGE_STDOUT" "the wait is spent" "the bound is not what ended it"
+  [ "$(slept)" -ge 300 ] && [ "$(slept)" -lt 1200 ] || bail "it ends once the grace has passed (slept $(slept) s)"
+)
+
 # GitHub computes mergeability lazily: null (or unknown) is "not computed yet", read again a
 # bounded number of times and never read as clean or as conflicting. On the test clock, so the
 # pauses are logged rather than waited.
@@ -3775,6 +3945,10 @@ tests=(
   test_a_pr_merged_elsewhere_at_the_judged_head_is_merged
   test_a_merged_head_that_did_not_read_is_unknown
   test_a_conflicting_pr_is_refused_before_the_wait
+  test_a_jobless_wait_ends_on_a_conflict_and_only_on_one
+  test_an_absent_head_that_conflicts_is_refused_as_a_conflict
+  test_a_never_started_run_does_not_hold_a_head_a_later_run_judged
+  test_a_checks_wait_ends_on_a_stopped_run_nothing_reruns
   test_an_uncomputed_mergeability_is_read_again_never_judged
   test_an_unread_mergeability_neither_refuses_nor_clears
   test_a_wait_rides_out_failed_head_rereads
