@@ -78,9 +78,10 @@ THE PROJECT PART, the value of PROJECT, read only when some part names ``@@PROJE
 directory's ``project.md`` when it exists, else the file the wave file's ``project_part`` names,
 read from the checkout at the task's base, else at the local remote-tracking default-branch tip
 (``origin/<vars.MAIN>``). Prep never fetches or reads the checked-out tree. It reports the selected
-path and revision. A fallback needs vars.MAIN and its remote-tracking commit; neither available
-refuses. BASE_ORIGIN calls a base the default tip only when its SHA equals that local tip;
-otherwise it names the explicit revision, without guessing which sibling branch owns it. Either is
+path and revision. The default tip is resolved once with the base, so the origin label and
+fallback refer to the same commit even if a remote-tracking ref moves meanwhile. A fallback
+needs vars.MAIN and its remote-tracking commit; neither available refuses.
+BASE_ORIGIN calls a base the default tip only when its SHA equals that local tip; otherwise it names the explicit revision, without guessing which sibling branch owns it. Either is
 rendered first with every NAME above but PROJECT and the legs', and its result is the value. Neither
 existing, or the path absent at both revisions, refuses.
 
@@ -198,6 +199,7 @@ class Prep:
     effort: str = ""
     host_checkout: str = ""  # the repository's clone on the host
     base_origin: str = ""
+    default_tip: str | None = None
     done: list[str] = field(default_factory=lambda: [])
 
     def __post_init__(self) -> None:
@@ -340,6 +342,15 @@ def git(prep: Prep, *args: str, timeout: float | None = None) -> proc.Completed:
 
 # --- the reads ------------------------------------------------------------------------------------
 
+def default_tip(prep: Prep) -> str | None:
+    main = prep.wave.vars.get("MAIN")
+    if not main:
+        return None
+    tip = git(prep, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{main}^{{commit}}")
+    sha = tip.stdout.strip()
+    return sha if tip.rc == 0 and SHA40.fullmatch(sha) else None
+
+
 def resolve_base(prep: Prep) -> None:
     done = git(prep, "rev-parse", "--verify", "--quiet", f"{prep.base}^{{commit}}")
     sha = done.stdout.strip()
@@ -347,11 +358,9 @@ def resolve_base(prep: Prep) -> None:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: --base {prep.base} is no commit in {prep.wave.checkout} (fetch first?)")
     prep.base_origin = f"explicit revision {prep.base} at prep"
     prep.base = sha
-    main = prep.wave.vars.get("MAIN")
-    if main:
-        tip = git(prep, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{main}^{{commit}}")
-        if tip.rc == 0 and tip.stdout.strip() == sha:
-            prep.base_origin = f"origin/{main} at prep"
+    prep.default_tip = default_tip(prep)
+    if prep.default_tip == sha:
+        prep.base_origin = f"origin/{prep.wave.vars['MAIN']} at prep"
 
 
 def rival_token(number: str) -> re.Pattern[str]:
@@ -464,6 +473,7 @@ def values_of(prep: Prep) -> dict[str, str]:
     values.update({"WAVE": prep.wave.wave, "T": prep.task, "N": prep.number, "REPO": prep.wave.repository,
                    "ISSUE_REPO": prep.wave.issue_repository, "CHECKOUT": prep.host_checkout,
                    "WAVE_DIR": prep.wave.directory, "WT": prep.worktree, "BR": prep.branch, "BASE": prep.base,
+                   # Pure rendering callers can supply a Prep without resolving repository refs.
                    "BASE_ORIGIN": prep.base_origin or f"explicit commit {prep.base}", "SCR": prep.scratch, "WORKER": prep.worker,
                    "SCR_PARENT": os.path.dirname(prep.scratch), "HOST": prep.host, "MODE": prep.mode})
     if prep.issue_ref:
@@ -542,12 +552,12 @@ def project_value(prep: Prep) -> str:
         shown = git(prep, "show", f"{revision}:{where}")
         if shown.rc != 0:
             main = prep.wave.vars.get("MAIN")
-            tip = git(prep, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{main}^{{commit}}") if main else None
-            if tip is None or tip.rc != 0 or not SHA40.fullmatch(tip.stdout.strip()):
+            tip = prep.default_tip
+            if tip is None:
                 raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the project part {shlex.quote(where)} cannot be read in"
                               f" {shlex.quote(prep.wave.checkout)} at base {prep.base}; fallback needs vars.MAIN"
                               " and its origin remote-tracking commit (fetch first?)")
-            revision, source = tip.stdout.strip(), f"origin/{main} fallback"
+            revision, source = tip, f"origin/{main} fallback"
             shown = git(prep, "show", f"{revision}:{where}")
             if shown.rc != 0:
                 raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the project part {shlex.quote(where)} cannot be read in"

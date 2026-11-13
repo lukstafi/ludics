@@ -175,9 +175,6 @@ read supplies a fallback. BASE_ORIGIN identifies the default tip only on a SHA m
 names the explicit revision, so a stacked launch keeps its own base (#1099).
 The Prep unit cases and the "wave kit" shell section pin this boundary; the new cases fail
 against the pre-change implementation (missing fallback, provenance and BASE_ORIGIN).
-Wave wave-20261113b-ludics, t1099: negative-base.log records five expected failures in the
-17 Prep cases on 4e4023a2; wave-kit.log records all 17 passing and 50 shell assertions passing
-under macOS /bin/bash. Logs live in the worker's wave scratch runs directory.
 
 ## Which suites drive each module
 

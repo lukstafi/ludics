@@ -387,6 +387,21 @@ class Prep(WaveDirCase):
         self.assertNotIn("(origin/main at prep)", self.brief())
         self.assertEqual(git("-C", os.path.join(self.dir, "repo-worktrees", "w1-42"), "rev-parse", "HEAD"), self.base)
 
+    def test_project_fallback_uses_the_tip_resolved_with_the_base(self) -> None:
+        self.write("common.md", "@@PROJECT@@\n")
+        tip = self.commit("docs/brief.md", "## Resolved tip\n")
+        repo = os.path.join(self.dir, "repo")
+        git("-C", repo, "update-ref", "refs/remotes/origin/main", tip)
+        self.rewave(vars={"MAIN": "main"}, project_part="docs/brief.md")
+        path, task, opts = waveprep.parse([self.path, "t42", "--base", self.base])
+        prep = waveprep.build(self.cfg, path, task, opts)
+        waveprep.resolve_base(prep)
+        later = self.commit("docs/brief.md", "## Later tip\n")
+        git("-C", repo, "update-ref", "refs/remotes/origin/main", later)
+        text = waveprep.brief_text(prep)
+        self.assertIn("## Resolved tip", text)
+        self.assertNotIn("## Later tip", text)
+
     def test_project_part_missing_at_both_revisions_refuses_before_writes(self) -> None:
         self.write("common.md", "@@PROJECT@@\n")
         tip = self.commit("other.txt", "tip\n")

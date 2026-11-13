@@ -6206,6 +6206,7 @@ grep -Fqx "## Project from default tip for t76" "$KS/briefs/brief-t76.md" &&
   ! grep -q '@@' "$KS/briefs/brief-t76.md" &&
   [ ! -e "$KS/common.md" ] &&
   [ ! -e "$proj-worktrees/wks-76" ] &&
+  [ "$(jq -r .base "$KS/prep/t76.json")" = "$pbase" ] &&
   ok "...the shipped CLI brief renders and preserves its stacked base" || ko "shipped brief is wrong"
 # Restore the shared fixture: the rest of this section prepares at master.
 setup_step "could not restore the fixture branch" git -C "$proj" reset --hard "$pbase"

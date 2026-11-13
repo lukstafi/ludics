@@ -6,8 +6,8 @@ copy re-learnt an old trap: an exit status lost in a pipe, a ``tail`` cutting a 
 loop orphaning its run. The kit is those four, project-neutral, so a wave directory holds data:
 
   wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>...   wavebrief.py
-  wave prep <wave.json> <task> --base <base-or-stacked-rev> [--issue <N> | --source <N>]                    waveprep.py
-            [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
+  wave prep <wave.json> <task> --base <base-or-stacked-rev>                                waveprep.py
+            [--issue <N> | --source <N>] [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
             [--profile <name>] [--host <box>]
   wave launch <wave.json> <task>                                                           wavelaunch.py
   wave loop <wave.json> <name> [--resume-after <request id> |                              waveloop.py
