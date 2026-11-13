@@ -8,6 +8,8 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
   wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>...   wavebrief.py
   wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>]                    waveprep.py
             [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
+            [--profile <name>] [--host <box>]
+  wave launch <wave.json> <task>                                                            wavelaunch.py
   wave loop <wave.json> <name> [--resume-after <request id>]                                waveloop.py
   wave heartbeat <wave.json> [--sleep <seconds>]                                             here
   wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                          wavereview.py
@@ -47,6 +49,15 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     ``<checkout>-worktrees/<worker>-<suffix>``, ``vars`` are the leg's own NAMEs
   loops             {<name>: {box, purpose, checkout, tip, command    default: {}
                     [, cpu][, integration][, poll]}}: an integration loop (waveloop.py)
+  profiles          {<name>: {transport, kind[, model][, effort]}}: a  default: {}
+                    kind of worker ``wave prep --profile`` gives a task in place of the wave's
+                    own transport and kind (a mixed wave: native Claude workers beside Codex CLI
+                    ones); ``transport`` is ``subagent`` or ``cli``, and ``model`` and ``effort``
+                    are a CLI worker's (``wave launch`` passes them to its CLI)
+  hosts             {<box>: {checkout, scratch}}: where a CLI worker     default: {}
+                    lives on a box that is not the agent host: the box's clone of the repository
+                    (its worktree goes under ``<checkout>-worktrees/``) and the directory its
+                    scratch goes under (``<scratch>/<wave>/<task>``), both absolute there
   review            {kind, model[, label][, project_part][, timeout]}: default: none
                     the review checkpoint's reviewer (wavereview.py): ``kind`` the CLI that runs
                     it (``claude``, the one kind there is), ``model`` its model, ``label`` the
@@ -78,7 +89,8 @@ from ludics.fleetworker.wavebrief import NAME, cmd_render
 USAGE = (
     "wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>... | "
     "wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]"
-    " [--legs <box,...>] [--allow-rival <pr>]... | wave loop <wave.json> <name> [--resume-after <request id>] | "
+    " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] | wave launch <wave.json> <task> | "
+    "wave loop <wave.json> <name> [--resume-after <request id>] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "
     "wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm [--issue <N> | --source <N>]"
     " [--dry-run | --posted <url> | --again]"
@@ -91,7 +103,11 @@ BUILTIN = frozenset({"WAVE", "T", "N", "ISSUE", "SOURCE", "REPO", "ISSUE_REPO", 
                      "BASE", "SCR", "WORKER", "HOST", "MODE", "PROJECT", "LEGLINES", "LEG", "LEG_ID", "LEG_WT",
                      "LEG_CHECKOUT"})
 TOP_REQUIRED = ("wave", "repository", "checkout", "worker_prefix", "agent_host", "transport", "kind", "standing_purpose")
-TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part", "review")
+TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part", "review", "profiles", "hosts")
+PROFILE_REQUIRED, PROFILE_OPTIONAL = ("transport", "kind"), ("model", "effort")
+PROFILE_TRANSPORTS = ("subagent", "cli")
+KINDS = ("claude", "codex")
+HOST_REQUIRED = ("checkout", "scratch")
 REVIEW_REQUIRED, REVIEW_OPTIONAL = ("kind", "model"), ("label", "project_part", "timeout")
 REVIEW_KINDS = ("claude",)
 # A reviewer's model and label: what a CLI flag and pr-review.sh comment's footer both take.
@@ -123,6 +139,21 @@ class Loop:
 
 
 @dataclass(frozen=True)
+class Profile:
+    transport: str
+    kind: str
+    model: str = ""  # "" when the profile names none: the CLI's own default
+    effort: str = ""
+
+
+@dataclass(frozen=True)
+class Host:
+    box: str
+    checkout: str
+    scratch: str
+
+
+@dataclass(frozen=True)
 class Review:
     kind: str
     model: str
@@ -149,6 +180,8 @@ class Wave:
     legs: dict[str, Leg] = field(default_factory=lambda: {})
     loops: dict[str, Loop] = field(default_factory=lambda: {})
     review: Review | None = None
+    profiles: dict[str, Profile] = field(default_factory=lambda: {})
+    hosts: dict[str, Host] = field(default_factory=lambda: {})
 
 
 def keys_problem(obj: dict[str, Any], what: str, required: tuple[str, ...], optional: tuple[str, ...]) -> str | None:
@@ -242,8 +275,27 @@ def parse_wave(path: str, data: Any) -> Wave:
         raise ValueError(problem)
     w = "the wave file"
     kind = text(top, "kind", w)
-    if kind not in ("claude", "codex"):
+    if kind not in KINDS:
         raise ValueError(f"{w}.kind must be claude or codex, not {json.dumps(kind)}")
+    profiles: dict[str, Profile] = {}
+    for name, entry in objects(top.get("profiles", {}), "profiles").items():
+        what = f"profiles.{name}"
+        problem = keys_problem(entry, what, PROFILE_REQUIRED, PROFILE_OPTIONAL)
+        if problem:
+            raise ValueError(problem)
+        transport, its_kind = text(entry, "transport", what), text(entry, "kind", what)
+        if transport not in PROFILE_TRANSPORTS or its_kind not in KINDS:
+            raise ValueError(f"{what} must have a transport of {' or '.join(PROFILE_TRANSPORTS)} and a kind of"
+                             f" {' or '.join(KINDS)}, not {json.dumps(transport)} and {json.dumps(its_kind)}")
+        profiles[name] = Profile(transport, its_kind, *(text(entry, key, what, REVIEW_NAME) if key in entry else ""
+                                                        for key in PROFILE_OPTIONAL))
+    hosts: dict[str, Host] = {}
+    for box, entry in objects(top.get("hosts", {}), "hosts").items():
+        what = f"hosts.{box}"
+        problem = keys_problem(entry, what, HOST_REQUIRED, ())
+        if problem:
+            raise ValueError(problem)
+        hosts[box] = Host(box, absolute(entry, "checkout", what), absolute(entry, "scratch", what))
     legs: dict[str, Leg] = {}
     for box, entry in objects(top.get("legs", {}), "legs").items():
         what = f"legs.{box}"
@@ -288,6 +340,8 @@ def parse_wave(path: str, data: Any) -> Wave:
         legs=legs,
         loops=loops,
         review=parse_review(top["review"]) if "review" in top else None,
+        profiles=profiles,
+        hosts=hosts,
     )
 
 
@@ -354,13 +408,15 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
 
 
 def cmd_wave(cfg: Config, args: list[str]) -> int:
-    from ludics.fleetworker import waveloop, waveprep, wavereview
+    from ludics.fleetworker import wavelaunch, waveloop, waveprep, wavereview
 
     match args[:1]:
         case ["render"]:
             return cmd_render(args[1:])
         case ["prep"]:
             return waveprep.cmd_prep(cfg, args[1:])
+        case ["launch"]:
+            return wavelaunch.cmd_launch(cfg, args[1:])
         case ["loop"]:
             return waveloop.cmd_loop(cfg, args[1:])
         case ["heartbeat"]:

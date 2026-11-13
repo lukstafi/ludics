@@ -1,7 +1,7 @@
-"""``wave prep``: one native worker's launch prep in one call (ludics#1047).
+"""``wave prep``: one worker's launch prep in one call (ludics#1047).
 
 ``wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]
-[--legs <box,...>] [--allow-rival <pr>]...`` makes what a worker needs before it is spawned: its
+[--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>]`` makes what a worker needs before it is spawned: its
 worktree and branch, its scratch directory, its standing reservations (the agent host's, and one per
 GPU home box ``--legs`` names), its rendered brief, its ``execution assign`` base, and its board row.
 Each wave's ``next.sh`` did this by hand, and each copy lost an exit status in a pipe, rendered the
@@ -14,6 +14,22 @@ issue's and needs ``--source <N>``, the issue it came from: it gets no ``ISSUE``
 than give a no-issue task a closing keyword. The worker is ``<worker_prefix>-<N>`` (``-<task>``
 for a --source task), its branch ``<kind>/<worker>``, its worktree
 ``<checkout>-worktrees/<worker>``, its scratch ``<wave dir>/scratch/<task>``.
+
+THE WORKER'S KIND AND HOST (a mixed wave). ``--profile <name>`` gives the task one of the wave
+file's ``profiles`` in place of the wave's own transport and kind, and ``--host <box>`` puts a CLI
+worker's agent on another box than the wave's agent host (a native worker runs where its
+coordinator does, so ``--host`` with a ``subagent`` transport refuses). A host that is not the
+agent host is one of the wave file's ``hosts``: the worktree is then
+``<hosts.<box>.checkout>-worktrees/<worker>`` and the scratch ``<hosts.<box>.scratch>/<wave>/<task>``,
+both on that box. HOST, WT and SCR are the task's own.
+
+A CLI TASK (transport ``cli``) is prepared and not made. ``fleet-worker.sh launch`` makes a CLI
+worker's worktree on its box and takes its standing reservation in one fenced step, so prep makes
+neither: it writes the brief, the standing payloads (the host's without a ``checkout``, which
+launch fills in; unreserved), the assign base and the pending row, and its manifest records what
+``wave launch <wave.json> <task>`` (wavelaunch.py) needs to start the worker. Its reads skip what
+only the host can answer (a remote host's worktree path and local branch); ``launch`` refuses those
+on the box. Its shipped template directory is ``cli-<kind>``.
 
 THE BRIEF is wavebrief.py's render of these parts, in this order: ``common.md``; ``tasks/<task>.md``;
 with --legs, ``legs.md``, whose ``@@LEGLINES@@`` is ``leg.md`` rendered once per leg; with a --mode
@@ -111,7 +127,7 @@ from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import anchor_gate
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import run
-from ludics.fleetworker.wave import USAGE, Leg, Wave, load_wave, shim
+from ludics.fleetworker.wave import USAGE, Leg, Profile, Wave, load_wave, shim
 from ludics.fleetworker.wavebrief import PLACEHOLDER, Part, render, write_atomically
 
 MODES = ("none", "paired", "paired+critique")
@@ -138,17 +154,45 @@ class Prep:
     legs: list[Leg]
     allow_rival: set[str]
     state: str  # ISSUE_WAVE_STATE, as the config reads it: the plans directory's parent
+    profile: str = ""  # --profile: one of the wave file's profiles; "" for the wave's own transport and kind
+    host: str = ""  # --host: the worker's agent host; "" for the wave's
+    verb: str = "WAVE PREP"  # how a refusal of the shared reads names its caller (wave launch re-reads the rivals)
     worker: str = ""
     branch: str = ""
     worktree: str = ""
     scratch: str = ""
+    transport: str = ""
+    kind: str = ""
+    model: str = ""
+    effort: str = ""
+    host_checkout: str = ""  # the repository's clone on the host
     done: list[str] = field(default_factory=lambda: [])
 
     def __post_init__(self) -> None:
+        chosen = self.wave.profiles[self.profile] if self.profile else Profile(self.wave.transport, self.wave.kind)
+        self.transport, self.kind, self.model, self.effort = chosen.transport, chosen.kind, chosen.model, chosen.effort
+        self.host = self.host or self.wave.agent_host
+        place = self.wave.hosts[self.host] if self.remote else None
+        self.host_checkout = place.checkout if place else self.wave.checkout
         self.worker = f"{self.wave.worker_prefix}-{self.number if self.issue_ref else self.task}"
-        self.branch = f"{self.wave.kind}/{self.worker}"
-        self.worktree = f"{self.wave.checkout}-worktrees/{self.worker}"
-        self.scratch = os.path.join(self.wave.directory, "scratch", self.task)
+        self.branch = f"{self.kind}/{self.worker}"
+        self.worktree = f"{self.host_checkout}-worktrees/{self.worker}"
+        self.scratch = (os.path.join(place.scratch, self.wave.wave, self.task) if place
+                        else os.path.join(self.wave.directory, "scratch", self.task))
+
+    @property
+    def cli(self) -> bool:
+        return self.transport == "cli"
+
+    @property
+    def remote(self) -> bool:
+        """The worker's host is another box than the wave's agent host (the coordinator's)."""
+        return self.host != self.wave.agent_host
+
+    @property
+    def boxes(self) -> list[str]:
+        """The boxes the task has a standing reservation on: its host, then each leg's."""
+        return [self.host, *(leg.box for leg in self.legs)]
 
     def standing_id(self, box: str) -> str:
         return f"{self.wave.wave}-{self.task}-{box}-iterate"
@@ -176,13 +220,14 @@ class Stop(Exception):
 def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
     if len(args) < 2 or args[0].startswith("--") or args[1].startswith("--"):
         die(f"wave prep: name the wave file and the task; usage: {USAGE}")
-    opts: dict[str, Any] = {"base": "", "issue": "", "source": "", "mode": "none", "legs": "", "allow_rival": set()}
+    opts: dict[str, Any] = {"base": "", "issue": "", "source": "", "mode": "none", "legs": "", "allow_rival": set(),
+                            "profile": "", "host": ""}
     rest = args[2:]
     i = 0
     while i < len(rest):
         word = rest[i]
         key = {"--base": "base", "--issue": "issue", "--source": "source", "--mode": "mode", "--legs": "legs",
-               "--allow-rival": "allow_rival"}.get(word)
+               "--allow-rival": "allow_rival", "--profile": "profile", "--host": "host"}.get(word)
         if key is None or i + 1 >= len(rest):
             die(f"wave prep: {'unknown option ' + word if key is None else word + ' needs a value'}; usage: {USAGE}")
         if key == "allow_rival":
@@ -220,15 +265,24 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
     if not opts["base"]:
         die("wave prep: --base <rev> is required (the verified base the worktree starts from)")
     number, issue_ref, source_ref = subject(wave, task, opts["issue"], opts["source"], "prep")
+    profile, host = opts["profile"], opts["host"]
+    if profile and profile not in wave.profiles:
+        die(f"wave prep: --profile names {profile!r}, which the wave file's profiles do not (it has: {', '.join(wave.profiles) or 'none'})")
+    transport = wave.profiles[profile].transport if profile else wave.transport
+    if host and host != wave.agent_host:
+        if transport != "cli":
+            die(f"wave prep: --host {host} needs a cli transport: a {transport} worker runs on the agent host, {wave.agent_host}")
+        if host not in wave.hosts:
+            die(f"wave prep: --host names {host!r}, which the wave file's hosts do not (it has: {', '.join(wave.hosts) or 'none'})")
     legs: list[Leg] = []
     for box in [b for b in opts["legs"].split(",") if b] if opts["legs"] else []:
         if box not in wave.legs:
             die(f"wave prep: --legs names {box!r}, which the wave file's legs do not (it has: {', '.join(wave.legs) or 'none'})")
-        if box == wave.agent_host or any(leg.box == box for leg in legs):
-            die(f"wave prep: --legs names {box} twice, or the agent host itself")
+        if box == (host or wave.agent_host) or any(leg.box == box for leg in legs):
+            die(f"wave prep: --legs names {box} twice, or the worker's own host")
         legs.append(wave.legs[box])
     return Prep(wave, task, number, issue_ref, source_ref, opts["base"], opts["mode"], legs, opts["allow_rival"],
-                cfg.path(cfg.state))
+                cfg.path(cfg.state), profile, host)
 
 
 def git(prep: Prep, *args: str, timeout: float | None = None) -> proc.Completed:
@@ -272,11 +326,11 @@ def open_prs(cfg: Config, prep: Prep, select: list[str]) -> list[dict[str, Any]]
     except ValueError:
         prs = None
     if not isinstance(prs, list):
-        raise Stop(4, f"WAVE PREP UNKNOWN {prep.task}: the open PRs of {prep.wave.repository} could not be read"
+        raise Stop(4, f"{prep.verb} UNKNOWN {prep.task}: the open PRs of {prep.wave.repository} could not be read"
                       f" (gh {' '.join(select)}: exit {done.rc}: {done.stderr.strip()[-200:]}); nothing made")
     listed = [cast(dict[str, Any], p) for p in cast(list[Any], prs) if isinstance(p, dict)]
     if len(listed) >= PR_PAGE:
-        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: {len(listed)} open PRs match {' '.join(select)}, a full page;"
+        raise Stop(1, f"{prep.verb} REFUSED {prep.task}: {len(listed)} open PRs match {' '.join(select)}, a full page;"
                       " read them by hand")
     return listed
 
@@ -290,20 +344,21 @@ def check_rivals(cfg: Config, prep: Prep) -> None:
         listed += [p for p in open_prs(cfg, prep, ["--search", prep.number]) if str(p.get("number")) not in seen]
     rivals = rivals_of(listed, prep)
     if rivals:
-        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: open rival PR(s) {'; '.join(rivals)} -- adopt one instead of"
+        raise Stop(1, f"{prep.verb} REFUSED {prep.task}: open rival PR(s) {'; '.join(rivals)} -- adopt one instead of"
                       " a competitor, or pass --allow-rival <pr> for one that is no rival")
 
 
 def check_fresh(prep: Prep) -> None:
-    if os.path.lexists(prep.worktree):
-        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the worktree path {prep.worktree} exists")
-    listed = git(prep, "worktree", "list", "--porcelain")
-    if listed.rc != 0:
-        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: git worktree list failed in {prep.wave.checkout}: {listed.stderr.strip()}")
-    if f"branch refs/heads/{prep.branch}" in listed.stdout.split("\n"):
-        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: branch {prep.branch} is checked out in another worktree")
-    if git(prep, "show-ref", "--verify", "--quiet", f"refs/heads/{prep.branch}").rc == 0:
-        raise Stop(1, f"WAVE PREP REFUSED {prep.task}: branch {prep.branch} exists in {prep.wave.checkout}")
+    if not prep.remote:  # a remote host's worktree and local branch are its launch's to refuse, on the box
+        if os.path.lexists(prep.worktree):
+            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the worktree path {prep.worktree} exists")
+        listed = git(prep, "worktree", "list", "--porcelain")
+        if listed.rc != 0:
+            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: git worktree list failed in {prep.wave.checkout}: {listed.stderr.strip()}")
+        if f"branch refs/heads/{prep.branch}" in listed.stdout.split("\n"):
+            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: branch {prep.branch} is checked out in another worktree")
+        if git(prep, "show-ref", "--verify", "--quiet", f"refs/heads/{prep.branch}").rc == 0:
+            raise Stop(1, f"WAVE PREP REFUSED {prep.task}: branch {prep.branch} exists in {prep.wave.checkout}")
     remote = git(prep, "ls-remote", "--heads", "origin", f"refs/heads/{prep.branch}", timeout=60)
     if remote.rc != 0:
         raise Stop(4, f"WAVE PREP UNKNOWN {prep.task}: origin's branches could not be read ({remote.stderr.strip()[-200:]}); nothing made")
@@ -320,7 +375,7 @@ def check_registry(cfg: Config, prep: Prep) -> None:
     if records is None:
         raise Stop(4, f"WAVE PREP UNKNOWN {prep.task}: the anchor's registry could not be read; nothing made")
     held = {str(r.get("request_id")).lower() for r in records}
-    for box in [prep.wave.agent_host, *(leg.box for leg in prep.legs)]:
+    for box in prep.boxes:
         if prep.standing_id(box).lower() in held:
             raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the registry holds {prep.standing_id(box)} already")
 
@@ -343,7 +398,7 @@ def values_of(prep: Prep) -> dict[str, str]:
     values.update({"WAVE": prep.wave.wave, "T": prep.task, "N": prep.number, "REPO": prep.wave.repository,
                    "ISSUE_REPO": prep.wave.issue_repository, "CHECKOUT": prep.wave.checkout,
                    "WAVE_DIR": prep.wave.directory, "WT": prep.worktree, "BR": prep.branch, "BASE": prep.base, "SCR": prep.scratch, "WORKER": prep.worker,
-                   "HOST": prep.wave.agent_host, "MODE": prep.mode})
+                   "HOST": prep.host, "MODE": prep.mode})
     if prep.issue_ref:
         values["ISSUE"] = prep.issue_ref
     else:
@@ -356,8 +411,8 @@ def leg_values(prep: Prep, leg: Leg) -> dict[str, str]:
             "LEG_WT": prep.leg_worktree(leg), "LEG_CHECKOUT": leg.checkout}
 
 
-def shipped_dir(kind: str) -> str:
-    return os.path.join(TEMPLATES, f"native-{kind}")
+def shipped_dir(kind: str, cli: bool = False) -> str:
+    return os.path.join(TEMPLATES, f"{'cli' if cli else 'native'}-{kind}")
 
 
 def read_or_none(prep: Prep, path: str) -> Part | None:
@@ -377,7 +432,7 @@ def part(prep: Prep, *name: str, required: bool = True) -> Part | None:
     if found is not None:
         return found
     rel = "/".join(name)
-    shipped = os.path.join(shipped_dir(prep.wave.kind), rel) if rel in SHIPPED else ""
+    shipped = os.path.join(shipped_dir(prep.kind, prep.cli), rel) if rel in SHIPPED else ""
     found = read_or_none(prep, shipped) if shipped else None
     if found is None and required:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the template part {path} does not exist"
@@ -436,18 +491,20 @@ def brief_text(prep: Prep) -> str:
 
 def reservation(prep: Prep, box: str, checkout: str, purpose: str) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "request_id": prep.standing_id(box), "wave": prep.wave.wave, "worker": prep.worker, "transport": prep.wave.transport,
-        "purpose": purpose, "agent_host": prep.wave.agent_host, "execution_host": box, "repository": prep.wave.repository,
-        "requested_revision": prep.base, "kind": "correctness", "standing": True, "checkout": checkout}
+        "request_id": prep.standing_id(box), "wave": prep.wave.wave, "worker": prep.worker, "transport": prep.transport,
+        "purpose": purpose, "agent_host": prep.host, "execution_host": box, "repository": prep.wave.repository,
+        "requested_revision": prep.base, "kind": "correctness", "standing": True}
+    if checkout:  # a CLI worker's own record names none: launch fills in the worktree it made (A CLI TASK)
+        payload["checkout"] = checkout
     if prep.issue_ref:  # a --source task is no issue's work: its records name none (prs --wave reads them)
         payload["issue"] = prep.issue_ref
     return payload
 
 
 def reservations(prep: Prep) -> list[tuple[str, dict[str, Any]]]:
-    """(file name, payload): the agent host's first, then each leg's."""
+    """(file name, payload): the worker's host's first, then each leg's."""
     own = Part("the wave file's standing_purpose", prep.wave.standing_purpose)
-    out = [(f"{prep.task}.json", reservation(prep, prep.wave.agent_host, prep.worktree,
+    out = [(f"{prep.task}.json", reservation(prep, prep.host, "" if prep.cli else prep.worktree,
                                              rendered(prep, [own], values_of(prep)).rstrip("\n")))]
     for leg in prep.legs:
         text = Part(f"legs.{leg.box}.purpose", leg.purpose)
@@ -463,19 +520,26 @@ def record(prep: Prep, step: str) -> None:
     os.makedirs(os.path.dirname(prep.manifest), exist_ok=True)
     write_atomically(prep.manifest, json.dumps({
         "task": prep.task, "wave": prep.wave.wave, "worker": prep.worker, "branch": prep.branch, "base": prep.base,
-        "worktree": prep.worktree, "standing": [prep.standing_id(b) for b in [prep.wave.agent_host, *(l.box for l in prep.legs)]],
+        "worktree": prep.worktree, "standing": [prep.standing_id(b) for b in prep.boxes],
+        "transport": prep.transport, "kind": prep.kind, "host": prep.host, "scratch": prep.scratch,
+        # What ``wave launch`` rebuilds the task from (wavelaunch.py): prep's own options, as given.
+        "opts": {"base": prep.base, "issue": prep.number if prep.issue_ref else "", "source": prep.number if prep.source_ref else "",
+                 "mode": prep.mode, "legs": ",".join(leg.box for leg in prep.legs), "allow_rival": sorted(prep.allow_rival),
+                 "profile": prep.profile, "host": "" if prep.host == prep.wave.agent_host else prep.host},
         "done": prep.done}, indent=1) + "\n")
 
 
 def board_fields(prep: Prep, brief: str) -> list[str]:
-    hosts = [prep.wave.agent_host, *(leg.box for leg in prep.legs)]
+    hosts = prep.boxes
     fields = [f"issue={prep.issue_ref}" if prep.issue_ref else f"source={prep.source_ref}",
               f"repository={prep.wave.repository}", f"worktree={prep.worktree}", f"branch={prep.branch}",
-              f"base={prep.base}", f"transport={prep.wave.transport}", f"kind={prep.wave.kind}",
-              f"agent_host={prep.wave.agent_host}", f"exec_hosts={','.join(hosts)}", f"brief={brief}",
+              f"base={prep.base}", f"transport={prep.transport}", f"kind={prep.kind}",
+              f"agent_host={prep.host}", f"exec_hosts={','.join(hosts)}", f"brief={brief}",
               f"brief_host={prep.wave.agent_host}", f"worker={prep.worker}",
               f"standing={' '.join(prep.standing_id(h) for h in hosts)}", "requests=none",
               f"runs={os.path.join(prep.scratch, 'runs')}", "state=pending"]
+    if prep.model:
+        fields.append(f"model={prep.model}" + (f"/{prep.effort}" if prep.effort else ""))
     if prep.mode != "none":
         plan = f"{prep.wave.wave}-{prep.number if prep.issue_ref else prep.task}"
         fields += [f"planning={prep.mode}", f"plan_dir={os.path.join(prep.state, 'plans', plan)}"]
@@ -490,17 +554,20 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
         return Stop(rc, f"WAVE PREP {word} {prep.task} at {step}: {why}")
 
     record(prep, "manifest")
-    added = git(prep, "worktree", "add", "-q", "-b", prep.branch, prep.worktree, prep.base)
-    if added.rc != 0:
-        raise fail("worktree", f"git worktree add exited {added.rc}: {added.stderr.strip()[-300:]}")
-    record(prep, f"worktree {prep.worktree} on branch {prep.branch} at {prep.base}")
+    if not prep.cli:
+        added = git(prep, "worktree", "add", "-q", "-b", prep.branch, prep.worktree, prep.base)
+        if added.rc != 0:
+            raise fail("worktree", f"git worktree add exited {added.rc}: {added.stderr.strip()[-300:]}")
+        record(prep, f"worktree {prep.worktree} on branch {prep.branch} at {prep.base}")
     try:
-        os.makedirs(os.path.join(prep.scratch, "runs"), exist_ok=True)
+        if not prep.remote:
+            os.makedirs(os.path.join(prep.scratch, "runs"), exist_ok=True)
         os.makedirs(prep.path("reserve"), exist_ok=True)
         os.makedirs(prep.path("briefs"), exist_ok=True)
     except OSError as exc:
         raise fail("scratch", f"cannot make the wave's directories ({exc.strerror})")
-    record(prep, f"scratch {os.path.join(prep.scratch, 'runs')}")
+    if not prep.remote:
+        record(prep, f"scratch {os.path.join(prep.scratch, 'runs')}")
     script = shim(cfg)
     for name, payload in payloads:
         path = prep.path("reserve", name)
@@ -508,14 +575,17 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
             write_atomically(path, json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
         except OSError as exc:
             raise fail("reservation", f"cannot write {path} ({exc.strerror})")
+        if prep.cli:
+            record(prep, f"standing payload {payload['request_id']} for {payload['execution_host']} ({path}), unreserved")
+            continue
         rc = run([script, "execution", "run", path], stdout_to_stderr=True).rc
         if rc != 0:
             raise fail("reservation", f"execution run {path} exited {rc} (above)", 4 if rc == 4 else 1)
         record(prep, f"standing reservation {payload['request_id']} on {payload['execution_host']} ({path})")
     brief_path = prep.path("briefs", f"brief-{prep.task}.md")
     base_path = prep.path("reserve", f"{prep.task}-base.json")
-    base = {"wave": prep.wave.wave, "worker": prep.worker, "transport": prep.wave.transport,
-            "agent_host": prep.wave.agent_host, "repository": prep.wave.repository}
+    base = {"wave": prep.wave.wave, "worker": prep.worker, "transport": prep.transport,
+            "agent_host": prep.host, "repository": prep.wave.repository}
     if prep.issue_ref:
         base["issue"] = prep.issue_ref
     try:
@@ -558,7 +628,8 @@ def cmd_prep(cfg: Config, args: list[str]) -> int:
                 cli.say(f"WAVE PREP MADE {task}: {step}")
         cli.say(f"WAVE PREP MADE {task}: the manifest {prep.manifest}" if prep.done else f"WAVE PREP MADE {task}: nothing")
         return stop.rc if isinstance(stop, Stop) else 1
-    standing = " ".join(prep.standing_id(b) for b in [prep.wave.agent_host, *(leg.box for leg in prep.legs)])
+    standing = " ".join(prep.standing_id(b) for b in prep.boxes)
     cli.say(f"WAVE PREP {task}: ready: brief {prep.path('briefs', f'brief-{task}.md')} worktree {prep.worktree}"
-            f" branch {prep.branch} base {prep.base} standing {standing}")
+            f" branch {prep.branch} base {prep.base} standing {standing}"
+            + (f" (a CLI worker on {prep.host}, nothing made or reserved yet: wave launch starts it)" if prep.cli else ""))
     return 0
