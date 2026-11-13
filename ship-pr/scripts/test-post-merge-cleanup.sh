@@ -5534,6 +5534,68 @@ test_runner_fails_a_case_that_did_not_finish() {
   echo "PASS: a case that dies on an unbound variable after a PASS line, or returns 0 without one, fails"
 }
 
+test_runner_treats_no_group_as_gone() {
+  # ludics#1125: ps can print an exiting process's -1 pgid unsigned. Stub only the
+  # case-pgid query, not the runner's capability probe or its liveness readings.
+  # The copy's case returns immediately; its status file must decide its result.
+  local tag="nogroup$$" copy="$TEST_ROOT/$COPY_DIR" out="$TEST_ROOT/copy.out"
+  local bin="$TEST_ROOT/bin" seen="$TEST_ROOT/pgid-read" patched value rc reading result
+  if [ "$ON_MSYS" -eq 1 ]; then
+    skip_boundary "the ps sentinel probe: Git for Windows' ps has no ps -o; the shared normalizer is covered by the proc probe"
+  else
+    mkdir -p "$bin"
+    {
+      printf '%s\n' '#!/usr/bin/env bash'
+      printf 'real_ps=%q seen=%q\n' "$(command -v ps)" "$seen"
+      cat <<'STUB'
+if [ "$#" -eq 4 ] && [ "$1" = -o ] && [ "$2" = pgid= ] && [ "$3" = -p ]; then
+  printf '%s\n' "$4" >>"$seen"
+  printf '  %s \n' "$RUNNER_SELF_PGID"
+  exit 0
+fi
+exec "$real_ps" "$@"
+STUB
+    } >"$bin/ps"
+    chmod +x "$bin/ps"
+    copy_runner "$copy" "$tag"
+    patched=$(awk -v target="$SELF_CASE() {" '{
+      print
+      if ($0 == target) print "  printf '\''%s\\n'\'' '\''PASS: immediate return'\''; return 0"
+    }' "$copy/test-post-merge-cleanup.sh")
+    printf '%s\n' "$patched" >"$copy/test-post-merge-cleanup.sh"
+    grep -qF 'PASS: immediate return' "$copy/test-post-merge-cleanup.sh" || fail "could not plant the immediate case"
+    for value in 4294967295 -1 0; do
+      : >"$seen"
+      if run_copy env PATH="$bin:$PATH" RUNNER_SELF_PGID="$value" \
+        "$copy/test-post-merge-cleanup.sh" -j 1 "$SELF_CASE" >"$out" 2>&1 </dev/null; then rc=0; else rc=$?; fi
+      [ -s "$seen" ] || fail "the case-pgid stand-in was not read"
+      [ "$rc" -eq 0 ] || fail "the copy exited $rc for pgid $value: $(cat "$out")"
+      grep -q "^PASS $SELF_CASE: immediate return$" "$out" || fail "the immediate case was not passed by its status: $(cat "$out")"
+      assert_copy_root_gone "$tag"
+    done
+  fi
+  # /proc/PID/pgid is Cygwin's interface, not Linux's. Exercise that reader with
+  # cat as the stand-in too, including a real group that must remain visible.
+  for reading in ps kill; do
+    for value in 4294967295 -1 0 '' 12345; do
+      result=$(
+        PROC_READING="$reading"
+        ps() { printf '  %s \n' "$value"; }
+        cat() {
+          [ "$1" = /proc/12345/pgid ] || return 1
+          printf '  %s \n' "$value"
+        }
+        case_pgid 12345
+      )
+      case "$value" in
+      12345) assert_eq "$result" 12345 "$reading must retain a real group" ;;
+      *) assert_eq "$result" "" "$reading must read sentinel '$value' as gone" ;;
+      esac
+    done
+  done
+  printf '%s\n' 'PASS: no-group readings defer to case status and both readers normalize sentinels'
+}
+
 test_runner_reaps_a_statusless_case() {
   # Candidate (2) of ludics-lite#9: a case shell may exit without running its status trap. Remove
   # the trap from a copy; the scheduler must notice the gone or zombie child, reap it, and report
@@ -6023,6 +6085,7 @@ TESTS=(
   test_runner_names_a_setup_case_failure
   test_runner_names_an_errexit_death
   test_runner_fails_a_case_that_did_not_finish
+  test_runner_treats_no_group_as_gone
   test_runner_reaps_a_statusless_case
   test_runner_cleans_up_after_a_closed_pipe
   test_runner_term_midrun_exits_130
@@ -6397,7 +6460,9 @@ pid_alive() {
   esac
 }
 
-# case_pgid <pid>: the process's group, or nothing once it is gone.
+# case_pgid <pid>: the process's group, or nothing once it is gone. An exiting
+# process can answer -1 (also printed unsigned by ps), or 0: none names a group.
+# Normalize both readers, including Cygwin's /proc/PID/pgid; Linux uses ps.
 case_pgid() {
   local pgid
   if [ "$PROC_READING" = kill ]; then
@@ -6405,7 +6470,11 @@ case_pgid() {
   else
     pgid=$(ps -o pgid= -p "$1" 2>/dev/null) || pgid=""
   fi
-  printf '%s\n' "$pgid" | tr -d ' '
+  pgid=$(printf '%s\n' "$pgid" | tr -d ' ')
+  case "$pgid" in
+  '' | 4294967295 | -1 | 0) return 0 ;;
+  esac
+  printf '%s\n' "$pgid"
 }
 
 # kill_case_group <pid>: terminate a case's process group and its leader, escalating to KILL
