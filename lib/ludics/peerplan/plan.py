@@ -32,6 +32,7 @@ the bg-run verdict's: codex's exit status, or 1 when codex exited 0 and wrote no
 
 import json
 import os
+import shlex
 import re
 import shutil
 import subprocess
@@ -408,9 +409,9 @@ def clean(args: Sequence[str]) -> int:
                 # stat must succeed even for links: an unread run cannot be declared finished.
                 os.stat(run)
                 if live(run):
-                    raise cli.Exit(1, f"the run {run!r} is still live: bg-run.sh stop {run!r} first")
+                    raise cli.Exit(1, f"the run {shlex.quote(run)} is still live: bg-run.sh stop {shlex.quote(run)} first")
     except OSError as exc:
-        raise cli.Exit(1, f"cannot read runs under {runs!r}: {exc}; worktree kept") from exc
+        raise cli.Exit(1, f"cannot read runs under {shlex.quote(runs)}: {exc}; worktree kept") from exc
     if os.path.isdir(meta.worktree):
         done = proc.run_tool(
             "git", ["-C", meta.checkout, "worktree", "remove", "--force", meta.worktree], stdin=subprocess.DEVNULL

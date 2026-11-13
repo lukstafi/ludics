@@ -919,7 +919,7 @@ def hold(box: str, inhibitor: Guard | None, why: str, hold_lock: str, marker: st
             indices.update(int(name[5:]) for name in os.listdir(directory)
                            if name.startswith("slot.") and name[5:].isdigit() and name[5:].isascii())
         except OSError as exc:
-            raise cli.Exit(1, f"{HOLD_PREFIX} REFUSED {box}: cannot list drain directory {directory!r}: {exc}; nothing started")
+            raise cli.Exit(1, f"{HOLD_PREFIX} REFUSED {box}: cannot list drain directory {shlex.quote(directory)}: {exc}; nothing started")
         # A hold nested in a live hold of this same measurement finds the slots held by its
         # enclosing one, and waiting for them would wait for itself.
         nested = os.environ.get("FLEET_MEASUREMENT_HELD") == marker and _is_held(hold_lock) is True

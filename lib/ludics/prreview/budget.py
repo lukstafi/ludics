@@ -44,7 +44,7 @@ STATE READ BOUNDARY (#1092). Lock owners and quota-holds are filesystem reads, n
 of absence when an I/O error occurs. Only lstat's ENOENT is absent; present links must be readable.
 Unread owners return lock status 2; unread holds return a gate refusal (session exit 3), including
 inside an observer, without sleeping or probing. Malformed readable hold lines retain the shell's
-existing parse boundary below; unrelated names (not <digits>.<suffix>) are not hold entries.
+existing parse boundary below; unrelated names (neither <digits> nor <digits>.<suffix>) are ignored.
 
 BOUNDARY. The quota reader is a fail-closed ALLOWLIST over the FIRST line of gh's stderr, with
 these shapes: ``API rate limit exceeded`` or ``API rate limit already exceeded`` (the primary limit,
@@ -88,6 +88,7 @@ budget on main, this port), so its format is the shell's, byte for byte:
 """
 
 import os
+import shlex
 import re
 import secrets
 import shutil
@@ -218,19 +219,10 @@ def _owner(path: str) -> tuple[str, str]:
         return f.readline().rstrip("\n"), f.readline().rstrip("\n")
 
 
-def _second_line(path: str) -> str:
-    try:
-        with open(path, encoding="utf-8", errors="surrogateescape") as f:
-            f.readline()
-            return f.readline().rstrip("\n")
-    except OSError:
-        return ""
-
-
 def _tab_read(path: str, n: int) -> list[str] | None:
     """``IFS=$'\\t' read -r a b ... <file``: the first line's tab-separated fields (runs of tabs as
-    one separator, the last field taking the rest), or None where ``read`` failed -- no file, or a
-    first line with no newline after it."""
+    one separator, the last field taking the rest). None for an absent file or a readable line
+    without its newline; I/O failures raise, never masquerade as an absent hold."""
     try:
         with open(path, encoding="utf-8", errors="surrogateescape") as f:
             line = f.readline()
@@ -386,8 +378,8 @@ class Budget:
     # --- the hold ---
 
     def _entries(self) -> list[tuple[int, str]]:
-        """The hold entries: (until, path) for every regular file named <digits>.<anything>, in the
-        order the shell's glob lists them."""
+        """The hold entries: (until, path) for numeric hold names, in shell glob order.
+        A named entry is read strictly; isfile() must not hide a broken or unread link."""
         try:
             names = sorted(os.listdir(self.holds_dir))
         except FileNotFoundError:
@@ -676,7 +668,7 @@ class Budget:
         except OSError as exc:
             if self._probe_owned:
                 self._drop_probe_lock()
-            return f"quota hold: cannot read {self.dir!r} (SHIP_PR_STATE_DIR): {exc}; no call was made"
+            return f"quota hold: cannot read {shlex.quote(self.dir)} (SHIP_PR_STATE_DIR): {exc}; no call was made"
 
     def _gate(self, mode: str) -> str | None:
         """``budget_gate <read|write>``: run before every call the session makes. None when no hold

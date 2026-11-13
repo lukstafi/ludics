@@ -224,6 +224,7 @@ log is the evidence. The dry run (THE DRY RUN) takes no override, so a shared fa
 import contextlib
 import fnmatch
 import os
+import shlex
 import re
 import shutil
 import signal
@@ -623,7 +624,7 @@ def _slot_runner() -> str | None:
         if not here.is_file():
             raise OSError("slot runner is not a regular file")
     except OSError as exc:
-        raise cli.Exit(3, f"merge build: cannot read slot runner {str(here)!r}: {exc}; nothing started") from exc
+        raise cli.Exit(3, f"merge build: cannot read slot runner {shlex.quote(str(here))}: {exc}; nothing started") from exc
     probe = _supervised(["bash", str(here), "execution", "slot", "--probe"], os.getcwd(), PROBE_TIMEOUT, dict(os.environ))
     if probe.rc == 0 and probe.stdout.startswith("EXECUTION SLOT PROBE "):
         return str(here)

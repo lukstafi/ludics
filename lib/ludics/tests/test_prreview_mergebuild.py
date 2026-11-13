@@ -44,7 +44,7 @@ class SlotRunner(unittest.TestCase):
             os.makedirs(scripts)
             os.symlink("missing", os.path.join(scripts, "fleet-worker.sh"))
             with mock.patch.object(mergebuild, "__file__", source), self.assertRaises(cli.Exit) as refused:
-                mergebuild._slot_runner()
+                mergebuild._slot_runner()  # pyright: ignore[reportPrivateUsage]
             self.assertEqual(refused.exception.rc, 3)
 
 

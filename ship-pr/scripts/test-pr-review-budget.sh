@@ -1307,12 +1307,24 @@ test_a_hold_inside_a_wait_is_one_line_and_no_exit() {
 test_an_unrecordable_first_hold_is_a_state_directory_error() {
   reset_fixture
   QUOTA_UNTIL=$((T0 + 7200))
-  : >"$STATE_DIR/quota-holds"
+  # The directory becomes unread after the first request; before it, #1092's read gate refuses.
+  READ_HOOK=': >"$STATE_DIR/quota-holds"'
   run wait cmd_checks "$REPO#7" --wait=600
   assert_eq "$(rc wait)" 3 "the refused read is UNKNOWN ($(err wait))"
   assert_eq "$(requests | grep -c '^read ')" 1 "and it is not resent"
   assert_contains "$(err wait)" "SHIP_PR_STATE_DIR" "naming the state directory"
   assert_contains "$(err wait)" "could not be recorded" "as the hold that could not be recorded"
+}
+
+# #1092: existing unread state is refused even before the first request, inside an observer too.
+test_unread_hold_state_refuses_without_a_request() {
+  reset_fixture
+  MSYS="${MSYS:+$MSYS }winsymlinks:nativestrict" ln -s missing "$STATE_DIR/quota-holds"
+  run wait cmd_checks "$REPO#7" --wait=600
+  assert_eq "$(rc wait)" 3 "unread hold state is UNKNOWN"
+  assert_eq "$(requests | grep -c '^read ' || :)" 0 "no GitHub read starts"
+  assert_eq "$(now)" "$T0" "an observer does not wait on unread state"
+  assert_contains "$(err wait)" "cannot read" "the refusal names the failed read"
 }
 
 # The build pause keys on the workflow runs too: a run that moves before any check row exists
@@ -1397,6 +1409,7 @@ run_tests \
   test_a_moving_signal_is_read_at_the_interval \
   test_a_hold_inside_a_wait_is_one_line_and_no_exit \
   test_an_unrecordable_first_hold_is_a_state_directory_error \
+  test_unread_hold_state_refuses_without_a_request \
   test_a_moving_run_before_any_check_resets_the_pause \
   test_another_host_is_refused_loudly \
   -- "$@"
