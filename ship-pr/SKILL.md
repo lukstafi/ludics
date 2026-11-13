@@ -86,7 +86,7 @@ It reads the build signal and never the 👍 (where a go-ahead is needed, CI run
 waits). It keeps the build gate the direct push skips; the push stays the lighter act where the user names that instead.
 
 The `gh` recipes below are packaged as `~/.claude/skills/ship-pr/scripts/pr-review.sh` (`poll`,
-`watch`, `status`, `checks`, `merge`, `base`, `reply`, `resolve`, `comment`, `body`, `retry`;
+`watch`, `status`, `checks`, `rerun`, `merge`, `base`, `reply`, `resolve`, `comment`, `body`, `retry`;
 `reply` and `comment` take their body as one argument or as `--body-file <path>`, never both), which
 encodes the traps in code — including the pagination that a PR running to many rounds walks into —
 so prefer it to hand-rolled API calls. The commands below spell that path out in full because they
@@ -120,8 +120,8 @@ full URL), so it fails on the argument and invites hand-building a PR URL. Use `
 
 **Name the repo in the PR argument: `owner/name#<pr>`.** It works from any directory. A bare
 number works in one place only: the checkout whose branch is that PR's head, where every verb that
-takes a PR (`poll`, `status`, `rounds`, `checks`, `watch`, `merge`, `reply`, `resolve`, `comment`,
-`body`) resolves it to the checkout's own PR and says so on stderr (#863). Anywhere else it is
+takes a PR (`poll`, `status`, `rounds`, `checks`, `rerun`, `watch`, `merge`, `reply`, `resolve`,
+`comment`, `body`) resolves it to the checkout's own PR and says so on stderr (#863). Anywhere else it is
 refused, exit 2, naming the qualified form, with nothing written: a *background* shell does not
 reliably start in the checkout, and the script used to guess the repo from the cwd. That failure
 was not loud: every active repository has a PR 7, so the wrong checkout resolved to an unrelated
@@ -1036,6 +1036,20 @@ again is the ordinary 1, naming both attempts. A run already rerun (attempt abov
 recoveries included) and a red only advisory jobs explain are never rerun, nor is anything when
 a red check is another app's (no rerun can clear it). It takes neither `--override` nor `--allow-no-verdict`: one merges over the red, the other
 would merge an unfinished rerun unread.
+
+**A re-run by hand goes through `rerun`**, and so does the look at a head's runs before it (#1111:
+on 2026-11-11 workers' own `gh run view` and `gh run rerun` loops, which pass no polling budget,
+drained the fleet token's quota while the hold was stopping every observer):
+
+```bash
+~/.claude/skills/ship-pr/scripts/pr-review.sh rerun <owner>/<repo>#<pr>              # the head's runs
+~/.claude/skills/ship-pr/scripts/pr-review.sh rerun <owner>/<repo>#<pr> <run-id>...  # re-run their failed jobs
+```
+
+It re-runs only a finished red or cancelled run of the PR's current head, sends nothing when any
+id it was given is not one, and exits 3 without a call while a quota hold stands. It waits for
+nothing: `checks --wait` reads the re-run's verdict. A raw `gh run` call, and one sent through
+`retry`, are outside the budget, so never loop either.
 
 **Exit 4 refuses too, by default.** Nothing has failed, but nothing has passed, and a merge that
 waits for neither read nothing — it was a warning until 2026-08-23, when a day-long runner queue

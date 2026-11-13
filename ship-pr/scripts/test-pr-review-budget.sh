@@ -122,7 +122,7 @@ workflow_runs() {
   jq -cn --arg s "$status" --arg c "$conclusion" --arg sha "$HEAD_SHA" \
     '{workflow_runs:[{id:101, workflow_id:1, name:"ci", event:"pull_request", head_sha:$sha,
        status:$s, conclusion:(if $c == "null" then null else $c end),
-       created_at:"2026-10-04T00:00:00Z"}]}'
+       created_at:"2026-10-04T00:00:00Z", run_attempt:1}]}'
 }
 
 probe_reset() {
@@ -149,6 +149,15 @@ gh() {
       return 1
     fi
     printf '%s\n' "$REPO"
+    return 0
+  fi
+  # `rerun`'s write (ludics#1111): logged, and refused on quota like any call while one stands.
+  if [ "${1:-} ${2:-}" = "run rerun" ]; then
+    printf 'rerun %s\n' "$3" >>"$CALL_LOG"
+    if [ "$(now)" -lt "$QUOTA_UNTIL" ]; then
+      echo "gh: API rate limit exceeded for user ID 1. (HTTP 403)" >&2
+      return 1
+    fi
     return 0
   fi
   if [ "${1:-} ${2:-}" = "run view" ]; then
@@ -571,6 +580,63 @@ test_a_write_never_waits_a_hold() {
   run read cmd_checks "$REPO#7" --wait
   assert_eq "$(rc read)" 0 "a read in an observer waits the hold out ($(err read))"
   assert_eq "$(cat "$SLEEP_LOG")" 600 "for exactly the hold"
+}
+
+# ludics#1111: workers' own `gh run view` and `gh run rerun` loops passed no budget, and drained
+# the fleet token's quota beside observers the hold was stopping. `rerun` is those calls as the
+# script's own: without a hold it reads the head and its runs and sends the re-run; while a hold
+# stands it makes NO call, listing or re-running, and exits 3; and a quota refusal of its own
+# sets the hold for every other caller. The control is the same re-run sent through `retry`, a
+# caller's call, which the hold does not stop: that is the gap the verb closes.
+test_rerun_goes_through_the_budget() {
+  reset_fixture
+  printf red >"$TEST_ROOT/state"
+  run rerun cmd_rerun "$REPO#7" 101
+  assert_eq "$(rc rerun)" 0 "a failed head run is re-run ($(err rerun))"
+  assert_eq "$(requests)" "read repos/$REPO/pulls/7
+read repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=100
+rerun 101" "two reads and the write, in that order"
+  assert_eq "$(out rerun | tail -n 1)" "rerun: head=$HEAD_SHA sent=1" "the trailer counts it"
+  : >"$CALL_LOG"
+  run list cmd_rerun "$REPO#7"
+  assert_eq "$(rc list)" 0 "with no run id it lists ($(err list))"
+  assert_contains "$(out list)" "  run 101  ci  (pull_request)  completed/failure  attempt 1  re-runnable" "naming the run"
+  assert_not_contains "$(requests)" "rerun" "and writes nothing"
+  local form
+  for form in "" 101; do
+    reset_fixture
+    printf red >"$TEST_ROOT/state"
+    plant_hold "$((T0 + 600))" "repos/$REPO/pulls/7" 600
+    # shellcheck disable=SC2086 # the empty form is no argument
+    run held cmd_rerun "$REPO#7" $form
+    assert_eq "$(rc held)" 3 "under a hold it is unknown, not a verdict ($(err held))"
+    assert_eq "$(requests)" "" "and no request at all is made (form '${form:-list}')"
+    assert_contains "$(err held)" "The polling budget made no call" "it says whose stop it is"
+    assert_eq "$(cat "$SLEEP_LOG")" "" "and it does not wait: it is no observer"
+  done
+  # The control: the same write as a `retry` caller's call is outside the budget, and is sent.
+  run outside cmd_retry run rerun 101 --failed --repo "$REPO"
+  assert_eq "$(requests)" "rerun 101" "a caller's call spends quota during the hold ($(err outside))"
+  # A quota refusal of its own first read sets the hold every other command then stops at.
+  reset_fixture
+  printf red >"$TEST_ROOT/state"
+  QUOTA_UNTIL=$((T0 + 900))
+  run refused cmd_rerun "$REPO#7" 101
+  assert_eq "$(rc refused)" 3 "a quota refusal is unknown ($(err refused))"
+  assert_not_contains "$(requests)" "rerun 101" "and the write is not sent after it"
+  assert_eq "$(standing | cut -f1-2)" "$((T0 + 900))	repos/$REPO/pulls/7" "it set the hold"
+  # A quota refusal of the WRITE, its reads having answered: the hold is probed on the run's own
+  # REST endpoint, the quota that refused it, never on GraphQL, which may have quota left.
+  reset_fixture
+  printf red >"$TEST_ROOT/state"
+  QUOTA_UNTIL=$((T0 + 900))
+  QUOTA_ENDPOINT="repos/$REPO/actions/runs/101"
+  run late cmd_rerun "$REPO#7" 101
+  assert_eq "$(rc late)" 3 "a write refused on quota is unknown ($(err late))"
+  assert_contains "$(requests)" "rerun 101" "the write was sent, once"
+  assert_contains "$(requests)" "probe repos/$REPO/actions/runs/101" "and its refusal probed on the run"
+  assert_not_contains "$(requests)" "probe graphql" "not on GraphQL"
+  assert_eq "$(standing | cut -f1-2)" "$((T0 + 900))	repos/$REPO/actions/runs/101" "the hold is that endpoint's"
 }
 
 # A prober that died between taking the lock and writing its owner leaves an ownerless lock. It is
@@ -1120,6 +1186,7 @@ run_tests \
   test_a_probe_that_answers_still_holds_the_refused_operation \
   test_a_later_refusal_never_shortens_the_hold \
   test_a_write_never_waits_a_hold \
+  test_rerun_goes_through_the_budget \
   test_an_ownerless_probe_lock_is_recovered \
   test_a_hold_at_the_start_counts_toward_the_ceiling \
   test_resolving_the_repo_passes_the_hold \

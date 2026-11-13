@@ -195,6 +195,12 @@
 #                                          # judged check is still running, so every red is
 #                                          # reported at once, exit 1 as before
 #                                          # (see prreview/checks.py)
+#   pr-review.sh rerun <pr> [<run-id>...]  # the head's workflow runs, one line each; with run
+#                                          # ids, re-runs the failed jobs of those (gh run rerun
+#                                          # <id> --failed), each a finished red or cancelled
+#                                          # run of the PR's head, else nothing is sent. Inside
+#                                          # the polling budget, unlike a raw gh call or a
+#                                          # `retry` one (ludics#1111; see prreview/rerun.py)
 #   pr-review.sh merge <pr> [--override "<why this red is unrelated>"] [--wait]
 #                           [--rerun-failed-once] [--allow-no-verdict] [--require-green]
 #                           [-C <clone>]
@@ -673,6 +679,7 @@ cmd_poll() { py_forward call poll "$@"; }
 cmd_status() { py_forward call status "$@"; }
 cmd_rounds() { py_forward call rounds "$@"; }
 cmd_checks() { py_forward call checks "$@"; }
+cmd_rerun() { py_forward call rerun "$@"; }
 cmd_merge() { py_forward call merge "$@"; }
 cmd_merge_build() { py_forward call merge-build "$@"; }
 cmd_base() { py_forward call base "$@"; }
@@ -823,7 +830,7 @@ main() {
   --repo=*) REPO="${1#--repo=}" && shift ;;
   esac
   case "${1:-}" in
-  poll | watch | status | rounds | checks | merge | merge-build | base | reply | resolve | comment | body | retry | local-review)
+  poll | watch | status | rounds | checks | rerun | merge | merge-build | base | reply | resolve | comment | body | retry | local-review)
     py_usage "$@"
     py_forward exec "$@"
     ;;
@@ -835,6 +842,7 @@ main() {
                                              # PR opens: HEAD against origin/<base>'s merge base,
                                              # the transcript to <dir>/run.log, the verdict alone
                                              # to <dir>/verdict.md (ship-pr's Open)
+  pr-review.sh rerun <pr> [<run-id>...]      # the head's runs; with ids, re-run their failed jobs
   pr-review.sh comment <pr> <body>           # a plain PR comment (a summary round, a review nudge)
   pr-review.sh reply|comment ... --body-file <path>  # the body from a file, instead of an argument
   pr-review.sh body <pr> <file>              # replace the PR's description from a file, over REST
