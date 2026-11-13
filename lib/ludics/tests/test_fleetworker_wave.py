@@ -1190,7 +1190,10 @@ class ShippedTemplate(unittest.TestCase):
                             self.assertEqual(brief.count("REVIEW_REQUEST <PR number> <head sha>"), 1 if review else 0)
                             self.assertIn(f"`HANDBACK {task}`", brief)
                             self.assertIn('"purpose":"<what the run is for, in one line>"', brief)
+                            self.assertIn("never borrow, copy or export a credential from another box, file or account", brief)
                             self.assertIn("fails on authentication or", brief)
+                            self.assertIn("Any other failed push is not that gate.", brief)
+                            self.assertIn("`pr-review.sh rerun lukstafi/ludics#<pr> <run id>...`", brief)
                             self.assertEqual(brief.count("- Credentials:"), 1, "a rule both transports follow is stated once")
                             if profile:
                                 self.assertIn("You are a Codex CLI worker of wave `wave-x-ludics`, task `" + task + "`", brief)

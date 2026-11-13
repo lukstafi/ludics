@@ -31,6 +31,9 @@ to `@@MAIN@@`.
   (ludics#1039). Never write a polling loop of your own around `gh run view` or `gh pr checks`
   either: the script's waits share one request budget across the fleet, and a loop outside it
   drains the fleet's quota (ludics#1111).
+- A red you judge a flake: `pr-review.sh rerun @@REPO@@#<pr>` lists the head's runs, and
+  `pr-review.sh rerun @@REPO@@#<pr> <run id>...` re-runs the failed jobs of the ones you name,
+  inside that budget. Then wait with `checks --wait` again. Never call `gh run rerun` yourself.
 - Review loop: `pr-review.sh watch` (a long run) waits for the reviewer's round. Answer every
   thread with a fix or a rebuttal, `reply` and `resolve` per thread, and push once per CI cycle. If
   the watch goes quiet suspiciously long, read the feed directly (`gh pr view <pr> --repo @@REPO@@
