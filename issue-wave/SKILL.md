@@ -561,9 +561,9 @@ The brief is self-contained (workers do not see this conversation), carries the 
 requirements for every transport with transport-specific setup and identity, and includes the
 items below. A native worker's brief is rendered from template parts by `fleet-worker.sh wave
 prep`, and any other brief by `wave render`; either refuses an unrendered placeholder
-([coordinator-kit.md](references/coordinator-kit.md)). A native Claude worker's common sections
-and paired-planning additions are the reference template the repository ships,
-`issue-wave/templates/native-claude/`, with the project's facts in wave.json values and the
+([coordinator-kit.md](references/coordinator-kit.md)). A native Claude worker's and a Codex CLI
+worker's common sections, and the paired-planning additions, are the reference template the
+repository ships, `issue-wave/templates/`, with the project's facts in wave.json values and the
 project's own part ([the shipped brief
 template](references/coordinator-kit.md#the-shipped-brief-template)), so no coordinator copies
 brief text forward from an earlier wave. The template carries the items below: a PR that changes
@@ -1161,8 +1161,11 @@ controlled through the tools in your coordinator's file, never through those com
      true`: the targeted batch is no verdict, and the field would make its pass one at the red
      SHA. It takes its own `--id-prefix <wave>-<name>-rerun`, since an id under the loop's prefix
      is the loop driver's own record; the loop's checkout, box and `--cpu`; and as its command the
-     loop's, narrowed to the failing aliases and run three times in one `sh -c` loop that exits on
-     the first failure, with no pipe. `tip-run --wait <id>` concludes it; `NOT STARTED` is a busy
+     loop's, narrowed to the failing aliases and run three times, exiting on the first failure,
+     with no pipe, through a runner that forces each run to execute: a build system reads a second
+     `build` of a target that passed as up to date and runs nothing (ludics#1106: three `dune build
+     @alias` in one `sh -c` loop ran the test once), so use the project's own repeat command, which
+     its agent notes name. `tip-run --wait <id>` concludes it; `NOT STARTED` is a busy
      box (a loop run queues for no slot): re-issue it. Three passes mean a flake, typically load
      on a box shared with workers' batches (wave-20261102: a `device_init_deadline` timing claim
      on macbook-pro beside five workers' batches, settled in three minutes). Then
