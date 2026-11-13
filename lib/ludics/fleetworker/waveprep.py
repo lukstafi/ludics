@@ -64,9 +64,9 @@ shipped directory (``native-codex``, ``cli-claude``) takes its own parts from th
 THE PARTS, where each other part is found (ludics#1072): the wave directory's part wins; for the
 two ``PLANNING`` parts (``planning-paired.md``, ``planning-paired+critique.md``) the shipped one of
 the worker's kind stands in when the wave directory has none (``native-claude`` ships them); any
-other part is the wave directory's or refuses. The shipped parts are the reference brief, kept in
-step with issue-wave SKILL.md's *The brief* and read by check-prompts
-(checkprompts/brieftemplate.py). They hold no project fact: the NAMEs they use are the built-ins
+other part is the wave directory's or refuses. The shipped parts are the reference brief, where
+a worker's rules live (issue-wave SKILL.md's *The brief* says what a task part adds to them), and
+are read by check-prompts (checkprompts/brieftemplate.py). They hold no project fact: the NAMEs they use are the built-ins
 above plus ``SHIPPED_VARS`` (COORDINATOR, the coordinator's session id, and MAIN, the main branch),
 which the wave file's ``vars`` supply, and PROJECT. The common parts speak of no issue (no ISSUE,
 no SOURCE), so they render for a --source task; the planning parts name ISSUE, so a paired --source

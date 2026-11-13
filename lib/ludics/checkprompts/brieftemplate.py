@@ -31,13 +31,13 @@ without it has no template to keep, as the suites' trees of copied prompts do no
   word: one match at least). Where such a ``.md`` word's span is followed by ``, *<heading>*``
   (blanks and line breaks read as one blank), the file has a Markdown heading line with exactly
   that text.
-- RETIRED. No part holds a line containing one of ``RETIRED``'s strings: the steps a PR retired
-  from SKILL.md's *The brief*, each with that PR. The PR that retires a brief step adds its
+- RETIRED. No part holds a line containing one of ``RETIRED``'s strings: the worker steps a PR
+  retired from the brief, each with that PR. The PR that retires a brief step adds its
   string here.
 
-What it deliberately does NOT read: the prose's meaning; whether every item of SKILL.md's *The
-brief* has a line in the template, or the template says it the same way (that is the review of the
-one diff that now holds both); a word of any other shape (an absolute path, a relative ``../``,
+What it deliberately does NOT read: the prose's meaning; whether the template states each rule a
+worker needs (the template is where those rules live, and SKILL.md's *The brief* only says what a
+task part adds: that is the review of the diff that changes either); a word of any other shape (an absolute path, a relative ``../``,
 a placeholder-built path); a heading named in any other form; wave directories, which are not in
 the repository.
 """

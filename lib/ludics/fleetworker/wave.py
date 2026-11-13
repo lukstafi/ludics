@@ -6,18 +6,19 @@ copy re-learnt an old trap: an exit status lost in a pipe, a ``tail`` cutting a 
 loop orphaning its run. The kit is those four, project-neutral, so a wave directory holds data:
 
   wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>...   wavebrief.py
-  wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>]                    waveprep.py
+  wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>]                   waveprep.py
             [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
             [--profile <name>] [--host <box>]
-  wave launch <wave.json> <task>                                                            wavelaunch.py
-  wave loop <wave.json> <name> [--resume-after <request id> | --rerun <red id> -- <command>]                                waveloop.py
-  wave heartbeat <wave.json> [--sleep <seconds>]                                             here
-  wave drive <wave.json> [--poll <seconds>] [--once]                                         wavedrive.py
-  wave turn <wave.json> <task>                                                              wavedrive.py
-  wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file>      wavedecide.py
+  wave launch <wave.json> <task>                                                           wavelaunch.py
+  wave loop <wave.json> <name> [--resume-after <request id> |                              waveloop.py
+            --rerun <red id> -- <command>]
+  wave heartbeat <wave.json> [--sleep <seconds>]                                           here
+  wave drive <wave.json> [--poll <seconds>] [--once]                                       wavedrive.py
+  wave turn <wave.json> <task>                                                             wavedrive.py
+  wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file>     wavedecide.py
               --by <model> [--task <task>] [--posted <url>]
-  wave decisions <wave.json>                                                                wavedecide.py
-  wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                          wavereview.py
+  wave decisions <wave.json>                                                               wavedecide.py
+  wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                         wavereview.py
               [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]
 
 It wraps the mechanisms that exist and re-implements none: ``execution run`` takes the

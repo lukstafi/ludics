@@ -1047,6 +1047,7 @@ WORKER = "issue-wave/scripts/fleet-worker.sh"
 LINK_TARGETS = (
     "issue-wave/SKILL.md",
     "issue-wave/references/cli-claude.md",
+    "issue-wave/references/cli-codex.md",
     "issue-wave/references/executions.md",
     "issue-wave/references/native-claude.md",
     "issue-wave/references/native-codex.md",
@@ -1805,11 +1806,9 @@ class ReadingListTest(Case):
     def test_obligations(self) -> None:
         R = self.root
         os.remove(f"{R}/{FLEET}")
-        # This case deliberately removes the wave prompt. Its references must not retain links
-        # to that absent file: the obligation under test is the shipping reading list alone.
-        for reference in ("executions.md", "native-claude.md"):
-            rewrite(R, f"issue-wave/references/{reference}",
-                    pattern=r"\[The brief\]\(\.\./SKILL\.md#the-brief\)", repl="The brief", count=0)
+        # This case deliberately removes the wave prompt. No reference links to it (the last two
+        # links went with #1129), so its absence leaves no dangling link: the obligation under test
+        # is the shipping reading list alone. A link to it added later fails this case loudly.
         self.expect("without issue-wave, the paragraph alone is held", 0, READ_WHEN_AGREE)
         fresh(R)
         self.lacks(f"a root without {SHIP} carries no reading-list obligation", "What to read when", run(CP, R))

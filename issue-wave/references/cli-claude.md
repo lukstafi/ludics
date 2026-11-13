@@ -6,6 +6,7 @@ provider. This file is written for a Claude Code coordinator, and its workers ca
 Codex invocations (`--kind claude` / `--kind codex`); the shared issue requirements of the
 brief, the base gate and the preflight are in SKILL.md, and the handoff for a worker that
 cannot message the coordinator is the [CLI reservation handoff](executions.md#cli-reservation-handoff).
+A Codex coordinator reads this file whole and [cli-codex.md](cli-codex.md) for its wake.
 
 ## Launch
 
