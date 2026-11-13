@@ -1074,6 +1074,11 @@ one call. `watch` used to hold its window blind and exit 3, the code that says r
 `test-pr-review-merge.sh` holds the merge call's half: the script's own flags refused is exit 2,
 and with the caller's flags forwarded after `--` the same refusal stays the ambiguous exit 3.
 
+`test-pr-review-budget.sh` also pins the #1112 heartbeat diagnostic: successful `Complete job`
+steps leave the verdict pending, incomplete steps leave the heartbeat unchanged, and step reads
+stay inside the budget at one per job per heartbeat. Only retained pending checks with this
+repository's GitHub Actions job URLs are read; step evidence never enters the verdict.
+
 `test-pr-review-budget.sh` drives the polling budget (ludics-lite#543) on a clock kept in a file
 (exported as `SHIP_PR_TEST_CLOCK`, with the suite's `sleep` bridged to the Python), so the hold's
 end, its probes and the pauses are exact and nothing sleeps. Every case drives a command, and the

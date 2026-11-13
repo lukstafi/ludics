@@ -51,6 +51,8 @@ T0=$(command date +%s)
 export SHIP_PR_TEST_CLOCK="$CLOCK"
 
 CHECKS_SEQ=()
+JOB_EARLIER_CONCLUSION=success
+JOB_STEPS_COMPLETE="" # heartbeat-only pending job step fixture (#1112)
 CHECK_DONE_AT=""     # a fake epoch: the check runs (in_progress) until it, then is green (#740)
 QUOTA_UNTIL=0        # fake epoch before which every request answers quota
 QUOTA_RESET=""       # the reset its headers name ("" = the quota's own end)
@@ -106,8 +108,8 @@ next_check() {
 check_runs() {
   case "$1" in
   queued | running) printf '{"check_runs":[]}' ;;
-  pending) printf '{"check_runs":[{"name":"build","status":"queued","conclusion":null,"html_url":"u","check_suite":{"id":1}}]}' ;;
-  inprog) printf '{"check_runs":[{"name":"build","status":"in_progress","conclusion":null,"html_url":"u","check_suite":{"id":1}}]}' ;;
+  pending) printf '{"check_runs":[{"name":"build","status":"queued","conclusion":null,"html_url":"https://github.com/example/repo/actions/runs/101/job/201","check_suite":{"id":1}}]}' ;;
+  inprog) printf '{"check_runs":[{"name":"build","status":"in_progress","conclusion":null,"html_url":"https://github.com/example/repo/actions/runs/101/job/201","check_suite":{"id":1}}]}' ;;
   green) printf '{"check_runs":[{"name":"build","status":"completed","conclusion":"success","html_url":"u","check_suite":{"id":1}}]}' ;;
   red) printf '{"check_runs":[{"name":"build","status":"completed","conclusion":"failure","html_url":"u","check_suite":{"id":1}}]}' ;;
   esac
@@ -263,6 +265,11 @@ gh() {
   "repos/$REPO") body='{"default_branch":""}' ;;
   # The open review threads a merge reads after its gate: none.
   graphql) body=$(review_threads_answer '[]' "$@") ;;
+  "repos/$REPO/actions/jobs/201")
+    body=$(jq -cn --arg complete "$JOB_STEPS_COMPLETE" --arg earlier "$JOB_EARLIER_CONCLUSION" '{name:"build",status:"in_progress",conclusion:null,
+      steps:[{name:"Build",status:"completed",conclusion:$earlier}, {name:"Complete job",status:(if $complete == "yes" then "completed" else "in_progress" end),
+        conclusion:(if $complete == "yes" then "success" else null end),completed_at:"2026-11-13T12:34:56.000Z"}]}')
+    ;;
   "repos/$REPO/actions/runs/101/jobs?per_page=100")
     body='{"jobs":[{"name":"build","status":"in_progress","conclusion":null,"created_at":"2026-10-04T00:00:00Z","completed_at":null}]}'
     ;;
@@ -289,6 +296,8 @@ reset_fixture() {
     "$TEST_ROOT/holder" "$TEST_ROOT/holder-live"
   CHECKS_SEQ=(green)
   CHECK_DONE_AT=""
+  JOB_STEPS_COMPLETE=""
+  JOB_EARLIER_CONCLUSION=success
   rm -f "$TEST_ROOT/check-reads"
   QUOTA_UNTIL=0
   QUOTA_RESET=""
@@ -1091,6 +1100,61 @@ test_a_still_queue_backs_off_and_a_red_still_ends_the_wait() {
   assert_eq "$(err wait)" "" "and an unchanged poll prints nothing"
 }
 
+# #1112: step evidence is prose only; even every successful step cannot turn pending green.
+test_completed_steps_annotate_without_a_green_verdict() {
+  reset_fixture
+  CHECKS_SEQ=(inprog)
+  JOB_STEPS_COMPLETE=yes
+  retune CHECKS_HEARTBEAT=60
+  run wait cmd_checks "$REPO#7" --wait=300
+  assert_eq "$(rc wait)" 4 "successful steps never publish a verdict ($(err wait))"
+  assert_contains "$(out wait)" "checks: verdict=pending" "the trailer stays pending"
+  assert_contains "$(err wait)" "steps finished successfully at 2026-11-13T12:34:56.000Z" "heartbeat carries the finish time"
+  assert_contains "$(err wait)" "conclusion has not been published; this is a GitHub-side delay" "explains the delay"
+  assert_eq "$(tr '\n' ' ' <"$SLEEP_LOG")" "60 120 120 " "polling and ceiling unchanged"
+}
+
+test_failed_steps_never_claim_successful_steps() {
+  reset_fixture
+  CHECKS_SEQ=(inprog)
+  JOB_STEPS_COMPLETE=yes
+  JOB_EARLIER_CONCLUSION=failure
+  retune CHECKS_HEARTBEAT=60
+  run wait cmd_checks "$REPO#7" --wait=300
+  assert_eq "$(rc wait)" 4 "a step failure with no job conclusion stays pending"
+  assert_eq "$(err wait | grep -c 'steps finished successfully' || :)" 0 "finalization does not make failed steps successful"
+}
+
+test_incomplete_steps_leave_the_heartbeat_unchanged() {
+  reset_fixture
+  CHECKS_SEQ=(inprog)
+  retune CHECKS_HEARTBEAT=60
+  run wait cmd_checks "$REPO#7" --wait=300
+  assert_eq "$(rc wait)" 4 "incomplete steps remain pending"
+  assert_eq "$(err wait | grep -c 'GitHub-side delay' || :)" 0 "no completion diagnostic"
+  assert_eq "$(err wait | grep -c '1 check(s) running: build)')" 2 "original heartbeat text"
+}
+
+test_step_reads_are_once_per_heartbeat_inside_the_budget() {
+  reset_fixture
+  CHECKS_SEQ=(inprog)
+  JOB_STEPS_COMPLETE=yes
+  retune CHECKS_HEARTBEAT=120
+  run wait cmd_checks "$REPO#7" --wait=420
+  assert_eq "$(rc wait)" 4 "step reads do not end the wait"
+  assert_eq "$(requests | grep -c 'actions/jobs/201')" 2 "one read for each of two heartbeats, none on other polls"
+  assert_eq "$(err wait | grep -c 'still waiting on')" 2 "two heartbeats"
+  reset_fixture
+  CHECKS_SEQ=(inprog)
+  retune CHECKS_HEARTBEAT=60
+  QUOTA_ENDPOINT="*actions/jobs/201"
+  QUOTA_UNTIL=$((T0 + 1000))
+  run held cmd_checks "$REPO#7" --wait=300
+  assert_eq "$(rc held)" 3 "the diagnostic's quota hold ends unread, never green"
+  assert_eq "$(requests | grep -c '^read .*actions/jobs/201')" 1 "no step read escapes the hold or wait ceiling"
+  assert_eq "$(requests | grep -c '^probe .*actions/jobs/201')" 1 "the existing budget probes the refusal once"
+}
+
 # ludics-lite#740: a check that has its runner ends on its own, so while every pending check is
 # running the pause stops doubling at twice the interval, and the completion is read within that
 # of a read that saw it running -- for checks --wait and merge --wait alike. The #543 queue above
@@ -1215,6 +1279,10 @@ run_tests \
   test_an_explicit_github_repo_overrides_gh_host \
   test_an_unrecordable_probe_answer_stops_the_gate \
   test_a_still_queue_backs_off_and_a_red_still_ends_the_wait \
+  test_completed_steps_annotate_without_a_green_verdict \
+  test_failed_steps_never_claim_successful_steps \
+  test_incomplete_steps_leave_the_heartbeat_unchanged \
+  test_step_reads_are_once_per_heartbeat_inside_the_budget \
   test_a_running_check_is_read_within_two_intervals \
   test_a_moving_signal_is_read_at_the_interval \
   test_a_hold_inside_a_wait_is_one_line_and_no_exit \
