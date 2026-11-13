@@ -60,6 +60,11 @@ no single worker can see. In this mode:
 - Per item, the close-out carries: the grounding, the *proposed* disposition, and the draft
   artifact — issue title+body in the tracker's style, chip prompt, or the existing issue
   number new evidence should be commented on.
+- A fourth disposition exists in this mode: a **checklist item**, for polish with no behaviour
+  change (a comment, a test's name, a helper worth sharing). Propose it as one line, the claim
+  and where it is, in place of an issue draft or a chip. The coordinator keeps one checklist
+  issue for a wave's items and batches what is worth doing. An item that could change a result
+  is never one: it is an issue.
 - File nothing, comment nothing, spawn nothing. Drops are still stated with their reason, so
   the coordinator does not re-raise what the worker already binned.
 

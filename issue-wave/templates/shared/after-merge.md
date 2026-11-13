@@ -7,9 +7,9 @@
    comment is posted from the maintainer's account. Then run `gh issue close <N> --repo @@ISSUE_REPO@@` only if the merge left it open.
    (`gh issue close --comment` on an issue that is already closed posts nothing.)
 2. Run the after-merge skill (`~/.claude/skills/after-merge/SKILL.md`) in HAND-BACK MODE: propose
-   follow-up issues (a title and a 2-4 line body each, ready to file, with evidence) and task chips
-   in your report. File nothing and spawn nothing; the coordinator combines proposals across
-   workers and files them.
+   follow-up issues (a title and a 2-4 line body each, ready to file, with evidence), task chips,
+   and one-line checklist items for polish that changes no behaviour, in your report. File
+   nothing and spawn nothing; the coordinator combines proposals across workers and files them.
 3. Do NOT remove your worktree or its branch; the coordinator does that at close-out. Leave the
    worktree clean (no untracked data of yours).
 4. Your final message is the hand-back. Its first line is `HANDBACK @@T@@`, alone. Then: the PR by
