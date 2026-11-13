@@ -22,6 +22,12 @@ class JobSteps(unittest.TestCase):
         self.assertEqual(read.call_args.args[0], "read")
         self.assertIn("repos/o/r/actions/jobs/34", read.call_args.args[1])
 
+    def test_repository_case_does_not_hide_evidence(self) -> None:
+        session = self.session()
+        with mock.patch.object(session, "retry", return_value=GhOk("2026-11-13T12:34:56Z")):
+            note = diagnostic(session, "O/R", [("build", "https://github.com/o/r/actions/runs/12/job/34")])
+        self.assertIn("steps finished successfully", note)
+
     def test_external_or_malformed_urls_never_read(self) -> None:
         session = self.session()
         urls = ["https://github.com/other/r/actions/runs/12/job/34",

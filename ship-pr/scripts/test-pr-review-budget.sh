@@ -51,6 +51,7 @@ T0=$(command date +%s)
 export SHIP_PR_TEST_CLOCK="$CLOCK"
 
 CHECKS_SEQ=()
+JOB_EARLIER_CONCLUSION=success
 JOB_STEPS_COMPLETE="" # heartbeat-only pending job step fixture (#1112)
 CHECK_DONE_AT=""     # a fake epoch: the check runs (in_progress) until it, then is green (#740)
 QUOTA_UNTIL=0        # fake epoch before which every request answers quota
@@ -265,8 +266,8 @@ gh() {
   # The open review threads a merge reads after its gate: none.
   graphql) body=$(review_threads_answer '[]' "$@") ;;
   "repos/$REPO/actions/jobs/201")
-    body=$(jq -cn --arg complete "$JOB_STEPS_COMPLETE" '{name:"build",status:"in_progress",conclusion:null,
-      steps:[{name:"Complete job",status:(if $complete == "yes" then "completed" else "in_progress" end),
+    body=$(jq -cn --arg complete "$JOB_STEPS_COMPLETE" --arg earlier "$JOB_EARLIER_CONCLUSION" '{name:"build",status:"in_progress",conclusion:null,
+      steps:[{name:"Build",status:"completed",conclusion:$earlier}, {name:"Complete job",status:(if $complete == "yes" then "completed" else "in_progress" end),
         conclusion:(if $complete == "yes" then "success" else null end),completed_at:"2026-11-13T12:34:56Z"}]}')
     ;;
   "repos/$REPO/actions/runs/101/jobs?per_page=100")
@@ -296,6 +297,7 @@ reset_fixture() {
   CHECKS_SEQ=(green)
   CHECK_DONE_AT=""
   JOB_STEPS_COMPLETE=""
+  JOB_EARLIER_CONCLUSION=success
   rm -f "$TEST_ROOT/check-reads"
   QUOTA_UNTIL=0
   QUOTA_RESET=""
@@ -1112,6 +1114,17 @@ test_completed_steps_annotate_without_a_green_verdict() {
   assert_eq "$(tr '\n' ' ' <"$SLEEP_LOG")" "60 120 120 " "polling and ceiling unchanged"
 }
 
+test_failed_steps_never_claim_successful_steps() {
+  reset_fixture
+  CHECKS_SEQ=(inprog)
+  JOB_STEPS_COMPLETE=yes
+  JOB_EARLIER_CONCLUSION=failure
+  retune CHECKS_HEARTBEAT=60
+  run wait cmd_checks "$REPO#7" --wait=300
+  assert_eq "$(rc wait)" 4 "a step failure with no job conclusion stays pending"
+  assert_eq "$(err wait | grep -c 'steps finished successfully' || :)" 0 "finalization does not make failed steps successful"
+}
+
 test_incomplete_steps_leave_the_heartbeat_unchanged() {
   reset_fixture
   CHECKS_SEQ=(inprog)
@@ -1267,6 +1280,7 @@ run_tests \
   test_an_unrecordable_probe_answer_stops_the_gate \
   test_a_still_queue_backs_off_and_a_red_still_ends_the_wait \
   test_completed_steps_annotate_without_a_green_verdict \
+  test_failed_steps_never_claim_successful_steps \
   test_incomplete_steps_leave_the_heartbeat_unchanged \
   test_step_reads_are_once_per_heartbeat_inside_the_budget \
   test_a_running_check_is_read_within_two_intervals \
