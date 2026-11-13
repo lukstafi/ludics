@@ -405,6 +405,7 @@ cp "$FW" "$TMP/dispatcher/issue-wave/scripts/fleet-worker.sh"
 cp "$HERE/../../scripts/py" "$TMP/dispatcher/scripts/py"
 cp -R "$HERE/../../lib" "$TMP/dispatcher/lib"
 cp "$HERE/bg-run.sh" "$TMP/dispatcher/issue-wave/scripts/bg-run.sh"
+cp -R "$HERE/../templates" "$TMP/dispatcher/issue-wave/templates"   # the shipped parts wave prep and wave review look up
 FW="$TMP/dispatcher/issue-wave/scripts/fleet-worker.sh"
 export BASE_CALL_LOG="$TMP/base-calls"
 export SHIM_FW="$FW"   # the dispatcher copy, for the shim's mid-read conclusion below
@@ -6152,6 +6153,32 @@ fixture_done wkv-cc-1
 expect "the heartbeat prints its time last" 0 "^HEARTBEAT wkv [0-9T:-]*Z$" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 0
 grep -q "^HEARTBEAT prs exit=" <<<"$out" && grep -q "^HEARTBEAT halted exit=" <<<"$out" && grep -q "^HEARTBEAT loop cc: " <<<"$out" &&
   [[ "$(tail -n 1 <<<"$out")" == "HEARTBEAT wkv "* ]] && ok "...after each read's exit and the loop's line" || ko "heartbeat: $out"
+# wave review (ludics#1108), a dry run end to end: the shipped parts render, the reviewer (a fake
+# `claude` here, first on PATH) gets the prompt on its stdin, and its last line is parsed whole.
+jq '. + {vars:{MAIN:"master"}, review:{kind:"claude", model:"opus"}}' "$K/wave.json" > "$K/wave-review.json" && mv "$K/wave-review.json" "$K/wave.json"
+mkdir -p "$K/bin"
+cat > "$K/bin/claude" <<'REVIEWER'
+#!/usr/bin/env bash
+cat > "$REVIEW_STDIN"
+jq -n --arg r "$REVIEW_SAYS" '{type:"result", is_error:false, result:$r}'
+REVIEWER
+chmod +x "$K/bin/claude"
+jq -n --arg h "$pbase" '{state:"OPEN", headRefOid:$h}' > "$K/pr-view.json"
+FWR=(env PATH="$K/bin:$PATH" REVIEW_STDIN="$K/review-stdin" SHIM_GH_PR_VIEW="$K/pr-view.json" FLEET_BOXES="testbox other" "$FW")
+expect "a dry-run review reads a blocking verdict whole: confirm, never merge" 0 \
+  "^WAVE REVIEW t77: example/project#12 at-open at ${pbase:0:8}: verdict=blocking blocking=1 suggestions=2 decision=confirm comment=- message=$K/reviews/12-at-open-${pbase:0:12}.message.md$" -- \
+  env REVIEW_SAYS=$'### Review checkpoint (at-open): head x\n\nA finding.\n\nVERDICT: blocking (1 blocking, 2 suggestions)' "${FWR[@]}" wave review "$K/wave.json" t77 12 "$pbase" --kind at-open --dry-run
+grep -q "example/project#12, head \`$pbase\`" "$K/review-stdin" && grep -q "^The PR is for issue example/project#77" "$K/review-stdin" && ! grep -q '@@' "$K/review-stdin" &&
+  ok "...the reviewer got the rendered shipped prompt on its stdin" || ko "the reviewer's stdin: $(head -n 5 "$K/review-stdin" 2>&1)"
+grep -q "^REVIEW_POSTED 12 $pbase$" "$K/reviews/12-at-open-${pbase:0:12}.message.md" && grep -q 'CONFIRM_REQUEST 12 <head sha>' "$K/reviews/12-at-open-${pbase:0:12}.message.md" &&
+  ok "...and the worker's message asks for the confirm" || ko "message: $(cat "$K/reviews/12-at-open-${pbase:0:12}.message.md" 2>&1)"
+rm -f "$K/reviews/12-at-open-${pbase:0:12}.json"
+expect "...and a review that ends on no verdict line is unreadable, taken as blocking" 0 "verdict=unreadable blocking=0 suggestions=0 decision=unreadable" -- \
+  env REVIEW_SAYS=$'Mostly suggestions.\n\nVERDICT: blocking (1 blocking, 2 suggestions), I think' "${FWR[@]}" wave review "$K/wave.json" t77 12 "$pbase" --kind at-open --dry-run
+jq -n --arg h "$(printf 'c%.0s' $(seq 40))" '{state:"OPEN", headRefOid:$h}' > "$K/pr-view.json"
+expect "a real review needs the PR's head to be the one asked at" 1 "^WAVE REVIEW REFUSED t78: example/project#13 at-open at ${pbase:0:8}: the PR's head is $(printf 'c%.0s' $(seq 40)), not $pbase" -- \
+  env REVIEW_SAYS=x "${FWR[@]}" wave review "$K/wave.json" t78 13 "$pbase" --kind at-open
+expect "review takes a kind" 2 "wave review: --kind is one of at-open, confirm" -- "${FWR[@]}" wave review "$K/wave.json" t77 12 "$pbase"
 }
 
 section "usage" && {

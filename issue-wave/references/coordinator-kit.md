@@ -1,17 +1,18 @@
 # Coordinator kit
 
 `fleet-worker.sh wave` is the per-wave tooling every coordinator used to rewrite under
-`$ISSUE_WAVE_STATE/<wave>/` (ludics#1047). It has four verbs:
+`$ISSUE_WAVE_STATE/<wave>/` (ludics#1047). It has five verbs:
 
 - a brief renderer;
 - a native worker's launch prep;
 - a restartable integration-loop driver;
-- a heartbeat.
+- a heartbeat;
+- the review checkpoint.
 
 With the kit, the wave directory holds data only: no script is copied forward from the last
 wave. The contracts are the module headers in `lib/ludics/fleetworker/`: `wave.py` for the wave
-file and the heartbeat, `wavebrief.py`, `waveprep.py` and `waveloop.py`. This page covers what
-a coordinator puts in the wave directory and when it calls each verb.
+file and the heartbeat, `wavebrief.py`, `waveprep.py`, `waveloop.py` and `wavereview.py`. This
+page covers what a coordinator puts in the wave directory and when it calls each verb.
 
 ## The wave directory
 
@@ -23,6 +24,8 @@ a coordinator puts in the wave directory and when it calls each verb.
 <wave>/common.md              optional: overrides the shipped common sections
 <wave>/planning-<mode>.md     optional: overrides a shipped paired-planning section (paired, paired+critique)
 <wave>/project.md             optional: overrides the project part the wave file's project_part names
+<wave>/review/<part>          optional: overrides a shipped review part; review/project.md overrides the
+                              project's own review part (the wave file's review.project_part)
 ```
 
 ## The shipped brief template
@@ -65,7 +68,9 @@ scratch/<task>/runs/     the worker's run parent
 prep/<task>.json         prep's manifest
 ```
 
-The loop driver writes `logs/loop-<name>.{json,log,lock}`.
+The loop driver writes `logs/loop-<name>.{json,log,lock}`. A review writes
+`reviews/<pr>-<kind>-<sha12>.*`: the prompt, the reviewer's raw answer, the review as posted, the
+message for the worker, and the record a re-run reads.
 
 `wave.json` is a fail-closed allowlist (wave.py's header lists every key). A minimal ludics wave
 on the shipped template:
@@ -157,3 +162,26 @@ kit invents none.
 
 7. **For a paired worker's plan,** use `peer-plan.sh save-plan <plan dir> --from-transcript
    <file>` ([paired-planning.md](paired-planning.md)).
+8. **The review checkpoint.** A wave whose file names a reviewer has a second model read each
+   worker's PR:
+
+   ```json
+   "review": {"kind": "claude", "model": "opus", "label": "Claude Opus 5.5",
+              "project_part": ".github/review-checkpoint.md"}
+   ```
+
+   A worker's request for its review, or for the confirm before it merges, is answered with one
+   call, run in the background since a review takes minutes:
+
+   ```
+   fleet-worker.sh wave review <wave.json> <task> <pr> <head sha> --kind at-open|confirm
+   ```
+
+   It runs the reviewer headless and read-only, posts the review on the PR, and prints one line
+   with the verdict, the decision and the path of the message that resumes the worker. Send the
+   worker that file as it is. `decision=unreadable` means the review ended on no verdict line: it
+   is treated as blocking, and the review is yours to read. The verdict's grammar, the decisions
+   and what a re-run recovers are `wavereview.py`'s header. The same call run twice replays its
+   record and buys no second review, so when a worker asks for a confirm again at the same head
+   (it rebutted and pushed nothing), add `--again`. `--dry-run` posts nothing, for trying a
+   reviewer or a project part on a PR that already merged.

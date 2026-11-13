@@ -3686,7 +3686,7 @@ class BriefTemplateTest(Case):
             ("a file prep never reads", lambda: write(os.path.join(R, T, "planning-pair.md"), "x\n"),
              f"FAIL: {T}planning-pair.md: is no part wave prep reads"),
             ("a directory for no kind", lambda: write(os.path.join(R, "issue-wave", "templates", "native-gpt", "common.md"), ""),
-             "FAIL: issue-wave/templates/native-gpt: is no native-<kind> template directory"),
+             "FAIL: issue-wave/templates/native-gpt: is no native-<kind> template directory (kinds: claude, codex), nor review"),
             ("no native-claude", lambda: os.rename(os.path.join(R, T), os.path.join(R, "issue-wave", "templates", "native-codex")),
              "FAIL: issue-wave/templates: has no native-claude/"),
             ("an issue name in common.md", lambda: append(os.path.join(R, T, "common.md"), "Closes @@ISSUE@@\n"),
@@ -3716,6 +3716,37 @@ class BriefTemplateTest(Case):
                 damage()
                 result = self.expect(f"{label} is refused", 1, want)
                 self.lacks(label, BRIEF_OK, result)
+
+    def test_the_review_parts_are_held_to_their_own_files_and_names(self) -> None:
+        R, V = self.root, "issue-wave/templates/review/"
+
+        def review_tree() -> None:
+            brief_tree(R)
+            for part, text in (("checkpoint.md", "Review @@REPO@@#@@PR@@ at @@SHA8@@ of @@WAVE@@.\n"), ("issue.md", "For @@ISSUE@@.\n"),
+                               ("source.md", "From @@SOURCE@@, see `@@BRIEF@@`.\n"), ("confirm.md", "After @@REVIEWED_SHA@@.\n"),
+                               ("verdict.md", "End on the verdict (@@KIND@@).\n")):
+                write(os.path.join(R, V, part), text)
+            write(os.path.join(R, ".github", "review-checkpoint.md"), "## This project\n\nRead `lib/ludics/README.md` at @@MAIN@@.\n")
+
+        review_tree()
+        self.expect("the review parts and the project's review part pass", 0, BRIEF_OK.replace("4 parts", "10 parts"))
+        cases: tuple[tuple[str, Callable[[], None], str], ...] = (
+            ("a missing review part", lambda: os.remove(os.path.join(R, V, "confirm.md")),
+             f"FAIL: {V}confirm.md: is missing, or no regular file: wave review looks this shipped part up"),
+            ("a file wave review never reads", lambda: write(os.path.join(R, V, "notes.md"), "x\n"),
+             f"FAIL: {V}notes.md: is no part wave review reads"),
+            ("an issue name in the checkpoint part", lambda: append(os.path.join(R, V, "checkpoint.md"), "@@ISSUE@@\n"),
+             f"FAIL: {V}checkpoint.md: {V}checkpoint.md:2: @@ISSUE@@ is not rendered"),
+            ("a brief name in the project's review part", lambda: append(os.path.join(R, ".github", "review-checkpoint.md"), "@@WT@@\n"),
+             "FAIL: .github/review-checkpoint.md: .github/review-checkpoint.md:4: @@WT@@ is not rendered"),
+            ("a reference to no file", lambda: append(os.path.join(R, V, "verdict.md"), "See `issue-wave/references/gone.md`.\n"),
+             f"FAIL: {V}verdict.md: `issue-wave/references/gone.md` names no file of this tree"),
+        )
+        for label, damage, want in cases:
+            with self.subTest(case=label):
+                review_tree()
+                damage()
+                self.expect(f"{label} is refused", 1, want)
 
     def test_words_of_other_shapes_are_not_read(self) -> None:
         # The boundary: only ~/.claude/skills/, ~/ludics/ and top-level-entry words are references.

@@ -193,6 +193,24 @@ def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
     return args[0], args[1], opts
 
 
+def subject(wave: Wave, task: str, issue: str, source: str, verb: str) -> tuple[str, str, str]:
+    """What a task is about, as ``(number, issue_ref, source_ref)``: the issue of a ``t<N>`` task or of
+    ``--issue``, or the issue a ``--source`` task came from; one ref is empty. ``wave review`` reads a
+    task the same way."""
+    if issue and source:
+        die(f"wave {verb}: --issue and --source exclude each other")
+    for given in (issue, source):
+        if given and not given.isdigit():
+            die(f"wave {verb}: an issue number is digits, not {given!r}")
+    issue_task = ISSUE_TASK.fullmatch(task)
+    if source:
+        return source, "", f"{wave.issue_repository}#{source}"
+    if issue or issue_task:
+        number = issue or (issue_task.group(1) if issue_task else "")
+        return number, f"{wave.issue_repository}#{number}", ""
+    die(f"wave {verb}: task {task} is no t<N>: name its issue with --issue <N>, or with --source <N> the issue a no-issue task came from")
+
+
 def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
     wave = load_wave(path, "prep")
     if not TASK.fullmatch(task):
@@ -201,19 +219,7 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
         die(f"wave prep: --mode is one of {', '.join(MODES)}, not {opts['mode']!r}")
     if not opts["base"]:
         die("wave prep: --base <rev> is required (the verified base the worktree starts from)")
-    if opts["issue"] and opts["source"]:
-        die("wave prep: --issue and --source exclude each other")
-    for given in (opts["issue"], opts["source"]):
-        if given and not given.isdigit():
-            die(f"wave prep: an issue number is digits, not {given!r}")
-    issue_task = ISSUE_TASK.fullmatch(task)
-    if opts["source"]:
-        number, issue_ref, source_ref = opts["source"], "", f"{wave.issue_repository}#{opts['source']}"
-    elif opts["issue"] or issue_task:
-        number = opts["issue"] or (issue_task.group(1) if issue_task else "")
-        issue_ref, source_ref = f"{wave.issue_repository}#{number}", ""
-    else:
-        die(f"wave prep: task {task} is no t<N>: name its issue with --issue <N>, or with --source <N> the issue a no-issue task came from")
+    number, issue_ref, source_ref = subject(wave, task, opts["issue"], opts["source"], "prep")
     legs: list[Leg] = []
     for box in [b for b in opts["legs"].split(",") if b] if opts["legs"] else []:
         if box not in wave.legs:

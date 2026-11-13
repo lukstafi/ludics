@@ -2,9 +2,11 @@
 shell suite's "wave kit" section drives the verbs end to end through fleet-worker.sh."""
 
 import contextlib
+import fcntl
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -13,7 +15,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import revision, takeover, wave, waveloop, waveprep
+from ludics.fleetworker import revision, takeover, wave, waveloop, waveprep, wavereview
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -109,7 +111,9 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-class Prep(unittest.TestCase):
+class WaveDirCase(unittest.TestCase):
+    """A scratch project checkout with its origin, a wave directory and its wave file."""
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         d = self.dir = os.path.realpath(self.tmp.name)
@@ -146,6 +150,8 @@ class Prep(unittest.TestCase):
         self.shim_calls.append(argv[1:])
         return Done(self.shim_rc.get(" ".join(argv[1:3]), 0), "")
 
+
+class Prep(WaveDirCase):
     @contextlib.contextmanager
     def world(self, prs: list[dict[str, Any]] | None = None, records: list[dict[str, Any]] | None = None,
               board: Any = NO_BOARD_EXIT, head_prs: list[dict[str, Any]] | None = None) -> Generator[FakeTool]:
@@ -394,6 +400,396 @@ class Prep(unittest.TestCase):
         self.assertIn(f"the template part {self.wavedir}/legs.md does not exist", out)
         self.assertNotIn("nor the shipped", out, "the repository ships no legs part")
         self.assert_made_nothing(out)
+
+
+class Verdict(unittest.TestCase):
+    """#1108: the verdict line parsed whole, never matched; anything else is unreadable, which blocks."""
+
+    def read(self, last: str, body: str = "### Review checkpoint (at-open): head 12345678\n\nA finding.\n\n") -> tuple[str, int, int, bool]:
+        got = wavereview.parse_verdict(body + last)
+        return got.word, got.blocking, got.suggestions, got.blocks
+
+    def test_the_line_is_read_whole_and_only_the_blocking_count_decides(self) -> None:
+        cases = {
+            "VERDICT: blocking (1 blocking, 2 suggestions)": ("blocking", 1, 2, True),  # the line a pattern read as "suggestions"
+            "VERDICT: blocking (0 blocking, 3 suggestions)": ("blocking", 0, 3, False),
+            "VERDICT: suggestions (0 blocking, 3 suggestions)": ("suggestions", 0, 3, False),
+            "VERDICT: suggestions": ("suggestions", 0, 0, False),
+            "VERDICT: clean": ("clean", 0, 0, False),
+            "VERDICT: clean (0 blocking, 0 suggestions)": ("clean", 0, 0, False),
+            "VERDICT: clean  \n\n": ("clean", 0, 0, False),
+        }
+        for last, want in cases.items():
+            self.assertEqual(self.read(last), want, last)
+
+    def test_anything_else_is_unreadable_and_blocks(self) -> None:
+        for last in ("", "VERDICT: blocking", "VERDICT: blocking (1 blocking", "VERDICT: block", "verdict: clean",
+                     "`VERDICT: clean`", " VERDICT: clean", "VERDICT: clean.", "VERDICT: clean (1 blocking, 0 suggestions)",
+                     "VERDICT: suggestions (2 blocking, 1 suggestions)", "VERDICT: blocking (01 blocking, 2 suggestions)",
+                     "VERDICT: blocking (-1 blocking, 2 suggestions)", "VERDICT: clean\nThanks.",
+                     "VERDICT: blocking (1 blocking, 2 suggestions) or clean", "Overall: VERDICT: clean"):
+            self.assertEqual(self.read(last), ("unreadable", 0, 0, True), repr(last))
+        self.assertEqual(wavereview.parse_verdict("").word, "unreadable")
+
+    def test_the_decision_table(self) -> None:
+        clean, blocking = wavereview.parse_verdict("VERDICT: clean"), wavereview.parse_verdict("VERDICT: blocking (2 blocking, 0 suggestions)")
+        table = {("at-open", clean): "merge", ("at-open", blocking): "confirm", ("confirm", clean): "cleared",
+                 ("confirm", blocking): "findings", ("at-open", wavereview.UNREADABLE): "unreadable",
+                 ("confirm", wavereview.UNREADABLE): "unreadable"}
+        for (kind, verdict), want in table.items():
+            self.assertEqual(wavereview.decision_of(kind, verdict), want, (kind, verdict.word))
+
+
+REVIEW_TEXT = "### Review checkpoint (at-open): head {sha8}\n\n**A claim that cannot fail** (blocking), `a.ml:3`: ...\n\n{verdict}"
+COMMENT = "https://github.com/o/staging/pull/7#issuecomment-1"
+
+
+class Review(WaveDirCase):
+    def setUp(self) -> None:
+        super().setUp()
+        with open(self.path, "w") as f:
+            json.dump(wave_data(self.dir, vars={"COORD": "session-1", "MAIN": "main"},
+                                review={"kind": "claude", "model": "opus", "label": "Claude Opus 5.5"}), f)
+        self.comment_rc = 0
+
+    def helper_run(self, argv: list[str], **_: Any) -> Done:
+        """The verb's two outside writes: pr-review.sh comment (its stdout the URL) and board set."""
+        self.shim_calls.append([os.path.basename(argv[0]), *argv[1:]])
+        if argv[1] == "comment":
+            return Done(self.comment_rc, COMMENT + "\n" if self.comment_rc == 0 else "")
+        return Done(self.shim_rc.get(" ".join(argv[1:3]), 0), "")
+
+    @contextlib.contextmanager
+    def world(self, verdict: str = "VERDICT: blocking (1 blocking, 2 suggestions)", head: str = "", state: str = "OPEN",
+              reviewer: Answer | None = None, gate: int = 0) -> Generator[tuple[FakeTool, mock.Mock]]:
+        said = REVIEW_TEXT.format(sha8=self.base[:8], verdict=verdict)
+        with (FakeTool("gh") as gh, FakeTool("claude") as claude,
+              mock.patch.object(wavereview, "anchor_gate", return_value=gate) as gated,
+              mock.patch.object(wavereview, "run", side_effect=self.helper_run)):
+            gh.route((When(prefix=("pr", "view")), Answer(stdout=json.dumps({"state": state, "headRefOid": head or self.base}))))
+            claude.script(reviewer or Answer(stdout=json.dumps({"type": "result", "is_error": False, "result": said})))
+            self.claude = claude
+            yield gh, gated
+
+    def review(self, *args: str, task: str = "t42", kind: str = "at-open", sha: str = "") -> tuple[int, str, str]:
+        return captured(wavereview.cmd_review, self.cfg, [self.path, task, "7", sha or self.base, "--kind", kind, *args])
+
+    def stem(self, kind: str = "at-open") -> str:
+        return os.path.join(self.wavedir, "reviews", f"7-{kind}-{self.base[:12]}")
+
+    def read(self, path: str) -> str:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_blocking_at_open_review_is_posted_and_asks_for_a_confirm(self) -> None:
+        with self.world() as (gh, gated):
+            rc, out, err = self.review()
+            asked, ran = gh.calls(), self.claude.calls()
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(out, f"WAVE REVIEW t42: o/staging#7 at-open at {self.base[:8]}: verdict=blocking blocking=1 suggestions=2"
+                              f" decision=confirm comment={COMMENT} message={self.stem()}.message.md\n")
+        gated.assert_called_once_with(self.cfg, "WAVE REVIEW", "t42", True)
+        self.assertEqual(asked, [["pr", "view", "7", "--repo", "o/staging", "--json", "state,headRefOid"]] * 2,
+                         "the PR is read before the reviewer runs and again before its review is posted")
+        self.assertEqual(len(ran), 1)
+        self.assertEqual(ran[0][:5], ["-p", "--model", "opus", "--output-format", "json"])
+        allowed = ran[0][ran[0].index("--allowedTools") + 1:ran[0].index("--disallowedTools")]
+        self.assertEqual(ran[0][ran[0].index("--disallowedTools") + 1:], ["Edit", "Write", "NotebookEdit"])
+        repo = os.path.join(self.dir, "repo")
+        self.assertIn(f"Bash(git -C {repo} show:*)", allowed)
+        self.assertIn("Bash(gh pr diff:*)", allowed)
+        # READ-ONLY is the tool list: no bare git or gh, and no verb that moves a checkout or writes to GitHub.
+        for entry in allowed:
+            self.assertNotIn(entry, ("Bash(git:*)", "Bash(gh:*)", "Bash", "Bash(*)"))
+            for verb in (" checkout", " reset", " push", " commit", " stash", " fetch", "pr comment", "pr merge", "gh api", "pr review"):
+                self.assertNotIn(verb, entry)
+        prompt = self.read(self.stem() + ".prompt.md")
+        for want in (f"o/staging#7, head `{self.base}`", "delegation wave wv", "The PR is for issue o/up#42",
+                     "`gh issue view 42 --repo o/up --json number,title,body,comments`", f"show origin/main:<path>",
+                     f"### Review checkpoint (at-open): head {self.base[:8]}", "VERDICT: blocking (<n> blocking, <m> suggestions)"):
+            self.assertIn(want, prompt)
+        self.assertNotIn("confirm review", prompt)
+        self.assertNotIn("@@", prompt)
+        self.assertEqual(self.shim_calls, [
+            ["pr-review.sh", "comment", "o/staging#7", "--body-file", self.stem() + ".md", "--coordinator", "Claude Opus 5.5 review checkpoint"],
+            ["fleet-worker.sh", "board", "set", "wv", "t42", f"review=blocking@{self.base[:8]}"]])
+        self.assertTrue(self.read(self.stem() + ".md").endswith("VERDICT: blocking (1 blocking, 2 suggestions)\n"))
+        message = self.read(self.stem() + ".message.md")
+        self.assertTrue(message.startswith(f"REVIEW_POSTED 7 {self.base}\nVERDICT: blocking (1 blocking, 2 suggestions)\n"))
+        self.assertIn("end your turn with `CONFIRM_REQUEST 7 <head sha>`", message)
+        self.assertIn(COMMENT, message)
+        record = json.loads(self.read(self.stem() + ".json"))
+        self.assertEqual((record["decision"], record["comment"], record["dry_run"], record["verdict"]["blocking"]),
+                         ("confirm", COMMENT, False, 1))
+
+    def test_a_verdict_that_does_not_block_says_merge_and_an_unreadable_one_never_does(self) -> None:
+        for verdict, word, decision, said in (
+                ("VERDICT: suggestions (0 blocking, 2 suggestions)", "suggestions", "merge", "with no CONFIRM_REQUEST"),
+                ("VERDICT: clean", "clean", "merge", "with no CONFIRM_REQUEST"),
+                ("Looks fine overall, VERDICT: clean I think", "unreadable", "unreadable", "no readable verdict line, so it is taken as blocking")):
+            with self.subTest(verdict):
+                shutil.rmtree(os.path.join(self.wavedir, "reviews"), ignore_errors=True)
+                with self.world(verdict=verdict):
+                    rc, out, _ = self.review()
+                self.assertEqual(rc, 0, out)
+                self.assertIn(f"verdict={word} ", out)
+                self.assertIn(f"decision={decision} ", out)
+                message = self.read(self.stem() + ".message.md")
+                self.assertIn(said, message)
+                self.assertEqual("CONFIRM_REQUEST 7 <head sha>" in message, decision == "unreadable")
+
+    def test_a_review_made_is_never_bought_twice(self) -> None:
+        with self.world():
+            self.assertEqual(self.review()[0], 0)
+            self.shim_calls.clear()
+            rc, out, _ = self.review()
+            self.assertEqual((rc, len(self.claude.calls()), self.shim_calls), (0, 1, []))
+            self.assertTrue(out.endswith(" (already reviewed; --again starts a new round on this head)\n") and f"comment={COMMENT}" in out, out)
+
+    def test_a_post_that_failed_is_posted_by_the_rerun_without_another_review(self) -> None:
+        with self.world() as (gh, _):
+            self.comment_rc = 1
+            rc, out, _ = self.review()
+            self.assertEqual(rc, 1)
+            self.assertIn("pr-review.sh comment exit 1: the review is not posted", out)
+            self.assertEqual(json.loads(self.read(self.stem() + ".json"))["comment"], "")
+            self.assertFalse(os.path.exists(self.stem() + ".message.md"), "no message tells a worker of a review nobody can read")
+            self.comment_rc = 0
+            rc, out, _ = self.review()
+            self.assertEqual((rc, len(self.claude.calls()), len(gh.calls())), (0, 1, 3), out)
+            self.assertIn(f"decision=confirm comment={COMMENT}", out)
+
+    def test_a_recorded_review_is_not_posted_on_a_pr_that_moved_or_closed(self) -> None:
+        with self.world():
+            self.assertEqual(self.review("--dry-run")[0], 0)
+        for head, state, why in ((C, "OPEN", f"the PR's head is {C}, not {self.base}"), ("", "CLOSED", "the PR is CLOSED, not open")):
+            with self.world(head=head, state=state):
+                rc, out, _ = self.review()
+                self.assertEqual((rc, self.claude.calls(), self.shim_calls), (1, [], []), out)
+                self.assertIn(why, out)
+                self.assertIn("not posted (a dry run)", self.read(self.stem() + ".message.md"), "the dry run's message stands")
+
+    def test_a_second_call_on_the_same_head_is_refused_while_the_first_holds_it(self) -> None:
+        os.makedirs(os.path.join(self.wavedir, "reviews"))
+        with open(self.stem() + ".lock", "a") as held, self.world():
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+            rc, out, _ = self.review()
+            self.assertEqual((rc, self.claude.calls(), self.shim_calls), (1, [], []), out)
+            self.assertIn("another call is reviewing this head", out)
+            self.assertEqual(self.review(kind="confirm")[0], 1, "the lock is the kind's too: a confirm is its own call")
+        with self.world():
+            self.assertEqual(self.review()[0], 0, "a lock nobody holds refuses nothing")
+
+    def test_an_ambiguous_post_is_no_verdict_and_posted_records_the_comment_found(self) -> None:
+        with self.world():
+            self.comment_rc = 3
+            rc, out, _ = self.review()
+            self.assertEqual(rc, 4)
+            self.assertIn("WAVE REVIEW NO VERDICT t42: o/staging#7 at-open", out)
+            self.assertIn("re-run with --posted <its URL>", out)
+            self.shim_calls.clear()
+            rc, out, _ = self.review("--posted", "https://github.com/o/staging/pull/7#issuecomment-9")
+            self.assertEqual(rc, 0, out)
+            self.assertIn("comment=https://github.com/o/staging/pull/7#issuecomment-9", out)
+            rc, out, _ = self.review("--posted", "https://github.com/o/staging/pull/7#issuecomment-9", kind="confirm")
+            self.assertEqual((rc, len(self.claude.calls())), (1, 1), "--posted reviews nothing")
+            self.assertIn("--posted names a comment, and no review of this head is recorded", out)
+            self.assertEqual([c[:3] for c in self.shim_calls], [["fleet-worker.sh", "board", "set"]], "nothing is posted again")
+
+    def test_a_head_the_pr_left_or_a_closed_pr_is_refused_before_the_reviewer(self) -> None:
+        for head, state, why in ((C, "OPEN", f"the PR's head is {C}, not {self.base}"), ("", "MERGED", "the PR is MERGED, not open")):
+            with self.world(head=head, state=state):
+                rc, out, _ = self.review()
+                self.assertEqual((rc, self.claude.calls(), self.shim_calls), (1, [], []), out)
+                self.assertIn(f"WAVE REVIEW REFUSED t42: o/staging#7 at-open at {self.base[:8]}: {why}", out)
+        with self.world(gate=1):
+            self.assertEqual((self.review()[0], self.claude.calls()), (1, []), "without the lease nothing is reviewed")
+        rc, _, err = self.review(sha="abc")
+        self.assertEqual(rc, 2)
+        self.assertIn("the head is a full commit SHA", err)
+
+    def test_a_head_that_is_no_commit_of_the_checkout_is_fetched_and_else_refused(self) -> None:
+        with self.world(head=C):
+            rc, out, _ = self.review(sha=C)
+            self.assertEqual((rc, self.claude.calls()), (4, []), out)
+            self.assertIn("refs/pull/7/head could not be fetched", out)
+
+    def test_a_dry_run_reviews_and_writes_but_posts_nothing_and_a_real_call_posts_its_review(self) -> None:
+        with self.world(state="MERGED") as (_, gated):
+            rc, out, _ = self.review("--dry-run")
+            self.assertEqual(rc, 0, out)
+            self.assertIn("WAVE REVIEW NOTE t42: the PR is MERGED, not open (--dry-run goes on)", out)
+            self.assertIn("decision=confirm comment=- message=", out)
+            gated.assert_not_called()
+            self.assertEqual(self.shim_calls, [])
+            self.assertIn("not posted (a dry run)", self.read(self.stem() + ".message.md"))
+            self.assertTrue(json.loads(self.read(self.stem() + ".json"))["dry_run"])
+        with self.world():
+            rc, out, _ = self.review()
+            self.assertEqual((rc, self.claude.calls()), (0, []), out)
+            self.assertIn(f"comment={COMMENT}", out)
+
+    def test_a_reviewer_that_does_not_answer_is_no_verdict(self) -> None:
+        for reviewer, why in ((Answer(rc=1, stderr="authentication_failed"), "the reviewer (claude) exited 1 (authentication_failed)"),
+                              (Answer(stdout=json.dumps({"is_error": True, "result": "x"})), "ended with no final message"),
+                              (Answer(stdout=json.dumps({"is_error": False, "result": "  "})), "ended with no final message"),
+                              (Answer(stdout="not json"), "ended with no final message")):
+            with self.world(reviewer=reviewer):
+                rc, out, _ = self.review()
+                self.assertEqual((rc, self.shim_calls), (4, []), out)
+                self.assertIn(why, out)
+                self.assertFalse(os.path.exists(self.stem() + ".json"))
+
+    def test_a_confirm_reads_the_at_open_review_and_clears_or_holds_the_merge(self) -> None:
+        with self.world():
+            rc, out, _ = self.review(kind="confirm")
+            self.assertEqual((rc, self.claude.calls()), (1, []))
+            self.assertIn("no at-open review of #7 is recorded", out)
+            self.assertEqual(self.review()[0], 0)
+        git("-C", os.path.join(self.dir, "repo"), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "fix")
+        fixed = git("-C", os.path.join(self.dir, "repo"), "rev-parse", "HEAD")
+        stem = os.path.join(self.wavedir, "reviews", f"7-confirm-{fixed[:12]}")
+        with self.world(verdict="VERDICT: clean", head=fixed):
+            self.shim_calls.clear()
+            rc, out, _ = self.review(kind="confirm", sha=fixed)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("verdict=clean blocking=0 suggestions=0 decision=cleared", out)
+            prompt = self.read(stem + ".prompt.md")
+            for want in ("This is a confirm review, not a first review", f"at head `{self.base}`", f"`{self.stem()}.md`",
+                         f"diff {self.base} {fixed}", f"### Review checkpoint (confirm): head {fixed[:8]}"):
+                self.assertIn(want, prompt)
+            self.assertTrue(self.read(stem + ".message.md").startswith(f"MERGE CLEARED 7 {fixed}\nVERDICT: clean\n"))
+            self.assertEqual(self.shim_calls[-1], ["fleet-worker.sh", "board", "set", "wv", "t42", f"confirm=clean@{fixed[:8]}"])
+        os.remove(stem + ".json")
+        with self.world(verdict="VERDICT: blocking (1 blocking, 0 suggestions)", head=fixed):
+            rc, out, _ = self.review(kind="confirm", sha=fixed)
+            self.assertIn("decision=findings", out)
+            message = self.read(stem + ".message.md")
+            self.assertTrue(message.startswith(f"MERGE NOT CLEARED 7 {fixed}\n"))
+            self.assertIn("CONFIRM_REQUEST 7 <head sha>", message)
+
+    def test_a_new_round_on_the_same_head_is_asked_for_and_never_inferred(self) -> None:
+        """A rebuttal moves no head: the worker's next confirm request names the SHA already reviewed."""
+        with self.world():
+            self.assertEqual(self.review()[0], 0)
+        with self.world(verdict="VERDICT: blocking (1 blocking, 0 suggestions)"):
+            rc, out, _ = self.review(kind="confirm")
+            self.assertIn("decision=findings", out)
+        with self.world(verdict="VERDICT: clean"):
+            rc, out, _ = self.review(kind="confirm")
+            self.assertEqual((rc, self.claude.calls()), (0, []), "the same call replays: a lost line buys no review")
+            self.assertIn("decision=findings", out)
+            self.shim_calls.clear()
+            rc, out, _ = self.review("--again", kind="confirm")
+            self.assertEqual((rc, len(self.claude.calls())), (0, 1), out)
+            self.assertIn("verdict=clean blocking=0 suggestions=0 decision=cleared", out)
+            self.assertEqual(self.shim_calls[0][:2], ["pr-review.sh", "comment"], "the new round is posted")
+            self.assertTrue(self.read(self.stem("confirm") + ".message.md").startswith(f"MERGE CLEARED 7 {self.base}\n"))
+            earlier = json.loads(self.read(self.stem("confirm") + ".r1.json"))
+            self.assertEqual((earlier["decision"], earlier["comment"]), ("findings", COMMENT), "the earlier round is kept, set aside")
+            self.assertTrue(os.path.exists(self.stem("confirm") + ".r1.md") and os.path.exists(self.stem("confirm") + ".r1.prompt.md"))
+            rc, out, _ = self.review("--again", kind="confirm")
+            self.assertEqual((rc, len(self.claude.calls())), (0, 2), "each --again is a round")
+            self.assertTrue(os.path.exists(self.stem("confirm") + ".r2.json"))
+        os.remove(self.stem() + ".json")
+        with self.world():
+            rc, out, _ = self.review("--again")
+            self.assertEqual((rc, self.claude.calls()), (1, []))
+            self.assertIn("--again starts a new round after a posted review, and this head has none posted", out)
+        for args in (["--again", "--dry-run"], ["--again", "--posted", "https://x"]):
+            rc, _, err = self.review(*args)
+            self.assertEqual(rc, 2)
+            self.assertIn("--again starts a new round, to be reviewed and posted", err)
+
+    def test_a_confirm_after_a_review_that_did_not_block_clears_without_a_reviewer(self) -> None:
+        with self.world(verdict="VERDICT: suggestions (0 blocking, 1 suggestions)"):
+            self.assertEqual(self.review()[0], 0)
+            rc, out, _ = self.review(kind="confirm")
+            self.assertEqual((rc, len(self.claude.calls())), (0, 1), out)
+            self.assertIn("decision=cleared", out)
+            self.assertIn("was not blocking, so there is nothing to confirm", self.read(self.stem("confirm") + ".md"))
+
+    def test_a_source_task_is_judged_against_its_brief(self) -> None:
+        with self.world():
+            rc, out, _ = self.review("--source", "1910", task="p8")
+            self.assertEqual((rc, self.claude.calls()), (1, []))
+            self.assertIn(f"a --source task is judged against its brief, and {self.wavedir}/briefs/brief-p8.md is no file", out)
+            os.makedirs(os.path.join(self.wavedir, "briefs"))
+            self.write("briefs/brief-p8.md", "## The task\n")
+            rc, out, _ = self.review("--source", "1910", task="p8")
+            self.assertEqual(rc, 0, out)
+            prompt = self.read(self.stem() + ".prompt.md")
+            self.assertIn("proposed by the work on\no/up#1910", prompt)
+            self.assertIn(f"`{self.wavedir}/briefs/brief-p8.md`", prompt)
+            self.assertNotIn("gh issue view", prompt)
+
+    def test_the_project_part_is_the_waves_or_the_bases_copy(self) -> None:
+        repo = os.path.join(self.dir, "repo")
+        os.makedirs(os.path.join(repo, ".github"))
+        with open(os.path.join(repo, ".github", "review.md"), "w") as f:
+            f.write("## This project\n\nHold @@REPO@@ to its goldens.\n")
+        git("-C", repo, "add", ".github/review.md")
+        git("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "review part")
+        data = wave_data(self.dir, vars={"COORD": "s", "MAIN": "main"},
+                         review={"kind": "claude", "model": "opus", "project_part": ".github/review.md"})
+        with open(self.path, "w") as f:
+            json.dump(data, f)
+        with self.world():
+            rc, out, _ = self.review("--dry-run")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("the project's review part .github/review.md cannot be read", out)
+            git("-C", repo, "push", "-q", "origin", "main")
+            rc, out, _ = self.review("--dry-run")
+            self.assertEqual(rc, 0, out)
+            self.assertIn("Hold o/staging to its goldens.", self.read(self.stem() + ".prompt.md"))
+            os.remove(self.stem() + ".json")
+            os.makedirs(os.path.join(self.wavedir, "review"))
+            self.write("review/project.md", "## This wave\n\nOnly the scans.\n")
+            self.write("review/issue.md", "## The task\n\nIssue @@ISSUE@@, this wave's wording.\n")
+            rc, out, _ = self.review("--dry-run")
+            prompt = self.read(self.stem() + ".prompt.md")
+            self.assertIn("Only the scans.", prompt)
+            self.assertNotIn("goldens", prompt)
+            self.assertIn("Issue o/up#42, this wave's wording.", prompt)
+            self.write("review/project.md", "@@WT@@\n")
+            os.remove(self.stem() + ".json")
+            rc, out, _ = self.review("--dry-run")
+            self.assertEqual(rc, 1)
+            self.assertIn("the prompt does not render", out)
+
+    def test_the_wave_file_names_the_reviewer_or_the_verb_refuses(self) -> None:
+        good = wave_data("/tmp/x", review={"kind": "claude", "model": "opus"})
+        parsed = wave.parse_wave("/tmp/x/wave.json", good).review
+        assert parsed is not None
+        self.assertEqual((parsed.label, parsed.timeout, parsed.project_part), ("opus", 1800, ""))
+        for review, word in (({"kind": "codex", "model": "x"}, "review.kind must be one of claude"), ({"kind": "claude"}, "review lacks model"),
+                             ({"kind": "claude", "model": "opus", "extra": 1}, "unknown key"),
+                             ({"kind": "claude", "model": "opus (best)"}, "does not match"),
+                             ({"kind": "claude", "model": "opus", "timeout": 0}, "positive whole number"),
+                             ({"kind": "claude", "model": "opus", "project_part": "/abs.md"}, "relative to the checkout"), ("opus", "must be an object")):
+            with self.assertRaises(ValueError) as caught:
+                wave.parse_wave("/tmp/x/wave.json", {**good, "review": review})
+            self.assertIn(word, str(caught.exception))
+        for data, why in ((wave_data(self.dir, vars={"MAIN": "main"}), "names no reviewer"),
+                          (wave_data(self.dir, review={"kind": "claude", "model": "opus"}), "names no vars.MAIN")):
+            with open(self.path, "w") as f:
+                json.dump(data, f)
+            rc, _, err = self.review()
+            self.assertEqual(rc, 2)
+            self.assertIn(why, err)
+
+    def test_usage(self) -> None:
+        for args, why in ((["--kind", "final"], "--kind is one of at-open, confirm"), ([], "--kind is one of"), (["--kind"], "--kind needs a value"),
+                          (["--kind", "at-open", "--force"], "unknown option --force"),
+                          (["--kind", "at-open", "--dry-run", "--posted", "https://x"], "--posted records a comment a real call left"),
+                          (["--kind", "at-open", "--issue", "1", "--source", "2"], "--issue and --source exclude each other")):
+            rc, _, err = captured(wavereview.cmd_review, self.cfg, [self.path, "t42", "7", self.base, *args])
+            self.assertEqual(rc, 2, args)
+            self.assertIn(why, err)
+        rc, _, err = captured(wavereview.cmd_review, self.cfg, [self.path, "t42", "7"])
+        self.assertIn("name the wave file, the task, the PR and its head", err)
+        rc, _, err = captured(wavereview.cmd_review, self.cfg, [self.path, "t42", "seven", self.base, "--kind", "at-open"])
+        self.assertIn("a PR is its number", err)
 
 
 class ShippedTemplate(unittest.TestCase):

@@ -10,6 +10,8 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
             [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
   wave loop <wave.json> <name> [--resume-after <request id>]                                waveloop.py
   wave heartbeat <wave.json> [--sleep <seconds>]                                             here
+  wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                          wavereview.py
+              [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]
 
 It wraps the mechanisms that exist and re-implements none: ``execution run`` takes the
 reservations, ``board set`` writes the row, ``execution tip-run`` runs and concludes each loop run,
@@ -45,6 +47,12 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     ``<checkout>-worktrees/<worker>-<suffix>``, ``vars`` are the leg's own NAMEs
   loops             {<name>: {box, purpose, checkout, tip, command    default: {}
                     [, cpu][, integration][, poll]}}: an integration loop (waveloop.py)
+  review            {kind, model[, label][, project_part][, timeout]}: default: none
+                    the review checkpoint's reviewer (wavereview.py): ``kind`` the CLI that runs
+                    it (``claude``, the one kind there is), ``model`` its model, ``label`` the
+                    name its posts carry (default: the model), ``project_part`` the project's
+                    own review part, a path as ``project_part`` above, ``timeout`` whole seconds
+                    (default 1800)
 
 ``wave heartbeat`` is one tick, re-armed by the coordinator (issue-wave SKILL.md, the heartbeat):
 it sleeps, then prints, in order and nothing piped, ``prs <repository> --wave <wave>`` whole and
@@ -71,7 +79,9 @@ USAGE = (
     "wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>... | "
     "wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]"
     " [--legs <box,...>] [--allow-rival <pr>]... | wave loop <wave.json> <name> [--resume-after <request id>] | "
-    "wave heartbeat <wave.json> [--sleep <seconds>]"
+    "wave heartbeat <wave.json> [--sleep <seconds>] | "
+    "wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm [--issue <N> | --source <N>]"
+    " [--dry-run | --posted <url> | --again]"
 )
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
@@ -81,7 +91,11 @@ BUILTIN = frozenset({"WAVE", "T", "N", "ISSUE", "SOURCE", "REPO", "ISSUE_REPO", 
                      "BASE", "SCR", "WORKER", "HOST", "MODE", "PROJECT", "LEGLINES", "LEG", "LEG_ID", "LEG_WT",
                      "LEG_CHECKOUT"})
 TOP_REQUIRED = ("wave", "repository", "checkout", "worker_prefix", "agent_host", "transport", "kind", "standing_purpose")
-TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part")
+TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part", "review")
+REVIEW_REQUIRED, REVIEW_OPTIONAL = ("kind", "model"), ("label", "project_part", "timeout")
+REVIEW_KINDS = ("claude",)
+# A reviewer's model and label: what a CLI flag and pr-review.sh comment's footer both take.
+REVIEW_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._+/-]*[A-Za-z0-9._+/-])?")
 LEG_REQUIRED, LEG_OPTIONAL = ("checkout", "suffix", "purpose"), ("vars",)
 LOOP_REQUIRED, LOOP_OPTIONAL = ("box", "purpose", "checkout", "tip", "command"), ("cpu", "integration", "poll")
 
@@ -109,6 +123,15 @@ class Loop:
 
 
 @dataclass(frozen=True)
+class Review:
+    kind: str
+    model: str
+    label: str
+    project_part: str  # relative to checkout; "" when the wave file names none
+    timeout: int
+
+
+@dataclass(frozen=True)
 class Wave:
     path: str  # the wave file, absolute
     directory: str  # the wave directory: the file's
@@ -125,6 +148,7 @@ class Wave:
     vars: dict[str, str] = field(default_factory=lambda: {})
     legs: dict[str, Leg] = field(default_factory=lambda: {})
     loops: dict[str, Loop] = field(default_factory=lambda: {})
+    review: Review | None = None
 
 
 def keys_problem(obj: dict[str, Any], what: str, required: tuple[str, ...], optional: tuple[str, ...]) -> str | None:
@@ -189,6 +213,25 @@ def objects(value: Any, what: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+def parse_review(value: Any) -> Review:
+    what = "review"
+    if not isinstance(value, dict):
+        raise ValueError(f"{what} must be an object")
+    entry = cast(dict[str, Any], value)
+    problem = keys_problem(entry, what, REVIEW_REQUIRED, REVIEW_OPTIONAL)
+    if problem:
+        raise ValueError(problem)
+    kind = text(entry, "kind", what)
+    if kind not in REVIEW_KINDS:
+        raise ValueError(f"{what}.kind must be one of {', '.join(REVIEW_KINDS)}, not {json.dumps(kind)}")
+    model = text(entry, "model", what, REVIEW_NAME)
+    timeout: Any = entry.get("timeout", 1800)
+    if not (isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0):
+        raise ValueError(f"{what}.timeout must be a positive whole number of seconds")
+    return Review(kind, model, text(entry, "label", what, REVIEW_NAME) if "label" in entry else model,
+                  relative(entry, "project_part", what) if "project_part" in entry else "", timeout)
+
+
 def parse_wave(path: str, data: Any) -> Wave:
     """The wave file's facts, or ValueError naming the first thing wrong with it."""
     if not isinstance(data, dict):
@@ -244,6 +287,7 @@ def parse_wave(path: str, data: Any) -> Wave:
         vars=var_map(top.get("vars", {}), "vars"),
         legs=legs,
         loops=loops,
+        review=parse_review(top["review"]) if "review" in top else None,
     )
 
 
@@ -310,7 +354,7 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
 
 
 def cmd_wave(cfg: Config, args: list[str]) -> int:
-    from ludics.fleetworker import waveloop, waveprep
+    from ludics.fleetworker import waveloop, waveprep, wavereview
 
     match args[:1]:
         case ["render"]:
@@ -321,5 +365,7 @@ def cmd_wave(cfg: Config, args: list[str]) -> int:
             return waveloop.cmd_loop(cfg, args[1:])
         case ["heartbeat"]:
             return cmd_heartbeat(cfg, args[1:])
+        case ["review"]:
+            return wavereview.cmd_review(cfg, args[1:])
         case _:
             die(f"usage: {USAGE}")
