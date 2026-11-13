@@ -9,12 +9,13 @@
 - a restartable integration-loop driver;
 - a heartbeat;
 - the review checkpoint;
-- the handoff driver.
+- the handoff driver;
+- the decision record.
 
 With the kit, the wave directory holds data only: no script is copied forward from the last
 wave. The contracts are the module headers in `lib/ludics/fleetworker/`: `wave.py` for the wave
 file and the heartbeat, `wavebrief.py`, `waveprep.py`, `wavelaunch.py`, `waveloop.py`,
-`wavereview.py` and `wavedrive.py`. This page covers what a coordinator puts in the wave directory and when it calls each verb.
+`wavereview.py`, `wavedrive.py` and `wavedecide.py`. This page covers what a coordinator puts in the wave directory and when it calls each verb.
 
 ## The wave directory
 
@@ -237,3 +238,18 @@ kit invents none.
    turn by hand; the worker's next turn is the driver's again. `wave turn <wave.json> <task>`
    answers one worker's turn, once, when no driver runs. A stop file `drive.stop` ends the driver.
    The markers, the answers and what is deliberately left to you are `wavedrive.py`'s header.
+10. **A design decision the wave takes** is surfaced with one call, whether it is a
+    recommendation before launch, a call you make mid-wave, or the maintainer's answer you post
+    for them:
+
+    ```
+    fleet-worker.sh wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call '<the decision, one line>' \
+      --body-file <the comment> --by '<your model>' [--task <task>]
+    ```
+
+    It posts the comment (with the wave's footer, or for tier 3 under the maintainer's heading),
+    adds the `design-joint` label, and records the decision under the wave directory. At
+    close-out, `fleet-worker.sh wave decisions <wave.json>` prints the records as rows for the
+    project's decisions ledger: add them to that file in one commit. A wave's own decision starts
+    `unreviewed` there, and the maintainer's `ok`. When the maintainer answers a call the wave
+    recorded, record the answer with `--tier 3` and the same `--call`: its row replaces the wave's.
