@@ -39,12 +39,16 @@ WHAT IT DOES, in this order:
    worktree a leg will make.
 6. The row: ``worktree`` (the path launch made, read off its ``LAUNCHED`` line), ``state=launched``,
    ``standing`` and ``exec_hosts`` naming what was reserved, and ``farside`` naming the worker's
-   own host/worktree plus each reserved leg. The worker host/path is read off ``LAUNCHED``.
+   own host/worktree plus each reserved leg. The worker path is read off ``LAUNCHED``; its host
+   is the prepared host passed to launch.
    A placement with whitespace, or a host with a colon, cannot fit one cleanup word: it is omitted
    with a NOTE (exit 3, reconcile by hand), never split into a different cleanup target.
 7. The manifest records the launch.
 
-THE RECOVERY BOUNDARY. A launch refused before it started anything (exit 1 from step 4: a gate, a
+THE RECOVERY BOUNDARY. LAUNCHED is read only when its line has exactly one `` cwd=`` and one
+`` stream=`` delimiter; repeated delimiters (including inside either path) are ambiguous and
+return UNKNOWN before any cleanup target is published. No quoted/escaped launch-line grammar
+is inferred. A launch refused before it started anything (exit 1 from step 4: a gate, a
 red base, a preflight) left nothing, and a re-run is the retry. ``LAUNCH UNKNOWN`` (exit 4) may have
 started the worker: read ``status`` and ``execution list`` before anything else, as launch's line
 says. Past step 4 the worker runs, so nothing after it stops the verb: a leg that could not be
@@ -82,7 +86,7 @@ else dirty=unreadable; fi
 printf 'worktree=%s dirty=%s\n' "$head" "$dirty"
 """
 STATE = re.compile(r"worktree=(\S+) dirty=(\S+)")
-LAUNCHED = re.compile(r"LAUNCHED ([^/\s]+)/\S+ .*?\bcwd=(/.*?) stream=")  # farside.py's line; a path may hold blanks
+LAUNCHED = re.compile(r"LAUNCHED \S+ .*? cwd=(/.*?) stream=")  # farside.py's line; a path may hold blanks
 MKDIR = 'mkdir -p -- "$1"\n'
 TEXTS = ("wave", "repository", "main", "transport", "kind", "model", "effort", "host", "host_checkout", "scratch", "worker",
          "branch", "base", "worktree", "number", "issue_ref", "standing")
@@ -218,12 +222,17 @@ def launched(cfg: Config, path: str, task: str) -> int:
     cli.emit(said)
     if started.rc != 0:
         return started.rc
-    found = [m for m in (LAUNCHED.match(line) for line in said.splitlines()) if m]
+    found = [(line, match) for line in said.splitlines() if (match := LAUNCHED.match(line))]
     if not found:
         cli.say(f"WAVE LAUNCH UNKNOWN {task}: launch exited 0 and printed no LAUNCHED line with its cwd; read status"
                 f" {record.host} {record.worker} before anything else")
         return 4
-    host, worktree = found[-1].group(1, 2)
+    line, match = found[-1]
+    if line.count(" cwd=") != 1 or line.count(" stream=") != 1:
+        cli.say(f"WAVE LAUNCH UNKNOWN {task}: ambiguous LAUNCHED cwd/stream delimiters; read status"
+                f" {record.host} {record.worker} and reconcile its checkout before recording cleanup targets")
+        return 4
+    worktree = match.group(1)
     notes: list[str] = []
     reserved: list[Leg] = []
     for leg in record.legs:
@@ -234,7 +243,7 @@ def launched(cfg: Config, path: str, task: str) -> int:
         else:
             notes.append(f"the standing leg on {leg.box} is not reserved (execution run exit {rc})")
     far_words: list[str] = []
-    for box, checkout in [(host, worktree), *((leg.box, leg.worktree) for leg in reserved)]:
+    for box, checkout in [(record.host, worktree), *((leg.box, leg.worktree) for leg in reserved)]:
         try:
             far_words.append(placement_word(box, checkout))
         except ValueError as exc:

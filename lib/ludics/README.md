@@ -437,8 +437,8 @@ prreview/rerun.py
 
 ## Checking
 
-Placement recovery (#1133): `wave launch` reads the worker's host/path from `LAUNCHED` and
-records it beside reserved legs. `execution assign` calls the board store's internal `placement`
+Placement recovery (#1133): `wave launch` reads the worker's path from `LAUNCHED`, uses the
+prepared host, and records it beside reserved legs. `execution assign` calls the board store's internal `placement`
 operation under the lease lock, including for matching `ASSIGN ALREADY` records: a union keeps
 one copy of each host/checkout across partial writes and retries. It matches the base's worker
 to an existing row and creates neither rows nor boards. The manifest and row schema are unchanged;
@@ -449,6 +449,9 @@ and pass with the fix; the mapped macOS sections passed 686 assertions. Local re
 whitespace paths as unsafe cleanup words: both writers now reject those words before publication,
 keeping valid placements and reporting reconciliation instead of publishing a path prefix.
 The two whitespace regression cases fail against the pre-guard commit 4c0158d7 and pass with it.
+Review round 1 also rejects repeated launch-line cwd/stream delimiters before publishing any
+placement; a missing board-writer identity becomes an assignment NOTE rather than aborting the
+remaining requests. Board mutations share one lease-protocol helper.
 
 ```sh
 npx --yes pyright@1.1.414 --pythonplatform Linux                  # from the repo root

@@ -70,7 +70,8 @@ THE BOARD / RECOVERY BOUNDARY. For a selected block with an explicit checkout, a
 run/window, or ASSIGN ALREADY from the registry, unions execution_host:checkout into the unique
 row whose worker matches the base, and its host into exec_hosts. This internal board write holds
 its lease lock across read/union/write, preserves other placements, and is safe to retry after
-an interrupted write or dispatch. No board or no matching worker row is a noted no-op: assign
+an interrupted write or dispatch. With the lease held, no board or no matching worker row is a
+noted no-op: assign
 also serves workers without boards. An ambiguous row or a failed write is a NOTE and exit 1;
 the assignment still prints, and the same call repairs the board via ALREADY without redispatch.
 The existing farside format cannot encode whitespace in a path or a colon in a host: such a
@@ -89,8 +90,8 @@ once, only when something was assigned; a failed unstick leaves the records disp
 with the command that resends the file (exit 4): never assign again.
 
 Exit: 0 every selected request ASSIGNED or ALREADY (and the unstick, if asked, landed); 1 one or
-more REFUSED or BOARD NOTE failures, none UNKNOWN; 2 usage, nothing asked; 4 one or more UNKNOWN, a registry that could not
-be read first, or an unstick that did not land. What the steps print themselves (the record, the
+more REFUSED or BOARD NOTE failures, none UNKNOWN; 2 usage, nothing asked; 4 one or more UNKNOWN,
+a registry that could not be read first, or an unstick that did not land. What the steps print themselves (the record, the
 refresh line, a refusal) goes to stderr.
 """
 
@@ -422,7 +423,12 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
             err(f"ASSIGN BOARD NOTE {execution.shown(block['request_id'])}: the registry's placement or owner"
                 " differs from this request; reconcile it before recording a checkout")
             return False
-        rc = record_placement(cfg, base_fields["wave"], base_fields["worker"], block["execution_host"], block["checkout"])
+        try:
+            rc = record_placement(cfg, base_fields["wave"], base_fields["worker"], block["execution_host"], block["checkout"])
+        except cli.Exit as exc:
+            err(f"ASSIGN BOARD NOTE {execution.shown(block['request_id'])}: {exc.message};"
+                " placement was not written, and remaining requests will still be handled")
+            return False
         if rc:
             err(f"ASSIGN BOARD NOTE {execution.shown(block['request_id'])}: placement write exit {rc};"
                 " retry this assign call to repair the row without dispatching again")

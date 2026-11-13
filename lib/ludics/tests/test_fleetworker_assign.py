@@ -152,7 +152,7 @@ class Outcomes(unittest.TestCase):
                     {"wave": wave, "worker": worker, "host": host, "checkout": checkout})])
 
         out, err = io.StringIO(), io.StringIO()
-        with (mock.patch.object(assign, "record_placement", side_effect=placement, create=True),
+        with (mock.patch.object(assign, "record_placement", side_effect=placement),
               mock.patch.object(execution, "listing", return_value=Done(0, json.dumps(list(records)))),
               contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
             rc = cmd_assign(self.cfg, args, call=call, resend=resend)
@@ -211,6 +211,19 @@ class Outcomes(unittest.TestCase):
             "checkout": "/wt", "request": {**BASE, "execution_host": "rog"}}])[0], 0)
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(len(self.placements), 2)
+
+    def test_missing_identity_is_a_board_note_and_remaining_requests_are_handled(self) -> None:
+        requests = self.write("r.txt", message(block("a", checkout="/wt"), block("b", checkout="/other")))
+        records = [{"request_id": "a", "state": "launching", "checkout": "/wt",
+                    "request": {**BASE, "execution_host": "rog"}}]
+        out, err = io.StringIO(), io.StringIO()
+        with (mock.patch.object(execution, "listing", return_value=Done(0, json.dumps(records))),
+              mock.patch.object(assign, "record_placement", side_effect=[cli.Exit(2, "no coordinator identity"), 0]),
+              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
+            rc = cmd_assign(self.cfg, [self.base, requests], call=lambda *_: Done(0, "{}"))
+        self.assertEqual(rc, 1)
+        self.assertIn("ASSIGN BOARD NOTE a: no coordinator identity", err.getvalue())
+        self.assertIn("EXECUTION_ASSIGNED b", out.getvalue())
 
     def test_already_with_a_different_registry_checkout_records_nothing(self) -> None:
         requests = self.write("r.txt", message(block("a", checkout="/wrong")))

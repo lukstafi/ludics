@@ -53,7 +53,7 @@ from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
 from ludics.fleetworker.takeover import DONE_STATES, LIVE_STATES, board_document, cmd_takeover, state_word
-from ludics.fleetworker.transport import PAYLOAD_ON_FD, err, prelude, run_on, shipped_python
+from ludics.fleetworker.transport import Done, PAYLOAD_ON_FD, err, prelude, run_on, shipped_python
 
 USAGE = (
     "board set [--create] [--new-row] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
@@ -184,6 +184,15 @@ def cmd_check(cfg: Config, args: list[str]) -> int:
     return 3 if left else 0
 
 
+def mutate(cfg: Config, action: str, raw: str, *, stdout_to_stderr: bool = False) -> Done:
+    """One board mutation, checked and performed under the shared coordinator lease protocol."""
+    check_identity(cfg)
+    script = prelude(cfg, cfg.anchor) + LEASE_MUTATION + store_command(raw)
+    return run_on(cfg, cfg.anchor, script,
+                  ["BOARD", my_token(cfg), cfg.lock_wait, action, coordinator_id(cfg), PAYLOAD_ON_FD],
+                  stdout_to_stderr=stdout_to_stderr)
+
+
 def cmd_board(cfg: Config, args: list[str]) -> int:
     if args[:1] == ["takeover"]:
         return cmd_takeover(cfg, args[1:])
@@ -201,12 +210,9 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
     if action == "show":
         script = prelude(cfg, cfg.anchor) + "shift 3\n" + store_command(raw)
         argv = ["BOARD", "x", "x", action, "x", PAYLOAD_ON_FD]
+        done = run_on(cfg, cfg.anchor, script, argv)
     else:
-        check_identity(cfg)
-        token = my_token(cfg)
-        script = prelude(cfg, cfg.anchor) + LEASE_MUTATION + store_command(raw)
-        argv = ["BOARD", token, cfg.lock_wait, action, coordinator_id(cfg), PAYLOAD_ON_FD]
-    done = run_on(cfg, cfg.anchor, script, argv)
+        done = mutate(cfg, action, raw)
     if done.unreachable:
         cli.say(f"BOARD UNREACHABLE {cfg.anchor}")
         return 4
@@ -215,10 +221,6 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
 
 def record_placement(cfg: Config, wave: str, worker: str, host: str, checkout: str) -> int:
     """Assign's idempotent placement union, performed inside the board writer's lease lock."""
-    check_identity(cfg)
     raw = json.dumps({"wave": wave, "worker": worker, "host": host, "checkout": checkout})
-    script = prelude(cfg, cfg.anchor) + LEASE_MUTATION + store_command(raw)
-    done = run_on(cfg, cfg.anchor, script,
-                  ["BOARD", my_token(cfg), cfg.lock_wait, "placement", coordinator_id(cfg), PAYLOAD_ON_FD],
-                  stdout_to_stderr=True)
+    done = mutate(cfg, "placement", raw, stdout_to_stderr=True)
     return 4 if done.unreachable else done.rc

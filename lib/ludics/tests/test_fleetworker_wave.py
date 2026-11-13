@@ -653,11 +653,23 @@ class MixedWave(WaveDirCase):
     def test_launch_row_reads_the_worker_placement_from_the_launched_line(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
-            self.launch = Done(0, "LAUNCHED actual/w1-42 kind=codex cwd=/actual/wt stream=/s\n")
+            self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex cwd=/actual/wt stream=/s\n")
             self.assertEqual(self.start()[0], 0)
         board = self.shim_calls[-1]
         self.assertIn("worktree=/actual/wt", board)
-        self.assertIn("farside=actual:/actual/wt", board)
+        self.assertIn("farside=far:/actual/wt", board)
+
+    def test_ambiguous_launch_output_never_publishes_a_cleanup_prefix(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            for path in ("/actual/wt stream=old/w1-42", "/actual/wt cwd=old/w1-42"):
+                self.launch = Done(0, f"LAUNCHED far/w1-42 kind=codex cwd={path} stream=/state/stream.jsonl\n")
+                self.shim_calls.clear()
+                rc, out, _ = self.start()
+                self.assertEqual(rc, 4)
+                self.assertIn("ambiguous LAUNCHED", out)
+                self.assertEqual([call[0] for call in self.shim_calls], ["launch"])
+                self.assertEqual(self.manifest()["done"][-1], "ready")
 
     def test_launch_never_publishes_a_whitespace_path_as_a_cleanup_prefix(self) -> None:
         with self.world():

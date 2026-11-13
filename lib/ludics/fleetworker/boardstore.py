@@ -34,7 +34,8 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         a board that exists, so a retried first write is safe.
   placement {"wave", "worker", "host", "checkout"}                internal to execution assign:
         union the host and host:checkout into exec_hosts and farside on the unique worker row,
-        under the same lease lock as set. No board or no matching row is a no-op (assign also
+        under the same lease lock as set. With the lease held, no board or no matching row is a no-op
+        (assign also
         serves work without a wave board); ambiguous worker rows refuse. Existing words retain
         their order, duplicates and the placeholder none disappear. exec_hosts accepts commas
         or whitespace and is written comma-separated; farside is whitespace-separated, as
@@ -325,13 +326,13 @@ def main(argv: list[str]) -> None:
         if not rows:
             print(f"BOARD PLACEMENT NOTE {wave}: no row for worker {json.dumps(worker)}; nothing written")
             return
-        word = placement_word(host, checkout)
+        cleanup_word = placement_word(host, checkout)
         row = rows[0]
         fields = cast(dict[str, str], row["fields"])
-        for key, value, sep in (("exec_hosts", host, ","), ("farside", word, " ")):
+        for key, value, sep in (("exec_hosts", host, ","), ("farside", cleanup_word, " ")):
             old = fields.get(key, "")
             words = (old.replace(",", " ") if key == "exec_hosts" else old).split()
-            fields[key] = sep.join(dict.fromkeys([*(word for word in words if word != "none"), value]))
+            fields[key] = sep.join(dict.fromkeys([*(w for w in words if w != "none"), value]))
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         assert doc is not None
         row["updated_at"] = doc["updated_at"] = now
