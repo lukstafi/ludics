@@ -2,7 +2,7 @@
 
 Ported from pr-review.sh's ``gate_checks`` and everything it reads through (ludics-lite#403):
 the advisory list and the repository's own advisory file (``advisory_policy``, #530), the
-override's waiver (``apply_waiver``/``is_waived``, #392; a cancel read at the first read too, #1036), the check fold (``build_checks``,
+override's waiver (``apply_waiver`` and the typed keys below, #392/#1098; a cancel read at the first read too, #1036), the check fold (``build_checks``,
 ``summarize_checks``), and the run list that overrules it (``run_signal`` with its job reads,
 #24/#38/#500) -- whose run-less head, inside the grace, asks the paths-ignore recognition
 (``workflows.head_within_paths_ignore``, #176). On a round with no verdict, ``checks`` and
@@ -27,7 +27,7 @@ the column-shifting that read does on an empty field is part of what the placeho
 import re
 import shlex
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Literal, assert_never
 
@@ -90,15 +90,125 @@ def load_gate_config(env: Mapping[str, str]) -> GateConfig:
     )
 
 
-# --- small readings ---------------------------------------------------------------------------------
+# --- the override's waiver keys (#1098) -----------------------------------------------------------------
+#
+# ``merge --override`` records, at the gate's first read, what is red or cancelled then, and later
+# rounds waive exactly that. A key has a KIND and an identity: a check run's (a job's) is
+# ``<suite>/<name>``, a workflow run's its id. The kinds, by subject:
+#   check          a red check run (or job), ``check:<suite>/<name>`` (#392)
+#   cancelled      a cancelled check run (or job), ``cancelled:<suite>/<name>`` (#1036)
+#   run            a red workflow run no check shows, ``run:<run id>`` (#392/#1066)
+#   cancelled-run  a cancelled workflow run, ``cancelled-run:<run id>`` (#1036)
+# The red and the cancelled kinds stay apart: a cancel re-run red keeps its suite (and a run its
+# id), and that red is not what the override was given for.
+#
+# Readers never spell a kind. They ask by subject and conclusion (``job_waiver``/``run_waiver``, the
+# one place a conclusion maps to a kind), and a reader that words or counts by kind matches on
+# ``WaiverKey.kind`` with no default arm, so the repository's ``reportMatchNotExhaustive`` names it
+# when a kind is missed. ``Gate.waived`` is the record, in the spelling above; only ``Gate``'s
+# ``_waive_*``/``waives`` methods read or write it (test_prreview_gate's guard checks gate.py and
+# merge.py). A FIFTH KIND: add it to ``JobWaiver`` or ``RunWaiver`` and to that subject's
+# classifier; pyright then lists every reader that branches on the subject's kinds. Not checked by
+# the type: the one-row/one-job-of-that-name rules (each reader counts its own population), the
+# record -> apply moves (``Gate.check``, ``_runs_unread``), and whether a reader passes the right
+# conclusion -- caller-level tests hold those.
 
-def _before_space(text: str) -> str:
-    return text.split(" ", 1)[0]
+type JobWaiver = Literal["check", "cancelled"]
+type RunWaiver = Literal["run", "cancelled-run"]
 
 
-def _after_space(text: str) -> str:
-    parts = text.split(" ", 1)
-    return parts[1] if len(parts) == 2 else text
+@dataclass(frozen=True)
+class JobKey:
+    """A check run's (a job's) waiver key; ``str()`` is the record's spelling."""
+
+    kind: JobWaiver
+    ident: str
+
+    def __str__(self) -> str:
+        return f"{self.kind}:{self.ident}"
+
+
+@dataclass(frozen=True)
+class RunKey:
+    """A workflow run's waiver key; ``str()`` is the record's spelling."""
+
+    kind: RunWaiver
+    ident: str
+
+    def __str__(self) -> str:
+        return f"{self.kind}:{self.ident}"
+
+
+type WaiverKey = JobKey | RunKey
+
+
+def job_waiver(suite: str, name: str, concl: str) -> JobKey | None:
+    """The key a check run (or a job) of this conclusion is waived under; None when no waiver
+    covers it. Boundary, a fail-closed allowlist: red, and ``cancelled`` alone among the stopped
+    conclusions; no conclusion yet, ``stale``, ``action_required`` and green are never waived."""
+    ident = f"{suite or '-'}/{name}"
+    cls = conclusion_class(concl)
+    match cls:
+        case "red":
+            return JobKey("check", ident)
+        case "nogo":
+            return JobKey("cancelled", ident) if concl == "cancelled" else None
+        case "green" | "pending":
+            return None
+        case _:
+            assert_never(cls)
+
+
+def run_waiver(rid: str, concl: str) -> RunKey | None:
+    """``job_waiver`` for a workflow run, by its id, under the same allowlist."""
+    cls = conclusion_class(concl)
+    match cls:
+        case "red":
+            return RunKey("run", rid)
+        case "nogo":
+            return RunKey("cancelled-run", rid) if concl == "cancelled" else None
+        case "green" | "pending":
+            return None
+        case _:
+            assert_never(cls)
+
+
+@dataclass(frozen=True)
+class WaivedRun:
+    """A workflow run the waiver took out of ``run_signal``'s red, for the report: ``check`` a red
+    run a waived check job of it explains, ``run`` a red run waived itself, ``cancelled-run`` a
+    cancelled run the override recorded."""
+
+    kind: Literal["check", "run", "cancelled-run"]
+    rid: str
+    name: str
+
+
+# A red run's judgement (``Gate._judge_red_run``), shared by ``run_signal`` and ``checkless_reds``:
+# advisory jobs alone explain it; they do beside a job whose check is waived; the run waiver
+# covers it; its job list could not be read (``failure`` the read's line); or it is red.
+type RedRunOutcome = Literal["advisory", "job-waived", "run-waived", "unread", "red"]
+
+
+@dataclass(frozen=True)
+class RedRunJudgement:
+    outcome: RedRunOutcome
+    failure: str = ""
+
+
+@dataclass(frozen=True)
+class JudgedRun:
+    """A non-advisory run of the round's run read, as ``Gate._judged_runs`` yields it: completed
+    and the newest of its workflow and event, or in flight (``later``: the id of a completed run
+    of its workflow and event listed above it when it is a ``queued`` ``pull_request`` run, else
+    "")."""
+
+    rid: str
+    name: str
+    concl: str
+    suite: str
+    inflight: bool
+    later: str = ""
 
 
 # --- the build signal -------------------------------------------------------------------------------
@@ -119,8 +229,8 @@ type Unread = Literal["refused", "held", "unanswered", "unusable"]
 @dataclass
 class RunSignal:
     """``run_signal``'s answer: its status (0 the fold stands, 1 red at the run level, 3 unread,
-    4 no verdict yet), the run-level red count, the runs the waiver took out of it (one
-    "<run id> <run|job|cancelled> <name>" per line), and the reason line. ``stopped``: the 4 is a run that
+    4 no verdict yet), the run-level red count, the runs the waiver took out of it
+    (``WaivedRun``, in the order judged), and the reason line. ``stopped``: the 4 is a run that
     stopped without a verdict, with nothing in flight -- no new check run comes of it unless
     someone re-runs it, which ``checks --check`` reads as final (#569). ``unread``: on a 3, how the
     read failed (``Unread``). ``holds``: on a 4 for runs in flight, one report line per held run,
@@ -130,7 +240,7 @@ class RunSignal:
 
     rc: int
     red: int
-    waived_runs: str
+    waived_runs: list[WaivedRun]
     reason: str
     stopped: bool = False
     # On a 3: how the read failed (``Unread``), which decides whether a wait reads it again.
@@ -192,6 +302,8 @@ class Gate:
     # on beside the check counts (ludics-lite#551): a run moves before any check row exists.
     run_state: str = ""
     waive_mode: Literal["", "record", "apply"] = ""
+    # The override's record, ``str()`` of each ``WaiverKey`` (the waiver-key block above): read and
+    # written only by ``_waive_record``, ``waives`` and ``_waive_take``, and reset by ``check``.
     waived: set[str] = field(default_factory=lambda: set[str]())
     # Jobs that never got a runner (runners.py, ludics-lite#560/#728): looked for only when
     # ``orphans_on`` (``checks`` and ``merge``; ``base`` reads a merged head and leaves it off), on
@@ -371,6 +483,28 @@ class Gate:
                 suites.add(suite)
         return [row for row in rows if tab_fields(row, 6)[4] not in suites]
 
+    # --- the override's record (the waiver-key block above) -------------------------------------------
+
+    def _waive_record(self, key: WaiverKey) -> None:
+        """Records ``key`` on the recording read; elsewhere a no-op."""
+        if self.waive_mode == "record":
+            self.waived.add(str(key))
+
+    def waives(self, key: WaiverKey) -> bool:
+        """Does the record hold ``key``? Whatever the mode: the readers of a record already made."""
+        return str(key) in self.waived
+
+    def _waive_eligible(self, key: WaiverKey) -> bool:
+        """Is ``key`` waived this round without changing the record: everything the recording read
+        sees (it is recorded where its reader records it), and what the record holds on a read
+        that applies it. With no override, nothing."""
+        return self.waive_mode == "record" or (self.waive_mode == "apply" and self.waives(key))
+
+    def _waive_take(self, key: WaiverKey) -> bool:
+        """``_waive_record`` then ``_waive_eligible``."""
+        self._waive_record(key)
+        return self._waive_eligible(key)
+
     def apply_waiver(self, rows: list[str]) -> list[str]:
         """``apply_waiver``: the red rows the waiver covers marked ``waived`` -- recorded first on the
         recording read -- and only while their key names exactly ONE row. A row that concluded
@@ -383,23 +517,16 @@ class Gate:
         for row in rows:
             cls, name, _concl, _url, suite, _status = tab_fields(row, 6)
             if cls:
-                keys.append(f"{suite}/{name}")
+                keys.append(f"{suite or '-'}/{name}")
         out: list[str] = []
         for row in rows:
             cls, name, concl, url, suite, status = tab_fields(row, 6)
             if not cls:
                 continue
-            ident = f"{suite}/{name}"
-            if cls == "red":
-                key = f"check:{ident}"
-            elif cls == "nogo" and concl == "cancelled":
-                key = f"cancelled:{ident}"
-            else:
-                key = ""
-            if key and keys.count(ident) == 1:
-                if self.waive_mode == "record":
-                    self.waived.add(key)
-                if key in self.waived:
+            key = job_waiver(suite, name, concl)
+            if key is not None and keys.count(key.ident) == 1:
+                self._waive_record(key)
+                if self.waives(key):
                     cls = "waived"
             out.append(f"{cls}\t{name}\t{concl}\t{url}\t{suite}\t{status}")
         return out
@@ -518,7 +645,8 @@ class Gate:
                 continue
             if conclusion_class(jconcl) != "red":
                 continue
-            if names.count(jname) == 1 and f"check:{suite or '-'}/{jname}" in self.waived:
+            key = job_waiver(suite, jname, jconcl)
+            if names.count(jname) == 1 and key is not None and self.waives(key):
                 waived += 1
                 continue
             hard += 1
@@ -572,26 +700,29 @@ class Gate:
                 last, last_job = jdone, job
             if self.is_advisory(jname):
                 continue
-            klass = conclusion_class(jconcl)
-            key = f"check:{suite or '-'}/{jname}"
-            if klass == "red":
-                if key not in self.waived:
-                    return f"{job} concluded {jconcl}, red and not waived"
-                if names.count(jname) != 1:
-                    return (
-                        f"{job} concluded {jconcl}, red, and the waiver cannot single it out:"
-                        f" {names.count(jname)} jobs of the run share its name"
-                    )
-                continue
-            if klass == "nogo" and jconcl == "cancelled" and f"cancelled:{suite or '-'}/{jname}" in self.waived:
-                # A cancel --override waived (#1036), under the one-job-of-that-name rule as a red.
-                if names.count(jname) != 1:
-                    return (
-                        f"{job} concluded cancelled, and the waiver cannot single it out:"
-                        f" {names.count(jname)} jobs of the run share its name"
-                    )
-                continue
-            if klass != "green":
+            key = job_waiver(suite, jname, jconcl)
+            if key is not None:
+                match key.kind:
+                    case "check":
+                        if not self.waives(key):
+                            return f"{job} concluded {jconcl}, red and not waived"
+                        if names.count(jname) != 1:
+                            return (
+                                f"{job} concluded {jconcl}, red, and the waiver cannot single it out:"
+                                f" {names.count(jname)} jobs of the run share its name"
+                            )
+                        continue
+                    case "cancelled":
+                        # A cancel --override waived (#1036), under the one-job-of-that-name rule
+                        # as a red; an unwaived one is stopped and not judged, below.
+                        if self.waives(key):
+                            if names.count(jname) != 1:
+                                return (
+                                    f"{job} concluded cancelled, and the waiver cannot single it out:"
+                                    f" {names.count(jname)} jobs of the run share its name"
+                                )
+                            continue
+            if conclusion_class(jconcl) != "green":
                 return f"{job} concluded {jconcl}, stopped and not judged"
         if not names:
             return "it lists no jobs yet"
@@ -683,11 +814,50 @@ class Gate:
             self.session, self.repo, runs, self.clock.time(), self.config.never_started, self.is_advisory, wanted
         )
 
+    def _judged_runs(self, raw: str) -> Iterator[JudgedRun]:
+        """The run read's non-advisory runs, in its order (newest first), as ``run_signal`` and
+        ``checkless_reds`` judge them: each run in flight (``later`` set for a ``queued``
+        ``pull_request`` run when a completed run of its workflow and event is listed above it),
+        and the newest COMPLETED run of each workflow and event -- the one the fold judges; an
+        older completed one of the same key is not yielded."""
+        seen: dict[str, str] = {}
+        for line in herestring_lines(raw):
+            _created, rid, wid, event, name, status, concl, suite = tab_fields(line, 8)
+            if not rid or self.is_advisory(name):
+                continue
+            key = f"{wid}/{event}"
+            if status != "completed" or conclusion_class(concl) == "pending":
+                later = seen.get(key, "") if status == "queued" and event == "pull_request" else ""
+                yield JudgedRun(rid, name, concl, suite or "-", inflight=True, later=later)
+                continue
+            if key in seen:
+                continue
+            seen[key] = rid
+            yield JudgedRun(rid, name, concl, suite or "-", inflight=False)
+
+    def _judge_red_run(self, rid: str, suite: str) -> RedRunJudgement:
+        """A completed red run, judged in the one order ``run_signal`` and ``checkless_reds`` share:
+        its job list first (``run_red_is_advisory_only``) -- advisory jobs alone explain it, or do
+        beside a job whose check the override waives -- then the run's own waiver, eligible but not
+        recorded (its caller records it), and only then a job list that did not answer: a waived
+        run is waived whether or not its jobs were read. ``failure`` is an unread read's line, taken
+        as it failed."""
+        explained = self.run_red_is_advisory_only(rid, suite)
+        if explained == 0:
+            return RedRunJudgement("advisory")
+        if explained == 2:
+            return RedRunJudgement("job-waived")
+        if self._waive_eligible(RunKey("run", rid)):
+            return RedRunJudgement("run-waived")
+        if explained == 3:
+            return RedRunJudgement("unread", self.session.err_line() or "it did not answer")
+        return RedRunJudgement("red")
+
     def run_signal(self, sha: str, pr_at: str, checks: int, base_sha: str, head_ref: str, pr: str) -> RunSignal:
         """``run_signal``: the head's workflow runs, read whenever the check fold leaves nothing to
         wait for, and able to overrule it (see the shell's comment for every round)."""
         repo = self.repo
-        waived_runs = ""
+        waived_runs: list[WaivedRun] = []
         # The round's run read, made once a round: a read the fold's workflow lookup already saw
         # fail is reported as it failed, not asked again (ludics#929).
         if self._round_raw is not None:
@@ -707,49 +877,31 @@ class Gate:
         self.run_state = " ".join(
             f"{f[1]}:{f[5]}:{f[6]}" for f in (tab_fields(line, 8) for line in herestring_lines(raw)) if f[1]
         )
-        # The newest completed run of each workflow and event, by id: the one the fold judges.
-        seen: dict[str, str] = {}
-        red_rows: list[str] = []
-        # Each run in flight: its id, suite and name, and the id of a completed run of its workflow
-        # and event listed above it (created after it) when it is a ``queued`` ``pull_request``
-        # run, else "".
-        inflight_ids: list[tuple[str, str, str, str]] = []
-        cancelled_ids: list[str] = []
+        red_runs: list[JudgedRun] = []
+        inflight_runs: list[JudgedRun] = []
+        cancelled_runs: list[tuple[JudgedRun, RunKey]] = []
         runs = nogo = 0
-        for line in herestring_lines(raw):
-            _created, rid, wid, event, name, status, concl, suite = tab_fields(line, 8)
-            if not rid:
+        for run in self._judged_runs(raw):
+            if run.inflight:
+                inflight_runs.append(run)
                 continue
-            if self.is_advisory(name):
-                continue
-            key = f"{wid}/{event}"
-            if status != "completed" or conclusion_class(concl) == "pending":
-                later = seen.get(key, "") if status == "queued" and event == "pull_request" else ""
-                inflight_ids.append((rid, suite or "-", name, later))
-                continue
-            if key in seen:
-                continue
-            seen[key] = rid
             runs += 1
-            cls = conclusion_class(concl)
-            match cls:
-                case "red":
-                    red_rows.append(f"{rid}\t{name}\t{concl}\t{suite or '-'}")
-                case "nogo":
-                    if concl == "cancelled":
-                        cancelled_ids.append(f"{rid}\t{name}")
-                        # --override's record of a run cancelled at the first read (#1036), made
-                        # here so a run in flight beside it, which ends this read early, does not
-                        # keep it from the record. Keyed by run id, apart from a red run's key:
-                        # the waiver covers the run while it reads cancelled, never a red of it.
-                        if self.waive_mode == "record":
-                            self.waived.add(f"cancelled-run:{rid}")
-                    else:
-                        nogo += 1
-                case "green" | "pending":
-                    pass
-                case _:
-                    assert_never(cls)
+            key = run_waiver(run.rid, run.concl)
+            if key is None:
+                # Green, or stopped as stale or action_required: no waiver covers it.
+                if conclusion_class(run.concl) == "nogo":
+                    nogo += 1
+                continue
+            match key.kind:
+                case "run":
+                    red_runs.append(run)
+                case "cancelled-run":
+                    cancelled_runs.append((run, key))
+                    # --override's record of a run cancelled at the first read (#1036), made
+                    # here so a run in flight beside it, which ends this read early, does not
+                    # keep it from the record. Keyed by run id, apart from a red run's key:
+                    # the waiver covers the run while it reads cancelled, never a red of it.
+                    self._waive_record(key)
         red = 0
         red_note = ""
         # Red runs whose job list did not answer (ludics#929): not explained, and not unexplained
@@ -760,30 +912,28 @@ class Gate:
         red_ids: list[str] = []
         unread_what = unread_line = ""
         unread_kind: Unread = "unanswered"
-        for row in red_rows:
-            rid, rname, rconcl, rsuite = tab_fields(row, 4)
-            if not rid:
-                continue
-            explained = self.run_red_is_advisory_only(rid, rsuite)
-            if explained == 0:
-                continue
-            if explained == 2:
-                waived_runs += f"{rid} job {rname}\n"
-                continue
-            if self.waive_mode == "record" or (self.waive_mode == "apply" and f"run:{rid}" in self.waived):
-                waived_runs += f"{rid} run {rname}\n"
-                continue
-            if explained == 3:
-                unread_jobs += 1
-                if not unread_what:
-                    unread_what = f"read the jobs of workflow run {rid} ({rname}, {rconcl}) of {repo} @{sha[:8]}"
-                    unread_line = self.session.err_line() or "it did not answer"
-                if unread_kind == "unanswered":
-                    unread_kind = self.read_failure
-                continue
-            red += 1
-            red_ids.append(rid)
-            red_note = red_note or f"{rname} ({rconcl})"
+        for run in red_runs:
+            rid, rname, rconcl = run.rid, run.name, run.concl
+            judged = self._judge_red_run(rid, run.suite)
+            match judged.outcome:
+                case "advisory":
+                    pass
+                case "job-waived":
+                    waived_runs.append(WaivedRun("check", rid, rname))
+                case "run-waived":
+                    # Recorded by ``check`` from this entry, on the recording read alone.
+                    waived_runs.append(WaivedRun("run", rid, rname))
+                case "unread":
+                    unread_jobs += 1
+                    if not unread_what:
+                        unread_what = f"read the jobs of workflow run {rid} ({rname}, {rconcl}) of {repo} @{sha[:8]}"
+                        unread_line = judged.failure
+                    if unread_kind == "unanswered":
+                        unread_kind = self.read_failure
+                case "red":
+                    red += 1
+                    red_ids.append(rid)
+                    red_note = red_note or f"{rname} ({rconcl})"
         if red > 0:
             return RunSignal(
                 1,
@@ -819,7 +969,8 @@ class Gate:
         # by nothing.
         inflight = released = 0
         holds = superseded = ""
-        for rid, rsuite, rname, later in inflight_ids:
+        for run in inflight_runs:
+            rid, rsuite, rname, later = run.rid, run.suite, run.name, run.later
             jobs = self.run_jobs(rid)
             if later and jobs is not None and not any(tab_fields(job, 4)[0] for job in herestring_lines(jobs)):
                 superseded += (
@@ -850,13 +1001,13 @@ class Gate:
         # held line; an unread job list holds as well, the old reading, and says so. A held one
         # --override recorded at the first read (#1036) is waived instead: a "cancelled" entry.
         stopped_released = 0
-        for entry in cancelled_ids:
-            rid, rname = tab_fields(entry, 2)
+        for run, key in cancelled_runs:
+            rid, rname = run.rid, run.name
             stopped_hold = self.run_stopped_hold(rid)
             if stopped_hold is None:
                 stopped_released += 1
-            elif f"cancelled-run:{rid}" in self.waived:
-                waived_runs += f"{rid} cancelled {rname}\n"
+            elif self.waives(key):
+                waived_runs.append(WaivedRun("cancelled-run", rid, rname))
             else:
                 nogo += 1
                 holds += f"  held     workflow run {rid} ({shlex.quote(rname)}): {stopped_hold[0]}\n"
@@ -967,45 +1118,35 @@ class Gate:
             for cls, _name, _concl, _url, suite, _status in (tab_fields(row, 6) for row in rows)
             if cls in ("red", "waived") and suite and suite != "-"
         }
-        seen: set[str] = set()
         red = 0
-        for line in herestring_lines(self._round_raw):
-            _created, rid, wid, event, name, status, concl, suite = tab_fields(line, 8)
-            if not rid or self.is_advisory(name):
+        for run in self._judged_runs(self._round_raw):
+            rid = run.rid
+            key = run_waiver(rid, run.concl)
+            if run.inflight or key is None or key.kind != "run" or run.suite in explained_suites:
                 continue
-            if status != "completed" or conclusion_class(concl) == "pending":
-                continue
-            key = f"{wid}/{event}"
-            if key in seen:
-                continue
-            seen.add(key)
-            if conclusion_class(concl) != "red" or (suite or "-") in explained_suites:
-                continue
-            explained = self.run_red_is_advisory_only(rid, suite or "-")
-            if explained in (0, 2):
-                continue
-            label = f"workflow run {rid} ({shlex.quote(name)}, {concl})"
-            if self.waive_mode == "record" or (self.waive_mode == "apply" and f"run:{rid}" in self.waived):
-                if self.waive_mode == "record":
-                    self.waived.add(f"run:{rid}")
-                self.run_waived += 1
-                self.check_lines += (
-                    f"  RED      {label} (no build check behind it — WAIVED: red when --override was given)\n"
-                )
-                continue
-            if explained == 3:
-                failure = self.session.err_line() or "it did not answer"
-                self.check_lines += (
-                    f"  unread   {label}: its job list could not be read ({failure}), so whether only advisory"
-                    " jobs explain its red is unknown\n"
-                )
-                continue
-            red += 1
-            self.red_runs.append(rid)
-            self.check_lines += (
-                f"  RED      {label} — no build check behind it: a run that fails before its jobs start"
-                " leaves nothing in the check list\n"
-            )
+            judged = self._judge_red_run(rid, run.suite)
+            label = f"workflow run {rid} ({shlex.quote(run.name)}, {run.concl})"
+            match judged.outcome:
+                case "advisory" | "job-waived":
+                    pass
+                case "run-waived":
+                    self._waive_record(key)
+                    self.run_waived += 1
+                    self.check_lines += (
+                        f"  RED      {label} (no build check behind it — WAIVED: red when --override was given)\n"
+                    )
+                case "unread":
+                    self.check_lines += (
+                        f"  unread   {label}: its job list could not be read ({judged.failure}), so whether only"
+                        " advisory jobs explain its red is unknown\n"
+                    )
+                case "red":
+                    red += 1
+                    self.red_runs.append(rid)
+                    self.check_lines += (
+                        f"  RED      {label} — no build check behind it: a run that fails before its jobs start"
+                        " leaves nothing in the check list\n"
+                    )
         return red
 
     def failed_runs(self) -> tuple[list[tuple[str, str]], str]:
@@ -1327,29 +1468,25 @@ class Gate:
                 run_why = sig.reason
                 run_holds = sig.holds
                 self.check_lines += sig.superseded
-                for entry in herestring_lines(sig.waived_runs):
-                    if not entry:
-                        continue
+                for waived in sig.waived_runs:
                     self.run_waived += 1
-                    rid = _before_space(entry)
-                    rest = _after_space(entry)
-                    if _before_space(rest) == "job":
-                        self.check_lines += (
-                            f"  RED      workflow run {_after_space(rest)} (red through a check above that is WAIVED)\n"
-                        )
-                    elif _before_space(rest) == "cancelled":
-                        self.waived_cancelled += 1
-                        self.check_lines += (
-                            f"  stopped  workflow run {_after_space(rest)} (cancelled — WAIVED: cancelled when"
-                            " --override was given)\n"
-                        )
-                    else:
-                        if self.waive_mode == "record":
-                            self.waived.add(f"run:{rid}")
-                        self.check_lines += (
-                            f"  RED      workflow run {_after_space(rest)} (no build check behind it — WAIVED:"
-                            " red when --override was given)\n"
-                        )
+                    match waived.kind:
+                        case "check":
+                            self.check_lines += (
+                                f"  RED      workflow run {waived.name} (red through a check above that is WAIVED)\n"
+                            )
+                        case "cancelled-run":
+                            self.waived_cancelled += 1
+                            self.check_lines += (
+                                f"  stopped  workflow run {waived.name} (cancelled — WAIVED: cancelled when"
+                                " --override was given)\n"
+                            )
+                        case "run":
+                            self._waive_record(RunKey("run", waived.rid))
+                            self.check_lines += (
+                                f"  RED      workflow run {waived.name} (no build check behind it — WAIVED:"
+                                " red when --override was given)\n"
+                            )
                 match sig.rc:
                     case 1:
                         self.verdict = "runred"

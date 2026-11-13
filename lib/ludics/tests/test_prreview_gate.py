@@ -7,7 +7,9 @@ The fixture suites (test-pr-review-checks-absent.sh, -merge.sh, -base-drift.sh) 
 conformance suite; these pin the rules inside the port that a regression would bend first.
 """
 
+import ast
 import contextlib
+import inspect
 import io
 import os
 import subprocess
@@ -15,6 +17,7 @@ import unittest
 from unittest import mock
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 from ludics import cli, proc
 from ludics.prreview import branchtip, checks, clock, closekw, shtext, workflow_yaml
@@ -23,7 +26,10 @@ from ludics.prreview.drift import compare_file_set, compare_hunks
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.budget import Budget
 from ludics.prreview.clock import FuncClock
-from ludics.prreview.gate import Gate, advisory_parse, load_gate_config, running_list
+from ludics.prreview import gate as gate_module, merge as merge_module
+from ludics.prreview.gate import (
+    Gate, RunKey, WaivedRun, advisory_parse, job_waiver, load_gate_config, run_waiver, running_list,
+)
 from ludics.prreview.runners import Idle
 
 
@@ -1200,6 +1206,109 @@ class RunningPause(unittest.TestCase):
         self.assertEqual(rows, ["waived\tubuntu\tfailure\tu\t1\tcompleted", "pending\tmacos\tpending\tm\t1\tin_progress"])
         gate.summarize(rows)
         self.assertEqual((gate.verdict, gate.check_pending, gate.check_queued), ("pending", 1, 0))
+
+
+class WaiverKeys(unittest.TestCase):
+    """#1098: the override's keys are typed. One classifier per subject maps a conclusion to a kind,
+    the record keeps the spelling, and the red-run judgement both readers share keeps its order."""
+
+    def test_each_conclusion_maps_to_one_kind_or_none(self) -> None:
+        jobs = {c: job_waiver("1", "ci", c) for c in ("failure", "timed_out", "startup_failure", "cancelled",
+                                                    "stale", "action_required", "pending", "", "success")}
+        self.assertEqual({c: str(k) if k else None for c, k in jobs.items()}, {
+            "failure": "check:1/ci", "timed_out": "check:1/ci", "startup_failure": "check:1/ci",
+            "cancelled": "cancelled:1/ci", "stale": None, "action_required": None, "pending": None, "": None,
+            "success": None,
+        })
+        self.assertEqual(str(job_waiver("", "ci", "failure")), "check:-/ci", "a missing suite reads as -")
+        runs = {c: run_waiver("100", c) for c in ("failure", "cancelled", "stale", "pending", "success")}
+        self.assertEqual({c: str(k) if k else None for c, k in runs.items()}, {
+            "failure": "run:100", "cancelled": "cancelled-run:100", "stale": None, "pending": None, "success": None,
+        })
+
+    def test_a_cancel_recorded_does_not_cover_the_same_id_read_red(self) -> None:
+        gate = make_gate(FakeGh(), FakeClock())
+        gate.waive_mode = "record"
+        for key in (run_waiver("100", "cancelled"), job_waiver("1", "ci", "cancelled")):
+            assert key is not None
+            gate._waive_record(key)  # pyright: ignore[reportPrivateUsage]
+        self.assertEqual(gate.waived, {"cancelled-run:100", "cancelled:1/ci"})
+        gate.waive_mode = "apply"
+        for key in (run_waiver("100", "failure"), job_waiver("1", "ci", "failure")):
+            assert key is not None
+            self.assertFalse(gate.waives(key), key)
+        self.assertTrue(gate.waives(RunKey("cancelled-run", "100")))
+
+    def test_the_record_by_mode(self) -> None:
+        gate = make_gate(FakeGh(), FakeClock())
+        key = RunKey("run", "100")
+        cases: list[tuple[Literal["", "record", "apply"], bool, set[str]]] = [
+            ("", False, set()), ("record", True, {"run:100"}), ("apply", False, set())]
+        for mode, eligible, recorded in cases:
+            with self.subTest(mode=mode):
+                gate.waive_mode = mode
+                gate.waived = set()
+                self.assertEqual(gate._waive_eligible(key), eligible)  # pyright: ignore[reportPrivateUsage]
+                self.assertEqual(gate.waived, set[str](), "eligibility records nothing")
+                gate._waive_record(key)  # pyright: ignore[reportPrivateUsage]
+                self.assertEqual(gate.waived, recorded)
+        gate.waive_mode = "apply"
+        gate.waived = {"run:100"}
+        self.assertTrue(gate._waive_take(key))  # pyright: ignore[reportPrivateUsage]
+        self.assertEqual(gate.waived, {"run:100"})
+
+    def red_run_gate(self, rows: str) -> tuple[Gate, FakeGh]:
+        """Run 101 (suite 2) concluded red and its job list does not answer, beside ``rows``."""
+        gh = FakeGh()
+        gh.on("actions/runs?head_sha=h1",
+              out="2026-01-01T00:00:00Z\t101\t2\tpull_request\tsetup\tcompleted\tfailure\t2" + rows)
+        gh.on("actions/runs/101/jobs", rc=1, err="HTTP 502: Bad Gateway")
+        return make_gate(gh, FakeClock()), gh
+
+    def test_run_signal_waives_a_red_run_before_its_unread_job_list(self) -> None:
+        modes: list[tuple[Literal["", "record"], int]] = [("record", 0), ("", 3)]
+        for mode, rc in modes:
+            with self.subTest(mode=mode):
+                gate, _gh = self.red_run_gate("")
+                gate.waive_mode = mode
+                sig = gate.run_signal("h1", "2026-01-01T00:00:00Z", 1, "b1", "topic", "7")
+                self.assertEqual(sig.rc, rc, sig.reason)
+                self.assertEqual(sig.waived_runs, [WaivedRun("run", "101", "setup")] if mode else [])
+                self.assertEqual(gate.waived, set[str](), "check records it from the entry, not run_signal")
+
+    def test_checkless_reds_waives_a_red_run_before_its_unread_job_list(self) -> None:
+        gate, _gh = self.red_run_gate("")
+        gate.waive_mode = "record"
+        self.assertIsNotNone(gate.read_runs("h1"))
+        self.assertEqual(gate.checkless_reds(["red\tlint\tfailure\tl\t1\tcompleted"]), 0)
+        self.assertEqual((gate.waived, gate.run_waived), ({"run:101"}, 1))
+        self.assertIn("RED      workflow run 101 (setup, failure) (no build check behind it — WAIVED", gate.check_lines)
+        self.assertNotIn("unread", gate.check_lines)
+
+    def test_checkless_reds_reads_no_job_list_of_a_suite_the_fold_shows(self) -> None:
+        gate, gh = self.red_run_gate("")
+        self.assertIsNotNone(gate.read_runs("h1"))
+        self.assertEqual(gate.checkless_reds(["red\tsetup\tfailure\tl\t2\tcompleted"]), 0)
+        self.assertFalse([c for c in gh.calls if "actions/runs/101/jobs" in " ".join(c)], gh.calls)
+        self.assertEqual(gate.check_lines, "")
+
+    def test_only_the_record_methods_touch_the_record(self) -> None:
+        # The guard behind the type: in gate.py and merge.py, ``.waived`` is read or written only
+        # by the record's methods (and reset by ``check``). Boundary: those two modules, by their
+        # syntax tree; another module reaching the record is outside it.
+        allowed = {"_waive_record", "waives", "check"}
+        for module in (gate_module, merge_module):
+            tree = ast.parse(inspect.getsource(module))
+            reached: set[str] = set()
+            for fn in ast.walk(tree):
+                if isinstance(fn, ast.FunctionDef):
+                    for node in ast.walk(fn):
+                        if isinstance(node, ast.Attribute) and node.attr == "waived":
+                            reached.add(fn.name)
+            with self.subTest(module=module.__name__):
+                self.assertLessEqual(reached, allowed)
+        self.assertIn("waives", {n.name for n in ast.walk(ast.parse(inspect.getsource(gate_module)))
+                                 if isinstance(n, ast.FunctionDef)}, "the guard reads the right tree")
 
 
 class Selection(unittest.TestCase):
