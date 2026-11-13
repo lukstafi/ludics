@@ -109,8 +109,8 @@ jobs:
     # scripts/preflight.sh runs the others as its GUARDS (`preflight.sh guards`; the Markdown-
     # triggered ones by default, all under `--guards all`, ludics-lite#553), and
     # scripts/test-preflight.sh holds its guard table and this job's steps to one set: a suite
-    # added here and not there fails it. 8 minutes since ludics#1135: re-measured on 2026-11-13
-    # over the seven green jobs in the issue's ten-run sample (main and pull requests), 202-289s:
+    # added here and not there fails it. 8 minutes since ludics#1135: re-measured on ubuntu-26.04
+    # on 2026-11-13 over the seven green jobs in the issue's ten-run sample (main and pull requests), 202-289s:
     # 43478923418 245s, 43481235641 202s, 43483172611 289s, 43486063437 266s,
     # 43489019661 277s, 43493724416 285s, 43496390236 246s. Nearest-rank p90 289s,
     # ceil(1.5 x 289 / 60) = 8 minutes by THE CAPS; three jobs hit the old 5-minute cap.
