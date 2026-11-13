@@ -6179,6 +6179,30 @@ jq -n --arg h "$(printf 'c%.0s' $(seq 40))" '{state:"OPEN", headRefOid:$h}' > "$
 expect "a real review needs the PR's head to be the one asked at" 1 "^WAVE REVIEW REFUSED t78: example/project#13 at-open at ${pbase:0:8}: the PR's head is $(printf 'c%.0s' $(seq 40)), not $pbase" -- \
   env REVIEW_SAYS=x "${FWR[@]}" wave review "$K/wave.json" t78 13 "$pbase" --kind at-open
 expect "review takes a kind" 2 "wave review: --kind is one of at-open, confirm" -- "${FWR[@]}" wave review "$K/wave.json" t77 12 "$pbase"
+# A mixed wave: a CLI task takes a profile, is prepared with nothing made, and wave launch starts it
+# through launch --standing, which makes the worktree and takes the reservation.
+jq '. + {profiles:{sol:{transport:"cli", kind:"codex"}}}' "$K/wave.json" > "$K/wave-mixed.json" && mv "$K/wave-mixed.json" "$K/wave.json"
+printf '# Task @@T@@\n' > "$K/tasks/t80.md"
+export SHIM_GH_PR_LIST="$K/prs.json"; echo '[]' > "$SHIM_GH_PR_LIST"
+expect "prep of a CLI task says wave launch starts it" 0 "standing wkv-t80-testbox-iterate (a CLI worker on testbox, nothing made or reserved yet: wave launch starts it)$" -- \
+  "${FWK[@]}" wave prep "$K/wave.json" t80 --base master --profile sol
+[ ! -e "$proj-worktrees/wk-80" ] && [ -z "$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t80-testbox-iterate") | .request_id')" ] &&
+  ok "...making no worktree and reserving nothing" || ko "a CLI prep made its worktree or reserved"
+got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t80") | .fields | "\(.state) \(.transport) \(.kind) \(.branch)"')
+[ "$got" = "pending cli codex codex/wk-80" ] && ok "...its row pending, a codex CLI worker's" || ko "row: $got"
+expect "wave launch starts the worker on the worktree launch made" 0 "^WAVE LAUNCH t80: launched testbox/wk-80 worktree $proj-worktrees/wk-80 standing wkv-t80-testbox-iterate$" -- \
+  "${FWK[@]}" wave launch "$K/wave.json" t80
+grep -q "^LAUNCHED testbox/wk-80 kind=codex " <<<"$out" && ok "...printing launch's own line" || ko "launch output: $out"
+got=$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t80-testbox-iterate") | "\(.request.standing) \(.request.transport) \(.checkout)"')
+[ "$got" = "true cli $proj-worktrees/wk-80" ] && ok "...the standing record on that worktree" || ko "record: $got"
+got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t80") | .fields | "\(.state) \(.worktree) \(.standing) \(.farside)"')
+[ "$got" = "launched $proj-worktrees/wk-80 wkv-t80-testbox-iterate none" ] && ok "...and the row launched" || ko "row: $got"
+[ "$(git -C "$proj-worktrees/wk-80" branch --show-current)" = codex/wk-80 ] && [ "$(git -C "$proj-worktrees/wk-80" rev-parse HEAD)" = "$pbase" ] &&
+  ok "...on its branch at prep's base" || ko "worktree: $(git -C "$proj-worktrees/wk-80" status -sb 2>&1 | head -n 1)"
+settle wk-80
+fixture_done wkv-t80-testbox-iterate
+expect "a second launch of the task is refused on the manifest" 1 "^WAVE LAUNCH REFUSED t80: $K/prep/t80.json records a launch already$" -- "${FWK[@]}" wave launch "$K/wave.json" t80
+expect "a native task is no wave launch's" 1 "^WAVE LAUNCH REFUSED t77: a subagent worker is spawned by its coordinator's runtime" -- "${FWK[@]}" wave launch "$K/wave.json" t77
 }
 
 section "usage" && {

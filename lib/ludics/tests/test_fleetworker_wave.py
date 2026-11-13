@@ -15,7 +15,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import revision, takeover, wave, waveloop, waveprep, wavereview
+from ludics.fleetworker import revision, takeover, wave, wavelaunch, waveloop, waveprep, wavereview
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -96,6 +96,9 @@ class WaveFile(unittest.TestCase):
                              ({**good, "kind": "gpt"}, "claude or codex"), ({**good, "vars": {"WT": "x"}}, "gives itself"),
                              ({**good, "checkout": "rel"}, "absolute"), ({**good, "legs": {"b": {"checkout": "/c"}}}, "lacks"),
                              ({**good, "loops": {"cc": {**good["loops"]["cc"], "command": []}}}, "argv words"),
+                             ({**good, "legs": {**good["legs"], "other-box": {**good["legs"]["gpu-box"], "checkout": "/o"}}},
+                              'legs.other-box.suffix "gpu" is another leg\'s, or the reserved name base'),
+                             ({**good, "legs": {"gpu-box": {**good["legs"]["gpu-box"], "suffix": "base"}}}, "the reserved name base"),
                              ({**good, "loops": {"cc": {**good["loops"]["cc"], "poll": True}}}, "poll"),
                              ({**good, "vars": {"CHECKOUT": "x"}}, "gives itself"),
                              ({**good, "project_part": "/abs/brief.md"}, "relative to the checkout"),
@@ -400,6 +403,322 @@ class Prep(WaveDirCase):
         self.assertIn(f"the template part {self.wavedir}/legs.md does not exist", out)
         self.assertNotIn("nor the shipped", out, "the repository ships no legs part")
         self.assert_made_nothing(out)
+
+
+MIXED = {"profiles": {"sol": {"transport": "cli", "kind": "codex", "model": "gpt-6.1-sol", "effort": "medium"},
+                      "opus": {"transport": "subagent", "kind": "claude"}},
+         "hosts": {"far": {"checkout": "/home/u/repo", "scratch": "/home/u/wave-scratch"}}}
+
+
+class MixedWave(WaveDirCase):
+    """A mixed wave: a task takes a profile and a host, and a CLI task is prepared, then launched."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        with open(self.path, "w") as f:
+            json.dump(wave_data(self.dir, vars={"COORD": "session-1", "MAIN": "main"}, **MIXED), f)
+        self.write("tasks/t43.md", "# Task @@T@@: @@ISSUE@@\n")
+        self.launch = Done(0, "preflight ok\nLAUNCHED far/w1-42 kind=codex session= model=gpt-6.1-sol cwd=/home/u/repo-worktrees/w1-42 stream=/s\n")
+        self.far_calls: list[list[str]] = []
+        self.far_state = Done(0, "worktree=absent\n")
+
+    def launch_run(self, argv: list[str], **_: Any) -> Done:
+        self.shim_calls.append(argv[1:])
+        return self.launch if argv[1] == "launch" else Done(self.shim_rc.get(" ".join(argv[1:3]), 0), "")
+
+    def far_run(self, _cfg: Any, box: str, script: str, args: list[str], **_: Any) -> Done:
+        if "worktree=" in script:  # wave launch's read of the worktree path on the host
+            return self.far_state
+        self.far_calls.append([box, *args])
+        return Done(0, "")
+
+    @contextlib.contextmanager
+    def world(self, prs: list[dict[str, Any]] | None = None) -> Generator[FakeTool]:
+        with (FakeTool("gh") as gh,
+              mock.patch.object(waveprep, "anchor_gate", return_value=0),
+              mock.patch.object(waveprep, "listing", return_value=Done(0, "[]")),
+              mock.patch.object(waveprep, "board_status", return_value=NO_BOARD_EXIT),
+              mock.patch.object(waveprep, "run", side_effect=self.fake_run),
+              mock.patch.object(wavelaunch, "run", side_effect=self.launch_run),
+              mock.patch.object(wavelaunch, "run_on", side_effect=self.far_run)):
+            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))))
+            yield gh
+
+    def prep(self, *args: str) -> tuple[int, str, str]:
+        return captured(waveprep.cmd_prep, self.cfg, [self.path, *args])
+
+    def start(self, task: str = "t42") -> tuple[int, str, str]:
+        return captured(wavelaunch.cmd_launch, self.cfg, [self.path, task])
+
+    def manifest(self, task: str = "t42") -> dict[str, Any]:
+        with open(os.path.join(self.wavedir, "prep", f"{task}.json")) as f:
+            return json.load(f)
+
+    def test_the_wave_file_takes_profiles_and_hosts_fail_closed(self) -> None:
+        good = wave_data("/tmp/x", **MIXED)
+        parsed = wave.parse_wave("/tmp/x/wave.json", good)
+        self.assertEqual(parsed.profiles["sol"], wave.Profile("cli", "codex", "gpt-6.1-sol", "medium"))
+        self.assertEqual((parsed.profiles["opus"].model, parsed.hosts["far"].scratch), ("", "/home/u/wave-scratch"))
+        for more, word in (({"profiles": {"x": {"transport": "app", "kind": "codex"}}}, "a transport of subagent or cli"),
+                           ({"profiles": {"x": {"transport": "cli", "kind": "gpt"}}}, "a kind of claude or codex"),
+                           ({"profiles": {"x": {"transport": "cli"}}}, "profiles.x lacks kind"),
+                           ({"profiles": {"x": {"transport": "cli", "kind": "codex", "args": ["-m"]}}}, "unknown key"),
+                           ({"profiles": {"x": {"transport": "cli", "kind": "codex", "model": "a;b"}}}, "does not match"),
+                           ({"hosts": {"far": {"checkout": "/c"}}}, "hosts.far lacks scratch"),
+                           ({"hosts": {"far": {"checkout": "rel", "scratch": "/s"}}}, "absolute"),
+                           ({"hosts": {"far": {"checkout": "/c", "scratch": "/s", "home": "/h"}}}, "unknown key")):
+            with self.assertRaises(ValueError) as caught:
+                wave.parse_wave("/tmp/x/wave.json", {**good, **more})
+            self.assertIn(word, str(caught.exception))
+
+    def test_a_cli_task_on_another_box_is_prepared_and_nothing_is_made_or_reserved(self) -> None:
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("worktree /home/u/repo-worktrees/w1-42 branch codex/w1-42", out)
+        self.assertIn("standing wv-t42-far-iterate wv-t42-gpu-box-iterate (a CLI worker on far, nothing made or reserved yet: wave launch starts it)", out)
+        self.assertEqual([c[:2] for c in self.shim_calls], [["board", "set"]], "no execution run: launch reserves")
+        self.assertFalse(os.path.lexists(os.path.join(self.dir, "repo-worktrees")), "no worktree is made here")
+        self.assertFalse(os.path.lexists(os.path.join(self.wavedir, "scratch")), "the scratch is the box's")
+        with open(os.path.join(self.wavedir, "reserve", "t42.json")) as f:
+            own = json.load(f)
+        self.assertEqual((own["request_id"], own["transport"], own["agent_host"], own["execution_host"], "checkout" in own),
+                         ("wv-t42-far-iterate", "cli", "far", "far", False))
+        with open(os.path.join(self.wavedir, "reserve", "t42-gpu.json")) as f:
+            leg = json.load(f)
+        self.assertEqual((leg["agent_host"], leg["execution_host"], leg["checkout"]), ("far", "gpu-box", "/home/u/repo-worktrees/w1-42-gpu"))
+        with open(os.path.join(self.wavedir, "reserve", "t42-base.json")) as f:
+            self.assertEqual(json.load(f), {"wave": "wv", "worker": "w1-42", "transport": "cli", "agent_host": "far",
+                                            "repository": "o/staging", "issue": "o/up#42"})
+        board = self.shim_calls[0]
+        for want in ("transport=cli", "kind=codex", "agent_host=far", "exec_hosts=far,gpu-box", "brief_host=mac", "model=gpt-6.1-sol/medium",
+                     "worktree=/home/u/repo-worktrees/w1-42", "runs=/home/u/wave-scratch/wv/t42/runs", "state=pending"):
+            self.assertIn(want, board)
+        with open(os.path.join(self.wavedir, "briefs", "brief-t42.md")) as f:
+            self.assertIn("/home/u/repo-worktrees/w1-42 on codex/w1-42", f.read())
+        launch = self.manifest()["launch"]
+        self.assertEqual({k: launch[k] for k in ("wave", "repository", "main", "transport", "kind", "model", "effort", "host", "remote",
+                                                 "host_checkout", "scratch", "worker", "branch", "base", "number", "issue_ref", "standing")},
+                         {"wave": "wv", "repository": "o/staging", "main": "main", "transport": "cli", "kind": "codex", "model": "gpt-6.1-sol",
+                          "effort": "medium", "host": "far", "remote": True, "host_checkout": "/home/u/repo",
+                          "scratch": "/home/u/wave-scratch/wv/t42", "worker": "w1-42", "branch": "codex/w1-42", "base": self.base,
+                          "number": "42", "issue_ref": "o/up#42", "standing": "wv-t42-far-iterate"})
+        self.assertEqual(launch["legs"], [{"box": "gpu-box", "suffix": "gpu", "worktree": "/home/u/repo-worktrees/w1-42-gpu",
+                                           "standing": "wv-t42-gpu-box-iterate"}])
+
+    def test_a_cli_task_on_the_agent_host_keeps_the_local_reads_and_a_native_profile_is_made_as_ever(self) -> None:
+        os.makedirs(os.path.join(self.dir, "repo-worktrees", "w1-42"))
+        with self.world():
+            rc, out, _ = self.prep("t42", "--base", "main", "--profile", "sol")
+            self.assertEqual(rc, 1)
+            self.assertIn("the worktree path", out)
+            os.rmdir(os.path.join(self.dir, "repo-worktrees", "w1-42"))
+            rc, out, _ = self.prep("t42", "--base", "main", "--profile", "sol")
+            self.assertEqual(rc, 0, out)
+            self.assertTrue(os.path.isdir(os.path.join(self.wavedir, "scratch", "t42", "runs")), "a local host's scratch is made")
+            self.assertFalse(os.path.lexists(os.path.join(self.dir, "repo-worktrees", "w1-42")))
+            self.shim_calls.clear()
+            rc, out, _ = self.prep("t43", "--base", "main", "--profile", "opus")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual([c[:2] for c in self.shim_calls], [["execution", "run"], ["board", "set"]])
+            self.assertEqual(git("-C", os.path.join(self.dir, "repo-worktrees", "w1-43"), "branch", "--show-current"), "claude/w1-43")
+
+    def test_a_file_another_task_wrote_is_never_overwritten(self) -> None:
+        """A task id that ends in a leg's suffix, or in -base, names another task's payload file."""
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            with open(os.path.join(self.wavedir, "reserve", "t42-gpu.json")) as f:
+                leg = f.read()
+            for task, name in (("t42-gpu", "reserve/t42-gpu.json"), ("t42-base", "reserve/t42-base.json")):
+                self.shim_calls.clear()
+                rc, out, _ = self.prep(task, "--source", "42", "--base", "main", "--profile", "sol")
+                self.assertEqual((rc, self.shim_calls), (1, []), out)
+                self.assertIn(f"WAVE PREP REFUSED {task}: {self.wavedir}/{name} exists, a file this prep would write", out)
+                self.assertFalse(os.path.exists(os.path.join(self.wavedir, "prep", f"{task}.json")))
+            with open(os.path.join(self.wavedir, "reserve", "t42-gpu.json")) as f:
+                self.assertEqual(f.read(), leg, "t42's leg payload is the one its launch reserves")
+
+    def test_profile_and_host_usage(self) -> None:
+        for args, why in ((["--profile", "astra"], "--profile names 'astra', which the wave file's profiles do not (it has: sol, opus)"),
+                          (["--host", "far"], "--host far needs a cli transport: a subagent worker runs on the agent host, mac"),
+                          (["--profile", "opus", "--host", "far"], "--host far needs a cli transport"),
+                          (["--profile", "sol", "--host", "rog"], "--host names 'rog', which the wave file's hosts do not (it has: far)"),
+                          (["--profile", "sol", "--host", "gpu-box", "--legs", "gpu-box"], "--host names 'gpu-box'")):
+            rc, _, err = self.prep("t42", "--base", "main", *args)
+            self.assertEqual(rc, 2, args)
+            self.assertIn(why, err)
+
+    def test_launch_starts_the_worker_reserves_its_legs_and_sets_the_row(self) -> None:
+        with self.world() as gh:
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            self.shim_calls.clear()
+            rc, out, err = self.start()
+            self.assertEqual(rc, 0, out + err)
+            self.assertEqual([c[4:6] for c in gh.calls()[-2:]], [["--state", "open"]] * 2, "the rivals are read again")
+            self.assertEqual(self.far_calls, [["far", "/home/u/wave-scratch/wv/t42/runs"]])
+            launch, leg, board = self.shim_calls
+            self.assertEqual(launch, ["launch", "far", "w1-42", "--target-repo", "o/staging", "--kind", "codex", "--brief",
+                                      f"{self.wavedir}/briefs/brief-t42.md", "--repo", "/home/u/repo", "--branch", "codex/w1-42",
+                                      "--base", self.base, "--base-branch", "main", "--standing", f"{self.wavedir}/reserve/t42.json",
+                                      "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
+            self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
+            self.assertEqual(board, ["board", "set", "wv", "t42", "worktree=/home/u/repo-worktrees/w1-42", "state=launched",
+                                     "standing=wv-t42-far-iterate wv-t42-gpu-box-iterate", "exec_hosts=far,gpu-box",
+                                     "farside=gpu-box:/home/u/repo-worktrees/w1-42-gpu"])
+            self.assertTrue(out.endswith("WAVE LAUNCH t42: launched far/w1-42 worktree /home/u/repo-worktrees/w1-42"
+                                         " standing wv-t42-far-iterate wv-t42-gpu-box-iterate\n"), out)
+            self.assertIn("LAUNCHED far/w1-42", out)
+            self.assertEqual(self.manifest()["done"][-2:], ["ready", "launched far/w1-42"])
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual((rc, self.shim_calls), (1, []))
+            self.assertIn("records a launch already", out)
+
+    def test_launch_refuses_a_prep_that_did_not_finish(self) -> None:
+        with self.world():
+            self.shim_rc = {"board set": 1}
+            rc, out, _ = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("WAVE PREP FAILED t42 at board", out)
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual((rc, self.shim_calls, self.far_calls), (1, [], []), out)
+            self.assertIn("WAVE LAUNCH REFUSED t42: its prep did not finish", out)
+            self.assertIn("not 'ready'", out)
+
+    def test_a_launch_that_is_refused_makes_nothing_and_a_leg_or_row_that_fails_is_a_note(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            self.shim_calls.clear()
+            self.launch = Done(1, "LAUNCH REFUSED far/w1-42: base red\n")
+            rc, out, _ = self.start()
+            self.assertEqual((rc, [c[0] for c in self.shim_calls]), (1, ["launch"]), out)
+            self.assertIn("LAUNCH REFUSED far/w1-42: base red", out)
+            self.assertNotIn("launched", " ".join(self.manifest()["done"]))
+            self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex\n")
+            rc, out, _ = self.start()
+            self.assertEqual(rc, 4)
+            self.assertIn("WAVE LAUNCH UNKNOWN t42: launch exited 0 and printed no LAUNCHED line with its cwd", out)
+            self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex cwd=/home/u/repo-worktrees/w1-42 stream=/s\n")
+            self.shim_rc = {"execution run": 1, "board set": 4}
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual(rc, 3, out)
+            self.assertIn("WAVE LAUNCH NOTE t42: the standing leg on gpu-box is not reserved (execution run exit 1)", out)
+            self.assertIn("WAVE LAUNCH NOTE t42: the row is not set (board set exit 4): worktree=/home/u/repo-worktrees/w1-42"
+                          " state=launched standing=wv-t42-far-iterate", out)
+            self.assertIn("exec_hosts=far", self.shim_calls[-1])
+            self.assertIn("farside=none", self.shim_calls[-1])
+            self.assertEqual(self.manifest()["done"][-1], "launched far/w1-42", "the worker runs: the launch is recorded")
+
+    def test_launch_refuses_a_worktree_on_the_host_that_is_not_preps(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            self.shim_calls.clear()
+            wt = "/home/u/repo-worktrees/w1-42"
+            for state, why in ((Done(0, f"worktree={C} dirty=0\n"), f"{wt} exists on far at {C} with 0 uncommitted path(s)"),
+                               (Done(0, f"worktree={self.base} dirty=2\n"), "with 2 uncommitted path(s), not a clean worktree at prep's base"),
+                               (Done(0, "worktree=unreadable dirty=unreadable\n"), "exists on far at unreadable")):
+                self.far_state = state
+                rc, out, _ = self.start()
+                self.assertEqual((rc, self.shim_calls, self.far_calls), (1, [], []), out)
+                self.assertIn(why, out)
+            for state in (Done(UNREACHABLE, ""), Done(0, "garbage\n"), Done(1, "worktree=absent\n"), Done(0, "")):
+                self.far_state = state
+                rc, out, _ = self.start()
+                self.assertEqual((rc, self.shim_calls), (4, []), out)
+                self.assertIn(f"WAVE LAUNCH UNKNOWN t42: the worktree path {wt} on far could not be read", out)
+            self.far_state = Done(0, f"worktree={self.base} dirty=0\n")
+            rc, out, _ = self.start()
+            self.assertEqual(rc, 0, "a clean worktree at prep's base is an earlier launch's: the retry goes on\n" + out)
+
+    def test_the_manifest_is_the_task_whatever_the_wave_file_says_later(self) -> None:
+        """A profile, a host or a leg edited after the prep changes nothing a launch does."""
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            with open(self.path) as f:
+                data = json.load(f)
+            data["hosts"]["far"] = {"checkout": "/srv/repo", "scratch": "/srv/scratch"}
+            data["profiles"]["sol"] = {"transport": "cli", "kind": "claude", "model": "opus"}
+            data["legs"]["gpu-box"].update(checkout="/srv/gpu", suffix="g2")
+            data["repository"], data["vars"]["MAIN"] = "o/elsewhere", "trunk"
+            with open(self.path, "w") as f:
+                json.dump(data, f)
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual(rc, 0, out)
+            launch, leg, board = self.shim_calls
+            self.assertEqual(launch[launch.index("--target-repo") + 1:launch.index("--brief")], ["o/staging", "--kind", "codex"])
+            self.assertEqual(launch[launch.index("--repo"):], ["--repo", "/home/u/repo", "--branch", "codex/w1-42", "--base", self.base,
+                                                              "--base-branch", "main", "--standing", f"{self.wavedir}/reserve/t42.json",
+                                                              "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
+            self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
+            self.assertIn("farside=gpu-box:/home/u/repo-worktrees/w1-42-gpu", board)
+            self.assertEqual(self.far_calls, [["far", "/home/u/wave-scratch/wv/t42/runs"]])
+
+    def test_launch_refuses_another_waves_manifest_one_with_no_record_and_one_with_no_base_branch(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol")[0], 0)
+            with open(self.path) as f:
+                data = json.load(f)
+            with open(self.path, "w") as f:
+                json.dump({**data, "wave": "wv2"}, f)
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual((rc, self.shim_calls), (1, []), out)
+            self.assertIn("was prepared for wave wv, and", out)
+            self.assertIn("names wv2; its reservations and row are wv's", out)
+            with open(self.path, "w") as f:
+                json.dump(data, f)
+            path = os.path.join(self.wavedir, "prep", "t42.json")
+            kept = self.manifest()
+            for damage, why in (({**kept, "launch": {**kept["launch"], "main": ""}}, "its prep recorded no base branch"),
+                                ({k: v for k, v in kept.items() if k != "launch"}, "holds no launch record wave prep wrote"),
+                                ({**kept, "launch": {**kept["launch"], "extra": 1}}, "holds no launch record"),
+                                ({**kept, "launch": {**kept["launch"], "remote": "no"}}, "holds no launch record"),
+                                ({**kept, "launch": {**kept["launch"], "legs": [{"box": "gpu-box"}]}}, "holds no launch record"),
+                                ({**kept, "launch": {k: v for k, v in kept["launch"].items() if k != "worktree"}}, "holds no launch record")):
+                with open(path, "w") as f:
+                    json.dump(damage, f)
+                rc, out, _ = self.start()
+                self.assertEqual((rc, self.shim_calls), (1, []), out)
+                self.assertIn(why, out)
+
+    def test_the_far_side_reads_the_worktree_path_as_it_is(self) -> None:
+        def state(path: str) -> str:
+            return subprocess.run(["bash", "-c", wavelaunch.WORKTREE_STATE, "state", path], capture_output=True, text=True, check=True).stdout
+
+        repo = os.path.join(self.dir, "repo")
+        self.assertEqual(state(os.path.join(self.dir, "nothing here")), "worktree=absent\n")
+        self.assertEqual(state(repo), f"worktree={self.base} dirty=0\n")
+        with open(os.path.join(repo, "left.txt"), "w") as f:
+            f.write("x")
+        self.assertEqual(state(repo), f"worktree={self.base} dirty=1\n")
+        os.makedirs(os.path.join(self.dir, "plain dir"))
+        self.assertEqual(state(os.path.join(self.dir, "plain dir")), "worktree=unreadable dirty=unreadable\n")
+        os.symlink(os.path.join(self.dir, "nowhere"), os.path.join(self.dir, "dangling"))
+        self.assertEqual(state(os.path.join(self.dir, "dangling")), "worktree=unreadable dirty=unreadable\n", "a dangling link is something there")
+        for said in ("worktree=absent", f"worktree={self.base} dirty=0", "worktree=unreadable dirty=unreadable"):
+            self.assertTrue(said == "worktree=absent" or wavelaunch.STATE.fullmatch(said), said)
+
+    def test_launch_refuses_what_is_not_a_prepared_cli_task(self) -> None:
+        with self.world(prs=[]) as gh:
+            rc, out, _ = self.start()
+            self.assertEqual(rc, 1)
+            self.assertIn("no prep manifest", out)
+            self.assertEqual(self.prep("t43", "--base", "main")[0], 0)
+            rc, out, _ = self.start("t43")
+            self.assertEqual(rc, 1)
+            self.assertIn("a subagent worker is spawned by its coordinator's runtime", out)
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol")[0], 0)
+            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps([{"number": 9, "title": "Fix #42", "body": "", "headRefName": "x"}]))))
+            self.shim_calls.clear()
+            rc, out, _ = self.start()
+            self.assertEqual((rc, self.shim_calls), (1, []), out)
+            self.assertIn("WAVE LAUNCH REFUSED t42: open rival PR(s) #9 Fix #42", out)
+        rc, _, err = captured(wavelaunch.cmd_launch, self.cfg, [self.path])
+        self.assertEqual(rc, 2)
+        self.assertIn("name the wave file and the task", err)
 
 
 class Verdict(unittest.TestCase):

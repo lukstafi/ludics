@@ -1,18 +1,19 @@
 # Coordinator kit
 
 `fleet-worker.sh wave` is the per-wave tooling every coordinator used to rewrite under
-`$ISSUE_WAVE_STATE/<wave>/` (ludics#1047). It has five verbs:
+`$ISSUE_WAVE_STATE/<wave>/` (ludics#1047). It has six verbs:
 
 - a brief renderer;
-- a native worker's launch prep;
+- a worker's launch prep;
+- a CLI worker's launch;
 - a restartable integration-loop driver;
 - a heartbeat;
 - the review checkpoint.
 
 With the kit, the wave directory holds data only: no script is copied forward from the last
 wave. The contracts are the module headers in `lib/ludics/fleetworker/`: `wave.py` for the wave
-file and the heartbeat, `wavebrief.py`, `waveprep.py`, `waveloop.py` and `wavereview.py`. This
-page covers what a coordinator puts in the wave directory and when it calls each verb.
+file and the heartbeat, `wavebrief.py`, `waveprep.py`, `wavelaunch.py`, `waveloop.py` and
+`wavereview.py`. This page covers what a coordinator puts in the wave directory and when it calls each verb.
 
 ## The wave directory
 
@@ -97,6 +98,24 @@ A native Claude wave with one GPU home box and one loop looks like this:
                         "command": ["env", "OCANNL_BACKEND=cuda", "tools/test-run.sh", "run", "--test-cap", "0", "build", "@runtest", "@train"]}}}
 ```
 
+## A mixed wave
+
+A wave file's `transport`, `kind` and `agent_host` describe its default worker. A wave that also
+runs another kind of worker names each kind as a profile, and each other box a CLI worker lives on
+as a host:
+
+```json
+"profiles": {"sol": {"transport": "cli", "kind": "codex", "model": "gpt-6.1-sol", "effort": "medium"}},
+"hosts": {"rog-nv-linux": {"checkout": "/home/lukstafi/ocannl-staging", "scratch": "/home/lukstafi/wave-scratch"}}
+```
+
+`wave prep <wave.json> <task> --base <sha> --profile sol [--host rog-nv-linux]` prepares such a
+task. For a CLI task it makes nothing on the box and reserves nothing: `fleet-worker.sh launch`
+makes a CLI worker's worktree and takes its standing reservation in one fenced step. `wave launch
+<wave.json> <task>` runs that launch from what prep recorded, then reserves the task's legs and
+sets its row. Nothing is shipped for a CLI worker's brief yet, so the wave directory supplies its
+`common.md`.
+
 ## Templates
 
 A placeholder is `@@NAME@@`, where NAME is `[A-Z][A-Z0-9_]*`. Any other `@@` is text.
@@ -128,6 +147,9 @@ kit invents none.
 
    When a write fails, the `WAVE PREP MADE` lines say what was made. What to keep is your call.
    A second prep of the same task refuses on the manifest.
+
+   A CLI task (*A mixed wave*) is then started with `fleet-worker.sh wave launch <wave.json>
+   <task>`, which runs the launch gate itself, in place of step 3's spawn.
 3. **Right before each spawn,** run `fleet-worker.sh gate --wait <seconds>`. Re-check for a
    rival PR by topic first: prep's check covers only the number and the branch. Then spawn the
    worker and set `agent=` and `state=launched` on its row.
