@@ -320,6 +320,12 @@ class Prs(unittest.TestCase):
         self.assertEqual(parse_checks(4, "checks: verdict=mixed runners=never-started")[0], "pending(never-started)")
         self.assertEqual(parse_checks(4, "checks: verdict=pending runners=no-runner,never-started")[0], "pending(no-runner,never-started)")
         self.assertEqual(parse_checks(4, "checks: verdict=pending")[0], "pending")
+
+    def test_a_conflicting_head_is_named_and_never_pending_or_unknown(self) -> None:
+        # ludics#1110: the gate's wait ends on a PR that conflicts with its base; no CI is coming for it.
+        self.assertEqual(parse_checks(4, "x\nchecks: verdict=conflict branch=current"), ("conflict", "current"))
+        self.assertEqual(parse_checks(1, "checks: verdict=conflict")[0], "unknown", "the verdict at odds with its status")
+        self.assertEqual(parse_checks(4, "checks: verdict=conflict runners=no-runner")[0], "unknown", "a runners field is a pending head's")
         self.assertEqual(parse_checks(0, "checks: verdict=green")[0], "green")
         for rc, out in ((0, "checks: verdict=green runners=no-runner"), (1, "checks: verdict=red runners=never-started"),
                         (4, "checks: verdict=pending runners="), (4, "checks: verdict=pending runners=never-started,no-runner"),
