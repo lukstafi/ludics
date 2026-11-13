@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from collections.abc import Sequence
@@ -12,7 +13,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import assign, execution
+from ludics.fleetworker import assign, execution, boardstore
 from ludics.fleetworker.assign import (assigned_revision, base_problem, block_problem, cmd_assign, fleet_worker_word,
                                        leg_command, parse, payload_of, read_blocks)
 from ludics.fleetworker.config import Config, load_config
@@ -121,6 +122,8 @@ class Outcomes(unittest.TestCase):
         self.addCleanup(lambda: [os.unlink(os.path.join(self.dir, f)) for f in os.listdir(self.dir)] and None)
         self.cfg = load_config(SCRIPT, {"HOME": "/nowhere"})
         self.base = self.write("base.json", json.dumps(BASE))
+        self.placements: list[tuple[str, str, str, str]] = []
+        self.placement_rc = 0
         self.calls: list[list[str]] = []
         self.unsticks: list[tuple[str, str, str]] = []
 
@@ -140,8 +143,17 @@ class Outcomes(unittest.TestCase):
             self.unsticks.append((box, name, file))
             return unstick_rc
 
+        def placement(_cfg: Config, wave: str, worker: str, host: str, checkout: str) -> int:
+            self.placements.append((wave, worker, host, checkout))
+            if self.placement_rc:
+                return self.placement_rc
+            with contextlib.redirect_stdout(io.StringIO()):
+                return boardstore.run(["-", self.dir, "placement", "coord", json.dumps(
+                    {"wave": wave, "worker": worker, "host": host, "checkout": checkout})])
+
         out, err = io.StringIO(), io.StringIO()
-        with (mock.patch.object(execution, "listing", return_value=Done(0, json.dumps(list(records)))),
+        with (mock.patch.object(assign, "record_placement", side_effect=placement),
+              mock.patch.object(execution, "listing", return_value=Done(0, json.dumps(list(records)))),
               contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
             rc = cmd_assign(self.cfg, args, call=call, resend=resend)
         return rc, out.getvalue(), err.getvalue()
@@ -155,6 +167,81 @@ class Outcomes(unittest.TestCase):
         self.assertIn(f"ASSIGN ASSIGNED a correctness rog {SHA}", err)
         self.assertIn("ASSIGN REFUSED m: the window exited 1", err)
         self.assertEqual(self.calls, [["execution", "run", "a"], ["execution", "window", "--deadline", "600", "tuf", "m"]])
+
+    def test_assigned_legs_and_already_retry_preserve_each_placement_once(self) -> None:
+        # The actual shipped store applies each write; no mock of the union logic.
+        with contextlib.redirect_stdout(io.StringIO()):
+            boardstore.main(["-", self.dir, "set", "coord", json.dumps({"wave": "w", "create": True,
+                "new_row": True, "task": "t42", "fields": [["worker", BASE["worker"]],
+                ["farside", "mac:/worker"], ["exec_hosts", "mac"]]})])
+        self.addCleanup(lambda: shutil.rmtree(os.path.join(self.dir, "boards")))
+        requests = self.write("r.txt", message(block("a", runner="check", clone="/repo", checkout="/wt"),
+                                               block("b", host="tuf", runner="check", clone="/repo", checkout="/wt")))
+        args = [self.base, requests]
+        self.assertEqual(self.assign(args, {"a": Done(0, "{}"), "b": Done(0, "{}")} )[0], 0)
+        records = [{"request_id": name, "state": state, "checkout": "/wt",
+                    "request": {**BASE, "execution_host": host}}
+                   for name, state, host in (("a", "launching", "rog"), ("b", "concluded", "tuf"))]
+        # Simulate the interrupted write after an earlier dispatch; ALREADY repairs it.
+        path = os.path.join(self.dir, "boards", "w.json")
+        with open(path) as stream:
+            doc = json.load(stream)
+        doc["tasks"][0]["fields"]["farside"] = "mac:/worker rog:/wt"
+        with open(path, "w") as stream:
+            json.dump(doc, stream)
+        for _ in range(2):
+            rc, out, _ = self.assign(args, {}, records)
+            self.assertEqual((rc, out), (0, ""))
+        with open(path) as stream:
+            fields = json.load(stream)["tasks"][0]["fields"]
+        self.assertEqual(fields["farside"], "mac:/worker rog:/wt tuf:/wt")
+        self.assertEqual(fields["exec_hosts"], "mac,rog,tuf")
+        self.assertEqual(len(self.calls), 2, "ALREADY never dispatches again")
+        self.assertEqual(len(self.placements), 6)
+
+    def test_board_failure_keeps_assignment_and_retry_repairs_without_dispatch(self) -> None:
+        requests = self.write("r.txt", message(block("a", checkout="/wt")))
+        self.placement_rc = 4
+        rc, out, err = self.assign([self.base, requests], {"a": Done(0, "{}")})
+        self.assertEqual(rc, 1)
+        self.assertIn("EXECUTION_ASSIGNED a", out)
+        self.assertIn("ASSIGN BOARD NOTE", err)
+        self.placement_rc = 0
+        self.assertEqual(self.assign([self.base, requests], {}, [{"request_id": "a", "state": "launching",
+            "checkout": "/wt", "request": {**BASE, "execution_host": "rog"}}])[0], 0)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.placements), 2)
+
+    def test_missing_identity_is_a_board_note_and_remaining_requests_are_handled(self) -> None:
+        requests = self.write("r.txt", message(block("a", checkout="/wt"), block("b", checkout="/other")))
+        records = [{"request_id": "a", "state": "launching", "checkout": "/wt",
+                    "request": {**BASE, "execution_host": "rog"}}]
+        def call(_cfg: Config, _verb: Sequence[str], _payload: dict[str, Any]) -> Done:
+            return Done(0, "{}")
+
+        out, err = io.StringIO(), io.StringIO()
+        with (mock.patch.object(execution, "listing", return_value=Done(0, json.dumps(records))),
+              mock.patch.object(assign, "record_placement", side_effect=[cli.Exit(2, "no coordinator identity"), 0]),
+              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
+            rc = cmd_assign(self.cfg, [self.base, requests], call=call)
+        self.assertEqual(rc, 1)
+        self.assertIn("ASSIGN BOARD NOTE a: no coordinator identity", err.getvalue())
+        self.assertIn("EXECUTION_ASSIGNED b", out.getvalue())
+
+    def test_already_with_a_different_registry_checkout_records_nothing(self) -> None:
+        requests = self.write("r.txt", message(block("a", checkout="/wrong")))
+        record = {"request_id": "a", "state": "launching", "checkout": "/actual",
+                  "request": {**BASE, "execution_host": "rog"}}
+        rc, out, err = self.assign([self.base, requests], {}, [record])
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("differs from this request", err)
+        self.assertEqual(self.placements, [])
+        self.assertEqual(self.calls, [])
+
+    def test_refused_unknown_and_checkoutless_requests_add_no_placement(self) -> None:
+        requests = self.write("r.txt", message(block("a", checkout="/wt"), block("b", checkout="/other"), block("c")))
+        self.assign([self.base, requests], {"a": Done(1, ""), "b": Done(4, ""), "c": Done(0, "{}")})
+        self.assertEqual(self.placements, [])
 
     def test_a_refused_window_alone_prints_nothing(self) -> None:
         requests = self.write("r.txt", message(block("m", kind="measurement")))

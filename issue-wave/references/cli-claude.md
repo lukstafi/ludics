@@ -205,8 +205,10 @@ A Claude worker's process ends only when its input closes: once its hand-back tu
 an ended worker it prints the verdict as it stands). `fleet-worker.sh ls` must show no `RUNNING`, no `IDLE` and no `ORPHANED` CLI worker on
 any box before the wave closes: an orphan is a CLI still writing after its tmux session died -
 wait for it, or `unstick --kill` it, never close out over it. Then, and only then, remove CLI
-workers' worktrees on their boxes, once no outstanding reservation refers to the checkout: write
-each as a `farside` word on its row and run `fleet-worker.sh farside-close <wave>`
+workers' worktrees on their boxes, once no outstanding reservation refers to the checkout.
+`wave launch` writes each CLI worker's own worktree as a `farside` word on its row;
+`execution assign` adds requested checkouts and execution hosts, including on a retry.
+Run the one close-out call, `fleet-worker.sh farside-close <wave>`
 ([executions.md](executions.md#the-gpu-home-box)). The finished worker records under
 `~/.local/state/issue-wave/workers/` can stay as evidence; `launch` refuses to overwrite one
 without `--replace`.

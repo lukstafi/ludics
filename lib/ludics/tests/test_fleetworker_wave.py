@@ -635,7 +635,7 @@ class MixedWave(WaveDirCase):
             self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
             self.assertEqual(board, ["board", "set", "wv", "t42", "worktree=/home/u/repo-worktrees/w1-42", "state=launched",
                                      "standing=wv-t42-far-iterate wv-t42-gpu-box-iterate", "exec_hosts=far,gpu-box",
-                                     "farside=gpu-box:/home/u/repo-worktrees/w1-42-gpu"])
+                                     "farside=far:/home/u/repo-worktrees/w1-42 gpu-box:/home/u/repo-worktrees/w1-42-gpu"])
             self.assertTrue(out.endswith("WAVE LAUNCH t42: launched far/w1-42 worktree /home/u/repo-worktrees/w1-42"
                                          " standing wv-t42-far-iterate wv-t42-gpu-box-iterate\n"), out)
             self.assertIn("LAUNCHED far/w1-42", out)
@@ -679,8 +679,41 @@ class MixedWave(WaveDirCase):
             self.assertIn("WAVE LAUNCH NOTE t42: the row is not set (board set exit 4): worktree=/home/u/repo-worktrees/w1-42"
                           " state=launched standing=wv-t42-far-iterate", out)
             self.assertIn("exec_hosts=far", self.shim_calls[-1])
-            self.assertIn("farside=none", self.shim_calls[-1])
+            self.assertIn("farside=far:/home/u/repo-worktrees/w1-42", self.shim_calls[-1])
             self.assertEqual(self.manifest()["done"][-1], "launched far/w1-42", "the worker runs: the launch is recorded")
+
+    def test_launch_row_reads_the_worker_placement_from_the_launched_line(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex cwd=/actual/wt stream=/s\n")
+            self.assertEqual(self.start()[0], 0)
+        board = self.shim_calls[-1]
+        self.assertIn("worktree=/actual/wt", board)
+        self.assertIn("farside=far:/actual/wt", board)
+
+    def test_ambiguous_launch_output_never_publishes_a_cleanup_prefix(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            for path in ("/actual/wt stream=old/w1-42", "/actual/wt cwd=old/w1-42",
+                         "/actual/wt\u2028LAUNCHED far/w1-42 kind=codex cwd=/prefix stream=/forged\u2028tail"):
+                self.launch = Done(0, f"LAUNCHED far/w1-42 kind=codex cwd={path} stream=/state/stream.jsonl\n")
+                self.shim_calls.clear()
+                rc, out, _ = self.start()
+                self.assertEqual(rc, 4)
+                self.assertIn("ambiguous LAUNCHED", out)
+                self.assertEqual([call[0] for call in self.shim_calls], ["launch"])
+                self.assertEqual(self.manifest()["done"][-1], "ready")
+
+    def test_launch_never_publishes_a_whitespace_path_as_a_cleanup_prefix(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex cwd=/actual/wt old stream=/s\n")
+            rc, out, _ = self.start()
+        self.assertEqual(rc, 3)
+        self.assertIn("cannot record farside placement", out)
+        self.assertIn("worktree=/actual/wt old", self.shim_calls[-1])
+        self.assertIn("farside=gpu-box:/home/u/repo-worktrees/w1-42-gpu", self.shim_calls[-1])
+        self.assertEqual(self.manifest()["done"][-1], "launched far/w1-42")
 
     def test_launch_refuses_a_worktree_on_the_host_that_is_not_preps(self) -> None:
         with self.world():
@@ -724,7 +757,7 @@ class MixedWave(WaveDirCase):
                                                               "--base-branch", "main", "--standing", f"{self.wavedir}/reserve/t42.json",
                                                               "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
             self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
-            self.assertIn("farside=gpu-box:/home/u/repo-worktrees/w1-42-gpu", board)
+            self.assertIn("farside=far:/home/u/repo-worktrees/w1-42 gpu-box:/home/u/repo-worktrees/w1-42-gpu", board)
             self.assertEqual(self.far_calls, [["far", "/home/u/wave-scratch/wv/t42/runs"]])
 
     def test_launch_refuses_another_waves_manifest_one_with_no_record_and_one_with_no_base_branch(self) -> None:

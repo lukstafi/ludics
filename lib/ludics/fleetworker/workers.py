@@ -263,13 +263,16 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
             cli.emit(done.out)
             return done.rc
         # Preparation's final line is the resolved absolute checkout, after any git notices.
-        prepared = substitution(done.out).split("\n")[-1]
+        lines = substitution(done.out).split("\n")
+        prepared = lines[-1]
+        for notice in lines[:-1]:
+            cli.say(notice)
         if not prepared.startswith("/"):
             die("launch: preparation did not return an absolute checkout")
         request["checkout"] = prepared
         check = f'[ "$cwd" = {shlex.quote(prepared)} ] || refuse "worktree path changed after reservation"\n'
-        # Revalidation's notices (including reuse of the worktree we just made) are diagnostic.
-        script = prefix + "{\n" + farside.LAUNCH_STANDING_WORKTREE + "} >&2\n" + check + farside.LAUNCH_STANDING_START
+        # Revalidation must not call a worktree this preparation made an existing reuse.
+        script = prefix + "launch_revalidation=1\n{\n" + farside.LAUNCH_STANDING_WORKTREE + "} >&2\n" + check + farside.LAUNCH_STANDING_START
     # Stage before admission: failure here cannot leave a dispatched reservation behind.
     done = put_file(cfg, box, brief, f"{cfg.state}/incoming/{name}-{when}.md")
     if done.unreachable:

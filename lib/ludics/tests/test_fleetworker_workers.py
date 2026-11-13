@@ -96,6 +96,7 @@ class StandingLaunch(unittest.TestCase):
                     return Done(0, "")
                 events.append("start")
                 self.assertIn('worktree path changed after reservation', script)
+                self.assertIn('launch_revalidation=1\n', script)
                 self.assertIn(farside.LAUNCH_STANDING_WORKTREE + "} >&2\n", script)
                 self.assertTrue(script.endswith(farside.LAUNCH_STANDING_START), "the standing start phase")
                 return Done(start_rc, "")

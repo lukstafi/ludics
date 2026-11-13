@@ -332,6 +332,9 @@ before and after. Nothing re-applies those, and a feature update can reset them,
 
 ## Tests
 
+For a ludics wave, ignored Python caches are regenerable: pass
+`farside-close <wave> --regenerable '**/__pycache__'` at coordinator close-out.
+
 **Before every push, run `scripts/preflight.sh` from the checkout.** It is CI's `lint` job — the
 same command the workflow runs, not a reconstruction of it: shell syntax, the two-way mode rule,
 shellcheck at error severity, the PowerShell parse, and the parse, prompt, jq-shape and
