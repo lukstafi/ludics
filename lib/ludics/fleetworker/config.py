@@ -27,11 +27,14 @@ PHYSICAL path, as ``cd -P "$(dirname "$0")/../.."`` gives it -- the script is re
 import fnmatch
 import json
 import os
+import re
 import shlex
 import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
+
+from ludics import cli
 
 DEFAULT_BOXES = "mac-studio rog-nv-linux minix-amd-linux tuf-amd-linux macbook-pro"
 DEFAULT_HOSTNAME_MAP = (
@@ -108,6 +111,15 @@ class Config:
 
     def path(self, value: str) -> str:
         return local_path(value, self.env)
+
+
+def fetch_timeout_s(cfg: Config) -> str:
+    """FLEET_FETCH_TIMEOUT for every caller: positive whole seconds, default 300 when unset
+    or empty. Refuse malformed input locally with exit 2 before asking a far side."""
+    value = _or_default(cfg.env, "FLEET_FETCH_TIMEOUT", "300")
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        cli.exit_with(2, f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {value!r}")
+    return value
 
 
 def load_config(script: str, env: Mapping[str, str], host: str | None = None) -> Config:

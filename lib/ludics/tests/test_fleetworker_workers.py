@@ -19,7 +19,7 @@ from unittest.mock import patch
 from typing import Any
 
 from ludics import cli
-from ludics.fleetworker import farside, workers
+from ludics.fleetworker import farside, farsideclose, preflight, workers
 from ludics.fleetworker.__main__ import usage_text
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.gate import uri
@@ -62,6 +62,53 @@ class Names(unittest.TestCase):
             self.assertEqual(feeder_wait_ok(cfg), want, value)
         # `${FLEET_FEEDER_WAIT:-10}`: empty is the default.
         self.assertTrue(feeder_wait_ok(load_config(SCRIPT, {"FLEET_FEEDER_WAIT": ""}, host="h")))
+
+
+class FetchTimeout(unittest.TestCase):
+    """Malformed fetch bounds refuse locally, even when launch's preflight is bypassed."""
+
+    def setUp(self) -> None:
+        self.cfg = load_config(SCRIPT, {"FLEET_FETCH_TIMEOUT": "soon"}, host="h")
+
+    def test_preflight_refuses_before_transport(self) -> None:
+        with patch.object(preflight, "run_on") as far:
+            with self.assertRaises(cli.Exit) as caught:
+                preflight.run_preflight(self.cfg, "local", "0", "0", "")
+            self.assertEqual(caught.exception.rc, 2)
+            self.assertIn("FLEET_FETCH_TIMEOUT", str(caught.exception))
+            far.assert_not_called()
+
+    def launch_refuses(self, checkout: bool) -> None:
+        with (tempfile.NamedTemporaryFile() as brief,
+              patch.object(workers, "anchor_gate", return_value=0),
+              patch.object(workers, "base_gate", return_value=0),
+              patch.object(workers, "run_preflight", return_value=Done(0, "OK")),
+              patch.object(workers, "run_on") as far,
+              patch.object(workers, "put_file") as stage):
+            args = ["local", "w", "--kind", "codex", "--brief", brief.name]
+            args += ["--cwd", "/checkout"] if checkout else ["--repo", "/repo", "--branch", "worker"]
+            with self.assertRaises(cli.Exit) as caught:
+                workers.cmd_launch(self.cfg, args)
+            self.assertEqual(caught.exception.rc, 2)
+            self.assertIn("FLEET_FETCH_TIMEOUT", str(caught.exception))
+            far.assert_not_called()
+            stage.assert_not_called()
+
+    def test_launch_fetch_refuses_before_transport(self) -> None:
+        self.launch_refuses(False)
+
+    def test_launch_existing_checkout_refuses_before_transport(self) -> None:
+        self.launch_refuses(True)
+
+    def test_farside_close_refuses_before_lease_or_board(self) -> None:
+        with (patch.object(farsideclose, "anchor_gate") as gate,
+              patch.object(farsideclose, "board_document") as board):
+            with self.assertRaises(cli.Exit) as caught:
+                farsideclose.cmd_farside_close(self.cfg, ["wave"])
+            self.assertEqual(caught.exception.rc, 2)
+            self.assertIn("FLEET_FETCH_TIMEOUT", str(caught.exception))
+            gate.assert_not_called()
+            board.assert_not_called()
 
 
 class StandingLaunch(unittest.TestCase):

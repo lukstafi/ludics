@@ -369,7 +369,7 @@ from typing import Any
 
 from ludics import cli
 from ludics.fleetworker import execution, graces, revision, slot
-from ludics.fleetworker.config import Config
+from ludics.fleetworker.config import Config, fetch_timeout_s
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.preflight import knob
 from ludics.fleetworker.registry import bound_commit, ref_name_ok
@@ -1171,16 +1171,6 @@ def min_free_gib(cfg: Config) -> str:
     value = knob(cfg, "FLEET_LEG_MIN_FREE_GIB", "")
     if value and not WHOLE.fullmatch(value):
         die(f"FLEET_LEG_MIN_FREE_GIB must be a whole number of GiB (0 for no floor), not {value!r}")
-    return value
-
-
-def fetch_timeout_s(cfg: Config) -> str:
-    """FLEET_FETCH_TIMEOUT, the bound in seconds on every far-side fetch, as the far side takes it
-    (default 300); anything but a positive whole number is a usage error, in `leg` and in `tip-run`
-    alike."""
-    value = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
-    if not SECONDS.fullmatch(value):
-        die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {value!r}")
     return value
 
 

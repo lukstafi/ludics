@@ -107,12 +107,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from ludics import cli
-from ludics.fleetworker.config import Config
+from ludics.fleetworker.config import Config, fetch_timeout_s
 from ludics.fleetworker.execution import field, jq_text, listing, recorded_checkout, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import anchor_gate
-from ludics.fleetworker.leg import REMOTE, SECONDS, WORKTREE
-from ludics.fleetworker.preflight import knob
+from ludics.fleetworker.leg import REMOTE, WORKTREE
 from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
 from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run_on
 from ludics.postmergecleanup.cleanup import ACTIVE_OPERATIONS
@@ -408,9 +407,7 @@ def parse(args: list[str]) -> tuple[str, list[str], list[str], str, bool]:
 
 def cmd_farside_close(cfg: Config, args: list[str]) -> int:
     wave, tasks, regenerable, remote, dry = parse(args)
-    fetch_timeout = knob(cfg, "FLEET_FETCH_TIMEOUT", "300")
-    if not SECONDS.fullmatch(fetch_timeout):
-        die(f"FLEET_FETCH_TIMEOUT must be a positive whole number of seconds, not {fetch_timeout!r}")
+    fetch_timeout = fetch_timeout_s(cfg)
     if not dry:
         rc = anchor_gate(cfg, "FARSIDE CLOSE", wave, True)
         if rc != 0:

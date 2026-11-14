@@ -34,7 +34,7 @@ class Repo(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.top, True)
         self.repo = os.path.join(self.top, "repo")
         os.makedirs(self.repo)
-        sh(self.repo, "init", "-q")
+        sh(self.repo, "init", "-q", "-b", "main")
         self.base = commit(self.repo, "a.txt", "base\n")
 
 
@@ -127,7 +127,7 @@ class TheScratchWorktree(Repo):
         sh(self.repo, "worktree", "add", "-q", "--detach", os.path.join(self.top, "mine"), self.base)
         other = os.path.join(self.top, "other")
         os.makedirs(other)
-        sh(other, "init", "-q")
+        sh(other, "init", "-q", "-b", "main")
         commit(other, "b.txt", "b\n")
         os.makedirs(os.path.join(other, "sub"))
         stray = os.path.join(self.top, "file")
