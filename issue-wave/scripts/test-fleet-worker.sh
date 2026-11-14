@@ -2170,16 +2170,21 @@ wsd="$ISSUE_WAVE_STATE/workers/ws"
 printf 'SLEEP 6 then report\n' > "$TMP/slow.md"
 "$FW" launch testbox ws --target-repo example/project --kind claude --brief "$TMP/slow.md" --cwd "$proj" >/dev/null; sleep 1
 pid_before=$(cat "$wsd/feeder.pid")
+# results= (#1122): the driver's turn counter for a claude worker, its ended turns: 0 mid-first-turn.
+expect "status counts a claude worker's ended turns: none mid-turn" 0 "^RUNNING testbox/ws kind=claude .* resumes=0 results=0 stderr=" -- "$FW" status testbox ws
 expect "unstick of a live worker mid-turn appends the message and proves delivery from its echo" 0 \
   "APPENDED testbox/ws kind=claude session=[0-9a-f-]\{36\} to=RUNNING .* delivered (echoed by the CLI)" -- "$FW" unstick testbox ws --message "$TMP/msg.md"
 expect "...the turn in flight answers it: attach waits for that reply" 0 "IDLE testbox/ws success .*did: SLEEP 6 then report +msg: Stop and answer now" -- "$FW" attach testbox ws --interval 1
 [ "$(cat "$wsd/feeder.pid")" = "$pid_before" ] && ! grep -q '"resumed":true' "$wsd/stream.jsonl" && grep -q '^resumes=0$' "$wsd/meta" &&
   ok "...the same process took it: no restart, no resume" || ko "the append restarted the worker: $(cat "$wsd/meta")"
+expect "...one turn ended: results=1" 0 "^IDLE testbox/ws .* resumes=0 results=1 stderr=" -- "$FW" status testbox ws
+expect "...and it holds while the worker idles" 0 "^IDLE testbox/ws .* resumes=0 results=1 stderr=" -- "$FW" status testbox ws
 [ "$(grep -c '' "$wsd/input.jsonl")" -eq 2 ] && [ "$(sed -n 2p "$wsd/input.jsonl" | jq -j '.message.content')" = "$(cat "$TMP/msg.md")" ] &&
   ok "...and input.jsonl logs the message after the brief" || ko "input.jsonl: $(cat "$wsd/input.jsonl")"
 printf 'Now the next step.\n' > "$TMP/msg2.md"
 expect "an append to an IDLE worker starts its next turn" 0 "APPENDED testbox/ws .* to=IDLE .* delivered" -- "$FW" unstick testbox ws --message "$TMP/msg2.md"
 expect "...whose reply attach returns" 0 "IDLE testbox/ws success .*did: Now the next step" -- "$FW" attach testbox ws --interval 1
+expect "...and the appended turn moves results once, the process and resumes unchanged" 0 "^IDLE testbox/ws .* resumes=0 results=2 stderr=" -- "$FW" status testbox ws
 expect "a live worker refuses extra CLI args on the append path: they need a new process" 1 "UNSTICK REFUSED testbox/ws: extra CLI arguments (--model opus) cannot reach a live process" -- "$FW" unstick testbox ws --message "$TMP/msg.md" -- --model opus
 mv "$proj" "$proj.moved"
 expect "a live worker whose worktree is gone refuses the append too" 1 "UNSTICK REFUSED testbox/ws: recorded working directory .* is gone" -- "$FW" unstick testbox ws --message "$TMP/msg.md"
@@ -6313,6 +6318,9 @@ FWD=(env PATH="$K/bin:$PATH" REVIEW_STDIN="$K/review-stdin" SHIM_GH_PR_VIEW="$K/
 expect "the driver starts a queued task: the gate read, the task prepared at the fetched tip and launched" 0 \
   "^DRIVE t81 launch: launch answered: WAVE LAUNCH t81: launched testbox/wk-81 worktree $cli_proj-worktrees/wk-81 standing wkv-t81-testbox-iterate$" -- \
   "${FWD[@]}" wave drive "$K/wave.json" --once
+# #1136: in a stream carrying both of the driver's outputs, its line follows the launch's own lines.
+awk '/^BOARD SET wkv: "t81" worktree state /{b=NR} /^DRIVE t81 launch: launch answered: /{d=NR} END{exit !(b && d && b < d)}' <<<"$out" &&
+  ok "...its line about the launch after the launch's own lines" || ko "the driver's line is out of order: $out"
 [ "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t81") | .fields | "\(.state) \(.base) \(.transport)"')" = "launched $pbase cli" ] &&
   ok "...its row launched, at the tip, a CLI worker's" || ko "t81's row: $("${FWK[@]}" board show wkv --json | jq -c '.tasks[] | select(.task == "t81") | .fields')"
 "$FW" attach testbox wk-81 --interval 1 >/dev/null 2>&1

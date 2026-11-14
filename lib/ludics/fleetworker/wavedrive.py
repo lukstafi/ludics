@@ -9,28 +9,49 @@ answers those turns, so the coordinator is asked only what a rule cannot answer.
     wave drive <wave.json> [--poll <seconds>] [--once]   every CLI worker of the wave, until stopped
     wave turn <wave.json> <task>                          one worker's returned turn, once
 
-WHO IT SERVES. The board's rows whose ``transport`` is ``cli`` and ``kind`` is ``codex``, with a
-``worker`` and an ``agent_host``, in a live state past ``pending``. Two kinds of worker are outside
-it, and the coordinator answers their turns with the same verbs (``wave review``, ``execution
-assign``): a native worker, whose turn returns to its coordinator's own runtime where no process
-can resume it; and a Claude CLI worker, whose process outlives its turns, so a message is appended
-to it and its ``resumes`` count does not move: nothing ``status`` prints names its turns one by
-one, and a driver that cannot tell two turns apart would answer one twice or never.
+WHO IT SERVES. The board's rows whose ``transport`` is ``cli`` and ``kind`` is ``codex`` or
+``claude``, with a ``worker`` and an ``agent_host``, in a live state past ``pending``. A native
+worker is outside it: its turn returns to its coordinator's own runtime, where no process can
+resume it, and the coordinator answers it with the same verbs (``wave review``, ``execution
+assign``). A driver that cannot tell two turns apart would answer one twice or never, so each
+kind's turns are named by a counter that moves once per turn.
 
-A TURN is one Codex worker's ``resumes`` count (``status``'s field: 0 for its launch, one more for
-each resume: a Codex turn is one process), of one worker and session: a worker launched again in
-a task's place, under another name or the same one (``launch --replace``), has a new session and
-counts from 0 again, and it does not inherit the turns its predecessor was answered. The ledger,
-``<wave dir>/logs/drive.jsonl``, holds one line per step taken for a task, worker, session and
-turn, and a turn whose last line is final (``answered`` or ``attention``) is never read again, so a
-restarted driver answers nothing twice. ONE DRIVER per wave: an exclusive ``flock`` on
+A TURN is a count, of one worker and session. A Codex worker's is its ``resumes`` (``status``'s
+field: 0 for its launch, one more for each resume: a Codex turn is one process). A Claude worker's
+process outlives its turns (a message is appended to it, and ``resumes`` does not move), so its
+count is ``status``'s ``results=``, the turns its stream has ended (its ``result`` events since the
+launch, across resumes): turn n is the one that wrote the n-th result, and turn 0 one that has
+written none (it died at startup). Its ledger lines carry ``"count": "results"``, and a line
+without it is a Codex turn's, so neither numbering is read as the other. A worker launched again
+in a task's place, under another name or the same one (``launch --replace``), has a new session
+and counts from 0 again, and it does not inherit the turns its predecessor was answered. The
+ledger, ``<wave dir>/logs/drive.jsonl``, holds one line per step taken for a task, worker, session
+and turn, and a turn whose last line is final (``answered`` or ``attention``) is never read again,
+so a restarted driver answers nothing twice. ONE DRIVER per wave: an exclusive ``flock`` on
 ``logs/drive.lock``, taken without waiting; ``wave turn`` takes it too, so it refuses while a
 driver runs.
 
-EACH TICK, for each worker: ``status`` on its box. ``RUNNING`` is left alone. ``EXITED`` with no
-final ledger line is a returned turn, and THE TURN'S OWN MESSAGE is read before anything is
-answered: ``attach`` (which returns at once for a process that has exited) must say ``DONE``, its
-verdict for a turn that ended in ``turn.completed`` past the worker's turn offset. Only then is the
+EACH TICK, for each worker: ``status`` on its box. ``RUNNING`` is left alone. ``EXITED`` (and, for
+a Claude worker, ``IDLE``: its process up and its turn ended) with no final ledger line is a
+returned turn, and THE TURN'S OWN MESSAGE is read before anything is answered: ``attach`` (which
+returns at once for a process that has exited or is idle) must say ``DONE``, its verdict for a turn
+that ended in ``turn.completed`` past the worker's turn offset, or for a Claude worker ``IDLE``,
+its turn's reply to the latest message sent. A Claude worker's status line is read further, and
+whatever it does not show is the next tick's, recorded nowhere: a line with no numeric
+``results=`` names no turn; an ``IDLE`` line whose ``unread=`` is not 0 shows a message the CLI has
+not echoed (an answer, or the coordinator's, on its way), so the idle turn is not that message's
+reply, and one whose ``turn=`` is not ``ended`` or whose ``background_tasks=`` is not 0 shows a
+turn that began after the far side read the state. THE RE-READ: once the message is read, ``status`` is read again, and the turn is answered
+only when the session and the count are unchanged and the state is still a returned one. The
+count only grows, so an unchanged count proves the message read was the n-th result's; a turn the
+worker began on its own meanwhile (a ``ScheduleWakeup``) leaves the reading to the next tick. A
+TURN THAT DIED: a Claude worker that is ``EXITED``, ``VANISHED`` or ``UNKNOWN`` while its count's
+turn was ``answered`` took the answer and ended no turn since, which no count would ever show:
+attention, once. ``ORPHANED`` is told the same way, its CLI outliving its tmux session (it may
+still run that turn, and ``unstick --kill`` resumes it). A REVIEW OUTRUN: a Claude worker whose count moved past a turn whose
+review still runs (a turn it began on its own meanwhile) has the newer turn's message read under
+THE RE-READ, kept in its ``msgs/`` file and named in an attention line, once, before the review is
+collected as before: the review's answer is sent, and two answers are not raced. Only then is the
 final message read with ``log --last-result``, saved to ``msgs/<task>.<worker>.<session>.<turn>.md``
 (every file of a turn is named by the turn's whole identity), and classified by
 THE MARKERS. ``log --last-result`` alone would not do: it skips a turn that never completed and
@@ -226,7 +247,12 @@ def execute(argv: Sequence[str], timeout: float | None = None) -> tuple[int, str
     except OSError as exc:
         return 127, "", f"{argv[0]}: {exc.strerror}\n"
     err = done.stderr.decode("utf-8", "replace")
+    # Flushed at once, our stdout first: a stream that carries both (a ``bg-run.sh`` log, a ``2>&1``)
+    # then reads in write order, the verb's own lines above the driver's line about them. The
+    # package's stderr is block-buffered (cli.setup_streams), which put every DRIVE line first.
+    sys.stdout.flush()
     sys.stderr.write(err)
+    sys.stderr.flush()
     return done.returncode, done.stdout.decode("utf-8", "replace"), err
 
 POLL = 30
@@ -236,7 +262,10 @@ FINAL = ("answered", "attention")
 RETURNED = re.compile(r"(EXITED\([0-9]+\)|IDLE)")
 GONE = ("ORPHANED", "VANISHED", "UNKNOWN")  # states that are no returned turn and will not become one
 WORKING = "RUNNING"  # the worker's state while its turn runs (farside.py's state_of), not bg-run.sh's verdict word
-STATUS = re.compile(r"(\S+) \S+/\S+ .*?\bsession=(\S*) .*\bresumes=([0-9]*)")
+STATUS = re.compile(r"(\S+) \S+/\S+ .*?\bsession=(\S*) .*\bresumes=([0-9]*)(?: results=(\S+))?")
+# A stream worker's turn state, listed background tasks and messages not yet echoed (farside.STATUS).
+CHANNEL = re.compile(r"\| turn=(\S+) background_tasks=(\S+) unread=([0-9]+) \|")
+SERVED = ("codex", "claude")
 ASK = re.compile(r"(REVIEW|CONFIRM)_REQUEST #?([1-9][0-9]*) ([0-9a-f]{40})")
 RESULT = re.compile(r"EXECUTION_RESULT (\{.*\})")
 PULL = re.compile(r"/pull/([1-9][0-9]*)")
@@ -360,7 +389,8 @@ class Worker:
     name: str
     box: str
     fields: dict[str, str]
-    session: str = ""  # status's session= (a Codex thread id), read each tick: part of a turn's identity
+    session: str = ""  # status's session= (a Codex thread id, a Claude session id), read each tick: part of a turn's identity
+    count: str = "resumes"  # the status field that numbers its turns (A TURN): ``results`` for a Claude worker
 
 
 @dataclass(frozen=True)
@@ -416,18 +446,19 @@ def workers_of(doc: dict[str, Any]) -> list[Worker]:
     out: list[Worker] = []
     for task, fields in rows_of(doc):
         word = state_word(fields.get("state", ""))
-        if fields.get("transport") != "cli" or fields.get("kind") != "codex" or not fields.get("worker") or not fields.get("agent_host"):
+        if fields.get("transport") != "cli" or fields.get("kind") not in SERVED or not fields.get("worker") or not fields.get("agent_host"):
             continue
         if word is None or word == "pending" or word in DONE_STATES:
             continue
-        out.append(Worker(task, fields["worker"], fields["agent_host"], fields))
+        out.append(Worker(task, fields["worker"], fields["agent_host"], fields,
+                          count="results" if fields.get("kind") == "claude" else "resumes"))
     return out
 
 
 def slots_held(doc: dict[str, Any]) -> dict[str, int]:
     """THE QUEUE's capacity count: for each host, the wave's CLI rows that hold a slot there. That is
     every CLI row of ANY kind that is not ``pending`` and not done, whether or not this driver answers
-    its turns (a Claude CLI worker fills a slot too), and a row whose state it cannot read counts:
+    its turns (a row of a kind it does not serve, or with no worker yet, fills a slot too), and a row whose state it cannot read counts:
     an unreadable row frees no slot."""
     held: dict[str, int] = {}
     for _, fields in rows_of(doc):
@@ -475,12 +506,14 @@ class Driver:
 
     def last(self, worker: Worker, turn: int) -> dict[str, Any] | None:
         mine = [e for e in self.ledger if e.get("task") == worker.task and e.get("worker") == worker.name
-                and e.get("session") == worker.session and e.get("turn") == turn]
+                and e.get("session") == worker.session and e.get("turn") == turn and e.get("count", "resumes") == worker.count]
         return mine[-1] if mine else None
 
     def note(self, worker: Worker, turn: int, kind: str, status: str, text: str, **more: Any) -> None:
+        # A Claude turn's line is tagged with its counter (A TURN): the untagged lines are numbered by resumes.
+        tag = {} if worker.count == "resumes" else {"count": worker.count}
         entry = {"at": utc_now(), "task": worker.task, "worker": worker.name, "session": worker.session, "turn": turn,
-                 "kind": kind, "status": status, "note": text, **more}
+                 **tag, "kind": kind, "status": status, "note": text, **more}
         append_line(self.ledger_path, entry)
         self.ledger.append(entry)
         if status != "attention":
@@ -516,23 +549,64 @@ class Driver:
 
     # --- one worker, one tick ---------------------------------------------------------------------
 
-    def tick(self, worker: Worker) -> None:
+    def reading(self, worker: Worker) -> tuple[str, str, int | None, re.Match[str] | None] | None:
+        """One ``status`` read: the state, the session, the turn (None: a status line whose counter this
+        driver cannot read) and the line's match; None when the box did not answer."""
         done = self.call("status", worker.box, worker.name)
         if done.rc == 4:
-            return  # the box did not answer: next tick
-        read = STATUS.match(substitution(done.out).splitlines()[-1] if done.out.strip() else "")
+            return None
+        line = substitution(done.out).splitlines()[-1] if done.out.strip() else ""
+        read = STATUS.match(line)
         state = read.group(1) if read else (done.out.split() or [""])[0]
-        turn = int(read.group(3) or 0) if read else 0
-        if state == WORKING:
-            return
-        worker = replace(worker, session=read.group(2) if read else "")
+        if read is None:
+            # A line STATUS does not read names no turn; only a gone worker's own line (UNKNOWN: never
+            # launched here) is read at turn 0, of no session, for either kind.
+            return state, "", 0 if worker.count == "resumes" or state in GONE else None, None
+        counter = read.group(4) if worker.count == "results" else (read.group(3) or "0")
+        return state, read.group(2), int(counter) if counter is not None and counter.isdigit() else None, read
+
+    def tick(self, worker: Worker) -> None:
+        got = self.reading(worker)
+        if got is None:
+            return  # the box did not answer: next tick
+        state, session, turn, read = got
+        if state == WORKING or turn is None:
+            return  # a running turn, or a Claude status line with no readable results=: next tick
+        worker = replace(worker, session=session)
         last = self.last(worker, turn)
+        earlier = self.open_review(worker, turn)
+        if earlier is not None and RETURNED.fullmatch(state) and (state != "IDLE" or self.replied(read)):
+            # A REVIEW OUTRUN (the header): the newer turn's message kept and handed up, then the review collected.
+            if last is None or last.get("status") not in FINAL:
+                read_log = self.confirmed(worker, turn)
+                if read_log is None:
+                    return
+                kept = self.turn_file(worker, turn, "md") if read_log.rc == 0 else ""
+                if kept:
+                    write_atomically(kept, read_log.out)
+                k = int(earlier["turn"])
+                which = label(turn) if turn == k + 1 else f"turns {k + 1} to {turn}"
+                self.attention(worker, turn, "turn", f"{which} ended while the review {label(k)} asked for still runs: the review's"
+                                                     " answer is still sent; " + (f"{label(turn)}'s message is kept, and is yours" if kept
+                                                                                 else f"{label(turn)} has no final message ("
+                                                                                 f"{substitution(read_log.out)[-200:]})"), kept)
+            return self.collect(worker, int(earlier["turn"]), earlier)
+        if (worker.count == "results" and last is not None and last.get("status") == "answered"
+                and (state in GONE or state.startswith("EXITED("))):
+            # A TURN THAT DIED (the header): answered, and the process gone with no result since.
+            what = (" its CLI outlived its tmux session and may still run the turn the answer started; `unstick --kill`"
+                    " resumes it in a new session" if state == "ORPHANED" else
+                    " the turn the answer started died; read its log, then resume it by hand")
+            return self.attention(worker, turn, "state", f"the worker is {state} on {worker.box} after {label(turn)} was answered,"
+                                                         f" and no turn has ended since:{what}")
         if last is not None and last.get("status") in FINAL:
             return
         if state in GONE:
             return self.attention(worker, turn, "state", f"the worker is {state} on {worker.box}, no returned turn")
         if not RETURNED.fullmatch(state):
             return  # a status line that is no state's (a transient failure): read again next tick
+        if worker.count == "results" and state == "IDLE" and not self.replied(read):
+            return  # a message the CLI has not echoed yet: this idle turn is not its reply
         if last is not None and last.get("status") == "reviewing":
             return self.collect(worker, turn, last)
         if last is not None and last.get("status") == "retry" and now() < float(last.get("next", 0)):
@@ -541,12 +615,19 @@ class Driver:
         if ended.rc in (4, 124):
             return  # the box did not answer, or the worker runs again: next tick
         verdict = substitution(ended.out).splitlines()[-1] if ended.out.strip() else ""
-        if not verdict.startswith("DONE "):
+        if not verdict.startswith("DONE ") and not (worker.count == "results" and verdict.startswith("IDLE ")):
             return self.attention(worker, turn, "turn", f"the turn did not complete: {verdict[:300] or f'attach exit {ended.rc}'}")
         message = self.turn_file(worker, turn, "md")
-        read_log = self.call("log", worker.box, worker.name, "--last-result")
-        if read_log.rc == 4:
-            return
+        if worker.count == "results":
+            # THE RE-READ (the header): the message is turn n's only if the count still says n.
+            got_log = self.confirmed(worker, turn)
+            if got_log is None:
+                return
+            read_log = got_log
+        else:
+            read_log = self.call("log", worker.box, worker.name, "--last-result")
+            if read_log.rc == 4:
+                return
         if read_log.rc != 0:
             return self.attention(worker, turn, "turn", f"the turn ended with no final message ({substitution(read_log.out)[-200:]})")
         write_atomically(message, read_log.out)
@@ -562,6 +643,39 @@ class Driver:
                 self.handback(worker, turn, message, what)
             case _:
                 self.attention(worker, turn, "turn", what.why, message)
+
+    def open_review(self, worker: Worker, turn: int) -> dict[str, Any] | None:
+        """A Claude worker's earlier turn whose review still runs: its count moved past it (a turn the
+        worker began on its own), which no reading of the current count would find."""
+        if worker.count != "results":
+            return None
+        lasts: dict[int, dict[str, Any]] = {}
+        for e in self.ledger:
+            if (e.get("task") == worker.task and e.get("worker") == worker.name and e.get("session") == worker.session
+                    and e.get("count") == worker.count and isinstance(e.get("turn"), int) and 0 <= e["turn"] < turn):
+                lasts[e["turn"]] = e
+        pending = [e for _, e in sorted(lasts.items()) if e.get("status") == "reviewing"]
+        return pending[0] if pending else None
+
+    @staticmethod
+    def replied(read: re.Match[str] | None) -> bool:
+        """An IDLE stream worker's line shows its turn ended, no background task listed and every
+        message it was sent echoed (``turn=ended background_tasks=0 unread=0``). The fields are read
+        after the state on the far side, so they can show a turn that began since it read IDLE."""
+        chan = CHANNEL.search(read.string) if read is not None else None
+        return chan is not None and chan.groups() == ("ended", "0", "0")
+
+    def confirmed(self, worker: Worker, turn: int) -> Done | None:
+        """``log --last-result`` of a Claude worker's turn, kept only when THE RE-READ (the header)
+        still shows that turn returned; None when it does not, or the box did not answer."""
+        read_log = self.call("log", worker.box, worker.name, "--last-result")
+        if read_log.rc == 4:
+            return None
+        again = self.reading(worker)
+        if again is None or again[1] != worker.session or again[2] != turn or not RETURNED.fullmatch(again[0]) or (
+                again[0] == "IDLE" and not self.replied(again[3])):
+            return None
+        return read_log
 
     def resume(self, worker: Worker, turn: int, kind: str, message: str, text: str, **more: Any) -> bool:
         done = self.call("unstick", worker.box, worker.name, "--message", message, gated="both")
@@ -634,8 +748,8 @@ class Driver:
         self.resume(worker, turn, "result", out, "; ".join(lines))
 
     def review(self, worker: Worker, turn: int, what: Turn) -> None:
-        mine = (worker.name, worker.session, turn)
-        again = any(e.get("task") == worker.task and (e.get("worker"), e.get("session"), e.get("turn")) != mine
+        mine = (worker.name, worker.session, turn, worker.count)
+        again = any(e.get("task") == worker.task and (e.get("worker"), e.get("session"), e.get("turn"), e.get("count", "resumes")) != mine
                     and e.get("status") == "answered" and e.get("kind") == what.kind and e.get("pr") == what.pr
                     and e.get("sha") == what.sha for e in self.ledger)
         subject: list[str] = []

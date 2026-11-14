@@ -77,7 +77,10 @@ with `fleet-worker.sh log <box> <name> --last-result` for a request or a result 
 the issue finished. It prints that message whole and nothing else (a Claude worker's last
 `result`, a Codex worker's last `agent_message` of its last ended turn), or one
 `NO RESULT <box>/<name>: <why>` line with exit 1 when no turn has ended with one; plain `log` is
-the tail of every turn's text, and cuts a long hand-back.
+the tail of every turn's text, and cuts a long hand-back. The first route for a returned turn,
+Claude or Codex, is the handoff driver, which reads and answers each turn a marker names
+([coordinator-kit.md](coordinator-kit.md#when-to-call-each-verb), step 9). The hand procedure in
+this file is for its attention lines and for a wave with no driver running.
 
 ## A Codex CLI worker's brief
 
@@ -134,8 +137,9 @@ with the wait to run in the foreground.
 - **The stall test is `fleet-worker.sh status <box> <name>`**: one line with the worker's state
   (`RUNNING`, `IDLE`, `ORPHANED`, `EXITED(n)`, `VANISHED`), the stream's event count and quiet
   time, the last event type, and the worktree's head age and dirty count; for a Claude worker
-  also its turn state, its listed background tasks, and how many messages it has not echoed
-  yet (`unread`). A `RUNNING` worker is silent between events and has no yield signal, so the
+  also its turn state, its listed background tasks, how many messages it has not echoed
+  yet (`unread`), and `results=`, the turns its stream has ended since the launch (the handoff
+  driver's name for each turn of the one process). A `RUNNING` worker is silent between events and has no yield signal, so the
   test is **stream quiet AND worktree unmoved over a wall-clock window sized to the task** (a
   long test run is quiet on both for its duration; a review round is not), read the same way
   on every box. The machine-level checks of SKILL.md's *Verify

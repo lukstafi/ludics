@@ -26,9 +26,9 @@ coordinator's own turn instead:
   stands in for it, and every wake re-reads the board, the PRs and `logs/attention.jsonl` rather
   than acting on what the last turn knew.
 - **One session per wait, not one per worker.** Under the driver no `attach` is needed for a
-  Codex CLI worker: the driver reads its turns. Hold an `attach` only for a worker whose turn is
-  yours (a Claude CLI worker, a turn an attention line handed you, or every worker while no
-  driver runs).
+  CLI worker, Claude or Codex: the driver reads its turns. Hold an `attach` only for a worker
+  whose turn is yours (a turn an attention line handed you, or every worker while no driver
+  runs).
 
 A run the coordinator itself starts (an integration `tip-run`, a `bg-run.sh` record) takes the
 same managed foreground shape, with `bg-run.sh new` and `start` in place of `spawn`
