@@ -2624,6 +2624,8 @@ class DriveClaude(DriveCase):
                 self.assertEqual((self.once()[1], self.calls), ("", []), why)
             self.unread, self.out["status"] = 0, self.status_line().replace(" results=1", "")
             self.assertEqual((self.once()[1], self.calls), ("", []), "a Claude line with no results= names no turn")
+            self.out["status"] = "IDLE far/w1-42 something STATUS does not read\n"
+            self.assertEqual((self.once()[1], self.calls), ("", []), "nor does a line STATUS cannot read: no guessed turn 0")
             del self.out["status"]
             self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1])
         self.assertFalse(self.attention())
@@ -2645,6 +2647,13 @@ class DriveClaude(DriveCase):
     def test_a_turn_that_died_with_no_result_is_attention_once(self) -> None:
         with self.world():
             self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1])
+            self.state = "ORPHANED"
+            out = self.once()[1]
+            self.assertIn("the worker is ORPHANED on far after turn 1 was answered, and no turn has ended since: its CLI outlived"
+                          " its tmux session", out)
+            self.assertIn("`unstick --kill`", out)
+            self.session, self.state = "0199-c", "IDLE"  # the same story in another session, for the states that died
+            self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1])
             for state in ("EXITED(1)", "VANISHED"):
                 self.state = state
                 out = self.once()[1]
@@ -2658,8 +2667,9 @@ class DriveClaude(DriveCase):
             self.rc["attach"], self.out["attach"] = 1, "FAILED far/w1-42 exit=1 no terminal event in the stream\n"
             self.assertIn("DRIVE ATTENTION t42 turn 0: the turn did not complete", self.once()[1])
         self.assertEqual(self.tagged(), [(1, "results", "request", "answered"), (1, "results", "state", "attention"),
+                                         (1, "results", "request", "answered"), (1, "results", "state", "attention"),
                                          (0, "results", "turn", "attention")])
-        self.assertEqual(len(self.attention()), 2)
+        self.assertEqual(len(self.attention()), 3)
 
     def test_a_relaunch_counts_from_zero_and_a_codex_line_is_no_claude_turn(self) -> None:
         os.makedirs(os.path.join(self.wavedir, "logs"))

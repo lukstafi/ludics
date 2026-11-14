@@ -44,9 +44,10 @@ reply. THE RE-READ: once the message is read, ``status`` is read again, and the 
 only when the session and the count are unchanged and the state is still a returned one. The
 count only grows, so an unchanged count proves the message read was the n-th result's; a turn the
 worker began on its own meanwhile (a ``ScheduleWakeup``) leaves the reading to the next tick. A
-TURN THAT DIED: a Claude worker that is ``EXITED``, ``ORPHANED``, ``VANISHED`` or ``UNKNOWN`` while
-its count's turn was ``answered`` took the answer and ended no turn since, which no count would
-ever show: attention, once. A REVIEW OUTRUN: a Claude worker whose count moved past a turn whose
+TURN THAT DIED: a Claude worker that is ``EXITED``, ``VANISHED`` or ``UNKNOWN`` while its count's
+turn was ``answered`` took the answer and ended no turn since, which no count would ever show:
+attention, once. ``ORPHANED`` is told the same way, its CLI outliving its tmux session (it may
+still run that turn, and ``unstick --kill`` resumes it). A REVIEW OUTRUN: a Claude worker whose count moved past a turn whose
 review still runs (a turn it began on its own meanwhile) has that review collected as before,
 and the newer turn is attention, once: the review's answer is sent, and two answers are not
 raced. Only then is the
@@ -556,7 +557,9 @@ class Driver:
         read = STATUS.match(line)
         state = read.group(1) if read else (done.out.split() or [""])[0]
         if read is None:
-            return state, "", 0, None
+            # A line STATUS does not read names no turn; only a gone worker's own line (UNKNOWN: never
+            # launched here) is read at turn 0, of no session, for either kind.
+            return state, "", 0 if worker.count == "resumes" or state in GONE else None, None
         counter = read.group(4) if worker.count == "results" else (read.group(3) or "0")
         return state, read.group(2), int(counter) if counter is not None and counter.isdigit() else None, read
 
@@ -580,9 +583,11 @@ class Driver:
         if (worker.count == "results" and last is not None and last.get("status") == "answered"
                 and (state in GONE or state.startswith("EXITED("))):
             # A TURN THAT DIED (the header): answered, and the process gone with no result since.
+            what = (" its CLI outlived its tmux session and may still run the turn the answer started; `unstick --kill`"
+                    " resumes it in a new session" if state == "ORPHANED" else
+                    " the turn the answer started died; read its log, then resume it by hand")
             return self.attention(worker, turn, "state", f"the worker is {state} on {worker.box} after {label(turn)} was answered,"
-                                                         " and no turn has ended since: the turn the answer started died; read its"
-                                                         " log, then resume it by hand")
+                                                         f" and no turn has ended since:{what}")
         if last is not None and last.get("status") in FINAL:
             return
         if state in GONE:
