@@ -41,16 +41,19 @@ A wave copies no brief text forward. The repository ships the reference template
 - `shared/`: where the worker works, its startup check, the task, requests, landing through
   ship-pr, the review checkpoint (only for a wave file that names a `review`) and the steps after
   the merge;
-- `native-claude/` and `cli-codex/`: what differs by the worker's kind. That is who it is, how it
-  runs tests, how it holds a long run, and how it keeps its context lean;
+- `native-claude/`, `native-codex/` and `cli-codex/`: what differs by the worker's kind. That is
+  who it is, how it runs tests, how it holds a long run, and how it keeps its context lean;
 - `native-claude/planning-paired.md` and `planning-paired+critique.md`, the paired-planning
   additions.
 
 `wave prep` puts the common sections in a fixed order and takes each from the wave directory's
 `common/<part>` when it has one, else from the worker's own kind, else from `shared/`
 (waveprep.py's header, *THE COMMON PARTS*). A wave directory's `common.md` replaces all of them.
-Nothing is shipped for a native Codex or a Claude CLI worker's own four parts, so such a wave
-writes them under `common/`, and its planning parts.
+Nothing is shipped for a Claude CLI worker's own four parts, so such a wave writes them under
+`common/`. Native Codex uses managed foreground command sessions and messages its coordinator
+mid-turn. It ships no planning parts: under a Codex coordinator, pairing a Codex worker needs
+the user's tier-3 confirmation (issue-wave SKILL.md's pairing rule); an approved paired wave
+supplies its own planning parts.
 
 The template holds no project fact. It takes them from three places:
 

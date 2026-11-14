@@ -3687,6 +3687,16 @@ class BriefTemplateTest(Case):
             write(os.path.join(self.root, "issue-wave", "templates", "cli-codex", part), f"## {part} on `@@HOST@@`\n")
         self.expect("a CLI kind with its four own parts passes", 0, BRIEF_OK.replace("14 parts", "18 parts"))
 
+    def test_native_codex_uses_the_kind_rules_without_planning_parts(self) -> None:
+        brief_tree(self.root)
+        template = os.path.join(self.root, "issue-wave", "templates", "native-codex")
+        for part in BRIEF_OWN:
+            write(os.path.join(template, part), f"## {part} on `@@HOST@@`\n")
+        self.expect("native Codex ships four own parts", 0, BRIEF_OK.replace("14 parts", "18 parts"))
+        append(os.path.join(template, "blocking.md"), "@@UNKNOWN@@\n")
+        self.expect("native Codex placeholders are checked too", 1,
+                    "@@UNKNOWN@@ is not rendered (no value for UNKNOWN)")
+
     def test_each_defect_is_refused(self) -> None:
         R, T, S = self.root, self.T, "issue-wave/templates/shared/"
         cases: tuple[tuple[str, Callable[[], None], str], ...] = (

@@ -167,6 +167,16 @@ that placeholder in parts rendered for a remote worker (the exact boundary is in
 header). The MixedWave unit cases cover both hosts and an agent-host `WAVE_DIR` control; on the
 base they fail on the missing built-in and the accepted remote path (ludics#1134).
 
+## Native Codex wave briefs
+
+`wave prep` selects `templates/native-codex/` through the same transport/kind lookup as the
+other shipped kinds. Its four own parts describe mid-turn coordinator messages and local
+managed foreground command sessions, following `references/native-codex.md`. Shared handoff
+blocks retain their format; the native worker sends them by message and waits for dispatch.
+No planning parts ship for this kind: Codex-coordinated pairing requires explicit confirmation
+and wave-local parts. The Prep regression renders without wave-local common parts; running it
+against the pre-template base must refuse on missing who.md, rather than pass with placeholders.
+
 ## Stacked wave prep briefs
 
 Prep reads a project's brief part at its task base first, then at the local

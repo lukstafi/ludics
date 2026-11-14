@@ -15,9 +15,9 @@ without it has no template to keep, as the suites' trees of copied prompts do no
   ``cli-<kind>`` for a kind wave.json takes (claude, codex), optionally ``review`` (the review
   checkpoint's prompt, wavereview.py), and nothing else. A kind's directory holds every one of
   waveprep's ``OWN`` parts, may hold its ``PLANNING`` parts, and holds nothing else: half a brief
-  is not shipped. ``native-claude`` is required, with its planning parts, so with ``shared`` it is
-  every common part. ``review`` holds exactly wavereview's parts. All are regular files; anything
-  missing or extra fails.
+  is not shipped. ``native-claude`` is required, with its planning parts; ``native-codex`` and
+  ``cli-codex`` ship only their own. ``review`` holds exactly wavereview's parts. All are regular
+  files; anything missing or extra fails.
 - THE NAMES. Each shipped part, and the project part, renders through wavebrief's own ``render``
   with one value for each NAME it may use: a common part the built-ins every task is given (no
   ISSUE, no SOURCE, no leg NAME; BASE_ORIGIN describes the resolved base), waveprep's

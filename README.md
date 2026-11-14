@@ -726,14 +726,15 @@ first word: a comparison of another shape is outside it. It also holds the two p
 fleet roster, the daily planner's home-box sentence and issue-wave's fleet bullet, to
 `DEFAULT_BOXES` in `lib/ludics/fleetworker/config.py` (#853): each names every default box and no
 other, read as the backticked names at parenthesis depth zero in the one sentence after a fixed
-anchor, the allowlist its `roster` module's header states. And it reads the reference native-Claude
+anchor, the allowlist its `roster` module's header states. And it reads the reference worker
 brief template `wave prep` renders, `issue-wave/templates/`, with this repository's project part
 `.github/wave-brief.md` (#1072): the template directory holds exactly the parts prep looks up;
 every placeholder is a NAME prep gives that part; every `~/.claude/skills/`, `~/ludics/` or
 tree-rooted path in a backticked span exists, as does the heading a `.md` path followed by
 `, *Heading*` names; and no line holds a step a PR retired from SKILL.md's *The brief* (the list
 and the boundary are in its `brieftemplate` module's header). Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
-against scratch trees, one per defect, with the well-formed tree as the control, and ends by
+against scratch trees, one per defect (native Codex own-part placeholders without planning
+parts among them), with the well-formed tree as the control, and ends by
 running it on this checkout.
 
 `check-jq-shapes.sh` is the jq shape guard, run in the lint job on every head over every

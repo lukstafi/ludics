@@ -59,9 +59,9 @@ a ``review``: the review checkpoint's protocol, wavereview.py) and ``after-merge
 first of: the wave directory's ``common/<part>``; the shipped part of the worker's own kind,
 ``issue-wave/templates/<native|cli>-<kind>/<part>``; the shipped ``issue-wave/templates/shared/<part>``.
 The repository ships a kind's ``OWN`` parts (who it is, how it runs tests, how it holds a long run,
-its context) for ``native-claude`` and ``cli-codex``, and the ``SHARED`` parts once, so a rule both
-transports follow is stated in one file. A part found nowhere refuses, naming it: a kind with no
-shipped directory (``native-codex``, ``cli-claude``) takes its own parts from the wave directory.
+its context) for ``native-claude``, ``native-codex`` and ``cli-codex``, and the ``SHARED`` parts
+once, so a rule both transports follow is stated in one file. A part found nowhere refuses, naming
+it: a kind with no shipped directory (``cli-claude``) takes its own parts from the wave directory.
 
 THE PARTS, where each other part is found (ludics#1072): the wave directory's part wins; for the
 two ``PLANNING`` parts (``planning-paired.md``, ``planning-paired+critique.md``) the shipped one of
