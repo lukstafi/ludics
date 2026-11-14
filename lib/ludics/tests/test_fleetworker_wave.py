@@ -2786,6 +2786,24 @@ class Queue(DriveCase):
             self.once()
             self.assertEqual([c[:2] for c in self.launched()], [["wave", "prep"], ["wave", "launch"]])
 
+    def test_a_fenced_manifest_with_its_pending_row_is_un_prepared_never_launched(self) -> None:
+        """A hand unprep wrote its fence and stopped at the row: the row is still pending, the base still the tip."""
+        self.queue({"task": "t51", "profile": "sol", "host": "far"})
+        self.rows = [row("t51", state="pending")]
+        self.manifest("t51", "far", B)
+        path = os.path.join(self.wavedir, "prep", "t51.json")
+        with open(path) as f:
+            fenced = json.load(f)
+        with open(path, "w") as f:
+            json.dump({**fenced, "done": ["ready", "unprepare"]}, f)
+        with self.world():
+            out = self.once()[1]
+        self.assertEqual(self.launched(), [["wave", "unprep", self.path, "t51"]], "never a launch that would refuse on the fence")
+        self.assertIn("DRIVE ATTENTION t51 launch: an un-prepare of the task stopped before it ended", out)
+
+    def test_unprep_reads_the_drivers_launch_turn(self) -> None:
+        self.assertEqual(waveunprep.LAUNCH_TURN, wavedrive.LAUNCH)
+
     def test_a_refresh_that_fails_never_stops_a_prep_and_is_beside_a_prep_that_refuses(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"})
         with self.world():

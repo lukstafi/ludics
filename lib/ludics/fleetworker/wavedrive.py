@@ -155,9 +155,9 @@ a launch on record, a ledger line holding a slot, a reservation of its standing 
 is not its prep's pending row): exit 0 is a non-final ledger line ``unprepared`` and the
 coordinator told once, and with no row left the task is due again, prepared at the tip under its
 own id on a later tick; exit 4 is the next tick's; any other exit is attention, final, with the
-verb's line. A task with no row whose manifest ends with the verb's fence (an un-prepare that
-removed the row and stopped, its acknowledgement lost) is un-prepared again the same way before
-anything is prepared, never sent to a prep that would refuse on that manifest.
+verb's line. A task whose manifest ends with the verb's fence (an un-prepare that stopped, with
+its row removed or not) is un-prepared again the same way before anything else, never sent to a
+prep or a launch that would refuse on that manifest.
 A task whose ``after`` task's row ended without a merge (``closed``, ``dropped``) can never come
 due: that is attention, final, since nothing else would say the task is not going to start.
 A prep that refuses (a rival PR, a branch that exists, a missing task part) is attention, final:
@@ -853,12 +853,12 @@ class Driver:
         rc, sha, _ = execute(["git", "-C", checkout, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{main}^{{commit}}"])
         if fetched != 0 or rc != 0 or not SHA40.fullmatch(sha.strip()):
             return  # the remote did not answer: the next tick's
-        fenced = not prepared and self.unprepping(queued.task)
+        fenced = self.unprepping(queued.task)
         if fenced or (record is not None and record.base != sha.strip()):
             # A STALE PREPARED TASK (the header): un-prepared here, prepared again at the tip on a later tick.
-            # A fenced manifest with no row is an un-prepare that stopped past its row: it is finished first.
-            moved = ("an un-prepare of the task stopped before it ended (its manifest ends with the fence)" if fenced or record is None
-                     else f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]})")
+            # A fenced manifest, its row there or not, is an un-prepare that stopped: it is finished first.
+            moved = (f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]})" if not fenced and record
+                     else "an un-prepare of the task stopped before it ended (its manifest ends with the fence)")
             done = self.call("wave", "unprep", self.wave.path, queued.task, gated="both")
             said = (substitution(done.out).splitlines() or [f"wave unprep exit {done.rc}"])[-1]
             if done.rc == 4:

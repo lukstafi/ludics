@@ -95,11 +95,7 @@ from ludics.fleetworker.waveprep import READY, TASK, Stop, task_lock
 FENCE = "unprepare"  # this verb's own step: a manifest that ends with it is no prep's ready one
 EXACT = ("manifest", READY, FENCE)  # the CLI prep steps (waveprep.write) a step may be, whole
 PREFIXES = ("scratch ", "standing payload ", "brief ", "board row ")  # ...or by its first words
-LAUNCH_TURN = -1  # wavedrive.LAUNCH, the ledger's turn for a queued task's launch
-
-
-def quoted(text: str) -> str:
-    return shlex.quote(text)
+LAUNCH_TURN = -1  # wavedrive.LAUNCH (which imports this module), the ledger's turn for a queued task's launch
 
 
 def read(path: str, wave: Wave, task: str) -> tuple[dict[str, Any], Record, list[str]] | None:
@@ -110,14 +106,14 @@ def read(path: str, wave: Wave, task: str) -> tuple[dict[str, Any], Record, list
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
-        raise Stop(1, f"WAVE UNPREP REFUSED {task}: the prep manifest {quoted(path)} cannot be read ({exc}); nothing removed") from None
+        raise Stop(1, f"WAVE UNPREP REFUSED {task}: the prep manifest {shlex.quote(path)} cannot be read ({exc}); nothing removed") from None
     manifest = cast(dict[str, Any], data) if isinstance(data, dict) else {}
     record = record_of(manifest.get("launch"))
     steps: Any = manifest.get("done")
     standing: Any = manifest.get("standing")
     if (record is None or manifest.get("task") != task or not isinstance(steps, list)
             or not all(isinstance(step, str) for step in cast(list[Any], steps)) or not isinstance(standing, list)):
-        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)} is no manifest wave prep wrote for {task}; nothing removed")
+        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {shlex.quote(path)} is no manifest wave prep wrote for {task}; nothing removed")
     done = cast(list[str], steps)
     if record.transport != "cli":
         raise Stop(1, f"WAVE UNPREP REFUSED {task}: a {record.transport} task: its prep took a worktree, a branch and standing"
@@ -125,17 +121,17 @@ def read(path: str, wave: Wave, task: str) -> tuple[dict[str, Any], Record, list
                       " proves none started; reconcile it by hand from its WAVE PREP MADE lines and prepare it again under a"
                       " new task id; nothing removed")
     if record.wave != wave.wave or manifest.get("wave") != wave.wave:
-        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)} was prepared for wave {record.wave}, and the wave file"
+        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {shlex.quote(path)} was prepared for wave {record.wave}, and the wave file"
                       f" names {wave.wave}; nothing removed")
     if any(step.startswith("launched ") for step in done):
-        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)} records a launch; its worker is the coordinator's to"
+        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {shlex.quote(path)} records a launch; its worker is the coordinator's to"
                       " close; nothing removed")
     unknown = [step for step in done if step not in EXACT and not step.startswith(PREFIXES)]
     if unknown:
-        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)} records a step no CLI prep writes ({unknown[0][:200]!r});"
+        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {shlex.quote(path)} records a step no CLI prep writes ({unknown[0][:200]!r});"
                       " nothing removed")
     if [str(s) for s in cast(list[Any], standing)] != [record.standing, *(leg.standing for leg in record.legs)]:
-        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)}'s standing ids are not its launch record's; nothing removed")
+        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {shlex.quote(path)}'s standing ids are not its launch record's; nothing removed")
     return manifest, record, done
 
 
@@ -215,10 +211,10 @@ def check_worktree(cfg: Config, task: str, record: Record) -> None:
     seen = run_on(cfg, record.host, prelude(cfg, record.host) + WORKTREE_STATE, [record.worktree], capture=True)
     said = substitution(seen.out).splitlines()[-1] if seen.out.strip() else ""
     if seen.unreachable or seen.rc != 0 or not (said == "worktree=absent" or STATE.fullmatch(said)):
-        raise Stop(4, f"WAVE UNPREP UNKNOWN {task}: the worktree path {quoted(record.worktree)} on {record.host} could not be"
+        raise Stop(4, f"WAVE UNPREP UNKNOWN {task}: the worktree path {shlex.quote(record.worktree)} on {record.host} could not be"
                       f" read (exit {seen.rc}); nothing removed")
     if said != "worktree=absent":
-        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(record.worktree)} exists on {record.host} ({said}): prep makes no"
+        raise Stop(1, f"WAVE UNPREP REFUSED {task}: {shlex.quote(record.worktree)} exists on {record.host} ({said}): prep makes no"
                       " worktree for a CLI task, so a launch began; read status there; nothing removed")
 
 
@@ -227,7 +223,7 @@ def check_files(task: str, files: list[tuple[str, str, str]]) -> None:
         if not os.path.lexists(path):
             continue
         if os.path.islink(path) or not os.path.isfile(path):
-            raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)} is no regular file, and prep writes one there; nothing removed")
+            raise Stop(1, f"WAVE UNPREP REFUSED {task}: {shlex.quote(path)} is no regular file, and prep writes one there; nothing removed")
         if not key:
             continue
         try:
@@ -236,7 +232,7 @@ def check_files(task: str, files: list[tuple[str, str, str]]) -> None:
         except (OSError, ValueError):
             data = None
         if not isinstance(data, dict) or cast(dict[str, Any], data).get(key) != value:
-            raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)} does not name {key} {value}, as this prep's does: another"
+            raise Stop(1, f"WAVE UNPREP REFUSED {task}: {shlex.quote(path)} does not name {key} {value}, as this prep's does: another"
                           " task's file of the same name (a task id that ends in a leg's suffix or in -base); nothing removed")
 
 
@@ -247,7 +243,7 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
     path = os.path.join(wave.directory, "prep", f"{task}.json")
     read_back = read(path, wave, task)
     if read_back is None:
-        cli.say(f"WAVE UNPREP {task}: nothing recorded to undo (no prep manifest {quoted(path)})")
+        cli.say(f"WAVE UNPREP {task}: nothing recorded to undo (no prep manifest {shlex.quote(path)})")
         return 0
     manifest, record, done = read_back
     files = files_of(wave, task, record)
@@ -264,7 +260,7 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
         cli.say(f"WAVE UNPREP {'UNKNOWN' if rc == 4 else 'FAILED'} {task} at {step}: {why}")
         for what in removed:
             cli.say(f"WAVE UNPREP REMOVED {task}: {what}")
-        cli.say(f"WAVE UNPREP {task}: a re-run goes on from here (the manifest {quoted(path)} ends with {FENCE!r})"
+        cli.say(f"WAVE UNPREP {task}: a re-run goes on from here (the manifest {shlex.quote(path)} ends with {FENCE!r})"
                 if done[-1:] == [FENCE] else f"WAVE UNPREP {task}: nothing removed")
         return rc
 
@@ -272,7 +268,7 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
         try:
             write_atomically(path, json.dumps({**manifest, "done": [*done, FENCE]}, indent=1) + "\n")
         except OSError as exc:
-            return failed("fence", f"cannot write {quoted(path)} ({exc.strerror})")
+            return failed("fence", f"cannot write {shlex.quote(path)} ({exc.strerror})")
         done = [*done, FENCE]
     rc = forget_row(cfg, wave.wave, task, record.worker)
     if rc != 0:
@@ -282,20 +278,20 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
         for directory in (os.path.join(record.scratch, "runs"), record.scratch):
             try:
                 os.rmdir(directory)
-                removed.append(f"the empty directory {quoted(directory)}")
+                removed.append(f"the empty directory {shlex.quote(directory)}")
             except FileNotFoundError:
                 pass
             except OSError as exc:
-                notes.append(f"{quoted(directory)} is left ({exc.strerror}); prep takes it as it is")
+                notes.append(f"{shlex.quote(directory)} is left ({exc.strerror}); prep takes it as it is")
                 break
     for item, _, _ in files:
         try:
             os.remove(item)
-            removed.append(quoted(item))
+            removed.append(shlex.quote(item))
         except FileNotFoundError:
             pass
         except OSError as exc:
-            return failed("files", f"cannot remove {quoted(item)} ({exc.strerror})")
+            return failed("files", f"cannot remove {shlex.quote(item)} ({exc.strerror})")
     logged = run([shim(cfg), "board", "log", wave.wave, f"{task} unprepared: its prep at {record.base[:12]} taken back"
                   " (wave unprep), to be prepared again under its own id"], stdout_to_stderr=True).rc
     if logged != 0:
@@ -305,10 +301,10 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
     try:
         os.replace(path, tomb)
     except OSError as exc:
-        return failed("manifest", f"cannot rename {quoted(path)} to {quoted(tomb)} ({exc.strerror})")
+        return failed("manifest", f"cannot rename {shlex.quote(path)} to {shlex.quote(tomb)} ({exc.strerror})")
     for note in notes:
         cli.say(f"WAVE UNPREP NOTE {task}: {note}")
-    cli.say(f"WAVE UNPREP {task}: unprepared: {len(removed)} piece(s) removed, the manifest kept as {quoted(tomb)};"
+    cli.say(f"WAVE UNPREP {task}: unprepared: {len(removed)} piece(s) removed, the manifest kept as {shlex.quote(tomb)};"
             " wave prep it again under its own id")
     return 0
 

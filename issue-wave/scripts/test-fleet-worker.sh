@@ -6363,16 +6363,17 @@ expect "...and prepares it again under its own id at the tip, and launches it" 0
 [ "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t86") | .fields.base')" = "$moved" ] && ok "...its row at the moved tip" || ko "t86's base is not $moved"
 jq -n --arg m "$(printf 'b%.0s' $(seq 40))" '{number:15, state:"MERGED", headRefName:"codex/wk-86", mergeCommit:{oid:$m}}' > "$K/pr-view.json"
 "$FW" attach testbox wk-86 --interval 1 >/dev/null 2>&1
-ticks=""
-for _ in $(seq 10); do
-  one=$("${FWD[@]}" wave drive "$K/wave.json" --once 2>&1); ticks+="$one"$'\n'
-  grep -q "^DRIVE t83 launch: launch answered: " <<<"$one" && break
+# Each tick on its own: a tick reads the board once, before its turns, so the tick whose hand-back
+# frees the slot must not start t83 (its launch line would print after the close in that tick too).
+ticks="" closed="" started=""
+for i in $(seq 10); do
+  one=$("${FWD[@]}" wave drive "$K/wave.json" --once 2>&1); ticks+="[tick $i] $one"$'\n'
+  grep -q '^DRIVE t86 turn 0: handback answered: BOARD CLOSE wkv: "t86" merged example/project#15' <<<"$one" && closed=${closed:-$i}
+  grep -q "^DRIVE t83 launch: launch answered: WAVE LAUNCH t83: launched testbox/wk-83 " <<<"$one" && { started=$i; break; }
   sleep 1
 done
-closed=$(grep -n '^DRIVE t86 turn 0: handback answered: BOARD CLOSE wkv: "t86" merged example/project#15' <<<"$ticks" | head -n 1 | cut -d: -f1)
-started=$(grep -n "^DRIVE t83 launch: launch answered: WAVE LAUNCH t83: launched testbox/wk-83 " <<<"$ticks" | head -n 1 | cut -d: -f1)
 [ -n "$closed" ] && [ -n "$started" ] && [ "$closed" -lt "$started" ] && ! grep -q "t84 launch" <<<"$ticks" &&
-  ok "a task waiting on its host's one slot starts when the task holding it merges" || ko "the capacity wait: $ticks"
+  ok "a task waiting on its host's one slot starts on a tick after the task holding it merges" || ko "the capacity wait: $ticks"
 setup_step "could not close t83's row (setup)" "${FWK[@]}" board set wkv t83 state=dropped
 settle wk-83
 fixture_done wkv-t83-testbox-iterate
