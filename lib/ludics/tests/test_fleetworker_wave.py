@@ -2634,7 +2634,9 @@ class DriveClaude(DriveCase):
         with self.world():
             for second, why in ((self.status_line(results=2), "a turn ended between the reads"),
                                 (self.status_line(state="RUNNING"), "the worker began a turn of its own between the reads"),
-                                (self.status_line().replace("unread=0", "unread=1"), "a message arrived between the reads")):
+                                (self.status_line().replace("unread=0", "unread=1"), "a message arrived between the reads"),
+                                (self.status_line().replace("turn=ended", "turn=working"),
+                                 "a turn began after the far side read IDLE: its later fields show it")):
                 self.statuses = [self.status_line(), second]
                 self.once()
                 self.assertEqual([c[0] for c in self.calls], ["log"], why)
@@ -2685,11 +2687,18 @@ class DriveClaude(DriveCase):
         self.message = f"REVIEW_REQUEST 7 {A}\n"
         with self.world():
             self.assertIn("DRIVE t42 turn 1: review reviewing", self.once()[1])
-            self.results = 2  # a turn the worker began on its own (a ScheduleWakeup) ended while the review runs
+            # A turn the worker began on its own (a ScheduleWakeup) ended while the review runs.
+            self.results, self.message = 2, "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
             self.rc["bg-run.sh wait"], self.out["bg-run.sh wait"] = 3, "RUNNING after 1 s of --within 1\n"
+            self.statuses = [self.status_line(), self.status_line(results=3)]
+            self.assertEqual((self.once()[1], [c[0] for c in self.calls]), ("", ["log"]), "a message the re-read does not confirm is not kept")
             out = self.once()[1]
-            self.assertIn("DRIVE ATTENTION t42 turn 2: turn 2 ended while the review turn 1 asked for still runs", out)
-            self.assertEqual([c[0] for c in self.calls], ["bg-run.sh"], "the review is still collected, the newer turn not read")
+            kept = f"{self.wavedir}/msgs/t42.w1-42.0199-a.2.md"
+            self.assertIn(f"DRIVE ATTENTION t42 turn 2: turn 2 ended while the review turn 1 asked for still runs: the review's answer"
+                          f" is still sent; turn 2's message is kept, and is yours ({kept})", out)
+            with open(kept) as f:
+                self.assertEqual(f.read(), self.message, "kept before the review's answer can move the worker on")
+            self.assertEqual([c[0] for c in self.calls], ["log", "bg-run.sh"], "the review is still collected, the newer turn not answered")
             self.assertEqual((self.once()[1], [c[0] for c in self.calls]), ("", ["bg-run.sh"]), "told once")
             message = f"{self.wavedir}/reviews/7-at-open-{A[:12]}.message.md"
             os.makedirs(self.runs, exist_ok=True)

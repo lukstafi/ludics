@@ -40,7 +40,8 @@ its turn's reply to the latest message sent. A Claude worker's status line is re
 whatever it does not show is the next tick's, recorded nowhere: a line with no numeric
 ``results=`` names no turn; an ``IDLE`` line whose ``unread=`` is not 0 shows a message the CLI has
 not echoed (an answer, or the coordinator's, on its way), so the idle turn is not that message's
-reply. THE RE-READ: once the message is read, ``status`` is read again, and the turn is answered
+reply, and one whose ``turn=`` is not ``ended`` or whose ``background_tasks=`` is not 0 shows a
+turn that began after the far side read the state. THE RE-READ: once the message is read, ``status`` is read again, and the turn is answered
 only when the session and the count are unchanged and the state is still a returned one. The
 count only grows, so an unchanged count proves the message read was the n-th result's; a turn the
 worker began on its own meanwhile (a ``ScheduleWakeup``) leaves the reading to the next tick. A
@@ -48,9 +49,9 @@ TURN THAT DIED: a Claude worker that is ``EXITED``, ``VANISHED`` or ``UNKNOWN`` 
 turn was ``answered`` took the answer and ended no turn since, which no count would ever show:
 attention, once. ``ORPHANED`` is told the same way, its CLI outliving its tmux session (it may
 still run that turn, and ``unstick --kill`` resumes it). A REVIEW OUTRUN: a Claude worker whose count moved past a turn whose
-review still runs (a turn it began on its own meanwhile) has that review collected as before,
-and the newer turn is attention, once: the review's answer is sent, and two answers are not
-raced. Only then is the
+review still runs (a turn it began on its own meanwhile) has the newer turn's message read under
+THE RE-READ, kept in its ``msgs/`` file and named in an attention line, once, before the review is
+collected as before: the review's answer is sent, and two answers are not raced. Only then is the
 final message read with ``log --last-result``, saved to ``msgs/<task>.<worker>.<session>.<turn>.md``
 (every file of a turn is named by the turn's whole identity), and classified by
 THE MARKERS. ``log --last-result`` alone would not do: it skips a turn that never completed and
@@ -262,7 +263,8 @@ RETURNED = re.compile(r"(EXITED\([0-9]+\)|IDLE)")
 GONE = ("ORPHANED", "VANISHED", "UNKNOWN")  # states that are no returned turn and will not become one
 WORKING = "RUNNING"  # the worker's state while its turn runs (farside.py's state_of), not bg-run.sh's verdict word
 STATUS = re.compile(r"(\S+) \S+/\S+ .*?\bsession=(\S*) .*\bresumes=([0-9]*)(?: results=(\S+))?")
-UNREAD = re.compile(r"\| turn=\S+ background_tasks=\S+ unread=([0-9]+) \|")  # a stream worker's messages not yet echoed
+# A stream worker's turn state, listed background tasks and messages not yet echoed (farside.STATUS).
+CHANNEL = re.compile(r"\| turn=(\S+) background_tasks=(\S+) unread=([0-9]+) \|")
 SERVED = ("codex", "claude")
 ASK = re.compile(r"(REVIEW|CONFIRM)_REQUEST #?([1-9][0-9]*) ([0-9a-f]{40})")
 RESULT = re.compile(r"EXECUTION_RESULT (\{.*\})")
@@ -574,11 +576,20 @@ class Driver:
         last = self.last(worker, turn)
         earlier = self.open_review(worker, turn)
         if earlier is not None and RETURNED.fullmatch(state) and (state != "IDLE" or self.replied(read)):
-            # A REVIEW OUTRUN (the header): the review is still collected, and the newer turn handed up.
+            # A REVIEW OUTRUN (the header): the newer turn's message kept and handed up, then the review collected.
             if last is None or last.get("status") not in FINAL:
-                self.attention(worker, turn, "turn", f"{label(turn)} ended while the review {label(int(earlier['turn']))} asked for"
-                                                     " still runs: the review's answer is still sent; this turn is yours to read"
-                                                     " (`log --last-result` before that answer lands)")
+                read_log = self.confirmed(worker, turn)
+                if read_log is None:
+                    return
+                kept = self.turn_file(worker, turn, "md") if read_log.rc == 0 else ""
+                if kept:
+                    write_atomically(kept, read_log.out)
+                k = int(earlier["turn"])
+                which = label(turn) if turn == k + 1 else f"turns {k + 1} to {turn}"
+                self.attention(worker, turn, "turn", f"{which} ended while the review {label(k)} asked for still runs: the review's"
+                                                     " answer is still sent; " + (f"{label(turn)}'s message is kept, and is yours" if kept
+                                                                                 else f"{label(turn)} has no final message ("
+                                                                                 f"{substitution(read_log.out)[-200:]})"), kept)
             return self.collect(worker, int(earlier["turn"]), earlier)
         if (worker.count == "results" and last is not None and last.get("status") == "answered"
                 and (state in GONE or state.startswith("EXITED("))):
@@ -607,17 +618,18 @@ class Driver:
         if not verdict.startswith("DONE ") and not (worker.count == "results" and verdict.startswith("IDLE ")):
             return self.attention(worker, turn, "turn", f"the turn did not complete: {verdict[:300] or f'attach exit {ended.rc}'}")
         message = self.turn_file(worker, turn, "md")
-        read_log = self.call("log", worker.box, worker.name, "--last-result")
-        if read_log.rc == 4:
-            return
-        if read_log.rc != 0:
-            return self.attention(worker, turn, "turn", f"the turn ended with no final message ({substitution(read_log.out)[-200:]})")
         if worker.count == "results":
             # THE RE-READ (the header): the message is turn n's only if the count still says n.
-            again = self.reading(worker)
-            if again is None or again[1] != worker.session or again[2] != turn or not RETURNED.fullmatch(again[0]) or (
-                    again[0] == "IDLE" and not self.replied(again[3])):
+            got_log = self.confirmed(worker, turn)
+            if got_log is None:
                 return
+            read_log = got_log
+        else:
+            read_log = self.call("log", worker.box, worker.name, "--last-result")
+            if read_log.rc == 4:
+                return
+        if read_log.rc != 0:
+            return self.attention(worker, turn, "turn", f"the turn ended with no final message ({substitution(read_log.out)[-200:]})")
         write_atomically(message, read_log.out)
         what = classify(read_log.out)
         match what.kind:
@@ -647,9 +659,23 @@ class Driver:
 
     @staticmethod
     def replied(read: re.Match[str] | None) -> bool:
-        """An IDLE stream worker's line says every message it was sent is echoed (``unread=0``)."""
-        unread = UNREAD.search(read.string) if read is not None else None
-        return unread is not None and unread.group(1) == "0"
+        """An IDLE stream worker's line shows its turn ended, no background task listed and every
+        message it was sent echoed (``turn=ended background_tasks=0 unread=0``). The fields are read
+        after the state on the far side, so they can show a turn that began since it read IDLE."""
+        chan = CHANNEL.search(read.string) if read is not None else None
+        return chan is not None and chan.groups() == ("ended", "0", "0")
+
+    def confirmed(self, worker: Worker, turn: int) -> Done | None:
+        """``log --last-result`` of a Claude worker's turn, kept only when THE RE-READ (the header)
+        still shows that turn returned; None when it does not, or the box did not answer."""
+        read_log = self.call("log", worker.box, worker.name, "--last-result")
+        if read_log.rc == 4:
+            return None
+        again = self.reading(worker)
+        if again is None or again[1] != worker.session or again[2] != turn or not RETURNED.fullmatch(again[0]) or (
+                again[0] == "IDLE" and not self.replied(again[3])):
+            return None
+        return read_log
 
     def resume(self, worker: Worker, turn: int, kind: str, message: str, text: str, **more: Any) -> bool:
         done = self.call("unstick", worker.box, worker.name, "--message", message, gated="both")
