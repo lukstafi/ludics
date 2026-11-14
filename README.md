@@ -819,6 +819,9 @@ section omitted from a scratch map still appearing in the source-derived output.
 checks (warning count, batch output and last-stage status, pipefail and quoted pipes), with the
 shared lease and one-slot testbox setup. It does not run the broader slot ownership, process,
 deadline or measurement cases. `test-fleet-worker.sh 'execution slot'` still selects both sections.
+The "wave kit" section also prepares a shipped CLI brief without a wave-local common.md:
+a project part absent at the stacked base comes from the default tip, and the brief retains
+the explicit base origin (#1099).
 Which sections (and which other suites) a change to a `lib/ludics` module reaches is that
 package's map, *Which suites drive each module* in `lib/ludics/README.md`, which check-prompts
 keeps naming only modules, suites and sections that exist (#718).

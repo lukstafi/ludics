@@ -6186,6 +6186,31 @@ got=$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t77-t
 got=$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t77") | .fields | "\(.state) \(.issue) \(.worktree) \(.runs)"')
 [ "$got" = "pending example/project#77 $proj-worktrees/wk-77 $K/scratch/t77/runs" ] && ok "...the pending row" || ko "row: $got"
 grep -qx "# Task t77: example/project#77" "$K/briefs/brief-t77.md" && ok "...the brief rendered" || ko "brief: $(cat "$K/briefs/brief-t77.md")"
+# ludics#1099: shipped common parts through the shim, with the project part absent at a
+# stacked base. The tip's project part is used, while the launch base stays the explicit commit.
+KS="$K/shipped"; mkdir -p "$KS/tasks"
+printf '# Shipped task @@T@@\n' > "$KS/tasks/t76.md"
+mkdir -p "$proj/docs"
+printf '## Project from default tip for @@T@@\n' > "$proj/docs/wave-brief.md"
+setup_step "could not commit the shipped project part" git -C "$proj" add docs/wave-brief.md
+setup_step "could not commit the shipped project part" git -C "$proj" commit -q -m "wave kit project part"
+ptip=$(git -C "$proj" rev-parse HEAD)
+setup_step "could not set the fixture default tip" git -C "$proj" update-ref refs/remotes/origin/master "$ptip"
+jq '. + {transport:"cli", kind:"codex", worker_prefix:"wks",
+  vars:{MAIN:"master", COORDINATOR:"fixture-session"}, project_part:"docs/wave-brief.md"}' "$K/wave.json" > "$KS/wave.json"
+expect "shipped brief prep falls back to the default tip project part" 0 \
+  "^WAVE PREP t76: project part docs/wave-brief.md at $ptip (origin/master fallback)$" -- \
+  "${FWK[@]}" wave prep "$KS/wave.json" t76 --base "$pbase"
+grep -Fqx "## Project from default tip for t76" "$KS/briefs/brief-t76.md" &&
+  grep -Fq "created from base \`$pbase\` (explicit revision $pbase at prep)" "$KS/briefs/brief-t76.md" &&
+  ! grep -q '@@' "$KS/briefs/brief-t76.md" &&
+  [ ! -e "$KS/common.md" ] &&
+  [ ! -e "$proj-worktrees/wks-76" ] &&
+  [ "$(jq -r .base "$KS/prep/t76.json")" = "$pbase" ] &&
+  ok "...the shipped CLI brief renders and preserves its stacked base" || ko "shipped brief is wrong"
+# Restore the shared fixture: the rest of this section prepares at master.
+setup_step "could not restore the fixture branch" git -C "$proj" reset --hard "$pbase"
+setup_step "could not restore the fixture default tip" git -C "$proj" update-ref refs/remotes/origin/master "$pbase"
 # A write that fails after the worktree (here the registry refuses a box outside the default roster)
 # reports each step made and the manifest, writes no row, and a second prep refuses on what it left.
 printf '# T @@T@@\n' > "$K/tasks/t79.md"

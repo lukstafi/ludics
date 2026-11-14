@@ -364,9 +364,78 @@ class Prep(WaveDirCase):
         self.assertIn("coordinator session `local_1` on `mac`", brief)
         self.assertIn(f"## This project\n\nWork in {wt} of {self.dir}/repo.\n\n## Running tests", brief)
         self.assertNotIn("A later edit", brief)
+        self.assertIn(f"project part docs/brief.md at {base} (base)", out)
+        self.assertIn(f"created from base `{base}` (explicit revision {base} at prep)", brief)
         self.assertIn("gh issue view <N> --repo o/up --json number,title,body,comments", brief)
         self.assertIn("pr-review.sh merge o/staging#<pr> --wait", brief)
         self.assertNotIn("@@", brief)
+
+    def test_project_part_falls_back_to_default_tip_on_a_stacked_base(self) -> None:
+        os.unlink(os.path.join(self.wavedir, "common.md"))
+        tip = self.commit("docs/brief.md", "## Default tip project for @@T@@\n")
+        repo = os.path.join(self.dir, "repo")
+        git("-C", repo, "update-ref", "refs/remotes/origin/main", tip)
+        self.commit("docs/brief.md", "## Unpushed checkout text\n")
+        self.rewave(vars={"COORDINATOR": "local_1", "MAIN": "main"}, project_part="docs/brief.md")
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", self.base)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("## Default tip project for t42", self.brief())
+        self.assertNotIn("Unpushed checkout text", self.brief())
+        self.assertIn(f"project part docs/brief.md at {tip} (origin/main fallback)", out)
+        self.assertIn(f"created from base `{self.base}` (explicit revision {self.base} at prep)", self.brief())
+        self.assertNotIn("(origin/main at prep)", self.brief())
+        self.assertEqual(git("-C", os.path.join(self.dir, "repo-worktrees", "w1-42"), "rev-parse", "HEAD"), self.base)
+
+    def test_project_fallback_uses_the_tip_resolved_with_the_base(self) -> None:
+        self.write("common.md", "@@PROJECT@@\n")
+        tip = self.commit("docs/brief.md", "## Resolved tip\n")
+        repo = os.path.join(self.dir, "repo")
+        git("-C", repo, "update-ref", "refs/remotes/origin/main", tip)
+        self.rewave(vars={"MAIN": "main"}, project_part="docs/brief.md")
+        path, task, opts = waveprep.parse([self.path, "t42", "--base", self.base])
+        prep = waveprep.build(self.cfg, path, task, opts)
+        waveprep.resolve_base(prep)
+        later = self.commit("docs/brief.md", "## Later tip\n")
+        git("-C", repo, "update-ref", "refs/remotes/origin/main", later)
+        text = waveprep.brief_text(prep)
+        self.assertIn("## Resolved tip", text)
+        self.assertNotIn("## Later tip", text)
+
+    def test_project_part_missing_at_both_revisions_refuses_before_writes(self) -> None:
+        self.write("common.md", "@@PROJECT@@\n")
+        tip = self.commit("other.txt", "tip\n")
+        git("-C", os.path.join(self.dir, "repo"), "update-ref", "refs/remotes/origin/main", tip)
+        self.rewave(vars={"MAIN": "main"}, project_part="docs/absent.md")
+        with self.world():
+            rc, out, _ = self.prep("t42", "--base", self.base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn(f"at base {self.base} or origin/main fallback {tip}", out)
+        self.assert_made_nothing(out)
+
+    def test_project_fallback_requires_a_known_default_tip(self) -> None:
+        self.write("common.md", "@@PROJECT@@\n")
+        self.rewave(vars={"MAIN": "absent"}, project_part="docs/absent.md")
+        with self.world():
+            rc, out, _ = self.prep("t42", "--base", self.base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("fallback needs vars.MAIN and its origin remote-tracking commit", out)
+        self.assert_made_nothing(out)
+
+    def test_origin_line_distinguishes_default_tip_from_a_stacked_branch(self) -> None:
+        self.write("common.md", "@@BASE@@ (@@BASE_ORIGIN@@)\n")
+        self.rewave(vars={"MAIN": "main"})
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "origin/main")
+        self.assertEqual(rc, 0, out + err)
+        self.assertTrue(self.brief().startswith(f"{self.base} (origin/main at prep)\n"), self.brief())
+        stacked = self.commit("stack.txt", "stack\n")
+        git("-C", os.path.join(self.dir, "repo"), "branch", "sibling", stacked)
+        with self.world():
+            rc, out, err = self.prep("p8", "--source", "42", "--base", "sibling")
+        self.assertEqual(rc, 0, out + err)
+        with open(os.path.join(self.wavedir, "briefs", "brief-p8.md")) as f:
+            self.assertTrue(f.read().startswith(f"{stacked} (explicit revision sibling at prep)\n"))
 
     def test_the_wave_directorys_project_part_wins_and_a_missing_one_refuses(self) -> None:
         os.unlink(os.path.join(self.wavedir, "common.md"))

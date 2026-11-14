@@ -1,7 +1,7 @@
 - Repository: `@@REPO@@` (GitHub; PRs and branches), main branch `@@MAIN@@`. Issues live in
   `@@ISSUE_REPO@@`. Pass `--repo` to every `gh` command.
 - Your worktree (absolute, already created, yours alone to write): `@@WT@@`
-- Your branch: `@@BR@@`, created from base `@@BASE@@` (`origin/@@MAIN@@` at launch).
+- Your branch: `@@BR@@`, created from base `@@BASE@@` (@@BASE_ORIGIN@@).
 - Never edit `@@CHECKOUT@@` (the project's main checkout: other sessions read it; it is read,
   never moved: never run checkout/switch/reset/stash/rebase/merge there) or any sibling worktree
   under `@@CHECKOUT@@-worktrees/`.

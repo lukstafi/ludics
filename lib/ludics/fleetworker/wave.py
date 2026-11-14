@@ -6,8 +6,8 @@ copy re-learnt an old trap: an exit status lost in a pipe, a ``tail`` cutting a 
 loop orphaning its run. The kit is those four, project-neutral, so a wave directory holds data:
 
   wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>...   wavebrief.py
-  wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>]                   waveprep.py
-            [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
+  wave prep <wave.json> <task> --base <base-or-stacked-rev>                                waveprep.py
+            [--issue <N> | --source <N>] [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
             [--profile <name>] [--host <box>]
   wave launch <wave.json> <task>                                                           wavelaunch.py
   wave loop <wave.json> <name> [--resume-after <request id> |                              waveloop.py
@@ -48,8 +48,8 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     The shipped template (waveprep.py, THE PARTS) names COORDINATOR
                     (the coordinator's session id) and MAIN (the main branch)
   project_part      the project's own brief part, a path relative to  default: none
-                    the checkout and read at the task's base (waveprep.py,
-                    THE PROJECT PART); no leading ``/``, no ``..`` component
+                    the checkout, read at the task's base, else origin/<vars.MAIN>
+                    (waveprep.py, THE PROJECT PART); no leading ``/``, no ``..`` component
   legs              {<box>: {checkout, suffix, purpose[, vars]}}: a   default: {}
                     GPU home box --legs may name; its far-side worktree is
                     ``<checkout>-worktrees/<worker>-<suffix>``, ``vars`` are the leg's own NAMEs;
@@ -105,7 +105,7 @@ from ludics.fleetworker.wavebrief import NAME, cmd_render
 
 USAGE = (
     "wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>... | "
-    "wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]"
+    "wave prep <wave.json> <task> --base <base-or-stacked-rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]"
     " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] | wave launch <wave.json> <task> | "
     "wave loop <wave.json> <name> [--resume-after <request id> | --rerun <red id> -- <command>] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "
@@ -120,8 +120,8 @@ REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
 # The NAMEs wave prep gives every part (waveprep.py's header says what each is); a wave's own vars
 # may not shadow one.
 BUILTIN = frozenset({"WAVE", "T", "N", "ISSUE", "SOURCE", "REPO", "ISSUE_REPO", "CHECKOUT", "WAVE_DIR", "WT", "BR",
-                     "BASE", "SCR", "SCR_PARENT", "WORKER", "HOST", "MODE", "PROJECT", "LEGLINES", "LEG", "LEG_ID", "LEG_WT",
-                     "LEG_CHECKOUT"})
+                     "BASE", "BASE_ORIGIN", "SCR", "SCR_PARENT", "WORKER", "HOST", "MODE", "PROJECT",
+                     "LEGLINES", "LEG", "LEG_ID", "LEG_WT", "LEG_CHECKOUT"})
 TOP_REQUIRED = ("wave", "repository", "checkout", "worker_prefix", "agent_host", "transport", "kind", "standing_purpose")
 TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part", "review", "profiles", "hosts")
 PROFILE_REQUIRED, PROFILE_OPTIONAL = ("transport", "kind"), ("model", "effort")
