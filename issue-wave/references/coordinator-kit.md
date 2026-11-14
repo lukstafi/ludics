@@ -169,6 +169,13 @@ driver hands you as an attention line.
 
    A CLI task (*A mixed wave*) is then started with `fleet-worker.sh wave launch <wave.json>
    <task>`, which runs the launch gate itself, in place of step 3's spawn.
+
+   A CLI task prepared and not launched before the main branch moved, or whose prep failed part
+   way, is taken back with `fleet-worker.sh wave unprep <wave.json> <task>`, then prepared again
+   under its own id. It removes the row, the files and the manifest the prep recorded, and keeps
+   the manifest as `prep/<task>.unprepared-<stamp>.json`. It refuses a native task, a launch on
+   record, and a launch that may have started (waveunprep.py's header lists each). The driver
+   does this itself for a stale task in its queue.
 3. **Right before each spawn,** run `fleet-worker.sh gate --wait <seconds>`. Re-check for a
    rival PR by topic first: prep's check covers only the number and the branch. Then spawn the
    worker and set `agent=` and `state=launched` on its row.

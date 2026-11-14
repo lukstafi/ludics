@@ -15,7 +15,11 @@ The wave file is read for two things only: where the wave directory is, and that
 the wave the manifest was prepared for. Nothing else of it is read again, so a profile, a host or
 a leg edited after the prep cannot make this verb launch one thing and reserve or record another:
 it launches what the brief, the payloads and the row were written for. A wave file changed on
-purpose for a prepared task means preparing it again under a new task id.
+purpose for a prepared task, or a base the branch has moved past, means un-preparing it (``wave
+unprep``, waveunprep.py) and preparing it again under its own id.
+
+THE TASK LOCK (waveprep.py): the verb holds the task's ``prep/<task>.lock`` throughout, so no
+``wave prep`` or ``wave unprep`` of the task runs meanwhile; a held lock refuses, nothing launched.
 
 WHAT IT DOES, in this order:
 
@@ -73,9 +77,9 @@ from ludics.fleetworker.boardstore import placement_word
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import prelude, run, run_on, substitution
-from ludics.fleetworker.wave import USAGE, load_wave, shim
+from ludics.fleetworker.wave import USAGE, Wave, load_wave, shim
 from ludics.fleetworker.wavebrief import write_atomically
-from ludics.fleetworker.waveprep import READY, Rivalry, Stop, check_rivals
+from ludics.fleetworker.waveprep import READY, Rivalry, Stop, check_rivals, task_lock
 
 # Far side of step 3's read, after the prelude. Arg: the worktree path. Prints `worktree=absent`, or
 # `worktree=<HEAD or unreadable> dirty=<count of git status --porcelain entries, or unreadable>`.
@@ -180,6 +184,11 @@ def read_manifest(path: str, task: str) -> tuple[dict[str, Any], Record, list[st
 
 def launched(cfg: Config, path: str, task: str) -> int:
     wave = load_wave(path, "launch")
+    with task_lock(wave.directory, task, "WAVE LAUNCH"):
+        return launched_locked(cfg, wave, path, task)
+
+
+def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
     manifest_path = os.path.join(wave.directory, "prep", f"{task}.json")
     manifest, record, done = read_manifest(manifest_path, task)
     if record.transport != "cli":
