@@ -2624,7 +2624,7 @@ class DriveClaude(DriveCase):
                 self.assertEqual((self.once()[1], self.calls), ("", []), why)
             self.unread, self.out["status"] = 0, self.status_line().replace(" results=1", "")
             self.assertEqual((self.once()[1], self.calls), ("", []), "a Claude line with no results= names no turn")
-            self.out["status"] = "IDLE far/w1-42 something STATUS does not read\n"
+            self.out["status"] = "EXITED(0) far/w1-42 something STATUS does not read\n"
             self.assertEqual((self.once()[1], self.calls), ("", []), "nor does a line STATUS cannot read: no guessed turn 0")
             del self.out["status"]
             self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1])
