@@ -733,8 +733,8 @@ every placeholder is a NAME prep gives that part; every `~/.claude/skills/`, `~/
 tree-rooted path in a backticked span exists, as does the heading a `.md` path followed by
 `, *Heading*` names; and no line holds a step a PR retired from SKILL.md's *The brief* (the list
 and the boundary are in its `brieftemplate` module's header). Its suite, `lib/ludics/tests/test_checkprompts_cli.py`, runs it
-against scratch trees, including native Codex own-part placeholders without planning parts,
-one per defect, with the well-formed tree as the control, and ends by
+against scratch trees, one per defect (native Codex own-part placeholders without planning
+parts among them), with the well-formed tree as the control, and ends by
 running it on this checkout.
 
 `check-jq-shapes.sh` is the jq shape guard, run in the lint job on every head over every

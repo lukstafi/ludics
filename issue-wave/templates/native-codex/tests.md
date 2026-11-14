@@ -18,6 +18,8 @@ waits too. Read the log afterwards with `tail` or `rg`. `EXECUTION SLOT REFUSED`
 never ran, not that its tests failed. A handle, a log path or elapsed time proves no result.
 
 A commit gated on a batch is made only after that batch's own exit 0, with no intervening edit.
+When running the batch and commit in one shell command, join them with `&&`, never `;`: a
+semicolon would commit even after a failed batch.
 Your standing reservation `@@WAVE@@-@@T@@-@@HOST@@-iterate` (kind correctness, execution host
 `@@HOST@@`, checkout your worktree) covers targeted batches. Report each batch's command, log,
 wall time and exit status. For work beyond that reservation, message the coordinator using the

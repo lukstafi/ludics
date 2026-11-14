@@ -482,7 +482,8 @@ class Prep(WaveDirCase):
         for name in waveprep.OWN:
             self.write(f"common/{name}", f"## The wave's own {name} for @@WORKER@@\n")
         self.write("common/startup.md", "## Startup, as this wave words it\n")
-        self.rewave(kind="codex", vars={"COORDINATOR": "local_1", "MAIN": "main"}, project_part="docs/absent.md")
+        self.rewave(kind="claude", transport="cli", vars={"COORDINATOR": "local_1", "MAIN": "main"},
+                    project_part="docs/absent.md")
         self.write("project.md", "## The project\n")
         with self.world():
             rc, out, err = self.prep("t42", "--base", "main")
