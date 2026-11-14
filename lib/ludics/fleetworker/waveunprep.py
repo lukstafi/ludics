@@ -32,7 +32,8 @@ WHAT IT REFUSES, with nothing removed and nothing written (exit 1):
   - anything at the worktree path on the task's host (prep makes none for a CLI task: a launch
     began);
   - a path prep would write (a payload, a leg's payload, the assign base, the brief) that holds
-    something other than a regular file.
+    something other than a regular file, or a payload or assign base that does not name the
+    manifest's standing id or worker (another task's file of the same name).
 A read that does not answer (the anchor, the registry, the board, origin, the host) is exit 4,
 nothing removed. No manifest at all is ``nothing recorded to undo``, exit 0: a finished run's re-run.
 
@@ -43,9 +44,12 @@ WHAT IT REMOVES, in this order, each skipped when it is absent already:
      the lease lock, while the row is the manifest's worker's ``pending`` row;
   3. the scratch ``runs/`` directory and the scratch directory, local tasks only, by ``rmdir``: a
      non-empty one is left, said in a ``WAVE UNPREP NOTE`` line (prep accepts it as it is);
-  4. prep's files: the payloads, the legs' payloads, the assign base and the brief. Each is at a
-     name built from the task id, and prep refused every one of them existing before it wrote its
-     manifest, so a file there is this prep's, its write recorded or not (a crash between the two);
+  4. prep's files: the payloads, the legs' payloads, the assign base and the brief, each at a name
+     built from the task id. Prep refused every one of them existing before it wrote its manifest,
+     so a file there is this prep's, its write recorded or not (a crash between the two), but for
+     a later task's: a reserve name is not one task's alone (``t42-gpu.json`` is task t42's leg
+     payload and task t42-gpu's own), so a payload is read first and must name the manifest's
+     standing id, and the assign base its worker, or the verb refuses (WHAT IT REFUSES);
   5. one ``board log`` line, the board's record of the removal (a failure is a NOTE);
   6. last, the manifest is renamed ``prep/<task>.unprepared-<UTC stamp>.json``, the record of
      what was prepared; prep no longer sees a manifest.
@@ -135,10 +139,15 @@ def read(path: str, wave: Wave, task: str) -> tuple[dict[str, Any], Record, list
     return manifest, record, done
 
 
-def files_of(wave: Wave, task: str, record: Record) -> list[str]:
-    """Prep's files for the task (waveprep.artifacts), named from the manifest's legs."""
-    names = [f"{task}.json", *(f"{task}-{leg.suffix}.json" for leg in record.legs), f"{task}-base.json"]
-    return [*(os.path.join(wave.directory, "reserve", name) for name in names), os.path.join(wave.directory, "briefs", f"brief-{task}.md")]
+def files_of(wave: Wave, task: str, record: Record) -> list[tuple[str, str, str]]:
+    """Prep's files for the task (waveprep.artifacts), named from the manifest's legs, each with the
+    key and value that make a payload or the assign base this prep's (the brief's name is the task's
+    alone; a reserve name is not: ``t42-gpu.json`` is task t42's leg payload and task t42-gpu's own)."""
+    reserve = os.path.join(wave.directory, "reserve")
+    return [(os.path.join(reserve, f"{task}.json"), "request_id", record.standing),
+            *((os.path.join(reserve, f"{task}-{leg.suffix}.json"), "request_id", leg.standing) for leg in record.legs),
+            (os.path.join(reserve, f"{task}-base.json"), "worker", record.worker),
+            (os.path.join(wave.directory, "briefs", f"brief-{task}.md"), "", "")]
 
 
 def check_ledger(wave: Wave, task: str) -> None:
@@ -213,10 +222,22 @@ def check_worktree(cfg: Config, task: str, record: Record) -> None:
                       " worktree for a CLI task, so a launch began; read status there; nothing removed")
 
 
-def check_files(task: str, paths: list[str]) -> None:
-    for path in paths:
-        if os.path.lexists(path) and (os.path.islink(path) or not os.path.isfile(path)):
+def check_files(task: str, files: list[tuple[str, str, str]]) -> None:
+    for path, key, value in files:
+        if not os.path.lexists(path):
+            continue
+        if os.path.islink(path) or not os.path.isfile(path):
             raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)} is no regular file, and prep writes one there; nothing removed")
+        if not key:
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                data: Any = json.load(f)
+        except (OSError, ValueError):
+            data = None
+        if not isinstance(data, dict) or cast(dict[str, Any], data).get(key) != value:
+            raise Stop(1, f"WAVE UNPREP REFUSED {task}: {quoted(path)} does not name {key} {value}, as this prep's does: another"
+                          " task's file of the same name (a task id that ends in a leg's suffix or in -base); nothing removed")
 
 
 def unprepared(cfg: Config, wave: Wave, task: str) -> int:
@@ -267,7 +288,7 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
             except OSError as exc:
                 notes.append(f"{quoted(directory)} is left ({exc.strerror}); prep takes it as it is")
                 break
-    for item in files:
+    for item, _, _ in files:
         try:
             os.remove(item)
             removed.append(quoted(item))

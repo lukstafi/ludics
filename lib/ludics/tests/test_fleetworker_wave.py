@@ -1105,6 +1105,25 @@ class Unprep(MixedWave):
                 json.dump({**manifest, "done": [*manifest["done"], "launched far/w1-42"]}, f)
             self.assert_refused("records a launch")
 
+    def test_a_file_of_the_same_name_another_task_wrote_is_never_removed(self) -> None:
+        """A prep that stopped before its leg payload; then task t42-gpu's own payload takes that name."""
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            other = os.path.join(self.wavedir, "reserve", "t42-gpu.json")
+            with open(other, "w") as f:
+                json.dump({"request_id": "wv-t42-gpu-far-iterate", "worker": "w1-t42-gpu"}, f)
+            before = self.manifest()
+            rc, out, _ = self.unprep()
+            self.assertEqual(rc, 1, out)
+            self.assertIn(f"WAVE UNPREP REFUSED t42: {other} does not name request_id wv-t42-gpu-box-iterate, as this prep's does", out)
+            self.assertEqual((self.manifest(), len(self.files()), self.forget_calls), (before, 4, []))
+            with open(os.path.join(self.wavedir, "reserve", "t42-base.json"), "w") as f:
+                json.dump({"worker": "w1-t42-base"}, f)
+            os.remove(other)
+            rc, out, _ = self.unprep()
+            self.assertEqual(rc, 1, out)
+            self.assertIn("t42-base.json does not name worker w1-42", out)
+
     def test_a_native_task_is_refused_loudly(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t43", "--base", "main", "--profile", "opus")[0], 0)
@@ -2748,6 +2767,24 @@ class Queue(DriveCase):
             self.assertIn("its un-prepare refused: WAVE UNPREP REFUSED t51: the registry holds wv-t51-far-iterate (concluded)", out)
             self.assertEqual(self.ledger(), [(wavedrive.LAUNCH, "launch", "attention")])
             self.assertEqual((self.once()[1], self.launched()), ("", []), "final: said once, nothing called again")
+
+    def test_an_unprep_that_stopped_past_the_row_is_finished_before_any_prep(self) -> None:
+        """The row's removal landed and its acknowledgement was lost: no row, and a fenced manifest."""
+        self.queue({"task": "t51", "profile": "sol", "host": "far"})
+        self.manifest("t51", "far", A)
+        path = os.path.join(self.wavedir, "prep", "t51.json")
+        with open(path) as f:
+            fenced = json.load(f)
+        with open(path, "w") as f:
+            json.dump({**fenced, "done": ["ready", "unprepare"]}, f)
+        with self.world():
+            out = self.once()[1]
+            self.assertEqual(self.launched(), [["wave", "unprep", self.path, "t51"]], "never a prep that would refuse on the manifest")
+            self.assertIn("DRIVE ATTENTION t51 launch: an un-prepare of the task stopped before it ended", out)
+            self.assertEqual(self.ledger()[-1], (wavedrive.LAUNCH, "launch", "unprepared"))
+            os.remove(path)
+            self.once()
+            self.assertEqual([c[:2] for c in self.launched()], [["wave", "prep"], ["wave", "launch"]])
 
     def test_a_refresh_that_fails_never_stops_a_prep_and_is_beside_a_prep_that_refuses(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"})
