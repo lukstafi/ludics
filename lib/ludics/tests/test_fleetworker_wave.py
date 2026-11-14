@@ -352,6 +352,23 @@ class Prep(WaveDirCase):
         with open(os.path.join(waveprep.shipped_dir("claude"), "planning-paired.md")) as f:
             self.assertIn("@@ISSUE@@", f.read(), "the fixture reads the shipped part, not a copy")
 
+    def test_native_codex_without_wave_common_parts_renders(self) -> None:
+        os.unlink(os.path.join(self.wavedir, "common.md"))
+        self.write("project.md", "## This project\nUse the project tests.\n")
+        self.rewave(kind="codex", vars={"COORDINATOR": "local_c", "MAIN": "main"})
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main")
+        self.assertEqual(rc, 0, out + err)
+        brief = self.brief()
+        self.assertNotIn("@@", brief)
+        self.assertIn("You are a native Codex worker", brief)
+        self.assertIn("`send_message`", brief)
+        self.assertIn("`write_stdin`", brief)
+        self.assertIn("Only the final hand-back ends your lifecycle", brief)
+        self.assertIn("## This project", brief)
+        self.assertNotIn("Claude Code", brief)
+        self.assertNotIn("bg-run.sh spawn", brief)
+
     def test_the_shipped_common_part_renders_with_the_project_part_at_the_base(self) -> None:
         os.unlink(os.path.join(self.wavedir, "common.md"))
         base = self.commit("docs/brief.md", "## This project\n\nWork in @@WT@@ of @@CHECKOUT@@.\n")
@@ -479,12 +496,12 @@ class Prep(WaveDirCase):
 
     def test_a_part_neither_the_wave_nor_the_repository_has_refuses(self) -> None:
         os.unlink(os.path.join(self.wavedir, "common.md"))
-        self.rewave(kind="codex")
+        self.rewave(kind="claude", transport="cli")
         with self.world():
             rc, out, _ = self.prep("t42", "--base", "main")
         self.assertEqual(rc, 1)
         self.assertIn(f"WAVE PREP REFUSED t42: the common part who.md exists nowhere: not {self.wavedir}/common.md (the whole of"
-                      f" them), nor {self.wavedir}/common/who.md, nor {waveprep.shipped_dir('codex')}/who.md, nor"
+                      f" them), nor {self.wavedir}/common/who.md, nor {waveprep.shipped_dir('claude', True)}/who.md, nor"
                       f" {waveprep.TEMPLATES}/shared/who.md", out)
         self.assert_made_nothing(out)
         self.write("common.md", "C\n")
@@ -1295,7 +1312,7 @@ class ShippedTemplate(unittest.TestCase):
     part, for an issue task in each planning mode and for a --source task: no placeholder left."""
 
     def test_each_shipped_kind_renders_whole_with_every_section_in_order(self) -> None:
-        """A native Claude worker's brief and a Codex CLI worker's: the kind's own parts and the shared
+        """Native Claude and Codex briefs and a Codex CLI worker's: the kind's own parts and the shared
         ones, an issue task and a --source task, with the review checkpoint and without."""
         root = os.path.dirname(os.path.dirname(waveprep.TEMPLATES))
         with tempfile.TemporaryDirectory() as d:
@@ -1309,11 +1326,12 @@ class ShippedTemplate(unittest.TestCase):
                 "wave": "wave-x-ludics", "repository": "lukstafi/ludics", "checkout": "/home/u/ludics",
                 "worker_prefix": "wx", "agent_host": "mac-studio", "transport": "subagent", "kind": "claude",
                 "standing_purpose": "standing iteration for @@T@@", "vars": {"COORDINATOR": "local_c", "MAIN": "main"},
-                "profiles": {"sol": {"transport": "cli", "kind": "codex"}},
+                "profiles": {"sol": {"transport": "cli", "kind": "codex"},
+                             "native": {"transport": "subagent", "kind": "codex"}},
                 "hosts": {"rog": {"checkout": "/srv/ludics", "scratch": "/srv/scratch"}}}
             for review in (False, True):
                 w = wave.parse_wave(os.path.join(d, "wave.json"), {**data, **({"review": {"kind": "claude", "model": "opus"}} if review else {})})
-                for profile, host in (("", ""), ("sol", "rog")):
+                for profile, host in (("", ""), ("sol", "rog"), ("native", "")):
                     for task, number, issue, source in (("t7", "7", "lukstafi/ludics#7", ""), ("p8", "9", "", "lukstafi/ludics#9")):
                         with self.subTest(review=review, profile=profile, task=task):
                             prep = waveprep.Prep(w, task, number, issue, source, A, "none", [], set(), "/state", profile, host)
@@ -1329,7 +1347,14 @@ class ShippedTemplate(unittest.TestCase):
                             self.assertIn("Any other failed push is not that gate.", brief)
                             self.assertIn("`pr-review.sh rerun lukstafi/ludics#<pr> <run id>...`", brief)
                             self.assertEqual(brief.count("- Credentials:"), 1, "a rule both transports follow is stated once")
-                            if profile:
+                            if profile == "native":
+                                self.assertIn("You are a native Codex worker", brief)
+                                self.assertIn("`send_message`", brief)
+                                self.assertIn("`write_stdin`", brief)
+                                own = brief.split("## Running tests")[1].split("## Landing: ship-pr")[0]
+                                self.assertNotIn("bg-run.sh spawn", own)
+                                self.assertNotIn("Claude Code", own)
+                            elif profile:
                                 self.assertIn("You are a Codex CLI worker of wave `wave-x-ludics`, task `" + task + "`", brief)
                                 self.assertIn("tmux session on `rog`", brief)
                                 self.assertIn("Never edit `/srv/ludics` (the project's main checkout", brief)
@@ -1345,10 +1370,11 @@ class ShippedTemplate(unittest.TestCase):
                                 self.assertNotIn("Codex", brief.split("## Landing: ship-pr")[0])
 
     def test_the_parts_are_split_as_the_code_says_and_no_kind_restates_a_shared_one(self) -> None:
-        listed = {name: sorted(os.listdir(os.path.join(waveprep.TEMPLATES, name))) for name in ("shared", "native-claude", "cli-codex")}
+        listed = {name: sorted(os.listdir(os.path.join(waveprep.TEMPLATES, name))) for name in ("shared", "native-claude", "native-codex", "cli-codex")}
         self.assertEqual(listed["shared"], sorted(waveprep.SHARED))
         self.assertEqual(listed["native-claude"], sorted(waveprep.OWN + waveprep.PLANNING))
         self.assertEqual(listed["cli-codex"], sorted(waveprep.OWN))
+        self.assertEqual(listed["native-codex"], sorted(waveprep.OWN))
         self.assertEqual(set(waveprep.OWN) | set(waveprep.SHARED), set(waveprep.COMMON))
         # The shared parts name neither transport's mechanism for holding a run: that is each kind's blocking.md.
         for name in waveprep.SHARED:
