@@ -6301,16 +6301,21 @@ expect "a native task is no wave launch's" 1 "^WAVE LAUNCH REFUSED t77: a subage
 # wave drive: a CLI worker's returned turns answered without the coordinator. The fake codex says
 # what $K/say holds as each turn's final message: a review request, then the hand-back. The review
 # runs for real under bg-run.sh (the fake claude, the canned comment), and board close closes the task.
+# The worker is started from queue.json (#1130), by the real gate, wave prep --profile and wave launch.
 printf '# Task @@T@@\n' > "$K/tasks/t81.md"
 "${FWK[@]}" board set wkv t80 state=dropped >/dev/null   # the launch case's worker is closed: its row is no live worker's
 export SHIM_CODEX_SAY="$K/say"
 printf 'The PR is open.\n\nREVIEW_REQUEST 14 %s\n' "$pbase" > "$K/say"
-setup_step "could not prepare t81 (setup)" "${FWK[@]}" wave prep "$K/wave.json" t81 --base master --profile sol
-setup_step "could not launch t81 (setup)" "${FWK[@]}" wave launch "$K/wave.json" t81
-"$FW" attach testbox wk-81 --interval 1 >/dev/null 2>&1
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t81", profile:"sol", host:"testbox"}]}' > "$K/queue.json"
 jq -n --arg h "$pbase" '{state:"OPEN", headRefOid:$h}' > "$K/pr-view.json"
 FWD=(env PATH="$K/bin:$PATH" REVIEW_STDIN="$K/review-stdin" SHIM_GH_PR_VIEW="$K/pr-view.json" FLEET_BOXES="testbox other"
      REVIEW_SAYS=$'### Review checkpoint (at-open): head x\n\nLooks right.\n\nVERDICT: clean' "$FW")
+expect "the driver starts a queued task: the gate read, the task prepared at the fetched tip and launched" 0 \
+  "^DRIVE t81 launch: launch answered: WAVE LAUNCH t81: launched testbox/wk-81 worktree $cli_proj-worktrees/wk-81 standing wkv-t81-testbox-iterate$" -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t81") | .fields | "\(.state) \(.base) \(.transport)"')" = "launched $pbase cli" ] &&
+  ok "...its row launched, at the tip, a CLI worker's" || ko "t81's row: $("${FWK[@]}" board show wkv --json | jq -c '.tasks[] | select(.task == "t81") | .fields')"
+"$FW" attach testbox wk-81 --interval 1 >/dev/null 2>&1
 expect "the driver starts the review a worker's turn asked for" 0 "^DRIVE t81 turn 0: review reviewing: wave review at-open of #14 at ${pbase:0:8} started in $K/logs/drive-runs/" -- \
   "${FWD[@]}" wave drive "$K/wave.json" --once
 printf 'HANDBACK t81\nMerged https://github.com/example/project/pull/14. Nothing to propose.\n' > "$K/say"
@@ -6331,10 +6336,63 @@ expect "the hand-back turn closes the task: the merge read from GitHub, the stan
 grep -q '^HANDBACK t81$' "$K/handbacks/t81.md" && ok "...the hand-back kept for the close-out's editorial pass" || ko "handbacks: $(ls "$K/handbacks" 2>&1)"
 [ "$("${FWK[@]}" execution list | jq -r '.[] | select(.request_id == "wkv-t81-testbox-iterate") | .state')" = concluded ] && ok "...its standing record concluded" || ko "t81's standing record is not concluded"
 expect "a turn answered is never read again, and a closed task is no longer served" 0 "^$" -- "${FWD[@]}" wave drive "$K/wave.json" --once
-[ "$(jq -r '[.kind, .status] | join(" ")' "$K/logs/drive.jsonl" | tr '\n' ';')" = "review reviewing;review answered;handback answered;" ] && ok "...the ledger one line per step" || ko "ledger: $(cat "$K/logs/drive.jsonl")"
+[ "$(jq -r '[.kind, .status] | join(" ")' "$K/logs/drive.jsonl" | tr '\n' ';')" = "launch launching;launch answered;review reviewing;review answered;handback answered;" ] && ok "...the ledger one line per step" || ko "ledger: $(cat "$K/logs/drive.jsonl")"
 expect "the heartbeat says the driver's state, and no attention when every turn was answered" 0 "^HEARTBEAT drive: NOT RUNNING; .* DRIVE t81 turn 1: handback answered" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 0
 grep -q "^HEARTBEAT attention" <<<"$out" && ko "attention where none was raised: $out" || ok "...and prints no attention line"
 "$FW" close testbox wk-81 >/dev/null 2>&1
+# The queue's waits, end to end (#1130): a prepared task whose base the branch moved past is taken
+# back with wave unprep and prepared again under its own id; a task waiting on its host's one slot
+# starts when the task holding it merges; a task after a native task with no row is told once, and
+# starts when that task is prepared and merged. (Told once per driver process: each --once here is a
+# new process, so the notice's memory is not this scenario's; the unit cases hold it.)
+for t in t83 t84 t85 t86; do printf '# Task @@T@@\n' > "$K/tasks/$t.md"; done
+setup_step "could not prepare t86 by hand (setup)" "${FWK[@]}" wave prep "$K/wave.json" t86 --base master --profile sol
+setup_step "could not clone the project's origin (setup)" git clone -q "$TMP/proj.git" "$K/pusher"
+setup_step "could not move the project's master (setup)" sh -c 'git -C "$1" -c user.name=t -c user.email=t@t commit -q --allow-empty -m moved && git -C "$1" push -q origin HEAD:master' _ "$K/pusher"
+moved=$(git -C "$K/pusher" rev-parse HEAD)
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t86", profile:"sol", host:"testbox"}, {task:"t83", profile:"sol", host:"testbox"},
+  {task:"t84", profile:"sol", host:"testbox", after:["t85"]}]}' > "$K/queue.json"
+printf 'HANDBACK t86\nMerged https://github.com/example/project/pull/15. Nothing to propose.\n' > "$K/say"
+expect "the driver un-prepares a prepared task whose base the branch moved past" 0 \
+  "^DRIVE ATTENTION t86 launch: master moved since the task was prepared at ${pbase:0:12} (now ${moved:0:12}): un-prepared, to be prepared again at the tip under its own id: WAVE UNPREP t86: unprepared" -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ -z "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t86") | .task')" ] && [ ! -e "$K/prep/t86.json" ] && [ ! -e "$K/briefs/brief-t86.md" ] &&
+  ls "$K/prep/t86.unprepared-"*.json >/dev/null 2>&1 && ok "...its row, manifest and brief gone, the manifest kept as a tombstone" || ko "t86 after unprep: $(ls "$K/prep" "$K/briefs" 2>&1)"
+expect "...and prepares it again under its own id at the tip, and launches it" 0 "^DRIVE t86 launch: launch answered: WAVE LAUNCH t86: launched testbox/wk-86 " -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t86") | .fields.base')" = "$moved" ] && ok "...its row at the moved tip" || ko "t86's base is not $moved"
+jq -n --arg m "$(printf 'b%.0s' $(seq 40))" '{number:15, state:"MERGED", headRefName:"codex/wk-86", mergeCommit:{oid:$m}}' > "$K/pr-view.json"
+"$FW" attach testbox wk-86 --interval 1 >/dev/null 2>&1
+ticks=""
+for _ in $(seq 10); do
+  one=$("${FWD[@]}" wave drive "$K/wave.json" --once 2>&1); ticks+="$one"$'\n'
+  grep -q "^DRIVE t83 launch: launch answered: " <<<"$one" && break
+  sleep 1
+done
+closed=$(grep -n '^DRIVE t86 turn 0: handback answered: BOARD CLOSE wkv: "t86" merged example/project#15' <<<"$ticks" | head -n 1 | cut -d: -f1)
+started=$(grep -n "^DRIVE t83 launch: launch answered: WAVE LAUNCH t83: launched testbox/wk-83 " <<<"$ticks" | head -n 1 | cut -d: -f1)
+[ -n "$closed" ] && [ -n "$started" ] && [ "$closed" -lt "$started" ] && ! grep -q "t84 launch" <<<"$ticks" &&
+  ok "a task waiting on its host's one slot starts when the task holding it merges" || ko "the capacity wait: $ticks"
+setup_step "could not close t83's row (setup)" "${FWK[@]}" board set wkv t83 state=dropped
+settle wk-83
+fixture_done wkv-t83-testbox-iterate
+expect "a task after a native task with neither row nor queue entry is told so" 0 \
+  "^DRIVE ATTENTION t84 launch: the queued task waits only on after tasks with no row or queue entry: t85;" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+setup_step "could not prepare the native t85 (setup)" "${FWK[@]}" wave prep "$K/wave.json" t85 --base master
+expect "...waits silently while that task is prepared, not merged" 0 "^$" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+setup_step "could not set t85 merged (setup)" "${FWK[@]}" board set wkv t85 state=merged
+expect "...and starts once it merges" 0 "^DRIVE t84 launch: launch answered: WAVE LAUNCH t84: launched testbox/wk-84 " -- "${FWD[@]}" wave drive "$K/wave.json" --once
+setup_step "could not close t84's row (setup)" "${FWK[@]}" board set wkv t84 state=dropped
+settle wk-84
+fixture_done wkv-t84-testbox-iterate
+setup_step "could not conclude t85's standing reservation (setup)" \
+  "${FWK[@]}" execution conclude --standing-handback --request wkv-t85-testbox-iterate --observed-from "$cli_proj-worktrees/wk-85" \
+  --evidence "wave kit fixture" --verdict cancelled
+expect "wave unprep refuses a launched task" 1 "^WAVE UNPREP REFUSED t84: .* records a launch" -- "${FWK[@]}" wave unprep "$K/wave.json" t84
+expect "wave unprep of a task with no manifest has nothing to undo" 0 "^WAVE UNPREP t99: nothing recorded to undo" -- "${FWK[@]}" wave unprep "$K/wave.json" t99
+setup_step "could not restore the project's master (setup)" git -C "$K/pusher" push -q -f origin "$pbase:refs/heads/master"
+setup_step "could not restore the project's origin/master (setup)" git -C "$proj" update-ref refs/remotes/origin/master "$pbase"
+rm -f "$K/queue.json"
 unset SHIM_CODEX_SAY
 }
 
@@ -6382,6 +6440,13 @@ expect "listing finds helper callers" 0 "^base gate$" -- /bin/bash "$0" --sectio
 expect "listing finds wrapped execution calls" 0 "^execution revisions resolve$" -- /bin/bash "$0" --sections-calling execution rebind
 expect "listing refuses an unrecognised verb" 1 "no recognised call" -- /bin/bash "$0" --sections-calling no-such-verb
 expect "listing requires a verb" 2 "usage:" -- /bin/bash "$0" --sections-calling
+# No silent setup step (#1100): a fixture step that discards both its streams before its ko hides
+# the cause of its own failure, which setup_step keeps. The boundary, a fail-closed allowlist: it
+# reads this file's lines and flags each one holding both the both-streams discard followed by
+# `|| ko "` and the `(setup` tag; a step that keeps stderr, or spans lines, is outside it.
+discard='>/dev/null 2>&1'; tag='(setup'
+silent=$(grep -nF "$discard || ko \"" "$0" | grep -F "$tag")
+[ -z "$silent" ] && ok "no silent setup step: a fixture step goes through setup_step" || ko "silent setup step(s), use setup_step: $silent"
 }
 
 section "shard selection" && {

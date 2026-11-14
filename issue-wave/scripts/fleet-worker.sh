@@ -277,6 +277,10 @@
 #                          # again, its scratch on its host, launch --standing with the profile's
 #                          # model and effort, its legs' reservations and the row; exit 3 when it
 #                          # launched with a NOTE to reconcile (wavelaunch.py)
+#   fleet-worker.sh wave unprep <wave.json> <task>   # take a prepared, never-launched CLI task back
+#                          # (its row, files and manifest, by what the manifest names), so it is
+#                          # prepared again under its own id; refuses a native task, a launch on
+#                          # record or one that may have started (waveunprep.py)
 #   fleet-worker.sh wave loop <wave.json> <name> [--resume-after <request id>]   # an integration
 #                          # loop around execution tip-run, restartable: it waits on its own running
 #                          # run before starting another; ends on a red (waveloop.py)

@@ -102,6 +102,28 @@ class Store(StoreCase):
             self.assertIn("cannot fit one", err)
             self.assertEqual(self.doc(), before, "even a valid prefix must never reach the cleanup board")
 
+    def test_forget_removes_only_the_named_workers_pending_row(self) -> None:
+        payload = {"wave": "w", "task": "t2", "worker": "wk", "state": "pending"}
+        rc, out, _ = self.call("forget", payload)
+        self.assertEqual((rc, out), (0, 'BOARD FORGET w: "t2" has no row; nothing written\n'), "no board: a retried removal")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "boards")), "and no board is started")
+        self.set("t1", ("worker", "w1"), ("state", "launched"))
+        self.set("t2", ("worker", "wk"), ("state", "pending"))
+        self.call("note", {"wave": "w", "fields": [["scope", "s"]]})
+        self.call("log", {"wave": "w", "text": "a line"})
+        for other in ({"state": "launched"}, {"worker": "w9"}):
+            before = self.doc()
+            rc, _, err = self.call("forget", {**payload, **other})
+            self.assertEqual(rc, 1)
+            self.assertIn('BOARD REFUSED: the row of "t2" is state="pending" worker="wk"', err)
+            self.assertEqual(self.doc(), before, "a row that is not the named one is never removed")
+        before = self.doc()
+        self.assertEqual(self.call("forget", payload), (0, 'BOARD FORGET w: "t2"\n', ""))
+        after = self.doc()
+        self.assertEqual([row["task"] for row in after["tasks"]], ["t1"])
+        self.assertEqual((after["notes"], after["log"], after["tasks"][0]), (before["notes"], before["log"], before["tasks"][0]))
+        self.assertEqual(self.call("forget", payload)[:2], (0, 'BOARD FORGET w: "t2" has no row; nothing written\n'), "a re-run")
+
     def test_hostile_text_round_trips_in_every_field(self) -> None:
         self.assertEqual(self.set(HOSTILE, ("state", HOSTILE), ("multi", "one\ntwo"))[0], 0)
         self.assertEqual(self.call("note", {"wave": "w", "fields": [["scope", HOSTILE]]})[0], 0)

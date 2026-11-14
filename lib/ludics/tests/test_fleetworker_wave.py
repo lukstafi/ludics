@@ -17,7 +17,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview
+from ludics.fleetworker import revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -892,6 +892,242 @@ class MixedWave(WaveDirCase):
         rc, _, err = captured(wavelaunch.cmd_launch, self.cfg, [self.path])
         self.assertEqual(rc, 2)
         self.assertIn("name the wave file and the task", err)
+
+
+class Unprep(MixedWave):
+    """wave unprep: a prepared, never-launched CLI task taken back, so it is prepared again under its own id."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.rows: list[dict[str, Any]] = []
+        self.records: list[dict[str, Any]] = []
+        self.listing_rc = 0
+        self.board_rc: int | None = None
+        self.forget_calls: list[tuple[str, str, str]] = []
+        self.forget_rc: list[int] = []
+
+    def board_run(self, argv: list[str], **_: Any) -> Done:
+        """The shim, with ``board set --new-row`` kept as the row the board reads back."""
+        self.shim_calls.append(argv[1:])
+        rc = self.shim_rc.get(" ".join(argv[1:3]), 0)
+        if rc == 0 and argv[1:3] == ["board", "set"] and "--new-row" in argv:
+            task = argv[argv.index("--new-row") + 2]
+            fields = dict(word.split("=", 1) for word in argv[argv.index("--new-row") + 3:])
+            self.rows = [r for r in self.rows if r["task"] != task] + [{"task": task, "fields": fields}]
+        return Done(rc, "")
+
+    def board(self, _cfg: Any, _wave: str) -> dict[str, Any] | int:
+        return self.board_rc if self.board_rc is not None else ({"tasks": self.rows} if self.rows else NO_BOARD_EXIT)
+
+    def forget(self, _cfg: Any, _wave: str, task: str, worker: str, state: str = "pending") -> int:
+        self.forget_calls.append((task, worker, state))
+        rc = self.forget_rc.pop(0) if self.forget_rc else 0
+        if rc in (0, 4):  # 4: the removal landed and its acknowledgement was lost
+            self.rows = [r for r in self.rows if not (r["task"] == task and r["fields"].get("worker") == worker
+                                                       and r["fields"].get("state") == state)]
+        return rc
+
+    @contextlib.contextmanager
+    def world(self, prs: list[dict[str, Any]] | None = None) -> Generator[FakeTool]:
+        def listed(_cfg: Any) -> Done:
+            return Done(self.listing_rc, json.dumps(self.records))
+        with (FakeTool("gh") as gh,
+              mock.patch.object(waveprep, "anchor_gate", return_value=0),
+              mock.patch.object(waveprep, "listing", side_effect=listed),
+              mock.patch.object(waveprep, "board_status", side_effect=self.board),
+              mock.patch.object(waveprep, "run", side_effect=self.board_run),
+              mock.patch.object(wavelaunch, "run", side_effect=self.launch_run),
+              mock.patch.object(wavelaunch, "run_on", side_effect=self.far_run),
+              mock.patch.object(waveunprep, "anchor_gate", return_value=0),
+              mock.patch.object(waveunprep, "listing", side_effect=listed),
+              mock.patch.object(waveunprep, "board_status", side_effect=self.board),
+              mock.patch.object(waveunprep, "forget_row", side_effect=self.forget),
+              mock.patch.object(waveunprep, "run", side_effect=self.board_run),
+              mock.patch.object(waveunprep, "run_on", side_effect=self.far_run)):
+            gh.route((When(prefix=("pr", "list")), Answer(stdout=json.dumps(prs or []))))
+            yield gh
+
+    def unprep(self, task: str = "t42") -> tuple[int, str, str]:
+        return captured(waveunprep.cmd_unprep, self.cfg, [self.path, task])
+
+    def files(self, task: str = "t42") -> list[str]:
+        return [p for p in (os.path.join(self.wavedir, "reserve", n) for n in (f"{task}.json", f"{task}-gpu.json", f"{task}-base.json"))
+                if os.path.lexists(p)] + [p for p in (os.path.join(self.wavedir, "briefs", f"brief-{task}.md"),) if os.path.lexists(p)]
+
+    def tombs(self, task: str = "t42") -> list[str]:
+        return glob.glob(os.path.join(self.wavedir, "prep", f"{task}.unprepared-*.json"))
+
+    def advance(self) -> str:
+        repo = os.path.join(self.dir, "repo")
+        git("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "moved")
+        git("-C", repo, "push", "-q", "origin", "main")
+        return git("-C", repo, "rev-parse", "HEAD")
+
+    def test_a_stale_prep_is_taken_back_and_prepared_again_under_its_own_id(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+            self.assertEqual(len(self.files()), 4)
+            tip = self.advance()
+            with open(self.path) as f:
+                edited = json.load(f)
+            edited["legs"], edited["profiles"]["sol"]["model"] = {}, "gpt-7"  # edited since: the manifest still names what was made
+            with open(self.path, "w") as f:
+                json.dump(edited, f)
+            rc, out, _ = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")
+            self.assertEqual(rc, 1, "without the verb the task can only be prepared under a new id")
+            self.assertIn("a prep manifest", out)
+            self.shim_calls.clear()
+            rc, out, err = self.unprep()
+            self.assertEqual(rc, 0, out + err)
+            self.assertIn("WAVE UNPREP t42: unprepared: ", out)
+            self.assertEqual(self.files(), [], "every file prep wrote, the leg's payload the edited wave file no longer names included")
+            self.assertEqual(self.rows, [])
+            self.assertEqual(self.forget_calls, [("t42", "w1-42", "pending")])
+            self.assertEqual(self.far_calls, [], "a remote task's worktree path is read, and nothing is made or removed there")
+            [tomb] = self.tombs()
+            with open(tomb) as f:
+                self.assertEqual(json.load(f)["done"][-2:], ["ready", "unprepare"])
+            self.assertEqual([c[:2] for c in self.shim_calls], [["board", "log"]])
+            rc, out, _ = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.manifest()["base"], tip, "prepared again at the moved tip, under its own id")
+            self.assertEqual(self.unprep()[0], 0, "and it can be taken back again")
+
+    def test_a_local_scratch_is_removed_when_empty_and_left_when_not(self) -> None:
+        scratch = os.path.join(self.wavedir, "scratch", "t42")
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol")[0], 0)
+            self.assertTrue(os.path.isdir(os.path.join(scratch, "runs")))
+            self.assertEqual(self.unprep()[0], 0)
+            self.assertFalse(os.path.lexists(scratch))
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol")[0], 0)
+            with open(os.path.join(scratch, "notes"), "w") as f:
+                f.write("kept\n")
+            rc, out, _ = self.unprep()
+            self.assertEqual(rc, 0, out)
+            self.assertIn(f"WAVE UNPREP NOTE t42: {scratch} is left", out)
+            self.assertTrue(os.path.exists(os.path.join(scratch, "notes")) and not os.path.lexists(os.path.join(scratch, "runs")))
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol")[0], 0, "prep takes a scratch left as it is")
+
+    def test_a_prep_that_failed_part_way_is_taken_back(self) -> None:
+        with self.world():
+            self.shim_rc = {"board set": 1}
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 1)
+            self.shim_rc = {}
+            self.assertEqual(self.manifest()["done"][-1][:6], "brief ")
+            rc, out, _ = self.unprep()
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.files(), [])
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+
+    def test_a_run_twice_and_an_interrupted_run_end_unprepared(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            self.forget_rc = [4]
+            rc, out, _ = self.unprep()
+            self.assertEqual(rc, 4, out)
+            self.assertIn("WAVE UNPREP UNKNOWN t42 at row:", out)
+            self.assertIn("a re-run goes on from here", out)
+            self.assertEqual(self.manifest()["done"][-1], "unprepare", "the fence: wave launch refuses the task now")
+            rc, out, _ = self.start()
+            self.assertEqual(rc, 1)
+            self.assertIn("its prep did not finish", out)
+            brief = os.path.join(self.wavedir, "briefs", "brief-t42.md")
+            real_remove = os.remove
+
+            def remove(path: str) -> None:
+                if path == brief:
+                    raise PermissionError(13, "Permission denied")
+                real_remove(path)
+            with mock.patch.object(waveunprep.os, "remove", side_effect=remove):
+                rc, out, _ = self.unprep()
+            self.assertEqual(rc, 1, out)
+            self.assertIn("WAVE UNPREP FAILED t42 at files: cannot remove", out)
+            self.assertIn("WAVE UNPREP REMOVED t42: ", out)
+            self.assertTrue(os.path.exists(brief))
+            rc, out, _ = self.unprep()
+            self.assertEqual(rc, 0, out)
+            self.assertEqual((self.files(), len(self.tombs())), ([], 1))
+            self.assertEqual(self.unprep()[1], f"WAVE UNPREP t42: nothing recorded to undo (no prep manifest {self.wavedir}/prep/t42.json)\n")
+
+    def assert_refused(self, why: str, rc: int = 1) -> None:
+        before = self.manifest()
+        got, out, _ = self.unprep()
+        self.assertEqual(got, rc, out)
+        self.assertIn(why, out)
+        self.assertIn("nothing removed", out)
+        self.assertEqual(self.manifest(), before, "no fence")
+        self.assertEqual((len(self.files()), self.forget_calls, self.tombs()), (3, [], []))
+
+    def test_what_may_have_launched_or_is_not_this_preps_refuses_removing_nothing(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            mine = dict(self.rows[0]["fields"])
+            os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+            ledger = os.path.join(self.wavedir, "logs", "drive.jsonl")
+            with open(ledger, "w") as f:
+                f.write(json.dumps({"task": "t42", "worker": "", "session": "", "turn": -1, "status": "launching", "holds": "far"}) + "\n")
+            self.assert_refused("the driver's last launch line for the task (launching) holds a slot on far")
+            with open(ledger, "a") as f:
+                f.write(json.dumps({"task": "t42", "worker": "", "session": "", "turn": -1, "status": "retry"}) + "\n")
+            self.records = [{"request_id": "wv-t42-far-iterate", "state": "concluded"}]
+            self.assert_refused("the registry holds wv-t42-far-iterate (concluded): a launch reserved it")
+            self.records = []
+            for fields, word in (({**mine, "state": "launched"}, "state='launched'"), ({**mine, "worker": "w1-99"}, "worker='w1-99'")):
+                self.rows = [{"task": "t42", "fields": fields}]
+                self.assert_refused(f"the board's row for t42 is {word}" if word.startswith("state") else word)
+            self.rows = [{"task": "t42", "fields": mine}]
+            self.far_state = Done(0, f"worktree={self.base} dirty=0\n")
+            self.assert_refused("exists on far (worktree=")
+            self.far_state = Done(UNREACHABLE, "")
+            self.assert_refused("WAVE UNPREP UNKNOWN t42: the worktree path", 4)
+            self.far_state = Done(0, "worktree=absent\n")
+            self.listing_rc = 1
+            self.assert_refused("WAVE UNPREP UNKNOWN t42: the anchor's registry could not be read", 4)
+            self.listing_rc, self.board_rc = 0, 4
+            self.assert_refused("the board of wv could not be read", 4)
+            self.board_rc = None
+            repo = os.path.join(self.dir, "repo")
+            git("-C", repo, "push", "-q", "origin", "main:refs/heads/codex/w1-42")
+            self.assert_refused("branch codex/w1-42 exists on origin")
+            git("-C", repo, "push", "-q", "origin", ":refs/heads/codex/w1-42")
+            brief = os.path.join(self.wavedir, "briefs", "brief-t42.md")
+            os.rename(brief, brief + ".kept")
+            os.mkdir(brief)
+            self.assert_refused("is no regular file")
+            os.rmdir(brief)
+            os.rename(brief + ".kept", brief)
+            manifest = self.manifest()
+            with open(os.path.join(self.wavedir, "prep", "t42.json"), "w") as f:
+                json.dump({**manifest, "done": [*manifest["done"], "worktree /x on branch b at c"]}, f)
+            self.assert_refused("records a step no CLI prep writes ('worktree /x")
+            with open(os.path.join(self.wavedir, "prep", "t42.json"), "w") as f:
+                json.dump({**manifest, "done": [*manifest["done"], "launched far/w1-42"]}, f)
+            self.assert_refused("records a launch")
+
+    def test_a_native_task_is_refused_loudly(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t43", "--base", "main", "--profile", "opus")[0], 0)
+            rc, out, _ = self.unprep("t43")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("WAVE UNPREP REFUSED t43: a subagent task: its prep took a worktree, a branch and standing reservations", out)
+        self.assertIn("prepare it again under a new task id; nothing removed", out)
+        self.assertTrue(os.path.isdir(os.path.join(self.dir, "repo-worktrees", "w1-43")))
+        self.assertEqual(self.forget_calls, [])
+
+    def test_the_task_lock_keeps_prep_launch_and_unprep_apart(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            with open(os.path.join(self.wavedir, "prep", "t42.lock"), "a") as held:
+                fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                for verb, call in (("UNPREP", self.unprep), ("LAUNCH", self.start)):
+                    rc, out, _ = call()
+                    self.assertEqual(rc, 1, out)
+                    self.assertIn(f"WAVE {verb} REFUSED t42: another wave prep, launch or unprep of the task holds", out)
+                rc, out, _ = self.prep("t44", "--issue", "42", "--base", "main", "--profile", "sol")
+                self.assertNotIn("holds", out, "another task's lock is its own")
+            self.assertEqual((self.forget_calls, len(self.files())), ([], 3))
+            self.assertEqual(self.unprep()[0], 0)
 
 
 class Verdict(unittest.TestCase):
@@ -2412,6 +2648,8 @@ class Queue(DriveCase):
             ("unreachable gate", [], {"gate": 4}, [task]),
             ("prerequisite with a row", [row("t42", state="reviewing", transport="subagent")], {}, [task]),
             ("queued prerequisite", [], {}, [{"task": "t42", "profile": "sol", "host": "far", "after": ["t43"]}, task]),
+            # A native row: a CLI row past pending would hold far's one slot (slots_held), and the
+            # capacity skip would then hide whether the row-not-pending guard skipped the task.
             ("already launched", [row("t50", transport="subagent")], {}, [task]),
         ]
         with self.world():
@@ -2480,12 +2718,49 @@ class Queue(DriveCase):
             self.assertEqual(self.launched(), [], "far is full, and mac's free slot is not the one this task would take")
             self.rows = self.rows[:3]
             out = self.once()[1]
-            self.assertIn(f"DRIVE ATTENTION t51 launch: main moved since the task was prepared at {A[:12]} (now {B[:12]}), and a prepared"
-                          " task launches at its base only; it is yours: prepare it again under a new task id", out)
-            self.assertEqual(self.launched(), [], "a stale base is not sent to a launch that can only refuse it")
+            self.assertIn(f"DRIVE ATTENTION t51 launch: main moved since the task was prepared at {A[:12]} (now {B[:12]}): un-prepared,"
+                          " to be prepared again at the tip under its own id", out)
+            self.assertEqual(self.launched(), [["wave", "unprep", self.path, "t51"]], "a stale base is un-prepared, never sent to a launch that can only refuse it")
+            self.assertEqual(self.ledger()[-1], (wavedrive.LAUNCH, "launch", "unprepared"), "a non-final line: the task can come due again")
+            self.rows = [self.rows[0], self.rows[2]]  # what wave unprep removed: t51's row and manifest
+            os.remove(os.path.join(self.wavedir, "prep", "t51.json"))
+            self.once()
+            self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--host", "far"],
+                                               ["wave", "launch", self.path, "t51"]], "...prepared again at the tip under its own id")
+            self.assertIn(["refresh", "mac"], self.calls, "the agent host's served checkout is refreshed before the prep")
+            self.rows.append(row("t51", state="merged #9"))
             self.once()
             self.assertEqual(self.launched(), [["wave", "launch", self.path, "t52"]], "a task prepared at the tip is launched, not prepared again")
         self.assertEqual(len(self.attention()), 2)
+
+    def test_a_stale_prepared_task_whose_unprep_refuses_is_final_and_an_unknown_one_is_the_next_ticks(self) -> None:
+        self.queue({"task": "t51", "profile": "sol", "host": "far"})
+        self.rows = [row("t51", state="pending")]
+        self.manifest("t51", "far", A)
+        with self.world():
+            self.rc["wave unprep"], self.out["wave unprep"] = 4, "WAVE UNPREP UNKNOWN t51: the anchor's registry could not be read; nothing removed\n"
+            self.assertEqual(self.once()[1], "", "an unknown un-prepare is said nowhere")
+            self.assertEqual(self.launched(), [["wave", "unprep", self.path, "t51"]])
+            self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "and leaves no ledger line")
+            self.rc["wave unprep"] = 1
+            self.out["wave unprep"] = "WAVE UNPREP REFUSED t51: the registry holds wv-t51-far-iterate (concluded): a launch reserved it\n"
+            out = self.once()[1]
+            self.assertIn("its un-prepare refused: WAVE UNPREP REFUSED t51: the registry holds wv-t51-far-iterate (concluded)", out)
+            self.assertEqual(self.ledger(), [(wavedrive.LAUNCH, "launch", "attention")])
+            self.assertEqual((self.once()[1], self.launched()), ("", []), "final: said once, nothing called again")
+
+    def test_a_refresh_that_fails_never_stops_a_prep_and_is_beside_a_prep_that_refuses(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"})
+        with self.world():
+            self.rc["refresh"], self.out["refresh"] = 1, "REFRESH REFUSED mac: the skills checkout has diverged from origin/main\n"
+            self.once()
+            self.assertEqual([c[:2] for c in self.calls if c[0] in ("refresh", "wave")],
+                             [["refresh", "mac"], ["wave", "prep"], ["wave", "launch"]], "the prep goes on")
+            self.rows = [row("t50")]
+            self.rc["wave prep"], self.out["wave prep"] = 1, "WAVE PREP REFUSED t51: the template part tasks/t51.md does not exist\n"
+            out = self.once()[1]
+            self.assertIn("launch it by hand (the refresh of mac's skills checkout before it: REFRESH REFUSED mac: the skills checkout"
+                          " has diverged from origin/main)", out)
 
     def test_a_task_whose_prerequisite_ended_without_a_merge_is_told_once_and_the_next_is_served(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far", "after": ["t42", "t43"]}, {"task": "t51", "profile": "sol", "host": "far"})

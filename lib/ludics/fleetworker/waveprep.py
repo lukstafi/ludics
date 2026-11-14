@@ -133,16 +133,25 @@ THE RECOVERY BOUNDARY. Prep is not resumable, and never deletes or concludes any
 in the reads makes nothing. A failure in the writes prints ``WAVE PREP FAILED <task> at <step>:
 <why>`` (``WAVE PREP UNKNOWN`` when the anchor, git's remote or gh did not answer), then one
 ``WAVE PREP MADE <task>: <what>`` line per step the manifest records as done, and the manifest's path,
-and exits 1 (4). A second prep of the task refuses on that manifest; what to keep, conclude or
-remove is the coordinator's call, made from those lines.
+and exits 1 (4). A second prep of the task refuses on that manifest. A CLI task's prep, ready or
+part-way, that nothing has launched is taken back by ``wave unprep`` (waveunprep.py), after which
+the task is prepared again under its own id; for a native task, and for what that verb refuses,
+what to keep, conclude or remove is the coordinator's call, made from those lines.
+
+THE TASK LOCK (``task_lock``): prep holds ``<wave dir>/prep/<task>.lock`` from its first read to its
+last write, as ``wave launch`` and ``wave unprep`` hold it, so no two of them run on one task at
+once; a held lock refuses, nothing made.
 
 Exit: 0 ready; 1 refused or failed; 2 usage; 4 unknown.
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import re
 import shlex
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -266,6 +275,27 @@ class Stop(Exception):
         super().__init__(line)
         self.rc = rc
         self.line = line
+
+
+@contextlib.contextmanager
+def task_lock(directory: str, task: str, verb: str) -> Generator[None]:
+    """THE TASK LOCK: ``wave prep``, ``wave launch`` and ``wave unprep`` of one task hold an exclusive
+    ``flock`` on ``<wave dir>/prep/<task>.lock``, taken without waiting, so none of them runs while
+    another of the task's does. A held lock is ``<verb> REFUSED`` (Stop, exit 1), nothing done. It is
+    not the driver's ``logs/drive.lock``: the driver takes none, its subprocesses take this one."""
+    path = os.path.join(directory, "prep", f"{task}.lock")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handle = open(path, "a", encoding="utf-8")
+    except OSError as exc:
+        raise Stop(1, f"{verb} REFUSED {task}: cannot open the task lock {shlex.quote(path)} ({exc.strerror}); nothing done") from None
+    with handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Stop(1, f"{verb} REFUSED {task}: another wave prep, launch or unprep of the task holds"
+                          f" {shlex.quote(path)}; nothing done") from None
+        yield
 
 
 def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
@@ -728,6 +758,16 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
 def cmd_prep(cfg: Config, args: list[str]) -> int:
     path, task, opts = parse(args)
     prep = build(cfg, path, task, opts)
+    try:
+        with task_lock(prep.wave.directory, task, "WAVE PREP"):
+            return prepared(cfg, prep)
+    except Stop as stop:
+        cli.say(stop.line)
+        return stop.rc
+
+
+def prepared(cfg: Config, prep: Prep) -> int:
+    task = prep.task
     try:
         gated = anchor_gate(cfg, "WAVE PREP", task, False)
         if gated != 0:

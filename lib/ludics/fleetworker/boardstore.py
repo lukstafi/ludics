@@ -42,6 +42,11 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         farside-close reads it. A new host/checkout containing whitespace, or a host containing
         a colon, refuses before either field changes: it cannot fit one cleanup word.
         No row or board is created.
+  forget {"wave", "task", "worker", "state"}                     internal to ``wave unprep``
+        (waveunprep.py): remove the task's row, a compare-and-delete under the same lease lock as
+        set, only while its ``state`` and ``worker`` fields are the given ones; any other row
+        refuses, nothing written. No board or no row is a no-op (a retried removal whose first
+        acknowledgement was lost). No other row, note or log line changes.
   note  {"wave", "create", "fields": [[key, value], ...]}           the wave's own facts (coordinator,
         scope, base, ...), shown above the table
   log   {"wave", "text"}                                            one line appended to the log,
@@ -338,6 +343,25 @@ def main(argv: list[str]) -> None:
         row["updated_at"] = doc["updated_at"] = now
         publish(path, doc)
         print(f"BOARD PLACEMENT {wave}: {json.dumps(worker)}")
+        return
+    if action == "forget":
+        task = task_ok(payload.get("task"))
+        worker = text_ok(payload.get("worker"), "worker")
+        state = text_ok(payload.get("state"), "state")
+        tasks = cast(list[Doc], doc["tasks"]) if doc else []
+        found = next((entry for entry in tasks if entry["task"] == task), None)
+        if found is None:
+            print(f"BOARD FORGET {wave}: {json.dumps(task)} has no row; nothing written")
+            return
+        fields = cast(dict[str, str], found["fields"])
+        if fields.get("state") != state or fields.get("worker") != worker:
+            refuse(f"the row of {json.dumps(task)} is state={json.dumps(fields.get('state'))} worker={json.dumps(fields.get('worker'))},"
+                   f" not state={json.dumps(state)} worker={json.dumps(worker)}; nothing written")
+        assert doc is not None
+        doc["tasks"] = [entry for entry in tasks if entry is not found]
+        doc["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        publish(path, doc)
+        print(f"BOARD FORGET {wave}: {json.dumps(task)}")
         return
     if action not in ("set", "note", "log"):
         refuse(f"unknown action {action}")

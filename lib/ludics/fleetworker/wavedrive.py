@@ -126,9 +126,14 @@ the FIRST task in file order that is due and starts it, one a tick:
             host (``slots_held``: any kind, past ``pending`` and not done) than the host's
             capacity; no final ``launch`` line in the ledger; launches not halted (``halted``,
             read once a tick: a halt is waited out, silently); THE GATE open
-  started   with no row, ``wave prep <task> --base <origin/MAIN, fetched now> --profile ... [--host]
-            [--legs] [--mode] [--issue|--source]`` (a dependent starts from the base its
-            prerequisite merged into), then ``wave launch``
+  started   with no row, ``refresh <agent host>`` (THE REFRESH), then ``wave prep <task> --base
+            <origin/MAIN, fetched now> --profile ... [--host] [--legs] [--mode] [--issue|--source]``
+            (a dependent starts from the base its prerequisite merged into), then ``wave launch``
+THE REFRESH: ``wave prep`` runs from the agent host's served skills checkout, and the project part
+it renders is read at the fetched tip, so a checkout one merge behind can lack a built-in that part
+names (a ``WAVE PREP REFUSED`` wave-20261113b-ludics saw). ``refresh`` brings it to its origin, or
+says why not, and resets nothing; its exit never stops a prep, and when the prep then refuses, the
+refresh's line is beside the prep's in that attention.
 When otherwise due, a task waiting only on ``after`` tasks with neither rows nor queue entries
 is told through a non-final attention line naming those tasks; it still starts when they merge.
 The last missing-task list told for each task is kept in memory (as the queue's and gate's
@@ -143,8 +148,14 @@ has not been told (kept in memory: a restarted driver tells it again), and the g
 after ``RETRY`` seconds.
 A PREPARED task (a ``pending`` row) is launched where and at what its prep recorded, the manifest's
 launch record (wavelaunch.py), never the queue's entry: an entry that names another host than the
-record's is attention, final, and so is a record whose base is no longer the branch's tip (it was
-prepared, its launch was refused, and the branch moved). Both leave the task to the coordinator.
+record's is attention, final, and leaves the task to the coordinator. A STALE PREPARED TASK, one
+whose record's base is no longer the branch's tip (prepared, its launch refused or not yet made,
+and the branch moved), is un-prepared with ``wave unprep`` (waveunprep.py, under its own refusals:
+a launch on record, a ledger line holding a slot, a reservation of its standing ids, a row that
+is not its prep's pending row): exit 0 is a non-final ledger line ``unprepared`` and the
+coordinator told once, and with no row left the task is due again, prepared at the tip under its
+own id on a later tick; exit 4 is the next tick's; any other exit is attention, final, with the
+verb's line.
 A task whose ``after`` task's row ended without a merge (``closed``, ``dropped``) can never come
 due: that is attention, final, since nothing else would say the task is not going to start.
 A prep that refuses (a rival PR, a branch that exists, a missing task part) is attention, final:
@@ -830,10 +841,21 @@ class Driver:
         if fetched != 0 or rc != 0 or not SHA40.fullmatch(sha.strip()):
             return  # the remote did not answer: the next tick's
         if record is not None and record.base != sha.strip():
-            return self.attention(slot, LAUNCH, "launch", f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]}),"
-                                                          " and a prepared task launches at its base only; it is yours: prepare it again"
-                                                          " under a new task id (wavelaunch.py's header)")
+            # A STALE PREPARED TASK (the header): un-prepared here, prepared again at the tip on a later tick.
+            moved = f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]})"
+            done = self.call("wave", "unprep", self.wave.path, queued.task, gated="both")
+            said = (substitution(done.out).splitlines() or [f"wave unprep exit {done.rc}"])[-1]
+            if done.rc == 4:
+                return  # a read that did not answer: the next tick's
+            if done.rc != 0:
+                return self.attention(slot, LAUNCH, "launch", f"{moved}, and a prepared task launches at its base only; its un-prepare"
+                                                              f" refused: {said[:300]}; it is yours")
+            self.tell(slot, LAUNCH, f"{moved}: un-prepared, to be prepared again at the tip under its own id: {said[:300]}")
+            return self.note(slot, LAUNCH, "launch", "unprepared", said[:300])
         if not prepared:
+            # THE REFRESH (the header): the served checkout's prep code, brought to its origin first.
+            refreshed = self.call("refresh", self.wave.agent_host)
+            fresh = "" if refreshed.rc == 0 else (substitution(refreshed.out).splitlines() or [f"refresh exit {refreshed.rc}"])[-1]
             done = self.call("wave", "prep", self.wave.path, queued.task, "--base", sha.strip(), "--profile", queued.profile,
                              *(["--host", queued.host] if queued.host != self.wave.agent_host else []),
                              *(["--legs", ",".join(queued.legs)] if queued.legs else []),
@@ -844,7 +866,8 @@ class Driver:
                 return
             if done.rc != 0:
                 said = (substitution(done.out).splitlines() or [f"wave prep exit {done.rc}"])[-1]
-                return self.attention(slot, LAUNCH, "launch", f"the queued task was not prepared: {said[:300]}; launch it by hand")
+                return self.attention(slot, LAUNCH, "launch", f"the queued task was not prepared: {said[:300]}; launch it by hand"
+                                      + (f" (the refresh of {self.wave.agent_host}'s skills checkout before it: {fresh[:300]})" if fresh else ""))
         host = record.host if record is not None else queued.host
         # A SLOT HELD (the header): the launch is on record before it is made, so a driver that stops
         # inside it leaves a line the next one reads.

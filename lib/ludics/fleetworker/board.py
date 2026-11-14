@@ -20,6 +20,8 @@ Its header is the contract: the document, what it accepts, and the markdown view
 
 ``record_placement`` is assign's internal writer: the store unions a requested host/checkout
 into the unique worker row under the lease lock (boardstore.py's placement contract).
+``forget_row`` is ``wave unprep``'s: the store removes a task's row only while it is the given
+worker's ``pending`` row (boardstore.py's forget contract). Neither is a board verb.
 
 A row's state is its ``state`` key, a STATE WORD first (``takeover``'s header states the vocabulary,
 ludics#810). ``set`` writes any value as given, and warns on stderr (``BOARD WARNING: ...``, the exit
@@ -223,4 +225,12 @@ def record_placement(cfg: Config, wave: str, worker: str, host: str, checkout: s
     """Assign's idempotent placement union, performed inside the board writer's lease lock."""
     raw = json.dumps({"wave": wave, "worker": worker, "host": host, "checkout": checkout})
     done = mutate(cfg, "placement", raw, stdout_to_stderr=True)
+    return 4 if done.unreachable else done.rc
+
+
+def forget_row(cfg: Config, wave: str, task: str, worker: str, state: str = "pending") -> int:
+    """``wave unprep``'s internal row removal: a compare-and-delete inside the board writer's lease
+    lock (boardstore.py's forget contract). 0 removed or no row, 1 refused, 4 the anchor did not answer."""
+    raw = json.dumps({"wave": wave, "task": task, "worker": worker, "state": state})
+    done = mutate(cfg, "forget", raw, stdout_to_stderr=True)
     return 4 if done.unreachable else done.rc
