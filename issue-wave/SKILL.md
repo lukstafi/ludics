@@ -425,7 +425,9 @@ branch). The verbs do the rest, on one of three routes
 - **A CLI task you launch yourself**: `fleet-worker.sh wave prep <wave.json> <task> --base <sha>
   --profile <name> [--host <box>]`, then `wave launch <wave.json> <task>`, which runs `launch` (the
   box's preflight, the base gate, the worktree and the standing reservation in one fenced step)
-  from what prep recorded. The raw `launch` and its recovery are
+  from what prep recorded. A task prepared and not launched before the main branch moved is
+  taken back with `fleet-worker.sh wave unprep <wave.json> <task>` and prepared again under its
+  own id; the driver does this itself for a queued task. The raw `launch` and its recovery are
   [cli-claude.md](references/cli-claude.md#launch).
 - **A native task**: `wave prep`, then `fleet-worker.sh gate --target-repo <owner/repo> --wait
   <seconds>` right before the runtime's spawn, then `agent=` and `state=launched` on its row
@@ -672,14 +674,14 @@ and `effort=` its args resolve to, and the worker's `meta` keeps them (ludics#53
 
 The coordinator's job between launch and last merge. **Who answers a returned turn** is set by
 the worker's kind. The handoff driver, `fleet-worker.sh wave drive <wave.json>`, answers every
-turn of a Codex CLI worker that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
+turn of a CLI worker, Claude or Codex, that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
 worker, concludes an `EXECUTION_RESULT`, runs `wave review` for a `REVIEW_REQUEST` or
 `CONFIRM_REQUEST`, and saves a `HANDBACK` under `handbacks/` and closes its row with `board close`
 ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 9;
 `lib/ludics/fleetworker/wavedrive.py`'s header). Everything else is yours, with the same verbs:
 each attention line the driver writes (a design question, a plan, a refused or partial assignment,
 a review with no verdict, a merge no clearance covers, a worker that vanished), every turn of a
-native or Claude CLI worker, and every turn while no driver runs (`wave turn <wave.json> <task>`
+native worker, and every turn while no driver runs (`wave turn <wave.json> <task>`
 answers one, once). An attention turn is final for the driver: answer it by hand, and the worker's
 next turn is the driver's again. Where a bullet below names `attach`, `status`, `log` or
 `unstick`, it is speaking of CLI workers; native and app workers are observed and controlled

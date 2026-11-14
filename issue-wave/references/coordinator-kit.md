@@ -250,8 +250,10 @@ driver hands you as an attention line.
 9. **The handoff driver.** A CLI worker ends its turn for every handoff, and most of those turns
    need no judgment. Start one driver per wave, in the background, as soon as it has something to
    serve: with a `queue.json` that is before any worker exists, since the driver launches what is
-   queued; without one, once the first Codex CLI worker is launched. It serves Codex CLI workers; a
-   Claude CLI worker's turns, like a native worker's, are yours to answer with the same verbs:
+   queued; without one, once the first CLI worker is launched. It serves CLI workers, Claude and
+   Codex (a Claude worker's turns are counted by `status`'s `results=`); a native worker's turns are
+   yours to answer with the same verbs. Once it serves a worker, stop answering that worker's turns
+   by hand: a hand answer and the driver's would be two answers to one turn.
 
    ```
    fleet-worker.sh wave drive <wave.json>
