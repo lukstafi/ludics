@@ -2671,6 +2671,27 @@ class DriveClaude(DriveCase):
             self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1], "the replacement's turn 1 is its own")
             self.assertEqual((self.once()[1], self.calls), ("", []))
 
+    def test_a_review_the_count_moved_past_is_still_collected_and_the_newer_turn_handed_up(self) -> None:
+        self.message = f"REVIEW_REQUEST 7 {A}\n"
+        with self.world():
+            self.assertIn("DRIVE t42 turn 1: review reviewing", self.once()[1])
+            self.results = 2  # a turn the worker began on its own (a ScheduleWakeup) ended while the review runs
+            self.rc["bg-run.sh wait"], self.out["bg-run.sh wait"] = 3, "RUNNING after 1 s of --within 1\n"
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t42 turn 2: turn 2 ended while the review turn 1 asked for still runs", out)
+            self.assertEqual([c[0] for c in self.calls], ["bg-run.sh"], "the review is still collected, the newer turn not read")
+            self.assertEqual((self.once()[1], [c[0] for c in self.calls]), ("", ["bg-run.sh"]), "told once")
+            message = f"{self.wavedir}/reviews/7-at-open-{A[:12]}.message.md"
+            os.makedirs(self.runs, exist_ok=True)
+            with open(os.path.join(self.runs, "log"), "w") as f:
+                f.write(f"WAVE REVIEW t42: o/staging#7 at-open at {A[:8]}: verdict=x blocking=0 suggestions=0 decision=merge"
+                        f" comment=https://x/1 message={message}\n")
+            del self.rc["bg-run.sh wait"], self.out["bg-run.sh wait"]
+            self.assertIn(f"DRIVE t42 turn 1: review answered: decision=merge, resumed with {message}", self.once()[1])
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+        self.assertEqual(self.tagged(), [(1, "results", "review", "reviewing"), (2, "results", "turn", "attention"),
+                                         (1, "results", "review", "answered")])
+
     def test_a_restarted_driver_answers_nothing_twice(self) -> None:
         real = wavedrive.append_line
 

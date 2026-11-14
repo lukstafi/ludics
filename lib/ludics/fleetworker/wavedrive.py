@@ -46,7 +46,10 @@ count only grows, so an unchanged count proves the message read was the n-th res
 worker began on its own meanwhile (a ``ScheduleWakeup``) leaves the reading to the next tick. A
 TURN THAT DIED: a Claude worker that is ``EXITED``, ``ORPHANED``, ``VANISHED`` or ``UNKNOWN`` while
 its count's turn was ``answered`` took the answer and ended no turn since, which no count would
-ever show: attention, once. Only then is the
+ever show: attention, once. A REVIEW OUTRUN: a Claude worker whose count moved past a turn whose
+review still runs (a turn it began on its own meanwhile) has that review collected as before,
+and the newer turn is attention, once: the review's answer is sent, and two answers are not
+raced. Only then is the
 final message read with ``log --last-result``, saved to ``msgs/<task>.<worker>.<session>.<turn>.md``
 (every file of a turn is named by the turn's whole identity), and classified by
 THE MARKERS. ``log --last-result`` alone would not do: it skips a turn that never completed and
@@ -566,6 +569,14 @@ class Driver:
             return  # a running turn, or a Claude status line with no readable results=: next tick
         worker = replace(worker, session=session)
         last = self.last(worker, turn)
+        earlier = self.open_review(worker, turn)
+        if earlier is not None and RETURNED.fullmatch(state) and (state != "IDLE" or self.replied(read)):
+            # A REVIEW OUTRUN (the header): the review is still collected, and the newer turn handed up.
+            if last is None or last.get("status") not in FINAL:
+                self.attention(worker, turn, "turn", f"{label(turn)} ended while the review {label(int(earlier['turn']))} asked for"
+                                                     " still runs: the review's answer is still sent; this turn is yours to read"
+                                                     " (`log --last-result` before that answer lands)")
+            return self.collect(worker, int(earlier["turn"]), earlier)
         if (worker.count == "results" and last is not None and last.get("status") == "answered"
                 and (state in GONE or state.startswith("EXITED("))):
             # A TURN THAT DIED (the header): answered, and the process gone with no result since.
@@ -615,6 +626,19 @@ class Driver:
                 self.handback(worker, turn, message, what)
             case _:
                 self.attention(worker, turn, "turn", what.why, message)
+
+    def open_review(self, worker: Worker, turn: int) -> dict[str, Any] | None:
+        """A Claude worker's earlier turn whose review still runs: its count moved past it (a turn the
+        worker began on its own), which no reading of the current count would find."""
+        if worker.count != "results":
+            return None
+        lasts: dict[int, dict[str, Any]] = {}
+        for e in self.ledger:
+            if (e.get("task") == worker.task and e.get("worker") == worker.name and e.get("session") == worker.session
+                    and e.get("count") == worker.count and isinstance(e.get("turn"), int) and 0 <= e["turn"] < turn):
+                lasts[e["turn"]] = e
+        pending = [e for _, e in sorted(lasts.items()) if e.get("status") == "reviewing"]
+        return pending[0] if pending else None
 
     @staticmethod
     def replied(read: re.Match[str] | None) -> bool:
