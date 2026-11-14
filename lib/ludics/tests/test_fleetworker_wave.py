@@ -2058,8 +2058,9 @@ class Markers(unittest.TestCase):
         doc = {"tasks": [row("t1"), row("t2", state="pending"), row("t3", state="merged #7 at abc"), row("t4", transport="subagent"),
                          row("t5", state="reviewing round 2"), row("t6", worker=""), row("t7", state="spawned"), "x", {"task": "t8"},
                          row("t9", kind="claude")]}
-        self.assertEqual([w.task for w in wavedrive.workers_of(doc)], ["t1", "t5"])
+        self.assertEqual([w.task for w in wavedrive.workers_of(doc)], ["t1", "t5", "t9"])
         self.assertEqual(wavedrive.workers_of(doc)[0], wavedrive.Worker("t1", "w1-1", "far", row("t1")["fields"]))
+        self.assertEqual(wavedrive.workers_of(doc)[2].count, "results", "a Claude worker's turns are its results")
 
 
 class DriveCase(WaveDirCase):
@@ -2076,6 +2077,10 @@ class DriveCase(WaveDirCase):
         self.clock = 1000.0
         self.attach_waits: list[float | None] = []
         self.runs = os.path.join(self.wavedir, "logs", "drive-runs", "run-1")
+        self.results: int | str | None = None  # a Claude worker's results= (None: a Codex worker's status line)
+        self.unread = 0
+        self.statuses: list[str] = []  # status lines answered first, one a read, before the scripted one
+        self.status_reads = 0
 
     def execute(self, argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
         tool, args = os.path.basename(argv[0]), list(argv[1:])
@@ -2090,7 +2095,10 @@ class DriveCase(WaveDirCase):
             self.calls.append([tool, *args] if tool == "bg-run.sh" else args)
         rc = self.rc.get(key, 0)
         if key == "status":
-            return rc, self.out.get(key, f"{self.state} far/{args[2]} kind=codex session={self.session} stream: 9 events, 3s quiet, last=x | head=abc | resumes={self.resumes} stderr=0B\n"), ""
+            self.status_reads += 1
+            if self.statuses:
+                return rc, self.statuses.pop(0), ""
+            return rc, self.out.get(key, self.status_line()), ""
         if key == "log":
             return rc, self.message if rc == 0 else "NO RESULT far/w1-42: latest turn ended turn.failed\n", ""
         if key == "bg-run.sh spawn":
@@ -2098,6 +2106,14 @@ class DriveCase(WaveDirCase):
         if key == "bg-run.sh wait":
             return rc, self.out.get(key, "rc=0\n"), ""
         return rc, self.out.get(key, ""), self.out.get(key + " stderr", "")
+
+    def status_line(self, state: str = "", results: int | str | None = None) -> str:
+        """status's line as farside.STATUS prints it: a Claude worker's with its stream fields and results=."""
+        state, results = state or self.state, self.results if results is None else results
+        if results is None:
+            return f"{state} far/w1-42 kind=codex session={self.session} stream: 9 events, 3s quiet, last=x | head=abc | resumes={self.resumes} stderr=0B\n"
+        return (f"{state} far/w1-42 kind=claude session={self.session} stream: 9 events, 3s quiet, last=result | turn=ended"
+                f" background_tasks=0 unread={self.unread} | head=abc dirty=0 branch=b | resumes={self.resumes} results={results} stderr=0B\n")
 
     @contextlib.contextmanager
     def world(self) -> Generator[None]:
@@ -2564,6 +2580,116 @@ class Drive(DriveCase):
             self.assertEqual(rc, 2)
             self.assertIn(why, err)
 
+class DriveClaude(DriveCase):
+    """wave drive and a Claude CLI worker: one process, many turns, each named by its results= count."""
+
+    REQUEST = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+    IDLE = "IDLE far/w1-42 success is_error=false turns=3 x | awaiting input: `unstick --message` continues it\n"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.rows = [row("t42", kind="claude")]
+        self.state, self.results, self.message = "IDLE", 1, self.REQUEST
+        self.out = {"attach": self.IDLE, "execution assign": "EXECUTION_ASSIGNED x\n"}
+
+    def tagged(self) -> list[tuple[int, str, str, str]]:
+        with open(os.path.join(self.wavedir, "logs", "drive.jsonl")) as f:
+            return [(e["turn"], e.get("count", "-"), e["kind"], e["status"]) for e in map(json.loads, f)]
+
+    def test_two_turns_of_one_process_are_each_answered_once(self) -> None:
+        with self.world():
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"],
+                                          ["execution", "assign", f"{self.wavedir}/reserve/t42-base.json", f"{self.wavedir}/msgs/t42.w1-42.0199-a.1.md",
+                                           "--message", f"{self.wavedir}/msgs/t42.w1-42.0199-a.1.assigned.md", "--unstick", "far", "w1-42"]])
+            self.assertIn("DRIVE t42 turn 1: request answered", out)
+            self.assertEqual(self.status_reads, 2, "the status is read again around the message")
+            self.assertEqual((self.once()[1], self.calls), ("", []), "an idle worker whose turn was answered is not read again")
+            self.state = "RUNNING"  # the answer was appended: the same process works, resumes and results unmoved
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+            self.state, self.results, self.message = "IDLE", 2, f"REVIEW_REQUEST 7 {A}\n"
+            out = self.once()[1]
+            self.assertIn("DRIVE t42 turn 2: review reviewing", out)
+            self.assertEqual(self.calls[0], ["log", "far", "w1-42", "--last-result"])
+            self.rc["bg-run.sh wait"], self.out["bg-run.sh wait"] = 3, "RUNNING after 1 s of --within 1\n"
+            self.assertEqual((self.once()[1], [c[0] for c in self.calls]), ("", ["bg-run.sh"]), "the review is collected, not read again")
+        self.assertEqual(self.resumes, 0)
+        self.assertEqual(self.tagged()[:2], [(1, "results", "request", "answered"), (2, "results", "review", "reviewing")])
+
+    def test_what_the_status_line_does_not_show_is_the_next_ticks(self) -> None:
+        with self.world():
+            for results, unread, why in (("?", 0, "an unreadable count"), (1, 1, "a message not echoed yet")):
+                self.results, self.unread = results, unread
+                self.assertEqual((self.once()[1], self.calls), ("", []), why)
+            self.unread, self.out["status"] = 0, self.status_line().replace(" results=1", "")
+            self.assertEqual((self.once()[1], self.calls), ("", []), "a Claude line with no results= names no turn")
+            del self.out["status"]
+            self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1])
+        self.assertFalse(self.attention())
+
+    def test_a_reading_the_re_read_does_not_confirm_is_the_next_ticks(self) -> None:
+        with self.world():
+            for second, why in ((self.status_line(results=2), "a turn ended between the reads"),
+                                (self.status_line(state="RUNNING"), "the worker began a turn of its own between the reads"),
+                                (self.status_line().replace("unread=0", "unread=1"), "a message arrived between the reads")):
+                self.statuses = [self.status_line(), second]
+                self.once()
+                self.assertEqual([c[0] for c in self.calls], ["log"], why)
+                self.assertFalse(os.path.exists(f"{self.wavedir}/msgs/t42.w1-42.0199-a.1.md"), "no message is kept for an unconfirmed turn")
+            self.results = 2
+            self.assertIn("DRIVE t42 turn 2: request answered", self.once()[1])
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+        self.assertEqual(self.tagged(), [(2, "results", "request", "answered")])
+
+    def test_a_turn_that_died_with_no_result_is_attention_once(self) -> None:
+        with self.world():
+            self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1])
+            for state in ("EXITED(1)", "VANISHED"):
+                self.state = state
+                out = self.once()[1]
+                if state == "EXITED(1)":
+                    self.assertIn(f"DRIVE ATTENTION t42 turn 1: the worker is {state} on far after turn 1 was answered", out)
+                else:
+                    self.assertEqual(out, "", "told once")
+                self.assertEqual(self.calls, [])
+            # A worker that died at startup has written no result: its turn 0, read and handed up as any failed turn.
+            self.session, self.results, self.state = "0199-b", 0, "EXITED(1)"
+            self.rc["attach"], self.out["attach"] = 1, "FAILED far/w1-42 exit=1 no terminal event in the stream\n"
+            self.assertIn("DRIVE ATTENTION t42 turn 0: the turn did not complete", self.once()[1])
+        self.assertEqual(self.tagged(), [(1, "results", "request", "answered"), (1, "results", "state", "attention"),
+                                         (0, "results", "turn", "attention")])
+        self.assertEqual(len(self.attention()), 2)
+
+    def test_a_relaunch_counts_from_zero_and_a_codex_line_is_no_claude_turn(self) -> None:
+        os.makedirs(os.path.join(self.wavedir, "logs"))
+        with open(os.path.join(self.wavedir, "logs", "drive.jsonl"), "w") as f:  # a Codex turn 1 of the same task, worker, session
+            f.write(json.dumps({"task": "t42", "worker": "w1-42", "session": "0199-a", "turn": 1, "kind": "request", "status": "answered"}) + "\n")
+        with self.world():
+            self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1], "the untagged line is a Codex turn's")
+            self.session = "0199-b"  # launch --replace: a new session, its stream emptied
+            self.assertIn("DRIVE t42 turn 1: request answered", self.once()[1], "the replacement's turn 1 is its own")
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+
+    def test_a_restarted_driver_answers_nothing_twice(self) -> None:
+        real = wavedrive.append_line
+
+        def dying(path: str, record: dict[str, Any]) -> None:
+            if path.endswith("drive.jsonl"):
+                raise KeyboardInterrupt  # killed after the answer was appended, before its ledger line
+            real(path, record)
+
+        with self.world():
+            with mock.patch.object(wavedrive, "append_line", side_effect=dying), self.assertRaises(KeyboardInterrupt):
+                self.once()
+            self.unread = 1  # the answer is on the worker's input, not echoed yet
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+            self.state, self.unread = "RUNNING", 0
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+            self.state, self.results = "IDLE", 2
+            self.assertIn("DRIVE t42 turn 2: request answered", self.once()[1])
+        self.assertEqual(self.tagged(), [(2, "results", "request", "answered")])
+
 
 class Queue(DriveCase):
     """wave drive launches what the coordinator queued: the first due task, one a tick."""
@@ -2621,7 +2747,7 @@ class Queue(DriveCase):
             self.assertEqual(self.launched() if self.once() else [], [], "far has one worker live, and capacity for one")
             for other in (row("t45", kind="claude"), row("t46", kind="claude", state="no state word"), row("t47", worker="")):
                 self.rows = [*self.rows[:2], other]
-                self.assertEqual(self.launched() if self.once() else [], [], f"a CLI row this driver does not serve holds a slot too: {other}")
+                self.assertEqual(self.launched() if self.once() else [], [], f"a CLI row holds a slot, served or not: {other}")
             self.rows = [*self.rows[:2], row("t48", transport="subagent"), row("t49", state="pending"), row("t40", agent_host="mac")]
             self.rc["halted"] = 1
             self.assertEqual((self.once()[1], self.launched()), ("", []), "a halt is waited out, silently")

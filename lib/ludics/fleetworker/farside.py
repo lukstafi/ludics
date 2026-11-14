@@ -1455,7 +1455,19 @@ if is_stream "$name"; then
   done <<< "$(tail -n +"$(meta_num "$d" input_from 1)" "$d/input.jsonl" 2>/dev/null | jq -r '.uuid // empty' 2>/dev/null)"
   chan=" | turn=$t background_tasks=$bg unread=$unread"
 fi
-echo "$state $BOX/$name kind=$kind session=$(session_of "$d") stream: ${events} events, ${quiet}s quiet, last=${last:-none}$chan | $wt | resumes=$(meta_get "$d" resumes) stderr=$(wc -c < "$d/stderr.log" 2>/dev/null | tr -d ' ')B"
+# A claude worker's turn counter (wave drive's turn identity, wavedrive.py's A TURN): its ended
+# turns, the `result` events of the whole stream, which only the launch empties, so a resume does
+# not reset it. Distinct uuids are counted (a result with none counts alone), so a result written
+# into the stream again would not count twice. Read after the state, and `?` when the stream does
+# not read: an unreadable count is never 0.
+results=""
+if [ "$kind" = claude ]; then
+  n=$(jq -Rrn '[inputs | fromjson? | select(type == "object" and .type == "result")]
+    | ([.[] | select(.uuid != null) | .uuid] | unique | length) + ([.[] | select(.uuid == null)] | length)' "$d/stream.jsonl" 2>/dev/null) || n=""
+  case "$n" in ''|*[!0-9]*) n='?' ;; esac
+  results=" results=$n"
+fi
+echo "$state $BOX/$name kind=$kind session=$(session_of "$d") stream: ${events} events, ${quiet}s quiet, last=${last:-none}$chan | $wt | resumes=$(meta_get "$d" resumes)$results stderr=$(wc -c < "$d/stderr.log" 2>/dev/null | tr -d ' ')B"
 """
 
 
