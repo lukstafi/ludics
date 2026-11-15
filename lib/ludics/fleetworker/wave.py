@@ -95,7 +95,13 @@ compares equal prints ONE line in place of the read: ``HEARTBEAT <wave> <UTC tim
 <the last full read's time> (prs exit=<n>, halted exit=<n>, drive running|drive NOT RUNNING|no
 driver): the last full read is <that file>``, whose ``read`` holds the lines it printed. Any other
 tick prints the whole read as above, after a ``HEARTBEAT changed since <time>: <parts>`` line when
-there is a saved read, and is saved. Boundary, a fail-closed allowlist of what is compared:
+there is a saved read, and is saved. The board-rows part names up to five changed tasks in
+sorted order, with old→new state words, ``added``/``removed``, or ``fields changed`` when the
+state word stayed the same, then a count of the remaining changed rows. Task names are capped
+at 40 characters and quoted to keep control characters on one line; state words at 24.
+If duplicate rows collapse to the same task fields, fall back to plain ``board rows``.
+An unreadable saved row shape yields ``board rows (previous rows unavailable)``.
+Boundary, a fail-closed allowlist of what is compared:
   board rows  each row's task and fields (``board show --json``); a board that does not read makes
               the tick a full read (``HEARTBEAT board: did not read ...``), never an unchanged one,
               and is not saved
@@ -116,6 +122,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import time
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -523,6 +530,54 @@ def saved_read(path: str) -> dict[str, Any] | None:
     return saved
 
 
+def changed_board_rows(previous: Any, current: list[Any]) -> str:
+    """Bounded detail for THE NO-CHANGE LINE's board part; compare every field, summarize states."""
+    from ludics.fleetworker.takeover import state_word
+
+    def decode(raw: Any) -> dict[str, dict[str, str]] | None:
+        if not isinstance(raw, list):
+            return None
+        result: dict[str, dict[str, str]] = {}
+        for item in cast(list[Any], raw):
+            if not isinstance(item, list):
+                return None
+            row = cast(list[Any], item)
+            if len(row) != 2 or not isinstance(row[0], str) or not isinstance(row[1], list):
+                return None
+            fields: dict[str, str] = {}
+            for pair in cast(list[Any], row[1]):
+                if not isinstance(pair, list):
+                    return None
+                field = cast(list[Any], pair)
+                if len(field) != 2 or not isinstance(field[0], str) or not isinstance(field[1], str):
+                    return None
+                fields[field[0]] = field[1]
+            result[row[0]] = fields
+        return result
+
+    old, new = decode(previous), decode(current)
+    if old is None or new is None:
+        return "board rows (previous rows unavailable)"
+    changed = sorted(task for task in old.keys() | new.keys() if old.get(task) != new.get(task))
+    if not changed:
+        return "board rows"
+    names: list[str] = []
+    for task in changed[:5]:
+        name = shlex.quote(task[:40].encode("unicode_escape").decode("ascii"))
+        if task not in old:
+            detail = "added"
+        elif task not in new:
+            detail = "removed"
+        else:
+            before = (state_word(old[task].get("state", "")) or "unknown")[:24]
+            after = (state_word(new[task].get("state", "")) or "unknown")[:24]
+            detail = f"{before}→{after}" if before != after else "fields changed"
+        names.append(f"{name} {detail}")
+    if len(changed) > 5:
+        names.append(f"+{len(changed) - 5} more")
+    return f"board rows ({'; '.join(names)})"
+
+
 def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
     if not args or args[0].startswith("--"):
         die(f"wave heartbeat: name the wave file; usage: {USAGE}")
@@ -558,6 +613,8 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
                 f" the last full read is {state}")
         return 0
     moved = [key for key in parts if saved is not None and (key != "board rows" or rows is not None) and saved["parts"].get(key) != parts[key]]
+    if saved is not None and "board rows" in moved and rows is not None:
+        moved[moved.index("board rows")] = changed_board_rows(saved["parts"].get("board rows"), rows)
     if saved is not None and (moved or attention):
         cli.say(f"HEARTBEAT changed since {saved['at']}: {', '.join([*moved, *(['attention'] if attention else [])])}")
     if rows is None:

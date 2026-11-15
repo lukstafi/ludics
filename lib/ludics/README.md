@@ -645,9 +645,15 @@ waiting gate retains the branch's one observer, and no saved gate verdict admits
 The ordinary gate's wait, integration-record recheck, advisory policy and lease/halt checks stay
 in place. `--no-wait` and outer `--wait` are mutually exclusive. Drive and gate unit cases pin the
 same-tick answer, checker arguments and option refusal. Pending snapshots return exit 4: the
-driver silently retries next tick without moving its retry deadline. Red refusals still notify
+driver retries next tick without moving its retry deadline, with the once-only sustained-pending
+notice described below. Red refusals still notify
 once and back off. Regression controls and macOS verification are recorded in
 [PR #1171](https://github.com/lukstafi/ludics/pull/1171).
+
+Agent notes (wave-20261115-ludics, p3): `wavedrive.py`'s THE GATE defines the ten-minute,
+non-final pending notice and its in-memory reset conditions; its remote-tip sample is diagnostic
+only. `wave.py`'s THE NO-CHANGE LINE defines the five-row change summary and remaining count.
+The Queue/Heartbeat unit cases pin both boundaries; they fail with the respective fixes undone.
 
 ### Safety state reads (#1092)
 

@@ -2132,7 +2132,7 @@ class DriveCase(WaveDirCase):
         self.rc: dict[str, int] = {}
         self.out: dict[str, str] = {}
         self.calls: list[list[str]] = []
-        self.clock = 1000.0
+        self.clock: float = 1000.0
         self.attach_waits: list[float | None] = []
         self.runs = os.path.join(self.wavedir, "logs", "drive-runs", "run-1")
         self.results: int | str | None = None  # a Claude worker's results= (None: a Codex worker's status line)
@@ -2864,6 +2864,70 @@ class Queue(DriveCase):
             self.state = "RUNNING"
             self.assertEqual((self.once()[1], self.launched()), ("", []), "a task with a row is not started again")
 
+    def test_sustained_pending_gate_notice_resets_without_changing_admission(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"})
+        os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+        self.rc["gate"] = 4
+        self.out["git ls-remote"] = B + "\trefs/heads/main\n"
+        slot = wavedrive.Worker("t50", "", "", {})
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        with self.world():
+            def pending() -> None:
+                deadline = driver.gate_next
+                self.assertFalse(driver.gate_open(slot))
+                self.assertEqual(driver.gate_next, deadline, "no pending backoff")
+                self.assertEqual(self.launched(), [], "a notice never prepares or launches")
+
+            for reset in ("verdict", "red", "tip", "unreadable", "restart"):
+                with self.subTest(reset=reset):
+                    start = self.clock
+                    pending()
+                    count = len(self.attention())
+                    self.clock = start + 599
+                    pending()
+                    self.assertEqual(len(self.attention()), count)
+                    self.clock = start + 600
+                    pending()
+                    self.assertEqual(len(self.attention()), count + 1)
+                    self.assertIn("stayed pending", self.attention()[-1])
+                    self.clock += 600
+                    pending()
+                    self.assertEqual(len(self.attention()), count + 1, "once per continuous pending tip")
+                    if reset in ("verdict", "red"):
+                        self.rc["gate"] = 0 if reset == "verdict" else 1
+                        self.assertEqual(driver.gate_open(slot), reset == "verdict")
+                        self.rc["gate"] = 4
+                        self.clock += wavedrive.RETRY
+                    elif reset == "tip":
+                        self.out["git ls-remote"] = A + "\trefs/heads/main\n"
+                    elif reset == "unreadable":
+                        self.rc["git ls-remote"] = 1
+                        pending()
+                        self.rc["git ls-remote"] = 0
+                    else:
+                        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+                    # Each reset starts a new interval, even after a notice was emitted.
+                    self.clock += 1
+                    pending()
+            self.assertEqual(sum(c[0] == "gate" for c in self.calls), 28, "every call still reads the snapshot")
+            self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "attention is non-final")
+
+    def test_unreadable_tip_samples_still_notice_once_after_the_bound(self) -> None:
+        os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+        self.rc = {"gate": 4, "git ls-remote": 1}
+        self.out["gate stderr"] = "the anchor did not answer\n"
+        slot = wavedrive.Worker("t50", "", "", {})
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        with self.world():
+            for elapsed, notices in ((0, 0), (599, 0), (600, 1), (1200, 1)):
+                self.clock = 1000 + elapsed
+                self.assertFalse(driver.gate_open(slot))
+                self.assertEqual(len(self.attention()), notices)
+            self.assertIn("tip sample unreadable", self.attention()[0])
+            self.assertIn("no verdict, or the anchor did not answer", self.attention()[0])
+            self.assertEqual(driver.gate_next, 0)
+            self.assertEqual(self.launched(), [])
+
     def test_a_task_waits_for_its_prerequisites_its_hosts_capacity_and_a_halt(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far", "after": ["t42", "t43"]}, capacity={"far": 1})
         self.state = "RUNNING"
@@ -3375,7 +3439,7 @@ class Heartbeat(unittest.TestCase):
             for part, change in (
                     ("prs", lambda: world.update(prs=world["prs"].replace("rounds=2", "rounds=3"))),
                     ("halted", lambda: world.update(halted=(0, "launches were not halted\n"))),
-                    ("board rows", lambda: world.update(rows=[["t7", [["state", "merged #7"]]]])),
+                    (r'board rows \(t7 reviewing→merged\)', lambda: world.update(rows=[["t7", [["state", "merged #7"]]]])),
                     ("loops", lambda: write(loop, "LOOP RED cc at def\n")),
                     ("driver", lambda: write(lock, "")),
                     ("driver", lambda: write(os.path.join(d, "logs", "drive.log"), "2026-11-15T12:00:00Z DRIVE t7 launch: launch cued: x\n"))):
@@ -3402,6 +3466,23 @@ class Heartbeat(unittest.TestCase):
                 out = tick()
                 self.assertIn("o/staging#7 rounds=3", out, "a torn or other-version state file is no saved read")
                 self.assertNotIn("changed since", out)
+
+    def test_changed_rows_are_named_with_a_bounded_line(self) -> None:
+        old = [[f"t{n}", [["state", "launched"]]] for n in range(8)]
+        new = [[f"t{n}", [["state", "merged #7"]]] for n in range(8)]
+        self.assertEqual(wave.changed_board_rows(old, new),
+                         'board rows (t0 launched→merged; t1 launched→merged; t2 launched→merged; '
+                         't3 launched→merged; t4 launched→merged; +3 more)')
+        self.assertEqual(wave.changed_board_rows([["gone", []], ["same", [["pr", "1"]]]],
+                                               [["new", []], ["same", [["pr", "2"]]]]),
+                         'board rows (gone removed; new added; same fields changed)')
+        self.assertEqual(wave.changed_board_rows([["t7", [["state", "pending"]]], ["t7", [["state", "merged"]]]],
+                                               [["t7", [["state", "launched"]]], ["t7", [["state", "merged"]]]]),
+                         "board rows", "duplicate-task changes must not print empty parentheses")
+        line = wave.changed_board_rows([], [["x\n" + "y" * 1000, []]])
+        self.assertNotIn("\n", line)
+        self.assertLess(len(line), 100)
+        self.assertEqual(wave.changed_board_rows(None, []), "board rows (previous rows unavailable)")
 
     def test_reads_print_whole_with_their_exits_and_the_time_last(self) -> None:
         with tempfile.TemporaryDirectory() as d:
