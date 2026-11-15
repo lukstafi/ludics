@@ -87,7 +87,15 @@ driver's files: ``HEARTBEAT drive: running|not running`` (whether a process hold
 line per record of ``logs/attention.jsonl`` not printed by an earlier heartbeat (a byte offset kept
 in ``logs/attention.seen``; the first heartbeat prints every record there is). The sleep ends early
 when the attention file grows past that offset, so a turn the driver cannot answer wakes the
-coordinator within ``ATTENTION_POLL`` seconds, not at the next ten-minute tick.
+coordinator within ``ATTENTION_POLL`` seconds, not at the next tick.
+
+THE SLEEP is ``--sleep <seconds>``, by default ``HEARTBEAT_SLEEP``, 1200 s (ludics#1157's
+follow-up). Since #1175 and #1182 every wake that needs an answer ends it early (a driver attention
+line, a cued native task, a refused queue file), and a native worker's hand-off returns on its own,
+so a full tick is a liveness read only. It was 600 s, to stay under the Claude Desktop app's pause
+of an idle coordinator after about fifteen minutes; on 2026-11-15 a lone 25-minute background
+command, with nothing else running and no message meanwhile, re-invoked an idle desktop
+coordinator 12 s after it exited, so a tracked command's exit wakes it past that pause.
 
 THE NO-CHANGE LINE (ludics#1157). Every read is taken before anything is printed, and compared with
 the last full read, kept in ``logs/heartbeat.last`` (versioned JSON, replaced whole). A tick that
@@ -439,6 +447,7 @@ def utc_now() -> str:
 
 
 ATTENTION_POLL = 5
+HEARTBEAT_SLEEP = 1200  # THE SLEEP (the header)
 
 
 def attention_state(wave: Wave) -> tuple[str, str, int, int]:
@@ -581,7 +590,7 @@ def changed_board_rows(previous: Any, current: list[Any]) -> str:
 def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
     if not args or args[0].startswith("--"):
         die(f"wave heartbeat: name the wave file; usage: {USAGE}")
-    seconds = 600
+    seconds = HEARTBEAT_SLEEP
     rest = args[1:]
     if rest:
         if len(rest) != 2 or rest[0] != "--sleep" or not rest[1].isdigit():

@@ -700,12 +700,13 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
 - **Stay alive, but design for dying.** A Claude Desktop coordinator is paused by the app about
   fifteen minutes after its last main-conversation activity, and a background waiter held
   inside a native worker does NOT hold the pause. While workers are working and the user may be
-  away, keep a coordinator-side heartbeat of about ten minutes whose wake is a command the
-  harness tracks, not a timer: a background shell command whose exit re-invokes the coordinator
-  (Claude Code's `run_in_background` on `fleet-worker.sh wave heartbeat <wave.json>`, one tick:
-  ten minutes' sleep, then `prs --wave` whole, `halted`, each loop's last line and the driver's new
-  attention lines, returning early when one arrives; re-armed each tick, so the review-rounds read
-  of *Converge long reviews* arrives with the wake).
+  away, keep a coordinator-side heartbeat whose wake is a command the harness tracks, not a timer:
+  a background shell command whose exit re-invokes the coordinator, past the pause too (on
+  2026-11-15 a lone 25-minute background command woke an idle coordinator 12 s after it exited).
+  That is Claude Code's `run_in_background` on `fleet-worker.sh wave heartbeat <wave.json>`, one
+  tick: twenty minutes' sleep by default, then `prs --wave` whole, `halted`, each loop's last line
+  and the driver's new attention lines, returning early when one arrives; re-armed each tick, so
+  the review-rounds read of *Converge long reviews* arrives with the wake.
   A /loop or ScheduleWakeup tick is a fallback at most: in desktop waves they fire hours late or
   never (2026-09-19: of three ScheduleWakeups, two never surfaced and one five hours late). After
   ANY interruption - pause, restart, dropped remote-control connection, a box that slept

@@ -222,11 +222,12 @@ driver hands you as an attention line.
    the driver, and no new attention line) prints one `HEARTBEAT <wave> <time> unchanged since
    <time> ...` line instead, naming the file that holds that read (`wave.py`'s header, *THE
    NO-CHANGE LINE*). A changed tick names up to five changed board rows with state transitions
-   (or added/removed/fields changed), then counts the rest. Once every remaining worker is either
-   native (its hand-off returns to you on its own) or served by the driver, and every native task
-   still to launch is in `queue.json` (its cue is an attention line), every wake that matters ends
-   the sleep early, so a longer `--sleep`
-   (15 to 20 minutes) costs only liveness latency: the heartbeat's exit still re-invokes you.
+   (or added/removed/fields changed), then counts the rest. Its default sleep is 20 minutes
+   (`wave.py`'s header, *THE SLEEP*): when every remaining worker is either native (its hand-off
+   returns to you on its own) or served by the driver, and every native task still to launch is in
+   `queue.json` (its cue is an attention line), every wake that matters ends the sleep early. Pass
+   a shorter `--sleep` (600) only while a wake that matters does not: a CLI worker you answer
+   yourself with no driver, or a native task you launch on a merge without queueing it.
 
 7. **For a paired worker's plan,** use `peer-plan.sh save-plan <plan dir> --from-transcript
    <file>` ([paired-planning.md](paired-planning.md)).

@@ -3486,6 +3486,18 @@ class Heartbeat(unittest.TestCase):
                 self.assertIn("HEARTBEAT attention t43 turn 0: ORPHANED\n", out)
                 self.assertRegex(out.rstrip("\n").split("\n")[-1], r"^HEARTBEAT wv ")
 
+    def test_the_default_sleep_is_twenty_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "wave.json")
+            with open(path, "w") as f:
+                json.dump(wave_data(d, loops={}), f)
+            cfg = load_config(SCRIPT, {"HOME": d})
+            with mock.patch.object(wave, "run", return_value=Done(0, "")), mock.patch.object(wave, "board_rows", return_value=[]), \
+                    mock.patch.object(wave, "nap") as nap:
+                captured(wave.cmd_heartbeat, cfg, [path])
+                captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600"])
+            self.assertEqual([c.args[1] for c in nap.call_args_list], [1200, 600], "no --sleep is 1200 s; --sleep still sets it")
+
     def test_a_tick_that_reads_as_the_last_full_read_prints_one_line(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "wave.json")

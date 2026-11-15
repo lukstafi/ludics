@@ -19,7 +19,7 @@ coordinator's own turn instead:
   <wave.json>` and each `wave loop <wave.json> <name>` (coordinator-kit.md's steps 5, 6 and 9).
   Retain each session's ID across context compaction, and read its actual exit. A returned
   handle is launch evidence, never a verdict.
-- **The heartbeat is the turn's pace.** `wave heartbeat` sleeps about ten minutes and returns
+- **The heartbeat is the turn's pace.** `wave heartbeat` sleeps about twenty minutes and returns
   early when the driver writes an attention line, so the coordinator's turn stays open on it,
   answers what it printed, and arms the next tick in the same turn. Where the runtime cannot keep
   a turn open that long, an authorized heartbeat (a scheduled re-invocation the user allowed)
