@@ -955,16 +955,14 @@ class Driver:
                 if not admits(slot):
                     return  # a halt, a closed gate or an unreachable anchor is the next tick's, for every task
                 if missing:
-                    self.tell(slot, LAUNCH, f"the queued native task waits only on after tasks with no row or queue entry:"
-                                           f" {', '.join(missing)}; check their names, or launch them when ready; it is cued when they merge")
-                    self.queue_missing[queued.task] = missing
+                    self.tell_missing(slot, queued, missing)
                     continue
                 merged = f"its after tasks {', '.join(queued.after)} merged" if queued.after else "it waits on no task"
                 self.tell(slot, LAUNCH, f"{queued.task} is due: launch it ({merged}, launches not halted, the launch gate open):"
                                        " wave prep, then gate --wait right before the spawn")
                 self.note(slot, LAUNCH, "launch", CUED, f"{queued.task} is due ({merged}); the coordinator launches it")
                 continue  # a cue starts nothing, so it takes no tick's launch
-            record =self.prepared(queued.task) if row is not None else None
+            record = self.prepared(queued.task) if row is not None else None
             if record is not None and record.host != queued.host:
                 self.attention(slot, LAUNCH, "launch", f"the task is prepared on {record.host}, and the queue names {queued.host} for it:"
                                                        " a prepared task launches where it was prepared; launch it by hand")
@@ -977,12 +975,17 @@ class Driver:
                 continue  # already told: do not spend another potentially blocking gate read on it
             if admits(slot):
                 if missing:
-                    self.tell(slot, LAUNCH, f"the queued task waits only on after tasks with no row or queue entry: {', '.join(missing)};"
-                                           " check their names, or launch them when ready; this task will still start when they merge")
-                    self.queue_missing[queued.task] = missing
+                    self.tell_missing(slot, queued, missing)
                     continue  # a missing prerequisite must not hold up another due task
                 self.start(queued, slot, row is not None, record, last)
             return  # one launch a tick, and a halt, a closed gate or an unreachable anchor is the next tick's
+
+    def tell_missing(self, slot: Worker, queued: Queued, missing: tuple[str, ...]) -> None:
+        """The missing-prerequisite notice (THE QUEUE, the header), told once per unchanged list: one text for both kinds."""
+        which, then = ("queued native task", "it is cued") if queued.native else ("queued task", "this task will still start")
+        self.tell(slot, LAUNCH, f"the {which} waits only on after tasks with no row or queue entry: {', '.join(missing)};"
+                               f" check their names, or launch them when ready; {then} when they merge")
+        self.queue_missing[queued.task] = missing
 
     def prepared(self, task: str) -> Record | None:
         """A prepared task's launch record, or None when its manifest does not read (``wave launch`` says why)."""
