@@ -314,6 +314,50 @@ class WaitLoop(unittest.TestCase):
         self.assertEqual(out, f"o/r main: green (tip {C[:8]})\n  green    ci — success at {C[:8]}\n")
         self.assertNotIn("repos/o/r/actions/workflows/1", gh.asked, "a covered tip reads no file")
 
+    def test_snapshot_needs_the_waiting_gates_admission_proof_without_polling(self) -> None:
+        for shape, page, expected in (
+            ("covered", runs({"conclusion": "success", "head_sha": C}), 0),
+            ("absent", runs({"conclusion": "success", "head_sha": A}), 4),
+            ("pending", runs({"status": "queued", "conclusion": None, "head_sha": C},
+                             {"conclusion": "success", "head_sha": A}), 4),
+            ("red", runs({"conclusion": "failure", "head_sha": C}), 1),
+        ):
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as state:
+                clock = FakeClock()
+                answers = world(C, page)
+                answers.update({f"repos/o/r/compare/{A}...{C}?per_page=20": json.dumps(
+                    {"total_commits": 1, "behind_by": 0, "commits": [{"sha": C, "parents": [{"sha": A}]}]}),
+                    f"repos/o/r/commits/{C}?per_page=100": json.dumps({"files": [{"filename": "src/x.ml"}]})})
+                # Even a live coordinator observer must not refuse this one-shot read.
+                holder = Budget(state, _AsClock(clock))
+                holder.base_claim("o/r", "main")
+                try:
+                    rc, out, err, gh = base_run(answers, ["main", "--snapshot"], clock=clock, state=state)
+                    self.assertEqual(rc, expected, out + err)
+                    self.assertEqual(clock.slept, [])
+                    self.assertEqual(gh.asked.count("repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=10"), 1)
+                finally:
+                    holder.release()
+
+    def test_snapshot_preserves_the_paths_ignore_proof(self) -> None:
+        answers = world(C, runs({"conclusion": "success", "head_sha": A}),
+                        **{f"repos/o/r/compare/{A}...{C}?per_page=20": json.dumps(
+                            {"total_commits": 1, "behind_by": 0,
+                             "commits": [{"sha": C, "parents": [{"sha": A}]}]}),
+                           f"repos/o/r/commits/{C}?per_page=100": json.dumps(
+                               {"files": [{"filename": "docs/notes.md"}]})})
+        clock = FakeClock()
+        rc, out, _, _ = base_run(answers, ["main", "--snapshot"], clock=clock)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("paths-ignore of ci", out)
+        self.assertEqual(clock.slept, [])
+
+    def test_snapshot_cannot_poll(self) -> None:
+        rc, _, err, gh = base_run({}, ["main", "--snapshot", "--wait=3"])
+        self.assertEqual(rc, 2)
+        self.assertIn("cannot be combined", err)
+        self.assertEqual(gh.asked, [])
+
     def test_the_absence_grace_settles_on_the_clock_and_not_before(self) -> None:
         answers = world(C, runs({"conclusion": "success", "head_sha": A}),
                         **{f"repos/o/r/compare/{A}...{C}?per_page=20": json.dumps(

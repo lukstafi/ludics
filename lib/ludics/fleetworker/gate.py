@@ -22,8 +22,8 @@ else -- an empty, unwritten or malformed file refuses the gate.
 last-green reads (issue-wave SKILL.md, *On a regression* and the GPU loop) take the gate's selection
 rather than a hand-written second one: a read of the listing, never a write.
 
-SINGLE READ (#1154). ``gate --no-wait`` gives the base checker ``--wait=0``:
-no polling pause and no base observer claim. It may read beside the coordinator's waiting
+SINGLE READ (#1154). ``gate --no-wait`` gives the base checker ``--wait=0 --snapshot``:
+the waiting gate's admission checks, with no polling pause and no base observer claim. It may read beside the coordinator's waiting
 observer, as any one-shot ``base`` does; it never becomes a second polling observer. No saved gate verdict
 file is reused, regardless of its SHA, age or writer: the checker reads GitHub and the current
 integration records under the ordinary policy. Missing verdicts refuse this tick. This option
@@ -293,6 +293,8 @@ def checker_read(cfg: Config, helper: str, target: str, branch: str, where: str,
         err(f"BASE REFUSED: {where}: cannot stage the checker's advisory-red file; dispatch blocked")
         return None
     argv = [helper, "--repo", target, "base"] + ([branch] if branch else []) + [f"--wait={0 if no_wait else BASE_WAIT}", "--interim"]
+    if no_wait:
+        argv += ["--snapshot"]
     argv += ["--advisory-red", advisory]
     records = ""
     if rows:

@@ -108,6 +108,7 @@ class SingleRead(unittest.TestCase):
                 self.assertEqual(gate.cmd_gate(cfg, args), 1 if result else 0)
                 self.assertEqual(checker.call_count, 1)
                 self.assertIn("--wait=0" if no_wait else "--wait=360", checker.call_args.args[1])
+                self.assertEqual("--snapshot" in checker.call_args.args[1], no_wait)
                 self.assertEqual(anchor.call_count, 1 if result else 2, "green still rechecks the lease and halt")
 
     def test_no_wait_cannot_start_an_outer_polling_loop(self) -> None:

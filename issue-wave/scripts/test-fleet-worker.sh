@@ -1243,7 +1243,7 @@ grep -q -- '--wait=301 ' "$BASE_CALL_LOG" && ko "the hand-spelled 301 ceiling is
 # #1154: the driver's one-shot gate keeps the native coordinator's base observer free.
 expect "a one-shot gate admits a green without the base polling wait" 0 "BASE GREEN" -- \
   "$FW" gate --target-repo example/project --base-branch topic --no-wait
-grep -Fxq -- '--repo example/project base topic --wait=0 --interim --advisory-red FILE grace=300 interval=60' "$BASE_CALL_LOG" &&
+grep -Fxq -- '--repo example/project base topic --wait=0 --interim --snapshot --advisory-red FILE grace=300 interval=60' "$BASE_CALL_LOG" &&
   ok "...the checker receives wait zero with the ordinary policy" || ko "one-shot checker arguments lost"
 expect "a one-shot gate without a verdict refuses this tick" 1 "base checker exit 4" -- \
   env SHIM_BASE_RC=4 "$FW" gate --target-repo example/project --no-wait

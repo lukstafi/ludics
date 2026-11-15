@@ -1,4 +1,13 @@
 """``pr-review.sh base [owner/name] [branch] [--wait[=s]] [--interim] [--integration-records f]``
+
+SNAPSHOT (#1154). ``--snapshot`` applies the waiting gate's admission checks in one round,
+with no observer claim or polling pause. It requires --wait=0 (the default); a missing tip,
+a tip not yet covered, or a pending source cannot fall back to an older green merely because
+there is no wait. The ordinary exact-tip, interim and paths-ignore proofs can still admit it.
+No saved gate verdict is consumed, of any SHA, age or writer. An absent run's elapsed grace
+is not carried between snapshots; the launch gate uses a positive grace and needs a proof or
+a judged tip.
+
 ``pr-review.sh base [owner/name] [branch] --last-green <red sha> [--greens <file>|-]``
 
 Is the base branch's CI green? Ported from the shell's ``cmd_base`` and the helpers only it uses
@@ -1409,6 +1418,7 @@ class Args:
     advisory_red: str = ""
     last_green: str = ""
     greens: str = ""
+    snapshot: bool = False
 
 
 def advisory_red_refusal(path: str) -> str:
@@ -1456,6 +1466,7 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
     """The shell's parse, in its case order: the first SLASHED argument is the repo unless one is
     already named -- branches carry slashes too (``claude/...``)."""
     interim = False
+    snapshot = False
     records = ""
     advisory_red = ""
     last_green_red = ""
@@ -1466,7 +1477,9 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg == "--interim":
+        if arg == "--snapshot":
+            snapshot = True
+        elif arg == "--interim":
             interim = True
         elif arg == "--integration-records":
             if i + 1 >= len(args):
@@ -1517,12 +1530,14 @@ def parse_args(args: Sequence[str], repo: str, knobs: Knobs) -> Args:
         i += 1
     if not _DIGITS.fullmatch(wait_text):
         die(f"base: --wait takes seconds, got '{wait_text}'")
+    if snapshot and int(wait_text) != 0:
+        die("base: --snapshot cannot be combined with a positive --wait")
     if greens and not last_green_red:
         die("base: --greens is --last-green's candidate list; name the red tip with --last-green <sha>")
-    if last_green_red and (waited or interim or records or advisory_red):
+    if last_green_red and (waited or snapshot or interim or records or advisory_red):
         die("base: --last-green is a lookup, not a verdict: it takes none of --wait, --interim,"
             " --integration-records, --advisory-red (a local loop's pass records go in as --greens)")
-    return Args(repo, branch, int(wait_text), interim, records, advisory_red, last_green_red, greens)
+    return Args(repo, branch, int(wait_text), interim, records, advisory_red, last_green_red, greens, snapshot)
 
 
 def run(session: GhSession, args: list[str], *, clock: Clock | FuncClock | None = None,
@@ -1636,7 +1651,7 @@ class Wait:
                 budget.waited = False
             # Re-read every round: a push during the wait moves the goal with it.
             tip = self.tip_read()
-            if not tip and wait_for != 0:
+            if not tip and (wait_for != 0 or self.args.snapshot):
                 fail(3, f"could not read {repo} {branch}'s tip ({b.err_line()}) — base --wait cannot know",
                      "which commit needs the verdict. This is UNKNOWN, not green: retry.")
             # The workflow list is re-read whenever the observed tip moves: a sibling merge can ADD
@@ -1677,7 +1692,7 @@ class Wait:
                     interim_green = False
                     continue
                 break
-            if wait_for <= 0:
+            if wait_for <= 0 and not self.args.snapshot:
                 break
             # Only a red AT THE TIP ends the wait early, and only once the tip is confirmed.
             if rnd.red_at_tip > 0 and self.tip_read() == tip:
@@ -1743,7 +1758,8 @@ class Wait:
                 no_tip_verdict = True
                 break
             if not now - started < wait_for:
-                waited_note = (f"(--wait ceiling of {wait_for // 60} min reached with a run still"
+                waited_note = ("(snapshot: no admission proof for the tip; not polling)" if self.args.snapshot else
+                               f"(--wait ceiling of {wait_for // 60} min reached with a run still"
                                " unfinished or the tip unjudged — NOT a verdict for the tip)")
                 no_tip_verdict = True
                 break

@@ -615,7 +615,9 @@ the PR records the batches and their outcomes.
 
 ### Driver launch-gate reads (#1154)
 
-The driver uses `gate --no-wait`, forwarding `--wait=0` to the base checker. A missing verdict
+The driver uses `gate --no-wait`, forwarding `--wait=0 --snapshot` to the base checker. Snapshot mode applies the waiting
+gate's admission checks once, refusing an uncovered or pending tip rather than falling back
+to an older green; a paths-ignore proof can still admit the tip. A missing verdict
 leaves launches for a later tick, after returned turns have been answered. This uses the existing
 one-shot base read rather than a background observer or a saved gate verdict: the coordinator's
 waiting gate retains the branch's one observer, and no saved gate verdict admits a launch.
