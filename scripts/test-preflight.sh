@@ -1292,8 +1292,8 @@ if gtree guards_scope; then
   if command -v python3 >/dev/null 2>&1; then
     expect "--guards all runs every guard, the Python ones under python3" \
       0 'ran-reporters' -- "$PF" --root "$T" --guards all syntax
-    expect "...the last of them included" 0 'ran-py-wrapper' -- "$PF" --root "$T" --guards all syntax
-    expect "...and each one is a step of the summary" 0 '7 passed, 0 failed' -- "$PF" --root "$T" --guards all syntax
+    expect "...the last of them included" 0 'ran-python-shards' -- "$PF" --root "$T" --guards all syntax
+    expect "...and each one is a step of the summary" 0 '8 passed, 0 failed' -- "$PF" --root "$T" --guards all syntax
   else
     ok "SKIP: no python3, so the --guards all controls do not run here (CI runs them)"
   fi
