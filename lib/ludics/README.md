@@ -536,11 +536,10 @@ prreview/rerun.py
 Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `lib/`
 `test_*.py` module paths at `PYTHON_TEST_CUTS`. CI passes job-index/job-total, so losing
 one matrix row refuses against the cut count; new modules enter a range automatically.
-`scripts/test-python-shards.py` compares the workflow's complete shard union to all module
-paths, once each. Removing `test_bgrun` from the selector fails that coverage assertion
-(negative control); the unchanged selector passes. Pyright remains one independent job. Local review found the missing preflight guard-table
-registration; the initial preflight reproduced three pin failures before that registration
-was added with triggers for the checker, runner, workflow and package paths.
+`scripts/test-python-shards.py` pins the workflow's shard rows, cut count and complete
+module coverage. Its module-path boundary is stated in the checker header. Pyright runs
+in one independent job; the checker is registered among preflight's guards, with triggers
+for the checker, runner, workflow and package paths.
 The tmux setup is shared by fleet jobs through `.github/actions/setup-tmux`, retaining
 both callers' one-minute ceilings and the fallback's 45s timeout plus 5s kill grace.
 

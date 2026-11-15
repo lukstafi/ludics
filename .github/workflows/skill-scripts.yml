@@ -157,7 +157,7 @@ jobs:
         run: scripts/test-py.sh || { echo '::error title=suite failed::test-py.sh'; exit 1; }
       - name: Check Python unit shard coverage and refusals
         if: ${{ !cancelled() }}
-        run: python3 scripts/test-python-shards.py
+        run: python3 scripts/test-python-shards.py || { printf '%s\n' '::error title=suite failed::test-python-shards.py'; exit 1; }
 
   lint:
     name: syntax, shellcheck, mode bits, parse guard
@@ -554,16 +554,18 @@ jobs:
     runs-on: ubuntu-latest
     # Four contiguous module ranges, with the matrix size checked against the cut count:
     # deleting a row refuses, and new test modules land in a range without editing this job.
-    # Baseline run 43549924107: 373s unit step, 416s combined job. Split rather than raise
-    # its 390s watchdog. Initial shard cap is THE CAPS' 5-minute floor; own PR measurements
-    # replace this estimate before landing. Keep the watchdog inside the job with setup room.
+    # Baseline 43549924107: 373s unit step, 416s combined job. PR run 43720533138:
+    # shard steps 168/62/54/86s, jobs 173/66/64/92s (one green sample per shard).
+    # THE CAPS: max(5, ceil(1.5 x 173 / 60)) = 5 minutes; watchdog 1.5 x 168 = 252s,
+    # leaving 48s for setup and stack output. Move the first cut from gate to execution
+    # to transfer that module (and farsideclose) from the heavy first shard to the second.
     timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
         part: [0, 1, 2, 3]
     env:
-      PYTHON_TEST_CUTS: ludics.tests.test_fleetworker_gate|ludics.tests.test_fleetworker_wave|ludics.tests.test_prreview_gate
+      PYTHON_TEST_CUTS: ludics.tests.test_fleetworker_execution|ludics.tests.test_fleetworker_wave|ludics.tests.test_prreview_gate
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -572,7 +574,7 @@ jobs:
       - name: The package's unit tests
         # One process timer dumps all thread stacks and exits 1 before the outer job cap.
         env:
-          LUDICS_TEST_WATCHDOG: '240'
+          LUDICS_TEST_WATCHDOG: '252'
         run: scripts/py scripts/run-python-tests.py --shard "${{ strategy.job-index }}/${{ strategy.job-total }}"
 
   # ---- the macOS suites: weekly, in macos-weekly.yml (THE MACOS QUEUE above) ----------------
