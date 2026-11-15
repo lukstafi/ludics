@@ -234,6 +234,9 @@ jobs:
       - name: Python interpreter wrapper
         if: ${{ !cancelled() }}
         run: scripts/test-py.sh || { echo '::error title=macOS suite failed::test-py.sh'; exit 1; }
+      - name: Python unit shard coverage and refusals
+        if: ${{ !cancelled() }}
+        run: python3 scripts/test-python-shards.py
       - name: execution reservations
         if: ${{ !cancelled() }}
         run: python3 issue-wave/scripts/test-fleet-execution.py || { echo '::error title=macOS suite failed::test-fleet-execution.py'; exit 1; }

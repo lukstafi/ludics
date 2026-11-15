@@ -6,10 +6,10 @@ mix their histories. Cases probing the forward set it themselves; other environm
 
 Importing this package arms a watchdog: once ``LUDICS_TEST_WATCHDOG`` seconds (default 600) have
 passed, faulthandler prints every thread's stack to stderr and exits the process with status 1.
-It is one timer for the whole process, not one per test, so it bounds the run: the full suite
-took about 235 s on the CI runner in 2026-11 (skill-scripts.yml's python job states the measure).
-``0`` disables it. CI sets a lower bound, because its job cap is shorter than the default and a
-job killed at the cap prints nothing.
+It is one timer for the whole process, not one per test. The unsharded suite took 373 s
+in CI run 43549924107 (2026-11-14). CI now runs module shards, with their own measured
+watchdog set in skill-scripts.yml. ``0`` disables it. The default still covers local full
+suite discovery; CI overrides it to leave setup and stack-dump room inside each job cap.
 
 Why: while writing the tests for ludics-lite#736, two in-process flock deadlocks (a
 ``take_slot`` slot lock leaked onto a descriptor nothing could reach any more; the registry's

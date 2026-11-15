@@ -23,7 +23,7 @@ switch there breaks every wave launch.
   per-repository config file) and the project states them.
 - `issue-wave/scripts/fleet-worker.sh` and `ship-pr/scripts/pr-review.sh` are thin shims over the
   package `lib/ludics` (`fleetworker/`, `prreview/`, ...), run through `scripts/py` (Python >= 3.12).
-  `lib/ludics/README.md` maps the package. CI's `python package, pyright and unit tests (ubuntu)`
+  `lib/ludics/README.md` maps the package. CI's `python package, pyright (ubuntu)` and `python unit tests` shards
   job runs strict pyright (`npx --yes pyright@1.1.414` from the checkout root) and
   `scripts/py -m unittest discover -s lib -t lib -p 'test_*.py' -v`; run both, slot-wrapped, before
   every push that touches `lib/`. The shell suites drive the shims end to end: run the ones your

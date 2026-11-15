@@ -1,0 +1,23 @@
+name: Set up tmux
+description: Prefer image tmux, with one bounded apt fallback on Ubuntu
+runs:
+  using: composite
+  steps:
+    - name: Find or install tmux
+      shell: bash
+      # Bound update AND install, including DNS stalls, to 45s plus a 5s kill grace.
+      # Callers retain their one-minute wrapper ceiling. Failure stops setup; success
+      # must still provide tmux. jq was installed by the preceding setup-jq action.
+      run: |
+        set -e
+        if command -v tmux >/dev/null 2>&1; then
+          printf '%s\n' 'Using tmux from the runner image'
+        else
+          timeout --kill-after=5s 45s sudo bash -c 'apt-get update -q && apt-get install -y -q tmux'
+        fi
+        if ! command -v tmux; then
+          printf '%s\n' '::error::tmux is missing after setup'
+          exit 1
+        fi
+        tmux -V
+        command -v jq
