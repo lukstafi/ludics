@@ -314,6 +314,54 @@ class WaitLoop(unittest.TestCase):
         self.assertEqual(out, f"o/r main: green (tip {C[:8]})\n  green    ci — success at {C[:8]}\n")
         self.assertNotIn("repos/o/r/actions/workflows/1", gh.asked, "a covered tip reads no file")
 
+    def test_snapshot_needs_the_waiting_gates_admission_proof_without_polling(self) -> None:
+        for shape, page, expected in (
+            ("covered", runs({"conclusion": "success", "head_sha": C}), 0),
+            ("absent", runs({"conclusion": "success", "head_sha": A}), 4),
+            ("pending", runs({"status": "queued", "conclusion": None, "head_sha": C},
+                             {"conclusion": "success", "head_sha": A}), 4),
+            ("red", runs({"conclusion": "failure", "head_sha": C}), 1),
+        ):
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as state:
+                clock = FakeClock()
+                answers = world(C, page)
+                answers.update({f"repos/o/r/compare/{A}...{C}?per_page=20": json.dumps(
+                    {"total_commits": 1, "behind_by": 0, "commits": [{"sha": C, "parents": [{"sha": A}]}]}),
+                    f"repos/o/r/commits/{C}?per_page=100": json.dumps({"files": [{"filename": "src/x.ml"}]})})
+                # Even a live coordinator observer must not refuse this one-shot read.
+                holder = Budget(state, _AsClock(clock), pid=os.getppid())
+                holder.base_claim("o/r", "main")
+                try:
+                    blocked, _, refusal, unread = base_run(answers, ["main", "--wait=1"], clock=clock, state=state)
+                    self.assertEqual(blocked, 2, refusal)
+                    self.assertIn("already has a base observer", refusal)
+                    self.assertEqual(unread.asked, [], "the control proves this is a foreign live observer")
+                    rc, out, err, gh = base_run(answers, ["main", "--snapshot"], clock=clock, state=state)
+                    self.assertEqual(rc, expected, out + err)
+                    self.assertEqual(clock.slept, [])
+                    self.assertEqual(gh.asked.count("repos/o/r/actions/workflows/1/runs?branch=main&event=push&per_page=10"), 1)
+                finally:
+                    holder.release()
+
+    def test_snapshot_preserves_the_paths_ignore_proof(self) -> None:
+        answers = world(C, runs({"conclusion": "success", "head_sha": A}),
+                        **{f"repos/o/r/compare/{A}...{C}?per_page=20": json.dumps(
+                            {"total_commits": 1, "behind_by": 0,
+                             "commits": [{"sha": C, "parents": [{"sha": A}]}]}),
+                           f"repos/o/r/commits/{C}?per_page=100": json.dumps(
+                               {"files": [{"filename": "docs/notes.md"}]})})
+        clock = FakeClock()
+        rc, out, _, _ = base_run(answers, ["main", "--snapshot"], clock=clock)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("paths-ignore of ci", out)
+        self.assertEqual(clock.slept, [])
+
+    def test_snapshot_cannot_poll(self) -> None:
+        rc, _, err, gh = base_run({}, ["main", "--snapshot", "--wait=3"])
+        self.assertEqual(rc, 2)
+        self.assertIn("cannot be combined", err)
+        self.assertEqual(gh.asked, [])
+
     def test_the_absence_grace_settles_on_the_clock_and_not_before(self) -> None:
         answers = world(C, runs({"conclusion": "success", "head_sha": A}),
                         **{f"repos/o/r/compare/{A}...{C}?per_page=20": json.dumps(
@@ -865,17 +913,38 @@ class RepositoryAdvisoryInterim(unittest.TestCase):
         })
         return answers
 
-    def _base(self, answers: dict[str, Answer], advisory: bool = False) -> tuple[int, str, list[dict[str, str]] | None]:
+    def _base(self, answers: dict[str, Answer], advisory: bool = False, *, snapshot: bool = False) -> tuple[int, str, list[dict[str, str]] | None]:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "advisory-red.json")
-            args = ["main", "--wait=120", "--interim"] + (["--advisory-red", path] if advisory else [])
-            rc, out, err, _ = base_run(answers, args, clock=FakeClock(),
+            args = ["main", "--snapshot" if snapshot else "--wait=120", "--interim"] + (["--advisory-red", path] if advisory else [])
+            clock = FakeClock()
+            rc, out, err, _ = base_run(answers, args, clock=clock,
                                        knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+            if snapshot:
+                self.assertEqual(clock.slept, [], "snapshot interim proofs never poll")
             record = None
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as f:
                     record = json.load(f)
         return rc, out + err, record
+
+    def test_snapshot_keeps_waiting_interim_admission_with_an_older_green(self) -> None:
+        for shape, answers, advisory, expected in (
+            ("green head", self._world(), False, 0),
+            ("advisory-only head", self._world(head_status="in_progress", head_concl=None,
+                head_jobs=[job(UBUNTU, "success"), job(MAC, None)]), True, 0),
+            ("required red", self._world(head_concl="failure",
+                head_jobs=[job(UBUNTU, "failure"), job(MAC, "success")]), True, 4),
+        ):
+            with self.subTest(shape=shape):
+                waited, out, _ = self._base(answers, advisory)
+                self.assertEqual(waited, expected, out)
+                snapshot, out, _ = self._base(answers, advisory, snapshot=True)
+                self.assertEqual(snapshot, expected, out)
+                if expected == 0:
+                    self.assertIn("green, interim", out)
+                else:
+                    self.assertNotIn("green, interim", out)
 
     def test_a_head_still_running_only_advisory_jobs_is_green_meanwhile(self) -> None:
         """`merge` does not wait for the macOS jobs, so the merged head's run is usually still going

@@ -433,10 +433,10 @@ branch). The verbs do the rest, on one of three routes
   <seconds>` right before the runtime's spawn, then `agent=` and `state=launched` on its row
   ([native-workers.md](references/native-workers.md#placement-and-launch)).
 
-The driver's launches shape yours in two ways. It reads the launch gate itself, synchronously
-inside its tick (a `base --wait=360` read), so through a merge burst it answers no worker's turn
-until that read ends; and while it reads, your own `gate` for a native spawn is refused because the
-branch already has a base observer ("Nothing was read"): run it again. And the queue launches CLI
+The driver's launches shape yours in two ways. It reads the launch gate with `--no-wait`:
+one base read, with no polling pause or base observer held; no verdict leaves the task for a
+later tick, while returned turns are answered each tick. Your own waiting `gate` for a native
+spawn can keep the branch's one base observer. The queue launches CLI
 tasks only, so a native task that follows a queued CLI task is yours to launch on that task's
 merge: its board row turning `merged`, read off the heartbeat, is the cue.
 

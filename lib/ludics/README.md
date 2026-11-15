@@ -623,6 +623,21 @@ wait/start fixtures in `test_prreview_mergebuild.py`, fail on launch base `e859b
 Task t1156's logs live under `~/.local/state/issue-wave/wave-20261115-ludics/scratch/t1156/runs/`;
 the PR records the batches and their outcomes.
 
+### Driver launch-gate reads (#1154)
+
+The driver uses `gate --no-wait`, forwarding `--wait=0 --snapshot` to the base checker. Snapshot mode applies the waiting
+gate's admission checks once, refusing an uncovered or pending tip rather than falling back
+to an older green; a paths-ignore proof can still admit the tip. A missing verdict
+leaves launches for a later tick, after returned turns have been answered. This uses the existing
+one-shot base read rather than a background observer or a saved gate verdict: the coordinator's
+waiting gate retains the branch's one observer, and no saved gate verdict admits a launch.
+The ordinary gate's wait, integration-record recheck, advisory policy and lease/halt checks stay
+in place. `--no-wait` and outer `--wait` are mutually exclusive. Drive and gate unit cases pin the
+same-tick answer, checker arguments and option refusal. Pending snapshots return exit 4: the
+driver silently retries next tick without moving its retry deadline. Red refusals still notify
+once and back off. Regression controls and macOS verification are recorded in
+[PR #1171](https://github.com/lukstafi/ludics/pull/1171).
+
 ### Safety state reads (#1092)
 
 At the six read sites below, only ENOENT beneath searchable directories means absent

@@ -289,7 +289,9 @@ driver hands you as an attention line.
 
    Each tick it starts the first task that is due: its `after` tasks merged, its host under its
    capacity, launches not halted, and the launch gate open. It reads the gate before it prepares
-   anything, so under a red base the queued tasks wait unprepared (you are told once) and none is
+   anything, using `gate --no-wait`: no polling pause or base observer held, and no verdict
+   leaves the task for a later tick while returned turns are still answered. Your waiting native
+   gate can keep the branch's one base observer. Under a red base the queued tasks wait unprepared (you are told once) and none is
    left with a stale base. It then prepares the task at the main branch's tip as fetched then, so
    a dependent starts from the base its prerequisite merged into, and launches it. A prep that
    refuses (a rival PR, say) is an attention line and that task is yours; a launch its own gates

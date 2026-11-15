@@ -18,7 +18,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import farside, revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
+from ludics.fleetworker import farside, gate, revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -2205,6 +2205,38 @@ class DriveCase(WaveDirCase):
 class Drive(DriveCase):
     """wave drive: each returned turn answered once, by its marker, and everything else handed up."""
 
+    def test_a_returned_turn_is_answered_in_the_tick_with_no_gate_verdict(self) -> None:
+        with open(self.path, "w") as f:
+            json.dump(wave_data(self.dir, vars={"COORD": "s", "MAIN": "main"}, **MIXED), f)
+        with open(os.path.join(self.wavedir, "queue.json"), "w") as f:
+            json.dump({"capacity": {"far": 2}, "tasks": [
+                {"task": "t50", "profile": "sol", "host": "far"}]}, f)
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
+        with (mock.patch.object(gate, "base_read", return_value=gate.Read(1, pending=True)),
+              mock.patch.object(gate, "anchor_gate", return_value=0)):
+            self.rc["gate"] = gate.cmd_gate(self.cfg, ["--target-repo", "o/staging", "--no-wait"])
+        self.out["gate stderr"] = "BASE REFUSED: NO VERDICT YET\n"
+        for directory in ("logs", "msgs"):
+            os.makedirs(os.path.join(self.wavedir, directory), exist_ok=True)
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        with self.world():
+            first = captured(lambda: driver.round())[1]
+            self.assertEqual(self.ledger(), [(0, "request", "answered")], "answered in the first pending tick")
+            self.assertNotIn("DRIVE ATTENTION", first)
+            self.assertEqual((driver.gate_next, driver.gate_refusal), (0, ""))
+            self.clock += 1
+            self.out["gate stderr"] = "BASE REFUSED: NO VERDICT for another tip\n"
+            second = captured(lambda: driver.round())[1]
+            self.assertNotIn("DRIVE ATTENTION", second)
+            self.assertEqual((driver.gate_next, driver.gate_refusal), (0, ""))
+            self.assertEqual(sum(c[0] == "gate" for c in self.calls), 2, "pending is read next tick, not after RETRY")
+        self.assertEqual(self.attention(), [])
+        self.assertEqual(self.ledger(), [(0, "request", "answered")])
+        gate_call = next(c for c in self.calls if c[0] == "gate")
+        self.assertIn("--no-wait", gate_call, "the tick must never enter the base polling wait")
+        self.assertFalse(any(c[:2] == ["wave", "prep"] for c in self.calls))
+
     def test_a_request_is_assigned_and_resumed_in_one_call_and_never_twice(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
         self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
@@ -2953,7 +2985,7 @@ class Queue(DriveCase):
         with self.world():
             self.rc, self.out = {"gate": 1}, {"gate stderr": "reading\n" + red}
             out = tick()
-            self.assertEqual(self.calls, [["halted"], ["gate", "--target-repo", "o/staging", "--base-branch", "main"]], "the gate, and nothing prepared")
+            self.assertEqual(self.calls, [["halted"], ["gate", "--target-repo", "o/staging", "--base-branch", "main", "--no-wait"]], "the gate, and nothing prepared")
             self.assertIn("DRIVE ATTENTION t50 launch: the launch gate refuses, so no queued task is prepared or launched until it passes"
                           " (read again every 300 s): BASE REFUSED: o/staging main: red at abc", out)
             self.assertEqual((tick(), self.calls), ("", [["halted"]]), "not read again before its time: one base read each RETRY")

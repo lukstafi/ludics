@@ -162,9 +162,14 @@ refusals are): an unchanged list is said once, an empty list clears it, and a re
 tells it again. A task also
 waiting on capacity, a halt, THE GATE or a prerequisite with a row or queue entry stays silent.
 THE GATE is the launch gate, ``gate --target-repo <repository> --base-branch <MAIN>``, read BEFORE
-a task is prepared. A launch needs the branch's tip to be the prepared base, and a prep is not
+a task is prepared, with ``--no-wait``: a single checker read, no base observer held and no
+polling pause. Pending (exit 4) is silent and read again next tick, without a retry backoff;
+the coordinator's waiting gate keeps its one observer. VERDICT FILE BOUNDARY: no saved gate verdict is accepted, for any SHA, age or writer.
+Every admission comes from this invocation's checker read of the branch, under gate.py's policy;
+logs and foreign or stale verdict files admit nothing. A launch needs the branch's tip to be the prepared base, and a prep is not
 done twice, so a task prepared under a red base would be stale the moment the fix merged. While the
-gate refuses, nothing is prepared or launched; the coordinator is told once for each refusal it
+gate refuses, nothing is prepared or launched. For other refusals, the coordinator is told once
+for each refusal it
 has not been told (kept in memory: a restarted driver tells it again), and the gate is read again
 after ``RETRY`` seconds.
 A PREPARED task (a ``pending`` row) is launched where and at what its prep recorded, the manifest's
@@ -946,12 +951,12 @@ class Driver:
         """THE GATE (the header)."""
         if now() < self.gate_next:
             return False
-        done = self.call("gate", "--target-repo", self.wave.repository, "--base-branch", self.wave.vars["MAIN"], gated="both")
+        done = self.call("gate", "--target-repo", self.wave.repository, "--base-branch", self.wave.vars["MAIN"], "--no-wait", gated="both")
         if done.rc == 0:
             self.gate_refusal = ""
             return True
         if done.rc == 4:
-            return False  # the anchor did not answer: the next tick's
+            return False  # pending snapshot or unanswered anchor: silently try the next tick
         self.gate_next = now() + RETRY
         lines = [line for line in (substitution(done.out) + "\n" + self.err).splitlines() if line.strip()]
         why = (lines[-1].strip() if lines else f"gate exit {done.rc}")[:300]

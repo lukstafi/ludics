@@ -14,6 +14,7 @@ import unittest
 from typing import cast
 from unittest import mock
 
+from ludics import cli
 from ludics.fleetworker import gate, lease
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.gate import Read, advisory_red_jobs, verdict_line
@@ -92,6 +93,30 @@ class VerdictLine(unittest.TestCase):
         for report in ("", "o/rr master: another repository\n", "  o/r master: indented\n"):
             with self.subTest(report=report):
                 self.assertEqual(verdict_line(report, "o/r"), "")
+
+
+class SingleRead(unittest.TestCase):
+    def test_no_wait_reaches_the_checker_without_a_polling_wait(self) -> None:
+        cfg = cast(Config, types.SimpleNamespace(checkout=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")), env={}))
+        for no_wait, result in ((True, 4), (True, 0), (False, 0), (False, 4)):
+            with (self.subTest(no_wait=no_wait, result=result),
+                  mock.patch.object(gate, "anchor_gate", return_value=0) as anchor,
+                  mock.patch.object(gate, "integration_records", return_value=""),
+                  mock.patch.object(gate, "_read", return_value="[]"),
+                  mock.patch.object(gate, "base_checker", return_value=(result, "NO VERDICT YET")) as checker):
+                args = ["--target-repo", "o/r"] + (["--no-wait"] if no_wait else [])
+                self.assertEqual(gate.cmd_gate(cfg, args), (4 if no_wait else 1) if result else 0)
+                self.assertEqual(checker.call_count, 1)
+                self.assertIn("--wait=0" if no_wait else "--wait=360", checker.call_args.args[1])
+                self.assertEqual("--snapshot" in checker.call_args.args[1], no_wait)
+                self.assertEqual(anchor.call_count, 1 if result else 2, "green still rechecks the lease and halt")
+
+    def test_no_wait_cannot_start_an_outer_polling_loop(self) -> None:
+        cfg = cast(Config, types.SimpleNamespace(env={}))
+        for args in (["--no-wait", "--wait", "2"], ["--wait", "2", "--no-wait"]):
+            with self.subTest(args=args), self.assertRaises(cli.Exit) as caught:
+                gate.cmd_gate(cfg, list(args))
+            self.assertEqual(caught.exception.message, "gate: --no-wait cannot be combined with --wait")
 
 
 class WaitDeadline(unittest.TestCase):
