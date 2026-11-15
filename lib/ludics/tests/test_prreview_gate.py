@@ -440,6 +440,47 @@ class GateLoop(unittest.TestCase):
         self.assertEqual((rc, gate.verdict, gate.check_sha, gate.gate_base), (0, "green", "h1", "b1"))
         self.assertEqual(clock.sleeps, [60], "one interval between the two reads")
 
+    def test_cancelled_jobs_are_named_once_per_attempt_during_wait(self) -> None:
+        for advisory, second_attempt, wait, red in (
+            (False, False, 600, False), (False, True, 600, False),
+            (True, False, 600, False), (False, False, 0, False),
+            (False, False, 600, True),
+        ):
+            with self.subTest(advisory=advisory, second_attempt=second_attempt, wait=wait, red=red):
+                gh = FakeGh()
+                gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
+                gh.on("pulls/7", out="h1\tb1\ttopic")
+                def row(conclusion: str, job: int) -> str:
+                    status = "in_progress" if conclusion == "pending" else "completed"
+                    return f"build job\t{conclusion}\thttps://github.com/o/r/actions/runs/100/job/{job}\t1\t{status}"
+                other = "other\tfailure\tu\t1\tcompleted" if red else "other\tpending\tu\t1\tin_progress"
+                sequence = [row("pending", 10), row("cancelled", 10), row("cancelled", 10)]
+                if second_attempt:
+                    sequence += [row("pending", 20), row("cancelled", 20), row("cancelled", 20)]
+                sequence += [row("success", 20)]
+                gh.on("check-runs", out=[f"{r}\n{other}" for r in sequence])
+                gh.on("actions/runs?head_sha=h1", out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t1")
+                gh.on("actions/runs/100/jobs", out="other\tpending\t2026-01-01T00:00:00Z\t-")
+                gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^build job$" if advisory else "^advisory$")
+                err = io.StringIO()
+                # Observe stderr at each pause: the line must precede the final report.
+                notices_at_pause: list[int] = []
+                original_sleep = gate.clock.sleep
+                def sleep(seconds: float) -> None:
+                    notices_at_pause.append(err.getvalue().count("cancelled job"))
+                    original_sleep(seconds)
+                gate.clock = FuncClock(time=gate.clock.now, sleep=sleep)
+                with contextlib.redirect_stderr(err):
+                    rc = gate.check("7", wait)
+                expected = 0 if advisory or not wait or red else 2 if second_attempt else 1
+                self.assertEqual(err.getvalue().count("cancelled job"), expected)
+                self.assertEqual(rc, 1 if red else 4)
+                if expected:
+                    self.assertEqual(notices_at_pause[:3], [0, 1, 1])
+                    self.assertIn("'build job'", err.getvalue())
+                    self.assertIn("run 100", err.getvalue())
+                    self.assertIn("pr-review.sh rerun 'o/r#7' 100", err.getvalue())
+
     def test_a_superseded_head_is_five_and_an_unread_reread_is_three(self) -> None:
         for second, want in (("h2\tb1\ttopic", 5), ("", 3)):
             # The unread re-read under a wait (600) is read again until the wait is spent: 3.
@@ -749,6 +790,7 @@ class GateLoop(unittest.TestCase):
                   out=f"2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t{suite}")
             gh.on("actions/runs/100/jobs", out=f"{jobs}\nmacos\tpending\t{old}\t-")
             with self.subTest(waive=waive, suite=suite, jobs=jobs):
+                gh.on("actions/runs/100/jobs", out="other\tpending\t2026-01-01T00:00:00Z\t-")
                 gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
                 self.assertEqual((gate.check("7", 0, waive=waive), gate.verdict), want)
 
@@ -772,6 +814,7 @@ class GateLoop(unittest.TestCase):
                   out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t1")
             gh.on("actions/runs/100/jobs", out=f"{jobs}\nmacos\tpending\t{old}\t-")
             with self.subTest(waive=waive, jobs=jobs):
+                gh.on("actions/runs/100/jobs", out="other\tpending\t2026-01-01T00:00:00Z\t-")
                 gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
                 self.assertEqual((gate.check("7", 0, waive=waive), gate.verdict), want)
 

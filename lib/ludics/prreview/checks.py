@@ -61,6 +61,15 @@ the exit stays 4 and the trailer's vocabulary is unchanged. What no wait resolve
 the bound, exit 4 too (``Gate.check``): a PR that conflicts with its base, ``verdict=conflict``
 (ludics#1110), and a head held by stopped runs alone, ``verdict=unjudged`` (ludics#1097).
 
+Cancellation notice boundary (wave-20261115-ludics, q2): the shared ``Gate.check`` wait loop
+writes one stderr line per completed cancelled job, only on a wait round with no judged red.
+It reads only the selected, non-advisory fold already fetched (including advisory-workflow
+filtering); an explicit ``--check`` selection includes advisory names as usual. Only job URLs
+ending in ``/actions/runs/<numeric run>/job/<numeric job>`` (with optional suffix) identify an
+attempt: a rerun's new job id gets a new line. Missing or other URLs, workflow-only cancellations,
+stale/action_required conclusions, unread rounds and one-shot reads add no notice. The line names
+the job, run and rerun command; it does not change verdicts, exits, reads, budgets or recovery.
+
 ``--settle`` (#1039; only with a ``--wait`` of more than 0 seconds) keeps the wait going past a red while a check the fold
 judges -- every required check, or the ``--check`` selection -- is still running, so every red of
 the head is reported in one answer rather than one push at a time (``Gate.settling``). It ends once

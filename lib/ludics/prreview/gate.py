@@ -1392,6 +1392,7 @@ class Gate:
         last_sig = ""
         quiet_since: float | None = None
         stopped_since: float | None = None
+        named_cancellations: set[tuple[str, str]] = set()
         while True:
             if budget is not None:
                 budget.waited = False
@@ -1572,6 +1573,25 @@ class Gate:
                     "verdict; check the name against `gh pr checks` and the ERE.",
                 )
                 return 2
+            # Diagnostic only, from the fold already read: no extra calls, and before recovery
+            # can rerun the job. GitHub gives a rerun a new job id even within the same run.
+            if wait_for > 0 and self.check_red == 0:
+                for row in rows:
+                    _cls, name, concl, url, _suite, status = tab_fields(row, 6)
+                    job = re.search(r"/actions/runs/([0-9]+)/job/([0-9]+)(?:[/?#].*)?$", url)
+                    if concl != "cancelled" or status != "completed" or job is None:
+                        continue
+                    rid, jid = job.groups()
+                    key = (rid, jid)
+                    if key in named_cancellations:
+                        continue
+                    named_cancellations.add(key)
+                    # Keep the notice one line even for repository-controlled control bytes.
+                    quoted_name = shlex.quote("".join(c if c.isprintable() else "?" for c in name))
+                    warn(
+                        f"cancelled job {quoted_name} (run {rid}, job {jid}) — stopped, not judged;"
+                        f" rerun: pr-review.sh rerun {shlex.quote(f'{repo}#{pr}')} {rid}"
+                    )
             # Jobs that never got a runner (runners.py): looked for after the head re-read above, so
             # a moved head is 5 before ``recover`` writes anything. A round that finds one ends the
             # wait, unless ``recover`` (merge --wait's one recovery) asks to keep waiting -- through
