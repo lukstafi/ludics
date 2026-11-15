@@ -533,17 +533,6 @@ prreview/rerun.py
 
 ## Checking
 
-Request-kind routing (#1155): a direct `execution hold --request` reads the registry before
-creating the slot directory or taking locks, and refuses correctness with the `execution slot`
-remedy. Refusal preserves the caller's CPU/GPU and wait choices rather than guessing them.
-Measurements, bare holds and unknown ids keep their prior paths; an unreadable registry refuses.
-Legs already select slot for correctness and hold for measurement. Assignment text names those
-forms and leaves both generated and manually supplied leg commands wrapped once. Local review
-caught the manual-command case; its regression fails on fa0b061f before the guidance correction. The CLI brief removes the unusable
-coordinator session id and distinguishes stopping spawned records from foreground start tasks
-(the stop-guidance item of #1162). New hold and assignment unit cases fail against e859b357.
-
-
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
 checks its worker/host identity against prep, and records the exact worktree beside reserved legs.
 `launch --result-file <local path>` isolates the remote JSON stdout from human stderr across ssh,
@@ -606,6 +595,16 @@ Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its 
 `lib/ludics/fleetworker/farside.py`: a box needs no Python for a worker's record, only for the
 batches it runs (`execution slot`) and, on the anchor, the registry. The one verb `fleet-worker.sh`
 still answers itself is `execution slot --probe`, which must answer on a box without Python 3.12.
+
+Request-kind routing (#1155): a direct `execution hold --request` reads the registry before
+creating the slot directory or taking locks, and refuses correctness with the `execution slot`
+remedy. Refusal preserves the caller's CPU/GPU and wait choices rather than guessing them.
+An unreadable registry warns and proceeds to preserve measurement admission during anchor outages.
+Bare holds and unknown ids retain their prior admission behaviour. Legs already select slot for
+correctness and hold for measurement. Assignment text names those forms and leaves both generated
+and manually supplied leg commands wrapped once. The CLI brief removes the unusable coordinator
+session id and distinguishes stopping spawned records from foreground start tasks (#1162).
+Unit and shell cases cover routing; negative controls fail with the relevant fixes undone.
 
 ### Slot wait progress (#1156)
 

@@ -415,13 +415,21 @@ class HoldRequestKind(unittest.TestCase):
                 self.assertEqual(hold.call_args.args[5], 6 if request else 0)
                 self.assertEqual(listing.call_count, 1 if request else 0)
 
-    def test_unreadable_registry_refuses_before_a_hold(self) -> None:
+    def test_unreadable_registry_warns_and_preserves_measurement_admission(self) -> None:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
-        with mock.patch.object(slot, "listing", return_value=Done(0, "invalid")), \
-                mock.patch.object(slot, "hold") as hold, mock.patch.object(slot.os, "makedirs"), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(slot.cmd_hold(cfg, ["--request", "m", "--", "true"]), 1)
-        hold.assert_not_called()
+        for answer in (Done(0, "invalid"), Done(1, "registry error"), Done(UNREACHABLE, "")):
+            out, warning = io.StringIO(), io.StringIO()
+            with self.subTest(answer=answer), mock.patch.object(slot, "listing", return_value=answer), \
+                    mock.patch.object(slot, "hold") as hold, mock.patch.object(slot.os, "makedirs"), \
+                    mock.patch.object(slot, "box_correctness_slots", return_value=6), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(warning):
+                slot.cmd_hold(cfg, ["--request", "m", "--", "true"])
+                hold.assert_called_once()
+                self.assertEqual(hold.call_args.args[5:7], (6, ["true"]))
+                self.assertEqual(out.getvalue(), "")
+                self.assertEqual(warning.getvalue(), "EXECUTION HOLD WARNING testbox: registry unread; kind of m"
+                                 " not checked; proceeding with hold\n")
+
 
 
 class SlotArguments(unittest.TestCase):
