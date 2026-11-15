@@ -3439,7 +3439,7 @@ class Heartbeat(unittest.TestCase):
             for part, change in (
                     ("prs", lambda: world.update(prs=world["prs"].replace("rounds=2", "rounds=3"))),
                     ("halted", lambda: world.update(halted=(0, "launches were not halted\n"))),
-                    ("board rows", lambda: world.update(rows=[["t7", [["state", "merged #7"]]]])),
+                    (r'board rows \(t7 reviewing→merged\)', lambda: world.update(rows=[["t7", [["state", "merged #7"]]]])),
                     ("loops", lambda: write(loop, "LOOP RED cc at def\n")),
                     ("driver", lambda: write(lock, "")),
                     ("driver", lambda: write(os.path.join(d, "logs", "drive.log"), "2026-11-15T12:00:00Z DRIVE t7 launch: launch cued: x\n"))):
@@ -3466,6 +3466,23 @@ class Heartbeat(unittest.TestCase):
                 out = tick()
                 self.assertIn("o/staging#7 rounds=3", out, "a torn or other-version state file is no saved read")
                 self.assertNotIn("changed since", out)
+
+    def test_changed_rows_are_named_with_a_bounded_line(self) -> None:
+        old = [[f"t{n}", [["state", "launched"]]] for n in range(8)]
+        new = [[f"t{n}", [["state", "merged #7"]]] for n in range(8)]
+        self.assertEqual(wave.changed_board_rows(old, new),
+                         'board rows (t0 launched→merged; t1 launched→merged; t2 launched→merged; '
+                         't3 launched→merged; t4 launched→merged; +3 more)')
+        self.assertEqual(wave.changed_board_rows([["gone", []], ["same", [["pr", "1"]]]],
+                                               [["new", []], ["same", [["pr", "2"]]]]),
+                         'board rows (gone removed; new added; same fields changed)')
+        self.assertEqual(wave.changed_board_rows([["t7", [["state", "pending"]]], ["t7", [["state", "merged"]]]],
+                                               [["t7", [["state", "launched"]]], ["t7", [["state", "merged"]]]]),
+                         "board rows", "duplicate-task changes must not print empty parentheses")
+        line = wave.changed_board_rows([], [["x\n" + "y" * 1000, []]])
+        self.assertNotIn("\n", line)
+        self.assertLess(len(line), 100)
+        self.assertEqual(wave.changed_board_rows(None, []), "board rows (previous rows unavailable)")
 
     def test_reads_print_whole_with_their_exits_and_the_time_last(self) -> None:
         with tempfile.TemporaryDirectory() as d:

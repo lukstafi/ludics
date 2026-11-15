@@ -221,9 +221,11 @@ driver hands you as an attention line.
    rows, the PR lines but for the head's age and a merge build's elapsed time, `halted`, the loops,
    the driver, and no new attention line) prints one `HEARTBEAT <wave> <time> unchanged since
    <time> ...` line instead, naming the file that holds that read (`wave.py`'s header, *THE
-   NO-CHANGE LINE*). Once every remaining worker is either native (its hand-off returns to you on
-   its own) or served by the driver, and every native task still to launch is in `queue.json` (its
-   cue is an attention line), every wake that matters ends the sleep early, so a longer `--sleep`
+   NO-CHANGE LINE*). A changed tick names up to five changed board rows with state transitions
+   (or added/removed/fields changed), then counts the rest. Once every remaining worker is either
+   native (its hand-off returns to you on its own) or served by the driver, and every native task
+   still to launch is in `queue.json` (its cue is an attention line), every wake that matters ends
+   the sleep early, so a longer `--sleep`
    (15 to 20 minutes) costs only liveness latency: the heartbeat's exit still re-invokes you.
 
 7. **For a paired worker's plan,** use `peer-plan.sh save-plan <plan dir> --from-transcript
