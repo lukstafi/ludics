@@ -11,6 +11,9 @@ import stat
 
 
 def absent(path: str | os.PathLike[str]) -> bool:
+    """Like fleetworker.registry.absent, with the stronger ancestor check: a dangling
+    ancestor is unread, never absent. The shipped registry helper checks only the entry itself.
+    """
     try:
         os.lstat(path)
     except FileNotFoundError:

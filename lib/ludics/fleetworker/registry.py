@@ -1060,7 +1060,10 @@ def absent(path: Path) -> bool:
     """True only when nothing is at ``path``: ``lstat``'s ENOENT (no file, no link). Any other
     failure to look it up raises, a refusal (#1076: ``Path.exists()`` is False on EACCES or ELOOP
     too, and ``Path.glob`` lists an unreadable directory as empty, so either read an unreadable
-    ledger or halt as "nothing there")."""
+    ledger or halt as "nothing there"). Unlike ludics.fs.absent, this shipped helper does not
+    walk ancestors: fs.absent also refuses a dangling ancestor, whose ENOENT here means absent.
+    Keep this module self-contained for shipment to the anchor.
+    """
     try:
         os.lstat(path)
     except FileNotFoundError:

@@ -219,7 +219,7 @@ from typing import Any, cast
 
 from ludics import bgrun, cli, proc
 from ludics.fleetworker.config import Config, fetch_timeout_s
-from ludics.fleetworker import revision
+from ludics.fleetworker import lease, revision
 from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.leg import BASE, FLOOR, PIN, min_free_gib
@@ -777,12 +777,10 @@ done
 # Far side of THE HALT NOTE's halt read, on the anchor. Prints `halt=0` (nothing at all at the
 # marker's path, in a state directory that can be searched: the registry's ``absent``), `halt=1`
 # then the marker's text, or `halt=unread` (a state directory that cannot be searched, or a marker
-# there that cannot be read: an unreadable file, a dangling or looping link).
-HALT_READ = r"""f="$ANCHOR_STATE/HALT"
-[ -d "$ANCHOR_STATE" ] && [ -x "$ANCHOR_STATE" ] || { printf 'halt=unread\n'; exit 0; }
-if [ ! -e "$f" ] && [ ! -L "$f" ]; then printf 'halt=0\n'; exit 0; fi
-text=$(cat "$f" 2>/dev/null) || { printf 'halt=unread\n'; exit 0; }
-printf 'halt=1\n%s\n' "$text"
+# there that cannot be read: a non-regular file, an unreadable file, a dangling or looping link).
+HALT_READ = lease.HALT_STATE + r"""read_halt || { printf 'halt=unread\n'; exit 0; }
+if [ "$halt_present" = 0 ]; then printf 'halt=0\n'; exit 0; fi
+printf 'halt=1\n%s\n' "$halt_text"
 """
 
 

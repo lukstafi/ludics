@@ -8,6 +8,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import farside, leg, tiprun
+from ludics.fleetworker import farside, lease, leg, tiprun
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.tiprun import (concluded_line, far_facts, loop_backend, next_id, parse, parse_wait, request_problem,
                                        started_run, yielding_to)
@@ -928,31 +929,65 @@ class HaltNote(unittest.TestCase):
             self.assertIn(tiprun.HALT_READ, far.call_args.args[2])
 
     def test_the_anchor_s_marker_is_absent_only_when_nothing_is_there(self) -> None:
-        # The registry's `absent` (#1076): a link that dangles or loops, or a file that cannot be
-        # read, is a halt not read, never no halt.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        state = Path(tmp.name)
+        # Exercise both consumers with the same filesystem shapes. Kill the process group on
+        # timeout: a regressed FIFO read can leave cat running beneath a command substitution.
+        marker = "2026-11-11T00:00:00Z id=g1 red at 67203021\n"
         bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"
-
-        def far() -> str:
-            return subprocess.run([bash, "-c", f"ANCHOR_STATE={shlex.quote(str(state))}\n" + tiprun.HALT_READ],
-                                  capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
-
-        self.assertEqual(far(), "halt=0\n")
-        halt = state / "HALT"
-        halt.write_text("2026-11-11T00:00:00Z id=g1 red at 67203021\n", encoding="utf-8")
-        self.assertEqual(far(), "halt=1\n2026-11-11T00:00:00Z id=g1 red at 67203021\n")
-        halt.unlink()
-        for target in ("nowhere", "HALT"):
-            halt.symlink_to(target)
-            self.assertEqual(far(), "halt=unread\n", target)
-            halt.unlink()
-        if os.geteuid() != 0:  # root reads a mode-000 file
-            halt.write_text("x id=g y\n", encoding="utf-8")
-            halt.chmod(0)
-            self.addCleanup(halt.chmod, 0o644)
-            self.assertEqual(far(), "halt=unread\n")
+        for shape in ("absent", "valid", "fifo", "directory", "dangling", "looping", "unreadable"):
+            if shape == "unreadable" and os.geteuid() == 0:
+                continue  # root can read mode-000 files; ordinary CI and fleet users cannot
+            with tempfile.TemporaryDirectory() as tmp:
+                state = Path(tmp)
+                halt = state / "HALT"
+                # Record cat calls: cat(directory) already fails, so output alone cannot prove
+                # the regular-file guard ran before attempting to open a special file.
+                bindir = state / "bin"
+                bindir.mkdir()
+                called = state / "cat-called"
+                cat = bindir / "cat"
+                cat.write_text("#!/bin/sh\nprintf '%s\\n' called > " + shlex.quote(str(called)) +
+                               "\nexec " + shlex.quote(shutil.which("cat") or "/bin/cat") + ' "$@"\n', encoding="utf-8")
+                cat.chmod(0o755)
+                if shape in ("valid", "unreadable"):
+                    halt.write_text(marker, encoding="utf-8")
+                    if shape == "unreadable":
+                        halt.chmod(0)
+                elif shape == "fifo":
+                    os.mkfifo(halt)
+                elif shape == "directory":
+                    halt.mkdir()
+                elif shape in ("dangling", "looping"):
+                    halt.symlink_to("nowhere" if shape == "dangling" else "HALT")
+                try:
+                    for consumer, script in (("tiprun", tiprun.HALT_READ), ("lease", lease.HALTED)):
+                        with self.subTest(shape=shape, consumer=consumer):
+                            called.unlink(missing_ok=True)
+                            with subprocess.Popen(
+                                [bash, "-c", script], env={**os.environ, "ANCHOR_STATE": str(state), "BOX": "test",
+                                                             "PATH": str(bindir) + os.pathsep + os.environ["PATH"]},
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                stdin=subprocess.DEVNULL, start_new_session=True,
+                            ) as proc:
+                                try:
+                                    out, err = proc.communicate(timeout=2)
+                                except subprocess.TimeoutExpired:
+                                    os.killpg(proc.pid, signal.SIGKILL)
+                                    proc.communicate()
+                                    self.fail("HALT read blocked past its two-second bound")
+                                if shape in ("fifo", "directory"):
+                                    self.assertFalse(called.exists(), "non-regular HALT must be refused before cat")
+                                if consumer == "tiprun":
+                                    want = ("halt=0\n" if shape == "absent" else
+                                            "halt=1\n" + marker if shape == "valid" else "halt=unread\n")
+                                    self.assertEqual((proc.returncode, out, err), (0, want, ""))
+                                else:
+                                    want = ("launches open\n" if shape == "absent" else
+                                            "HALTED " + marker if shape == "valid" else
+                                            "HALTED: cannot read HALT on test; launches refused\n")
+                                    self.assertEqual((proc.returncode, out, err), (0 if shape == "absent" else 1, want, ""))
+                finally:
+                    if shape == "unreadable":
+                        halt.chmod(0o644)
 
     def test_the_log_is_read_for_whole_names(self) -> None:
         tmp = tempfile.TemporaryDirectory()

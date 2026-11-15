@@ -313,7 +313,7 @@ class Locks(Scratch):
         lock = os.path.join(self.dir, "lock")
         os.mkdir(lock)
         os.symlink("missing", os.path.join(lock, "owner"))
-        self.budget().lock_reap(lock, "")
+        self.assertFalse(self.budget().lock_reap(lock, ""))
         self.assertTrue(os.path.islink(os.path.join(lock, "owner")))
 
     def test_a_reap_keeps_a_lock_retaken_meanwhile(self) -> None:

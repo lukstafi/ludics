@@ -621,7 +621,7 @@ owners and a gate reason (session exit 3) for unread quota state, without sleepi
 The hold drain exits 1 before starting its command when its directory cannot be listed. Merge
 builds exit 3 on an unread present slot runner; genuinely absent runners and unsupported probe
 answers retain the existing bare-build policy. Peer-plan clean exits 1 and keeps the worktree
-when its run directory or a named run cannot be read. Lease HALT reads follow `tiprun.HALT_READ`:
+when its run directory or a named run cannot be read. `tiprun.HALT_READ` follows the lease gates’ shared `lease.HALT_STATE` reader:
 absent is open, readable is halted, unread refuses (exit 1), with the explicit force gate retained.
 These failures return immediately; observers do not retry unread state within their wait,
 including a hold read after a quota response (`core.GhSession`). Numeric hold entries and lock
@@ -635,3 +635,17 @@ launch base d794b0e: lock success, no quota hold, command started after an unrea
 runner, git worktree removal, and all three open HALT checks respectively. Task t1092's batch logs
 are under `~/.local/state/issue-wave/wave-20261113b-ludics/scratch/t1092/runs/`; the PR records the
 commands and outcomes.
+
+`tiprun.HALT_READ` now renders `lease.HALT_STATE` as `halt=0/1/unread` (#1159),
+so neither consumer opens a FIFO or directory as a marker. Both consumers run against absent,
+valid, FIFO, directory, dangling-link, looping-link and unreadable-file fixtures, each read
+bounded to two seconds with process-group cleanup on timeout. Mode-000 coverage requires a
+non-root user. A recording `cat` shim proves the non-regular-file guard precedes the open:
+directory output alone cannot distinguish the old implementation's failed `cat` from the guard.
+Against launch base af843e97 the tip-run FIFO times out and the directory reaches `cat` (two
+failures); the lease consumer passes. Logs are under
+`~/.local/state/issue-wave/wave-20261115-ludics/scratch/t1159/runs/negative2.log`.
+The shared reader's existing path-check/open boundary is unchanged; this does not add atomic
+protection against a marker replaced between those operations. The two #1162 follow-ups
+cross-reference the absence helpers' different ancestor guarantees and assert the unread-owner
+reap's false result; the shipped registry remains self-contained.
