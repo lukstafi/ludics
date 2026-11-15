@@ -1404,17 +1404,14 @@ def main(argv: list[str]) -> None:
             refuse("verdict is only valid for conclude")
         if "state" in data and action not in {"record", "reconcile"}:
             refuse("state is only valid for record or reconcile")
-        if "pinned_backend" in data:
-            # THE BACKEND MARK (see the header): written by a record, as the purpose names it.
-            if action != "record":
-                refuse("pinned_backend is only valid for record")
-            pinned_backend_ok(data["pinned_backend"], record["request"])
         if "full_loop" in data or "pinned_backend" in data:
-            # THE LOOP'S COVERAGE (see the header): beside the mark, both or neither, written once.
+            # THE BACKEND MARK and THE LOOP'S COVERAGE (see the header): written by a record, both or
+            # neither, the backend the purpose names, and the coverage written once.
             if action != "record":
-                refuse("full_loop is only valid for record")
+                refuse("pinned_backend and full_loop are only valid for record")
             if ("full_loop" in data) != ("pinned_backend" in data):
                 refuse("pinned_backend and full_loop are written together (the pin, and whether the run was the loop's full command)")
+            pinned_backend_ok(data["pinned_backend"], record["request"])
             if not isinstance(data["full_loop"], bool):
                 refuse(f"full_loop {json.dumps(data['full_loop'])} must be true or false")
             if "full_loop" in record and record["full_loop"] is not data["full_loop"]:

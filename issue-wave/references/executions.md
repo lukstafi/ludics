@@ -731,8 +731,9 @@ must name as `--target-repo` to be handed it (SKILL.md's *Base gate*).
 
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
 `fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] [--base <branch>] --checkout <dir>
-[--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] -- <command...>`. Its request is the coordinator's non-standing
-`correctness` request whose `requested_revision` is exactly one full SHA, or names none under
+[--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] -- <command...>`. Its request is the
+coordinator's non-standing `correctness` request whose `requested_revision` is exactly one full
+SHA, or names none under
 `--tip`, which writes the branch's head on GitHub into it; under `--id-prefix` it names no
 `request_id` either, and the run takes `<prefix>-<n>`, one past the highest `<n>` the registry holds
 under the prefix (ludics-lite#714). A request whose `purpose` begins `GPU integration loop,

@@ -204,7 +204,8 @@ driver hands you as an attention line.
      using the configured loop's placement with no integration verdict. It requires a concluded
      fail/timeout record of that loop; the caller still judges the narrowed command and triage
      before restarting. A GPU loop's narrowed command must still pin its backend, and its pass
-     is recorded `"full_loop": false`, never that backend's last green. Unknown or unfinished records must be reconciled first.
+     is recorded `"full_loop": false`, never that backend's last green. Unknown or unfinished
+     records must be reconciled first.
    - `LOOP UNKNOWN`: reconcile the record it names.
    - A stop file (`loops.stop`, or `loop-<name>.stop`) ends it with its run left running. The
      next driver resumes that run rather than starting another.

@@ -119,7 +119,8 @@
 #                          # records, an alias (rog) selecting its roster entry's (rog-nv-linux)
 #   fleet-worker.sh execution integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas]
 #                          # the cc loop's records the base gate reads (or, with --pinned-backend,
-#                          # the GPU loop's full-loop runs of that backend), one sha/verdict/id/time row each,
+#                          # the GPU loop's full-loop runs of that backend), one
+#                          # sha/verdict/id/time row each,
 #                          # --shas the SHAs alone for base --last-green --greens; exit 3 unread
 #   fleet-worker.sh execution slot [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>]
 #                          -- <command...>
@@ -203,7 +204,8 @@
 #                          # clean checkout on the box, unless its filesystem has under
 #                          # FLEET_LEG_MIN_FREE_GIB free (a GPU-loop purpose's command must pin its
 #                          # backend by .github/fleet-leg there; --full-loop, GPU loop only, records
-#                          # it as the loop's full command, a backend's last-green candidate), and start the command there under
+#                          # it as the loop's full command, a backend's last-green candidate), and
+#                          # start the command there under
 #                          # `execution slot --bg <runs> --wait 0` (a GPU token unless --cpu, only
 #                          # if one is free now); prints TIP-RUN STARTED <id> <box> <sha> <dir>
 #                          # (exit 0) or TIP-RUN NOT STARTED <id>: <why> (exit 1, anything reserved

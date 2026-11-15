@@ -576,12 +576,12 @@ class BackendMark(RegistryCase):
                 self.assertIn(why, err)
         rc, _, err = self.call("dispatch", {"request_id": "g", "evidence": "x", "pinned_backend": "hip", "full_loop": True})
         self.assertEqual(rc, 1)
-        self.assertIn("pinned_backend is only valid for record", err)
+        self.assertIn("pinned_backend and full_loop are only valid for record", err)
         rc, _, err = self.call("conclude", {"request_id": "g", "verdict": "pass", "log": "/l", "evidence": "x",
                                             "observed_sha": self.SHA, "handle": "h", "remote_checkout": "/co",
                                             "pinned_backend": "hip", "full_loop": True})
         self.assertEqual(rc, 1)
-        self.assertIn("pinned_backend is only valid for record", err)
+        self.assertIn("pinned_backend and full_loop are only valid for record", err)
         self.assertEqual(self.running("g")[0], 0)
         listed = {r["request_id"]: r for r in self.call("list", {})[1]}
         self.assertNotIn("pinned_backend", listed["g"], "neither a refusal nor a record naming none writes one")
@@ -631,7 +631,7 @@ class LoopCoverage(RegistryCase):
                 self.assertIn(why, err)
         rc, _, err = self.call("dispatch", {"request_id": "g", "evidence": "x", "full_loop": True})
         self.assertEqual(rc, 1)
-        self.assertIn("full_loop is only valid for record", err)
+        self.assertIn("pinned_backend and full_loop are only valid for record", err)
         self.assertEqual(self.running("g", pinned_backend="hip", full_loop=True)[0], 0)
         rc, _, err = self.running("g", pinned_backend="hip", full_loop=False)
         self.assertEqual(rc, 1)
