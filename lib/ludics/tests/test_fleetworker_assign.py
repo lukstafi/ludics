@@ -90,11 +90,18 @@ class Composition(unittest.TestCase):
                            ("measurement", "execution hold --request a -- <command>")):
             with self.subTest(kind=kind):
                 text = assign.assignment_text(block("a", kind=kind), "true", SHA)
-                self.assertIn("run it as: " + form, text)
+                self.assertIn(form, text)
                 leg = block("a", kind=kind, runner="true", clone="/c", checkout="/w")
                 text = assign.assignment_text(leg, leg_command("fw", leg, SHA), SHA)
                 self.assertIn("run it as: the command above already uses execution leg", text)
                 self.assertNotIn("-- <command>", text)
+
+    def test_manually_wrapped_legs_are_run_as_written_for_both_kinds(self) -> None:
+        for kind in ("correctness", "measurement"):
+            request = block("a", kind=kind, execution_host="other", command="fw execution leg --request a -- true")
+            text = assign.assignment_text(request, request["command"], SHA)
+            self.assertIn("run it as: an execution leg command runs as written; for a bare batch on other,", text)
+            self.assertIn("command: fw execution leg --request a -- true", text)
 
     def test_a_correctness_leg_waits_out_a_window_and_a_measurement_leg_does_not(self) -> None:
         leg = block("a", runner="tools/test-run.sh run --x", clone="/srv/p", checkout="/srv/wt")

@@ -538,7 +538,8 @@ creating the slot directory or taking locks, and refuses correctness with the `e
 remedy. Refusal preserves the caller's CPU/GPU and wait choices rather than guessing them.
 Measurements, bare holds and unknown ids keep their prior paths; an unreadable registry refuses.
 Legs already select slot for correctness and hold for measurement. Assignment text names those
-forms and leaves generated leg commands wrapped once. The CLI brief removes the unusable
+forms and leaves both generated and manually supplied leg commands wrapped once. Local review
+caught the manual-command case; its regression fails on fa0b061f before the guidance correction. The CLI brief removes the unusable
 coordinator session id and distinguishes stopping spawned records from foreground start tasks
 (the stop-guidance item of #1162). New hold and assignment unit cases fail against e859b357.
 

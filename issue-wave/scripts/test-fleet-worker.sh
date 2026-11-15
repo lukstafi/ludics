@@ -3673,7 +3673,7 @@ grep -qx "ASSIGN ASSIGNED as-1 correctness testbox $asha" <<<"$said" && grep -qx
   ko "states: $(state_as as-1),$(state_as as-2)"
 grep -Fqx "command: tools/test-run.sh run a" <<<"$msg" && grep -Fqx "checkout: /w/as-1" <<<"$msg" && grep -Fqx "revision: $asha" <<<"$msg" &&
   ok "...a command sent as written, with its revision and checkout" || ko "as-1's assignment: $msg"
-grep -Fqx 'run it as: execution slot --wait-window --cpu -- <command> (use --gpu instead of --cpu for a GPU batch)' <<<"$msg" &&
+grep -Fqx 'run it as: an execution leg command runs as written; for a bare batch on testbox, execution slot --wait-window --cpu -- <command> (use --gpu instead of --cpu for a GPU batch)' <<<"$msg" &&
   ok "...a direct correctness command names its slot wrapper" || ko "correctness form missing: $msg"
 grep -Fq 'run it as: the command above already uses execution leg' <<<"$msg" &&
   ok "...a generated leg runs as written" || ko "leg form missing: $msg"

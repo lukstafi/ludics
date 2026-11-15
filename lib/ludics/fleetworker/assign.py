@@ -330,10 +330,12 @@ def assigned_revision(stdout: str, block: dict[str, Any]) -> str | None:
 def assignment_text(block: dict[str, Any], command: str, revision: str) -> str:
     if "runner" in block:
         form = "run it as: the command above already uses execution leg, which chooses slot or hold from the record's kind"
-    elif block["kind"] == "correctness":
-        form = "run it as: execution slot --wait-window --cpu -- <command> (use --gpu instead of --cpu for a GPU batch)"
     else:
-        form = f"run it as: execution hold --request {shlex.quote(block['request_id'])} -- <command>"
+        wrapper = ("execution slot --wait-window --cpu -- <command> (use --gpu instead of --cpu for a GPU batch)"
+                   if block["kind"] == "correctness"
+                   else f"execution hold --request {shlex.quote(block['request_id'])} -- <command>")
+        form = ("run it as: an execution leg command runs as written; for a bare batch on "
+                f"{shlex.quote(block['execution_host'])}, {wrapper}")
     return "\n".join((
         f"EXECUTION_ASSIGNED {block['request_id']}",
         f"command: {command}",
