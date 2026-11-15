@@ -652,6 +652,11 @@ to an older green; a paths-ignore proof can still admit the tip. A missing verdi
 leaves launches for a later tick, after returned turns have been answered. This uses the existing
 one-shot base read rather than a background observer or a saved gate verdict: the coordinator's
 waiting gate retains the branch's one observer, and no saved gate verdict admits a launch.
+CLI launch also reads a fresh snapshot, even when called without the driver. It never claims
+the coordinator's waiting observer, and pending or unknown refuses before worker creation.
+The fetched SHA confirmation, integration-record recheck, advisory policy and lease/halt checks
+still apply. The launch regression drives wave launch through worker launch and the real base
+reader beside an isolated live observer, and confirms that observer survives the launch.
 The ordinary gate's wait, integration-record recheck, advisory policy and lease/halt checks stay
 in place. `--no-wait` and outer `--wait` are mutually exclusive. Drive and gate unit cases pin the
 same-tick answer, checker arguments and option refusal. Pending snapshots return exit 4: the

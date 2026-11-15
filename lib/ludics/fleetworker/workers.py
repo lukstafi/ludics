@@ -248,7 +248,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         return rc
     if pinned:
         base = pinned
-    # The preflight and base read may take minutes; a halt or adoption during that window must
+    # The preflight and fetch may take minutes; a halt or adoption during that window must
     # still fence this launch, so the gate is read again right before anything is written.
     rc = anchor_gate(cfg, "LAUNCH", label, force)
     if rc != 0:

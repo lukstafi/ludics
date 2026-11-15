@@ -19,7 +19,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import farside, gate, revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
+from ludics.fleetworker import farside, gate, revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep, workers
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -738,6 +738,81 @@ class MixedWave(WaveDirCase):
             rc, out, _ = self.start()
             self.assertEqual((rc, self.shim_calls), (1, []))
             self.assertIn("records a launch already", out)
+
+    def test_launch_beside_a_live_base_observer(self) -> None:
+        # Use the real launch/gate/base path and observer lock; only GitHub and far-side
+        # work are fixtures. The foreign live PID models a coordinator's base --wait.
+        from ludics.prreview.budget import Budget
+        from ludics.tests.test_prreview_base import FakeClock, base_run, runs, world
+
+        with open(self.path) as f:
+            data = json.load(f)
+        data["repository"] = "o/r"
+        with open(self.path, "w") as f:
+            json.dump(data, f)
+        with self.world():
+            rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")
+            self.assertEqual(rc, 0, out + err)
+            record = self.manifest()["launch"]
+            answers = world(record["base"], runs({"conclusion": "success", "head_sha": record["base"]}))
+            clock = FakeClock()
+            state = os.path.join(self.dir, "observer-state")
+            class HolderClock:
+                def time(self) -> float:
+                    return clock.time()
+
+                def now(self) -> int:
+                    return clock.now()
+
+                def sleep(self, seconds: float, /) -> None:
+                    clock.sleep(seconds)
+
+            holder = Budget(state, HolderClock(), pid=os.getppid())
+            holder.base_claim("o/r", "main")
+            reads: list[list[str]] = []
+
+            def checker(_cfg: Any, argv: list[str]) -> tuple[int, str]:
+                args = argv[argv.index("base") + 1:]
+                reads.append(args)
+                rc, out, err, _ = base_run(answers, args, clock=clock, state=state)
+                return rc, out + err
+
+            def far(_cfg: Any, _box: str, script: str, _args: list[str], **_kw: Any) -> Done:
+                if farside.LAUNCH_FETCH in script:
+                    return Done(0, record["base"])
+                if farside.LAUNCH_STANDING_START in script:
+                    return Done(0, json.dumps(self.result))
+                return Done(0, json.dumps({"worktree": record["worktree"]}))
+
+            def dispatch(argv: list[str], **kw: Any) -> Done:
+                if argv[1] != "launch":
+                    return self.launch_run(argv, **kw)
+                rc, out, err = captured(workers.cmd_launch, self.cfg, argv[2:])
+                return Done(rc, out + err)
+
+            try:
+                blocked, _, refusal, unread = base_run(answers, ["main", "--wait=1"], state=state)
+                self.assertEqual(blocked, 2, refusal)
+                self.assertEqual(unread.asked, [])
+                with (mock.patch.object(wavelaunch, "run", side_effect=dispatch),
+                      mock.patch.object(workers, "anchor_gate", return_value=0),
+                      mock.patch.object(workers, "run_preflight", return_value=Done(0, "OK")),
+                      mock.patch.object(workers, "run_on", side_effect=far),
+                      mock.patch.object(workers, "put_file", return_value=Done(0, "")),
+                      mock.patch.object(workers.tiprun, "fleet_worker", return_value=0),
+                      mock.patch.object(gate, "integration_records", return_value=""),
+                      mock.patch.object(gate, "base_checker", side_effect=checker),
+                      mock.patch.object(gate, "base_checker_read", return_value=record["base"])):
+                    rc, out, err = self.start()
+                self.assertEqual(rc, 0, out + err)
+                self.assertIn("launched far/w1-42", out)
+                self.assertEqual(len(reads), 1)
+                self.assertIn("--snapshot", reads[0])
+                self.assertEqual(clock.slept, [])
+                blocked, _, refusal, _ = base_run(answers, ["main", "--wait=1"], state=state)
+                self.assertEqual(blocked, 2, "launch must leave the coordinator's observer intact: " + refusal)
+            finally:
+                holder.release()
 
     def test_launch_refuses_a_prep_that_did_not_finish(self) -> None:
         with self.world():
