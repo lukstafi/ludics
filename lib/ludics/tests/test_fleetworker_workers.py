@@ -182,6 +182,65 @@ class StandingLaunch(unittest.TestCase):
                     if want == 4:
                         self.assertNotIn("LAUNCH REFUSED", output.getvalue())
 
+    def structured_launch(self, preparation: str, result_path: str) -> tuple[int, str, list[str]]:
+        cfg = load_config(SCRIPT, {"FLEET_LOCAL_BOX": "box"}, host="box")
+        events: list[str] = []
+        result = json.dumps(dict(worker="w", host="box", session="sid", worktree="/checkout"))
+
+        def run(*args: object, **kwargs: object) -> Done:
+            script = str(args[2])
+            self.assertTrue(kwargs.get("capture"))
+            if farside.LAUNCH_STANDING_START in script:
+                events.append("start")
+                return Done(0, result)
+            events.append("prepare")
+            return Done(0, preparation)
+
+        def stage(*args: object) -> Done:
+            events.append("stage")
+            return Done(0, "")
+
+        def worker(_cfg: object, args: list[str], payload: dict[str, Any], *, verb: str) -> int:
+            events.append(args[1])
+            self.assertEqual(args, ["execution", "run"], "unknown outcomes never conclude a reservation")
+            self.assertEqual(payload["checkout"], "/checkout")
+            return 0
+
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as payload:
+            json.dump(dict(request_id="req", standing=True, kind="correctness", execution_host="box", repository="o/r"), payload)
+            payload.flush()
+            output = io.StringIO()
+            with (patch.object(workers, "anchor_gate", return_value=0),
+                  patch.object(workers, "base_gate", return_value=0),
+                  patch.object(workers, "run_preflight", return_value=Done(0, "OK")),
+                  patch.object(workers, "run_on", side_effect=run),
+                  patch.object(workers, "put_file", side_effect=stage),
+                  patch.object(workers.tiprun, "fleet_worker", side_effect=worker),
+                  contextlib.redirect_stdout(output)):
+                rc = workers.cmd_launch(cfg, ["local", "w", "--target-repo", "o/r", "--kind", "codex",
+                                              "--cwd", "/checkout", "--brief", payload.name, "--standing", payload.name,
+                                              "--result-file", result_path])
+            return rc, output.getvalue(), events
+
+    def test_invalid_structured_preparation_never_dispatches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "result.json")
+            for preparation in ("/checkout\n", "[]", "{}", '{"worktree":"relative"}', '{"worktree":42}'):
+                with self.subTest(preparation=preparation):
+                    rc, output, events = self.structured_launch(preparation, path)
+                    self.assertEqual(rc, 4)
+                    self.assertIn("preparation did not return a structured checkout", output)
+                    self.assertEqual(events, ["prepare"])
+                    self.assertFalse(os.path.exists(path))
+
+    def test_unwritable_result_after_start_keeps_the_reservation_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            # A directory is deterministically unwritable as a file, even as root.
+            rc, output, events = self.structured_launch('{"worktree":"/checkout"}', directory)
+            self.assertEqual(rc, 4)
+            self.assertIn("cannot write structured result; inspect status before retrying", output)
+            self.assertEqual(events, ["prepare", "stage", "run", "start"])
+
     def test_only_the_standing_refusals_exit_not_started(self) -> None:
         # The no-standing script and preparation keep every refusal at exit 1.
         self.assertEqual(farside.LAUNCH, farside.LAUNCH_WORKTREE + farside.LAUNCH_START)

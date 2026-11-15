@@ -544,6 +544,12 @@ words cannot represent them. The two selected structured-result regressions fail
 also exercised under `/bin/bash` with spaces, tabs, LF, U+2028 and literal cwd/stream delimiters.
 Evidence logs: `wave-20261115-ludics/scratch/t1160/runs/negative.log` and `target2.log` under the
 coordinator's issue-wave state directory.
+Checkpoint coverage also drives `cmd_launch` directly: malformed/relative preparation JSON
+never dispatches, and a result-file write failure after startup stays UNKNOWN without concluding
+the standing reservation. All six StandingLaunch tests pass; changing exit 4 to exit 0 makes the
+two new cases fail (six assertions), in `review-target.log` and `review-negative.log` beside those
+logs. Sharing the two small absolute-path predicates is deferred as a maintenance checklist item;
+preparation reads a path while wave launch additionally checks result identity.
 
 `execution assign` calls the board store's internal `placement`
 operation under the lease lock, including for matching `ASSIGN ALREADY` records: a union keeps
