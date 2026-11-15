@@ -3681,6 +3681,10 @@ grep -qx "ASSIGN ASSIGNED as-1 correctness testbox $asha" <<<"$said" && grep -qx
   ko "states: $(state_as as-1),$(state_as as-2)"
 grep -Fqx "command: tools/test-run.sh run a" <<<"$msg" && grep -Fqx "checkout: /w/as-1" <<<"$msg" && grep -Fqx "revision: $asha" <<<"$msg" &&
   ok "...a command sent as written, with its revision and checkout" || ko "as-1's assignment: $msg"
+grep -Fqx 'run it as: an execution leg command runs as written; for a bare batch on testbox, execution slot --wait-window --cpu -- <command> (use --gpu instead of --cpu for a GPU batch)' <<<"$msg" &&
+  ok "...a direct correctness command names its slot wrapper" || ko "correctness form missing: $msg"
+grep -Fq 'run it as: the command above already uses execution leg' <<<"$msg" &&
+  ok "...a generated leg runs as written" || ko "leg form missing: $msg"
 grep -Fq "execution leg --request as-2 --rev $asha --checkout /srv/proj --worktree '/srv/wt b' --wait-window -- tools/test-run.sh run --suite b" <<<"$msg" &&
   ok "...a runner wrapped into the leg form, --wait-window added for correctness" || ko "as-2's leg form: $msg"
 grep -q '"request_id"' <<<"$msg" && ko "a record reached the message: $msg" || ok "...and the records stay on stderr"
@@ -5786,6 +5790,11 @@ grep -q "^mac-unasserted-but-ran$" <<<"$out" && ! grep -q "sleep assertions (caf
 gone "$INHIBIT_PID" && ok "...and its helper is gone" || ko "the unasserted caffeinate helper lingered"
 # `hold` is the measurement's wrapper: the slot refuses while a measurement is outstanding, the
 # measurement's own included, so the guard has to come without the slot.
+"${FWS[@]}" execution run "$(slotreq hold-correctness correctness)" >/dev/null || ko "could not reserve correctness hold control"
+expect "execution hold refuses correctness with the slot remedy" 1 "hold-correctness is a correctness request; run it as: execution slot --wait-window --cpu -- <command>; no hold taken" -- \
+  "${FWS[@]}" execution hold --request hold-correctness -- echo MUST-NOT-RUN
+grep -q '^MUST-NOT-RUN$' <<<"$out" && ko "correctness ran under a whole-box hold" || ok "correctness hold starts no command"
+fixture_done hold-correctness
 "${FWS[@]}" execution run "$(slotreq hold-measure measurement)" >/dev/null || ko "could not reserve the measurement (setup)"
 : > "$INHIBIT_LOG"
 expect "execution hold runs a measurement's runner under the inhibitor while the slot refuses it" 0 "sleep:idle block inhibitor held for: testbox hold: echo measured" -- \

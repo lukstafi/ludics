@@ -362,10 +362,13 @@ as it runs (ludics-lite#317): `execution slot` runs its command inside
 which takes no slot of its own, is invoked as `fleet-worker.sh execution hold --request
 <request_id> -- <runner command>` (a slot its runner takes inside runs under that one guard:
 [the measurement's own run](#exclusivity-and-the-run-time-slots)).
-`hold` takes nothing else - no slot, no registry read, no lease (but `hold --request <id>
---worktree <dir> --rev <sha>`, which is an [`execution leg`](#a-leg-on-another-box) on the box
-itself, the worktree made or moved to the commit, ludics-lite#816) - and where there is no
-`systemd-inhibit` it takes `caffeinate -i -s` instead (macOS, ludics#538: `wake-lab.sh sleep`
+A bare `hold` takes no slot, registry read or lease. With `--request <id>` it reads the registry
+only to refuse a correctness record, naming `execution slot`; an unreadable registry warns and
+proceeds so an anchor outage does not refuse a measurement. The hold then drains the box's slots
+as described in [the measurement's own run](#exclusivity-and-the-run-time-slots).
+`hold --request <id> --worktree <dir> --rev <sha>` is an [`execution leg`](#a-leg-on-another-box)
+on the box itself, the worktree made or moved to the commit (ludics-lite#816).
+Where there is no `systemd-inhibit` it takes `caffeinate -i -s` instead (macOS, ludics#538: `wake-lab.sh sleep`
 reads those assertions and refuses while one is held, and they keep a box that a network wake left
 in DarkWake awake under the run), and with neither (a Linux host without systemd) it runs the
 command bare and silently.

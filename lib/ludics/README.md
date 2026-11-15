@@ -596,6 +596,16 @@ Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its 
 batches it runs (`execution slot`) and, on the anchor, the registry. The one verb `fleet-worker.sh`
 still answers itself is `execution slot --probe`, which must answer on a box without Python 3.12.
 
+Request-kind routing (#1155): a direct `execution hold --request` reads the registry before
+creating the slot directory or taking locks, and refuses correctness with the `execution slot`
+remedy. Refusal preserves the caller's CPU/GPU and wait choices rather than guessing them.
+An unreadable registry warns and proceeds to preserve measurement admission during anchor outages.
+Bare holds and unknown ids retain their prior admission behaviour. Legs already select slot for
+correctness and hold for measurement. Assignment text names those forms and leaves both generated
+and manually supplied leg commands wrapped once. The CLI brief removes the unusable coordinator
+session id and distinguishes stopping spawned records from foreground start tasks (#1162).
+Unit and shell cases cover routing; negative controls fail with the relevant fixes undone.
+
 ### Slot wait progress (#1156)
 
 A correctness slot announces its first busy pass once, naming candidate slots' recorded commands
