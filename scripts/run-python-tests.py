@@ -6,6 +6,10 @@ fully qualified module names, each the first module of the next shard). It does 
 parse test source or balance individual cases. Package paths must be importable;
 invalid/missing/unordered cuts, empty parts and a matrix size unequal to cuts + 1
 refuse before loading tests. New modules automatically belong to one range.
+Elapsed lines measure each loaded module suite with a monotonic clock, including
+fixture transitions performed there by unittest. A module's final class/module
+teardown is counted in the next module's line, and the last module's in none.
+Imports/load_tests are not timed.
 """
 
 import argparse
@@ -14,6 +18,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
+import time
 import unittest
 
 
@@ -50,6 +55,33 @@ def select(all_modules: list[str], cuts: list[str], shard: str) -> list[str]:
     return all_modules[positions[index]:positions[index + 1]]
 
 
+class TimedModule(unittest.TestSuite):
+    """Time one loaded module suite without changing unittest's shared result."""
+
+    def __init__(self, name: str, suite: unittest.TestSuite):
+        super().__init__([suite])
+        self.name = name
+
+    def run(self, result, debug=False):
+        started = time.monotonic()
+        try:
+            return super().run(result, debug)
+        finally:
+            print(f"--- {time.monotonic() - started:.3f}s: {self.name}", flush=True)
+
+
+def run_modules(selected: list[str]):
+    loader = unittest.TestLoader()
+    # Load every module before running any, just as loadTestsFromNames did before
+    # timing. Keep one outer suite/result so module/class fixtures and errors retain
+    # unittest's ordering and failure semantics (including failed imports).
+    loaded = loader.loadTestsFromNames(selected)
+    suite = unittest.TestSuite(
+        TimedModule(name, tests) for name, tests in zip(selected, loaded, strict=True)
+    )
+    return unittest.TextTestRunner(verbosity=2).run(suite)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shard", required=True)
@@ -66,9 +98,7 @@ def main() -> int:
         return 0
     print(f"Python shard {args.shard}: {len(selected)} modules", flush=True)
     sys.path.insert(0, str(root))
-    loader = unittest.TestLoader()
-    suite = loader.loadTestsFromNames(selected)
-    return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+    return 0 if run_modules(selected).wasSuccessful() else 1
 
 
 if __name__ == "__main__":

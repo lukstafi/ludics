@@ -4,11 +4,14 @@
 Boundary: reads python-unit's literal part list and PYTHON_TEST_CUTS scalar in
 skill-scripts.yml, and test_*.py paths under lib/. This checks that workflow shape,
 not general YAML or application test source. Synthetic lists exercise additions and
-bad cuts; a temporary copy of this checker and runner probes bytecode-free importing.
+bad cuts; a fake clock exercises timing, load order and failure semantics. A temporary
+copy of this checker and runner probes bytecode-free importing.
 """
 
 from collections import Counter
 import importlib.util
+import contextlib
+import io
 import os
 from pathlib import Path
 import re
@@ -18,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 # Preflight also runs on the served checkout, whose freshness check includes ignored
 # files: importing the runner must not create scripts/__pycache__ there.
@@ -90,6 +94,58 @@ class Shards(unittest.TestCase):
         for shard in ("-1/2", "1/1", "0/0", "x/2", "0/2/3"):
             with self.subTest(shard=shard), self.assertRaises(ValueError):
                 shards.select(["a", "b"], [], shard)
+
+    def test_elapsed_preserves_loading_order_and_failure_semantics(self):
+        events = []
+
+        class Case(unittest.TestCase):
+            def test_run(self):
+                events.append("run")
+
+        class FixtureCase(unittest.TestCase):
+            @classmethod
+            def setUpClass(cls):
+                events.append("class setup")
+
+            @classmethod
+            def tearDownClass(cls):
+                events.append("class teardown")
+
+            def test_one(self):
+                events.append("one")
+
+            def test_two(self):
+                events.append("two")
+
+        class Loader(unittest.TestLoader):
+            def loadTestsFromName(self, name, module=None):
+                events.append("load " + name)
+                if name == "fixtures":
+                    return self.loadTestsFromTestCase(FixtureCase)
+                if name == "missing":
+                    return super().loadTestsFromName("absent_shard_fixture_module")
+                return self.loadTestsFromTestCase(Case)
+
+        output = io.StringIO()
+        # Module 1 succeeds, module 2 is an import error, module 3 still runs.
+        with mock.patch.object(shards.unittest, "TestLoader", Loader), \
+                mock.patch.object(shards.time, "monotonic",
+                                  side_effect=[10, 11.25, 20, 22.5, 30, 30.125]), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            result = shards.run_modules(["fixtures", "missing", "last"])
+        self.assertEqual(events, ["load fixtures", "load missing", "load last",
+                                  "class setup", "one", "two", "class teardown", "run"])
+        self.assertEqual(result.testsRun, 4)
+        self.assertEqual(len(result.errors), 1)
+        self.assertFalse(result.wasSuccessful())
+        self.assertEqual(output.getvalue().splitlines(), [
+            "--- 1.250s: fixtures", "--- 2.500s: missing", "--- 0.125s: last"])
+
+        # A successful shard still reports success through the same shared result.
+        with mock.patch.object(shards.unittest, "TestLoader", Loader), \
+                mock.patch.object(shards.time, "monotonic", side_effect=[1, 1.5]), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(shards.run_modules(["last"]).wasSuccessful())
 
     def test_single_shard(self):
         self.assertEqual(shards.select(["a", "b"], [], "0/1"), ["a", "b"])
