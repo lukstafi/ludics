@@ -576,6 +576,7 @@ class Waiting(unittest.TestCase):
         # A held slot 1 makes the batch wait; freed, the batch takes it, and its command sees no record.
         blocker = os.open(os.path.join(self.dir, "slot.1"), os.O_CREAT | os.O_RDWR, 0o644)
         fcntl.flock(blocker, fcntl.LOCK_EX)
+        record_holder(blocker, ["busy job"], None)
         seen: list[list[str]] = []
 
         def release() -> None:
@@ -591,12 +592,33 @@ class Waiting(unittest.TestCase):
 
         thread = threading.Thread(target=release)
         thread.start()
-        with mock.patch.object(slot, "run_command", run), contextlib.redirect_stderr(io.StringIO()):
+        with mock.patch.object(slot, "run_command", run), contextlib.redirect_stderr(io.StringIO()) as err:
             with self.assertRaises(cli.Exit):
                 slot.take_slot("testbox", self.dir, 1, 0, False, 30, None, ["make"], None)
         thread.join()
+        lines = err.getvalue()
+        self.assertEqual(lines.count("waiting up to 30s for an execution slot"), 1)
+        self.assertIn(f"recorded holder pid {os.getpid()}, command 'busy job'", lines)
+        self.assertLess(lines.index("waiting up to"), lines.index("slot 1 of 1 held for: make"))
         self.assertIn(f"waiting.{os.getpid()}", seen[0], "recorded while it waited")
         self.assertEqual(seen[1], ["slot.1"], "and gone once it held the slot")
+
+    def test_wait_summary_never_names_a_free_or_dead_record(self) -> None:
+        path = os.path.join(self.dir, "slot.1")
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+        self.addCleanup(os.close, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        record_holder(descriptor, ["old holder"], None)
+        with mock.patch.object(slot.os, "kill", side_effect=ProcessLookupError):
+            self.assertNotIn("old holder", slot.waiting_holders(self.dir, range(1, 2)))
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        self.assertNotIn("old holder", slot.waiting_holders(self.dir, range(1, 2)))
+
+    def test_stderr_is_line_buffered(self) -> None:
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", line_buffering=False)
+        with mock.patch.object(cli.sys, "stderr", stream):
+            cli.setup_streams()
+        self.assertTrue(stream.line_buffering)
 
 
 class WindowWait(unittest.TestCase):
