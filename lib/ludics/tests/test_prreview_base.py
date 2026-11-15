@@ -356,6 +356,37 @@ class WaitLoop(unittest.TestCase):
         self.assertIn("paths-ignore of ci", out)
         self.assertEqual(clock.slept, [])
 
+    def test_only_active_workflows_hold_a_snapshot_paths_ignore_proof(self) -> None:
+        # A second workflow with no push run on the branch: disabled, it can create no run, so it
+        # is no newcomer and the paths-ignore proof settles; active, it still holds the read; with
+        # no state key at all, it is listed (and so holds) as before.
+        for shape, extra, expected in (
+            ("disabled", {"state": "disabled_manually"}, 0),
+            ("active", {"state": "active"}, 4),
+            ("no state", {}, 4),
+        ):
+            with self.subTest(shape=shape):
+                answers = world(C, runs({"conclusion": "success", "head_sha": A}),
+                                **{f"repos/o/r/compare/{A}...{C}?per_page=20": json.dumps(
+                                    {"total_commits": 1, "behind_by": 0,
+                                     "commits": [{"sha": C, "parents": [{"sha": A}]}]}),
+                                   f"repos/o/r/commits/{C}?per_page=100": json.dumps(
+                                       {"files": [{"filename": "docs/notes.md"}]}),
+                                   "repos/o/r/actions/workflows/2/runs?branch=main&event=push&per_page=10":
+                                       json.dumps({"workflow_runs": []})})
+                answers["repos/o/r/actions/workflows?per_page=100"] = json.dumps(
+                    {"workflows": [{"id": 1, "name": "ci", "state": "active"},
+                                   dict({"id": 2, "name": "stale"}, **extra)]})
+                clock = FakeClock()
+                rc, out, err, gh = base_run(answers, ["main", "--snapshot"], clock=clock)
+                self.assertEqual(rc, expected, out + err)
+                self.assertEqual(clock.slept, [])
+                asked = "repos/o/r/actions/workflows/2/runs?branch=main&event=push&per_page=10" in gh.asked
+                self.assertEqual(asked, shape != "disabled", gh.asked)
+                if expected == 0:
+                    self.assertIn("paths-ignore of ci", out)
+                    self.assertNotIn("stale", out)
+
     def test_snapshot_cannot_poll(self) -> None:
         rc, _, err, gh = base_run({}, ["main", "--snapshot", "--wait=3"])
         self.assertEqual(rc, 2)
@@ -1631,6 +1662,13 @@ class LastGreen(unittest.TestCase):
                 self.assertEqual(rc, 3, out + err)
                 self.assertIn("UNKNOWN", err)
                 self.assertEqual(out, "")
+
+    def test_a_disabled_workflows_red_is_still_attributed(self) -> None:
+        answers = chain_world(**{"repos/o/r/actions/workflows?per_page=100": json.dumps(
+            {"workflows": [{"id": 1, "name": "ci", "state": "disabled_manually"}]})})
+        rc, out, _, _ = base_run(answers, ["main", "--last-green", R])
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"last green for ci: {P2}", out)
 
     def test_two_red_workflows_print_only_once_both_are_read(self) -> None:
         answers = chain_world(**{
