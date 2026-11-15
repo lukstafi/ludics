@@ -576,7 +576,12 @@ sys.exit(0 if ok else 1)
 
     def test_bench_without_the_checkout_skips_link_and_fixtures(self):
         self.bench_setup()
-        out = self.run_shell(self.BENCH_STUB + 'BENCH_CHECKOUT=$PWD/none; bench_provision').stdout
+        # Force the venv path to end in ssh: its smoke record must not count as SSH.
+        mktemp = ('mktemp() { local d; d=$(command mktemp "$@") || return; '
+                  'mv "$d" "${d}ssh"; printf "%s\\n" "${d}ssh"; }; ')
+        out = self.run_shell(self.BENCH_STUB + mktemp +
+                             'BENCH_CHECKOUT=$PWD/none; bench_provision').stdout
+        self.assertRegex(self.calls(), r'(?m)^smoke .*ssh nvidia$')
         self.assertIn('skipping', out)
         self.assertNotIn('ssh ', self.calls())
 
