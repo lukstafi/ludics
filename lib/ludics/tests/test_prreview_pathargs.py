@@ -43,7 +43,7 @@ PATHS: dict[tuple[str, str], tuple[str, ...]] = {
 
 NOT_PATHS: frozenset[tuple[str, str]] = frozenset({
     ("__main__.py", "--repo"), ("__main__.py", "--repo="),
-    ("base.py", "--greens"), ("base.py", "--greens="), ("base.py", "--interim"),
+    ("base.py", "--snapshot"), ("base.py", "--greens"), ("base.py", "--greens="), ("base.py", "--interim"),
     ("base.py", "--last-green"), ("base.py", "--last-green="), ("base.py", "--wait"), ("base.py", "--wait="),
     ("budget.py", "--job"), ("budget.py", "--job="), ("budget.py", "--repo"), ("budget.py", "--repo="),
     ("budget.py", "-R"), ("budget.py", "-j"),
