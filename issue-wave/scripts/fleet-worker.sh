@@ -90,7 +90,7 @@
 #                          # no re-read lifts arrives (red, unknown, halt ...: at once), or no read may start
 #                          # before the deadline; pause FLEET_GATE_REREAD_INTERVAL (60) s; #872, gate.py THE WAIT
 #   fleet-worker.sh launch <box> <name> --target-repo <owner/repo> --kind claude|codex --brief <file>
-#                          [--standing <reserve.json>]
+#                          [--standing <reserve.json>] [--result-file <local path>]
 #                          (--cwd <dir> | --repo <checkout-dir> --branch <branch> [--base <ref>])
 #                          [--base-branch <branch>] [--force --allow-red-base <reason>]
 #                          [--replace] [--no-cross] [-- <extra CLI args>]
@@ -98,6 +98,8 @@
 #                          # them; meta records the model and effort they resolve to (model=,
 #                          # effort=, each with *_from= args|config|default); --no-cross skips the
 #                          # preflight's sibling reach probes (a wave with no cross-box legs)
+#                          # --result-file writes remote JSON (worker, host, session, worktree);
+#                          # human output uses stderr on this opt-in path. Use a fresh result file.
 #   fleet-worker.sh attach <box> <name> [--interval <sec>]
 #   fleet-worker.sh status <box> <name>
 #   fleet-worker.sh log <box> <name> [-n <lines>]   # the tail of every turn's assistant text
