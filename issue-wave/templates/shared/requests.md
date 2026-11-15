@@ -24,6 +24,10 @@ far-side paths absolutely (an unquoted `~` expands to YOUR home). A measurement 
 build, the fixtures and a dry run go first under your standing reservation. A measurement on
 `@@HOST@@` is `fleet-worker.sh execution hold --request <id> -- <runner>` as a long run;
 on another box an `execution leg` with `--deadline <s>` only (no `--cpu/--gpu/--wait/--wait-window`).
+An assigned correctness command on `@@HOST@@` runs as
+`fleet-worker.sh execution slot --wait-window --cpu -- <command>` (use `--gpu` for a GPU batch).
+A command already wrapped as `execution leg` runs as written: the leg selects slot or hold from
+its record's kind. Follow the assignment's form; `execution hold --request` refuses correctness.
 You will be resumed with one of:
 
 - `EXECUTION_ASSIGNED <request_id>` with the exact command and revision: run only that, at that
@@ -36,6 +40,7 @@ You will be resumed with one of:
 - `EXECUTION_PENDING <request_id> <...>`: answer with the one line `PENDING <request_id>` and end
   your turn, starting nothing.
 - `EXECUTION_DEFERRED <request_id> <reason>`: hand back early: commit and push what has passed its
-  tests, stop a review watch or merge wait you left running (`bg-run.sh stop <dir>`), and end with a status
+  tests, stop a review watch or merge wait you left running (`bg-run.sh stop <dir>` for a spawned
+  record; interrupt the running task for a foreground `bg-run.sh start` record), and end with a status
   block: head SHA, PR, the pending request verbatim, what its result decides, and the step after
   it. You will not be resumed after that.

@@ -533,6 +533,16 @@ prreview/rerun.py
 
 ## Checking
 
+Request-kind routing (#1155): a direct `execution hold --request` reads the registry before
+creating the slot directory or taking locks, and refuses correctness with the `execution slot`
+remedy. Refusal preserves the caller's CPU/GPU and wait choices rather than guessing them.
+Measurements, bare holds and unknown ids keep their prior paths; an unreadable registry refuses.
+Legs already select slot for correctness and hold for measurement. Assignment text names those
+forms and leaves generated leg commands wrapped once. The CLI brief removes the unusable
+coordinator session id and distinguishes stopping spawned records from foreground start tasks
+(the stop-guidance item of #1162). New hold and assignment unit cases fail against e859b357.
+
+
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
 checks its worker/host identity against prep, and records the exact worktree beside reserved legs.
 `launch --result-file <local path>` isolates the remote JSON stdout from human stderr across ssh,

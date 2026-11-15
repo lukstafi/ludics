@@ -388,6 +388,42 @@ def started(*args: object, **kwargs: object) -> None:
         on_start()
     raise Started
 
+class HoldRequestKind(unittest.TestCase):
+    def test_correctness_refuses_before_taking_locks_or_starting_a_command(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        records = [{"request_id": "cpu-test", "request": {"kind": "correctness"}}]
+        out = io.StringIO()
+        with mock.patch.object(slot, "listing", return_value=Done(0, json.dumps(records))), \
+                mock.patch.object(slot.os, "makedirs") as mkdir, mock.patch.object(slot, "hold") as hold, \
+                contextlib.redirect_stdout(out):
+            rc = slot.cmd_hold(cfg, ["--request", "cpu-test", "--", "true"])
+        self.assertEqual(rc, 1)
+        self.assertIn("cpu-test is a correctness request", out.getvalue())
+        self.assertIn("execution slot --wait-window --cpu -- <command>", out.getvalue())
+        mkdir.assert_not_called()
+        hold.assert_not_called()
+
+    def test_measurement_unknown_and_bare_holds_keep_their_paths(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        for request, records in (("m", [{"request_id": "m", "request": {"kind": "measurement"}}]), ("unknown", []), ("", [])):
+            with self.subTest(request=request), \
+                    mock.patch.object(slot, "listing", return_value=Done(0, json.dumps(records))) as listing, \
+                    mock.patch.object(slot.os, "makedirs"), mock.patch.object(slot, "box_correctness_slots", return_value=6), \
+                    mock.patch.object(slot, "hold") as hold:
+                slot.cmd_hold(cfg, [*(["--request", request] if request else []), "--", "true"])
+                hold.assert_called_once()
+                self.assertEqual(hold.call_args.args[5], 6 if request else 0)
+                self.assertEqual(listing.call_count, 1 if request else 0)
+
+    def test_unreadable_registry_refuses_before_a_hold(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        with mock.patch.object(slot, "listing", return_value=Done(0, "invalid")), \
+                mock.patch.object(slot, "hold") as hold, mock.patch.object(slot.os, "makedirs"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(slot.cmd_hold(cfg, ["--request", "m", "--", "true"]), 1)
+        hold.assert_not_called()
+
+
 class SlotArguments(unittest.TestCase):
     def refused(self, args: list[str]) -> str:
         err = io.StringIO()

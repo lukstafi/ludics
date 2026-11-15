@@ -21,6 +21,10 @@ brief:
   NOW -- and a batch it covers runs under the enclosing hold, taking nothing. The two judgements
   are one shape, ``Judged``: Inside, Take (the marker does not cover the batch: say why, take a slot
   of its own), or Refused.
+- THE REQUEST KIND (ludics#1155): before a direct hold with --request takes any locks, it
+  reads the registry and refuses a correctness record, naming execution slot. Unreadable registries
+  refuse too. Unknown ids and other kinds retain their existing behaviour; bare holds and the
+  worktree form keep their own paths (the latter already requires a measurement in leg.py).
 - THE DRAIN (ludics-lite#481): a ``hold --request`` takes every slot of the box before its command
   starts, so no batch runs beside a measurement.
 - THE HOLDER RECORD (ludics-lite#668): whoever takes a slot writes into its lock file who it is
@@ -1723,6 +1727,15 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
         # The marker names the box the slot reads it on, so it needs the name the slot has.
         if not cfg.local_box:
             die("execution hold: --request needs this host's fleet name; set FLEET_LOCAL_BOX")
+        records = read_registry(cfg, box, Voice(HOLD_PREFIX, "", "no hold taken"))
+        if isinstance(records, Unread):
+            for line in records.lines:
+                cli.say(line)
+            return records.rc
+        if any(r.get("request_id") == request and field(r, "request", "kind") == "correctness" for r in records):
+            cli.say(f"{HOLD_PREFIX} REFUSED {box}: {shlex.quote(request)} is a correctness request;"
+                    " run it as: execution slot --wait-window --cpu -- <command>; no hold taken")
+            return 1
         directory = os.path.join(cfg.path(cfg.slot_state), box)
         try:
             os.makedirs(directory, exist_ok=True)
