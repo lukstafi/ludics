@@ -329,9 +329,13 @@ class WaitLoop(unittest.TestCase):
                     {"total_commits": 1, "behind_by": 0, "commits": [{"sha": C, "parents": [{"sha": A}]}]}),
                     f"repos/o/r/commits/{C}?per_page=100": json.dumps({"files": [{"filename": "src/x.ml"}]})})
                 # Even a live coordinator observer must not refuse this one-shot read.
-                holder = Budget(state, _AsClock(clock))
+                holder = Budget(state, _AsClock(clock), pid=os.getppid())
                 holder.base_claim("o/r", "main")
                 try:
+                    blocked, _, refusal, unread = base_run(answers, ["main", "--wait=1"], clock=clock, state=state)
+                    self.assertEqual(blocked, 2, refusal)
+                    self.assertIn("already has a base observer", refusal)
+                    self.assertEqual(unread.asked, [], "the control proves this is a foreign live observer")
                     rc, out, err, gh = base_run(answers, ["main", "--snapshot"], clock=clock, state=state)
                     self.assertEqual(rc, expected, out + err)
                     self.assertEqual(clock.slept, [])
