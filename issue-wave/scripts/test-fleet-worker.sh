@@ -1235,7 +1235,7 @@ expect "...and from that checkout, not from a ship-pr beside the link" 0 "BASE G
   "$TMP/lone-skills/issue-wave/scripts/fleet-worker.sh" gate --target-repo example/project --base-branch topic
 grep -q "DECOY" <<<"$out" && ko "the gate read the decoy checker beside the link: $out" || ok "...and the decoy was never read"
 grep -Fxq -- '--repo example/project base topic --wait=360 --interim --advisory-red FILE grace=300 interval=60' "$BASE_CALL_LOG" && ok "explicit native branch passed to coordinator helper" || ko "native branch lost"
-grep -Fxq -- '--repo example/project base master --wait=360 --interim --advisory-red FILE grace=300 interval=60' "$BASE_CALL_LOG" && ok "worktree base branch passed to coordinator helper" || ko "worktree base lost"
+grep -Fxq -- '--repo example/project base master --wait=0 --interim --snapshot --advisory-red FILE grace=300 interval=60' "$BASE_CALL_LOG" && ok "worktree base branch passed to coordinator helper" || ko "worktree base lost"
 # The value itself, and the relation behind it: 360 is 300 + 60, a whole round of margin over the
 # grace. `--wait=301` left a one-second margin that one round's API latency swallowed, so the gate
 # reached its ceiling and refused dispatch for a docs-only tip the next round would have settled

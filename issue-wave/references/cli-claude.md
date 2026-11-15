@@ -65,7 +65,10 @@ a wave with no cross-box legs needs none, and each sleeping sibling costs 20 s o
 for another default, `--base <ref>` for one launch, `--cwd` for a worktree that already exists;
 a `--base` that is not an `origin/<branch>` ref, such as a SHA, also takes `--base-branch <branch>`, the
 branch whose CI the base gate reads, and is refused without it) and
-prints the session id that addresses every later intervention. `attach` blocks until the
+prints the session id that addresses every later intervention. Its base gate takes a fresh
+`--wait=0 --snapshot` read, so the coordinator may keep a `base --wait` observer running.
+A pending or unknown verdict still refuses launch; retry after a verdict is available. No
+saved verdict is reused, and a new worktree stays pinned to the fetched SHA the gate confirms. `attach` blocks until the
 worker's turn ends and prints one verdict line, riding out ssh drops and box naps by retrying
 from the coordinator's side: `IDLE` for a Claude worker whose turn answered the latest message
 and whose process now awaits input (`FAILED ... idle` if that turn ended in an error), and

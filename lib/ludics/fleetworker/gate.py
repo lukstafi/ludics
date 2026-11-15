@@ -9,7 +9,9 @@ checkout's physical root. Its clocks are pinned here so the ceiling cannot drift
 
 ``launch`` reads the same gate, with the commit it fetched as ``expected``: the target branch's
 tip must still be that commit once the verdict is in, or the worker would start from a base the
-verdict never judged.
+verdict never judged. The launch read is always a fresh snapshot (``--wait=0 --snapshot``),
+so a coordinator holding the branch's observer cannot refuse it. Pending and unknown still
+refuse dispatch; no earlier caller's verdict is trusted or reused.
 
 The read passes ``--advisory-red <file>`` (ludics-lite#651): a workflow red only in jobs the
 repository's own ``.github/ship-pr-advisory-checks`` names is the checker's to take out of the
@@ -414,8 +416,10 @@ def base_read(cfg: Config, target: str, branch: str, force: bool, reason: str, e
 
 def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, expected: str = "") -> int:
     """0 the base may be built on, 1 refused (its line on stderr); a usage error dies (2). With
-    ``expected`` (launch's fetched base), the branch's tip must still be that commit."""
-    return base_read(cfg, target, branch, force, reason, expected).rc
+    ``expected`` (launch's fetched base), the branch's tip must still be that commit.
+    Always a fresh snapshot: launch must coexist with the coordinator's waiting observer,
+    even when called directly rather than after the driver's own gate read."""
+    return base_read(cfg, target, branch, force, reason, expected, no_wait=True).rc
 
 
 GATE_USAGE = "gate: expected --target-repo <owner/repo> [--base-branch <branch>] [--wait <seconds> | --no-wait] [--force]"

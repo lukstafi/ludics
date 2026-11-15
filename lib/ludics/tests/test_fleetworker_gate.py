@@ -111,6 +111,20 @@ class SingleRead(unittest.TestCase):
                 self.assertEqual("--snapshot" in checker.call_args.args[1], no_wait)
                 self.assertEqual(anchor.call_count, 1 if result else 2, "green still rechecks the lease and halt")
 
+    def test_launch_reads_a_fresh_snapshot_and_confirms_its_fetched_sha(self) -> None:
+        cfg = cast(Config, types.SimpleNamespace(checkout=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")), env={}))
+        for verdict, tip, expected in ((0, SHA, 0), (0, "a" * 40, 1), (0, None, 1), (3, SHA, 1), (4, SHA, 1)):
+            with (self.subTest(verdict=verdict, tip=tip),
+                  mock.patch.object(gate, "integration_records", return_value=""),
+                  mock.patch.object(gate, "_read", return_value="[]"),
+                  mock.patch.object(gate, "base_checker", return_value=(verdict, "fresh verdict")) as checker,
+                  mock.patch.object(gate, "base_checker_read", return_value=tip) as confirm):
+                self.assertEqual(gate.base_gate(cfg, "o/r", "main", False, "", SHA), expected)
+                self.assertEqual(checker.call_count, 1)
+                self.assertIn("--snapshot", checker.call_args.args[1])
+                self.assertIn("--wait=0", checker.call_args.args[1])
+                self.assertEqual(confirm.call_count, 0 if verdict else 1)
+
     def test_no_wait_cannot_start_an_outer_polling_loop(self) -> None:
         cfg = cast(Config, types.SimpleNamespace(env={}))
         for args in (["--no-wait", "--wait", "2"], ["--wait", "2", "--no-wait"]):
