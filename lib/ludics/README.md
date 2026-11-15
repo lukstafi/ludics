@@ -533,17 +533,6 @@ prreview/rerun.py
 
 ## Checking
 
-Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `lib/`
-`test_*.py` module paths at `PYTHON_TEST_CUTS`. CI passes job-index/job-total, so losing
-one matrix row refuses against the cut count; new modules enter a range automatically.
-`scripts/test-python-shards.py` pins the workflow's shard rows, cut count and complete
-module coverage. Its module-path boundary is stated in the checker header. Pyright runs
-in one independent job; the checker is registered among preflight's guards, with triggers
-for the checker, runner, workflow and package paths.
-The tmux setup is shared by fleet jobs through `.github/actions/setup-tmux`, retaining
-both callers' one-minute ceilings and the fallback's 45s timeout plus 5s kill grace.
-
-
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
 checks its worker/host identity against prep, and records the exact worktree beside reserved legs.
 `launch --result-file <local path>` isolates the remote JSON stdout from human stderr across ssh,
@@ -575,6 +564,17 @@ keeping valid placements and reporting reconciliation instead of publishing a pa
 The two whitespace regression cases fail against the pre-guard commit 4c0158d7 and pass with it.
 A missing board-writer identity becomes an assignment NOTE rather than aborting the
 remaining requests. Board mutations share one lease-protocol helper.
+
+Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `lib/`
+`test_*.py` module paths at `PYTHON_TEST_CUTS`. CI passes job-index/job-total, so losing
+one matrix row refuses against the cut count; new modules enter a range automatically.
+`scripts/test-python-shards.py` pins the workflow's shard rows, cut count and complete
+module coverage. Its module-path boundary is stated in the checker header. Pyright runs
+in one independent job; the checker is registered among preflight's guards, with triggers
+for the checker, runner, workflow and package paths.
+The tmux setup is shared by fleet jobs through `.github/actions/setup-tmux`, retaining
+both callers' one-minute ceilings and the fallback's 45s timeout plus 5s kill grace.
+
 
 ```sh
 npx --yes pyright@1.1.414 --pythonplatform Linux                  # from the repo root
