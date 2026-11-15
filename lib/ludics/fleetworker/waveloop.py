@@ -11,7 +11,9 @@ THE LOOP'S REQUESTS are tip-run's (tiprun.py's header): the payload, ``<wave dir
 is ``{wave, worker: coordinator, transport: coordinator, purpose, agent_host, execution_host: box,
 repository, kind: correctness}``, with ``"integration": true`` only when the loop says so (a GPU
 loop's records are informative and must not carry it); the ids are ``<wave>-<name>-<n>``
-(``--id-prefix <wave>-<name>``); the command, checkout, branch and ``--cpu`` are the loop's.
+(``--id-prefix <wave>-<name>``); the command, checkout, branch and ``--cpu`` are the loop's. A GPU
+loop's start (a purpose beginning ``GPU integration loop``) adds ``--full-loop``: it runs the loop's
+own command, so its pass covers the loop (registry.py, THE LOOP'S COVERAGE).
 
 ONE DRIVER per loop: an exclusive ``flock`` on ``logs/loop-<name>.lock``, taken without waiting; a
 second driver refuses (exit 1). The OS drops it with its holder, so a killed driver leaves none.
@@ -33,9 +35,11 @@ THE TARGETED RERUN: ``wave loop <wave.json> <name> --rerun <red id> -- <command>
 this loop's numbered records, requiring the named record to be concluded fail/timeout with a full
 observed SHA. It starts one plain tip-run at that SHA, with the configured loop's box, checkout,
 purpose and CPU setting, a separate ``<wave>-<name>-rerun`` id prefix and payload file, and NEVER
-an integration field. It accepts no payload overrides. GPU-loop purposes are refused: their
-``pinned_backend`` mark also makes a record last-green evidence, independently of integration;
-use the existing full pinned-command GPU rerun path instead. The caller supplies the narrowed command;
+an integration field or ``--full-loop``. It accepts no payload overrides. A GPU loop's rerun is
+served too (ludics#1158): tip-run still checks its command's backend pin, so the narrowed command
+must pin the loop's backend, and its record carries ``pinned_backend`` with ``"full_loop": false``
+(registry.py, THE LOOP'S COVERAGE), so it is never that backend's last green, even when the caller
+gives the full command. The caller supplies the narrowed command;
 its coverage and repeat semantics are the coordinator's judgment, not inspected here. Wait with
 ``execution tip-run --wait <id>``. No automatic retry or resume-launches: triage must finish first.
 
@@ -49,7 +53,7 @@ bound; a stopped driver leaves its run running, and the next driver resumes it:
   1. The tip, read here (``revision.branch_head``, tip-run's own read). Unread is a note and a
      ``poll``: never taken as current or moved.
   2. At the last judged commit: wait ``poll`` seconds. Past it: ``execution tip-run <payload> --tip
-     <branch> --id-prefix <wave>-<name> --checkout <dir> [--cpu] -- <command>``.
+     <branch> --id-prefix <wave>-<name> --checkout <dir> [--cpu] [--full-loop] -- <command>``.
      ``TIP-RUN STARTED`` (exit 0): wait. ``NOT STARTED`` (exit 1, the box busy or the tip unread
      there): a note and a ``poll``. Anything else: ``LOOP UNKNOWN``, exit 4 (2 on its usage).
   3. The wait: ``execution tip-run --wait <id>``, re-issued while it exits 3 (RUNNING). Exit 0's
@@ -189,8 +193,7 @@ class Driver:
         return None
 
     def rerun(self, red_id: str, command: list[str]) -> int:
-        if self.loop.purpose.startswith(GPU_LOOP):
-            die("wave loop --rerun: targeted GPU reruns could become backend integration evidence; use the full pinned-command path")
+        # Never --full-loop: a targeted pass keeps its backend pin and is no last green (the header).
         red = next((r for r in self.mine() if str(r.get("request_id")).lower() == red_id.lower()), None)
         if (red is None or red.get("state") != "concluded" or red.get("verdict") not in ("fail", "timeout")
                 or not isinstance(red.get("observed_sha"), str) or not SHA40.fullmatch(red["observed_sha"])):
@@ -210,7 +213,8 @@ class Driver:
     def start(self, tip: str) -> str | None:
         """The started run's id, or None after a yield."""
         args = ["execution", "tip-run", self.payload, "--tip", self.loop.tip, "--id-prefix", self.prefix,
-                "--checkout", self.loop.checkout, *(["--cpu"] if self.loop.cpu else []), "--", *self.loop.command]
+                "--checkout", self.loop.checkout, *(["--cpu"] if self.loop.cpu else []),
+                *(["--full-loop"] if self.loop.purpose.startswith(GPU_LOOP) else []), "--", *self.loop.command]
         done = self.fleet(*args)
         lines = done.out.split("\n")
         if done.rc == 0:

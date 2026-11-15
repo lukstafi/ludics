@@ -731,14 +731,20 @@ must name as `--target-repo` to be handed it (SKILL.md's *Base gate*).
 
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
 `fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] [--base <branch>] --checkout <dir>
-[--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command...>`. Its request is the coordinator's non-standing
+[--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] -- <command...>`. Its request is the coordinator's non-standing
 `correctness` request whose `requested_revision` is exactly one full SHA, or names none under
 `--tip`, which writes the branch's head on GitHub into it; under `--id-prefix` it names no
 `request_id` either, and the run takes `<prefix>-<n>`, one past the highest `<n>` the registry holds
 under the prefix (ludics-lite#714). A request whose `purpose` begins `GPU integration loop,
 <backend>:` runs only a command pinning exactly that backend, by the project's `.github/fleet-leg`
 at the commit (the leg's backend pin, below; ludics-lite#793): an unpinned command, one pinning
-another backend, and a commit without the file are refused. A checkout whose filesystem has under
+another backend, and a commit without the file are refused. Such a run's record carries two
+marks (ludics#1158): `pinned_backend`, that the pin was checked, and `full_loop`, `true` only under
+`--full-loop`, its caller's statement that the command is the loop's full one (`wave loop` passes it
+for the loop's own command, never for `--rerun`'s narrowed one; the flag on a purpose naming no
+backend is refused). `integration-records --pinned-backend` reads only full-loop passes (and a
+pinned record from before the field, which was a full run), so a targeted rerun never advances the
+backend's last green. A checkout whose filesystem has under
 `FLEET_LEG_MIN_FREE_GIB` free is refused before the fetch, the checkout and the slot (the leg's
 free-space floor, below; ludics#991), naming the box, the free space and the floor, and a read that
 fails is a `TIP-RUN NOTE <box>:` on stderr and the run goes on. It yields, reserving nothing, to anything

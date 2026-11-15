@@ -3255,16 +3255,24 @@ expect "...and one at a commit whose project states no pin" 1 "^TIP-RUN NOT STAR
 [ "$(git -C "$tco" rev-parse HEAD)" != "$pinned" ] && ok "...each before the checkout moved to the commit" || ko "the checkout moved to $pinned"
 jq 'del(.request_id)' "$(loopreq w-gpu-testbox-x "$pinned" cuda)" > "$TMP/tip-alloc.json"
 expect "--id-prefix allocates one past the highest id held, and a pinned GPU-loop run starts" 0 "^TIP-RUN STARTED w-gpu-testbox-4 testbox $pinned /" -- \
-  "${FWT[@]}" execution tip-run "$TMP/tip-alloc.json" --checkout "$tco" --id-prefix w-gpu-testbox -- env OCANNL_BACKEND=cuda sh -c 'echo "backend $OCANNL_BACKEND"; echo "exit: 0"'
+  "${FWT[@]}" execution tip-run "$TMP/tip-alloc.json" --checkout "$tco" --id-prefix w-gpu-testbox --full-loop -- env OCANNL_BACKEND=cuda sh -c 'echo "backend $OCANNL_BACKEND"; echo "exit: 0"'
 grep -q "^TIP-RUN ID w-gpu-testbox-4: allocated under w-gpu-testbox-" <<<"$out" && ok "...saying which id it took" || ko "no ID line: $out"
 expect "...which --wait concludes under that id" 0 "^TIP-RUN CONCLUDED w-gpu-testbox-4 pass testbox $pinned /" -- \
   "${FWT[@]}" execution tip-run --wait w-gpu-testbox-4 --within 60
 grep -Fxq "backend cuda" "$(sed -n "s/^TIP-RUN CONCLUDED w-gpu-testbox-4 pass testbox $pinned //p" <<<"$out")/log" && ok "...having run the command as given" || ko "w-gpu-testbox-4's log lacks the backend line"
-# The backend mark (registry.py, THE BACKEND MARK): the started GPU-loop run's record says which
-# pin was checked; the refused ones and a cc-loop run (tip-i) carry none, so the last-green read
-# (issue-wave SKILL.md) takes only the first.
-marks=$("$FW" execution list | jq -r '[.[] | select(.request_id | test("^(w-gpu-testbox-[0-9]+|tip-i|tip-k)$")) | "\(.request_id)=\(.pinned_backend // "-")"] | sort | join(" ")')
-[ "$marks" = "tip-i=- tip-k=- w-gpu-testbox-1=- w-gpu-testbox-3=- w-gpu-testbox-4=cuda" ] && ok "...marked pinned_backend cuda, and no run not started or not a GPU loop's is" || ko "the backend marks: $marks"
+# ludics#1158 (registry.py, THE LOOP'S COVERAGE): a targeted GPU rerun, no --full-loop, at the
+# same commit, still past the backend pin.
+expect "a GPU-loop run without --full-loop starts past the same pin" 0 "^TIP-RUN STARTED w-gpu-testbox-5 testbox $pinned /" -- \
+  "${FWT[@]}" execution tip-run "$TMP/tip-alloc.json" --checkout "$tco" --id-prefix w-gpu-testbox -- env OCANNL_BACKEND=cuda sh -c 'echo "exit: 0"'
+expect "...and --wait concludes it" 0 "^TIP-RUN CONCLUDED w-gpu-testbox-5 pass testbox $pinned /" -- \
+  "${FWT[@]}" execution tip-run --wait w-gpu-testbox-5 --within 60
+# The backend mark (registry.py, THE BACKEND MARK): the started GPU-loop runs' records say which
+# pin was checked and whether the run was the loop's full command; the refused ones and a cc-loop
+# run (tip-i) carry neither, so the last-green read (issue-wave SKILL.md) takes only the full one.
+marks=$("$FW" execution list | jq -r '[.[] | select(.request_id | test("^(w-gpu-testbox-[0-9]+|tip-i|tip-k)$")) | "\(.request_id)=\(.pinned_backend // "-"),\(if has("full_loop") then .full_loop else "-" end)"] | sort | join(" ")')
+[ "$marks" = "tip-i=-,- tip-k=-,- w-gpu-testbox-1=-,- w-gpu-testbox-3=-,- w-gpu-testbox-4=cuda,true w-gpu-testbox-5=cuda,false" ] && ok "...marked pinned_backend cuda with its coverage, and no run not started or not a GPU loop's is" || ko "the backend marks: $marks"
+out=$("${FWT[@]}" execution integration-records o/r --pinned-backend cuda --verdict pass 2>&1); rc=$?
+[ "$rc" = 0 ] && [ "$(cut -f3 <<<"$out")" = "w-gpu-testbox-4" ] && ok "...and the backend's last-green candidates are the full-loop pass alone" || ko "integration-records --pinned-backend cuda (rc=$rc): $out"
 expect "--id-prefix beside a named request id is refused" 2 "--id-prefix allocates the request id, so the payload names no request_id" -- \
   "${FWT[@]}" execution tip-run "$(loopreq tip-l "$pinned" cuda)" --checkout "$tco" --id-prefix w-gpu-testbox -- echo never
 expect "a GPU-loop purpose that does not name its backend is refused" 2 "names its backend, as 'GPU integration loop, <backend>: ...'" -- \
