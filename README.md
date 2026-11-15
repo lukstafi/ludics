@@ -617,6 +617,13 @@ rounds apart. The boundary is the file and not the commands in it — the agent 
 commands in those indented blocks, one at a time, so a command malformed in itself is a real defect;
 what does not apply is the reproduction that needs bash to read the prose around it.
 
+The Python shard runner prints `--- <seconds>s: <module>` after each loaded module suite,
+using a monotonic clock. A module's final class/module teardown is counted in the next module's
+line, and the last module's in none. Imports and `load_tests` are excluded. All modules still
+load before any tests run, with one shared result and the same failure exit. The fake-clock
+case in `test-python-shards.py` pins loading order, class fixtures, continued execution after an
+import error, and elapsed lines.
+
 The GitHub Actions workflow in `.github/workflows/skill-scripts.yml` runs the shell suites and
 shared Python fixtures on Ubuntu, on every pull request and every push to `main`. No job there
 runs past 30 minutes, and the target is a p90 of 20 (the maintainer's decision on ludics#974): a
