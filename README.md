@@ -23,8 +23,8 @@ daily sequencing plan `issue-wave` reads, the OCANNL test sweep, and the CI-red
 triage cloud routine. See [routines/README.md](routines/README.md).
 
 Design decisions a wave takes without the maintainer in the loop are listed, one row each, in
-[docs/design/decisions.md](docs/design/decisions.md), the ledger issue-wave's close-out adds to and
-the daily plan's "Decisions taken" section reads.
+`docs/design/decisions.md`, the ledger issue-wave's close-out adds to and the daily plan's
+"Decisions taken" section reads.
 
 The skills were extracted from a private repository with their full history. Its issues were
 cloned here and the references in the skills renumbered to `ludics-lite#N`; the few remaining
