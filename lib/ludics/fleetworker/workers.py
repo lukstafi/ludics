@@ -2,6 +2,11 @@
 (fleet-worker.sh's ``cmd_launch``, ``cmd_attach``, ``cmd_status``, ``cmd_log``, ``cmd_unstick``,
 ``cmd_close``, ``cmd_ls``).
 
+``--result-file <local path>`` opts into a JSON object with worker, host, session and
+worktree. Only the remote result stdout is written there; human output is on stderr.
+The file is written only after start succeeds. It is evidence of startup, not readiness;
+on a missing/malformed result reconcile status and reservations before retrying.
+
 A CLI worker is a detached tmux session on its box with its record under the box's
 ``$STATE/workers/<name>/`` (fleet-worker.sh's header has the model, the two kinds and their
 states). Every read and every change of a record is the far side's (``ludics.fleetworker.farside``),
@@ -108,7 +113,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     box, name = _box_and_name(args, "launch")
     if not valid_name(name):
         die("launch: name must be [A-Za-z0-9._-]+ and not start with a dot")
-    kind = brief = cwd = repo = branch = target = base_branch = reason = standing = ""
+    kind = brief = cwd = repo = branch = target = base_branch = reason = standing = result_file = ""
     base = cfg.env.get("FLEET_BASE_REF") or "origin/master"
     force = replace = no_cross = False
     extra: list[str] = []
@@ -127,6 +132,11 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                 i += 1
             case "--kind":
                 kind = _value(rest, i)
+                i += 1
+            case "--result-file":
+                result_file = _value(rest, i)
+                if not result_file:
+                    die("launch: --result-file <local path> required")
                 i += 1
             case "--standing":
                 standing = _value(rest, i)
@@ -257,19 +267,30 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     script = prefix + farside.LAUNCH
     request_id = ""
     if request is not None:
-        done = run_on(cfg, box, prefix + farside.LAUNCH_PREPARE, far_args, capture=True)
+        preparation = (farside.structured_launch(prefix + farside.LAUNCH_WORKTREE)
+                       if result_file else prefix + farside.LAUNCH_PREPARE)
+        done = run_on(cfg, box, preparation, far_args, capture=True)
         if done.unreachable:
             return _unreachable(f"LAUNCH UNREACHABLE {box}")
         if done.rc != 0:
             cli.emit(done.out)
             return done.rc
-        # Preparation's final line is the resolved absolute checkout, after any git notices.
-        lines = substitution(done.out).split("\n")
-        prepared = lines[-1]
-        for notice in lines[:-1]:
-            cli.say(notice)
-        if not prepared.startswith("/"):
-            die("launch: preparation did not return an absolute checkout")
+        if result_file:
+            try:
+                prepared = json.loads(done.out)["worktree"]
+                if not isinstance(prepared, str) or not prepared.startswith("/") or "\0" in prepared:
+                    raise ValueError("invalid worktree")
+            except (ValueError, KeyError, TypeError):
+                cli.say("LAUNCH UNKNOWN: preparation did not return a structured checkout; reconcile before retrying")
+                return 4
+        else:
+            # Legacy callers retain preparation's human output and path convention.
+            lines = substitution(done.out).split("\n")
+            prepared = lines[-1]
+            for notice in lines[:-1]:
+                cli.say(notice)
+            if not prepared.startswith("/"):
+                die("launch: preparation did not return an absolute checkout")
         request["checkout"] = prepared
         check = f'[ "$cwd" = {shlex.quote(prepared)} ] || refuse "worktree path changed after reservation"\n'
         # Revalidation must not call a worktree this preparation made an existing reuse.
@@ -298,7 +319,14 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
             run_on(cfg, box, prelude(cfg, box) + farside.LAUNCH_DROP_BRIEF, [f"{name}-{when}.md"])
             return tiprun.not_started(cfg, request_id, f"{label}: post-reservation launch gate refused (exit {rc})",
                                       "none: worker startup was not attempted", verb="LAUNCH")
-    done = run_on(cfg, box, script, far_args)
+    done = run_on(cfg, box, farside.structured_launch(script) if result_file else script, far_args, capture=bool(result_file))
+    if result_file and done.rc == 0:
+        try:
+            with open(result_file, "w", encoding="utf-8") as output:
+                output.write(done.out)
+        except OSError:
+            cli.say("LAUNCH UNKNOWN: cannot write structured result; inspect status before retrying")
+            return 4
     if request is not None and done.rc == farside.LAUNCH_NOT_STARTED:
         # The one proven pre-start outcome (farside's closed list): the far side's refusal above
         # says why, and the reservation is concluded not-launched.

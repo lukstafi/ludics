@@ -272,6 +272,7 @@ fleetworker/farside.py:LAUNCH_EXISTS fleetworker/farside.py:LAUNCH_FETCH fleetwo
 fleetworker/farside.py:LAUNCH_DROP_BRIEF fleetworker/farside.py:LAUNCH_PREPARE fleetworker/farside.py:LAUNCH_START
 fleetworker/farside.py:LAUNCH fleetworker/farside.py:LAUNCH_NOT_STARTED fleetworker/farside.py:_REFUSE_EXIT
 fleetworker/farside.py:_proven_refusals fleetworker/farside.py:LAUNCH_STANDING_WORKTREE
+fleetworker/farside.py:LAUNCH_RESULT fleetworker/farside.py:structured_launch
 fleetworker/farside.py:LAUNCH_STANDING_START fleetworker/farside.py:VERDICT fleetworker/farside.py:ATTACH
 fleetworker/farside.py:CLOSE
     issue-wave/scripts/test-fleet-worker.sh preflight "the real checkout" "base gate" "coordinator lease" halt "launch /" "failure verdicts" unstick "codex workers" usage
@@ -532,8 +533,25 @@ prreview/rerun.py
 
 ## Checking
 
-Placement recovery (#1133): `wave launch` reads the worker's path from `LAUNCHED`, uses the
-prepared host, and records it beside reserved legs. `execution assign` calls the board store's internal `placement`
+Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
+checks its worker/host identity against prep, and records the exact worktree beside reserved legs.
+`launch --result-file <local path>` isolates the remote JSON stdout from human stderr across ssh,
+including the standing reservation's preparation path. Missing/invalid results are UNKNOWN;
+legacy LAUNCHED-only output is never guessed from. Startup evidence is not a readiness claim.
+Whitespace paths survive JSON intact but still produce reconciliation notes because cleanup
+words cannot represent them. The two selected structured-result regressions fail on e859b357
+(five assertion failures); all 21 MixedWave cases pass with the change. The remote serializer is
+also exercised under `/bin/bash` with spaces, tabs, LF, U+2028 and literal cwd/stream delimiters.
+Evidence logs: `wave-20261115-ludics/scratch/t1160/runs/negative.log` and `target2.log` under the
+coordinator's issue-wave state directory.
+Checkpoint coverage also drives `cmd_launch` directly: malformed/relative preparation JSON
+never dispatches, and a result-file write failure after startup stays UNKNOWN without concluding
+the standing reservation. All six StandingLaunch tests pass; changing exit 4 to exit 0 makes the
+two new cases fail (six assertions), in `review-target.log` and `review-negative.log` beside those
+logs. Sharing the two small absolute-path predicates is deferred as a maintenance checklist item;
+preparation reads a path while wave launch additionally checks result identity.
+
+`execution assign` calls the board store's internal `placement`
 operation under the lease lock, including for matching `ASSIGN ALREADY` records: a union keeps
 one copy of each host/checkout across partial writes and retries. It matches the base's worker
 to an existing row and creates neither rows nor boards. The manifest and row schema are unchanged;
@@ -544,9 +562,7 @@ and pass with the fix; the mapped macOS sections passed 686 assertions. Local re
 whitespace paths as unsafe cleanup words: both writers now reject those words before publication,
 keeping valid placements and reporting reconciliation instead of publishing a path prefix.
 The two whitespace regression cases fail against the pre-guard commit 4c0158d7 and pass with it.
-Review round 1 also rejects repeated launch-line cwd/stream delimiters before publishing any
-placement. Only LF separates launch output lines, so Unicode separators cannot forge a second
-LAUNCHED line. A missing board-writer identity becomes an assignment NOTE rather than aborting the
+A missing board-writer identity becomes an assignment NOTE rather than aborting the
 remaining requests. Board mutations share one lease-protocol helper.
 
 ```sh

@@ -1252,6 +1252,18 @@ echo "LAUNCHED $BOX/$name kind=$kind session=${sid:-unknown} model=$(meta_get "$
 """
 
 
+# Opt-in result channel: only JSON travels on stdout, including over ssh. Human output
+# keeps its bytes on stderr. Preparation also uses JSON so no path is split on a newline.
+LAUNCH_RESULT = r'''jq -cn --arg worker "$name" --arg host "$BOX" --arg session "${sid:-unknown}" --arg worktree "$cwd" \
+  '{worker:$worker,host:$host,session:$session,worktree:$worktree}'
+'''
+
+
+def structured_launch(script: str) -> str:
+    """Redirect all human output, then serialize shell variables without text delimiters."""
+    return "{\n" + script + "\n} >&2\n" + LAUNCH_RESULT
+
+
 # Without --standing this is the original script, byte for byte.
 LAUNCH = LAUNCH_WORKTREE + LAUNCH_START
 

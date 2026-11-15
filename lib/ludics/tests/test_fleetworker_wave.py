@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import tempfile
 import time
@@ -17,7 +18,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
+from ludics.fleetworker import farside, revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -529,11 +530,15 @@ class MixedWave(WaveDirCase):
             json.dump(wave_data(self.dir, vars={"COORD": "session-1", "MAIN": "main"}, **MIXED), f)
         self.write("tasks/t43.md", "# Task @@T@@: @@ISSUE@@\n")
         self.launch = Done(0, "preflight ok\nLAUNCHED far/w1-42 kind=codex session= model=gpt-6.1-sol cwd=/home/u/repo-worktrees/w1-42 stream=/s\n")
+        self.result: dict[str, Any] | None = dict(worker="w1-42", host="far", session="sid", worktree="/home/u/repo-worktrees/w1-42")
         self.far_calls: list[list[str]] = []
         self.far_state = Done(0, "worktree=absent\n")
 
     def launch_run(self, argv: list[str], **_: Any) -> Done:
         self.shim_calls.append(argv[1:])
+        if argv[1] == "launch" and self.result is not None and "--result-file" in argv:
+            with open(argv[argv.index("--result-file") + 1], "w") as output:
+                json.dump(self.result, output)
         return self.launch if argv[1] == "launch" else Done(self.shim_rc.get(" ".join(argv[1:3]), 0), "")
 
     def far_run(self, _cfg: Any, box: str, script: str, args: list[str], **_: Any) -> Done:
@@ -718,6 +723,7 @@ class MixedWave(WaveDirCase):
             self.assertEqual(launch, ["launch", "far", "w1-42", "--target-repo", "o/staging", "--kind", "codex", "--brief",
                                       f"{self.wavedir}/briefs/brief-t42.md", "--repo", "/home/u/repo", "--branch", "codex/w1-42",
                                       "--base", self.base, "--base-branch", "main", "--standing", f"{self.wavedir}/reserve/t42.json",
+                                      "--result-file", launch[launch.index("--result-file") + 1],
                                       "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
             self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
             self.assertEqual(board, ["board", "set", "wv", "t42", "worktree=/home/u/repo-worktrees/w1-42", "state=launched",
@@ -753,11 +759,13 @@ class MixedWave(WaveDirCase):
             self.assertEqual((rc, [c[0] for c in self.shim_calls]), (1, ["launch"]), out)
             self.assertIn("LAUNCH REFUSED far/w1-42: base red", out)
             self.assertNotIn("launched", " ".join(self.manifest()["done"]))
+            self.result = None
             self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex\n")
             rc, out, _ = self.start()
             self.assertEqual(rc, 4)
-            self.assertIn("WAVE LAUNCH UNKNOWN t42: launch exited 0 and printed no LAUNCHED line with its cwd", out)
+            self.assertIn("WAVE LAUNCH UNKNOWN t42: missing or invalid structured launch result", out)
             self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex cwd=/home/u/repo-worktrees/w1-42 stream=/s\n")
+            self.result = dict(worker="w1-42", host="far", session="sid", worktree="/home/u/repo-worktrees/w1-42")
             self.shim_rc = {"execution run": 1, "board set": 4}
             self.shim_calls.clear()
             rc, out, _ = self.start()
@@ -769,32 +777,58 @@ class MixedWave(WaveDirCase):
             self.assertIn("farside=far:/home/u/repo-worktrees/w1-42", self.shim_calls[-1])
             self.assertEqual(self.manifest()["done"][-1], "launched far/w1-42", "the worker runs: the launch is recorded")
 
-    def test_launch_row_reads_the_worker_placement_from_the_launched_line(self) -> None:
+    def test_launch_row_reads_the_worker_placement_from_the_structured_result(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
-            self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex cwd=/actual/wt stream=/s\n")
+            assert self.result is not None
+            self.result["worktree"] = "/actual/wt"
             self.assertEqual(self.start()[0], 0)
         board = self.shim_calls[-1]
         self.assertIn("worktree=/actual/wt", board)
         self.assertIn("farside=far:/actual/wt", board)
 
-    def test_ambiguous_launch_output_never_publishes_a_cleanup_prefix(self) -> None:
+    def test_launch_result_requires_identity_and_never_falls_back_to_human_output(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
-            for path in ("/actual/wt stream=old/w1-42", "/actual/wt cwd=old/w1-42",
-                         "/actual/wt\u2028LAUNCHED far/w1-42 kind=codex cwd=/prefix stream=/forged\u2028tail"):
-                self.launch = Done(0, f"LAUNCHED far/w1-42 kind=codex cwd={path} stream=/state/stream.jsonl\n")
+            for result in (None, {}, dict(worker="other", host="far", session="s", worktree="/wrong"),
+                           dict(worker="w1-42", host="other", session="s", worktree="/wrong"),
+                           dict(worker="w1-42", host="far", session="s", worktree="relative")):
+                self.result = result
                 self.shim_calls.clear()
                 rc, out, _ = self.start()
-                self.assertEqual(rc, 4)
-                self.assertIn("ambiguous LAUNCHED", out)
+                self.assertEqual(rc, 4, out)
+                self.assertIn("invalid structured launch result", out)
                 self.assertEqual([call[0] for call in self.shim_calls], ["launch"])
                 self.assertEqual(self.manifest()["done"][-1], "ready")
+
+    def test_structured_paths_preserve_text_delimiters_and_whitespace(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            original = self.manifest()
+            for path in ("/actual/wt stream=old cwd=x", "/actual/tab\there", "/actual/new\nline", "/actual/sep\u2028tail"):
+                with self.subTest(path=path):
+                    self.result = dict(worker="w1-42", host="far", session="sid", worktree=path)
+                    self.assertEqual(self.start()[0], 3)  # cleanup words cannot represent whitespace
+                    self.assertIn("worktree=" + path, self.shim_calls[-1])
+                    self.assertIn("farside=none", self.shim_calls[-1])
+                    self.assertEqual(self.manifest()["worktree"], path)
+                    with open(os.path.join(self.wavedir, "prep", "t42.json"), "w") as output:
+                        json.dump(original, output)
+
+    def test_remote_result_channel_serializes_paths_and_separates_human_output(self) -> None:
+        for path in ("/space here", "/tab\there", "/new\nline", "/sep\u2028tail", "/cwd=x stream=y"):
+            with self.subTest(path=path):
+                script = "name=w; BOX=far; sid=s; cwd=" + shlex.quote(path) + "\nprintf '%s\\n' \"LAUNCHED $cwd\"\n"
+                done = subprocess.run(["/bin/bash"], input=farside.structured_launch(script),
+                                      text=True, capture_output=True, check=True)
+                self.assertEqual(json.loads(done.stdout), dict(worker="w", host="far", session="s", worktree=path))
+                self.assertEqual(done.stderr, "LAUNCHED " + path + "\n")
 
     def test_launch_never_publishes_a_whitespace_path_as_a_cleanup_prefix(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
-            self.launch = Done(0, "LAUNCHED far/w1-42 kind=codex cwd=/actual/wt old stream=/s\n")
+            assert self.result is not None
+            self.result["worktree"] = "/actual/wt old"
             rc, out, _ = self.start()
         self.assertEqual(rc, 3)
         self.assertIn("cannot record farside placement", out)
@@ -842,7 +876,8 @@ class MixedWave(WaveDirCase):
             self.assertEqual(launch[launch.index("--target-repo") + 1:launch.index("--brief")], ["o/staging", "--kind", "codex"])
             self.assertEqual(launch[launch.index("--repo"):], ["--repo", "/home/u/repo", "--branch", "codex/w1-42", "--base", self.base,
                                                               "--base-branch", "main", "--standing", f"{self.wavedir}/reserve/t42.json",
-                                                              "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
+                                                              "--result-file", launch[launch.index("--result-file") + 1],
+                                      "--", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=medium"])
             self.assertEqual(leg, ["execution", "run", f"{self.wavedir}/reserve/t42-gpu.json"])
             self.assertIn("farside=far:/home/u/repo-worktrees/w1-42 gpu-box:/home/u/repo-worktrees/w1-42-gpu", board)
             self.assertEqual(self.far_calls, [["far", "/home/u/wave-scratch/wv/t42/runs"]])

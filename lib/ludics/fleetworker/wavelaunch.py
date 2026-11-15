@@ -41,19 +41,20 @@ WHAT IT DOES, in this order:
    status other than 0 is this verb's, and nothing below runs.
 5. Each leg's standing reservation (``execution run`` of the payload prep wrote), on the far-side
    worktree a leg will make.
-6. The row: ``worktree`` (the path launch made, read off its ``LAUNCHED`` line), ``state=launched``,
+6. The row: ``worktree`` (the path launch made, read from its structured result), ``state=launched``,
    ``standing`` and ``exec_hosts`` naming what was reserved, and ``farside`` naming the worker's
-   own host/worktree plus each reserved leg. The worker path is read off ``LAUNCHED``; its host
+   own host/worktree plus each reserved leg. The worker path is read from the JSON result; its host
    is the prepared host passed to launch.
    A placement with whitespace, or a host with a colon, cannot fit one cleanup word: it is omitted
    with a NOTE (exit 3, reconcile by hand), never split into a different cleanup target.
 7. The manifest records the launch.
 
-THE RECOVERY BOUNDARY. Only protocol LF separates output lines: Unicode separators inside a
-path remain path data. LAUNCHED is read only when its line has exactly one `` cwd=`` and one
-`` stream=`` delimiter; repeated delimiters (including inside either path) are ambiguous and
-return UNKNOWN before any cleanup target is published. No quoted/escaped launch-line grammar
-is inferred. A launch refused before it started anything (exit 1 from step 4: a gate, a
+THE RECOVERY BOUNDARY. JSON strings preserve paths including whitespace and Unicode separators.
+Only the caller-named JSON result file is read for the worker path;
+stdout (including legacy LAUNCHED lines) is never a fallback. The result must name the prepared
+host and worker and an absolute worktree. Missing or malformed results return UNKNOWN before
+publishing cleanup targets. The result proves startup, not worker readiness.
+A launch refused before it started anything (exit 1 from step 4: a gate, a
 red base, a preflight) left nothing, and a re-run is the retry. ``LAUNCH UNKNOWN`` (exit 4) may have
 started the worker: read ``status`` and ``execution list`` before anything else, as launch's line
 says. Past step 4 the worker runs, so nothing after it stops the verb: a leg that could not be
@@ -69,6 +70,7 @@ import json
 import os
 import re
 import shlex
+import tempfile
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -91,7 +93,6 @@ else dirty=unreadable; fi
 printf 'worktree=%s dirty=%s\n' "$head" "$dirty"
 """
 STATE = re.compile(r"worktree=(\S+) dirty=(\S+)")
-LAUNCHED = re.compile(r"LAUNCHED \S+ .*? cwd=(/.*?) stream=")  # farside.py's line; a path may hold blanks
 MKDIR = 'mkdir -p -- "$1"\n'
 TEXTS = ("wave", "repository", "main", "transport", "kind", "model", "effort", "host", "host_checkout", "scratch", "worker",
          "branch", "base", "worktree", "number", "issue_ref", "standing")
@@ -225,24 +226,31 @@ def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
     script = shim(cfg)
     payload = os.path.join(wave.directory, "reserve", f"{task}.json")
     brief = os.path.join(wave.directory, "briefs", f"brief-{task}.md")
-    started = run([script, "launch", record.host, record.worker, "--target-repo", record.repository, "--kind", record.kind,
-                   "--brief", brief, "--repo", record.host_checkout, "--branch", record.branch, "--base", record.base,
-                   "--base-branch", record.main, "--standing", payload, "--", *cli_args(record)], capture=True)
-    said = substitution(started.out)
-    cli.emit(said)
-    if started.rc != 0:
-        return started.rc
-    found = [(line, match) for line in said.split("\n") if (match := LAUNCHED.match(line))]
-    if not found:
-        cli.say(f"WAVE LAUNCH UNKNOWN {task}: launch exited 0 and printed no LAUNCHED line with its cwd; read status"
-                f" {record.host} {record.worker} before anything else")
-        return 4
-    line, match = found[-1]
-    if line.count(" cwd=") != 1 or line.count(" stream=") != 1:
-        cli.say(f"WAVE LAUNCH UNKNOWN {task}: ambiguous LAUNCHED cwd/stream delimiters; read status"
-                f" {record.host} {record.worker} and reconcile its checkout before recording cleanup targets")
-        return 4
-    worktree = match.group(1)
+    with tempfile.TemporaryDirectory(prefix="ludics-launch-") as result_dir:
+        result_path = os.path.join(result_dir, "result.json")
+        started = run([script, "launch", record.host, record.worker, "--target-repo", record.repository, "--kind", record.kind,
+                       "--brief", brief, "--repo", record.host_checkout, "--branch", record.branch, "--base", record.base,
+                       "--base-branch", record.main, "--standing", payload, "--result-file", result_path,
+                       "--", *cli_args(record)], capture=True)
+        cli.emit(substitution(started.out))
+        if started.rc != 0:
+            return started.rc
+        try:
+            with open(result_path, encoding="utf-8") as source:
+                result = json.load(source)
+            if not isinstance(result, dict):
+                raise ValueError("result is not an object")
+            result = cast(dict[str, Any], result)
+            if (result.get("host") != record.host
+                    or result.get("worker") != record.worker or not isinstance(result.get("session"), str)):
+                raise ValueError("result identity differs from prepared launch")
+            worktree = result.get("worktree")
+            if not isinstance(worktree, str) or not worktree.startswith("/") or "\0" in worktree:
+                raise ValueError("result worktree is not an absolute path")
+        except (OSError, ValueError):
+            cli.say(f"WAVE LAUNCH UNKNOWN {task}: missing or invalid structured launch result; read status"
+                    f" {record.host} {record.worker} and reconcile before retrying")
+            return 4
     notes: list[str] = []
     reserved: list[Leg] = []
     for leg in record.legs:
