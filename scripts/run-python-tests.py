@@ -12,6 +12,7 @@ import argparse
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import unittest
 
@@ -24,7 +25,7 @@ def modules(root: Path) -> list[str]:
             (parent / "__init__.py").is_file()
             for parent in path.parents if parent != root and root in parent.parents
         ):
-            raise ValueError(f"non-importable test module: {str(path)!r}")
+            raise ValueError(f"non-importable test module: {shlex.quote(str(path))}")
         result.append(".".join(relative.parts))
     if not result:
         raise ValueError("no test modules beneath lib/")
@@ -40,10 +41,10 @@ def select(all_modules: list[str], cuts: list[str], shard: str) -> list[str]:
     positions = [0]
     for cut in cuts:
         if cut not in all_modules:
-            raise ValueError(f"cut names no module: {cut!r}")
+            raise ValueError(f"cut names no module: {shlex.quote(cut)}")
         position = all_modules.index(cut)
         if position <= positions[-1]:
-            raise ValueError(f"cut leaves an empty/unordered part: {cut!r}")
+            raise ValueError(f"cut leaves an empty/unordered part: {shlex.quote(cut)}")
         positions.append(position)
     positions.append(len(all_modules))
     return all_modules[positions[index]:positions[index + 1]]

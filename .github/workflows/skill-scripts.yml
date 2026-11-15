@@ -554,11 +554,11 @@ jobs:
     runs-on: ubuntu-latest
     # Four contiguous module ranges, with the matrix size checked against the cut count:
     # deleting a row refuses, and new test modules land in a range without editing this job.
-    # Baseline 43549924107: 373s unit step, 416s combined job. PR run 43720533138:
-    # shard steps 168/62/54/86s, jobs 173/66/64/92s (one green sample per shard).
-    # THE CAPS: max(5, ceil(1.5 x 173 / 60)) = 5 minutes; watchdog 1.5 x 168 = 252s,
-    # leaving 48s for setup and stack output. Move the first cut from gate to execution
-    # to transfer that module (and farsideclose) from the heavy first shard to the second.
+    # Baseline 43549924107: 373s unit step, 416s combined job. First PR split
+    # (43720533138) took 168/62/54/86s, so the first cut moved from gate to execution.
+    # Rebalanced PR run 43721587938: steps 132/70/59/70s, jobs 137/77/64/73s
+    # (one green sample per new range). THE CAPS: max(5, ceil(1.5 x 137 / 60)) = 5 min.
+    # Watchdog: 1.5 x 132 = 198s, rounded to 200s, leaving 100s for setup and stack output.
     timeout-minutes: 5
     strategy:
       fail-fast: false
@@ -574,7 +574,7 @@ jobs:
       - name: The package's unit tests
         # One process timer dumps all thread stacks and exits 1 before the outer job cap.
         env:
-          LUDICS_TEST_WATCHDOG: '252'
+          LUDICS_TEST_WATCHDOG: '200'
         run: scripts/py scripts/run-python-tests.py --shard "${{ strategy.job-index }}/${{ strategy.job-total }}"
 
   # ---- the macOS suites: weekly, in macos-weekly.yml (THE MACOS QUEUE above) ----------------

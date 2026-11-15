@@ -12,6 +12,7 @@ import importlib.util
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,14 @@ class Shards(unittest.TestCase):
             )
             self.assertEqual(child.returncode, 0, child.stderr)
             self.assertEqual(list(scripts.rglob("*.pyc")), [])
+
+    def test_refusal_shell_quotes_module_path(self):
+        with tempfile.TemporaryDirectory(prefix="python-shards-quote-") as temporary:
+            path = Path(temporary) / "test_$(echo bad)'x.py"
+            path.touch()
+            with self.assertRaises(ValueError) as error:
+                shards.modules(Path(temporary))
+            self.assertIn(shlex.quote(str(path)), str(error.exception))
 
     def test_new_module_lands_automatically(self):
         modules = ["a", "b", "c", "d", "new"]
