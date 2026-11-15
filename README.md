@@ -41,7 +41,7 @@ so there is no separate sync step to forget.
 git clone https://github.com/lukstafi/ludics.git ~/ludics
 mkdir -p "$HOME/.claude/skills"
 for s in "$HOME"/ludics/*/; do
-  case "$s" in */.git/|*/lib/|*/routines/|*/scripts/) continue ;; esac
+  case "$s" in */.git/|*/docs/|*/lib/|*/routines/|*/scripts/) continue ;; esac
   ln -sfn "${s%/}" "$HOME/.claude/skills/$(basename "$s")"
 done
 ```
@@ -50,9 +50,10 @@ The loop skips `routines/`, whose contents are scheduled-task prompts rather tha
 `scripts/`, which holds the lab script and the native-Linux bootstrap
 ([scripts/install-linux.md](scripts/install-linux.md)); both are installed separately, see the
 Routines and Lab script sections. It skips `lib/` too: that is the Python package the scripts
-run through `scripts/py` (ludics-lite#403), reached from the checkout, never as a skill. Rerun the loop after adding a skill. Replace any pre-existing real directory in
-`~/.claude/skills/` by hand first, and diff it against this copy, since a divergent local edit
-may be a fix worth keeping.
+run through `scripts/py` (ludics-lite#403), reached from the checkout, never as a skill, and
+`docs/`, which holds the design decisions ledger. Rerun the loop after adding a skill. Replace
+any pre-existing real directory in `~/.claude/skills/` by hand first, and diff it against this
+copy, since a divergent local edit may be a fix worth keeping.
 
 These loops are executed, not just quoted: the fleet launcher's test suite extracts them from
 this README, runs them against a scratch clone of the checkout, and preflights the result, so a

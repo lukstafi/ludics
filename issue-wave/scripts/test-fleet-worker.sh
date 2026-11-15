@@ -978,7 +978,7 @@ codex_loop=$(readme_block 'for s in ship-pr wait-and-proceed after-merge' | grep
 # Tracked paths close the class rather than one name (post-merge-cleanup.sh, which has to judge a
 # real checkout rather than a declaration, exempts `.claude/` by name instead). `.git` is never
 # tracked, so unlike under `find` it no longer has to be declared.
-non_skill_dirs=".github lib routines scripts"
+non_skill_dirs=".github docs lib routines scripts"
 top_dirs() { # <checkout>: the top-level directories the repository declares, one per line
   git -C "$1" ls-files -z | while IFS= read -r -d '' path; do
     case $path in */*) printf '%s\n' "${path%%/*}" ;; esac
