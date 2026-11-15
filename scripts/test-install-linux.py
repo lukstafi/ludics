@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Isolated bootstrap safety checks; never installs packages or contacts the fleet."""
+"""Isolated bootstrap safety checks; never installs packages or contacts the fleet.
+
+Bench command assertions read the first whitespace-delimited word of each fake log
+record. Arguments are deliberately ignored; this is not a shell command parser.
+"""
 import os
 from pathlib import Path
 import re
