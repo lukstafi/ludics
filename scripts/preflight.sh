@@ -60,6 +60,7 @@
 #   - nudge-fixtures       ship-pr/hooks/test-ship-pr-nudge.py  } edit cannot break them, so they
 #   - base-helper-fixtures scripts/test-run-against-base.sh     } run under --guards all or by
 #   - py-wrapper           scripts/test-py.sh                   } name, and CI runs them always
+#   - python-shards        scripts/test-python-shards.py, on its runner, workflow and lib/ paths
 # scripts/test-preflight.sh pins the table to the job: every guard is a step of it, and every
 # step of it is a guard or one of the steps above.
 #
@@ -159,6 +160,7 @@ GUARDS=(
   'nudge-fixtures:ship-pr/hooks/test-ship-pr-nudge.py:'
   'base-helper-fixtures:scripts/test-run-against-base.sh:'
   'py-wrapper:scripts/test-py.sh:'
+  'python-shards:scripts/test-python-shards.py:scripts/test-python-shards.py scripts/run-python-tests.py .github/workflows/skill-scripts.yml lib/*'
 )
 
 # The jq minor the fleet and CI run (ludics-lite#508). CI pins the patch in

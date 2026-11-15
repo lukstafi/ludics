@@ -538,7 +538,9 @@ Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `l
 one matrix row refuses against the cut count; new modules enter a range automatically.
 `scripts/test-python-shards.py` compares the workflow's complete shard union to all module
 paths, once each. Removing `test_bgrun` from the selector fails that coverage assertion
-(negative control); the unchanged selector passes. Pyright remains one independent job.
+(negative control); the unchanged selector passes. Pyright remains one independent job. Local review found the missing preflight guard-table
+registration; the initial preflight reproduced three pin failures before that registration
+was added with triggers for the checker, runner, workflow and package paths.
 The tmux setup is shared by fleet jobs through `.github/actions/setup-tmux`, retaining
 both callers' one-minute ceilings and the fallback's 45s timeout plus 5s kill grace.
 
