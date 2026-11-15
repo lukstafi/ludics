@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Isolated bootstrap safety checks; never installs packages or contacts the fleet."""
+"""Isolated bootstrap safety checks; never installs packages or contacts the fleet.
+
+Bench command assertions read the first whitespace-delimited word of each fake log
+record. Arguments are deliberately ignored; this is not a shell command parser.
+"""
 import os
 from pathlib import Path
 import re
@@ -430,6 +434,10 @@ sys.exit(0 if ok else 1)
         path = self.root / 'calls'
         return path.read_text() if path.exists() else ''
 
+    def command_words(self):
+        # The bench fakes log one command per line, with its command word first.
+        return [line.split(maxsplit=1)[0] for line in self.calls().splitlines() if line.strip()]
+
     def venv_dirs(self):
         return sorted(p.name for p in (self.root / 'venvs').iterdir())
 
@@ -466,7 +474,8 @@ sys.exit(0 if ok else 1)
         fresh = os.readlink(venv)
         self.assertRegex(fresh, r'^ocannl-bench-\d{8}T\d{6}Z\.')
         self.assertIn('smoke ' + str((self.root / 'venvs' / fresh).resolve()) + ' nvidia', calls)
-        self.assertLess(calls.index('smoke '), calls.index('ssh '))
+        commands = self.command_words()
+        self.assertLess(commands.index('smoke'), commands.index('ssh'))
         self.assertEqual((self.root / 'venvs/ocannl-bench.requirements.txt').read_text(),
                          self.NVIDIA_PINS.replace(' ', '\n') + '\n')
         self.assertEqual(os.readlink(self.root / 'ocannl/benchmarks/.venv'), str(venv))
@@ -576,9 +585,14 @@ sys.exit(0 if ok else 1)
 
     def test_bench_without_the_checkout_skips_link_and_fixtures(self):
         self.bench_setup()
-        out = self.run_shell(self.BENCH_STUB + 'BENCH_CHECKOUT=$PWD/none; bench_provision').stdout
+        # Force the venv path to end in ssh: its smoke record must not count as SSH.
+        mktemp = ('mktemp() { local d; d=$(command mktemp "$@") || return; '
+                  'mv "$d" "${d}ssh"; printf "%s\\n" "${d}ssh"; }; ')
+        out = self.run_shell(self.BENCH_STUB + mktemp +
+                             'BENCH_CHECKOUT=$PWD/none; bench_provision').stdout
+        self.assertRegex(self.calls(), r'(?m)^smoke .*ssh nvidia$')
         self.assertIn('skipping', out)
-        self.assertNotIn('ssh ', self.calls())
+        self.assertNotIn('ssh', self.command_words())
 
     def test_bench_foreign_checkout_venv_is_left_with_a_warning(self):
         self.bench_setup()
@@ -656,7 +670,8 @@ exit "${FAKE_CHECK_RC:-0}"
         self.assertFalse(Path(args[0]).exists(), 'the tip clone outlived the run')
         self.assertIn(self.tip_sha, result.stdout)
         self.assertTrue(result.stdout.endswith('Box check: id-minix-amd-linux READY.\n'), result.stdout)
-        self.assertLess(self.calls().index('smoke '), self.calls().index('ssh '))
+        commands = self.command_words()
+        self.assertLess(commands.index('smoke'), commands.index('ssh'))
 
     def test_bench_check_gap_and_harness_error_set_the_exit_status(self):
         stub = self.check_setup()
