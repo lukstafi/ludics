@@ -88,7 +88,9 @@ No other record carries it. Beside it the record carries ``"full_loop": true|fal
 THE LOOP'S COVERAGE): ``true`` only under ``--full-loop``, the caller's statement that the command is
 the loop's full one (``wave loop`` passes it for the loop's own command, never for ``--rerun``'s
 narrowed one), so the pin and the coverage are two facts and only a full-loop pass is a backend's
-last green (gate.py). The command is never compared with anything to decide it. ``--full-loop`` on a
+last green (gate.py). A started targeted GPU run prints one stderr NOTE naming its id,
+``full_loop: false`` and its exclusion from last-green candidates; this is information, including
+for ``wave loop --rerun``. The command is never compared with anything to decide it. ``--full-loop`` on a
 request whose purpose names no backend is a usage refusal (exit 2), before GitHub or the anchor is
 asked: there is no mark for it to qualify.
 
@@ -654,6 +656,9 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
                 " take its running record (above); the record stays dispatched, record it by hand")
         return 4
     cli.say(f"TIP-RUN STARTED {request_id} {box} {sha} {run_dir}")
+    if backend and not parsed.full_loop:
+        cli.note(f"TIP-RUN NOTE {shlex.quote(request_id)}",
+                 "targeted GPU-loop run (full_loop: false); not a last-green candidate")
     return 0
 
 

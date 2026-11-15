@@ -400,8 +400,9 @@ class Starting(unittest.TestCase):
                     mock.patch.object(tiprun, "refresh_box", return_value=0), \
                     mock.patch.object(tiprun, "run_on", side_effect=on_box), \
                     mock.patch.object(tiprun.revision, "branch_head", return_value=SHA), \
-                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
                 rc = tiprun.cmd_tip_run(cfg, [payload, *(flags or []), "--checkout", "/co", "--", "env", "OCANNL_BACKEND=hip", "true"])
+        self.start_stderr = err.getvalue()
         return rc, calls, far_args
 
 
@@ -426,6 +427,19 @@ class Mark(Starting):
                 self.assertEqual(far[11:], ["env", "OCANNL_BACKEND=hip", "true"], "the flag is not the command's")
                 marks = {k: (calls[1][1] or {}).get(k) for k in ("pinned_backend", "full_loop")}
                 self.assertEqual(marks, {"pinned_backend": "hip", "full_loop": full})
+
+    def test_only_a_started_targeted_gpu_run_gets_the_informational_note(self) -> None:
+        for purpose, flags, targeted in (
+            ("GPU integration loop, hip: tip", [], True),
+            ("GPU integration loop, hip: tip", ["--full-loop"], False),
+            ("cc integration loop: tip", [], False),
+        ):
+            with self.subTest(purpose=purpose, flags=flags):
+                rc, _, _ = self.start(request(purpose=purpose), "dir=/s/run-1\nslot=held\n", flags=flags)
+                self.assertEqual(rc, 0)
+                expected = ("TIP-RUN NOTE w-gpu-rog-1: targeted GPU-loop run (full_loop: false); "
+                            "not a last-green candidate\n") if targeted else ""
+                self.assertEqual(self.start_stderr, expected)
 
     def test_full_loop_on_a_purpose_naming_no_backend_is_a_usage_error_before_anything_is_asked(self) -> None:
         cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
