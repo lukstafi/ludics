@@ -84,7 +84,13 @@ shows the command NAMES the backend, never that the run held it (the runner's ow
 run as before, ``--cpu`` or not. A GPU-loop run that started says the check was made: its running
 record carries ``"pinned_backend": "<backend>"`` (registry.py, THE BACKEND MARK), which the loop's
 last-green read selects on, since the records before #793 carry the same purpose and were cc runs.
-No other record carries it.
+No other record carries it. Beside it the record carries ``"full_loop": true|false`` (registry.py,
+THE LOOP'S COVERAGE): ``true`` only under ``--full-loop``, the caller's statement that the command is
+the loop's full one (``wave loop`` passes it for the loop's own command, never for ``--rerun``'s
+narrowed one), so the pin and the coverage are two facts and only a full-loop pass is a backend's
+last green (gate.py). The command is never compared with anything to decide it. ``--full-loop`` on a
+request whose purpose names no backend is a usage refusal (exit 2), before GitHub or the anchor is
+asked: there is no mark for it to qualify.
 
 THE FREE-SPACE FLOOR (ludics#991): ``execution leg``'s (leg.py, THE FREE-SPACE FLOOR; one program,
 ``FLOOR_PY``, and one knob, FLEET_LEG_MIN_FREE_GIB, read where the verb runs and carried to the box as
@@ -231,7 +237,7 @@ from ludics.fleetworker.transport import (
 )
 
 USAGE = (
-    "execution tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] -- <command> [args...],"
+    "execution tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] -- <command> [args...],"
     " or tip-run --wait <id> [--within <s>] [--tip <branch>]"
 )
 SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -338,6 +344,7 @@ class TipRunArgs:
     tip: str = ""
     id_prefix: str = ""
     base: str = ""
+    full_loop: bool = False  # THE BACKEND PIN's coverage: the caller ran the loop's full command
 
 
 @dataclass(frozen=True)
@@ -369,7 +376,7 @@ def parse_wait(args: list[str]) -> WaitArgs:
 
 
 def parse(args: list[str]) -> TipRunArgs:
-    payload, checkout, runs, cpu, tip, id_prefix, base = "", "", "", False, "", "", ""
+    payload, checkout, runs, cpu, tip, id_prefix, base, full_loop = "", "", "", False, "", "", "", False
     i = 0
     while i < len(args):
         arg = args[i]
@@ -401,6 +408,8 @@ def parse(args: list[str]) -> TipRunArgs:
             continue
         if arg == "--cpu":
             cpu = True
+        elif arg == "--full-loop":
+            full_loop = True
         elif arg == "--":
             command = args[i + 1 :]
             if not command:
@@ -411,7 +420,7 @@ def parse(args: list[str]) -> TipRunArgs:
             named = base or tip
             if named and not (ref_name_ok(named) and revision.git_branch_ok(named)):
                 die(f"execution tip-run: {'--base' if base else '--tip'} names the base, so it must be a branch name of origin, not {named!r}")
-            return TipRunArgs(payload, checkout, runs, cpu, command, tip, id_prefix, base)
+            return TipRunArgs(payload, checkout, runs, cpu, command, tip, id_prefix, base, full_loop)
         elif not payload and not arg.startswith("-"):
             payload = arg
         else:
@@ -537,6 +546,9 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     problem = request_problem(request, bool(parsed.tip), bool(parsed.id_prefix))
     if problem:
         die(f"execution tip-run: {problem}")
+    if parsed.full_loop and not loop_backend(cast(dict[str, Any], request)):
+        die(f"execution tip-run: --full-loop says a GPU-loop run is the loop's full command, so it takes a purpose"
+            f" beginning '{LOOP}, <backend>:' (THE BACKEND PIN), and this request's names no backend")
     min_free = min_free_gib(cfg)
     fetch_timeout = fetch_timeout_s(cfg)
     fields = cast(dict[str, Any], request)
@@ -636,6 +648,7 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
                "handle": f"bg-run:{box}:{run_dir}", "log": f"{box}:{run_dir}/log"}
     if backend:
         running["pinned_backend"] = backend  # the far side started it only past THE BACKEND PIN
+        running["full_loop"] = parsed.full_loop  # and whether it was the loop's full command, as the caller says
     if fleet_worker(cfg, ["execution", "record"], running) != 0:
         cli.say(f"TIP-RUN UNKNOWN {request_id}: the run started in {run_dir} on {box} at {sha}, but the registry did not"
                 " take its running record (above); the record stays dispatched, record it by hand")

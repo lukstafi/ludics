@@ -873,6 +873,24 @@ class IntegrationRecordsVerb(unittest.TestCase):
         rc, out, _ = self.run_verb(["example/project", "--pinned-backend", "cuda"], self.listed())
         self.assertEqual((rc, [line.split("\t")[2] for line in out.splitlines()]), (0, ["gpu-4"]))
 
+    def test_a_narrowed_pinned_pass_is_never_a_candidate_and_a_full_one_still_is(self) -> None:
+        # THE LOOP'S COVERAGE (ludics#1158): a targeted rerun keeps its pin, never the full loop.
+        gpu: dict[str, object] = {"integration": None, "purpose": "GPU integration loop, hip: tip"}
+        full, newer, narrowed_red = "e" * 40, "f" * 40, "1" * 40
+        records = [*self.records(),  # gpu-1: a pinned pass from before the field, read as full
+                   record("gpu-5", request=gpu, pinned_backend="hip", full_loop=True, observed_sha=full),
+                   record("gpu-6", request=gpu, pinned_backend="hip", full_loop=False, observed_sha=newer),
+                   record("gpu-7", request=gpu, pinned_backend="hip", full_loop=False, verdict="fail", observed_sha=narrowed_red),
+                   record("gpu-8", request=gpu, pinned_backend="hip", full_loop="true", observed_sha=newer)]
+        done = Done(0, json.dumps(records))
+        self.assertEqual(self.run_verb(["example/project", "--pinned-backend", "hip", "--verdict", "pass", "--shas"], done),
+                         (0, f"{self.OTHER}\n{full}\n", ""))
+        rc, out, _ = self.run_verb(["example/project", "--pinned-backend", "hip"], done)
+        self.assertEqual((rc, [line.split("\t")[2] for line in out.splitlines()]), (0, ["gpu-1", "gpu-5"]),
+                         "a narrowed red is no row of the backend's either")
+        self.assertEqual(self.run_verb(["example/project"], done)[1], integration_rows(self.records(), "example/project") + "\n",
+                         "the cc loop's rows are unchanged")
+
     def test_an_unread_registry_is_exit_3_with_nothing_printed(self) -> None:
         for done in (Done(1, ""), Done(0, "not json"), Done(0, '{"a": 1}')):
             rc, out, errs = self.run_verb(["example/project", "--verdict", "pass", "--shas"], done)

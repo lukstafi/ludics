@@ -327,7 +327,24 @@ reason. The boundary, and nothing else: this module checks the mark's shape, the
 writes it, and its agreement with the purpose. That
 a pin was in fact checked is the writer's statement, as all evidence is, and that the run held the
 backend it named is the project runner's own check; a record without the mark is no candidate for
-the read, whatever its purpose says.
+the read, whatever its purpose says, and a marked one is a candidate only as THE LOOP'S COVERAGE says.
+
+THE LOOP'S COVERAGE (ludics#1158). The pin is not the coverage: a `wave loop --rerun` pass pins its
+backend but runs a narrowed command, and a narrowed pass taken for the backend's last green sends
+attribution down the wrong span. So `full_loop` (exactly `true` or `false`) is a second top-level
+field, beside the mark and never without it, saying whether the run was the loop's full command:
+tip-run writes `true` only under `--full-loop`, which the loop driver passes for the loop's own
+command and never for a targeted rerun (tiprun.py, THE BACKEND PIN). It is decided where the record
+is written, by the caller that knows what it ran, never re-derived from the command later. A
+`record` payload alone may carry it, and only together with `pinned_backend`; either one without the
+other is refused, and once written it is never changed (the same value again is a retry). How a
+record written BEFORE this field reads: `pinned_backend` and no `full_loop` is a full-loop pass. That
+is sound because only `execution tip-run` wrote the mark, and the one targeted form the tooling had,
+`wave loop --rerun`, refused GPU-loop purposes, so no narrowed marked pass came from it; and from
+this field on the refusal above makes a missing `full_loop` mean an old record, never a new writer
+that forgot it. The boundary, and nothing else: as the mark is, the coverage is its writer's
+statement; a pre-#1158 tip-run started by hand with a narrowed command (against the GPU loop's
+documented "same `tip-run` and pinned command") reads as full, as it read before.
 """
 import contextlib
 import fcntl
@@ -632,6 +649,9 @@ def validate_record(data: Any, path: Path) -> Record:
             pinned_backend_ok(record["pinned_backend"], record["request"])
         except ValueError:
             refuse(f"invalid pinned backend: {path}")
+    # THE LOOP'S COVERAGE: a boolean, only beside the mark; the mark alone is a record written before it.
+    if "full_loop" in record and (not isinstance(record["full_loop"], bool) or "pinned_backend" not in record):
+        refuse(f"invalid full_loop mark: {path}")
     if "observed_sha" in record and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", record["observed_sha"]):
         refuse(f"invalid observed SHA: {path}")
     if "resolved_revision" in record and not (isinstance(record["resolved_revision"], str)
@@ -1366,7 +1386,7 @@ def main(argv: list[str]) -> None:
         if record is None:
             refuse("unknown request_id")
         if set(data) - {"request_id", "state", "evidence", "observed_sha", "remote_checkout", "handle", "log", "verdict",
-                        "execution_host", "resolved_revision", "pinned_backend", "rebound_revision"}:
+                        "execution_host", "resolved_revision", "pinned_backend", "full_loop", "rebound_revision"}:
             refuse("unknown evidence fields")
         if "resolved_revision" in data and action != "dispatch":
             refuse("resolved_revision is only valid for dispatch")
@@ -1384,11 +1404,18 @@ def main(argv: list[str]) -> None:
             refuse("verdict is only valid for conclude")
         if "state" in data and action not in {"record", "reconcile"}:
             refuse("state is only valid for record or reconcile")
-        if "pinned_backend" in data:
-            # THE BACKEND MARK (see the header): written by a record, as the purpose names it.
+        if "full_loop" in data or "pinned_backend" in data:
+            # THE BACKEND MARK and THE LOOP'S COVERAGE (see the header): written by a record, both or
+            # neither, the backend the purpose names, and the coverage written once.
             if action != "record":
-                refuse("pinned_backend is only valid for record")
+                refuse("pinned_backend and full_loop are only valid for record")
+            if ("full_loop" in data) != ("pinned_backend" in data):
+                refuse("pinned_backend and full_loop are written together (the pin, and whether the run was the loop's full command)")
             pinned_backend_ok(data["pinned_backend"], record["request"])
+            if not isinstance(data["full_loop"], bool):
+                refuse(f"full_loop {json.dumps(data['full_loop'])} must be true or false")
+            if "full_loop" in record and record["full_loop"] is not data["full_loop"]:
+                refuse(f"full_loop is already {json.dumps(record['full_loop'])} on this record, and is never changed")
         if record["state"] == "concluded":
             # Terminal records are immutable; retries of the final payload are harmless.
             if action == "conclude" and record["history"][-1]["data"] == data:
@@ -1491,6 +1518,8 @@ def main(argv: list[str]) -> None:
             if key in data:
                 nonempty(data, [key])
                 record[key] = data[key]
+        if "full_loop" in data:
+            record["full_loop"] = data["full_loop"]
         record["state"] = state
         events.append((action, data))
     for other in before:

@@ -159,10 +159,14 @@ def loop_records(records: list[dict[str, Any]], repo: str, backend: str = "") ->
     """The cc loop's records for the repository: a loop run (``_loop_run``) marked
     ``"integration": true``. With ``backend``, the GPU loop's records of that backend instead
     (ludics-lite#811): a loop run whose record carries ``"pinned_backend": "<backend>"``
-    (registry.py, THE BACKEND MARK), never an unmarked one, whatever its purpose says."""
+    (registry.py, THE BACKEND MARK), never an unmarked one, whatever its purpose says, and that ran
+    the loop's full command (ludics#1158, registry.py THE LOOP'S COVERAGE): ``"full_loop": true``,
+    or no ``full_loop`` at all, a record written before the field, which the header shows was a
+    full run. A ``false`` one, a targeted rerun, is no row of the backend's, whatever its verdict."""
     return [
         r for r in records
-        if (r.get("pinned_backend") == backend if backend else field(r, "request", "integration") is True)
+        if (r.get("pinned_backend") == backend and r.get("full_loop", True) is True
+            if backend else field(r, "request", "integration") is True)
         and _loop_run(r, repo)
     ]  # fmt: skip
 
@@ -193,7 +197,7 @@ def cmd_integration_records(cfg: Config, args: list[str]) -> int:
     """``execution integration-records`` (ludics-lite#811): the rows the base gate reads, printed, so
     a last-green read takes the gate's own selection instead of a second, hand-written one. A read:
     no lease, no write. ``--verdict`` keeps one verdict's rows, ``--pinned-backend`` reads the GPU
-    loop's records of that backend instead of the cc loop's, and ``--shas`` prints the SHA column
+    loop's full-loop records of that backend instead of the cc loop's (``loop_records``), and ``--shas`` prints the SHA column
     alone, one per line, the shape ``pr-review.sh base --last-green <red> --greens`` reads.
 
     Exit 0 with the rows (none is an empty output), 2 usage, 3 when the registry could not be read:

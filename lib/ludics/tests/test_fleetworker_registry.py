@@ -555,10 +555,10 @@ class BackendMark(RegistryCase):
 
     def test_a_record_writes_it_beside_the_request_and_a_conclusion_keeps_it(self) -> None:
         self.start("g")
-        rc, rec, _ = self.running("g", pinned_backend="hip")
+        rc, rec, _ = self.running("g", pinned_backend="hip", full_loop=True)
         self.assertEqual((rc, rec["pinned_backend"], "pinned_backend" in rec["request"]), (0, "hip", False))
         self.assertEqual(rec["history"][-1]["data"]["pinned_backend"], "hip")
-        self.assertEqual(self.running("g", pinned_backend="hip")[0], 0, "the same mark again")
+        self.assertEqual(self.running("g", pinned_backend="hip", full_loop=True)[0], 0, "the same mark again")
         rc, rec, _ = self.call("conclude", {"request_id": "g", "verdict": "pass", "log": "/l", "evidence": "x"})
         self.assertEqual((rc, rec["pinned_backend"]), (0, "hip"))
         self.assertEqual(self.call("list", {})[0], 0)
@@ -571,17 +571,17 @@ class BackendMark(RegistryCase):
                                      ("g", "hip ", "must be a backend name"),
                                      ("cc", "cc", "is not the backend this request's purpose names")):
             with self.subTest(identity=identity, value=value):
-                rc, _, err = self.running(identity, pinned_backend=value)
+                rc, _, err = self.running(identity, pinned_backend=value, full_loop=True)
                 self.assertEqual(rc, 1)
                 self.assertIn(why, err)
-        rc, _, err = self.call("dispatch", {"request_id": "g", "evidence": "x", "pinned_backend": "hip"})
+        rc, _, err = self.call("dispatch", {"request_id": "g", "evidence": "x", "pinned_backend": "hip", "full_loop": True})
         self.assertEqual(rc, 1)
-        self.assertIn("pinned_backend is only valid for record", err)
+        self.assertIn("pinned_backend and full_loop are only valid for record", err)
         rc, _, err = self.call("conclude", {"request_id": "g", "verdict": "pass", "log": "/l", "evidence": "x",
                                             "observed_sha": self.SHA, "handle": "h", "remote_checkout": "/co",
-                                            "pinned_backend": "hip"})
+                                            "pinned_backend": "hip", "full_loop": True})
         self.assertEqual(rc, 1)
-        self.assertIn("pinned_backend is only valid for record", err)
+        self.assertIn("pinned_backend and full_loop are only valid for record", err)
         self.assertEqual(self.running("g")[0], 0)
         listed = {r["request_id"]: r for r in self.call("list", {})[1]}
         self.assertNotIn("pinned_backend", listed["g"], "neither a refusal nor a record naming none writes one")
@@ -589,7 +589,7 @@ class BackendMark(RegistryCase):
 
     def test_a_malformed_mark_in_the_ledger_is_refused(self) -> None:
         self.start("g")
-        self.running("g", pinned_backend="hip")
+        self.running("g", pinned_backend="hip", full_loop=True)
         path = os.path.join(self.root, "executions", "g.json")
         with open(path) as f:
             data = json.load(f)
@@ -599,6 +599,64 @@ class BackendMark(RegistryCase):
         rc, _, err = self.call("list", {})
         self.assertEqual(rc, 1)
         self.assertIn("invalid pinned backend", err)
+
+class LoopCoverage(RegistryCase):
+    """THE LOOP'S COVERAGE (ludics#1158): `full_loop`, a boolean written with the mark and never
+    without it, never changed; a stored mark without it is a record from before the field."""
+
+    SHA, GPU, start, running = BackendMark.SHA, BackendMark.GPU, BackendMark.start, BackendMark.running
+
+    def test_a_targeted_pass_keeps_its_pin_and_says_it_was_not_the_full_loop(self) -> None:
+        self.start("g")
+        rc, rec, _ = self.running("g", pinned_backend="hip", full_loop=False)
+        self.assertEqual((rc, rec["pinned_backend"], rec["full_loop"], "full_loop" in rec["request"]), (0, "hip", False, False))
+        self.assertIs(rec["history"][-1]["data"]["full_loop"], False)
+        self.assertEqual(self.running("g", pinned_backend="hip", full_loop=False)[0], 0, "the same marks again")
+        self.assertEqual(self.running("g")[0], 0, "a record naming neither keeps them")
+        rc, rec, _ = self.call("conclude", {"request_id": "g", "verdict": "pass", "log": "/l", "evidence": "x"})
+        self.assertEqual((rc, rec["pinned_backend"], rec["full_loop"]), (0, "hip", False))
+        listed = {r["request_id"]: r for r in self.call("list", {})[1]}
+        self.assertIs(listed["g"]["full_loop"], False)
+
+    def test_the_two_marks_are_written_together_once_and_only_by_a_record(self) -> None:
+        self.start("g")
+        for extra, why in (({"pinned_backend": "hip"}, "written together"),
+                           ({"full_loop": True}, "written together"),
+                           ({"pinned_backend": "hip", "full_loop": "true"}, "must be true or false"),
+                           ({"pinned_backend": "hip", "full_loop": 1}, "must be true or false"),
+                           ({"pinned_backend": "hip", "full_loop": None}, "must be true or false")):
+            with self.subTest(extra=extra):
+                rc, _, err = self.running("g", **extra)
+                self.assertEqual(rc, 1)
+                self.assertIn(why, err)
+        rc, _, err = self.call("dispatch", {"request_id": "g", "evidence": "x", "full_loop": True})
+        self.assertEqual(rc, 1)
+        self.assertIn("pinned_backend and full_loop are only valid for record", err)
+        self.assertEqual(self.running("g", pinned_backend="hip", full_loop=True)[0], 0)
+        rc, _, err = self.running("g", pinned_backend="hip", full_loop=False)
+        self.assertEqual(rc, 1)
+        self.assertIn("is never changed", err)
+        listed = {r["request_id"]: r for r in self.call("list", {})[1]}
+        self.assertIs(listed["g"]["full_loop"], True, "a refused change leaves the mark as written")
+
+    def test_a_stored_mark_without_coverage_is_an_old_record_and_a_malformed_one_is_refused(self) -> None:
+        self.start("g")
+        self.running("g", pinned_backend="hip", full_loop=True)
+        path = os.path.join(self.root, "executions", "g.json")
+        with open(path) as f:
+            data = json.load(f)
+        del data["full_loop"]
+        with open(path, "w") as f:
+            json.dump(data, f)
+        self.assertEqual(self.call("list", {})[0], 0, "a pinned record from before the field reads")
+        for broken in ({"full_loop": "yes"}, {"full_loop": True, "pinned_backend": None}):
+            with self.subTest(broken=broken):
+                stored = {k: v for k, v in {**data, **broken}.items() if v is not None}
+                with open(path, "w") as f:
+                    json.dump(stored, f)
+                rc, _, err = self.call("list", {})
+                self.assertEqual(rc, 1)
+                self.assertIn("invalid full_loop mark", err)
 
 
 class WindowGap(RegistryCase):

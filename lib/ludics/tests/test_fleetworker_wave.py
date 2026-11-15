@@ -1812,16 +1812,38 @@ class Loop(unittest.TestCase):
         self.assertEqual(payload["execution_host"], "rog")
         self.assertIn("TIP-RUN STARTED", out)
 
-    def test_targeted_gpu_rerun_refuses_before_it_can_become_backend_evidence(self) -> None:
+    def gpu_loop(self) -> None:
         data = wave_data(self.dir)
-        data["loops"]["cc"]["purpose"] = "GPU integration loop, hip: tests"
+        data["loops"]["cc"].update(purpose="GPU integration loop, hip: tests", integration=False, cpu=False,
+                                   command=["env", "OCANNL_BACKEND=hip", "tools/run", "all"])
         with open(self.path, "w") as f:
             json.dump(data, f)
+
+    def test_a_targeted_gpu_rerun_is_served_and_never_claims_the_full_loop(self) -> None:
+        # ludics#1158: the rerun keeps tip-run's backend pin, and without --full-loop its record
+        # says it was no full-loop pass, so it is never the backend's last green.
+        self.gpu_loop()
         self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-rerun-1 rog {A} /r\n")]
-        rc, out = self.drive([rec(2, "concluded", "fail", A)], "--rerun", "wv-cc-2", "--", "tools/repeat")
-        self.assertEqual(rc, 2, out)
-        self.assertIn("GPU", out)
-        self.assertEqual(self.calls, [], "a targeted pass must not gain pinned_backend evidence")
+        rc, out = self.drive([rec(2, "concluded", "fail", A)], "--rerun", "wv-cc-2", "--",
+                             "env", "OCANNL_BACKEND=hip", "tools/repeat")
+        self.assertEqual(rc, 0, out)
+        start = self.starts()[0]
+        self.assertEqual(start[3:], ["--id-prefix", "wv-cc-rerun", "--checkout", "/home/u/integ",
+                                     "--", "env", "OCANNL_BACKEND=hip", "tools/repeat"])
+        with open(start[2]) as f:
+            payload = json.load(f)
+        self.assertEqual((payload["purpose"], payload["requested_revision"], "integration" in payload),
+                         ("GPU integration loop, hip: tests", A, False))
+
+    def test_a_gpu_loops_own_run_says_it_is_the_full_loop(self) -> None:
+        self.gpu_loop()
+        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-3 rog {A} /r\n"),
+                        Done(0, f"TIP-RUN CONCLUDED wv-cc-3 pass rog {A} /r\n")]
+        self.tips = [A, A]
+        rc, out = self.drive([rec(2, "concluded", "pass", B)])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.starts()[0][3:], ["--tip", "master", "--id-prefix", "wv-cc", "--checkout", "/home/u/integ",
+                                                "--full-loop", "--", "env", "OCANNL_BACKEND=hip", "tools/run", "all"])
 
     def test_rerun_refuses_a_missing_non_red_or_unreadable_revision(self) -> None:
         for records in ([], [rec(2, "concluded", "pass", A)], [rec(2, "running", "fail", A)],

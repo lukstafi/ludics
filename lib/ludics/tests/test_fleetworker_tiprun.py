@@ -415,11 +415,36 @@ class Mark(Starting):
         self.assertEqual([c[0] for c in calls], [["execution", "run"], ["execution", "record"]])
         self.assertEqual((calls[1][1] or {}).get("pinned_backend"), "hip")
 
+    def test_the_coverage_is_the_callers_full_loop_flag_and_false_without_it(self) -> None:
+        # THE LOOP'S COVERAGE (ludics#1158): the pin and the coverage are two marks.
+        for flags, full in (([], False), (["--full-loop"], True)):
+            with self.subTest(flags=flags):
+                rc, calls, far = self.start(request(purpose="GPU integration loop, hip: tip"), "dir=/s/run-1\nslot=held\n", flags=flags)
+                self.assertEqual(rc, 0)
+                self.assertEqual(far[6], "hip", "a targeted run's pin is checked all the same")
+                self.assertEqual(far[11:], ["env", "OCANNL_BACKEND=hip", "true"], "the flag is not the command's")
+                marks = {k: (calls[1][1] or {}).get(k) for k in ("pinned_backend", "full_loop")}
+                self.assertEqual(marks, {"pinned_backend": "hip", "full_loop": full})
+
+    def test_full_loop_on_a_purpose_naming_no_backend_is_a_usage_error_before_anything_is_asked(self) -> None:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(request(purpose="integration loop, cc: tip", integration=True), f)
+            with mock.patch.object(tiprun, "listing", side_effect=AssertionError("the anchor was asked")), \
+                    mock.patch.object(tiprun.revision, "branch_head", side_effect=AssertionError("GitHub was asked")), \
+                    self.assertRaises(cli.Exit) as raised:
+                tiprun.cmd_tip_run(cfg, [payload, "--full-loop", "--checkout", "/co", "--", "true"])
+        self.assertEqual(raised.exception.rc, 2)
+        self.assertIn("--full-loop says a GPU-loop run is the loop's full command", str(raised.exception))
+
     def test_a_cc_loop_run_is_not_marked(self) -> None:
         rc, calls, far = self.start(request(purpose="integration loop, cc: tip", integration=True), "dir=/s/run-1\nslot=held\n")
         self.assertEqual(rc, 0)
         self.assertEqual(far[6], "", "nothing is checked")
         self.assertNotIn("pinned_backend", calls[1][1] or {})
+        self.assertNotIn("full_loop", calls[1][1] or {})
 
     def test_a_run_refused_on_its_pin_is_concluded_unmarked(self) -> None:
         rc, calls, _ = self.start(request(purpose="GPU integration loop, hip: tip"),
@@ -428,6 +453,7 @@ class Mark(Starting):
         self.assertEqual([c[0] for c in calls][1:], [["execution", "conclude"]])
         self.assertEqual((calls[1][1] or {}).get("verdict"), "not-launched")
         self.assertNotIn("pinned_backend", calls[1][1] or {})
+        self.assertNotIn("full_loop", calls[1][1] or {})
 
 
 def running(**fields: object) -> dict[str, Any]:
