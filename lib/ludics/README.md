@@ -627,6 +627,14 @@ cause travels separately from the refusal's lines, so warning-and-proceed admiss
 "no hold taken" advice. Unit negative controls against base `de57a40f` fail on the missing GPU
 note and each of the three missing hold causes. Batch evidence is in this task's PR and hand-back.
 
+Agent notes (wave-20261115-ludics, q2; refs #1155): the shared build wait names each
+completed cancelled check job once per numeric run/job URL identity, before merge recovery.
+It uses the already filtered fold, emits only with no judged red, and adds no API calls or
+policy changes. The boundary is in `prreview/checks.py`'s header. The in-process gate regression
+pins mid-wait timing, repeated reads, a second attempt, advisory exclusion, red suppression and
+one-shot silence (the latter two start already cancelled; each fails with its guard removed); the two positive cases fail on launch base `66649bdd` (missing notices).
+Verification logs are in this task's PR and hand-back, under scratch `q2/runs/`.
+
 ### Slot wait progress (#1156)
 
 A correctness slot announces its first busy pass once, naming candidate slots' recorded commands
