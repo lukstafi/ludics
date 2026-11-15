@@ -459,21 +459,24 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.scripts == 'true') }}
     runs-on: ubuntu-latest
-    # A matrix since ludics#974: the one job reached p90 1574s on ubuntu-26.04 (20 green runs;
-    # 41898756817 1584s) and a 40-minute cap, past THE CAPS' ceiling. Each row runs one contiguous
-    # part of the suite's sections (`--shard`, cut at FLEET_WORKER_TEST_CUTS); the row passes
-    # job-index/job-total, so a matrix that loses a row no longer matches the cut list and the
-    # suite refuses it, and a new section lands in whichever part its place puts it. Cut at
-    # `codex workers`: the sections' p90s sum to 710s before it and ~702s from it, each row ~16s
-    # of setup on top, x1.5. The job's other steps are `fleet-helpers` below, so no row repeats
-    # them. fail-fast off, so one red row does not cancel the other into a stopped, unjudged one.
+    # A matrix since ludics#974; four contiguous ranges since #1177, cut at
+    # `unstick`, `codex workers` and `execution leg`. The three-way split's first
+    # job took 707/756/774s in #1177 runs 43738445260/43739962239/43741619779;
+    # 774s would need 20 minutes, so split it again rather than raising the cap.
+    # At these four cuts those runs' section totals were 411/286/428/579s,
+    # 444/304/423/600s and 452/311/425/587s. Setup/cleanup took at most 10s per
+    # job. THE CAPS for a moved range uses the sum of section p90s until measured:
+    # the unchanged last range's whole-job p90 is 608s; ceil(1.5 x 608 / 60) = 16.
+    # Retain the existing 19-minute cap for runner variance and suite growth.
+    # job-index/job-total refuses a missing matrix row; new sections enter one range.
+    # fail-fast off keeps a red row from cancelling another row's verdict.
     strategy:
       fail-fast: false
       matrix:
-        part: [0, 1]
+        part: [0, 1, 2, 3]
     timeout-minutes: 19
     env:
-      FLEET_WORKER_TEST_CUTS: codex workers
+      FLEET_WORKER_TEST_CUTS: unstick|codex workers|execution leg
     steps:
       - uses: actions/checkout@v4
         with:
