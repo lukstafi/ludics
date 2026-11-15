@@ -162,7 +162,11 @@ refusals are): an unchanged list is said once, an empty list clears it, and a re
 tells it again. A task also
 waiting on capacity, a halt, THE GATE or a prerequisite with a row or queue entry stays silent.
 THE GATE is the launch gate, ``gate --target-repo <repository> --base-branch <MAIN>``, read BEFORE
-a task is prepared. A launch needs the branch's tip to be the prepared base, and a prep is not
+a task is prepared, with ``--no-wait``: a single checker read, no base observer held and no
+polling pause. No verdict means not this tick; the coordinator's waiting gate keeps its one
+observer. VERDICT FILE BOUNDARY: no saved gate verdict is accepted, for any SHA, age or writer.
+Every admission comes from this invocation's checker read of the branch, under gate.py's policy;
+logs and foreign or stale verdict files admit nothing. A launch needs the branch's tip to be the prepared base, and a prep is not
 done twice, so a task prepared under a red base would be stale the moment the fix merged. While the
 gate refuses, nothing is prepared or launched; the coordinator is told once for each refusal it
 has not been told (kept in memory: a restarted driver tells it again), and the gate is read again
@@ -946,7 +950,7 @@ class Driver:
         """THE GATE (the header)."""
         if now() < self.gate_next:
             return False
-        done = self.call("gate", "--target-repo", self.wave.repository, "--base-branch", self.wave.vars["MAIN"], gated="both")
+        done = self.call("gate", "--target-repo", self.wave.repository, "--base-branch", self.wave.vars["MAIN"], "--no-wait", gated="both")
         if done.rc == 0:
             self.gate_refusal = ""
             return True

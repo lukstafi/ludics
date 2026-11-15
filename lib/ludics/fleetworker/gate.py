@@ -22,6 +22,13 @@ else -- an empty, unwritten or malformed file refuses the gate.
 last-green reads (issue-wave SKILL.md, *On a regression* and the GPU loop) take the gate's selection
 rather than a hand-written second one: a read of the listing, never a write.
 
+SINGLE READ (#1154). ``gate --no-wait`` gives the base checker ``--wait=0``:
+no polling pause and no base observer claim. It may read beside the coordinator's waiting
+observer, as any one-shot ``base`` does; it never becomes a second polling observer. No saved gate verdict
+file is reused, regardless of its SHA, age or writer: the checker reads GitHub and the current
+integration records under the ordinary policy. Missing verdicts refuse this tick. This option
+cannot be combined with ``--wait`` (which would make a second polling loop).
+
 THE WAIT (#872). ``gate --wait <seconds>`` reads the base again after a refusal the next read may
 lift, until a read passes, a refusal that no later read lifts arrives, or the deadline runs out.
 Through a merge burst nearly every first read was refused for minutes and passed on a re-read, and
@@ -274,7 +281,7 @@ def _remove(path: str) -> None:
         pass
 
 
-def checker_read(cfg: Config, helper: str, target: str, branch: str, where: str, rows: str) -> tuple[int, str | None, str] | None:
+def checker_read(cfg: Config, helper: str, target: str, branch: str, where: str, rows: str, *, no_wait: bool = False) -> tuple[int, str | None, str] | None:
     """One read of the checker over the records ``rows``: its exit, its --advisory-red file's
     text and its report, or None (having refused) when a file it needs could not be staged. The ordinary base read
     may carry an older green while the tip is running: --wait, bounded by the derived ceiling, and
@@ -285,7 +292,7 @@ def checker_read(cfg: Config, helper: str, target: str, branch: str, where: str,
     if advisory is None:
         err(f"BASE REFUSED: {where}: cannot stage the checker's advisory-red file; dispatch blocked")
         return None
-    argv = [helper, "--repo", target, "base"] + ([branch] if branch else []) + [f"--wait={BASE_WAIT}", "--interim"]
+    argv = [helper, "--repo", target, "base"] + ([branch] if branch else []) + [f"--wait={0 if no_wait else BASE_WAIT}", "--interim"]
     argv += ["--advisory-red", advisory]
     records = ""
     if rows:
@@ -319,7 +326,7 @@ def _refused(line: str, *, pending: bool = False, why: str = "") -> Read:
     return Read(1, pending, why or line)
 
 
-def base_read(cfg: Config, target: str, branch: str, force: bool, reason: str, expected: str = "") -> Read:
+def base_read(cfg: Config, target: str, branch: str, force: bool, reason: str, expected: str = "", *, no_wait: bool = False) -> Read:
     """``base_gate``'s read, with whether its refusal is one a later read may lift; a usage error
     dies (2)."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", target):
@@ -348,7 +355,7 @@ def base_read(cfg: Config, target: str, branch: str, force: bool, reason: str, e
     # records as they now stand. Any other verdict of the first read stands: only a green read
     # over an outdated snapshot is read again.
     for attempt in (1, 2):
-        read = checker_read(cfg, helper, target, branch, where, rows)
+        read = checker_read(cfg, helper, target, branch, where, rows, no_wait=no_wait)
         if read is None:
             return Read(1)
         rc, text, report = read
@@ -404,13 +411,14 @@ def base_gate(cfg: Config, target: str, branch: str, force: bool, reason: str, e
     return base_read(cfg, target, branch, force, reason, expected).rc
 
 
-GATE_USAGE = "gate: expected --target-repo <owner/repo> [--base-branch <branch>] [--wait <seconds>] [--force]"
+GATE_USAGE = "gate: expected --target-repo <owner/repo> [--base-branch <branch>] [--wait <seconds> | --no-wait] [--force]"
 REREAD = "FLEET_GATE_REREAD_INTERVAL"
 
 
 def cmd_gate(cfg: Config, args: list[str]) -> int:
     started = time.monotonic()
     force, target, branch, reason, wait = False, "", "", "", 0
+    no_wait = False
     i = 0
     while i < len(args):
         arg = args[i]
@@ -421,6 +429,8 @@ def cmd_gate(cfg: Config, args: list[str]) -> int:
             i += 1
         elif arg == "--force":
             force = True
+        elif arg == "--no-wait":
+            no_wait = True
         elif arg == "--wait":
             if i + 1 >= len(args) or not re.fullmatch(r"[1-9][0-9]{0,6}", args[i + 1]):
                 die("gate: --wait takes a whole number of seconds, 1 to 9999999")
@@ -437,6 +447,8 @@ def cmd_gate(cfg: Config, args: list[str]) -> int:
         else:
             die(GATE_USAGE)
         i += 1
+    if no_wait and wait:
+        die("gate: --no-wait cannot be combined with --wait")
     interval = cfg.env.get(REREAD) or str(BASE_POLL_INTERVAL)
     if not re.fullmatch(r"[0-9]{1,6}", interval):
         die(f"gate: {REREAD} must be a whole number of seconds")
@@ -447,7 +459,8 @@ def cmd_gate(cfg: Config, args: list[str]) -> int:
     where = f"{target} {branch or 'default branch'}"
     reads = 0
     while True:
-        read = base_read(cfg, target, branch, force, reason)
+        read = (base_read(cfg, target, branch, force, reason, no_wait=True) if no_wait
+                else base_read(cfg, target, branch, force, reason))
         reads += 1
         if read.rc == 0:
             break

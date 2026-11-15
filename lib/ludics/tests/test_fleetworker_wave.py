@@ -2183,6 +2183,23 @@ class DriveCase(WaveDirCase):
 class Drive(DriveCase):
     """wave drive: each returned turn answered once, by its marker, and everything else handed up."""
 
+    def test_a_returned_turn_is_answered_in_the_tick_with_no_gate_verdict(self) -> None:
+        with open(self.path, "w") as f:
+            json.dump(wave_data(self.dir, vars={"COORD": "s", "MAIN": "main"}, **MIXED), f)
+        with open(os.path.join(self.wavedir, "queue.json"), "w") as f:
+            json.dump({"capacity": {"far": 2}, "tasks": [
+                {"task": "t50", "profile": "sol", "host": "far"}]}, f)
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
+        self.rc["gate"] = 1
+        self.out["gate stderr"] = "BASE REFUSED: NO VERDICT YET\n"
+        with self.world():
+            self.assertEqual(self.once()[0], 0)
+        self.assertEqual(self.ledger(), [(0, "request", "answered")])
+        gate_call = next(c for c in self.calls if c[0] == "gate")
+        self.assertIn("--no-wait", gate_call, "the tick must never enter the base polling wait")
+        self.assertFalse(any(c[:2] == ["wave", "prep"] for c in self.calls))
+
     def test_a_request_is_assigned_and_resumed_in_one_call_and_never_twice(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
         self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
@@ -2931,7 +2948,7 @@ class Queue(DriveCase):
         with self.world():
             self.rc, self.out = {"gate": 1}, {"gate stderr": "reading\n" + red}
             out = tick()
-            self.assertEqual(self.calls, [["halted"], ["gate", "--target-repo", "o/staging", "--base-branch", "main"]], "the gate, and nothing prepared")
+            self.assertEqual(self.calls, [["halted"], ["gate", "--target-repo", "o/staging", "--base-branch", "main", "--no-wait"]], "the gate, and nothing prepared")
             self.assertIn("DRIVE ATTENTION t50 launch: the launch gate refuses, so no queued task is prepared or launched until it passes"
                           " (read again every 300 s): BASE REFUSED: o/staging main: red at abc", out)
             self.assertEqual((tick(), self.calls), ("", [["halted"]]), "not read again before its time: one base read each RETRY")
