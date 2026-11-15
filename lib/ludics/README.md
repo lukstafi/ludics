@@ -580,6 +580,23 @@ Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its 
 batches it runs (`execution slot`) and, on the anchor, the registry. The one verb `fleet-worker.sh`
 still answers itself is `execution slot --probe`, which must answer on a box without Python 3.12.
 
+### Slot wait progress (#1156)
+
+A correctness slot announces its first busy pass once, naming candidate slots' recorded commands
+with shell quoting, and its existing held line announces admission. Foreground stderr and a
+`--bg` run's combined log share that path. Window waits retain their measurement identity and
+bounded progress lines. The diagnostic reads only candidate slot files through `read_holder`'s
+bounded JSON reader; a recorded PID must still exist and its file must still be locked before it
+is named. Free files may retain old text; it is not presented as a live holder. This is recorded
+identity, not a kernel ownership confirmation, and it never changes admission or deadlines.
+Merge builds say `awaiting execution slot` before launching the wrapper, then `command started`
+from inside the admitted command wrapper. Both CLI streams are line buffered (#1162).
+
+The waiting/admitted, stale-record and buffering fixtures in `test_fleetworker_slot.py`, and the
+wait/start fixtures in `test_prreview_mergebuild.py`, fail on launch base `e859b357`.
+Task t1156's logs live under `~/.local/state/issue-wave/wave-20261115-ludics/scratch/t1156/runs/`;
+the PR records the batches and their outcomes.
+
 ### Safety state reads (#1092)
 
 At the six read sites below, only ENOENT beneath searchable directories means absent

@@ -838,6 +838,28 @@ def exec_command(prefix: str, box: str, command: Sequence[str]) -> NoReturn:
         refuse_unrunnable(prefix, box, command, exc)
 
 
+def waiting_holders(directory: str, order: range) -> str:
+    """Diagnostic boundary: only candidate slot files, read_holder's bounded JSON fields,
+    and a live recorded PID in a currently locked file. This is recorded identity, not kernel
+    confirmation of ownership; free files and dead PIDs never name a holder. No ps or registry scan.
+    """
+    named: list[str] = []
+    for index in order:
+        path = os.path.join(directory, f"slot.{index}")
+        holder = read_holder(path)
+        if holder is None:
+            continue
+        try:
+            os.kill(holder.pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass  # live, but owned by another user
+        if _is_held(path) is True:
+            named.append(f"slot {index}: recorded holder pid {holder.pid}, command {shlex.join(holder.command)}")
+    return printable("; ".join(named)) if named else "holder identity unavailable (no live recorded holder)"
+
+
 def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: Guard | None,
               command: Sequence[str], bound: int | None, waiting: "WaitingRecord | None" = None,
               release: Callable[[], None] = lambda: None) -> NoReturn:
@@ -852,6 +874,7 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
     else:
         order = range(1, tokens + 1)
     deadline = time.monotonic() + wait
+    announced = False
     while True:
         for index in order:
             descriptor = os.open(os.path.join(directory, f"slot.{index}"), os.O_CREAT | os.O_RDWR, 0o644)
@@ -891,6 +914,10 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             else:
                 cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {cap} run-time correctness slots busy after {wait}s")
             raise cli.Exit(1)
+        if not announced:
+            errline(f"{SLOT_PREFIX} {box}: waiting up to {wait}s for an execution slot; "
+                    f"{waiting_holders(directory, order)}")
+            announced = True
         if waiting is None:
             waiting = WaitingRecord(directory, command, "slot", "cpu" if cpu else "gpu")
         else:

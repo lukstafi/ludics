@@ -33,13 +33,13 @@ def exit_with(rc: int, *parts: str) -> NoReturn:
 
 
 def setup_streams() -> None:
-    """UTF-8 out and err, LF line ends on every platform, and stdout flushed per line.
+    """UTF-8 out and err, LF line ends on every platform, and both streams flushed per line.
 
     LF: Python on Windows writes CRLF in text mode, which is exactly the bug a native jq.exe put
     into the shell (ludics-lite#335). Line buffering: the shell wrote each line as it went, and a
     caller reading stdout and stderr interleaved, or a run cut off by a timeout, sees the same.
     """
-    for stream, buffered in ((sys.stdout, True), (sys.stderr, False)):
+    for stream, buffered in ((sys.stdout, True), (sys.stderr, True)):
         if isinstance(stream, io.TextIOWrapper):
             stream.reconfigure(
                 encoding="utf-8", errors="surrogateescape", newline="\n", line_buffering=buffered

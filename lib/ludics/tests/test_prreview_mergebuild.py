@@ -851,6 +851,8 @@ class Forwarded(Repo):
                 time.sleep(0.05)
             self.assertTrue(named, "the hold is named while the slot still waits")
             self.assertIsNone(child.poll(), "and the build has not run yet")
+            self.assertIn("awaiting execution slot", self.read(err))
+            self.assertNotIn("merge build: build.status command started", self.read(err))
             open(os.path.join(self.dir, "release"), "w").close()
             rc = child.wait(timeout=60)
         finally:
@@ -860,10 +862,20 @@ class Forwarded(Repo):
         self.assertEqual(rc, 0, self.read(out) + self.read(err))
         self.assertIn("PASSED", self.read(out))
         self.assertIn("waited for up to 5000s", self.read(out))
+        self.assertEqual(self.read(err).count("merge build: build.status command started"), 1)
         argv = self.read(os.path.join(self.dir, "argv")).split("\n")
         self.assertIn("--wait-window=5000", argv, "the rest of the ceiling")
         self.assertIn("--wait", argv)
         self.assertEqual(argv[argv.index("--wait") + 1], "1800", "the free-slot wait is unchanged")
+
+    def test_command_start_is_said_after_slot_admission(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        open(os.path.join(self.dir, "release"), "w").close()
+        child, out, err = self.run_build(head, "None")
+        self.assertEqual(child.wait(timeout=60), 0, self.read(out) + self.read(err))
+        progress = self.read(err)
+        self.assertLess(progress.index("awaiting execution slot"),
+                        progress.index("merge build: build.status command started"))
 
     def test_no_wait_keeps_the_slot_wait_and_a_refusal_is_said_once(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
@@ -873,6 +885,7 @@ class Forwarded(Repo):
         argv = self.read(os.path.join(self.dir, "argv")).split("\n")
         self.assertIn("--wait-window=1800", argv, "no --wait: as before")
         both = self.read(out) + self.read(err)
+        self.assertNotIn("command started", self.read(err))
         self.assertEqual(both.count("still holds box after 9s"), 1, both)
         self.assertIn("could not run", self.read(out))
 
