@@ -3,14 +3,24 @@
 
 Boundary: reads python-unit's literal part list and PYTHON_TEST_CUTS scalar in
 skill-scripts.yml, and test_*.py paths under lib/. This checks that workflow shape,
-not general YAML or test source. Synthetic lists exercise additions and bad cuts.
+not general YAML or application test source. Synthetic lists exercise additions and
+bad cuts; a temporary copy of this checker and runner probes bytecode-free importing.
 """
 
 from collections import Counter
 import importlib.util
+import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
+
+# Preflight also runs on the served checkout, whose freshness check includes ignored
+# files: importing the runner must not create scripts/__pycache__ there.
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("shards", ROOT / "scripts/run-python-tests.py")
@@ -36,6 +46,22 @@ class Shards(unittest.TestCase):
                     for p in (ROOT / "lib").rglob("test_*.py")]
         self.assertEqual(Counter(selected), Counter(expected))
         self.assertTrue(all(count == 1 for count in Counter(selected).values()))
+
+    def test_runner_import_leaves_no_bytecode(self):
+        with tempfile.TemporaryDirectory(prefix="python-shards-") as temporary:
+            scripts = Path(temporary) / "scripts"
+            scripts.mkdir()
+            for name in ("run-python-tests.py", "test-python-shards.py"):
+                shutil.copyfile(ROOT / "scripts" / name, scripts / name)
+            environment = os.environ.copy()
+            environment.pop("PYTHONDONTWRITEBYTECODE", None)
+            child = subprocess.run(
+                [sys.executable, str(scripts / "test-python-shards.py"),
+                 "Shards.test_single_shard"],
+                env=environment, capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(child.returncode, 0, child.stderr)
+            self.assertEqual(list(scripts.rglob("*.pyc")), [])
 
     def test_new_module_lands_automatically(self):
         modules = ["a", "b", "c", "d", "new"]
