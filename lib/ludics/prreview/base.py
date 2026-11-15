@@ -37,6 +37,7 @@ anywhere on the branch (it judges a tree the tip contains). A red at the tip bre
 once: it is a verdict. The workflows read are the repository's ACTIVE ones (``Base.workflow_list``):
 a disabled one (``disabled_manually``, ``disabled_inactivity``, ...) can create no run, so it has
 no verdict to wait for and is no newcomer; one whose ``state`` is missing counts as active.
+(``--last-green`` still reads every workflow: its question is about runs already made.)
 
 Stdout: the verdict line, then one line per workflow (and its notes). Exit: 0 green (an interim
 green under --interim included); 1 red; 2 usage or configuration; 3 UNKNOWN (a read the verdict
@@ -688,12 +689,13 @@ class Base:
             return ""
         return jq_raw(get(doc, "sha")) if isinstance(doc, dict) else ""
 
-    def workflow_list(self) -> list[Want] | None:
+    def workflow_list(self, *, active_only: bool = True) -> list[Want] | None:
         """The repository's ACTIVE workflows, or None when the list could not be read. A workflow
         whose ``state`` is anything else (``disabled_manually``, ``disabled_inactivity``,
         ``disabled_fork``, ``deleted``) can create no run: listed, one with no push run on the
         branch would count as the newcomer and hold a snapshot read forever. A missing ``state``
-        counts as active (fail closed: waited for, as before)."""
+        counts as active (fail closed: waited for, as before). ``active_only=False`` lists every
+        workflow, for ``--last-green``: a disable stops future runs, not the history it asks about."""
         doc = self.gh_json(["api", f"repos/{self.repo}/actions/workflows?per_page=100"])
         if isinstance(doc, (GhFailed, GhUnanswered)):
             return None
@@ -701,7 +703,7 @@ class Base:
         if items is None:
             return None
         return [(jq_raw(get(w, "id")), tsv(get(w, "name"))) for w in items
-                if get(w, "state") in (None, "active")]
+                if not active_only or get(w, "state") in (None, "active")]
 
     def runs_page(self, wid: str, ebranch: str, per_page: int,
                   keep: list[tuple[str, str]] | None = None) -> list[RunRow] | None:
@@ -1356,7 +1358,7 @@ def last_green(b: Base, branch: str, red: str, greens: Sequence[str] | None) -> 
               f" {red[:8]} (of the {len(greens)} SHA(s) given)")
         return 0
     ebranch = encode_ref(branch)
-    wants = b.workflow_list()
+    wants = b.workflow_list(active_only=False)
     if wants is None:
         fail(3, f"base: --last-green: could not list {b.repo}'s workflows ({b.err_line()}) -- the"
              " last green is UNKNOWN.")

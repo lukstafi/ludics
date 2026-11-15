@@ -1663,6 +1663,13 @@ class LastGreen(unittest.TestCase):
                 self.assertIn("UNKNOWN", err)
                 self.assertEqual(out, "")
 
+    def test_a_disabled_workflows_red_is_still_attributed(self) -> None:
+        answers = chain_world(**{"repos/o/r/actions/workflows?per_page=100": json.dumps(
+            {"workflows": [{"id": 1, "name": "ci", "state": "disabled_manually"}]})})
+        rc, out, _, _ = base_run(answers, ["main", "--last-green", R])
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"last green for ci: {P2}", out)
+
     def test_two_red_workflows_print_only_once_both_are_read(self) -> None:
         answers = chain_world(**{
             "repos/o/r/actions/workflows?per_page=100": json.dumps(
