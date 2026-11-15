@@ -138,6 +138,11 @@ other key, a task named twice, a profile that is no profile of the wave file, a 
 no ``capacity``, an ``after`` that is no task id, or one that names the task itself or a task
 queued LATER (the file's order is the launch order, so no two queued tasks can wait on each other)
 refuses the whole file, said once as ``DRIVE QUEUE REFUSED`` and launching nothing until it reads.
+Said once, it is also an attention record, task ``queue.json`` (the turn ``launch``), so the
+heartbeat's sleep ends on it: a refused file holds every queued launch, and a record nobody wakes
+for was read only at the next full tick (wave-20261115-ludics: ten minutes). It is no ledger line
+and makes nothing final; a corrected file is read on the next tick, and a different refusal is
+told again. Like the gate's, its "once" is this process's (#1130's fourth item).
 So does a wave file with no ``vars.MAIN``, the branch a queued task is prepared at. An ``after``
 task that is not queued needs no row yet: it may be a native task the coordinator has still to
 launch. With no file the driver launches nothing.
@@ -576,6 +581,12 @@ class Driver:
         append_line(self.path("logs", "attention.jsonl"), {"at": utc_now(), "task": worker.task, "turn": turn, "why": why, "file": file})
         self.say(f"DRIVE ATTENTION {worker.task} {label(turn)}: {why}" + (f" ({file})" if file else ""))
 
+    def tell_queue(self, why: str) -> None:
+        """A refused queue file's attention record (THE QUEUE, the header): the heartbeat wakes on it.
+        The ``DRIVE QUEUE REFUSED`` line already said it, so this writes the record alone."""
+        append_line(self.path("logs", "attention.jsonl"),
+                    {"at": utc_now(), "task": "queue.json", "turn": LAUNCH, "why": why, "file": self.path("queue.json")})
+
     def say(self, line: str) -> None:
         cli.say(line)
         with open(self.path("logs", "drive.log"), "a", encoding="utf-8") as f:
@@ -916,6 +927,7 @@ class Driver:
         if isinstance(queue, str):
             if queue != self.queue_refusal:
                 self.say(f"DRIVE QUEUE REFUSED {self.wave.wave}: {queue}; nothing is launched until it reads")
+                self.tell_queue(f"the queue is refused: {queue}; nothing is launched until it reads")
             self.queue_refusal = queue
             return
         self.queue_refusal = ""

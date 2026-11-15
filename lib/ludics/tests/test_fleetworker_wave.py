@@ -3394,6 +3394,15 @@ class Queue(DriveCase):
             self.once()
             self.assertEqual([c[3] for c in self.launched()], ["t51", "t51"])
 
+    def queue_alerts(self) -> list[dict[str, Any]]:
+        """The attention records a refused queue file wrote (task ``queue.json``)."""
+        try:
+            with open(os.path.join(self.wavedir, "logs", "attention.jsonl"), encoding="utf-8") as f:
+                records = [json.loads(line) for line in f if line.strip()]
+        except FileNotFoundError:
+            return []
+        return [r for r in records if r.get("task") == "queue.json"]
+
     def test_the_queue_file_is_a_fail_closed_allowlist_said_once(self) -> None:
         good = {"task": "t50", "profile": "sol", "host": "far"}
         with self.world():
@@ -3416,9 +3425,14 @@ class Queue(DriveCase):
                 driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
                 os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
                 self.calls.clear()
+                before = self.queue_alerts()
                 _, out, _ = captured(lambda d=driver: d.round() + d.round() + d.round())
                 self.assertEqual(out.count("DRIVE QUEUE REFUSED wv: "), 1, "a driver says a refused queue once")
                 self.assertIn(why, out)
+                told = self.queue_alerts()[len(before):]
+                self.assertEqual(len(told), 1, "and writes one attention record for it, which ends the heartbeat's sleep")
+                self.assertEqual((told[0]["task"], told[0]["turn"]), ("queue.json", wavedrive.LAUNCH))
+                self.assertIn(why, told[0]["why"])
                 self.assertEqual(self.launched(), [], "and launches nothing")
             with open(os.path.join(self.wavedir, "queue.json"), "w") as f:
                 f.write('{"tasks": [], "queue": 1}')
