@@ -455,6 +455,8 @@ class GateLoop(unittest.TestCase):
                     return f"build job\t{conclusion}\thttps://github.com/o/r/actions/runs/100/job/{job}\t1\t{status}"
                 other = "other\tfailure\tu\t1\tcompleted" if red else "other\tpending\tu\t1\tin_progress"
                 sequence = [row("pending", 10), row("cancelled", 10), row("cancelled", 10)]
+                if red or wait == 0:
+                    sequence = [row("cancelled", 10)]
                 if second_attempt:
                     sequence += [row("pending", 20), row("cancelled", 20), row("cancelled", 20)]
                 sequence += [row("success", 20)]
@@ -790,7 +792,6 @@ class GateLoop(unittest.TestCase):
                   out=f"2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t{suite}")
             gh.on("actions/runs/100/jobs", out=f"{jobs}\nmacos\tpending\t{old}\t-")
             with self.subTest(waive=waive, suite=suite, jobs=jobs):
-                gh.on("actions/runs/100/jobs", out="other\tpending\t2026-01-01T00:00:00Z\t-")
                 gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
                 self.assertEqual((gate.check("7", 0, waive=waive), gate.verdict), want)
 
@@ -814,7 +815,6 @@ class GateLoop(unittest.TestCase):
                   out="2026-01-01T00:00:00Z\t100\t1\tpush\tci\tin_progress\tpending\t1")
             gh.on("actions/runs/100/jobs", out=f"{jobs}\nmacos\tpending\t{old}\t-")
             with self.subTest(waive=waive, jobs=jobs):
-                gh.on("actions/runs/100/jobs", out="other\tpending\t2026-01-01T00:00:00Z\t-")
                 gate = make_gate(gh, FakeClock(), SHIP_PR_ADVISORY_CHECKS="^macos$")
                 self.assertEqual((gate.check("7", 0, waive=waive), gate.verdict), want)
 
