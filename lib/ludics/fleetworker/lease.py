@@ -20,7 +20,7 @@ from ludics.fleetworker.config import Config, short_hostname
 from ludics.fleetworker.identity import check_identity, die, my_token
 from ludics.fleetworker.transport import prelude, run_on
 
-# tiprun.HALT_READ's rule: only no entry in a searchable state directory is open. A present
+# Shared by the lease gates and tiprun.HALT_READ: only no entry in a searchable state directory is open. A present
 # marker must be a readable regular file (links to such files work). Unread state returns at once.
 HALT_STATE = r"""read_halt() {
   halt_present=0 halt_text=
