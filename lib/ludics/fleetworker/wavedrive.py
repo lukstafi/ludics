@@ -134,14 +134,28 @@ THE QUEUE, ``<wave dir>/queue.json``, is the launches the coordinator decided an
                 [, "issue" | "source"]}, ...]}
 
 A fail-closed allowlist, read each tick (the coordinator may add tasks while the driver runs): any
-other key, a task named twice, a profile that is no ``cli`` profile of the wave file, a host with
+other key, a task named twice, a profile that is no profile of the wave file, a CLI entry's host with
 no ``capacity``, an ``after`` that is no task id, or one that names the task itself or a task
 queued LATER (the file's order is the launch order, so no two queued tasks can wait on each other)
 refuses the whole file, said once as ``DRIVE QUEUE REFUSED`` and launching nothing until it reads.
 So does a wave file with no ``vars.MAIN``, the branch a queued task is prepared at. An ``after``
 task that is not queued needs no row yet: it may be a native task the coordinator has still to
-launch. With no file the driver launches nothing. After the workers' turns, each tick takes
-the FIRST task in file order that is due and starts it, one a tick:
+launch. With no file the driver launches nothing.
+A NATIVE ENTRY is one whose worker is not a CLI worker: it names a profile whose ``transport`` is not
+``cli``, or it names no profile and the wave file's own ``transport`` is not ``cli`` (a wave whose
+native workers are its default worker has no native profile to name). It takes ``task`` and
+optionally ``profile`` and ``after``, and no other key: the driver prepares nothing for it, so
+prep's flags are the coordinator's. The driver never refreshes, prepares, un-prepares or launches
+it and counts it against no capacity; when it is due (as below, but for the capacity, the backoff
+and the prepared record: no row or a ``pending`` one, every ``after`` row landed, not halted, THE
+GATE open) it CUES it: one attention line, ``<task> is due: launch it``, then a ledger line
+``cued`` (told first and recorded after, as ``attention`` does). A task with a ``cued`` line is
+never cued again, so a restarted driver does not repeat it; ``cued`` is no final status, so no
+reader takes it for a launch decision, and it holds no slot. A cue starts nothing, so it takes
+no tick's launch: the scan goes on past it. A native row past ``pending`` (the coordinator
+launched it, cue or no cue) is not cued; a CLI task ``after`` a native entry waits on its row.
+After the workers' turns, each tick takes the FIRST CLI task in file order that is due and starts
+it, one a tick (THE GATE and the halt are read once a tick, for the cues and the start alike):
   due       no row yet, or a ``pending`` row (prepared, its launch refused so far); every ``after``
             task's row ``merged`` or ``done``; fewer CLI rows of this wave holding a slot on its
             host (``slots_held``: any kind, past ``pending`` and not done) than the host's
@@ -156,7 +170,8 @@ names (a ``WAVE PREP REFUSED`` wave-20261113b-ludics saw). ``refresh`` brings it
 says why not, and resets nothing; its exit never stops a prep, and when the prep then refuses, the
 refresh's line is beside the prep's in that attention.
 When otherwise due, a task waiting only on ``after`` tasks with neither rows nor queue entries
-is told through a non-final attention line naming those tasks; it still starts when they merge.
+is told through a non-final attention line naming those tasks; it still starts (a native entry:
+is still cued) when they merge.
 The last missing-task list told for each task is kept in memory (as the queue's and gate's
 refusals are): an unchanged list is said once, an empty list clears it, and a restarted driver
 tells it again. A task also
@@ -309,6 +324,8 @@ LANDED = ("merged", "done")  # the row states of an ``after`` task that let its 
 PRESTART = re.compile(r"^(?:LAUNCH REFUSED |BASE REFUSED: ).*$", re.M)
 QUEUE_KEYS, QUEUED_REQUIRED = ("capacity", "tasks"), ("task", "profile", "host")
 QUEUED_OPTIONAL = ("legs", "mode", "after", "issue", "source")
+NATIVE_KEYS = ("profile", "after")  # a native entry's keys beside ``task`` (A NATIVE ENTRY, the header)
+CUED = "cued"  # a native entry's ledger status once its cue was told: never told again, and no launch decision
 
 
 @dataclass(frozen=True)
@@ -321,6 +338,7 @@ class Queued:
     after: tuple[str, ...]
     issue: str
     source: str
+    native: bool = False  # A NATIVE ENTRY (the header): cued, never prepared or launched
 
 
 def label(turn: int) -> str:
@@ -357,7 +375,15 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
         item = cast(dict[str, Any], entry)
         name = item.get("task")
         what = f"{path}: task {json.dumps(name)}"
-        if set(item) - set(QUEUED_REQUIRED) - set(QUEUED_OPTIONAL) or any(key not in item for key in QUEUED_REQUIRED):
+        # A NATIVE ENTRY (the header): its worker's transport, its profile's or with none the wave's own, is not cli.
+        named: Any = item.get("profile")
+        native = (wave.transport != "cli" if "profile" not in item
+                  else isinstance(named, str) and named in wave.profiles and wave.profiles[named].transport != "cli")
+        if native:
+            if set(item) - {"task", *NATIVE_KEYS} or "task" not in item:
+                return (f"{what} is a native entry, which takes task and optionally {', '.join(NATIVE_KEYS)}: the driver prepares"
+                        " nothing for it, so prep's flags are yours when you launch it")
+        elif set(item) - set(QUEUED_REQUIRED) - set(QUEUED_OPTIONAL) or any(key not in item for key in QUEUED_REQUIRED):
             return f"{what} takes {', '.join(QUEUED_REQUIRED)} and optionally {', '.join(QUEUED_OPTIONAL)}"
         lists = {key: item.get(key, []) for key in ("legs", "after")}
         texts = {key: item.get(key, "") for key in ("task", "profile", "host", "mode", "issue", "source")}
@@ -367,9 +393,12 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
         if not TASK.fullmatch(texts["task"]) or any(q.task == texts["task"] for q in tasks):
             return f"{what} is no task id ({TASK.pattern}), or is queued twice"
         chosen = wave.profiles.get(texts["profile"])
-        if chosen is None or chosen.transport != "cli":
-            return f"{what}: profile {texts['profile']!r} is no cli profile of the wave file (the driver launches CLI workers)"
-        if texts["host"] not in capacity:
+        if native:
+            pass  # no host, so no capacity: the driver only cues it
+        elif chosen is None:
+            return (f"{what}: profile {texts['profile']!r} is no profile of the wave file (a cli profile's task is launched,"
+                    " a native one's cued)")
+        elif texts["host"] not in capacity:
             return f"{what}: host {texts['host']!r} has no capacity"
         if texts["issue"] and texts["source"]:
             return f"{what} names both an issue and a source"
@@ -380,7 +409,7 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
             return (f"{what} comes after itself, or is queued after a task that waits on it: the file's order is the launch"
                     " order, so a task's queued prerequisites are above it")
         tasks.append(Queued(texts["task"], texts["profile"], texts["host"], tuple(cast(list[str], lists["legs"])), texts["mode"],
-                            tuple(cast(list[str], lists["after"])), texts["issue"], texts["source"]))
+                            tuple(cast(list[str], lists["after"])), texts["issue"], texts["source"], native))
     return capacity, tasks
 
 
@@ -888,11 +917,20 @@ class Driver:
         for task, entry in launch_ends.items():
             if entry.get("holds") and state_word(rows.get(task, {}).get("state", "pending")) == "pending":
                 live[str(entry["holds"])] = live.get(str(entry["holds"]), 0) + 1
+        admitted: bool | None = None  # launches not halted and THE GATE open, read once a tick and only when wanted
+
+        def admits(slot: Worker) -> bool:
+            nonlocal admitted
+            if admitted is None:
+                admitted = self.call("halted").rc == 0 and self.gate_open(slot)
+            return admitted
+
         for queued in tasks:
             slot = Worker(queued.task, "", queued.host, {})
             last = self.last(slot, LAUNCH)
             row = rows.get(queued.task)
-            if (last is not None and last.get("status") in FINAL) or (row is not None and state_word(row.get("state", "")) != "pending"):
+            if (last is not None and last.get("status") in (*FINAL, CUED)) or (
+                    row is not None and state_word(row.get("state", "")) != "pending"):
                 continue
             if last is not None and last.get("status") == "launching":
                 self.attention(slot, LAUNCH, "launch", "a launch of the task was begun and its end was not recorded (the driver stopped"
@@ -910,7 +948,23 @@ class Driver:
                 self.queue_missing.pop(queued.task, None)
             if any(word not in LANDED and dep not in missing for dep, word in states.items()):
                 continue
-            record = self.prepared(queued.task) if row is not None else None
+            if queued.native:
+                # A NATIVE ENTRY (the header): cued once when due, and never prepared, launched or counted.
+                if missing and self.queue_missing.get(queued.task) == missing:
+                    continue
+                if not admits(slot):
+                    return  # a halt, a closed gate or an unreachable anchor is the next tick's, for every task
+                if missing:
+                    self.tell(slot, LAUNCH, f"the queued native task waits only on after tasks with no row or queue entry:"
+                                           f" {', '.join(missing)}; check their names, or launch them when ready; it is cued when they merge")
+                    self.queue_missing[queued.task] = missing
+                    continue
+                merged = f"its after tasks {', '.join(queued.after)} merged" if queued.after else "it waits on no task"
+                self.tell(slot, LAUNCH, f"{queued.task} is due: launch it ({merged}, launches not halted, the launch gate open):"
+                                       " wave prep, then gate --wait right before the spawn")
+                self.note(slot, LAUNCH, "launch", CUED, f"{queued.task} is due ({merged}); the coordinator launches it")
+                continue  # a cue starts nothing, so it takes no tick's launch
+            record =self.prepared(queued.task) if row is not None else None
             if record is not None and record.host != queued.host:
                 self.attention(slot, LAUNCH, "launch", f"the task is prepared on {record.host}, and the queue names {queued.host} for it:"
                                                        " a prepared task launches where it was prepared; launch it by hand")
@@ -921,7 +975,7 @@ class Driver:
                 continue
             if missing and self.queue_missing.get(queued.task) == missing:
                 continue  # already told: do not spend another potentially blocking gate read on it
-            if self.call("halted").rc == 0 and self.gate_open(slot):
+            if admits(slot):
                 if missing:
                     self.tell(slot, LAUNCH, f"the queued task waits only on after tasks with no row or queue entry: {', '.join(missing)};"
                                            " check their names, or launch them when ready; this task will still start when they merge")

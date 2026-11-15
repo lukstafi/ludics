@@ -6434,6 +6434,17 @@ fixture_done wkv-t84-testbox-iterate
 setup_step "could not conclude t85's standing reservation (setup)" \
   "${FWK[@]}" execution conclude --standing-handback --request wkv-t85-testbox-iterate --observed-from "$cli_proj-worktrees/wk-85" \
   --evidence "wave kit fixture" --verdict cancelled
+# #1157: a native entry (no profile: the wave's own workers are native) is cued once its after task
+# merged, through the real gate and halt reads, and never prepared; the ledger keeps a new driver silent.
+printf '# Task @@T@@\n' > "$K/tasks/t87.md"
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t87", after:["t86"]}]}' > "$K/queue.json"
+expect "a queued native task is cued once its after task merged" 0 \
+  "^DRIVE ATTENTION t87 launch: t87 is due: launch it (its after tasks t86 merged, launches not halted, the launch gate open)" -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ ! -e "$K/prep/t87.json" ] && [ -z "$("${FWK[@]}" board show wkv --json | jq -r '.tasks[] | select(.task == "t87") | .task')" ] &&
+  ok "...and is not prepared: no manifest, no row" || ko "t87 was prepared: $(ls "$K/prep" 2>&1)"
+expect "...and a restarted driver does not cue it again" 0 "^$" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+expect "...and the heartbeat hands the cue up" 0 "^HEARTBEAT attention t87 launch: t87 is due: launch it" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 0
 expect "wave unprep refuses a launched task" 1 "^WAVE UNPREP REFUSED t84: .* records a launch" -- "${FWK[@]}" wave unprep "$K/wave.json" t84
 expect "wave unprep of a task with no manifest has nothing to undo" 0 "^WAVE UNPREP t99: nothing recorded to undo" -- "${FWK[@]}" wave unprep "$K/wave.json" t99
 setup_step "could not restore the project's master (setup)" git -C "$K/pusher" push -q -f origin "$pbase:refs/heads/master"

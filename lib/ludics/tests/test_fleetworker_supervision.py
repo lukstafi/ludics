@@ -78,6 +78,21 @@ class PrsTally(unittest.TestCase):
         rc, lines = self.prs()
         self.assertEqual((rc, lines), (0, ["PRS o/r: no open PRs"]))
 
+    def test_the_steady_line_cuts_only_the_fields_that_move_with_the_clock(self) -> None:
+        self.answer([pr(7, "claude/issue-7")])
+        line = self.prs()[1][0]
+        self.assertRegex(line, r" head=[0-9]", "the writer prints the head's age (the line steady_prs_line reads)")
+        self.assertEqual(supervision.steady_prs_line(line), "o/r#7 rounds=1 ci=green branch=current claude/issue-7: PR 7")
+        for written, steady in (
+                ("o/r#7 rounds=2 ci=red branch=behind head=3h2m merge-build=412s/1800s draft claude/x: T head=1m",
+                 "o/r#7 rounds=2 ci=red branch=behind merge-build=running/1800s draft claude/x: T head=1m"),
+                ("o/r#7 rounds=2 ci=green branch=current head=9m merge-build=waiting(window,61s) claude/x: T",
+                 "o/r#7 rounds=2 ci=green branch=current merge-build=waiting(window) claude/x: T"),
+                ("o/r#7 rounds=2 ci=green branch=current head=? merge-build=waiting(slot) claude/x: T",
+                 "o/r#7 rounds=2 ci=green branch=current merge-build=waiting(slot) claude/x: T"),
+                ("PRS o/r: 1 open PR listed above: #7", "PRS o/r: 1 open PR listed above: #7")):
+            self.assertEqual(supervision.steady_prs_line(written), steady)
+
 
 if __name__ == "__main__":
     unittest.main()

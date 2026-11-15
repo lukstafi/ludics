@@ -436,9 +436,14 @@ branch). The verbs do the rest, on one of three routes
 The driver's launches shape yours in two ways. It reads the launch gate with `--no-wait`:
 one base read, with no polling pause or base observer held; no verdict leaves the task for a
 later tick, while returned turns are answered each tick. Your own waiting `gate` for a native
-spawn can keep the branch's one base observer. The queue launches CLI
-tasks only, so a native task that follows a queued CLI task is yours to launch on that task's
-merge: its board row turning `merged`, read off the heartbeat, is the cue.
+spawn can keep the branch's one base observer. The driver launches CLI
+tasks only. Queue a native task too, with its `after` tasks: an entry under a native profile, or
+with no profile in a wave whose own workers are native, which takes only `task`, `profile` and
+`after`. The driver never prepares, launches or counts it. Once it is due (its `after` tasks
+merged, launches not halted, the gate open), the driver writes one attention line, `<task> is due:
+launch it`, which ends the heartbeat's sleep, and its ledger keeps a restarted driver from
+repeating it. That line is your cue to run the *A native task* steps above. A native task you do
+not queue is yours to watch for.
 
 ### Skill-freshness preflight
 
@@ -690,7 +695,7 @@ through the tools in your coordinator's file, never through those commands.
 What the driver leaves to you while it runs: starting it and the heartbeat as background commands
 (one driver per wave: a second refuses on its lock), re-arming the heartbeat each tick, reading
 each merge off GitHub (a closed row is the driver's report, not your verification), launching the
-native tasks that follow a CLI task's merge (*Launch*), and stopping it (*Close out*).
+native tasks it cues (*Launch*), and stopping it (*Close out*).
 
 - **Stay alive, but design for dying.** A Claude Desktop coordinator is paused by the app about
   fifteen minutes after its last main-conversation activity, and a background waiter held
@@ -976,7 +981,7 @@ native tasks that follow a CLI task's merge (*Launch*), and stopping it (*Close 
     worker's): `fleet-worker.sh wave loop <wave.json> <name>` drives one of the wave file's loops
     and is restartable - it waits on its own running run before it starts another - through the
     two calls a run is by hand, `execution tip-run <reserve.json> --tip <base> --id-prefix
-    <wave>-gpu-<box> --checkout <dir> -- <command...>` and `execution tip-run --wait <id> --tip
+    <wave>-gpu-<box> --checkout <dir> --full-loop -- <command...>` and `execution tip-run --wait <id> --tip
     <base>` ([executions.md](references/executions.md#reserve-launch-observe-conclude) states
     both: the yield, the next `<n>` under the prefix, the detached checkout, the GPU token only if
     one is free, `TIP-RUN STARTED`/`NOT STARTED`/`CONCLUDED`, and `TIP-RUN TIP <base> <sha> moved`,
@@ -1000,8 +1005,9 @@ native tasks that follow a CLI task's merge (*Launch*), and stopping it (*Close 
     loop run verifies the fix-forward under the halt before `resume-launches`. The last green on a
     backend is the nearest commit below the red tip on its first-parent chain that a pass of
     that backend's loop judged, never just the newest pass (ludics-lite#602, above). Its
-    candidates are the passes `tip-run` marked `pinned_backend` (it marks only a run it started
-    past the backend pin): the GPU-loop records before #793 carry the same purpose and were cc
+    candidates are the full-loop passes `tip-run` marked `pinned_backend` (it marks only a run it
+    started past the backend pin, `full_loop: true` only under `--full-loop`; a `wave loop --rerun`
+    pass records `false` and is no candidate): the GPU-loop records before #793 carry the same purpose and were cc
     runs, so an unmarked pass is no green on any backend (`--pinned-backend` reads only marked ones):
 
         fleet-worker.sh execution integration-records <owner/repo> --pinned-backend hip --verdict pass --shas > <greens>

@@ -7,6 +7,7 @@ import glob
 import io
 import json
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -2972,6 +2973,58 @@ class Queue(DriveCase):
             self.assertIn("DRIVE ATTENTION t51 launch: the queued task waits only", out)
             self.assertEqual([c[3] for c in self.launched()], ["t52", "t52"])
 
+    def test_a_native_entry_is_cued_once_when_due_and_never_prepared_launched_or_counted(self) -> None:
+        # t53 names a native profile, t54 none in a wave whose own workers are native; t55 is a CLI task after t53.
+        self.queue({"task": "t53", "profile": "opus", "after": ["t42"]}, {"task": "t54", "after": ["t42"]},
+                   {"task": "t55", "profile": "sol", "host": "far", "after": ["t53"]}, capacity={"far": 1})
+        self.state = "RUNNING"
+        gates = lambda: [c for c in self.calls if c[0] == "gate"]  # noqa: E731
+        with self.world():
+            self.rows = [row("t42", state="reviewing")]
+            self.assertEqual((self.once()[1], self.calls, self.attention()), ("", [], []), "not while its after task is unmerged")
+            self.rows = [row("t42", state="merged #7")]
+            for rc, why in (({"halted": 1}, "under a halt"), ({"gate": 4}, "under a pending gate snapshot"), ({"gate": 1}, "under a refusing gate")):
+                self.rc = rc
+                self.once()
+                self.assertEqual([a for a in self.attention() if "is due" in a], [], why)
+            self.rc = {}
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t53 launch: t53 is due: launch it (its after tasks t42 merged, launches not halted, the launch"
+                          " gate open): wave prep, then gate --wait right before the spawn", out)
+            self.assertIn("DRIVE ATTENTION t54 launch: t54 is due: launch it", out)
+            self.assertNotIn("no row or queue entry", out, "a CLI task after a native entry waits on its row, untold")
+            self.assertEqual((self.launched(), len(gates())), ([], 1), "nothing prepared or launched, and one gate read for both cues")
+            for rows in ([row("t42", state="merged #7")], [row("t42", state="merged #7"), row("t54", state="pending", transport="subagent")]):
+                self.rows = rows
+                self.assertNotIn("is due", self.once()[1], "a cue is told once, by a driver restarted too (each --once is a new driver)")
+            self.assertEqual(self.ledger(), [(-1, "launch", "cued"), (-1, "launch", "cued")])
+            self.rows = [row("t42", state="merged #7"), row("t53", transport="subagent", state="merged #9"),
+                         row("t54", transport="subagent", kind="claude", state="reviewing")]
+            self.once()
+            self.assertEqual([c[1:4] for c in self.launched()], [["prep", self.path, "t55"], ["launch", self.path, "t55"]],
+                             "once the native row merged its CLI dependent starts, and a native row holds no slot of far's one")
+
+    def test_a_cue_takes_no_ticks_launch_and_a_native_entry_whose_after_ended_is_final(self) -> None:
+        self.queue({"task": "t53", "profile": "opus"}, {"task": "t54", "profile": "opus", "after": ["t42"]},
+                   {"task": "t56", "profile": "opus", "after": ["t99"]}, {"task": "t50", "profile": "sol", "host": "far"})
+        self.rows = [row("t42", state="closed")]
+        self.state = "RUNNING"
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("DRIVE ATTENTION t53 launch: t53 is due: launch it (it waits on no task, ", out)
+            self.assertIn("DRIVE ATTENTION t54 launch: the queued task cannot come due: t42, which it comes after, ended without a merge", out)
+            self.assertIn("DRIVE ATTENTION t56 launch: the queued native task waits only on after tasks with no row or queue entry: t99;"
+                          " check their names, or launch them when ready; it is cued when they merge", out)
+            self.assertEqual([c[1:4] for c in self.launched()], [["prep", self.path, "t50"], ["launch", self.path, "t50"]],
+                             "the cue and the missing-after line took no launch: the CLI task below them started this tick")
+            self.assertEqual(len([c for c in self.calls if c[0] == "gate"]), 1, "the halt and the gate are read once a tick")
+            self.rows = [row("t42", state="closed"), row("t50")]
+            out = self.once()[1]
+            self.assertNotIn("t53", out)
+            self.assertNotIn("t54", out, "the ended after is final: told once")
+        self.assertEqual(self.ledger(), [(-1, "launch", "cued"), (-1, "launch", "attention"), (-1, "launch", "launching"),
+                                         (-1, "launch", "answered")])
+
     def test_nothing_is_prepared_while_the_launch_gate_refuses_and_the_coordinator_is_told_once(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"})
         red = "BASE REFUSED: o/staging main: red at abc (base checker exit 1); dispatch blocked\n"
@@ -3209,8 +3262,10 @@ class Queue(DriveCase):
             for tasks, capacity, why in (([{**good, "extra": 1}], None, "takes task, profile, host and optionally"),
                                          ([{"task": "t50", "profile": "sol"}], None, "takes task, profile, host"),
                                          ([good, good], None, "is queued twice"), ([{**good, "task": "5x"}], None, "is no task id"),
-                                         ([{**good, "profile": "opus"}], None, "is no cli profile of the wave file"),
-                                         ([{**good, "profile": "astra"}], None, "is no cli profile of the wave file"),
+                                         ([{**good, "profile": "opus"}], None, "is a native entry, which takes task and optionally"
+                                                                               " profile, after: the driver prepares nothing for it"),
+                                         ([{"task": "t50", "legs": ["gpu-box"]}], None, "is a native entry, which takes task"),
+                                         ([{**good, "profile": "astra"}], None, "profile 'astra' is no profile of the wave file"),
                                          ([{**good, "host": "rog"}], None, "host 'rog' has no capacity"),
                                          ([{**good, "issue": "1", "source": "2"}], None, "names both an issue and a source"),
                                          ([{**good, "after": "t42"}], None, "legs and after lists of text"),
@@ -3240,6 +3295,10 @@ class Queue(DriveCase):
             self.queue(good)
             self.once()
             self.assertEqual([c[1] for c in self.launched()], ["prep", "launch"], "a queue that reads again is served")
+            with open(self.path, "w") as f:
+                json.dump(wave_data(self.dir, vars={"COORD": "s", "MAIN": "main"}, transport="cli", kind="codex", **MIXED), f)
+            self.queue({"task": "t53"})
+            self.assertIn("takes task, profile, host and optionally", self.once()[1], "with no profile, a CLI wave's entry is a CLI one")
 
 
 class Heartbeat(unittest.TestCase):
@@ -3249,10 +3308,10 @@ class Heartbeat(unittest.TestCase):
             with open(path, "w") as f:
                 json.dump(wave_data(d, loops={}), f)
             cfg = load_config(SCRIPT, {"HOME": d})
-            with mock.patch.object(wave, "run", return_value=Done(0, "")):
+            with mock.patch.object(wave, "run", return_value=Done(0, "")), mock.patch.object(wave, "board_rows", return_value=[]):
                 _, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])
                 self.assertNotIn("HEARTBEAT drive", out, "a wave no driver served prints no driver line")
-                os.makedirs(os.path.join(d, "logs"))
+                os.makedirs(os.path.join(d, "logs"), exist_ok=True)
                 attention = os.path.join(d, "logs", "attention.jsonl")
                 with open(os.path.join(d, "logs", "drive.log"), "w") as f:
                     f.write("2026-11-13T12:00:00Z DRIVE t42 turn 0: request answered: assigned\n")
@@ -3274,6 +3333,76 @@ class Heartbeat(unittest.TestCase):
                 self.assertIn("HEARTBEAT attention t43 turn 0: ORPHANED\n", out)
                 self.assertRegex(out.rstrip("\n").split("\n")[-1], r"^HEARTBEAT wv ")
 
+    def test_a_tick_that_reads_as_the_last_full_read_prints_one_line(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "wave.json")
+            with open(path, "w") as f:
+                json.dump(wave_data(d), f)
+            os.makedirs(os.path.join(d, "logs"))
+            loop = os.path.join(d, "logs", "loop-cc.log")
+            with open(loop, "w") as f:
+                f.write("LOOP PASS cc at abc\n")
+            cfg = load_config(SCRIPT, {"HOME": d})
+            world: dict[str, Any] = {
+                "prs": "o/staging#7 rounds=2 ci=green branch=current head=12m merge-build=40s/1800s claude/w1-7: T\n"
+                       "PRS o/staging: 1 open PR listed above: #7\n",
+                "halted": (1, "HALTED red at abc\n"), "rows": [["t7", [["state", "reviewing"]]]]}
+
+            def fake(argv: list[str], **_: Any) -> Done:
+                return Done(0, world["prs"]) if argv[1] == "prs" else Done(*world["halted"])
+
+            def tick() -> str:
+                with (mock.patch.object(wave, "run", side_effect=fake),
+                      mock.patch.object(wave, "board_rows", side_effect=lambda *_: world["rows"], create=True)):  # pyright: ignore[reportUnknownLambdaType]
+                    return captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])[1]
+
+            unchanged = (r"\AHEARTBEAT wv \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ unchanged since \d{4}-\S+Z \(prs exit=0, halted exit=[01],"
+                         r" (no driver|drive running|drive NOT RUNNING)\): the last full read is " + re.escape(os.path.join(d, "logs", "heartbeat.last")) + r"\n\Z")
+            out = tick()
+            self.assertIn("o/staging#7 rounds=2", out, "the first tick is a full read")
+            self.assertNotIn("changed since", out, "with no saved read there is nothing to differ from")
+            world["prs"] = world["prs"].replace("head=12m", "head=22m").replace("40s/", "640s/")
+            out = tick()
+            self.assertRegex(out, unchanged, "the head's age and a build's elapsed time move with the clock alone")
+            with open(os.path.join(d, "logs", "heartbeat.last")) as f:
+                self.assertIn("o/staging#7 rounds=2 ci=green branch=current head=12m merge-build=40s/1800s claude/w1-7: T", json.load(f)["read"])
+            lock = os.path.join(d, "logs", "drive.lock")
+
+            def write(file: str, text: str) -> None:
+                with open(file, "a") as f:
+                    f.write(text)
+
+            for part, change in (
+                    ("prs", lambda: world.update(prs=world["prs"].replace("rounds=2", "rounds=3"))),
+                    ("halted", lambda: world.update(halted=(0, "launches were not halted\n"))),
+                    ("board rows", lambda: world.update(rows=[["t7", [["state", "merged #7"]]]])),
+                    ("loops", lambda: write(loop, "LOOP RED cc at def\n")),
+                    ("driver", lambda: write(lock, "")),
+                    ("driver", lambda: write(os.path.join(d, "logs", "drive.log"), "2026-11-15T12:00:00Z DRIVE t7 launch: launch cued: x\n"))):
+                change()
+                out = tick()
+                self.assertRegex(out, rf"\AHEARTBEAT changed since \S+: {part}\n", part)
+                self.assertRegex(out.rstrip("\n").split("\n")[-1], r"^HEARTBEAT wv \S+Z$", "a full read ends with the time")
+                self.assertRegex(tick(), unchanged, f"and once {part} is read, the next quiet tick is one line again")
+            for _ in range(2):  # a new record, even with an earlier one's text, is a full read
+                write(os.path.join(d, "logs", "attention.jsonl"), json.dumps({"task": "t8", "turn": -1, "why": "t8 is due: launch it"}) + "\n")
+                out = tick()
+                self.assertIn("changed since", out)
+                self.assertIn("HEARTBEAT attention t8 launch: t8 is due: launch it\n", out)
+                self.assertRegex(tick(), unchanged)
+            world["rows"] = None
+            out = tick()
+            self.assertIn("HEARTBEAT board: did not read, so this tick is not called unchanged\n", out)
+            self.assertIn("o/staging#7 rounds=3", out)
+            world["rows"] = [["t7", [["state", "merged #7"]]]]
+            self.assertRegex(tick(), unchanged, "an unread board saved nothing: the saved read still stands")
+            for torn in ("{", json.dumps({"v": 0, "at": "x", "parts": {}})):
+                with open(os.path.join(d, "logs", "heartbeat.last"), "w") as f:
+                    f.write(torn)
+                out = tick()
+                self.assertIn("o/staging#7 rounds=3", out, "a torn or other-version state file is no saved read")
+                self.assertNotIn("changed since", out)
+
     def test_reads_print_whole_with_their_exits_and_the_time_last(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "wave.json")
@@ -3286,11 +3415,10 @@ class Heartbeat(unittest.TestCase):
 
             def fake(argv: list[str], **_: Any) -> Done:
                 if argv[1] == "prs":
-                    print("\n".join(f"#{n} PR line" for n in range(30)))
-                    return Done(0, "")
+                    return Done(0, "\n".join(f"#{n} PR line" for n in range(30)) + "\n")
                 return Done(3, "")
 
-            with mock.patch.object(wave, "run", side_effect=fake):
+            with mock.patch.object(wave, "run", side_effect=fake), mock.patch.object(wave, "board_rows", return_value=[]):
                 rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "0"])
         self.assertEqual(rc, 0)
         lines = out.rstrip("\n").split("\n")
