@@ -52,7 +52,8 @@ A wave copies no brief text forward. The repository ships the reference template
 Nothing is shipped for a Claude CLI worker's own four parts, so such a wave writes them under
 `common/`. Native Codex uses managed foreground command sessions and messages its coordinator
 mid-turn. It ships no planning parts: under a Codex coordinator, pairing a Codex worker needs
-the user's tier-3 confirmation (issue-wave SKILL.md's pairing rule); an approved paired wave
+the user's tier-3 confirmation (issue-wave SKILL.md's pairing rule, *Planning mode, per issue*
+in its [Decision gate](../SKILL.md#decision-gate-before-launch-batched-fatigue-aware)); an approved paired wave
 supplies its own planning parts.
 
 The template holds no project fact. It takes them from three places:
@@ -216,7 +217,14 @@ driver hands you as an attention line.
    ```
 
    Run it with `run_in_background` and re-arm it each tick. A tick prints `prs` whole, `halted`,
-   each loop's last line, and its time last.
+   each loop's last line, and its time last. A tick that reads as the last full read (the board's
+   rows, the PR lines but for the head's age and a merge build's elapsed time, `halted`, the loops,
+   the driver, and no new attention line) prints one `HEARTBEAT <wave> <time> unchanged since
+   <time> ...` line instead, naming the file that holds that read (`wave.py`'s header, *THE
+   NO-CHANGE LINE*). Once every remaining worker is either native (its hand-off returns to you on
+   its own) or served by the driver, and every native task still to launch is in `queue.json` (its
+   cue is an attention line), every wake that matters ends the sleep early, so a longer `--sleep`
+   (15 to 20 minutes) costs only liveness latency: the heartbeat's exit still re-invokes you.
 
 7. **For a paired worker's plan,** use `peer-plan.sh save-plan <plan dir> --from-transcript
    <file>` ([paired-planning.md](paired-planning.md)).
@@ -284,7 +292,8 @@ driver hands you as an attention line.
    {"capacity": {"mac-studio": 4, "rog-nv-linux": 2},
     "tasks": [{"task": "t2130", "profile": "sol", "host": "mac-studio"},
               {"task": "t2136", "profile": "sol", "host": "mac-studio", "after": ["t2130"]},
-              {"task": "t2151", "profile": "sol", "host": "rog-nv-linux", "legs": ["minix-amd-linux"]}]}
+              {"task": "t2151", "profile": "sol", "host": "rog-nv-linux", "legs": ["minix-amd-linux"]},
+              {"task": "t2140", "after": ["t2136"]}]}
    ```
 
    Each tick it starts the first task that is due: its `after` tasks merged, its host under its
@@ -301,7 +310,15 @@ driver hands you as an attention line.
    that ended in doubt (a NOTE, an unknown outcome, a driver stopped inside it) is an attention
    line too, and keeps its host's slot until you set its row `launched` or close it. You may add
    tasks to the file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
-   task that is not queued is one you launch yourself (a native worker's). A task whose `after`
+   task that is not queued is one you launch yourself (a native worker's).
+
+   A native task is queued for its cue, not its launch: an entry under a native profile, or with
+   no profile in a wave whose own workers are native (`t2140` above), taking only `task`,
+   `profile` and `after`. The driver never prepares, launches or counts it. When it is due (its
+   `after` tasks merged, launches not halted, the gate open), the driver writes one attention
+   line, `<task> is due: launch it`, once: its ledger line `cued` keeps a restarted driver from
+   repeating it. A cue takes no tick's launch. Launch the task yourself (steps 2 and 3); a CLI task
+   `after` it waits on its row. A task whose `after`
    task ended without a merge is an attention line too, since it will never come due. The
    rival-PR check by topic stays yours, before you queue a task. When a task is otherwise due
    and waits only on `after` tasks with neither rows nor queue entries, you are told their names

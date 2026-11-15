@@ -438,6 +438,24 @@ def listed_line(repo: str, numbers: list[str]) -> str:
     return f"PRS {repo}: {len(numbers)} {noun} listed above: " + " ".join(f"#{n}" for n in numbers)
 
 
+# The fields of a PR line that move with the clock alone (cmd_prs writes them: ``head=<age>``, a merge
+# build's elapsed seconds and a queued one's wait), which the wave heartbeat's no-change compare
+# drops (wave.py, THE NO-CHANGE LINE). Kept beside the writer, so the two change together.
+_HEAD_AGE = re.compile(r" head=\S+")
+_BUILD_ELAPSED = re.compile(r"merge-build=[0-9]+s/")
+_BUILD_WAIT = re.compile(r"merge-build=waiting\(([a-z]+)(?:,[0-9]+s)?\)")
+
+
+def steady_prs_line(line: str) -> str:
+    """One ``prs`` output line with its clock-only fields cut: ``head=<age>`` dropped,
+    ``merge-build=<n>s/<b>s`` read ``merge-build=running/<b>s``, ``waiting(<phase>,<n>s)`` read
+    ``waiting(<phase>)``. Every other field (rounds, ci, branch, draft, the title, a CONVERGE note,
+    a build starting or ending) is kept as written."""
+    line = _HEAD_AGE.sub("", line, count=1)
+    line = _BUILD_ELAPSED.sub("merge-build=running/", line, count=1)
+    return _BUILD_WAIT.sub(r"merge-build=waiting(\1)", line, count=1)
+
+
 def cmd_prs(cfg: Config, args: list[str]) -> int:
     """``prs <owner/repo> [--wave <id>] [--flag-at <n>]``: the coordinator's supervision read of open
     PRs (ludics-lite#405). The skill sends the convergence policy "after ~5 rounds", but no view

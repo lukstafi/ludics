@@ -88,6 +88,28 @@ line per record of ``logs/attention.jsonl`` not printed by an earlier heartbeat 
 in ``logs/attention.seen``; the first heartbeat prints every record there is). The sleep ends early
 when the attention file grows past that offset, so a turn the driver cannot answer wakes the
 coordinator within ``ATTENTION_POLL`` seconds, not at the next ten-minute tick.
+
+THE NO-CHANGE LINE (ludics#1157). Every read is taken before anything is printed, and compared with
+the last full read, kept in ``logs/heartbeat.last`` (versioned JSON, replaced whole). A tick that
+compares equal prints ONE line in place of the read: ``HEARTBEAT <wave> <UTC time> unchanged since
+<the last full read's time> (prs exit=<n>, halted exit=<n>, drive running|drive NOT RUNNING|no
+driver): the last full read is <that file>``, whose ``read`` holds the lines it printed. Any other
+tick prints the whole read as above, after a ``HEARTBEAT changed since <time>: <parts>`` line when
+there is a saved read, and is saved. Boundary, a fail-closed allowlist of what is compared:
+  board rows  each row's task and fields (``board show --json``); a board that does not read makes
+              the tick a full read (``HEARTBEAT board: did not read ...``), never an unchanged one,
+              and is not saved
+  prs         its stdout lines, with the fields that move with the clock alone cut
+              (supervision.steady_prs_line: the head's age, a merge build's elapsed seconds and a
+              queued one's wait), and its exit
+  halted      its stdout and exit
+  loops       each loop's line
+  driver      THE DRIVER's own line (running or not, and the last line of ``logs/drive.log``)
+  attention   any new record makes a full read, whatever its text
+Nothing else is read: no stderr, and no field a read's stdout does not print. A loop whose last
+line carries a time makes every tick a full read, which is safe. A missing, torn or other-version
+state file is no saved read. Two heartbeats run at once race on the file, as on
+``logs/attention.seen``: the kit runs one per wave.
 """
 
 import fcntl
@@ -102,7 +124,7 @@ from ludics import cli
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import run
-from ludics.fleetworker.wavebrief import NAME, cmd_render
+from ludics.fleetworker.wavebrief import NAME, cmd_render, write_atomically
 
 USAGE = (
     "wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>... | "
@@ -437,11 +459,12 @@ def nap(wave: Wave, seconds: int) -> None:
         time.sleep(min(ATTENTION_POLL, left))
 
 
-def driver_lines(wave: Wave) -> list[str]:
-    """THE DRIVER's lines (the header); none for a wave no driver has served."""
+def driver_lines(wave: Wave) -> tuple[list[str], list[str]]:
+    """THE DRIVER's lines (the header): the driver's own line and the new attention lines; none for a
+    wave no driver has served. Reading them moves the attention cursor."""
     lock = os.path.join(wave.directory, "logs", "drive.lock")
     if not os.path.exists(lock):
-        return []
+        return [], []
     running = False
     with open(lock, "a", encoding="utf-8") as held:
         try:
@@ -449,7 +472,8 @@ def driver_lines(wave: Wave) -> list[str]:
         except OSError:
             running = True
     last = last_line(os.path.join(wave.directory, "logs", "drive.log"))
-    lines = [f"HEARTBEAT drive: {'running' if running else 'NOT RUNNING'}; {last if last is not None else 'no log yet'}"]
+    own = [f"HEARTBEAT drive: {'running' if running else 'NOT RUNNING'}; {last if last is not None else 'no log yet'}"]
+    lines: list[str] = []
     path, seen, offset, size = attention_state(wave)
     if size > offset:
         with open(path, "rb") as f:
@@ -467,7 +491,36 @@ def driver_lines(wave: Wave) -> list[str]:
                 lines.append(f"HEARTBEAT attention {entry.get('task')} {turn}: {entry.get('why')}{where}")
         with open(seen, "w", encoding="ascii") as f:
             f.write(f"{size}\n")
-    return lines
+    return own, lines
+
+
+HEARTBEAT_STATE = 1  # the version of ``logs/heartbeat.last`` (THE NO-CHANGE LINE): another one is no saved read
+
+
+def board_rows(cfg: Config, wave: Wave) -> list[Any] | None:
+    """The board's rows, as ``[task, [[field, value], ...]]`` in task order, or None when it does not read."""
+    from ludics.fleetworker.takeover import board_document
+    from ludics.fleetworker.wavedrive import rows_of
+
+    doc = board_document(cfg, wave.wave)
+    if isinstance(doc, int):
+        return None
+    return sorted([task, sorted([k, v] for k, v in fields.items())] for task, fields in rows_of(doc))
+
+
+def saved_read(path: str) -> dict[str, Any] | None:
+    """The last full read (THE NO-CHANGE LINE), or None for a missing, torn or other-version file."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data: Any = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    saved = cast(dict[str, Any], data)
+    if saved.get("v") != HEARTBEAT_STATE or not isinstance(saved.get("at"), str) or not isinstance(saved.get("parts"), dict):
+        return None
+    return saved
 
 
 def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
@@ -482,19 +535,40 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
     wave = load_wave(args[0], "heartbeat")
     if seconds:
         nap(wave, seconds)
+    from ludics.fleetworker.supervision import steady_prs_line
+
     script = shim(cfg)
-    # Each read prints straight to our stdout, whole: no tail can cut a PR line (#1050), and its
-    # exit is printed after it rather than lost in a pipe.
-    rc = run([script, "prs", wave.repository, "--wave", wave.wave]).rc
-    cli.say(f"HEARTBEAT prs exit={rc}")
-    rc = run([script, "halted"]).rc
-    cli.say(f"HEARTBEAT halted exit={rc}")
-    for name in wave.loops:
-        line = last_line(loop_log(wave, name))
-        cli.say(f"HEARTBEAT loop {name}: {line if line is not None else 'no log yet'}")
-    for line in driver_lines(wave):
+    # Each read is printed whole, never piped: no tail can cut a PR line (#1050), and its exit is
+    # printed after it rather than lost in a pipe. It is captured first, for THE NO-CHANGE LINE.
+    prs = run([script, "prs", wave.repository, "--wave", wave.wave], capture=True)
+    halted = run([script, "halted"], capture=True)
+    loops = [f"HEARTBEAT loop {name}: {line if line is not None else 'no log yet'}"
+             for name, line in ((name, last_line(loop_log(wave, name))) for name in wave.loops)]
+    own, attention = driver_lines(wave)
+    rows = board_rows(cfg, wave)
+    parts: dict[str, Any] = {
+        "board rows": rows, "prs": [steady_prs_line(line) for line in prs.out.splitlines()] + [f"exit={prs.rc}"],
+        "halted": [*halted.out.splitlines(), f"exit={halted.rc}"], "loops": loops, "driver": own}
+    state = os.path.join(wave.directory, "logs", "heartbeat.last")
+    saved = saved_read(state)
+    stamp = utc_now()
+    if saved is not None and rows is not None and not attention and saved["parts"] == parts:
+        drive = ("no driver" if not own else "drive running" if own[0].startswith("HEARTBEAT drive: running") else "drive NOT RUNNING")
+        cli.say(f"HEARTBEAT {wave.wave} {stamp} unchanged since {saved['at']} (prs exit={prs.rc}, halted exit={halted.rc}, {drive}):"
+                f" the last full read is {state}")
+        return 0
+    moved = [key for key in parts if saved is not None and (key != "board rows" or rows is not None) and saved["parts"].get(key) != parts[key]]
+    if saved is not None and (moved or attention):
+        cli.say(f"HEARTBEAT changed since {saved['at']}: {', '.join([*moved, *(['attention'] if attention else [])])}")
+    if rows is None:
+        cli.say("HEARTBEAT board: did not read, so this tick is not called unchanged")
+    read = [*prs.out.splitlines(), f"HEARTBEAT prs exit={prs.rc}", *halted.out.splitlines(), f"HEARTBEAT halted exit={halted.rc}",
+            *loops, *own, *attention, f"HEARTBEAT {wave.wave} {stamp}"]
+    for line in read:
         cli.say(line)
-    cli.say(f"HEARTBEAT {wave.wave} {utc_now()}")
+    if rows is not None:
+        os.makedirs(os.path.dirname(state), exist_ok=True)
+        write_atomically(state, json.dumps({"v": HEARTBEAT_STATE, "at": stamp, "parts": parts, "read": read}, ensure_ascii=False) + "\n")
     return 0
 
 

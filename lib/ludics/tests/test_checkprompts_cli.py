@@ -1806,9 +1806,11 @@ class ReadingListTest(Case):
     def test_obligations(self) -> None:
         R = self.root
         os.remove(f"{R}/{FLEET}")
-        # This case deliberately removes the wave prompt. No reference links to it (the last two
-        # links went with #1129), so its absence leaves no dangling link: the obligation under test
-        # is the shipping reading list alone. A link to it added later fails this case loudly.
+        # This case deliberately removes the wave prompt, so the one reference link to it
+        # (coordinator-kit.md's pairing paragraph, #1162) is cut from the fixture too: the
+        # obligation under test is the shipping reading list alone. Another link to it added later
+        # fails this case loudly.
+        rewrite(R, "issue-wave/references/coordinator-kit.md", pattern=r"\[Decision gate\]\(\.\./SKILL\.md#[^)]*\)", repl="Decision gate")
         self.expect("without issue-wave, the paragraph alone is held", 0, READ_WHEN_AGREE)
         fresh(R)
         self.lacks(f"a root without {SHIP} carries no reading-list obligation", "What to read when", run(CP, R))
