@@ -18,7 +18,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import farside, revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
+from ludics.fleetworker import farside, gate, revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -2191,10 +2191,25 @@ class Drive(DriveCase):
                 {"task": "t50", "profile": "sol", "host": "far"}]}, f)
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
         self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
-        self.rc["gate"] = 1
+        with (mock.patch.object(gate, "base_read", return_value=gate.Read(1, pending=True)),
+              mock.patch.object(gate, "anchor_gate", return_value=0)):
+            self.rc["gate"] = gate.cmd_gate(self.cfg, ["--target-repo", "o/staging", "--no-wait"])
         self.out["gate stderr"] = "BASE REFUSED: NO VERDICT YET\n"
+        for directory in ("logs", "msgs"):
+            os.makedirs(os.path.join(self.wavedir, directory), exist_ok=True)
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
         with self.world():
-            self.assertEqual(self.once()[0], 0)
+            first = captured(lambda: driver.round())[1]
+            self.assertEqual(self.ledger(), [(0, "request", "answered")], "answered in the first pending tick")
+            self.assertNotIn("DRIVE ATTENTION", first)
+            self.assertEqual((driver.gate_next, driver.gate_refusal), (0, ""))
+            self.clock += 1
+            self.out["gate stderr"] = "BASE REFUSED: NO VERDICT for another tip\n"
+            second = captured(lambda: driver.round())[1]
+            self.assertNotIn("DRIVE ATTENTION", second)
+            self.assertEqual((driver.gate_next, driver.gate_refusal), (0, ""))
+            self.assertEqual(sum(c[0] == "gate" for c in self.calls), 2, "pending is read next tick, not after RETRY")
+        self.assertEqual(self.attention(), [])
         self.assertEqual(self.ledger(), [(0, "request", "answered")])
         gate_call = next(c for c in self.calls if c[0] == "gate")
         self.assertIn("--no-wait", gate_call, "the tick must never enter the base polling wait")

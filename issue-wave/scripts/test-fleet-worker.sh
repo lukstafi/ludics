@@ -509,6 +509,7 @@ done
 # moved either knob and left the ceiling behind fails here (ludics-lite#175).
 case " $* " in *" --wait=0 "*|*" --wait=$((SHIP_PR_BASE_ABSENT_GRACE + SHIP_PR_CHECKS_INTERVAL)) "*) ;; *) exit 4 ;; esac
 # The driver may instead request a one-shot --wait=0 (#1154), with no observer or polling.
+case " $* " in *" --wait=0 "*) case " $* " in *" --snapshot "*) ;; *) exit 4 ;; esac ;; esac
 # And it opts in to the interim verdict (ludics-lite#308): a launch through a merge burst is not
 # waiting for the tip's own run, so every gate read carries --interim.
 case " $* " in *" --interim "*) ;; *) exit 4 ;; esac
@@ -1245,10 +1246,19 @@ expect "a one-shot gate admits a green without the base polling wait" 0 "BASE GR
   "$FW" gate --target-repo example/project --base-branch topic --no-wait
 grep -Fxq -- '--repo example/project base topic --wait=0 --interim --snapshot --advisory-red FILE grace=300 interval=60' "$BASE_CALL_LOG" &&
   ok "...the checker receives wait zero with the ordinary policy" || ko "one-shot checker arguments lost"
-expect "a one-shot gate without a verdict refuses this tick" 1 "base checker exit 4" -- \
+expect "a one-shot gate without a verdict refuses this tick" 4 "base checker exit 4" -- \
   env SHIM_BASE_RC=4 "$FW" gate --target-repo example/project --no-wait
 expect "a one-shot gate cannot start an outer polling loop" 2 "cannot be combined" -- \
   "$FW" gate --target-repo example/project --no-wait --wait 600
+# The shim must reject a plain nonwaiting read too: it does not preserve tip admission.
+printf '%s\n' '' > "$TMP/one-shot-advisory"
+ONE_SHOT_CHECKER=(env -u SHIP_PR_ADVISORY_CHECKS -u SHIP_PR_TEST_SOURCE_ONLY -u SHIP_PR_CHECKS_WAIT
+  -u SHIP_PR_CHECKS_HEARTBEAT -u SHIP_PR_API_ATTEMPTS -u SHIP_PR_API_BACKOFF
+  SHIP_PR_BASE_ABSENT_GRACE=300 SHIP_PR_CHECKS_INTERVAL=60
+  "$TMP/dispatcher/ship-pr/scripts/pr-review.sh" --repo example/project base topic --wait=0
+  --interim --advisory-red "$TMP/one-shot-advisory")
+expect "the one-shot shim control accepts snapshot admission" 0 "BASE GREEN" -- "${ONE_SHOT_CHECKER[@]}" --snapshot
+expect "the one-shot shim refuses plain wait zero without snapshot admission" 4 "" -- "${ONE_SHOT_CHECKER[@]}"
 # A red only in jobs the repository's advisory file names (ludics-lite#651) is the checker's to
 # take out of the verdict under --advisory-red, and it hands the jobs back in the file at its
 # green: the gate admits and names each one. The checker's side -- which red is advisory-only,

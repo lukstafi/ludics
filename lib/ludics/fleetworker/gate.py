@@ -26,7 +26,8 @@ SINGLE READ (#1154). ``gate --no-wait`` gives the base checker ``--wait=0 --snap
 the waiting gate's admission checks, with no polling pause and no base observer claim. It may read beside the coordinator's waiting
 observer, as any one-shot ``base`` does; it never becomes a second polling observer. No saved gate verdict
 file is reused, regardless of its SHA, age or writer: the checker reads GitHub and the current
-integration records under the ordinary policy. Missing verdicts refuse this tick. This option
+integration records under the ordinary policy. A pending refusal returns exit 4 (not this
+tick); other base refusals return 1. Ordinary gate refusals retain exit 1. This option
 cannot be combined with ``--wait`` (which would make a second polling loop).
 
 THE WAIT (#872). ``gate --wait <seconds>`` reads the base again after a refusal the next read may
@@ -461,13 +462,12 @@ def cmd_gate(cfg: Config, args: list[str]) -> int:
     where = f"{target} {branch or 'default branch'}"
     reads = 0
     while True:
-        read = (base_read(cfg, target, branch, force, reason, no_wait=True) if no_wait
-                else base_read(cfg, target, branch, force, reason))
+        read = base_read(cfg, target, branch, force, reason, no_wait=no_wait)
         reads += 1
         if read.rc == 0:
             break
         if not (wait and read.pending):
-            return 1
+            return 4 if no_wait and read.pending else 1
         # The halt and the lease before every pause (THE WAIT): a halt never waits out a deadline.
         rc = anchor_gate(cfg, "GATE", "native-worker", force)
         if rc != 0:

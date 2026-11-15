@@ -98,14 +98,14 @@ class VerdictLine(unittest.TestCase):
 class SingleRead(unittest.TestCase):
     def test_no_wait_reaches_the_checker_without_a_polling_wait(self) -> None:
         cfg = cast(Config, types.SimpleNamespace(checkout=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")), env={}))
-        for no_wait, result in ((True, 4), (True, 0), (False, 0)):
+        for no_wait, result in ((True, 4), (True, 0), (False, 0), (False, 4)):
             with (self.subTest(no_wait=no_wait, result=result),
                   mock.patch.object(gate, "anchor_gate", return_value=0) as anchor,
                   mock.patch.object(gate, "integration_records", return_value=""),
                   mock.patch.object(gate, "_read", return_value="[]"),
                   mock.patch.object(gate, "base_checker", return_value=(result, "NO VERDICT YET")) as checker):
                 args = ["--target-repo", "o/r"] + (["--no-wait"] if no_wait else [])
-                self.assertEqual(gate.cmd_gate(cfg, args), 1 if result else 0)
+                self.assertEqual(gate.cmd_gate(cfg, args), (4 if no_wait else 1) if result else 0)
                 self.assertEqual(checker.call_count, 1)
                 self.assertIn("--wait=0" if no_wait else "--wait=360", checker.call_args.args[1])
                 self.assertEqual("--snapshot" in checker.call_args.args[1], no_wait)

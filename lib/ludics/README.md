@@ -623,17 +623,10 @@ one-shot base read rather than a background observer or a saved gate verdict: th
 waiting gate retains the branch's one observer, and no saved gate verdict admits a launch.
 The ordinary gate's wait, integration-record recheck, advisory policy and lease/halt checks stay
 in place. `--no-wait` and outer `--wait` are mutually exclusive. Drive and gate unit cases pin the
-same-tick answer, checker arguments and option refusal; their negative control runs the new cases
-against the base, with the evidence recorded in the PR. The initial gate/Drive cases fail
-against `e859b357` (`base-negative-final.log`, exit 1). Local review caught older-green admission
-by a plain no-wait read, addressed by snapshot mode: undoing its admission checks fails the
-absent/pending cases (`snapshot-negative.log`), and forcing snapshots to claim the observer
-fails all four tip shapes (`snapshot-observer-negative.log`). Both controls exit 1.
-The final 63 focused cases and strict pyright pass (`final-focused.log`, exit 0), including a
-distinct live observer PID and a refused waiting-read control. The macOS fleet sections pass
-144 assertions (`final-macos-fleet.log`), and 16 selected mapped base/API/budget cases pass
-(`final-macos-base.log`), both exit 0. These logs are under
-`~/.local/state/issue-wave/wave-20261115-ludics/scratch/t1154/runs/`.
+same-tick answer, checker arguments and option refusal. Pending snapshots return exit 4: the
+driver silently retries next tick without moving its retry deadline. Red refusals still notify
+once and back off. Regression controls and macOS verification are recorded in
+[PR #1171](https://github.com/lukstafi/ludics/pull/1171).
 
 ### Safety state reads (#1092)
 

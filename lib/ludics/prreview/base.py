@@ -2159,7 +2159,7 @@ class Wait:
                                 " head's)\n")
         if not (rnd.red == 0 and not rnd.src_pending and not rnd.src_none
                 and rnd.inflight == len(rnd.tipfly) and rnd.uncov_nofly == 0 and older_fly == 0
-                and (self.args.wait_for > 0 or rnd.pend > 0)):
+                and (self.args.wait_for > 0 or self.args.snapshot or rnd.pend > 0)):
             return "no"
         src = b.named_source(branch, tip, rnd.tipfly, proofs=rnd.tip_proofs)
         if src is None:

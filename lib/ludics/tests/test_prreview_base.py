@@ -913,17 +913,38 @@ class RepositoryAdvisoryInterim(unittest.TestCase):
         })
         return answers
 
-    def _base(self, answers: dict[str, Answer], advisory: bool = False) -> tuple[int, str, list[dict[str, str]] | None]:
+    def _base(self, answers: dict[str, Answer], advisory: bool = False, *, snapshot: bool = False) -> tuple[int, str, list[dict[str, str]] | None]:
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "advisory-red.json")
-            args = ["main", "--wait=120", "--interim"] + (["--advisory-red", path] if advisory else [])
-            rc, out, err, _ = base_run(answers, args, clock=FakeClock(),
+            args = ["main", "--snapshot" if snapshot else "--wait=120", "--interim"] + (["--advisory-red", path] if advisory else [])
+            clock = FakeClock()
+            rc, out, err, _ = base_run(answers, args, clock=clock,
                                        knobs={"SHIP_PR_BASE_ABSENT_GRACE": "0"})
+            if snapshot:
+                self.assertEqual(clock.slept, [], "snapshot interim proofs never poll")
             record = None
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as f:
                     record = json.load(f)
         return rc, out + err, record
+
+    def test_snapshot_keeps_waiting_interim_admission_with_an_older_green(self) -> None:
+        for shape, answers, advisory, expected in (
+            ("green head", self._world(), False, 0),
+            ("advisory-only head", self._world(head_status="in_progress", head_concl=None,
+                head_jobs=[job(UBUNTU, "success"), job(MAC, None)]), True, 0),
+            ("required red", self._world(head_concl="failure",
+                head_jobs=[job(UBUNTU, "failure"), job(MAC, "success")]), True, 4),
+        ):
+            with self.subTest(shape=shape):
+                waited, out, _ = self._base(answers, advisory)
+                self.assertEqual(waited, expected, out)
+                snapshot, out, _ = self._base(answers, advisory, snapshot=True)
+                self.assertEqual(snapshot, expected, out)
+                if expected == 0:
+                    self.assertIn("green, interim", out)
+                else:
+                    self.assertNotIn("green, interim", out)
 
     def test_a_head_still_running_only_advisory_jobs_is_green_meanwhile(self) -> None:
         """`merge` does not wait for the macOS jobs, so the merged head's run is usually still going
