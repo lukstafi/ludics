@@ -622,7 +622,10 @@ waiting gate retains the branch's one observer, and no saved gate verdict admits
 The ordinary gate's wait, integration-record recheck, advisory policy and lease/halt checks stay
 in place. `--no-wait` and outer `--wait` are mutually exclusive. Drive and gate unit cases pin the
 same-tick answer, checker arguments and option refusal; their negative control runs the new cases
-against the base, with the evidence recorded in the PR.
+against the base, with the evidence recorded in the PR. On mac-studio the new unit cases fail
+against `e859b357` (`base-negative-final.log`, exit 1), while all 1,711 package tests (one skip),
+strict pyright and check-prompts pass (`python-prompts.log`, exit 0). These logs are under
+`~/.local/state/issue-wave/wave-20261115-ludics/scratch/t1154/runs/`.
 
 ### Safety state reads (#1092)
 
