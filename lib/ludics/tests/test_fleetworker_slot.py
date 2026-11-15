@@ -417,7 +417,11 @@ class HoldRequestKind(unittest.TestCase):
 
     def test_unreadable_registry_warns_and_preserves_measurement_admission(self) -> None:
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
-        for answer in (Done(0, "invalid"), Done(1, "registry error"), Done(UNREACHABLE, "")):
+        for answer, reason in (
+            (Done(0, "invalid"), "registry data did not parse"),
+            (Done(1, "registry error"), "registry read failed (exit 1)"),
+            (Done(UNREACHABLE, ""), "anchor mac-studio unreachable"),
+        ):
             out, warning = io.StringIO(), io.StringIO()
             with self.subTest(answer=answer), mock.patch.object(slot, "listing", return_value=answer), \
                     mock.patch.object(slot, "hold") as hold, mock.patch.object(slot.os, "makedirs"), \
@@ -427,7 +431,7 @@ class HoldRequestKind(unittest.TestCase):
                 hold.assert_called_once()
                 self.assertEqual(hold.call_args.args[5:7], (6, ["true"]))
                 self.assertEqual(out.getvalue(), "")
-                self.assertEqual(warning.getvalue(), "EXECUTION HOLD WARNING testbox: registry unread; kind of m"
+                self.assertEqual(warning.getvalue(), f"EXECUTION HOLD WARNING testbox: registry unread ({reason}); kind of m"
                                  " not checked; proceeding with hold\n")
 
 
@@ -809,7 +813,7 @@ class WindowWait(unittest.TestCase):
                            "FLEET_SLOT_STATE": tempfile.mkdtemp(prefix="ludics-slot-state.")}, host="testbox")
         self.addCleanup(shutil.rmtree, cfg.env["FLEET_SLOT_STATE"])
         for flags, carried in ((["--wait-window=60"], True), ([], False)):
-            reads = mock.Mock(return_value=slot.Unread(1, ("refused",)))
+            reads = mock.Mock(return_value=slot.Unread(1, ("refused",), "registry read failed (exit 1)"))
             with mock.patch.object(slot, "read_registry", reads), mock.patch.object(slot, "registry_source"), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(slot.cmd_slot(cfg, [*flags, "--", "make"]), 1)
@@ -835,7 +839,8 @@ class WindowWait(unittest.TestCase):
         self.assertRegex(listings[0]["id"], rf"\Atestbox-{os.getpid()}\Z")
 
     def test_a_late_read_that_answers_clears_an_earlier_failed_one(self) -> None:
-        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))
+        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",),
+                        "anchor unreachable")
         answers: list[Any] = [unread]
 
         def reads(*_: object) -> Any:
@@ -854,7 +859,8 @@ class WindowWait(unittest.TestCase):
                                          " (--wait-window); no slot taken\n")
 
     def test_a_late_read_that_fails_is_the_refusal(self) -> None:
-        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))
+        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",),
+                        "anchor unreachable")
 
         def reads(*_: object) -> Any:
             time.sleep(1.2)  # fails, past the bound
@@ -869,7 +875,8 @@ class WindowWait(unittest.TestCase):
         self.assertEqual(out.getvalue(), "EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken\n")
 
     def test_a_failed_read_mid_wait_is_asked_again_and_refused_as_itself_at_the_bound(self) -> None:
-        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",))
+        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",),
+                        "anchor unreachable")
         result, _, err = self.wait([measurement("win")], [unread, []])
         self.assertEqual(result, [])
         self.assertIn("the registry could not be read while waiting", err)

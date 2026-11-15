@@ -23,8 +23,10 @@ brief:
   of its own), or Refused.
 - THE REQUEST KIND (ludics#1155): before a direct hold with --request takes any locks, it
   reads the registry and refuses a correctness record, naming execution slot. An unreadable registry
-  warns and proceeds, preserving measurement admission. Unknown ids and other kinds retain their
-  existing behaviour; bare holds and the worktree form keep their own paths (the latter already requires a measurement in leg.py).
+  warns once with a bounded cause (anchor unreachable, registry failure or malformed data)
+  and proceeds, preserving measurement admission; it never replays refusal advice or raw registry
+  output. Unknown ids and other kinds retain their existing behaviour; bare holds and the worktree
+  form keep their own paths (the latter already requires a measurement in leg.py).
 - THE DRAIN (ludics-lite#481): a ``hold --request`` takes every slot of the box before its command
   starts, so no batch runs beside a measurement.
 - THE HOLDER RECORD (ludics-lite#668): whoever takes a slot writes into its lock file who it is
@@ -1192,6 +1194,7 @@ class Unread:
 
     rc: int
     lines: tuple[str, ...]
+    reason: str  # bounded admission diagnostic, separate from refusal advice
 
 
 # wake-lab.sh's anchor allowlist (its `--wait` check of WAKE_LAB_ANCHOR), restated as the boundary
@@ -1224,12 +1227,14 @@ def read_registry(cfg: Config, box: str, voice: Voice = SLOT_VOICE,
         # native-Linux box -- that `wake-lab.sh --wait` waits for it. The command names this
         # anchor, this box's spelling of it, as WAKE_LAB_ANCHOR wants: wake-lab's own default
         # (mac-studio) is FLEET_ANCHOR's default, not whatever this one is.
-        return Unread(4, unreachable_lines(cfg.anchor, voice))
+        return Unread(4, unreachable_lines(cfg.anchor, voice), f"anchor {shlex.quote(cfg.anchor)} unreachable")
     if done.rc != 0:
-        return Unread(1, (substitution(done.out), f"{voice.prefix} REFUSED {box}: the anchor's registry could not be read"))
+        return Unread(1, (substitution(done.out), f"{voice.prefix} REFUSED {box}: the anchor's registry could not be read"),
+                      f"registry read failed (exit {done.rc})")
     records = records_of(done.out)
     if records is None:
-        return Unread(1, (f"{voice.prefix} REFUSED {box}: the anchor's registry did not parse",))
+        return Unread(1, (f"{voice.prefix} REFUSED {box}: the anchor's registry did not parse",),
+                      "registry data did not parse")
     return records
 
 
@@ -1730,7 +1735,7 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
             die("execution hold: --request needs this host's fleet name; set FLEET_LOCAL_BOX")
         records = read_registry(cfg, box, Voice(HOLD_PREFIX, "", "no hold taken"))
         if isinstance(records, Unread):
-            errline(f"{HOLD_PREFIX} WARNING {box}: registry unread; kind of {shlex.quote(request)} not checked;"
+            errline(f"{HOLD_PREFIX} WARNING {box}: registry unread ({records.reason}); kind of {shlex.quote(request)} not checked;"
                 " proceeding with hold")
         elif any(r.get("request_id") == request and field(r, "request", "kind") == "correctness" for r in records):
             cli.say(f"{HOLD_PREFIX} REFUSED {box}: {shlex.quote(request)} is a correctness request;"

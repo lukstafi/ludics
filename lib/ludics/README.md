@@ -611,11 +611,21 @@ Request-kind routing (#1155): a direct `execution hold --request` reads the regi
 creating the slot directory or taking locks, and refuses correctness with the `execution slot`
 remedy. Refusal preserves the caller's CPU/GPU and wait choices rather than guessing them.
 An unreadable registry warns and proceeds to preserve measurement admission during anchor outages.
+The warning retains a bounded cause: anchor unreachable, registry read failed (with exit status),
+or registry data did not parse. It excludes raw registry output and refusal-only recovery advice.
 Bare holds and unknown ids retain their prior admission behaviour. Legs already select slot for
 correctness and hold for measurement. Assignment text names those forms and leaves both generated
 and manually supplied leg commands wrapped once. The CLI brief removes the unusable coordinator
 session id and distinguishes stopping spawned records from foreground start tasks (#1162).
 Unit and shell cases cover routing; negative controls fail with the relevant fixes undone.
+
+Post-wave diagnostics (wave-20261115-ludics, p2; refs #1158 and #1155): a started GPU
+`tip-run` without `--full-loop` emits one stderr NOTE naming the targeted run, `full_loop: false`,
+and its exclusion from last-green candidates. This also describes `wave loop --rerun` without
+asking the caller to act. Full-loop GPU runs and cc runs get no new note. The hold warning's
+cause travels separately from the refusal's lines, so warning-and-proceed admission cannot replay
+"no hold taken" advice. Unit negative controls against base `de57a40f` fail on the missing GPU
+note and each of the three missing hold causes. Batch evidence is in this task's PR and hand-back.
 
 ### Slot wait progress (#1156)
 
