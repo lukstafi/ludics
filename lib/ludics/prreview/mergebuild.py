@@ -275,7 +275,7 @@ _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
 # status to a file -- the status file is what tells the command's own failure from the slot
 # wrapper's refusal or deadline. A word after the status path names the PR in the slot's holder
 # record (`build_of`); the script does not read it.
-_WRAPPER = ': >"$3.started"; printf "%s\\n" "merge build: command started" >&2; sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; exit "$rc"'
+_WRAPPER = ': >"$3.started"; printf "merge build: %s command started\\n" "${3##*/}" >&2; sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; exit "$rc"'
 _WRAPPER_NAME = "merge-build"
 _BUILD_OF = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
 
