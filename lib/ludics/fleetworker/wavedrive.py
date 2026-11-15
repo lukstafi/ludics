@@ -178,7 +178,15 @@ tells it again. A task also
 waiting on capacity, a halt, THE GATE or a prerequisite with a row or queue entry stays silent.
 THE GATE is the launch gate, ``gate --target-repo <repository> --base-branch <MAIN>``, read BEFORE
 a task is prepared, with ``--no-wait``: a single checker read, no base observer held and no
-polling pause. Pending (exit 4) is silent and read again next tick, without a retry backoff;
+polling pause. Pending (exit 4) is read again next tick, without a retry backoff. After 600 seconds of
+pending snapshots at the same observed remote tip (or continuously unreadable tip samples),
+one non-final attention line wakes the
+heartbeat; it admits nothing and changes no retry. The timer and told-once are in memory:
+a verdict (any non-4 exit), a changed tip sample (including readable↔unreadable), or a driver
+restart resets both. Repeated unreadable samples do not reset the interval. Exit 4 also covers
+an unanswered anchor; the notice names both possible causes. Only pending reads sample ``git ls-remote origin refs/heads/<MAIN>`` (10 s timeout);
+this diagnostic sample observes changes between ticks, not moves away and back between reads,
+and is never an admission proof. A tick with no gate read leaves the sample unchanged; elapsed wall time includes those gaps;
 the coordinator's waiting gate keeps its one observer. VERDICT FILE BOUNDARY: no saved gate verdict is accepted, for any SHA, age or writer.
 Every admission comes from this invocation's checker read of the branch, under gate.py's policy;
 logs and foreign or stale verdict files admit nothing. A launch needs the branch's tip to be the prepared base, and a prep is not
@@ -512,6 +520,9 @@ class Driver:
         self.queue_refusal = ""  # the queue's refusal last said, so it is said once
         self.queue_missing: dict[str, tuple[str, ...]] = {}  # each task's missing prerequisites last told
         self.gate_refusal, self.gate_next = "", 0.0  # THE GATE's refusal last told, and when it is read again
+        self.gate_pending_tip: str | None = None
+        self.gate_pending_since = 0.0
+        self.gate_pending_told = False
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.wave.directory, *parts)
@@ -1009,11 +1020,25 @@ class Driver:
         if now() < self.gate_next:
             return False
         done = self.call("gate", "--target-repo", self.wave.repository, "--base-branch", self.wave.vars["MAIN"], "--no-wait", gated="both")
+        if done.rc != 4:
+            self.gate_pending_tip = None
+            self.gate_pending_told = False
         if done.rc == 0:
             self.gate_refusal = ""
             return True
         if done.rc == 4:
-            return False  # pending snapshot or unanswered anchor: silently try the next tick
+            rc, tip, _ = execute(["git", "-C", self.wave.checkout, "ls-remote", "origin",
+                                  f"refs/heads/{self.wave.vars['MAIN']}"], timeout=10)
+            fields = tip.split()
+            sha = fields[0] if rc == 0 and len(fields) == 2 and SHA40.fullmatch(fields[0]) and fields[1] == f"refs/heads/{self.wave.vars['MAIN']}" else ""
+            if sha != self.gate_pending_tip:
+                self.gate_pending_tip, self.gate_pending_since, self.gate_pending_told = sha, now(), False
+            elif not self.gate_pending_told and now() - self.gate_pending_since >= 600:
+                self.tell(slot, LAUNCH, f"the launch gate has stayed pending (no verdict, or the anchor did not answer) for at least 600 s;"
+                          f" tip sample {sha or 'unreadable'};"
+                          " no queued task is admitted; retrying next tick")
+                self.gate_pending_told = True
+            return False  # pending snapshot or unanswered anchor: try the next tick
         self.gate_next = now() + RETRY
         lines = [line for line in (substitution(done.out) + "\n" + self.err).splitlines() if line.strip()]
         why = (lines[-1].strip() if lines else f"gate exit {done.rc}")[:300]

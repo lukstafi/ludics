@@ -2132,7 +2132,7 @@ class DriveCase(WaveDirCase):
         self.rc: dict[str, int] = {}
         self.out: dict[str, str] = {}
         self.calls: list[list[str]] = []
-        self.clock = 1000.0
+        self.clock: float = 1000.0
         self.attach_waits: list[float | None] = []
         self.runs = os.path.join(self.wavedir, "logs", "drive-runs", "run-1")
         self.results: int | str | None = None  # a Claude worker's results= (None: a Codex worker's status line)
@@ -2863,6 +2863,70 @@ class Queue(DriveCase):
             self.rows = [row("t50"), row("t51", agent_host="mac")]
             self.state = "RUNNING"
             self.assertEqual((self.once()[1], self.launched()), ("", []), "a task with a row is not started again")
+
+    def test_sustained_pending_gate_notice_resets_without_changing_admission(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"})
+        os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+        self.rc["gate"] = 4
+        self.out["git ls-remote"] = B + "\trefs/heads/main\n"
+        slot = wavedrive.Worker("t50", "", "", {})
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        with self.world():
+            def pending() -> None:
+                deadline = driver.gate_next
+                self.assertFalse(driver.gate_open(slot))
+                self.assertEqual(driver.gate_next, deadline, "no pending backoff")
+                self.assertEqual(self.launched(), [], "a notice never prepares or launches")
+
+            for reset in ("verdict", "red", "tip", "unreadable", "restart"):
+                with self.subTest(reset=reset):
+                    start = self.clock
+                    pending()
+                    count = len(self.attention())
+                    self.clock = start + 599
+                    pending()
+                    self.assertEqual(len(self.attention()), count)
+                    self.clock = start + 600
+                    pending()
+                    self.assertEqual(len(self.attention()), count + 1)
+                    self.assertIn("stayed pending", self.attention()[-1])
+                    self.clock += 600
+                    pending()
+                    self.assertEqual(len(self.attention()), count + 1, "once per continuous pending tip")
+                    if reset in ("verdict", "red"):
+                        self.rc["gate"] = 0 if reset == "verdict" else 1
+                        self.assertEqual(driver.gate_open(slot), reset == "verdict")
+                        self.rc["gate"] = 4
+                        self.clock += wavedrive.RETRY
+                    elif reset == "tip":
+                        self.out["git ls-remote"] = A + "\trefs/heads/main\n"
+                    elif reset == "unreadable":
+                        self.rc["git ls-remote"] = 1
+                        pending()
+                        self.rc["git ls-remote"] = 0
+                    else:
+                        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+                    # Each reset starts a new interval, even after a notice was emitted.
+                    self.clock += 1
+                    pending()
+            self.assertEqual(sum(c[0] == "gate" for c in self.calls), 28, "every call still reads the snapshot")
+            self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "attention is non-final")
+
+    def test_unreadable_tip_samples_still_notice_once_after_the_bound(self) -> None:
+        os.makedirs(os.path.join(self.wavedir, "logs"), exist_ok=True)
+        self.rc = {"gate": 4, "git ls-remote": 1}
+        self.out["gate stderr"] = "the anchor did not answer\n"
+        slot = wavedrive.Worker("t50", "", "", {})
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        with self.world():
+            for elapsed, notices in ((0, 0), (599, 0), (600, 1), (1200, 1)):
+                self.clock = 1000 + elapsed
+                self.assertFalse(driver.gate_open(slot))
+                self.assertEqual(len(self.attention()), notices)
+            self.assertIn("tip sample unreadable", self.attention()[0])
+            self.assertIn("no verdict, or the anchor did not answer", self.attention()[0])
+            self.assertEqual(driver.gate_next, 0)
+            self.assertEqual(self.launched(), [])
 
     def test_a_task_waits_for_its_prerequisites_its_hosts_capacity_and_a_halt(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far", "after": ["t42", "t43"]}, capacity={"far": 1})
