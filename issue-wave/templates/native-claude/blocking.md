@@ -1,5 +1,7 @@
 ## Blocking rule (the one that costs the most when broken)
 
+For ASSIGNED commands, *Requests* states which run record `EXECUTION_RESULT` must name.
+
 The coordinator reads a turn that ends as a handoff or a hand-back. Never end a turn with a watch,
 a wait, a suite or any detached process still running. There is NO `TaskOutput` tool in your
 runtime, and `Monitor` or a background-completion notification is not a wait either: it arrives

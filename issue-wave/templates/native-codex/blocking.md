@@ -1,5 +1,7 @@
 ## Blocking rule (the one that costs the most when broken)
 
+For ASSIGNED commands, *Requests* states which run record `EXECUTION_RESULT` must name.
+
 Keep your turn open until every command you own has actually exited. This includes suites,
 `pr-review.sh local-review`, `pr-review.sh watch`, `pr-review.sh checks --wait`,
 `pr-review.sh merge --wait`, and every `execution leg` or `execution hold`. Run them in the

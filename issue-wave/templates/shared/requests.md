@@ -31,8 +31,18 @@ its record's kind. Follow the assignment's form; `execution hold --request` refu
 You will be resumed with one of:
 
 - `EXECUTION_ASSIGNED <request_id>` with the exact command and revision: run only that, at that
-  revision (after a rebase, end your turn with `EXECUTION_REBIND <id> <new pushed sha>` first),
-  and as soon as it ends, before any other work, end your turn with one line:
+  revision (after a rebase, end your turn with `EXECUTION_REBIND <id> <new pushed sha>` first).
+  Every assigned command needs its own run record: use the *Blocking rule*'s `bg-run.sh new` /
+  `start` recipe (native Claude: `spawn` / `wait`), wrapping the entire assigned command, including
+  its slot, hold or leg wrapper; its `log` retains a direct shell leg's transcript. A bg-run
+  conclusion also reads the last runner sentinel in that log: a harness with intentionally red
+  nested tests needs its own final `harness: exit: <status>` line as well as its returned status.
+  The coordinator must include that in the assigned harness; wrapping alone does not override
+  nested failure sentinels. Automatic authoritative harness receipts remain a follow-up.
+  Alternatively, when the assigned command itself is the project's test runner, name the record
+  returned by `tools/test-run.sh paths run last`. `run` below is that record's absolute directory,
+  never the `runs/` parent, a plain log directory or a nested run with a different verdict.
+  As soon as it ends, before any other work, end your turn with one line:
   `EXECUTION_RESULT {"request_id":"<id>","run":"<run dir>","exit":<n>,"observed_sha":"<40-hex sha that ran>"}`.
   An unreported finished run holds the box's reservation and blocks a sibling.
 - `EXECUTION_REFUSED <reason>` (sometimes with an offer of another box): keep implementing, or send

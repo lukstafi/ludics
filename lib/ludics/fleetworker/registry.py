@@ -375,9 +375,10 @@ def as_object(value: Any) -> Record | None:
 
 
 def nonempty(obj: Record, keys: list[str]) -> None:
-    for key in keys:
-        if not isinstance(obj.get(key), str) or not obj[key].strip():
-            refuse(f"{key} must be a nonempty string")
+    missing = [key for key in keys if not isinstance(value := obj.get(key), str) or not value.strip()]
+    if missing:
+        suffix = " must be a nonempty string" if len(missing) == 1 else " must be nonempty strings"
+        refuse(", ".join(missing) + suffix)
 
 
 REQUEST_FIELDS = {"request_id", "wave", "worker", "transport", "purpose",
@@ -1395,7 +1396,8 @@ def main(argv: list[str]) -> None:
             refuse("resolved_revision is only valid for dispatch")
         if ("rebound_revision" in data) != (action == "rebind"):
             refuse("rebound_revision is required for rebind, and only valid for it")
-        nonempty(data, ["evidence"])
+        if action != "conclude":
+            nonempty(data, ["evidence"])
         # Evidence read on a named box binds to the box that was reserved: a run record at the
         # same path on another machine cannot conclude this assignment.
         if "execution_host" in data:
@@ -1491,11 +1493,15 @@ def main(argv: list[str]) -> None:
                 record["rebound_revision"] = new
             state = record["state"]
         elif action == "conclude":
-            nonempty(data, ["verdict", "log"])
+            # Only these three fields may be inherited from a prior dispatch. The current
+            # conclusion supplies its own evidence, verdict and log, checked together.
+            inherited = {key: record.get(key) for key in ("observed_sha", "remote_checkout", "handle")}
+            fields = ["evidence", "verdict", "log"]
+            if data.get("verdict") != "not-launched":
+                fields += list(inherited)
+            nonempty({**inherited, **data}, fields)
             if data["verdict"] not in {"pass", "fail", "timeout", "cancelled", "not-launched"}:
                 refuse("invalid terminal verdict")
-            if data["verdict"] != "not-launched":
-                nonempty({**record, **data}, ["observed_sha", "remote_checkout", "handle"])
             state = "concluded"
             record.pop("suspended_by", None)
             record.pop("suspended_from", None)

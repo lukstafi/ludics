@@ -1,5 +1,8 @@
 ## Running tests
 
+These are your own batches. For an ASSIGNED command, use the run-record rule beside
+`EXECUTION_RESULT` in *Requests*: its `run` names the command's record directory.
+
 Run each batch from your worktree through its execution host's run-time slot, in the spelling
 the project section gives. Keep the command in a local managed `exec_command` session, with its
 whole output recorded outside the worktree:
