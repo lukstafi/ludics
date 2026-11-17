@@ -1738,7 +1738,7 @@ def window_gap(cfg: Config, args: list[str]) -> tuple[list[str], int]:
 def window_deadline(args: list[str]) -> tuple[list[str], int | None]:
     """THE WINDOW'S DEADLINE (ludics-lite#737, the registry's header): the window's words without
     ``--deadline <seconds>``, which may only come right after ``window`` (and its ``--no-gap``), and
-    the seconds from the window's opening by which its coordinator will have concluded it, or None."""
+    the seconds from the drained hold's opening by which its coordinator will have concluded it, or None."""
     if len(args) > 1 and args[1] == "--deadline":
         if len(args) < 3 or not re.fullmatch(r"[0-9]+", args[2]) or int(args[2]) < 1:
             die("execution window: --deadline takes a positive whole number of seconds")
