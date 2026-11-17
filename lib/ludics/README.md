@@ -290,7 +290,7 @@ fleetworker/farside.py:LS
     issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts"
 
 fleetworker/execution.py fleetworker/registry.py
-    issue-wave/scripts/test-fleet-worker.sh execution "prs (" refresh "base gate" "launch /" "wave kit"
+    issue-wave/scripts/test-fleet-worker.sh execution "prs (" refresh "base gate" "launch /" "wave kit" board
     issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/execution.py:from_run_payload
@@ -374,6 +374,11 @@ fleetworker/siblingscan.py
 
 fleetworker/board.py fleetworker/boardstore.py fleetworker/takeover.py
     issue-wave/scripts/test-fleet-worker.sh board "execution assign" "wave kit"
+    lib/ludics/tests/test_fleetworker_status.py
+
+fleetworker/status.py
+    issue-wave/scripts/test-fleet-worker.sh board usage
+    lib/ludics/tests/test_fleetworker_status.py
 
 fleetworker/closeout.py
     issue-wave/scripts/test-fleet-worker.sh "execution conclude --standing-handback" board

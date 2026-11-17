@@ -13,6 +13,7 @@ answer is ``<VERB> UNREACHABLE <anchor>``, exit 4, never a verdict about the lea
 """
 
 import os
+from dataclasses import dataclass
 
 from ludics import cli
 from ludics.fleetworker import identity
@@ -148,6 +149,84 @@ HALTED = HALT_STATE + r"""read_halt || { printf '%s\n' "HALTED: cannot read HALT
 if [ "$halt_present" = 1 ]; then printf '%s\n' "HALTED $halt_text"; exit 1; fi
 printf '%s\n' "launches open"
 """
+
+# Far side for ``status --json`` (ludics#1165): what an observer may see of the lease and the halt,
+# with no lock, no lease and no identity (claim publishes the lease by link or rename, halt by its own
+# writes; ``halted`` reads HALT so too). A fixed protocol, read fail-closed by ``anchor_facts``: a
+# ``lease=absent|present|unread`` line, for present the lease's first ``host=`` and ``since=`` lines
+# (sed reads those two keys and nothing else, so the token never leaves the file), then a
+# ``halt=absent|present|unread`` line, for present followed by the HALT text, verbatim, to the end.
+ANCHOR_FACTS = HALT_STATE + r"""lease="$ANCHOR_STATE/COORDINATOR"
+if [ ! -e "$lease" ] && [ ! -L "$lease" ]; then
+  echo "lease=absent"
+elif [ -f "$lease" ] && [ -r "$lease" ]; then
+  host=$(sed -n 's/^host=//p' "$lease" | head -n 1); since=$(sed -n 's/^since=//p' "$lease" | head -n 1)
+  printf 'lease=present\nhost=%s\nsince=%s\n' "$host" "$since"
+else
+  echo "lease=unread"
+fi
+if ! read_halt; then
+  echo "halt=unread"
+elif [ "$halt_present" = 1 ]; then
+  printf 'halt=present\n%s' "$halt_text"
+else
+  echo "halt=absent"
+fi
+"""
+
+
+@dataclass(frozen=True)
+class AnchorFacts:
+    """``ANCHOR_FACTS``' answer: each state absent, present or unread (``why`` says why)."""
+
+    lease: str
+    host: str | None = None
+    since: str | None = None
+    halt: str = "unread"
+    halt_text: str | None = None
+    why: str = ""
+
+
+def parse_anchor_facts(out: str) -> AnchorFacts:
+    """``ANCHOR_FACTS``' protocol, fail-closed: anything off it reads both states unread."""
+    rest = out
+    def line() -> str | None:
+        nonlocal rest
+        head, sep, tail = rest.partition("\n")
+        if not sep and not head:
+            return None
+        rest = tail
+        return head
+
+    off = AnchorFacts("unread", why="the anchor's answer is not the lease/halt protocol")
+    lease = line()
+    host = since = None
+    if lease == "lease=present":
+        h, n = line(), line()
+        if h is None or n is None or not h.startswith("host=") or not n.startswith("since="):
+            return off
+        host, since = h.removeprefix("host=") or None, n.removeprefix("since=") or None
+    elif lease not in ("lease=absent", "lease=unread"):
+        return off
+    assert lease is not None
+    state = lease.removeprefix("lease=")
+    halt = line()
+    if halt == "halt=present":
+        return AnchorFacts(state, host, since, "present", rest)
+    if halt not in ("halt=absent", "halt=unread") or rest:
+        return off
+    return AnchorFacts(state, host, since, halt.removeprefix("halt="))
+
+
+def anchor_facts(cfg: Config) -> AnchorFacts | None:
+    """The lease's host and since and the halt, read on the anchor with no lease; None when the
+    anchor did not answer."""
+    done = run_on(cfg, cfg.anchor, prelude(cfg, cfg.anchor) + ANCHOR_FACTS, [], capture=True)
+    if done.unreachable:
+        return None
+    if done.rc != 0:
+        return AnchorFacts("unread", why=f"the anchor's read exited {done.rc}")
+    return parse_anchor_facts(done.out)
 
 
 def _anchor(cfg: Config, script: str, args: list[str], unreachable_line: str) -> int:

@@ -36,6 +36,15 @@ included, is no state word, which ``board check`` reads as not done (an allowlis
   done   merged, done (handed back without a merge of its own), closed (the issue closed with no
          PR), dropped (out of the wave, launched or not)
 
+THE PHASE (ludics#1165): a row's normalized phase, derived when the row is read and never stored, so
+it cannot disagree with the row: ``phase_of`` reads the row's state (its ``state`` key, else its
+``status``, as ``board check`` reads it) by its STATE WORD alone. Every live word is ``active``; each
+done word is itself (``merged``, ``done``, ``closed``, ``dropped``); anything else -- no state word,
+an empty state, no state key -- is ``unknown``, never a guess (no other key of the row, a ``merge``
+SHA included, moves it). ``board check``'s done test is ``phase_of(fields) in DONE_STATES``: the
+phase is the source, and the two agree by construction. ``fleet-worker.sh status --json``
+(``ludics.fleetworker.status``) prints it for every row.
+
 What it reads, and nothing else (the boundary): the board (``board show --json`` on the anchor, no
 lock, no lease); the brief, a file on brief_host; on agent_host, the worktree's HEAD, branch and
 uncommitted-path count (``git --no-optional-locks``, so no index refresh is written under a live
@@ -120,6 +129,27 @@ def state_word(value: str) -> str | None:
     words = value.split()
     word = words[0].rstrip(";:,.").lower() if words else ""
     return word if word in LIVE_STATES or word in DONE_STATES else None
+
+
+# THE PHASE (the header): every phase a row can read.
+PHASES = ("active", *DONE_STATES, "unknown")
+
+
+def row_state(fields: dict[str, str]) -> tuple[str, str] | None:
+    """The key and value a row's state is read from: ``state``, else ``status``, else none."""
+    for key in ("state", "status"):
+        if key in fields:
+            return key, fields[key]
+    return None
+
+
+def phase_of(fields: dict[str, str]) -> str:
+    """The row's phase (the header's THE PHASE): ``active``, a done word, or ``unknown``."""
+    state = row_state(fields)
+    word = state_word(state[1]) if state is not None else None
+    if word is None:
+        return "unknown"
+    return "active" if word in LIVE_STATES else word
 
 
 def _state(value: str) -> str | None:

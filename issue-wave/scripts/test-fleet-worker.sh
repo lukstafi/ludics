@@ -2743,6 +2743,17 @@ expect "check lists each row not done and exits 3, without the lease or any iden
   ok "...each written as given" || ko "ck board: $(cat "$ISSUE_WAVE_STATE/boards/ck.json")"
 setup_step "could not write ck-1's state (setup)" "$FW" board set ck ck-1 "state=merged #1"
 expect "...and 0 once every row is done" 0 "^BOARD CHECK ck: 1 rows, 1 done, 0 not done$" -- "$FW" board check ck
+# status --json (ludics#1165): the observers' read through the shim, with no lease and no identity --
+# every board, each row's phase derived as check reads it, the lease's host and never its token.
+expect "status --json reads every board without the lease or any identity" 0 '^{"version": 1, ' -- \
+  env -u FLEET_COORDINATOR "${B[@]}" status --json
+[ "$(jq -r '.waves[] | select(.wave == "ck") | .tasks[0] | "\(.phase) \(.state_word)"' <<<"$out")" = "merged merged" ] &&
+  ok "...each row with the phase check reads" || ko "status --json: $out"
+tok=$(sed -n 's/^token=//p' "$ISSUE_WAVE_STATE/COORDINATOR")
+[ -n "$tok" ] && ! grep -qF -- "$tok" <<<"$out" && [ "$(jq -r '.coordinator | keys | join(" ")' <<<"$out")" = "host since" ] &&
+  ok "...with the lease's host and since, and its token nowhere" || ko "status --json lease: $(jq -c .coordinator <<<"$out")"
+expect "...and --since takes positive hours" 2 "status --json: --since takes a positive number of hours" -- "$FW" status --json --since 0
+expect "status <box> <name> is the CLI worker's read, as before" 2 "status: <box> <name> required" -- "$FW" status testbox
 # #1123: use the real conclude CLI and registry, so a JSON string mistaken for a payload-file
 # argument cannot pass a mock writer. Both verdicts finish the row; a retry writes nothing.
 FNP=(env FLEET_BOXES="testbox other" "$FW")

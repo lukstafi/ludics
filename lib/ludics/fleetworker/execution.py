@@ -163,12 +163,17 @@ def registry_source() -> str:
     die(f"execution: missing helper {shown(REGISTRY)}")
 
 
-def listing(cfg: Config, waiter: dict[str, Any] | None = None) -> Done:
+def listing(cfg: Config, waiter: dict[str, Any] | None = None, options: dict[str, bool] | None = None) -> Done:
     """The anchor's whole registry as JSON (captured). ``list`` takes no lease and mutates nothing,
     so a worker with no coordinator identity may read it. With ``waiter`` ({box, id, command, ttl})
     it is ``wait`` instead, as lease-free: the same listing, after the registry records that this
-    batch is waiting for the box (THE WAITERS in registry.py's header, ludics-lite#719)."""
-    payload = json.dumps({"waiter": waiter}, separators=(",", ":")) if waiter is not None else "{}"
+    batch is waiting for the box (THE WAITERS in registry.py's header, ludics-lite#719). With
+    ``options`` (``list``'s ``active``/``compact`` flags) it is ``execution list``'s own read of them,
+    as ``status --json`` reads the registry (ludics#1165)."""
+    if waiter is not None:
+        payload = json.dumps({"waiter": waiter}, separators=(",", ":"))
+    else:
+        payload = json.dumps(options or {}, separators=(",", ":"))
     script = prelude(cfg, cfg.anchor) + "shift 3\n" + registry_command(registry_source(), payload)
     action = "wait" if waiter is not None else "list"
     # A waiter's box is a roster entry (the slot's own box, a leg's record's execution host), so
