@@ -23,7 +23,7 @@ import time
 import unittest
 from unittest import mock
 
-from ludics import cli
+from ludics import cli, proc
 from ludics.prreview import buildhistory, drift, mergebuild
 from ludics.prreview.core import Json
 from ludics.prreview.mergebuild import BuildConfig, build_inputs, build_reason, parse_config
@@ -281,6 +281,25 @@ class Log(unittest.TestCase):
                 mergebuild._say_progress("fixture", 10, 10, handle.name)  # pyright: ignore[reportPrivateUsage]
             self.assertIn("HARNESS overrun exit: 1", out.getvalue())
 
+    def test_overrun_scans_diagnostics_once(self) -> None:
+        with tempfile.NamedTemporaryFile() as handle:
+            handle.write(b"ordinary\n" * 20000 + b"HARNESS middle exit: 1\n" + b"ordinary\n" * 20000)
+            handle.flush()
+            with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
+                mergebuild, "_diagnostics", wraps=mergebuild._diagnostics  # pyright: ignore[reportPrivateUsage]
+            ) as scan:
+                mergebuild._say_progress("fixture", 10, 10, handle.name)  # pyright: ignore[reportPrivateUsage]
+            self.assertEqual(scan.call_count, 1)
+
+    def test_overrun_with_an_unreadable_log_reports_it(self) -> None:
+        with tempfile.NamedTemporaryFile() as handle:
+            handle.write(b"output\n")
+            handle.flush()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), mock.patch("builtins.open", side_effect=PermissionError("denied")):
+                mergebuild._say_progress("fixture", 10, 10, handle.name)  # pyright: ignore[reportPrivateUsage]
+            self.assertIn("the build log could not be read", out.getvalue())
+
     def test_a_huge_log_and_an_endless_line_are_read_bounded(self) -> None:
         lines = self.shown(b"start\n" + b"x" * (5 * 1024 * 1024) + b"\nend\n")
         self.assertEqual(lines[0], "start")
@@ -446,6 +465,28 @@ class Build(Repo):
                 self.assertEqual(receipts[-1]["outcome"], "passed" if status == 0 else "failed")
                 if status:
                     self.assertEqual((directory / "base.log").read_text(), "evidence 1\n")
+
+    def test_never_started_attempts_have_a_distinct_receipt(self) -> None:
+        subject = mergebuild._Subject("fixture", "NOT built", "REFUSED", "7", "owner/repo")  # pyright: ignore[reportPrivateUsage]
+        head = "a" * 40
+        for code in (1, 124):
+            with self.subTest(wrapper_status=code), contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()), \
+                    mock.patch.object(mergebuild, "_supervised", return_value=proc.Completed(code, "", "")), \
+                    mock.patch.object(mergebuild.time, "monotonic", side_effect=[10.0, 17.0]):
+                ran = mergebuild._run(  # pyright: ignore[reportPrivateUsage]
+                    subject, BuildConfig("true", ("*",), 60), "unused-runner", None,
+                    self.dir, self.dir, "build", "b" * 40, head, "fixture",
+                )
+                self.assertFalse(ran.started)
+                rows = [json.loads(line) for line in
+                        (Path(self.dir) / "state/merge-builds/owner--repo.jsonl").read_text().splitlines()]
+                self.assertEqual(rows[-1]["outcome"], "unstarted")
+                self.assertEqual(rows[-1]["seconds"], 7, "explicitly the wrapper wait, not command duration")
+                directory = Path(rows[-1]["log_dir"])
+                self.assertEqual((directory / "build.log").read_bytes(), b"")
+                self.assertEqual((directory / "build.status").read_bytes(), b"")
+                self.assertEqual(buildhistory.read("owner/repo", "true"), [])
 
     def test_retention_error_refuses(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
@@ -669,7 +710,7 @@ class Build(Repo):
                     "import os, signal\n"
                     "signal.signal(signal.SIGINT, signal.default_int_handler)\n"
                     "from ludics.prreview.mergebuild import _build, BuildConfig\n"
-                    "from ludics import cli\n"
+                    "from ludics import cli, proc\n"
                     f"os.chdir({self.clone!r})\n"
                     "try:\n"
                     f"    _build('owner/repo', '7', {head!r}, 'main', {self.tip!r}, BuildConfig({command!r}, ('*.sh',), 60), 'test')\n"
@@ -729,7 +770,7 @@ class Build(Repo):
                 code = (
                     "import os\n"
                     "from ludics.prreview.mergebuild import _build, BuildConfig\n"
-                    "from ludics import cli\n"
+                    "from ludics import cli, proc\n"
                     f"os.chdir({self.clone!r})\n"
                     "try:\n"
                     f"    _build('owner/repo', '7', {head!r}, 'main', {self.tip!r}, BuildConfig('sh ./api.sh', ('*.sh',), 60), 'test')\n"
@@ -874,7 +915,7 @@ class Forwarded(Repo):
         code = (
             "import sys\n"
             "from ludics.prreview import mergebuild\n"
-            "from ludics import cli\n"
+            "from ludics import cli, proc\n"
             f"mergebuild._slot_runner = lambda: {fake!r}\n"
             "class C:\n"
             "    def now(self): return 1000\n"

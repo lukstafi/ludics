@@ -10,10 +10,11 @@ THE RECORD. One JSON line per completed command attempt, appended to
 ``merge-builds/<owner>--<name>.jsonl`` under pr-review's state directory (``budget.budget_dir``), so
 per box: a duration is this box's, under this box's load. Its fields: ``at`` (UTC, ISO 8601),
 ``command`` (a digest of the config's command), ``outcome``, ``seconds`` (the command's own run,
-slot and window waits left out) and ``bound`` (the ``timeout`` it ran under). ``outcome`` is
-``passed``, ``overran`` or ``failed``. Rows also name ``log_dir``, the retained artifacts
-(mergebuild.py, LOG RETENTION); failed rows are excluded from timing advice because a failure
-stops early. Legacy rows without log_dir remain readable.
+slot and window waits left out; for ``unstarted``, the wrapper wait instead) and ``bound`` (the
+``timeout`` it ran under). ``outcome`` is ``passed``, ``overran``, ``failed`` or ``unstarted`` (the
+command never began). Rows also name ``log_dir``, the retained artifacts (mergebuild.py, LOG
+RETENTION); failed and unstarted rows are excluded from timing advice because a failure stops early
+and an unstarted command has no duration. Legacy rows without log_dir remain readable.
 
 THE TIER -- the boundary. A repository's command is one opaque string, and which tiers it runs is
 its own choice (mergebuild.py, THE COMMAND'S CONTRACT), so "what this tier took before" is read as
@@ -25,9 +26,10 @@ is read from the log: its wording is the project's.
 THE READER, a fail-closed allowlist: the file's last ``READ_BYTES`` (the first line of a cut read is
 dropped) and in them the lines that are one JSON object with the fields above, of their types, whose
 ``command`` is this command's. Any other line is skipped. A file that cannot be read is no history.
-Receipt reads and writes inform a message, so they are fail-open: a write that fails is dropped,
-and neither a read nor a receipt write changes a merge's verdict. Artifact copying is separate
-and refuses on error (mergebuild.py, LOG RETENTION). Nothing trims the file, and only its tail is ever read.
+Receipt reads and writes inform a message, so they are fail-open: a write that fails is dropped, and
+neither a read nor a receipt write changes a merge's verdict. Artifact copying and its failure
+policy belong to mergebuild.py (LOG RETENTION). Nothing trims the file, and only its tail is ever
+read.
 
 THE ADVICE (``overrun_advice``). A re-run LIKELY REPEATS the overrun when an earlier run overran a
 bound at least this high, or when the slowest pass took ``TIGHT`` or more of the bound: the bound is
@@ -39,20 +41,17 @@ It is advice in the refusal's words, never a gate: nothing refuses a re-run.
 import hashlib
 import json
 import os
-import shutil
-import shlex
-from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
 from ludics.prreview.budget import budget_dir
-from ludics.prreview.core import fail
 
 READ_BYTES = 64 * 1024
 TIGHT = 0.8  # THE ADVICE: a slowest pass at this share of the bound or more leaves no room for load
 
 type Outcome = Literal["passed", "overran"]
+type Recorded = Outcome | Literal["failed", "unstarted"]
 
 
 @dataclass(frozen=True)
@@ -111,27 +110,13 @@ def read(repo: str, command: str) -> list[Row]:
     return [row for line in (lines[1:] if size > READ_BYTES else lines) if (row := _row(line, digest))]
 
 
-def retain(repo: str, pr: str, head: str, name: str, log: str, status: str) -> str | None:
-    """Retain command artifacts before scratch cleanup; retries replace the same head's files."""
-    receipt = _path(repo)
-    if receipt is None:
-        return None  # fixtures can explicitly disable state; config-only dry runs have no repo
-    directory = os.path.abspath(os.path.join(os.path.dirname(receipt), "logs", repo.replace("/", "--"),
-                                            pr or "dry-run", head))
-    try:
-        os.makedirs(directory, exist_ok=True)
-        for source, leaf in ((log, f"{name}.log"), (status, f"{name}.status")):
-            destination = os.path.join(directory, leaf)
-            if os.path.exists(source):
-                shutil.copyfile(source, destination)
-            else:
-                Path(destination).write_bytes(b"")
-    except OSError as exc:
-        fail(3, f"NOT merging: could not retain merge-build log/status in {shlex.quote(directory)}: {exc}")
-    return directory
+def state_root(repo: str) -> str | None:
+    """The repository's merge-build state directory, or None when history is disabled."""
+    path = _path(repo)
+    return os.path.dirname(path) if path is not None else None
 
 
-def record(repo: str, command: str, outcome: Literal["passed", "overran", "failed"], seconds: int,
+def record(repo: str, command: str, outcome: Recorded, seconds: int,
            bound: int, *, log_dir: str | None = None) -> None:
     """Append one row, in one write (the module's THE RECORD); a failure is dropped."""
     at = datetime.now(timezone.utc).isoformat(timespec="seconds")
