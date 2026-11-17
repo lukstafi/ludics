@@ -797,7 +797,10 @@ class Driver:
                     break
             if not verdict:
                 return self.attention(worker, turn, "result", f"{request} could not be concluded off {where} (neither run record"
-                                                              " reads); conclude it by hand, then resume the worker", message)
+                                                              " reads); worker was NOT resumed: reconcile this completed run and conclude it by hand,"
+                                                              " then relay to the worker: run future assigned commands under bg-run.sh new/start"
+                                                              " (native Claude: spawn/wait) and report that record's directory as run, not its runs/"
+                                                              " parent or a plain log directory; do not rerun this completed command", message)
             lines.append(f"EXECUTION_CONCLUDED {request} {verdict}")
         out = self.turn_file(worker, turn, "concluded.md")
         write_atomically(out, "\n".join(lines) + "\n\nContinue with your task.\n")

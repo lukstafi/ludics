@@ -1,5 +1,7 @@
 ## Blocking rule (the one that costs the most when broken)
 
+For ASSIGNED commands, *Requests* states which run record `EXECUTION_RESULT` must name.
+
 The coordinator reads only a turn that ends, as a handoff or a hand-back. No background process
 outlives your turn and no notification wakes you: when `codex exec` ends, everything it started
 dies with it. So never end a turn with a watch, a wait, a suite or any detached process still

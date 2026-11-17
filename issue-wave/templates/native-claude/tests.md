@@ -1,5 +1,8 @@
 ## Running tests
 
+These are your own batches. For an ASSIGNED command, use the run-record rule beside
+`EXECUTION_RESULT` in *Requests*: its `run` names the command's record directory.
+
 Run every batch through the box's run-time slot lock, one batch per run, from the worktree, in the
 spelling the project section gives, always in the background form, and block on it inside your
 turn. Claude Code moves a native worker's foreground Bash call to the background at the subagent

@@ -1206,6 +1206,20 @@ def main(argv: list[str]) -> None:
     if request_data is None:
         refuse("request must be a JSON object")
     data: Record = request_data
+    if action == "conclude":
+        # Report the whole hand-conclusion shape in one refusal. Only these three fields
+        # may come from an earlier dispatch; evidence, verdict and log belong to this call.
+        said_id = data.get("request_id")
+        prior = records.get(said_id) if isinstance(said_id, str) else None
+        fields = ["request_id", "evidence", "verdict", "log"]
+        inherited = {key: (prior or {}).get(key) for key in ("observed_sha", "remote_checkout", "handle")}
+        if data.get("verdict") != "not-launched":
+            fields += list(inherited)
+        supplied = {**inherited, **data}
+        missing = [key for key in fields if not isinstance(value := supplied.get(key), str) or not value.strip()]
+        if missing:
+            suffix = " must be a nonempty string" if len(missing) == 1 else " must be nonempty strings"
+            refuse(", ".join(missing) + suffix)
     nonempty(data, ["request_id"])
     identity = data["request_id"]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", identity):

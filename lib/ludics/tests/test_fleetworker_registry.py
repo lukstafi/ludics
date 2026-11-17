@@ -56,6 +56,15 @@ class RegistryCase(unittest.TestCase):
 
 
 class Registry(RegistryCase):
+    def test_conclude_names_all_missing_fields_together(self) -> None:
+        self.assertEqual(self.call("reserve", request("a"))[0], 0)
+        rc, _, err = self.call("conclude", {"request_id": "a", "verdict": "pass", "evidence": "terminal"})
+        self.assertEqual(rc, 1)
+        self.assertIn("log, observed_sha, remote_checkout, handle must be nonempty strings", err)
+        rc, _, err = self.call("conclude", {})
+        self.assertEqual(rc, 1)
+        self.assertIn("request_id, evidence, verdict, log, observed_sha, remote_checkout, handle", err)
+
     def test_import_runs_nothing(self) -> None:
         self.assertEqual(registry.LANE_LOCKS, [])
 

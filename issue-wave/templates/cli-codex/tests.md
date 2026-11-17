@@ -1,5 +1,8 @@
 ## Running tests
 
+These are your own batches. For an ASSIGNED command, use the run-record rule beside
+`EXECUTION_RESULT` in *Requests*: its `run` names the command's record directory.
+
 Run every batch through the box's run-time slot lock, one batch per run, from the worktree, in the
 spelling the project section gives, in the foreground of your turn, with its whole output going to
 a log you read afterwards:

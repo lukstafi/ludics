@@ -2523,6 +2523,19 @@ class Drive(DriveCase):
             self.message = f"{line}\n"
             self.assertIn("and the worker was NOT resumed (unstick exit 1", self.once()[1])
 
+    def test_a_plain_result_directory_tells_the_coordinator_what_to_relay(self) -> None:
+        self.message = 'EXECUTION_RESULT {"request_id":"wv-t42-rog-1","run":"/scratch/runs","exit":0,"observed_sha":"' + A + '"}\n'
+        self.rc["execution conclude --from-run"] = 1
+        self.rc["execution conclude --from-bg-run"] = 1
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("worker was NOT resumed", out)
+            self.assertIn("reconcile this completed run and conclude it by hand", out)
+            self.assertIn("relay to the worker", out)
+            self.assertIn("bg-run.sh new/start", out)
+            self.assertIn("report that record's directory as run", out)
+            self.assertNotIn("unstick", [c[0] for c in self.calls])
+
     def review_log(self, decision: str, kind: str = "at-open") -> str:
         message = f"{self.wavedir}/reviews/7-{kind}-{A[:12]}.message.md"
         os.makedirs(self.runs, exist_ok=True)
