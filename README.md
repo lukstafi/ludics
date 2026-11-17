@@ -817,6 +817,8 @@ repeated close writes nothing. The fixtures use payload files rather than accept
 prepared worktree, starts no worker, and a retry cannot silently adopt an outstanding dispatch;
 a start refused before `run.sh` concludes its reservation `not-launched`, while one after which
 `run.sh` had run stays `LAUNCH UNKNOWN` with its reservation and record kept (#1023).
+The supervision fixtures keep closing-reference reads on paginated GraphQL for gh 2.46;
+package cases refuse partial closing populations and preserve the open-PR cap (#1189).
 The suite runs its ~1000 assertions top to bottom in one shell, which takes about
 sixteen minutes on CI's Ubuntu runner, twenty-four on its macOS one, and up to sixteen on a mac
 shared with other workers. Arguments

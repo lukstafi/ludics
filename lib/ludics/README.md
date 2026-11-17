@@ -366,6 +366,7 @@ fleetworker/suitecalls.py
 
 fleetworker/supervision.py
     issue-wave/scripts/test-fleet-worker.sh load "prs (" sibling-scan
+    lib/ludics/tests/test_fleetworker_supervision.py
 
 fleetworker/siblingscan.py
     issue-wave/scripts/test-fleet-worker.sh sibling-scan
@@ -723,3 +724,11 @@ The shared reader's existing path-check/open boundary is unchanged; this does no
 protection against a marker replaced between those operations. The two #1162 follow-ups
 cross-reference the absence helpers' different ancestor guarantees and assert the unread-owner
 reap's false result; the shipped registry remains self-contained.
+
+Supervision compatibility note (#1189): gh 2.46 lists the open population with its supported
+JSON fields. Wave selection reads closing references through paginated GraphQL per listed PR,
+requiring a stable count, unique issue identities and a terminal page before selecting any rows.
+Worker-branch matches and unfiltered reads need no closing-reference query. The existing open
+population cap still makes the result incomplete; no gh upgrade or prose parsing is required.
+Selection consumes the enriched pages directly, and a closing-read refusal names its PR and
+keeps the helper error, separately from an open-list parse failure (PR #1195 review checkpoint).

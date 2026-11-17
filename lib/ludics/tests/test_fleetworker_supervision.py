@@ -8,9 +8,12 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from ludics.fleetworker import supervision
 from ludics.fleetworker.config import load_config
+from ludics.fleetworker.transport import Done
+from ludics.prreview.core import Json
 from ludics.tests import fake
 from ludics.tests.fake import Answer, When
 
@@ -92,6 +95,118 @@ class PrsTally(unittest.TestCase):
                  "o/r#7 rounds=2 ci=green branch=current merge-build=waiting(slot) claude/x: T"),
                 ("PRS o/r: 1 open PR listed above: #7", "PRS o/r: 1 open PR listed above: #7")):
             self.assertEqual(supervision.steady_prs_line(written), steady)
+
+
+class ClosingReferences(unittest.TestCase):
+    """Use a fake gh 2.46 through the retry wrapper; never supply closing JSON via pr list."""
+
+    def setUp(self) -> None:
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="ludics-closing-refs."))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        os.makedirs(os.path.join(self.root, "ship-pr", "scripts"))
+        self.cfg = load_config(os.path.join(self.root, "issue-wave", "scripts", "fleet-worker.sh"),
+                               {"FLEET_LOCAL_BOX": ""}, host="unmapped")
+        self.gh = fake.FakeTool("gh")
+        self.addCleanup(shutil.rmtree, self.gh.dir, ignore_errors=True)
+        self.gh.__enter__()
+        self.addCleanup(self.gh.__exit__, None, None, None)
+        self.wrapper = os.path.join(self.root, "ship-pr", "scripts", "pr-review.sh")
+        with open(self.wrapper, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nshift 2\nexec gh "$@"\n')
+        os.chmod(self.wrapper, 0o755)
+        record = {"request": {"wave": "w", "issue": "o/r#42"}}
+        self.registry = mock.patch.object(supervision, "listing", return_value=Done(0, json.dumps([record])))
+        self.registry.start()
+        self.addCleanup(self.registry.stop)
+
+    def page(self, numbers: list[int], more: bool = False, total: int = 1) -> dict[str, object]:
+        return {"data": {"repository": {"pullRequest": {"number": 7, "closingIssuesReferences": {
+            "totalCount": total, "pageInfo": {"hasNextPage": more, "endCursor": "cursor" if more else None},
+            "nodes": [{"number": n, "repository": {"name": "r", "owner": {"login": "o"}}} for n in numbers]}}}}}
+
+    def route(self, pages: list[object], rc: int = 0) -> None:
+        row = pr(7, "feature")
+        del row["closingIssuesReferences"]
+        self.gh.route(
+            (When(prefix=("pr", "list"), text=("closingIssuesReferences",)), Answer(rc=2)),
+            (When(prefix=("pr", "list")), Answer(stdout=json.dumps([row]))),
+            (When(prefix=("api", "graphql"), text=("closingIssuesReferences",)),
+             Answer(rc=rc, stdout="\n".join(json.dumps(p) for p in pages))),
+        )
+
+    def selection(self, limit: str = "1000") -> tuple[int, list[supervision.PrRow] | None, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc, rows = supervision.open_prs(self.cfg, "SIBLING-SCAN", "o/r", "w", self.wrapper, limit)
+        return rc, rows, out.getvalue()
+
+    def test_graphql_complete_population_selects_the_closing_pr(self) -> None:
+        self.route([self.page([42])])
+        rc, rows, out = self.selection()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([r.number for r in rows or []], ["7"])
+        calls = self.gh.calls()
+        self.assertIn("--paginate", calls[-1])
+        self.assertIn("number=7", calls[-1])
+        self.assertNotIn("closingIssuesReferences", calls[0][-1])
+
+    def test_selection_uses_enriched_pages_even_if_sort_copies_rows(self) -> None:
+        self.route([self.page([42])])
+        original = supervision.sorted_prs
+
+        def copying_sort(doc: Json) -> list[Json]:
+            return original(json.loads(json.dumps(doc)))
+
+        with mock.patch.object(supervision, "sorted_prs", side_effect=copying_sort):
+            rc, rows, out = self.selection()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([r.number for r in rows or []], ["7"])
+
+    def test_refused_closing_read_names_the_pr_and_helper_exit(self) -> None:
+        self.route([], rc=2)
+        rc, rows, out = self.selection()
+        self.assertEqual(rc, 1, out)
+        self.assertIsNone(rows)
+        self.assertIn("closing references of o/r#7", out)
+        self.assertIn("pr-review.sh exit 2", out)
+        self.assertNotIn("did not parse", out)
+
+    def test_graphql_pagination_finds_a_reference_on_the_second_page(self) -> None:
+        self.route([self.page([41], True, 2), self.page([42], total=2)])
+        rc, rows, out = self.selection()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([r.number for r in rows or []], ["7"])
+
+    def test_graphql_partial_population_is_refused(self) -> None:
+        cases: list[list[object]] = [
+            [], [self.page([42], True)], [self.page([42], total=2)],
+            [self.page([42], True, 2), self.page([42], total=2)],
+            [self.page([41], True, 2), self.page([42], total=3)],
+            [self.page([42]), self.page([41])],
+            [{"data": {"repository": {"pullRequest": None}}}],
+            [{**self.page([42]), "errors": [{"message": "partial data"}]}],
+        ]
+        for pages in cases:
+            with self.subTest(pages=pages):
+                self.route(pages)
+                rc, rows, out = self.selection()
+                self.assertEqual(rc, 1, out)
+                self.assertIsNone(rows)
+                self.assertIn("REFUSED", out)
+
+    def test_graphql_unreachable_is_not_an_empty_selection(self) -> None:
+        self.route([], rc=3)
+        rc, rows, out = self.selection()
+        self.assertEqual(rc, 4, out)
+        self.assertIsNone(rows)
+        self.assertIn("UNREACHABLE", out)
+
+    def test_open_population_cap_still_blocks_a_complete_claim(self) -> None:
+        self.route([self.page([42])])
+        rc, rows, out = self.selection("1")
+        self.assertEqual(rc, 4, out)
+        self.assertEqual([r.number for r in rows or []], ["7"])
+        self.assertIn("INCOMPLETE", out)
 
 
 if __name__ == "__main__":
