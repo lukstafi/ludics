@@ -272,7 +272,9 @@ driver hands you as an attention line.
    ```
 
    It reads each such worker's returned turn by the marker in its final message and answers it:
-   an `EXECUTION_REQUEST` is assigned and the worker resumed, an `EXECUTION_RESULT` concluded, a
+   a `WINDOWS_WITNESS_REQUEST` goes straight to coordinator attention (see executions.md,
+   *Coordinator recipe for a worker's Windows witness*), an `EXECUTION_REQUEST` is assigned
+   and the worker resumed, an `EXECUTION_RESULT` concluded, a
    `REVIEW_REQUEST` or `CONFIRM_REQUEST` reviewed (step 8) while it serves the other workers, and
    a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Without a PR,
    exact `RUN /absolute/path` lines select `board close --no-pr --run` (one flag per line);

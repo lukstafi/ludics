@@ -63,6 +63,8 @@ next tick and recorded nowhere: only a state the worker is really in ends a turn
 
 THE MARKERS, a fail-closed allowlist over the final message's non-blank lines. Exactly one of these
 holds, or the turn is attention:
+  windows   a line that is exactly ``WINDOWS_WITNESS_REQUEST`` (coordinator attention,
+            never assigned; its payload is kept verbatim, not parsed or executed)
   request   a line that is exactly ``EXECUTION_REQUEST``
   result    one or more lines ``EXECUTION_RESULT {json}``, and no line that starts with
             ``EXECUTION_RESULT`` and is not that, whole (a wrapped or cut result is never dropped
@@ -74,6 +76,8 @@ Two of them in one message, or none (``NEEDS_DESIGN``, ``PLAN_READY``, a questio
 attention, named by the last line's first word.
 
 THE ANSWERS:
+  windows   attention immediately, once per returned turn, naming the saved request. The
+            coordinator follows executions.md, Bounded native Windows verification.
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
             <worker>``: it reserves, dispatches and resumes in one call. A block an earlier call
             dispatched (assign's ``ASSIGN ALREADY`` line: a driver that died before it resumed
@@ -442,7 +446,7 @@ class Worker:
 
 @dataclass(frozen=True)
 class Turn:
-    kind: str  # request, result, review, confirm, handback, or other
+    kind: str  # windows, request, result, review, confirm, handback, or other
     why: str = ""  # other: what the turn is, for the attention line
     pr: str = ""
     sha: str = ""
@@ -455,6 +459,8 @@ def classify(message: str) -> Turn:
     if not lines:
         return Turn("other", "an empty final message")
     found: list[Turn] = []
+    if "WINDOWS_WITNESS_REQUEST" in lines:
+        found.append(Turn("windows"))
     if "EXECUTION_REQUEST" in lines:
         found.append(Turn("request"))
     claimed = [line for line in lines if line.startswith("EXECUTION_RESULT")]
@@ -689,6 +695,8 @@ class Driver:
         write_atomically(message, read_log.out)
         what = classify(read_log.out)
         match what.kind:
+            case "windows":
+                self.attention(worker, turn, "windows", "Windows witness needs the coordinator; no execution assign attempted", message)
             case "request":
                 self.assign(worker, turn, message, last)
             case "result":

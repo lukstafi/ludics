@@ -13,6 +13,23 @@ below, back to back, nothing after the last (do not start the run):
      "command":"<one bounded command>","log":"-"}
     END_EXECUTION_REQUEST
 
+For a native Windows witness on a dual-boot box, use this separate block instead of an
+`EXECUTION_REQUEST` for a `-win` host. End the turn; the driver hands it to coordinator
+attention immediately, without assignment retries. The coordinator owns the Linux-side
+measurement reservation, boot and recovery (see *Bounded native Windows verification* in
+`issue-wave/references/executions.md`). Supply the pushed revision, script contents or a
+retrievable script path, its cap, Windows checkout and evidence paths; do not boot the box.
+
+    WINDOWS_WITNESS_REQUEST
+    {"request_id":"@@WAVE@@-@@T@@-windows-<k>","linux_host":"<dual-boot Linux fleet name>",
+     "windows_host":"<native Windows ssh alias>","requested_revision":"<full pushed 40-hex SHA>",
+     "script":"<script path or contents>","cap_seconds":120,"checkout":"<Windows checkout>",
+     "purpose":"<Windows witness needed>","evidence":"<fresh Windows log and error paths>"}
+    END_WINDOWS_WITNESS_REQUEST
+
+Do not combine this block with other handoff markers. Wait for the coordinator's result or
+repair instructions; an attention handoff is not authorization to run or retry the witness.
+
 For a cross-box leg you may give `"runner":"<runner args>","clone":"<the box's checkout>"` in place
 of `"command"`; `execution assign` wraps it into the `execution leg` form, with `--wait-window`
 for correctness (ludics#869). Read `issue-wave/references/executions.md`, *A leg on another box*,
