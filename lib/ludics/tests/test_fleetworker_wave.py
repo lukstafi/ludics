@@ -2534,6 +2534,7 @@ class Drive(DriveCase):
             self.assertIn("relay to the worker", out)
             self.assertIn("bg-run.sh new/start", out)
             self.assertIn("report that record's directory as run", out)
+            self.assertIn("tools/test-run.sh paths run last when the assignment itself is the project runner", out)
             self.assertNotIn("unstick", [c[0] for c in self.calls])
 
     def review_log(self, decision: str, kind: str = "at-open") -> str:

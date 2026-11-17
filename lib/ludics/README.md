@@ -674,12 +674,13 @@ once and back off. Regression controls and macOS verification are recorded in
 [PR #1171](https://github.com/lukstafi/ludics/pull/1171).
 
 Agent notes (wave-20261117-ludics, t1186): assigned commands name their outer bg-run
-record, whose exit is the harness verdict and whose log retains shell-leg transcripts. The
+record, whose log retains shell-leg transcripts. Its conclusion also reads runner sentinels:
+a harness with intentionally red nested tests needs its own final sentinel. The
 shared result paragraph owns this contract; native and CLI parts point to it. An unreadable
 result remains coordinator attention, never an automatic rerun: reconcile and conclude the
 completed command, then relay the run-record guidance to the worker. Hand conclusions report
-all required nonempty fields together, retaining dispatch inheritance and the not-launched
-exception. The new Drive and registry cases both failed against unchanged base production code.
+all required nonempty fields together after identity and immutability checks, retaining
+dispatch inheritance and the not-launched exception. The new Drive and registry cases both failed against unchanged base production code.
 
 Agent notes (wave-20261115-ludics, p3): `wavedrive.py`'s THE GATE defines the ten-minute,
 non-final pending notice and its in-memory reset conditions; its remote-tip sample is diagnostic

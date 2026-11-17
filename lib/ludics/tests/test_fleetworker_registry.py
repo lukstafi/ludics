@@ -61,9 +61,33 @@ class Registry(RegistryCase):
         rc, _, err = self.call("conclude", {"request_id": "a", "verdict": "pass", "evidence": "terminal"})
         self.assertEqual(rc, 1)
         self.assertIn("log, observed_sha, remote_checkout, handle must be nonempty strings", err)
-        rc, _, err = self.call("conclude", {})
+        rc, _, err = self.call("conclude", {"request_id": "a"})
         self.assertEqual(rc, 1)
-        self.assertIn("request_id, evidence, verdict, log, observed_sha, remote_checkout, handle", err)
+        self.assertIn("evidence, verdict, log, observed_sha, remote_checkout, handle", err)
+
+    def test_conclude_checks_identity_and_immutability_before_missing_fields(self) -> None:
+        for payload, message in (({}, "request_id must be a nonempty string"),
+                                 ({"request_id": "typo"}, "unknown request_id")):
+            rc, _, err = self.call("conclude", payload)
+            self.assertEqual(rc, 1)
+            self.assertIn(message, err)
+        self.assertEqual(self.call("reserve", request("a"))[0], 0)
+        terminal = dict(request_id="a", verdict="not-launched", log="l", evidence="never launched")
+        self.assertEqual(self.call("conclude", terminal)[0], 0)
+        rc, _, err = self.call("conclude", {"request_id": "a", "evidence": "new payload"})
+        self.assertEqual(rc, 1)
+        self.assertIn("assignment already concluded", err)
+
+    def test_conclude_inherits_only_dispatch_run_fields(self) -> None:
+        self.assertEqual(self.call("reserve", request("a"))[0], 0)
+        dispatched = dict(request_id="a", evidence="launched", observed_sha="a" * 40,
+                          remote_checkout="/wt/a", handle="runner", log="dispatch.log")
+        self.assertEqual(self.call("dispatch", dispatched)[0], 0)
+        rc, _, err = self.call("conclude", {"request_id": "a", "verdict": "pass"})
+        self.assertEqual(rc, 1)
+        self.assertIn("evidence, log must be nonempty strings", err)
+        self.assertEqual(self.call("conclude", dict(request_id="a", verdict="pass",
+                                                   evidence="done", log="terminal.log"))[0], 0)
 
     def test_import_runs_nothing(self) -> None:
         self.assertEqual(registry.LANE_LOCKS, [])

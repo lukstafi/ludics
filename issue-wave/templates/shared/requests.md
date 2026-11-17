@@ -34,8 +34,11 @@ You will be resumed with one of:
   revision (after a rebase, end your turn with `EXECUTION_REBIND <id> <new pushed sha>` first).
   Every assigned command needs its own run record: use the *Blocking rule*'s `bg-run.sh new` /
   `start` recipe (native Claude: `spawn` / `wait`), wrapping the entire assigned command, including
-  its slot, hold or leg wrapper. This outer record's exit is authoritative for a plain harness,
-  even when a nested test-run is red by design; its `log` retains a direct shell leg's transcript.
+  its slot, hold or leg wrapper; its `log` retains a direct shell leg's transcript. A bg-run
+  conclusion also reads the last runner sentinel in that log: a harness with intentionally red
+  nested tests needs its own final `harness: exit: <status>` line as well as its returned status.
+  The coordinator must include that in the assigned harness; wrapping alone does not override
+  nested failure sentinels. Automatic authoritative harness receipts remain a follow-up.
   Alternatively, when the assigned command itself is the project's test runner, name the record
   returned by `tools/test-run.sh paths run last`. `run` below is that record's absolute directory,
   never the `runs/` parent, a plain log directory or a nested run with a different verdict.

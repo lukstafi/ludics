@@ -595,8 +595,8 @@ determines whether the source/configuration is acceptable.
 
 Once runner evidence establishes completion and no process remains, `execution conclude` accepts
 the fields `request_id`, `evidence`, `verdict`, `log`, `observed_sha`, `remote_checkout` and `handle`.
-It names all missing or empty required fields in one refusal. The last three may be inherited
-from the record; `not-launched` does not require them (see below):
+For a known, unconcluded request it names all missing or empty required fields in one refusal.
+The last three may be inherited from the record; `not-launched` does not require them (see below):
 
 ```json
 {
