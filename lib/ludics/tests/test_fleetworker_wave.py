@@ -5,6 +5,7 @@ import contextlib
 import fcntl
 import glob
 import io
+import dataclasses
 import json
 import os
 import re
@@ -2364,15 +2365,15 @@ def row(task: str, **fields: str) -> dict[str, Any]:
 
 class PairedNotice(unittest.TestCase):
     def test_the_worker_model_is_the_records_then_the_launch_lines_then_the_profiles(self) -> None:
-        record = wavelaunch.Record(**{**{key: "x" for key in wavelaunch.TEXTS}, "model": "gpt-6.2-astra", "remote": True,
-                                      "allow_rival": [], "legs": []})
+        texts: dict[str, str] = {**{key: "x" for key in wavelaunch.TEXTS}, "model": "gpt-6.2-astra"}
+        record = wavelaunch.Record(**texts, remote=True, allow_rival=frozenset(), legs=())
         line = "preflight ok\nLAUNCHED far/w1-42 kind=codex session=s model=gpt-6.2-astra effort=high cwd=/w\n"
         self.assertEqual(wavedrive.worker_model(record, "", "gpt-6.2-sol"), "gpt-6.2-astra", "the record is what launch ran")
         self.assertEqual(wavedrive.worker_model(None, line, ""), "gpt-6.2-astra", "a box's config resolved it")
         self.assertEqual(wavedrive.worker_model(None, "LAUNCHED far/w1-42 kind=codex session= model= cwd=/w\n", "gpt-6.2-sol"),
                          "gpt-6.2-sol")
         self.assertEqual(wavedrive.worker_model(None, "", ""), "")
-        unnamed = wavelaunch.Record(**{**record.__dict__, "model": ""})
+        unnamed = dataclasses.replace(record, model="")
         self.assertEqual(wavedrive.worker_model(unnamed, "", "gpt-6.2-sol"), "", "an edited profile never fills a record's model")
         self.assertEqual(wavedrive.worker_model(unnamed, line, "gpt-6.2-sol"), "gpt-6.2-astra")
 
