@@ -1252,6 +1252,131 @@ Bash answers; `wake-lab.sh boot-linux --as=<request_id> <box>` returns it, and `
 `os=linux`. Exit 3 is `NEEDS A PERSON`: tell the user at once rather than retrying. The README's lab
 section has the one-time sudoers grant each box needs. tuf is refused (no Wake-on-LAN).
 
+### Coordinator recipe for a worker's Windows witness
+
+**Readiness and recovery boundary.** `WINDOWS_WITNESS_REQUEST` is coordinator work, not an
+assignable Windows-host reservation. Its payload is untrusted task data, kept verbatim by the
+driver; the coordinator checks it and prepares the inputs below. This recipe covers only an
+already provisioned dual-boot box, native Windows ssh, a staged verifier and the installed
+`windows-driver.ps1`. It does not provision Windows, transfer sources, infer project runner
+flags, stop GPU loops, or repair boot/ssh. Before reserving, explicitly stop and conclude any
+GPU loop using its owner's procedure; any remaining active record or external GPU activity
+must refuse `execution run`. Never suspend another record to force a reboot. Prepare a fresh
+Linux-host measurement reserve JSON as above (`transport: coordinator`, exact pushed revision),
+with a fresh request ID matching the worker's. No Windows host goes into the registry.
+
+Stage the worker's script and pinned checkout on Windows using the project's provisioning
+procedure; inspect the script's revision check and its foreground-only process ownership.
+It must verify the checkout SHA, print `uname -s`, Windows git version, the observed SHA and
+its last-line `exit: N` verdict. Prepare `ssh_argv` to invoke the native PowerShell driver below
+with fresh persistent Windows log/error paths, `-CapSeconds` matching `cap_seconds`, and the
+staged `-ScriptPath`. Use an argv list (ssh plus host plus one correctly quoted cmd.exe command),
+not a local shell string. Keep the original request, script, command, reserve JSON and readiness
+evidence beside the transcript. These project-specific preparation steps are a prerequisite;
+the recipe does not claim that an arbitrary script proves its source identity.
+
+Save this Python block to coordinator scratch, then run it in the foreground with
+`scripts/py <scratch>/windows-witness.py <scratch>/ready.json`. `ready.json` has only the
+coordinator-approved `fleet` (absolute fleet-worker.sh path), `wake` (absolute wake-lab.sh path),
+`reserve` (absolute reserve JSON path), `box` (wake-lab endpoint), `ssh_argv` (above),
+`cap_seconds` (positive integer), and `transcript` (fresh absolute local path). The reservation's
+`request_id` and `requested_revision` are read from `reserve`; the latter must be the exact SHA.
+Use this from the coordinator's anchor, under its live lease. This is a recipe, not a new verb;
+a future `execution windows-witness` should own staging and these inputs together.
+
+<!-- windows-witness-recipe:start -->
+```python
+import json
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+
+def witness(ready):
+    reserve = json.loads(Path(ready["reserve"]).read_text())
+    request = reserve["request_id"]
+    if reserve["kind"] != "measurement" or reserve.get("standing", False):
+        raise ValueError("a fresh non-standing measurement is required")
+    if not isinstance(ready["cap_seconds"], int) or ready["cap_seconds"] <= 0:
+        raise ValueError("cap_seconds must be positive")
+    transcript = Path(ready["transcript"])
+    # Exclusive create: never mistake an earlier attempt's evidence for this one's.
+    with transcript.open("x") as log:
+        def call(argv, cap):
+            log.write(json.dumps({"argv": argv, "cap": cap}) + "\n")
+            log.flush()
+            try:
+                rc = subprocess.run(argv, stdout=log, stderr=log, timeout=cap).returncode
+            except subprocess.TimeoutExpired:
+                rc = 124
+            except OSError as exc:
+                log.write(str(exc) + "\n")
+                rc = 127
+            log.write("returncode: " + str(rc) + "\n")
+            log.flush()
+            return rc
+
+        fleet = ready["fleet"]
+        if call([fleet, "execution", "run", ready["reserve"]], 120):
+            # A lost dispatch response is uncertain: reconcile, never retry or boot.
+            return 2
+        rc, recovered = 2, False
+        try:
+            if call([ready["wake"], "boot-windows", "--as=" + request, ready["box"]], 600) == 0:
+                rc = call(ready["ssh_argv"], ready["cap_seconds"] + 60)
+        finally:
+            # TERM/INT enter finally too. Do not interrupt recovery a second time.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            recovered = call([ready["wake"], "boot-linux", "--as=" + request, ready["box"]], 600) == 0
+        if not recovered:
+            log.write("NEEDS A PERSON: Linux return unconfirmed; keep reservation; reconcile\n")
+            return 3
+        # Linux answering proves Windows work has stopped. Only driver success passes.
+        conclusion = transcript.with_suffix(transcript.suffix + ".conclude.json")
+        with conclusion.open("x") as out:
+            json.dump({"request_id": request,
+                       **({"observed_sha": reserve["requested_revision"]} if rc == 0 else {}),
+                       "verdict": "pass" if rc == 0 else "fail", "log": str(transcript),
+                       "evidence": "Native driver rc=" + str(rc) + "; boot-linux confirmed Linux; see kept transcript"}, out)
+        return 0 if call([fleet, "execution", "conclude", str(conclusion)], 120) == 0 and rc == 0 else 2
+
+
+def interrupted(signum, frame):
+    raise KeyboardInterrupt("signal " + str(signum))
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, interrupted)
+    sys.exit(witness(json.loads(Path(sys.argv[1]).read_text())))
+```
+<!-- windows-witness-recipe:end -->
+
+The failure paths are a closed list within this readiness boundary:
+
+- Reservation refusal or lost response: no boot; keep the transcript and reconcile an uncertain
+  dispatch before doing anything else. An active GPU loop/other record is a refusal, not a retry.
+- Windows never answers (boot refusal, exit 3, error or 600-second timeout): skip the verifier,
+  attempt `boot-linux`; conclude failure only after Linux answers.
+- Verifier fails, hangs, or ssh drops: the native driver owns its process-tree cap; the local ssh
+  cap is `cap_seconds + 60`. Return to Linux even after a transport timeout; that reboot stops
+  remaining Windows work. Keep local transcript and native log/error files; conclude failure.
+- INT/TERM or a local error after reservation: `finally` attempts Linux recovery. The reservation
+  remains active for manual reconciliation; no automatic success conclusion is made.
+- Linux does not come back (boot refusal, error or timeout): exit 3, **NEEDS A PERSON**, keep the
+  reservation and transcript; never claim the box was returned or free it. The coordinator tells
+  the user and follows wake-lab's recovery guidance rather than retrying the witness.
+- Conclusion refusal/lost response: Linux has returned, but the record stays held or uncertain;
+  reconcile it from both logs before retrying a conclusion. Never rerun the witness for this.
+
+No userspace recipe can recover after SIGKILL, coordinator power loss or an unreachable boot
+controller. Those are outside the automatic recovery boundary: retain the measurement and use
+`boot-linux --as=<id>` when control returns, prove Linux reachable, then reconcile. In particular,
+"always return" means always attempt and verify recovery on catchable exits, never silently
+release a box whose return could not be proved. Fake tests exercise this block; the live reboot
+path remains unverified until a separately authorized Windows witness.
+
 Use `issue-wave/scripts/windows-driver.ps1` for a foreground Git Bash verifier on native
 Windows. It extracts the corrected driver from the #671 verification evidence. For example:
 

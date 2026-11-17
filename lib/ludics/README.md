@@ -693,6 +693,15 @@ completed command, then relay the run-record guidance to the worker. Hand conclu
 all required nonempty fields together after identity and immutability checks, retaining
 dispatch inheritance and the not-launched exception. The new Drive and registry cases both failed against unchanged base production code.
 
+Agent notes (wave-20261117-ludics, t1190): `wavedrive.py`'s exact
+`WINDOWS_WITNESS_REQUEST` marker goes directly to attention without parsing its payload or
+calling assign. `test_fleetworker_wave.py` drives the first tick and repeat ticks, rejects mixed
+markers, and executes executions.md's Windows coordinator recipe against fake boot/ssh/registry
+calls, including timeouts and interruption. The recipe reserves on Linux, refuses active work,
+keeps a transcript, and attempts Linux recovery before conclusion; unconfirmed recovery retains
+the measurement. Source staging and live reboot verification remain outside its readiness
+boundary. The integrated `execution windows-witness` verb is deferred to a hand-back proposal.
+
 Agent notes (wave-20261115-ludics, p3): `wavedrive.py`'s THE GATE defines the ten-minute,
 non-final pending notice and its in-memory reset conditions; its remote-tip sample is diagnostic
 only. `wave.py`'s THE NO-CHANGE LINE defines the five-row change summary and remaining count.

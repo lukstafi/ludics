@@ -2283,6 +2283,76 @@ class DriveCase(WaveDirCase):
             return []
 
 
+class WindowsWitnessRecipe(unittest.TestCase):
+    """Execute the documentation's recipe, not a separate model of its recovery logic."""
+
+    def test_reservation_boot_verifier_recovery_and_conclusion_paths(self) -> None:
+        doc = os.path.join(os.path.dirname(SCRIPT), "..", "references", "executions.md")
+        with open(doc) as f:
+            text = f.read()
+        code = text.split("<!-- windows-witness-recipe:start -->", 1)[1].split("```python\n", 1)[1].split("```", 1)[0]
+        namespace: dict[str, Any] = {"__name__": "recipe_test"}
+        exec(compile(code, doc, "exec"), namespace)
+        for failure in ("none", "reserve", "reserve-timeout", "windows", "windows-timeout", "script", "script-timeout",
+                        "ssh-error", "interrupt", "local-error", "linux", "linux-timeout", "conclude", "conclude-timeout"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                reserve = os.path.join(directory, "reserve.json")
+                with open(reserve, "w") as f:
+                    json.dump({"request_id": "win-1", "requested_revision": A, "kind": "measurement"}, f)
+                ready = {"reserve": reserve, "fleet": "/fake/fleet", "wake": "/fake/wake", "box": "dual",
+                         "cap_seconds": 17, "ssh_argv": ["ssh", "win", "native-driver"],
+                         "transcript": os.path.join(directory, "transcript.log")}
+                calls: list[str] = []
+                caps: list[int] = []
+
+                def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+                    step = argv[2] if argv[0] == "/fake/fleet" else argv[1] if argv[0] == "/fake/wake" else "script"
+                    calls.append(step)
+                    caps.append(kwargs["timeout"])
+                    kwargs["stdout"].write("fake " + step + "\n")
+                    target = {"run": "reserve", "boot-windows": "windows", "boot-linux": "linux"}.get(step, step)
+                    if failure == target + "-timeout":
+                        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+                    if step == "script" and failure == "ssh-error":
+                        raise OSError("ssh unavailable")
+                    if step == "script" and failure == "interrupt":
+                        raise KeyboardInterrupt()
+                    if step == "script" and failure == "local-error":
+                        raise ValueError("local failure")
+                    return subprocess.CompletedProcess(argv, 3 if failure == target else 0)
+
+                with mock.patch("subprocess.run", side_effect=run), mock.patch("signal.signal"):
+                    if failure in ("interrupt", "local-error"):
+                        with self.assertRaises(KeyboardInterrupt if failure == "interrupt" else ValueError):
+                            namespace["witness"](ready)
+                        rc = 2
+                    else:
+                        rc = namespace["witness"](ready)
+                if failure.startswith("reserve"):
+                    self.assertEqual(calls, ["run"], "a refused or uncertain dispatch must never boot")
+                else:
+                    self.assertIn("boot-linux", calls, "every boot attempt must attempt Linux recovery")
+                    self.assertLess(calls.index("boot-windows"), calls.index("boot-linux"))
+                    if failure.startswith("windows"):
+                        self.assertNotIn("script", calls)
+                    if failure.startswith("linux") or failure in ("interrupt", "local-error"):
+                        self.assertNotIn("conclude", calls, "uncertain recovery/interrupt must retain reservation")
+                    else:
+                        self.assertEqual(calls[-1], "conclude")
+                        with open(ready["transcript"] + ".conclude.json") as f:
+                            conclusion = json.load(f)
+                        self.assertEqual(conclusion["verdict"], "pass" if failure in ("none", "conclude", "conclude-timeout") else "fail")
+                        self.assertEqual(conclusion["log"], ready["transcript"])
+                if "script" in calls:
+                    self.assertEqual(caps[calls.index("script")], 77)
+                self.assertEqual(rc, 0 if failure == "none" else 3 if failure.startswith("linux") else 2)
+                with open(ready["transcript"]) as f:
+                    transcript = f.read()
+                self.assertIn("fake run", transcript)
+                if failure.startswith("linux"):
+                    self.assertIn("NEEDS A PERSON", transcript)
+
+
 class Drive(DriveCase):
     """wave drive: each returned turn answered once, by its marker, and everything else handed up."""
 
@@ -2317,6 +2387,22 @@ class Drive(DriveCase):
         gate_call = next(c for c in self.calls if c[0] == "gate")
         self.assertIn("--no-wait", gate_call, "the tick must never enter the base polling wait")
         self.assertFalse(any(c[:2] == ["wave", "prep"] for c in self.calls))
+
+    def test_windows_witness_goes_to_coordinator_on_first_tick_without_assignment(self) -> None:
+        self.message = 'WINDOWS_WITNESS_REQUEST\n{"request_id":"win-1"}\nEND_WINDOWS_WITNESS_REQUEST\n'
+        self.rc["execution assign"] = 1
+        with self.world():
+            self.assertIn("Windows witness needs the coordinator; no execution assign attempted", self.once()[1])
+            self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"]])
+            self.assertEqual(self.ledger(), [(0, "windows", "attention")])
+            self.clock += wavedrive.RETRY * 7
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+        with open(f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.md") as f:
+            self.assertEqual(f.read(), self.message)
+        self.assertEqual(len(self.attention()), 1)
+        for other in ("EXECUTION_REQUEST", "EXECUTION_RESULT {}", f"REVIEW_REQUEST 7 {A}", "HANDBACK"):
+            message = other + "\n" + self.message if other == "HANDBACK" else self.message + other
+            self.assertEqual(wavedrive.classify(message).kind, "other", other)
 
     def test_a_request_is_assigned_and_resumed_in_one_call_and_never_twice(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
