@@ -950,6 +950,21 @@ class WindowDeadline(unittest.TestCase):
         self.assertRegex(out, r"\AEXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 1s"
                               r" \(--wait-window, to measurement win's deadline \S+\); no slot taken\n\Z")
 
+    def test_a_pending_windows_first_opening_shortens_the_crash_bound(self) -> None:
+        pending = measurement("win", due_in=3660)
+        opened = {**measurement("win", due_in=60), "hold_opened_at": "2026-11-17T00:00:00+00:00"}
+        clock = [0.0]
+
+        def nap(seconds: float) -> None:
+            clock[0] += seconds
+
+        with mock.patch.object(slot.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(slot.time, "sleep", side_effect=nap):
+            result, out, _ = self.wait([pending], [[opened]] * 1000)
+        self.assertEqual(result, 1)
+        self.assertEqual(clock[0], 60, "a crashed opened hold does not get the pending allowance")
+        self.assertIn("after 60s", out)
+
     def test_a_later_window_does_not_move_the_cutoff(self) -> None:
         # Frozen at the start: the next window's later deadline is the gap's to let the waiter out of.
         first, later = measurement("a", due_in=1), measurement("b", due_in=7200)

@@ -178,9 +178,14 @@ the verdict, restores every reservation it suspended to its former state, with t
 conclusion each write several records, and a listing never sees one half done: every registry
 action takes the anchor's `executions.lock`, a listing shared and a write exclusive (ludics-lite#711;
 the snapshot contract and its boundary, a caller whose checkout predates it, are in `registry.py`'s
-header). `execution window --deadline <seconds>` (at most a week) records when the window will have been
-concluded, counted from its opening: the runner's `--deadline`, its setup, and the time you take to conclude
-it (ludics-lite#737). It bounds the waiters, below, and nothing else. While the window is open:
+header). `execution window --deadline <seconds>` (at most a week) starts its budget when
+`hold --request` opens after draining running batches, including the hold's setup and the
+coordinator's conclusion latency (ludics#1193). Until that opening is published on the anchor,
+waiters allow one hour for launch/drain plus the budget; once opened, they use its recorded end,
+so a crashed holder remains bounded. Only the first opening counts; retries and nested holds
+cannot renew it. A failure to publish a known window's opening refuses the hold before its
+command starts; an unreadable initial registry retains the hold's existing warning and fail-open
+behaviour, so its waiters retain the pending bound. It bounds the waiters and nothing else. While the window is open:
 
 - `execution slot` on the box refuses a batch with `EXECUTION SLOT REFUSED <box>: measurement window
   <id> is open on <box> ...`, so a caller knows to retry after it closes rather than to debug or to
@@ -193,7 +198,8 @@ it (ludics-lite#737). It bounds the waiters, below, and nothing else. While the 
   its bound with `... still holds <box> after <n>s (--wait-window)`. A bare `--wait-window` waits
   to the deadline of the window it finds (`(--wait-window, to measurement <id>'s deadline <time>)`),
   short of an hour or past it, and an hour behind a measurement that records none; the latest of
-  those it finds when it starts, fixed then (ludics-lite#737). `--wait-window=<seconds>` waits
+  those it finds when it starts (ludics-lite#737); a pending window's first hold opening
+  shortens that initial bound, and later windows cannot extend it. `--wait-window=<seconds>` waits
   exactly that. Once nothing is outstanding
   it waits for a slot as `--wait` says, each wait with its own bound. A measurement on another
   box never makes it wait, and it does not wait inside a measurement's hold (it would wait for

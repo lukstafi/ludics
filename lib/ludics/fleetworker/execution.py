@@ -182,6 +182,15 @@ def listing(cfg: Config, waiter: dict[str, Any] | None = None, options: dict[str
     return run_on(cfg, cfg.anchor, script, args, capture=True)
 
 
+def open_hold(cfg: Config, request: str, box: str) -> Done:
+    """Publish a drained window's opening on the anchor, without borrowing a coordinator lease."""
+    payload = json.dumps({"request_id": request, "execution_host": box,
+                          "evidence": "measurement hold drained; opening its budget"})
+    script = prelude(cfg, cfg.anchor) + "shift 3\n" + registry_command(registry_source(), payload)
+    args = ["EXECUTION", "x", "x", "hold-open", "holder", "x", PAYLOAD_ON_FD, cfg.boxes, cfg.slots]
+    return run_on(cfg, cfg.anchor, script, args, capture=True)
+
+
 def records_of(text: str) -> list[dict[str, Any]] | None:
     """A listing's records, or None when it is not a JSON array of objects."""
     try:

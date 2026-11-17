@@ -42,7 +42,8 @@ brief:
   is never parked for a whole window, and it does not wait inside a measurement's hold, where it
   would wait for its own measurement. A bare ``--wait-window`` waits to the window's own deadline
   where its record holds one (ludics-lite#737, ``window_cutoff``), an hour where it does not; an
-  explicit ``--wait-window=<seconds>`` waits exactly that.
+  explicit ``--wait-window=<seconds>`` waits exactly that. A pending window's first hold opening
+  shortens its initial launch/drain bound; later windows never extend the wait (ludics#1193).
 - THE WAITERS (ludics-lite#719): a batch waiting out a measurement reads the registry with
   ``wait``, which records on the anchor that it waits for this box (registry.py's THE WAITERS), so a
   new window keeps its gap only while someone waits; and a batch waiting here, for a window or for a
@@ -289,7 +290,7 @@ from ludics.fleetworker import cotenants, graces, group, holders
 # HOLDER_READ is re-exported for the tests; ``read_holder`` is called by its name here, so a test
 # patching ``slot.read_holder`` reaches the drain.
 from ludics.fleetworker.slotrecord import HOLDER_READ as HOLDER_READ, Holder, read_holder, record_holder
-from ludics.fleetworker.execution import field, jq_text, listing, records_of, registry_source
+from ludics.fleetworker.execution import field, jq_text, listing, open_hold, records_of, registry_source
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
 
@@ -933,10 +934,12 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
 
 
 def hold(box: str, inhibitor: Guard | None, why: str, hold_lock: str, marker: str, cap: int,
-         command: Sequence[str], deadline: int | None, repeat: float = HOLDER_REPEAT) -> NoReturn:
+         command: Sequence[str], deadline: int | None, repeat: float = HOLDER_REPEAT,
+         opened: Callable[[], None] | None = None) -> NoReturn:
     """``execution hold``: with a measurement (``hold_lock``), THE DRAIN and the marker's shared lock
     first, then the command under the guard, THE CO-TENANTS recorded before and after it."""
     recorder: Recorder | None = None
+    nested = False
     taken: list[tuple[int, float]] = []  # THE HOLDER RECORD: each slot drained, and when
 
     def counting() -> None:
@@ -987,6 +990,8 @@ def hold(box: str, inhibitor: Guard | None, why: str, hold_lock: str, marker: st
         # THE CO-TENANTS: every hold records its own pair, a nested one too, since nothing bounds
         # its life by its enclosing hold's (a backgrounded nested hold outlives it).
         recorder = Recorder(box, request, directory, os.getpgrp() if nested else None)
+    if opened is not None and not nested:
+        opened()
     run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline, recorder=recorder, on_start=counting)
 
 
@@ -1286,7 +1291,8 @@ def window_cutoff(holding: list[dict[str, Any]]) -> tuple[int, str]:
     seconds from then: the latest of each measurement's time left to its deadline as the listing
     that found the box held gave it (``deadline_left``, by the anchor's clock), or ``WINDOW_WAIT``
     for one that gives none; and what the lines say it is. A deadline already past
-    gives up at once. Windows that open later do not move it: a waiter's bound runs across
+    gives up at once. A pending window is shortened to its first hold opening in await_measurements.
+    Windows that open later do not move it: a waiter's bound runs across
     back-to-back windows, and the gap is where it gets out. The boundary: the time left is counted
     from when that listing reached this process, so the cutoff falls after the recorded deadline by
     the read's return latency (seconds over ssh). That errs only toward waiting longer for the
@@ -1461,6 +1467,8 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     else:
         shown, said = bound, "--wait-window"
     deadline = start + shown
+    pending = {jq_text(r.get("request_id")) for r in first
+               if "deadline" in r and "hold_opened_at" not in r} if bound == BY_DEADLINE else set[str]()
     progress = start + WINDOW_PROGRESS
     named: set[str] = set()
     unread: Unread | None = None
@@ -1475,6 +1483,13 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                 errline(f"{voice.prefix} {box}: no measurement holds {box} after {int(time.monotonic() - start)}s;"
                         f" {voice.proceed}")
             return records
+        if pending:
+            changed = [r for r in holding if jq_text(r.get("request_id")) in pending and "hold_opened_at" in r]
+            if changed:
+                left, reason = window_cutoff(holding)
+                deadline = min(deadline, time.monotonic() + left)
+                shown, said = max(0, math.ceil(deadline - start)), reason
+                pending.difference_update(jq_text(r.get("request_id")) for r in changed)
         for record in holding:
             identity = jq_text(record.get("request_id"))
             if identity not in named:
@@ -1729,6 +1744,7 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
                                     deadline, command, no_config=no_config)
     box = cfg.local_box or short_hostname()
     hold_lock, marker, cap = "", "", 0
+    opened: Callable[[], None] | None = None
     if request:
         # The marker names the box the slot reads it on, so it needs the name the slot has.
         if not cfg.local_box:
@@ -1741,6 +1757,13 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
             cli.say(f"{HOLD_PREFIX} REFUSED {box}: {shlex.quote(request)} is a correctness request;"
                     " run it as: execution slot --wait-window --cpu -- <command>; no hold taken")
             return 1
+        if not isinstance(records, Unread) and any(
+                r.get("request_id") == request and r.get("window") is True and "deadline" in r for r in records):
+            def publish_opening() -> None:
+                done = open_hold(cfg, request, box)
+                if done.rc != 0:
+                    raise cli.Exit(1, f"{HOLD_PREFIX} REFUSED {box}: cannot publish window opening; nothing started")
+            opened = publish_opening
         directory = os.path.join(cfg.path(cfg.slot_state), box)
         try:
             os.makedirs(directory, exist_ok=True)
@@ -1760,4 +1783,4 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
     except ValueError:
         repeat = HOLDER_REPEAT
     repeat = max(repeat, 0.1) if math.isfinite(repeat) else HOLDER_REPEAT
-    hold(box, inhibitor_path(cfg), why, hold_lock, marker, cap, command, deadline, repeat)
+    hold(box, inhibitor_path(cfg), why, hold_lock, marker, cap, command, deadline, repeat, opened=opened)
