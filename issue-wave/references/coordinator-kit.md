@@ -161,9 +161,11 @@ driver hands you as an attention line.
 2. **Per task:**
 
    ```
-   fleet-worker.sh wave prep <wave.json> <task> --base <sha> [--mode ...] [--legs ...]
+   fleet-worker.sh wave prep <wave.json> <task> --base <sha> --tier <tier> [--mode ...] [--legs ...]
    ```
 
+   `--tier` is the plan's difficulty tier for the task (`D1`, `D1/D2`, `D2`, `D2/D3` or `D3`),
+   written to the row as `tier=` so model comparisons read it there and not from the task part.
    It runs every check before it writes anything: the lease and the halt, rival PRs, an existing
    worktree or branch, registry ids, the board row, and the brief render. Then it makes the
    worktree, the standing reservations, the brief, `base.json` and the pending row.
@@ -182,7 +184,9 @@ driver hands you as an attention line.
    does this itself for a stale task in its queue.
 3. **Right before each spawn,** run `fleet-worker.sh gate --wait <seconds>`. Re-check for a
    rival PR by topic first: prep's check covers only the number and the branch. Then spawn the
-   worker and set `agent=` and `state=launched` on its row.
+   worker and set `agent=`, `model=` (the model you spawned it with, when its profile names
+   none) and `state=launched` on its row. The board stamps `launched_at` on that first
+   `state=launched` itself, as it does for `wave launch`.
 4. **Each worker's EXECUTION_REQUEST** is answered with one call:
 
    ```
@@ -295,7 +299,7 @@ driver hands you as an attention line.
 
    ```json
    {"capacity": {"mac-studio": 4, "rog-nv-linux": 2},
-    "tasks": [{"task": "t2130", "profile": "sol", "host": "mac-studio"},
+    "tasks": [{"task": "t2130", "profile": "sol", "host": "mac-studio", "tier": "D1"},
               {"task": "t2136", "profile": "sol", "host": "mac-studio", "after": ["t2130"]},
               {"task": "t2151", "profile": "sol", "host": "rog-nv-linux", "legs": ["minix-amd-linux"]},
               {"task": "t2140", "after": ["t2136"]}]}
@@ -315,13 +319,14 @@ driver hands you as an attention line.
    yourself is launched where and at what its prep recorded: on another host than its queue
    entry's, or with the main branch moved since, it is an attention line and yours. A launch
    that ended in doubt (a NOTE, an unknown outcome, a driver stopped inside it) is an attention
-   line too, and keeps its host's slot until you set its row `launched` or close it. You may add
-   tasks to the file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
+   line too, and keeps its host's slot until you set its row `launched` or close it. An entry's
+   `tier` is passed to prep as `--tier` (a native entry's cue names it for your own prep); give
+   every entry one. You may add tasks to the file while the driver runs. A task's queued `after` tasks are above it in the file; an `after`
    task that is not queued is one you launch yourself (a native worker's).
 
    A native task is queued for its cue, not its launch: an entry under a native profile, or with
    no profile in a wave whose own workers are native (`t2140` above), taking only `task`,
-   `profile` and `after`. The driver never prepares, launches or counts it. When it is due (its
+   `profile`, `after` and `tier`. The driver never prepares, launches or counts it. When it is due (its
    `after` tasks merged, launches not halted, the gate open), the driver writes one attention
    line, `<task> is due: launch it`, once: its ledger line `cued` keeps a restarted driver from
    repeating it. A cue takes no tick's launch. Launch the task yourself (steps 2 and 3); a CLI task

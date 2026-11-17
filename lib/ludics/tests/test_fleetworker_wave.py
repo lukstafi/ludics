@@ -590,7 +590,7 @@ class MixedWave(WaveDirCase):
 
     def test_a_cli_task_on_another_box_is_prepared_and_nothing_is_made_or_reserved(self) -> None:
         with self.world():
-            rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")
+            rc, out, err = self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box", "--tier", "D1/D2")
         self.assertEqual(rc, 0, out + err)
         self.assertIn("worktree /home/u/repo-worktrees/w1-42 branch codex/w1-42", out)
         self.assertIn("standing wv-t42-far-iterate wv-t42-gpu-box-iterate (a CLI worker on far, nothing made or reserved yet: wave launch starts it)", out)
@@ -609,7 +609,7 @@ class MixedWave(WaveDirCase):
                                             "repository": "o/staging", "issue": "o/up#42"})
         board = self.shim_calls[0]
         for want in ("transport=cli", "kind=codex", "agent_host=far", "exec_hosts=far,gpu-box", "brief_host=mac", "model=gpt-6.1-sol/medium",
-                     "worktree=/home/u/repo-worktrees/w1-42", "runs=/home/u/wave-scratch/wv/t42/runs", "state=pending"):
+                     "tier=D1/D2", "worktree=/home/u/repo-worktrees/w1-42", "runs=/home/u/wave-scratch/wv/t42/runs", "state=pending"):
             self.assertIn(want, board)
         with open(os.path.join(self.wavedir, "briefs", "brief-t42.md")) as f:
             self.assertIn("/home/u/repo-worktrees/w1-42 on codex/w1-42", f.read())
@@ -634,10 +634,14 @@ class MixedWave(WaveDirCase):
             self.assertEqual(rc, 0, out)
             self.assertTrue(os.path.isdir(os.path.join(self.wavedir, "scratch", "t42", "runs")), "a local host's scratch is made")
             self.assertFalse(os.path.lexists(os.path.join(self.dir, "repo-worktrees", "w1-42")))
+            board = [c for c in self.shim_calls if c[:2] == ["board", "set"]]
+            self.assertEqual(len(board), 1)
+            self.assertFalse(any(word.startswith("tier=") for word in board[0]), "a task prepared with no --tier has no tier= on its row")
             self.shim_calls.clear()
-            rc, out, _ = self.prep("t43", "--base", "main", "--profile", "opus")
+            rc, out, _ = self.prep("t43", "--base", "main", "--profile", "opus", "--tier", "D3")
             self.assertEqual(rc, 0, out)
             self.assertEqual([c[:2] for c in self.shim_calls], [["execution", "run"], ["board", "set"]])
+            self.assertIn("tier=D3", self.shim_calls[1], "a native task's row takes its tier as a CLI task's does")
             self.assertEqual(git("-C", os.path.join(self.dir, "repo-worktrees", "w1-43"), "branch", "--show-current"), "claude/w1-43")
 
     def test_a_file_another_task_wrote_is_never_overwritten(self) -> None:
@@ -708,7 +712,10 @@ class MixedWave(WaveDirCase):
                           (["--host", "far"], "--host far needs a cli transport: a subagent worker runs on the agent host, mac"),
                           (["--profile", "opus", "--host", "far"], "--host far needs a cli transport"),
                           (["--profile", "sol", "--host", "rog"], "--host names 'rog', which the wave file's hosts do not (it has: far)"),
-                          (["--profile", "sol", "--host", "gpu-box", "--legs", "gpu-box"], "--host names 'gpu-box'")):
+                          (["--profile", "sol", "--host", "gpu-box", "--legs", "gpu-box"], "--host names 'gpu-box'"),
+                          (["--tier", "D4"], "--tier is one of D1, D1/D2, D2, D2/D3, D3, not 'D4'"),
+                          (["--tier", "2"], "--tier is one of"),
+                          (["--tier", ""], "--tier is one of D1, D1/D2, D2, D2/D3, D3, not ''")):
             rc, _, err = self.prep("t42", "--base", "main", *args)
             self.assertEqual(rc, 2, args)
             self.assertIn(why, err)
@@ -3287,7 +3294,7 @@ class Queue(DriveCase):
 
     def test_the_first_due_task_is_prepared_at_the_fetched_tip_and_launched(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far", "legs": ["gpu-box"], "mode": "paired"},
-                   {"task": "t51", "profile": "sol", "host": "mac", "issue": "777"})
+                   {"task": "t51", "profile": "sol", "host": "mac", "issue": "777", "tier": "D1/D2"})
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
@@ -3298,7 +3305,8 @@ class Queue(DriveCase):
             self.assertIn("DRIVE t50 launch: launch answered: WAVE LAUNCH t50: launched far/w1-50", out)
             self.rows = [row("t50")]  # launched: its row is live
             self.once()
-            self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--issue", "777"],
+            self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--issue", "777",
+                                                "--tier", "D1/D2"],
                                                ["wave", "launch", self.path, "t51"]], "one launch a tick, in file order; the agent host takes no --host")
             self.rows = [row("t50"), row("t51", agent_host="mac")]
             self.state = "RUNNING"
@@ -3479,7 +3487,7 @@ class Queue(DriveCase):
 
     def test_a_native_entry_is_cued_once_when_due_and_never_prepared_launched_or_counted(self) -> None:
         # t53 names a native profile, t54 none in a wave whose own workers are native; t55 is a CLI task after t53.
-        self.queue({"task": "t53", "profile": "opus", "after": ["t42"]}, {"task": "t54", "after": ["t42"]},
+        self.queue({"task": "t53", "profile": "opus", "after": ["t42"], "tier": "D2/D3"}, {"task": "t54", "after": ["t42"]},
                    {"task": "t55", "profile": "sol", "host": "far", "after": ["t53"]}, capacity={"far": 1})
         self.state = "RUNNING"
         gates = lambda: [c for c in self.calls if c[0] == "gate"]  # noqa: E731
@@ -3494,8 +3502,9 @@ class Queue(DriveCase):
             self.rc = {}
             out = self.once()[1]
             self.assertIn("DRIVE ATTENTION t53 launch: t53 is due: launch it (its after tasks t42 merged, launches not halted, the launch"
-                          " gate open): wave prep, then gate --wait right before the spawn", out)
-            self.assertIn("DRIVE ATTENTION t54 launch: t54 is due: launch it", out)
+                          " gate open): wave prep --tier D2/D3, then gate --wait right before the spawn", out)
+            self.assertIn("DRIVE ATTENTION t54 launch: t54 is due: launch it (its after tasks t42 merged, launches not halted, the launch"
+                          " gate open): wave prep, then gate --wait right before the spawn", out, "an entry with no tier names none")
             self.assertNotIn("no row or queue entry", out, "a CLI task after a native entry waits on its row, untold")
             self.assertEqual((self.launched(), len(gates())), ([], 1), "nothing prepared or launched, and one gate read for both cues")
             for rows in ([row("t42", state="merged #7")], [row("t42", state="merged #7"), row("t54", state="pending", transport="subagent")]):
@@ -3776,7 +3785,11 @@ class Queue(DriveCase):
                                          ([{"task": "t50", "profile": "sol"}], None, "takes task, profile, host"),
                                          ([good, good], None, "is queued twice"), ([{**good, "task": "5x"}], None, "is no task id"),
                                          ([{**good, "profile": "opus"}], None, "is a native entry, which takes task and optionally"
-                                                                               " profile, after: the driver prepares nothing for it"),
+                                                                               " profile, after, tier: the driver prepares nothing for it"),
+                                         ([{**good, "tier": "D4"}], None, "tier is one of D1, D1/D2, D2, D2/D3, D3, not 'D4'"),
+                                         ([{**good, "tier": ""}], None, "tier is one of"),
+                                         ([{**good, "tier": 2}], None, "its values are text"),
+                                         ([{"task": "t53", "profile": "opus", "tier": "d2"}], None, "tier is one of"),
                                          ([{"task": "t50", "legs": ["gpu-box"]}], None, "is a native entry, which takes task"),
                                          ([{**good, "profile": "astra"}], None, "profile 'astra' is no profile of the wave file"),
                                          ([{**good, "host": "rog"}], None, "host 'rog' has no capacity"),
