@@ -1467,8 +1467,13 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     else:
         shown, said = bound, "--wait-window"
     deadline = start + shown
+    # Each original blocker keeps its own clock: opening one must not restart another's hour,
+    # or import a later window from a subsequent read.
+    cutoffs = {jq_text(r.get("request_id")): (start + left, reason)
+               for r in first for left, reason in [window_cutoff([r])]} if bound == BY_DEADLINE else {}
     pending = {jq_text(r.get("request_id")) for r in first
-               if "deadline" in r and r.get("hold_opened_at") is None} if bound == BY_DEADLINE else set[str]()
+               if "deadline" in r and "hold_opened_at" in r and r["hold_opened_at"] is None
+               } if bound == BY_DEADLINE else set[str]()
     progress = start + WINDOW_PROGRESS
     named: set[str] = set()
     unread: Unread | None = None
@@ -1486,9 +1491,12 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
         if pending:
             changed = [r for r in holding if jq_text(r.get("request_id")) in pending and r.get("hold_opened_at") is not None]
             if changed:
-                left, reason = window_cutoff(holding)
-                deadline = time.monotonic() + left
-                shown, said = max(0, math.ceil(deadline - start)), reason
+                now = time.monotonic()
+                for record in changed:
+                    left, reason = window_cutoff([record])
+                    cutoffs[jq_text(record.get("request_id"))] = (now + left, reason)
+                deadline, said = max(cutoffs.values(), key=lambda cutoff: cutoff[0])
+                shown = max(0, math.ceil(deadline - start))
                 pending.difference_update(jq_text(r.get("request_id")) for r in changed)
         for record in holding:
             identity = jq_text(record.get("request_id"))

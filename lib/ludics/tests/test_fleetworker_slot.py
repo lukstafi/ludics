@@ -951,7 +951,7 @@ class WindowDeadline(unittest.TestCase):
                               r" \(--wait-window, to measurement win's deadline \S+\); no slot taken\n\Z")
 
     def test_a_pending_windows_first_opening_shortens_the_crash_bound(self) -> None:
-        pending = measurement("win", due_in=3660)
+        pending = {**measurement("win", due_in=3660), "hold_opened_at": None}
         opened = {**measurement("win", due_in=60), "hold_opened_at": "2026-11-17T00:00:00+00:00"}
         clock = [0.0]
 
@@ -966,7 +966,7 @@ class WindowDeadline(unittest.TestCase):
         self.assertIn("after 60s", out)
 
     def test_a_pending_window_follows_its_own_opening_even_near_the_provisional_bound(self) -> None:
-        pending = measurement("win", due_in=1)
+        pending = {**measurement("win", due_in=1), "hold_opened_at": None}
         opened = {**measurement("win", due_in=60), "hold_opened_at": "2026-11-17T00:00:00+00:00"}
         clock = [0.0]
 
@@ -979,6 +979,33 @@ class WindowDeadline(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(clock[0], 60, "the original hold opening gets its full budget, once")
         self.assertIn("after 60s", out)
+
+    def test_an_opening_updates_only_its_original_blockers_cutoff(self) -> None:
+        pending = {**measurement("a", due_in=3660), "hold_opened_at": None}
+        opened = {**measurement("a", due_in=60), "hold_opened_at": "2026-11-17T00:00:00+00:00"}
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        # An original blocker without a deadline keeps its original hour. A later window
+        # contributes no cutoff at all, even when it shares the read that observes A opening.
+        for original_other, expected in ((True, 3600), (False, 3060)):
+            with self.subTest(original_other=original_other):
+                clock = [0.0]
+                other = measurement("m") if original_other else measurement("b", due_in=9000)
+                first = [pending, other] if original_other else [pending]
+
+                def read(*_args: object) -> list[dict[str, Any]]:
+                    clock[0] = max(clock[0], 3000.0)
+                    return [opened, other]
+
+                def nap(seconds: float) -> None:
+                    clock[0] += seconds
+
+                with mock.patch.object(slot.time, "monotonic", side_effect=lambda: clock[0]), \
+                        mock.patch.object(slot.time, "sleep", side_effect=nap), \
+                        mock.patch.object(slot, "window_poll", return_value=300), \
+                        mock.patch.object(slot, "read_registry", side_effect=read), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(await_measurements(cfg, "testbox", first, slot.BY_DEADLINE, ["true"]), 1)
+                self.assertEqual(clock[0], expected, "only A's first opening may change A's cutoff")
 
     def test_a_later_window_does_not_move_the_cutoff(self) -> None:
         # Frozen at the start: the next window's later deadline is the gap's to let the waiter out of.

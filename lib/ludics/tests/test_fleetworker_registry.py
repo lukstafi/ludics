@@ -976,22 +976,23 @@ class WindowDeadline(RegistryCase):
     def window(self, identity: str = "w", extra: dict[str, object] | None = None) -> tuple[int, Any, str]:
         return self.call("window", {"box": "mac", "request": request(identity, kind="measurement"), **(extra or {})})
 
-    def test_the_window_records_its_deadline_from_its_opening(self) -> None:
+    def test_a_pending_window_records_its_provisional_deadline(self) -> None:
         before = datetime.now(timezone.utc)
         rc, out, _ = self.window(extra={"deadline": 7200})
         self.assertEqual((rc, out["deadline"]), (0, 7200))
         due = datetime.fromisoformat(out["deadline_at"])
-        self.assertLessEqual(abs((due - before).total_seconds() - 10800), 5)
+        provisional = registry.WINDOW_START_WAIT + 7200
+        self.assertLessEqual(abs((due - before).total_seconds() - provisional), 5)
         self.assertNotIn("deadline", out["request"], "beside the request, never in it")
         rc, listed, _ = self.call("list", {"active": True, "compact": True})
         self.assertEqual((rc, listed[0]["deadline_at"]), (0, out["deadline_at"]))
         # The listing gives the time left by the anchor's clock (round 1 of #771); the record keeps none.
-        self.assertTrue(10790 <= listed[0]["deadline_left"] <= 10800, listed[0]["deadline_left"])
+        self.assertTrue(provisional - 10 <= listed[0]["deadline_left"] <= provisional, listed[0]["deadline_left"])
         self.assertNotIn("deadline_left", out)
         with open(os.path.join(self.root, "executions", "w.json")) as f:
             self.assertNotIn("deadline_left", json.load(f))
         rc, waited, _ = self.call("wait", {"waiter": {"box": "mac", "id": "r-1", "command": "x", "ttl": 30}})
-        self.assertTrue(10790 <= waited[0]["deadline_left"] <= 10800)
+        self.assertTrue(provisional - 10 <= waited[0]["deadline_left"] <= provisional)
         # A window without one records neither field.
         self.assertEqual(self.call("conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null",
                                                 "evidence": "unit"})[0], 0)
