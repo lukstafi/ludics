@@ -201,6 +201,14 @@ def open_hold(cfg: Config, request: str, box: str) -> Done:
     return run_on(cfg, cfg.anchor, script, args, capture=True)
 
 
+def pending_windows(cfg: Config) -> Done:
+    """The anchor's live pending-window marks as JSON (registry.py, THE PENDING WINDOW): a read, lease-free
+    as ``list`` is, writing nothing."""
+    script = prelude(cfg, cfg.anchor) + "shift 3\n" + registry_command(registry_source(), "{}")
+    args = ["EXECUTION", "x", "x", "pending-windows", "x", "x", PAYLOAD_ON_FD, cfg.boxes, cfg.slots]
+    return run_on(cfg, cfg.anchor, script, args, capture=True)
+
+
 def records_of(text: str) -> list[dict[str, Any]] | None:
     """A listing's records, or None when it is not a JSON array of objects."""
     try:

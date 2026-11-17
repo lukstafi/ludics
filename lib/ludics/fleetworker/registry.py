@@ -319,6 +319,48 @@ triage request, held to THE HALT'S TRIAGE. The mark is the lease holder's statem
 `integration` is: it does not verify that the command is a loop's suite, and `execution tip-run`'s
 own yield (a loop run yields to every non-standing record on its box) stays tip-run's.
 
+THE SLOT RESERVATION (ludics#1187). The cc integration loop owns one run-time slot of its home box
+for the wave: a coordinator's STANDING correctness record whose `run` payload carries
+`"slot_reservation": true` BESIDE the request (as THE CHECKOUT is, and for its reason); the record
+keeps it as a top-level `slot_reservation`, fixed for the record's life (a retry carries the same
+mark or is refused). `wave loop` takes it (waveloop.py, THE RESERVED SLOT). The mark's shape, checked
+on every new reservation: exactly `true`, only on `run`, only beside a standing `correctness` request
+of transport `coordinator` (which names its checkout, as every standing request does), on a box of
+at least two correctness slots, and at most one outstanding per box (a second is refused, naming
+the first). Under a halt it is admitted as a tip-run mark is (THE LOOP RUN UNDER A HALT): it is the
+loop the halt waits for. What it changes here is the cap. A tip-run that takes the reserved slot
+(`execution tip-run --reserved <id>`) says so: its `run` payload carries `"reserved_by": "<id>"`
+beside the request, only with the tip-run mark, naming the reservation outstanding on its host (any
+other is refused), kept as a top-level `reserved_by` fixed for the record's life. On a box holding
+an outstanding reservation, every other non-standing request counts the box's non-standing records
+but those `reserved_by` it against `cap - 1` (a GPU loop's tip-run, which takes an ordinary slot,
+counts and is counted as before), and the one `reserved_by` it is admitted past the count, its run
+bounded by the one reserved slot at run time (slot.py, THE RESERVED SLOT). A window
+suspends a reservation as it does any standing record. The boundary: the registry checks the mark's
+shape, its box and its one-per-box rule; that the holder is a loop, and which batch may take the
+slot, are `wave loop`'s and `execution slot`'s.
+
+THE PENDING WINDOW (ludics#1187). A new window whose box holds outstanding non-standing correctness
+records (a loop run, a worker's leg) cannot open, and once a loop runs back to back it would never
+find the gap between its runs. (A window behind another measurement is refused as before: one
+measurement per box, and a loop starts no run beside a measurement anyway.) So that one refusal is
+an answer instead, given once every other admission check has passed (the lane lock, the halt and
+THE HALT'S TRIAGE: a window they refuse is refused as before, and leaves no mark): the registry
+writes the mark `pending-windows/<request id, lowercased>.json`
+under the state root -- `{box, id, worker, seen, expires}`, `expires` PENDING_TTL seconds from this
+anchor's clock, replaced whole on each retry -- removes every mark already expired, and exits 3 with
+`{"pending": {"box", "id", "blockers", "expires"}}` on stdout and an `EXECUTION WINDOW <box>: ...
+pending` line on stderr. Nothing else is written: no record, no suspension. The window's opening
+removes its own mark (after its record is published; a crash between them leaves a mark that
+expires). `pending-windows` is a lease-free reader, SHARED like `list`: a JSON array of the live
+marks, each with `expires_left` in whole seconds by this anchor's clock, and a mark it cannot read
+(or a directory it cannot list) as `{"id", "unreadable": true}`, which a reader counts on every box. Its one reader is a
+reserved loop run's start (tiprun.py, THE RESERVED RUN), which yields to a live mark on its box; a
+running run is never touched by one. The boundary: a mark says a window was asked for and could not
+open, not that anyone will ask again; the retry is its coordinator's (`wave drive`'s RETRY, or by
+hand), and a mark nobody renews holds a loop back for PENDING_TTL seconds at most. Only that
+capacity refusal writes one: a halt, a lane lock, a gap answer and any other refusal write none.
+
 THE BACKEND MARK (after ludics-lite#793). `pinned_backend` is a top-level record field saying that
 the run's starter checked its command pins that backend: `execution tip-run` writes it on the
 running record of a GPU-loop run, which starts only once the command's pin is checked (tiprun.py,
@@ -585,6 +627,45 @@ def tip_run_ok(value: Any, action: str, request: Record) -> bool:
     return True
 
 
+def slot_reservation_ok(value: Any, action: str, request: Record) -> bool:
+    """THE SLOT RESERVATION's mark (see the header), by its shape: exactly true, only on `run`,
+    beside a coordinator's standing correctness request."""
+    if value is not True:
+        refuse("slot_reservation must be true when present")
+    if action != "run":
+        refuse("slot_reservation marks the integration loop's standing reservation, made by execution run only")
+    if request["kind"] != "correctness" or request["transport"] != "coordinator" or request.get("standing") is not True:
+        refuse("only a coordinator's standing correctness reservation can reserve a slot for the integration loop")
+    return True
+
+
+def reserved_by_ok(value: Any, tip_run: bool | None) -> str:
+    """THE SLOT RESERVATION's ``reserved_by`` (see the header), by its shape: a request id, beside the tip-run mark."""
+    if not (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value)):
+        refuse("reserved_by must be the slot reservation's request id")
+    if not tip_run:
+        refuse("reserved_by names the slot an execution tip-run loop run takes, so it goes with the tip_run mark only")
+    return value
+
+
+def check_slot_reservation(request: Record, records: dict[str, Record], slots_spec: str,
+                           canonical_hosts: set[str]) -> None:
+    """A NEW slot reservation's box (see the header): at least two slots, and none reserved there yet."""
+    host = request["execution_host"]
+    cap = correctness_slots(slots_spec, canonical_hosts).get(host, 1)
+    if cap < 2:
+        refuse(f"{host} has {cap} correctness slot: a slot reserved for the integration loop would leave its workers none")
+    held = reservation_on(records, host)
+    if held is not None:
+        refuse(f"{host} already holds the slot reservation {held['request_id']} (one per box); conclude it first")
+
+
+def reservation_on(records: dict[str, Record], host: str) -> Record | None:
+    """The outstanding slot reservation on ``host``, if any (THE SLOT RESERVATION)."""
+    return next((r for r in records.values() if r["state"] != "concluded" and r.get("slot_reservation") is True
+                 and r["request"]["execution_host"] == host), None)
+
+
 def halt_reason(marker: str) -> str:
     """The reason a HALT marker states now: its last line's text after the stamp (and id), or the
     line itself when it has neither shape."""
@@ -603,6 +684,9 @@ def check_halt_dispatch(record: Record, halt_identity: str | None, halt_text: st
         refuse("triage assignment belongs to a different or ended halt")
     if halt_identity is None or triage:
         return ""
+    if record.get("slot_reservation"):
+        return (f"; admitted under fleet halt {halt_identity} as the integration loop's slot reservation"
+                f" (THE SLOT RESERVATION); the halt's reason: {halt_reason(halt_text or '')}")
     if not record.get("tip_run"):
         refuse("fleet halted; ordinary dispatch refused")
     return (f"; admitted under fleet halt {halt_identity} as an execution tip-run loop run (the verdict the halt "
@@ -649,6 +733,10 @@ def validate_record(data: Any, path: Path) -> Record:
             refuse(f"invalid triage boxes: {path}")
     if "tip_run" in record and record["tip_run"] is not True:
         refuse(f"invalid tip_run mark: {path}")
+    if "slot_reservation" in record and (record["slot_reservation"] is not True or record["request"].get("standing") is not True):
+        refuse(f"invalid slot_reservation mark: {path}")
+    if "reserved_by" in record and not (isinstance(record["reserved_by"], str) and record.get("tip_run") is True):
+        refuse(f"invalid reserved_by: {path}")
     if "pinned_backend" in record:
         try:
             pinned_backend_ok(record["pinned_backend"], record["request"])
@@ -849,7 +937,7 @@ def check_lane_lock(host: str, map_spec: str, anchor: str, lab: str) -> None:
 
 
 def check_capacity(data: Record, records: dict[str, Record], canonical_hosts: set[str], slots_spec: str,
-                   window: bool = False) -> str | None:
+                   window: bool = False, reserved_by: str | None = None) -> str | None:
     """Refuse when the requested host cannot take this assignment beside the outstanding ones.
 
     Returns the open measurement window a standing request is queued behind, if any."""
@@ -886,6 +974,20 @@ def check_capacity(data: Record, records: dict[str, Record], canonical_hosts: se
         return None
     counted = [r for r in outstanding if not r["request"].get("standing")]
     cap = slots.get(host, 1)
+    reserved = reservation_on(records, host)
+    if reserved_by is not None and (reserved is None or reserved_by.lower() != reserved["request_id"].lower()):
+        refuse(f"reserved_by names {reserved_by}, which is no outstanding slot reservation on {host}"
+               f" ({reserved['request_id'] if reserved else 'none is'}{' is' if reserved else ''})")
+    if reserved is not None:
+        # THE SLOT RESERVATION: the run in the reserved slot is bounded by it, every other one by the rest.
+        if reserved_by is not None:
+            return None
+        mine = reserved["request_id"].lower()
+        counted = [r for r in counted if str(r.get("reserved_by", "")).lower() != mine]
+        if len(counted) >= cap - 1:
+            refuse(f"box owned by {owners} (correctness slots {len(counted)}/{cap - 1} on {host} taken; one more"
+                   f" is reserved for the integration loop by {reserved['request_id']})")
+        return None
     if len(counted) >= cap:
         refuse(f"box owned by {owners} (correctness slots {len(counted)}/{cap} on {host} taken)")
     return None
@@ -940,6 +1042,85 @@ def check_gap(host: str, gap: int, records: dict[str, Record], now: datetime, wa
               f"measurement {after} concluded on {host} {max(0, int(ago))}s ago, and batches are waiting for"
               f" {host} ({', '.join(waiting)}): they get {gap}s to take its slots before the next window"
               f" (ludics-lite#667, #719); {wait}s to go")
+
+
+PENDING_TTL = 1800  # seconds a pending window's mark holds a reserved loop back unless renewed
+
+
+class Pending(Gap):
+    """A new window its box's non-standing records keep from opening (THE PENDING WINDOW): marked, not
+    refused, an answer its coordinator retries."""
+
+
+def window_blockers(host: str, records: dict[str, Record]) -> list[str]:
+    """The outstanding non-standing correctness records on ``host`` a new window cannot open beside;
+    none while a measurement is outstanding there, whose window is refused as before (see the header)."""
+    outstanding = [r for r in records.values() if r["state"] != "concluded" and r["request"]["execution_host"] == host
+                   and not r["request"].get("standing")]
+    if any(r["request"]["kind"] == "measurement" for r in outstanding):
+        return []
+    return sorted(r["request_id"] for r in outstanding)
+
+
+def sweep_pending(directory: Path, now: datetime) -> None:
+    """Remove every pending-window mark already expired (an unreadable one is left for a person)."""
+    for path in directory.glob("*.json"):
+        try:
+            existing = as_object(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            continue
+        expires = waiter_time(existing.get("expires")) if existing is not None else None
+        if expires is not None and expires <= now:
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+
+
+def mark_pending(directory: Path, request: Record, identity: str, blockers: list[str], now: datetime) -> NoReturn:
+    """THE PENDING WINDOW's mark, written whole, then its answer (exit 3)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    sweep_pending(directory, now)
+    host = request["execution_host"]
+    expires = now + timedelta(seconds=PENDING_TTL)
+    mark = {"box": host, "id": identity, "worker": request["worker"], "seen": now.isoformat(), "expires": expires.isoformat()}
+    fd, temporary = tempfile.mkstemp(prefix=".pending-", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(mark, stream)
+            stream.write("\n")
+        os.replace(temporary, directory / (identity.lower() + ".json"))
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    raise Pending({"pending": {"box": host, "id": identity, "blockers": blockers, "expires": expires.isoformat()}},
+                  f"window {identity} pending: {', '.join(blockers)} outstanding on {host}, so it cannot open yet;"
+                  f" a reserved integration loop starts no new run there for {PENDING_TTL}s unless the window is asked"
+                  f" again; ask again once they conclude (THE PENDING WINDOW)")
+
+
+def live_pending(directory: Path, now: datetime) -> list[Record]:
+    """The live pending-window marks, each with ``expires_left`` by this clock. A mark this cannot read
+    is listed as a mark on no box, named by its file, so a reader can say so."""
+    if absent(directory):
+        return []
+    try:
+        names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
+    except OSError:
+        # Fail-closed, as fresh_waiters is: a directory it cannot list may hold live marks.
+        return [{"id": f"{directory} (unlistable)", "unreadable": True}]
+    marks: list[Record] = []
+    for path in (directory / name for name in names):
+        try:
+            data = as_object(json.loads(path.read_text()))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            data = None
+        expires = waiter_time(data.get("expires")) if data is not None else None
+        if data is None or expires is None or not isinstance(data.get("box"), str):
+            marks.append({"id": path.stem, "unreadable": True})
+        elif expires > now:
+            marks.append({**data, "expires_left": math.ceil((expires - now).total_seconds())})
+    return marks
 
 
 WAITER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -1123,7 +1304,7 @@ LOCK_WAIT = 120   # seconds an action waits for `executions.lock` before it is r
 SNAPSHOT_LOCKS: list[int] = []   # `executions.lock`, held until `run` returns (THE SNAPSHOT)
 WINDOW_START_WAIT = 3600  # bounded launch/drain allowance before a hold publishes its opening
 
-READERS = {"list", "wait"}   # the actions that take it SHARED; every other one takes it EXCLUSIVE
+READERS = {"list", "wait", "pending-windows"}   # the actions that take it SHARED; every other one EXCLUSIVE
 
 
 def lock_snapshot(root: Path, shared: bool) -> None:
@@ -1186,6 +1367,12 @@ def main(argv: list[str]) -> None:
                       load_records(directory))
         raw = json.dumps({key: value for key, value in payload.items() if key != "waiter"})
         action = "list"
+    if action == "pending-windows":
+        # THE PENDING WINDOW's reader: the live marks, nothing written.
+        if as_object(json.loads(raw)) != {}:
+            refuse("a pending-windows read takes the empty payload {}")
+        print(json.dumps(live_pending(Path(root) / "pending-windows", datetime.now(timezone.utc))))
+        return
     records = load_records(directory)
     if action == "list":
         options = as_object(json.loads(raw))
@@ -1276,7 +1463,11 @@ def main(argv: list[str]) -> None:
         triage_boxes: list[str] | None = data.get("triage_boxes")
         # THE LOOP RUN UNDER A HALT's mark rides beside the request too (see the header).
         tip_run: bool | None = data.get("tip_run")
-        request = {k: v for k, v in data.items() if k not in {"checkout", "triage_boxes", "tip_run"}}
+        # THE SLOT RESERVATION's mark rides beside the request as well (see the header).
+        slot_reservation: bool | None = data.get("slot_reservation")
+        reserved_by: str | None = data.get("reserved_by")
+        request = {k: v for k, v in data.items()
+                   if k not in {"checkout", "triage_boxes", "tip_run", "slot_reservation", "reserved_by"}}
         dispatch_evidence = ("measurement window opened: reserved and dispatched in one step (execution window)"
                              if action == "window" else "reserved and dispatched in one step (execution run)")
         if action in {"run", "window"}:
@@ -1294,6 +1485,10 @@ def main(argv: list[str]) -> None:
                 refuse(f"the window is for {window_box}, but the measurement names {request['execution_host']}")
         if "tip_run" in data:
             tip_run = tip_run_ok(tip_run, action, request)
+        if "slot_reservation" in data:
+            slot_reservation = slot_reservation_ok(slot_reservation, action, request)
+        if "reserved_by" in data:
+            reserved_by = reserved_by_ok(reserved_by, tip_run)
         if "triage_boxes" in data:
             triage_boxes = triage_boxes_ok(triage_boxes, request)
             for box in triage_boxes:
@@ -1313,6 +1508,12 @@ def main(argv: list[str]) -> None:
             if record.get("tip_run") != tip_run:
                 refuse(f"request_id already names a different tip_run mark ({json.dumps(record.get('tip_run'))});"
                        f" a record's tip_run mark is fixed when it is taken")
+            if record.get("slot_reservation") != slot_reservation:
+                refuse(f"request_id already names a different slot_reservation mark"
+                       f" ({json.dumps(record.get('slot_reservation'))}); a record's slot_reservation mark is fixed when it is taken")
+            if record.get("reserved_by") != reserved_by:
+                refuse(f"request_id already names a different reserved_by ({json.dumps(record.get('reserved_by'))});"
+                       f" a record's reserved_by is fixed when it is taken")
             if action == "reserve":
                 sync_directory(directory.parent)
                 sync_directory(directory)
@@ -1349,7 +1550,13 @@ def main(argv: list[str]) -> None:
             halted = halt_identity is not None
             if "triage_reason" in request and not halted:
                 refuse("triage reservations require an active halt")
-            queued = check_capacity(request, records, canonical_hosts, slots_spec, window=action == "window")
+            # THE PENDING WINDOW (see the header): the capacity refusal it replaces is answered last,
+            # once every other admission check (the lane lock, the halt and its triage) has passed.
+            blockers = window_blockers(request["execution_host"], records) if action == "window" else []
+            queued = None if blockers else check_capacity(request, records, canonical_hosts, slots_spec,
+                                                          window=action == "window", reserved_by=reserved_by)
+            if slot_reservation:
+                check_slot_reservation(request, records, slots_spec, canonical_hosts)
             if request["kind"] == "measurement":
                 check_lane_lock(request["execution_host"], map_spec, anchor, lab)
             if halted:
@@ -1357,10 +1564,12 @@ def main(argv: list[str]) -> None:
                     nonempty(request, ["triage_reason"])
                     # One explicitly named owner, not an unrestricted force flag (THE HALT'S TRIAGE).
                     check_triage(request, triage_boxes, records, halt_identity)
-                elif not tip_run:
+                elif not tip_run and not slot_reservation:
                     # The loop's own run is the verdict the halt waits for (THE LOOP RUN UNDER A HALT).
                     refuse("fleet halted; ordinary reservations refused (only the named triage_reason reservation"
                            " and an execution tip-run loop run are admitted)")
+            if blockers:
+                mark_pending(Path(root) / "pending-windows", request, identity, blockers, clock)
             if action == "window":
                 # Last of the admission checks: a gap answer is retried, and only a window every
                 # other check admits may wait for one.
@@ -1388,8 +1597,12 @@ def main(argv: list[str]) -> None:
                 record["triage_boxes"] = triage_boxes
             if tip_run:
                 record["tip_run"] = True
-            beside = {k: v for k, v in (("checkout", checkout), ("triage_boxes", triage_boxes), ("tip_run", tip_run))
-                      if v is not None}
+            if slot_reservation:
+                record["slot_reservation"] = True
+            if reserved_by is not None:
+                record["reserved_by"] = reserved_by
+            beside = {k: v for k, v in (("checkout", checkout), ("triage_boxes", triage_boxes), ("tip_run", tip_run),
+                                        ("slot_reservation", slot_reservation), ("reserved_by", reserved_by)) if v is not None}
             events.append(("reserve", {**request, **beside}))
         if dispatch:
             under_halt = check_halt_dispatch(record, halt_identity, halt_text)
@@ -1592,6 +1805,9 @@ def main(argv: list[str]) -> None:
         print(f"EXECUTION WINDOW {host}: {identity} concluded; restored "
               + ", ".join(f"{r['request_id']} ({r['state']})" for r in before), file=sys.stderr)
     if action == "window":
+        # THE PENDING WINDOW: the window is open, so its mark goes (after the record is published).
+        with contextlib.suppress(FileNotFoundError):
+            (Path(root) / "pending-windows" / (identity.lower() + ".json")).unlink()
         suspended = sorted(r["request_id"] for r in records.values()
                            if r.get("suspended_by") == identity and r["state"] == "suspended")
         print(f"EXECUTION WINDOW {host}: {identity} open; suspended "
@@ -1622,8 +1838,8 @@ def outcome(argv: list[str]) -> int:
     """`main`, its refusals and its gap answer said, and its status (`run`'s contract)."""
     try:
         main(argv)
-    except Gap as gap:
-        print(f"EXECUTION WINDOW {gap.answer['gap']['box']}: {gap}", file=sys.stderr)
+    except Gap as gap:   # a gap's answer, or THE PENDING WINDOW's (a Gap of its own)
+        print(f"EXECUTION WINDOW {next(iter(gap.answer.values()))['box']}: {gap}", file=sys.stderr)
         print(json.dumps(gap.answer, separators=(",", ":")))
         return 3
     except (ValueError, OSError, KeyError, TypeError) as exc:

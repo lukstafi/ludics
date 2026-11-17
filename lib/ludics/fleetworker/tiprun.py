@@ -27,7 +27,8 @@ In order, each step yielding rather than waiting:
     another loop run) refuses the run: a loop run is the lowest-priority correctness on the box, so it never takes
     a seat or a token a worker's leg was reserved for, and never stands between a measurement and
     its window. Standing reservations are a worker's iteration on its own agent host, whose batches
-    the slot below sees as they run.
+    the slot below sees as they run. A run with ``--reserved <id>`` yields far less (THE RESERVED
+    RUN, below).
  3. ``execution run`` reserves and dispatches it, with every check the registry makes (lease,
     halt and the two records it admits: its triage, and a run marked as this verb's -- the payload
     is sent with ``"tip_run": true`` beside the request, registry.py's THE LOOP RUN UNDER A HALT,
@@ -54,6 +55,32 @@ In order, each step yielding rather than waiting:
     holds no such line (the slot refused, or its registry read failed, and the command never ran);
     anything else at the bound is unsettled. Nothing else in the log is read: the command's own
     output follows that line, so it can neither start nor un-start the run.
+
+THE RESERVED RUN (ludics#1187). The cc integration loop owns one slot of its home box for the wave
+(registry.py, THE SLOT RESERVATION; ``wave loop`` takes it), and a run that names that standing
+record, ``--reserved <id>``, is a correctness batch like any other: it takes that slot and yields
+only to measurement. Its step 2, read off the same two registry reads, a fail-closed allowlist:
+  - the reservation: ``<id>`` must be an outstanding record of the execution host carrying
+    ``slot_reservation: true``; missing, concluded or on another box refuses the run, and a
+    ``suspended`` one (a measurement window holds the box) refuses it as the window's;
+  - the box's other outstanding records: a ``measurement`` refuses it (a window or not), and so
+    does another loop run (``tip_run``) that is not yet ``running`` or runs in this ``--checkout``
+    (its ``remote_checkout``, compared as THE CHECKOUT compares, trailing separators dropped): two
+    runs never share a checkout. Every other record -- a worker's leg,
+    an assigned suite, a loop run in another checkout -- is passed over;
+  - before the reservation only, the anchor's live pending-window marks (registry.py, THE PENDING
+    WINDOW): one naming this box refuses the run, so a window asked for while the loop ran opens
+    before its next run; an unreadable mark counts on every box, and a read that fails refuses the
+    run too (fail-closed toward the measurement, whose window the loop must not outrun). A mark made
+    between that read and the reservation is seen by the window's next retry, which this run's
+    record holds back for at most this run: the cost is one run, never two.
+Its ``execution run`` payload carries ``"reserved_by": "<id>"`` beside the request, so the registry
+admits it past the box's ordinary cap, and only it (registry.py, THE SLOT RESERVATION). A refusal
+is ``TIP-RUN NOT STARTED`` (exit 1), concluded as any. The far side passes ``--reserved
+<id>`` to its ``execution slot``, which takes only the reserved slot (slot.py, THE RESERVED SLOT),
+still ``--wait 0``: a slot held by a batch that took it before the reservation stood refuses the
+run, and the loop tries again at its next start. A running run is never stopped by any of this. A
+run without ``--reserved`` -- a GPU loop's -- yields as step 2 says, unchanged.
 
 Started, the record is moved to ``running`` with the revision, checkout, handle and log; not
 started, anything reserved is concluded ``not-launched`` with the reason as evidence, so a box the
@@ -222,7 +249,7 @@ from typing import Any, cast
 from ludics import bgrun, cli, proc
 from ludics.fleetworker.config import Config, fetch_timeout_s
 from ludics.fleetworker import lease, revision
-from ludics.fleetworker.execution import field, gh_timeout, listing, record_of, records_of
+from ludics.fleetworker.execution import field, gh_timeout, listing, pending_windows, record_of, records_of, same_checkout
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.leg import BASE, FLOOR, PIN, min_free_gib
 from ludics.fleetworker.preflight import refresh_box
@@ -239,7 +266,8 @@ from ludics.fleetworker.transport import (
 )
 
 USAGE = (
-    "execution tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] -- <command> [args...],"
+    "execution tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> [--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop]"
+    " [--reserved <id>] -- <command> [args...],"
     " or tip-run --wait <id> [--within <s>] [--tip <branch>]"
 )
 SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -258,9 +286,9 @@ HALT_TEST = re.compile(r"(?<![^\s(,;])test=([A-Za-z0-9_@./+-]+)")
 # fleet-worker.sh to run there (empty: the box's skills checkout's), cpu|gpu, the settle bound, the
 # backend a GPU-loop purpose names (empty: none, nothing checked), the free-space floor in GiB
 # (FLEET_LEG_MIN_FREE_GIB, 0 for none), the base branch (empty: origin/HEAD's) and the flag it came
-# from, the fetch bound in seconds (FLEET_FETCH_TIMEOUT), then the command. Prints `base=` (THE BASE's words), `dir=` and `slot=held|ended|unsettled`
+# from, the fetch bound in seconds (FLEET_FETCH_TIMEOUT), the slot reservation (empty: none), then the command. Prints `base=` (THE BASE's words), `dir=` and `slot=held|ended|unsettled`
 # (and `said=` for ended), or one TIP-RUN REFUSED line, exit 1, when nothing was started.
-FAR = PIN + FLOOR + BASE + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7" min_free="$8" base="$9" base_how="${10}" fetch_timeout="${11}"; shift 11
+FAR = PIN + FLOOR + BASE + r"""co="$1" sha="$2" runs="$3" fw="$4" kind="$5" settle="$6" backend="$7" min_free="$8" base="$9" base_how="${10}" fetch_timeout="${11}" reserved="${12}"; shift 12
 refuse() { printf '%s\n' "TIP-RUN REFUSED: $*"; exit 1; }
 [ -n "$runs" ] || runs="$(expand_tilde "$STATE")/tip-runs"
 [ -n "$fw" ] || fw="$(expand_tilde "$SKILLS_REPO")/issue-wave/scripts/fleet-worker.sh"
@@ -318,6 +346,7 @@ head=$(git rev-parse HEAD 2>/dev/null)
 [ -z "$(git status --porcelain </dev/null 2>/dev/null)" ] || refuse "$co on $BOX is not clean after checking out $sha"
 unset FLEET_SLOT_HELD FLEET_MEASUREMENT_HELD
 if [ "$kind" = cpu ]; then set -- --cpu -- "$@"; else set -- -- "$@"; fi
+[ -z "$reserved" ] || set -- --reserved "$reserved" "$@"
 dir=$(fleet_worker "$fw" execution slot --bg "$runs" --wait 0 "$@" </dev/null) || refuse "execution slot --bg did not start the run (above)"
 case "$dir" in /*) [ -d "$dir" ] || refuse "execution slot --bg printed '$dir', not a run directory" ;; *) refuse "execution slot --bg printed '$dir', not a run directory" ;; esac
 held='^EXECUTION SLOT [^ ]+: slot [0-9]+ of [0-9]+(, GPU token [0-9]+ of [0-9]+)? held for: '
@@ -347,6 +376,7 @@ class TipRunArgs:
     id_prefix: str = ""
     base: str = ""
     full_loop: bool = False  # THE BACKEND PIN's coverage: the caller ran the loop's full command
+    reserved: str = ""  # THE RESERVED RUN: the slot reservation the run takes its slot under
 
 
 @dataclass(frozen=True)
@@ -378,7 +408,7 @@ def parse_wait(args: list[str]) -> WaitArgs:
 
 
 def parse(args: list[str]) -> TipRunArgs:
-    payload, checkout, runs, cpu, tip, id_prefix, base, full_loop = "", "", "", False, "", "", "", False
+    payload, checkout, runs, cpu, tip, id_prefix, base, full_loop, reserved = "", "", "", False, "", "", "", False, ""
     i = 0
     while i < len(args):
         arg = args[i]
@@ -395,6 +425,12 @@ def parse(args: list[str]) -> TipRunArgs:
             if i + 1 >= len(args) or not IDENTITY.fullmatch(args[i + 1]):
                 die("execution tip-run: --id-prefix takes a request id's leading part ([A-Za-z0-9][A-Za-z0-9._-]*), e.g. <wave>-gpu-<box>")
             id_prefix = args[i + 1]
+            i += 2
+            continue
+        if arg == "--reserved":
+            if i + 1 >= len(args) or not IDENTITY.fullmatch(args[i + 1]):
+                die("execution tip-run: --reserved takes the slot reservation's request id")
+            reserved = args[i + 1]
             i += 2
             continue
         if arg in ("--checkout", "--runs"):
@@ -422,7 +458,7 @@ def parse(args: list[str]) -> TipRunArgs:
             named = base or tip
             if named and not (ref_name_ok(named) and revision.git_branch_ok(named)):
                 die(f"execution tip-run: {'--base' if base else '--tip'} names the base, so it must be a branch name of origin, not {named!r}")
-            return TipRunArgs(payload, checkout, runs, cpu, command, tip, id_prefix, base, full_loop)
+            return TipRunArgs(payload, checkout, runs, cpu, command, tip, id_prefix, base, full_loop, reserved)
         elif not payload and not arg.startswith("-"):
             payload = arg
         else:
@@ -491,6 +527,45 @@ def yielding_to(records: list[dict[str, Any]], box: str, request_id: str) -> lis
         and field(r, "request", "standing") is not True
         and r.get("request_id") != request_id
     ]
+
+
+def reserved_refusal(records: list[dict[str, Any]], box: str, request_id: str, checkout: str, reserved: str) -> str | None:
+    """THE RESERVED RUN's step 2 off one registry read: why the run does not start, or None."""
+    holder = next((r for r in records if str(r.get("request_id")).lower() == reserved.lower()), None)
+    if (holder is None or holder.get("state") == "concluded" or holder.get("slot_reservation") is not True
+            or field(holder, "request", "execution_host") != box):
+        return f"{reserved} is no outstanding slot reservation on {box} (THE RESERVED RUN)"
+    if holder.get("state") == "suspended":
+        return f"its slot reservation {reserved} is suspended by {holder.get('suspended_by')}, a measurement window holding {box}"
+    busy = [f"{r.get('request_id')} ({r.get('state')})" for r in records
+            if r.get("state") != "concluded" and field(r, "request", "execution_host") == box
+            and r.get("request_id") != request_id
+            and (field(r, "request", "kind") == "measurement"
+                 or (r.get("tip_run") is True and (r.get("state") != "running"
+                                                   or same_checkout(str(r.get("remote_checkout") or ""), checkout))))]
+    if busy:
+        return (f"{box} has {', '.join(busy)} outstanding; a reserved loop run yields to a measurement and to another"
+                f" loop run in {checkout} or still starting")
+    return None
+
+
+def pending_on(cfg: Config, box: str) -> str | None:
+    """THE RESERVED RUN's pending-window read: why the run does not start, or None."""
+    done = pending_windows(cfg)
+    try:
+        decoded: Any = json.loads(done.out) if done.rc == 0 and not done.unreachable else None
+    except ValueError:
+        decoded = None
+    if not isinstance(decoded, list) or not all(isinstance(m, dict) for m in cast(list[Any], decoded)):
+        return (f"the anchor's pending windows could not be read (exit {done.rc}), so whether a window waits for {box}"
+                " is unknown; a reserved loop run never outruns one")
+    marks = cast(list[dict[str, Any]], decoded)
+    named = [f"{m.get('id')}" + (" (unreadable)" if m.get("unreadable") else f" ({m.get('worker')}, {m.get('expires_left')}s left)")
+             for m in marks if m.get("unreadable") or m.get("box") == box]
+    if named:
+        return (f"pending window {', '.join(named)} waits for {box}; a reserved loop run starts no new run before it opens"
+                " (registry.py, THE PENDING WINDOW)")
+    return None
 
 
 def far_facts(text: str) -> dict[str, str]:
@@ -581,14 +656,22 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     if held is not None:
         cli.say(f"TIP-RUN NOT STARTED {request_id}: the registry already holds it ({held.get('state')}); a loop run takes a fresh request id")
         return 1
-    busy = yielding_to(records, box, request_id)
-    if busy:
-        cli.say(f"TIP-RUN NOT STARTED {request_id}: {box} has {', '.join(busy)} outstanding; a loop run yields to it; nothing reserved")
-        return 1
+    if parsed.reserved:
+        why = reserved_refusal(records, box, request_id, parsed.checkout, parsed.reserved) or pending_on(cfg, box)
+        if why:
+            cli.say(f"TIP-RUN NOT STARTED {request_id}: {why}; nothing reserved")
+            return 1
+    else:
+        busy = yielding_to(records, box, request_id)
+        if busy:
+            cli.say(f"TIP-RUN NOT STARTED {request_id}: {box} has {', '.join(busy)} outstanding; a loop run yields to it; nothing reserved")
+            return 1
 
     # The request is staged anew, marked beside it as this verb's (registry.py, THE LOOP RUN UNDER A
     # HALT: a halt admits it, the verdict the halt waits for), with the revision and id resolved above.
-    rc = fleet_worker(cfg, ["execution", "run"], {**fields, "tip_run": True})
+    # THE RESERVED RUN: a run in the reserved slot names it beside the request (registry.py, THE SLOT RESERVATION).
+    rc = fleet_worker(cfg, ["execution", "run"], {**fields, "tip_run": True,
+                                                   **({"reserved_by": parsed.reserved} if parsed.reserved else {})})
     if rc != 0:
         if rc == 4:
             cli.say(f"TIP-RUN UNKNOWN {request_id}: the reservation's outcome is unknown (above); reconcile it")
@@ -603,9 +686,14 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     records = records_of(listed.out) if listed.rc == 0 else None
     if records is None:
         return not_started(cfg, request_id, f"the registry could not be re-read after the reservation, so whether {box} is still free is unknown", nothing)
-    busy = yielding_to(records, box, request_id)
-    if busy:
-        return not_started(cfg, request_id, f"{box} has {', '.join(busy)} outstanding, reserved beside this run; a loop run yields to it", nothing)
+    if parsed.reserved:
+        why = reserved_refusal(records, box, request_id, parsed.checkout, parsed.reserved)
+        if why:
+            return not_started(cfg, request_id, f"{why}, read once this run was reserved", nothing)
+    else:
+        busy = yielding_to(records, box, request_id)
+        if busy:
+            return not_started(cfg, request_id, f"{box} has {', '.join(busy)} outstanding, reserved beside this run; a loop run yields to it", nothing)
 
     # The box's own fleet-worker.sh runs the slot, so it must be the one `execution run` just tried
     # to bring current: that refresh reports and never fails the dispatch, so it is asked again
@@ -616,7 +704,8 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
     kind = "cpu" if parsed.cpu else "gpu"
     backend = loop_backend(fields)
     base, base_how = (parsed.base, "--base") if parsed.base else (parsed.tip, "--tip") if parsed.tip else ("", "")
-    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, min_free, base, base_how, fetch_timeout, *parsed.command]
+    far = [parsed.checkout, sha, parsed.runs, fw, kind, str(SETTLE), backend, min_free, base, base_how, fetch_timeout,
+           parsed.reserved, *parsed.command]
     done = run_on(cfg, box, prelude(cfg, box) + FAR, far, capture=True)
     text = done.out.rstrip("\n")
     if done.unreachable:

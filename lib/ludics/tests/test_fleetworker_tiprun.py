@@ -280,6 +280,124 @@ class Race(unittest.TestCase):
         self.assertIn("the skills checkout on rog-nv-linux was not refreshed", out.getvalue())
 
 
+def reservation(request_id: str = "w-cc-slot-macbook-pro-1", state: str = "launching",
+                host: str = "macbook-pro", **extra: object) -> dict[str, Any]:
+    return {**outstanding(request_id, state, host, standing=True, kind="correctness"), "slot_reservation": True, **extra}
+
+
+class ReservedRun(unittest.TestCase):
+    """THE RESERVED RUN (ludics#1187): the conformance cases of the maintainer's decision -- the box's
+    slots full but the reserved one, a held window, a pending window at the loop's next start -- and
+    the GPU loops' yield beside it, unchanged."""
+
+    BOX = "macbook-pro"
+    RID = "w-cc-7"
+
+    def go(self, before: list[dict[str, Any]], pending: str = "[]", after: list[dict[str, Any]] | None = None,
+           reserved: str = "w-cc-slot-macbook-pro-1", pending_rc: int = 0,
+           ) -> tuple[int, str, list[list[str]], list[str], list[dict[str, Any]]]:
+        cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
+        calls: list[list[str]] = []
+        bodies: list[dict[str, Any]] = []
+        far_args: list[str] = []
+        mine = outstanding(self.RID, host=self.BOX)
+
+        def listing(_cfg: object) -> Done:
+            return Done(0, json.dumps(before if not calls else (after if after is not None else [*before, mine])))
+
+        def worker(_cfg: object, args: list[str], body: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
+            calls.append(args)
+            bodies.append(body or {})
+            return 0
+
+        def on_box(_cfg: object, _box: str, _script: str, args: list[str], capture: bool = False) -> Done:
+            far_args.extend(args)
+            return Done(0, "dir=/s/run-1\nslot=held\n")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = os.path.join(tmp, "req.json")
+            with open(payload, "w", encoding="utf-8") as f:
+                json.dump(request(request_id=self.RID, execution_host=self.BOX), f)
+            out = io.StringIO()
+            with mock.patch.object(tiprun, "listing", side_effect=listing), \
+                    mock.patch.object(tiprun, "pending_windows", return_value=Done(pending_rc, pending)), \
+                    mock.patch.object(tiprun, "fleet_worker", side_effect=worker), \
+                    mock.patch.object(tiprun, "refresh_box", return_value=0), \
+                    mock.patch.object(tiprun, "run_on", side_effect=on_box), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                flags = ["--reserved", reserved] if reserved else []
+                rc = tiprun.cmd_tip_run(cfg, [payload, *flags, "--checkout", "/co", "--cpu", "--", "true"])
+        return rc, out.getvalue(), calls, far_args, bodies
+
+    def busy_box(self) -> list[dict[str, Any]]:
+        """Every other slot's worth of work on the box: a worker's leg, an assigned suite, iterating workers."""
+        return [reservation(), outstanding("leg-1", host=self.BOX), outstanding("suite-2", "running", self.BOX),
+                outstanding("iterate-3", host=self.BOX, standing=True), outstanding("iterate-4", host=self.BOX, standing=True)]
+
+    def test_slots_full_but_the_reserved_one_the_reserved_run_starts_and_takes_it(self) -> None:
+        rc, out, calls, far, bodies = self.go(self.busy_box())
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"TIP-RUN STARTED {self.RID} {self.BOX}", out)
+        self.assertEqual([c[:2] for c in calls], [["execution", "run"], ["execution", "record"]])
+        self.assertEqual(far[11:], ["w-cc-slot-macbook-pro-1", "true"], "the far side's slot takes the reserved slot")
+        self.assertEqual(bodies[0].get("reserved_by"), "w-cc-slot-macbook-pro-1", "the registry counts it in its slot")
+
+    def test_without_the_reservation_the_same_box_is_yielded_as_ever(self) -> None:
+        # The GPU loops' rule, and a reserved loop's before #1187: every non-standing record turns it away.
+        rc, out, calls, _, _ = self.go(self.busy_box(), reserved="")
+        self.assertEqual((rc, calls), (1, []))
+        self.assertIn("leg-1 (launching), suite-2 (running) outstanding; a loop run yields to it", out)
+
+    def test_a_held_window_turns_it_away_before_anything_is_reserved(self) -> None:
+        for held in ([reservation(), outstanding("measure-1", "running", self.BOX, kind="measurement")],
+                     [reservation(state="suspended", suspended_by="measure-1")]):
+            with self.subTest(held=held):
+                rc, out, calls, _, _ = self.go(held)
+                self.assertEqual((rc, calls), (1, []))
+                self.assertIn("measure-1", out)
+
+    def test_a_pending_window_blocks_the_next_start(self) -> None:
+        mark = {"box": self.BOX, "id": "measure-2", "worker": "t9", "expires_left": 900}
+        rc, out, calls, _, _ = self.go(self.busy_box(), pending=json.dumps([mark]))
+        self.assertEqual((rc, calls), (1, []))
+        self.assertIn("pending window measure-2 (t9, 900s left) waits for macbook-pro", out)
+        elsewhere = {**mark, "box": "tuf-amd-linux"}
+        self.assertEqual(self.go(self.busy_box(), pending=json.dumps([elsewhere]))[0], 0, "another box's window")
+
+    def test_an_unread_or_unreadable_pending_window_turns_it_away(self) -> None:
+        for pending, rc_read in (("[]", 1), ("nonsense", 0), (json.dumps([{"id": "x", "unreadable": True}]), 0)):
+            with self.subTest(pending=pending, rc=rc_read):
+                rc, out, calls, _, _ = self.go(self.busy_box(), pending=pending, pending_rc=rc_read)
+                self.assertEqual((rc, calls), (1, []), out)
+
+    def test_it_yields_to_a_loop_run_in_its_checkout_or_still_starting_and_to_no_other(self) -> None:
+        here = {**outstanding("w-cc-6", "running", self.BOX), "tip_run": True, "remote_checkout": "/co"}
+        starting = {**outstanding("w-hip-2", "launching", self.BOX), "tip_run": True}
+        there = {**outstanding("w-hip-1", "running", self.BOX), "tip_run": True, "remote_checkout": "/hip"}
+        self.assertEqual(self.go([reservation(), here])[0], 1)
+        slashed = {**here, "remote_checkout": "/co/"}
+        self.assertEqual(self.go([reservation(), slashed])[0], 1, "the same checkout spelled with a trailing separator")
+        self.assertEqual(self.go([reservation(), starting])[0], 1)
+        self.assertEqual(self.go([reservation(), there])[0], 0)
+
+    def test_no_reservation_of_its_box_refuses_it(self) -> None:
+        for records in ([], [reservation(state="concluded")], [reservation(host="tuf-amd-linux")],
+                        [{**reservation(), "slot_reservation": None}]):
+            with self.subTest(records=records):
+                rc, out, calls, _, _ = self.go(records)
+                self.assertEqual((rc, calls), (1, []))
+                self.assertIn("is no outstanding slot reservation on macbook-pro", out)
+
+    def test_a_measurement_reserved_beside_it_is_read_again_and_concluded_not_launched(self) -> None:
+        mine = outstanding(self.RID, host=self.BOX)
+        rc, out, calls, far, bodies = self.go(
+            [reservation()], after=[reservation(), mine, outstanding("measure-3", "launching", self.BOX, kind="measurement")])
+        self.assertEqual((rc, far), (1, []))
+        self.assertEqual([c[:2] for c in calls], [["execution", "run"], ["execution", "conclude"]])
+        self.assertEqual(bodies[1].get("verdict"), "not-launched")
+        self.assertIn("read once this run was reserved", out)
+
+
 class Tip(unittest.TestCase):
     """--tip: the branch's head on GitHub becomes the request's one SHA before anything is reserved."""
 
@@ -424,7 +542,7 @@ class Mark(Starting):
                 rc, calls, far = self.start(request(purpose="GPU integration loop, hip: tip"), "dir=/s/run-1\nslot=held\n", flags=flags)
                 self.assertEqual(rc, 0)
                 self.assertEqual(far[6], "hip", "a targeted run's pin is checked all the same")
-                self.assertEqual(far[11:], ["env", "OCANNL_BACKEND=hip", "true"], "the flag is not the command's")
+                self.assertEqual(far[12:], ["env", "OCANNL_BACKEND=hip", "true"], "the flag is not the command's")
                 marks = {k: (calls[1][1] or {}).get(k) for k in ("pinned_backend", "full_loop")}
                 self.assertEqual(marks, {"pinned_backend": "hip", "full_loop": full})
 
@@ -488,7 +606,7 @@ class Floor(Starting):
             with self.subTest(env=env):
                 rc, _, far = self.start(request(), "dir=/s/run-1\nslot=held\n", env)
                 self.assertEqual(rc, 0)
-                self.assertEqual(far[7:], [floor, "", "", "300", "env", "OCANNL_BACKEND=hip", "true"],
+                self.assertEqual(far[7:], [floor, "", "", "300", "", "env", "OCANNL_BACKEND=hip", "true"],
                                  "the floor, the base, the fetch bound, then the command")
 
     def test_the_far_side_carries_the_one_floor_program(self) -> None:
@@ -526,7 +644,7 @@ class FetchBound(Starting):
             with self.subTest(env=env):
                 rc, _, far = self.start(request(), "dir=/s/run-1\nslot=held\n", env)
                 self.assertEqual(rc, 0)
-                self.assertEqual(far[10:], [bound, "env", "OCANNL_BACKEND=hip", "true"], "the fetch bound, then the command")
+                self.assertEqual(far[10:], [bound, "", "env", "OCANNL_BACKEND=hip", "true"], "the fetch bound, no reservation, then the command")
 
     def test_a_bound_that_is_no_whole_number_of_seconds_is_a_usage_error_before_anything_is_asked(self) -> None:
         tip = {k: v for k, v in request().items() if k != "requested_revision"}

@@ -53,7 +53,8 @@ block, in file order, then has one outcome, said in one line on stderr:
   revision is the record's ``resolved_revision`` for a ``head-of:`` request (read off the step's
   stdout, the record), else the request's ``requested_revision``.
 - ``ASSIGN REFUSED <id>: ...``: the step exited nonzero but 4 (its refusal is above); nothing is
-  printed for it.
+  printed for it. A window that exited 3 is pending (registry.py, THE PENDING WINDOW), and the line
+  says so: the same call later is its retry.
 - ``ASSIGN ALREADY <id>: ...``: the registry already holds the request past ``reserved`` (an earlier
   call dispatched it, or it is concluded), so it is not asked again and nothing is printed: a
   ``run`` would refuse it, and an assignment printed twice is two runs. A still-``reserved`` record is
@@ -464,7 +465,9 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
             unknown = True
             continue
         if answer.rc != 0:
-            err(f"ASSIGN REFUSED {request_id}: the {verb[1]} exited {answer.rc} (above); nothing assigned")
+            # A window exiting 3 is pending (registry.py, THE PENDING WINDOW): refused for now, asked again later.
+            pending = "; it is pending: ask again once the box's records conclude" if verb[1] == "window" and answer.rc == 3 else ""
+            err(f"ASSIGN REFUSED {request_id}: the {verb[1]} exited {answer.rc} (above); nothing assigned{pending}")
             refused = True
             continue
         if not placement(block):

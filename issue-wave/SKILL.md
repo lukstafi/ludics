@@ -868,6 +868,31 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
   run; `base --wait` reads that as no verdict, never green, and `gh run rerun <its id> --repo
   <owner/repo>` puts the tip back in line.
 
+  **The cc loop owns a slot of a pinned home box and yields only to measurement** (ludics#1187,
+  the maintainer's decision of 2026-11-16; before it the loop yielded to every non-standing record
+  on its box and gave no verdict for 3 h 27 min of wave-20261115-ocannl). Give the cc loop's entry
+  in the wave file `"reserve_slot": true` (with `"cpu": true`), its `box` the wave's home for it
+  (the default box above; a box of at least two slots, so the reserved one costs little), and a
+  `"standby": {"box", "checkout"}` on another box, a clone of the project kept there for it
+  (mac-studio, six slots, unless it is the home). `wave loop` then holds, for the whole wave, one
+  standing slot reservation on the home box (`RESERVED <id> on <box>: workers' batches there take
+  <n-1> of <n> slots`), and every start takes that slot (`tip-run --reserved`), beside workers'
+  batches and legs, whatever they hold. **The cost is one slot of the home box: workers there get
+  one fewer, and the registry queues one fewer assignment there; say so in the wave summary.**
+  The loop yields only to measurement: a window held on its box, and a window asked for while it
+  ran. A window a
+  non-standing record keeps from opening is answered *pending* (`execution window` exit 3, and
+  `execution assign` reports it refused as before); the loop's next start yields to its mark, so
+  ask for the window again once the loop's run concludes (`wave drive` retries every 300 s) and it
+  opens after at most the loop's current run, which is never stopped (worker legs on the box still
+  hold it as they always did). A mark nobody asks again lapses in 30 minutes. The home is pinned:
+  only after it has refused every start for `failover_after` seconds (default 1800, about one cc
+  tip run and its poll; a window, the box down) does the loop reserve a slot on the standby and
+  run there (`FAILOVER to <box>`), and the first start home succeeds returns it (`RETURNED to
+  <box>`), releasing the standby's slot; an unknown outcome never fails it over. Neither a stop, a
+  red nor a restart releases the home slot: at close-out run `wave loop <wave.json> <name>
+  --release` after the loop's driver has stopped. The GPU loops keep the yield (below).
+
   **On a red at the tip, halt launches at once** (`fleet-worker.sh halt "<red at <sha>, rerun
   pending>"`): the rerun below puts the tip's run back in flight, where the base gate's interim
   would admit a launch onto the red. Merges are not frozen (roll-forward: a merge never waits on
@@ -894,15 +919,17 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
      (references/executions.md *Adoption and halt*), so the coordinator holds no triage record and
      the halt's triage stays free for its one owner, even mid-rerun. Use `wave loop <wave.json>
      <name> --rerun <red id> -- <narrowed command>`: it derives the red SHA from that loop's
-     concluded red record, uses the loop's checkout, box and `--cpu`, and allocates under
+     concluded red record, runs on that record's box (the home or the standby) in the loop's
+     checkout there, with the loop's `--cpu` and that box's reserved slot, and allocates under
      `<wave>-<name>-rerun`. Its separate payload never carries `"integration": true`: the targeted
      batch is no verdict at the red SHA. As its command use the loop's, narrowed to the failing
      aliases and run three times, exiting on the first failure, with no pipe, through a runner that
      forces each run to execute: a build system reads a second `build` of a target that passed as
      up to date and runs nothing (ludics#1106: three `dune build @alias` in one `sh -c` loop ran
      the test once), so use the project's own repeat command, which its agent notes name. `tip-run
-     --wait <id>` concludes it; `NOT STARTED` is a busy box (a loop run queues for no slot):
-     re-issue it. Three passes mean a flake, typically load on a box shared with workers' batches
+     --wait <id>` concludes it; `NOT STARTED` is a busy box (a loop run queues for no slot, the
+     reserved one included): re-issue it. Three passes mean a flake, typically load on a box
+     shared with workers' batches
      (wave-20261102: a `device_init_deadline` timing claim on macbook-pro beside five workers'
      batches, settled in three minutes). Then `resume-launches` and restart `wave loop` with
      `--resume-after <red id>` to run at the current tip at once, even when that is still the red
@@ -994,9 +1021,10 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
     tools/test-run.sh run --test-cap 0 build @runtest @train`, with `<backend>` the loop's own
     (`cuda` on rog, `hip` on tuf and minix), since the runner otherwise takes OCANNL's test config,
     which pins cc (two waves' GPU-loop records were cc runs, ludics-lite#793). The cc loop's local
-    run may take the same calls, its request carrying `"integration": true`: yielding is how it
-    finds a quiet box too. `wave loop` ends on a red with `LOOP RED`, the cue for *On a red at the
-    tip*; it never halts launches itself, since the later-merge check comes before the halt
+    run takes the same calls, its request carrying `"integration": true`, but in its reserved slot
+    (`--reserved`, above), yielding only to measurement. `wave loop` ends on a red with `LOOP
+    RED`, the cue for *On a red at the tip*; it never halts launches itself, since the later-merge
+    check comes before the halt
     ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 5).
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
     rerun pending"` (a red that gates nothing may skip it: *On a regression*, below); one rerun

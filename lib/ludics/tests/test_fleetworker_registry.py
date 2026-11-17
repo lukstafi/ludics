@@ -825,6 +825,183 @@ class WindowGap(RegistryCase):
         self.assertIn("w1: updated_at 'yesterday' is no ISO 8601 time, so the gap after it cannot be measured", err)
 
 
+class SlotReservation(RegistryCase):
+    """THE SLOT RESERVATION (ludics#1187): the cc loop's standing record, its mark's shape, one per
+    box, and the cap it leaves the box's other non-standing work."""
+
+    SLOTS = "mac=4 rog=1"
+    BOXES = "mac rog"
+
+    def reserve(self, identity: str = "w-cc-slot-mac-1", host: str = "mac", mark: object = True, action: str = "run",
+                **extra: object) -> tuple[int, Any, str]:
+        payload = request(identity, worker="coordinator", transport="coordinator", execution_host=host,
+                          standing=True, **extra)
+        payload["slot_reservation"] = mark
+        return self.call(action, payload, boxes=self.BOXES, slots=self.SLOTS)
+
+    def run_(self, identity: str, tip_run: bool = False, reserved_by: str = "", **extra: object) -> tuple[int, Any, str]:
+        payload = request(identity, **extra)
+        if tip_run:
+            payload.update(worker="coordinator", transport="coordinator", tip_run=True)
+        if reserved_by:
+            payload["reserved_by"] = reserved_by
+        return self.call("run", payload, boxes=self.BOXES, slots=self.SLOTS)
+
+    def test_the_reservation_is_kept_on_its_record_fixed_and_one_per_box(self) -> None:
+        rc, record, err = self.reserve()
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((record["slot_reservation"], record["request"]["standing"]), (True, True))
+        self.assertNotIn("slot_reservation", record["request"], "beside the request, never in it")
+        rc, _, err = self.reserve("w-cc-slot-mac-2")
+        self.assertEqual(rc, 1)
+        self.assertIn("mac already holds the slot reservation w-cc-slot-mac-1 (one per box)", err)
+        rc, _, err = self.call("run", request("w-cc-slot-mac-1", worker="coordinator", transport="coordinator",
+                                              standing=True), boxes=self.BOXES, slots=self.SLOTS)
+        self.assertEqual(rc, 1)
+        self.assertIn("request_id already names a different slot_reservation mark", err)
+
+    def test_the_marks_shape(self) -> None:
+        for kwargs, why in (({"mark": "yes"}, "slot_reservation must be true"),
+                            ({"action": "reserve"}, "made by execution run only"),
+                            ({"host": "rog"}, "rog has 1 correctness slot")):
+            with self.subTest(kwargs=kwargs):
+                rc, _, err = self.reserve(**kwargs)
+                self.assertEqual(rc, 1)
+                self.assertIn(why, err)
+        rc, _, err = self.call("run", {**request("x", standing=True), "slot_reservation": True},
+                               boxes=self.BOXES, slots=self.SLOTS)
+        self.assertIn("only a coordinator's standing correctness reservation", err)
+        rc, _, err = self.call("run", {**request("y", worker="coordinator", transport="coordinator"), "slot_reservation": True},
+                               boxes=self.BOXES, slots=self.SLOTS)
+        self.assertIn("only a coordinator's standing correctness reservation", err)
+
+    def test_the_box_takes_one_fewer_ordinary_assignment_and_the_loop_run_past_the_count(self) -> None:
+        # Base: four non-standing assignments fill mac=4, and the loop's run is refused at 4/4.
+        self.assertEqual(self.reserve()[0], 0)
+        for n in (1, 2, 3):
+            self.assertEqual(self.run_(f"leg-{n}")[0], 0)
+        rc, _, err = self.run_("leg-4")
+        self.assertEqual(rc, 1)
+        self.assertIn("correctness slots 3/3 on mac taken; one more is reserved for the integration loop by w-cc-slot-mac-1", err)
+        rc, record, err = self.run_("w-cc-1", tip_run=True, reserved_by="w-cc-slot-mac-1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(record["reserved_by"], "w-cc-slot-mac-1", "kept beside the request")
+        self.assertEqual(self.run_("w-gpu-1", tip_run=True)[0], 1, "a loop run in an ordinary slot is counted as ever")
+
+    def test_a_gpu_loops_run_counts_against_the_workers_slots(self) -> None:
+        # The at-open review's finding: a tip-run without reserved_by takes an ordinary slot at run time.
+        self.assertEqual(self.reserve()[0], 0)
+        self.assertEqual(self.run_("w-gpu-1", tip_run=True)[0], 0)
+        for n in (1, 2):
+            self.assertEqual(self.run_(f"leg-{n}")[0], 0)
+        rc, _, err = self.run_("leg-3")
+        self.assertEqual(rc, 1, "cap - 2 ordinary records beside the GPU loop's run")
+        self.assertIn("correctness slots 3/3 on mac taken", err)
+        self.assertEqual(self.run_("w-cc-1", tip_run=True, reserved_by="w-cc-slot-mac-1")[0], 0)
+
+    def test_reserved_by_names_the_boxs_reservation_beside_the_tip_run_mark(self) -> None:
+        self.assertEqual(self.reserve()[0], 0)
+        for kwargs, why in (({"tip_run": True, "reserved_by": "w-other"}, "reserved_by names w-other, which is no outstanding"),
+                            ({"reserved_by": "w-cc-slot-mac-1"}, "goes with the tip_run mark only"),
+                            ({"tip_run": True, "reserved_by": "-x"}, "must be the slot reservation's request id")):
+            with self.subTest(kwargs=kwargs):
+                rc, _, err = self.run_("w-cc-9", **kwargs)  # pyright: ignore[reportArgumentType]
+                self.assertEqual(rc, 1)
+                self.assertIn(why, err)
+
+    def test_without_a_reservation_the_cap_is_as_before(self) -> None:
+        for n in (1, 2, 3, 4):
+            self.assertEqual(self.run_(f"leg-{n}")[0], 0)
+        rc, _, err = self.run_("w-cc-1", tip_run=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("correctness slots 4/4 on mac taken", err)
+
+    def test_it_is_admitted_under_a_halt(self) -> None:
+        with open(os.path.join(self.root, "HALT"), "w") as f:
+            f.write("2026-11-11T00:00:00Z id=h1 cc red at abc\n")
+        rc, record, err = self.reserve()
+        self.assertEqual(rc, 0, err)
+        self.assertIn("as the integration loop's slot reservation", record["history"][-1]["data"]["evidence"])
+        self.assertEqual(self.run_("leg-1")[0], 1, "an ordinary reservation is refused as before")
+
+
+class PendingWindow(RegistryCase):
+    """THE PENDING WINDOW (ludics#1187): a window non-standing correctness records keep from opening is
+    answered pending with a mark, renewed by a retry and removed when it opens."""
+
+    def window(self, identity: str = "m-1") -> tuple[int, Any, str]:
+        return self.call("window", {"box": "mac", "request": request(identity, kind="measurement")}, slots="mac=4")
+
+    def marks(self) -> list[dict[str, Any]]:
+        rc, out, _ = self.call("pending-windows", {})
+        self.assertEqual(rc, 0)
+        return cast(list[dict[str, Any]], out)
+
+    def test_a_window_beside_a_loop_run_is_pending_then_opens_once_it_concludes(self) -> None:
+        self.assertEqual(self.call("run", request("s", standing=True))[0], 0)
+        self.assertEqual(self.call("run", request("run-1"), slots="mac=4")[0], 0)
+        rc, out, err = self.window()
+        self.assertEqual(rc, 3, err)
+        self.assertEqual((out["pending"]["box"], out["pending"]["id"], out["pending"]["blockers"]), ("mac", "m-1", ["run-1"]))
+        self.assertIn("EXECUTION WINDOW mac: window m-1 pending: run-1 outstanding on mac", err)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "executions", "m-1.json")), "no record")
+        self.assertEqual([r["state"] for r in self.call("list", {})[1] if r["request_id"] == "s"], ["launching"], "no suspension")
+        marks = self.marks()
+        self.assertEqual([(m["box"], m["id"], m["worker"]) for m in marks], [("mac", "m-1", "m-1")])
+        self.assertTrue(0 < marks[0]["expires_left"] <= registry.PENDING_TTL)
+        self.assertEqual(self.window()[0], 3, "a retry renews it")
+        self.assertEqual(len(self.marks()), 1)
+        self.assertEqual(self.call("conclude", {"request_id": "run-1", "verdict": "not-launched", "log": "-",
+                                                "evidence": "unit"})[0], 0)
+        self.assertEqual(self.window()[0], 0, "the box is free: the window opens")
+        self.assertEqual(self.marks(), [], "and its mark is gone")
+
+    def test_an_expired_mark_is_no_mark_and_the_next_write_sweeps_it(self) -> None:
+        self.assertEqual(self.call("run", request("run-1"), slots="mac=4")[0], 0)
+        self.window("m-1")
+        path = os.path.join(self.root, "pending-windows", "m-1.json")
+        with open(path) as f:
+            mark = json.load(f)
+        with open(path, "w") as f:
+            json.dump({**mark, "expires": "2026-01-01T00:00:00+00:00"}, f)
+        self.assertEqual(self.marks(), [])
+        self.window("m-2")
+        self.assertFalse(os.path.exists(path), "swept")
+        with open(os.path.join(self.root, "pending-windows", "bad.json"), "w") as f:
+            f.write("nonsense")
+        self.assertIn({"id": "bad", "unreadable": True}, self.marks())
+        # A directory it cannot list is no empty one (the review's round 1): fail-closed, as the waiters are.
+        directory = os.path.join(self.root, "pending-windows")
+        with mock.patch.object(registry.os, "listdir", side_effect=PermissionError(13, "denied")):
+            self.assertEqual(registry.live_pending(registry.Path(directory), datetime.now(timezone.utc)),
+                             [{"id": f"{directory} (unlistable)", "unreadable": True}])
+
+    def test_other_refusals_write_no_mark(self) -> None:
+        # Behind another measurement: refused as before. Under a halt: the halt's refusal.
+        self.assertEqual(self.window("m-1")[0], 0)
+        rc, _, err = self.window("m-2")
+        self.assertEqual(rc, 1)
+        self.assertIn("measurement window m-1 is already open on mac", err)
+        self.assertEqual(self.call("conclude", {"request_id": "m-1", "verdict": "not-launched", "log": "-",
+                                                "evidence": "unit"})[0], 0)
+        self.assertEqual(self.call("run", request("run-1"), slots="mac=4")[0], 0)
+        with open(os.path.join(self.root, "HALT"), "w") as f:
+            f.write("2026-11-11T00:00:00Z id=h1 red\n")
+        rc, _, err = self.window("m-3")
+        self.assertEqual(rc, 1)
+        self.assertIn("fleet halted", err)
+        self.assertEqual(self.marks(), [])
+        # The local review's finding: a triage window the halt's triage refuses (another owner) is
+        # refused as before, the box's records notwithstanding, and holds no loop back.
+        self.assertEqual(self.call("run", request("tri-1", triage_reason="red"), slots="mac=4")[0], 0)
+        rc, _, err = self.call("window", {"box": "mac", "request": request("tri-m", kind="measurement", triage_reason="red")},
+                               slots="mac=4")
+        self.assertEqual(rc, 1, err)
+        self.assertIn("the halt's triage has one owner", err)
+        self.assertEqual(self.marks(), [])
+        self.assertEqual(self.call("pending-windows", {"x": 1})[0], 1, "the reader takes the empty payload")
+
+
 class Waiters(RegistryCase):
     """ludics-lite#719: ``wait`` records a heartbeat outside the executions and answers as ``list``."""
 

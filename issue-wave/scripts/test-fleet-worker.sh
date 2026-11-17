@@ -3322,6 +3322,27 @@ setup_step "could not dispatch the worker's leg (setup)" "${FWT[@]}" execution r
 expect "a loop run yields to a worker's leg on the box" 1 "^TIP-RUN NOT STARTED tip-b: testbox has tip-leg (launching) outstanding; a loop run yields to it; nothing reserved$" -- \
   "${FWT[@]}" execution tip-run "$(tipreq tip-b)" --checkout "$tco" -- echo never
 [ -z "$(state_of tip-b)" ] && ok "...reserving nothing" || ko "tip-b was reserved: $(state_of tip-b)"
+# THE RESERVED RUN (ludics#1187): the cc loop's slot reservation on the box, and a run naming it starts
+# beside the worker's leg, in the box's highest slot; a window asked for meanwhile is pending, and the
+# loop's next start yields to it.
+jq -n --arg co "$tco" '{request_id:"tip-slot", wave:"w", worker:"coordinator", transport:"coordinator", purpose:"cc loop slot",
+  agent_host:"testbox", execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"correctness",
+  standing:true, checkout:$co, slot_reservation:true}' > "$TMP/tip-slot.json"
+setup_step "could not take the loop's slot reservation (setup)" "${FWT[@]}" execution run "$TMP/tip-slot.json"
+ccreq() { tipreq "$1" "$tip" '{"purpose":"o/r cc integration loop: fixture"}'; }
+expect "a reserved loop run starts beside a worker's leg on the box" 0 "^TIP-RUN STARTED tip-r1 testbox $tip /" -- \
+  "${FWT[@]}" execution tip-run "$(ccreq tip-r1)" --checkout "$tco" --runs "$TMP/tip runs" --cpu --reserved tip-slot -- sh -c 'exit 0'
+tdir=$(sed -n "s/^TIP-RUN STARTED tip-r1 testbox $tip //p" <<<"$out")
+bash "$BG" wait "$tdir" --within 30 >/dev/null
+grep -q "^EXECUTION SLOT testbox: slot 2 of 2 held for: " "$tdir/log" && ok "...in the reserved slot, the box's highest" || ko "tip-r1's slot: $(head -n 3 "$tdir/log")"
+expect "...and concludes as its run did" 0 '"verdict": "pass"' -- "${FWT[@]}" execution conclude --from-bg-run "$tdir" --request tip-r1 --sha "$tip"
+jq -n '{request_id:"tip-m", wave:"w", worker:"w2", transport:"subagent", issue:"o/r#1", purpose:"timing", agent_host:"testbox",
+  execution_host:"testbox", repository:"o/r", requested_revision:"origin/main", kind:"measurement"}' > "$TMP/tip-m.json"
+expect "a window the worker's leg keeps from opening is pending" 3 "window tip-m pending: tip-leg outstanding on testbox" -- \
+  "${FWT[@]}" execution window --no-gap testbox "$TMP/tip-m.json"
+expect "...and the reserved loop's next start yields to it" 1 "^TIP-RUN NOT STARTED tip-r2: pending window tip-m (w2, [0-9]*s left) waits for testbox" -- \
+  "${FWT[@]}" execution tip-run "$(ccreq tip-r2)" --checkout "$tco" --cpu --reserved tip-slot -- echo never
+fixture_done tip-slot
 fixture_done tip-leg
 # The token taken only if free now: a batch holding the box's one GPU token turns the run away, and
 # what was reserved is concluded not-launched.
@@ -3740,13 +3761,14 @@ as_run "$(as_base subagent)" "$two" --request as-2
 got=$("$FW" board show w --json | jq -r '.tasks[] | select(.task == "as-row") | .fields.farside')
 [ "$got" = "testbox:/worker testbox:/w/as-1" ] && ok "the refused placement leaves earlier words intact" || ko "unsafe words: $got"
 "$FW" board set w as-row worker=completed-fixture >/dev/null || ko "could not retire assignment fixture row"
-# One refused among two: a measurement window on `other`, which as-2 holds (not standing), is refused.
+# One refused among two: a measurement window on `other`, which as-2 holds (not standing), is
+# pending (exit 3, registry.py's THE PENDING WINDOW), so it is not assigned.
 mixed=$(as_msg mixed "$(as_block as-3 testbox correctness "$asha" '{"command":"tools/test-run.sh run c"}')" \
   "$(as_block as-4 other measurement "$asha" '{"command":"tools/bench.sh"}')")
 as_run "$(as_base subagent)" "$mixed" --no-gap
 [ "$rc" -eq 1 ] && grep -qx 'EXECUTION_ASSIGNED as-3' <<<"$msg" && ! grep -q 'as-4' <<<"$msg" &&
   ok "one refused among two leaves the other assigned, exit 1" || ko "a partial refusal (rc=$rc): $msg -- $said"
-grep -q '^ASSIGN REFUSED as-4: the window exited 1' <<<"$said" && grep -qx "ASSIGN ASSIGNED as-3 correctness testbox $asha" <<<"$said" &&
+grep -q '^ASSIGN REFUSED as-4: the window exited 3 (above); nothing assigned; it is pending' <<<"$said" && grep -qx "ASSIGN ASSIGNED as-3 correctness testbox $asha" <<<"$said" &&
   ok "...each line stating its own outcome" || ko "outcome lines: $said"
 [ -z "$(state_as as-4)" ] && ok "...and the refused window recorded nothing" || ko "as-4 left a record: $(state_as as-4)"
 as_run "$(as_base subagent)" "$mixed" --no-gap --request as-4

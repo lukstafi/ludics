@@ -1078,6 +1078,116 @@ class WindowDeadline(unittest.TestCase):
         self.assertTrue(slot.describe_measurement("testbox", measurement("win")).endswith("no expected end is recorded)"))
 
 
+def reservation_record(request_id: str = "w-cc-slot-testbox-1", state: str = "launching",
+                       host: str = "testbox", **extra: object) -> dict[str, Any]:
+    return {"request_id": request_id, "state": state, "slot_reservation": True,
+            "request": {"execution_host": host, "kind": "correctness", "standing": True}, **extra}
+
+
+class ReservedSlot(unittest.TestCase):
+    """THE RESERVED SLOT (ludics#1187): with a slot reservation outstanding on the box its highest slot
+    is the reservation's batch's alone, on real flocks."""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.mkdtemp(prefix="ludics-reserved.")
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def hold(self, *indices: int) -> None:
+        for index in indices:
+            descriptor = os.open(os.path.join(self.dir, f"slot.{index}"), os.O_CREAT | os.O_RDWR, 0o644)
+            self.addCleanup(os.close, descriptor)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def take(self, reservation: slot.Reservation | None, cpu: bool = True, tokens: int = 0) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(slot, "run_command", mock.Mock(side_effect=cli.Exit(0))), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), self.assertRaises(cli.Exit) as caught:
+            slot.take_slot("testbox", self.dir, 4, tokens, cpu, 0, None, ["make"], None, reservation=reservation)
+        return caught.exception.rc, out.getvalue(), err.getvalue()
+
+    def test_the_reading_off_the_registry(self) -> None:
+        records = [reservation_record(), reservation_record("other", host="elsewhere"),
+                   reservation_record("old", state="concluded")]
+        self.assertIsNone(slot.reserved_slot("testbox", 4, 0, True, [], ""))
+        self.assertEqual(slot.reserved_slot("testbox", 4, 0, True, records, ""), slot.Reservation(4, "w-cc-slot-testbox-1", False))
+        self.assertEqual(slot.reserved_slot("testbox", 4, 0, True, records, "W-CC-SLOT-TESTBOX-1"),
+                         slot.Reservation(4, "W-CC-SLOT-TESTBOX-1", True), "ids compare ignoring case, as the registry's")
+        for named, held, cpu, tokens, why in (
+                ("other", records, True, 0, "is no outstanding slot reservation on testbox"),
+                ("old", records, True, 0, "is no outstanding slot reservation on testbox"),
+                ("w-cc-slot-testbox-1", [reservation_record(state="suspended", suspended_by="m-1")], True, 0, "suspended by m-1"),
+                ("w-cc-slot-testbox-1", records, False, 2, "a reserved batch declares --cpu")):
+            with self.subTest(named=named, why=why):
+                refused = slot.reserved_slot("testbox", 4, tokens, cpu, held, named)
+                assert isinstance(refused, slot.Refused)
+                self.assertIn(why, refused.line)
+        # A suspended reservation still reserves the slot for every other batch.
+        self.assertEqual(slot.reserved_slot("testbox", 4, 0, True, [reservation_record(state="suspended")], ""),
+                         slot.Reservation(4, "w-cc-slot-testbox-1", False))
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertIsNone(slot.reserved_slot("testbox", 1, 0, True, records, ""))
+        self.assertIn("NOTE testbox", err.getvalue())
+
+    def test_slots_full_but_the_reserved_one_an_ordinary_batch_is_refused_and_the_loops_takes_it(self) -> None:
+        self.hold(1, 2, 3)
+        rc, out, _ = self.take(slot.Reservation(4, "w-cc-slot-testbox-1", False))
+        self.assertEqual(rc, 1)
+        self.assertIn("all 3 run-time correctness slots busy after 0s (slot 4 of 4 is reserved for the integration loop"
+                      " by w-cc-slot-testbox-1)", out)
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu):
+                rc, _, err = self.take(slot.Reservation(4, "w-cc-slot-testbox-1", False), cpu=cpu)
+                self.assertEqual(rc, 1, "never the reserved slot, a GPU batch's order neither")
+        rc, _, err = self.take(slot.Reservation(4, "w-cc-slot-testbox-1", True))
+        self.assertEqual(rc, 0)
+        self.assertIn("EXECUTION SLOT testbox: slot 4 of 4 held for: make", err)
+
+    def test_without_a_reservation_the_highest_slot_is_anyones(self) -> None:
+        # The base's rule, and a box with no reservation's: a CPU batch takes the highest free slot.
+        self.hold(1, 2, 3)
+        rc, _, err = self.take(None)
+        self.assertEqual(rc, 0)
+        self.assertIn("slot 4 of 4 held for: make", err)
+
+    def test_the_reservations_batch_takes_its_slot_alone(self) -> None:
+        self.hold(4)
+        rc, out, _ = self.take(slot.Reservation(4, "w-cc-slot-testbox-1", True))
+        self.assertEqual(rc, 1, "slots 1-3 free, but not its")
+        self.assertIn("slot 4 of 4, reserved by w-cc-slot-testbox-1, busy after 0s", out)
+        rc, _, err = self.take(slot.Reservation(4, "w-cc-slot-testbox-1", False))
+        self.assertEqual(rc, 0)
+        self.assertIn("slot 1 of 4 held for: make", err, "no tokens bind here: the first free slot but the reserved one")
+
+    def test_reserved_is_parsed_and_carried_through_bg(self) -> None:
+        self.assertEqual(slot.parse_slot(["--reserved", "w-1", "--cpu", "--", "make"]).reserved, "w-1")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit):
+            slot.parse_slot(["--reserved", "-x", "--", "make"])
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_BOXES": "testbox"}, host="testbox")
+        execv = mock.Mock(side_effect=OSError(2, "stopped here"))
+        with mock.patch.object(slot.os, "execv", execv), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(slot.cmd_slot(cfg, ["--bg", "/p", "--wait", "0", "--reserved", "w-1", "--cpu", "--", "make"]), 126)
+        argv: list[str] = execv.call_args.args[1]
+        self.assertEqual(argv[argv.index("--reserved"):], ["--reserved", "w-1", "--", "make"])
+
+    def test_cmd_slot_refuses_a_reserved_batch_the_registry_does_not_name(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_BOXES": "testbox", "FLEET_BOX_CORRECTNESS_SLOTS": "testbox=4",
+                           "FLEET_SLOT_STATE": self.dir}, host="testbox")
+        take = mock.Mock(side_effect=AssertionError("a slot was taken"))
+        with mock.patch.object(slot, "read_registry", return_value=[]), mock.patch.object(slot, "registry_source"), \
+                mock.patch.object(slot, "take_slot", take), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(slot.cmd_slot(cfg, ["--reserved", "w-1", "--cpu", "--", "make"]), 1)
+        self.assertIn("--reserved names w-1, which is no outstanding slot reservation on testbox", out.getvalue())
+        take = mock.Mock(side_effect=cli.Exit(0))
+        with mock.patch.object(slot, "read_registry", return_value=[reservation_record()]), \
+                mock.patch.object(slot, "registry_source"), mock.patch.object(slot, "take_slot", take), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit):
+            slot.cmd_slot(cfg, ["--cpu", "--", "make"])
+        self.assertEqual(take.call_args.args[-1], slot.Reservation(4, "w-cc-slot-testbox-1", False))
+
+
 class RegistryUnread(unittest.TestCase):
     """An anchor that does not answer refuses at once, and says why a fresh wake may need a retry
     (ludics-lite#617): the box's sshd answers before its own ssh to the anchor does."""

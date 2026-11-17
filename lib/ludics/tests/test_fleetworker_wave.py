@@ -2003,6 +2003,193 @@ class Loop(unittest.TestCase):
         self.assertIn("another driver holds", out)
 
 
+def slot_rec(box: str = "rog", n: int = 1, state: str = "launching") -> dict[str, Any]:
+    return {"request_id": f"wv-cc-slot-{box}-{n}", "state": state, "slot_reservation": True,
+            "request": {"execution_host": box, "repository": "o/staging", "standing": True}}
+
+
+class ReservedLoop(unittest.TestCase):
+    """THE RESERVED SLOT (ludics#1187): the reservation the driver keeps, the ``--reserved`` it passes,
+    and failover to the standby and return (the decision's last conformance case)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.path = os.path.join(self.dir, "wave.json")
+        data = wave_data(self.dir)
+        data["loops"]["cc"].update(reserve_slot=True, standby={"box": "tuf", "checkout": "/home/u/standby"},
+                                   failover_after=600)
+        with open(self.path, "w") as f:
+            json.dump(data, f)
+        self.cfg = load_config(SCRIPT, {"HOME": self.dir, "FLEET_BOXES": "rog tuf", "FLEET_BOX_CORRECTNESS_SLOTS": "rog=4 tuf=3"})
+        self.calls: list[list[str]] = []
+        self.answers: list[Done] = []
+        self.records: list[dict[str, Any]] = []
+        self.payloads: list[dict[str, Any]] = []
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def fake_run(self, argv: list[str], **_: Any) -> Done:
+        args = argv[1:]
+        self.calls.append(args)
+        if args[:2] == ["execution", "run"]:
+            with open(args[2]) as f:
+                payload = json.load(f)
+            self.payloads.append(payload)
+            self.records.append(slot_rec(payload["execution_host"], int(payload["request_id"].rsplit("-", 1)[1])))
+            return Done(0, "{}")
+        if args[:2] == ["execution", "conclude"]:
+            with open(args[2]) as f:
+                done = json.load(f)
+            self.payloads.append(done)
+            self.records = [r for r in self.records if r["request_id"] != done["request_id"]]
+            return Done(0, "{}")
+        return self.answers.pop(0)
+
+    def drive(self, tips: list[str], clocks: list[float], sleeps: int, *extra: str) -> tuple[int, str]:
+        tip_iter, clock_iter = iter(tips), iter(clocks)
+        slept: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            if len(slept) >= sleeps:
+                open(os.path.join(self.dir, "loops.stop"), "w").close()
+
+        def listed(_cfg: object) -> Done:
+            return Done(0, json.dumps(self.records))
+
+        def head(*_args: object) -> str:
+            return next(tip_iter)
+
+        with (mock.patch.object(waveloop, "listing", side_effect=listed),
+              mock.patch.object(waveloop, "run", side_effect=self.fake_run),
+              mock.patch.object(revision, "branch_head", side_effect=head),
+              mock.patch.object(waveloop, "clock", side_effect=lambda: next(clock_iter)),
+              mock.patch.object(waveloop, "sleep", side_effect=sleep)):
+            rc, out, err = captured(waveloop.cmd_loop, self.cfg, [self.path, "cc", *extra])
+        return rc, out + err
+
+    def starts(self) -> list[list[str]]:
+        return [c for c in self.calls if c[:2] == ["execution", "tip-run"] and c[2] != "--wait"]
+
+    def test_the_reservation_is_taken_once_and_every_start_names_it(self) -> None:
+        self.records = [rec(1, "concluded", "pass", B)]
+        self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: busy\n")]
+        rc, out = self.drive([A], [0], 1)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.payloads[0]["request_id"], "wv-cc-slot-rog-1")
+        self.assertEqual({k: self.payloads[0][k] for k in ("execution_host", "standing", "slot_reservation", "checkout",
+                                                           "requested_revision", "kind", "transport")},
+                         {"execution_host": "rog", "standing": True, "slot_reservation": True, "checkout": "/home/u/integ",
+                          "requested_revision": "head-of:master", "kind": "correctness", "transport": "coordinator"})
+        self.assertNotIn("integration", self.payloads[0], "a reservation is no integration record")
+        self.assertIn("RESERVED wv-cc-slot-rog-1 on rog: workers' batches there take 3 of 4 slots", out)
+        start = self.starts()[0]
+        self.assertEqual(start[start.index("--reserved") + 1], "wv-cc-slot-rog-1")
+        self.assertEqual(start[start.index("--checkout") + 1], "/home/u/integ")
+        # A restart keeps it, takes none.
+        os.unlink(os.path.join(self.dir, "loops.stop"))
+        self.calls.clear()
+        self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: busy\n")]
+        rc, out = self.drive([A], [0], 1)
+        self.assertEqual([c[:2] for c in self.calls if c[:2] == ["execution", "run"]], [])
+        self.assertIn("RESERVED wv-cc-slot-rog-1 on rog (outstanding, kept)", out)
+
+    def test_failover_after_the_threshold_and_return_on_the_first_home_start(self) -> None:
+        self.records = [rec(1, "concluded", "pass", B), slot_rec()]
+        self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: measurement window m-1 holds rog\n"),
+                        Done(1, "TIP-RUN NOT STARTED wv-cc-3: measurement window m-1 holds rog\n"),
+                        Done(0, f"TIP-RUN STARTED wv-cc-4 tuf {A} /r\n"),
+                        Done(0, f"TIP-RUN CONCLUDED wv-cc-4 pass tuf {A} /r\n"),
+                        Done(0, f"TIP-RUN STARTED wv-cc-5 rog {C} /r\n"),
+                        Done(0, f"TIP-RUN CONCLUDED wv-cc-5 pass rog {C} /r\n")]
+        rc, out = self.drive([A, A, C, C], [0, 700], 2)
+        self.assertEqual(rc, 0, out)
+        boxes = [(s[s.index("--checkout") + 1], s[s.index("--reserved") + 1]) for s in self.starts()]
+        self.assertEqual(boxes, [("/home/u/integ", "wv-cc-slot-rog-1"), ("/home/u/integ", "wv-cc-slot-rog-1"),
+                                 ("/home/u/standby", "wv-cc-slot-tuf-1"), ("/home/u/integ", "wv-cc-slot-rog-1")],
+                         "home first every step; the standby only past the threshold")
+        self.assertIn("FAILOVER to tuf: rog has refused every start for 700s (failover_after 600s)", out)
+        self.assertIn("RETURNED to rog: wv-cc-5 runs at home", out)
+        self.assertIn("RELEASED wv-cc-slot-tuf-1 on tuf", out)
+        self.assertEqual([r["request_id"] for r in self.records if r.get("slot_reservation")], ["wv-cc-slot-rog-1"])
+        with open(os.path.join(self.dir, "logs", "loop-cc-standby.json")) as f:
+            self.assertEqual(json.load(f)["execution_host"], "tuf")
+
+    def test_no_failover_before_the_threshold_nor_across_an_idle_tip(self) -> None:
+        self.records = [rec(1, "concluded", "pass", B), slot_rec()]
+        self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: x\n"), Done(1, "TIP-RUN NOT STARTED wv-cc-3: x\n")]
+        # Refused at 0, the tip judged (idle: the streak ends), refused again at 700: a streak of 0 s.
+        rc, out = self.drive([A, B, A], [0, 700], 3)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(self.starts()), 2)
+        self.assertNotIn("FAILOVER", out)
+        self.assertNotIn("/home/u/standby", json.dumps(self.calls))
+
+    def test_an_unknown_start_never_fails_over(self) -> None:
+        self.records = [rec(1, "concluded", "pass", B), slot_rec()]
+        self.answers = [Done(4, "TIP-RUN UNKNOWN wv-cc-2: rog did not answer\n")]
+        rc, out = self.drive([A], [0, 10_000], 5)
+        self.assertEqual(rc, 4, out)
+        self.assertEqual(len(self.starts()), 1)
+
+    def test_a_restart_failed_over_goes_straight_to_the_standby_while_home_refuses(self) -> None:
+        self.records = [rec(1, "concluded", "pass", B), slot_rec(), slot_rec("tuf")]
+        self.answers = [Done(1, "TIP-RUN NOT STARTED wv-cc-2: x\n"), Done(0, f"TIP-RUN STARTED wv-cc-3 tuf {A} /r\n"),
+                        Done(0, f"TIP-RUN CONCLUDED wv-cc-3 pass tuf {A} /r\n")]
+        rc, out = self.drive([A, A], [0], 1)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("RESUME failed over to tuf (wv-cc-slot-tuf-1 outstanding)", out)
+        self.assertEqual([s[s.index("--checkout") + 1] for s in self.starts()], ["/home/u/integ", "/home/u/standby"])
+
+    def test_two_reservations_on_a_box_are_unknown(self) -> None:
+        self.records = [slot_rec(), slot_rec(n=2)]
+        rc, out = self.drive([], [], 1)
+        self.assertEqual(rc, 4)
+        self.assertIn("are all outstanding on rog", out)
+        self.assertEqual(self.calls, [])
+
+    def test_release_concludes_every_reservation_of_the_loop(self) -> None:
+        self.records = [slot_rec(), slot_rec("tuf"), {**slot_rec("rog"), "request_id": "other-slot-rog-1"}]
+        rc, out = self.drive([], [], 1, "--release")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([p["request_id"] for p in self.payloads], ["wv-cc-slot-rog-1", "wv-cc-slot-tuf-1"])
+        self.assertEqual({p["verdict"] for p in self.payloads}, {"not-launched"})
+        self.assertEqual([r["request_id"] for r in self.records], ["other-slot-rog-1"], "another loop's is not this one's")
+
+    def test_a_rerun_runs_where_the_red_ran_under_that_boxs_reservation(self) -> None:
+        red = rec(4, "concluded", "fail", A)
+        red["request"]["execution_host"] = "tuf"
+        self.records = [red, slot_rec(), slot_rec("tuf")]
+        self.answers = [Done(0, f"TIP-RUN STARTED wv-cc-rerun-1 tuf {A} /r\n")]
+        rc, out = self.drive([], [], 1, "--rerun", "wv-cc-4", "--", "tools/run", "one")
+        self.assertEqual(rc, 0, out)
+        start = self.starts()[0]
+        self.assertEqual((start[start.index("--checkout") + 1], start[start.index("--reserved") + 1]),
+                         ("/home/u/standby", "wv-cc-slot-tuf-1"))
+        with open(os.path.join(self.dir, "logs", "loop-cc-rerun.json")) as f:
+            self.assertEqual(json.load(f)["execution_host"], "tuf")
+
+    def test_the_wave_files_reservation_keys(self) -> None:
+        good = wave_data("/tmp/x")
+        cc = good["loops"]["cc"]
+        loop = wave.parse_wave("/tmp/x/wave.json", {**good, "loops": {"cc": {**cc, "reserve_slot": True}}}).loops["cc"]
+        self.assertEqual((loop.reserve_slot, loop.standby, loop.failover_after), (True, None, 1800))
+        for entry, why in (({**cc, "reserve_slot": True, "cpu": False}, "reserve_slot needs cpu"),
+                           ({**cc, "standby": {"box": "tuf", "checkout": "/s"}}, "standby needs reserve_slot"),
+                           ({**cc, "reserve_slot": True, "standby": {"box": "rog", "checkout": "/s"}}, "another box"),
+                           ({**cc, "reserve_slot": True, "standby": {"box": "tuf"}}, "lacks"),
+                           ({**cc, "reserve_slot": True, "failover_after": 60}, "failover_after needs a standby"),
+                           ({**cc, "reserve_slot": True, "standby": {"box": "tuf", "checkout": "/s"}, "failover_after": 0},
+                            "positive whole number"),
+                           ({**cc, "reserve_slot": "yes"}, "true or false")):
+            with self.subTest(entry=entry):
+                with self.assertRaises(ValueError) as caught:
+                    wave.parse_wave("/tmp/x/wave.json", {**good, "loops": {"cc": entry}})
+                self.assertIn(why, str(caught.exception))
+
+
 class Decide(WaveDirCase):
     """wave decide: a decision posted under the right heading, labelled, and recorded for the ledger."""
 
