@@ -1417,6 +1417,10 @@ applies the trigger, runs the command, and exits as `merge`'s build step would (
 refused); it reads no PR, fetches nothing and merges nothing. A config change's negative control is
 that run on a pair the config must refuse.
 
+The build prints its retained log/status directory, kept under ship-pr's state directory as
+`merge-builds/logs/<owner>--<repo>/<pr>/<head>/` on success and refusal alike (retries replace that
+head's files; old heads remain until manual removal), and records it in the JSONL receipt.
+
 **A merge build that overruns its bound** ends `merge` with exit 4 and no verdict. The refusal shows
 how far the build got and what the same command has taken on this box, and says when a re-run will
 likely repeat the overrun: then do not re-run, raise `timeout` on the default branch
