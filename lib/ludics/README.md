@@ -532,6 +532,16 @@ prreview/rerun.py
     ship-pr/scripts/test-pr-review-budget.sh
 ```
 
+Agent notes (wave-20261117-ludics, t1188; refs #1188): merge-build artifacts live beside the JSONL
+receipts in ship-pr state, independent of wave state. One directory per PR/head retains build and
+base log/status files on pass and refusal; retries overwrite, old heads need manual removal.
+Receipts name log_dir, failed and unstarted rows stay out of timing advice, and copy failures
+refuse. The diagnostic scanner's allowlist is in mergebuild.py's header; every matching line is
+shown without a count cap, and the complete log is retained. Targeted unit negative controls cover
+middle diagnostics and cleanup survival. Review regression tests distinguish unstarted receipts,
+scan overrun diagnostics once, handle unreadable logs, and enforce replacement decoding; all fail
+against pre-fix `e23e7b0a`.
+
 ## Checking
 
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,
@@ -732,12 +742,3 @@ Worker-branch matches and unfiltered reads need no closing-reference query. The 
 population cap still makes the result incomplete; no gh upgrade or prose parsing is required.
 Selection consumes the enriched pages directly, and a closing-read refusal names its PR and
 keeps the helper error, separately from an open-list parse failure (PR #1195 review checkpoint).
-
-Agent notes (wave-20261117-ludics, t1188; refs #1188): merge-build artifacts live beside the JSONL
-receipts in ship-pr state, independent of wave state. One directory per PR/head retains build and
-base log/status files on pass and refusal; retries overwrite, old heads need manual removal.
-Receipts name log_dir, failed and unstarted rows stay out of timing advice, and copy failures
-refuse. The diagnostic scanner's allowlist is in mergebuild.py's header; every matching line is
-shown without a count cap, and the complete log is retained. Targeted unit negative controls cover
-middle diagnostics and cleanup survival. Review regression tests distinguish unstarted receipts,
-scan overrun diagnostics once, and handle unreadable logs; all fail against pre-fix `e23e7b0a`.

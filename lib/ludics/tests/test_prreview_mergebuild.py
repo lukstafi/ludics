@@ -265,6 +265,10 @@ class Log(unittest.TestCase):
                 self.assertIn("HARNESS targeted-suite exit: 1", lines)
                 self.assertIn("FAIL middle assertion", lines)
 
+    def test_diagnostic_decode_replaces_invalid_utf8(self) -> None:
+        lines = self.shown(b"ordinary\n" * 300 + b"HARNESS invalid \xff exit: 1\n" + b"ordinary\n" * 300)
+        self.assertIn("HARNESS invalid \ufffd exit: 1", lines)
+
     def test_diagnostic_scan_boundary_and_no_count_cap(self) -> None:
         lines = self.shown(b"ordinary\n" * 300 + b"FAILURE no\ntext FAIL no\n" +
                            b"HARNESS suite exit: 1\n" * 201 + b"ordinary\n" * 300)

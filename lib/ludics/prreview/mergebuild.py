@@ -655,7 +655,7 @@ def _diagnostics(log: str) -> list[str]:
     try:
         with open(log, "rb") as handle:
             while chunk := handle.readline(SHOWN_BYTES):
-                prefix = proc.decode(chunk).rstrip("\r\n")
+                prefix = chunk.decode("utf-8", "replace").rstrip("\r\n")
                 while chunk and not chunk.endswith(b"\n"):
                     chunk = handle.readline(SHOWN_BYTES)
                 if pattern.search(prefix):
