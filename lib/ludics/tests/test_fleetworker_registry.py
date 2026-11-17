@@ -839,10 +839,12 @@ class SlotReservation(RegistryCase):
         payload["slot_reservation"] = mark
         return self.call(action, payload, boxes=self.BOXES, slots=self.SLOTS)
 
-    def run_(self, identity: str, tip_run: bool = False, **extra: object) -> tuple[int, Any, str]:
+    def run_(self, identity: str, tip_run: bool = False, reserved_by: str = "", **extra: object) -> tuple[int, Any, str]:
         payload = request(identity, **extra)
         if tip_run:
             payload.update(worker="coordinator", transport="coordinator", tip_run=True)
+        if reserved_by:
+            payload["reserved_by"] = reserved_by
         return self.call("run", payload, boxes=self.BOXES, slots=self.SLOTS)
 
     def test_the_reservation_is_kept_on_its_record_fixed_and_one_per_box(self) -> None:
@@ -881,7 +883,31 @@ class SlotReservation(RegistryCase):
         rc, _, err = self.run_("leg-4")
         self.assertEqual(rc, 1)
         self.assertIn("correctness slots 3/3 on mac taken; one more is reserved for the integration loop by w-cc-slot-mac-1", err)
-        self.assertEqual(self.run_("w-cc-1", tip_run=True)[0], 0, "the loop's run, slots full but its own")
+        rc, record, err = self.run_("w-cc-1", tip_run=True, reserved_by="w-cc-slot-mac-1")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(record["reserved_by"], "w-cc-slot-mac-1", "kept beside the request")
+        self.assertEqual(self.run_("w-gpu-1", tip_run=True)[0], 1, "a loop run in an ordinary slot is counted as ever")
+
+    def test_a_gpu_loops_run_counts_against_the_workers_slots(self) -> None:
+        # The at-open review's finding: a tip-run without reserved_by takes an ordinary slot at run time.
+        self.assertEqual(self.reserve()[0], 0)
+        self.assertEqual(self.run_("w-gpu-1", tip_run=True)[0], 0)
+        for n in (1, 2):
+            self.assertEqual(self.run_(f"leg-{n}")[0], 0)
+        rc, _, err = self.run_("leg-3")
+        self.assertEqual(rc, 1, "cap - 2 ordinary records beside the GPU loop's run")
+        self.assertIn("correctness slots 3/3 on mac taken", err)
+        self.assertEqual(self.run_("w-cc-1", tip_run=True, reserved_by="w-cc-slot-mac-1")[0], 0)
+
+    def test_reserved_by_names_the_boxs_reservation_beside_the_tip_run_mark(self) -> None:
+        self.assertEqual(self.reserve()[0], 0)
+        for kwargs, why in (({"tip_run": True, "reserved_by": "w-other"}, "reserved_by names w-other, which is no outstanding"),
+                            ({"reserved_by": "w-cc-slot-mac-1"}, "goes with the tip_run mark only"),
+                            ({"tip_run": True, "reserved_by": "-x"}, "must be the slot reservation's request id")):
+            with self.subTest(kwargs=kwargs):
+                rc, _, err = self.run_("w-cc-9", **kwargs)  # pyright: ignore[reportArgumentType]
+                self.assertEqual(rc, 1)
+                self.assertIn(why, err)
 
     def test_without_a_reservation_the_cap_is_as_before(self) -> None:
         for n in (1, 2, 3, 4):

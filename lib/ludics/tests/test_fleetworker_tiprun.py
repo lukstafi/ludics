@@ -280,8 +280,8 @@ class Race(unittest.TestCase):
         self.assertIn("the skills checkout on rog-nv-linux was not refreshed", out.getvalue())
 
 
-def reservation(request_id: str = "w-cc-slot-minix-amd-linux-1", state: str = "launching",
-                host: str = "minix-amd-linux", **extra: object) -> dict[str, Any]:
+def reservation(request_id: str = "w-cc-slot-macbook-pro-1", state: str = "launching",
+                host: str = "macbook-pro", **extra: object) -> dict[str, Any]:
     return {**outstanding(request_id, state, host, standing=True, kind="correctness"), "slot_reservation": True, **extra}
 
 
@@ -290,11 +290,11 @@ class ReservedRun(unittest.TestCase):
     slots full but the reserved one, a held window, a pending window at the loop's next start -- and
     the GPU loops' yield beside it, unchanged."""
 
-    BOX = "minix-amd-linux"
+    BOX = "macbook-pro"
     RID = "w-cc-7"
 
     def go(self, before: list[dict[str, Any]], pending: str = "[]", after: list[dict[str, Any]] | None = None,
-           reserved: str = "w-cc-slot-minix-amd-linux-1", pending_rc: int = 0,
+           reserved: str = "w-cc-slot-macbook-pro-1", pending_rc: int = 0,
            ) -> tuple[int, str, list[list[str]], list[str], list[dict[str, Any]]]:
         cfg = load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", {}, host="h")
         calls: list[list[str]] = []
@@ -335,11 +335,12 @@ class ReservedRun(unittest.TestCase):
                 outstanding("iterate-3", host=self.BOX, standing=True), outstanding("iterate-4", host=self.BOX, standing=True)]
 
     def test_slots_full_but_the_reserved_one_the_reserved_run_starts_and_takes_it(self) -> None:
-        rc, out, calls, far, _ = self.go(self.busy_box())
+        rc, out, calls, far, bodies = self.go(self.busy_box())
         self.assertEqual(rc, 0, out)
         self.assertIn(f"TIP-RUN STARTED {self.RID} {self.BOX}", out)
         self.assertEqual([c[:2] for c in calls], [["execution", "run"], ["execution", "record"]])
-        self.assertEqual(far[11:], ["w-cc-slot-minix-amd-linux-1", "true"], "the far side's slot takes the reserved slot")
+        self.assertEqual(far[11:], ["w-cc-slot-macbook-pro-1", "true"], "the far side's slot takes the reserved slot")
+        self.assertEqual(bodies[0].get("reserved_by"), "w-cc-slot-macbook-pro-1", "the registry counts it in its slot")
 
     def test_without_the_reservation_the_same_box_is_yielded_as_ever(self) -> None:
         # The GPU loops' rule, and a reserved loop's before #1187: every non-standing record turns it away.
@@ -359,7 +360,7 @@ class ReservedRun(unittest.TestCase):
         mark = {"box": self.BOX, "id": "measure-2", "worker": "t9", "expires_left": 900}
         rc, out, calls, _, _ = self.go(self.busy_box(), pending=json.dumps([mark]))
         self.assertEqual((rc, calls), (1, []))
-        self.assertIn("pending window measure-2 (t9, 900s left) waits for minix-amd-linux", out)
+        self.assertIn("pending window measure-2 (t9, 900s left) waits for macbook-pro", out)
         elsewhere = {**mark, "box": "tuf-amd-linux"}
         self.assertEqual(self.go(self.busy_box(), pending=json.dumps([elsewhere]))[0], 0, "another box's window")
 
@@ -383,7 +384,7 @@ class ReservedRun(unittest.TestCase):
             with self.subTest(records=records):
                 rc, out, calls, _, _ = self.go(records)
                 self.assertEqual((rc, calls), (1, []))
-                self.assertIn("is no outstanding slot reservation on minix-amd-linux", out)
+                self.assertIn("is no outstanding slot reservation on macbook-pro", out)
 
     def test_a_measurement_reserved_beside_it_is_read_again_and_concluded_not_launched(self) -> None:
         mine = outstanding(self.RID, host=self.BOX)

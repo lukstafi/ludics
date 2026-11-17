@@ -73,7 +73,9 @@ only to measurement. Its step 2, read off the same two registry reads, a fail-cl
     run too (fail-closed toward the measurement, whose window the loop must not outrun). A mark made
     between that read and the reservation is seen by the window's next retry, which this run's
     record holds back for at most this run: the cost is one run, never two.
-A refusal is ``TIP-RUN NOT STARTED`` (exit 1), concluded as any. The far side passes ``--reserved
+Its ``execution run`` payload carries ``"reserved_by": "<id>"`` beside the request, so the registry
+admits it past the box's ordinary cap, and only it (registry.py, THE SLOT RESERVATION). A refusal
+is ``TIP-RUN NOT STARTED`` (exit 1), concluded as any. The far side passes ``--reserved
 <id>`` to its ``execution slot``, which takes only the reserved slot (slot.py, THE RESERVED SLOT),
 still ``--wait 0``: a slot held by a batch that took it before the reservation stood refuses the
 run, and the loop tries again at its next start. A running run is never stopped by any of this. A
@@ -665,7 +667,9 @@ def cmd_tip_run(cfg: Config, args: list[str]) -> int:
 
     # The request is staged anew, marked beside it as this verb's (registry.py, THE LOOP RUN UNDER A
     # HALT: a halt admits it, the verdict the halt waits for), with the revision and id resolved above.
-    rc = fleet_worker(cfg, ["execution", "run"], {**fields, "tip_run": True})
+    # THE RESERVED RUN: a run in the reserved slot names it beside the request (registry.py, THE SLOT RESERVATION).
+    rc = fleet_worker(cfg, ["execution", "run"], {**fields, "tip_run": True,
+                                                   **({"reserved_by": parsed.reserved} if parsed.reserved else {})})
     if rc != 0:
         if rc == 4:
             cli.say(f"TIP-RUN UNKNOWN {request_id}: the reservation's outcome is unknown (above); reconcile it")

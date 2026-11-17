@@ -878,8 +878,9 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
   standing slot reservation on the home box (`RESERVED <id> on <box>: workers' batches there take
   <n-1> of <n> slots`), and every start takes that slot (`tip-run --reserved`), beside workers'
   batches and legs, whatever they hold. **The cost is one slot of the home box: workers there get
-  one fewer, and the registry queues one fewer assignment there; say so in the wave summary.** The loop yields
-  only to measurement: a window held on its box, and a window asked for while it ran. A window a
+  one fewer, and the registry queues one fewer assignment there; say so in the wave summary.**
+  The loop yields only to measurement: a window held on its box, and a window asked for while it
+  ran. A window a
   non-standing record keeps from opening is answered *pending* (`execution window` exit 3, and
   `execution assign` reports it refused as before); the loop's next start yields to its mark, so
   ask for the window again once the loop's run concludes (`wave drive` retries every 300 s) and it
@@ -927,7 +928,8 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
      up to date and runs nothing (ludics#1106: three `dune build @alias` in one `sh -c` loop ran
      the test once), so use the project's own repeat command, which its agent notes name. `tip-run
      --wait <id>` concludes it; `NOT STARTED` is a busy box (a loop run queues for no slot, the
-     reserved one included): re-issue it. Three passes mean a flake, typically load on a box shared with workers' batches
+     reserved one included): re-issue it. Three passes mean a flake, typically load on a box
+     shared with workers' batches
      (wave-20261102: a `device_init_deadline` timing claim on macbook-pro beside five workers'
      batches, settled in three minutes). Then `resume-launches` and restart `wave loop` with
      `--resume-after <red id>` to run at the current tip at once, even when that is still the red
@@ -1020,8 +1022,9 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
     (`cuda` on rog, `hip` on tuf and minix), since the runner otherwise takes OCANNL's test config,
     which pins cc (two waves' GPU-loop records were cc runs, ludics-lite#793). The cc loop's local
     run takes the same calls, its request carrying `"integration": true`, but in its reserved slot
-    (`--reserved`, above), yielding only to measurement. `wave loop` ends on a red with `LOOP RED`, the cue for *On a red at the
-    tip*; it never halts launches itself, since the later-merge check comes before the halt
+    (`--reserved`, above), yielding only to measurement. `wave loop` ends on a red with `LOOP
+    RED`, the cue for *On a red at the tip*; it never halts launches itself, since the later-merge
+    check comes before the halt
     ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 5).
   - **A red takes the cc loop's path, with the backend named:** `halt "<backend> red at <sha>,
     rerun pending"` (a red that gates nothing may skip it: *On a regression*, below); one rerun

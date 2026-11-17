@@ -83,7 +83,7 @@ THE RESERVED SLOT (ludics#1187). A loop whose entry says ``reserve_slot`` (the c
   - FAILOVER, only with ``standby: {box, checkout}``: every step starts at home first. A home
     ``NOT STARTED`` (tip-run's exit 1, a definite refusal; an unknown outcome ends the driver as
     before, so it never fails over) opens a streak, and once the streak is ``failover_after``
-    seconds old (default 1800, about one cc tip run on minix and its poll) the step reserves a slot
+    seconds old (default 1800: longer than about one cc tip run, and its poll) the step reserves a slot
     on the standby as above and starts there (``FAILOVER to <box> ...``). Failed over, a home refusal
     goes straight to the standby. The first home start returns the loop (``RETURNED to <box>``) and
     concludes the standby's reservation. A step that starts nothing because the tip is judged ends a
@@ -394,8 +394,9 @@ class Driver:
         try:
             if self.loop.reserve_slot:
                 self.home_slot = self.ensure(self.loop.box, self.loop.checkout)
-                if self.loop.standby is not None and self.held(self.loop.standby.box):
-                    self.standby_slot = str(self.held(self.loop.standby.box)[0]["request_id"])
+                spare = self.held(self.loop.standby.box) if self.loop.standby is not None else []
+                if spare and self.loop.standby is not None:
+                    self.standby_slot = str(spare[0]["request_id"])
                     self.say(f"RESUME failed over to {self.loop.standby.box} ({self.standby_slot} outstanding)")
             pending = self.recover(resume_after)
             while True:

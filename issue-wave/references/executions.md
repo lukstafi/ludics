@@ -747,8 +747,9 @@ must name as `--target-repo` to be handed it (SKILL.md's *Base gate*).
 
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
 `fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] [--base <branch>] --checkout <dir>
-[--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] [--reserved <id>] -- <command...>`. Its request is the
-coordinator's non-standing `correctness` request whose `requested_revision` is exactly one full
+[--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] [--reserved <id>] -- <command...>`.
+Its request is the coordinator's non-standing `correctness` request whose `requested_revision`
+is exactly one full
 SHA, or names none under
 `--tip`, which writes the branch's head on GitHub into it; under `--id-prefix` it names no
 `request_id` either, and the run takes `<prefix>-<n>`, one past the highest `<n>` the registry holds
@@ -771,8 +772,10 @@ correctness batch like a worker's, in the slot its loop owns: `<id>` is the loop
 reservation on the box (`"slot_reservation": true` beside its `run` payload, one per box, which
 `wave loop` takes for a loop whose entry says `reserve_slot`), and while it stands workers' batches
 there take one slot fewer (3 of a four-slot box's 4) and the registry queues one fewer non-standing
-assignment there, admitting the loop's own run past that count. Such a run yields only to
-measurement: a measurement outstanding on the box (an open window suspends the reservation), a
+assignment there, admitting the loop's own run past that count (its payload names the
+reservation, `reserved_by`; a GPU loop's run counts and is counted as before). Such a run yields
+only to measurement: a measurement outstanding on the box (an open window suspends the
+reservation), a
 **pending window** there, and another loop run in its checkout or still starting; a worker's leg or
 an assigned suite does not turn it away. A window a non-standing correctness record keeps from
 opening is answered pending (`execution window` exit 3, `{"pending": ...}`) and leaves a mark on the

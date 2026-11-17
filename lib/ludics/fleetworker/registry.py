@@ -328,10 +328,14 @@ on every new reservation: exactly `true`, only on `run`, only beside a standing 
 of transport `coordinator` (which names its checkout, as every standing request does), on a box of
 at least two correctness slots, and at most one outstanding per box (a second is refused, naming
 the first). Under a halt it is admitted as a tip-run mark is (THE LOOP RUN UNDER A HALT): it is the
-loop the halt waits for. What it changes here is the cap: on a box holding an outstanding
-reservation, a non-standing request without the tip-run mark counts the box's non-standing records
-but tip-run ones against `cap - 1`, and a request with the tip-run mark is admitted past the count,
-its run bounded by the one reserved slot at run time (slot.py, THE RESERVED SLOT). A window
+loop the halt waits for. What it changes here is the cap. A tip-run that takes the reserved slot
+(`execution tip-run --reserved <id>`) says so: its `run` payload carries `"reserved_by": "<id>"`
+beside the request, only with the tip-run mark, naming the reservation outstanding on its host (any
+other is refused), kept as a top-level `reserved_by` fixed for the record's life. On a box holding
+an outstanding reservation, every other non-standing request counts the box's non-standing records
+but those `reserved_by` it against `cap - 1` (a GPU loop's tip-run, which takes an ordinary slot,
+counts and is counted as before), and the one `reserved_by` it is admitted past the count, its run
+bounded by the one reserved slot at run time (slot.py, THE RESERVED SLOT). A window
 suspends a reservation as it does any standing record. The boundary: the registry checks the mark's
 shape, its box and its one-per-box rule; that the holder is a loop, and which batch may take the
 slot, are `wave loop`'s and `execution slot`'s.
@@ -634,6 +638,15 @@ def slot_reservation_ok(value: Any, action: str, request: Record) -> bool:
     return True
 
 
+def reserved_by_ok(value: Any, tip_run: bool | None) -> str:
+    """THE SLOT RESERVATION's ``reserved_by`` (see the header), by its shape: a request id, beside the tip-run mark."""
+    if not (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value)):
+        refuse("reserved_by must be the slot reservation's request id")
+    if not tip_run:
+        refuse("reserved_by names the slot an execution tip-run loop run takes, so it goes with the tip_run mark only")
+    return value
+
+
 def check_slot_reservation(request: Record, records: dict[str, Record], slots_spec: str,
                            canonical_hosts: set[str]) -> None:
     """A NEW slot reservation's box (see the header): at least two slots, and none reserved there yet."""
@@ -721,6 +734,8 @@ def validate_record(data: Any, path: Path) -> Record:
         refuse(f"invalid tip_run mark: {path}")
     if "slot_reservation" in record and (record["slot_reservation"] is not True or record["request"].get("standing") is not True):
         refuse(f"invalid slot_reservation mark: {path}")
+    if "reserved_by" in record and not (isinstance(record["reserved_by"], str) and record.get("tip_run") is True):
+        refuse(f"invalid reserved_by: {path}")
     if "pinned_backend" in record:
         try:
             pinned_backend_ok(record["pinned_backend"], record["request"])
@@ -921,7 +936,7 @@ def check_lane_lock(host: str, map_spec: str, anchor: str, lab: str) -> None:
 
 
 def check_capacity(data: Record, records: dict[str, Record], canonical_hosts: set[str], slots_spec: str,
-                   window: bool = False, tip_run: bool = False) -> str | None:
+                   window: bool = False, reserved_by: str | None = None) -> str | None:
     """Refuse when the requested host cannot take this assignment beside the outstanding ones.
 
     Returns the open measurement window a standing request is queued behind, if any."""
@@ -959,11 +974,15 @@ def check_capacity(data: Record, records: dict[str, Record], canonical_hosts: se
     counted = [r for r in outstanding if not r["request"].get("standing")]
     cap = slots.get(host, 1)
     reserved = reservation_on(records, host)
+    if reserved_by is not None and (reserved is None or reserved_by.lower() != reserved["request_id"].lower()):
+        refuse(f"reserved_by names {reserved_by}, which is no outstanding slot reservation on {host}"
+               f" ({reserved['request_id'] if reserved else 'none is'}{' is' if reserved else ''})")
     if reserved is not None:
-        # THE SLOT RESERVATION: the loop's run is bounded by its reserved slot, every other one by the rest.
-        if tip_run:
+        # THE SLOT RESERVATION: the run in the reserved slot is bounded by it, every other one by the rest.
+        if reserved_by is not None:
             return None
-        counted = [r for r in counted if not r.get("tip_run")]
+        mine = reserved["request_id"].lower()
+        counted = [r for r in counted if str(r.get("reserved_by", "")).lower() != mine]
         if len(counted) >= cap - 1:
             refuse(f"box owned by {owners} (correctness slots {len(counted)}/{cap - 1} on {host} taken; one more"
                    f" is reserved for the integration loop by {reserved['request_id']})")
@@ -1440,7 +1459,9 @@ def main(argv: list[str]) -> None:
         tip_run: bool | None = data.get("tip_run")
         # THE SLOT RESERVATION's mark rides beside the request as well (see the header).
         slot_reservation: bool | None = data.get("slot_reservation")
-        request = {k: v for k, v in data.items() if k not in {"checkout", "triage_boxes", "tip_run", "slot_reservation"}}
+        reserved_by: str | None = data.get("reserved_by")
+        request = {k: v for k, v in data.items()
+                   if k not in {"checkout", "triage_boxes", "tip_run", "slot_reservation", "reserved_by"}}
         dispatch_evidence = ("measurement window opened: reserved and dispatched in one step (execution window)"
                              if action == "window" else "reserved and dispatched in one step (execution run)")
         if action in {"run", "window"}:
@@ -1460,6 +1481,8 @@ def main(argv: list[str]) -> None:
             tip_run = tip_run_ok(tip_run, action, request)
         if "slot_reservation" in data:
             slot_reservation = slot_reservation_ok(slot_reservation, action, request)
+        if "reserved_by" in data:
+            reserved_by = reserved_by_ok(reserved_by, tip_run)
         if "triage_boxes" in data:
             triage_boxes = triage_boxes_ok(triage_boxes, request)
             for box in triage_boxes:
@@ -1482,6 +1505,9 @@ def main(argv: list[str]) -> None:
             if record.get("slot_reservation") != slot_reservation:
                 refuse(f"request_id already names a different slot_reservation mark"
                        f" ({json.dumps(record.get('slot_reservation'))}); a record's slot_reservation mark is fixed when it is taken")
+            if record.get("reserved_by") != reserved_by:
+                refuse(f"request_id already names a different reserved_by ({json.dumps(record.get('reserved_by'))});"
+                       f" a record's reserved_by is fixed when it is taken")
             if action == "reserve":
                 sync_directory(directory.parent)
                 sync_directory(directory)
@@ -1522,7 +1548,7 @@ def main(argv: list[str]) -> None:
             # once every other admission check (the lane lock, the halt and its triage) has passed.
             blockers = window_blockers(request["execution_host"], records) if action == "window" else []
             queued = None if blockers else check_capacity(request, records, canonical_hosts, slots_spec,
-                                                          window=action == "window", tip_run=bool(tip_run))
+                                                          window=action == "window", reserved_by=reserved_by)
             if slot_reservation:
                 check_slot_reservation(request, records, slots_spec, canonical_hosts)
             if request["kind"] == "measurement":
@@ -1567,8 +1593,10 @@ def main(argv: list[str]) -> None:
                 record["tip_run"] = True
             if slot_reservation:
                 record["slot_reservation"] = True
+            if reserved_by is not None:
+                record["reserved_by"] = reserved_by
             beside = {k: v for k, v in (("checkout", checkout), ("triage_boxes", triage_boxes), ("tip_run", tip_run),
-                                        ("slot_reservation", slot_reservation)) if v is not None}
+                                        ("slot_reservation", slot_reservation), ("reserved_by", reserved_by)) if v is not None}
             events.append(("reserve", {**request, **beside}))
         if dispatch:
             under_halt = check_halt_dispatch(record, halt_identity, halt_text)
