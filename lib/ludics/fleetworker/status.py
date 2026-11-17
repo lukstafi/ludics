@@ -12,7 +12,7 @@ THE DOCUMENT, version 1 (this header is the one statement of it). One JSON objec
 
   version       1
   anchor        the anchor box read (FLEET_ANCHOR)
-  generated_at  this box's clock, ``%Y-%m-%dT%H:%M:%SZ``
+  generated_at  this box's clock, boardstore's STAMP (``%Y-%m-%dT%H:%M:%SZ``)
   since_hours   the window given, a number, or null for every board
   coordinator   {"host", "since"} from the lease (each a string or null), or null with no lease; never
                 the token
@@ -66,6 +66,7 @@ from typing import Any, cast
 from ludics import cli
 from ludics.fleetworker import lease
 from ludics.fleetworker.board import store_command
+from ludics.fleetworker.boardstore import STAMP
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import listing, records_of
 from ludics.fleetworker.identity import die
@@ -160,8 +161,8 @@ def read_boards(cfg: Config, since: float | None, errors: list[dict[str, str]]) 
         if isinstance(entry, dict):
             item = cast(dict[str, Any], entry)
             errors.append({"source": "board", "wave": str(item.get("wave")), "why": str(item.get("why"))})
-    docs = [cast(dict[str, Any], b) for b in cast(list[Any], boards) if isinstance(b, dict)] if isinstance(boards, list) else []
-    return sorted((wave_of(d) for d in docs), key=lambda w: w["wave"] or "")
+    # In the scan's name order (boardstore's header): a board's wave is its file's name.
+    return [wave_of(cast(dict[str, Any], b)) for b in cast(list[Any], boards) if isinstance(b, dict)] if isinstance(boards, list) else []
 
 
 def read_facts(cfg: Config, errors: list[dict[str, str]]) -> tuple[dict[str, str | None] | None, str | None]:
@@ -205,7 +206,7 @@ def cmd_status_json(cfg: Config, args: list[str]) -> int:
     document = {
         "version": VERSION,
         "anchor": cfg.anchor,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": datetime.now(timezone.utc).strftime(STAMP),
         "since_hours": since,
         "coordinator": coordinator,
         "halt": halt,

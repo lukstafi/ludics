@@ -16,9 +16,10 @@ from unittest import mock
 
 from ludics import cli
 from ludics.fleetworker import __main__ as entry
-from ludics.fleetworker import boardstore, lease, status, takeover, transport
+from ludics.fleetworker import boardstore, lease, registry, status, takeover, transport
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
+from ludics.tests.test_fleetworker_registry import request
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 SCRIPT = os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh")
@@ -238,9 +239,28 @@ class Document(Anchor):
         self.assertIsNone(doc["executions"])
         self.assertEqual(doc["errors"], [{"source": "executions", "why": "the registry listing exited 1"}])
 
-    def test_the_real_registry_listing_is_read(self) -> None:
-        self.assertEqual(self.document()["executions"], [])
-        self.assertTrue(os.path.isdir(self.root))
+    def records(self) -> None:
+        """Two records through the registry's own writer: ``open`` reserved, ``shut`` concluded, each
+        holding the coordinator's token as its ``lease_token``."""
+        def call(action: str, payload: dict[str, object]) -> None:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = registry.run(["-", self.root, action, "owner", TOKEN, json.dumps(payload), "mac", "", ""])
+            while registry.WAITER_LOCKS:
+                os.close(registry.WAITER_LOCKS.pop())
+            self.assertEqual(rc, 0, action)
+
+        call("reserve", request("shut"))  # one outstanding reservation per box: conclude it first
+        call("conclude", {"request_id": "shut", "verdict": "not-launched", "log": "l", "evidence": "never launched"})
+        call("reserve", request("open"))
+        with open(os.path.join(self.root, "executions", "open.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["lease_token"], TOKEN, "the fixture holds the token the listing must drop")
+
+    def test_the_real_registry_lists_open_records_without_their_token(self) -> None:
+        self.records()
+        doc = self.document()
+        self.assertEqual([r["request_id"] for r in doc["executions"]], ["open"])  # the concluded one is not
+        self.assertFalse({"lease_token", "history"} & set(doc["executions"][0]))
+        self.assertEqual(doc["executions"][0]["state"], "reserved")
 
     def test_three_anchor_calls_whatever_the_number_of_boards(self) -> None:
         def calls() -> int:
@@ -263,11 +283,14 @@ class Document(Anchor):
     def test_the_token_appears_nowhere_end_to_end(self) -> None:
         """Through fleet-worker.sh's own entry (scripts/py -m ludics.fleetworker), stdout and stderr."""
         self.fixture()
+        self.records()
         self.write("HALT", "halted\n")
         done = subprocess.run([os.path.join(CHECKOUT, "scripts", "py"), "-m", "ludics.fleetworker", SCRIPT,
                                "status", "--json"], env=self.env, capture_output=True, text=True, check=False)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(json.loads(done.stdout)["coordinator"]["host"], "box/session-1")
+        doc = json.loads(done.stdout)
+        self.assertEqual(doc["coordinator"]["host"], "box/session-1")
+        self.assertEqual([r["request_id"] for r in doc["executions"]], ["open"])
         self.assertNotIn(TOKEN, done.stdout + done.stderr)
         self.assertNotIn("token", done.stdout)
 
