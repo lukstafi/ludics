@@ -2293,17 +2293,17 @@ class WindowsWitnessRecipe(unittest.TestCase):
         code = text.split("<!-- windows-witness-recipe:start -->", 1)[1].split("```python\n", 1)[1].split("```", 1)[0]
         namespace: dict[str, Any] = {"__name__": "recipe_test"}
         exec(compile(code, doc, "exec"), namespace)
-        for failure in ("none", "reserve", "reserve-timeout", "windows", "windows-timeout", "script", "script-timeout",
+        for failure in ("none", "reserve", "reserve-timeout", "windows", "windows-timeout", "windows-needs-person", "script", "script-timeout",
                         "ssh-error", "interrupt", "local-error", "linux", "linux-timeout", "conclude", "conclude-timeout"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 reserve = os.path.join(directory, "reserve.json")
                 with open(reserve, "w") as f:
                     json.dump({"request_id": "win-1", "requested_revision": A, "kind": "measurement"}, f)
-                ready = {"reserve": reserve, "fleet": "/fake/fleet", "wake": "/fake/wake", "box": "dual",
-                         "cap_seconds": 17, "ssh_argv": ["ssh", "win", "native-driver"],
+                ready: dict[str, Any] = {"reserve": reserve, "fleet": "/fake/fleet", "wake": "/fake/wake", "box": "dual",
+                         "cap_seconds": 17, "observed_sha": A, "remote_checkout": "C:/work/project", "ssh_argv": ["ssh", "win", "native-driver"],
                          "transcript": os.path.join(directory, "transcript.log")}
                 calls: list[str] = []
-                caps: list[int] = []
+                caps: list[int | None] = []
 
                 def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
                     step = argv[2] if argv[0] == "/fake/fleet" else argv[1] if argv[0] == "/fake/wake" else "script"
@@ -2311,7 +2311,17 @@ class WindowsWitnessRecipe(unittest.TestCase):
                     caps.append(kwargs["timeout"])
                     kwargs["stdout"].write("fake " + step + "\n")
                     target = {"run": "reserve", "boot-windows": "windows", "boot-linux": "linux"}.get(step, step)
-                    if failure == target + "-timeout":
+                    if step == "conclude":
+                        with open(argv[3]) as f:
+                            payload = json.load(f)
+                        if payload["verdict"] != "not-launched":
+                            for field in ("observed_sha", "remote_checkout", "handle"):
+                                self.assertTrue(payload.get(field), "registry requires " + field)
+                    if step.startswith("boot-"):
+                        self.assertIsNone(kwargs["timeout"], "wake-lab must finish its own bounded cleanup")
+                        if failure == target + "-timeout":
+                            return subprocess.CompletedProcess(argv, 1)  # wake-lab's own deadline
+                    elif failure == target + "-timeout":
                         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
                     if step == "script" and failure == "ssh-error":
                         raise OSError("ssh unavailable")
@@ -2319,7 +2329,8 @@ class WindowsWitnessRecipe(unittest.TestCase):
                         raise KeyboardInterrupt()
                     if step == "script" and failure == "local-error":
                         raise ValueError("local failure")
-                    return subprocess.CompletedProcess(argv, 3 if failure == target else 0)
+                    return subprocess.CompletedProcess(argv, 3 if failure == "windows-needs-person" and step == "boot-windows" else
+                                                       1 if failure == target else 0)
 
                 with mock.patch("subprocess.run", side_effect=run), mock.patch("signal.signal"):
                     if failure in ("interrupt", "local-error"):
@@ -2335,21 +2346,22 @@ class WindowsWitnessRecipe(unittest.TestCase):
                     self.assertLess(calls.index("boot-windows"), calls.index("boot-linux"))
                     if failure.startswith("windows"):
                         self.assertNotIn("script", calls)
-                    if failure.startswith("linux") or failure in ("interrupt", "local-error"):
+                    if failure.startswith("linux") or failure in ("interrupt", "local-error", "windows-needs-person"):
                         self.assertNotIn("conclude", calls, "uncertain recovery/interrupt must retain reservation")
                     else:
                         self.assertEqual(calls[-1], "conclude")
                         with open(ready["transcript"] + ".conclude.json") as f:
                             conclusion = json.load(f)
-                        self.assertEqual(conclusion["verdict"], "pass" if failure in ("none", "conclude", "conclude-timeout") else "fail")
+                        self.assertEqual(conclusion["verdict"], "not-launched" if failure.startswith("windows") else
+                                         "pass" if failure in ("none", "conclude", "conclude-timeout") else "fail")
                         self.assertEqual(conclusion["log"], ready["transcript"])
                 if "script" in calls:
                     self.assertEqual(caps[calls.index("script")], 77)
-                self.assertEqual(rc, 0 if failure == "none" else 3 if failure.startswith("linux") else 2)
+                self.assertEqual(rc, 0 if failure == "none" else 3 if failure.startswith("linux") or failure == "windows-needs-person" else 2)
                 with open(ready["transcript"]) as f:
                     transcript = f.read()
                 self.assertIn("fake run", transcript)
-                if failure.startswith("linux"):
+                if failure.startswith("linux") or failure == "windows-needs-person":
                     self.assertIn("NEEDS A PERSON", transcript)
 
 

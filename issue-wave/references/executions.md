@@ -1279,7 +1279,9 @@ Save this Python block to coordinator scratch, then run it in the foreground wit
 `scripts/py <scratch>/windows-witness.py <scratch>/ready.json`. `ready.json` has only the
 coordinator-approved `fleet` (absolute fleet-worker.sh path), `wake` (absolute wake-lab.sh path),
 `reserve` (absolute reserve JSON path), `box` (wake-lab endpoint), `ssh_argv` (above),
-`cap_seconds` (positive integer), and `transcript` (fresh absolute local path). The reservation's
+`cap_seconds` (positive integer), `remote_checkout` (staged Windows checkout),
+`observed_sha` (SHA the coordinator verified there during readiness), and `transcript`
+(fresh absolute local path). The reservation's
 `request_id` and `requested_revision` are read from `reserve`; the latter must be the exact SHA.
 Use this from the coordinator's anchor, under its live lease. This is a recipe, not a new verb;
 a future `execution windows-witness` should own staging and these inputs together.
@@ -1300,6 +1302,8 @@ def witness(ready):
         raise ValueError("a fresh non-standing measurement is required")
     if not isinstance(ready["cap_seconds"], int) or ready["cap_seconds"] <= 0:
         raise ValueError("cap_seconds must be positive")
+    if ready["observed_sha"] != reserve["requested_revision"]:
+        raise ValueError("readiness SHA must match the reserved revision")
     transcript = Path(ready["transcript"])
     # Exclusive create: never mistake an earlier attempt's evidence for this one's.
     with transcript.open("x") as log:
@@ -1321,24 +1325,36 @@ def witness(ready):
         if call([fleet, "execution", "run", ready["reserve"]], 120):
             # A lost dispatch response is uncertain: reconcile, never retry or boot.
             return 2
-        rc, recovered = 2, False
+        rc, recovered, launched, boot = 2, False, False, 2
         try:
-            if call([ready["wake"], "boot-windows", "--as=" + request, ready["box"]], 600) == 0:
+            # wake-lab owns its bounded boot/BootNext cleanup. Never SIGKILL it at
+            # an outer timeout or abandon it on INT/TERM while a reboot is pending.
+            term = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            intr = signal.signal(signal.SIGINT, signal.SIG_IGN)
+            try:
+                boot = call([ready["wake"], "boot-windows", "--as=" + request, ready["box"]], None)
+            finally:
+                signal.signal(signal.SIGTERM, term)
+                signal.signal(signal.SIGINT, intr)
+            if boot == 0:
+                launched = True
                 rc = call(ready["ssh_argv"], ready["cap_seconds"] + 60)
         finally:
             # TERM/INT enter finally too. Do not interrupt recovery a second time.
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             signal.signal(signal.SIGINT, signal.SIG_IGN)
-            recovered = call([ready["wake"], "boot-linux", "--as=" + request, ready["box"]], 600) == 0
+            recovered = call([ready["wake"], "boot-linux", "--as=" + request, ready["box"]], None) == 0 and boot != 3
         if not recovered:
-            log.write("NEEDS A PERSON: Linux return unconfirmed; keep reservation; reconcile\n")
+            log.write("NEEDS A PERSON: Linux/BootNext recovery unconfirmed; keep reservation; reconcile\n")
             return 3
         # Linux answering proves Windows work has stopped. Only driver success passes.
         conclusion = transcript.with_suffix(transcript.suffix + ".conclude.json")
         with conclusion.open("x") as out:
             json.dump({"request_id": request,
-                       **({"observed_sha": reserve["requested_revision"]} if rc == 0 else {}),
-                       "verdict": "pass" if rc == 0 else "fail", "log": str(transcript),
+                       **({"observed_sha": ready["observed_sha"],
+                           "remote_checkout": ready["remote_checkout"],
+                           "handle": "windows-driver:" + request} if launched else {}),
+                       "verdict": ("pass" if rc == 0 else "fail") if launched else "not-launched", "log": str(transcript),
                        "evidence": "Native driver rc=" + str(rc) + "; boot-linux confirmed Linux; see kept transcript"}, out)
         return 0 if call([fleet, "execution", "conclude", str(conclusion)], 120) == 0 and rc == 0 else 2
 
@@ -1357,18 +1373,27 @@ The failure paths are a closed list within this readiness boundary:
 
 - Reservation refusal or lost response: no boot; keep the transcript and reconcile an uncertain
   dispatch before doing anything else. An active GPU loop/other record is a refusal, not a retry.
-- Windows never answers (boot refusal, exit 3, error or 600-second timeout): skip the verifier,
-  attempt `boot-linux`; conclude failure only after Linux answers.
+- Windows never answers (boot refusal, exit 3, error or wake-lab’s own boot deadline): skip the verifier,
+  attempt `boot-linux`; conclude `not-launched` only after Linux answers and the Windows boot
+  did not return exit 3. Exit 3 may mean a reboot is still pending or BootNext is unresolved:
+  retain the reservation even if Linux answers, and ask a person to reconcile boot state.
 - Verifier fails, hangs, or ssh drops: the native driver owns its process-tree cap; the local ssh
   cap is `cap_seconds + 60`. Return to Linux even after a transport timeout; that reboot stops
   remaining Windows work. Keep local transcript and native log/error files; conclude failure.
 - INT/TERM or a local error after reservation: `finally` attempts Linux recovery. The reservation
-  remains active for manual reconciliation; no automatic success conclusion is made.
+  remains active for manual reconciliation; no automatic success conclusion is made. INT/TERM
+  during a boot operation are ignored until wake-lab completes its own bounded cleanup; they
+  must not orphan a pending reboot or bypass BootNext cleanup.
 - Linux does not come back (boot refusal, error or timeout): exit 3, **NEEDS A PERSON**, keep the
   reservation and transcript; never claim the box was returned or free it. The coordinator tells
   the user and follows wake-lab's recovery guidance rather than retrying the witness.
 - Conclusion refusal/lost response: Linux has returned, but the record stays held or uncertain;
   reconcile it from both logs before retrying a conclusion. Never rerun the witness for this.
+
+The boot operations use wake-lab’s own `WAKE_LAB_BOOT_WAIT_SECONDS` budget (900 seconds by
+default), not an outer subprocess timeout. Keep its bounded ssh/boot defaults; do not override
+them to an unbounded wait. A boot deadline is wake-lab’s terminal failure, with its cleanup
+finished before the recipe attempts the next operation.
 
 No userspace recipe can recover after SIGKILL, coordinator power loss or an unreachable boot
 controller. Those are outside the automatic recovery boundary: retain the measurement and use
