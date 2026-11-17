@@ -179,7 +179,9 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
             [--tier]``
             (a dependent starts from the base its prerequisite merged into), then ``wave launch``
 A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its launch answers: one
-non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha``. The
+non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha with
+--model <m>``, the planner ``peer_model`` names for the profile's model (peerplan/plan.py: Opus
+beside an Astra worker), or the default planner with a note when the profile names no model. The
 driver starts no planner; the coordinator starts it on that sha, since both plans must read one tree.
 THE REFRESH: ``wave prep`` runs from the agent host's served skills checkout, and the project part
 it renders is read at the fetched tip, so a checkout one merge behind can lack a built-in that part
@@ -276,6 +278,7 @@ from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import Record, read_manifest
 from ludics.fleetworker.waveprep import TASK, TIERS, Stop
 from ludics.fleetworker.waveunprep import FENCE
+from ludics.peerplan.plan import peer_model
 
 sleep: Callable[[float], None] = time.sleep  # the tests' seam, as waveloop's
 now: Callable[[], float] = time.time
@@ -1134,7 +1137,10 @@ class Driver:
             if queued.mode and queued.mode != "none":
                 # A PAIRED LAUNCH (the header): the planner must read the tree the worker launched from.
                 base = record.base if record is not None else sha.strip()
-                self.tell(slot, LAUNCH, f"launched {queued.mode} at {base}: start its peer planner on that sha"
+                model = self.wave.profiles[queued.profile].model
+                which = (f"with --model {peer_model(model)} (the worker runs {model})" if model
+                         else f"with --model {peer_model('')}, the default (the profile names no model: read the worker's launch line)")
+                self.tell(slot, LAUNCH, f"launched {queued.mode} at {base}: start its peer planner on that sha {which}"
                                        " (paired-planning.md, Coordinator, step 1)")
             return self.note(slot, LAUNCH, "launch", "answered", said)
         gate = PRESTART.search(said) or PRESTART.search(self.err)

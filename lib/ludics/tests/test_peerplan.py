@@ -89,6 +89,13 @@ def git(*args: str) -> str:
     return done.stdout.strip()
 
 
+class PeerModel(unittest.TestCase):
+    def test_opus_beside_an_astra_worker_and_the_default_beside_any_other(self) -> None:
+        self.assertEqual(plan.peer_model("gpt-6.2-astra"), "opus")
+        self.assertEqual(plan.peer_model("gpt-6.2-sol"), plan.DEFAULT_MODEL)
+        self.assertEqual(plan.peer_model(""), plan.DEFAULT_MODEL)
+
+
 class CleanUnread(unittest.TestCase):
     def test_dangling_runs_never_removes_worktree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ludics-clean.") as tmp:
