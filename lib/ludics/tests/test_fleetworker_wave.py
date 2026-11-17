@@ -2386,7 +2386,11 @@ class Markers(unittest.TestCase):
                              (f'EXECUTION_RESULT {{}} done\nREVIEW_REQUEST 7 {A}', "an EXECUTION_RESULT line that is not"),
                              ("The HANDBACK follows\nPR 7", "the last line starts 'PR'"),
                              (f"HANDBACK t42\n...\nREVIEW_REQUEST 7 {A}", "more than one marker: review, handback"),
-                             (f"EXECUTION_REQUEST\n{{}}\nEND_EXECUTION_REQUEST\nEXECUTION_RESULT {{}}", "more than one marker: request, result")):
+                             (f"EXECUTION_REQUEST\n{{}}\nEND_EXECUTION_REQUEST\nEXECUTION_RESULT {{}}", "more than one marker: request, result"),
+                             # A plan's Verification may quote a marker: the envelope is read first.
+                             ("Plan below.\nPLAN_READY\n## Verification\nEXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\nEND_PLAN_READY",
+                              "a PLAN_READY plan"),
+                             (f"PLAN_READY\nEXECUTION_RESULT {{}}\nEND_PLAN_READY\nREVIEW_REQUEST 7 {A}", "a PLAN_READY plan")):
             got = wavedrive.classify(message)
             self.assertEqual(got.kind, "other", message)
             self.assertIn(why, got.why)
@@ -3307,8 +3311,10 @@ class Queue(DriveCase):
                 ["wave", "launch", self.path, "t50"]])
             self.assertEqual(self.calls[0], ["halted"])
             self.assertIn("DRIVE t50 launch: launch answered: WAVE LAUNCH t50: launched far/w1-50", out)
+            self.assertIn(f"DRIVE ATTENTION t50 launch: launched paired at {B}: start its peer planner on that sha", out)
             self.rows = [row("t50")]  # launched: its row is live
-            self.once()
+            out = self.once()[1]
+            self.assertNotIn("peer planner", out, "an unpaired launch names no planner")
             self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--issue", "777",
                                                 "--tier", "D1/D2"],
                                                ["wave", "launch", self.path, "t51"]], "one launch a tick, in file order; the agent host takes no --host")

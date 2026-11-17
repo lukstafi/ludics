@@ -123,7 +123,8 @@ runs another kind of worker names each kind as a profile, and each other box a C
 as a host:
 
 ```json
-"profiles": {"sol": {"transport": "cli", "kind": "codex", "model": "gpt-6.2-sol", "effort": "high"}},
+"profiles": {"sol": {"transport": "cli", "kind": "codex", "model": "gpt-6.2-sol", "effort": "high"},
+             "astra": {"transport": "cli", "kind": "codex", "model": "gpt-6.2-astra", "effort": "high"}},
 "hosts": {"rog-nv-linux": {"checkout": "/home/lukstafi/ocannl-staging", "scratch": "/home/lukstafi/wave-scratch"}}
 ```
 
