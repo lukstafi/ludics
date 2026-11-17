@@ -51,6 +51,19 @@ brief:
   new window keeps its gap only while someone waits; and a batch waiting here, for a window or for a
   free slot, keeps a ``waiting.<pid>`` record in the slot directory, flocked for as long as it
   waits, which ``--holders`` lists (``WaitingRecord``).
+- THE RESERVED SLOT (ludics#1187): while the anchor's registry holds an outstanding slot
+  reservation on this box (registry.py, THE SLOT RESERVATION: the cc integration loop's), its
+  highest slot is the loop's. A batch that names that record, ``--reserved <id>``, takes that slot
+  and no other; every other batch takes the rest, in its usual order. What it reads, a fail-closed
+  allowlist: the records of the registry read the slot makes anyway, those outstanding on this box
+  whose top-level ``slot_reservation`` is ``true`` (suspended ones included: a window holds the box
+  then all the same); any one of them reserves the one highest slot. A ``--reserved`` batch is
+  refused when its id is no such record, when the record is suspended, and when it is a GPU batch
+  on a box whose tokens bind (the highest slot is never a token there). A box of one slot reserves
+  nothing (a NOTE says so). A drain (``hold --request``) still takes every slot, the reserved one
+  included. The boundary: the reservation is read once, at the batch's start, as the measurement
+  check is; a batch that already held the highest slot when the reservation was taken keeps it
+  until it ends, and the loop's batch is refused meanwhile.
 - THE GUARD (ludics-lite#317): a logind ``block`` inhibitor on sleep:idle, held by a HELPER beside
   the command (systemd-inhibit closes the descriptors of the process it runs, SIGTERMs it, and
   rewrites its exit status, so it must never wrap the batch), alive for as long as anything in the
@@ -848,7 +861,7 @@ def exec_command(prefix: str, box: str, command: Sequence[str]) -> NoReturn:
         refuse_unrunnable(prefix, box, command, exc)
 
 
-def waiting_holders(directory: str, order: range) -> str:
+def waiting_holders(directory: str, order: Sequence[int]) -> str:
     """Diagnostic boundary: only candidate slot files, read_holder's bounded JSON fields,
     and a live recorded PID in a currently locked file. This is recorded identity, not kernel
     confirmation of ownership; free files and dead PIDs never name a holder. No ps or registry scan.
@@ -872,17 +885,21 @@ def waiting_holders(directory: str, order: range) -> str:
 
 def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: int, inhibitor: Guard | None,
               command: Sequence[str], bound: int | None, waiting: "WaitingRecord | None" = None,
-              release: Callable[[], None] = lambda: None) -> NoReturn:
+              release: Callable[[], None] = lambda: None, reservation: "Reservation | None" = None) -> NoReturn:
     """Wait up to ``wait`` seconds for a slot (a GPU token unless ``cpu``), then run the command in it;
     from the first pass that finds none free, under a WaitingRecord (``waiting``, when the window
     wait already keeps one)."""
     # The candidate slots, in the order this batch tries them (THE GPU TOKENS).
+    order: Sequence[int]
     if not tokens:
         order = range(1, cap + 1)
     elif cpu:
         order = range(cap, 0, -1)
     else:
         order = range(1, tokens + 1)
+    if reservation is not None:
+        # THE RESERVED SLOT: the reservation's batch takes its slot alone, every other batch the rest.
+        order = [reservation.index] if reservation.mine else [i for i in order if i != reservation.index]
     deadline = time.monotonic() + wait
     announced = False
     while True:
@@ -918,7 +935,13 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
             if waiting is not None:
                 waiting.done()
             release()
-            if tokens and not cpu:
+            if reservation is not None and reservation.mine:
+                cli.say(f"{SLOT_PREFIX} REFUSED {box}: slot {reservation.index} of {cap}, reserved by {reservation.holder},"
+                        f" busy after {wait}s")
+            elif reservation is not None and not (tokens and not cpu):
+                cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {cap - 1} run-time correctness slots busy after {wait}s"
+                        f" (slot {reservation.index} of {cap} is reserved for the integration loop by {reservation.holder})")
+            elif tokens and not cpu:
                 cli.say(f"{SLOT_PREFIX} REFUSED {box}: all {tokens} GPU tokens (slots 1-{tokens} of {cap}) busy"
                         f" after {wait}s; a batch that holds no GPU declares --cpu")
             else:
@@ -1056,6 +1079,7 @@ def inhibitor_path(cfg: Config) -> Guard | None:
 
 SLOT_USAGE = (
     "execution slot [--bg <parent>] [--wait <seconds>] [--wait-window[=<seconds>]] [--cpu|--gpu] [--deadline <seconds>]"
+    " [--reserved <id>]"
     " -- <command> [args...]"
     " | execution slot --probe"
     " | execution slot --holders"
@@ -1082,6 +1106,7 @@ class SlotArgs:
     window_wait: WindowBound | None = None  # --wait-window's bound; None: refuse at once under a measurement
     deadline: int | None = None
     holders: bool = False  # --holders (ludics-lite#639): list who holds this box's slots, take nothing
+    reserved: str = ""  # --reserved <id> (THE RESERVED SLOT): the slot reservation this batch runs under
 
 
 def parse_deadline(verb: str, args: list[str], i: int) -> int:
@@ -1098,7 +1123,7 @@ def parse_slot(args: list[str]) -> SlotArgs:
         if len(args) > 1:
             die("execution slot: --holders takes no other word; it runs nothing")
         return SlotArgs(600, "", False, "", [], holders=True)
-    wait, kind, probe, bg = 600, "", False, ""
+    wait, kind, probe, bg, reserved = 600, "", False, "", ""
     deadline: int | None = None
     window_wait: WindowBound | None = None
     wait_text = "600"
@@ -1126,6 +1151,11 @@ def parse_slot(args: list[str]) -> SlotArgs:
         elif arg == "--deadline":
             deadline = parse_deadline("slot", args, i)
             i += 1
+        elif arg == "--reserved":
+            if i + 1 >= len(args) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args[i + 1]):
+                die("execution slot: --reserved takes the slot reservation's request id")
+            reserved = args[i + 1]
+            i += 1
         elif arg == "--wait-window":
             window_wait = BY_DEADLINE
         elif arg.startswith("--wait-window="):
@@ -1148,9 +1178,11 @@ def parse_slot(args: list[str]) -> SlotArgs:
         die("execution slot: --probe takes no --bg; it runs nothing")
     if probe and deadline is not None:
         die("execution slot: --probe takes no --deadline; it runs nothing")
+    if probe and reserved:
+        die("execution slot: --probe takes no --reserved; it runs nothing")
     if not probe and not command:
         die("execution slot: a command to hold the slot around is required, after --")
-    return SlotArgs(wait, kind, probe, bg, command, window_wait, deadline)
+    return SlotArgs(wait, kind, probe, bg, command, window_wait, deadline, reserved=reserved)
 
 
 def measurement_records(records: list[dict[str, Any]], box: str) -> list[dict[str, Any]]:
@@ -1578,6 +1610,39 @@ def check_graces(verb: str, cfg: Config) -> None:
         die(f"execution {verb}: {exc}")
 
 
+@dataclass(frozen=True)
+class Reservation:
+    """THE RESERVED SLOT: the slot ``index`` is the reservation ``holder``'s; ``mine`` when this batch is it."""
+    index: int
+    holder: str
+    mine: bool
+
+
+def reserved_slot(box: str, cap: int, tokens: int, cpu: bool, records: list[dict[str, Any]],
+                  named: str) -> Reservation | Refused | None:
+    """THE RESERVED SLOT (see the header) off the registry read: the reservation, or None, or the refusal
+    of a ``--reserved`` batch that is not the reservation's."""
+    held = [r for r in records if r.get("state") != "concluded" and r.get("slot_reservation") is True
+            and field(r, "request", "execution_host") == box]
+    ids = ", ".join(str(r.get("request_id")) for r in held)
+    if held and cap < 2:
+        errline(f"{SLOT_PREFIX} NOTE {box}: {ids} reserves a slot, but {box} has one; nothing is reserved")
+        held = []
+    if not named:
+        return Reservation(cap, str(held[0].get("request_id")), False) if held else None
+    mine = next((r for r in held if str(r.get("request_id")).lower() == named.lower()), None)
+    if mine is None:
+        return Refused(f"{SLOT_PREFIX} REFUSED {box}: --reserved names {named}, which is no outstanding slot reservation"
+                       f" on {box} ({ids or 'none is'}{' holds it' if ids else ''}); nothing ran")
+    if mine.get("state") == "suspended":
+        return Refused(f"{SLOT_PREFIX} REFUSED {box}: the slot reservation {named} is suspended by"
+                       f" {mine.get('suspended_by')}, a measurement window holding {box}; nothing ran")
+    if tokens and not cpu:
+        return Refused(f"{SLOT_PREFIX} REFUSED {box}: slot {cap}, the reserved one, is no GPU token of {box}"
+                       f" ({tokens} of {cap}): a reserved batch declares --cpu")
+    return Reservation(cap, named, True)
+
+
 def cmd_slot(cfg: Config, args: list[str]) -> int:
     parsed = parse_slot(args)
     check_graces("slot", cfg)
@@ -1634,6 +1699,8 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
             argv.append(parsed.kind)
         if parsed.deadline is not None:
             argv += ["--deadline", str(parsed.deadline)]
+        if parsed.reserved:
+            argv += ["--reserved", parsed.reserved]
         argv += ["--", *command]
         sys.stdout.flush()
         sys.stderr.flush()
@@ -1716,12 +1783,19 @@ def cmd_slot(cfg: Config, args: list[str]) -> int:
             + ("" if marker_measure or parsed.window_wait is not None else ", and `--wait-window` waits for it")
         )
         return 1
+    reservation = reserved_slot(box, cap, tokens, cpu, records, parsed.reserved)
+    if isinstance(reservation, Refused):
+        if waiting is not None:
+            waiting.done()
+        release_waiter(cfg, waiter)
+        cli.say(reservation.line)
+        return 1
     try:
         os.makedirs(directory, exist_ok=True)
     except OSError:
         die(f"execution slot: cannot create the slot directory {directory}")
     take_slot(box, directory, cap, tokens, cpu, parsed.wait, inhibitor_path(cfg), command, parsed.deadline, waiting,
-              lambda: release_waiter(cfg, waiter))
+              lambda: release_waiter(cfg, waiter), reservation)
 
 
 def cmd_hold(cfg: Config, args: list[str]) -> int:

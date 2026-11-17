@@ -747,7 +747,7 @@ must name as `--target-repo` to be handed it (SKILL.md's *Base gate*).
 
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
 `fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] [--base <branch>] --checkout <dir>
-[--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] -- <command...>`. Its request is the
+[--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] [--reserved <id>] -- <command...>`. Its request is the
 coordinator's non-standing `correctness` request whose `requested_revision` is exactly one full
 SHA, or names none under
 `--tip`, which writes the branch's head on GitHub into it; under `--id-prefix` it names no
@@ -764,15 +764,29 @@ pinned record from before the field, which was a full run), so a targeted rerun 
 backend's last green. A checkout whose filesystem has under
 `FLEET_LEG_MIN_FREE_GIB` free is refused before the fetch, the checkout and the slot (the leg's
 free-space floor, below; ludics#991), naming the box, the free space and the floor, and a read that
-fails is a `TIP-RUN NOTE <box>:` on stderr and the run goes on. It yields, reserving nothing, to anything
-outstanding on the box but standing reservations (read again once its own is published); then it
+fails is a `TIP-RUN NOTE <box>:` on stderr and the run goes on. Without `--reserved` (a GPU loop's
+run) it yields, reserving nothing, to anything outstanding on the box but standing reservations
+(read again once its own is published). With `--reserved <id>` (the cc loop's, ludics#1187) it is a
+correctness batch like a worker's, in the slot its loop owns: `<id>` is the loop's standing slot
+reservation on the box (`"slot_reservation": true` beside its `run` payload, one per box, which
+`wave loop` takes for a loop whose entry says `reserve_slot`), and while it stands workers' batches
+there take one slot fewer (3 of a four-slot box's 4) and the registry queues one fewer non-standing
+assignment there, admitting the loop's own run past that count. Such a run yields only to
+measurement: a measurement outstanding on the box (an open window suspends the reservation), a
+**pending window** there, and another loop run in its checkout or still starting; a worker's leg or
+an assigned suite does not turn it away. A window a non-standing correctness record keeps from
+opening is answered pending (`execution window` exit 3, `{"pending": ...}`) and leaves a mark on the
+anchor for 1800 s, renewed by each retry and removed when the window opens; a reserved run reads the
+marks before it reserves, so the window opens at the first retry after the loop's current run, which
+is never stopped. Then it
 runs `execution run`, starts nothing on a remote box whose skills checkout the refresh did not
 bring current, checks the SHA out
 detached in the clean checkout on the box (fetching only when it lacks it; before that it fetches
 the base, as the leg does below, into `origin/<branch>`: the branch `--base` names, else `--tip`'s,
 else `origin/HEAD`'s, and a failed fetch refuses the run, ludics#1067; both fetches are bounded by
 `FLEET_FETCH_TIMEOUT`, 300 s by default, read where the verb runs as the leg reads it), and starts the command
-there under `execution slot --bg <runs> --wait 0` (default `<runs>`: `tip-runs` in the state
+there under `execution slot --bg <runs> --wait 0` (with `--reserved <id>`, which takes only the
+reserved slot, the box's highest; default `<runs>`: `tip-runs` in the state
 directory, `~/.local/state/issue-wave` on the box unless `ISSUE_WAVE_STATE` names another), so it
 takes a GPU token, unless `--cpu`, only if one is free at once.
 It prints `TIP-RUN STARTED <id> <box> <sha> <dir>` with the record moved to `running`, or `TIP-RUN

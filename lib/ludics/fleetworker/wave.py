@@ -12,7 +12,7 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
   wave launch <wave.json> <task>                                                           wavelaunch.py
   wave unprep <wave.json> <task>                                                           waveunprep.py
   wave loop <wave.json> <name> [--resume-after <request id> |                              waveloop.py
-            --rerun <red id> -- <command>]
+            --rerun <red id> -- <command> | --release]
   wave heartbeat <wave.json> [--sleep <seconds>]                                           here
   wave drive <wave.json> [--poll <seconds>] [--once]                                       wavedrive.py
   wave turn <wave.json> <task>                                                             wavedrive.py
@@ -57,7 +57,11 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     each suffix is its leg's alone and none is ``base``, since a leg's payload
                     file is ``reserve/<task>-<suffix>.json``
   loops             {<name>: {box, purpose, checkout, tip, command    default: {}
-                    [, cpu][, integration][, poll]}}: an integration loop (waveloop.py)
+                    [, cpu][, integration][, poll][, reserve_slot][, standby {box, checkout}]
+                    [, failover_after]}}: an integration loop (waveloop.py; the last three are
+                    THE RESERVED SLOT's: ``reserve_slot`` needs ``cpu``, ``standby`` needs
+                    ``reserve_slot`` and another box, ``failover_after`` -- whole seconds, default
+                    1800 -- needs ``standby``)
   profiles          {<name>: {transport, kind[, model][, effort]}}: a  default: {}
                     kind of worker ``wave prep --profile`` gives a task in place of the wave's
                     own transport and kind (a mixed wave: native Claude workers beside Codex CLI
@@ -146,7 +150,7 @@ USAGE = (
     "wave prep <wave.json> <task> --base <base-or-stacked-rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]"
     " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] | wave launch <wave.json> <task> | "
     "wave unprep <wave.json> <task> | "
-    "wave loop <wave.json> <name> [--resume-after <request id> | --rerun <red id> -- <command>] | "
+    "wave loop <wave.json> <name> [--resume-after <request id> | --rerun <red id> -- <command> | --release] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "
     "wave drive <wave.json> [--poll <seconds>] [--once] | wave turn <wave.json> <task> | "
     "wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file> --by <model> [--task <task>]"
@@ -172,7 +176,9 @@ REVIEW_KINDS = ("claude",)
 # A reviewer's model and label: what a CLI flag and pr-review.sh comment's footer both take.
 REVIEW_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._+/-]*[A-Za-z0-9._+/-])?")
 LEG_REQUIRED, LEG_OPTIONAL = ("checkout", "suffix", "purpose"), ("vars",)
-LOOP_REQUIRED, LOOP_OPTIONAL = ("box", "purpose", "checkout", "tip", "command"), ("cpu", "integration", "poll")
+LOOP_REQUIRED = ("box", "purpose", "checkout", "tip", "command")
+LOOP_OPTIONAL = ("cpu", "integration", "poll", "reserve_slot", "standby", "failover_after")
+FAILOVER_AFTER = 1800  # a loop's failover_after default: longer than about one cc tip run (ludics#1187)
 
 
 @dataclass(frozen=True)
@@ -195,6 +201,15 @@ class Loop:
     cpu: bool
     integration: bool
     poll: int
+    reserve_slot: bool = False  # THE RESERVED SLOT (waveloop.py): the loop owns one slot of its box
+    standby: "Standby | None" = None  # the one box and checkout it fails over to
+    failover_after: int = FAILOVER_AFTER  # seconds of home refusals before it does
+
+
+@dataclass(frozen=True)
+class Standby:
+    box: str
+    checkout: str
 
 
 @dataclass(frozen=True)
@@ -384,9 +399,31 @@ def parse_wave(path: str, data: Any) -> Wave:
         poll: Any = entry.get("poll", 300)
         if not (isinstance(poll, int) and not isinstance(poll, bool) and poll > 0):
             raise ValueError(f"{what}.poll must be a positive whole number of seconds")
-        loops[name] = Loop(name, text(entry, "box", what, WORD), text(entry, "purpose", what), absolute(entry, "checkout", what),
+        if "reserve_slot" in entry and not isinstance(entry["reserve_slot"], bool):
+            raise ValueError(f"{what}.reserve_slot must be true or false")
+        reserve = bool(entry.get("reserve_slot", False))
+        if reserve and not entry.get("cpu", False):
+            raise ValueError(f"{what}.reserve_slot needs cpu: true (the reserved slot is a box's highest, never a GPU token)")
+        box = text(entry, "box", what, WORD)
+        standby: Standby | None = None
+        if "standby" in entry:
+            if not reserve:
+                raise ValueError(f"{what}.standby needs reserve_slot: true (the loop fails over to a slot reserved there)")
+            spare = objects({"standby": entry["standby"]}, what)["standby"]
+            problem = keys_problem(spare, f"{what}.standby", ("box", "checkout"), ())
+            if problem:
+                raise ValueError(problem)
+            standby = Standby(text(spare, "box", f"{what}.standby", WORD), absolute(spare, "checkout", f"{what}.standby"))
+            if standby.box == box:
+                raise ValueError(f"{what}.standby.box must be another box than {what}.box")
+        failover: Any = entry.get("failover_after", FAILOVER_AFTER)
+        if "failover_after" in entry and standby is None:
+            raise ValueError(f"{what}.failover_after needs a standby")
+        if not (isinstance(failover, int) and not isinstance(failover, bool) and failover > 0):
+            raise ValueError(f"{what}.failover_after must be a positive whole number of seconds")
+        loops[name] = Loop(name, box, text(entry, "purpose", what), absolute(entry, "checkout", what),
                            text(entry, "tip", what), list(cast(list[str], command)), bool(entry.get("cpu", False)),
-                           bool(entry.get("integration", False)), poll)
+                           bool(entry.get("integration", False)), poll, reserve, standby, failover)
     repository = text(top, "repository", w, REPOSITORY)
     return Wave(
         path=path,

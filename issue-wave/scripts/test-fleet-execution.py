@@ -731,8 +731,11 @@ def measurement_window():
         # edit this case (#718, after ludics-lite#667's `[--no-gap]`).
         assert 'execution window [' in err and '] <box> <measurement reserve.json>' in err, err
         change('run', request('assigned'))
-        out, err = window(request('blocked', kind='measurement'), expected=1)
-        assert 'request=assigned' in err and 'suspends only standing reservations' in err, err
+        # THE PENDING WINDOW (ludics#1187): a non-standing record keeps the window from opening, and it
+        # is answered pending (exit 3) with a mark, never a record.
+        out, err = window(request('blocked', kind='measurement'), expected=3)
+        assert 'window blocked pending: assigned outstanding on mac' in err, err
+        assert json.loads(out)['pending']['blockers'] == ['assigned'], out
         assert {'not-measure', 'elsewhere', 'blocked'}.isdisjoint(records())
         done('assigned')
         before = records()
