@@ -591,6 +591,8 @@ What no template can know is the coordinator's, written in the task's part (`tas
   coordinator reads its result before the merge, never after it, since code review, Codex review
   and CI judge correctness and none of them reads a timing (a 2x CUDA regression passed all of
   them and two Opus checkpoints, and the PR was reverted: ahrefs/ocannl#934, ludics#539).
+  A row or other measured consequence the PR itself predicts will move is part of that acceptance,
+  however long its measurement window; calling the PR "Part of" does not defer it past the merge.
 - **A scan boundary, for an issue whose natural implementation reads free text** (a rule over a
   PR body, a commit message, a workflow file or Markdown): say which reading the requirement
   needs. Where a best-effort reading satisfies it (a warning, a lint), the task part prescribes a
