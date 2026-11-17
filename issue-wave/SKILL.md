@@ -841,7 +841,7 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
   a quiet, strong box with the whole board in view (`fleet-worker.sh load` - CPU/GPU five-minute
   averages, dune count, agent sessions per box; a
   box already running this wave's GPU measurement is NOT quiet whatever its CPU says; the
-  maintainer chose minix-amd-linux over tuf-amd-linux): take an execution reservation there,
+  maintainer's default is macbook-pro): take an execution reservation there,
   and run the MERGED
   repository's own full integration suite to completion in a checkout that owes the same proof
   as the launch preflight - clean porcelain, expected branch, HEAD equal to the remote master
