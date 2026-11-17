@@ -447,6 +447,12 @@ if [ -n "${SHIM_PRS:-}" ]; then
     for arg in "$@"; do
       case "$arg" in owner=*) xo=${arg#owner=} ;; name=*) xn=${arg#name=} ;; number=*) xi=${arg#number=} ;; esac
     done
+    case "$*" in *closingIssuesReferences*)
+      jq --argjson n "$xi" '{data: {repository: {pullRequest: (.[] | select(.number == $n) |
+        {number, closingIssuesReferences: {totalCount: (.closingIssuesReferences | length),
+         nodes: .closingIssuesReferences, pageInfo: {hasNextPage: false, endCursor: null}}})}}}' "$SHIM_PRS/list.json"
+      exit $? ;;
+    esac
     xf="$SHIM_PRS/xref-$xo-$xn-$xi"
     [ -f "$xf" ] || exit 3
     case "$(head -n 1 "$xf")" in "exit "*) exit "$(head -n 1 "$xf" | cut -c6-)" ;; esac
@@ -4976,8 +4982,11 @@ xref o-other-7 o/elsewhere 12
 : > "$P/calls"
 expect "--wave keeps the PRs closing an issue its records name" 0 "^o/r#7 rounds=2" -- "$FW" prs o/r --wave wv
 grep -q "o/r#12" <<<"$out" && ko "a PR of no wave issue was listed: $out" || ok "...and drops the rest, a PR of another repository referencing the issue included"
-grep -q "^retry --read api graphql --paginate -f query=.*CROSS_REFERENCED_EVENT.* -f owner=o -f name=other -F number=7 " "$P/calls" && [ "$(grep -c graphql "$P/calls")" = 1 ] \
+grep -q "^retry --read api graphql --paginate -f query=.*CROSS_REFERENCED_EVENT.* -f owner=o -f name=other -F number=7 " "$P/calls" && [ "$(grep -c CROSS_REFERENCED_EVENT "$P/calls")" = 1 ] \
   && ok "...through one cross-reference read of the wave issue" || ko "cross-reference calls: $(grep graphql "$P/calls")"
+grep -q '^retry --read api graphql --paginate .*closingIssuesReferences.* -F number=7 ' "$P/calls" &&
+  ! grep -q '^retry --read pr list .*closingIssuesReferences' "$P/calls" &&
+  ok "...closing references use GraphQL, never gh 2.46's unsupported JSON field" || ko "closing-reference calls: $(cat "$P/calls")"
 # A wave PR for one item of a multi-item issue says `Refs #N` and closes nothing (lukstafi/ludics-lite#655).
 xref o-other-7 O/R 12
 expect "--wave keeps a PR that only references a wave issue" 0 "^o/r#12 rounds=6 " -- "$FW" prs o/r --wave wv --flag-at 7
@@ -4992,7 +5001,7 @@ expect "a cross-reference page of another shape is REFUSED, exit 1" 1 "^PRS REFU
 jq '[.[] | select(.number == 7)]' "$P/list.json" > "$P/list-7.json" && mv "$P/list-7.json" "$P/list.json"
 : > "$P/calls"
 expect "with every open PR kept by its closing references, nothing more is read" 0 "^o/r#7 rounds=2" -- "$FW" prs o/r --wave wv
-grep -q graphql "$P/calls" && ko "a cross-reference read with nothing to find: $(cat "$P/calls")" || ok "...no cross-reference read"
+grep -q CROSS_REFERENCED_EVENT "$P/calls" && ko "a cross-reference read with nothing to find: $(cat "$P/calls")" || ok "...no cross-reference read"
 expect "--wave with no records is refused, not read as an empty wave" 1 "no execution record names wave nowave" -- "$FW" prs o/r --wave nowave
 fixture_done prs-7
 # A post-wave task has no issue of its own (lukstafi/ludics-lite#664): its records name none, and its
@@ -5013,7 +5022,7 @@ jq -n --arg now "$now" '[{number: 7, title: "post-wave PR", headRefName: "claude
 expect "--wave keeps a PR on a branch of a worker its records name, with no issue to read" 0 "^o/r#7 rounds=2 .* claude/wvp-p1t2: post-wave PR$" -- "$FW" prs o/r --wave wvp --flag-at 7
 grep -q "o/r#12" <<<"$out" && ko "a branch that only contains the worker's name was kept: $out" || ok "...and drops a branch whose last component is another name"
 grep -q "o/r#9" <<<"$out" && ko "a fork's branch of the worker's name was kept: $out" || ok "...and a fork's branch of the same name"
-grep -q graphql "$P/calls" && ko "a cross-reference read for a wave naming no issue: $(cat "$P/calls")" || ok "...with no cross-reference read"
+grep -q CROSS_REFERENCED_EVENT "$P/calls" && ko "a cross-reference read for a wave naming no issue: $(cat "$P/calls")" || ok "...with no cross-reference read"
 expect "...and only in the repository the worker's records name" 0 "^PRS o/other: no open PRs closing or referencing an issue of wave wvp, or on a branch of its workers$" -- "$FW" prs o/other --wave wvp
 fixture_done prs-p
 unset SHIM_PRS

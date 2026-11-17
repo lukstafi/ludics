@@ -313,6 +313,76 @@ def referencing_prs(pages: list[Json], repo: str) -> set[int]:
     return found
 
 
+# Boundary: read GitHub's closing-issue connection for each listed PR needed by wave selection,
+# never PR/commit prose. gh pr list supplies the capped open population; GraphQL supplies only
+# references, keyed by that PR number. Require every page, a stable totalCount and unique issue
+# identities; errors, missing nodes or a truncated connection refuse the entire selection.
+CLOSING_QUERY = (
+    "query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {"
+    " repository(owner: $owner, name: $name) { pullRequest(number: $number) { number"
+    " closingIssuesReferences(first: 100, after: $endCursor) { totalCount"
+    " pageInfo { hasNextPage endCursor }"
+    " nodes { number repository { name owner { login } } } } } } }"
+)
+
+
+def closing_read(helper: str, repo: str, number: Json) -> list[Json]:
+    """Read a complete closing connection through gh 2.46's GraphQL API, or raise JqError.
+
+    An unavailable API raises ConnectionError so callers preserve the supervision exit contract.
+    """
+    if type(number) is not int or number <= 0:
+        raise JqError("a PR without a positive number")
+    owner, name = repo.split("/")
+    done = run(
+        [helper, "retry", "--read", "api", "graphql", "--paginate", "-f", f"query={CLOSING_QUERY}",
+         "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={number}"],
+        capture=True,
+    )  # fmt: skip
+    if done.rc == 3:
+        raise ConnectionError("closing references did not answer")
+    if done.rc != 0:
+        raise JqError(f"closing references refused (pr-review.sh exit {done.rc})")
+    pages = json_stream(done.out)
+    if not pages:
+        raise JqError("no closing-reference page")
+    refs: list[Json] = []
+    identities: set[tuple[str, str, int]] = set()
+    cursors: set[str] = set()
+    total: int | None = None
+    for i, page in enumerate(pages):
+        pr = path(page, "data", "repository", "pullRequest")
+        if idx(page, "errors") is not None or idx(pr, "number") != number:
+            raise JqError("GraphQL errors or a different PR")
+        connection = idx(pr, "closingIssuesReferences")
+        count, nodes = idx(connection, "totalCount"), idx(connection, "nodes")
+        if type(count) is not int or count < 0 or not isinstance(nodes, list):
+            raise JqError("a closing-reference page without its count and nodes")
+        if total is not None and count != total:
+            raise JqError("closing-reference population changed")
+        total = count
+        more = path(connection, "pageInfo", "hasNextPage")
+        if more is not (i < len(pages) - 1):
+            raise JqError("incomplete closing-reference pagination")
+        if more:
+            cursor = path(connection, "pageInfo", "endCursor")
+            if not isinstance(cursor, str) or not cursor or cursor in cursors or not nodes:
+                raise JqError("closing-reference pagination made no progress")
+            cursors.add(cursor)
+        for ref in nodes:
+            n, r, o = idx(ref, "number"), path(ref, "repository", "name"), path(ref, "repository", "owner", "login")
+            if type(n) is not int or n <= 0 or not isinstance(r, str) or not r or not isinstance(o, str) or not o:
+                raise JqError("an incomplete closing reference")
+            identity = (o.casefold(), r.casefold(), n)
+            if identity in identities:
+                raise JqError("a repeated closing reference")
+            identities.add(identity)
+            refs.append(ref)
+    if len(refs) != total:
+        raise JqError("incomplete closing-reference population")
+    return refs
+
+
 def tsv_field(text: str) -> str:
     """One ``@tsv`` field: backslash, tab, newline and carriage return escaped."""
     return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
@@ -573,7 +643,7 @@ def open_prs(cfg: Config, label: str, repo: str, wave: str, helper: str, limit: 
     # list that reaches it may have lost PRs past it: said on its own line and read as exit 4.
     listed = run(
         [helper, "retry", "--read", "pr", "list", "--repo", repo, "--state", "open", "--limit", limit,
-         "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,isCrossRepository,closingIssuesReferences"],
+         "--json", "number,title,headRefName,headRefOid,createdAt,isDraft,isCrossRepository"],
         capture=True,
     )  # fmt: skip
     if listed.rc == 3:
@@ -592,10 +662,20 @@ def open_prs(cfg: Config, label: str, repo: str, wave: str, helper: str, limit: 
             cli.say(f"{label} INCOMPLETE {repo}: the list reached its cap of {limit} open PRs (FLEET_PRS_LIMIT), so PRs past it are not shown")
             worst = 4
         pages = [sorted_prs(doc) for doc in docs]
+        if issues:
+            for page in pages:
+                for pr in page:
+                    if not isinstance(pr, dict):
+                        raise JqError("a PR is not an object")
+                    if not on_worker_branch(pr, workers):
+                        pr["closingIssuesReferences"] = closing_read(helper, repo, idx(pr, "number"))
         unkept = issues is not None and any(not (closes_one_of(pr, issues) or on_worker_branch(pr, workers))
                                             for page in pages for pr in page)
+    except ConnectionError:
+        cli.say(f"{label} UNREACHABLE: the closing references of {repo}'s open PRs did not answer")
+        return 4, None
     except JqError:
-        cli.say(f"{label} REFUSED: the open-PR list of {repo} did not parse")
+        cli.say(f"{label} REFUSED: the open-PR list of {repo} did not parse (including closing references)")
         return 1, None
     referencing: set[int] = set()
     for issue in (issues or []) if unkept else []:
