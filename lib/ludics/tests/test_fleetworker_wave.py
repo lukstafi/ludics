@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
@@ -2304,6 +2305,12 @@ class WindowsWitnessRecipe(unittest.TestCase):
                          "transcript": os.path.join(directory, "transcript.log")}
                 calls: list[str] = []
                 caps: list[int | None] = []
+                dispositions: dict[int, Any] = {signal.SIGTERM: namespace["interrupted"], signal.SIGINT: signal.default_int_handler}
+
+                def set_signal(signum: int, handler: Any) -> Any:
+                    previous = dispositions[signum]
+                    dispositions[signum] = handler
+                    return previous
 
                 def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
                     step = argv[2] if argv[0] == "/fake/fleet" else argv[1] if argv[0] == "/fake/wake" else "script"
@@ -2319,10 +2326,16 @@ class WindowsWitnessRecipe(unittest.TestCase):
                                 self.assertTrue(payload.get(field), "registry requires " + field)
                     if step.startswith("boot-"):
                         self.assertIsNone(kwargs["timeout"], "wake-lab must finish its own bounded cleanup")
+                        for signum in (signal.SIGINT, signal.SIGTERM):
+                            self.assertEqual(dispositions[signum], signal.SIG_IGN, "boot/recovery must not be interrupted")
                         if failure == target + "-timeout":
-                            return subprocess.CompletedProcess(argv, 1)  # wake-lab's own deadline
+                            kwargs["stdout"].write("NEEDS A PERSON: boot deadline expired\n")
+                            return subprocess.CompletedProcess(argv, 3)  # wake-lab's unresolved boot deadline
                     elif failure == target + "-timeout":
                         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+                    if step == "script":
+                        for signum in (signal.SIGINT, signal.SIGTERM):
+                            self.assertNotEqual(dispositions[signum], signal.SIG_IGN, "verifier must remain interruptible")
                     if step == "script" and failure == "ssh-error":
                         raise OSError("ssh unavailable")
                     if step == "script" and failure == "interrupt":
@@ -2332,7 +2345,7 @@ class WindowsWitnessRecipe(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 3 if failure == "windows-needs-person" and step == "boot-windows" else
                                                        1 if failure == target else 0)
 
-                with mock.patch("subprocess.run", side_effect=run), mock.patch("signal.signal"):
+                with mock.patch("subprocess.run", side_effect=run), mock.patch("signal.signal", side_effect=set_signal):
                     if failure in ("interrupt", "local-error"):
                         with self.assertRaises(KeyboardInterrupt if failure == "interrupt" else ValueError):
                             namespace["witness"](ready)
@@ -2346,23 +2359,27 @@ class WindowsWitnessRecipe(unittest.TestCase):
                     self.assertLess(calls.index("boot-windows"), calls.index("boot-linux"))
                     if failure.startswith("windows"):
                         self.assertNotIn("script", calls)
-                    if failure.startswith("linux") or failure in ("interrupt", "local-error", "windows-needs-person"):
+                    if failure.startswith("linux") or failure in ("interrupt", "local-error", "windows-needs-person", "windows-timeout"):
                         self.assertNotIn("conclude", calls, "uncertain recovery/interrupt must retain reservation")
                     else:
                         self.assertEqual(calls[-1], "conclude")
                         with open(ready["transcript"] + ".conclude.json") as f:
                             conclusion = json.load(f)
                         self.assertEqual(conclusion["verdict"], "not-launched" if failure.startswith("windows") else
-                                         "pass" if failure in ("none", "conclude", "conclude-timeout") else "fail")
+                                         "pass" if failure in ("none", "conclude", "conclude-timeout") else
+                                         "timeout" if failure == "script-timeout" else "fail")
                         self.assertEqual(conclusion["log"], ready["transcript"])
+                        self.assertIn("observed_sha from coordinator readiness check of C:/work/project", conclusion["evidence"])
                 if "script" in calls:
                     self.assertEqual(caps[calls.index("script")], 77)
-                self.assertEqual(rc, 0 if failure == "none" else 3 if failure.startswith("linux") or failure == "windows-needs-person" else 2)
+                self.assertEqual(rc, 0 if failure == "none" else 3 if failure.startswith("linux") or failure in ("windows-needs-person", "windows-timeout") else 2)
                 with open(ready["transcript"]) as f:
                     transcript = f.read()
                 self.assertIn("fake run", transcript)
-                if failure.startswith("linux") or failure == "windows-needs-person":
+                if failure.startswith("linux") or failure in ("windows-needs-person", "windows-timeout"):
                     self.assertIn("NEEDS A PERSON", transcript)
+                if failure in ("windows-timeout", "linux-timeout"):
+                    self.assertIn("boot deadline expired", transcript)
 
 
 class Drive(DriveCase):

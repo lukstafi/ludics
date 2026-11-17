@@ -1354,8 +1354,9 @@ def witness(ready):
                        **({"observed_sha": ready["observed_sha"],
                            "remote_checkout": ready["remote_checkout"],
                            "handle": "windows-driver:" + request} if launched else {}),
-                       "verdict": ("pass" if rc == 0 else "fail") if launched else "not-launched", "log": str(transcript),
-                       "evidence": "Native driver rc=" + str(rc) + "; boot-linux confirmed Linux; see kept transcript"}, out)
+                       "verdict": ("pass" if rc == 0 else "timeout" if rc == 124 else "fail") if launched else "not-launched", "log": str(transcript),
+                       "evidence": "Native driver rc=" + str(rc) + "; observed_sha from coordinator readiness check of "
+                                   + ready["remote_checkout"] + "; boot-linux confirmed Linux; see kept transcript"}, out)
         return 0 if call([fleet, "execution", "conclude", str(conclusion)], 120) == 0 and rc == 0 else 2
 
 
@@ -1379,11 +1380,14 @@ The failure paths are a closed list within this readiness boundary:
   retain the reservation even if Linux answers, and ask a person to reconcile boot state.
 - Verifier fails, hangs, or ssh drops: the native driver owns its process-tree cap; the local ssh
   cap is `cap_seconds + 60`. Return to Linux even after a transport timeout; that reboot stops
-  remaining Windows work. Keep local transcript and native log/error files; conclude failure.
+  remaining Windows work. Keep local transcript and native log/error files; conclude `timeout`
+  for rc 124, otherwise failure.
 - INT/TERM or a local error after reservation: `finally` attempts Linux recovery. The reservation
   remains active for manual reconciliation; no automatic success conclusion is made. INT/TERM
-  during a boot operation are ignored until wake-lab completes its own bounded cleanup; they
-  must not orphan a pending reboot or bypass BootNext cleanup.
+  during boot and recovery are deliberately dropped, not deferred: the boot child and its ssh
+  descendants inherit the ignored dispositions, so cancellation cannot orphan a pending reboot
+  or bypass BootNext cleanup. The witness continues after boot; cancellation can be requested
+  again during the bounded verifier. Deferred cancellation belongs in the integrated verb.
 - Linux does not come back (boot refusal, error or timeout): exit 3, **NEEDS A PERSON**, keep the
   reservation and transcript; never claim the box was returned or free it. The coordinator tells
   the user and follows wake-lab's recovery guidance rather than retrying the witness.

@@ -700,7 +700,10 @@ markers, and executes executions.md's Windows coordinator recipe against fake bo
 calls, including timeouts and interruption. The recipe reserves on Linux, refuses active work,
 keeps a transcript, and attempts Linux recovery before conclusion; unconfirmed recovery retains
 the measurement. Source staging and live reboot verification remain outside its readiness
-boundary. The integrated `execution windows-witness` verb is deferred to a hand-back proposal.
+boundary. Signal-disposition assertions and a negative control pin the intentionally dropped
+boot/recovery cancellation; verifier timeouts keep their own registry verdict, and source
+evidence explicitly identifies the coordinator readiness observation. The integrated
+`execution windows-witness` verb is deferred to a hand-back proposal.
 
 Agent notes (wave-20261115-ludics, p3): `wavedrive.py`'s THE GATE defines the ten-minute,
 non-final pending notice and its in-memory reset conditions; its remote-tip sample is diagnostic
