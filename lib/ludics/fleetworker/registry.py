@@ -339,8 +339,10 @@ slot, are `wave loop`'s and `execution slot`'s.
 THE PENDING WINDOW (ludics#1187). A new window whose box holds outstanding non-standing correctness
 records (a loop run, a worker's leg) cannot open, and once a loop runs back to back it would never
 find the gap between its runs. (A window behind another measurement is refused as before: one
-measurement per box, and a loop starts no run beside a measurement anyway.) So that one refusal is an answer instead: unless a halt
-refuses the window first, the registry writes the mark `pending-windows/<request id, lowercased>.json`
+measurement per box, and a loop starts no run beside a measurement anyway.) So that one refusal is
+an answer instead, given once every other admission check has passed (the lane lock, the halt and
+THE HALT'S TRIAGE: a window they refuse is refused as before, and leaves no mark): the registry
+writes the mark `pending-windows/<request id, lowercased>.json`
 under the state root -- `{box, id, worker, seen, expires}`, `expires` PENDING_TTL seconds from this
 anchor's clock, replaced whole on each retry -- removes every mark already expired, and exits 3 with
 `{"pending": {"box", "id", "blockers", "expires"}}` on stdout and an `EXECUTION WINDOW <box>: ...
@@ -1516,14 +1518,11 @@ def main(argv: list[str]) -> None:
             halted = halt_identity is not None
             if "triage_reason" in request and not halted:
                 refuse("triage reservations require an active halt")
-            if action == "window" and (blockers := window_blockers(request["execution_host"], records)):
-                # THE PENDING WINDOW (see the header): a halt refuses it first; the box's records mark it.
-                if halted and "triage_reason" not in request:
-                    refuse("fleet halted; ordinary reservations refused (only the named triage_reason reservation"
-                           " and an execution tip-run loop run are admitted)")
-                mark_pending(Path(root) / "pending-windows", request, identity, blockers, clock)
-            queued = check_capacity(request, records, canonical_hosts, slots_spec, window=action == "window",
-                                    tip_run=bool(tip_run))
+            # THE PENDING WINDOW (see the header): the capacity refusal it replaces is answered last,
+            # once every other admission check (the lane lock, the halt and its triage) has passed.
+            blockers = window_blockers(request["execution_host"], records) if action == "window" else []
+            queued = None if blockers else check_capacity(request, records, canonical_hosts, slots_spec,
+                                                          window=action == "window", tip_run=bool(tip_run))
             if slot_reservation:
                 check_slot_reservation(request, records, slots_spec, canonical_hosts)
             if request["kind"] == "measurement":
@@ -1537,6 +1536,8 @@ def main(argv: list[str]) -> None:
                     # The loop's own run is the verdict the halt waits for (THE LOOP RUN UNDER A HALT).
                     refuse("fleet halted; ordinary reservations refused (only the named triage_reason reservation"
                            " and an execution tip-run loop run are admitted)")
+            if blockers:
+                mark_pending(Path(root) / "pending-windows", request, identity, blockers, clock)
             if action == "window":
                 # Last of the admission checks: a gap answer is retried, and only a window every
                 # other check admits may wait for one.

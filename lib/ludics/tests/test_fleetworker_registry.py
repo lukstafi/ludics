@@ -960,6 +960,14 @@ class PendingWindow(RegistryCase):
         self.assertEqual(rc, 1)
         self.assertIn("fleet halted", err)
         self.assertEqual(self.marks(), [])
+        # The local review's finding: a triage window the halt's triage refuses (another owner) is
+        # refused as before, the box's records notwithstanding, and holds no loop back.
+        self.assertEqual(self.call("run", request("tri-1", triage_reason="red"), slots="mac=4")[0], 0)
+        rc, _, err = self.call("window", {"box": "mac", "request": request("tri-m", kind="measurement", triage_reason="red")},
+                               slots="mac=4")
+        self.assertEqual(rc, 1, err)
+        self.assertIn("the halt's triage has one owner", err)
+        self.assertEqual(self.marks(), [])
         self.assertEqual(self.call("pending-windows", {"x": 1})[0], 1, "the reader takes the empty payload")
 
 
