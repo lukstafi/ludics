@@ -57,8 +57,8 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         (ludics#1165): no lock and no lease, as ``show``. It lists ``<root>/boards/`` once, keeps
         each entry named ``<wave>.json`` with the wave in the grammar below (anything else there --
         the writers' ``.board-`` temporaries included -- is skipped, not reported), and ``load``s
-        each: one that does not validate, cannot be read or is no file is ``{"wave", "why"}`` under
-        ``refused``, and the scan goes on. ``since_hours`` (a positive finite number, or null for
+        each that is a regular file (a FIFO would block the scan): one that is not, does not
+        validate or cannot be read is ``{"wave", "why"}`` under ``refused``, and the scan goes on. ``since_hours`` (a positive finite number, or null for
         every board) keeps a board whose ``updated_at`` is at or after this anchor's now less that
         many hours -- the clock that stamped it -- and refuses one whose ``updated_at`` is not this
         module's stamp (``%Y-%m-%dT%H:%M:%SZ``). No ``boards`` directory is no boards; a root or a
@@ -101,6 +101,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import tempfile
 import unicodedata
@@ -353,6 +354,10 @@ def scan(root: str, payload: Doc) -> None:
         if wave == name or not WAVE.fullmatch(wave):
             continue
         try:
+            # A FIFO or device would block the read, and every board after it: only a regular
+            # file (a link to one included, as ``load`` reads it) is read.
+            if not stat.S_ISREG(os.stat(directory / name).st_mode):
+                refuse(f"{directory / name} is no regular file")
             doc = load(directory / name, wave)
             if doc is None:
                 continue  # removed between the listing and the read

@@ -112,12 +112,16 @@ class Scan(Anchor):
         self.write("boards/.board-tmp123", "{")         # a writer's temporary
         self.write("boards/notes.txt", "x")
         self.write("boards/-x.json", "{}")               # outside the wave grammar
+        os.mkfifo(os.path.join(self.root, "boards", "fifo.json"))  # read, it would block the scan
+        os.symlink("w1.json", os.path.join(self.root, "boards", "link.json"))  # a link to a board is read
         rc, out, err = self.scan({"since_hours": None})
         self.assertEqual((rc, err), (0, ""))
         got = json.loads(out)
         self.assertEqual([b["wave"] for b in got["boards"]], ["w1", "w2"])
-        self.assertEqual([r["wave"] for r in got["refused"]], ["bad"])
+        self.assertEqual([r["wave"] for r in got["refused"]], ["bad", "fifo", "link"])
         self.assertIn("is not a valid board", got["refused"][0]["why"])
+        self.assertIn("fifo.json is no regular file", got["refused"][1]["why"])
+        self.assertIn("not board version 1 of wave link", got["refused"][2]["why"])  # its wave names the file
         self.assertEqual(out.count("\n"), 1)
 
     def test_the_window_is_inclusive_against_the_anchors_clock(self) -> None:
