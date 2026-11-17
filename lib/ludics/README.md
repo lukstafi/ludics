@@ -700,8 +700,9 @@ markers, and executes executions.md's Windows coordinator recipe against fake bo
 calls, including timeouts and interruption. The recipe reserves on Linux, refuses active work,
 keeps a transcript, and attempts Linux recovery before conclusion; unconfirmed recovery retains
 the measurement. Source staging and live reboot verification remain outside its readiness
-boundary. Signal-disposition assertions and a negative control pin the intentionally dropped
-boot/recovery cancellation; verifier timeouts keep their own registry verdict, and source
+boundary. Signal-disposition assertions, real Bash trap fakes and a negative control pin deferred
+boot/recovery cancellation with isolated child sessions; verifier timeouts keep their own
+registry verdict, and source
 evidence explicitly identifies the coordinator readiness observation. The integrated
 `execution windows-witness` verb is deferred to a hand-back proposal.
 

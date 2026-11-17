@@ -1307,11 +1307,11 @@ def witness(ready):
     transcript = Path(ready["transcript"])
     # Exclusive create: never mistake an earlier attempt's evidence for this one's.
     with transcript.open("x") as log:
-        def call(argv, cap):
+        def call(argv, cap, isolated=False):
             log.write(json.dumps({"argv": argv, "cap": cap}) + "\n")
             log.flush()
             try:
-                rc = subprocess.run(argv, stdout=log, stderr=log, timeout=cap).returncode
+                rc = subprocess.run(argv, stdout=log, stderr=log, timeout=cap, start_new_session=isolated).returncode
             except subprocess.TimeoutExpired:
                 rc = 124
             except OSError as exc:
@@ -1326,24 +1326,37 @@ def witness(ready):
             # A lost dispatch response is uncertain: reconcile, never retry or boot.
             return 2
         rc, recovered, launched, boot = 2, False, False, 2
+        pending = []
+
+        def defer(signum, frame):
+            pending.append(signum)
+
         try:
             # wake-lab owns its bounded boot/BootNext cleanup. Never SIGKILL it at
             # an outer timeout or abandon it on INT/TERM while a reboot is pending.
-            term = signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            intr = signal.signal(signal.SIGINT, signal.SIG_IGN)
+            term = signal.signal(signal.SIGTERM, defer)
+            intr = signal.signal(signal.SIGINT, defer)
             try:
-                boot = call([ready["wake"], "boot-windows", "--as=" + request, ready["box"]], None)
+                boot = call([ready["wake"], "boot-windows", "--as=" + request, ready["box"]], None, isolated=True)
             finally:
                 signal.signal(signal.SIGTERM, term)
                 signal.signal(signal.SIGINT, intr)
+            if pending:
+                raise KeyboardInterrupt("cancelled during boot; recover before reconciliation")
             if boot == 0:
                 launched = True
                 rc = call(ready["ssh_argv"], ready["cap_seconds"] + 60)
         finally:
-            # TERM/INT enter finally too. Do not interrupt recovery a second time.
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            recovered = call([ready["wake"], "boot-linux", "--as=" + request, ready["box"]], None) == 0 and boot != 3
+            # Finish recovery even if cancellation is requested again.
+            term = signal.signal(signal.SIGTERM, defer)
+            intr = signal.signal(signal.SIGINT, defer)
+            try:
+                recovered = call([ready["wake"], "boot-linux", "--as=" + request, ready["box"]], None, isolated=True) == 0 and boot != 3
+            finally:
+                signal.signal(signal.SIGTERM, term)
+                signal.signal(signal.SIGINT, intr)
+        if pending:
+            raise KeyboardInterrupt("cancelled; retain reservation and reconcile recovery transcript")
         if not recovered:
             log.write("NEEDS A PERSON: Linux/BootNext recovery unconfirmed; keep reservation; reconcile\n")
             return 3
@@ -1384,10 +1397,11 @@ The failure paths are a closed list within this readiness boundary:
   for rc 124, otherwise failure.
 - INT/TERM or a local error after reservation: `finally` attempts Linux recovery. The reservation
   remains active for manual reconciliation; no automatic success conclusion is made. INT/TERM
-  during boot and recovery are deliberately dropped, not deferred: the boot child and its ssh
-  descendants inherit the ignored dispositions, so cancellation cannot orphan a pending reboot
-  or bypass BootNext cleanup. The witness continues after boot; cancellation can be requested
-  again during the bounded verifier. Deferred cancellation belongs in the integrated verb.
+  during boot/recovery are recorded by a non-raising parent handler. Boot children run in their
+  own sessions, with normal signal dispositions so Bash can install its watchdog TERM trap.
+  After boot, pending cancellation skips the verifier and completes Linux recovery; cancellation
+  during recovery lets that recovery finish. In either case retain the reservation and reconcile
+  from the transcript before concluding.
 - Linux does not come back (boot refusal, error or timeout): exit 3, **NEEDS A PERSON**, keep the
   reservation and transcript; never claim the box was returned or free it. The coordinator tells
   the user and follows wake-lab's recovery guidance rather than retrying the witness.

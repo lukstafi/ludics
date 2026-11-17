@@ -2295,7 +2295,7 @@ class WindowsWitnessRecipe(unittest.TestCase):
         namespace: dict[str, Any] = {"__name__": "recipe_test"}
         exec(compile(code, doc, "exec"), namespace)
         for failure in ("none", "reserve", "reserve-timeout", "windows", "windows-timeout", "windows-needs-person", "script", "script-timeout",
-                        "ssh-error", "interrupt", "local-error", "linux", "linux-timeout", "conclude", "conclude-timeout"):
+                        "ssh-error", "interrupt", "boot-interrupt", "recovery-interrupt", "local-error", "linux", "linux-timeout", "conclude", "conclude-timeout"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 reserve = os.path.join(directory, "reserve.json")
                 with open(reserve, "w") as f:
@@ -2327,7 +2327,10 @@ class WindowsWitnessRecipe(unittest.TestCase):
                     if step.startswith("boot-"):
                         self.assertIsNone(kwargs["timeout"], "wake-lab must finish its own bounded cleanup")
                         for signum in (signal.SIGINT, signal.SIGTERM):
-                            self.assertEqual(dispositions[signum], signal.SIG_IGN, "boot/recovery must not be interrupted")
+                            self.assertEqual(getattr(dispositions[signum], "__name__", ""), "defer", "parent defers cancellation")
+                        self.assertTrue(kwargs["start_new_session"], "boot child must be isolated from terminal signals")
+                        if failure == "boot-interrupt" and step == "boot-windows" or failure == "recovery-interrupt" and step == "boot-linux":
+                            dispositions[signal.SIGTERM](signal.SIGTERM, None)
                         if failure == target + "-timeout":
                             kwargs["stdout"].write("NEEDS A PERSON: boot deadline expired\n")
                             return subprocess.CompletedProcess(argv, 3)  # wake-lab's unresolved boot deadline
@@ -2335,7 +2338,7 @@ class WindowsWitnessRecipe(unittest.TestCase):
                         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
                     if step == "script":
                         for signum in (signal.SIGINT, signal.SIGTERM):
-                            self.assertNotEqual(dispositions[signum], signal.SIG_IGN, "verifier must remain interruptible")
+                            self.assertNotEqual(getattr(dispositions[signum], "__name__", ""), "defer", "verifier must remain interruptible")
                     if step == "script" and failure == "ssh-error":
                         raise OSError("ssh unavailable")
                     if step == "script" and failure == "interrupt":
@@ -2346,8 +2349,8 @@ class WindowsWitnessRecipe(unittest.TestCase):
                                                        1 if failure == target else 0)
 
                 with mock.patch("subprocess.run", side_effect=run), mock.patch("signal.signal", side_effect=set_signal):
-                    if failure in ("interrupt", "local-error"):
-                        with self.assertRaises(KeyboardInterrupt if failure == "interrupt" else ValueError):
+                    if failure in ("interrupt", "boot-interrupt", "recovery-interrupt", "local-error"):
+                        with self.assertRaises(ValueError if failure == "local-error" else KeyboardInterrupt):
                             namespace["witness"](ready)
                         rc = 2
                     else:
@@ -2357,9 +2360,9 @@ class WindowsWitnessRecipe(unittest.TestCase):
                 else:
                     self.assertIn("boot-linux", calls, "every boot attempt must attempt Linux recovery")
                     self.assertLess(calls.index("boot-windows"), calls.index("boot-linux"))
-                    if failure.startswith("windows"):
+                    if failure.startswith("windows") or failure == "boot-interrupt":
                         self.assertNotIn("script", calls)
-                    if failure.startswith("linux") or failure in ("interrupt", "local-error", "windows-needs-person", "windows-timeout"):
+                    if failure.startswith("linux") or failure in ("interrupt", "boot-interrupt", "recovery-interrupt", "local-error", "windows-needs-person", "windows-timeout"):
                         self.assertNotIn("conclude", calls, "uncertain recovery/interrupt must retain reservation")
                     else:
                         self.assertEqual(calls[-1], "conclude")
@@ -2380,6 +2383,47 @@ class WindowsWitnessRecipe(unittest.TestCase):
                     self.assertIn("NEEDS A PERSON", transcript)
                 if failure in ("windows-timeout", "linux-timeout"):
                     self.assertIn("boot deadline expired", transcript)
+
+
+    def test_real_bash_boot_traps_and_deferred_cancellation(self) -> None:
+        doc = os.path.join(os.path.dirname(SCRIPT), "..", "references", "executions.md")
+        with open(doc) as f:
+            code = f.read().split("<!-- windows-witness-recipe:start -->", 1)[1].split("```python\n", 1)[1].split("```", 1)[0]
+        namespace: dict[str, Any] = {"__name__": "recipe_test"}
+        exec(compile(code, doc, "exec"), namespace)
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel), tempfile.TemporaryDirectory() as directory:
+                reserve = os.path.join(directory, "reserve.json")
+                with open(reserve, "w") as f:
+                    json.dump({"request_id": "win-1", "requested_revision": A, "kind": "measurement"}, f)
+                fleet, wake, verifier = (os.path.join(directory, name) for name in ("fleet", "wake", "verifier"))
+                for path, content in ((fleet, "#!/bin/bash\nprintf '%s\\n' fake-registry\n"),
+                                      (verifier, "#!/bin/bash\nprintf '%s\\n' fake-verifier\n"),
+                                      (wake, "#!/bin/bash\ntrap \"printf '%s\\\\n' child-term-trap\" TERM\n"
+                                       "kill -TERM \"$$\"\nprintf '%s\\n' \"$1\"\n" +
+                                       ('[ "$1" != boot-windows ] || kill -TERM "$PPID"\n' if cancel else ""))):
+                    with open(path, "w") as f:
+                        f.write(content)
+                    os.chmod(path, 0o755)
+                ready: dict[str, Any] = {"reserve": reserve, "fleet": fleet, "wake": wake, "box": "fake", "cap_seconds": 1,
+                         "observed_sha": A, "remote_checkout": "C:/fake", "ssh_argv": [verifier],
+                         "transcript": os.path.join(directory, "transcript.log")}
+                term, intr = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+                try:
+                    if cancel:
+                        with self.assertRaises(KeyboardInterrupt):
+                            namespace["witness"](ready)
+                    else:
+                        self.assertEqual(namespace["witness"](ready), 0)
+                finally:
+                    signal.signal(signal.SIGTERM, term)
+                    signal.signal(signal.SIGINT, intr)
+                with open(ready["transcript"]) as f:
+                    transcript = f.read()
+                self.assertEqual(transcript.count("child-term-trap"), 2, "both boot children must install TERM traps")
+                self.assertIn("boot-linux", transcript)
+                self.assertEqual("fake-verifier" in transcript, not cancel)
+                self.assertEqual(os.path.exists(ready["transcript"] + ".conclude.json"), not cancel)
 
 
 class Drive(DriveCase):
