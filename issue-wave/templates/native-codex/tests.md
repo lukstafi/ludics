@@ -1,3 +1,20 @@
+## How the change reads
+
+A reviewer reads your diff and PR body, not your session, so shape both for that reader.
+- Do what the issue asks and stop there. A related defect you find goes into your hand-back as a
+  proposed follow-up, not into this diff. Reorder, re-sort or reformat nothing the change does not
+  need: a golden file churns with it.
+- Reuse the project's predicates, helpers and types before adding a parallel table, flag or
+  regex. Where the code offers structure (a parsed form, a typed value), match on it, not on
+  words in text.
+- A comment says why: the invariant, the reason, the case it guards. It does not say what the
+  next line does, the procedure you ran, or a date. State a caveat once, where it binds.
+- PR body: open with the outcome and your decisions in a few sentences. Then give the evidence
+  *Landing* asks for as one line per batch (command, exit status, run directory, leg box). Leave
+  out review-round logs, run-by-run narration, and paths beyond those lines. Add only the sections
+  something asks for: *Landing* ("Local Codex review", the review-record paragraph when you merge
+  on substance) or your task section (a scanner's "Recognised forms (closed)", say).
+
 ## Running tests
 
 These are your own batches. For an ASSIGNED command, use the run-record rule beside
