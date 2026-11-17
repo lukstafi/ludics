@@ -2362,6 +2362,18 @@ def row(task: str, **fields: str) -> dict[str, Any]:
     return {"task": task, "fields": {**base, **fields}}
 
 
+class PairedNotice(unittest.TestCase):
+    def test_the_worker_model_is_the_records_then_the_launch_lines_then_the_profiles(self) -> None:
+        record = wavelaunch.Record(**{**{key: "x" for key in wavelaunch.TEXTS}, "model": "gpt-6.2-astra", "remote": True,
+                                      "allow_rival": [], "legs": []})
+        line = "preflight ok\nLAUNCHED far/w1-42 kind=codex session=s model=gpt-6.2-astra effort=high cwd=/w\n"
+        self.assertEqual(wavedrive.worker_model(record, "", "gpt-6.2-sol"), "gpt-6.2-astra", "the record is what launch ran")
+        self.assertEqual(wavedrive.worker_model(None, line, ""), "gpt-6.2-astra", "a box's config resolved it")
+        self.assertEqual(wavedrive.worker_model(None, "LAUNCHED far/w1-42 kind=codex session= model= cwd=/w\n", "gpt-6.2-sol"),
+                         "gpt-6.2-sol")
+        self.assertEqual(wavedrive.worker_model(None, "", ""), "")
+
+
 class Markers(unittest.TestCase):
     def test_exactly_one_marker_names_a_turn(self) -> None:
         request = "I need a leg.\n\nEXECUTION_REQUEST\n{\"request_id\":\"x\"}\nEND_EXECUTION_REQUEST\n"

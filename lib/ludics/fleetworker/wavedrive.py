@@ -180,8 +180,10 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
             (a dependent starts from the base its prerequisite merged into), then ``wave launch``
 A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its launch answers: one
 non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha with
---model <m>``, the planner ``peer_model`` names for the profile's model (peerplan/plan.py: Opus
-beside an Astra worker), or the default planner with a note when the profile names no model. The
+--model <m>``, the planner ``peer_model`` names for the worker's model (peerplan/plan.py: Opus
+beside an Astra worker). The worker's model is the launch record's (what ``wave launch`` ran),
+else the ``model=`` its ``LAUNCHED`` line resolved from the box's config, else the profile's; with
+none, the line names both planners and says to read the worker's meta first. The
 driver starts no planner; the coordinator starts it on that sha, since both plans must read one tree.
 THE REFRESH: ``wave prep`` runs from the agent host's served skills checkout, and the project part
 it renders is read at the fetched tip, so a checkout one merge behind can lack a built-in that part
@@ -497,6 +499,19 @@ def classify(message: str) -> Turn:
     if found:
         return Turn("other", "a final message with more than one marker: " + ", ".join(t.kind for t in found))
     return Turn("other", f"no marker this driver answers; the last line starts {lines[-1].split()[0][:40]!r}")
+
+
+LAUNCHED_MODEL = re.compile(r"^LAUNCHED \S+ .*?\bmodel=(\S+)", re.M)
+
+
+def worker_model(record: Record | None, launch_out: str, profile_model: str) -> str:
+    """A PAIRED LAUNCH's worker model (the header): the launch record's, which is what ``wave launch``
+    ran, else the ``model=`` the launch's ``LAUNCHED`` line resolved from the box's config, else the
+    profile's; "" when none names one."""
+    if record is not None and record.model:
+        return record.model
+    found = LAUNCHED_MODEL.search(launch_out)
+    return found.group(1) if found else profile_model
 
 
 def rows_of(doc: dict[str, Any]) -> list[tuple[str, dict[str, str]]]:
@@ -1137,9 +1152,10 @@ class Driver:
             if queued.mode and queued.mode != "none":
                 # A PAIRED LAUNCH (the header): the planner must read the tree the worker launched from.
                 base = record.base if record is not None else sha.strip()
-                model = self.wave.profiles[queued.profile].model
-                which = (f"with --model {peer_model(model)} (the worker runs {model})" if model
-                         else f"with --model {peer_model('')}, the default (the profile names no model: read the worker's launch line)")
+                model = worker_model(self.prepared(queued.task), substitution(done.out), self.wave.profiles[queued.profile].model)
+                which = (f"with --model {peer_model(model)} (the worker runs {model})" if model else
+                         f"with --model opus if the worker runs Astra, else the default {peer_model('')}: no model is on record"
+                         " or in the launch's output, so read the worker's meta first")
                 self.tell(slot, LAUNCH, f"launched {queued.mode} at {base}: start its peer planner on that sha {which}"
                                        " (paired-planning.md, Coordinator, step 1)")
             return self.note(slot, LAUNCH, "launch", "answered", said)
