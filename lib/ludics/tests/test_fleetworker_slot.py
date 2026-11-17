@@ -1007,6 +1007,54 @@ class WindowDeadline(unittest.TestCase):
                     self.assertEqual(await_measurements(cfg, "testbox", first, slot.BY_DEADLINE, ["true"]), 1)
                 self.assertEqual(clock[0], expected, "only A's first opening may change A's cutoff")
 
+    def test_an_opening_in_the_last_poll_interval_is_observed_before_refusal(self) -> None:
+        pending = {**measurement("win", due_in=10), "hold_opened_at": None}
+        opened = {**measurement("win", due_in=60), "hold_opened_at": "2026-11-17T00:00:00+00:00"}
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        for slow_read in (False, True):
+            with self.subTest(slow_read=slow_read):
+                clock = [0.0]
+                reads = [0]
+
+                def read(*_args: object, **_kwargs: object) -> list[dict[str, Any]]:
+                    reads[0] += 1
+                    if reads[0] == 1:
+                        if slow_read:
+                            clock[0] = 10.0
+                            return [opened]
+                        return [pending]
+                    return [opened] if reads[0] == 2 and not slow_read else []
+
+                def nap(seconds: float) -> None:
+                    clock[0] += seconds
+
+                with mock.patch.object(slot.time, "monotonic", side_effect=lambda: clock[0]), \
+                        mock.patch.object(slot.time, "sleep", side_effect=nap), \
+                        mock.patch.object(slot, "read_registry", side_effect=read) as reader, \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(await_measurements(cfg, "testbox", [pending], slot.BY_DEADLINE, ["true"]), [])
+                self.assertGreater(reads[0], 1)
+                if not slow_read:
+                    self.assertEqual(reader.call_args_list[1].kwargs, {"timeout": slot.WINDOW_OPEN_CHECK})
+
+    def test_the_final_pending_check_never_admits_a_late_free_box_and_is_not_retried(self) -> None:
+        pending = {**measurement("win", due_in=10), "hold_opened_at": None}
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        for response in ([], [pending], Unread(1, ("timed out",), "timeout")):
+            with self.subTest(response=response):
+                clock = [0.0]
+
+                def nap(seconds: float) -> None:
+                    clock[0] += seconds
+
+                with mock.patch.object(slot.time, "monotonic", side_effect=lambda: clock[0]), \
+                        mock.patch.object(slot.time, "sleep", side_effect=nap), \
+                        mock.patch.object(slot, "read_registry", side_effect=[[pending], response]) as reader, \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(await_measurements(cfg, "testbox", [pending], slot.BY_DEADLINE, ["true"]), 1)
+                self.assertEqual(reader.call_count, 2)
+                self.assertEqual(reader.call_args.kwargs, {"timeout": slot.WINDOW_OPEN_CHECK})
+
     def test_a_later_window_does_not_move_the_cutoff(self) -> None:
         # Frozen at the start: the next window's later deadline is the gap's to let the waiter out of.
         first, later = measurement("a", due_in=1), measurement("b", due_in=7200)

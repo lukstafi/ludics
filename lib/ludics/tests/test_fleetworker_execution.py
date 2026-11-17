@@ -104,6 +104,16 @@ class Conclusions(unittest.TestCase):
         for text in ("{}", "[1]", "nope", ""):
             self.assertIsNone(records_of(text), text)
 
+    def test_a_bounded_listing_uses_the_owned_process_group_runner(self) -> None:
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        with mock.patch.object(execution, "registry_source", return_value="pass"), \
+                mock.patch.object(execution, "far_argv", return_value=["bash", "-s"]), \
+                mock.patch.object(execution.proc, "run_tool", return_value=proc.Completed(124, "", "timed out")) as run, \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(execution.listing(cfg, timeout=15), Done(124, ""))
+        self.assertEqual(run.call_args.kwargs["timeout"], 15)
+        self.assertIsInstance(run.call_args.kwargs["stdin"], bytes)
+
 
 def run_text(**over: str) -> str:
     """FROM_RUN's output for a finished record launched clean at ``"b" * 40``, ``over`` replacing facts."""

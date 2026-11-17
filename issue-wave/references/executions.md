@@ -183,7 +183,11 @@ header). `execution window --deadline <seconds>` (at most a week) starts its bud
 coordinator's conclusion latency (ludics#1193). Until that opening is published on the anchor,
 waiters allow one hour for launch/drain plus the budget; once opened, they use its recorded end,
 so a crashed holder remains bounded. Only the first opening counts; retries and nested holds
-cannot renew it. A failure to publish a known window's opening refuses the hold before its
+cannot renew it. At the provisional cutoff a bare waiter makes a final opening check bounded to
+15 seconds plus at most 5 seconds of output drainage; a response saying only that the box is free
+cannot admit a batch after its old cutoff. The stored legacy deadline remains assignment-based
+so older fleet callers can still read and conclude records; their waits retain the older bound.
+Current listings project the separate hold deadline. A failure to publish a known window's opening refuses the hold before its
 command starts; an unreadable initial registry retains the hold's existing warning and fail-open
 behaviour, so its waiters retain the pending bound. It bounds the waiters and nothing else. While the window is open:
 
