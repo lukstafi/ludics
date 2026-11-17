@@ -28,6 +28,35 @@ An assigned correctness command on `@@HOST@@` runs as
 `fleet-worker.sh execution slot --wait-window --cpu -- <command>` (use `--gpu` for a GPU batch).
 A command already wrapped as `execution leg` runs as written: the leg selects slot or hold from
 its record's kind. Follow the assignment's form; `execution hold --request` refuses correctness.
+
+### Multi-command legs with `--file`
+
+For several commands, put them in a local script under your scratch directory, starting with
+`set -eu`. Request the complete leg as `"command"` (rather than the `"runner"` / `"clone"`
+shorthand, which does not carry leg options). For example, use this command in the request:
+
+```sh
+~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution leg \
+  --request <id> --rev <sha> --checkout <the box's clone> \
+  --worktree <that clone>-worktrees/@@WORKER@@ --wait-window \
+  --file <absolute local script path> -- env <backend-variable>=<backend> /bin/bash '{file}'
+```
+
+Replace `<backend-variable>` and `<backend>` with the pin the project part supplies (and quote
+paths as needed). The pin must be a leading argv word after `env`; putting it inside a `sh -c`
+or `bash -ec` string hides it from the guard. `--file` ships the local file to the execution box;
+each runner word exactly equal to `{file}` becomes the shipped copy's absolute path. A word
+merely containing `{file}` is not replaced. `--file` and the `{file}` word must occur together.
+The copy lives outside the worktree and is removed when the leg ends. For a measurement, omit
+`--wait-window` and use only `--deadline <s>` as described above. This is a request example;
+wait for assignment before running it.
+
+<!-- Agent notes (wave-20261117-ludics, t1192): leg.py THE FILE owns this grammar.
+The existing backend-pin refusal already names --file and the exact runner word {file}.
+assign.leg_command returns the leg command for the worker to execute; assign and the driver
+reserve/dispatch it rather than running the leg, so its stderr refusal reaches the worker
+at execution time. Keep the guard unchanged. -->
+
 You will be resumed with one of:
 
 - `EXECUTION_ASSIGNED <request_id>` with the exact command and revision: run only that, at that
