@@ -28,7 +28,8 @@ Every other model runs as ``codex exec -s read-only``. The plan, the session id 
 and the critique's resume of that session follow the same files for both; a claude run's
 ``<kind>.jsonl`` holds its one JSON result. ``astra-plan.md`` is the peer's plan whatever its
 model: the name predates THE PLANNER, and every reader and brief names it. Only the default model (Astra) is shipped as a
-default: a coordinator names ``--model opus`` where issue-wave asks for it (an Astra worker's D3).
+default: a coordinator names ``--model opus`` where issue-wave asks for it (an Astra worker's D3),
+the rule ``peer_model`` states for the wave driver's paired-launch notice.
 
 ``--managed`` is for a coordinator that must hold the run in a managed foreground session of its
 own (a native Codex runtime, issue-wave/references/native-codex.md): the run directory is only
@@ -63,6 +64,12 @@ DEFAULT_MODEL = "gpt-6.2-astra"
 DEFAULT_EFFORT = "high"
 CLAUDE_MODELS = ("opus",)
 CLAUDE_TOOLS = "Read,Grep,Glob"
+
+
+def peer_model(worker_model: str) -> str:
+    """The peer planner beside a worker of ``worker_model`` (issue-wave SKILL.md's *Codex model
+    choice*): Opus beside an Astra worker, so the two plans are two models' readings; else the default."""
+    return "opus" if "-astra" in worker_model else DEFAULT_MODEL
 
 
 def is_claude(model: str) -> bool:
