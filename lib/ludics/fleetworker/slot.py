@@ -43,7 +43,7 @@ brief:
   would wait for its own measurement. A bare ``--wait-window`` waits to the window's own deadline
   where its record holds one (ludics-lite#737, ``window_cutoff``), an hour where it does not; an
   explicit ``--wait-window=<seconds>`` waits exactly that. A pending window's first hold opening
-  shortens its initial launch/drain bound; later windows never extend the wait (ludics#1193).
+  updates its initial launch/drain bound; later windows never extend the wait (ludics#1193).
 - THE WAITERS (ludics-lite#719): a batch waiting out a measurement reads the registry with
   ``wait``, which records on the anchor that it waits for this box (registry.py's THE WAITERS), so a
   new window keeps its gap only while someone waits; and a batch waiting here, for a window or for a
@@ -1291,7 +1291,7 @@ def window_cutoff(holding: list[dict[str, Any]]) -> tuple[int, str]:
     seconds from then: the latest of each measurement's time left to its deadline as the listing
     that found the box held gave it (``deadline_left``, by the anchor's clock), or ``WINDOW_WAIT``
     for one that gives none; and what the lines say it is. A deadline already past
-    gives up at once. A pending window is shortened to its first hold opening in await_measurements.
+    gives up at once. A pending window follows its first hold opening in await_measurements.
     Windows that open later do not move it: a waiter's bound runs across
     back-to-back windows, and the gap is where it gets out. The boundary: the time left is counted
     from when that listing reached this process, so the cutoff falls after the recorded deadline by
@@ -1468,7 +1468,7 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
         shown, said = bound, "--wait-window"
     deadline = start + shown
     pending = {jq_text(r.get("request_id")) for r in first
-               if "deadline" in r and "hold_opened_at" not in r} if bound == BY_DEADLINE else set[str]()
+               if "deadline" in r and r.get("hold_opened_at") is None} if bound == BY_DEADLINE else set[str]()
     progress = start + WINDOW_PROGRESS
     named: set[str] = set()
     unread: Unread | None = None
@@ -1484,10 +1484,10 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                         f" {voice.proceed}")
             return records
         if pending:
-            changed = [r for r in holding if jq_text(r.get("request_id")) in pending and "hold_opened_at" in r]
+            changed = [r for r in holding if jq_text(r.get("request_id")) in pending and r.get("hold_opened_at") is not None]
             if changed:
                 left, reason = window_cutoff(holding)
-                deadline = min(deadline, time.monotonic() + left)
+                deadline = time.monotonic() + left
                 shown, said = max(0, math.ceil(deadline - start)), reason
                 pending.difference_update(jq_text(r.get("request_id")) for r in changed)
         for record in holding:

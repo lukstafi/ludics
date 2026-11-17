@@ -199,7 +199,7 @@ behaviour, so its waiters retain the pending bound. It bounds the waiters and no
   to the deadline of the window it finds (`(--wait-window, to measurement <id>'s deadline <time>)`),
   short of an hour or past it, and an hour behind a measurement that records none; the latest of
   those it finds when it starts (ludics-lite#737); a pending window's first hold opening
-  shortens that initial bound, and later windows cannot extend it. `--wait-window=<seconds>` waits
+  updates that initial bound once, and later windows cannot extend it. `--wait-window=<seconds>` waits
   exactly that. Once nothing is outstanding
   it waits for a slot as `--wait` says, each wait with its own bound. A measurement on another
   box never makes it wait, and it does not wait inside a measurement's hold (it would wait for

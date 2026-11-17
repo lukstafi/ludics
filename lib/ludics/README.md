@@ -305,6 +305,11 @@ fleetworker/execution.py:standing_handback_payload
 fleetworker/execution.py:standing_handback
     issue-wave/scripts/test-fleet-worker.sh "execution conclude --standing-handback" "wave kit"
 
+fleetworker/execution.py:open_hold
+fleetworker/registry.py:time_left
+    issue-wave/scripts/test-fleet-worker.sh "execution slot" "execution leg"
+    lib/ludics/tests/test_fleetworker_registry.py
+
 fleetworker/execution.py:window_gap
 fleetworker/execution.py:window_deadline
 fleetworker/execution.py:gap_wait

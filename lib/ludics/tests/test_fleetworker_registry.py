@@ -1041,6 +1041,14 @@ class WindowDeadline(RegistryCase):
         self.call("conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null", "evidence": "unit"})
         self.assertEqual(self.opening()[0], 1)
 
+    def test_historical_windows_without_a_hold_opening_still_validate(self) -> None:
+        _, record, _ = self.window(extra={"deadline": 60})
+        del record["hold_opened_at"]
+        record["deadline_at"] = (datetime.fromisoformat(record["created_at"]) + timedelta(seconds=60)).isoformat()
+        with open(os.path.join(self.root, "executions", "w.json"), "w") as stream:
+            json.dump(record, stream)
+        self.assertEqual(self.call("list", {})[0], 0)
+
     def test_a_retry_names_the_same_deadline_and_never_moves_it(self) -> None:
         _, first, _ = self.window(extra={"deadline": 600})
         rc, again, _ = self.window(extra={"deadline": 600})

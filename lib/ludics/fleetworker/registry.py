@@ -152,7 +152,7 @@ window's drain takes slots as they free), and a box whose fleet-worker predates 
 
 THE WINDOW'S DEADLINE (ludics#1193). A window's positive whole `deadline` (at most a week)
 is its budget from the hold opening after the drain, including setup and conclusion. Before a
-hold opens, `deadline_at` is created_at + WINDOW_START_WAIT + deadline: a crashed or never-launched
+hold opens, `hold_opened_at` is null and `deadline_at` is created_at + WINDOW_START_WAIT + deadline: a crashed or never-launched
 holder cannot park waiters forever. The internal lease-free `hold-open` action reads only
 {request_id, execution_host, evidence}, requires an outstanding dispatched window on that host,
 and stamps `hold_opened_at` once on the anchor's clock, setting deadline_at to that time + deadline.
@@ -160,6 +160,7 @@ Retries and nested holds never move it. A listing (`list`, `wait`) adds `deadlin
 up by the anchor's clock; a waiter initially seeing a pending window follows that same window's
 first opening, never a later window. Publication failure refuses the hold before its command runs;
 no deadline is inferred from local clocks, slot files, process output or arbitrary evidence text.
+Historical records without hold_opened_at retain their original assignment-based bound.
 The deadline bounds waiters only: it does not conclude a record or release any lock.
 
 THE SNAPSHOT (ludics-lite#711). A window's opening publishes the measurement and then suspends the
@@ -682,7 +683,7 @@ def validate_record(data: Any, path: Path) -> Record:
             created = datetime.fromisoformat(record["created_at"])
             if origin.tzinfo is None or origin < created:
                 raise ValueError("invalid hold opening")
-            due = origin + timedelta(seconds=seconds + (WINDOW_START_WAIT if opened is None else 0))
+            due = origin + timedelta(seconds=seconds + (WINDOW_START_WAIT if "hold_opened_at" in record and opened is None else 0))
         except (ValueError, OverflowError):
             at = due = None
         if at is None or at.tzinfo is None or at != due or record.get("window") is not True:
@@ -1359,6 +1360,7 @@ def main(argv: list[str]) -> None:
                 if window_deadline is not None:
                     # Pending launch/drain bound; hold-open will start the actual budget.
                     record["deadline"] = window_deadline
+                    record["hold_opened_at"] = None
                     record["deadline_at"] = (clock + timedelta(seconds=WINDOW_START_WAIT + window_deadline)).isoformat()
             if checkout is not None:
                 record["checkout"] = checkout
@@ -1457,7 +1459,7 @@ def main(argv: list[str]) -> None:
             if (set(data) != {"request_id", "evidence"} or record.get("window") is not True
                     or "deadline" not in record or record["state"] not in {"launching", "running", "uncertain"}):
                 refuse("hold-open requires a dispatched window with a deadline and its execution_host")
-            if "hold_opened_at" in record:
+            if record.get("hold_opened_at") is not None:
                 print(json.dumps(record, indent=2))
                 return
             record["hold_opened_at"] = now
