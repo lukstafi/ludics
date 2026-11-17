@@ -53,6 +53,17 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         stamped with the time and the coordinator; nothing edits or removes a log line, and it
         never starts a board (an append is not idempotent: a retried first write must be)
   show  {"wave", "json"}                                            the markdown view, or the document
+  scan  {"since_hours"}                                             every board, for ``status --json``
+        (ludics#1165): no lock and no lease, as ``show``. It lists ``<root>/boards/`` once, keeps
+        each entry named ``<wave>.json`` with the wave in the grammar below (anything else there --
+        the writers' ``.board-`` temporaries included -- is skipped, not reported), and ``load``s
+        each: one that does not validate, cannot be read or is no file is ``{"wave", "why"}`` under
+        ``refused``, and the scan goes on. ``since_hours`` (a positive finite number, or null for
+        every board) keeps a board whose ``updated_at`` is at or after this anchor's now less that
+        many hours -- the clock that stamped it -- and refuses one whose ``updated_at`` is not this
+        module's stamp (``%Y-%m-%dT%H:%M:%SZ``). No ``boards`` directory is no boards; a root or a
+        ``boards`` that is no directory refuses. It prints one line, ``{"boards": [<document>...],
+        "refused": [...]}``, the boards in name order. The payload names no wave.
 
 What it accepts, fail-closed (anything else refuses, ``BOARD REFUSED: <why>`` on stderr, exit 1):
 a wave is ``[A-Za-z0-9][A-Za-z0-9._-]*`` (it names a file); a key is ``[A-Za-z][A-Za-z0-9_-]*``; a
@@ -87,12 +98,13 @@ rows first name them.
 """
 import difflib
 import json
+import math
 import os
 import re
 import sys
 import tempfile
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
@@ -304,6 +316,60 @@ def placement_word(host: str, checkout: str) -> str:
     return f"{host}:{checkout}"
 
 
+STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def scan(root: str, payload: Doc) -> None:
+    """``scan`` (the header): every board under ``root``, one JSON line, with no lock."""
+    since: Any = payload.get("since_hours")
+    if since is not None and (type(since) not in (int, float) or not math.isfinite(since) or since <= 0):
+        refuse("since_hours must be a positive finite number of hours, or null")
+    if not Path(root).is_dir():
+        refuse(f"the anchor state root {root} is not a directory")
+    directory = Path(root) / "boards"
+    try:
+        os.lstat(directory)
+    except FileNotFoundError:
+        names: list[str] = []
+    else:
+        if not directory.is_dir():
+            refuse(f"{directory} is not a directory")
+        with os.scandir(directory) as entries:
+            names = sorted(entry.name for entry in entries)
+    cutoff: datetime | None = None
+    if since is not None:
+        try:
+            cutoff = now_utc() - timedelta(hours=since)
+        except OverflowError:
+            cutoff = datetime.min.replace(tzinfo=timezone.utc)  # a window wider than the calendar: every board
+    boards: list[Doc] = []
+    refused: list[Doc] = []
+    for name in names:
+        wave = name.removesuffix(".json")
+        if wave == name or not WAVE.fullmatch(wave):
+            continue
+        try:
+            doc = load(directory / name, wave)
+            if doc is None:
+                continue  # removed between the listing and the read
+            if cutoff is not None:
+                try:
+                    stamp = datetime.strptime(doc["updated_at"], STAMP).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    refuse(f"its updated_at {json.dumps(doc['updated_at'])} is no {STAMP} stamp, so no window can place it")
+                if stamp < cutoff:
+                    continue
+        except (ValueError, OSError) as exc:
+            refused.append({"wave": wave, "why": str(exc)})
+            continue
+        boards.append(doc)
+    sys.stdout.write(json.dumps({"boards": boards, "refused": refused}, ensure_ascii=False) + "\n")
+
+
 def main(argv: list[str]) -> None:
     root, action, coordinator, word = argv[1:5]
     raw = payload_word(word)
@@ -311,6 +377,9 @@ def main(argv: list[str]) -> None:
     if not isinstance(decoded, dict):
         refuse("the payload must be a JSON object")
     payload = cast(Doc, decoded)
+    if action == "scan":
+        scan(root, payload)
+        return
     wave = wave_ok(payload.get("wave"))
     path = Path(root) / "boards" / f"{wave}.json"
     doc = load(path, wave)

@@ -8,7 +8,8 @@ knob is read from the environment, as the shell read it (``ludics.fleetworker.co
 Every verb is served here (ludics-lite#403): the coordinator lease (claim, release, coordinator),
 the halt (halt, resume-launches, halted), the native gate (gate), every ``execution`` action, the
 preflight and refresh (``preflight``), a CLI worker's life (``workers``: launch, attach, status,
-log, unstick, close, ls), the supervision reads (``supervision``: load, prs), a new scan's check
+log, unstick, close, ls), the supervision reads (``supervision``: load, prs), the observers' read
+(``status``: status --json), a new scan's check
 of the open sibling heads (``siblingscan``) and the wave board (``board``: set, note, log, show,
 check, takeover, close). The one answer
 fleet-worker.sh still gives itself is ``execution slot --probe``, which must answer on a box with no
@@ -21,7 +22,7 @@ import re
 import sys
 
 from ludics import cli
-from ludics.fleetworker import board, execution, farsideclose, gate, lease, preflight, siblingscan, supervision, wave, workers
+from ludics.fleetworker import board, execution, farsideclose, gate, lease, preflight, siblingscan, status, supervision, wave, workers
 from ludics.fleetworker.config import Config, load_config, pin_refusal
 from ludics.fleetworker.identity import PROG, die
 
@@ -109,6 +110,9 @@ def run_verb(cfg: Config, verb: str, rest: list[str]) -> int:
         case "attach":
             return workers.cmd_attach(cfg, rest)
         case "status":
+            # `status --json` is the observers' read (status.py); any other first word is a box.
+            if rest[:1] == ["--json"]:
+                return status.cmd_status_json(cfg, rest)
             return workers.cmd_status(cfg, rest)
         case "log":
             return workers.cmd_log(cfg, rest)

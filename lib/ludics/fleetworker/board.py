@@ -27,9 +27,10 @@ A row's state is its ``state`` key, a STATE WORD first (``takeover``'s header st
 ludics#810). ``set`` writes any value as given, and warns on stderr (``BOARD WARNING: ...``, the exit
 unchanged) for a ``state`` whose first word is no state word and for a ``status`` key, the name
 boards before #810 used beside ``state``. ``check`` reads each row's ``state``, or on a row with no
-``state`` its ``status``, by the state words and nothing else of the row, the notes or the log: it
-prints ``BOARD CHECK <wave>: <n> rows, <d> done, <o> not done``, then a line per row not done, and
-exits 0 when every row's state is a done word, 3 when a row's is not (a live word, no state word or
+``state`` its ``status``, by the state words and nothing else of the row, the notes or the log -- a
+row is done when its phase is a done word (``takeover.phase_of``, THE PHASE: the one rule ``status
+--json`` prints too). It prints ``BOARD CHECK <wave>: <n> rows, <d> done, <o> not done``, then a line
+per row not done, and exits 0 when every row's state is a done word, 3 when a row's is not (a live word, no state word or
 no state: an allowlist), 1 with no board, 4 when the anchor did not answer.
 
 The writers run inside the lease lock after the lease check (``lease.LEASE_MUTATION``), the lock and
@@ -54,7 +55,7 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
-from ludics.fleetworker.takeover import DONE_STATES, LIVE_STATES, board_document, cmd_takeover, state_word
+from ludics.fleetworker.takeover import DONE_STATES, LIVE_STATES, board_document, cmd_takeover, phase_of, row_state, state_word
 from ludics.fleetworker.transport import Done, PAYLOAD_ON_FD, err, prelude, run_on, shipped_python
 
 USAGE = (
@@ -148,14 +149,6 @@ def warnings_of(task: str, pairs: list[list[str]]) -> list[str]:
     return out
 
 
-def row_state(fields: dict[str, str]) -> tuple[str, str] | None:
-    """The key and value ``check`` reads as the row's state: ``state``, else ``status``, else none."""
-    for key in ("state", "status"):
-        if key in fields:
-            return key, fields[key]
-    return None
-
-
 def cmd_check(cfg: Config, args: list[str]) -> int:
     if len(args) != 1 or not args[0]:
         die(f"board check: expected <wave> ({USAGE})")
@@ -175,10 +168,10 @@ def cmd_check(cfg: Config, args: list[str]) -> int:
             left.append(f"- {task}: no state")
             continue
         key, value = state
-        word = state_word(value)
-        if word in DONE_STATES:
+        phase = phase_of(fields)
+        if phase in DONE_STATES:
             continue
-        why = "live" if word is not None else f"no state word: {STATE_WORDS}"
+        why = "live" if phase == "active" else f"no state word: {STATE_WORDS}"
         left.append(f"- {task}: {key}={json.dumps(value, ensure_ascii=False)} ({why})")
     cli.say(f"BOARD CHECK {wave}: {len(rows)} rows, {len(rows) - len(left)} done, {len(left)} not done")
     for line in left:

@@ -102,6 +102,9 @@
 #                          # human output uses stderr on this opt-in path. Use a fresh result file.
 #   fleet-worker.sh attach <box> <name> [--interval <sec>]
 #   fleet-worker.sh status <box> <name>
+#   fleet-worker.sh status --json [--since <hours>]   # observers' read, no lease: lease host/since
+#                          # (never the token), halt, every board's tasks with a derived phase,
+#                          # active executions; one versioned JSON document (lib/ludics/fleetworker/status.py)
 #   fleet-worker.sh log <box> <name> [-n <lines>]   # the tail of every turn's assistant text
 #   fleet-worker.sh log <box> <name> --last-result  # the latest ended turn's final message, whole
 #                          # and alone (no -n): claude's last `result`, codex's last agent_message

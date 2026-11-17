@@ -403,6 +403,20 @@ class Check(unittest.TestCase):
         self.assertTrue(lines[2].startswith('- "c": state="done-merged" (no state word: live pending,'), lines[2])
         self.assertEqual(lines[3:], ['- "d": no state', '- "e": state="reviewing" (live)'])
 
+    def test_check_reads_done_as_the_phase_status_json_prints(self) -> None:
+        """THE PHASE is check's source (takeover's header, ludics#1165): every row check calls done is
+        one whose phase is a done word, and no other."""
+        rows = {"a": {"state": "MERGED 37a9539b; issue closed;"}, "b": {"status": "done"}, "c": {"state": "closed"},
+                "d": {"state": "dropped (scope)"}, "e": {"state": "done-merged", "merge": "0123abcd"},
+                "f": {"state": "pending"}, "g": {"pr": "4"}, "h": {"state": ""}, "i": {"state": "blocked", "status": "merged"}}
+        for task, fields in rows.items():
+            self.row(task, **fields)
+        rc, out, _ = self.check()
+        left = {line.split('"')[1] for line in out.splitlines()[1:]}
+        self.assertEqual(rc, 3)
+        self.assertEqual(left, {t for t, f in rows.items() if takeover.phase_of(f) not in takeover.DONE_STATES})
+        self.assertEqual(left, {"e", "f", "g", "h", "i"})
+
     def test_an_empty_board_is_done_and_no_board_refuses(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(boardstore.run(["-", self.root, "note", "coord", json.dumps(
