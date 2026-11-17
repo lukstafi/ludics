@@ -367,13 +367,13 @@ label, and a row for the project's decisions ledger, where it stands `unreviewed
 maintainer has read it ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb),
 step 10).
 
-**Planning mode, per issue.** Every D3 gets `paired+critique` and an issue on the D2/D3
-border gets `paired`. Either way GPT Astra plans the issue read-only next to the worker,
-and the worker reconciles the two plans before it codes
-([paired-planning.md](references/paired-planning.md)). D1 and plain D2 issues get neither. List
-the mode per issue in the wave summary, where it is veto-able like tier 2. Under a Claude
-coordinator a Codex worker's issue pairs like any other. Under any other coordinator, pairing
-one is a tier-3 question, and the issue plans alone unless the user confirms.
+**Planning mode, per issue.** Every D3 gets `paired+critique` and an issue on the D2/D3 border gets
+`paired`. Either way a second model plans the issue read-only next to the worker (GPT Astra, or
+Opus for an Astra worker), and the worker reconciles the two plans before it codes
+([paired-planning.md](references/paired-planning.md)). D1 and plain D2 issues get neither. List the
+mode per issue in the wave summary, where it is veto-able like tier 2. Under a Claude coordinator a
+Codex worker's issue pairs like any other. Under any other coordinator, pairing one is a tier-3
+question, and the issue plans alone unless the user confirms.
 
 Most waves should have an empty tier 3. If every question keeps landing in tier 3, the
 triage is wrong, not the backlog.
@@ -660,17 +660,18 @@ transport when a task reaches those paths.
 ### Codex model choice
 
 Unless the user specifies otherwise, a Codex worker runs Sol at high reasoning effort
-(`gpt-6.2-sol`, high) on D1 to D2/D3 issues, and Astra at high (`gpt-6.2-astra`, high) on a D3
-(the maintainer's call of 2026-11-17). The paired planner runs Astra at high too
-(`peer-plan.sh`'s defaults), so on a GPT-arm D3 the worker's plan and the peer plan come from the
-same model. Keep D1/D2/D3 as implementation-difficulty labels. Assess semantic coupling,
-verification risk (low: local deterministic acceptance; medium: timing-sensitive claims or
-extensive negative controls; high: platform semantics, GPU searches or expanding language-feature
-combinations) and delivery overhead (shared files, dependencies, slow CI or likely repeated
-reviews) separately. They shape the brief, the verification plan and the planning mode, not the
-model, and high verification risk calls for a concrete verification plan. If the first
-substantial review exposes interacting semantics or expanding scope, reassess toward D3 and
-clarify contract boundaries before another incremental fix cycle. The worker keeps its model:
+(`gpt-6.2-sol`, high) on D1 to D2/D3 issues, and Astra at high (`gpt-6.2-astra`, high) on a D3 (the
+maintainer's call of 2026-11-17). The paired planner runs Astra at high (`peer-plan.sh`'s
+defaults), except beside an Astra worker, where it runs Opus at high (`peer-plan.sh start --model
+opus`), so the second plan is always a second model's reading. Opus, not Fable: a peer stronger
+than either arm's model would help the GPT arm alone. Keep D1/D2/D3 as implementation-difficulty
+labels. Assess semantic coupling, verification risk (low: local deterministic acceptance; medium:
+timing-sensitive claims or extensive negative controls; high: platform semantics, GPU searches or
+expanding language-feature combinations) and delivery overhead (shared files, dependencies, slow CI
+or likely repeated reviews) separately. They shape the brief, the verification plan and the
+planning mode, not the model, and high verification risk calls for a concrete verification plan. If
+the first substantial review exposes interacting semantics or expanding scope, reassess toward D3
+and clarify contract boundaries before another incremental fix cycle. The worker keeps its model:
 switching mid-task would leave neither arm's reading of the task. Sol workers own implementation
 through `ship-pr` and merge, with explicit briefs, test evidence, CI gates and coordinator
 escalation.
