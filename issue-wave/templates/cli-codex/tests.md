@@ -11,9 +11,9 @@ A reviewer reads your diff and PR body, not your session, so shape both for that
   next line does, the procedure you ran, or a date. State a caveat once, where it binds.
 - PR body: open with the outcome and your decisions in a few sentences. Then give the evidence
   *Landing* asks for as one line per batch (command, exit status, run directory, leg box). Leave
-  out review-round logs, run-by-run narration, and paths beyond those lines. The only other
-  sections are the two *Landing* asks for: "Local Codex review" and, when you merge on substance,
-  the review-record paragraph.
+  out review-round logs, run-by-run narration, and paths beyond those lines. Add only the sections
+  something asks for: *Landing* ("Local Codex review", the review-record paragraph when you merge
+  on substance) or your task section (a scanner's "Recognised forms (closed)", say).
 
 ## Running tests
 
