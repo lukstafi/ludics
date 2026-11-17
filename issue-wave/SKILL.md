@@ -380,7 +380,9 @@ triage is wrong, not the backlog.
 
 The wave summary names the wave mode (*Wave mode*): regular, with its starting worker count, unless
 the user asked for a sprint, whose summary names its agent count, which workers run as CLI
-workers on their home boxes, and its integration box.
+workers on their home boxes, and its integration box. The wave summary names the cc integration
+loop's home box and its standby, and says workers on the home box get one slot fewer (a four-slot
+box: 3 of 4).
 
 ## Launch
 
@@ -689,7 +691,9 @@ worker, concludes an `EXECUTION_RESULT`, runs `wave review` for a `REVIEW_REQUES
 each attention line the driver writes (a design question, a plan, a refused or partial assignment,
 a review with no verdict, a merge no clearance covers, a worker that vanished), every turn of a
 native worker, and every turn while no driver runs (`wave turn <wave.json> <task>`
-answers one, once). An attention turn is final for the driver: answer it by hand, and the worker's
+answers one, once). A `WINDOWS_WITNESS_REQUEST` goes straight to coordinator attention; follow
+[executions.md, *Coordinator recipe for a worker’s Windows witness*](references/executions.md#coordinator-recipe-for-a-workers-windows-witness).
+An attention turn is final for the driver: answer it by hand, and the worker's
 next turn is the driver's again. Where a bullet below names `attach`, `status`, `log` or
 `unstick`, it is speaking of CLI workers; native and app workers are observed and controlled
 through the tools in your coordinator's file, never through those commands.
