@@ -73,7 +73,10 @@ holds, or the turn is attention:
   confirm   the last line is ``CONFIRM_REQUEST <pr> <40-hex sha>``
   handback  the first line starts with ``HANDBACK``
 Two of them in one message, or none (``NEEDS_DESIGN``, ``PLAN_READY``, a question, a status), is
-attention, named by the last line's first word.
+attention, named by the last line's first word. A paired worker's PLAN ENVELOPE is read first: a
+message with a line that is exactly ``PLAN_READY`` and a later one exactly ``END_PLAN_READY`` is
+attention as a plan, whatever lines it holds, since a plan's Verification section may quote a
+marker (an ``EXECUTION_REQUEST`` example) that is no request.
 
 THE ANSWERS:
   windows   attention immediately, once per returned turn, naming the saved request. The
@@ -175,6 +178,9 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
             <origin/MAIN, fetched now> --profile ... [--host] [--legs] [--mode] [--issue|--source]
             [--tier]``
             (a dependent starts from the base its prerequisite merged into), then ``wave launch``
+A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its launch answers: one
+non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha``. The
+driver starts no planner; the coordinator starts it on that sha, since both plans must read one tree.
 THE REFRESH: ``wave prep`` runs from the agent host's served skills checkout, and the project part
 it renders is read at the fetched tip, so a checkout one merge behind can lack a built-in that part
 names (a ``WAVE PREP REFUSED`` wave-20261113b-ludics saw). ``refresh`` brings it to its origin, or
@@ -463,6 +469,8 @@ def classify(message: str) -> Turn:
     lines = [line.strip() for line in message.split("\n") if line.strip()]
     if not lines:
         return Turn("other", "an empty final message")
+    if "PLAN_READY" in lines and "END_PLAN_READY" in lines[lines.index("PLAN_READY"):]:
+        return Turn("other", "a PLAN_READY plan, the coordinator's (paired-planning.md)")
     found: list[Turn] = []
     if "WINDOWS_WITNESS_REQUEST" in lines:
         found.append(Turn("windows"))
@@ -1123,6 +1131,11 @@ class Driver:
         done = self.call("wave", "launch", self.wave.path, queued.task, gated="both")
         said = (substitution(done.out).splitlines() or [f"wave launch exit {done.rc}"])[-1]
         if done.rc == 0:
+            if queued.mode and queued.mode != "none":
+                # A PAIRED LAUNCH (the header): the planner must read the tree the worker launched from.
+                base = record.base if record is not None else sha.strip()
+                self.tell(slot, LAUNCH, f"launched {queued.mode} at {base}: start its peer planner on that sha"
+                                       " (paired-planning.md, Coordinator, step 1)")
             return self.note(slot, LAUNCH, "launch", "answered", said)
         gate = PRESTART.search(said) or PRESTART.search(self.err)
         if done.rc == 1 and gate:

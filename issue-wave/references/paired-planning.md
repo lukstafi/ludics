@@ -18,7 +18,9 @@ passing:
   resumed with the worker's plan and critiques it against the code and its own plan.
 - No pairing for D1 and plain D2 issues.
 
-The second planner is always Astra, whichever provider the worker is. Under a Claude
+The second planner is Astra, whichever provider the worker is, except beside an Astra worker (a
+GPT-arm D3, issue-wave SKILL.md's *Codex model choice*): that peer is Opus, so the two plans are
+always two models' readings. Under a Claude
 coordinator, a Codex worker's issue is paired like any other. Under any other coordinator,
 pairing a Codex worker is the user's call: put it in the decision gate's batched question, and
 the issue plans alone unless the user confirms. Any transport works, because the plans travel
@@ -42,9 +44,10 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    ```
 
    It reads the issue with `gh` (the planner's sandbox has no network) and adds a detached
-   worktree of the base under `<plan-dir>`. Then it starts Astra (`gpt-6-astra`, medium;
-   `--model`/`--effort` to change them) there in the background, read-only, and prints a
-   `bg-run.sh` run directory. A native Codex coordinator, whose local `spawn` runs die
+   worktree of the base under `<plan-dir>`. Then it starts Astra (`gpt-6.2-astra`, high;
+   `--model`/`--effort` to change them; `--model opus` beside an Astra worker, which runs Opus at
+   high through `claude -p` with only read and search tools) there in the background, read-only,
+   and prints a `bg-run.sh` run directory. A native Codex coordinator, whose local `spawn` runs die
    ([native-codex.md](native-codex.md#local-managed-command-sessions)), passes `--managed` to
    `start` and `critique` instead. That only allocates and records the run directory, and the
    coordinator runs `bg-run.sh start <run> -- peer-plan.sh _run plan <plan-dir>` (`critique`

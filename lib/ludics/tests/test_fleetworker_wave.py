@@ -1753,7 +1753,7 @@ class ShippedTemplate(unittest.TestCase):
         listed = {name: sorted(os.listdir(os.path.join(waveprep.TEMPLATES, name))) for name in ("shared", "native-claude", "native-codex", "cli-codex")}
         self.assertEqual(listed["shared"], sorted(waveprep.SHARED))
         self.assertEqual(listed["native-claude"], sorted(waveprep.OWN + waveprep.PLANNING))
-        self.assertEqual(listed["cli-codex"], sorted(waveprep.OWN))
+        self.assertEqual(listed["cli-codex"], sorted(waveprep.OWN + waveprep.PLANNING))
         self.assertEqual(listed["native-codex"], sorted(waveprep.OWN))
         self.assertEqual(set(waveprep.OWN) | set(waveprep.SHARED), set(waveprep.COMMON))
         # The shared parts name neither transport's mechanism for holding a run: that is each kind's blocking.md.
@@ -1776,16 +1776,20 @@ class ShippedTemplate(unittest.TestCase):
                 "wave": "wave-x-ludics", "repository": "lukstafi/ludics", "checkout": "/home/u/ludics",
                 "worker_prefix": "wx", "agent_host": "mac-studio", "transport": "subagent", "kind": "claude",
                 "standing_purpose": "standing iteration for @@T@@", "project_part": ".github/wave-brief.md",
-                "vars": {"COORDINATOR": "local_c", "MAIN": "main"}})
-            cases = [("t7", "7", "lukstafi/ludics#7", "", mode) for mode in waveprep.MODES]
-            cases.append(("p8", "9", "", "lukstafi/ludics#9", "none"))
-            for task, number, issue, source, mode in cases:
-                with self.subTest(task=task, mode=mode):
-                    prep = waveprep.Prep(w, task, number, issue, source, A, mode, [], set(), "/state")
+                "vars": {"COORDINATOR": "local_c", "MAIN": "main"},
+                "profiles": {"sol": {"transport": "cli", "kind": "codex"}},
+                "hosts": {"rog": {"checkout": "/srv/ludics", "scratch": "/srv/scratch"}}})
+            # A Codex CLI worker plans in every mode too: an A/B wave sends it issues of every tier.
+            cases = [("t7", "7", "lukstafi/ludics#7", "", mode, profile, host)
+                     for mode in waveprep.MODES for profile, host in (("", ""), ("sol", "rog"))]
+            cases.append(("p8", "9", "", "lukstafi/ludics#9", "none", "", ""))
+            for task, number, issue, source, mode, profile, host in cases:
+                with self.subTest(task=task, mode=mode, profile=profile):
+                    prep = waveprep.Prep(w, task, number, issue, source, A, mode, [], set(), "/state", profile, host)
                     brief = waveprep.brief_text(prep)
                     self.assertNotIn("@@", brief)
                     self.assertIn("## Project conventions (read before editing)", brief)
-                    self.assertIn("`wave-x-ludics-" + task + "-mac-studio-iterate`", brief)
+                    self.assertIn("`wave-x-ludics-" + task + "-" + (host or "mac-studio") + "-iterate`", brief)
                     self.assertEqual("## Paired planning" in brief, mode != "none")
                     self.assertEqual("PEER_CRITIQUE" in brief, mode == "paired+critique")
 
@@ -2382,7 +2386,11 @@ class Markers(unittest.TestCase):
                              (f'EXECUTION_RESULT {{}} done\nREVIEW_REQUEST 7 {A}', "an EXECUTION_RESULT line that is not"),
                              ("The HANDBACK follows\nPR 7", "the last line starts 'PR'"),
                              (f"HANDBACK t42\n...\nREVIEW_REQUEST 7 {A}", "more than one marker: review, handback"),
-                             (f"EXECUTION_REQUEST\n{{}}\nEND_EXECUTION_REQUEST\nEXECUTION_RESULT {{}}", "more than one marker: request, result")):
+                             (f"EXECUTION_REQUEST\n{{}}\nEND_EXECUTION_REQUEST\nEXECUTION_RESULT {{}}", "more than one marker: request, result"),
+                             # A plan's Verification may quote a marker: the envelope is read first.
+                             ("Plan below.\nPLAN_READY\n## Verification\nEXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\nEND_PLAN_READY",
+                              "a PLAN_READY plan"),
+                             (f"PLAN_READY\nEXECUTION_RESULT {{}}\nEND_PLAN_READY\nREVIEW_REQUEST 7 {A}", "a PLAN_READY plan")):
             got = wavedrive.classify(message)
             self.assertEqual(got.kind, "other", message)
             self.assertIn(why, got.why)
@@ -3303,8 +3311,10 @@ class Queue(DriveCase):
                 ["wave", "launch", self.path, "t50"]])
             self.assertEqual(self.calls[0], ["halted"])
             self.assertIn("DRIVE t50 launch: launch answered: WAVE LAUNCH t50: launched far/w1-50", out)
+            self.assertIn(f"DRIVE ATTENTION t50 launch: launched paired at {B}: start its peer planner on that sha", out)
             self.rows = [row("t50")]  # launched: its row is live
-            self.once()
+            out = self.once()[1]
+            self.assertNotIn("peer planner", out, "an unpaired launch names no planner")
             self.assertEqual(self.launched(), [["wave", "prep", self.path, "t51", "--base", B, "--profile", "sol", "--issue", "777",
                                                 "--tier", "D1/D2"],
                                                ["wave", "launch", self.path, "t51"]], "one launch a tick, in file order; the agent host takes no --host")

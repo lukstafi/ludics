@@ -94,7 +94,8 @@ workflow to this explicit task list, with these adaptations for tasks without is
   source hand-back. Summarize the next wave and proceed under the selected mode; use the
   existing decision gate for unresolved user-owned choices.
 - **Batch the tasks by area: one worker, one worktree and one PR for each group** of tasks that
-  touch the same files or subsystem. A task of a few lines does not earn a brief, a CI cycle and
+  touch the same files or subsystem, within one arm of an A/B wave (a task takes its source
+  issue's arm, issue-wave SKILL.md's *Launch*). A task of a few lines does not earn a brief, a CI cycle and
   a review of its own (wave-20261111-ocannl ran eleven such tasks as eleven PRs). A task stays
   alone when it needs evidence of its own (a measurement, a reproduction) or would hold its group
   up. The coordinator continues to sequence and supervise; it does not implement the chips

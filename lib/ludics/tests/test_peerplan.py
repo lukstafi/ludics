@@ -53,6 +53,18 @@ if mode != "silent":
         f.write("resume" if "resume" in argv else "plan")
 """
 
+# The claude fake: one JSON result on stdout, as `claude -p --output-format json` prints it.
+FAKE_CLAUDE = """\
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+argv = sys.argv[1:]
+with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
+    log.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": sys.stdin.read()}) + "\\n")
+error = os.environ.get("FAKE_CLAUDE_MODE") == "error"
+print(json.dumps({"type": "result", "is_error": error, "session_id": "sid-1",
+                  "result": "Credit balance is too low" if error else ("resume" if "--resume" in argv else "plan")}))
+"""
+
 
 @dataclass(frozen=True)
 class Call:
@@ -111,6 +123,12 @@ class PeerPlan(unittest.TestCase):
         self.codex.__enter__()
         self.addCleanup(self.codex.__exit__, None, None, None)
         os.environ.pop("FAKE_CODEX_MODE", None)
+        self.claude = FakeTool("claude")
+        with open(os.path.join(self.claude.dir, "claude"), "w", encoding="utf-8") as f:
+            f.write(f"#!{sys.executable}\n{FAKE_CLAUDE}")
+        self.claude.__enter__()
+        self.addCleanup(self.claude.__exit__, None, None, None)
+        os.environ.pop("FAKE_CLAUDE_MODE", None)
         self.dir = os.path.join(self.tmp, "plans", "w-7")
 
     def answer_gh(self, login: str = "maint", issue: Answer = Answer(stdout=json.dumps(ISSUE))) -> None:
@@ -125,8 +143,8 @@ class PeerPlan(unittest.TestCase):
         # The verdict word: a run that finished before the wait reads `rc=0 (finished earlier, ...)`.
         return done.stdout.split(" ", 1)[0].strip()
 
-    def codex_calls(self) -> list[Call]:
-        path = os.path.join(self.codex.dir, "calls.jsonl")
+    def codex_calls(self, tool: FakeTool | None = None) -> list[Call]:
+        path = os.path.join((tool or self.codex).dir, "calls.jsonl")
         with open(path, encoding="utf-8") as f:
             rows = [cast(dict[str, object], json.loads(line)) for line in f if line.strip()]
         return [Call(cast(list[str], r["argv"]), str(r["cwd"]), str(r["stdin"])) for r in rows]
@@ -186,6 +204,42 @@ class PeerPlan(unittest.TestCase):
         self.assertFalse(os.path.exists(wt))
         self.assertNotIn(wt, git("-C", self.repo, "worktree", "list"))
         self.assertTrue(os.path.exists(os.path.join(self.dir, "astra-plan.md")))
+
+    def test_an_opus_planner_runs_claude_with_read_only_tools_and_resumes_it(self) -> None:
+        """THE PLANNER: --model opus (an Astra worker's D3) plans through claude -p, read-only by its tools."""
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--model", "opus")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        wt = os.path.join(self.dir, "worktree")
+        with open(os.path.join(self.dir, "astra-plan.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "plan", "the peer's plan keeps its file, whatever the model")
+        with open(os.path.join(self.dir, "thread"), encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "sid-1")
+        self.assertFalse(os.path.exists(os.path.join(self.codex.dir, "calls.jsonl")), "no codex run")
+        first = self.codex_calls(self.claude)[0]
+        self.assertEqual(first.argv, ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob"])
+        self.assertEqual(os.path.realpath(first.cwd), os.path.realpath(wt))
+        self.assertIn("one of two planners", first.stdin)
+        mine = os.path.join(self.dir, "claude-plan.md")
+        with open(mine, "w", encoding="utf-8") as f:
+            f.write("my plan\n")
+        done = self.entry("critique", self.dir, "--plan", mine)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        with open(os.path.join(self.dir, "critique.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "resume")
+        second = self.codex_calls(self.claude)[1]
+        self.assertEqual(second.argv[-2:], ["--resume", "sid-1"])
+        self.assertIn("--tools", second.argv)
+        self.assertIn("my plan", second.stdin)
+
+    def test_an_opus_planner_error_result_is_no_plan(self) -> None:
+        os.environ["FAKE_CLAUDE_MODE"] = "error"
+        self.addCleanup(os.environ.pop, "FAKE_CLAUDE_MODE", None)
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--model", "opus")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=1")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "astra-plan.md")), "an error result is never written as a plan")
 
     def test_managed_runs_start_in_the_callers_session(self) -> None:
         done = self.entry(

@@ -21,6 +21,15 @@ bg-run directory, to block on with ``bg-run.sh wait``; ``<dir>/plan-run`` and
 once no run is live, and keeps every other file: they are the record of the planning. A run has
 no deadline of its own: ``bg-run.sh stop <run>`` ends it, codex included.
 
+THE PLANNER is named by ``--model``. A model in ``CLAUDE_MODELS`` (``opus``) or one named
+``claude-...`` runs as ``claude -p`` with the tools ``Read,Grep,Glob`` and nothing else: no tool
+that writes, runs a command or reaches the network is offered, which is its read-only sandbox.
+Every other model runs as ``codex exec -s read-only``. The plan, the session id in ``<dir>/thread``
+and the critique's resume of that session follow the same files for both; a claude run's
+``<kind>.jsonl`` holds its one JSON result. ``astra-plan.md`` is the peer's plan whatever its
+model: the name predates THE PLANNER, and every reader and brief names it. Only the default model (Astra) is shipped as a
+default: a coordinator names ``--model opus`` where issue-wave asks for it (an Astra worker's D3).
+
 ``--managed`` is for a coordinator that must hold the run in a managed foreground session of its
 own (a native Codex runtime, issue-wave/references/native-codex.md): the run directory is only
 allocated (``bg-run.sh new``) and recorded, nothing starts, and the caller runs
@@ -50,8 +59,15 @@ PROG = "peer-plan.sh"
 ROOT = Path(__file__).resolve().parents[3]
 PY = ROOT / "scripts" / "py"
 BG_RUN = ROOT / "issue-wave" / "scripts" / "bg-run.sh"
-DEFAULT_MODEL = "gpt-6-astra"
-DEFAULT_EFFORT = "medium"
+DEFAULT_MODEL = "gpt-6.2-astra"
+DEFAULT_EFFORT = "high"
+CLAUDE_MODELS = ("opus",)
+CLAUDE_TOOLS = "Read,Grep,Glob"
+
+
+def is_claude(model: str) -> bool:
+    """THE PLANNER (the header): which CLI runs ``model``."""
+    return model in CLAUDE_MODELS or model.startswith("claude-")
 
 USAGE = f"""\
 usage: {PROG} start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref> [--model <m>] [--effort <e>] [--managed]
@@ -424,36 +440,63 @@ def clean(args: Sequence[str]) -> int:
     return 0
 
 
-def run_codex(d: str, kind: str) -> int:
-    """What the background run executes: one codex turn, its events kept in ``<d>/<kind>.jsonl``."""
+def claude_result(stdout: str) -> tuple[str, str, bool]:
+    """A ``claude -p --output-format json`` run's result text, session id and error flag."""
+    try:
+        doc: object = json.loads(stdout)
+    except ValueError:
+        return "", "", True
+    if not isinstance(doc, dict):
+        return "", "", True
+    fields = cast(dict[str, object], doc)
+    result, sid = fields.get("result"), fields.get("session_id")
+    return (result if isinstance(result, str) else "", sid if isinstance(sid, str) else "",
+            fields.get("is_error") is True)
+
+
+def run_planner(d: str, kind: str) -> int:
+    """What the background run executes: one planner turn, its output kept in ``<d>/<kind>.jsonl``."""
     meta = load_meta(d)
-    effort = f"model_reasoning_effort={meta.effort}"
-    if kind == "plan":
-        out = os.path.join(d, "astra-plan.md")
-        argv = ["exec", "--json", "-m", meta.model, "-c", effort, "-s", "read-only", "-C", meta.worktree]
-        brief = read(os.path.join(d, "plan-brief.md"))
+    out = os.path.join(d, "astra-plan.md" if kind == "plan" else "critique.md")
+    brief = read(os.path.join(d, "plan-brief.md" if kind == "plan" else "critique-brief.md"))
+    claude = is_claude(meta.model)
+    if claude:
+        tool = "claude"
+        argv = ["-p", "--model", meta.model, "--effort", meta.effort, "--output-format", "json", "--tools", CLAUDE_TOOLS]
+        if kind == "critique":
+            argv += ["--resume", read(os.path.join(d, "thread")).strip()]
     else:
-        out = os.path.join(d, "critique.md")
-        tid = read(os.path.join(d, "thread")).strip()
-        # resume takes no -s and no -C: the sandbox is set by config and the directory by cwd.
-        argv = ["exec", "resume", tid, "--json", "-m", meta.model, "-c", effort, "-c", 'sandbox_mode="read-only"']
-        brief = read(os.path.join(d, "critique-brief.md"))
-    # No timeout: run_tool would start codex in a session of its own, out of reach of the
-    # `bg-run.sh stop` that bounds an overdue planner. Unbounded, codex stays in the run's group.
-    done = proc.run_tool("codex", [*argv, "-o", out, "-"], cwd=meta.worktree, stdin=brief.encode("utf-8"))
+        tool = "codex"
+        effort = f"model_reasoning_effort={meta.effort}"
+        if kind == "plan":
+            argv = ["exec", "--json", "-m", meta.model, "-c", effort, "-s", "read-only", "-C", meta.worktree, "-o", out, "-"]
+        else:
+            tid = read(os.path.join(d, "thread")).strip()
+            # resume takes no -s and no -C: the sandbox is set by config and the directory by cwd.
+            argv = ["exec", "resume", tid, "--json", "-m", meta.model, "-c", effort, "-c", 'sandbox_mode="read-only"', "-o", out, "-"]
+    # No timeout: run_tool would start the planner in a session of its own, out of reach of the
+    # `bg-run.sh stop` that bounds an overdue planner. Unbounded, it stays in the run's group.
+    done = proc.run_tool(tool, argv, cwd=meta.worktree, stdin=brief.encode("utf-8"))
     write(os.path.join(d, f"{kind}.jsonl"), done.stdout)
     sys.stderr.write(done.stderr)
+    if claude:
+        text, tid, failed = claude_result(done.stdout)
+        if text and not failed and done.rc == 0:
+            write(out, text)
+    else:
+        tid, failed = thread_id(done.stdout), False
     if kind == "plan":
-        tid = thread_id(done.stdout)
         if tid:
             write(os.path.join(d, "thread"), tid + "\n")
         else:
-            cli.note(PROG, "no thread.started event: a critique cannot resume this session")
+            cli.note(PROG, f"no session id from {tool}: a critique cannot resume this session")
     if done.rc != 0:
-        cli.note(PROG, f"codex exited {done.rc}")
+        cli.note(PROG, f"{tool} exited {done.rc}")
         return done.rc
+    if failed:
+        raise cli.Exit(1, f"{tool} exited 0 with an error result: {last_line(done.stdout)}")
     if not nonempty(out):
-        raise cli.Exit(1, f"codex exited 0 and wrote nothing to {out}")
+        raise cli.Exit(1, f"{tool} exited 0 and wrote nothing to {out}")
     return 0
 
 
@@ -472,6 +515,6 @@ def run(argv: list[str]) -> int:
         case "clean":
             return clean(rest)
         case "_run" if len(rest) == 2 and rest[0] in ("plan", "critique"):
-            return run_codex(os.path.abspath(rest[1]), rest[0])
+            return run_planner(os.path.abspath(rest[1]), rest[0])
         case _:
             raise usage(f"unknown verb {verb}")
