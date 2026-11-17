@@ -42,7 +42,10 @@ brief:
   is never parked for a whole window, and it does not wait inside a measurement's hold, where it
   would wait for its own measurement. A bare ``--wait-window`` waits to the window's own deadline
   where its record holds one (ludics-lite#737, ``window_cutoff``), an hour where it does not; an
-  explicit ``--wait-window=<seconds>`` waits exactly that.
+  explicit ``--wait-window=<seconds>`` waits exactly that. A pending window's first hold opening
+  updates its initial launch/drain bound; later windows never extend the wait (ludics#1193).
+  A final opening check is bounded to 15s plus at most 5s of output drainage, and cannot admit
+  a late free-box answer; each successful check consumes an original pending record.
 - THE WAITERS (ludics-lite#719): a batch waiting out a measurement reads the registry with
   ``wait``, which records on the anchor that it waits for this box (registry.py's THE WAITERS), so a
   new window keeps its gap only while someone waits; and a batch waiting here, for a window or for a
@@ -289,7 +292,7 @@ from ludics.fleetworker import cotenants, graces, group, holders
 # HOLDER_READ is re-exported for the tests; ``read_holder`` is called by its name here, so a test
 # patching ``slot.read_holder`` reaches the drain.
 from ludics.fleetworker.slotrecord import HOLDER_READ as HOLDER_READ, Holder, read_holder, record_holder
-from ludics.fleetworker.execution import field, jq_text, listing, records_of, registry_source
+from ludics.fleetworker.execution import field, jq_text, listing, open_hold, records_of, registry_source
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import substitution
 
@@ -933,10 +936,12 @@ def take_slot(box: str, directory: str, cap: int, tokens: int, cpu: bool, wait: 
 
 
 def hold(box: str, inhibitor: Guard | None, why: str, hold_lock: str, marker: str, cap: int,
-         command: Sequence[str], deadline: int | None, repeat: float = HOLDER_REPEAT) -> NoReturn:
+         command: Sequence[str], deadline: int | None, repeat: float = HOLDER_REPEAT,
+         opened: Callable[[], None] | None = None) -> NoReturn:
     """``execution hold``: with a measurement (``hold_lock``), THE DRAIN and the marker's shared lock
     first, then the command under the guard, THE CO-TENANTS recorded before and after it."""
     recorder: Recorder | None = None
+    nested = False
     taken: list[tuple[int, float]] = []  # THE HOLDER RECORD: each slot drained, and when
 
     def counting() -> None:
@@ -987,6 +992,8 @@ def hold(box: str, inhibitor: Guard | None, why: str, hold_lock: str, marker: st
         # THE CO-TENANTS: every hold records its own pair, a nested one too, since nothing bounds
         # its life by its enclosing hold's (a backgrounded nested hold outlives it).
         recorder = Recorder(box, request, directory, os.getpgrp() if nested else None)
+    if opened is not None and not nested:
+        opened()
     run_command(HOLD_PREFIX, box, command, inhibitor, why, deadline, recorder=recorder, on_start=counting)
 
 
@@ -1053,6 +1060,7 @@ SLOT_USAGE = (
     " | execution slot --probe"
     " | execution slot --holders"
 )
+WINDOW_OPEN_CHECK = 15  # final pending-window read; proc.run_tool adds at most 5s of pipe drainage
 WINDOW_WAIT = 3600  # a bare --wait-window's bound behind a measurement that records no deadline
 BY_DEADLINE: Literal["deadline"] = "deadline"  # a bare --wait-window: the window's own deadline (#737)
 type WindowBound = int | Literal["deadline"]  # --wait-window=<seconds>, or bare
@@ -1217,8 +1225,8 @@ def unreachable_lines(anchor: str, voice: Voice = SLOT_VOICE) -> tuple[str, ...]
 
 
 def read_registry(cfg: Config, box: str, voice: Voice = SLOT_VOICE,
-                  waiter: dict[str, Any] | None = None) -> list[dict[str, Any]] | Unread:
-    done = listing(cfg, waiter)
+                  waiter: dict[str, Any] | None = None, *, timeout: float | None = None) -> list[dict[str, Any]] | Unread:
+    done = listing(cfg, waiter) if timeout is None else listing(cfg, waiter, timeout=timeout)
     if done.unreachable:
         # Refused at once, never retried here: later in a box's uptime an anchor that does not
         # answer is the answer. The first minute after a wake is the exception (ludics-lite#617):
@@ -1286,7 +1294,8 @@ def window_cutoff(holding: list[dict[str, Any]]) -> tuple[int, str]:
     seconds from then: the latest of each measurement's time left to its deadline as the listing
     that found the box held gave it (``deadline_left``, by the anchor's clock), or ``WINDOW_WAIT``
     for one that gives none; and what the lines say it is. A deadline already past
-    gives up at once. Windows that open later do not move it: a waiter's bound runs across
+    gives up at once. A pending window follows its first hold opening in await_measurements.
+    Windows that open later do not move it: a waiter's bound runs across
     back-to-back windows, and the gap is where it gets out. The boundary: the time left is counted
     from when that listing reached this process, so the cutoff falls after the recorded deadline by
     the read's return latency (seconds over ssh). That errs only toward waiting longer for the
@@ -1461,9 +1470,31 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     else:
         shown, said = bound, "--wait-window"
     deadline = start + shown
+    # Each original blocker keeps its own clock: opening one must not restart another's hour,
+    # or import a later window from a subsequent read.
+    cutoffs = {jq_text(r.get("request_id")): (start + left, reason)
+               for r in first for left, reason in [window_cutoff([r])]} if bound == BY_DEADLINE else {}
+    pending = {jq_text(r.get("request_id")) for r in first
+               if "deadline" in r and "hold_opened_at" in r and r["hold_opened_at"] is None
+               } if bound == BY_DEADLINE else set[str]()
     progress = start + WINDOW_PROGRESS
     named: set[str] = set()
     unread: Unread | None = None
+
+    def refresh_openings(holding: list[dict[str, Any]]) -> bool:
+        changed = [r for r in holding if jq_text(r.get("request_id")) in pending and r.get("hold_opened_at") is not None]
+        if not changed:
+            return False
+        nonlocal deadline, shown, said
+        now = time.monotonic()
+        for record in changed:
+            left, reason = window_cutoff([record])
+            cutoffs[jq_text(record.get("request_id"))] = (now + left, reason)
+        deadline, said = max(cutoffs.values(), key=lambda cutoff: cutoff[0])
+        shown = max(0, math.ceil(deadline - start))
+        pending.difference_update(jq_text(r.get("request_id")) for r in changed)
+        return True
+
     while True:
         holding = holding_in(records)
         if isinstance(holding, Ended):
@@ -1475,6 +1506,8 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                 errline(f"{voice.prefix} {box}: no measurement holds {box} after {int(time.monotonic() - start)}s;"
                         f" {voice.proceed}")
             return records
+        if pending:
+            refresh_openings(holding)
         for record in holding:
             identity = jq_text(record.get("request_id"))
             if identity not in named:
@@ -1485,6 +1518,18 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
         now = time.monotonic()
         ids = ", ".join(jq_text(r.get("request_id")) for r in holding)
         if now >= deadline:
+            if pending:
+                # A hold may have opened during the last sleep. Only an original opening can
+                # renew the cutoff; a late free-box/Ended answer is never an admission.
+                final = read_registry(cfg, box, voice, waiter, timeout=WINDOW_OPEN_CHECK)
+                if isinstance(final, Unread):
+                    unread = final
+                else:
+                    final_holding = holding_in(final)
+                    if (not isinstance(final_holding, Ended) and refresh_openings(final_holding)
+                            and time.monotonic() < deadline):
+                        records, unread = final, None
+                        continue
             if unread is not None:
                 for line in unread.lines:
                     cli.say(line)
@@ -1499,15 +1544,20 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
         if not beat:
             time.sleep(min(poll, deadline - now))
             if time.monotonic() >= deadline:
-                # The bound is the bound: no read after it, which over a remote anchor could run past
-                # it by the transport's timeout and then admit the batch late.
+                # Ordinary polling stops here. A still-pending original window gets the bounded
+                # opening check above, which cannot admit a merely late free-box answer.
                 continue
         beat = False
         read = read_registry(cfg, box, voice, waiter)
         if time.monotonic() >= deadline:
-            # Nor a read that came back past it: a slow transport must not admit the batch late
-            # either (ludics-lite#683 review). Such a read decides which refusal is said -- its
-            # own failure, or the measurement's -- and never whether the batch runs.
+            # A late read can hand off an original pending window to its actual opening; every
+            # other late response keeps the old refusal (ludics-lite#683), even a free-box answer.
+            if pending and not isinstance(read, Unread):
+                late_holding = holding_in(read)
+                if (not isinstance(late_holding, Ended) and refresh_openings(late_holding)
+                        and time.monotonic() < deadline):
+                    records, unread = read, None
+                    continue
             unread = read if isinstance(read, Unread) else None
             continue
         if isinstance(read, Unread):
@@ -1729,6 +1779,7 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
                                     deadline, command, no_config=no_config)
     box = cfg.local_box or short_hostname()
     hold_lock, marker, cap = "", "", 0
+    opened: Callable[[], None] | None = None
     if request:
         # The marker names the box the slot reads it on, so it needs the name the slot has.
         if not cfg.local_box:
@@ -1741,6 +1792,13 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
             cli.say(f"{HOLD_PREFIX} REFUSED {box}: {shlex.quote(request)} is a correctness request;"
                     " run it as: execution slot --wait-window --cpu -- <command>; no hold taken")
             return 1
+        if not isinstance(records, Unread) and any(
+                r.get("request_id") == request and r.get("window") is True and "deadline" in r for r in records):
+            def publish_opening() -> None:
+                done = open_hold(cfg, request, box)
+                if done.rc != 0:
+                    raise cli.Exit(1, f"{HOLD_PREFIX} REFUSED {box}: cannot publish window opening; nothing started")
+            opened = publish_opening
         directory = os.path.join(cfg.path(cfg.slot_state), box)
         try:
             os.makedirs(directory, exist_ok=True)
@@ -1760,4 +1818,4 @@ def cmd_hold(cfg: Config, args: list[str]) -> int:
     except ValueError:
         repeat = HOLDER_REPEAT
     repeat = max(repeat, 0.1) if math.isfinite(repeat) else HOLDER_REPEAT
-    hold(box, inhibitor_path(cfg), why, hold_lock, marker, cap, command, deadline, repeat)
+    hold(box, inhibitor_path(cfg), why, hold_lock, marker, cap, command, deadline, repeat, opened=opened)

@@ -5283,11 +5283,19 @@ expect "...and the slot it never took is still free" 0 "slot 1 of 1" -- "${FWS[@
 h0=$!
 held "$TMP/slot-h0.log" "slot 1 of 1 held" &&
   expect "a second batch is refused while the box's only run-time slot is held" 1 "all 1 run-time correctness slots busy after 0s" -- "${FWS[@]}" execution slot --wait 0 -- echo second
+# #1176: an ordinary sibling announces its slot wait before release, then is admitted once.
+"${FWS[@]}" execution slot --wait 15 -- echo waiting-sibling > "$TMP/slot-waiting.log" 2>&1 &
+waiting_sibling=$!
+held "$TMP/slot-waiting.log" "waiting up to 15s for an execution slot" &&
+  ok "a sibling logs its slot wait before the holder releases" || ko "the sibling never announced its slot wait"
 # The lock is the kernel's, held on an open descriptor the batch inherits, so there is no lock file
 # to strand: killing the batch's wrapper outright -- what a cancelled or stuck suite gets -- frees
 # the slot, once its guardian has killed the batch's process group (ludics-lite#566), so the next
 # batch may wait a moment for it.
 kill -9 "$h0" 2>/dev/null; wait "$h0" 2>/dev/null
+wait "$waiting_sibling"; waiting_rc=$?
+[ "$waiting_rc" -eq 0 ] && [ "$(grep -c 'slot 1 of 1 held for: echo waiting-sibling' "$TMP/slot-waiting.log")" -eq 1 ] &&
+  ok "the waiting sibling receives exactly one admission after release" || ko "the waiting sibling was not admitted exactly once"
 expect "a killed batch frees its slot (the kernel holds the lock, not a file)" 0 "slot 1 of 1" -- "${FWS[@]}" execution slot --wait 5 -- echo after-kill
 "${FWS2[@]}" execution slot -- sleep 30 > "$TMP/slot-h1.log" 2>&1 &
 h1=$!
@@ -6039,6 +6047,7 @@ bgkill "$bgd"
 # concluded (`execution window --deadline <seconds>`), and a bare --wait-window waits to that, past
 # the hour or short of it; 3600 s is only the bound behind a measurement that records none.
 setup_step "could not open the window (setup)" "${FWS[@]}" execution window --no-gap --deadline 7200 testbox "$(slotreq dl-long measurement)"
+setup_step "could not publish the drained hold opening (setup)" "${FWS[@]}" execution hold --request dl-long -- true
 expect "a bare --wait-window batch returns its run directory at once behind a window due in two hours" 0 "^$TMP/slot-dl/run-1$" -- \
   env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --bg "$TMP/slot-dl" --wait-window --wait 0 -- echo after-the-long-window
 dbd="$TMP/slot-dl/run-1"
@@ -6052,6 +6061,7 @@ if held "$dbd/log" "waiting up to 7[12][0-9][0-9]s (--wait-window, to measuremen
 else ko "the bare --wait-window batch never said it waits to the deadline: $(cat "$dbd/log" 2>/dev/null)"; fixture_done dl-long; fi
 bgkill "$dbd"
 setup_step "could not open the window (setup)" "${FWS[@]}" execution window --no-gap --deadline 2 testbox "$(slotreq dl-short measurement)"
+setup_step "could not publish the drained hold opening (setup)" "${FWS[@]}" execution hold --request dl-short -- true
 expect "a bare --wait-window batch behind a window still open at its deadline is refused at it, naming it" 1 \
   "^EXECUTION SLOT REFUSED testbox: measurement dl-short still holds testbox after [0-2]s (--wait-window, to measurement dl-short's deadline [^ ]*); no slot taken$" -- \
   env FLEET_SLOT_WINDOW_POLL=1 "${FWS[@]}" execution slot --wait-window -- echo past-the-deadline

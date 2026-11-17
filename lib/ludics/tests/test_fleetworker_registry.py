@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from unittest import mock
 
@@ -970,33 +970,113 @@ class Waiters(RegistryCase):
 
 
 class WindowDeadline(RegistryCase):
-    """THE WINDOW'S DEADLINE (ludics-lite#737): a window's payload may carry the seconds by which it will
-    be concluded; the record keeps them and the moment they end, fixed for its life."""
+    """A legacy stored deadline plus separate pending/opened hold timing for current waiters."""
 
     def window(self, identity: str = "w", extra: dict[str, object] | None = None) -> tuple[int, Any, str]:
         return self.call("window", {"box": "mac", "request": request(identity, kind="measurement"), **(extra or {})})
 
-    def test_the_window_records_its_deadline_from_its_opening(self) -> None:
+    def test_a_pending_window_records_its_provisional_deadline(self) -> None:
         before = datetime.now(timezone.utc)
         rc, out, _ = self.window(extra={"deadline": 7200})
         self.assertEqual((rc, out["deadline"]), (0, 7200))
-        due = datetime.fromisoformat(out["deadline_at"])
-        self.assertLessEqual(abs((due - before).total_seconds() - 7200), 5)
+        due = datetime.fromisoformat(out["hold_deadline_at"])
+        self.assertEqual(datetime.fromisoformat(out["deadline_at"]),
+                         datetime.fromisoformat(out["created_at"]) + timedelta(seconds=7200))
+        provisional = registry.WINDOW_START_WAIT + 7200
+        self.assertLessEqual(abs((due - before).total_seconds() - provisional), 5)
         self.assertNotIn("deadline", out["request"], "beside the request, never in it")
         rc, listed, _ = self.call("list", {"active": True, "compact": True})
-        self.assertEqual((rc, listed[0]["deadline_at"]), (0, out["deadline_at"]))
+        self.assertEqual((rc, listed[0]["deadline_at"]), (0, out["hold_deadline_at"]))
         # The listing gives the time left by the anchor's clock (round 1 of #771); the record keeps none.
-        self.assertTrue(7190 <= listed[0]["deadline_left"] <= 7200, listed[0]["deadline_left"])
+        self.assertTrue(provisional - 10 <= listed[0]["deadline_left"] <= provisional, listed[0]["deadline_left"])
         self.assertNotIn("deadline_left", out)
         with open(os.path.join(self.root, "executions", "w.json")) as f:
             self.assertNotIn("deadline_left", json.load(f))
         rc, waited, _ = self.call("wait", {"waiter": {"box": "mac", "id": "r-1", "command": "x", "ttl": 30}})
-        self.assertTrue(7190 <= waited[0]["deadline_left"] <= 7200)
+        self.assertTrue(provisional - 10 <= waited[0]["deadline_left"] <= provisional)
         # A window without one records neither field.
         self.assertEqual(self.call("conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null",
                                                 "evidence": "unit"})[0], 0)
         rc, out, _ = self.window("w2")
         self.assertEqual((rc, {"deadline", "deadline_at"} & set(out)), (0, set()))
+
+    def opening(self) -> tuple[int, Any, str]:
+        return self.call("hold-open", {"request_id": "w", "execution_host": "mac", "evidence": "drained"})
+
+    def test_a_hold_opens_its_budget_after_waiting_longer_than_that_budget(self) -> None:
+        _, assigned, _ = self.window(extra={"deadline": 60})
+        opened = datetime.fromisoformat(assigned["created_at"]) + timedelta(minutes=20)
+        with mock.patch.object(registry, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = opened
+            rc, held, err = self.opening()
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(datetime.fromisoformat(held["hold_deadline_at"]), opened + timedelta(seconds=60))
+            clock.now.return_value = opened + timedelta(seconds=30)
+            self.assertEqual(self.opening()[1]["hold_deadline_at"], held["hold_deadline_at"], "a retry cannot renew it")
+            self.assertEqual(self.call("list", {})[1][0]["deadline_left"], 30)
+            clock.now.return_value = opened + timedelta(seconds=61)
+            self.assertEqual(self.call("list", {})[1][0]["deadline_left"], 0, "a crashed hold stays bounded")
+
+    def test_a_waiter_is_not_refused_while_a_delayed_hold_is_within_budget(self) -> None:
+        from ludics.fleetworker import slot
+        from ludics.fleetworker.config import load_config
+
+        _, assigned, _ = self.window(extra={"deadline": 60})
+        opened = datetime.fromisoformat(assigned["created_at"]) + timedelta(minutes=20)
+        with mock.patch.object(registry, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = opened
+            self.opening()
+            clock.now.return_value = opened + timedelta(seconds=30)
+            first = self.call("list", {})[1]
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "mac"}, host="mac")
+        with mock.patch.object(slot, "read_registry", return_value=[]), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(slot.await_measurements(cfg, "mac", first, slot.BY_DEADLINE, ["true"]), [])
+
+    def test_opening_requires_the_windows_host_and_never_reopens_a_conclusion(self) -> None:
+        self.window(extra={"deadline": 60})
+        for host in (None, "other"):
+            payload = {"request_id": "w", "evidence": "drained"}
+            if host is not None:
+                payload["execution_host"] = host
+            self.assertEqual(self.call("hold-open", payload)[0], 1)
+        self.call("conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null", "evidence": "unit"})
+        self.assertEqual(self.opening()[0], 1)
+
+    def test_historical_windows_without_a_hold_opening_still_validate(self) -> None:
+        _, record, _ = self.window(extra={"deadline": 60})
+        del record["hold_opened_at"]
+        del record["hold_deadline_at"]
+        record["deadline_at"] = (datetime.fromisoformat(record["created_at"]) + timedelta(seconds=60)).isoformat()
+        with open(os.path.join(self.root, "executions", "w.json"), "w") as stream:
+            json.dump(record, stream)
+        self.assertEqual(self.call("list", {})[0], 0)
+        rc, again, _ = self.opening()
+        self.assertEqual((rc, again["deadline_at"]), (0, record["deadline_at"]))
+        self.assertNotIn("hold_opened_at", again, "upgrading cannot renew a historical window")
+
+    def test_legacy_deadline_stays_readable_pending_opened_and_concluded(self) -> None:
+        _, pending, _ = self.window(extra={"deadline": 60})
+        _, opened, _ = self.opening()
+        _, concluded, _ = self.call("conclude", {"request_id": "w", "verdict": "not-launched",
+                                                "log": "/dev/null", "evidence": "unit"})
+        for record in (pending, opened, concluded):
+            with self.subTest(state=record["state"], opened=record["hold_opened_at"]):
+                # The exact invariant checked by callers that ship the parent registry.
+                self.assertEqual(datetime.fromisoformat(record["deadline_at"]),
+                                 datetime.fromisoformat(record["created_at"]) + timedelta(seconds=record["deadline"]))
+
+    def test_hold_timing_fields_are_validated_as_one_pair(self) -> None:
+        _, good, _ = self.window(extra={"deadline": 60})
+        path = os.path.join(self.root, "executions", "w.json")
+        for key, value in (("hold_deadline_at", "soon"), ("hold_opened_at", "soon")):
+            for corrupt in ({**good, key: value}, {k: v for k, v in good.items() if k != key}):
+                with open(path, "w") as stream:
+                    json.dump(corrupt, stream)
+                self.assertEqual(self.call("list", {})[0], 1)
+        with open(path, "w") as stream:
+            json.dump(good, stream)
+        self.assertEqual(self.call("list", {})[0], 0)
 
     def test_a_retry_names_the_same_deadline_and_never_moves_it(self) -> None:
         _, first, _ = self.window(extra={"deadline": 600})

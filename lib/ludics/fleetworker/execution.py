@@ -111,7 +111,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, assert_never, cast
 
-from ludics import bgrun, cli
+from ludics import bgrun, cli, proc
 from ludics.fleetworker import cotenants, revision
 from ludics.fleetworker.config import Config, in_roster
 from ludics.fleetworker.farside import FLEET_PYTHON
@@ -127,6 +127,7 @@ from ludics.fleetworker.transport import (
     emit_var,
     err,
     fleet_name,
+    far_argv,
     is_local,
     prelude,
     run,
@@ -163,13 +164,15 @@ def registry_source() -> str:
     die(f"execution: missing helper {shown(REGISTRY)}")
 
 
-def listing(cfg: Config, waiter: dict[str, Any] | None = None, options: dict[str, bool] | None = None) -> Done:
+def listing(cfg: Config, waiter: dict[str, Any] | None = None, options: dict[str, bool] | None = None,
+            *, timeout: float | None = None) -> Done:
     """The anchor's whole registry as JSON (captured). ``list`` takes no lease and mutates nothing,
     so a worker with no coordinator identity may read it. With ``waiter`` ({box, id, command, ttl})
     it is ``wait`` instead, as lease-free: the same listing, after the registry records that this
     batch is waiting for the box (THE WAITERS in registry.py's header, ludics-lite#719). With
     ``options`` (``list``'s ``active``/``compact`` flags) it is ``execution list``'s own read of them,
-    as ``status --json`` reads the registry (ludics#1165)."""
+    as ``status --json`` reads the registry (ludics#1165). ``timeout`` bounds the final pending-window
+    check with the owned process-group runner; ordinary listings retain their transport path."""
     if waiter is not None:
         payload = json.dumps({"waiter": waiter}, separators=(",", ":"))
     else:
@@ -179,6 +182,22 @@ def listing(cfg: Config, waiter: dict[str, Any] | None = None, options: dict[str
     # A waiter's box is a roster entry (the slot's own box, a leg's record's execution host), so
     # the registry checks it against the roster with no endpoint map.
     args = ["EXECUTION", "x", "x", action, "x", "x", PAYLOAD_ON_FD, cfg.boxes, cfg.slots]
+    if timeout is not None:
+        # The final pending-window check has a hard bound, including an unresponsive local anchor.
+        # run_tool already owns timeout cleanup for the whole process group and its output pipes.
+        argv = far_argv(cfg, cfg.anchor, args)
+        done = proc.run_tool(argv[0], argv[1:], stdin=script.encode("utf-8", "surrogateescape"), timeout=timeout)
+        sys.stderr.write(done.stderr)
+        return Done(done.rc, done.stdout)
+    return run_on(cfg, cfg.anchor, script, args, capture=True)
+
+
+def open_hold(cfg: Config, request: str, box: str) -> Done:
+    """Publish a drained window's opening on the anchor, without borrowing a coordinator lease."""
+    payload = json.dumps({"request_id": request, "execution_host": box,
+                          "evidence": "measurement hold drained; opening its budget"})
+    script = prelude(cfg, cfg.anchor) + "shift 3\n" + registry_command(registry_source(), payload)
+    args = ["EXECUTION", "x", "x", "hold-open", "holder", "x", PAYLOAD_ON_FD, cfg.boxes, cfg.slots]
     return run_on(cfg, cfg.anchor, script, args, capture=True)
 
 
@@ -1729,7 +1748,7 @@ def window_gap(cfg: Config, args: list[str]) -> tuple[list[str], int]:
 def window_deadline(args: list[str]) -> tuple[list[str], int | None]:
     """THE WINDOW'S DEADLINE (ludics-lite#737, the registry's header): the window's words without
     ``--deadline <seconds>``, which may only come right after ``window`` (and its ``--no-gap``), and
-    the seconds from the window's opening by which its coordinator will have concluded it, or None."""
+    the seconds from the drained hold's opening by which its coordinator will have concluded it, or None."""
     if len(args) > 1 and args[1] == "--deadline":
         if len(args) < 3 or not re.fullmatch(r"[0-9]+", args[2]) or int(args[2]) < 1:
             die("execution window: --deadline takes a positive whole number of seconds")
