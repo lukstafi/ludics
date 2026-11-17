@@ -721,3 +721,5 @@ JSON fields. Wave selection reads closing references through paginated GraphQL p
 requiring a stable count, unique issue identities and a terminal page before selecting any rows.
 Worker-branch matches and unfiltered reads need no closing-reference query. The existing open
 population cap still makes the result incomplete; no gh upgrade or prose parsing is required.
+Selection consumes the enriched pages directly, and a closing-read refusal names its PR and
+keeps the helper error, separately from an open-list parse failure (PR #1195 review checkpoint).

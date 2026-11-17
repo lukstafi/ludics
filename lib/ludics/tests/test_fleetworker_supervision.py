@@ -13,6 +13,7 @@ from unittest import mock
 from ludics.fleetworker import supervision
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import Done
+from ludics.prreview.core import Json
 from ludics.tests import fake
 from ludics.tests.fake import Answer, When
 
@@ -148,6 +149,27 @@ class ClosingReferences(unittest.TestCase):
         self.assertIn("--paginate", calls[-1])
         self.assertIn("number=7", calls[-1])
         self.assertNotIn("closingIssuesReferences", calls[0][-1])
+
+    def test_selection_uses_enriched_pages_even_if_sort_copies_rows(self) -> None:
+        self.route([self.page([42])])
+        original = supervision.sorted_prs
+
+        def copying_sort(doc: Json) -> list[Json]:
+            return original(json.loads(json.dumps(doc)))
+
+        with mock.patch.object(supervision, "sorted_prs", side_effect=copying_sort):
+            rc, rows, out = self.selection()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([r.number for r in rows or []], ["7"])
+
+    def test_refused_closing_read_names_the_pr_and_helper_exit(self) -> None:
+        self.route([], rc=2)
+        rc, rows, out = self.selection()
+        self.assertEqual(rc, 1, out)
+        self.assertIsNone(rows)
+        self.assertIn("closing references of o/r#7", out)
+        self.assertIn("pr-review.sh exit 2", out)
+        self.assertNotIn("did not parse", out)
 
     def test_graphql_pagination_finds_a_reference_on_the_second_page(self) -> None:
         self.route([self.page([41], True, 2), self.page([42], total=2)])

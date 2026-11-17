@@ -668,14 +668,18 @@ def open_prs(cfg: Config, label: str, repo: str, wave: str, helper: str, limit: 
                     if not isinstance(pr, dict):
                         raise JqError("a PR is not an object")
                     if not on_worker_branch(pr, workers):
-                        pr["closingIssuesReferences"] = closing_read(helper, repo, idx(pr, "number"))
+                        number = idx(pr, "number")
+                        try:
+                            pr["closingIssuesReferences"] = closing_read(helper, repo, number)
+                        except (ConnectionError, JqError) as exc:
+                            status = 4 if isinstance(exc, ConnectionError) else 1
+                            state = "UNREACHABLE" if status == 4 else "REFUSED"
+                            cli.say(f"{label} {state}: the closing references of {repo}#{jstr(number)}: {exc}")
+                            return status, None
         unkept = issues is not None and any(not (closes_one_of(pr, issues) or on_worker_branch(pr, workers))
                                             for page in pages for pr in page)
-    except ConnectionError:
-        cli.say(f"{label} UNREACHABLE: the closing references of {repo}'s open PRs did not answer")
-        return 4, None
     except JqError:
-        cli.say(f"{label} REFUSED: the open-PR list of {repo} did not parse (including closing references)")
+        cli.say(f"{label} REFUSED: the open-PR list of {repo} did not parse")
         return 1, None
     referencing: set[int] = set()
     for issue in (issues or []) if unkept else []:
@@ -689,7 +693,8 @@ def open_prs(cfg: Config, label: str, repo: str, wave: str, helper: str, limit: 
             elif worst != 1:
                 worst = 4
     try:
-        rows = [row for doc in docs for row in pr_rows(doc, issues, frozenset(referencing), workers)]
+        # Select from the enriched pages, without relying on sorted_prs aliasing docs' rows.
+        rows = [row for page in pages for row in pr_rows(page, issues, frozenset(referencing), workers)]
     except JqError:
         cli.say(f"{label} REFUSED: the open-PR list of {repo} did not parse")
         return 1, None
