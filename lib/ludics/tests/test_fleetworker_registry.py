@@ -1048,6 +1048,9 @@ class WindowDeadline(RegistryCase):
         with open(os.path.join(self.root, "executions", "w.json"), "w") as stream:
             json.dump(record, stream)
         self.assertEqual(self.call("list", {})[0], 0)
+        rc, again, _ = self.opening()
+        self.assertEqual((rc, again["deadline_at"]), (0, record["deadline_at"]))
+        self.assertNotIn("hold_opened_at", again, "upgrading cannot renew a historical window")
 
     def test_a_retry_names_the_same_deadline_and_never_moves_it(self) -> None:
         _, first, _ = self.window(extra={"deadline": 600})

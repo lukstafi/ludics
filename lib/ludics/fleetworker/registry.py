@@ -1459,7 +1459,7 @@ def main(argv: list[str]) -> None:
             if (set(data) != {"request_id", "evidence"} or record.get("window") is not True
                     or "deadline" not in record or record["state"] not in {"launching", "running", "uncertain"}):
                 refuse("hold-open requires a dispatched window with a deadline and its execution_host")
-            if record.get("hold_opened_at") is not None:
+            if "hold_opened_at" not in record or record["hold_opened_at"] is not None:
                 print(json.dumps(record, indent=2))
                 return
             record["hold_opened_at"] = now
