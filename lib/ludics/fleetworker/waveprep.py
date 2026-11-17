@@ -71,7 +71,7 @@ it: a kind with no shipped directory (``cli-claude``) takes its own parts from t
 
 THE PARTS, where each other part is found (ludics#1072): the wave directory's part wins; for the
 two ``PLANNING`` parts (``planning-paired.md``, ``planning-paired+critique.md``) the shipped one of
-the worker's kind stands in when the wave directory has none (``native-claude`` ships them); any
+the worker's kind stands in when the wave directory has none (``native-claude`` and ``cli-codex`` ship them); any
 other part is the wave directory's or refuses. The shipped parts are the reference brief, where
 a worker's rules live (issue-wave SKILL.md's *The brief* says what a task part adds to them), and
 are read by check-prompts (checkprompts/brieftemplate.py). They hold no project fact: the NAMEs they use are the built-ins

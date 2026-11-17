@@ -43,8 +43,10 @@ A wave copies no brief text forward. The repository ships the reference template
   the merge;
 - `native-claude/`, `native-codex/` and `cli-codex/`: what differs by the worker's kind. That is
   who it is, how it runs tests, how it holds a long run, and how it keeps its context lean;
-- `native-claude/planning-paired.md` and `planning-paired+critique.md`, the paired-planning
-  additions.
+- `planning-paired.md` and `planning-paired+critique.md` in `native-claude/` and `cli-codex/`, the
+  paired-planning additions. The two kinds carry the same text: a CLI worker ends its turn on
+  `PLAN_READY` and is resumed with the peer plan by `unstick`
+  ([paired-planning.md](paired-planning.md)).
 
 `wave prep` puts the common sections in a fixed order and takes each from the wave directory's
 `common/<part>` when it has one, else from the worker's own kind, else from `shared/`
@@ -121,7 +123,7 @@ runs another kind of worker names each kind as a profile, and each other box a C
 as a host:
 
 ```json
-"profiles": {"sol": {"transport": "cli", "kind": "codex", "model": "gpt-6.1-sol", "effort": "medium"}},
+"profiles": {"sol": {"transport": "cli", "kind": "codex", "model": "gpt-6.2-sol", "effort": "high"}},
 "hosts": {"rog-nv-linux": {"checkout": "/home/lukstafi/ocannl-staging", "scratch": "/home/lukstafi/wave-scratch"}}
 ```
 

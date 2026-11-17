@@ -392,14 +392,19 @@ launch either provider as CLI workers; cross-provider delegation is the CLI rout
 tools expose the coordinator's own provider and not a provider switch. **Preserve the user's
 explicit provider, model and transport choices** - this is the one statement of that rule, and
 every reference defers to it. **Where the user left them open, a Claude Code coordinator runs a
-mixed wave** (the maintainer's default of 2026-11-13, a cost split, to be revisited when the
-budget changes): a D1 or plain D2 issue goes to a Codex CLI worker on its home box (Sol, *Codex
-model choice*), a D3 or D2/D3-border issue to a native Claude Opus worker with its paired
-planning, and the wave file names a Claude Opus reviewer, so every PR of the wave gets the review
-checkpoint and the handoff driver answers the CLI workers' routine turns
-([coordinator-kit.md](references/coordinator-kit.md#a-mixed-wave)). That spends the Claude
-subscription on design and review and leaves the volume of implementation to Codex. Name each
-task's profile in the wave summary. Any other coordinator prefers native workers for a
+mixed wave that A/B tests Sol against Opus** (the maintainer's default of 2026-11-17, replacing
+the 2026-11-13 split by difficulty). Every issue, of every tier, goes to one arm by its issue
+number: odd to a Codex CLI worker on its home box (Sol, *Codex model choice*), even to a native
+Claude Opus worker. A post-wave task takes its source issue's arm. Never pick the arm for fit:
+that judgment is the selection bias the test exists to remove. A task its arm cannot serve (no
+box whose codex serves the model, a capability the transport lacks) is reported, and it changes
+arm only on the user's word, marked in the wave summary as a reassignment. Planning mode follows
+the tier, not the arm (*Planning mode, per issue*), so a Sol D3 gets `paired+critique` like an
+Opus one. The wave file names a Claude Opus reviewer, so every PR of the wave gets the review
+checkpoint, and the handoff driver answers the CLI workers' routine turns
+([coordinator-kit.md](references/coordinator-kit.md#a-mixed-wave)). Name each task's tier and
+arm (its profile) in the wave summary, and give `wave prep` the tier, since the comparison groups
+by both. Any other coordinator prefers native workers for a
 same-provider wave and recommends CLI when cross-provider work or host-resident iteration calls
 for it. **Never substitute a transport to get past a missing capability or a permission gate**:
 report the gate instead. Codex model tiers are in *Codex model choice* at the end of this
@@ -651,36 +656,39 @@ transport when a task reaches those paths.
 
 ### Codex model choice
 
-Unless the user specifies otherwise, use Sol / medium (`gpt-6.1-sol`) for bounded
-implementation and documentation work, including tightly scoped D2s; consider Sol / high for
-broader but bounded workflow and portability work. Prefer Astra / medium (`gpt-6-astra`) for
-coordination and escalations, semantic analysis, cross-platform lifecycle behavior, changes to
-verification logic, and interacting states, clocks, identities or partial observations. Astra /
-low ("Light") fits prescribed execution and genuinely narrow fixes; hardware timeouts and loader
-failures alone do not justify more reasoning effort. Keep D1/D2/D3 as implementation-difficulty
-labels, and assess semantic coupling, verification risk (low: local deterministic acceptance;
-medium: timing-sensitive claims or extensive negative controls; high: platform semantics, GPU
-searches or expanding language-feature combinations), and delivery overhead (shared files,
-dependencies, slow CI or likely repeated reviews) separately. D1/D2 alone should not select the
-model, and high verification risk calls for a concrete verification plan, not automatically a
-stronger model. If the first substantial review exposes interacting semantics or expanding
-scope, reassess toward D3 and Astra / medium, clarifying contract boundaries before another
-incremental fix cycle. Sol workers still own implementation through `ship-pr` and merge, with
-explicit briefs, test evidence, CI gates and coordinator escalation. These defaults reflect
-qualitative observations from the OCANNL-staging and ludics-lite waves, not a controlled cost or
-speed comparison; evaluate future assignments by review rounds, coordinator interventions and
-time to merge, separating queueing, CI and dependency waits from active work where possible.
-The board row holds what that comparison groups by: `tier=` (prep's `--tier`, or a queue
+Unless the user specifies otherwise, a Codex worker runs Sol at high reasoning effort
+(`gpt-6.2-sol`, high) whatever the tier, and the paired planner runs Astra at high
+(`gpt-6.2-astra`, high: `peer-plan.sh`'s defaults). Astra plans; it is not a worker model by
+default. Keep D1/D2/D3 as implementation-difficulty labels. Assess semantic coupling,
+verification risk (low: local deterministic acceptance; medium: timing-sensitive claims or
+extensive negative controls; high: platform semantics, GPU searches or expanding language-feature
+combinations) and delivery overhead (shared files, dependencies, slow CI or likely repeated
+reviews) separately. They shape the brief, the verification plan and the planning mode, not the
+model, and high verification risk calls for a concrete verification plan. If the first
+substantial review exposes interacting semantics or expanding scope, reassess toward D3 and
+clarify contract boundaries before another incremental fix cycle. The worker keeps its model:
+switching mid-task would leave neither arm's reading of the task. Sol workers own implementation
+through `ship-pr` and merge, with explicit briefs, test evidence, CI gates and coordinator
+escalation.
+
+The A/B (*Launch*) is how these defaults are judged. Compare the arms within a tier by review
+rounds (the checkpoint's verdicts and the reviewer's findings), coordinator interventions and
+launch-to-merge time, separating queueing, CI and dependency waits from active work where
+possible. The 2026-11-13 split rested on qualitative observations. A retrospective of past waves
+could not separate the model from its wave, project, box and era; assigning both arms within the
+same waves does. The board row holds what that comparison groups by: `tier=` (prep's `--tier`, or a queue
 entry's `tier`), `model=` (a profile's model and effort; a native row's from its launch) and
 `launched_at` (stamped by the board on the row's first `state=launched`), beside `pr`, `review`,
 `confirm` and `merge`. Give every task its tier at prep, so no comparison has to recover it from
 the task part's prose.
 
-The IDs are the ones `~/.codex/models_cache.json` lists on the worker's box (2026-11-07:
-`gpt-6.1-sol`, and `gpt-6-astra` with no 6.1 Astra); read them there rather than from this
-paragraph when they may have moved. Name the effort as well as the model: the config default
-differs by box (`medium` on mac-studio, `high` on macbook-pro on 2026-11-07), so a CLI worker
-meant to run at medium gets `-- -m <model> -c model_reasoning_effort=medium`. Neither model
+The IDs are the ones `~/.codex/models_cache.json` lists on the worker's box (2026-11-17 on
+mac-studio: `gpt-6.2-sol` and `gpt-6.2-astra`); read them there rather than from this paragraph
+when they may have moved. A box whose codex predates them is refused at `preflight`, since its
+Codex probe runs with the worker's args: update that box's codex rather than falling back to an
+older model. Name the effort as well as the model, because the config default differs by box. A
+CLI worker gets `-- -m gpt-6.2-sol -c model_reasoning_effort=high`, and a wave file's profile
+names both (`"model": "gpt-6.2-sol", "effort": "high"`). Neither model
 names its own ID reliably when asked, so the record is the check: `launch` prints the `model=`
 and `effort=` its args resolve to, and the worker's `meta` keeps them (ludics#539).
 

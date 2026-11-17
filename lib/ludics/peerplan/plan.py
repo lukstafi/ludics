@@ -50,8 +50,8 @@ PROG = "peer-plan.sh"
 ROOT = Path(__file__).resolve().parents[3]
 PY = ROOT / "scripts" / "py"
 BG_RUN = ROOT / "issue-wave" / "scripts" / "bg-run.sh"
-DEFAULT_MODEL = "gpt-6-astra"
-DEFAULT_EFFORT = "medium"
+DEFAULT_MODEL = "gpt-6.2-astra"
+DEFAULT_EFFORT = "high"
 
 USAGE = f"""\
 usage: {PROG} start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref> [--model <m>] [--effort <e>] [--managed]

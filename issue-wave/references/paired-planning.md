@@ -42,7 +42,7 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    ```
 
    It reads the issue with `gh` (the planner's sandbox has no network) and adds a detached
-   worktree of the base under `<plan-dir>`. Then it starts Astra (`gpt-6-astra`, medium;
+   worktree of the base under `<plan-dir>`. Then it starts Astra (`gpt-6.2-astra`, high;
    `--model`/`--effort` to change them) there in the background, read-only, and prints a
    `bg-run.sh` run directory. A native Codex coordinator, whose local `spawn` runs die
    ([native-codex.md](native-codex.md#local-managed-command-sessions)), passes `--managed` to
