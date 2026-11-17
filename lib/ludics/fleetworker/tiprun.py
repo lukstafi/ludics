@@ -65,7 +65,8 @@ only to measurement. Its step 2, read off the same two registry reads, a fail-cl
     ``suspended`` one (a measurement window holds the box) refuses it as the window's;
   - the box's other outstanding records: a ``measurement`` refuses it (a window or not), and so
     does another loop run (``tip_run``) that is not yet ``running`` or runs in this ``--checkout``
-    (its ``remote_checkout``): two runs never share a checkout. Every other record -- a worker's leg,
+    (its ``remote_checkout``, compared as THE CHECKOUT compares, trailing separators dropped): two
+    runs never share a checkout. Every other record -- a worker's leg,
     an assigned suite, a loop run in another checkout -- is passed over;
   - before the reservation only, the anchor's live pending-window marks (registry.py, THE PENDING
     WINDOW): one naming this box refuses the run, so a window asked for while the loop ran opens
@@ -248,7 +249,7 @@ from typing import Any, cast
 from ludics import bgrun, cli, proc
 from ludics.fleetworker.config import Config, fetch_timeout_s
 from ludics.fleetworker import lease, revision
-from ludics.fleetworker.execution import field, gh_timeout, listing, pending_windows, record_of, records_of
+from ludics.fleetworker.execution import field, gh_timeout, listing, pending_windows, record_of, records_of, same_checkout
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.leg import BASE, FLOOR, PIN, min_free_gib
 from ludics.fleetworker.preflight import refresh_box
@@ -540,7 +541,8 @@ def reserved_refusal(records: list[dict[str, Any]], box: str, request_id: str, c
             if r.get("state") != "concluded" and field(r, "request", "execution_host") == box
             and r.get("request_id") != request_id
             and (field(r, "request", "kind") == "measurement"
-                 or (r.get("tip_run") is True and (r.get("state") != "running" or r.get("remote_checkout") == checkout)))]
+                 or (r.get("tip_run") is True and (r.get("state") != "running"
+                                                   or same_checkout(str(r.get("remote_checkout") or ""), checkout))))]
     if busy:
         return (f"{box} has {', '.join(busy)} outstanding; a reserved loop run yields to a measurement and to another"
                 f" loop run in {checkout} or still starting")

@@ -375,6 +375,8 @@ class ReservedRun(unittest.TestCase):
         starting = {**outstanding("w-hip-2", "launching", self.BOX), "tip_run": True}
         there = {**outstanding("w-hip-1", "running", self.BOX), "tip_run": True, "remote_checkout": "/hip"}
         self.assertEqual(self.go([reservation(), here])[0], 1)
+        slashed = {**here, "remote_checkout": "/co/"}
+        self.assertEqual(self.go([reservation(), slashed])[0], 1, "the same checkout spelled with a trailing separator")
         self.assertEqual(self.go([reservation(), starting])[0], 1)
         self.assertEqual(self.go([reservation(), there])[0], 0)
 

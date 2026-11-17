@@ -353,7 +353,8 @@ anchor's clock, replaced whole on each retry -- removes every mark already expir
 pending` line on stderr. Nothing else is written: no record, no suspension. The window's opening
 removes its own mark (after its record is published; a crash between them leaves a mark that
 expires). `pending-windows` is a lease-free reader, SHARED like `list`: a JSON array of the live
-marks, each with `expires_left` in whole seconds by this anchor's clock. Its one reader is a
+marks, each with `expires_left` in whole seconds by this anchor's clock, and a mark it cannot read
+(or a directory it cannot list) as `{"id", "unreadable": true}`, which a reader counts on every box. Its one reader is a
 reserved loop run's start (tiprun.py, THE RESERVED RUN), which yields to a live mark on its box; a
 running run is never touched by one. The boundary: a mark says a window was asked for and could not
 open, not that anyone will ask again; the retry is its coordinator's (`wave drive`'s RETRY, or by
@@ -1101,8 +1102,13 @@ def live_pending(directory: Path, now: datetime) -> list[Record]:
     is listed as a mark on no box, named by its file, so a reader can say so."""
     if absent(directory):
         return []
+    try:
+        names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
+    except OSError:
+        # Fail-closed, as fresh_waiters is: a directory it cannot list may hold live marks.
+        return [{"id": f"{directory} (unlistable)", "unreadable": True}]
     marks: list[Record] = []
-    for path in sorted(directory.glob("*.json")):
+    for path in (directory / name for name in names):
         try:
             data = as_object(json.loads(path.read_text()))
         except FileNotFoundError:

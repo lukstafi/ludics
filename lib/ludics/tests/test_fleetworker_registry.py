@@ -970,6 +970,11 @@ class PendingWindow(RegistryCase):
         with open(os.path.join(self.root, "pending-windows", "bad.json"), "w") as f:
             f.write("nonsense")
         self.assertIn({"id": "bad", "unreadable": True}, self.marks())
+        # A directory it cannot list is no empty one (the review's round 1): fail-closed, as the waiters are.
+        directory = os.path.join(self.root, "pending-windows")
+        with mock.patch.object(registry.os, "listdir", side_effect=PermissionError(13, "denied")):
+            self.assertEqual(registry.live_pending(registry.Path(directory), datetime.now(timezone.utc)),
+                             [{"id": f"{directory} (unlistable)", "unreadable": True}])
 
     def test_other_refusals_write_no_mark(self) -> None:
         # Behind another measurement: refused as before. Under a halt: the halt's refusal.
