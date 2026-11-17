@@ -1382,7 +1382,10 @@ class Review(WaveDirCase):
         prompt = self.read(self.stem() + ".prompt.md")
         for want in (f"o/staging#7, head `{self.base}`", "delegation wave wv", "The PR is for issue o/up#42",
                      "`gh issue view 42 --repo o/up --json number,title,body,comments`", f"show origin/main:<path>",
-                     f"### Review checkpoint (at-open): head {self.base[:8]}", "VERDICT: blocking (<n> blocking, <m> suggestions)"):
+                     f"### Review checkpoint (at-open): head {self.base[:8]}", "VERDICT: blocking (<n> blocking, <m> suggestions)",
+                     "which of the PR's predicted measured consequences has no measurement yet",
+                     "any such unmeasured consequence is **blocking**",
+                     'window and even if the PR says "Part of"'):
             self.assertIn(want, prompt)
         self.assertNotIn("confirm review", prompt)
         self.assertNotIn("@@", prompt)
@@ -1532,7 +1535,9 @@ class Review(WaveDirCase):
             self.assertIn("verdict=clean blocking=0 suggestions=0 decision=cleared", out)
             prompt = self.read(stem + ".prompt.md")
             for want in ("This is a confirm review, not a first review", f"at head `{self.base}`", f"`{self.stem()}.md`",
-                         f"diff {self.base} {fixed}", f"### Review checkpoint (confirm): head {fixed[:8]}"):
+                         f"diff {self.base} {fixed}", f"### Review checkpoint (confirm): head {fixed[:8]}",
+                         "any such unmeasured consequence is **blocking**",
+                         'window and even if the PR says "Part of"'):
                 self.assertIn(want, prompt)
             self.assertTrue(self.read(stem + ".message.md").startswith(f"MERGE CLEARED 7 {fixed}\nVERDICT: clean\n"))
             self.assertEqual(self.shim_calls[-1], ["fleet-worker.sh", "board", "set", "wv", "t42", f"confirm=clean@{fixed[:8]}"])
