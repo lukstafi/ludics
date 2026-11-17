@@ -182,8 +182,9 @@ A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its la
 non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha with
 --model <m>``, the planner ``peer_model`` names for the worker's model (peerplan/plan.py: Opus
 beside an Astra worker). The worker's model is the launch record's (what ``wave launch`` ran),
-else the ``model=`` its ``LAUNCHED`` line resolved from the box's config, else the profile's; with
-none, the line names both planners and says to read the worker's meta first. The
+else the ``model=`` its ``LAUNCHED`` line resolved from the box's config (read from both of the
+launch's streams: a structured launch prints it on stderr), else, with no record, the profile's;
+with none, the line names both planners and says to read the worker's meta first. The
 driver starts no planner; the coordinator starts it on that sha, since both plans must read one tree.
 THE REFRESH: ``wave prep`` runs from the agent host's served skills checkout, and the project part
 it renders is read at the fetched tip, so a checkout one merge behind can lack a built-in that part
@@ -504,14 +505,16 @@ def classify(message: str) -> Turn:
 LAUNCHED_MODEL = re.compile(r"^LAUNCHED \S+ .*?\bmodel=(\S+)", re.M)
 
 
-def worker_model(record: Record | None, launch_out: str, profile_model: str) -> str:
+def worker_model(record: Record | None, launch_text: str, profile_model: str) -> str:
     """A PAIRED LAUNCH's worker model (the header): the launch record's, which is what ``wave launch``
-    ran, else the ``model=`` the launch's ``LAUNCHED`` line resolved from the box's config, else the
-    profile's; "" when none names one."""
+    ran, else the ``model=`` the launch's ``LAUNCHED`` line resolved from the box's config (on stderr
+    under a structured launch, so ``launch_text`` is both streams), else, with no record, the
+    profile's; "" when none names one. A record's empty model is never filled from the profile, which
+    may have been edited since the prep."""
     if record is not None and record.model:
         return record.model
-    found = LAUNCHED_MODEL.search(launch_out)
-    return found.group(1) if found else profile_model
+    found = LAUNCHED_MODEL.search(launch_text)
+    return found.group(1) if found else ("" if record is not None else profile_model)
 
 
 def rows_of(doc: dict[str, Any]) -> list[tuple[str, dict[str, str]]]:
@@ -1152,7 +1155,8 @@ class Driver:
             if queued.mode and queued.mode != "none":
                 # A PAIRED LAUNCH (the header): the planner must read the tree the worker launched from.
                 base = record.base if record is not None else sha.strip()
-                model = worker_model(self.prepared(queued.task), substitution(done.out), self.wave.profiles[queued.profile].model)
+                model = worker_model(self.prepared(queued.task), substitution(done.out) + "\n" + self.err,
+                                     self.wave.profiles[queued.profile].model)
                 which = (f"with --model {peer_model(model)} (the worker runs {model})" if model else
                          f"with --model opus if the worker runs Astra, else the default {peer_model('')}: no model is on record"
                          " or in the launch's output, so read the worker's meta first")
