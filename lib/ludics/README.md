@@ -684,6 +684,14 @@ notice described below. Red refusals still notify
 once and back off. Regression controls and macOS verification are recorded in
 [PR #1171](https://github.com/lukstafi/ludics/pull/1171).
 
+Agent notes (wave-20261117-ludics, t1192): shared/requests.md shows a multi-command
+leg using `--file` and the exact runner word `{file}`, with a leading project-supplied
+`env` pin; the example assumes a `pin-env` project. `leg.py`'s THE FILE owns the grammar.
+`assign.leg_command` returns the leg command for the worker to execute; assign and the driver
+reserve/dispatch it rather than running the leg, so its stderr refusal reaches the worker
+at execution time. The unchanged hint directly shows the leading `env` fix and names
+`--file` / `{file}` as a list form; the template supplies the script example.
+
 Agent notes (wave-20261117-ludics, t1186): assigned commands name their outer bg-run
 record, whose log retains shell-leg transcripts. Its conclusion also reads runner sentinels:
 a harness with intentionally red nested tests needs its own final sentinel. The
