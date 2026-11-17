@@ -1,4 +1,4 @@
-"""``merge``'s build of the would-be merge commit (ludics-lite#611): when the base has moved since
+r"""``merge``'s build of the would-be merge commit (ludics-lite#611): when the base has moved since
 the head's CI run AND the config's trigger holds (by default, a path both sides changed is a build
 input), or on every merge under ``trigger always``, build the PR merged with the current base
 locally, before the merge call, and refuse the merge when that build fails.
@@ -109,8 +109,8 @@ merge-tree --write-tree``, ``commit-tree``; a textual conflict is exit 1) and ch
 and the command runs at its root, its output to a log beside it, inside this box's run-time slot
 when it has slots (``fleet-worker.sh execution slot --probe`` answers the PROBE line; ``--cpu``,
 waiting up to 30 min for a slot and, for a measurement, THE WINDOW WAIT below, under ``--deadline``
-= the timeout) and bare otherwise, bounded either way. The scratch directory is the whole of the build's state:
-it is removed whatever the outcome, and one a SIGKILLed merge leaves is in pr-review's swept
+= the timeout) and bare otherwise, bounded either way. The scratch tree is removed whatever the outcome, and one a SIGKILLed merge leaves is in
+pr-review's swept
 temporary family (``pr-review-build.<pid>.*``). What the clone keeps is the fetched objects, which
 nothing names, as after any fetch. So the revision a build tested outlives it only in the output
 (#1024): before the command runs, one line names the merge commit and its two parents, the base's
@@ -181,6 +181,25 @@ A git write the command makes lands in the scratch repository; a command no exec
 NUL in it, past the argument limit) is a config error (exit 2); anything else it does (a write
 outside its tree, a network call, a process it detaches with ``setsid``) is the command's
 business, as it would be from a developer's shell.
+
+LOG RETENTION (#1188). After each command attempt, before scratch cleanup, copy its log and
+status to ``merge-builds/logs/<owner>--<repo>/<pr>/<head>/`` under ship-pr's state directory
+(budget.budget_dir), independent of ISSUE_WAVE_STATE so wave cleanup cannot remove the evidence.
+Retries replace that head's files; base-alone attempts use ``base.log`` and ``base.status``.
+Dry runs naming a repository use ``dry-run`` in place of the PR; config-only dry runs and
+fixtures explicitly disabling state have no durable directory, as with history. Missing files
+(a command never started or did not finish) are retained as empty files. A copy error refuses with exit 3. The directory is printed
+and recorded as ``log_dir`` in the JSONL receipt, including failures and slot refusals. One directory
+per head bounds retries, not total disk usage: old heads are left for manual removal of
+``merge-builds/logs``; no automatic sweep is promised. Interrupts before the copy and SIGKILL
+remain outside retention's readiness boundary.
+
+DIAGNOSTIC SCAN -- the boundary. In addition to the bounded head/tail display, scan the complete
+log in bounded chunks for physical lines whose first SHOWN_BYTES bytes, decoded as UTF-8 with
+replacement, match ``^\s*(?:HARNESS\b.*\bexit:|FAIL\b)``. No ANSI stripping, multiline parsing,
+or other failure wording is read. Show every matching line, each cut at LINE_CHARS; only the
+ordinary head/tail output is capped in line count. This is diagnostic only,
+never a verdict. The head/tail may repeat these lines.
 
 VERDICTS. Passed: the merge proceeds. Failed (any nonzero status): exit 1, refused, with the build
 output (its first and last lines when long, each line and each end bounded in bytes). Not finished
@@ -630,10 +649,24 @@ def _slot_runner() -> str | None:
     return None
 
 
+def _diagnostics(log: str) -> list[str]:
+    result: list[str] = []
+    pattern = re.compile(r"^\s*(?:HARNESS\b.*\bexit:|FAIL\b)")
+    with open(log, "rb") as handle:
+        while chunk := handle.readline(SHOWN_BYTES):
+            prefix = proc.decode(chunk).rstrip("\r\n")
+            while chunk and not chunk.endswith(b"\n"):
+                chunk = handle.readline(SHOWN_BYTES)
+            if pattern.search(prefix):
+                result.append(prefix[:LINE_CHARS])
+    return result
+
+
 def _shown(log: str) -> list[str]:
     """The build log as shown: whole when short; otherwise its first ``SHOWN_HEAD`` and last
     ``SHOWN_TAIL`` lines, read from at most ``SHOWN_BYTES`` at each end, so a log of any size (or
-    one endless line) costs a bounded read. Every line is cut at ``LINE_CHARS``."""
+    one endless line) is read in bounded chunks. Diagnostic matches add lines without a count cap.
+    Every displayed line is cut at ``LINE_CHARS``."""
 
     def cut(line: str) -> str:
         return line if len(line) <= LINE_CHARS else line[:LINE_CHARS] + f"… ({len(line) - LINE_CHARS} more chars)"
@@ -646,14 +679,14 @@ def _shown(log: str) -> list[str]:
                 if len(lines) <= SHOWN_HEAD + SHOWN_TAIL:
                     return [cut(line) for line in lines]
                 left = len(lines) - SHOWN_HEAD - SHOWN_TAIL
-                return [*map(cut, lines[:SHOWN_HEAD]), f"... ({left} line(s) of {len(lines)} left out) ...",
+                return [*_diagnostics(log), *map(cut, lines[:SHOWN_HEAD]), f"... ({left} line(s) of {len(lines)} left out) ...",
                         *map(cut, lines[-SHOWN_TAIL:])]
             first = proc.decode(handle.read(SHOWN_BYTES)).splitlines()[:SHOWN_HEAD]
             handle.seek(size - SHOWN_BYTES)
             last = proc.decode(handle.read(SHOWN_BYTES)).splitlines()[1:][-SHOWN_TAIL:]
     except OSError as exc:
         return [f"(the build log could not be read: {exc.strerror})"]
-    return [*map(cut, first), f"... (the log is {size} bytes; its middle is left out) ...", *map(cut, last)]
+    return [*_diagnostics(log), *map(cut, first), f"... (the log is {size} bytes; its middle is left out) ...", *map(cut, last)]
 
 
 class _Interrupts:
@@ -931,7 +964,7 @@ def _build_in_scratch(
     stop, pr = subject.stop, subject.pr
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
     # (a whole build tree, and the repository it is in) is swept by the next `watch`
-    # (watch.tmp_sweep_stale): nothing of the build lives anywhere else. It is made and removed
+    # (watch.tmp_sweep_stale). Logs are retained separately below. It is made and removed
     # with signals held, so no signal leaves it behind.
     scratch: str | None = None
     try:
@@ -1269,11 +1302,12 @@ def _run(
         rc_text = ""
     ran_for = _ran_for(status, rc_text != "")
     earlier = buildhistory.read(subject.repo, config.command)
-    if ran_for is not None:
-        if rc_text == "0":
-            buildhistory.record(subject.repo, config.command, "passed", ran_for, config.timeout)
-        elif not rc_text and done.rc == 124:
-            buildhistory.record(subject.repo, config.command, "overran", ran_for, config.timeout)
+    log_dir = buildhistory.retain(subject.repo, subject.pr, gated, name, log, status)
+    if log_dir:
+        cli.say(f"merge build {subject.label}: retained log/status in {shlex.quote(log_dir)}")
+    outcome = "passed" if rc_text == "0" else "overran" if not rc_text and done.rc == 124 and ran_for is not None else "failed"
+    buildhistory.record(subject.repo, config.command, outcome, took if ran_for is None else ran_for,
+                        config.timeout, log_dir=log_dir)
     return _Ran(rc_text, done, took if ran_for is None else ran_for, log, ran_for is not None, tuple(earlier))
 
 
@@ -1297,7 +1331,7 @@ def _say_progress(label: str, took: int, bound: int, log: str) -> None:
         cli.say(f"merge build {label}: stopped {took}s in, bound {bound}s, having written no output")
         return
     cli.say(f"merge build {label}: stopped {took}s in, bound {bound}s, having written {size} byte(s); its last lines:")
-    for line in _shown(log)[-OVERRUN_LINES:]:
+    for line in [*_diagnostics(log), *_shown(log)[-OVERRUN_LINES:]]:
         cli.say(f"  | {line}")
 
 
