@@ -275,12 +275,13 @@
 #                          # written (wavebrief.py)
 #   fleet-worker.sh wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>]
 #                          [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
-#                          [--profile <name>] [--host <box>]
+#                          [--profile <name>] [--host <box>] [--tier D1|D1/D2|D2|D2/D3|D3]
 #                          # a worker's launch prep: worktree, standing reservations, brief,
 #                          # assign base and pending board row, every read before any write; refuses
 #                          # a rival PR or an existing worktree/branch; spawns nothing. --profile
 #                          # gives the task one of the wave file's profiles (a mixed wave); a CLI
-#                          # task is prepared with nothing made or reserved (waveprep.py)
+#                          # task is prepared with nothing made or reserved; --tier writes the
+#                          # task's difficulty tier to its row as tier= (waveprep.py)
 #   fleet-worker.sh wave launch <wave.json> <task>   # start a prepared CLI worker: the rivals read
 #                          # again, its scratch on its host, launch --standing with the profile's
 #                          # model and effort, its legs' reservations and the row; exit 3 when it

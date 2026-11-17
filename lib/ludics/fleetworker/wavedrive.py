@@ -135,11 +135,12 @@ THE QUEUE, ``<wave dir>/queue.json``, is the launches the coordinator decided an
 
     {"capacity": {"<box>": <n>, ...},
      "tasks": [{"task", "profile", "host"[, "legs": [<box>, ...]][, "mode"][, "after": [<task>, ...]]
-                [, "issue" | "source"]}, ...]}
+                [, "issue" | "source"][, "tier"]}, ...]}
 
 A fail-closed allowlist, read each tick (the coordinator may add tasks while the driver runs): any
 other key, a task named twice, a profile that is no profile of the wave file, a CLI entry's host with
-no ``capacity``, an ``after`` that is no task id, or one that names the task itself or a task
+no ``capacity``, a ``tier`` that is no tier of ``wave prep --tier`` (waveprep.py's THE TIER), an
+``after`` that is no task id, or one that names the task itself or a task
 queued LATER (the file's order is the launch order, so no two queued tasks can wait on each other)
 refuses the whole file, said once as ``DRIVE QUEUE REFUSED`` and launching nothing until it reads.
 Said once, it is also an attention record, task ``queue.json`` (the turn ``launch``), so the
@@ -153,8 +154,8 @@ launch. With no file the driver launches nothing.
 A NATIVE ENTRY is one whose worker is not a CLI worker: it names a profile whose ``transport`` is not
 ``cli``, or it names no profile and the wave file's own ``transport`` is not ``cli`` (a wave whose
 native workers are its default worker has no native profile to name). It takes ``task`` and
-optionally ``profile`` and ``after``, and no other key: the driver prepares nothing for it, so
-prep's flags are the coordinator's. The driver never refreshes, prepares, un-prepares or launches
+optionally ``profile``, ``after`` and ``tier``, and no other key: the driver prepares nothing for it, so
+prep's flags are the coordinator's (its cue names ``--tier <tier>`` when the entry has one). The driver never refreshes, prepares, un-prepares or launches
 it and counts it against no capacity; when it is due (as below, but for the capacity, the backoff
 and the prepared record: no row or a ``pending`` one, every ``after`` row landed, not halted, THE
 GATE open) it CUES it: one attention line, ``<task> is due: launch it``, then a ledger line
@@ -171,7 +172,8 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
             capacity; no final ``launch`` line in the ledger; launches not halted (``halted``,
             read once a tick: a halt is waited out, silently); THE GATE open
   started   with no row, ``refresh <agent host>`` (THE REFRESH), then ``wave prep <task> --base
-            <origin/MAIN, fetched now> --profile ... [--host] [--legs] [--mode] [--issue|--source]``
+            <origin/MAIN, fetched now> --profile ... [--host] [--legs] [--mode] [--issue|--source]
+            [--tier]``
             (a dependent starts from the base its prerequisite merged into), then ``wave launch``
 THE REFRESH: ``wave prep`` runs from the agent host's served skills checkout, and the project part
 it renders is read at the fetched tip, so a checkout one merge behind can lack a built-in that part
@@ -266,7 +268,7 @@ from ludics.fleetworker.transport import Done, substitution
 from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import Record, read_manifest
-from ludics.fleetworker.waveprep import TASK, Stop
+from ludics.fleetworker.waveprep import TASK, TIERS, Stop
 from ludics.fleetworker.waveunprep import FENCE
 
 sleep: Callable[[float], None] = time.sleep  # the tests' seam, as waveloop's
@@ -340,8 +342,8 @@ LANDED = ("merged", "done")  # the row states of an ``after`` task that let its 
 # verb's refusal as stdout's last line, or the base gate's, which it writes to stderr.
 PRESTART = re.compile(r"^(?:LAUNCH REFUSED |BASE REFUSED: ).*$", re.M)
 QUEUE_KEYS, QUEUED_REQUIRED = ("capacity", "tasks"), ("task", "profile", "host")
-QUEUED_OPTIONAL = ("legs", "mode", "after", "issue", "source")
-NATIVE_KEYS = ("profile", "after")  # a native entry's keys beside ``task`` (A NATIVE ENTRY, the header)
+QUEUED_OPTIONAL = ("legs", "mode", "after", "issue", "source", "tier")
+NATIVE_KEYS = ("profile", "after", "tier")  # a native entry's keys beside ``task`` (A NATIVE ENTRY, the header)
 CUED = "cued"  # a native entry's ledger status once its cue was told: never told again, and no launch decision
 
 
@@ -356,6 +358,7 @@ class Queued:
     issue: str
     source: str
     native: bool = False  # A NATIVE ENTRY (the header): cued, never prepared or launched
+    tier: str = ""  # wave prep's --tier (waveprep.py's THE TIER); "" when the entry names none
 
 
 def label(turn: int) -> str:
@@ -403,7 +406,7 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
         elif set(item) - set(QUEUED_REQUIRED) - set(QUEUED_OPTIONAL) or any(key not in item for key in QUEUED_REQUIRED):
             return f"{what} takes {', '.join(QUEUED_REQUIRED)} and optionally {', '.join(QUEUED_OPTIONAL)}"
         lists = {key: item.get(key, []) for key in ("legs", "after")}
-        texts = {key: item.get(key, "") for key in ("task", "profile", "host", "mode", "issue", "source")}
+        texts = {key: item.get(key, "") for key in ("task", "profile", "host", "mode", "issue", "source", "tier")}
         if not all(isinstance(v, str) for v in texts.values()) or not all(
                 isinstance(v, list) and all(isinstance(x, str) and x for x in cast(list[Any], v)) for v in lists.values()):
             return f"{what}: its values are text, and legs and after lists of text"
@@ -419,6 +422,8 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
             return f"{what}: host {texts['host']!r} has no capacity"
         if texts["issue"] and texts["source"]:
             return f"{what} names both an issue and a source"
+        if "tier" in item and texts["tier"] not in TIERS:
+            return f"{what}: tier is one of {', '.join(TIERS)}, not {texts['tier']!r}"
         if any(not TASK.fullmatch(dep) for dep in cast(list[str], lists["after"])):
             return f"{what}: after takes task ids ({TASK.pattern})"
         later.update(cast(list[str], lists["after"]))
@@ -426,7 +431,7 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
             return (f"{what} comes after itself, or is queued after a task that waits on it: the file's order is the launch"
                     " order, so a task's queued prerequisites are above it")
         tasks.append(Queued(texts["task"], texts["profile"], texts["host"], tuple(cast(list[str], lists["legs"])), texts["mode"],
-                            tuple(cast(list[str], lists["after"])), texts["issue"], texts["source"], native))
+                            tuple(cast(list[str], lists["after"])), texts["issue"], texts["source"], native, texts["tier"]))
     return capacity, tasks
 
 
@@ -995,7 +1000,7 @@ class Driver:
                     continue
                 merged = f"its after tasks {', '.join(queued.after)} merged" if queued.after else "it waits on no task"
                 self.tell(slot, LAUNCH, f"{queued.task} is due: launch it ({merged}, launches not halted, the launch gate open):"
-                                       " wave prep, then gate --wait right before the spawn")
+                                       f" wave prep{' --tier ' + queued.tier if queued.tier else ''}, then gate --wait right before the spawn")
                 self.note(slot, LAUNCH, "launch", CUED, f"{queued.task} is due ({merged}); the coordinator launches it")
                 continue  # a cue starts nothing, so it takes no tick's launch
             record = self.prepared(queued.task) if row is not None else None
@@ -1103,7 +1108,8 @@ class Driver:
                              *(["--legs", ",".join(queued.legs)] if queued.legs else []),
                              *(["--mode", queued.mode] if queued.mode else []),
                              *(["--issue", queued.issue] if queued.issue else []),
-                             *(["--source", queued.source] if queued.source else []), gated="both")
+                             *(["--source", queued.source] if queued.source else []),
+                             *(["--tier", queued.tier] if queued.tier else []), gated="both")
             if done.rc == 4:
                 return
             if done.rc != 0:

@@ -31,7 +31,13 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``new_row`` is true, when it joins the table's end (#1114: a task typed wrong, ``2032`` for
         ``t2032``, made an empty second row each time); the refusal names the nearest task the
         board has. ``new_row`` on a task that has its row is no refusal, as ``create`` is none on
-        a board that exists, so a retried first write is safe.
+        a board that exists, so a retried first write is safe. THE LAUNCH STAMP: a set that leaves
+        the row's ``state`` with ``launched`` as its first word (``;:,.`` stripped, case ignored),
+        on a row with no ``launched_at``, also writes ``launched_at``, this module's now (the
+        ``updated_at`` stamp), at the row's end: every launch, ``wave launch``'s and a native
+        coordinator's ``state=launched`` alike, is timed by one clock with no step of its own. A
+        row keeps its first stamp (a finisher's relaunch is not a new launch time), and a set that
+        names ``launched_at`` itself writes its own value.
   placement {"wave", "worker", "host", "checkout"}                internal to execution assign:
         union the host and host:checkout into exec_hosts and farside on the unique worker row,
         under the same lease lock as set. With the lease held, no board or no matching row is a no-op
@@ -320,6 +326,12 @@ def placement_word(host: str, checkout: str) -> str:
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 
 
+def launched(state: str) -> bool:
+    """THE LAUNCH STAMP's test (the header): the state's first word is ``launched``."""
+    words = state.split()
+    return bool(words) and words[0].rstrip(";:,.").lower() == "launched"
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -461,6 +473,8 @@ def main(argv: list[str]) -> None:
             fields = cast(dict[str, str], row["fields"])
             for key, value in pairs:
                 fields[key] = value
+            if "launched_at" not in fields and launched(fields.get("state", "")):
+                fields["launched_at"] = now  # THE LAUNCH STAMP (the header)
             row["updated_at"] = now
             # ASCII whatever the task holds (json escapes it; wave and keys are ASCII by grammar), so
             # no stdout encoding can fail the acknowledgement.

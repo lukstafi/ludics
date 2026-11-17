@@ -1,7 +1,7 @@
 """``wave prep``: one worker's launch prep in one call (ludics#1047).
 
 ``wave prep <wave.json> <task> --base <rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]
-[--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>]`` makes what a worker needs before it is spawned: its
+[--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] [--tier <tier>]`` makes what a worker needs before it is spawned: its
 worktree and branch, its scratch directory, its standing reservations (the agent host's, and one per
 GPU home box ``--legs`` names), its rendered brief, its ``execution assign`` base, and its board row.
 Each wave's ``next.sh`` did this by hand, and each copy lost an exit status in a pipe, rendered the
@@ -30,6 +30,12 @@ launch fills in; unreserved), the assign base and the pending row, and its manif
 ``wave launch <wave.json> <task>`` (wavelaunch.py) needs to start the worker. Its reads skip what
 only the host can answer (a remote host's worktree path and local branch); ``launch`` refuses those
 on the box. Its shipped template directory is ``cli-<kind>``.
+
+THE TIER. ``--tier`` is the task's difficulty tier as the sequencing plan rates it, one of ``TIERS``
+(D1, D1/D2, D2, D2/D3, D3), written to the row as ``tier=``. It changes nothing prep makes; it is
+there so a comparison of worker models (issue-wave SKILL.md's *Codex model choice*) reads each
+row's tier, ``model=`` and ``launched_at`` beside its PR's outcome, not the task part's prose. A
+task prepared with no ``--tier`` gets no ``tier=``.
 
 THE BRIEF is wavebrief.py's render of these parts, in this order: THE COMMON PARTS; ``tasks/<task>.md``;
 with --legs, ``legs.md``, whose ``@@LEGLINES@@`` is ``leg.md`` rendered once per leg; with a --mode
@@ -102,7 +108,7 @@ IN ORDER, every read before any write:
      the brief (``briefs/brief-<task>.md``) and the assign base (``reserve/<task>-base.json``,
      ``execution assign``'s base: wave, worker, transport, agent_host, repository, and issue for an
      issue task; a --source task's records and base name no issue), then the
-     board row with ``state=pending`` (and, with a --mode, ``plan_dir=$ISSUE_WAVE_STATE/plans/<wave>-<N>``,
+     board row with ``state=pending`` (``tier=`` with --tier; and, with a --mode, ``plan_dir=$ISSUE_WAVE_STATE/plans/<wave>-<N>``,
      ``<wave>-<task>`` for a --source task, so two tasks of one source never share one). Each step's exit is read, never piped away, and recorded in
      the manifest once it is confirmed.
   3. ``WAVE PREP <task>: ready ...`` on stdout, exit 0.
@@ -167,6 +173,7 @@ from ludics.fleetworker.wave import USAGE, Leg, Profile, Wave, load_wave, shim
 from ludics.fleetworker.wavebrief import PLACEHOLDER, Part, render, write_atomically
 
 MODES = ("none", "paired", "paired+critique")
+TIERS = ("D1", "D1/D2", "D2", "D2/D3", "D3")  # THE TIER: the sequencing plan's difficulty tiers
 TASK = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 ISSUE_TASK = re.compile(r"t([0-9]+)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
@@ -198,6 +205,7 @@ class Prep:
     state: str  # ISSUE_WAVE_STATE, as the config reads it: the plans directory's parent
     profile: str = ""  # --profile: one of the wave file's profiles; "" for the wave's own transport and kind
     host: str = ""  # --host: the worker's agent host; "" for the wave's
+    tier: str = ""  # --tier (THE TIER); "" when prep was given none
     worker: str = ""
     branch: str = ""
     worktree: str = ""
@@ -302,13 +310,14 @@ def parse(args: list[str]) -> tuple[str, str, dict[str, Any]]:
     if len(args) < 2 or args[0].startswith("--") or args[1].startswith("--"):
         die(f"wave prep: name the wave file and the task; usage: {USAGE}")
     opts: dict[str, Any] = {"base": "", "issue": "", "source": "", "mode": "none", "legs": "", "allow_rival": set(),
-                            "profile": "", "host": ""}
+                            "profile": "", "host": "", "tier": None}
     rest = args[2:]
     i = 0
     while i < len(rest):
         word = rest[i]
         key = {"--base": "base", "--issue": "issue", "--source": "source", "--mode": "mode", "--legs": "legs",
-               "--allow-rival": "allow_rival", "--profile": "profile", "--host": "host"}.get(word)
+               "--allow-rival": "allow_rival", "--profile": "profile", "--host": "host",
+               "--tier": "tier"}.get(word)
         if key is None or i + 1 >= len(rest):
             die(f"wave prep: {'unknown option ' + word if key is None else word + ' needs a value'}; usage: {USAGE}")
         if key == "allow_rival":
@@ -343,6 +352,8 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
         die(f"wave prep: task {task!r} does not match {TASK.pattern}")
     if opts["mode"] not in MODES:
         die(f"wave prep: --mode is one of {', '.join(MODES)}, not {opts['mode']!r}")
+    if opts["tier"] is not None and opts["tier"] not in TIERS:
+        die(f"wave prep: --tier is one of {', '.join(TIERS)}, not {opts['tier']!r}")
     if not opts["base"]:
         die("wave prep: --base <rev> is required (the verified base the worktree starts from)")
     number, issue_ref, source_ref = subject(wave, task, opts["issue"], opts["source"], "prep")
@@ -363,7 +374,7 @@ def build(cfg: Config, path: str, task: str, opts: dict[str, Any]) -> Prep:
             die(f"wave prep: --legs names {box} twice, or the worker's own host")
         legs.append(wave.legs[box])
     return Prep(wave, task, number, issue_ref, source_ref, opts["base"], opts["mode"], legs, opts["allow_rival"],
-                cfg.path(cfg.state), profile, host)
+                cfg.path(cfg.state), profile, host, opts["tier"] or "")
 
 
 def git(prep: Prep, *args: str, timeout: float | None = None) -> proc.Completed:
@@ -693,6 +704,8 @@ def board_fields(prep: Prep, brief: str) -> list[str]:
               f"runs={os.path.join(prep.scratch, 'runs')}", "state=pending"]
     if prep.model:
         fields.append(f"model={prep.model}" + (f"/{prep.effort}" if prep.effort else ""))
+    if prep.tier:
+        fields.append(f"tier={prep.tier}")
     if prep.mode != "none":
         plan = f"{prep.wave.wave}-{prep.number if prep.issue_ref else prep.task}"
         fields += [f"planning={prep.mode}", f"plan_dir={os.path.join(prep.state, 'plans', plan)}"]

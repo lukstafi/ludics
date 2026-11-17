@@ -8,7 +8,7 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
   wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>...   wavebrief.py
   wave prep <wave.json> <task> --base <base-or-stacked-rev>                                waveprep.py
             [--issue <N> | --source <N>] [--mode none|paired|paired+critique] [--legs <box,...>] [--allow-rival <pr>]...
-            [--profile <name>] [--host <box>]
+            [--profile <name>] [--host <box>] [--tier D1|D1/D2|D2|D2/D3|D3]
   wave launch <wave.json> <task>                                                           wavelaunch.py
   wave unprep <wave.json> <task>                                                           waveunprep.py
   wave loop <wave.json> <name> [--resume-after <request id> |                              waveloop.py
@@ -148,7 +148,7 @@ from ludics.fleetworker.wavebrief import NAME, cmd_render, write_atomically
 USAGE = (
     "wave render [--set NAME=VALUE]... [--set-file NAME=<path>]... [--out <file>] <part>... | "
     "wave prep <wave.json> <task> --base <base-or-stacked-rev> [--issue <N> | --source <N>] [--mode none|paired|paired+critique]"
-    " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] | wave launch <wave.json> <task> | "
+    " [--legs <box,...>] [--allow-rival <pr>]... [--profile <name>] [--host <box>] [--tier D1|D1/D2|D2|D2/D3|D3] | wave launch <wave.json> <task> | "
     "wave unprep <wave.json> <task> | "
     "wave loop <wave.json> <name> [--resume-after <request id> | --rerun <red id> -- <command> | --release] | "
     "wave heartbeat <wave.json> [--sleep <seconds>] | "

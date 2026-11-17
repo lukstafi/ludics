@@ -2743,6 +2743,20 @@ expect "check lists each row not done and exits 3, without the lease or any iden
   ok "...each written as given" || ko "ck board: $(cat "$ISSUE_WAVE_STATE/boards/ck.json")"
 setup_step "could not write ck-1's state (setup)" "$FW" board set ck ck-1 "state=merged #1"
 expect "...and 0 once every row is done" 0 "^BOARD CHECK ck: 1 rows, 1 done, 0 not done$" -- "$FW" board check ck
+# THE LAUNCH STAMP (boardstore.py): the shipped store times a row's first state=launched, wave
+# launch's and a native coordinator's alike, and keeps that stamp; status=launched is no state.
+[ "$(jq -r '.tasks[0].fields.launched_at // "none"' "$ISSUE_WAVE_STATE/boards/ck.json")" = none ] &&
+  ok "status=launched stamps no launched_at" || ko "ck board: $(cat "$ISSUE_WAVE_STATE/boards/ck.json")"
+setup_step "could not prepare the ls-1 row (setup)" "$FW" board set --create --new-row ls ls-1 state=pending tier=D2
+setup_step "could not launch the ls-1 row (setup)" "$FW" board set ls ls-1 agent=a1 state=launched
+stamp=$(jq -r '.tasks[0].fields.launched_at' "$ISSUE_WAVE_STATE/boards/ls.json")
+grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' <<<"$stamp" &&
+  [ "$(jq -r '.tasks[0] | "\(.fields.tier) \(.fields | keys_unsorted | last)"' "$ISSUE_WAVE_STATE/boards/ls.json")" = "D2 launched_at" ] &&
+  ok "state=launched stamps launched_at at the row's end, beside its tier" || ko "ls board: $(cat "$ISSUE_WAVE_STATE/boards/ls.json")"
+setup_step "could not set ls-1's launched_at (setup)" "$FW" board set ls ls-1 launched_at=2000-01-01T00:00:00Z
+setup_step "could not relaunch the ls-1 row (setup)" "$FW" board set ls ls-1 "state=launched again"
+[ "$(jq -r '.tasks[0].fields.launched_at' "$ISSUE_WAVE_STATE/boards/ls.json")" = 2000-01-01T00:00:00Z ] &&
+  ok "...and a relaunch keeps the stamp the row has" || ko "ls board after relaunch: $(cat "$ISSUE_WAVE_STATE/boards/ls.json")"
 # status --json (ludics#1165): the observers' read through the shim, with no lease and no identity --
 # every board, each row's phase derived as check reads it, the lease's host and never its token.
 expect "status --json reads every board without the lease or any identity" 0 '^{"version": 1, ' -- \

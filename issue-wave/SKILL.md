@@ -419,20 +419,20 @@ branch). The verbs do the rest, on one of three routes
 ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb)):
 
 - **A queued CLI task**: its part in `tasks/<task>.md` and an entry in the wave directory's
-  `queue.json` (file order, `after`, a `capacity` per host), served by `fleet-worker.sh wave drive
+  `queue.json` (file order, `after`, `tier`, a `capacity` per host), served by `fleet-worker.sh wave drive
   <wave.json>`. Each tick the driver reads the launch gate, prepares the first due task at the main
   branch's tip as fetched then (so a dependent starts from the base its prerequisite merged into),
   and launches it. A prep that refuses, or a launch that ended in doubt, is an attention line, and
   that task is then yours.
 - **A CLI task you launch yourself**: `fleet-worker.sh wave prep <wave.json> <task> --base <sha>
-  --profile <name> [--host <box>]`, then `wave launch <wave.json> <task>`, which runs `launch` (the
+  --profile <name> --tier <tier> [--host <box>]`, then `wave launch <wave.json> <task>`, which runs `launch` (the
   box's preflight, the base gate, the worktree and the standing reservation in one fenced step)
   from what prep recorded. A task prepared and not launched before the main branch moved is
   taken back with `fleet-worker.sh wave unprep <wave.json> <task>` and prepared again under its
   own id; the driver does this itself for a queued task. The raw `launch` and its recovery are
   [cli-claude.md](references/cli-claude.md#launch).
 - **A native task**: `wave prep`, then `fleet-worker.sh gate --target-repo <owner/repo> --wait
-  <seconds>` right before the runtime's spawn, then `agent=` and `state=launched` on its row
+  <seconds>` right before the runtime's spawn, then `agent=`, `model=` and `state=launched` on its row
   ([native-workers.md](references/native-workers.md#placement-and-launch)).
 
 The driver's launches shape yours in two ways. It reads the launch gate with `--no-wait`:
@@ -670,6 +670,11 @@ explicit briefs, test evidence, CI gates and coordinator escalation. These defau
 qualitative observations from the OCANNL-staging and ludics-lite waves, not a controlled cost or
 speed comparison; evaluate future assignments by review rounds, coordinator interventions and
 time to merge, separating queueing, CI and dependency waits from active work where possible.
+The board row holds what that comparison groups by: `tier=` (prep's `--tier`, or a queue
+entry's `tier`), `model=` (a profile's model and effort; a native row's from its launch) and
+`launched_at` (stamped by the board on the row's first `state=launched`), beside `pr`, `review`,
+`confirm` and `merge`. Give every task its tier at prep, so no comparison has to recover it from
+the task part's prose.
 
 The IDs are the ones `~/.codex/models_cache.json` lists on the worker's box (2026-11-07:
 `gpt-6.1-sol`, and `gpt-6-astra` with no 6.1 Astra); read them there rather than from this

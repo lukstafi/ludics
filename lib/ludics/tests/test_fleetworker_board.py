@@ -83,7 +83,8 @@ class Store(StoreCase):
         for _ in range(2):
             self.assertEqual(self.call("placement", payload)[0], 0)
         fields = self.doc()["tasks"][0]["fields"]
-        self.assertEqual(fields, {"worker": "wk", "exec_hosts": "mac,gpu", "farside": "gpu:/leg", "state": "launched"})
+        self.assertEqual({k: v for k, v in fields.items() if k != "launched_at"},
+                         {"worker": "wk", "exec_hosts": "mac,gpu", "farside": "gpu:/leg", "state": "launched"})
         before = self.doc()
         self.assertEqual(self.call("placement", {**payload, "worker": "absent"})[0], 0)
         self.assertEqual(self.doc(), before)
@@ -135,12 +136,41 @@ class Store(StoreCase):
         self.assertEqual([(line["by"], line["text"]) for line in doc["log"]], [("coord", HOSTILE)])
 
     def test_rows_and_keys_keep_their_order_and_a_set_changes_only_its_keys(self) -> None:
-        self.set("b", ("state", "launched"), ("pr", ""))
+        self.set("b", ("state", "implementing"), ("pr", ""))
         self.set("a", ("pr", "12"), ("host", "mac"))
         self.set("b", ("state", "merged"))
         doc = self.doc()
         self.assertEqual([row["task"] for row in doc["tasks"]], ["b", "a"])
         self.assertEqual(doc["tasks"][0]["fields"], {"state": "merged", "pr": ""})
+
+    def test_a_launch_is_stamped_once_by_the_stores_clock(self) -> None:
+        """THE LAUNCH STAMP: ``state=launched`` (wave launch's, or a native coordinator's by hand)
+        writes ``launched_at`` beside it, so every launch is timed with no step of its own."""
+        clock = iter(["2026-11-17T10:00:00Z", "2026-11-17T10:05:00Z", "2026-11-17T11:00:00Z", "2026-11-17T12:00:00Z",
+                      "2026-11-17T13:00:00Z", "2026-11-17T14:00:00Z"])
+
+        class Stamp:
+            def strftime(self, _fmt: str) -> str:
+                return next(clock)
+
+        class Clock:
+            @staticmethod
+            def now(_tz: Any) -> Stamp:
+                return Stamp()
+
+        with mock.patch.object(boardstore, "datetime", Clock):
+            self.set("t1", ("state", "pending"), ("tier", "D2"))
+            self.set("t1", ("agent", "a1"), ("state", "launched"))
+            self.set("t1", ("state", "Launched; again, a finisher"))
+            self.set("t2", ("state", "launched: by hand"), ("launched_at", "2026-11-16T09:00:00Z"))
+            self.set("t3", ("state", "launchedx"))
+            self.set("t3", ("state", "merged #4"))
+        rows = {row["task"]: row["fields"] for row in self.doc()["tasks"]}
+        self.assertEqual(rows["t1"], {"state": "Launched; again, a finisher", "tier": "D2", "agent": "a1",
+                                      "launched_at": "2026-11-17T10:05:00Z"},
+                         "stamped at the row's end by the set that launched it, and a relaunch keeps the first stamp")
+        self.assertEqual(rows["t2"]["launched_at"], "2026-11-16T09:00:00Z", "a set that names launched_at writes its own")
+        self.assertNotIn("launched_at", rows["t3"], "only the state word launched stamps: no other word, no prefix")
 
     def test_the_view_escapes_only_the_pipe_and_line_breaks(self) -> None:
         self.set("ll#1", ("state", "a|b"), ("note", "x\ny"))
