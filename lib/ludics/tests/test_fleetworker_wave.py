@@ -2856,6 +2856,7 @@ class Drive(DriveCase):
     def test_a_refused_assignment_is_tried_again_then_handed_up_and_exit_4_at_once(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
         self.rc["execution assign"] = 1
+        self.out["execution assign stderr"] = "box owned by measurement-1 (correctness slots taken)\n"
         with self.world():
             self.assertIn("request retry: execution assign refused a block (try 1 of 6)", self.once()[1])
             self.assertEqual(self.once()[1], "", "not before its retry time")
@@ -2875,6 +2876,19 @@ class Drive(DriveCase):
             self.assertIn("DRIVE ATTENTION t42 turn 2: execution assign refused some of the turn's blocks and resumed the worker with the rest", out)
             self.assertEqual((self.once()[1], self.calls), ("", []), "a partly assigned turn is final: its worker runs a new one")
         self.assertEqual(len(self.attention()), 3)
+
+    def test_assignment_action_required_goes_to_attention_on_first_try(self) -> None:
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        self.rc["execution assign"] = 5
+        with self.world():
+            self.assertIn("DRIVE ATTENTION t42 turn 0: execution assign needs action before retrying", self.once()[1])
+            self.assertEqual([call[:2] for call in self.calls if call[0] == "execution"], [["execution", "assign"]])
+            self.clock += wavedrive.RETRY
+            self.assertEqual((self.once()[1], self.calls), ("", []))
+            self.resumes = 1
+            self.out["execution assign"] = "EXECUTION_ASSIGNED x\n"
+            self.assertIn("execution assign refused some of the turn's blocks and resumed the worker with the rest", self.once()[1])
+        self.assertEqual(self.ledger(), [(0, "request", "attention"), (1, "request", "attention")])
 
     def test_a_result_is_concluded_off_its_run_and_the_worker_told_the_verdict(self) -> None:
         line = 'EXECUTION_RESULT {"request_id":"wv-t42-rog-1","run":"/runs/7","exit":0,"observed_sha":"' + A + '"}'
@@ -3604,6 +3618,21 @@ class Queue(DriveCase):
         self.assertEqual(len(self.attention()), 2)
         self.assertEqual(self.ledger(), [(-1, "launch", "launching"), (-1, "launch", "answered")],
                          "a closed gate is no line of the task's: nothing of it was made")
+
+    def test_restarting_on_a_refused_gate_or_queue_repeats_only_the_notice(self) -> None:
+        self.queue({"task": "t50", "profile": "sol", "host": "far"})
+        self.rc["gate"] = 1
+        self.out["gate stderr"] = "BASE REFUSED: red head\n"
+        with self.world():
+            for _ in range(2):
+                self.assertIn("the launch gate refuses", self.once()[1])
+                self.assertEqual([call[0] for call in self.calls], ["halted", "gate"])
+            self.queue({"task": "t50", "profile": "sol", "host": "unknown"})
+            for _ in range(2):
+                self.assertIn("DRIVE QUEUE REFUSED", self.once()[1])
+                self.assertEqual(self.calls, [])
+        self.assertEqual((len(self.attention()), len(self.queue_alerts())), (4, 2))
+        self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")))
 
     def test_a_prepared_task_is_launched_by_its_own_record_or_left_to_the_coordinator(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "mac"}, {"task": "t51", "profile": "sol", "host": "far"},

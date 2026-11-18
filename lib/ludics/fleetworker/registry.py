@@ -415,6 +415,14 @@ def refuse(message: str) -> NoReturn:
     raise ValueError(message)
 
 
+ASSIGN_ACTION_REQUIRED = 5
+ASSIGN_STATUS_ARG = "--assignment-status"
+
+
+class AssignmentInput(ValueError):
+    """Admission needs a request or fleet configuration change, or registry reconciliation."""
+
+
 def as_object(value: Any) -> Record | None:
     """The decoded JSON value as an object, or None when it is anything else."""
     return cast(Record, value) if isinstance(value, dict) else None
@@ -1422,11 +1430,11 @@ def main(argv: list[str]) -> None:
     nonempty(data, ["request_id"])
     identity = data["request_id"]
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", identity):
-        refuse("invalid request_id")
+        raise AssignmentInput("invalid request_id")
     # APFS commonly preserves case but aliases filenames differing only by case.
     # Preserve existing mixed-case identities; never publish another spelling over them.
     if any(name.casefold() == identity.casefold() and name != identity for name in records):
-        refuse("request_id collides with an existing identity by case")
+        raise AssignmentInput("request_id collides with an existing identity by case")
     clock = datetime.now(timezone.utc)
     now = clock.isoformat()
     halt_path = Path(root) / "HALT"
@@ -1443,13 +1451,16 @@ def main(argv: list[str]) -> None:
         roster = list(dict.fromkeys(boxes.split()))   # a repeated entry is the same entry
         canonical_hosts = set(roster)
         if not canonical_hosts:
-            refuse("FLEET_BOXES must name the canonical fleet hosts")
-        check_one_entry_per_box(roster, map_spec)
+            raise AssignmentInput("FLEET_BOXES must name the canonical fleet hosts")
+        try:
+            check_one_entry_per_box(roster, map_spec)
+        except ValueError as exc:
+            raise AssignmentInput(str(exc)) from exc
         # A changed roster cannot silently erase ownership recorded under an old alias.
         # Keep reads and evidence/conclusion available to reconcile those records.
         for existing in records.values():
             if existing["state"] != "concluded" and existing["request"]["execution_host"] not in canonical_hosts:
-                refuse(f"reconcile noncanonical execution host on request {existing['request_id']} before dispatch")
+                raise AssignmentInput(f"reconcile noncanonical execution host on request {existing['request_id']} before dispatch")
     if action in {"reserve", "run", "window"}:
         # `run` is reserve + dispatch under one lock: the payload is the reservation, plus an
         # optional `evidence` for the dispatch step (ludics-lite: four calls per execution
@@ -1475,9 +1486,12 @@ def main(argv: list[str]) -> None:
             if "evidence" in data:
                 nonempty(data, ["evidence"])
                 dispatch_evidence = data["evidence"]
-        validate_request(request, new=True)
+        try:
+            validate_request(request, new=True)
+        except ValueError as exc:
+            raise AssignmentInput(str(exc)) from exc
         if request["execution_host"] not in canonical_hosts:
-            refuse("execution_host must exactly match a canonical FLEET_BOXES entry")
+            raise AssignmentInput("execution_host must exactly match a canonical FLEET_BOXES entry")
         if action == "window":
             if request["kind"] != "measurement":
                 refuse("a window opens for a measurement: kind must be measurement")
@@ -1498,22 +1512,22 @@ def main(argv: list[str]) -> None:
         dispatch = action in {"run", "window"}
         if record:
             if record["request"] != request:
-                refuse("request_id already names a different assignment")
+                raise AssignmentInput("request_id already names a different assignment")
             if record.get("checkout") != checkout:
-                refuse(f"request_id already names a different checkout ({json.dumps(record.get('checkout'))});"
-                       f" a reservation's checkout is fixed when it is taken")
+                raise AssignmentInput(f"request_id already names a different checkout ({json.dumps(record.get('checkout'))});"
+                                      f" a reservation's checkout is fixed when it is taken")
             if record.get("triage_boxes") != triage_boxes:
-                refuse(f"request_id already names different triage_boxes ({json.dumps(record.get('triage_boxes'))});"
-                       f" a triage record's boxes are fixed when it is taken")
+                raise AssignmentInput(f"request_id already names different triage_boxes ({json.dumps(record.get('triage_boxes'))});"
+                                      f" a triage record's boxes are fixed when it is taken")
             if record.get("tip_run") != tip_run:
-                refuse(f"request_id already names a different tip_run mark ({json.dumps(record.get('tip_run'))});"
-                       f" a record's tip_run mark is fixed when it is taken")
+                raise AssignmentInput(f"request_id already names a different tip_run mark ({json.dumps(record.get('tip_run'))});"
+                                      f" a record's tip_run mark is fixed when it is taken")
             if record.get("slot_reservation") != slot_reservation:
-                refuse(f"request_id already names a different slot_reservation mark"
-                       f" ({json.dumps(record.get('slot_reservation'))}); a record's slot_reservation mark is fixed when it is taken")
+                raise AssignmentInput(f"request_id already names a different slot_reservation mark"
+                                      f" ({json.dumps(record.get('slot_reservation'))}); a record's slot_reservation mark is fixed when it is taken")
             if record.get("reserved_by") != reserved_by:
-                refuse(f"request_id already names a different reserved_by ({json.dumps(record.get('reserved_by'))});"
-                       f" a record's reserved_by is fixed when it is taken")
+                raise AssignmentInput(f"request_id already names a different reserved_by ({json.dumps(record.get('reserved_by'))});"
+                                      f" a record's reserved_by is fixed when it is taken")
             if action == "reserve":
                 sync_directory(directory.parent)
                 sync_directory(directory)
@@ -1522,10 +1536,10 @@ def main(argv: list[str]) -> None:
             if action == "window":
                 # A retried window never dispatches again: it finishes the suspensions below.
                 if not record.get("window"):
-                    refuse("request_id already names a measurement that opened no window")
+                    raise AssignmentInput("request_id already names a measurement that opened no window")
                 if record.get("deadline") != window_deadline:
-                    refuse(f"request_id already names a window with a different deadline"
-                           f" ({json.dumps(record.get('deadline'))}); a window's deadline is fixed when it opens")
+                    raise AssignmentInput(f"request_id already names a window with a different deadline"
+                                          f" ({json.dumps(record.get('deadline'))}); a window's deadline is fixed when it opens")
                 if record["state"] == "concluded":
                     sync_directory(directory.parent)
                     sync_directory(directory)
@@ -1538,12 +1552,15 @@ def main(argv: list[str]) -> None:
                 if record["state"] != "reserved":
                     refuse(f"assignment already dispatched (state {record['state']}); reconcile, never run twice")
                 if record["lease_token"] != token:
-                    refuse("adopted assignment must be reconciled before dispatch")
+                    raise AssignmentInput("adopted assignment must be reconciled before dispatch")
                 # The dispatch step, rechecked: a reservation can wait hours for its launch.
                 if record["request"]["kind"] == "measurement":
                     check_lane_lock(record["request"]["execution_host"], map_spec, anchor, lab)
         else:
-            check_issue(request)
+            try:
+                check_issue(request)
+            except ValueError as exc:
+                raise AssignmentInput(str(exc)) from exc
             if request.get("standing") and checkout is None:
                 refuse("a standing reservation must name its checkout: \"checkout\": the worker's worktree, absolute on "
                        "the execution host, which its hand-back's --observed-from must be (ludics-lite#731)")
@@ -1817,7 +1834,8 @@ def main(argv: list[str]) -> None:
 
 def run(argv: list[str]) -> int:
     """`main` with the registry's refusal contract: one `EXECUTION REFUSED: <why>` line on stderr, exit 1;
-    a window inside the gap (see the header) is exit 3, its answer on stdout. Everything an action
+    internal run/window calls from assign opt in to exit 5 for `AssignmentInput`.
+    A window inside the gap (see the header) is exit 3, its answer on stdout. Everything an action
     says is buffered and written only once the snapshot lock is released (THE SNAPSHOT): a caller
     that stops reading its pipe then stalls this process alone, never every other action behind
     the lock. The lock is released whatever the outcome, so an in-process caller's next action
@@ -1844,6 +1862,8 @@ def outcome(argv: list[str]) -> int:
         return 3
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f"EXECUTION REFUSED: {exc}", file=sys.stderr)
+        if isinstance(exc, AssignmentInput) and argv[11:] == [ASSIGN_STATUS_ARG]:
+            return ASSIGN_ACTION_REQUIRED
         return 1
     return 0
 

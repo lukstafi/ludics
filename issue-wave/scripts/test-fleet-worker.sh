@@ -3794,11 +3794,44 @@ amoved="${asha%??}ee"; printf 'claude/w869 %s\n' "$amoved" > "$SHIM_GH_HEADS"
 as_run "$(as_base subagent)" "$(as_msg head "$(as_block as-5 testbox correctness head-of:claude/w869 "$leg_run")")"
 [ "$rc" -eq 0 ] && grep -Fqx "revision: $amoved" <<<"$msg" && grep -Fq -- "--rev $amoved --checkout" <<<"$msg" &&
   ok "a head-of request is assigned at the resolved SHA, in the leg's --rev too" || ko "a head-of assignment (rc=$rc): $msg -- $said"
+# Action-required status comes from the admission checks, including a GitHub 404 and the anchor's roster.
+as_run "$(as_base subagent)" "$(as_msg gone "$(as_block as-gone testbox correctness head-of:claude/gone "$leg_run")")"
+[ "$rc" -eq 5 ] && [ -z "$msg" ] && grep -Fq "GitHub has no branch claude/gone" <<<"$said" &&
+  [ -z "$(state_as as-gone)" ] && ok "a missing head-of branch needs action, with no assignment or record" ||
+  ko "missing branch outcome (rc=$rc): $msg -- $said"
+SHIM_GH_NO_COMMIT="$asha" as_run "$(as_base subagent)" "$(as_msg absent "$(as_block as-absent testbox correctness "$asha" '{"command":"true"}')")"
+[ "$rc" -eq 5 ] && [ -z "$msg" ] && grep -Fq "is no commit of o/r" <<<"$said" &&
+  [ -z "$(state_as as-absent)" ] && ok "a missing SHA needs action, with no assignment or record" ||
+  ko "missing SHA outcome (rc=$rc): $msg -- $said"
+SHIM_GH=down as_run "$(as_base subagent)" "$(as_msg unverified "$(as_block as-unverified testbox correctness head-of:claude/w869 "$leg_run")")"
+[ "$rc" -eq 4 ] && [ -z "$msg" ] && grep -Fq "EXECUTION UNVERIFIED" <<<"$said" &&
+  ok "an unanswered GitHub lookup stays unknown" || ko "unanswered GitHub outcome (rc=$rc): $msg -- $said"
 unset SHIM_GH_HEADS
+as_run "$(as_base subagent)" "$(as_msg unreservable "$(as_block as-unreservable TESTBOX measurement "$asha" '{"command":"true"}')")" --no-gap
+[ "$rc" -eq 5 ] && [ -z "$msg" ] && grep -Fq "execution_host must exactly match a canonical FLEET_BOXES entry" <<<"$said" &&
+  [ -z "$(state_as as-unreservable)" ] && ok "a noncanonical host needs action, with no assignment or record" ||
+  ko "unreservable host outcome (rc=$rc): $msg -- $said"
+as_run "$(as_base subagent)" "$(as_msg collision "$(as_block AS-1 testbox correctness "$asha" '{"command":"true"}')")"
+[ "$rc" -eq 5 ] && [ -z "$msg" ] && grep -Fq "request_id collides with an existing identity by case" <<<"$said" &&
+  [ "$(state_as as-1)" = launching ] && ok "an id collision needs action and preserves the existing assignment" ||
+  ko "id collision outcome (rc=$rc): $msg -- $said"
+jq --arg sha "$asha" '. + {request_id:"as-reserved", execution_host:"testbox", kind:"correctness", requested_revision:$sha}' \
+  "$(as_base subagent)" > "$TMP/as-reserved.json"
+setup_step "could not reserve as-reserved (setup)" "${FWA[@]}" execution reserve "$TMP/as-reserved.json"
+as_run "$(as_base subagent)" "$(as_msg conflict "$(as_block as-reserved other correctness "$asha" '{"command":"true"}')")"
+[ "$rc" -eq 5 ] && [ -z "$msg" ] && grep -Fq "request_id already names a different assignment" <<<"$said" &&
+  [ "$(state_as as-reserved)" = reserved ] && ok "a conflicting reserved id needs action and stays reserved" ||
+  ko "reserved id outcome (rc=$rc): $msg -- $said"
+fixture_done as-reserved
 # THE TRANSPORT (quirk 37): "native" is refused, naming the accepted values.
 as_run "$(as_base native)" "$(as_msg native "$(as_block as-6 testbox correctness "$asha" '{"command":"true"}')")"
-[ "$rc" -eq 1 ] && [ -z "$msg" ] && grep -Fq 'invalid transport "native": one of subagent, app, cli, coordinator' <<<"$said" &&
-  ok "a native transport is refused, naming the accepted values" || ko "a native transport (rc=$rc): $msg -- $said"
+[ "$rc" -eq 5 ] && [ -z "$msg" ] && grep -Fq 'invalid transport "native": one of subagent, app, cli, coordinator' <<<"$said" &&
+  ok "a native transport needs action, naming the accepted values" || ko "a native transport (rc=$rc): $msg -- $said"
+as_run "$(as_base subagent)" "$(as_msg full "$(as_block as-fill other correctness "$asha" '{"command":"true"}')" \
+  "$(as_block as-busy other correctness "$asha" '{"command":"true"}')")"
+[ "$rc" -eq 1 ] && grep -qx 'EXECUTION_ASSIGNED as-fill' <<<"$msg" && grep -Fq "correctness slots 2/2 on other taken" <<<"$said" &&
+  [ -z "$(state_as as-busy)" ] && ok "a full box retains the retryable refusal status" ||
+  ko "capacity outcome (rc=$rc): $msg -- $said"
 # The boundary: a malformed block refuses the whole call before the registry is asked.
 expect "a block naming a field outside the allowlist refuses the call, nothing assigned" 2 "block 2 (as-8) names standing" -- \
   "${FWA[@]}" execution assign "$(as_base subagent)" "$(as_msg bad "$(as_block as-7 testbox correctness "$asha" '{"command":"true"}')" \
@@ -3810,7 +3843,7 @@ expect "a message with no block is refused" 2 "no EXECUTION_REQUEST ... END_EXEC
   "${FWA[@]}" execution assign "$(as_base subagent)" "$TMP/as-base-subagent.json"
 expect "--unstick needs the --message file it sends" 2 "--unstick sends the --message file" -- \
   "${FWA[@]}" execution assign "$(as_base subagent)" "$two" --unstick testbox w869
-for id in as-1 as-2 as-3 as-5; do fixture_done "$id"; done
+for id in as-1 as-2 as-3 as-5 as-fill; do fixture_done "$id"; done
 }
 
 section "execution conclude --standing-handback" && {
@@ -6316,6 +6349,8 @@ grep -Fqx "## Project from default tip for t76" "$KS/briefs/brief-t76.md" &&
   [ ! -e "$proj-worktrees/wks-76" ] &&
   [ "$(jq -r .base "$KS/prep/t76.json")" = "$pbase" ] &&
   ok "...the shipped CLI brief renders and preserves its stacked base" || ko "shipped brief is wrong"
+grep -Fq 'Start your final reply with the plain line `HANDBACK t76`' "$KS/briefs/brief-t76.md" &&
+  ok "...the hand-back marker starts the worker's final reply" || ko "shipped brief omits the hand-back instruction"
 # Restore the shared fixture: the rest of this section prepares at master.
 setup_step "could not restore the fixture branch" git -C "$proj" reset --hard "$pbase"
 setup_step "could not restore the fixture default tip" git -C "$proj" update-ref refs/remotes/origin/master "$pbase"

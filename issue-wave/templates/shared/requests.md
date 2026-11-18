@@ -13,6 +13,9 @@ below, back to back, nothing after the last (do not start the run):
      "command":"<one bounded command>","log":"-"}
     END_EXECUTION_REQUEST
 
+Use the full commit SHA for a head whose branch has not been pushed. The commit itself must
+already be visible to GitHub. Use `head-of:@@BR@@` only once that branch exists on GitHub.
+
 For a native Windows witness on a dual-boot box, use this separate block instead of an
 `EXECUTION_REQUEST` for a `-win` host. End the turn; the driver hands it to coordinator
 attention immediately, without assignment retries. The coordinator owns the Linux-side

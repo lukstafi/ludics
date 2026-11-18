@@ -181,6 +181,7 @@ def branch_head(repo: str, branch: str, timeout: float = 30) -> str | tuple[str,
                 " nothing recorded", 1)
     if "(HTTP 404)" in done.stderr:
         return (f"EXECUTION REFUSED: {what}: GitHub has no branch {branch} in {repo} (or the repository is one this"
-                f" box's gh token cannot see: {said}); nothing recorded", 1)
+                f" box's gh token cannot see: {said}); nothing recorded. Check repository access, push the branch,"
+                " or name the full SHA of a commit already visible to GitHub", 1)
     return (f"EXECUTION UNVERIFIED github.com: {what} could not be resolved in {repo} ({said}); nothing recorded"
             " -- retry once GitHub answers", 4)
