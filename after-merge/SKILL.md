@@ -14,7 +14,7 @@ self-propelling; no scheduler is involved.
 - The merged diff: `gh pr diff <n> -R <owner>/<repo>`, or `git diff <base>...<head>`.
 - The review threads on the PR, including anything you pushed back on and why:
   `gh api repos/<owner>/<repo>/pulls/<n>/comments --jq '.[] | {path,line,body}'`
-  (inline review comments are a different surface from `gh pr view --comments`; read both).
+  (read top-level comments and review summaries with `gh pr view --json comments,reviews` as well).
 - **The session transcript** — the friction that never reached an artifact: dead ends, greps you
   had to run three times, a test that was awkward to express, a fact you had to rediscover. This
   is the richest input, and it is only available while the working session is still in context.

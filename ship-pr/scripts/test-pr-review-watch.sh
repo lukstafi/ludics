@@ -2216,6 +2216,8 @@ test_a_stalled_round_is_nudged_once_and_watched() {
   assert_eq "$(nudges_posted)" 1 "still one nudge for the head, never a second"
   assert_contains "$WATCH_OUT" "this watch's own '@codex review' on head ${H2:0:7}" \
     "the move after it is the once-per-head remedy"
+  assert_contains "$WATCH_OUT" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
+    "the fallback reads both feed fields through retry"
   [ "$(($(cat "$SHIP_PR_TEST_CLOCK") - start))" -ge "$GRACE" ] ||
     bail "the request's grace was not waited out ($(($(cat "$SHIP_PR_TEST_CLOCK") - start))s)"
   # A post that fails is sent once, whatever its error, and the window still runs to its end.
@@ -2325,7 +2327,11 @@ test_a_stalled_round_with_something_standing_is_never_nudged() {
     [ "$(poll_rounds)" -ge 5 ] || bail "$kind: the stall ended the wait before the window did"
     assert_contains "$WATCH_OUT" "not nudged — " "$kind: the line says it was not nudged, and why"
     case "$kind" in
-    thumb) assert_contains "$WATCH_OUT" "a 👍 from ${REVIEWER} is on the PR" "thumb: the 👍 is named" ;;
+    thumb)
+      assert_contains "$WATCH_OUT" "a 👍 from ${REVIEWER} is on the PR" "thumb: the 👍 is named"
+      assert_contains "$WATCH_OUT" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
+        "the barred nudge points to both feed fields"
+      ;;
     verdict) assert_contains "$WATCH_OUT" "no-findings verdict for head ${H2:0:7}" "verdict: it is named" ;;
     completed-row) assert_contains "$WATCH_OUT" "Code Review Completed" "completed-row: it is named" ;;
     request)

@@ -89,6 +89,7 @@ from ludics.prreview.state import (
     gated_state,
     is_init_failure,
     nudge_read,
+    pr_feed_command,
     review_rounds,
     stall_nudge_read,
     state_threads,
@@ -101,11 +102,6 @@ _NUMBER = re.compile(r"[0-9]+")
 _WATERMARK = re.compile(r"[0-9].*,[0-9].*,[0-9].*", re.DOTALL)
 _REQUEST_BODY = "@codex review\n\n_\U0001f916 Addressed by an automated coding agent_"
 _ADVICE = " — consider nudging with a '@codex review' comment"
-_NEW_HEAD = (
-    "read the PR feed (retry --read pr view <pr> --comments), then push a new head (an amend"
-    " suffices: git commit --amend --no-edit && git push --force-with-lease) or hand it to the"
-    " maintainer"
-)
 # end()'s answer when it posted the automatic nudge: the loop goes on, watching the request.
 _NUDGED = -1
 # end()'s answer when its final poll read a head the nudge is held for (a new head, or a request
@@ -770,6 +766,13 @@ class Watch:
             case _:
                 assert_never(read)
 
+    def new_head_advice(self) -> str:
+        return (
+            f"read the PR feed ({pr_feed_command(self.repo, self.pr)}), then push a new head"
+            " (an amend suffices: git commit --amend --no-edit && git push --force-with-lease)"
+            " or hand it to the maintainer"
+        )
+
     def stall_remedy(self) -> str:
         """What a stall still standing at the window's end says to do, from the final read."""
         failed = self.stall_failed.get(self.polled.head)
@@ -780,7 +783,7 @@ class Watch:
             return (
                 f"this watch's own '@codex review' on head {self.polled.head[:7]},"
                 f" {fmt_age(self.clock.now() - own)} ago, drew no finished round, and a second is"
-                f" never posted automatically: {_NEW_HEAD}"
+                f" never posted automatically: {self.new_head_advice()}"
             )
         flag = "" if self.nudge else "--no-nudge: "
         read = stall_nudge_read(self.ctx, self.pr)
@@ -794,11 +797,12 @@ class Watch:
             )
         match read:
             case NudgeBarred(why=why, asked=asked) if asked:
-                return f"{flag}not nudged — {why}, so no second one: {_NEW_HEAD}"
+                return f"{flag}not nudged — {why}, so no second one: {self.new_head_advice()}"
             case NudgeBarred(why=why):
                 return (
-                    f"{flag}not nudged — {why}. Read the PR feed (retry --read pr view <pr>"
-                    " --comments) before any move; never re-request while a 👍 may stand"
+                    f"{flag}not nudged — {why}. Read the PR feed"
+                    f" ({pr_feed_command(self.repo, self.pr)}) before any move and check PR"
+                    " reactions. Never re-request while a 👍 may stand"
                 )
             case NudgeClear(head=head):
                 pr_state, now_head = self.write_gate()
@@ -838,12 +842,15 @@ class Watch:
             return (
                 f" — this watch's own '@codex review' on head {self.polled.head[:7]},"
                 f" {fmt_age(self.clock.now() - own)} ago, drew no review, and a second is never posted"
-                f" automatically: {_NEW_HEAD}"
+                f" automatically: {self.new_head_advice()}"
             )
         if self.nudge and state.tok == "nudged":
             # A request stood on the head through its grace and drew nothing: the once-per-head
             # remedy, as for one below the watermark (review of #583, round 6).
-            return f" — a '@codex review' request on this head drew no review in its grace, so no second one: {_NEW_HEAD}"
+            return (
+                " — a '@codex review' request on this head drew no review in its grace,"
+                f" so no second one: {self.new_head_advice()}"
+            )
         if not self.nudge or state.tok != "expected":
             return _ADVICE
         if state.merge in ("dirty", "draft"):
@@ -855,7 +862,7 @@ class Watch:
         read = nudge_read(self.ctx, self.pr)
         match read:
             case NudgeBarred(why=why, asked=asked) if asked:
-                return f" — {why}, so the watch posts no second one: {_NEW_HEAD}"
+                return f" — {why}, so the watch posts no second one: {self.new_head_advice()}"
             case NudgeBarred(why=why):
                 return f" — not nudged automatically ({why}); consider nudging with a '@codex review' comment"
             case NudgeClear(head=head):

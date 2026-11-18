@@ -1544,6 +1544,9 @@ test_an_old_eyes_over_a_fresh_push_is_its_pickup_then_its_stall() {
   run_status
   assert_eq "$(state_tok "$STATE")" stalled "past the pickup the 👀 is the stall it is"
   assert_contains "$(state_detail "$STATE")" "with nothing posted since" "aged from the 👀, as before"
+  assert_contains "$LINE" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
+    "the stalled fallback reads both feed fields through retry"
+  assert_contains "$LINE" "check the PR conversation for a 👍" "reactions need a separate read"
 }
 
 # --- an approval over open review threads (ludics-lite#289) -----------------------------------
@@ -2253,6 +2256,8 @@ test_a_failed_run_counts_the_requests_on_its_head() {
   run_status
   assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" run-again "a failure answering a request on this head"
   assert_contains "$LINE" "reviewer's run FAILED AGAIN on head 1e14b13" "is surfaced, not re-requested"
+  assert_contains "$LINE" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
+    "the fallback reads both feed fields through retry"
   assert_contains "$LINE" "request at 2026-09-04T22:47:00Z" "naming the request it answers"
   # A request in the head commit's own second counts as on it: the clock cannot say otherwise.
   COMMENTS_JSON="[$(failed_run_summary 1 "$FAILED_RUN_ROW"),$(request_comment 2 "$HEAD_AT")]"

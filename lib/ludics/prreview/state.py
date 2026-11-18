@@ -15,6 +15,7 @@ carry.
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Literal, assert_never, cast
 
@@ -1308,6 +1309,20 @@ def conflict_note(merge: str, repo: str, pr: str) -> str:
             return ""
 
 
+def pr_feed_command(repo: str, pr: str) -> str:
+    """Manual read of top-level comments and review summaries. Check PR reactions separately."""
+    target = shlex.quote(pr) if pr else "<pr>"
+    repository = shlex.quote(repo) if repo else "<owner/repo>"
+    render = (
+        r'.comments[], .reviews[] | ([.state // "COMMENT", .author.login, .commit.oid]'
+        r' | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
+    )
+    return (
+        f"~/.claude/skills/ship-pr/scripts/pr-review.sh retry --read pr view {target}"
+        f" --repo {repository} --json comments,reviews --jq {shlex.quote(render)}"
+    )
+
+
 def status_line(state: State, repo: str, pr: str) -> str:
     detail = state.detail
     if state.tok == "nudged":
@@ -1332,9 +1347,9 @@ def status_line(state: State, repo: str, pr: str) -> str:
             return (
                 f"STALLED — {detail} for {age}, longer than a round takes. `watch` nudges it"
                 " itself, once per head, when no 👍, verdict or request stands for the head, and"
-                " keeps watching. Outside a watch, FIRST read the PR feed yourself (retry --read pr"
-                " view <pr> --comments): a verdict may have landed as a comment or a 👍 this state"
-                " machine missed. If the feed holds nothing for the current head, nudge once"
+                f" keeps watching. Outside a watch, FIRST read the PR feed ({pr_feed_command(repo, pr)})"
+                " for a verdict and check the PR conversation for a 👍. If neither stands for the"
+                " current head, nudge once"
                 f" (pr-review.sh comment {repo}#{p} '@codex review'); never while a 👍 may stand,"
                 f" since a re-request CLEARS it{c}"
             )
@@ -1353,8 +1368,8 @@ def status_line(state: State, repo: str, pr: str) -> str:
                 case "run-again":
                     return (
                         f"reviewer's run FAILED AGAIN on head {fsha} after a '@codex review'"
-                        " request on it — not re-requested a second time: read the PR feed (retry"
-                        " --read pr view <pr> --comments) for anything the reviewer said, then"
+                        " request on it — not re-requested a second time: read the PR feed"
+                        f" ({pr_feed_command(repo, pr)}) for anything the reviewer said, then"
                         " push a new head (an amend suffices: git commit --amend --no-edit && git"
                         " push --force-with-lease) or hand it to the maintainer. This is not a"
                         f" round — {frest}, standing for {age}{c}"
