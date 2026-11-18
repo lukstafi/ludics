@@ -73,6 +73,7 @@ SECTIONS=(
   "execution tip-run"
   "execution revisions resolve"
   "execution assign"
+  "execution windows-witness"
   "execution conclude --standing-handback"
   "execution leg"
   "prs (the supervision read)"
@@ -416,6 +417,7 @@ cp "$FW" "$TMP/dispatcher/issue-wave/scripts/fleet-worker.sh"
 cp "$HERE/../../scripts/py" "$TMP/dispatcher/scripts/py"
 cp -R "$HERE/../../lib" "$TMP/dispatcher/lib"
 cp "$HERE/bg-run.sh" "$TMP/dispatcher/issue-wave/scripts/bg-run.sh"
+cp "$HERE/windows-driver.ps1" "$TMP/dispatcher/issue-wave/scripts/windows-driver.ps1"   # execution windows-witness stages it
 cp -R "$HERE/../templates" "$TMP/dispatcher/issue-wave/templates"   # the shipped parts wave prep and wave review look up
 FW="$TMP/dispatcher/issue-wave/scripts/fleet-worker.sh"
 export BASE_CALL_LOG="$TMP/base-calls"
@@ -3889,6 +3891,94 @@ expect "a message with no block is refused" 2 "no EXECUTION_REQUEST ... END_EXEC
 expect "--unstick needs the --message file it sends" 2 "--unstick sends the --message file" -- \
   "${FWA[@]}" execution assign "$(as_base subagent)" "$two" --unstick testbox w869
 for id in as-1 as-2 as-3 as-5 as-fill; do fixture_done "$id"; done
+}
+
+section "execution windows-witness" && {
+need_lease
+# ludics#1206: a worker's WINDOWS_WITNESS_REQUEST, run by one verb against the registry: the
+# measurement on the box's Linux side, the boots and the status read through a fake wake-lab.sh
+# (the site's `wake`), the staging and the native driver through an ssh that answers the Windows
+# alias here and hands every other call to the suite's shim. The unit suite
+# (test_fleetworker_winwitness.py) runs every failure path and the staged scripts themselves.
+ww="$TMP/ww"; mkdir -p "$ww/bin"
+wsha=$(printf 'b%.0s' $(seq 40))
+cat > "$ww/wake" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$WW/calls"
+case "$1" in
+  endpoint-map) printf '%s\n' 'testbox testbox testbox-win' ;;
+  status) printf '%s\n' "testbox  os=${WW_OS:-linux}  linux=UP" ;;
+  *) [ "${WW_FAIL:-}" != "$1" ] || { printf '%s\n' "$1 FAILED on testbox"; exit 1; } ;;
+esac
+EOF
+cat > "$ww/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+host="" prev=""
+for word in "$@"; do
+  if [ "$prev" = -o ]; then prev=""; continue; fi
+  case "$word" in -o) prev=-o ;; -*) ;; *) host="$word"; break ;; esac
+done
+[ "$host" = testbox-win ] || exec "$WW_SHIM" "$@"
+case "${*: -1}" in
+  *' --noprofile --norc -s"') cat > "$WW/staged.sh"; printf '%s\n' "ssh stage" >> "$WW/calls"; printf 'observed_sha: %s\n' "$WW_SHA" ;;
+  *windows-driver.ps1*) printf '%s\n' "ssh run" >> "$WW/calls"; printf 'runner_exit=%s\nexit: %s\n' "${WW_EXIT:-0}" "${WW_EXIT:-0}"; exit "${WW_EXIT:-0}" ;;
+  *) exit 255 ;;
+esac
+EOF
+chmod +x "$ww/wake" "$ww/bin/ssh"
+printf '%s\n' 'uname -a' 'bash --version' > "$ww/verify.sh"
+jq -n '{wave:"w", worker:"/root/w1206", transport:"subagent", agent_host:"testbox", repository:"o/r",
+  issue:"o/r#1206", purpose:"windows-witness fixture"}' > "$ww/base.json"
+jq -n --arg wake "$ww/wake" '{testbox: {windows_host:"testbox-win", root:"C:/witness", wake:$wake}}' > "$ww/site.json"
+ww_msg() { # <id> [jq object merged in] -> the worker's message, as a file
+  jq -c -n --arg id "$1" --arg rev "$wsha" --arg script "$ww/verify.sh" --argjson more "${2:-"{}"}" \
+    '{request_id:$id, linux_host:"testbox", windows_host:"testbox-win", requested_revision:$rev, script:$script,
+      cap_seconds:60, checkout:"C:/ignored", evidence:"C:/ignored.log"} + $more' > "$ww/$1.json"
+  printf 'Please run my witness:\n    WINDOWS_WITNESS_REQUEST\n%s\n    END_WINDOWS_WITNESS_REQUEST\n' "$(cat "$ww/$1.json")" > "$ww/$1.md"
+  printf '%s' "$ww/$1.md"
+}
+ww_run() { # <id> [VAR=value...] -> the verb's stderr in $said, its status in $rc, the calls it made in $calls
+  local id="$1"; shift; : > "$ww/calls"
+  said=$(env PATH="$ww/bin:$PATH" WW="$ww" WW_SHIM="$TMP/bin/ssh" WW_SHA="$wsha" FLEET_BOXES="testbox other" "$@" \
+    "$FW" execution windows-witness "$ww/base.json" "$(ww_msg "$id")" --site "$ww/site.json" --transcript "$ww/$id.log" \
+    --script "$ww/verify.sh" 2>&1); rc=$?
+  calls=$(tr '\n' '|' < "$ww/calls")
+}
+record_of() { "$FW" execution list | jq -c --arg id "$1" '[.[] | select(.request_id == $id)][0] // {}'; }
+ww_run ww-1
+[ "$rc" -eq 0 ] && grep -qx 'WITNESS concluded: ww-1 pass' <<<"$said" && ok "a passing witness is reserved, run and concluded pass, exit 0" ||
+  ko "a passing witness (rc=$rc): $said"
+[ "$calls" = "endpoint-map|boot-windows --as=ww-1 testbox|ssh stage|ssh run|boot-linux --as=ww-1 testbox|status testbox|" ] &&
+  ok "...endpoint map, boot-windows, staging, the driver, boot-linux, status, in that order" || ko "calls: $calls"
+got=$(record_of ww-1 | jq -r '[.state, .verdict, .request.kind, .request.transport, .request.execution_host, .observed_sha, .remote_checkout] | join(" ")')
+[ "$got" = "concluded pass measurement coordinator testbox $wsha C:/witness/ww-1/checkout" ] &&
+  ok "...the registry holds the coordinator's measurement, concluded with the staged checkout" || ko "record: $got"
+grep -Fq 'base64 -d > "$dir"/windows-driver.ps1' "$ww/staged.sh" && grep -Fq "sha=$wsha" "$ww/staged.sh" && cmp -s "$ww/staged.sh" "$ww/ww-1.log.stage.sh" &&
+  ok "...the staging script sent is the one kept beside the transcript" || ko "staging script: $(head -c 300 "$ww/staged.sh")"
+grep -q '^exit: 0$' "$ww/ww-1.log" && grep -Fq '"boot-windows", "--as=ww-1", "testbox"' "$ww/ww-1.log" &&
+  ok "...the transcript keeps every command and the driver's output" || ko "transcript: $(cat "$ww/ww-1.log")"
+ww_run ww-2 WW_EXIT=3
+[ "$rc" -eq 1 ] && [ "$(record_of ww-2 | jq -r '.verdict')" = fail ] && ok "a failing script concludes fail, exit 1" || ko "a failing script (rc=$rc): $said"
+ww_run ww-3 WW_FAIL=boot-windows
+[ "$rc" -eq 1 ] && [ "$(record_of ww-3 | jq -r '.verdict')" = not-launched ] &&
+  [ "$calls" = "endpoint-map|boot-windows --as=ww-3 testbox|boot-linux --as=ww-3 testbox|status testbox|" ] &&
+  ok "Windows that never answers: no staging, Linux recovered, concluded not-launched" || ko "boot-windows failing (rc=$rc): $calls -- $said"
+ww_run ww-4 WW_OS=windows
+[ "$rc" -eq 3 ] && grep -q '^WITNESS NEEDS A PERSON: testbox is not confirmed back on Linux; ww-4 kept' <<<"$said" &&
+  [ "$(record_of ww-4 | jq -r '.state')" = launching ] && ok "a box whose status does not read os=linux is NEEDS A PERSON, its record kept" ||
+  ko "unconfirmed Linux (rc=$rc): $(record_of ww-4) -- $said"
+ww_run ww-5
+[ "$rc" -eq 2 ] && [ "$calls" = "endpoint-map|" ] && [ "$(record_of ww-5)" = "{}" ] && grep -q '"execution", "list"' "$ww/ww-5.log" &&
+  ok "...and while it is kept, the next witness on the box is refused: nothing reserved, nothing booted" || ko "a busy box (rc=$rc): $calls -- $said"
+fixture_done ww-4
+expect "a Windows alias that is not the site's is refused before anything is asked" 2 \
+  "windows_host testbox-wsl is not the site's native Windows alias for testbox, testbox-win" -- \
+  env PATH="$ww/bin:$PATH" WW="$ww" FLEET_BOXES="testbox other" "$FW" execution windows-witness "$ww/base.json" \
+    "$(ww_msg ww-6 '{"windows_host":"testbox-wsl"}')" --site "$ww/site.json" --transcript "$ww/ww-6.log" --script "$ww/verify.sh"
+[ "$(record_of ww-6)" = "{}" ] && [ ! -e "$ww/ww-6.log" ] && ok "...no record and no transcript" || ko "ww-6 left: $(record_of ww-6)"
+expect "an existing transcript is refused, so an earlier attempt's evidence stays its own" 2 "ww-1.log exists; name a fresh transcript" -- \
+  env WW="$ww" FLEET_BOXES="testbox other" "$FW" execution windows-witness "$ww/base.json" "$ww/ww-1.md" --site "$ww/site.json" \
+    --transcript "$ww/ww-1.log" --script "$ww/verify.sh"
 }
 
 section "execution conclude --standing-handback" && {

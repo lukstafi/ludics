@@ -1281,7 +1281,8 @@ USAGE = (
     " run|reserve|dispatch|record|reconcile|rebind|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
     " tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> -- <command>, tip-run --wait <id>,"
-    " or assign <base.json> <requests file|-> [--request <id>]... [--message <file>] [--unstick <box> <name>]"
+    " assign <base.json> <requests file|-> [--request <id>]... [--message <file>] [--unstick <box> <name>],"
+    " or windows-witness <base.json> <message file|-> --site <site.json> --transcript <path> --script <file>"
 )
 CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"
 
@@ -1874,6 +1875,12 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             from ludics.fleetworker import assign
 
             return assign.cmd_assign(cfg, args[1:])
+        case "windows-witness":
+            # A worker's WINDOWS_WITNESS_REQUEST run on its dual-boot box (ludics#1206): `run`, the
+            # boots, the staging and the driver, then `conclude`, the box returned on every exit.
+            from ludics.fleetworker import winwitness
+
+            return winwitness.cmd_windows_witness(cfg, args[1:])
         case "conclude":
             mode = args[1] if len(args) > 1 else ""
             if mode == "--from-run":

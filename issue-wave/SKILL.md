@@ -380,9 +380,8 @@ triage is wrong, not the backlog.
 
 The wave summary names the wave mode (*Wave mode*): regular, with its starting worker count, unless
 the user asked for a sprint, whose summary names its agent count, which workers run as CLI
-workers on their home boxes, and its integration box. The wave summary names the cc integration
-loop's home box and its standby, and says workers on the home box get one slot fewer (a four-slot
-box: 3 of 4).
+workers on their home boxes, and its integration box. It also names the cc integration loop's home
+box and its standby, and says workers on the home box get one slot fewer (a four-slot box: 3 of 4).
 
 ## Launch
 
@@ -708,22 +707,23 @@ worker's `meta` keeps them (ludics#539).
 
 ## Supervise
 
-The coordinator's job between launch and last merge. **Who answers a returned turn** is set by
-the worker's kind. The handoff driver, `fleet-worker.sh wave drive <wave.json>`, answers every
-turn of a CLI worker, Claude or Codex, that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
+The coordinator's job between launch and last merge. **Who answers a returned turn** is set by the
+worker's kind. The handoff driver, `fleet-worker.sh wave drive <wave.json>`, answers every turn of a
+CLI worker, Claude or Codex, that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
 worker, concludes an `EXECUTION_RESULT`, runs `wave review` for a `REVIEW_REQUEST` or
 `CONFIRM_REQUEST`, and saves a `HANDBACK` under `handbacks/` and closes its row with `board close`
 ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 9;
-`lib/ludics/fleetworker/wavedrive.py`'s header). Everything else is yours, with the same verbs:
-each attention line the driver writes (a design question, a plan, a refused or partial assignment,
-a review with no verdict, a merge no clearance covers, a worker that vanished), every turn of a
-native worker, and every turn while no driver runs (`wave turn <wave.json> <task>`
-answers one, once). A `WINDOWS_WITNESS_REQUEST` goes straight to coordinator attention; follow
-[executions.md, *Coordinator recipe for a worker’s Windows witness*](references/executions.md#coordinator-recipe-for-a-workers-windows-witness).
-An attention turn is final for the driver: answer it by hand, and the worker's
-next turn is the driver's again. Where a bullet below names `attach`, `status`, `log` or
-`unstick`, it is speaking of CLI workers; native and app workers are observed and controlled
-through the tools in your coordinator's file, never through those commands.
+`lib/ludics/fleetworker/wavedrive.py`'s header). Everything else is yours, with the same verbs: each
+attention line the driver writes (a design question, a plan, a refused or partial assignment, a
+review with no verdict, a merge no clearance covers, a worker that vanished), every turn of a native
+worker, and every turn while no driver runs (`wave turn <wave.json> <task>` answers one, once). A
+`WINDOWS_WITNESS_REQUEST` goes straight to coordinator attention: review it and its script, then run
+`fleet-worker.sh execution windows-witness` ([executions.md, *Coordinator recipe for a worker's
+Windows witness*](references/executions.md#coordinator-recipe-for-a-workers-windows-witness)). An
+attention turn is final for the driver: answer it by hand, and the worker's next turn is the
+driver's again. Where a bullet below names `attach`, `status`, `log` or `unstick`, it is speaking of
+CLI workers; native and app workers are observed and controlled through the tools in your
+coordinator's file, never through those commands.
 
 What the driver leaves to you while it runs: starting it and the heartbeat as background commands
 (one driver per wave: a second refuses on its lock), re-arming the heartbeat each tick, reading

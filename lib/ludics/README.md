@@ -405,7 +405,11 @@ fleetworker/tiprun.py
     issue-wave/scripts/test-fleet-worker.sh "launch /" tip-run
 
 fleetworker/assign.py
-    issue-wave/scripts/test-fleet-worker.sh "execution assign" board
+    issue-wave/scripts/test-fleet-worker.sh "execution assign" board "execution windows-witness"
+
+fleetworker/winwitness.py
+    issue-wave/scripts/test-fleet-worker.sh "execution windows-witness"
+    lib/ludics/tests/test_fleetworker_winwitness.py
 
 fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker/waveloop.py fleetworker/wavereview.py fleetworker/wavelaunch.py fleetworker/waveunprep.py fleetworker/wavedrive.py fleetworker/wavedecide.py
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
@@ -729,12 +733,19 @@ calling assign. `test_fleetworker_wave.py` drives the first tick and repeat tick
 markers, and executes executions.md's Windows coordinator recipe against fake boot/ssh/registry
 calls, including timeouts and interruption. The recipe reserves on Linux, refuses active work,
 keeps a transcript, and attempts Linux recovery before conclusion; unconfirmed recovery retains
-the measurement. Source staging and live reboot verification remain outside its readiness
-boundary. Signal-disposition assertions, real Bash trap fakes and a negative control pin deferred
-boot/recovery cancellation with isolated child sessions; verifier timeouts keep their own
-registry verdict, and source
-evidence explicitly identifies the coordinator readiness observation. The integrated
-`execution windows-witness` verb is deferred to a hand-back proposal.
+the measurement. Signal-disposition assertions, real Bash trap fakes and a negative control pin
+deferred boot/recovery cancellation with isolated child sessions.
+
+Agent notes (wave-20261118-ludics, t1206): that recipe is now the verb `execution
+windows-witness` (`fleetworker/winwitness.py`), and executions.md keeps no Python block: the
+recipe's fake-call tests moved to `test_fleetworker_winwitness.py`, which also runs the staging
+script and `witness.sh` with a local bash and git (POSIX paths standing in for the site's), and
+the fleet suite's "execution windows-witness" section drives the verb against the registry with a
+fake wake-lab (the site's `wake`) and an ssh that answers the Windows alias. The verb composes its
+measurement from `assign`'s base and `assign.read_blocks` (#159), stages the revision, the script
+and this checkout's `windows-driver.ps1` itself (#562), and confirms Linux by `boot-linux` and
+`status`'s `os=linux`. Its Windows paths come from a coordinator-private site file, so the box's
+layout never enters this public repository.
 
 Agent notes (wave-20261115-ludics, p3): `wavedrive.py`'s THE GATE defines the ten-minute,
 non-final pending notice and its in-memory reset conditions; its remote-tip sample is diagnostic
