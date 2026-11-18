@@ -1392,7 +1392,10 @@ class Review(WaveDirCase):
         for want in (f"o/staging#7, head `{self.base}`", "delegation wave wv", "The PR is for issue o/up#42",
                      "`gh issue view 42 --repo o/up --json number,title,body,comments`", f"show origin/main:<path>",
                      f"### Review checkpoint (at-open): head {self.base[:8]}", "VERDICT: blocking (<n> blocking, <m> suggestions)",
-                     "which of the PR's predicted measured consequences has no measurement yet",
+                     f"`{os.path.join(self.wavedir, 'briefs', 'brief-t42.md')}`",
+                     "task's backend scope for dedicated probes",
+                     "project's full-suite requirements for controls",
+                     "missing measurements for the PR's predicted consequences",
                      "any such unmeasured consequence is **blocking**",
                      'window and even if the PR says "Part of"'):
             self.assertIn(want, prompt)
@@ -1545,6 +1548,8 @@ class Review(WaveDirCase):
             prompt = self.read(stem + ".prompt.md")
             for want in ("This is a confirm review, not a first review", f"at head `{self.base}`", f"`{self.stem()}.md`",
                          f"diff {self.base} {fixed}", f"### Review checkpoint (confirm): head {fixed[:8]}",
+                         "gh pr view 7 --repo o/staging --json comments,reviews --jq ",
+                         "task's backend scope for dedicated probes",
                          "any such unmeasured consequence is **blocking**",
                          'window and even if the PR says "Part of"'):
                 self.assertIn(want, prompt)

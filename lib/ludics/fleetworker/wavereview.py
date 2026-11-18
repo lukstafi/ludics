@@ -108,7 +108,7 @@ SHIPPED = ("checkpoint.md", "issue.md", "source.md", "confirm.md", "verdict.md")
 # The NAMEs each shipped part may use (checkprompts/brieftemplate.py renders each with exactly these).
 COMMON_NAMES = frozenset({"WAVE", "KIND", "REPO", "PR", "SHA", "SHA8", "CHECKOUT", "MAIN"})
 PART_NAMES: dict[str, frozenset[str]] = {
-    "checkpoint.md": COMMON_NAMES,
+    "checkpoint.md": COMMON_NAMES | {"BRIEF"},
     "issue.md": COMMON_NAMES | {"ISSUE", "ISSUE_N", "ISSUE_REPO"},
     "source.md": COMMON_NAMES | {"SOURCE", "BRIEF"},
     "confirm.md": COMMON_NAMES | {"REVIEWED_SHA", "REVIEW_FILE"},
@@ -387,17 +387,17 @@ def project_part(call: Call) -> Part | None:
 
 def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
     """Step 6: the rendered prompt."""
+    brief = call.path("briefs", f"brief-{call.task}.md")
     values = {"WAVE": call.wave.wave, "KIND": call.kind, "REPO": call.wave.repository, "PR": call.pr, "SHA": call.sha,
-              "SHA8": call.sha[:8], "CHECKOUT": call.wave.checkout, "MAIN": call.wave.vars["MAIN"]}
+              "SHA8": call.sha[:8], "CHECKOUT": call.wave.checkout, "MAIN": call.wave.vars["MAIN"], "BRIEF": brief}
     parts = [read_part(call, "checkpoint.md")]
     if call.issue_ref:
         values |= {"ISSUE": call.issue_ref, "ISSUE_N": call.number, "ISSUE_REPO": call.wave.issue_repository}
         parts.append(read_part(call, "issue.md"))
     else:
-        brief = call.path("briefs", f"brief-{call.task}.md")
         if not os.path.isfile(brief):
             raise call.refused(f"a --source task is judged against its brief, and {brief} is no file")
-        values |= {"SOURCE": call.source_ref, "BRIEF": brief}
+        values["SOURCE"] = call.source_ref
         parts.append(read_part(call, "source.md"))
     project = project_part(call)
     if project is not None:

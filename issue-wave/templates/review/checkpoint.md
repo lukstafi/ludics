@@ -20,15 +20,19 @@ and a command outside the forms below is refused. Read with:
 The project's own rules are its `AGENTS.md` or `CLAUDE.md` at the root of the tree, and the notes
 they point to. Read them at the base, and hold the PR to them.
 
+Read the task's assigned verification in the worker brief at `@@BRIEF@@`, if present. Use the
+task's backend scope for dedicated probes and the project's full-suite requirements for controls
+in the full suite.
+
 Look especially for:
 
 - a claim or a test that cannot fail: a negative control never run, a golden that pins the wrong
   thing, a value checked only by its shape;
 - a fix that covers the task's example and not its class;
 - a behaviour change the PR body does not state;
-- which of the PR's predicted measured consequences has no measurement yet: for an issue whose
-  acceptance is a measurement, any such unmeasured consequence is **blocking**, however long its
-  window and even if the PR says "Part of";
+- missing measurements for the PR's predicted consequences. For an issue whose acceptance is a
+  measurement, any such unmeasured consequence is **blocking**, however long its window and
+  even if the PR says "Part of";
 - a duplicated helper where an existing one fits.
 
 A finding is **blocking** when it is a real defect or it invalidates a claim the PR makes.
