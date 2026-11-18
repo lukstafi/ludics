@@ -3412,7 +3412,7 @@ fixture_done tip-leg
 wait "$twait"; trc=$?
 [ "$trc" -eq 0 ] && grep -q "^EXECUTION WINDOW testbox: tip-m open; suspended " "$TMP/tip-wait.log" &&
   ok "...and one whose blocker concludes within the bound opens the window" || ko "the pending wait (exit $trc): $(cat "$TMP/tip-wait.log")"
-fixture_done tip-m
+[ -z "$(state_of tip-m)" ] || fixture_done tip-m   # a window that never opened has no record
 fixture_done tip-slot
 # The token taken only if free now: a batch holding the box's one GPU token turns the run away, and
 # what was reserved is concluded not-launched.
