@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from typing import NoReturn, assert_never, cast
 
 from ludics import cli
-from ludics.prreview.budget import pause
+from ludics.prreview.budget import pause, sleep_for_poll
 from ludics.prreview.clock import clock_from_env
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, api_rejection, die, fail, pr_arg
@@ -240,7 +240,10 @@ def recovery_read(session: GhSession, args: list[str]) -> int:
         cap = session.budget.build_cap if session.budget is not None else timing.interval
         delay = pause(timing.interval, cap, delay, last != found.state())
         last = found.state()
-        clock.sleep(min(delay, max(0, deadline - clock.now())))
+        nap = min(delay, max(0, deadline - clock.now()))
+        sleep_for_poll(clock, nap, backed_off=delay > timing.interval,
+                       subject=f"rerun wait for run {rid} on {shlex.quote(f'{repo}#{pr}')}",
+                       reason="the run is unfinished")
     jobs = read_jobs(session, repo, rid)
     if verb == "job-log":
         jid = extra[0]

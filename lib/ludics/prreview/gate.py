@@ -36,7 +36,7 @@ from ludics.prreview import ere
 from ludics.prreview import knobs
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, warn
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
-from ludics.prreview.budget import pause
+from ludics.prreview.budget import pause, sleep_for_poll
 from ludics.prreview.clock import Clock, FuncClock, age_of, fmt_age, freshest_age
 from ludics.prreview.images import RedJob, report_lines as image_lines
 from ludics.prreview.jobsteps import diagnostic as step_diagnostic
@@ -287,10 +287,9 @@ class Gate:
     check_lines: str = ""
     # The held lines the report carries (``RunSignal.holds``), for ``base``'s merged-head check.
     check_holds: str = ""
-    # The names of the checks the fold left running, for the wait's progress line (#569).
-    pending_names: list[str] = field(default_factory=lambda: list[str]())
     # Heartbeat-only job evidence (#1112), enabled by checks, never folded into the verdict.
     steps_on: bool = False
+    # The wait lists all pending checks, even if a check has no Actions job URL to inspect.
     pending_jobs: list[tuple[str, str]] = field(default_factory=lambda: list[tuple[str, str]]())
     # ``checks --check <ERE>`` (#569): judge only the check runs whose name the ERE matches, grep
     # reading it as it reads the advisory list. Empty is the whole head. See ``check``.
@@ -534,11 +533,14 @@ class Gate:
         yet queued) does not hold it, as ``--check``'s selection does not see one."""
         return self.settle and self.verdict in ("red", "runred") and self.check_pending > 0
 
+    @property
+    def pending_names(self) -> list[str]:
+        return [name for name, _ in self.pending_jobs]
+
     def summarize(self, rows: list[str]) -> None:
         """``summarize_checks``: the per-check classes folded into ``verdict`` and the report lines."""
         red = waived = cancelled = pending = queued = nogo = green = passed = 0
         lines: list[str] = []
-        running: list[str] = []
         reds: list[RedJob] = []
         pending_jobs: list[tuple[str, str]] = []
         for row in rows:
@@ -563,7 +565,6 @@ class Gate:
                     pending += 1
                     if status != "in_progress":
                         queued += 1
-                    running.append(name)
                     pending_jobs.append((name, url))
                     lines.append(f"  running  {name} (no verdict yet)  {url}\n")
                 case "nogo":
@@ -575,7 +576,6 @@ class Gate:
                         passed += 1
         self.check_lines = "".join(lines)
         self.red_jobs = reds
-        self.pending_names = running
         self.pending_jobs = pending_jobs
         self.check_red = red
         self.check_waived = waived
@@ -1323,14 +1323,17 @@ class Gate:
         )
         return isinstance(result, GhOk) and result.stdout == "dirty"
 
-    def _pause(self, deadline: int, last_pause: int | None, changed: bool) -> int:
-        """Sleep the budget's next pause (``pause``), clipped at the deadline; the pause taken."""
+    def _pause(self, pr: str, deadline: int, last_pause: int | None, changed: bool,
+               reason: str = "retrying an unread build signal") -> int:
+        """Sleep up to the deadline and return the nominal pause for the next backoff step."""
         budget = self.session.budget
         cap = budget.build_cap if budget is not None else self.config.checks_interval
         if (self.verdict == "pending" or self.settling()) and self.check_queued == 0:
             cap = min(cap, 2 * self.config.checks_interval)
         sleep_for = pause(self.config.checks_interval, cap, last_pause, changed)
-        self.clock.sleep(min(sleep_for, max(0, deadline - int(self.clock.now()))))
+        nap = min(sleep_for, max(0, deadline - self.clock.now()))
+        sleep_for_poll(self.clock, nap, backed_off=sleep_for > self.config.checks_interval,
+                       subject=f"build gate for {shlex.quote(f'{self.repo}#{pr}')}", reason=reason)
         return sleep_for
 
     def check(self, pr: str, wait_for: int, waive: bool = False) -> int:
@@ -1385,7 +1388,7 @@ class Gate:
                 "unanswered" if kind == "ok" else kind, deadline, f"read {repo}#{pr}'s head SHA", failure, unknown
             ):
                 return 3
-            last_pause = self._pause(deadline, last_pause, False)
+            last_pause = self._pause(pr, deadline, last_pause, False)
         self.check_sha = sha
         beat = started
         run_why = ""
@@ -1416,7 +1419,7 @@ class Gate:
                     return 3
                 if self._moved(pr, sha):
                     return 5
-                last_pause = self._pause(deadline, last_pause, False)
+                last_pause = self._pause(pr, deadline, last_pause, False)
                 continue
             rows = self.drop_advisory_workflows(sha, rows)
             if self.waive_mode:
@@ -1448,7 +1451,7 @@ class Gate:
                         return 3
                     if self._moved(pr, sha):
                         return 5
-                    last_pause = self._pause(deadline, last_pause, False)
+                    last_pause = self._pause(pr, deadline, last_pause, False)
                     continue
                 self.check_lines += sig.superseded
                 match sig.rc:
@@ -1506,7 +1509,7 @@ class Gate:
                             return 3
                         if self._moved(pr, sha):
                             return 5
-                        last_pause = self._pause(deadline, last_pause, False)
+                        last_pause = self._pause(pr, deadline, last_pause, False)
                         continue
                     case 4:
                         if self.verdict != "pending":
@@ -1540,7 +1543,7 @@ class Gate:
                     unknown,
                 ):
                     return 3
-                last_pause = self._pause(deadline, last_pause, False)
+                last_pause = self._pause(pr, deadline, last_pause, False)
                 continue
             base_sha, head_ref = reread_base, reread_ref
             if current != sha:
@@ -1669,7 +1672,13 @@ class Gate:
                 f"{self.verdict}|{self.check_pending}|{self.check_green}|{self.check_total}"
                 f"|{self.run_state}"
             )
-            last_pause = self._pause(deadline, last_pause, sig != last_sig)
+            if keep:
+                reason = "waiting for build recovery"
+            elif self.settling():
+                reason = "waiting for the remaining build checks to settle"
+            else:
+                reason = "the build verdict is pending"
+            last_pause = self._pause(pr, deadline, last_pause, sig != last_sig, reason)
             last_sig = sig
         note = f" ({self.check_green} build check(s) have passed so far)" if self.check_green > 0 else ""
         head = f"build signal {repo}#{pr} @{sha[:8]}"

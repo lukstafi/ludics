@@ -419,6 +419,33 @@ class Session(Scratch):
         self.assertEqual(read, GhOk("sha"))
         self.assertEqual(self.clock.slept, [600])
 
+    def test_quota_hold_reports_the_ceiling_when_it_precedes_the_reset(self) -> None:
+        b = self.budget()
+        b.wait_until = T0 + 30
+        self.plant(T0 + 600, "repos/o/r/pulls/7", 600)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNotNone(b.gate("read"))
+        self.assertIn("no call to GitHub until 08:10:00Z", err.getvalue())
+        self.assertIn("next poll at 08:00:30Z (rechecking the shared GitHub quota hold)", err.getvalue())
+        self.assertEqual((self.gh.calls, self.clock.slept), ([], [30]))
+
+    def test_a_quota_probe_in_another_process_reports_its_recheck(self) -> None:
+        b = self.budget(alive=True)
+        b.wait_until = T0 + 15
+        self.plant(T0, "repos/o/r/pulls/7", 600)
+        os.mkdir(b.probe_lock)
+        with open(os.path.join(b.probe_lock, "owner"), "w", encoding="utf-8") as owner:
+            owner.write(f"4243\n{T0}\n")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNotNone(b.gate("read"))
+        self.assertEqual((self.gh.calls, self.clock.slept), ([], [5, 5, 5]))
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertEqual(lines[0], "pr-review.sh: quota hold: next poll at 08:00:05Z "
+                         "(another process is probing GitHub, rechecking every 5s)")
+
     def test_a_hold_waited_out_then_transport_is_not_quota_stopped(self) -> None:
         # ludics-lite#795: the gate reads quota_stopped() to tell a read the budget stopped (3 at
         # once) from transport (read again within the wait). A read refused on quota, whose hold an

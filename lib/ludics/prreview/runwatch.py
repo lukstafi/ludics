@@ -27,12 +27,13 @@ flag, or a run/repo pair the API rejects); 3 the API did not answer, so the run'
 
 import os
 import re
+import shlex
 from collections.abc import Mapping
 from typing import assert_never
 
 from ludics import cli
 from ludics.prreview import knobs
-from ludics.prreview.budget import pause
+from ludics.prreview.budget import pause, sleep_for_poll
 from ludics.prreview.checkruns import conclusion_class
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.core import (
@@ -220,7 +221,9 @@ def run(
         sleep_for = pause(interval, cap, last_pause, status != last_status)
         last_status = status
         last_pause = sleep_for
-        clk.sleep(min(sleep_for, deadline - now))
+        sleep_for_poll(clk, min(sleep_for, deadline - now), backed_off=sleep_for > interval,
+                       subject=f"run {shlex.quote(run_id)} in {shlex.quote(repo)}",
+                       reason="the run is unfinished")
     verdict = conclusion_class(conclusion)
     match verdict:
         case "green":

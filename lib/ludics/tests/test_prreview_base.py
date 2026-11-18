@@ -423,10 +423,15 @@ class WaitLoop(unittest.TestCase):
     def test_the_ceiling_caps_the_last_sleep(self) -> None:
         clock = FakeClock()
         page = runs({"status": "in_progress", "conclusion": None, "head_sha": C})
-        rc, out, _, _ = base_run(world(C, page), ["main", "--wait=70"], clock=clock)
+        with tempfile.TemporaryDirectory() as state:
+            rc, out, err, _ = base_run(world(C, page), ["main", "--wait=70"], clock=clock, state=state)
         self.assertEqual(rc, 4)
         self.assertIn("NO VERDICT for the tip", out)
         self.assertEqual(clock.slept, [60, 10], "the last sleep is what is left of the ceiling")
+        self.assertEqual(
+            [line for line in err.splitlines() if "next poll" in line],
+            ["pr-review.sh: base o/r main: next poll at 08:01:10Z (polling backoff while push CI is in flight)"],
+        )
 
     def test_a_stale_page_between_rounds_is_read_again(self) -> None:
         """ludics-lite#550: round one sees the tip's run in flight, round two's page holds only a

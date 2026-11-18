@@ -203,6 +203,17 @@ def at(epoch: int | str) -> str:
         return f"epoch {text}"
 
 
+def next_poll(epoch: int, reason: str) -> str:
+    return f"next poll at {at(epoch)} ({reason})"
+
+
+def sleep_for_poll(clock: Clock, nap: int, *, backed_off: bool, subject: str, reason: str) -> None:
+    """Announce a grown pause using the nap the caller selected after applying its deadline."""
+    if backed_off and nap > 0:
+        warn(f"{subject}: {next_poll(clock.now() + nap, f'polling backoff while {reason}')}")
+    clock.sleep(nap)
+
+
 def _first_line(path: str) -> str:
     """``sed -n 1p <file>``: "" when the file cannot be read."""
     try:
@@ -685,19 +696,21 @@ class Budget:
         if not self.dir:
             return None
         noted: int | None = None
+        noted_probe: tuple[str, str] | None = None
         while (hold := self.hold_read()) is not None:
             now = self.clock.now()
             observing = mode == "read" and self.wait_until is not None and now < self.wait_until
             if now < hold.until:
                 if observing and self.wait_until is not None:
+                    nap = min(hold.until - now, self.wait_until - now)
                     if noted != hold.until:
                         warn(
                             f"quota hold: {hold.ep} refused on quota; no call to GitHub until {at(hold.until)}",
                             f"({hold.src}). Waiting it out within this command's ceiling; nothing is"
                             " concluded meanwhile.",
+                            next_poll(now + nap, "rechecking the shared GitHub quota hold"),
                         )
                         noted = hold.until
-                    nap = min(hold.until - now, self.wait_until - now)
                     self.clock.sleep(nap)
                     # Whatever this command read before the wait is as old as the wait now.
                     self.waited = True
@@ -741,7 +754,13 @@ class Budget:
                     )
                 continue
             if observing:
-                self.clock.sleep(5)
+                nap = 5
+                probe_owner = (lock.holder, lock.since)
+                if noted_probe != probe_owner:
+                    reason = f"another process is probing GitHub, rechecking every {nap}s"
+                    warn(f"quota hold: {next_poll(self.clock.now() + nap, reason)}")
+                    noted_probe = probe_owner
+                self.clock.sleep(nap)
                 self.waited = True
                 continue
             return f"quota hold: pid {lock.holder} is probing {hold.ep} for its recovery; no call was made"

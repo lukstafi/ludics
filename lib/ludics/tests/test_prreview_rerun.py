@@ -7,12 +7,16 @@ would bend first.
 
 import contextlib
 import io
+import os
 import unittest
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from unittest import mock
 
 from ludics import cli, proc
 from ludics.prreview import rerun
+from ludics.prreview.budget import Budget
+from ludics.prreview.clock import FuncClock
 from ludics.prreview.core import Config, GhSession
 
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -53,9 +57,9 @@ class Gh:
         return [c for c in self.calls if c[:2] == ["run", "rerun"]]
 
 
-def rerun_with(gh: Gh, *args: str) -> tuple[int, str, str]:
+def rerun_with(gh: Gh, *args: str, budget: Budget | None = None) -> tuple[int, str, str]:
     config = Config(repo="o/r", reviewer="r", round_threshold=None, round_gap=0, api_attempts=1, api_backoff=0)
-    session = GhSession(config, run=gh, sleep=lambda _s: None)
+    session = GhSession(config, run=gh, sleep=lambda _s: None, budget=budget)
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
@@ -104,6 +108,25 @@ class Rerun(unittest.TestCase):
             rc, out, err = rerun_with(Gh(runs=row("101", conclusion=conclusion)), "7", "wait", "101", "1")
             self.assertEqual(rc, 0, err)
             self.assertIn("completed/" + conclusion, out)
+
+    def test_wait_reports_its_backoff_without_changing_the_status_output(self) -> None:
+        elapsed = 0.0
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            nonlocal elapsed
+            sleeps.append(seconds)
+            elapsed += seconds
+
+        clock = FuncClock(time=lambda: 1_800_000_000 + elapsed, sleep=sleep)
+        gh = Gh(runs=row("101", "in_progress", "pending"))
+        with (mock.patch.object(rerun, "clock_from_env", return_value=clock),
+              mock.patch.dict(os.environ, {"SHIP_PR_CHECKS_INTERVAL": "10"})):
+            rc, out, err = rerun_with(gh, "7", "wait", "101", "25", budget=Budget("", clock))
+        self.assertEqual((rc, sleeps), (4, [10, 15]))
+        self.assertEqual(out.splitlines(), ["rerun wait: run 101 in_progress"] * 3)
+        self.assertIn("rerun wait for run 101 on 'o/r#7': next poll at 08:00:25Z "
+                      "(polling backoff while the run is unfinished)", err)
 
     def test_no_run_id_lists_the_heads_runs_and_writes_nothing(self) -> None:
         gh = Gh(runs="\n".join([
