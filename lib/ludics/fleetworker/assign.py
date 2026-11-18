@@ -210,21 +210,22 @@ def base_problem(base: Any) -> str | None:
     return None
 
 
-def read_blocks(text: str) -> list[Any] | str:
-    """THE BLOCKS (see the header): each block's decoded JSON, in order, or why the text is refused."""
+def read_blocks(text: str, opening: str = OPEN, closing: str = CLOSE) -> list[Any] | str:
+    """THE BLOCKS (see the header): each block's decoded JSON, in order, or why the text is refused.
+    ``execution windows-witness`` reads its ``WINDOWS_WITNESS_REQUEST`` blocks by the same rule."""
     blocks: list[Any] = []
     inside: list[str] | None = None
     for line in text.split("\n"):
         word = line.strip()
         if inside is None:
-            if word == OPEN:
+            if word == opening:
                 inside = []
-            elif word == CLOSE:
-                return f"an {CLOSE} line with no {OPEN} before it"
+            elif word == closing:
+                return f"an {closing} line with no {opening} before it"
             continue
-        if word == OPEN:
-            return f"an {OPEN} line inside a block"
-        if word == CLOSE:
+        if word == opening:
+            return f"an {opening} line inside a block"
+        if word == closing:
             try:
                 blocks.append(json.loads("\n".join(inside)))
             except ValueError:
@@ -233,9 +234,9 @@ def read_blocks(text: str) -> list[Any] | str:
             continue
         inside.append(line)
     if inside is not None:
-        return f"block {len(blocks) + 1} has no {CLOSE} line"
+        return f"block {len(blocks) + 1} has no {closing} line"
     if not blocks:
-        return f"no {OPEN} ... {CLOSE} block"
+        return f"no {opening} ... {closing} block"
     return blocks
 
 

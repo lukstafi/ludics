@@ -228,6 +228,11 @@
 #                          # request's `runner` wrapped into the `execution leg` form; one ASSIGN
 #                          # ASSIGNED|REFUSED|ALREADY|UNKNOWN line per request on stderr; --unstick
 #                          # sends the --message file to a CLI worker (lib/ludics/fleetworker/assign.py)
+#   fleet-worker.sh execution windows-witness <base.json> <message file|-> --site <site.json> --transcript <path> [--script <file>]
+#                          # a worker's WINDOWS_WITNESS_REQUEST: a measurement on its Linux side, boot-windows,
+#                          # the revision and script staged, the native driver, boot-linux, conclude; exit 0
+#                          # pass, 1 fail/timeout/not-launched, 2 refused, 3 NEEDS A PERSON, 4 reconcile
+#                          # (lib/ludics/fleetworker/winwitness.py)
 #   fleet-worker.sh prs <owner/repo> [--wave <id>] [--flag-at <n>]   # open PRs with review rounds,
 #                          # CI state (pending(no-runner|never-started): a build job never got a
 #                          # runner), branch agreement (branch=current|behind|unread), head age
