@@ -753,12 +753,14 @@ class Budget:
                         " after its probe; no call was made"
                     )
                 continue
-            if observing:
-                nap = 5
+            probe_now = self.clock.now()
+            if mode == "read" and self.wait_until is not None and probe_now < self.wait_until:
+                interval = 5
+                nap = min(interval, self.wait_until - probe_now)
                 probe_owner = (lock.holder, lock.since)
                 if noted_probe != probe_owner:
-                    reason = f"another process is probing GitHub, rechecking every {nap}s"
-                    warn(f"quota hold: {next_poll(self.clock.now() + nap, reason)}")
+                    reason = f"another process is probing GitHub, rechecking every {interval}s"
+                    warn(f"quota hold: {next_poll(probe_now + nap, reason)}")
                     noted_probe = probe_owner
                 self.clock.sleep(nap)
                 self.waited = True
