@@ -188,6 +188,11 @@ class Planning(unittest.TestCase):
         with open(self.site, "w") as f:
             json.dump(SITE, f)
         self.assertIn("endpoint-map failed", refusal(lambda: self.plan(message(block()), mapped=None)))
+        with open(self.site, "w") as f:
+            json.dump({"rog-nv-linux": {**SITE["rog-nv-linux"], "wake": self.write("wake", "#!/bin/bash\n")}}, f)
+        self.assertIn("is not an executable file; the boots and status run it", refusal(lambda: self.plan(message(block()))))
+        with open(self.site, "w") as f:
+            json.dump(SITE, f)
         with open(self.base, "w") as f:
             json.dump({**BASE, "standing": True}, f)
         self.assertIn("the base names standing", refusal(lambda: self.plan(message(block()))))
@@ -296,7 +301,7 @@ FAILURES = ("none", "reserve", "reserve-published", "reserve-unlisted", "reserve
             "windows-needs-person", "windows-signal", "stage",
             "stage-sha", "stage-timeout", "script", "script-timeout", "driver-timeout", "ssh-error", "interrupt",
             "boot-interrupt", "recovery-interrupt", "local-error", "linux", "linux-needs-person", "status",
-            "conclude", "conclude-timeout", "conclude-file")
+            "conclude", "conclude-timeout", "conclude-file", "handler-interrupt", "handler-interrupt-linux")
 
 
 def fake_plan(directory: str, fleet: str = "/fake/fleet", wake: str = "/fake/wake") -> Plan:
@@ -364,7 +369,7 @@ class Steps(unittest.TestCase):
                     self.assertNotEqual(getattr(dispositions[signum], "__name__", ""), "defer", "the run stays interruptible")
                 if failure == "ssh-error":
                     raise OSError("ssh unavailable")
-                if failure == "interrupt":
+                if failure == "interrupt" or failure.startswith("handler-interrupt"):
                     raise KeyboardInterrupt()
                 if failure == "local-error":
                     raise ValueError("local failure")
@@ -379,6 +384,7 @@ class Steps(unittest.TestCase):
                 text += "rog  os=" + ("windows" if failure == "status" else "linux") + "  linux=UP\n"
             rc = (3 if failure == target + "-needs-person" else 130 if failure == "windows-signal" and name == "boot-windows"
                   else 4 if failure == "reserve-unreachable" and name == "run"
+                  else 1 if failure == "handler-interrupt-linux" and name == "boot-linux"
                   else 1 if failure in ("reserve-published", "reserve-unlisted") and name == "run"
                   else 124 if failure == "driver-timeout" and name == "script" else 1 if failure == target else 0)
             if out is subprocess.PIPE:
@@ -390,7 +396,16 @@ class Steps(unittest.TestCase):
         if failure == "conclude-file":  # the conclusion cannot be written: exclusive create meets a file
             with open(plan.transcript + ".conclude.json", "w") as f:
                 f.write("not this run's\n")
+        said_step = winwitness.step
+
+        def step(name: str, text: str) -> None:
+            if name == "interrupted" and failure.startswith("handler-interrupt"):
+                # A second cancellation while the first is said: under the deferral it is recorded.
+                dispositions[signal.SIGINT](signal.SIGINT, None)
+            said_step(name, text)
+
         with (mock.patch("subprocess.run", side_effect=run), mock.patch("signal.signal", side_effect=set_signal),
+              mock.patch.object(winwitness, "step", side_effect=step),
               contextlib.redirect_stderr(io.StringIO()) as said, transcript_of(plan) as f):
             rc = execute(plan, f)
         with open(plan.transcript) as f:
@@ -412,7 +427,8 @@ class Steps(unittest.TestCase):
         if "script" in calls:
             self.assertEqual((caps["stage"], caps["script"]), (30, 77), "the site's staging cap; the driver's cap plus 60")
         held = failure.startswith("linux") or failure in ("status", "windows-needs-person", "windows-signal", "interrupt",
-                                                          "boot-interrupt", "recovery-interrupt", "local-error", "conclude-file")
+                                                          "boot-interrupt", "recovery-interrupt", "local-error", "conclude-file",
+                                                          "handler-interrupt", "handler-interrupt-linux")
         if held:
             self.assertNotIn("conclude", calls, "an unconfirmed return or a cancellation keeps the reservation")
             self.assertEqual(os.path.exists(conclusion), failure == "conclude-file")
@@ -426,7 +442,8 @@ class Steps(unittest.TestCase):
             self.assertEqual(payload["log"], plan.transcript)
             if payload["verdict"] != "not-launched":
                 self.assertEqual((payload["observed_sha"], payload["remote_checkout"]), (A, "C:/witness/win-1/checkout"))
-        unconfirmed = failure.startswith("linux") or failure in ("status", "windows-needs-person", "windows-signal")
+        unconfirmed = failure.startswith("linux") or failure in ("status", "windows-needs-person", "windows-signal",
+                                                                 "handler-interrupt-linux")
         self.assertEqual(rc, 0 if failure == "none" else 3 if unconfirmed else
                          4 if held or failure.startswith("conclude") else 1)
         self.assertIn("fake run", transcript)

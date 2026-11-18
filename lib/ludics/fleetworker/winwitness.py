@@ -42,8 +42,8 @@ registry is asked or any box is touched:
   ``root`` (required: the directory each witness gets a fresh ``<root>/<request_id>`` in),
   ``bash`` (Git Bash; ``C:/Program Files/Git/usr/bin/bash.exe``, the driver's default),
   ``max_cap_seconds`` (3600) and ``stage_seconds`` (900, the staging's whole ssh call), and ``wake``
-  (an absolute local path; this checkout's ``scripts/wake-lab.sh``). A Windows path must match
-  WINDOWS_PATH, a drive letter and then only letters, digits, blanks and ``._/\\()-``: every one of
+  (an absolute local path to an executable file, run directly for the endpoint map, the boots and
+  ``status`` alike; this checkout's ``scripts/wake-lab.sh``). A Windows path must match WINDOWS_PATH, a drive letter and then only letters, digits, blanks and ``._/\\()-``: every one of
   them reaches a cmd.exe command line inside double quotes, where a quote, ``%``, ``^``, ``&``,
   ``|``, ``<``, ``>`` or ``!`` would be read as syntax.
 - ``--transcript <path>``: a fresh local file, created exclusively, beside it ``<path>.reserve.json``
@@ -76,13 +76,15 @@ last, the record the driver requires. The driver prints both native logs; they s
 
 THE RECOVERY. ``boot-windows`` and ``boot-linux`` run with no outer timeout (wake-lab owns its
 bounded boot and BootNext cleanup, ``WAKE_LAB_BOOT_WAIT_SECONDS``), each in its own session, with
-INT/TERM deferred in this process meanwhile, so a cancellation never abandons a reboot half done.
+INT/TERM deferred in this process meanwhile, so a cancellation never abandons a reboot half done;
+a failure's handling is deferred too, and the recovery runs after it, never inside a ``finally``,
+so the exit is always one of the five below.
 ``boot-linux`` is attempted after every ``boot-windows`` attempt, whatever happened between, and
 the box counts as returned only when ``boot-linux`` exits 0, ``wake-lab.sh status <linux_host>``
 then prints the word ``os=linux``, and ``boot-windows`` exited 0, 1 (wake-lab's refusal or failure,
 its BootNext cleanup verified) or 2 (usage), or never ran: any other exit (3, NEEDS A PERSON; 130 or
-a signal, its cleanup unknown) leaves a reboot or BootNext possibly pending. The recovery runs in a
-``finally``, and a transcript or stderr write that fails (a full disk) never stops it: the steps go
+a signal, its cleanup unknown) leaves a reboot or BootNext possibly pending. The recovery runs
+however the Windows part ended, and a transcript or stderr write that fails (a full disk) never stops it: the steps go
 on, the loss is said once on stderr and in the conclusion's evidence.
 
 THE FAILURE PATHS, a closed list; each is said on stderr and in the transcript:
@@ -565,18 +567,26 @@ def execute(plan: Plan, f: IO[str]) -> int:
     step("reserve", f"{plan.request_id} reserved on {plan.linux_host}")
     at = Attempt()
     pending: list[int] = []
-    recovered = False
+    recovered: bool | None = None
     try:
         try:
             windows_part(log, plan, pending, at)
         except (KeyboardInterrupt, Exception) as exc:  # the run is abandoned; recovery still runs
             at.failure = f"{type(exc).__name__}: {exc}"
-            log.note("INTERRUPTED: " + at.failure)
-            step("interrupted", at.failure + "; returning the box to Linux")
-    finally:
-        # Whatever happened above, a second cancellation in the handler included: Linux recovery.
-        with deferred(pending):
-            recovered = linux_confirmed(log, plan, at.boot)
+            with deferred(pending):  # a further INT/TERM while this is said is recorded, not raised
+                log.note("INTERRUPTED: " + at.failure)
+                step("interrupted", at.failure + "; returning the box to Linux")
+    except KeyboardInterrupt:  # one that landed before the handler's deferral took hold
+        at.failure = at.failure or "KeyboardInterrupt: cancelled while a failure was handled"
+    # THE RECOVERY, outside any finally, so nothing is in flight when the exit is chosen. A
+    # cancellation can land only outside the deferral: before it is entered, when the recovery is
+    # attempted again (boot-linux has not started), or as it is left, when it has already run.
+    while recovered is None:
+        try:
+            with deferred(pending):
+                recovered = linux_confirmed(log, plan, at.boot)
+        except KeyboardInterrupt:
+            pending.append(signal.SIGINT)
     if not recovered:
         log.note("NEEDS A PERSON: Linux/BootNext recovery unconfirmed; the reservation is kept; reconcile")
         step("NEEDS A PERSON", f"{plan.linux_host} is not confirmed back on Linux; {plan.request_id} kept;"
@@ -662,6 +672,8 @@ def plan_of(cfg: Config, args: list[str], *, read_map: Callable[[str], str | Non
             driver = f.read()
     except OSError as exc:
         die(f"execution windows-witness: cannot read {shown(driver_path)}: {exc.strerror}")
+    if not (os.path.isfile(site.wake) and os.access(site.wake, os.X_OK)):
+        die(f"execution windows-witness: {shown(site.wake)} is not an executable file; the boots and status run it")
     map_text = (read_map or endpoint_map)(site.wake)
     if map_text is None:
         die(f"execution windows-witness: {shown(site.wake)} endpoint-map failed")
@@ -683,7 +695,7 @@ def plan_of(cfg: Config, args: list[str], *, read_map: Callable[[str], str | Non
 
 def endpoint_map(wake: str) -> str | None:
     try:
-        done = subprocess.run(["bash", wake, "endpoint-map"], stdout=subprocess.PIPE, timeout=STATUS_CAP)
+        done = subprocess.run([wake, "endpoint-map"], stdout=subprocess.PIPE, timeout=STATUS_CAP)  # as the boots run it
     except (OSError, subprocess.TimeoutExpired):
         return None
     return done.stdout.decode("utf-8", "surrogateescape") if done.returncode == 0 else None
