@@ -449,6 +449,8 @@ class Steps(unittest.TestCase):
         self.assertIn("fake run", transcript)
         self.assertEqual("NEEDS A PERSON" in transcript, unconfirmed)
         self.assertEqual("NEEDS A PERSON" in said.getvalue(), unconfirmed)
+        if failure.startswith("handler-interrupt"):
+            self.assertIn("WITNESS interrupted: KeyboardInterrupt", said.getvalue(), "the handler finishes what it says")
 
     def test_real_boot_children_keep_their_traps_and_a_cancellation_waits_for_recovery(self) -> None:
         for cancel in (False, True):
