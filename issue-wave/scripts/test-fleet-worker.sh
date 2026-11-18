@@ -4503,6 +4503,69 @@ expect "...and a report that fails changes no verdict" 0 "after the main run (ex
 expect "a runner that never started gets no report" 1 "EXECUTION LEG REFUSED testbox: the runner is not an executable command" -- \
   leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- tools/no-such-runner.sh
 grep -q "run report" <<<"$out" && ko "a report ran for a runner that never started: $out" || ok "...none asked"
+# THE OWED RECORD (#1219): use an on-box receipt to verify that the runner and hook see the same
+# invocation. The hook announces every invocation, even when its own checks fail.
+export LEG_OWED_RECEIPT="$TMP/owed receipt"
+mkdir -p "$TMP/owed tmp"
+git -C "$lsrc" checkout -q -b owed reported && printf '%s\n' 'owed-record tools/owed.sh' >> "$lsrc/.github/fleet-leg" &&
+  cat > "$lsrc/tools/owed.sh" <<'OWED' &&
+#!/usr/bin/env bash
+printf '%s\n' 'owed fixture invoked'
+[ "$#" -eq 3 ] && [ "$1" = "$(cat "$LEG_OWED_RECEIPT")" ] &&
+  [ "$3" = "$(git rev-parse HEAD)" ] && [ ! -e broken ] &&
+  grep -Fqx "request=$2" "$1" && grep -Fqx "observed_sha=$3" "$1" || exit 91
+[ "${LEG_OWED_REMOVE:-0}" != 1 ] || rm "$1" || exit 92
+printf 'owed fixture published %s %s\n' "$2" "$3"
+exit "${LEG_OWED_EXIT:-0}"
+OWED
+  chmod +x "$lsrc/tools/owed.sh" && git -C "$lsrc" add -A && git -C "$lsrc" commit -q -m owed &&
+  lowed=$(git -C "$lsrc" rev-parse HEAD) &&
+  git -C "$lsrc" checkout -q -b owed-bad && printf '%s\n' 'owed-record ../outside' > "$lsrc/.github/fleet-leg" &&
+  git -C "$lsrc" commit -q -am owed-bad && git -C "$lsrc" push -q "$lremote" owed owed-bad &&
+  git -C "$lsrc" checkout -q main || ko "could not build the owed-record fixture (setup)"
+owed_leg() {
+  leg --request leg-a --rev owed --checkout "$lco" --worktree "$lwt" --cpu "$@"
+}
+no_owed_hook() {
+  if grep -q '^owed fixture invoked$' <<<"$out"; then ko "the owed-record hook was called: $out"
+  else ok "...the owed-record hook was skipped"; fi
+}
+TMPDIR="$TMP/owed tmp" LEG_OWED_REMOVE=1 FLEET_LEG_RUN_RECORD=/stale \
+  expect "a clean main pass gives the owed-record hook the on-box record, request and observed SHA" 0 \
+  "^owed fixture published leg-a $lowed$" -- owed_leg --control "$TMP/break.patch" -- bash -c '
+    if [ -e broken ]; then
+      [ -z "${FLEET_LEG_RUN_RECORD+x}" ] || exit 0
+    else
+      printf "%s\n" "${FLEET_LEG_RUN_RECORD:?}" > "$LEG_OWED_RECEIPT" || exit 1
+    fi
+    exec tools/check.sh'
+[ "$(grep -c '^owed fixture invoked$' <<<"$out")" = 1 ] && [ "$(last_line)" = "execution-leg: exit: 0" ] &&
+  grep -q 'control failed as required (exit 4), patch reverted' <<<"$out" &&
+  ok "...once, with the control still running after the hook removed its record" || ko "unexpected hook count or control status: $out"
+LEG_OWED_EXIT=9 expect "an owed-record hook failure warns and keeps the main verdict" 0 'WARNING: owed-record tools/owed\.sh failed (exit 9)$' -- \
+  owed_leg -- bash -c 'printf "%s\n" "${FLEET_LEG_RUN_RECORD:?}" > "$LEG_OWED_RECEIPT"'
+[ -s "$LEG_OWED_RECEIPT" ] && [ ! -e "$(cat "$LEG_OWED_RECEIPT")" ] &&
+  ok "...the leg removed the hook's run record at cleanup" || ko "the run record was not cleaned: $out"
+FLEET_LEG_RUN_RECORD=/stale expect "a leg without an owed-record hook clears a parent's record path" 0 '^execution-leg: exit: 0$' -- \
+  leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- bash -c '[ -z "${FLEET_LEG_RUN_RECORD+x}" ]'
+expect "a failed main run keeps its verdict with an owed-record hook configured" 7 '^execution-leg: exit: 7$' -- \
+  owed_leg -- bash -c 'exit 7'
+no_owed_hook
+expect "a timed-out main run keeps its verdict with an owed-record hook configured" 124 '^execution-leg: exit: 124$' -- \
+  owed_leg --deadline 1 -- sleep 20
+no_owed_hook
+expect "a main run that leaves dirt still warns" 0 'uncommitted path(s) after the run' -- \
+  owed_leg -- bash -c ': > stray'
+no_owed_hook
+[ ! -e "$lwt/stray" ] || rm "$lwt/stray"
+expect "a main run that moves HEAD still warns" 0 'WARNING: HEAD .* (the runner moved it)$' -- \
+  owed_leg -- git commit -q --allow-empty -m moved
+no_owed_hook
+n=$(marks)
+expect "a malformed owed-record line refuses the leg before the runner starts" 1 'line 1 is not one the fleet reads (owed-record \.\./outside)' -- \
+  leg --request leg-a --rev owed-bad --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
+[ "$(marks)" = "$n" ] && ok "...the runner was skipped" || ko "the refused leg ran its runner: $out"
+no_owed_hook
 # THE FAILING LINES (ludics#1040): a failed run's fail-lines output comes back, bounded, after the
 # run report; a passing run, and a project that declares none, copy nothing.
 git -C "$lsrc" checkout -q -b failing reported &&

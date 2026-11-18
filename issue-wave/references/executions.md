@@ -892,8 +892,9 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   runner's words hold `<option> <backend>` or `<option>=<backend>` before any `--` of its own) and
   `pin-env <NAME>` (the runner is `env NAME=<backend> ... <command>`, a command after the assignments), and at most
   one each of `slot-plan <path>` (*The slot plan* below), `run-report <path>` (*The run report*),
-  `fail-lines <shell command>` (*The failing lines*) and `min-free-gib <GiB>` (*The free-space
-  floor*); any other line refuses the leg. A leg that may hold the GPU -- one that does not declare `--cpu`, a measurement's included --
+  `owed-record <path>` (*The owed record*), `fail-lines <shell command>` (*The failing lines*) and
+  `min-free-gib <GiB>` (*The free-space floor*); any other line refuses the leg. A leg that may hold
+  the GPU -- one that does not declare `--cpu`, a measurement's included --
   whose command satisfies none of the pins is refused before anything runs, saying which it asks
   for. OCANNL's are `pin-flag --expect-backend` and `pin-env OCANNL_BACKEND`, so `-- env
   OCANNL_BACKEND=cuda tools/test-run.sh run --expect-backend cuda <alias>` runs. Only argv words
@@ -963,6 +964,18 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   leg's. What it leaves in the worktree counts as the run's (the main run's `NO CONTROL`, the
   after-run warning). A leg run by a checkout from before this reads a `run-report` line as one it
   cannot read and refuses, so a project adds it once its callers' skills checkout has it.
+- **The owed record** (ludics#1219). A project names `owed-record <path>` using the run report's
+  path grammar. Before the run report or control patch, the leg runs
+  `<path> <leg run record> <request ID> <observed SHA>` in the execution box's worktree. It
+  does so once if the main runner started, its nested slot exited 0, HEAD still matches the
+  observed commit, and Git reports a clean worktree including submodules. The file is the
+  leg's temporary record on that box, separate from the verdict markers, with internal contents.
+  The leg clears any inherited `FLEET_LEG_RUN_RECORD` and sets it to the record's path for its
+  main runner when the hook is configured, so the runner can tie its receipt to that invocation.
+  Cleanup removes the file. The hook runs under a nested `execution slot --deadline
+  300` with the run's CPU/GPU flags and closed stdin. Its output goes to stderr and any
+  failure is warned about with its exit status. The main and control verdicts retain their usual
+  rules. The hook decides which runs to publish and is responsible for leaving the worktree unchanged.
 - **The failing lines.** A failed leg's log said the verdict and the goldens that differ, not the
   claims that failed, so each failed leg cost an ssh session to the far side (ludics#1040). Which
   lines count as failing, and where the runner keeps them, are the project's: it names
