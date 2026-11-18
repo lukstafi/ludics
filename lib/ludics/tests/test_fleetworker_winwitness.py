@@ -523,7 +523,36 @@ class LostWrites(unittest.TestCase):
                               json.load(c)["evidence"])
 
 
+class UnclosableTranscript(io.StringIO):
+    """A transcript whose final flush meets a full disk, as a real /dev/full stream's close does."""
+
+    def close(self) -> None:
+        super().close()
+        raise OSError(28, "No space left on device")
+
+
 class Verb(unittest.TestCase):
+    def test_a_transcript_that_cannot_close_keeps_the_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = load_config(SCRIPT, {"HOME": "/nowhere"})
+            paths: dict[str, str] = {}
+            for name, text in (("base.json", json.dumps(BASE)), ("site.json", json.dumps(SITE)), ("v.sh", "uname -a\n"),
+                               ("msg.md", message(block()))):
+                paths[name] = os.path.join(directory, name)
+                with open(paths[name], "w") as f:
+                    f.write(text)
+            for kept in (3, 4):
+                with self.subTest(kept=kept):
+                    transcript = os.path.join(directory, f"t{kept}.log")
+                    with (mock.patch.object(winwitness, "endpoint_map", return_value=MAP),
+                          mock.patch.object(winwitness, "open_transcript", return_value=UnclosableTranscript()),
+                          mock.patch.object(winwitness, "execute", return_value=kept),
+                          contextlib.redirect_stderr(io.StringIO()) as said):
+                        rc = winwitness.cmd_windows_witness(cfg, [paths["base.json"], paths["msg.md"], "--site", paths["site.json"],
+                                                                  "--transcript", transcript, "--script", paths["v.sh"]])
+                    self.assertEqual(rc, kept, "a failed close never replaces NEEDS A PERSON or reconcile")
+                    self.assertIn("WITNESS transcript: closing it failed", said.getvalue())
+
     def test_the_side_files_are_written_and_the_steps_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cfg = load_config(SCRIPT, {"HOME": "/nowhere"})

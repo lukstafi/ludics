@@ -712,13 +712,22 @@ def cmd_windows_witness(cfg: Config, args: list[str]) -> int:
                            (plan.transcript + ".stage.sh", plan.stage_script)):
             with open(path, "x", encoding="utf-8") as f:
                 f.write(text)
-        transcript = open(plan.transcript, "x", encoding="utf-8")
+        transcript = open_transcript(plan.transcript)
     except OSError as exc:
         die(f"execution windows-witness: cannot write {shown(plan.transcript)} and its side files: {exc.strerror};"
             " nothing reserved")
     term = signal.signal(signal.SIGTERM, interrupted)
     try:
-        with transcript:
-            return execute(plan, transcript)
+        return execute(plan, transcript)
     finally:
         signal.signal(signal.SIGTERM, term)
+        # Closing flushes what a full disk refused once more: that failure never replaces the exit.
+        try:
+            transcript.close()
+        except (OSError, ValueError) as exc:
+            step("transcript", f"closing it failed ({exc}); the exit above stands")
+
+
+def open_transcript(path: str) -> IO[str]:
+    """The transcript, created exclusively (WHAT IS READ)."""
+    return open(path, "x", encoding="utf-8")
