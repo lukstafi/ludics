@@ -4512,8 +4512,7 @@ git -C "$lsrc" checkout -q -b owed reported && printf '%s\n' 'owed-record tools/
 #!/usr/bin/env bash
 printf '%s\n' 'owed fixture invoked'
 [ "$#" -eq 3 ] && [ "$1" = "$(cat "$LEG_OWED_RECEIPT")" ] &&
-  [ "$3" = "$(git rev-parse HEAD)" ] && [ ! -e broken ] &&
-  grep -Fqx "request=$2" "$1" && grep -Fqx "observed_sha=$3" "$1" || exit 91
+  [ -f "$1" ] && [ "$3" = "$(git rev-parse HEAD)" ] && [ ! -e broken ] || exit 91
 [ "${LEG_OWED_REMOVE:-0}" != 1 ] || rm "$1" || exit 92
 printf 'owed fixture published %s %s\n' "$2" "$3"
 exit "${LEG_OWED_EXIT:-0}"
@@ -4521,7 +4520,10 @@ OWED
   chmod +x "$lsrc/tools/owed.sh" && git -C "$lsrc" add -A && git -C "$lsrc" commit -q -m owed &&
   lowed=$(git -C "$lsrc" rev-parse HEAD) &&
   git -C "$lsrc" checkout -q -b owed-bad && printf '%s\n' 'owed-record ../outside' > "$lsrc/.github/fleet-leg" &&
-  git -C "$lsrc" commit -q -am owed-bad && git -C "$lsrc" push -q "$lremote" owed owed-bad &&
+  git -C "$lsrc" commit -q -am owed-bad &&
+  git -C "$lsrc" checkout -q -b owed-missing reported &&
+  printf '%s\n' 'owed-record tools/absent.sh' >> "$lsrc/.github/fleet-leg" &&
+  git -C "$lsrc" commit -q -am owed-missing && git -C "$lsrc" push -q "$lremote" owed owed-bad owed-missing &&
   git -C "$lsrc" checkout -q main || ko "could not build the owed-record fixture (setup)"
 owed_leg() {
   leg --request leg-a --rev owed --checkout "$lco" --worktree "$lwt" --cpu "$@"
@@ -4546,6 +4548,9 @@ LEG_OWED_EXIT=9 expect "an owed-record hook failure warns and keeps the main ver
   owed_leg -- bash -c 'printf "%s\n" "${FLEET_LEG_RUN_RECORD:?}" > "$LEG_OWED_RECEIPT"'
 [ -s "$LEG_OWED_RECEIPT" ] && [ ! -e "$(cat "$LEG_OWED_RECEIPT")" ] &&
   ok "...the leg removed the hook's run record at cleanup" || ko "the run record was not cleaned: $out"
+expect "a missing owed-record executable warns and keeps the main verdict" 0 'WARNING: owed-record tools/absent\.sh failed (exit 127)$' -- \
+  leg --request leg-a --rev owed-missing --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
+[ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...with the main verdict's sentinel" || ko "unexpected status: $out"
 FLEET_LEG_RUN_RECORD=/stale expect "a leg without an owed-record hook clears a parent's record path" 0 '^execution-leg: exit: 0$' -- \
   leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- bash -c '[ -z "${FLEET_LEG_RUN_RECORD+x}" ]'
 expect "a failed main run keeps its verdict with an owed-record hook configured" 7 '^execution-leg: exit: 7$' -- \

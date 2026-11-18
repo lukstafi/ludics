@@ -1007,7 +1007,7 @@ go() {
   local tag="$1"; shift
   "$fw" execution slot "${nest[@]}" -- bash -c '
     case "$4" in */*) [ -f "$4" ] && [ -x "$4" ] ;; *) command -v "$4" >/dev/null ;; esac ||
-      { printf "%s-unexecutable\n" "$1" >> "$2"; printf "EXECUTION LEG: %q is not an executable command here\n" "$4" >&2; exit 127; }
+      { printf "%s-unexecutable\n" "$1" >> "$2"; printf "EXECUTION LEG: %s is not an executable command here\n" "$4" >&2; exit 127; }
     if [ "$1" = main ] && [ -n "$3" ]; then export FLEET_LEG_RUN_RECORD="$3"; fi
     printf "%s-started\n" "$1" >> "$2"; shift 3; exec "$@"' leg-run "$tag" "$results" "$run_record" "$@" </dev/null
 }
