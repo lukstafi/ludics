@@ -1514,6 +1514,7 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
     progress = start + WINDOW_PROGRESS
     named: set[str] = set()
     unread: Unread | None = None
+    late_holding: list[dict[str, Any]] | Ended | None = None
 
     def refresh_openings(holding: list[dict[str, Any]]) -> bool:
         changed = [r for r in holding if jq_text(r.get("request_id")) in pending and r.get("hold_opened_at") is not None]
@@ -1550,8 +1551,8 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                 errline(f"{voice.prefix} {box}: waiting up to {shown}s ({said}) for it to conclude, then for a"
                         f" slot, for: {' '.join(command)}")
         now = time.monotonic()
-        ids = ", ".join(jq_text(r.get("request_id")) for r in holding)
         if now >= deadline:
+            at_cutoff = holding if late_holding is None else late_holding
             if pending:
                 # A hold may have opened during the last sleep. Only an original opening can
                 # renew the cutoff; a late free-box/Ended answer is never an admission.
@@ -1564,15 +1565,22 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                     if (not isinstance(final_holding, Ended) and refresh_openings(final_holding)
                             and time.monotonic() < deadline):
                         records = final
+                        late_holding = None
                         continue
+                    at_cutoff = final_holding
             if unread is not None:
                 for line in unread.lines:
                     cli.say(line)
                 return unread.rc
-            cli.say(f"{voice.prefix} REFUSED {box}: measurement {ids} still holds {box} after {shown}s"
-                    f" ({said}); {voice.refused}")
+            if isinstance(at_cutoff, Ended) or not at_cutoff:
+                reason = "wait cutoff elapsed"
+            else:
+                ids = ", ".join(jq_text(r.get("request_id")) for r in at_cutoff)
+                reason = f"measurement {ids} still holds {box}"
+            cli.say(f"{voice.prefix} REFUSED {box}: {reason} after {shown}s ({said}); {voice.refused}")
             return 1
         if now >= progress:
+            ids = ", ".join(jq_text(r.get("request_id")) for r in holding)
             errline(f"{voice.prefix} {box}: still waiting for measurement {ids}"
                     f" ({int(now - start)}s of {shown}s, {said})")
             progress += WINDOW_PROGRESS
@@ -1585,14 +1593,15 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
         beat = False
         read = read_registry(cfg, box, voice, waiter)
         if time.monotonic() >= deadline:
-            # A late read can hand off an original pending window to its actual opening; every
-            # other late response keeps the old refusal (ludics-lite#683), even a free-box answer.
-            if pending and not isinstance(read, Unread):
-                late_holding = holding_in(read)
-                if (not isinstance(late_holding, Ended) and refresh_openings(late_holding)
+            # Only an original pending window's opening can move admission past this cutoff.
+            # Other late answers are used for the refusal only (ludics-lite#683).
+            if not isinstance(read, Unread):
+                observed = holding_in(read)
+                if (pending and not isinstance(observed, Ended) and refresh_openings(observed)
                         and time.monotonic() < deadline):
                     records, unread = read, None
                     continue
+                late_holding = observed
             unread = read if isinstance(read, Unread) else None
             continue
         if isinstance(read, Unread):
