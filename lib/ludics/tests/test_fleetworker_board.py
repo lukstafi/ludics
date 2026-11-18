@@ -401,6 +401,24 @@ class Tally(StoreCase):
         self.assertEqual(self.tally("routine_answers", worker="w1-43", host="mac", done=done)[1],
                          'BOARD TALLY b: "t3" routine_answers=2\n', "a board that does not load is skipped")
         self.assertEqual(self.tally("interventions", worker="w1-43", host="mac", done="merged")[0], 1)
+        row("e", "t1", worker="w1-44", agent_host="mac", state="launched", transport="subagent")
+        self.assertIn("BOARD TALLY NOTE: no row", self.tally("interventions", worker="w1-44", host="mac", done=done)[1],
+                      "an unstick reaches only a CLI worker: a native row of that name is never charged")
+
+    def test_a_row_made_before_the_counters_says_its_counts_are_partial(self) -> None:
+        self.set("t1", ("state", "launched"))
+        doc = self.doc()
+        doc["tasks"][0]["fields"] = {"state": "launched"}  # a row an older store made
+        with open(os.path.join(self.root, "boards", "w.json"), "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(self.tally("routine_answers", wave="w", task="t1")[0], 0)
+        self.assertEqual(self.tally("interventions", wave="w", task="t1")[0], 0)
+        fields = self.fields("t1")
+        self.assertEqual((fields["routine_answers"], fields["interventions"]), ("1", "1"))
+        self.assertRegex(fields["counted_from"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.set("t2", ("state", "launched"))
+        self.tally("interventions", wave="w", task="t2")
+        self.assertNotIn("counted_from", self.fields("t2"), "a row counted from its creation needs no mark")
 
 
 class Classify(unittest.TestCase):

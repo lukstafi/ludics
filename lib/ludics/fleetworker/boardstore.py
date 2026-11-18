@@ -48,14 +48,18 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``routine_answers``, and its value goes up by one under the same lease lock as set, in one
         publish, so two tallies never read one starting value. The value is a decimal count
         (``0`` or no leading zero), and a row without the key counts from 0; any other value refuses,
-        nothing written. An ``interventions`` tally also appends one log line in the same replace,
+        nothing written. A row with neither counter (one made before ludics#1214, its turns until now
+        uncounted) also gets ``counted_from``, the tally's now, so its counts never read as a whole
+        task's. An ``interventions`` tally also appends one log line in the same replace,
         ``<task> interventions=<n>: <why>``; a ``routine_answers`` tally logs nothing. The row is
         named by ``wave`` and ``task`` (no row refuses, with the nearest task, as set does; no board
         refuses), or, for ``unstick``, which knows only a box and a worker, by ``worker`` and
         ``host``: every board under ``boards/`` (named and read as ``scan`` reads them, a board that
         does not load skipped) is searched for the rows whose ``worker`` field is ``worker``, whose
-        ``agent_host`` is ``host`` and whose state's first word (its ``state``, else its
-        ``status``; ``;:,.`` stripped, case ignored) is none of ``done``. Exactly one is counted; none, or more than one, is ``BOARD TALLY NOTE
+        ``agent_host`` is ``host``, whose ``transport`` is ``cli`` or absent (an unstick reaches only
+        a CLI worker, so a native row of the same name is never charged with it) and whose state's
+        first word (its ``state``, else its ``status``; ``;:,.`` stripped, case ignored) is none of
+        ``done``. Exactly one is counted; none, or more than one, is ``BOARD TALLY NOTE
         ...; nothing counted`` on stdout, exit 0: a worker outside any wave is no refusal, and an
         ambiguous one is counted nowhere rather than on a guess.
   placement {"wave", "worker", "host", "checkout"}                internal to execution assign:
@@ -371,9 +375,11 @@ def count(path: Path, doc: Doc, row: Doc, coordinator: str, payload: Doc) -> str
     old = fields.get(counter, "0")
     if not COUNT.fullmatch(old):
         refuse(f"the row of {json.dumps(row['task'])} holds {counter}={json.dumps(old)}, no count; nothing counted")
+    now = now_utc().strftime(STAMP)
+    if not any(key in fields for key in COUNTERS):
+        fields["counted_from"] = now  # a row made before THE COUNTERS START AT ZERO: its counts are partial
     new = str(int(old) + 1)
     fields[counter] = new
-    now = now_utc().strftime(STAMP)
     if counter == "interventions":
         line = f"{row['task']} interventions={new}: {why.strip() or '(no reason given)'}"
         cast(list[Doc], doc["log"]).append({"at": now, "by": coordinator, "text": line})
@@ -418,7 +424,8 @@ def tally_by_worker(root: str, coordinator: str, payload: Doc) -> None:
             fields = cast(dict[str, str], row["fields"])
             words = (fields["state"] if "state" in fields else fields.get("status", "")).split()
             word = words[0].rstrip(";:,.").lower() if words else ""
-            if fields.get("worker") == worker and fields.get("agent_host") == host and word not in done:
+            if (fields.get("worker") == worker and fields.get("agent_host") == host and word not in done
+                    and fields.get("transport", "cli") == "cli"):
                 found.append((directory / name, doc, row))
     who = f"worker {json.dumps(worker)} on {json.dumps(host)}"
     if not found:

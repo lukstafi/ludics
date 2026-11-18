@@ -24,7 +24,9 @@ directory, observed SHA and exit in its reply, which `execution conclude --from-
 --request <id> --sha <sha>` consumes. A Codex worker may also use the fixed `EXECUTION_REQUEST`
 / `EXECUTION_RESULT` blocks of [native-claude.md](native-claude.md#worker-channel); what
 differs is only that it may wait instead of yielding. Each message the coordinator sends the
-worker is counted on its row with `board tally`, as that channel's step 6 says.
+worker is counted on its row with `board tally`, as that channel's step 6 says. An answer composed
+by hand opens with its protocol line (`EXECUTION_ASSIGNED <request_id>`, `EXECUTION_CONCLUDED <id>
+<verdict>`), as `execution assign`'s does, or it counts as an intervention.
 
 Name the workload kind in that assignment and use the wrapper specified in
 [executions.md](executions.md#reserve-launch-observe-conclude): correctness takes a run-time
