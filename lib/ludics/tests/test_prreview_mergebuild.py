@@ -160,13 +160,13 @@ class Grammar(unittest.TestCase):
         self.assertEqual(config and config.plan, None, "no plan line: no plan")
         for text, named in (
             ("command make\ninput *.c\nplan a\nplan b\n", "a second plan line"),
-            ("command make\ninput *.c\nplan\n", "plan"),
+            ("command make\ninput *.c\nplan\n", "blank line: plan"),
             ("command make\ninput *.c\nplan a\nplan-timeout 0\n", "plan-timeout 0"),
             ("command make\ninput *.c\nplan a\nplan-timeout 86401\n", "plan-timeout 86401"),
             ("command make\ninput *.c\nplan a\nplan-timeout 5\nplan-timeout 6\n", "a second plan-timeout line"),
             ("command make\ninput *.c\nplan-timeout 5\n", "a `plan-timeout` line and no `plan` line"),
             ("command make\ninput *.c\nplan-time 5\n", "plan-time 5"),
-            ("command make\ninput *.c\nplan-\n", "plan-"),
+            ("command make\ninput *.c\nplan-\n", "blank line: plan-"),
         ):
             with self.subTest(text=text):
                 config, err = parsed(text)

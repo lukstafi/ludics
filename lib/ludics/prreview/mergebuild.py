@@ -1126,6 +1126,8 @@ def _build_in_scratch(
         _no_verdict(subject.label, stop, config, ran, "the build of its merge commit")
     finally:
         # Held from its first instruction (as in _supervised), so no signal skips the removal.
+        # Inline, not _remove_held: a call is where CPython runs a signal handler, so a helper's
+        # hold would start one call too late for the scratch's own removal.
         was, _INTERRUPTS.holding = _INTERRUPTS.holding, True
         try:
             if scratch is not None:
@@ -1133,6 +1135,27 @@ def _build_in_scratch(
         finally:
             _INTERRUPTS.holding = was
         _INTERRUPTS.check()
+
+
+def _remove_held(path: str) -> None:
+    """Remove ``path`` inside the scratch with signals held, acting on a held one after it. A
+    signal at the call itself ends merge before the hold; the scratch's own removal (inline in
+    _build_in_scratch) still takes ``path`` with it."""
+    was, _INTERRUPTS.holding = _INTERRUPTS.holding, True
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    finally:
+        _INTERRUPTS.holding = was
+    _INTERRUPTS.check()
+
+
+def _status_text(status: str) -> str:
+    """A wrapper's status file, stripped; "" when there is none (the command never ended on its own)."""
+    try:
+        with open(status, encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
 
 
 def _new_repo(scratch: str, tree: str, objects: str) -> str:
@@ -1383,11 +1406,7 @@ def _run(
         where_fix = "the file on the default branch" if subject.pr else "the config"
         fail(2, f"{subject.stop}: {CONFIG_FILE}'s command cannot be run ({exc}); fix {where_fix}.")
     took = int(time.monotonic() - started)
-    try:
-        with open(status, encoding="utf-8") as handle:
-            rc_text = handle.read().strip()
-    except OSError:
-        rc_text = ""
+    rc_text = _status_text(status)
     ran_for = _ran_for(status, rc_text != "")
     earlier = buildhistory.read(subject.repo, config.command)
     log_dir = _retain(subject.repo, subject.pr, gated, name, log, status)
@@ -1429,21 +1448,12 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
         except (ValueError, OSError) as exc:
             unstarted = str(exc)
     took = int(time.monotonic() - started)
-    try:
-        with open(status, encoding="utf-8") as handle:
-            rc_text = handle.read().strip()
-    except OSError:
-        rc_text = ""
+    rc_text = _status_text(status)
     log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status)
     if log_dir:
         cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
-    # Its checkout goes now, with signals held, so the build's slot is not taken beside it.
-    was, _INTERRUPTS.holding = _INTERRUPTS.holding, True
-    try:
-        shutil.rmtree(checkout, ignore_errors=True)
-    finally:
-        _INTERRUPTS.holding = was
-    _INTERRUPTS.check()
+    # Its checkout goes now, so the build's slot is not taken beside it.
+    _remove_held(checkout)
     # The closed list (THE PLAN): a verdict -- read only when the plan AND its wrapper exited 0 --
     # or which no-verdict this is.
     verdict: PlanVerdict | str
