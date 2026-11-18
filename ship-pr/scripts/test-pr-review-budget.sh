@@ -1194,7 +1194,7 @@ test_a_graphql_200_can_still_be_quota() {
   assert_eq "$(rc answered) $(standing)" "0 " "a 200 with quota left is the answer ($(err answered))"
 }
 
-# --- fixture 3: a meaningful failure notifies; an unchanged queued poll does not ---------------
+# --- fixture 3: a backed-off queue reports the next poll, and a red ends the wait ---------------
 
 test_a_still_queue_backs_off_and_a_red_still_ends_the_wait() {
   reset_fixture
@@ -1204,7 +1204,11 @@ test_a_still_queue_backs_off_and_a_red_still_ends_the_wait() {
   assert_contains "$(out wait)" "RED" "and says RED"
   assert_eq "$(tr '\n' ' ' <"$SLEEP_LOG")" "60 120 240 480 600 " \
     "unchanged polls double the pause from the interval up to the build cap"
-  assert_eq "$(err wait)" "" "and an unchanged poll prints nothing"
+  local expected
+  expected=$(jq -nr --argjson start "$T0" --arg target "'$REPO#7'" '
+    $start + (180, 420, 900, 1500) | strftime("%H:%M:%SZ")
+    | "pr-review.sh: build gate for \($target): next poll at \(.) (polling backoff while the build verdict is pending)"')
+  assert_eq "$(err wait)" "$expected" "each backed-off wait names the scheduled UTC poll and reason"
 }
 
 # #1112: step evidence is prose only; even every successful step cannot turn pending green.

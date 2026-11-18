@@ -1675,7 +1675,7 @@ class Gate:
                 f"{self.verdict}|{self.check_pending}|{self.check_green}|{self.check_total}"
                 f"|{self.run_state}"
             )
-            if held:
+            if keep:
                 reason = "waiting for build recovery"
             elif self.settling():
                 reason = "waiting for the remaining build checks to settle"

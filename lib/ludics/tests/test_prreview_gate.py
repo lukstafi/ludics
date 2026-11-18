@@ -30,7 +30,7 @@ from ludics.prreview import gate as gate_module, merge as merge_module
 from ludics.prreview.gate import (
     Gate, RunKey, WaivedRun, advisory_parse, job_waiver, load_gate_config, run_waiver, running_list,
 )
-from ludics.prreview.runners import Idle
+from ludics.prreview.runners import Idle, Recover, Wait
 
 
 def grep_refuses_in(locale: str, pattern: str) -> bool:
@@ -1165,7 +1165,8 @@ class RunningPause(unittest.TestCase):
         self.addCleanup(stack.close)
 
     def wait(self, checks: Callable[[int], str], select: str = "", build_cap: int = 600, wait_for: int = 1800,
-             jobs: str = "", env: dict[str, str] | None = None) -> tuple[int, Gate, FakeClock, TimedGh]:
+             jobs: str = "", env: dict[str, str] | None = None,
+             recover: Recover | None = None) -> tuple[int, Gate, FakeClock, TimedGh]:
         clk = FakeClock()
         gh = TimedGh(clock=clk, checks=checks)
         gh.on("pulls/7", ".updated_at", out="h1\t2026-01-01T00:00:00Z\tb1\ttopic")
@@ -1176,6 +1177,8 @@ class RunningPause(unittest.TestCase):
         session = GhSession(config, run=gh, sleep=lambda _s: None, budget=Budget("", fclock, build_cap=build_cap))
         gate = Gate(session, "o/r", load_gate_config({"SHIP_PR_CHECKS_INTERVAL": "60", **(env or {})}), fclock)
         gate.select = select
+        gate.orphans_on = recover is not None
+        gate.recover = recover
         return gate.check("7", wait_for), gate, clk, gh
 
     def test_a_running_check_is_read_within_two_intervals_of_its_completion(self) -> None:
@@ -1256,6 +1259,12 @@ class RunningPause(unittest.TestCase):
         self.assertEqual(rows, ["waived\tubuntu\tfailure\tu\t1\tcompleted", "pending\tmacos\tpending\tm\t1\tin_progress"])
         gate.summarize(rows)
         self.assertEqual((gate.verdict, gate.check_pending, gate.check_queued), ("pending", 1, 0))
+
+    def test_recovery_wait_reports_the_reason_even_without_heartbeat_prose(self) -> None:
+        rc, _gate, clk, _gh = self.wait(lambda _at: "build\tpending\tu\t1\tin_progress", wait_for=180,
+                                       recover=lambda _orphans, _runs: Wait())
+        self.assertEqual((rc, clk.sleeps), (4, [60, 120]))
+        self.assertIn("next poll at 00:03:00Z (polling backoff while waiting for build recovery)", self.out.getvalue())
 
     def test_pending_names_include_checks_without_an_actions_job_url(self) -> None:
         gate = make_gate(FakeGh(), FakeClock())
