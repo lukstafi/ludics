@@ -943,9 +943,10 @@ class WindowPayload(unittest.TestCase):
             self.assertEqual(caught.exception.rc, 2, text)
 
 
-class WindowGap(unittest.TestCase):
-    """ludics-lite#667: ``execution window`` asks for FLEET_WINDOW_GAP (or none with ``--no-gap``),
-    and waits out the registry's gap answer (exit 3) with no lock held before asking again."""
+class WindowCase(unittest.TestCase):
+    """The window cases' fixture: a one-request reservation file, the config, and ``run_window``, which
+    drives ``cmd_execution`` with the registry's answers queued and a monotonic clock only the sleeps
+    (and a given ask's own time) move. It holds no case of its own."""
 
     def setUp(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
@@ -957,6 +958,47 @@ class WindowGap(unittest.TestCase):
 
     def cfg(self, **env: str) -> Any:
         return load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", env, host="testbox")
+
+    def run_window(self, answers: list[Any], words: list[str] | None = None, delays: list[float] | None = None, *,
+                   endpoint_map: str | None = "",
+                   **env: str) -> tuple[int, str, str, list[Any], list[float]]:
+        calls: list[Any] = []
+        slept: list[float] = []
+        clock = [1000.0]  # the monotonic clock, moved only by the sleeps
+
+        def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            clock[0] += seconds
+
+        def unresolved(cfg: Any, payload: str, action: str, *, refusal_status: int = 1) -> tuple[str, str]:
+            return payload, ""
+
+        def run_on(cfg: Any, box: str, script: str, argv: list[str], capture: bool = False) -> Any:
+            # The payload is the script's fd-3 line, argv only says so (ludics-lite#636).
+            self.assertEqual(argv[6], PAYLOAD_ON_FD)
+            framed = script.split("3<<'FLEET_EXECUTION_PY_PAYLOAD' <<'FLEET_EXECUTION_PY'\n", 1)[1].split("\n", 1)[0]
+            calls.append(json.loads(json.loads(framed)))
+            clock[0] += delays.pop(0) if delays else 0.0  # the ask's own time, when given
+            return answers.pop(0)
+
+        out, err = io.StringIO(), io.StringIO()
+        with (mock.patch.object(execution, "check_identity"), mock.patch.object(execution, "checked_request"),
+              mock.patch.object(execution, "with_resolution", side_effect=unresolved),
+              mock.patch.object(execution, "endpoint_map", return_value=endpoint_map),
+              mock.patch.object(execution, "my_token", return_value="tok"),
+              mock.patch.object(execution, "coordinator_id", return_value="coord"),
+              mock.patch.object(execution, "execution_refresh"),
+              mock.patch.object(execution, "run_on", side_effect=run_on),
+              mock.patch.object(execution.time, "sleep", side_effect=sleep),
+              mock.patch.object(execution.time, "monotonic", side_effect=lambda: clock[0]),
+              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
+            rc = execution.cmd_execution(self.cfg(**env), ["window", *(words or []), "testbox", self.file])
+        return rc, out.getvalue(), err.getvalue(), calls, slept
+
+
+class WindowGap(WindowCase):
+    """ludics-lite#667: ``execution window`` asks for FLEET_WINDOW_GAP (or none with ``--no-gap``),
+    and waits out the registry's gap answer (exit 3) with no lock held before asking again."""
 
     def test_the_gap_is_the_knob_or_none_with_no_gap_right_after_window(self) -> None:
         cfg = self.cfg()
@@ -1000,42 +1042,6 @@ class WindowGap(unittest.TestCase):
                      execution.Done(3, '{"gap":{"wait":"5"}}'), execution.Done(3, "[]")):
             self.assertIsNone(execution.gap_wait(done), done)
 
-    def run_window(self, answers: list[Any], words: list[str] | None = None, delays: list[float] | None = None, *,
-                   endpoint_map: str | None = "",
-                   **env: str) -> tuple[int, str, str, list[Any], list[float]]:
-        calls: list[Any] = []
-        slept: list[float] = []
-        clock = [1000.0]  # the monotonic clock, moved only by the sleeps
-
-        def sleep(seconds: float) -> None:
-            slept.append(seconds)
-            clock[0] += seconds
-
-        def unresolved(cfg: Any, payload: str, action: str, *, refusal_status: int = 1) -> tuple[str, str]:
-            return payload, ""
-
-        def run_on(cfg: Any, box: str, script: str, argv: list[str], capture: bool = False) -> Any:
-            # The payload is the script's fd-3 line, argv only says so (ludics-lite#636).
-            self.assertEqual(argv[6], PAYLOAD_ON_FD)
-            framed = script.split("3<<'FLEET_EXECUTION_PY_PAYLOAD' <<'FLEET_EXECUTION_PY'\n", 1)[1].split("\n", 1)[0]
-            calls.append(json.loads(json.loads(framed)))
-            clock[0] += delays.pop(0) if delays else 0.0  # the ask's own time, when given
-            return answers.pop(0)
-
-        out, err = io.StringIO(), io.StringIO()
-        with (mock.patch.object(execution, "check_identity"), mock.patch.object(execution, "checked_request"),
-              mock.patch.object(execution, "with_resolution", side_effect=unresolved),
-              mock.patch.object(execution, "endpoint_map", return_value=endpoint_map),
-              mock.patch.object(execution, "my_token", return_value="tok"),
-              mock.patch.object(execution, "coordinator_id", return_value="coord"),
-              mock.patch.object(execution, "execution_refresh"),
-              mock.patch.object(execution, "run_on", side_effect=run_on),
-              mock.patch.object(execution.time, "sleep", side_effect=sleep),
-              mock.patch.object(execution.time, "monotonic", side_effect=lambda: clock[0]),
-              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
-            rc = execution.cmd_execution(self.cfg(**env), ["window", *(words or []), "testbox", self.file])
-        return rc, out.getvalue(), err.getvalue(), calls, slept
-
     def test_endpoint_map_refusal_needs_action_only_during_assignment(self) -> None:
         with mock.patch.dict(os.environ, {"LUDICS_EXECUTION_ASSIGN_STEP": ""}):
             self.assertEqual(self.run_window([], endpoint_map=None), (1, "", "", [], []))
@@ -1065,12 +1071,9 @@ class WindowGap(unittest.TestCase):
         self.assertEqual((rc, out, slept), (1, "", []), "a refusal is no gap")
 
 
-class WindowPendingWait(unittest.TestCase):
+class WindowPendingWait(WindowCase):
     """ludics#1208, THE PENDING WAIT: ``execution window --wait-pending <seconds>`` asks again at each
     poll while the registry answers pending, until the window opens or the bound runs out."""
-
-    # WindowGap's fixture and driver, without inheriting (and so running again) its cases.
-    setUp, tearDown, cfg, run_window = WindowGap.setUp, WindowGap.tearDown, WindowGap.cfg, WindowGap.run_window
 
     PENDING = execution.Done(3, '{"pending":{"box":"testbox","id":"w2","blockers":["leg"],"expires":"2026-11-18T12:30:00+00:00"}}')
     OPENED = execution.Done(0, '{"request_id":"w2"}')

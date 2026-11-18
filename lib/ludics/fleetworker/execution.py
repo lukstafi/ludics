@@ -1807,29 +1807,31 @@ def window_wait_pending(cfg: Config, args: list[str]) -> tuple[list[str], int, i
     return args, 0, PENDING_POLL
 
 
-def pending_answer(done: Done) -> dict[str, Any] | None:
-    """The registry's pending answer (exit 3, ``{"pending": {"box", "id", "blockers", "expires"}}``,
-    registry.py's THE PENDING WINDOW), or None for any other outcome, a gap answer included."""
+def registry_answer(done: Done) -> dict[str, Any] | None:
+    """The registry's exit-3 answer, decoded (a gap's or THE PENDING WINDOW's: registry.py's
+    ``outcome``), or None for any other outcome: another exit, an unreachable anchor, or stdout that
+    is not one JSON object."""
     if done.rc != 3 or done.unreachable:
         return None
     try:
         decoded: Any = json.loads(done.out)
     except ValueError:
         return None
-    pending = cast(dict[str, Any], decoded).get("pending") if isinstance(decoded, dict) else None
+    return cast(dict[str, Any], decoded) if isinstance(decoded, dict) else None
+
+
+def pending_answer(done: Done) -> dict[str, Any] | None:
+    """The registry's pending answer (exit 3, ``{"pending": {"box", "id", "blockers", "expires"}}``,
+    registry.py's THE PENDING WINDOW), or None for any other outcome, a gap answer included."""
+    pending = (registry_answer(done) or {}).get("pending")
     return cast(dict[str, Any], pending) if isinstance(pending, dict) else None
 
 
 def gap_wait(done: Done) -> int | None:
     """The seconds the registry's gap answer (exit 3, ``{"gap": {..., "wait": <n>}}``) says to wait,
     or None for any other outcome, which is said and returned as it stands."""
-    if done.rc != 3 or done.unreachable:
-        return None
-    try:
-        decoded: Any = json.loads(done.out)
-    except ValueError:
-        return None
-    wait = field(cast(dict[str, Any], decoded), "gap", "wait") if isinstance(decoded, dict) else None
+    answer = registry_answer(done)
+    wait = field(answer, "gap", "wait") if answer is not None else None
     return wait if type(wait) is int and wait > 0 else None
 
 
