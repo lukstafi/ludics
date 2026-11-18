@@ -117,7 +117,10 @@ THE ANSWERS:
             unstick then: the answered note, the mixed-``ALREADY`` and partial-assignment
             attention, and an exit 4 beside a message) ends with the unstick's ``BOARD TALLY``
             lines (``tally.said``), so a lost count is never silent; an answer with no message
-            printed reached no unstick of assign's and carries none.
+            printed reached no unstick of assign's and carries none. The boundary: ``said`` reads
+            every line of assign's stderr that starts with ``BOARD TALLY WARNING`` or ``NOTE``,
+            and does not tell the unstick's lines from a step's, so a step echoing such a line
+            adds a false warning (loud: ``board show`` reconciles it), never hides a real one.
   result    each line needs ``request_id``, an absolute ``run`` and a 40-hex ``observed_sha``, and is
             concluded off the run record: ``execution conclude --from-run``, and when that refuses,
             ``--from-bg-run`` (a refused conclusion concludes nothing, so trying both reads is
