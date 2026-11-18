@@ -10,8 +10,8 @@ for any other -- with its arguments as positional parameters. Only the near side
 ``prelude`` is what every far side starts with: the paths, BOX and its locality, the coordinator's
 fleet configuration for any fleet-worker.sh the far side starts (``fleet_worker``, below), then the
 shell's prelude helpers byte for byte. ``run`` starts a process with a script on its stdin and the far
-side's stderr passed through, which ``ludics.proc.run_tool`` (captured streams, inherited stdin)
-does not offer.
+side's stderr passed through. ``ludics.proc.run_tool`` also accepts script bytes as stdin and captures
+both output streams for callers such as the bounded registry read.
 """
 
 import json

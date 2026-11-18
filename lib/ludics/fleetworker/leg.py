@@ -186,9 +186,10 @@ grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
 Any other line refuses the leg, naming it: a file the fleet cannot read is never ignored. A leg that
 may hold the GPU -- one that does not declare ``--cpu``, the slot's own fail-closed definition, so a
 measurement's too -- whose repository's file names a pin and whose argv satisfies none is refused
-before anything runs, naming the forms that pass: the pins, and for a runner that is a shell's
-``-c`` string (``sh``, ``bash``, ``dash``, ``zsh``, ``ksh``) the leading ``env`` pin or a long list
-shipped with ``--file`` (THE FILE). The boundary: argv words as given, nothing else -- a pin inside a
+before anything runs, naming the forms that pass. A shell composite (``sh``, ``bash``, ``dash``,
+``zsh``, ``ksh``) can carry its pin as a leading ``env`` assignment before the shell executable.
+Keep the pin in the runner's argv when shipping a list or script with ``--file`` (THE FILE).
+The boundary: argv words as given, nothing else -- a pin inside a
 ``sh -c`` string, an environment the caller exported (it does not travel to the box), or a project
 file that selects the backend does not count. It establishes that the command NAMES a backend, never
 that the run held it: that is the runner's own check (OCANNL's ``--expect-backend``), and no refusal
@@ -523,9 +524,9 @@ backend_pin() {
         -*c*)
           if [ -n "$pin_envs" ]; then
             for e in $pin_envs; do break; done
-            hint="; a pin inside a ${1##*/} -c string is no word of the argv: lead with it, env $e=<backend> ${1##*/} -c '...', or give the runner a long list as a file, --file <local file> and the runner word {file}"
+            hint="; a pin inside a ${1##*/} -c string is no word of the argv: lead with it, env $e=<backend> ${1##*/} -c '...', or keep that leading env pin and give the runner a list or script as a file, --file <local file> and the runner word {file}"
           else
-            hint="; a pin inside a ${1##*/} -c string is no word of the argv: run the runner itself, its pin among its words, and give it a long list as a file, --file <local file> and the runner word {file}"
+            hint="; a pin inside a ${1##*/} -c string is no word of the argv: run the runner itself, its pin among its words, and give it a list or script as a file, --file <local file> and the runner word {file}"
           fi ;;
       esac ;;
   esac

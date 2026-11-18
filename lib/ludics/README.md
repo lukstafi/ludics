@@ -703,6 +703,13 @@ reserve/dispatch it rather than running the leg, so its stderr refusal reaches t
 at execution time. The unchanged hint directly shows the leading `env` fix and names
 `--file` / `{file}` as a list form; the template supplies the script example.
 
+Agent notes (wave-20261118-ludics, t1205). A successful final pending-window read clears any
+earlier registry error. Only an original pending window's first opening can renew the cutoff.
+The slot regression observes stale exit 4 after the successful final read on base `8c1b3103`.
+Both execution-leg refusal hints now name a list or script for `--file` and keep the backend pin
+in the runner's arguments. The transport header records the bytes stdin used by the bounded
+registry read.
+
 Agent notes (wave-20261117-ludics, t1186): assigned commands name their outer bg-run
 record, whose log retains shell-leg transcripts. Its conclusion also reads runner sentinels:
 a harness with intentionally red nested tests needs its own final sentinel. The
