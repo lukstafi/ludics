@@ -33,7 +33,7 @@ from typing import assert_never
 
 from ludics import cli
 from ludics.prreview import knobs
-from ludics.prreview.budget import next_poll, pause
+from ludics.prreview.budget import pause, sleep_for_poll
 from ludics.prreview.checkruns import conclusion_class
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.core import (
@@ -221,11 +221,9 @@ def run(
         sleep_for = pause(interval, cap, last_pause, status != last_status)
         last_status = status
         last_pause = sleep_for
-        nap = min(sleep_for, deadline - now)
-        if sleep_for > interval and nap > 0:
-            warn(f"run {shlex.quote(run_id)} in {shlex.quote(repo)}: "
-                 f"{next_poll(now + nap, 'polling backoff while the run is unfinished')}")
-        clk.sleep(nap)
+        sleep_for_poll(clk, min(sleep_for, deadline - now), backed_off=sleep_for > interval,
+                       subject=f"run {shlex.quote(run_id)} in {shlex.quote(repo)}",
+                       reason="the run is unfinished")
     verdict = conclusion_class(conclusion)
     match verdict:
         case "green":

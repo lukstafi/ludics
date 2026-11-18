@@ -36,7 +36,7 @@ from ludics.prreview import ere
 from ludics.prreview import knobs
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, warn
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
-from ludics.prreview.budget import next_poll, pause
+from ludics.prreview.budget import pause, sleep_for_poll
 from ludics.prreview.clock import Clock, FuncClock, age_of, fmt_age, freshest_age
 from ludics.prreview.images import RedJob, report_lines as image_lines
 from ludics.prreview.jobsteps import diagnostic as step_diagnostic
@@ -1331,12 +1331,9 @@ class Gate:
         if (self.verdict == "pending" or self.settling()) and self.check_queued == 0:
             cap = min(cap, 2 * self.config.checks_interval)
         sleep_for = pause(self.config.checks_interval, cap, last_pause, changed)
-        now = self.clock.now()
-        nap = min(sleep_for, max(0, deadline - now))
-        if sleep_for > self.config.checks_interval and nap > 0:
-            warn(f"build gate for {shlex.quote(f'{self.repo}#{pr}')}: "
-                 f"{next_poll(now + nap, f'polling backoff while {reason}')}")
-        self.clock.sleep(nap)
+        nap = min(sleep_for, max(0, deadline - self.clock.now()))
+        sleep_for_poll(self.clock, nap, backed_off=sleep_for > self.config.checks_interval,
+                       subject=f"build gate for {shlex.quote(f'{self.repo}#{pr}')}", reason=reason)
         return sleep_for
 
     def check(self, pr: str, wait_for: int, waive: bool = False) -> int:

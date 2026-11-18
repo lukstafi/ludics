@@ -1299,8 +1299,16 @@ test_a_hold_inside_a_wait_is_one_line_and_no_exit() {
   QUOTA_UNTIL=$((T0 + 100))
   run wait cmd_checks "$REPO#7" --wait
   assert_eq "$(rc wait)" 1 "the wait outlives the hold and ends on the red ($(err wait))"
-  assert_eq "$(err wait | grep -c '^pr-review.sh: quota hold:')" 1 "the quota hold is announced once"
-  assert_eq "$(err wait | grep -c '^pr-review.sh: quota hold lifted:')" 1 "the lift is announced once"
+  local ep hold_at backoff_at expected
+  ep="repos/$REPO/pulls/7"
+  hold_at=$(jq -nr --argjson t "$QUOTA_UNTIL" '$t | strftime("%H:%M:%SZ")')
+  backoff_at=$(jq -nr --argjson t "$((QUOTA_UNTIL + 60 + 120))" '$t | strftime("%H:%M:%SZ")')
+  expected="pr-review.sh: quota hold: $ep refused on quota; no call to GitHub until $hold_at (its headers)."
+  expected="$expected Waiting it out within this command's ceiling; nothing is concluded meanwhile."
+  expected="$expected next poll at $hold_at (rechecking the shared GitHub quota hold)
+pr-review.sh: quota hold lifted: $ep answered again
+pr-review.sh: build gate for '$REPO#7': next poll at $backoff_at (polling backoff while the build verdict is pending)"
+  assert_eq "$(err wait)" "$expected" "the hold, lift and backed-off poll are the only notices"
   assert_eq "$(cat "$MERGE_LOG")" "" "nothing merges from a checks read"
 }
 

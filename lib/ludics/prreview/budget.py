@@ -207,6 +207,13 @@ def next_poll(epoch: int, reason: str) -> str:
     return f"next poll at {at(epoch)} ({reason})"
 
 
+def sleep_for_poll(clock: Clock, nap: int, *, backed_off: bool, subject: str, reason: str) -> None:
+    """Announce a grown pause using the nap the caller selected after applying its deadline."""
+    if backed_off and nap > 0:
+        warn(f"{subject}: {next_poll(clock.now() + nap, f'polling backoff while {reason}')}")
+    clock.sleep(nap)
+
+
 def _first_line(path: str) -> str:
     """``sed -n 1p <file>``: "" when the file cannot be read."""
     try:
@@ -689,6 +696,7 @@ class Budget:
         if not self.dir:
             return None
         noted: int | None = None
+        noted_probe: tuple[str, str] | None = None
         while (hold := self.hold_read()) is not None:
             now = self.clock.now()
             observing = mode == "read" and self.wait_until is not None and now < self.wait_until
@@ -747,7 +755,11 @@ class Budget:
                 continue
             if observing:
                 nap = 5
-                warn(f"quota hold: {next_poll(self.clock.now() + nap, 'another process is probing GitHub')}")
+                probe_owner = (lock.holder, lock.since)
+                if noted_probe != probe_owner:
+                    reason = f"another process is probing GitHub, rechecking every {nap}s"
+                    warn(f"quota hold: {next_poll(self.clock.now() + nap, reason)}")
+                    noted_probe = probe_owner
                 self.clock.sleep(nap)
                 self.waited = True
                 continue

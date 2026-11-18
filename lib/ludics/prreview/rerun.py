@@ -54,10 +54,10 @@ from dataclasses import dataclass
 from typing import NoReturn, assert_never, cast
 
 from ludics import cli
-from ludics.prreview.budget import next_poll, pause
+from ludics.prreview.budget import pause, sleep_for_poll
 from ludics.prreview.clock import clock_from_env
 from ludics.prreview.checkruns import conclusion_class, newest_first_lines
-from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, api_rejection, die, fail, pr_arg, warn
+from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, api_rejection, die, fail, pr_arg
 from ludics.prreview.knobs import INTMAX, checks_timing, is_digits
 from ludics.prreview.runners import rerun_command
 from ludics.prreview.shtext import herestring_lines, placeholder, tab_fields
@@ -240,12 +240,10 @@ def recovery_read(session: GhSession, args: list[str]) -> int:
         cap = session.budget.build_cap if session.budget is not None else timing.interval
         delay = pause(timing.interval, cap, delay, last != found.state())
         last = found.state()
-        now = clock.now()
-        nap = min(delay, max(0, deadline - now))
-        if delay > timing.interval and nap > 0:
-            warn(f"rerun wait for run {rid} on {shlex.quote(f'{repo}#{pr}')}: "
-                 f"{next_poll(now + nap, 'polling backoff while the run is unfinished')}")
-        clock.sleep(nap)
+        nap = min(delay, max(0, deadline - clock.now()))
+        sleep_for_poll(clock, nap, backed_off=delay > timing.interval,
+                       subject=f"rerun wait for run {rid} on {shlex.quote(f'{repo}#{pr}')}",
+                       reason="the run is unfinished")
     jobs = read_jobs(session, repo, rid)
     if verb == "job-log":
         jid = extra[0]

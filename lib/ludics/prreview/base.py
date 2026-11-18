@@ -146,7 +146,7 @@ from ludics.prreview.ere import Matcher
 from ludics.prreview.gate import GateConfig, Gate, load_gate_config
 from ludics.prreview.workflows import Reads
 from ludics.prreview.checkruns import conclusion_class, newest_first
-from ludics.prreview.budget import next_poll, pause
+from ludics.prreview.budget import pause, sleep_for_poll
 from ludics.prreview.clock import Clock, FuncClock, age_of, clock_from_env
 from ludics.prreview.shtext import encode_ref, herestring_lines, tab_fields
 from ludics.prreview.workflow_yaml import paths_ignore_covers, workflow_filter, workflow_keys
@@ -1791,12 +1791,11 @@ class Wait:
             last_sig = sig
             last_pause = sleep_for
             remaining = started + wait_for - now
-            nap = min(sleep_for, remaining)
-            if sleep_for > knobs.checks_interval and nap > 0:
-                reason = ("polling backoff while push CI is in flight" if rnd.inflight
-                          else "polling backoff while waiting for a verdict at the tip")
-                warn(f"base {shlex.quote(repo)} {shlex.quote(branch)}: {next_poll(b.clock.now() + nap, reason)}")
-            b.clock.sleep(nap)
+            sleep_for_poll(
+                b.clock, min(sleep_for, remaining), backed_off=sleep_for > knobs.checks_interval,
+                subject=f"base {shlex.quote(repo)} {shlex.quote(branch)}",
+                reason="push CI is in flight" if rnd.inflight else "waiting for a verdict at the tip",
+            )
         return self.report(rnd, tip, waited_note, no_tip_verdict, interim_green)
 
     def held_over(self) -> bool:

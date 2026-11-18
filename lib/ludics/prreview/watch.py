@@ -63,8 +63,8 @@ from typing import assert_never
 
 from ludics.proc import windows_command_line
 from ludics.prreview import knobs
-from ludics.prreview.budget import next_poll
 from ludics.prreview.budget import pause as budget_pause
+from ludics.prreview.budget import sleep_for_poll
 from ludics.prreview.core import (
     GhFailed,
     GhOk,
@@ -1258,11 +1258,9 @@ class Watch:
                     break
                 if pause > remaining:
                     pause = remaining
-            if last_pause > interval and pause > 0:
-                reason = ("polling backoff while the review is in flight" if tok == "reviewing"
-                          else "polling backoff while review state is unchanged")
-                warn(f"watching {shlex.quote(f'{self.repo}#{pr}')}: {next_poll(self.clock.now() + pause, reason)}")
-            self.clock.sleep(pause)
+            sleep_for_poll(self.clock, pause, backed_off=last_pause > interval,
+                           subject=f"watching {shlex.quote(f'{self.repo}#{pr}')}",
+                           reason="the review is in flight" if tok == "reviewing" else "review state is unchanged")
 
         if self.state.tok == "stalled":
             return self.end("stalled", "", remedy="stalled")
