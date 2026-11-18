@@ -1400,6 +1400,18 @@ whose comments the command does not read (no doc build over them, no output nami
 moves again between the build and the call is the integration loop's either way
 (`prreview/mergebuild.py` states both).
 
+**A plan before the slot** (#1218). A build that owes a run it does not make (OCANNL's refuses a
+cross-cutting change without a recorded full-suite run) is told so by a `plan <shell command>` line
+in the same file (bound: `plan-timeout <seconds>`, default 300). Where a build is to run, `merge`
+runs the plan at the merge commit under the build command's contract, bare and before the slot,
+and reads its exit status and its one `ship-pr-merge-plan:` line: `nothing-owed` and `admitted
+[<what>]` go on to the build, which still decides; `unadmitted [<what>]` refuses with exit 1 and
+that line, nothing built and no slot taken, and `--override` does not go over it. Any other
+answer (it exited nonzero, timed out, printed no such line or a malformed one) is no verdict: said
+which, and the build runs as without a plan. Record (or waive) what the refusal names, then merge
+again. The plan runs in a checkout of its own, so nothing it writes reaches the build's tree
+(`prreview/mergebuild.py`'s THE PLAN states the line shapes and the closed list).
+
 **Where the merge build runs, how long it waits, and how to try a config** (ludics-lite#730, #764,
 #751). `merge -C <clone>` names the clone the build uses, for a `merge` started anywhere else (a
 `bg-run.sh spawn`); the PR is still named by `owner/name#<n>`, never by the clone, and `-C` is checked

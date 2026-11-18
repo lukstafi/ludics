@@ -148,6 +148,31 @@ class Grammar(unittest.TestCase):
         config, err = parsed("trigger always\n")
         self.assertIsNone(config, "a command is required under every trigger")
 
+    def test_a_plan_and_its_timeout(self) -> None:
+        """THE PLAN (#1218): one optional `plan` line, its bound optional beside it."""
+        config, err = parsed("command make\ninput *.c\nplan  tools/plan.sh --plan-merge \n")
+        self.assertEqual(config and (config.plan, config.plan_timeout), ("tools/plan.sh --plan-merge", mergebuild.PLAN_TIMEOUT))
+        self.assertEqual(err, "")
+        config, err = parsed("command make\ntrigger always\nplan p\nplan-timeout 90\n")
+        self.assertEqual(config and (config.plan, config.plan_timeout), ("p", 90))
+        self.assertEqual(err, "")
+        config, _ = parsed("command make\ninput *.c\n")
+        self.assertEqual(config and config.plan, None, "no plan line: no plan")
+        for text, named in (
+            ("command make\ninput *.c\nplan a\nplan b\n", "a second plan line"),
+            ("command make\ninput *.c\nplan\n", "blank line: plan"),
+            ("command make\ninput *.c\nplan a\nplan-timeout 0\n", "plan-timeout 0"),
+            ("command make\ninput *.c\nplan a\nplan-timeout 86401\n", "plan-timeout 86401"),
+            ("command make\ninput *.c\nplan a\nplan-timeout 5\nplan-timeout 6\n", "a second plan-timeout line"),
+            ("command make\ninput *.c\nplan-timeout 5\n", "a `plan-timeout` line and no `plan` line"),
+            ("command make\ninput *.c\nplan-time 5\n", "plan-time 5"),
+            ("command make\ninput *.c\nplan-\n", "blank line: plan-"),
+        ):
+            with self.subTest(text=text):
+                config, err = parsed(text)
+                self.assertIsNone(config)
+                self.assertIn(named, err)
+
 
 class Inputs(unittest.TestCase):
     def test_a_glob_matches_the_whole_path_and_star_crosses_slashes(self) -> None:
@@ -1078,6 +1103,148 @@ class BaseAlone(Repo):
 
 ML = ["(* The library. *)", "let a = 1", "", "", "", "", "", "", "let b = 2 (* two *)", ""]
 RAN = "echo the build ran; exit 1"  # a build that runs is refused, so a merge that proceeds built nothing
+
+
+class Plan(Repo):
+    """THE PLAN (#1218): the configured plan runs before the slot probe; its ``unadmitted`` verdict
+    refuses with nothing built and no slot taken, every other answer goes on to the build."""
+
+    BUILD = "echo the build ran >&2; test ! -e planned && sh ./api.sh"
+
+    def planned(self, gated: str, plan: str, command: str = BUILD, plan_timeout: int = 60) -> tuple[int, str]:
+        refs = self.refs()
+        os.chdir(self.clone)
+        out = io.StringIO()
+        rc = 0
+        config = BuildConfig(command, ("*.sh",), 60, plan=plan, plan_timeout=plan_timeout)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                mergebuild._build(  # pyright: ignore[reportPrivateUsage]
+                    "owner/repo", "7", gated, "main", self.tip, config, "test",
+                )
+            except cli.Exit as exc:
+                rc = exc.rc
+                out.write(exc.message + "\n")
+        self.assert_untouched(refs)
+        return rc, out.getvalue()
+
+    def test_an_unadmitted_owed_run_is_refused_before_any_slot(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        plan = 'echo "owed: the whole suite"; echo "ship-pr-merge-plan: unadmitted runtest train"'
+        with mock.patch.object(mergebuild, "_slot_runner", side_effect=AssertionError("a slot was probed")):
+            rc, out = self.planned(head, plan)
+        self.assertEqual(rc, 1, out)
+        self.assertIn(f"REFUSING to merge owner/repo#7: the plan of {head[:8]} merged with {self.tip[:8]} owes runtest train", out)
+        self.assertIn("(ship-pr-merge-plan: unadmitted runtest train)", out, "the plan's verdict is in the refusal")
+        self.assertIn("Nothing was built and no slot was taken", out)
+        self.assertIn("  | owed: the whole suite", out, "the plan's output is shown")
+        self.assertNotIn("the build ran", out)
+        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head
+        self.assertIn("ship-pr-merge-plan: unadmitted", (retained / "plan.log").read_text())
+        self.assertEqual((retained / "plan.status").read_text().strip(), "0")
+        self.assertFalse((retained / "build.log").exists(), "no build ran")
+        self.assertEqual(buildhistory.read("owner/repo", self.BUILD), [], "no build went into the history")
+
+    def test_a_record_that_admits_it_goes_on_to_the_build(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.planned(head, "touch planned; echo 'ship-pr-merge-plan: admitted runtest'")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("the plan owes runtest, and a record admits it", out)
+        self.assertIn("PASSED", out, "the build ran on the merged tree as checked out, the plan's file gone")
+        # The build still owns admission: an admitted plan does not pass a failing build.
+        rc, out = self.planned(head, "echo 'ship-pr-merge-plan: admitted runtest'", command="false")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAILED", out)
+
+    def test_nothing_owed_goes_on_to_the_build(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.planned(head, "echo 'ship-pr-merge-plan: nothing-owed'")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("the plan owes nothing", out)
+        self.assertIn("PASSED", out)
+
+    def test_the_plan_runs_under_the_commands_contract(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        plan = ('test "$(git rev-parse HEAD^1)" = "$SHIP_PR_MERGE_BASE_SHA" && test "$(git rev-parse HEAD^2)" = "$SHIP_PR_MERGE_HEAD_SHA"'
+                ' && test -f api.sh && echo "ship-pr-merge-plan: unadmitted x"')
+        rc, out = self.planned(head, plan)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("owes x, and no", out)
+
+    def test_no_verdict_is_neither_a_refusal_nor_an_admission(self) -> None:
+        """The closed list: each goes on to the build, which decides -- a passing one merges, a
+        failing one refuses as without a plan."""
+        head, _ = self.sides("keep", "seam() { :; }")
+        for plan, said in (
+            ("./tools/no-such-plan.sh", "it exited 127"),
+            ("echo 'ship-pr-merge-plan: unadmitted x'; exit 3", "it exited 3"),
+            ("echo planned nothing", "it printed no `ship-pr-merge-plan:` line"),
+            ("echo 'ship-pr-merge-plan: nothing-owed'; echo 'ship-pr-merge-plan: unadmitted x'",
+             "it printed 2 `ship-pr-merge-plan:` lines"),
+            ("echo 'ship-pr-merge-plan: refused x'", "none of the verdict shapes"),
+            ("echo 'ship-pr-merge-plan: nothing-owed x'", "none of the verdict shapes"),
+            ("echo 'ship-pr-merge-plan:  unadmitted x'", "none of the verdict shapes"),
+            ("echo ' ship-pr-merge-plan: unadmitted x'; echo 'ship-pr-merge-plan:unadmitted'", "none of the verdict shapes"),
+            ("printf 'ship-pr-merge-plan: unadmitted \\001\\n'", "none of the verdict shapes"),
+            ("sleep 30", "it did not finish within 1s (the plan-timeout)"),
+        ):
+            with self.subTest(plan=plan):
+                rc, out = self.planned(head, plan, plan_timeout=1 if plan == "sleep 30" else 60)
+                self.assertEqual(rc, 0, out)
+                self.assertIn(f"the plan gave NO VERDICT after", out)
+                self.assertIn(said, out)
+                self.assertIn("PASSED", out)
+        rc, out = self.planned(head, "exit 9", command="false")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("it exited 9", out)
+        self.assertIn("FAILED", out)
+
+    def test_the_plans_checkout_is_its_own(self) -> None:
+        """What the plan writes -- a file, a git write -- never reaches the build's tree."""
+        head, _ = self.sides("keep", "seam() { :; }")
+        plan = "touch planned && git tag planned && echo 'ship-pr-merge-plan: nothing-owed'"
+        rc, out = self.planned(head, plan, command=f"{self.BUILD} && ! git rev-parse -q --verify planned")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PASSED", out)
+        self.assertNotIn("NO VERDICT", out)
+
+    def test_a_status_written_as_the_bound_struck_is_no_verdict(self) -> None:
+        """The bound's answer wins: a late `unadmitted` never refuses (local review)."""
+        head, _ = self.sides("keep", "seam() { :; }")
+        real = mergebuild._supervised  # pyright: ignore[reportPrivateUsage]
+
+        def struck(argv: list[str], *args: object, **kwargs: object) -> proc.Completed:
+            done = real(argv, *args, **kwargs)  # type: ignore[arg-type]
+            return proc.Completed(124, done.stdout, done.stderr) if argv[3:4] == ["merge-plan"] else done
+
+        with mock.patch.object(mergebuild, "_supervised", side_effect=struck):
+            rc, out = self.planned(head, "echo 'ship-pr-merge-plan: unadmitted x'")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("it did not finish within 60s (the plan-timeout)", out)
+        self.assertIn("PASSED", out)
+
+    def test_a_verdict_line_past_the_read_bound_is_never_read_whole(self) -> None:
+        log = os.path.join(self.dir, "plan.log")
+        long = "ship-pr-merge-plan: unadmitted " + "x" * mergebuild.SHOWN_BYTES
+        with open(log, "w", encoding="utf-8") as f:
+            f.write(long + "\nafter\n")
+        verdict = mergebuild.plan_verdict(log)
+        self.assertIsInstance(verdict, str)
+        self.assertIn("none of the verdict shapes", str(verdict))
+        with open(log, "w", encoding="utf-8") as f:
+            f.write("x" * (3 * mergebuild.SHOWN_BYTES) + "\nship-pr-merge-plan: unadmitted y\r\n")
+        self.assertEqual(mergebuild.plan_verdict(log), mergebuild.PlanVerdict("unadmitted", "y", "ship-pr-merge-plan: unadmitted y"),
+                         "a long line before it is drained, and a CRLF ending read as a line end")
+        with open(log, "w", encoding="utf-8") as f:
+            f.write("ship-pr-merge-plan: admitted")
+        self.assertEqual(mergebuild.plan_verdict(log), mergebuild.PlanVerdict("admitted", "", "ship-pr-merge-plan: admitted"),
+                         "a last line with no newline is whole")
+
+    def test_no_plan_runs_none_and_says_nothing_of_one(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.build(head)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("plan", out)
 
 
 class CommentsOnly(Repo):
