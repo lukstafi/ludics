@@ -16,10 +16,10 @@ from unittest import mock
 
 from ludics import cli
 from ludics.fleetworker import __main__ as entry
-from ludics.fleetworker import boardstore, lease, registry, status, takeover, transport
+from ludics.fleetworker import boardstore, lease, status, takeover, transport
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
-from ludics.tests.test_fleetworker_registry import request
+from ludics.tests.test_fleetworker_registry import plant
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 SCRIPT = os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh")
@@ -240,18 +240,9 @@ class Document(Anchor):
         self.assertEqual(doc["errors"], [{"source": "executions", "why": "the registry listing exited 1"}])
 
     def records(self) -> None:
-        """Two records through the registry's own writer: ``open`` reserved, ``shut`` concluded, each
-        holding the coordinator's token as its ``lease_token``."""
-        def call(action: str, payload: dict[str, object]) -> None:
-            with contextlib.redirect_stdout(io.StringIO()):
-                rc = registry.run(["-", self.root, action, "owner", TOKEN, json.dumps(payload), "mac", "", ""])
-            while registry.WAITER_LOCKS:
-                os.close(registry.WAITER_LOCKS.pop())
-            self.assertEqual(rc, 0, action)
-
-        call("reserve", request("shut"))  # one outstanding reservation per box: conclude it first
-        call("conclude", {"request_id": "shut", "verdict": "not-launched", "log": "l", "evidence": "never launched"})
-        call("reserve", request("open"))
+        """Two records through the registry's own writer (``plant``): ``open`` reserved, ``shut``
+        concluded, each holding the coordinator's token as its ``lease_token``."""
+        plant(self.root, TOKEN)
         with open(os.path.join(self.root, "executions", "open.json"), encoding="utf-8") as f:
             self.assertEqual(json.load(f)["lease_token"], TOKEN, "the fixture holds the token the listing must drop")
 
