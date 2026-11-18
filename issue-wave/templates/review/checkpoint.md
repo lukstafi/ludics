@@ -31,8 +31,8 @@ Look especially for:
 - a fix that covers the task's example and not its class;
 - a behaviour change the PR body does not state;
 - missing measurements for the PR's predicted consequences. For an issue whose acceptance is a
-  measurement, any such unmeasured consequence is **blocking**, however long its window and
-  even if the PR says "Part of";
+  measurement, any such unmeasured consequence is **blocking**, however long its
+  window and even if the PR says "Part of";
 - a duplicated helper where an existing one fits.
 
 A finding is **blocking** when it is a real defect or it invalidates a claim the PR makes.
