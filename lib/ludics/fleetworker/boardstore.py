@@ -54,8 +54,8 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``<task> interventions=<n>: <why>``; a ``routine_answers`` tally logs nothing. The row is
         named by ``wave`` and ``task`` (no row refuses, with the nearest task, as set does; no board
         refuses), or, for ``unstick``, which knows only a box and a worker, by ``worker`` and
-        ``host``: every board under ``boards/`` (named and read as ``scan`` reads them, a board that
-        does not load skipped) is searched for the rows whose ``worker`` field is ``worker``, whose
+        ``host``: every board under ``boards/`` (listed and read as ``scan`` lists and reads them, by
+        one listing; a board that does not load, or is no regular file, is skipped) is searched for the rows whose ``worker`` field is ``worker``, whose
         ``agent_host`` is ``host``, whose ``transport`` is ``cli`` or absent (an unstick reaches only
         a CLI worker, so a native row of the same name is never charged with it) and whose state's
         first word (its ``state``, else its ``status``; ``;:,.`` stripped, case ignored) is none of
@@ -399,23 +399,10 @@ def tally_by_worker(root: str, coordinator: str, payload: Doc) -> None:
     done = {w.lower() for w in cast(list[str], done_raw)}
     if not worker or not host:
         refuse("a tally by worker names a worker and a host")
-    if not Path(root).is_dir():
-        refuse(f"the anchor state root {root} is not a directory")
-    directory = Path(root) / "boards"
-    try:
-        with os.scandir(directory) as entries:
-            names = sorted(entry.name for entry in entries)
-    except FileNotFoundError:
-        names = []
     found: list[tuple[Path, Doc, Doc]] = []
-    for name in names:
-        wave = name.removesuffix(".json")
-        if wave == name or not WAVE.fullmatch(wave):
-            continue
+    for path, wave in board_files(root):
         try:
-            if not stat.S_ISREG(os.stat(directory / name).st_mode):
-                continue
-            doc = load(directory / name, wave)
+            doc = load_regular(path, wave)
         except (ValueError, OSError):
             continue  # a board that does not load holds no row this tally can count
         if doc is None:
@@ -426,7 +413,7 @@ def tally_by_worker(root: str, coordinator: str, payload: Doc) -> None:
             word = words[0].rstrip(";:,.").lower() if words else ""
             if (fields.get("worker") == worker and fields.get("agent_host") == host and word not in done
                     and fields.get("transport", "cli") == "cli"):
-                found.append((directory / name, doc, row))
+                found.append((path, doc, row))
     who = f"worker {json.dumps(worker)} on {json.dumps(host)}"
     if not found:
         print(f"BOARD TALLY NOTE: no row of {who} that is not done, on any board; nothing counted")
@@ -443,23 +430,39 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def scan(root: str, payload: Doc) -> None:
-    """``scan`` (the header): every board under ``root``, one JSON line, with no lock."""
-    since: Any = payload.get("since_hours")
-    if since is not None and (type(since) not in (int, float) or not math.isfinite(since) or since <= 0):
-        refuse("since_hours must be a positive finite number of hours, or null")
+def board_files(root: str) -> list[tuple[Path, str]]:
+    """Every ``<wave>.json`` under ``<root>/boards/`` as (path, wave), in name order: ``scan``'s listing
+    (the header), which ``tally`` by worker reads too. Any other entry is skipped, not reported; no
+    ``boards`` directory is no boards; a root or a ``boards`` that is no directory refuses."""
     if not Path(root).is_dir():
         refuse(f"the anchor state root {root} is not a directory")
     directory = Path(root) / "boards"
     try:
         os.lstat(directory)
     except FileNotFoundError:
-        names: list[str] = []
-    else:
-        if not directory.is_dir():
-            refuse(f"{directory} is not a directory")
-        with os.scandir(directory) as entries:
-            names = sorted(entry.name for entry in entries)
+        return []
+    if not directory.is_dir():
+        refuse(f"{directory} is not a directory")
+    with os.scandir(directory) as entries:
+        names = sorted(entry.name for entry in entries)
+    return [(directory / name, wave) for name in names
+            if (wave := name.removesuffix(".json")) != name and WAVE.fullmatch(wave)]
+
+
+def load_regular(path: Path, wave: str) -> Doc | None:
+    """``load``, of a regular file only (a link to one included, as ``load`` reads it): a FIFO or a
+    device would block the read, and every board after it."""
+    if not stat.S_ISREG(os.stat(path).st_mode):
+        refuse(f"{path} is no regular file")
+    return load(path, wave)
+
+
+def scan(root: str, payload: Doc) -> None:
+    """``scan`` (the header): every board under ``root``, one JSON line, with no lock."""
+    since: Any = payload.get("since_hours")
+    if since is not None and (type(since) not in (int, float) or not math.isfinite(since) or since <= 0):
+        refuse("since_hours must be a positive finite number of hours, or null")
+    files = board_files(root)
     cutoff: datetime | None = None
     if since is not None:
         try:
@@ -468,16 +471,9 @@ def scan(root: str, payload: Doc) -> None:
             cutoff = datetime.min.replace(tzinfo=timezone.utc)  # a window wider than the calendar: every board
     boards: list[Doc] = []
     refused: list[Doc] = []
-    for name in names:
-        wave = name.removesuffix(".json")
-        if wave == name or not WAVE.fullmatch(wave):
-            continue
+    for path, wave in files:
         try:
-            # A FIFO or device would block the read, and every board after it: only a regular
-            # file (a link to one included, as ``load`` reads it) is read.
-            if not stat.S_ISREG(os.stat(directory / name).st_mode):
-                refuse(f"{directory / name} is no regular file")
-            doc = load(directory / name, wave)
+            doc = load_regular(path, wave)
             if doc is None:
                 continue  # removed between the listing and the read
             if cutoff is not None:

@@ -13,7 +13,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import assign, board, boardstore, takeover, tally, wavedrive, wavereview
+from ludics.fleetworker import assign, board, boardstore, takeover, tally, wavereview
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import Done
 
@@ -404,6 +404,13 @@ class Tally(StoreCase):
         row("e", "t1", worker="w1-44", agent_host="mac", state="launched", transport="subagent")
         self.assertIn("BOARD TALLY NOTE: no row", self.tally("interventions", worker="w1-44", host="mac", done=done)[1],
                       "an unstick reaches only a CLI worker: a native row of that name is never charged")
+        shutil.rmtree(os.path.join(self.root, "boards"))
+        with open(os.path.join(self.root, "boards"), "w") as f:
+            f.write("")
+        for refused in (self.tally("interventions", worker="w1-43", host="mac", done=done),
+                        self.call("scan", {"since_hours": None})):
+            self.assertEqual(refused[:2], (1, ""), "a boards that is no directory: scan's refusal, by its one listing")
+            self.assertIn("boards is not a directory", refused[2])
 
     def test_a_row_made_before_the_counters_says_its_counts_are_partial(self) -> None:
         self.set("t1", ("state", "launched"))
@@ -448,12 +455,11 @@ class Classify(unittest.TestCase):
             messages.append(wavereview.message_of(call, mock.Mock(line="VERDICT: x", blocks=blocks), "https://x"))
         block = {"request_id": "r-1", "kind": "correctness", "execution_host": "mac", "checkout": "/w"}
         messages.append(assign.assignment_text(block, "true", "b" * 40) + "\n\n" + assign.assignment_text(block, "true", "c" * 40))
-        messages.append("\n".join(["EXECUTION_CONCLUDED r-1 pass", "EXECUTION_CONCLUDED r-2 fail"]))
         self.assertEqual([m.split()[0] for m in messages][:4], ["REVIEW_POSTED", "REVIEW_POSTED", "MERGE", "MERGE"])
         for message in messages:
             self.assertEqual(tally.classify(message)[0], "routine_answers", message[:60])
-        self.assertIn('lines.append(f"EXECUTION_CONCLUDED {request} {verdict}")', open(wavedrive.__file__).read(),
-                      "the result answer's line is the one built above")
+        # The result answer is the driver's own concluded.md, classified where it is written: test_fleetworker_wave's
+        # conclude case.
 
     def test_said_keeps_only_the_tallys_own_lines(self) -> None:
         self.assertEqual(tally.said("RESUMED x\nBOARD TALLY w: \"t\" routine_answers=1\n"), "")

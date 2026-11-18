@@ -21,7 +21,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import farside, gate, revision, takeover, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep, workers
+from ludics.fleetworker import farside, gate, revision, takeover, tally, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep, workers
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -2924,7 +2924,10 @@ class Drive(DriveCase):
             self.assertEqual(self.calls[1:], [["execution", "conclude", "--from-run", "/runs/7", "--request", "wv-t42-rog-1", "--sha", A],
                                               ["unstick", "far", "w1-42", "--message", f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.concluded.md"]])
             with open(f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.concluded.md") as f:
-                self.assertEqual(f.read(), "EXECUTION_CONCLUDED wv-t42-rog-1 pass\n\nContinue with your task.\n")
+                concluded = f.read()
+            self.assertEqual(concluded, "EXECUTION_CONCLUDED wv-t42-rog-1 pass\n\nContinue with your task.\n")
+            self.assertEqual(tally.classify(concluded)[0], "routine_answers",
+                             "the message the unstick sends counts as a routine answer (tally.py, ludics#1214)")
             # A bg-run directory is no test-run record: the first read refuses, the second concludes.
             self.resumes = 1
             self.rc["execution conclude --from-run"] = 1
