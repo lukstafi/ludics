@@ -259,6 +259,16 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    dispatch, so nothing is reserved again. A record the rebind refuses (a run already recorded
    at the old commit) is concluded there, and the new head is a new request.
 
+6. **Count each message on the row.** Every message the coordinator sends a worker with
+   `SendMessage`, a protocol answer or not, is saved to a file and counted beside the send:
+   `fleet-worker.sh board tally <wave> <task> --message <file>` (ludics#1214). The verb reads the
+   message's first non-blank line: a protocol answer (`REVIEW_POSTED`, `EXECUTION_ASSIGNED`,
+   `PEER_PLAN`, ... the closed list in `lib/ludics/fleetworker/tally.py`) counts in the row's
+   `routine_answers`, anything else (an escalation's answer, a nudge, a forwarded finding) in its
+   `interventions`, with one board log line. A CLI worker's `unstick` counts its own, so CLI and
+   native rows carry the same two fields. A tally that refuses or does not answer is re-read with
+   `board show` before it is tried again; the message is never sent again to repair a count.
+
 The same request and result lines work for a Codex native worker that prefers them; what
 differs is only that Codex may keep its turn open and wait.
 

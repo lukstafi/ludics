@@ -294,6 +294,7 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
 from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
+from ludics.fleetworker.tally import said
 from ludics.fleetworker.transport import Done, substitution
 from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
@@ -800,7 +801,7 @@ class Driver:
             self.attention(worker, turn, kind, f"{text}, and the worker was NOT resumed (unstick exit {done.rc}:"
                                                f" {substitution(done.out)[-200:]}); resume it with {message}", message)
             return False
-        self.note(worker, turn, kind, "answered", text, **more)
+        self.note(worker, turn, kind, "answered", text + said(self.err), **more)
         return True
 
     def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None) -> None:
@@ -821,7 +822,7 @@ class Driver:
                                   f" earlier call had dispatched {', '.join(earlier)} and its message is not in this one; send"
                                   " the worker those assignments", message)
         if done.rc == 0:
-            return self.note(worker, turn, "request", "answered", f"assigned and resumed with {out}")
+            return self.note(worker, turn, "request", "answered", f"assigned and resumed with {out}{said(self.err)}")
         if done.rc in (1, ASSIGN_ACTION_REQUIRED) and done.out.strip():
             return self.attention(worker, turn, "request", "execution assign refused some of the turn's blocks and resumed the"
                                   f" worker with the rest ({out}); its lines name the refused ones, which the worker still waits for",

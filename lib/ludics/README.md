@@ -382,6 +382,10 @@ fleetworker/board.py fleetworker/boardstore.py fleetworker/takeover.py
     issue-wave/scripts/test-fleet-worker.sh board "execution assign" "wave kit"
     lib/ludics/tests/test_fleetworker_status.py
 
+fleetworker/tally.py
+    issue-wave/scripts/test-fleet-worker.sh board unstick "execution assign"
+    lib/ludics/tests/test_fleetworker_board.py
+
 fleetworker/status.py
     issue-wave/scripts/test-fleet-worker.sh board usage
     lib/ludics/tests/test_fleetworker_status.py

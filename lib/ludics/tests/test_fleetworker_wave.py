@@ -2853,6 +2853,31 @@ class Drive(DriveCase):
             self.assertEqual(self.calls[-1], ["unstick", "far", "w1-42", "--message", saved.replace(".0.assigned", ".1.assigned")])
             self.assertIn("request answered: dispatched by an earlier call; resumed with its saved message", out)
 
+    def test_a_resume_that_was_not_counted_says_so_in_its_answered_note(self) -> None:
+        """ludics#1214: the unstick a driver's answer goes through counts the turn itself, on stderr, which the
+        driver keeps out of the ledger on success; a tally's NOTE or WARNING line rides into the note instead."""
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
+        self.out["execution assign stderr"] = ("ASSIGN ASSIGNED x\nBOARD TALLY w: \"t42\" routine_answers=1\n"
+                                               "BOARD TALLY WARNING far/w1-42: not counted (board exit 1)\n")
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("request answered: assigned and resumed with", out)
+            self.assertIn("; BOARD TALLY WARNING far/w1-42: not counted (board exit 1)", out)
+            self.assertNotIn("routine_answers=1", out, "a counted turn adds nothing to the note")
+            self.resumes = 1
+            self.out["execution assign"] = ""
+            self.out["execution assign stderr"] = "ASSIGN ALREADY x\n"
+            with open(f"{self.wavedir}/msgs/t42.w1-42.0199-a.1.assigned.md", "w") as f:
+                f.write("EXECUTION_ASSIGNED x\n")
+            self.out["unstick stderr"] = "BOARD TALLY NOTE: no row of worker \"w1-42\" on \"far\" that is not done\n"
+            out = self.once()[1]
+            self.assertIn("resumed with its saved message", out)
+            self.assertIn('; BOARD TALLY NOTE: no row of worker "w1-42" on "far" that is not done', out)
+        with open(os.path.join(self.wavedir, "logs", "drive.jsonl")) as f:
+            notes = [e["note"] for e in map(json.loads, f)]
+        self.assertTrue(notes[0].endswith("; BOARD TALLY WARNING far/w1-42: not counted (board exit 1)"), notes[0])
+
     def test_a_refused_assignment_is_tried_again_then_handed_up_and_exit_4_at_once(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
         self.rc["execution assign"] = 1

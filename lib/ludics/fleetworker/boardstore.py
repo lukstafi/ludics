@@ -37,7 +37,27 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``updated_at`` stamp), at the row's end: every launch, ``wave launch``'s and a native
         coordinator's ``state=launched`` alike, is timed by one clock with no step of its own. A
         row keeps its first stamp (a finisher's relaunch is not a new launch time), and a set that
-        names ``launched_at`` itself writes its own value.
+        names ``launched_at`` itself writes its own value. THE COUNTERS START AT ZERO: a set that
+        creates a row also writes ``interventions=0`` and ``routine_answers=0`` after its own pairs
+        (unless it names them), so a row that has the fields was measured from its start and a row
+        without them (one made before ludics#1214) was not; a set on an existing row, ``--new-row``
+        again included, keeps the counts.
+  tally {"counter", "why", "wave", "task"} | {"counter", "why", "worker", "host", "done": [word, ...]}
+        one more of a row's coordinator turns (ludics#1214; the classifier and its closed list are
+        ``ludics.fleetworker.tally``'s, near side): ``counter`` is ``interventions`` or
+        ``routine_answers``, and its value goes up by one under the same lease lock as set, in one
+        publish, so two tallies never read one starting value. The value is a decimal count
+        (``0`` or no leading zero), and a row without the key counts from 0; any other value refuses,
+        nothing written. An ``interventions`` tally also appends one log line in the same replace,
+        ``<task> interventions=<n>: <why>``; a ``routine_answers`` tally logs nothing. The row is
+        named by ``wave`` and ``task`` (no row refuses, with the nearest task, as set does; no board
+        refuses), or, for ``unstick``, which knows only a box and a worker, by ``worker`` and
+        ``host``: every board under ``boards/`` (named and read as ``scan`` reads them, a board that
+        does not load skipped) is searched for the rows whose ``worker`` field is ``worker``, whose
+        ``agent_host`` is ``host`` and whose state's first word (its ``state``, else its
+        ``status``; ``;:,.`` stripped, case ignored) is none of ``done``. Exactly one is counted; none, or more than one, is ``BOARD TALLY NOTE
+        ...; nothing counted`` on stdout, exit 0: a worker outside any wave is no refusal, and an
+        ambiguous one is counted nowhere rather than on a guess.
   placement {"wave", "worker", "host", "checkout"}                internal to execution assign:
         union the host and host:checkout into exec_hosts and farside on the unique worker row,
         under the same lease lock as set. With the lease held, no board or no matching row is a no-op
@@ -332,6 +352,86 @@ def launched(state: str) -> bool:
     return bool(words) and words[0].rstrip(";:,.").lower() == "launched"
 
 
+COUNTERS = ("interventions", "routine_answers")  # tally's counters (the header)
+COUNT = re.compile(r"0|[1-9][0-9]*")
+
+
+def counter_ok(value: Any) -> str:
+    if value not in COUNTERS:
+        refuse(f"a tally's counter is one of {', '.join(COUNTERS)}, not {json.dumps(value)}")
+    return cast(str, value)
+
+
+def count(path: Path, doc: Doc, row: Doc, coordinator: str, payload: Doc) -> str:
+    """``tally``'s write (the header): the row's counter one more, an intervention's log line, one
+    publish; the acknowledgement it returns."""
+    counter = counter_ok(payload.get("counter"))
+    why = text_ok(payload.get("why"), "a tally's why")
+    fields = cast(dict[str, str], row["fields"])
+    old = fields.get(counter, "0")
+    if not COUNT.fullmatch(old):
+        refuse(f"the row of {json.dumps(row['task'])} holds {counter}={json.dumps(old)}, no count; nothing counted")
+    new = str(int(old) + 1)
+    fields[counter] = new
+    now = now_utc().strftime(STAMP)
+    if counter == "interventions":
+        line = f"{row['task']} interventions={new}: {why.strip() or '(no reason given)'}"
+        cast(list[Doc], doc["log"]).append({"at": now, "by": coordinator, "text": line})
+    row["updated_at"] = doc["updated_at"] = now
+    publish(path, doc)
+    return f"BOARD TALLY {doc['wave']}: {json.dumps(row['task'])} {counter}={new}"
+
+
+def tally_by_worker(root: str, coordinator: str, payload: Doc) -> None:
+    """``tally`` by ``worker`` and ``host`` (the header): the one row not done across every board."""
+    counter_ok(payload.get("counter"))
+    worker = text_ok(payload.get("worker"), "worker")
+    host = text_ok(payload.get("host"), "host")
+    done_raw: Any = payload.get("done")
+    if not isinstance(done_raw, list) or not all(isinstance(w, str) for w in cast(list[Any], done_raw)):
+        refuse("a tally by worker names its done words, a list of text")
+    done = {w.lower() for w in cast(list[str], done_raw)}
+    if not worker or not host:
+        refuse("a tally by worker names a worker and a host")
+    if not Path(root).is_dir():
+        refuse(f"the anchor state root {root} is not a directory")
+    directory = Path(root) / "boards"
+    try:
+        with os.scandir(directory) as entries:
+            names = sorted(entry.name for entry in entries)
+    except FileNotFoundError:
+        names = []
+    found: list[tuple[Path, Doc, Doc]] = []
+    for name in names:
+        wave = name.removesuffix(".json")
+        if wave == name or not WAVE.fullmatch(wave):
+            continue
+        try:
+            if not stat.S_ISREG(os.stat(directory / name).st_mode):
+                continue
+            doc = load(directory / name, wave)
+        except (ValueError, OSError):
+            continue  # a board that does not load holds no row this tally can count
+        if doc is None:
+            continue
+        for row in cast(list[Doc], doc["tasks"]):
+            fields = cast(dict[str, str], row["fields"])
+            words = (fields["state"] if "state" in fields else fields.get("status", "")).split()
+            word = words[0].rstrip(";:,.").lower() if words else ""
+            if fields.get("worker") == worker and fields.get("agent_host") == host and word not in done:
+                found.append((directory / name, doc, row))
+    who = f"worker {json.dumps(worker)} on {json.dumps(host)}"
+    if not found:
+        print(f"BOARD TALLY NOTE: no row of {who} that is not done, on any board; nothing counted")
+        return
+    if len(found) > 1:
+        rows = ", ".join(f"{doc['wave']}/{row['task']}" for _, doc, row in found)
+        print(f"BOARD TALLY NOTE: {who} names {len(found)} rows that are not done ({rows}); nothing counted")
+        return
+    path, doc, row = found[0]
+    print(count(path, doc, row, coordinator, payload))
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -397,6 +497,9 @@ def main(argv: list[str]) -> None:
     if action == "scan":
         scan(root, payload)
         return
+    if action == "tally" and "wave" not in payload:
+        tally_by_worker(root, coordinator, payload)
+        return
     wave = wave_ok(payload.get("wave"))
     path = Path(root) / "boards" / f"{wave}.json"
     doc = load(path, wave)
@@ -449,6 +552,18 @@ def main(argv: list[str]) -> None:
         publish(path, doc)
         print(f"BOARD FORGET {wave}: {json.dumps(task)}")
         return
+    if action == "tally":
+        if doc is None:
+            refuse(f"no board for wave {wave} on the anchor")
+        task = task_ok(payload.get("task"))
+        tasks = cast(list[Doc], doc["tasks"])
+        found = next((entry for entry in tasks if entry["task"] == task), None)
+        if found is None:
+            near = difflib.get_close_matches(task, [cast(str, entry["task"]) for entry in tasks], n=1)
+            hint = f"; the nearest is {json.dumps(near[0])}" if near else ""
+            refuse(f"no task {json.dumps(task)} on the board of {wave}{hint}; nothing counted")
+        print(count(path, doc, found, coordinator, payload))
+        return
     if action not in ("set", "note", "log"):
         refuse(f"unknown action {action}")
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -470,9 +585,15 @@ def main(argv: list[str]) -> None:
                     refuse(f"no task {json.dumps(task)} on the board of {wave}{hint} (a new row takes set --new-row)")
                 row = {"task": task, "fields": {}, "updated_at": now}
                 tasks.append(row)
+                created = True
+            else:
+                created = False
             fields = cast(dict[str, str], row["fields"])
             for key, value in pairs:
                 fields[key] = value
+            if created:
+                for key in COUNTERS:
+                    fields.setdefault(key, "0")  # THE COUNTERS START AT ZERO (the header)
             if "launched_at" not in fields and launched(fields.get("state", "")):
                 fields["launched_at"] = now  # THE LAUNCH STAMP (the header)
             row["updated_at"] = now
