@@ -319,7 +319,7 @@ fleetworker/execution.py:gap_wait
 fleetworker/execution.py:window_payload
 fleetworker/execution.py:with_gap
 fleetworker/execution.py:window_lines
-    issue-wave/scripts/test-fleet-worker.sh "execution run and conclude --from-run" "execution assign" "execution leg" "execution slot"
+    issue-wave/scripts/test-fleet-worker.sh "execution run and conclude --from-run" "execution tip-run" "execution assign" "execution leg" "execution slot"
     issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/execution.py:checked_rebind

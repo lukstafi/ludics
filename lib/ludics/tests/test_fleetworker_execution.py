@@ -1000,7 +1000,8 @@ class WindowGap(unittest.TestCase):
                      execution.Done(3, '{"gap":{"wait":"5"}}'), execution.Done(3, "[]")):
             self.assertIsNone(execution.gap_wait(done), done)
 
-    def run_window(self, answers: list[Any], words: list[str] | None = None, *, endpoint_map: str | None = "",
+    def run_window(self, answers: list[Any], words: list[str] | None = None, delays: list[float] | None = None, *,
+                   endpoint_map: str | None = "",
                    **env: str) -> tuple[int, str, str, list[Any], list[float]]:
         calls: list[Any] = []
         slept: list[float] = []
@@ -1018,6 +1019,7 @@ class WindowGap(unittest.TestCase):
             self.assertEqual(argv[6], PAYLOAD_ON_FD)
             framed = script.split("3<<'FLEET_EXECUTION_PY_PAYLOAD' <<'FLEET_EXECUTION_PY'\n", 1)[1].split("\n", 1)[0]
             calls.append(json.loads(json.loads(framed)))
+            clock[0] += delays.pop(0) if delays else 0.0  # the ask's own time, when given
             return answers.pop(0)
 
         out, err = io.StringIO(), io.StringIO()
@@ -1080,18 +1082,18 @@ class WindowPendingWait(unittest.TestCase):
         args, _ = execution.window_deadline(["window", "--deadline", "90", "--wait-pending", "600", "b", "f"])
         self.assertEqual(execution.window_wait_pending(self.cfg(), args), (["window", "b", "f"], 600, 60))
         self.assertEqual(execution.window_wait_pending(self.cfg(FLEET_WINDOW_PENDING_POLL=""), args)[2], 60)
-        self.assertEqual(execution.window_wait_pending(self.cfg(FLEET_WINDOW_PENDING_POLL="1799"), args)[2], 1799)
         for bad in (["window", "--wait-pending"], ["window", "--wait-pending", "0", "b", "f"],
                     ["window", "--wait-pending", "1.5", "b", "f"], ["window", "--wait-pending", "soon", "b", "f"]):
             with self.assertRaises(cli.Exit) as caught:
                 execution.window_wait_pending(self.cfg(), bad)
             self.assertEqual(caught.exception.rc, 2, bad)
             self.assertIn("--wait-pending takes a positive whole number of seconds", caught.exception.message)
-        for poll in ("0", "1800", "soon", "-1"):
+        self.assertEqual(execution.window_wait_pending(self.cfg(FLEET_WINDOW_PENDING_POLL="900"), args)[2], 900)
+        for poll in ("0", "901", "soon", "-1"):
             with self.assertRaises(cli.Exit) as caught:
                 execution.window_wait_pending(self.cfg(FLEET_WINDOW_PENDING_POLL=poll), ["window", "--wait-pending", "9", "b", "f"])
             self.assertEqual(caught.exception.rc, 2, poll)
-            self.assertIn("FLEET_WINDOW_PENDING_POLL must be a whole number of seconds from 1 to 1799", caught.exception.message)
+            self.assertIn("FLEET_WINDOW_PENDING_POLL must be a whole number of seconds from 1 to 900", caught.exception.message)
 
     def test_only_the_registrys_pending_answer_is_waited_on(self) -> None:
         self.assertEqual(execution.pending_answer(self.PENDING),
@@ -1118,6 +1120,13 @@ class WindowPendingWait(unittest.TestCase):
                          "the last ask is made when the bound is spent, so it renews the mark")
         self.assertTrue(err.endswith("EXECUTION WINDOW testbox: w2 still pending after 150s (--wait-pending);"
                                      " its mark stands until 2026-11-18T12:30:00+00:00\n"), err)
+
+    def test_a_reply_past_the_bound_to_an_earlier_ask_is_asked_again(self) -> None:
+        # The second ask is made at 60 s of a 65 s bound, and its reply arrives at 66 s: that ask was
+        # not the last, so the window is asked for again at once, and opens.
+        rc, out, _, calls, slept = self.run_window([self.PENDING, self.PENDING, self.OPENED],
+                                                   ["--no-gap", "--wait-pending", "65"], delays=[0, 6, 0])
+        self.assertEqual((rc, out, slept, len(calls)), (0, '{"request_id":"w2"}\n', [60], 3))
 
     def test_the_plain_form_answers_pending_once(self) -> None:
         rc, out, err, calls, slept = self.run_window([self.PENDING], ["--no-gap"])

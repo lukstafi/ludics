@@ -100,22 +100,23 @@ and the other verbs keep their own lines (``execution leg``'s far side, ``tip-ru
 registry's, ``execution slot``'s), but for leg.py's recorded-checkout refusal, THE CHECKOUT's twin.
 
 THE PENDING WAIT (ludics#1208). A window its box's non-standing correctness records keep from
-opening is answered pending (exit 3, and a mark a reserved loop's next start yields to: registry.py's
-THE PENDING WINDOW), and it opens only when someone asks again. ``execution window --wait-pending
-<seconds>`` asks again itself: at each pending answer it waits, no lock held, the lesser of
-``FLEET_WINDOW_PENDING_POLL`` seconds (60; under the mark's PENDING_TTL, so no mark lapses between
-two asks) and what is left of the bound, then asks with the same payload (a head-of request resolved
-afresh, the gap it asks for unchanged), and each ask renews the mark. It ends at the first answer
-that is not pending: the window's record (exit 0), a refusal, an unreachable anchor, or a gap
-answer, which THE GAP waits out as before (and a pending answer after it waits again). The bound is
-wall-clock seconds from the first pending answer, and the last ask is made when it is spent: an
-answer still pending then is printed with exit 3, as the plain form's, its mark renewed by that ask
-and lapsing on its own. It says on stderr once that it waits, and once that the bound ran out. The
-bound and the gap are separate budgets, so the call waits at most the two together plus each ask's
-own time. ``--deadline`` counts from the drained hold's opening, which no pending answer reaches, so
-time spent pending never spends it. Without the flag nothing changes: one answer, printed. The
-boundary: it reads only the registry's ``{"pending": ...}`` answer; the mark, its renewal and its
-lapse are the registry's, unchanged, and nothing here stops the loop's running run.
+opening is answered pending (exit 3, and a mark a reserved loop's next start yields to:
+registry.py's THE PENDING WINDOW), and it opens only when someone asks again. ``execution window
+--wait-pending <seconds>`` asks again itself: at each pending answer it waits, no lock held, the
+lesser of ``FLEET_WINDOW_PENDING_POLL`` seconds (60; at most half the mark's PENDING_TTL, so no mark
+lapses between two asks) and what is left of the bound, then asks with the same payload (a head-of
+request resolved afresh, the gap it asks for unchanged), and each ask renews the mark. It ends at
+the first answer that is not pending: the window's record (exit 0), a refusal, an unreachable
+anchor, or a gap answer, which THE GAP waits out as before (and a pending answer after it waits
+again). The bound is wall-clock seconds from the first pending answer, and the last ask is the first
+one made once it is spent (a reply that arrives past the bound to an ask made before it is asked
+again): an answer still pending then is printed with exit 3, as the plain form's, its mark renewed
+by that ask and lapsing on its own. It says on stderr once that it waits, and once that the bound
+ran out. The bound and the gap are separate budgets, so the call waits at most the two together plus
+each ask's own time. ``--deadline`` counts from the drained hold's opening, which no pending answer
+reaches, so time spent pending never spends it. Without the flag nothing changes: one answer,
+printed. The boundary: it reads only the registry's ``{"pending": ...}`` answer; the mark, its
+renewal and its lapse are the registry's, unchanged, and nothing here stops the loop's running run.
 """
 
 import json
@@ -1793,15 +1794,15 @@ def window_wait_pending(cfg: Config, args: list[str]) -> tuple[list[str], int, i
     """THE PENDING WAIT (ludics#1208, the header): the window's words without ``--wait-pending
     <seconds>``, which may only come right after ``window`` (and its ``--no-gap`` and ``--deadline``),
     its bound (0 without the flag), and the seconds between its asks: FLEET_WINDOW_PENDING_POLL (a
-    whole number of seconds under the mark's PENDING_TTL, so no mark lapses between two asks; 60 when
-    unset or empty), read only with the flag."""
+    whole number of seconds, at most half the mark's PENDING_TTL, so no mark lapses between two asks
+    however slow an ask is; 60 when unset or empty), read only with the flag."""
     if len(args) > 1 and args[1] == "--wait-pending":
         if len(args) < 3 or not re.fullmatch(r"[0-9]+", args[2]) or int(args[2]) < 1:
             die("execution window: --wait-pending takes a positive whole number of seconds")
         text = knob(cfg, "FLEET_WINDOW_PENDING_POLL", str(PENDING_POLL))
-        if not re.fullmatch(r"[0-9]+", text) or not 1 <= int(text) < PENDING_TTL:
+        if not re.fullmatch(r"[0-9]+", text) or not 1 <= int(text) <= PENDING_TTL // 2:
             die(f"execution window: FLEET_WINDOW_PENDING_POLL must be a whole number of seconds from 1 to"
-                f" {PENDING_TTL - 1}, not {text!r}")
+                f" {PENDING_TTL // 2}, not {text!r}")
         return [args[0], *args[3:]], int(args[2]), int(text)
     return args, 0, PENDING_POLL
 
@@ -1984,6 +1985,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
         cfg.boxes, cfg.slots, map_spec, fleet_name(cfg, cfg.anchor), fleet_name(cfg, cfg.lab_host),
         *([ASSIGN_STATUS_ARG] if assignment_step else []),
     ]  # fmt: skip
+    asked = time.monotonic()  # when the answer in hand was asked for (THE PENDING WAIT's last ask)
     done = run_on(cfg, cfg.anchor, script, argv, capture=True)
     left = gap
     until: float | None = None  # THE PENDING WAIT's end, set at its first pending answer
@@ -2006,16 +2008,20 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
                 until = moment + pending_bound
                 err(f"EXECUTION WINDOW {args[1]}: {pending.get('id')} pending; asking again every {pending_poll}s"
                     f" for up to {pending_bound}s (--wait-pending)")
-            if moment >= until:
+            if asked >= until:
+                # Only an ask made once the bound was spent is the last one: a reply that arrives
+                # after the bound to an ask made before it is asked again at once.
                 err(f"EXECUTION WINDOW {args[1]}: {pending.get('id')} still pending after {pending_bound}s"
                     f" (--wait-pending); its mark stands until {pending.get('expires')}")
                 break
-            time.sleep(min(pending_poll, until - moment))
+            if (pause := min(pending_poll, until - moment)) > 0:
+                time.sleep(pause)
         else:
             break
         payload, resolution = with_resolution(cfg, with_gap(requests, left), action, refusal_status=refusal_status)
         # The payload rides the script, never argv (ludics-lite#636): a new payload is a new script.
         script = head + registry_command(source, payload)
+        asked = time.monotonic()
         done = run_on(cfg, cfg.anchor, script, argv, capture=True)
     out = substitution(done.out)
     cli.emit(out)
