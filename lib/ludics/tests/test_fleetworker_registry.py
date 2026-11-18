@@ -32,6 +32,36 @@ def request(identity: str, **extra: object) -> dict[str, object]:
     return base
 
 
+def registry_call(root: str, action: str, payload: object, token: str = "token", boxes: str = "mac",
+                  slots: str = "", map_spec: str = "", *, assignment: bool = False) -> tuple[int, str, str]:
+    """One registry action in process, as coordinator ``owner`` holding ``token``: its exit status, stdout
+    and stderr."""
+    out, err = io.StringIO(), io.StringIO()
+    argv = ["-", root, action, "owner", token, json.dumps(payload), boxes, slots, map_spec]
+    if assignment:
+        argv.extend(["", "", "--assignment-status"])
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = registry.run(argv)
+    finally:
+        # A program holds waiters/.lock until it exits; in process, this call is its exit.
+        while registry.WAITER_LOCKS:
+            os.close(registry.WAITER_LOCKS.pop())
+    return rc, out.getvalue(), err.getvalue()
+
+
+def plant(root: str, token: str) -> None:
+    """A reader test's ledger, through the registry's own writer: ``shut`` reserved and concluded, then
+    ``open`` reserved (one outstanding reservation per box), each holding ``token`` as its ``lease_token``."""
+    for action, payload in (("reserve", request("shut")),
+                            ("conclude", {"request_id": "shut", "verdict": "not-launched", "log": "l",
+                                          "evidence": "never launched"}),
+                            ("reserve", request("open"))):
+        rc, _, err = registry_call(root, action, payload, token)
+        if rc != 0:
+            raise AssertionError(f"plant: {action} exited {rc}: {err}")
+
+
 class RegistryCase(unittest.TestCase):
     """A scratch registry root and the call into it; no tests of its own."""
 
@@ -43,18 +73,9 @@ class RegistryCase(unittest.TestCase):
 
     def call(self, action: str, payload: object, boxes: str = "mac", slots: str = "",
              map_spec: str = "", *, assignment: bool = False) -> tuple[int, Any, str]:
-        out, err = io.StringIO(), io.StringIO()
-        argv = ["-", self.root, action, "owner", "token", json.dumps(payload), boxes, slots, map_spec]
-        if assignment:
-            argv.extend(["", "", "--assignment-status"])
-        try:
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                rc = registry.run(argv)
-        finally:
-            # A program holds waiters/.lock until it exits; in process, this call is its exit.
-            while registry.WAITER_LOCKS:
-                os.close(registry.WAITER_LOCKS.pop())
-        return rc, json.loads(out.getvalue()) if out.getvalue() else None, err.getvalue()
+        rc, out, err = registry_call(self.root, action, payload, boxes=boxes, slots=slots, map_spec=map_spec,
+                                     assignment=assignment)
+        return rc, json.loads(out) if out else None, err
 
 
 class Registry(RegistryCase):
@@ -136,6 +157,28 @@ class Registry(RegistryCase):
         with open(os.path.join(self.root, "executions", "a.json"), "w") as f:
             f.write("{}")
         self.assertEqual(self.call("list", {"active": True, "compact": True})[0], 1)
+
+    def test_no_listing_form_prints_the_lease_token(self) -> None:
+        # THE LEASE TOKEN (ludics#1204): every lease-free form drops it, the full ones keeping history.
+        token = "SEKRIT-1204-lease-token"
+        plant(self.root, token)
+        with open(os.path.join(self.root, "executions", "open.json"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["lease_token"], token, "the record on file keeps it")
+        waiter = {"box": "mac", "id": "r-1204", "command": "x", "ttl": 30}
+        for action, payload, ids, compact in (
+                ("list", {}, ["open", "shut"], False), ("list", {"active": True}, ["open"], False),
+                ("list", {"compact": True}, ["open", "shut"], True),
+                ("list", {"active": True, "compact": True}, ["open"], True),
+                ("list", {"host": "mac"}, ["open", "shut"], False),
+                ("wait", {"waiter": waiter}, ["open", "shut"], False),
+                ("wait", {"waiter": waiter, "active": True, "compact": True}, ["open"], True)):
+            with self.subTest(action=action, payload=payload):
+                rc, out, err = registry_call(self.root, action, payload, token)
+                self.assertEqual(rc, 0, err)
+                self.assertNotIn(token, out)
+                listed = json.loads(out)
+                self.assertEqual(sorted(r["request_id"] for r in listed), ids)
+                self.assertTrue(all("lease_token" not in r and ("history" in r) != compact for r in listed), listed)
 
     def test_list_host_selects_one_box_an_alias_its_roster_entry(self) -> None:
         roster, endpoints = "mac rog-nv-linux", "rog rog-nv-linux rog-nv-wsl\n"
@@ -926,6 +969,13 @@ class SlotReservation(RegistryCase):
                 rc, _, err = self.run_("w-cc-9", **kwargs)  # pyright: ignore[reportArgumentType]
                 self.assertEqual(rc, 1)
                 self.assertIn(why, err)
+        with self.subTest(box="empty"):
+            # Nothing outstanding on rog, so the capacity check's early return admitted it before (#1210).
+            rc, _, err = self.run_("w-cc-8", tip_run=True, reserved_by="w-cc-slot-mac-1", execution_host="rog")
+            self.assertEqual(rc, 1)
+            self.assertIn("reserved_by names w-cc-slot-mac-1, which is no outstanding slot reservation on rog"
+                          " (the box holds none)", err)
+        self.assertIn("(the box holds w-cc-slot-mac-1)", self.run_("w-cc-9", tip_run=True, reserved_by="w-other")[2])
 
     def test_without_a_reservation_the_cap_is_as_before(self) -> None:
         for n in (1, 2, 3, 4):
@@ -1207,7 +1257,10 @@ class WindowDeadline(RegistryCase):
             self.assertEqual((rc, err), (0, ""))
             self.assertEqual(datetime.fromisoformat(held["hold_deadline_at"]), opened + timedelta(seconds=60))
             clock.now.return_value = opened + timedelta(seconds=30)
-            self.assertEqual(self.opening()[1]["hold_deadline_at"], held["hold_deadline_at"], "a retry cannot renew it")
+            again = self.opening()[1]
+            self.assertEqual(again["hold_deadline_at"], held["hold_deadline_at"], "a retry cannot renew it")
+            # Lease-free, so its answer carries no lease token, the first or a retry (THE LEASE TOKEN).
+            self.assertFalse("lease_token" in held or "lease_token" in again)
             self.assertEqual(self.call("list", {})[1][0]["deadline_left"], 30)
             clock.now.return_value = opened + timedelta(seconds=61)
             self.assertEqual(self.call("list", {})[1][0]["deadline_left"], 0, "a crashed hold stays bounded")

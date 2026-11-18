@@ -130,7 +130,8 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
         del broken[missing]
         sibling_path.write_text(json.dumps(broken))
         change('dispatch', dict(request_id=identity, evidence='must fail closed'), expected=1)
-        assert json.loads((root / 'executions' / (identity + '.json')).read_text()) == first
+        # The record on file, byte for byte (its lease token too, which no listing prints).
+        assert (root / 'executions' / (identity + '.json')).read_bytes() == owner_bytes
     broken = json.loads(sibling_bytes)
     del broken['request']['execution_host']
     sibling_path.write_text(json.dumps(broken))
@@ -153,12 +154,18 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
     active = json.loads(run('execution', 'list', '--active', owner='reader'))
     assert {r['request_id'] for r in active} == {identity, 'minix'}
     compact = json.loads(run('execution', 'list', '--compact', owner='reader'))
-    assert compact == [{k: v for k, v in r.items() if k not in {'history', 'lease_token'}}
-                       for r in full]
+    assert compact == [{k: v for k, v in r.items() if k != 'history'} for r in full]
     active_compact = json.loads(run('execution', 'list', '--active', '--compact'))
     assert active_compact == [r for r in compact if r['state'] != 'concluded']
     assert json.loads(run('execution', 'list', '--compact', '--active')) == active_compact
-    assert all('history' in r and 'lease_token' in r for r in full)
+    # THE LEASE TOKEN (ludics#1204): the records on file hold the coordinator's token, and no listing
+    # form prints it; the full forms keep the history.
+    assert all('history' in r and 'lease_token' not in r for r in full)
+    tokens = {json.loads(p.read_bytes())['lease_token'] for p in (root / 'executions').glob('*.json')}
+    assert tokens and all(tokens), tokens
+    for form in ([], ['--active'], ['--compact'], ['--active', '--compact'], ['--host', 'rog']):
+        listed = run('execution', 'list', *form, owner='reader')
+        assert not any(token in listed for token in tokens), (form, listed)
     run('execution', 'list', '--actve', expected=2)
     assert ledger_before == {p.name: p.read_bytes() for p in (root / 'executions').glob('*.json')}
     # Filtering a terminal record must not hide corruption from the reader.
@@ -740,6 +747,12 @@ def measurement_window():
         done('assigned')
         before = records()
 
+        def token_of(identity):
+            # The lease token is the record's on file: no listing prints it (ludics#1204).
+            return json.loads((root / 'executions' / f'{identity}.json').read_text())['lease_token']
+
+        tokens_before = {name: token_of(name) for name in ('iterate-a', 'iterate-b')}
+
         def open_window(identity, owner='first'):
             out, err = window({**request(identity, kind='measurement'), 'evidence': 'invoking the runner'}, owner=owner)
             record = json.loads(out)
@@ -754,7 +767,7 @@ def measurement_window():
         for name, former in [('iterate-a', 'launching'), ('iterate-b', 'reserved')]:
             r = now[name]
             assert (r['state'], r['suspended_by'], r['suspended_from']) == ('suspended', 'window-1', former), r
-            assert r['history'][-1]['action'] == 'suspend' and r['lease_token'] == before[name]['lease_token'], r
+            assert r['history'][-1]['action'] == 'suspend' and token_of(name) == tokens_before[name], r
         assert now['iterate-rog'] == before['iterate-rog']
         # Routine supervision tells a suspended reservation apart, and names its window.
         compact = {r['request_id']: r for r in json.loads(run('execution', 'list', '--active', '--compact')[0])}
@@ -779,9 +792,11 @@ def measurement_window():
             assert 'iterate-b is suspended by measurement window window-1' in err, (action, err)
         # A retried window never dispatches again, and finishes a suspension a crash left undone.
         partial = json.loads((root / 'executions' / 'iterate-b.json').read_text())
-        (root / 'executions' / 'iterate-b.json').write_text(json.dumps(before['iterate-b']))
+        (root / 'executions' / 'iterate-b.json').write_text(
+            json.dumps({**before['iterate-b'], 'lease_token': tokens_before['iterate-b']}))
         out, err = window({**request('window-1', kind='measurement'), 'evidence': 'invoking the runner'})
-        assert json.loads(out) == records()['window-1'] and 'suspended iterate-a, iterate-b, iterate-c' in err, err
+        answered = {k: v for k, v in json.loads(out).items() if k != 'lease_token'}  # the window's own answer has it
+        assert answered == records()['window-1'] and 'suspended iterate-a, iterate-b, iterate-c' in err, err
         assert records()['iterate-b']['state'] == 'suspended'
         assert [e['action'] for e in records()['window-1']['history']] == ['reserve', 'dispatch']
         assert partial['suspended_from'] == records()['iterate-b']['suspended_from']

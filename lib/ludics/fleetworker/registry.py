@@ -51,6 +51,15 @@ fleet-worker passes one only when its checkout has no wake-lab.sh, and says so o
 (`rog`) selects its roster entry's (`rog-nv-linux`), and a name that is no roster entry's box is
 refused.
 
+THE LEASE TOKEN (ludics#1204). A record's `lease_token` is the token of the coordinator that took
+it (or last reconciled it to reserved): `run`, `dispatch` and `rebind` compare the caller's token
+with it, reading the record's own file here, after fleet-worker's LEASE_MUTATION has compared that
+token with the anchor's lease. No reader takes it from anything this module prints: a caller's
+token is its own (`identity.my_token`). So nothing printed to a lease-free caller carries it: every
+listing form (`list`, with or without `active`, `compact` and `host`, and `wait`, which answers
+with that listing) drops it, `compact` drops `history` besides, and so does `hold-open`'s answer.
+The actions taken under the lease answer with the whole record, to the caller that holds the token.
+
 A coordinator's correctness request may carry `"integration": true` (ludics-lite#401): the run is
 the repository's full integration suite at a merged tip, and once concluded pass or fail at an
 exact `observed_sha` it is the verdict source `fleet-worker.sh gate` offers `pr-review.sh base`
@@ -671,6 +680,15 @@ def check_slot_reservation(request: Record, records: dict[str, Record], slots_sp
         refuse(f"{host} already holds the slot reservation {held['request_id']} (one per box); conclude it first")
 
 
+def check_reserved_by(reserved_by: str, records: dict[str, Record], host: str) -> None:
+    """THE SLOT RESERVATION's ``reserved_by`` names the reservation outstanding on its host, whatever
+    else the box holds (an empty box's too, which the capacity check returns early for)."""
+    reserved = reservation_on(records, host)
+    if reserved is None or reserved_by.lower() != reserved["request_id"].lower():
+        refuse(f"reserved_by names {reserved_by}, which is no outstanding slot reservation on {host}"
+               f" (the box holds {reserved['request_id'] if reserved else 'none'})")
+
+
 def reservation_on(records: dict[str, Record], host: str) -> Record | None:
     """The outstanding slot reservation on ``host``, if any (THE SLOT RESERVATION)."""
     return next((r for r in records.values() if r["state"] != "concluded" and r.get("slot_reservation") is True
@@ -947,6 +965,13 @@ def check_lane_lock(host: str, map_spec: str, anchor: str, lab: str) -> None:
     LANE_LOCKS.append(descriptor)
 
 
+def lease_free(record: Record, compact: bool = False) -> Record:
+    """A record as a lease-free action prints it (THE LEASE TOKEN): never its ``lease_token``, nor,
+    compact, its ``history``."""
+    hidden = {"lease_token", "history"} if compact else {"lease_token"}
+    return {key: value for key, value in record.items() if key not in hidden}
+
+
 def check_capacity(data: Record, records: dict[str, Record], canonical_hosts: set[str], slots_spec: str,
                    window: bool = False, reserved_by: str | None = None) -> str | None:
     """Refuse when the requested host cannot take this assignment beside the outstanding ones.
@@ -986,9 +1011,6 @@ def check_capacity(data: Record, records: dict[str, Record], canonical_hosts: se
     counted = [r for r in outstanding if not r["request"].get("standing")]
     cap = slots.get(host, 1)
     reserved = reservation_on(records, host)
-    if reserved_by is not None and (reserved is None or reserved_by.lower() != reserved["request_id"].lower()):
-        refuse(f"reserved_by names {reserved_by}, which is no outstanding slot reservation on {host}"
-               f" ({reserved['request_id'] if reserved else 'none is'}{' is' if reserved else ''})")
     if reserved is not None:
         # THE SLOT RESERVATION: the run in the reserved slot is bounded by it, every other one by the rest.
         if reserved_by is not None:
@@ -1399,9 +1421,7 @@ def main(argv: list[str]) -> None:
                     if not flags.get("active") or record["state"] != "concluded"]
         if "host" in flags:
             selected = on_one_box(selected, flags["host"], boxes, map_spec)
-        if flags.get("compact"):
-            selected = [{key: value for key, value in record.items()
-                         if key not in {"history", "lease_token"}} for record in selected]
+        selected = [lease_free(record, compact=bool(flags.get("compact"))) for record in selected]
         # THE WINDOW'S DEADLINE: the time left by THIS clock, so a waiter on another host compares no
         # clocks (a listing's field only, never written to a record).
         now = datetime.now(timezone.utc)
@@ -1506,6 +1526,7 @@ def main(argv: list[str]) -> None:
             slot_reservation = slot_reservation_ok(slot_reservation, action, request)
         if "reserved_by" in data:
             reserved_by = reserved_by_ok(reserved_by, tip_run)
+            check_reserved_by(reserved_by, records, request["execution_host"])
         if "triage_boxes" in data:
             triage_boxes = triage_boxes_ok(triage_boxes, request)
             for box in triage_boxes:
@@ -1713,7 +1734,7 @@ def main(argv: list[str]) -> None:
                     or "deadline" not in record or record["state"] not in {"launching", "running", "uncertain"}):
                 refuse("hold-open requires a dispatched window with a deadline and its execution_host")
             if "hold_opened_at" not in record or record["hold_opened_at"] is not None:
-                print(json.dumps(record, indent=2))
+                print(json.dumps(lease_free(record), indent=2))
                 return
             record["hold_opened_at"] = now
             record["hold_deadline_at"] = (clock + timedelta(seconds=record["deadline"])).isoformat()
@@ -1832,7 +1853,7 @@ def main(argv: list[str]) -> None:
                            if r.get("suspended_by") == identity and r["state"] == "suspended")
         print(f"EXECUTION WINDOW {host}: {identity} open; suspended "
               + (", ".join(suspended) or "nothing (no standing reservation on the box)"), file=sys.stderr)
-    print(json.dumps(record, indent=2))
+    print(json.dumps(lease_free(record) if action == "hold-open" else record, indent=2))
 
 
 def run(argv: list[str]) -> int:
