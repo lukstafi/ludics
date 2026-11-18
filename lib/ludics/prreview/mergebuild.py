@@ -30,6 +30,9 @@ naming it:
     trigger same-input         at most one trigger line, default same-input: WHEN IT BUILDS.
     trigger any-input          The value is one of these three words; any other refuses.
     trigger always
+    plan <shell command>       at most one: THE PLAN (#1218), run before the slot is taken
+    plan-timeout <seconds>     at most one, 1 to 86400 (default 300): the plan's bound; refused
+                               without a `plan` line
 
 BUILD INPUTS -- the boundary. A path is a build input when one ``input`` glob matches the WHOLE
 repository-relative path (``/``-separated) under Python's ``fnmatch.fnmatchcase``: case-sensitive,
@@ -151,6 +154,39 @@ its own tiers by what each side changed reads these, not its guess of the parent
 is ``/dev/null``; its stdout and stderr are the build's log. Git's repository-selection variables
 are cleared (below); the rest of merge's environment is inherited.
 
+THE PLAN (#1218). A build can owe what it does not run -- OCANNL's owes a cross-cutting change a
+recorded full-suite run, and refuses without one -- and a merge learned that only from the build,
+after a slot wait and the build's own time. A ``plan`` line names a read-only query of the
+candidate merge that says so first. When the build is to run, once the merge commit is checked
+out and before the slot probe, the plan runs at the root of the merged tree under THE COMMAND'S
+CONTRACT (the same tree, ``HEAD``, parents, environment and stdin), BARE -- never in a slot nor
+waiting for a measurement window: a plan is a query that costs about a minute, and taking no slot
+is its point -- bounded by ``plan-timeout``, its output to ``plan.log`` (shown, and retained as
+LOG RETENTION retains the build's). Its verdict is its exit status and the ONE line of its output
+(stdout and stderr together) that starts ``ship-pr-merge-plan:``, matched whole against a
+fail-closed allowlist of three shapes:
+
+    ship-pr-merge-plan: nothing-owed          the merge owes no run past the build: building
+    ship-pr-merge-plan: admitted [<what>]     it owes <what> (free text, shown) and a record
+                                              admits it: building
+    ship-pr-merge-plan: unadmitted [<what>]   it owes <what> and no record admits it: REFUSED,
+                                              exit 1, the line in the refusal, with no slot
+                                              taken and nothing built; ``--override`` does not
+                                              go over it (the shared red it is for is a build's)
+
+Anything else is NO VERDICT, said as which of this closed list it is, and the merge goes on to the
+build exactly as without a plan: the plan could not be started; it did not finish within its
+bound; its wrapper ended before it did; it exited nonzero (127, a command not found, included: a
+verdict line beside a nonzero exit is not read); it printed no such line; it printed more than one;
+its one line matches no shape (a line past ``SHOWN_BYTES`` is never read whole, so never matches);
+its output could not be read. So a plan never admits a merge -- the build keeps owning admission,
+whatever the plan said -- and refuses one only by its own ``unadmitted``. What the plan writes in
+the tree is undone before the build (``git reset --hard`` to the merge commit and ``git clean
+-ffdx``; a failure there is exit 3); what it writes elsewhere is the command's business, as TRUST
+says. The plan runs only where a build runs: no build, no plan; THE BASE ALONE does not run it
+again. A config without a ``plan`` line runs none and prints nothing
+of one.
+
 HOSTS AND CLONES -- the boundary. The merge build runs on POSIX hosts (the fleet's macOS and Linux
 boxes); under Windows a merge that needs one is refused (exit 2), so nothing below has a Windows
 branch. It needs a FULL clone: a shallow one may lack the merge base, and a partial one (a promisor
@@ -185,7 +221,8 @@ business, as it would be from a developer's shell.
 LOG RETENTION (#1188). After each command attempt, before scratch cleanup, copy its log and status
 to ``merge-builds/logs/<owner>--<repo>/<pr>/<head>/`` under ship-pr's state directory
 (budget.budget_dir), independent of ISSUE_WAVE_STATE so wave cleanup cannot remove the evidence.
-Retries replace that head's files; base-alone attempts use ``base.log`` and ``base.status``. Dry
+Retries replace that head's files; base-alone attempts use ``base.log`` and ``base.status``, THE
+PLAN ``plan.log`` and ``plan.status``. Dry
 runs naming a repository use ``dry-run`` in place of the PR; config-only dry runs and fixtures
 explicitly disabling state have no durable directory, as with history. Missing files (a command
 never started or did not finish) are retained as empty files. A copy error refuses with exit 3. The
@@ -268,6 +305,7 @@ from ludics.prreview.gate import github_file_absent
 CONFIG_LEAF = "ship-pr-merge-build"
 CONFIG_FILE = f".github/{CONFIG_LEAF}"
 DEFAULT_TIMEOUT = 1200
+PLAN_TIMEOUT = 300  # THE PLAN's default bound
 MAX_TIMEOUT = 86400  # a day: a larger `timeout` is a config error, refused before anything is built
 SLOT_WAIT = 1800  # seconds a slot is waited for, and the least a measurement holding the box is (WINDOW WAIT)
 FETCH_TIMEOUT = 600
@@ -287,7 +325,7 @@ TRIGGERS = ("same-input", "any-input", "always")
 BASE_SHA_VAR = "SHIP_PR_MERGE_BASE_SHA"  # THE COMMAND'S CONTRACT: the merge commit's first parent
 HEAD_SHA_VAR = "SHIP_PR_MERGE_HEAD_SHA"  # and its second
 
-_LINE = re.compile(r"([a-z]+)(?:[ \t]+(.*))?")
+_LINE = re.compile(r"([a-z]+(?:-[a-z]+)*)(?:[ \t]+(.*))?")
 _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
 # Run by `sh -c`: a marker that the command is starting (its mtime is where the build's own time
 # starts, a slot's and a window's waits left behind), the command, its output to the log, and its
@@ -296,6 +334,12 @@ _SHA = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
 # record (`build_of`); the script does not read it.
 _WRAPPER = ': >"$3.started"; printf "merge build: %s command started\\n" "${3##*/}" >&2; sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; exit "$rc"'
 _WRAPPER_NAME = "merge-build"
+# THE PLAN's run: the command, its output to the log, its status to a file (no status file: it
+# never ended on its own -- its bound, or the wrapper's own failure).
+_PLAN_WRAPPER = 'sh -c "$1" >"$2" 2>&1 </dev/null; rc=$?; printf "%s\\n" "$rc" >"$3"; exit "$rc"'
+_PLAN_WRAPPER_NAME = "merge-plan"
+PLAN_PREFIX = "ship-pr-merge-plan:"  # THE PLAN: a line starting so is a verdict line
+_PLAN_VERDICT = re.compile(r"ship-pr-merge-plan: (?:nothing-owed|(admitted|unadmitted)(?: ([^\s].*))?)")
 _BUILD_OF = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*")
 
 
@@ -309,6 +353,8 @@ class BuildConfig:
     timeout: int = DEFAULT_TIMEOUT
     trigger: Trigger = "same-input"
     comments: tuple[str, ...] = ()  # COMMENTS ONLY's globs
+    plan: str | None = None  # THE PLAN's command; None: no plan, the build as before
+    plan_timeout: int = PLAN_TIMEOUT
 
 
 def build_of(command: Sequence[str]) -> str | None:
@@ -327,6 +373,8 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
     comments: list[str] = []
     timeout: int | None = None
     trigger: Trigger | None = None
+    plan: str | None = None
+    plan_timeout: int | None = None
     for raw in text.split("\n"):
         line = (raw[:-1] if raw.endswith("\r") else raw).strip(" \t")
         if not line or line.startswith("#"):
@@ -343,15 +391,23 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
             inputs.append(value)
         elif key == "comments" and value:
             comments.append(value)
-        elif key == "timeout" and value:
-            if timeout is not None:
-                warn(f"{where} names a second timeout line: {line}")
+        elif key in ("timeout", "plan-timeout") and value:
+            if (timeout if key == "timeout" else plan_timeout) is not None:
+                warn(f"{where} names a second {key} line: {line}")
                 return None
             # The length first: a few thousand digits is a ValueError in int() itself.
             if not value.isascii() or not value.isdigit() or len(value) > 6 or not 1 <= int(value) <= MAX_TIMEOUT:
-                warn(f"{where}'s timeout is not a whole number of seconds from 1 to {MAX_TIMEOUT}: {line}")
+                warn(f"{where}'s {key} is not a whole number of seconds from 1 to {MAX_TIMEOUT}: {line}")
                 return None
-            timeout = int(value)
+            if key == "timeout":
+                timeout = int(value)
+            else:
+                plan_timeout = int(value)
+        elif key == "plan" and value:
+            if plan is not None:
+                warn(f"{where} names a second plan line; a merge build runs one plan: {line}")
+                return None
+            plan = value
         elif key == "trigger" and value:
             if trigger is not None:
                 warn(f"{where} names a second trigger line: {line}")
@@ -369,8 +425,8 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
         else:
             warn(
                 f"{where} holds a line that is none of `command <shell command>`, `input <glob>`,",
-                f"`comments <glob>`, `timeout <seconds>`, `trigger same-input|any-input|always`, a # comment or a",
-                f"blank line: {line}",
+                f"`comments <glob>`, `timeout <seconds>`, `trigger same-input|any-input|always`, `plan <shell command>`,",
+                f"`plan-timeout <seconds>`, a # comment or a blank line: {line}",
             )
             return None
     if command is None or (not inputs and trigger != "always"):
@@ -385,8 +441,12 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
             "so no `comments` line could apply. Drop them, or name another trigger.",
         )
         return None
+    if plan_timeout is not None and plan is None:
+        warn(f"{where} has a `plan-timeout` line and no `plan` line: there is no plan for it to bound.")
+        return None
     return BuildConfig(
-        command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout, trigger or "same-input", tuple(comments)
+        command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout, trigger or "same-input", tuple(comments),
+        plan, PLAN_TIMEOUT if plan_timeout is None else plan_timeout,
     )
 
 
@@ -1045,6 +1105,9 @@ def _build_in_scratch(
             f"merge build {subject.label}: merge commit {merge_sha}, parents {base_ref} at {tip}"
             f" and the gated head {gated}"
         )
+        if config.plan is not None:
+            # THE PLAN: before the slot probe, so a refusal takes no slot.
+            _plan(subject, config, quiet, tree, scratch, merge_sha, tip, gated)
         runner = _slot_runner()
         ran = _run(
             subject, config, runner, ceiling, tree, scratch, "build", tip, gated,
@@ -1340,6 +1403,122 @@ def _run(
     buildhistory.record(subject.repo, config.command, outcome, took if ran_for is None else ran_for,
                         config.timeout, log_dir=log_dir)
     return _Ran(rc_text, done, took if ran_for is None else ran_for, log, ran_for is not None, tuple(earlier))
+
+
+def _plan(
+    subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, scratch: str, merge_sha: str, tip: str,
+    gated: str,
+) -> None:
+    """THE PLAN (module docstring): run ``config.plan`` at the merged tree, bare, before the slot
+    probe; return to build (the tree restored to ``merge_sha``), or end the command with the
+    refusal when the plan's verdict is ``unadmitted``."""
+    assert config.plan is not None
+    label = subject.label
+    log = os.path.join(scratch, "plan.log")
+    status = os.path.join(scratch, "plan.status")
+    wrapped = ["sh", "-c", _PLAN_WRAPPER, _PLAN_WRAPPER_NAME, config.plan, log, status]
+    cli.say(f"merge build {label}: its plan first, bare and before any slot, bound {config.plan_timeout}s: {config.plan}")
+    env = {**_clean_env(), BASE_SHA_VAR: tip, HEAD_SHA_VAR: gated}
+    started = time.monotonic()
+    done: proc.Completed | None = None
+    unstarted = ""
+    try:
+        done = _supervised(wrapped, tree, float(config.plan_timeout), env, merged=True, end_group=True)
+    except (ValueError, OSError) as exc:
+        unstarted = str(exc)
+    took = int(time.monotonic() - started)
+    try:
+        with open(status, encoding="utf-8") as handle:
+            rc_text = handle.read().strip()
+    except OSError:
+        rc_text = ""
+    log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status)
+    if log_dir:
+        cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
+    # The closed list (THE PLAN): a verdict, or which no-verdict this is.
+    verdict: PlanVerdict | str
+    if done is None:
+        verdict = f"it could not be started ({unstarted})"
+    elif not rc_text and done.rc == 124:
+        verdict = f"it did not finish within {config.plan_timeout}s (the plan-timeout)"
+    elif not rc_text:
+        verdict = f"its wrapper exited {done.rc} before it did ({_first_line(done)})"
+    elif rc_text != "0":
+        verdict = f"it exited {rc_text}"
+    else:
+        verdict = plan_verdict(log)
+    if isinstance(verdict, str):
+        cli.say(f"merge build {label}: the plan gave NO VERDICT after {took}s: {verdict}; the build decides")
+        for line in _shown(log, diagnostics=False)[-OVERRUN_LINES:]:
+            cli.say(f"  | {line}")
+    elif verdict.word == "unadmitted":
+        cli.say(f"merge build {label}: the plan says no record admits what it owes, after {took}s; its output:")
+        for line in _shown(log):
+            cli.say(f"  | {line}")
+        fail(
+            1,
+            f"{subject.refuse}: the plan of {gated[:8]} merged with {tip[:8]} owes {verdict.what or 'a run'}, and no",
+            f"record admits it ({verdict.line}). Nothing was built and no slot was taken. Record (or waive)",
+            "what it owes as the repository's plan says, then merge again; --override does not go over this.",
+        )
+    elif verdict.word == "admitted":
+        cli.say(
+            f"merge build {label}: the plan owes {verdict.what or 'a run'}, and a record admits it ({took}s);"
+            " building, and the build decides"
+        )
+    else:
+        cli.say(f"merge build {label}: the plan owes nothing ({took}s); building, and the build decides")
+    # What the plan wrote in the tree is not the build's: back to the merge commit as checked out.
+    for args in (["-c", "core.sparseCheckout=false", "reset", "--hard", "--quiet", merge_sha], ["clean", "-ffdxq"]):
+        restored = _git([*quiet, *args], tree)
+        if restored.rc != 0:
+            fail(3, f"{subject.stop}: the merged tree could not be restored after its plan ({_first_line(restored)}).")
+
+
+@dataclass(frozen=True)
+class PlanVerdict:
+    """THE PLAN's verdict: ``word`` as its verdict line said it, ``what`` the owed targets the line
+    named ("" when it named none), ``line`` the line itself."""
+
+    word: Literal["nothing-owed", "admitted", "unadmitted"]
+    what: str
+    line: str
+
+
+def plan_verdict(log: str) -> PlanVerdict | str:
+    """THE PLAN's verdict line in the log of a plan that exited 0, or, with no verdict, the reason
+    of the closed list (THE PLAN) it is. Read in bounded chunks: a line longer than ``SHOWN_BYTES``
+    is read only as far as its prefix."""
+    found: list[tuple[str, bool]] = []  # each verdict line, and whether it was cut at the bound
+    prefix = PLAN_PREFIX.encode()
+    try:
+        with open(log, "rb") as handle:
+            while first := handle.readline(SHOWN_BYTES):
+                cut = not first.endswith(b"\n") and len(first) == SHOWN_BYTES
+                rest = first
+                while cut and rest and not rest.endswith(b"\n"):
+                    rest = handle.readline(SHOWN_BYTES)  # past the bound: drained, never read
+                if first.startswith(prefix):
+                    # A line cut at the bound is never a verdict, whatever its first bytes say.
+                    text = first.decode("utf-8", "replace").removesuffix("\n").removesuffix("\r")
+                    found.append((text, cut))
+    except OSError as exc:
+        return f"its output could not be read ({exc.strerror})"
+    if not found:
+        return f"it printed no `{PLAN_PREFIX}` line"
+    if len(found) > 1:
+        return f"it printed {len(found)} `{PLAN_PREFIX}` lines, where one is its verdict"
+    line, cut = found[0]
+    m = None if cut or not line.isprintable() else _PLAN_VERDICT.fullmatch(line)
+    if m is None:
+        shown = line[:LINE_CHARS] + ("…" if cut or len(line) > LINE_CHARS else "")
+        return f"its `{PLAN_PREFIX}` line is none of the verdict shapes: {shown!r}"
+    what = m.group(2) or ""
+    if m.group(1) == "admitted":
+        return PlanVerdict("admitted", what, line)
+    if m.group(1) == "unadmitted":
+        return PlanVerdict("unadmitted", what, line)
+    return PlanVerdict("nothing-owed", "", line)
 
 
 def _ran_for(status: str, ended: bool) -> int | None:

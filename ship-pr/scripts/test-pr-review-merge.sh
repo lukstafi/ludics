@@ -3623,6 +3623,50 @@ test_any_input_catches_a_single_side_clash() {
   assert_clone_untouched
 }
 
+# #1218, THE PLAN: a `plan` line runs before the slot. A plan owing a run no record admits refuses
+# the merge with its verdict, before the build's slot line and with nothing built; a plan whose
+# owed run a record admits goes on to the build, which passes and merges. The build would pass in
+# both (the compatible fixture), so only the plan can refuse.
+MERGE_BUILD_PLANNED=$'command echo the build ran; sh ./api.sh\ninput *.sh\ntimeout 120\nplan-timeout 60\nplan echo "owed: the whole suite"; echo "ship-pr-merge-plan: '
+test_a_plan_owing_an_unrecorded_run_is_refused_before_the_build() {
+  reset
+  build_fixture compatible
+  MERGE_BUILD_CONFIG="${MERGE_BUILD_PLANNED}unadmitted runtest\""
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge whose plan owes an unrecorded run"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "a plan owing an unrecorded run refuses the merge ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: its plan first, bare and before any slot, bound 60s" \
+    "the plan runs first"
+  assert_contains "$MERGE_STDOUT" "  | owed: the whole suite" "its output is shown"
+  assert_contains "$MERGE_STDERR" "REFUSING to merge $REPO#7: the plan of ${BUILD_HEAD:0:8} merged with ${BUILD_TIP:0:8} owes runtest, and no" \
+    "the refusal names what is owed"
+  assert_contains "$MERGE_STDERR" "(ship-pr-merge-plan: unadmitted runtest)" "with the plan's verdict"
+  assert_not_contains "$MERGE_STDOUT" "this box has no run-time slots" "the build never reached its slot"
+  assert_not_contains "$MERGE_OUTPUT" "the build ran" "nothing was built"
+  assert_no_merge_call
+  assert_clone_untouched
+}
+
+test_a_plan_whose_owed_run_a_record_admits_goes_on_to_the_build() {
+  reset
+  build_fixture compatible
+  MERGE_BUILD_CONFIG="${MERGE_BUILD_PLANNED}admitted runtest\""
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "a merge whose plan a record admits"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "a plan a record admits goes on to the build, which merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: the plan owes runtest, and a record admits it" "says so"
+  assert_contains "$MERGE_STDOUT" "bare (this box has no run-time slots)" "the build runs"
+  assert_contains "$MERGE_STDOUT" "merge build $REPO#7: PASSED" "and passes"
+  assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
+  assert_clone_untouched
+}
+
 # #860: a red the base's tip already has fails every merge build. The merge's build fails, the same
 # command on the base alone fails the same way, and the merge is refused naming --override; under a
 # cited --override it merges, announcing what it went over. One with a failure of its own beside
@@ -4021,6 +4065,8 @@ tests=(
   test_an_unusable_merge_build_never_merges
   test_any_input_catches_a_single_side_clash
   test_trigger_always_builds_every_merge
+  test_a_plan_owing_an_unrecorded_run_is_refused_before_the_build
+  test_a_plan_whose_owed_run_a_record_admits_goes_on_to_the_build
   test_a_merge_build_failure_the_base_shares_merges_under_override
   test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override
   test_a_comment_only_shared_change_merges_without_a_build
