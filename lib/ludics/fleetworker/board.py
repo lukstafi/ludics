@@ -17,6 +17,10 @@ Its header is the contract: the document, what it accepts, and the markdown view
                                                       lease; ``ludics.fleetworker.takeover``)
   board close <wave> <task> [--pr <n>] ...            a merged task's close-out, in one line (lease;
                                                       ``ludics.fleetworker.closeout``)
+  board tally <wave> <task> --message <file>          one more of the row's coordinator turns, the
+                                                      message sent to a native worker classified as
+                                                      routine or an intervention (lease;
+                                                      ``ludics.fleetworker.tally``, ludics#1214)
 
 ``record_placement`` is assign's internal writer: the store unions a requested host/checkout
 into the unique worker row under the lease lock (boardstore.py's placement contract).
@@ -61,7 +65,7 @@ from ludics.fleetworker.transport import Done, PAYLOAD_ON_FD, err, prelude, run_
 USAGE = (
     "board set [--create] [--new-row] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
     "board log <wave> <text>... | board show <wave> [--json] | board check <wave> | board takeover <wave> <task> | "
-    "board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>]"
+    "board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>] | board tally <wave> <task> --message <file>"
 )
 STATE_WORDS = f"live {', '.join(LIVE_STATES)}; done {', '.join(DONE_STATES)}"
 
@@ -103,7 +107,7 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
             die(f"board show: expected <wave> [--json] ({USAGE})")
         return action, {"wave": rest[0], "json": rest[1:] == ["--json"]}
     if action not in ("set", "note", "log"):
-        die(f"board: expected set, note, log, show, check, takeover or close ({USAGE})")
+        die(f"board: expected set, note, log, show, check, takeover, close or tally ({USAGE})")
     flags: set[str] = set()
     while rest and rest[0] in ("--create", "--new-row") and rest[0] not in flags:
         flags.add(rest[0])
@@ -197,6 +201,10 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
         from ludics.fleetworker.closeout import cmd_close
 
         return cmd_close(cfg, args[1:])
+    if args[:1] == ["tally"]:
+        from ludics.fleetworker.tally import cmd_tally
+
+        return cmd_tally(cfg, args[1:])
     action, payload = payload_of(args)
     if action == "set":
         for line in warnings_of(cast(str, payload["task"]), cast(list[list[str]], payload["fields"])):

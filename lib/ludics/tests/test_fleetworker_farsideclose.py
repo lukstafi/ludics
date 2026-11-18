@@ -552,5 +552,19 @@ class Near(unittest.TestCase):
         self.assertEqual(farsideclose.parse(["w", *[w for v in values for w in ("--regenerable", v)]])[2], values)
 
 
+class RowDone(unittest.TestCase):
+    def test_row_done_is_the_phase_board_check_reads(self) -> None:
+        """#1210's item: row_done reads the state as ``takeover.phase_of`` does, with the same verdicts the old
+        ``state``-else-``status`` read gave on every shape of row."""
+        from ludics.fleetworker.takeover import DONE_STATES, state_word
+        rows: list[dict[str, str]] = [{"state": "merged #1"}, {"status": "done"}, {"state": "Closed.", "status": "launched"},
+                                      {"state": "reviewing", "status": "merged"}, {"state": "done-merged"}, {"pr": "4"},
+                                      {"state": ""}, {"status": "dropped (scope)"}, {"state": "pending"}]
+        for fields in rows:
+            old = state_word(fields.get("state", fields.get("status", ""))) in DONE_STATES
+            self.assertEqual(farsideclose.row_done(fields), old, fields)
+        self.assertEqual([farsideclose.row_done(f) for f in rows], [True, True, True, False, False, False, False, True, False])
+
+
 if __name__ == "__main__":
     unittest.main()

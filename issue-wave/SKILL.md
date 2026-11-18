@@ -687,7 +687,13 @@ comparison of the two worker profiles, not of the models alone. The board row ho
 comparison groups by: `tier=` (prep's `--tier`, or a queue entry's `tier`), `model=` (a profile's
 model and effort; a native row's from its launch) and `launched_at` (stamped by the board on the
 row's first `state=launched`), beside `pr`, `review`, `confirm` and `merge`. Give every task its
-tier at prep, so no comparison has to recover it from the task part's prose.
+tier at prep, so no comparison has to recover it from the task part's prose. It counts the
+coordinator's turns too: `interventions=` (turns that needed judgment: an escalation's answer, a
+nudge, an `unstick --kill` or `--interrupt`) apart from `routine_answers=` (the protocol's answers),
+both from 0 at the row's creation. `unstick` counts its own, so a CLI row needs no step; beside each
+message to a native worker run `board tally`
+([native-claude.md](references/native-claude.md#worker-channel)). The message's first line decides,
+by the closed list in `lib/ludics/fleetworker/tally.py`.
 
 The IDs are the ones `~/.codex/models_cache.json` lists on the worker's box (2026-11-17 on
 mac-studio: `gpt-6.2-sol` and `gpt-6.2-astra`); read them there rather than from this paragraph

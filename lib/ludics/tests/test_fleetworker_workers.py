@@ -275,6 +275,37 @@ class StandingLaunch(unittest.TestCase):
                     workers.standing_request(payload.name, "box", "o/r")
 
 
+class UnstickTally(unittest.TestCase):
+    """ludics#1214: an unstick that exited 0 counts its turn on the row (tally.py), and only then."""
+
+    def setUp(self) -> None:
+        self.cfg = load_config(SCRIPT, {}, host="h")
+        self.dir = tempfile.mkdtemp(prefix="ludics-unstick-tally.")
+        self.msg = os.path.join(self.dir, "msg.md")
+        with open(self.msg, "w") as f:
+            f.write("continue\n")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.dir)
+
+    def unstick(self, rc: int, *args: str) -> tuple[int, Any]:
+        with patch.object(workers, "anchor_gate", return_value=0), patch.object(workers, "put_file", return_value=Done(0, "")), \
+                patch.object(workers, "run_on", return_value=Done(rc, "")), \
+                patch.object(workers.tally, "after_unstick") as counted:
+            return workers.cmd_unstick(self.cfg, ["box", "w1-42", *args]), counted
+
+    def test_only_an_unstick_that_exited_0_counts_and_its_exit_is_its_own(self) -> None:
+        rc, counted = self.unstick(0, "--message", self.msg, "--kill")
+        self.assertEqual(rc, 0)
+        counted.assert_called_once_with(self.cfg, "box", "w1-42", self.msg, kill=True, interrupt=False)
+        rc, counted = self.unstick(0, "--interrupt")
+        counted.assert_called_once_with(self.cfg, "box", "w1-42", "", kill=False, interrupt=True)
+        for failed in (1, 3):
+            rc, counted = self.unstick(failed, "--message", self.msg)
+            self.assertEqual(rc, failed)
+            counted.assert_not_called()
+
+
 class Readings(unittest.TestCase):
     def test_the_preflight_note_is_the_ok_line_past_its_skills_field(self) -> None:
         line = "PREFLIGHT OK rog skills=abcdef123 (cross-box unreachable, asleep or off the network: tuf)"

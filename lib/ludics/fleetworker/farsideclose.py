@@ -112,7 +112,7 @@ from ludics.fleetworker.execution import field, jq_text, listing, recorded_check
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import anchor_gate
 from ludics.fleetworker.leg import REMOTE, WORKTREE
-from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
+from ludics.fleetworker.takeover import DONE_STATES, board_document, phase_of
 from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run_on
 from ludics.postmergecleanup.cleanup import ACTIVE_OPERATIONS
 
@@ -273,8 +273,7 @@ def words_of(fields: dict[str, str]) -> list[str]:
 
 def row_done(fields: dict[str, str]) -> bool:
     """The row's state is a done word: ``state``, or ``status`` on a row from before ludics#810."""
-    value = fields.get("state", fields.get("status", ""))
-    return state_word(value) in DONE_STATES
+    return phase_of(fields) in DONE_STATES
 
 
 def refers_to(bound: str, want: str) -> bool:

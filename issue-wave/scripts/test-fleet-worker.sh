@@ -2260,6 +2260,29 @@ expect "...status counts it unread" 0 "turn=.* unread=1 " -- "$FW" status testbo
 expect "...and attach returns the reply to it, not the turn that ended before it was read" 0 "IDLE testbox/wq .*did: Stop and answer now" -- "$FW" attach testbox wq --interval 1
 expect "...after which it is read" 0 "unread=0 " -- "$FW" status testbox wq
 settle wq
+# ludics#1214: an unstick that exits 0 counts its turn on the worker's row (tally.py), routine or an
+# intervention by its message's first line; a worker with no row on any board (wq) is a NOTE.
+grep -Eq '^BOARD TALLY NOTE: no row of worker "wq" on "testbox"( or "local")? that is not done, on any board; nothing counted$' <<<"$(env FLEET_DELIVERY_WAIT=0 "$FW" unstick testbox wq --message "$TMP/msg2.md" 2>&1)" &&
+  ok "an unstick of a worker no board names counts nothing, and says so" || ko "no NOTE for a worker with no row"
+settle wq
+"$FW" board set --create --new-row tally t-wt worker=wt agent_host=testbox state=launched >/dev/null
+"$FW" launch testbox wt --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" >/dev/null
+"$FW" attach testbox wt --interval 1 >/dev/null
+printf 'REVIEW_POSTED 7 %s\nThe verdict is not blocking.\n' 0123456789abcdef0123456789abcdef01234567 > "$TMP/routine.md"
+expect "a protocol answer through unstick counts in the row's routine_answers" 0 '^BOARD TALLY tally: "t-wt" routine_answers=1$' -- \
+  "$FW" unstick testbox wt --message "$TMP/routine.md"
+"$FW" attach testbox wt --interval 1 >/dev/null
+expect "...a nudge in its interventions" 0 '^BOARD TALLY tally: "t-wt" interventions=1$' -- "$FW" unstick testbox wt --message "$TMP/msg2.md"
+"$FW" attach testbox wt --interval 1 >/dev/null
+expect "...an unstick that refuses counts nothing" 1 "UNSTICK REFUSED testbox/wt: extra CLI arguments" -- "$FW" unstick testbox wt --message "$TMP/msg.md" -- --model opus
+expect "...and --kill is an intervention whatever its message" 0 '^BOARD TALLY tally: "t-wt" interventions=2$' -- \
+  "$FW" unstick testbox wt --message "$TMP/routine.md" --kill
+got=$("$FW" board show tally --json | jq -r '.tasks[0].fields | "\(.interventions) \(.routine_answers)"')
+[ "$got" = "2 1" ] && ok "...the row holds both counts apart" || ko "counts: $got"
+got=$("$FW" board show tally --json | jq -r '[.log[].text] | join("|")')
+[ "$got" = 't-wt interventions=1: "Now the next step."|t-wt interventions=2: unstick --kill ("REVIEW_POSTED 7 0123456789abcdef0123456789abcdef01234567")' ] &&
+  ok "...and each intervention its log line" || ko "log: $got"
+settle wt
 # A message still queued when the process is killed is fed to the resumed one, before the new one.
 "$FW" launch testbox wr --target-repo example/project --kind claude --brief "$TMP/bg4.md" --cwd "$proj" >/dev/null
 for i in $(seq 1 20); do grep -q '"background_tasks_changed","tasks":\[{' "$ISSUE_WAVE_STATE/workers/wr/stream.jsonl" 2>/dev/null && break; sleep 0.25; done
@@ -2716,7 +2739,7 @@ want=$(printf '%s\n' "ll#1" "$hostile" "$hostile" "$hostile" "$hostile" "#12 (dr
 [ ! -e "$TMP/pwned" ] && ok "...and nothing in it ran" || ko "a value was run as a command"
 [ "$(jq -r '.log[0].by' "$TMP/board.json")" = test-coordinator ] && ok "a log line names its coordinator" || ko "log by: $(jq -c '.log[0]' "$TMP/board.json")"
 expect "show renders the markdown view, the pipe escaped" 0 '^| ll#1 | a\\|b (c) #d /e `f` ' -- "$FW" board show bw
-grep -q '^| task | state | pr |$' <<<"$out" && grep -q '^## Log$' <<<"$out" && ok "...with the table header and the log" || ko "view: $out"
+grep -q '^| task | state | pr | interventions | routine_answers |$' <<<"$out" && grep -q '^## Log$' <<<"$out" && ok "...with the table header and the log" || ko "view: $out"
 expect "another coordinator reads the board without the lease" 0 "^# Board: bw$" -- "${B[@]}" board show bw
 expect "...and without any identity" 0 "^# Board: bw$" -- env -u FLEET_COORDINATOR "$FW" board show bw
 expect "...but cannot write it" 1 "BOARD REFUSED fleet: coordinator lease held by" -- "${B[@]}" board log bw "not mine"
@@ -2730,7 +2753,25 @@ expect "a field without = is a usage error" 2 "board set: expected <key>=<value>
 expect "show of a wave with no board refuses with its own exit, 5" 5 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
 expect "...but a state root that is no directory is a plain refusal, never no board" 1 "is not a directory$" -- \
   env FLEET_ANCHOR_STATE="$TMP/no-such-state" "$FW" board show none
-expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show, check, takeover or close" -- "$FW" board edit bw
+expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show, check, takeover, close or tally" -- "$FW" board edit bw
+# board tally (ludics#1214): a native worker's message, counted on its row by its first line.
+[ "$(jq -r '.tasks[0].fields | "\(.interventions) \(.routine_answers)"' "$ISSUE_WAVE_STATE/boards/bw.json")" = "0 0" ] &&
+  ok "a row starts its two counters at 0" || ko "row: $(jq -c '.tasks[0].fields' "$ISSUE_WAVE_STATE/boards/bw.json")"
+printf 'EXECUTION_ASSIGNED bw-r1\ncommand: true\n' > "$TMP/assigned.md"
+printf 'Your plan misses #1210: read it, then go on.\n' > "$TMP/followup.md"
+expect "board tally counts a protocol answer in routine_answers" 0 '^BOARD TALLY bw: "ll#1" routine_answers=1$' -- "$FW" board tally bw "ll#1" --message "$TMP/assigned.md"
+expect "...anything else in interventions, with a log line" 0 '^BOARD TALLY bw: "ll#1" interventions=1$' -- "$FW" board tally bw "ll#1" --message "$TMP/followup.md"
+[ "$(jq -r '.log[-1].text' "$ISSUE_WAVE_STATE/boards/bw.json")" = 'll#1 interventions=1: message "Your plan misses #1210: read it, then go on."' ] &&
+  ok "...the log line names the message" || ko "log: $(jq -c '.log[-1]' "$ISSUE_WAVE_STATE/boards/bw.json")"
+expect "...a task with no row refuses, naming the nearest" 1 'no task "ll#2" on the board of bw; the nearest is "ll#1"; nothing counted' -- \
+  "$FW" board tally bw "ll#2" --message "$TMP/followup.md"
+expect "...another coordinator cannot tally" 1 "BOARD REFUSED fleet: coordinator lease held by" -- "${B[@]}" board tally bw "ll#1" --message "$TMP/followup.md"
+expect "...and a message that is no readable file is a usage error" 2 "board tally: --message <readable file>" -- "$FW" board tally bw "ll#1" --message "$TMP/no-such.md"
+"$FW" board tally bw "ll#1" --message "$TMP/followup.md" >/dev/null & t1=$!
+"$FW" board tally bw "ll#1" --message "$TMP/followup.md" >/dev/null & t2=$!
+wait "$t1"; r1=$?; wait "$t2"; r2=$?
+[ "$r1 $r2 $(jq -r '.tasks[0].fields.interventions' "$ISSUE_WAVE_STATE/boards/bw.json")" = "0 0 3" ] &&
+  ok "two tallies at once both count: the store increments under the lock" || ko "concurrent: $r1 $r2 $(jq -c '.tasks[0].fields' "$ISSUE_WAVE_STATE/boards/bw.json")"
 # A row's state grammar (ludics#810): set warns on status= and on a state with no state word, and writes
 # both as given; check, a read, exits 3 listing each row not done and 0 when every row is.
 expect "set warns on status=, and writes it" 0 "^BOARD WARNING: task \"ck-1\": a row's state is its state key, not status; written as given$" -- \

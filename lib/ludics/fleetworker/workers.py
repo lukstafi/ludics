@@ -28,7 +28,7 @@ import time
 from typing import Any, cast
 
 from ludics import cli
-from ludics.fleetworker import farside, tiprun
+from ludics.fleetworker import farside, tally, tiprun
 from ludics.fleetworker.config import Config, fetch_timeout_s, short_hostname
 from ludics.fleetworker.gate import base_gate
 from ludics.fleetworker.identity import die, gen_uuid
@@ -491,6 +491,10 @@ def cmd_unstick(cfg: Config, args: list[str]) -> int:
     done = run_on(cfg, box, script, [name, "1" if kill else "0", when, mid, dwait, rid, "1" if given else "0", *extra])
     if done.unreachable:
         return _unreachable(f"UNSTICK UNREACHABLE {box}/{name}")
+    if done.rc == 0:
+        # The row's count of this coordinator turn (tally.py: the message classifies itself), on
+        # stderr, never this unstick's exit.
+        tally.after_unstick(cfg, box, name, msg, kill=kill, interrupt=interrupt)
     return done.rc
 
 

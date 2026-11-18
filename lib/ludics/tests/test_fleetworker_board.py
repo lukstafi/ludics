@@ -6,20 +6,25 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import board, boardstore, takeover
+from ludics.fleetworker import assign, board, boardstore, takeover, tally, wavereview
 from ludics.fleetworker.config import load_config
+from ludics.fleetworker.transport import Done
 
 CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # The cell texts that broke `sed` on the OCANNL wave-20261014 board, and the rest of the shell's and
 # markdown's metacharacters.
 HOSTILE = "a|b (c) #d /e `f` $(g) 'q' \"dq\" s/x/y/g \\ & * [x](y) <br> ü"
+
+
+ZERO = {"interventions": "0", "routine_answers": "0"}  # THE COUNTERS START AT ZERO (boardstore.py's header)
 
 
 class StoreCase(unittest.TestCase):
@@ -53,7 +58,7 @@ class Store(StoreCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "boards")))
         self.assertEqual(self.set("t", ("k", "v"))[0], 0)
         self.assertEqual(self.set("t", ("k", "w"))[0], 0, "create on an existing board is no refusal")
-        self.assertEqual(self.doc()["tasks"][0]["fields"], {"k": "w"})
+        self.assertEqual(self.doc()["tasks"][0]["fields"], {"k": "w", **ZERO})
         self.assertEqual(self.call("log", {"wave": "w", "text": " "})[2], "BOARD REFUSED: a log line must not be empty\n")
 
     def test_a_task_with_no_row_is_refused_unless_new_row(self) -> None:
@@ -84,7 +89,7 @@ class Store(StoreCase):
             self.assertEqual(self.call("placement", payload)[0], 0)
         fields = self.doc()["tasks"][0]["fields"]
         self.assertEqual({k: v for k, v in fields.items() if k != "launched_at"},
-                         {"worker": "wk", "exec_hosts": "mac,gpu", "farside": "gpu:/leg", "state": "launched"})
+                         {"worker": "wk", "exec_hosts": "mac,gpu", "farside": "gpu:/leg", "state": "launched", **ZERO})
         before = self.doc()
         self.assertEqual(self.call("placement", {**payload, "worker": "absent"})[0], 0)
         self.assertEqual(self.doc(), before)
@@ -131,7 +136,7 @@ class Store(StoreCase):
         self.assertEqual(self.call("log", {"wave": "w", "text": HOSTILE})[0], 0)
         doc = self.doc()
         self.assertEqual(doc["tasks"][0]["task"], HOSTILE)
-        self.assertEqual(doc["tasks"][0]["fields"], {"state": HOSTILE, "multi": "one\ntwo"})
+        self.assertEqual(doc["tasks"][0]["fields"], {"state": HOSTILE, "multi": "one\ntwo", **ZERO})
         self.assertEqual(doc["notes"], {"scope": HOSTILE})
         self.assertEqual([(line["by"], line["text"]) for line in doc["log"]], [("coord", HOSTILE)])
 
@@ -141,7 +146,7 @@ class Store(StoreCase):
         self.set("b", ("state", "merged"))
         doc = self.doc()
         self.assertEqual([row["task"] for row in doc["tasks"]], ["b", "a"])
-        self.assertEqual(doc["tasks"][0]["fields"], {"state": "merged", "pr": ""})
+        self.assertEqual(doc["tasks"][0]["fields"], {"state": "merged", "pr": "", **ZERO})
 
     def test_a_launch_is_stamped_once_by_the_stores_clock(self) -> None:
         """THE LAUNCH STAMP: ``state=launched`` (wave launch's, or a native coordinator's by hand)
@@ -166,7 +171,7 @@ class Store(StoreCase):
             self.set("t3", ("state", "launchedx"))
             self.set("t3", ("state", "merged #4"))
         rows = {row["task"]: row["fields"] for row in self.doc()["tasks"]}
-        self.assertEqual(rows["t1"], {"state": "Launched; again, a finisher", "tier": "D2", "agent": "a1",
+        self.assertEqual(rows["t1"], {"state": "Launched; again, a finisher", "tier": "D2", **ZERO, "agent": "a1",
                                       "launched_at": "2026-11-17T10:05:00Z"},
                          "stamped at the row's end by the set that launched it, and a relaunch keeps the first stamp")
         self.assertEqual(rows["t2"]["launched_at"], "2026-11-16T09:00:00Z", "a set that names launched_at writes its own")
@@ -180,8 +185,10 @@ class Store(StoreCase):
         rc, out, _ = self.call("show", {"wave": "w"})
         self.assertEqual(rc, 0)
         lines = out.split("\n")
-        self.assertEqual(lines[:5], ["# Board: w", "", "- base: abc<br>def", "", "| task | state | note | pr |"])
-        self.assertEqual(lines[5:8], ["| --- | --- | --- | --- |", "| ll#1 | a\\|b | x<br>y |  |", "| ll#2 |  |  | `#3` |"])
+        self.assertEqual(lines[:5], ["# Board: w", "", "- base: abc<br>def", "",
+                                     "| task | state | note | interventions | routine_answers | pr |"])
+        self.assertEqual(lines[5:8], ["| --- | --- | --- | --- | --- | --- |", "| ll#1 | a\\|b | x<br>y | 0 | 0 |  |",
+                                      "| ll#2 |  |  | 0 | 0 | `#3` |"])
         self.assertEqual(lines[9], "## Log")
         self.assertRegex(lines[10], r"^- \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ one \| two$")
 
@@ -191,7 +198,7 @@ class Store(StoreCase):
         rc, out, _ = self.call("show", {"wave": "w"})
         self.assertEqual(rc, 0)
         lines = out.split("\n")
-        self.assertEqual(lines[4], "| t | x\\\\\\|y | one<br>two<br>three<br>four<br>five | bell\ufffd\ttab\ufffd |")
+        self.assertEqual(lines[4], "| t | x\\\\\\|y | one<br>two<br>three<br>four<br>five | bell\ufffd\ttab\ufffd | 0 | 0 |")
         self.assertTrue(lines[7].endswith(" x<br>y"), lines)
         self.assertEqual(len(out.splitlines()), len(lines) - 1, "no line break but the view's own")
         self.assertEqual(self.doc()["tasks"][0]["fields"]["a"], "x\\|y", "the document keeps the text as given")
@@ -317,6 +324,229 @@ class Store(StoreCase):
         self.assertEqual(self.call("log", {"wave": "w", "text": "x"})[0], 1)
 
 
+class Tally(StoreCase):
+    """boardstore's ``tally`` (ludics#1214): a row's counter one more, under the lock, in one publish."""
+
+    def tally(self, counter: str, why: str = "x", **where: Any) -> tuple[int, str, str]:
+        return self.call("tally", {"counter": counter, "why": why, **where})
+
+    def fields(self, task: str, wave: str = "w") -> dict[str, str]:
+        return next(row["fields"] for row in self.doc(wave)["tasks"] if row["task"] == task)
+
+    def test_a_new_row_starts_at_zero_and_a_set_keeps_the_counts(self) -> None:
+        self.set("t1", ("state", "pending"))
+        self.set("t2", ("state", "pending"), ("interventions", "3"))
+        self.assertEqual(self.fields("t1"), {"state": "pending", **ZERO})
+        self.assertEqual(self.fields("t2"), {"state": "pending", "interventions": "3", "routine_answers": "0"},
+                         "a set that names a counter writes its own")
+        self.assertEqual(self.tally("interventions", wave="w", task="t1")[0], 0)
+        self.set("t1", ("state", "launched"))  # --new-row again, as a retried first write or a relaunch sends it
+        self.assertEqual(self.fields("t1")["interventions"], "1", "a set on a row that exists keeps its counts")
+
+    def test_a_tally_by_task_counts_once_and_logs_an_intervention_only(self) -> None:
+        self.set("t1", ("state", "launched"))
+        self.set("t2", ("state", "launched"))
+        rc, out, err = self.tally("interventions", "unstick --kill (\"x\")", wave="w", task="t1")
+        self.assertEqual((rc, out, err), (0, 'BOARD TALLY w: "t1" interventions=1\n', ""))
+        self.assertEqual(self.tally("routine_answers", "\"REVIEW_POSTED 1\"", wave="w", task="t1")[0], 0)
+        self.assertEqual(self.tally("interventions", "message \"why?\"", wave="w", task="t1")[0], 0)
+        self.assertEqual(self.fields("t1"), {"state": "launched", "interventions": "2", "routine_answers": "1",
+                                             "launched_at": self.fields("t1")["launched_at"]})
+        self.assertEqual(self.fields("t2"), {"state": "launched", **ZERO, "launched_at": self.fields("t2")["launched_at"]},
+                         "a sibling row is not touched")
+        self.assertEqual([line["text"] for line in self.doc()["log"]],
+                         ['t1 interventions=1: unstick --kill ("x")', 't1 interventions=2: message "why?"'])
+
+    def test_a_tally_refuses_what_it_cannot_count_and_writes_nothing(self) -> None:
+        self.set("t2032", ("state", "launched"), ("routine_answers", "07"))
+        before = self.doc()
+        refusals = {
+            "a counter of no list": self.tally("rounds", wave="w", task="t2032"),
+            "a task with no row": self.tally("interventions", wave="w", task="2032"),
+            "a value that is no count": self.tally("routine_answers", wave="w", task="t2032"),
+            "no board": self.tally("interventions", wave="none", task="t1"),
+        }
+        for what, (rc, out, _) in refusals.items():
+            self.assertEqual((rc, out), (1, ""), what)
+        self.assertIn('the nearest is "t2032"; nothing counted', refusals["a task with no row"][2])
+        self.assertIn('holds routine_answers="07", no count', refusals["a value that is no count"][2])
+        self.assertEqual(self.doc(), before, "a refusal writes nothing")
+
+    def test_a_tally_by_worker_counts_the_one_row_not_done_on_any_board(self) -> None:
+        """``unstick`` knows a box and a worker: the row is the one not done whose worker and agent_host match."""
+        def row(wave: str, task: str, **fields: str) -> None:
+            self.call("set", {"wave": wave, "create": True, "new_row": True, "task": task,
+                              "fields": [[k, v] for k, v in fields.items()]})
+        done = list(takeover.DONE_STATES)
+        row("a", "t1", worker="w1-42", agent_host="mac", state="merged")              # an earlier wave's, done
+        row("b", "t1", worker="w1-42", agent_host="mac", state="Implementing; round 2")
+        row("b", "t2", worker="w1-42", agent_host="rog", state="launched")            # another box's
+        row("b", "t3", worker="w1-43", agent_host="mac", status="launched")          # status only: before #810
+        rc, out, _ = self.tally("interventions", worker="w1-42", hosts=["mac"], done=done)
+        self.assertEqual((rc, out), (0, 'BOARD TALLY b: "t1" interventions=1\n'))
+        self.assertEqual(self.tally("routine_answers", worker="w1-43", hosts=["mac"], done=done)[1],
+                         'BOARD TALLY b: "t3" routine_answers=1\n')
+        self.assertEqual((self.fields("t1", "a")["interventions"], self.fields("t2", "b")["interventions"]), ("0", "0"))
+        rc, out, _ = self.tally("interventions", worker="w9", hosts=["mac"], done=done)
+        self.assertEqual((rc, out), (0, 'BOARD TALLY NOTE: no row of worker "w9" on "mac" that is not done, on any board;'
+                                        " nothing counted\n"), "a worker outside any wave is no refusal")
+        row("c", "t9", worker="w1-42", agent_host="mac", state="reviewing")
+        before = (self.doc("b"), self.doc("c"))
+        rc, out, _ = self.tally("interventions", worker="w1-42", hosts=["mac"], done=done)
+        self.assertEqual((rc, out), (0, 'BOARD TALLY NOTE: worker "w1-42" on "mac" names 2 rows that are not done'
+                                        " (b/t1, c/t9); nothing counted\n"), "an ambiguous worker is counted nowhere")
+        self.assertEqual((self.doc("b"), self.doc("c")), before)
+        with open(os.path.join(self.root, "boards", "d.json"), "w") as f:
+            f.write("{not a board")
+        self.assertEqual(self.tally("routine_answers", worker="w1-43", hosts=["mac"], done=done)[1],
+                         'BOARD TALLY b: "t3" routine_answers=2\n', "a board that does not load is skipped")
+        self.assertEqual(self.tally("interventions", worker="w1-43", hosts=["mac"], done="merged")[0], 1)
+        row("e", "t1", worker="w1-44", agent_host="mac", state="launched", transport="subagent")
+        self.assertIn("BOARD TALLY NOTE: no row", self.tally("interventions", worker="w1-44", hosts=["mac"], done=done)[1],
+                      "an unstick reaches only a CLI worker: a native row of that name is never charged")
+        shutil.rmtree(os.path.join(self.root, "boards"))
+        with open(os.path.join(self.root, "boards"), "w") as f:
+            f.write("")
+        for refused in (self.tally("interventions", worker="w1-43", hosts=["mac"], done=done),
+                        self.call("scan", {"since_hours": None})):
+            self.assertEqual(refused[:2], (1, ""), "a boards that is no directory: scan's refusal, by its one listing")
+            self.assertIn("boards is not a directory", refused[2])
+
+    def test_a_row_made_before_the_counters_says_its_counts_are_partial(self) -> None:
+        self.set("t1", ("state", "launched"))
+        doc = self.doc()
+        doc["tasks"][0]["fields"] = {"state": "launched"}  # a row an older store made
+        with open(os.path.join(self.root, "boards", "w.json"), "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(self.tally("routine_answers", wave="w", task="t1")[0], 0)
+        self.assertEqual(self.tally("interventions", wave="w", task="t1")[0], 0)
+        fields = self.fields("t1")
+        self.assertEqual((fields["routine_answers"], fields["interventions"]), ("1", "1"))
+        self.assertRegex(fields["counted_from"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.set("t2", ("state", "launched"))
+        self.tally("interventions", wave="w", task="t2")
+        self.assertNotIn("counted_from", self.fields("t2"), "a row counted from its creation needs no mark")
+
+
+class Classify(unittest.TestCase):
+    """tally.py's closed list: the message classifies itself, by its first non-blank line's leading words."""
+
+    def test_every_recognised_form_is_routine_and_anything_else_an_intervention(self) -> None:
+        for marker in tally.ROUTINE:
+            self.assertEqual(tally.classify(f"\n  \n{marker} 12 abc\nprose\n")[0], "routine_answers", marker)
+            self.assertEqual(tally.classify(f"{marker}\n")[0], "routine_answers", marker)
+        for text in ("", "\n \n", "REVIEW_POSTEDX 1 a", "review_posted 1 a", "`REVIEW_POSTED 1 a`", "MERGE 1 a",
+                     "MERGE NOT 1", "Answer to your PLAN_ESCALATION: do A", "continue\nREVIEW_POSTED 1 a",
+                     "EXECUTION_REQUEST", "PLAN_READY", "EXECUTION_RESULT {}"):
+            self.assertEqual(tally.classify(text)[0], "interventions", repr(text))
+
+    def test_kill_and_interrupt_are_interventions_whatever_the_message(self) -> None:
+        self.assertEqual(tally.classify("REVIEW_POSTED 1 a", kill=True), ("interventions", 'unstick --kill ("REVIEW_POSTED 1 a")'))
+        self.assertEqual(tally.classify("", interrupt=True), ("interventions", "unstick --interrupt (no message)"))
+        self.assertEqual(tally.classify("x" * 200)[1], json.dumps("x" * tally.SHOWN + "..."))
+
+    def test_every_message_the_driver_sends_is_routine(self) -> None:
+        """The driver's resumes all go through unstick, so its answers are counted only if each message it can
+        send classifies as routine: built here by the very code that writes them."""
+        call = mock.Mock(kind="at-open", pr=7, sha="a" * 40, wave=mock.Mock(repository="o/r"))
+        messages: list[str] = []
+        for kind, blocks in (("at-open", True), ("at-open", False), ("confirm", True), ("confirm", False)):
+            call.kind = kind
+            messages.append(wavereview.message_of(call, mock.Mock(line="VERDICT: x", blocks=blocks), "https://x"))
+        block = {"request_id": "r-1", "kind": "correctness", "execution_host": "mac", "checkout": "/w"}
+        messages.append(assign.assignment_text(block, "true", "b" * 40) + "\n\n" + assign.assignment_text(block, "true", "c" * 40))
+        self.assertEqual([m.split()[0] for m in messages][:4], ["REVIEW_POSTED", "REVIEW_POSTED", "MERGE", "MERGE"])
+        for message in messages:
+            self.assertEqual(tally.classify(message)[0], "routine_answers", message[:60])
+        # The result answer is the driver's own concluded.md, classified where it is written: test_fleetworker_wave's
+        # conclude case.
+
+    def test_said_keeps_only_the_tallys_own_lines(self) -> None:
+        self.assertEqual(tally.said("RESUMED x\nBOARD TALLY w: \"t\" routine_answers=1\n"), "")
+        self.assertEqual(tally.said("x\n BOARD TALLY NOTE: no row\nBOARD TALLY WARNING h/w: y\n"),
+                         "; BOARD TALLY NOTE: no row; BOARD TALLY WARNING h/w: y")
+
+
+class TallyVerbs(StoreCase):
+    """``board tally`` and unstick's own tally, their anchor call run through the store here."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.cfg = load_config(os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh"), {
+            "FLEET_ANCHOR": "local", "FLEET_ANCHOR_STATE": self.root, "FLEET_SKILLS_REPO": CHECKOUT,
+            "FLEET_BOXES": "local", "PATH": os.environ.get("PATH", ""), "HOME": self.root,
+        }, host="testbox")
+        self.set("t1", ("worker", "w1-42"), ("agent_host", "testbox"), ("state", "launched"))
+        self.message = os.path.join(self.root, "msg.md")
+        self.payloads: list[dict[str, Any]] = []
+
+    def mutate(self, _cfg: Any, action: str, raw: str, *, stdout_to_stderr: bool = False) -> Done:
+        self.payloads.append(json.loads(raw))
+        rc, out, err = self.call(action, json.loads(raw))
+        (sys.stderr if stdout_to_stderr else sys.stdout).write(out + err)
+        return Done(rc, "")
+
+    def run_verb(self, fn: Any, *args: Any, **kw: Any) -> tuple[Any, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(tally, "mutate", self.mutate), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = fn(*args, **kw)
+            except cli.Exit as exc:
+                rc = exc.rc
+        return rc, out.getvalue(), err.getvalue()
+
+    def write(self, text: str) -> None:
+        with open(self.message, "w") as f:
+            f.write(text)
+
+    def test_board_tally_classifies_the_native_message(self) -> None:
+        self.write("REVIEW_POSTED 7 " + "a" * 40 + "\n...")
+        self.assertEqual(self.run_verb(board.cmd_board, self.cfg, ["tally", "w", "t1", "--message", self.message])[:2],
+                         (0, 'BOARD TALLY w: "t1" routine_answers=1\n'))
+        self.write("Your plan's step 3 is wrong: read #1210 first.\n")
+        self.assertEqual(self.run_verb(board.cmd_board, self.cfg, ["tally", "w", "t1", "--message", self.message])[:2],
+                         (0, 'BOARD TALLY w: "t1" interventions=1\n'))
+        self.assertEqual(self.doc()["log"][-1]["text"], 't1 interventions=1: message "Your plan\'s step 3 is wrong: read #1210 first."')
+        for args in (["tally", "w", "t1"], ["tally", "w", "t1", "--message", self.root], ["tally", "w", "t1", "-m", self.message]):
+            self.assertEqual(self.run_verb(board.cmd_board, self.cfg, args)[0], 2, args)
+
+    def test_unstick_counts_by_worker_on_stderr_and_a_failure_is_a_warning(self) -> None:
+        self.write("PEER_PLAN /x/astra-plan.md\n")
+        rc, out, err = self.run_verb(tally.after_unstick, self.cfg, "testbox", "w1-42", self.message, kill=False, interrupt=False)
+        self.assertEqual((rc, out, err), (None, "", 'BOARD TALLY w: "t1" routine_answers=1\n'))
+        with mock.patch.object(tally, "spellings", return_value=["local", "testbox"]) as named:
+            self.run_verb(tally.after_unstick, self.cfg, "local", "w1-42", self.message, kill=False, interrupt=False)
+        named.assert_called_once_with(self.cfg, "local")
+        self.assertEqual(self.payloads[-1]["hosts"], ["local", "testbox"], "the row is found by every spelling of the box")
+        self.run_verb(tally.after_unstick, self.cfg, "testbox", "w1-42", "", kill=False, interrupt=True)
+        self.assertEqual((self.fields_of()["interventions"], self.fields_of()["routine_answers"]), ("1", "2"))
+        with mock.patch.object(tally, "mutate", return_value=Done(1, "")), contextlib.redirect_stderr(io.StringIO()) as err2:
+            tally.after_unstick(self.cfg, "testbox", "w1-42", self.message, kill=False, interrupt=False)
+        self.assertIn("BOARD TALLY WARNING testbox/w1-42: the unstick reached the worker, and its turn was not counted (board"
+                      " exit 1)", err2.getvalue())
+        with mock.patch.object(tally, "mutate", side_effect=SystemExit(2)), contextlib.redirect_stderr(io.StringIO()) as err3:
+            tally.after_unstick(self.cfg, "testbox", "w1-42", self.message, kill=False, interrupt=False)
+        self.assertIn("BOARD TALLY WARNING testbox/w1-42", err3.getvalue(), "an identity refusal never ends the unstick")
+
+    def test_the_box_is_looked_up_by_every_spelling_a_row_may_give_it(self) -> None:
+        """A wave file may name its agent host ``local`` or by its fleet name, and prep writes it as given."""
+        here, bare = mock.Mock(local_box="mac-studio"), mock.Mock(local_box="")
+        self.assertEqual(tally.spellings(here, "local"), ["local", "mac-studio"])
+        self.assertEqual(tally.spellings(here, "mac-studio"), ["mac-studio", "local"])
+        self.assertEqual(tally.spellings(here, "rog"), ["rog"])
+        self.assertEqual(tally.spellings(bare, "local"), ["local"])
+        self.set("t2", ("worker", "w1-77"), ("agent_host", "local"), ("state", "launched"))
+        cfg = load_config(os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh"), {
+            "FLEET_ANCHOR": "local", "FLEET_ANCHOR_STATE": self.root, "FLEET_SKILLS_REPO": CHECKOUT,
+            "FLEET_BOXES": "local", "FLEET_LOCAL_BOX": "testbox", "PATH": os.environ.get("PATH", ""), "HOME": self.root,
+        }, host="testbox")
+        _, _, err = self.run_verb(tally.after_unstick, cfg, "testbox", "w1-77", "", kill=True, interrupt=False)
+        self.assertEqual(err, 'BOARD TALLY w: "t2" interventions=1\n', "a row prep wrote as agent_host=local is this box's")
+
+    def fields_of(self) -> dict[str, str]:
+        return self.doc()["tasks"][0]["fields"]
+
+
 class CommandLine(unittest.TestCase):
     def payload(self, *args: str) -> tuple[str, dict[str, object]]:
         return board.payload_of(list(args))
@@ -351,7 +581,7 @@ class CommandLine(unittest.TestCase):
         self.assertIn("expected <key>=<value>, got \"--create\"", self.refused("set", "w", "t", "k=v", "--create"))
 
     def test_usage_refusals(self) -> None:
-        self.assertIn("expected set, note, log, show, check, takeover or close", self.refused())
+        self.assertIn("expected set, note, log, show, check, takeover, close or tally", self.refused())
         self.assertIn("board show: expected <wave> [--json]", self.refused("show"))
         self.assertIn("board show: expected <wave> [--json]", self.refused("show", "w", "--md"))
         self.assertIn("board set: expected <task>", self.refused("set", "w"))
