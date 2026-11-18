@@ -103,6 +103,9 @@ THE ANSWERS:
               no longer in the roster
             - a reserved id whose assignment or window definition differs, or whose reservation
               was adopted and needs reconciliation.
+            The code sources are ``registry.AssignmentInput``, ``execution.cmd_execution`` (the
+            endpoint map and revision refusals through ``execution.fail(..., refusal_status=...)``),
+            and assign's usage exits.
             Only assign's status classifies these refusals. Its diagnostics and the worker's
             text are not searched for refusal reasons. Exit 1 or 5 with assignments in the
             message has resumed the worker with those, so it is attention at once for the

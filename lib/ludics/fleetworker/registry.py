@@ -420,7 +420,10 @@ ASSIGN_STATUS_ARG = "--assignment-status"
 
 
 class AssignmentInput(ValueError):
-    """Admission needs a request or fleet configuration change, or registry reconciliation."""
+    """Admission needs a request or fleet configuration change, or registry reconciliation.
+
+    Keep the closed refusal list in wavedrive.py's request handler description in sync.
+    """
 
 
 def as_object(value: Any) -> Record | None:
