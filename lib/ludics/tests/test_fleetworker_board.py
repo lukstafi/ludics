@@ -382,32 +382,32 @@ class Tally(StoreCase):
         row("b", "t1", worker="w1-42", agent_host="mac", state="Implementing; round 2")
         row("b", "t2", worker="w1-42", agent_host="rog", state="launched")            # another box's
         row("b", "t3", worker="w1-43", agent_host="mac", status="launched")          # status only: before #810
-        rc, out, _ = self.tally("interventions", worker="w1-42", host="mac", done=done)
+        rc, out, _ = self.tally("interventions", worker="w1-42", hosts=["mac"], done=done)
         self.assertEqual((rc, out), (0, 'BOARD TALLY b: "t1" interventions=1\n'))
-        self.assertEqual(self.tally("routine_answers", worker="w1-43", host="mac", done=done)[1],
+        self.assertEqual(self.tally("routine_answers", worker="w1-43", hosts=["mac"], done=done)[1],
                          'BOARD TALLY b: "t3" routine_answers=1\n')
         self.assertEqual((self.fields("t1", "a")["interventions"], self.fields("t2", "b")["interventions"]), ("0", "0"))
-        rc, out, _ = self.tally("interventions", worker="w9", host="mac", done=done)
+        rc, out, _ = self.tally("interventions", worker="w9", hosts=["mac"], done=done)
         self.assertEqual((rc, out), (0, 'BOARD TALLY NOTE: no row of worker "w9" on "mac" that is not done, on any board;'
                                         " nothing counted\n"), "a worker outside any wave is no refusal")
         row("c", "t9", worker="w1-42", agent_host="mac", state="reviewing")
         before = (self.doc("b"), self.doc("c"))
-        rc, out, _ = self.tally("interventions", worker="w1-42", host="mac", done=done)
+        rc, out, _ = self.tally("interventions", worker="w1-42", hosts=["mac"], done=done)
         self.assertEqual((rc, out), (0, 'BOARD TALLY NOTE: worker "w1-42" on "mac" names 2 rows that are not done'
                                         " (b/t1, c/t9); nothing counted\n"), "an ambiguous worker is counted nowhere")
         self.assertEqual((self.doc("b"), self.doc("c")), before)
         with open(os.path.join(self.root, "boards", "d.json"), "w") as f:
             f.write("{not a board")
-        self.assertEqual(self.tally("routine_answers", worker="w1-43", host="mac", done=done)[1],
+        self.assertEqual(self.tally("routine_answers", worker="w1-43", hosts=["mac"], done=done)[1],
                          'BOARD TALLY b: "t3" routine_answers=2\n', "a board that does not load is skipped")
-        self.assertEqual(self.tally("interventions", worker="w1-43", host="mac", done="merged")[0], 1)
+        self.assertEqual(self.tally("interventions", worker="w1-43", hosts=["mac"], done="merged")[0], 1)
         row("e", "t1", worker="w1-44", agent_host="mac", state="launched", transport="subagent")
-        self.assertIn("BOARD TALLY NOTE: no row", self.tally("interventions", worker="w1-44", host="mac", done=done)[1],
+        self.assertIn("BOARD TALLY NOTE: no row", self.tally("interventions", worker="w1-44", hosts=["mac"], done=done)[1],
                       "an unstick reaches only a CLI worker: a native row of that name is never charged")
         shutil.rmtree(os.path.join(self.root, "boards"))
         with open(os.path.join(self.root, "boards"), "w") as f:
             f.write("")
-        for refused in (self.tally("interventions", worker="w1-43", host="mac", done=done),
+        for refused in (self.tally("interventions", worker="w1-43", hosts=["mac"], done=done),
                         self.call("scan", {"since_hours": None})):
             self.assertEqual(refused[:2], (1, ""), "a boards that is no directory: scan's refusal, by its one listing")
             self.assertIn("boards is not a directory", refused[2])
@@ -514,10 +514,10 @@ class TallyVerbs(StoreCase):
         self.write("PEER_PLAN /x/astra-plan.md\n")
         rc, out, err = self.run_verb(tally.after_unstick, self.cfg, "testbox", "w1-42", self.message, kill=False, interrupt=False)
         self.assertEqual((rc, out, err), (None, "", 'BOARD TALLY w: "t1" routine_answers=1\n'))
-        with mock.patch.object(tally, "fleet_name", return_value="testbox") as named:
+        with mock.patch.object(tally, "spellings", return_value=["local", "testbox"]) as named:
             self.run_verb(tally.after_unstick, self.cfg, "local", "w1-42", self.message, kill=False, interrupt=False)
         named.assert_called_once_with(self.cfg, "local")
-        self.assertEqual(self.payloads[-1]["host"], "testbox", "the row is found by the box's fleet name")
+        self.assertEqual(self.payloads[-1]["hosts"], ["local", "testbox"], "the row is found by every spelling of the box")
         self.run_verb(tally.after_unstick, self.cfg, "testbox", "w1-42", "", kill=False, interrupt=True)
         self.assertEqual((self.fields_of()["interventions"], self.fields_of()["routine_answers"]), ("1", "2"))
         with mock.patch.object(tally, "mutate", return_value=Done(1, "")), contextlib.redirect_stderr(io.StringIO()) as err2:
@@ -527,6 +527,21 @@ class TallyVerbs(StoreCase):
         with mock.patch.object(tally, "mutate", side_effect=SystemExit(2)), contextlib.redirect_stderr(io.StringIO()) as err3:
             tally.after_unstick(self.cfg, "testbox", "w1-42", self.message, kill=False, interrupt=False)
         self.assertIn("BOARD TALLY WARNING testbox/w1-42", err3.getvalue(), "an identity refusal never ends the unstick")
+
+    def test_the_box_is_looked_up_by_every_spelling_a_row_may_give_it(self) -> None:
+        """A wave file may name its agent host ``local`` or by its fleet name, and prep writes it as given."""
+        here, bare = mock.Mock(local_box="mac-studio"), mock.Mock(local_box="")
+        self.assertEqual(tally.spellings(here, "local"), ["local", "mac-studio"])
+        self.assertEqual(tally.spellings(here, "mac-studio"), ["mac-studio", "local"])
+        self.assertEqual(tally.spellings(here, "rog"), ["rog"])
+        self.assertEqual(tally.spellings(bare, "local"), ["local"])
+        self.set("t2", ("worker", "w1-77"), ("agent_host", "local"), ("state", "launched"))
+        cfg = load_config(os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh"), {
+            "FLEET_ANCHOR": "local", "FLEET_ANCHOR_STATE": self.root, "FLEET_SKILLS_REPO": CHECKOUT,
+            "FLEET_BOXES": "local", "FLEET_LOCAL_BOX": "testbox", "PATH": os.environ.get("PATH", ""), "HOME": self.root,
+        }, host="testbox")
+        _, _, err = self.run_verb(tally.after_unstick, cfg, "testbox", "w1-77", "", kill=True, interrupt=False)
+        self.assertEqual(err, 'BOARD TALLY w: "t2" interventions=1\n', "a row prep wrote as agent_host=local is this box's")
 
     def fields_of(self) -> dict[str, str]:
         return self.doc()["tasks"][0]["fields"]

@@ -2262,7 +2262,7 @@ expect "...after which it is read" 0 "unread=0 " -- "$FW" status testbox wq
 settle wq
 # ludics#1214: an unstick that exits 0 counts its turn on the worker's row (tally.py), routine or an
 # intervention by its message's first line; a worker with no row on any board (wq) is a NOTE.
-grep -q '^BOARD TALLY NOTE: no row of worker "wq" on "testbox" that is not done, on any board; nothing counted$' <<<"$(env FLEET_DELIVERY_WAIT=0 "$FW" unstick testbox wq --message "$TMP/msg2.md" 2>&1)" &&
+grep -Eq '^BOARD TALLY NOTE: no row of worker "wq" on "testbox"( or "local")? that is not done, on any board; nothing counted$' <<<"$(env FLEET_DELIVERY_WAIT=0 "$FW" unstick testbox wq --message "$TMP/msg2.md" 2>&1)" &&
   ok "an unstick of a worker no board names counts nothing, and says so" || ko "no NOTE for a worker with no row"
 settle wq
 "$FW" board set --create --new-row tally t-wt worker=wt agent_host=testbox state=launched >/dev/null

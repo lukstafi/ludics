@@ -61,7 +61,7 @@ from ludics.fleetworker.board import mutate
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.takeover import DONE_STATES
-from ludics.fleetworker.transport import err, fleet_name
+from ludics.fleetworker.transport import err, fleet_name, is_local
 
 USAGE = "board tally <wave> <task> --message <file>"
 ROUTINE = ("REVIEW_POSTED", "MERGE CLEARED", "MERGE NOT CLEARED", "EXECUTION_ASSIGNED", "EXECUTION_CONCLUDED",
@@ -104,14 +104,24 @@ def tally(cfg: Config, payload: dict[str, object], *, stdout_to_stderr: bool) ->
     return 4 if done.unreachable else done.rc
 
 
+def spellings(cfg: Config, box: str) -> list[str]:
+    """Every name a row's ``agent_host`` may give the box an unstick named: the name as given, its fleet
+    name, and for this box ``local`` too (a wave file may name the agent host either way, and prep
+    writes it as given)."""
+    names = [box, fleet_name(cfg, box)]
+    if is_local(cfg, box):
+        names += ["local", cfg.local_box]
+    return [n for n in dict.fromkeys(names) if n]
+
+
 def after_unstick(cfg: Config, box: str, name: str, message: str, *, kill: bool, interrupt: bool) -> None:
     """``unstick``'s own tally, after it exited 0 (the header), all on stderr: never changes its exit."""
     host = fleet_name(cfg, box)
     try:
         text = read_message(message) if message else ""
         counter, why = classify(text, kill=kill, interrupt=interrupt)
-        rc = tally(cfg, {"worker": name, "host": host, "done": list(DONE_STATES), "counter": counter, "why": why},
-                   stdout_to_stderr=True)
+        rc = tally(cfg, {"worker": name, "hosts": spellings(cfg, box), "done": list(DONE_STATES), "counter": counter,
+                         "why": why}, stdout_to_stderr=True)
     except (OSError, SystemExit) as exc:
         err(f"BOARD TALLY WARNING {host}/{name}: the unstick reached the worker, and its turn was not counted ({exc})")
         return
