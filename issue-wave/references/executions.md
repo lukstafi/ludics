@@ -1303,7 +1303,7 @@ data kept verbatim. Read the request and the whole script it names (it runs on t
 
 ```
 fleet-worker.sh execution windows-witness <wave>/reserve/<task>-base.json <the saved message> \
-  --site <site.json> --transcript <fresh local path> [--script <the script you reviewed>]
+  --site <site.json> --transcript <fresh local path> --script <your copy of the script you reviewed>
 ```
 
 The verb owns the rest of the recipe: the exclusive measurement on the box's Linux side (`execution
@@ -1321,11 +1321,14 @@ Around it, the coordinator:
   by its owner's procedure first: `execution run` refuses a box holding any other record, and
   nothing suspends a record to force a reboot.
 - **The site file** is the coordinator's own, kept off this public repository with the other
-  machine facts: one JSON object from a box's Linux fleet name to its Windows `root` (each witness
-  gets a fresh `<root>/<request_id>`, kept afterwards as evidence), and optionally `bash`,
-  `max_cap_seconds` and `stage_seconds`, for example `{"rog-nv-linux": {"root":
-  "C:/Users/<you>/witness"}}`. The worker's `checkout` and `evidence` fields are not used: no
-  worker names a path the box writes.
+  machine facts: one JSON object from a box's Linux fleet name to its native Windows ssh alias
+  `windows_host` (its `win` or `lan` route, never `wsl`) and its Windows `root` (each witness gets a
+  fresh `<root>/<request_id>`, kept afterwards as evidence), and optionally `bash`,
+  `max_cap_seconds` and `stage_seconds`, for example `{"rog-nv-linux": {"windows_host":
+  "rog-nv-win", "root": "C:/Users/<you>/witness"}}`. The request's `windows_host` must be the
+  site's. Its `script`, `checkout` and `evidence` fields are not used: the script run is your
+  `--script` copy, so the bytes you reviewed are the bytes staged, and no worker names a path the
+  box writes.
 - **After, by exit.** 0 and 1 are concluded (`pass`; `fail`, `timeout` or `not-launched`) with
   Linux confirmed: send the worker the verdict and the transcript, which is the evidence. 2
   reserved nothing and touched nothing: fix the input, or wait until the box is free. 3 is

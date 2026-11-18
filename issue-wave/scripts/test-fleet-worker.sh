@@ -3888,7 +3888,7 @@ chmod +x "$ww/wake" "$ww/bin/ssh"
 printf '%s\n' 'uname -a' 'bash --version' > "$ww/verify.sh"
 jq -n '{wave:"w", worker:"/root/w1206", transport:"subagent", agent_host:"testbox", repository:"o/r",
   issue:"o/r#1206", purpose:"windows-witness fixture"}' > "$ww/base.json"
-jq -n --arg wake "$ww/wake" '{testbox: {root:"C:/witness", wake:$wake}}' > "$ww/site.json"
+jq -n --arg wake "$ww/wake" '{testbox: {windows_host:"testbox-win", root:"C:/witness", wake:$wake}}' > "$ww/site.json"
 ww_msg() { # <id> [jq object merged in] -> the worker's message, as a file
   jq -c -n --arg id "$1" --arg rev "$wsha" --arg script "$ww/verify.sh" --argjson more "${2:-"{}"}" \
     '{request_id:$id, linux_host:"testbox", windows_host:"testbox-win", requested_revision:$rev, script:$script,
@@ -3899,7 +3899,8 @@ ww_msg() { # <id> [jq object merged in] -> the worker's message, as a file
 ww_run() { # <id> [VAR=value...] -> the verb's stderr in $said, its status in $rc, the calls it made in $calls
   local id="$1"; shift; : > "$ww/calls"
   said=$(env PATH="$ww/bin:$PATH" WW="$ww" WW_SHIM="$TMP/bin/ssh" WW_SHA="$wsha" FLEET_BOXES="testbox other" "$@" \
-    "$FW" execution windows-witness "$ww/base.json" "$(ww_msg "$id")" --site "$ww/site.json" --transcript "$ww/$id.log" 2>&1); rc=$?
+    "$FW" execution windows-witness "$ww/base.json" "$(ww_msg "$id")" --site "$ww/site.json" --transcript "$ww/$id.log" \
+    --script "$ww/verify.sh" 2>&1); rc=$?
   calls=$(tr '\n' '|' < "$ww/calls")
 }
 record_of() { "$FW" execution list | jq -c --arg id "$1" '[.[] | select(.request_id == $id)][0] // {}'; }
@@ -3926,15 +3927,17 @@ ww_run ww-4 WW_OS=windows
   [ "$(record_of ww-4 | jq -r '.state')" = launching ] && ok "a box whose status does not read os=linux is NEEDS A PERSON, its record kept" ||
   ko "unconfirmed Linux (rc=$rc): $(record_of ww-4) -- $said"
 ww_run ww-5
-[ "$rc" -eq 2 ] && [ "$calls" = "endpoint-map|" ] && [ "$(record_of ww-5)" = "{}" ] &&
+[ "$rc" -eq 2 ] && [ "$calls" = "endpoint-map|" ] && [ "$(record_of ww-5)" = "{}" ] && grep -q '"execution", "list"' "$ww/ww-5.log" &&
   ok "...and while it is kept, the next witness on the box is refused: nothing reserved, nothing booted" || ko "a busy box (rc=$rc): $calls -- $said"
 fixture_done ww-4
-expect "a Windows alias of another box is refused before anything is asked" 2 "windows_host other-win is not an alias of testbox's box" -- \
+expect "a Windows alias that is not the site's is refused before anything is asked" 2 \
+  "windows_host testbox-wsl is not the site's native Windows alias for testbox, testbox-win" -- \
   env PATH="$ww/bin:$PATH" WW="$ww" FLEET_BOXES="testbox other" "$FW" execution windows-witness "$ww/base.json" \
-    "$(ww_msg ww-6 '{"windows_host":"other-win"}')" --site "$ww/site.json" --transcript "$ww/ww-6.log"
+    "$(ww_msg ww-6 '{"windows_host":"testbox-wsl"}')" --site "$ww/site.json" --transcript "$ww/ww-6.log" --script "$ww/verify.sh"
 [ "$(record_of ww-6)" = "{}" ] && [ ! -e "$ww/ww-6.log" ] && ok "...no record and no transcript" || ko "ww-6 left: $(record_of ww-6)"
 expect "an existing transcript is refused, so an earlier attempt's evidence stays its own" 2 "ww-1.log exists; name a fresh transcript" -- \
-  env WW="$ww" FLEET_BOXES="testbox other" "$FW" execution windows-witness "$ww/base.json" "$ww/ww-1.md" --site "$ww/site.json" --transcript "$ww/ww-1.log"
+  env WW="$ww" FLEET_BOXES="testbox other" "$FW" execution windows-witness "$ww/base.json" "$ww/ww-1.md" --site "$ww/site.json" \
+    --transcript "$ww/ww-1.log" --script "$ww/verify.sh"
 }
 
 section "execution conclude --standing-handback" && {

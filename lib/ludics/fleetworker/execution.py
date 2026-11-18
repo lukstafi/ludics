@@ -1282,7 +1282,7 @@ USAGE = (
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
     " tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> -- <command>, tip-run --wait <id>,"
     " assign <base.json> <requests file|-> [--request <id>]... [--message <file>] [--unstick <box> <name>],"
-    " or windows-witness <base.json> <message file|-> --site <site.json> --transcript <path> [--script <file>]"
+    " or windows-witness <base.json> <message file|-> --site <site.json> --transcript <path> --script <file>"
 )
 CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"
 
