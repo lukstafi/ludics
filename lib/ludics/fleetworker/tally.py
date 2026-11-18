@@ -48,9 +48,12 @@ surely: its retry is the one counted). ``board tally`` counts what it is given, 
 
 The board is best effort (boardstore.py's header): a tally that fails, or finds no row, is one
 ``BOARD TALLY WARNING`` or ``BOARD TALLY NOTE`` line on stderr, and the unstick's exit is its own;
-``wave drive`` carries such a line into its ``answered`` ledger note (``said``), so a lost count is
-never silent. A lost acknowledgement and a retry may count twice: reconcile with ``board show``,
-never by sending a worker a message again.
+``wave drive`` carries such a line into the note of every answer whose unstick it called or
+``execution assign`` called for it (``said``): the ``answered`` notes, and the attention lines of a
+partly assigned turn (wavedrive.py's *request* answer names them), so a lost count is never silent;
+an unstick that exits non-zero prints no such line, so the answers that resumed nobody carry none.
+A lost acknowledgement and a retry may count twice: reconcile with ``board show``, never by sending
+a worker a message again.
 """
 
 import json

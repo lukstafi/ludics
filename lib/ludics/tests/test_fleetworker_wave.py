@@ -2745,6 +2745,43 @@ class Drive(DriveCase):
             notes = [e["note"] for e in map(json.loads, f)]
         self.assertTrue(notes[0].endswith("; BOARD TALLY WARNING far/w1-42: not counted (board exit 1)"), notes[0])
 
+    def test_a_partly_assigned_turn_says_a_lost_count_in_its_attention_and_an_unresumed_one_says_none(self) -> None:
+        """ludics#1214's follow-up (wave-20261118-ludics p2): assign's unstick resumed the worker on the mixed-ALREADY,
+        partial-refusal and exit-4-with-a-message paths too, so their attention lines carry its tally lines; a path
+        that printed no message reached no unstick of assign's and carries none, whatever its stderr holds."""
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        warning = "BOARD TALLY WARNING far/w1-42: the unstick reached the worker, and its turn was not counted (board exit 1)"
+        resumed = [("mixed ALREADY", 0, "ASSIGN ALREADY a: an earlier call dispatched it\nASSIGN ASSIGNED b correctness far abc\n",
+                    "the worker was resumed with part of its assignments"),
+                   ("partly refused", 1, "ASSIGN REFUSED a: the run exited 1 (above); nothing assigned\n",
+                    "execution assign refused some of the turn's blocks and resumed the worker with the rest"),
+                   ("partly needing action", 5, "ASSIGN REFUSED a: the run exited 5 (above); nothing assigned\n",
+                    "execution assign refused some of the turn's blocks and resumed the worker with the rest"),
+                   ("an UNKNOWN beside an assignment", 4, "ASSIGN UNKNOWN a: dispatched, but no resolved_revision\n",
+                    "execution assign exit 4: read its lines before anything else")]
+        with self.world():
+            for turn, (what, rc, lines, why) in enumerate(resumed):
+                self.resumes, self.rc["execution assign"] = turn, rc
+                self.out["execution assign"] = "EXECUTION_ASSIGNED b\ncommand: true\n"
+                self.out["execution assign stderr"] = f"{lines}BOARD TALLY NOTE: no row of worker \"w1-42\"\n{warning}\n"
+                out = self.once()[1]
+                with self.subTest(what):  # each path on its own, so the base fails every one, not only the first
+                    self.assertIn(f"DRIVE ATTENTION t42 turn {turn}: {why}", out)
+                    self.assertIn(f'; BOARD TALLY NOTE: no row of worker "w1-42"; {warning}', out)
+                    self.assertTrue(self.attention()[-1].endswith(f"; {warning}"), self.attention()[-1])
+            # No message printed: assign's unstick never ran, so a stray tally line on its stderr is not this turn's.
+            self.out["execution assign"] = ""
+            for turn, (what, rc) in enumerate([("exit 5 with no message", 5), ("exit 4 with no message", 4),
+                                                ("every block ALREADY, no saved message", 0)], start=len(resumed)):
+                self.resumes, self.rc["execution assign"] = turn, rc
+                self.out["execution assign stderr"] = f"ASSIGN REFUSED a: nothing assigned\n{warning}\n"
+                out = self.once()[1]
+                with self.subTest(what):
+                    self.assertIn(f"DRIVE ATTENTION t42 turn {turn}:", out)
+                    self.assertNotIn("BOARD TALLY", out)
+        self.assertEqual(self.ledger(), [(t, "request", "attention") for t in range(len(resumed) + 3)])
+        self.assertEqual(sum("BOARD TALLY" in why for why in self.attention()), len(resumed))
+
     def test_a_refused_assignment_is_tried_again_then_handed_up_and_exit_4_at_once(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
         self.rc["execution assign"] = 1

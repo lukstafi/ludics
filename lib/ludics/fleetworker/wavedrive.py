@@ -113,7 +113,14 @@ THE ANSWERS:
             framed by ``ASSIGN ACTION REQUIRED ``. Earlier stderr lines, stdout and the worker's
             request text supply no detail to that note.
             Other nonzero exits are also attention (exit 4 can require reconciliation before
-            any further assignment).
+            any further assignment). Every answer whose assign printed a message (assign tried its
+            unstick then: the answered note, the mixed-``ALREADY`` and partial-assignment
+            attention, and an exit 4 beside a message) ends with the unstick's ``BOARD TALLY``
+            lines (``tally.said``), so a lost count is never silent; an answer with no message
+            printed reached no unstick of assign's and carries none. The boundary: ``said`` reads
+            every line of assign's stderr that starts with ``BOARD TALLY WARNING`` or ``NOTE``,
+            and does not tell the unstick's lines from a step's, so a step echoing such a line
+            adds a false warning (loud: ``board show`` reconciles it), never hides a real one.
   result    each line needs ``request_id``, an absolute ``run`` and a 40-hex ``observed_sha``, and is
             concluded off the run record: ``execution conclude --from-run``, and when that refuses,
             ``--from-bg-run`` (a refused conclusion concludes nothing, so trying both reads is
@@ -811,6 +818,8 @@ class Driver:
         done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
                          "--message", out, "--unstick", worker.box, worker.name, gated="stderr")
         earlier = ALREADY.findall(self.err)
+        # A printed message means assign tried its unstick: every such answer, attention or not, carries its tally lines.
+        counted = said(self.err) if done.out.strip() else ""
         if done.rc == 0 and not done.out.strip():
             # Nothing assigned by this call: an earlier one dispatched every block and never resumed the worker.
             if os.path.isfile(out):
@@ -822,13 +831,13 @@ class Driver:
             # Some blocks assigned now and some by an earlier call whose message never reached the worker.
             return self.attention(worker, turn, "request", f"the worker was resumed with part of its assignments ({out}): an"
                                   f" earlier call had dispatched {', '.join(earlier)} and its message is not in this one; send"
-                                  " the worker those assignments", message)
+                                  f" the worker those assignments{counted}", message)
         if done.rc == 0:
-            return self.note(worker, turn, "request", "answered", f"assigned and resumed with {out}{said(self.err)}")
+            return self.note(worker, turn, "request", "answered", f"assigned and resumed with {out}{counted}")
         if done.rc in (1, ASSIGN_ACTION_REQUIRED) and done.out.strip():
             return self.attention(worker, turn, "request", "execution assign refused some of the turn's blocks and resumed the"
-                                  f" worker with the rest ({out}); its lines name the refused ones, which the worker still waits for",
-                                  message)
+                                  f" worker with the rest ({out}); its lines name the refused ones, which the worker still waits"
+                                  f" for{counted}", message)
         if done.rc == ASSIGN_ACTION_REQUIRED:
             report = self.err.rstrip("\n").rpartition("\n")[2]
             detail = report[len(ACTION_REQUIRED_LINE):] if report.startswith(ACTION_REQUIRED_LINE) else ""
@@ -839,7 +848,7 @@ class Driver:
             return self.note(worker, turn, "request", "retry", f"execution assign refused a block (try {tries} of {TRIES})",
                              tries=tries, next=now() + RETRY)
         self.attention(worker, turn, "request", f"execution assign exit {done.rc}" + (f" after {tries} tries" if done.rc == 1 else "")
-                       + ": read its lines before anything else; the request is in the turn's message", message)
+                       + f": read its lines before anything else; the request is in the turn's message{counted}", message)
 
     def conclude(self, worker: Worker, turn: int, message: str, what: Turn) -> None:
         lines: list[str] = []
