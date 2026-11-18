@@ -6294,8 +6294,8 @@ expect "...while the measurement's own run is admitted inside its hold" 0 "insid
 grep -q "^window-own-run$" <<<"$out" && ok "...and runs" || ko "the window's own run did not run: $out"
 expect "a second window on the box is refused while one is open" 1 "measurement window win-measure is already open on testbox" -- \
   "${FWS[@]}" execution window testbox "$(slotreq win-second measurement)"
-expect "execution window takes a box and a reservation" 2 "execution window \[--no-gap\] \[--deadline <seconds>\] <box> <measurement reserve.json>" -- "${FWS[@]}" execution window testbox
-expect "...and --no-gap only right after window" 2 "execution window \[--no-gap\] \[--deadline <seconds>\] <box> <measurement reserve.json>" -- \
+expect "execution window takes a box and a reservation" 2 "execution window \[--no-gap\] .* <box> <measurement reserve.json>" -- "${FWS[@]}" execution window testbox
+expect "...and --no-gap only right after window" 2 "execution window \[--no-gap\] .* <box> <measurement reserve.json>" -- \
   "${FWS[@]}" execution window testbox --no-gap "$(slotreq win-second measurement)"
 expect "...and a gap of whole seconds" 2 "FLEET_WINDOW_GAP must be a whole number of seconds" -- \
   env FLEET_WINDOW_GAP=soon "${FWS[@]}" execution window testbox "$(slotreq win-second measurement)"
@@ -6365,8 +6365,10 @@ expect "...and runs once it concludes (rc=0)" 0 "rc=0" -- "$BGR" wait "$dnd" --w
 bgkill "$dnd"
 expect "execution window --deadline takes a positive whole number of seconds" 2 "--deadline takes a positive whole number of seconds" -- \
   "${FWS[@]}" execution window --deadline 0 testbox "$(slotreq dl-bad measurement)"
-expect "...only right after window (and its --no-gap)" 2 "execution window \[--no-gap\] \[--deadline <seconds>\] <box> <measurement reserve.json>" -- \
+expect "...only right after window (and its --no-gap)" 2 "execution window \[--no-gap\] .* <box> <measurement reserve.json>" -- \
   "${FWS[@]}" execution window testbox --deadline 60 "$(slotreq dl-bad measurement)"
+expect "execution window --wait-pending takes a positive whole number of seconds" 2 "--wait-pending takes a positive whole number of seconds" -- \
+  "${FWS[@]}" execution window --deadline 60 --wait-pending 0 testbox "$(slotreq dl-bad measurement)"
 # THE GAP (ludics-lite#667): a coordinator's back-to-back windows are two registry calls, and a
 # batch waiting out the first re-reads the registry every FLEET_SLOT_WINDOW_POLL seconds, so it
 # read the second window and never the moment between them. Now the second window, on a box a
