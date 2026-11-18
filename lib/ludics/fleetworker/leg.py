@@ -181,6 +181,7 @@ grammar, a fail-closed allowlist: blank lines, ``#`` comment lines, and
     composite carries one);
   - ``slot-plan <path>``, at most one: THE SLOT PLAN below;
   - ``run-report <path>``, at most one: THE RUN REPORT below;
+  - ``owed-record <path>``, at most one: THE OWED RECORD below;
   - ``fail-lines <shell command>``, at most one, the rest of the line (no CR): THE FAILING LINES below;
   - ``min-free-gib <GiB>``, at most one, decimal digits only: THE FREE-SPACE FLOOR above.
 Any other line refuses the leg, naming it: a file the fleet cannot read is never ignored. A leg that
@@ -247,6 +248,27 @@ boundary: the report runs where the run ran, in the slot that held it, so what i
 worktree is the run's (a moved HEAD or dirt is the main run's NO CONTROL, or the after-run warning);
 it runs after no refusal and no run that never started; and a stop ends it as it ends a run. A
 runner's own stderr needs no report: it reaches the caller as it is written, over ssh's stderr.
+
+THE OWED RECORD (#1219). A project can publish a record for a run its merge build owes. A configured
+``owed-record <path>`` (the run report's path grammar) runs once when all of these hold:
+  - the main runner started and its nested slot returned 0;
+  - HEAD still resolves to the observed commit;
+  - git status succeeds and reports no staged, changed or untracked paths, including submodules
+    (ignored files are allowed).
+These checks are at main runner return, before the run report and any control patch. A refusal,
+failure, timeout or dirt at that point gives no publication callback. The control never triggers
+publication and its later verdict is independent of this main-run callback.
+
+In the worktree on the execution box, the hook receives exactly three arguments: the path to
+this leg's temporary run record on that box, the request ID and the observed commit SHA. The
+path identifies this invocation even when a request is reused. The leg clears any inherited
+``FLEET_LEG_RUN_RECORD`` and sets it to that path for its own main runner when the hook is
+configured, so the runner can bind its receipt to this invocation. The leg removes the record
+during cleanup. Its contents are internal and kept separate from the leg's verdict markers.
+The hook runs with closed stdin, in a nested slot with the run's CPU/GPU flags and a
+300-second deadline. Its output goes to stderr. A missing executable, timeout or nonzero exit
+is a warning with the hook status. That status never replaces the runner's or control's verdict.
+The hook is responsible for leaving the worktree unchanged and deciding which runs to publish.
 
 THE FAILING LINES (ludics#1040). A failed leg's log carried the runner's verdict and the names of
 the goldens that differ, but not the claims that failed, so each failed GPU leg cost its worker an
@@ -423,8 +445,8 @@ NOT_HOME = r"""not_home() {
 #     and nothing else -- every pin it satisfies names exactly <backend> -- and the file names a pin.
 # pin_grammar and pin_scan set the caller's locals (bash scopes dynamically): pin_flags, pin_envs and
 # pin_asks (the file's pins, the asks with `<backend>` for the value), pin_plan (its slot-plan path,
-# or empty), pin_floor (its floor, or empty), pin_report (its run-report path, or empty), pin_fail
-# (its fail-lines command, or empty),
+# or empty), pin_floor (its floor, or empty), pin_report (its run-report path, or empty),
+# pin_owed (its owed-record path, or empty), pin_fail (its fail-lines command, or empty),
 # and pin_any (a pin the argv satisfies) and pin_other (the first one naming another backend
 # than pin_target, as `<how>`).
 PIN = r"""fleet_leg_read() {
@@ -436,9 +458,9 @@ PIN = r"""fleet_leg_read() {
   printf '%s' "$text"
 }
 pin_grammar() {
-  local text="$1" raw d w extra good n=0 sp cr
+  local text="$1" raw d w extra good n=0 sp cr previous
   sp=" $(printf '\t')" cr=$(printf '\r')
-  pin_flags="" pin_envs="" pin_asks="" pin_plan="" pin_report="" pin_floor="" pin_fail=""
+  pin_flags="" pin_envs="" pin_asks="" pin_plan="" pin_report="" pin_owed="" pin_floor="" pin_fail=""
   while IFS= read -r raw || [ -n "$raw" ]; do
     n=$((n + 1))
     d="" w="" extra=""
@@ -449,15 +471,22 @@ pin_grammar() {
       pin-flag) case "$w" in -*[!A-Za-z0-9_.-]*|-|--) ;; -*) good=1 ;; esac ;;
       pin-env) case "$w" in *[!A-Za-z0-9_]*|[0-9]*|'') ;; *) good=1 ;; esac ;;
       # A path in the worktree: relative, no `..` or `.` component, no empty one, not an option.
-      slot-plan) case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;; *) [ -n "$pin_plan" ] || good=1 ;; esac ;;
+      slot-plan|run-report|owed-record)
+        case "$d" in
+          slot-plan) previous=$pin_plan ;;
+          run-report) previous=$pin_report ;;
+          owed-record) previous=$pin_owed ;;
+        esac
+        case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;;
+          *) [ -n "$previous" ] || good=1 ;;
+        esac ;;
       min-free-gib) case "$w" in ''|*[!0-9]*) ;; *) [ -n "$pin_floor" ] || good=1 ;; esac ;;
-      run-report) case "$w" in ''|/*|-*|*[!A-Za-z0-9_./-]*|*//*|*/|.|..|./*|../*|*/./*|*/../*|*/.|*/..) ;; *) [ -n "$pin_report" ] || good=1 ;; esac ;;
       # THE FAILING LINES: the rest of the line, as written, is one shell command (no CR, as no
       # other line takes one).
       fail-lines) case "$raw" in *"$cr"*) ;; *) [ -n "$w" ] && [ -z "$pin_fail" ] && good=1 extra="" ;; esac ;;
     esac
     if [ -z "$good" ] || [ -n "$extra" ]; then
-      printf '%s' ".github/fleet-leg line $n is not one the fleet reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, one fail-lines <shell command>, one min-free-gib <GiB>, a # comment or a blank line"
+      printf '%s' ".github/fleet-leg line $n is not one the fleet reads ($d${w:+ $w}${extra:+ $extra}): pin-flag <option>, pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, one owed-record <path in the worktree>, one fail-lines <shell command>, one min-free-gib <GiB>, a # comment or a blank line"
       return 1
     fi
     case "$d" in
@@ -465,6 +494,7 @@ pin_grammar() {
       pin-env) pin_envs="$pin_envs $w"; pin_asks="$pin_asks, env $w=<backend>" ;;
       slot-plan) pin_plan=$w ;;
       run-report) pin_report=$w ;;
+      owed-record) pin_owed=$w ;;
       min-free-gib) pin_floor=$w ;;
       # The line less its leading blanks, the key, the blanks after it and its trailing blanks.
       fail-lines) pin_fail=${raw#"${raw%%[!$sp]*}"}; pin_fail=${pin_fail#fail-lines}; pin_fail=${pin_fail#"${pin_fail%%[!$sp]*}"}
@@ -510,7 +540,7 @@ pin_scan() {
   done
 }
 backend_pin() {
-  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_floor pin_fail pin_any="" pin_other="" pin_target="" hint="" e
+  local text="$1" gpu="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_owed pin_floor pin_fail pin_any="" pin_other="" pin_target="" hint="" e
   shift 2
   pin_grammar "$text" || return 1
   [ "$gpu" = 1 ] && [ -n "$pin_flags$pin_envs" ] || return 0
@@ -534,7 +564,7 @@ backend_pin() {
   return 1
 }
 backend_pin_to() {
-  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_floor pin_fail pin_any="" pin_other=""
+  local text="$1" pin_target="$2" pin_flags pin_envs pin_asks pin_plan pin_report pin_owed pin_floor pin_fail pin_any="" pin_other=""
   shift 2
   pin_grammar "$text" || return 1
   if [ -z "$pin_flags$pin_envs" ]; then
@@ -711,6 +741,8 @@ BASE = r"""refresh_base() {
 LEG = NOT_HOME + PIN + SWEEP + WORKTREE + FLOOR + BASE + r"""co=$(expand_tilde "$1") wt=$(expand_tilde "$2") remote="$3" rev="$4" want="$5" pname="$6" request="$7" fetch_timeout="$8" token="$9" fname="${10}" no_config="${11}" min_free="${12}" base="${13}" nwrap="${14}"
 # THE STOP (see the header): this shell's pid, first, under the token; the leg keeps it.
 printf 'execution-leg %s: far: %s\n' "$token" "$$"
+# A nested leg must never tag a runner with its enclosing leg's identity.
+unset FLEET_LEG_RUN_RECORD
 shift 14
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
@@ -719,12 +751,13 @@ nnest="$1"; shift; nest=()
 while [ "$nnest" -gt 0 ]; do nest+=("$1"); shift; nnest=$((nnest - 1)); done
 patch=""; [ -z "$pname" ] || patch="$STATE/leg-control/$pname"
 lfile=""; [ -z "$fname" ] || lfile="$STATE/leg-files/$fname"
-ref="refs/fleet-leg/$$"; results=""; planned=""
+ref="refs/fleet-leg/$$"; results=""; planned=""; run_record=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
 cleanup() {
   [ -z "$patch" ] || rm -f "$patch"
   [ -z "$lfile" ] || rm -f "$lfile"
   [ -z "$planned" ] || rm -f "$planned"
+  [ -z "$run_record" ] || rm -f "$run_record"
   [ -z "$results" ] || rm -f "$results" "$results.sh" "$results.report" "$results.fail" "$results.fail.shown"
   git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
   return 0
@@ -797,7 +830,7 @@ esac
 # THE BACKEND PIN (see the header): the project's rule at this commit, before the worktree moves.
 pins=$(fleet_leg_read "$co" "$sha"); prc=$?
 [ "$prc" -ne 1 ] || refuse "$pins; nothing ran"
-pin_plan="" pin_report="" pin_floor="" pin_fail=""
+pin_plan="" pin_report="" pin_owed="" pin_floor="" pin_fail=""
 if [ "$prc" -eq 0 ]; then
   case " ${nest[*]} " in *" --cpu "*) gpu=0 ;; *) gpu=1 ;; esac
   # --reads-no-config: the caller declares a runner that reads none of the project's configuration, so no
@@ -886,6 +919,11 @@ if [ -n "$pin_plan" ] && [ "${wrap[2]}" = slot ] && case " ${nest[*]} " in *" --
   fi
 fi
 results=$(mktemp "${TMPDIR:-/tmp}/fleet-leg.XXXXXX") || refuse "cannot create a scratch file on $BOX"
+if [ -n "$pin_owed" ]; then
+  # Projects get the invocation's identity, independent of the private verdict markers.
+  run_record=$(mktemp "${TMPDIR:-/tmp}/fleet-leg-owed.XXXXXX") || refuse "cannot create an owed-record run file on $BOX"
+  printf 'request=%s\nobserved_sha=%s\n' "$request" "$head" >"$run_record" || refuse "cannot write the owed-record run file on $BOX"
+fi
 # The runs, under ONE slot (or the measurement's hold): the main run, then the control. Each step
 # that ends is written to the results file, so a wrapper that refused is told from a runner that ran.
 # The script is a file beside it, so the slot's "held for" line names it rather than quoting it.
@@ -894,7 +932,8 @@ results=$(mktemp "${TMPDIR:-/tmp}/fleet-leg.XXXXXX") || refuse "cannot create a 
 # takes anything it left running in that group with it (group.py, ludics-lite#566), so a runner's
 # leftover background child cannot overlap the control run, nor outlive the leg.
 cat > "$results.sh" <<'FLEET_LEG_RUNS' || refuse "cannot write a scratch file on $BOX"
-wt="$1" patch="$2" results="$3" box="$4" fw="$5" head="$6" report="$7" fail="$8" n="$9"; shift 9
+wt="$1" patch="$2" results="$3" box="$4" fw="$5" head="$6" report="$7" fail="$8" owed="$9"
+request="${10}" run_record="${11}" n="${12}"; shift 12
 nest=(); while [ "$n" -gt 0 ]; do nest+=("$1"); shift; n=$((n - 1)); done
 cd "$wt" || exit 1
 # THE RUN REPORT (see the header): after a run that started, the project's report, in its own nested
@@ -917,6 +956,23 @@ said() {
   tail -n 200 "$out" >&2
   printf "EXECUTION LEG %s: end of the run report (%s run)\n" "$box" "$tag" >&2
   rm -f "$out"
+}
+# THE OWED RECORD (see the header): judge the main runner's tree before another hook can change it.
+publish_owed() {
+  local now dirty orc
+  [ -n "$owed" ] && [ "$1" -eq 0 ] && grep -qx main-started "$results" || return 0
+  now=$(git rev-parse --verify -q 'HEAD^{commit}') && [ "$now" = "$head" ] || return 0
+  dirty=$(git status --porcelain --untracked-files=all --ignore-submodules=none) && [ -z "$dirty" ] || return 0
+  if [ -f "$owed" ] && [ -x "$owed" ]; then
+    "$fw" execution slot --deadline 300 "${nest[@]:2}" -- "./$owed" "$run_record" "$request" "$head" </dev/null >&2
+    orc=$?
+  else
+    printf 'EXECUTION LEG %s: no executable %q in %q\n' "$box" "$owed" "$wt" >&2
+    orc=127
+  fi
+  if [ "$orc" -ne 0 ]; then
+    printf 'EXECUTION LEG %s: WARNING: owed-record %q failed (exit %s)\n' "$box" "$owed" "$orc" >&2
+  fi
 }
 # THE FAILING LINES (see the header): after a run that started and FAILED, the project's fail-lines
 # command, in its own nested slot (300 s), stdout and stderr together, the runner's argv its $1...;
@@ -950,13 +1006,15 @@ failing() {
 go() {
   local tag="$1"; shift
   "$fw" execution slot "${nest[@]}" -- bash -c '
-    case "$3" in */*) [ -f "$3" ] && [ -x "$3" ] ;; *) command -v "$3" >/dev/null ;; esac ||
-      { printf "%s-unexecutable\n" "$1" >> "$2"; echo "EXECUTION LEG: $3 is not an executable command here" >&2; exit 127; }
-    printf "%s-started\n" "$1" >> "$2"; shift 2; exec "$@"' leg-run "$tag" "$results" "$@" </dev/null
+    case "$4" in */*) [ -f "$4" ] && [ -x "$4" ] ;; *) command -v "$4" >/dev/null ;; esac ||
+      { printf "%s-unexecutable\n" "$1" >> "$2"; printf "EXECUTION LEG: %s is not an executable command here\n" "$4" >&2; exit 127; }
+    if [ "$1" = main ] && [ -n "$3" ]; then export FLEET_LEG_RUN_RECORD="$3"; fi
+    printf "%s-started\n" "$1" >> "$2"; shift 3; exec "$@"' leg-run "$tag" "$results" "$run_record" "$@" </dev/null
 }
 printf "started\n" >> "$results"
 go main "$@"; rc=$?
 printf "main=%s\n" "$rc" >> "$results"
+publish_owed "$rc"
 said main "$rc" "$@"
 failing main "$rc" "$@"
 { [ "$rc" -eq 0 ] && [ -n "$patch" ] && grep -qx main-started "$results"; } || exit "$rc"
@@ -984,7 +1042,7 @@ FLEET_LEG_RUNS
 # does not end it before the control is reverted and its files are removed.
 stop_asked=""
 trap 'stop_asked=1' TERM INT HUP
-fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "$pin_report" "$pin_fail" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
+fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "$pin_report" "$pin_fail" "$pin_owed" "$request" "$run_record" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
 trap '' PIPE
 [ -z "$stop_asked" ] || say "stopped (a signal from the leg's stop, or its group's): the wrapper exit $wrc"
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }

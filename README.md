@@ -838,6 +838,9 @@ section omitted from a scratch map still appearing in the source-derived output.
 checks (warning count, batch output and last-stage status, pipefail and quoted pipes), with the
 shared lease and one-slot testbox setup. It does not run the broader slot ownership, process,
 deadline or measurement cases. `test-fleet-worker.sh 'execution slot'` still selects both sections.
+The `execution leg` section also checks that `owed-record` receives the main runner's on-box
+record path, request ID and observed SHA only on a clean pass, plus the parser refusal and the
+warning if publication fails.
 The "wave kit" section also prepares a shipped CLI brief without a wave-local common.md:
 a project part absent at the stacked base comes from the default tip, and the brief retains
 the explicit base origin (#1099).

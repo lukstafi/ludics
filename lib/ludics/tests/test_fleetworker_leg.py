@@ -386,6 +386,18 @@ class BackendPin(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("line 2 is not one the fleet reads (run-report q)", why)
 
+    def test_owed_record_uses_the_run_report_path_grammar(self) -> None:
+        self.assertEqual(self.pin("run-report tools/report.sh\nowed-record tools/owed.sh\n", "1", "tools/t.sh"), (0, ""))
+        for suffix in ("", " /abs", " ../up", " a/./b", " -option", " a b", " a$b"):
+            with self.subTest(suffix=suffix):
+                line = f"owed-record{suffix}"
+                rc, why = self.pin(f"# fixture\n{line}", "0", "tools/t.sh")
+                self.assertEqual(rc, 1)
+                self.assertIn(f"line 2 is not one the fleet reads ({line})", why)
+        rc, why = self.pin("owed-record a\nowed-record b\n", "0", "tools/t.sh")
+        self.assertEqual(rc, 1)
+        self.assertIn("line 2 is not one the fleet reads (owed-record b)", why)
+
     def test_a_fail_lines_line_is_one_command_as_written(self) -> None:
         """ludics#1040: THE FAILING LINES' command, the rest of its line, at most one."""
         def read(text: str) -> tuple[int, str]:
@@ -429,7 +441,8 @@ class BackendPin(unittest.TestCase):
         rc, why = self.pin("slot-plan p\nslot-plan q\n", "0", "tools/t.sh")
         self.assertEqual(rc, 1)
         self.assertEqual(why, ".github/fleet-leg line 2 is not one the fleet reads (slot-plan q): pin-flag <option>,"
-                              " pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>, one fail-lines <shell command>, one min-free-gib <GiB>, a # comment"
+                              " pin-env <NAME>, one slot-plan <path in the worktree>, one run-report <path in the worktree>,"
+                              " one owed-record <path in the worktree>, one fail-lines <shell command>, one min-free-gib <GiB>, a # comment"
                               " or a blank line")
 
 
@@ -453,7 +466,7 @@ class FailingLines(unittest.TestCase):
             results = Path(d, "results")
             results.write_text("")
             done = subprocess.run([self.bash, "-c", script, "x", str(wt), "", str(results), "testbox", str(fw), "h", "",
-                                   fail, "2", "--deadline", "30", *runner], capture_output=True, text=True)
+                                   fail, "", "req", "", "2", "--deadline", "30", *runner], capture_output=True, text=True)
             self.assertEqual(sorted(p.name for p in Path(d).iterdir()), ["fw", "results", "wt"])
             return done.returncode, done.stderr
 
