@@ -4358,7 +4358,7 @@ expect "...and so does one holding a NUL byte, which a shell variable would drop
 # ludics#864: the forms the pin gate refused in wave-20261102, each now passing or refused naming
 # the form that passes. A shell composite carries its pin as a leading env pin, never inside -c.
 expect "a GPU leg whose runner is a bash -c composite is refused, naming the leading env pin and --file" 1 \
-  "a pin inside a bash -c string is no word of the argv: lead with it, env LEG_BACKEND=<backend> bash -c '...', or give the runner a list or script as a file, --file <local file> and the runner word {file}; or declare --cpu .*, or --reads-no-config for a runner" -- \
+  "a pin inside a bash -c string is no word of the argv: lead with it, env LEG_BACKEND=<backend> bash -c '...', or keep that leading env pin and give the runner a list or script as a file, --file <local file> and the runner word {file}; or declare --cpu .*, or --reads-no-config for a runner" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- bash -c 'tools/check.sh --expect-backend cc'
 expect "...and the composite behind a leading env pin runs" 0 "runner argv: \\[--expect-backend\\] \\[cc\\]" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc bash -c 'tools/check.sh --expect-backend cc'

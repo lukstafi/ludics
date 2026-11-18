@@ -1059,7 +1059,8 @@ class WindowDeadline(unittest.TestCase):
         pending = {**measurement("win", due_in=10), "hold_opened_at": None}
         unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",),
                         "anchor unreachable")
-        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
+                          {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "15"}, host="testbox")
         clock = [0.0]
         out = io.StringIO()
 

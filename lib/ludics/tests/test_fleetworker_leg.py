@@ -344,8 +344,9 @@ class BackendPin(unittest.TestCase):
                 rc, why = self.pin(self.PINS, "1", *argv)
                 self.assertEqual(rc, 1)
                 self.assertIn(f"; pin it (as words of the runner's own argv); a pin inside a {shell} -c string is no"
-                              f" word of the argv: lead with it, env OCANNL_BACKEND=<backend> {shell} -c '...', or give"
-                              " the runner a list or script as a file, --file <local file> and the runner word {file}; or"
+                              f" word of the argv: lead with it, env OCANNL_BACKEND=<backend> {shell} -c '...', or"
+                              " keep that leading env pin and give the runner a list or script as a file,"
+                              " --file <local file> and the runner word {file}; or"
                               " declare --cpu", why)
         rc, why = self.pin("pin-flag --expect-backend\n", "1", "bash", "-c", "tools/t.sh --expect-backend cuda")
         self.assertEqual(rc, 1)

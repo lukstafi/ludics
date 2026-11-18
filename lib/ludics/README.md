@@ -705,9 +705,10 @@ at execution time. The unchanged hint directly shows the leading `env` fix and n
 
 Agent notes (wave-20261118-ludics, t1205). A successful final pending-window read clears any
 earlier registry error. Only an original pending window's first opening can renew the cutoff.
-The slot regression reaches the final bounded read with a stale exit 4 and observes that failure
-on base `8c1b3103`. Both execution-leg pin refusal hints now name a list or script for `--file`,
-and the transport header records the bytes-stdin option used by the bounded registry read.
+The slot regression observes stale exit 4 after the successful final read on base `8c1b3103`.
+Both execution-leg refusal hints now name a list or script for `--file` and keep the backend pin
+in the runner's arguments. The transport header records the bytes stdin used by the bounded
+registry read.
 
 Agent notes (wave-20261117-ludics, t1186): assigned commands name their outer bg-run
 record, whose log retains shell-leg transcripts. Its conclusion also reads runner sentinels:
