@@ -157,14 +157,18 @@ are cleared (below); the rest of merge's environment is inherited.
 THE PLAN (#1218). A build can owe what it does not run -- OCANNL's owes a cross-cutting change a
 recorded full-suite run, and refuses without one -- and a merge learned that only from the build,
 after a slot wait and the build's own time. A ``plan`` line names a read-only query of the
-candidate merge that says so first. When the build is to run, once the merge commit is checked
-out and before the slot probe, the plan runs at the root of the merged tree under THE COMMAND'S
-CONTRACT (the same tree, ``HEAD``, parents, environment and stdin), BARE -- never in a slot nor
-waiting for a measurement window: a plan is a query that costs about a minute, and taking no slot
-is its point -- bounded by ``plan-timeout``, its output to ``plan.log`` (shown, and retained as
-LOG RETENTION retains the build's). Its verdict is its exit status and the ONE line of its output
-(stdout and stderr together) that starts ``ship-pr-merge-plan:``, matched whole against a
-fail-closed allowlist of three shapes:
+candidate merge that says so first. When the build is to run, once the merge commit is written
+and before the slot probe, the plan runs under THE COMMAND'S CONTRACT (the merge commit checked
+out, its parents, the environment, stdin) in a checkout of its OWN: a repository beside the
+build's, made as the build's is (HOW IT BUILDS), borrowing the clone's objects and the build
+repository's, and removed before the slot probe. So what the plan writes in its tree, a submodule
+it checks out included, never reaches the build's; what it writes elsewhere is the command's
+business, as TRUST says. It runs BARE -- never in a slot, nor waiting for a measurement window: a
+plan is a query of about a minute, and taking no slot is its point -- bounded by
+``plan-timeout``, its output to ``plan.log`` (shown, and retained as LOG RETENTION retains the
+build's). Its verdict is its exit status and the ONE line of its output (stdout and stderr
+together) that starts ``ship-pr-merge-plan:``, matched whole against a fail-closed allowlist of
+three shapes:
 
     ship-pr-merge-plan: nothing-owed          the merge owes no run past the build: building
     ship-pr-merge-plan: admitted [<what>]     it owes <what> (free text, shown) and a record
@@ -175,17 +179,15 @@ fail-closed allowlist of three shapes:
                                               go over it (the shared red it is for is a build's)
 
 Anything else is NO VERDICT, said as which of this closed list it is, and the merge goes on to the
-build exactly as without a plan: the plan could not be started; it did not finish within its
-bound; its wrapper ended before it did; it exited nonzero (127, a command not found, included: a
-verdict line beside a nonzero exit is not read); it printed no such line; it printed more than one;
-its one line matches no shape (a line past ``SHOWN_BYTES`` is never read whole, so never matches);
-its output could not be read. So a plan never admits a merge -- the build keeps owning admission,
-whatever the plan said -- and refuses one only by its own ``unadmitted``. What the plan writes in
-the tree is undone before the build (``git reset --hard`` to the merge commit and ``git clean
--ffdx``; a failure there is exit 3); what it writes elsewhere is the command's business, as TRUST
-says. The plan runs only where a build runs: no build, no plan; THE BASE ALONE does not run it
-again. A config without a ``plan`` line runs none and prints nothing
-of one.
+build exactly as without a plan: the plan could not be started (its checkout included); it exited
+nonzero (127, a command not found, included: a verdict line beside a nonzero exit is not read); it
+did not finish within its bound (the bound's answer wins over a status written as it struck); its
+wrapper ended before it did; it printed no such line; it printed more than one; its one line
+matches no shape (a line past ``SHOWN_BYTES`` is never read whole, so never matches); its output
+could not be read. So a plan never admits a merge -- the build keeps owning admission, whatever
+the plan said -- and refuses one only by its own ``unadmitted``. The plan runs only where a build
+runs: no build, no plan; THE BASE ALONE does not run it again. A config without a ``plan`` line
+runs none and prints nothing of one.
 
 HOSTS AND CLONES -- the boundary. The merge build runs on POSIX hosts (the fleet's macOS and Linux
 boxes); under Windows a merge that needs one is refused (exit 2), so nothing below has a Windows
@@ -1107,7 +1109,7 @@ def _build_in_scratch(
         )
         if config.plan is not None:
             # THE PLAN: before the slot probe, so a refusal takes no slot.
-            _plan(subject, config, quiet, tree, scratch, merge_sha, tip, gated)
+            _plan(subject, config, quiet, tree, scratch, merge_sha, tip, gated, objects)
         runner = _slot_runner()
         ran = _run(
             subject, config, runner, ceiling, tree, scratch, "build", tip, gated,
@@ -1405,27 +1407,27 @@ def _run(
     return _Ran(rc_text, done, took if ran_for is None else ran_for, log, ran_for is not None, tuple(earlier))
 
 
-def _plan(
-    subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, scratch: str, merge_sha: str, tip: str,
-    gated: str,
-) -> None:
-    """THE PLAN (module docstring): run ``config.plan`` at the merged tree, bare, before the slot
-    probe; return to build (the tree restored to ``merge_sha``), or end the command with the
-    refusal when the plan's verdict is ``unadmitted``."""
+def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, scratch: str, merge_sha: str, tip: str,
+          gated: str, objects: str) -> None:
+    """THE PLAN (module docstring): run ``config.plan`` in a checkout of its own of the merge
+    commit, bare, before the slot probe; return to build (the build's ``tree`` untouched), or end
+    the command with the refusal when the plan's verdict is ``unadmitted``."""
     assert config.plan is not None
     label = subject.label
     log = os.path.join(scratch, "plan.log")
     status = os.path.join(scratch, "plan.status")
-    wrapped = ["sh", "-c", _PLAN_WRAPPER, _PLAN_WRAPPER_NAME, config.plan, log, status]
+    checkout = os.path.join(scratch, "plan")
     cli.say(f"merge build {label}: its plan first, bare and before any slot, bound {config.plan_timeout}s: {config.plan}")
-    env = {**_clean_env(), BASE_SHA_VAR: tip, HEAD_SHA_VAR: gated}
     started = time.monotonic()
     done: proc.Completed | None = None
-    unstarted = ""
-    try:
-        done = _supervised(wrapped, tree, float(config.plan_timeout), env, merged=True, end_group=True)
-    except (ValueError, OSError) as exc:
-        unstarted = str(exc)
+    unstarted = _plan_checkout(quiet, checkout, scratch, tree, objects, merge_sha)
+    if not unstarted:
+        wrapped = ["sh", "-c", _PLAN_WRAPPER, _PLAN_WRAPPER_NAME, config.plan, log, status]
+        env = {**_clean_env(), BASE_SHA_VAR: tip, HEAD_SHA_VAR: gated}
+        try:
+            done = _supervised(wrapped, checkout, float(config.plan_timeout), env, merged=True, end_group=True)
+        except (ValueError, OSError) as exc:
+            unstarted = str(exc)
     took = int(time.monotonic() - started)
     try:
         with open(status, encoding="utf-8") as handle:
@@ -1435,21 +1437,29 @@ def _plan(
     log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status)
     if log_dir:
         cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
-    # The closed list (THE PLAN): a verdict, or which no-verdict this is.
+    # Its checkout goes now, with signals held, so the build's slot is not taken beside it.
+    was, _INTERRUPTS.holding = _INTERRUPTS.holding, True
+    try:
+        shutil.rmtree(checkout, ignore_errors=True)
+    finally:
+        _INTERRUPTS.holding = was
+    _INTERRUPTS.check()
+    # The closed list (THE PLAN): a verdict -- read only when the plan AND its wrapper exited 0 --
+    # or which no-verdict this is.
     verdict: PlanVerdict | str
     if done is None:
         verdict = f"it could not be started ({unstarted})"
-    elif not rc_text and done.rc == 124:
-        verdict = f"it did not finish within {config.plan_timeout}s (the plan-timeout)"
-    elif not rc_text:
-        verdict = f"its wrapper exited {done.rc} before it did ({_first_line(done)})"
-    elif rc_text != "0":
+    elif rc_text and rc_text != "0":
         verdict = f"it exited {rc_text}"
+    elif done.rc == 124:
+        verdict = f"it did not finish within {config.plan_timeout}s (the plan-timeout)"
+    elif done.rc != 0 or not rc_text:
+        verdict = f"its wrapper exited {done.rc} before it did ({_first_line(done)})"
     else:
         verdict = plan_verdict(log)
     if isinstance(verdict, str):
         cli.say(f"merge build {label}: the plan gave NO VERDICT after {took}s: {verdict}; the build decides")
-        for line in _shown(log, diagnostics=False)[-OVERRUN_LINES:]:
+        for line in _shown(log, diagnostics=False)[-OVERRUN_LINES:] if os.path.exists(log) else []:
             cli.say(f"  | {line}")
     elif verdict.word == "unadmitted":
         cli.say(f"merge build {label}: the plan says no record admits what it owes, after {took}s; its output:")
@@ -1468,11 +1478,26 @@ def _plan(
         )
     else:
         cli.say(f"merge build {label}: the plan owes nothing ({took}s); building, and the build decides")
-    # What the plan wrote in the tree is not the build's: back to the merge commit as checked out.
-    for args in (["-c", "core.sparseCheckout=false", "reset", "--hard", "--quiet", merge_sha], ["clean", "-ffdxq"]):
-        restored = _git([*quiet, *args], tree)
-        if restored.rc != 0:
-            fail(3, f"{subject.stop}: the merged tree could not be restored after its plan ({_first_line(restored)}).")
+
+
+def _plan_checkout(quiet: list[str], checkout: str, scratch: str, tree: str, objects: str, merge_sha: str) -> str:
+    """THE PLAN's own repository at ``checkout``, the merge commit checked out in full there: it
+    borrows the clone's objects and the build repository's (where the merge commit was written),
+    so nothing the plan does reaches the build's tree. Returns what went wrong, or ""."""
+    with _INTERRUPTS.held():
+        made = _new_repo(scratch, checkout, objects)
+    _INTERRUPTS.check()
+    if made:
+        return f"its checkout could not be made: {made}"
+    try:
+        with open(os.path.join(checkout, ".git", "objects", "info", "alternates"), "a", encoding="utf-8") as handle:
+            handle.write(os.path.join(tree, ".git", "objects") + "\n")
+    except OSError as exc:
+        return f"its checkout could not be made: {exc.strerror}"
+    out = _git([*quiet, "-c", "core.sparseCheckout=false", "checkout", "--quiet", "--detach", merge_sha], checkout)
+    if out.rc != 0:
+        return f"its checkout could not be made: {_first_line(out)}"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -1489,7 +1514,8 @@ def plan_verdict(log: str) -> PlanVerdict | str:
     """THE PLAN's verdict line in the log of a plan that exited 0, or, with no verdict, the reason
     of the closed list (THE PLAN) it is. Read in bounded chunks: a line longer than ``SHOWN_BYTES``
     is read only as far as its prefix."""
-    found: list[tuple[str, bool]] = []  # each verdict line, and whether it was cut at the bound
+    first_found: tuple[str, bool] | None = None  # the first verdict line, and whether it was cut at the bound
+    count = 0
     prefix = PLAN_PREFIX.encode()
     try:
         with open(log, "rb") as handle:
@@ -1499,16 +1525,17 @@ def plan_verdict(log: str) -> PlanVerdict | str:
                 while cut and rest and not rest.endswith(b"\n"):
                     rest = handle.readline(SHOWN_BYTES)  # past the bound: drained, never read
                 if first.startswith(prefix):
-                    # A line cut at the bound is never a verdict, whatever its first bytes say.
-                    text = first.decode("utf-8", "replace").removesuffix("\n").removesuffix("\r")
-                    found.append((text, cut))
+                    count += 1  # only the first is kept: a noisy plan costs no memory
+                    if first_found is None:
+                        # A line cut at the bound is never a verdict, whatever its first bytes say.
+                        first_found = (first.decode("utf-8", "replace").removesuffix("\n").removesuffix("\r"), cut)
     except OSError as exc:
         return f"its output could not be read ({exc.strerror})"
-    if not found:
+    if first_found is None:
         return f"it printed no `{PLAN_PREFIX}` line"
-    if len(found) > 1:
-        return f"it printed {len(found)} `{PLAN_PREFIX}` lines, where one is its verdict"
-    line, cut = found[0]
+    if count > 1:
+        return f"it printed {count} `{PLAN_PREFIX}` lines, where one is its verdict"
+    line, cut = first_found
     m = None if cut or not line.isprintable() else _PLAN_VERDICT.fullmatch(line)
     if m is None:
         shown = line[:LINE_CHARS] + ("…" if cut or len(line) > LINE_CHARS else "")

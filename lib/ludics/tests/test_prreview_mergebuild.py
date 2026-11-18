@@ -1199,6 +1199,30 @@ class Plan(Repo):
         self.assertIn("it exited 9", out)
         self.assertIn("FAILED", out)
 
+    def test_the_plans_checkout_is_its_own(self) -> None:
+        """What the plan writes -- a file, a git write -- never reaches the build's tree."""
+        head, _ = self.sides("keep", "seam() { :; }")
+        plan = "touch planned && git tag planned && echo 'ship-pr-merge-plan: nothing-owed'"
+        rc, out = self.planned(head, plan, command=f"{self.BUILD} && ! git rev-parse -q --verify planned")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PASSED", out)
+        self.assertNotIn("NO VERDICT", out)
+
+    def test_a_status_written_as_the_bound_struck_is_no_verdict(self) -> None:
+        """The bound's answer wins: a late `unadmitted` never refuses (local review)."""
+        head, _ = self.sides("keep", "seam() { :; }")
+        real = mergebuild._supervised  # pyright: ignore[reportPrivateUsage]
+
+        def struck(argv: list[str], *args: object, **kwargs: object) -> proc.Completed:
+            done = real(argv, *args, **kwargs)  # type: ignore[arg-type]
+            return proc.Completed(124, done.stdout, done.stderr) if argv[3:4] == ["merge-plan"] else done
+
+        with mock.patch.object(mergebuild, "_supervised", side_effect=struck):
+            rc, out = self.planned(head, "echo 'ship-pr-merge-plan: unadmitted x'")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("it did not finish within 60s (the plan-timeout)", out)
+        self.assertIn("PASSED", out)
+
     def test_a_verdict_line_past_the_read_bound_is_never_read_whole(self) -> None:
         log = os.path.join(self.dir, "plan.log")
         long = "ship-pr-merge-plan: unadmitted " + "x" * mergebuild.SHOWN_BYTES
