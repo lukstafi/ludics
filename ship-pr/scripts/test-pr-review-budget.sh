@@ -1295,7 +1295,8 @@ test_a_hold_inside_a_wait_is_one_line_and_no_exit() {
   QUOTA_UNTIL=$((T0 + 100))
   run wait cmd_checks "$REPO#7" --wait
   assert_eq "$(rc wait)" 1 "the wait outlives the hold and ends on the red ($(err wait))"
-  assert_eq "$(err wait | grep -c .)" 2 "the hold and its lifting are the only lines on the way"
+  assert_eq "$(err wait | grep -c '^pr-review.sh: quota hold:')" 1 "the quota hold is announced once"
+  assert_eq "$(err wait | grep -c '^pr-review.sh: quota hold lifted:')" 1 "the lift is announced once"
   assert_eq "$(cat "$MERGE_LOG")" "" "nothing merges from a checks read"
 }
 

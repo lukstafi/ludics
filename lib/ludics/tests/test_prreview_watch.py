@@ -262,6 +262,11 @@ class EndToEnd(unittest.TestCase):
                 self.assertTrue(lines[0].startswith("no reviewer activity about head 2222222 in 60s; status: review EXPECTED"),
                                 lines[0])
                 self.assertIn("watching PR o/r#7, every 30s for up to 60s; from:", done.stderr)
+                self.assertEqual(
+                    [line for line in done.stderr.splitlines() if "next poll" in line],
+                    ["pr-review.sh: watching 'o/r#7': next poll at 14:14:20Z "
+                     "(polling backoff while review state is unchanged)"],
+                )
                 with open(self.clock) as f:
                     self.assertEqual(int(f.read()), 1790000000 + 60, "two 30s pauses, on the file clock")
 
@@ -312,6 +317,18 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("has NO VERDICT after 4 min (status: in_progress)", done.stderr)
         self.assertEqual(done.stderr.count("still waiting on run 5 in o/r: in_progress after 3 min"), 1)
         self.assertEqual(len(self.calls()), 4, "reads at 0, 100, 200 and the capped 250")
+
+    def test_the_run_await_reports_its_backed_off_poll(self) -> None:
+        self.answer({"run view": {"stdout": "in_progress\tpending\n"}})
+        done = self.run_cmd([PR_REVIEW], "retry", "run", "watch", "o/r#5", "-i", "100",
+                            SHIP_PR_CHECKS_WAIT="250", SHIP_PR_BUILD_POLL_CAP="600")
+        self.assertEqual(done.returncode, 4, done.stderr)
+        self.assertEqual(len(self.calls()), 3, "reads at 0, 100 and the capped 250")
+        self.assertEqual(
+            [line for line in done.stderr.splitlines() if "next poll" in line],
+            ["pr-review.sh: run 5 in o/r: next poll at 14:17:30Z "
+             "(polling backoff while the run is unfinished)"],
+        )
 
 
 if __name__ == "__main__":

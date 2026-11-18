@@ -203,6 +203,10 @@ def at(epoch: int | str) -> str:
         return f"epoch {text}"
 
 
+def next_poll(epoch: int, reason: str) -> str:
+    return f"next poll at {at(epoch)} ({reason})"
+
+
 def _first_line(path: str) -> str:
     """``sed -n 1p <file>``: "" when the file cannot be read."""
     try:
@@ -690,14 +694,15 @@ class Budget:
             observing = mode == "read" and self.wait_until is not None and now < self.wait_until
             if now < hold.until:
                 if observing and self.wait_until is not None:
+                    nap = min(hold.until - now, self.wait_until - now)
                     if noted != hold.until:
                         warn(
                             f"quota hold: {hold.ep} refused on quota; no call to GitHub until {at(hold.until)}",
                             f"({hold.src}). Waiting it out within this command's ceiling; nothing is"
                             " concluded meanwhile.",
+                            next_poll(now + nap, "rechecking the shared GitHub quota hold"),
                         )
                         noted = hold.until
-                    nap = min(hold.until - now, self.wait_until - now)
                     self.clock.sleep(nap)
                     # Whatever this command read before the wait is as old as the wait now.
                     self.waited = True
@@ -741,7 +746,9 @@ class Budget:
                     )
                 continue
             if observing:
-                self.clock.sleep(5)
+                nap = 5
+                warn(f"quota hold: {next_poll(self.clock.now() + nap, 'another process is probing GitHub')}")
+                self.clock.sleep(nap)
                 self.waited = True
                 continue
             return f"quota hold: pid {lock.holder} is probing {hold.ep} for its recovery; no call was made"

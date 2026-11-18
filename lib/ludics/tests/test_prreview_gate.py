@@ -1240,6 +1240,13 @@ class RunningPause(unittest.TestCase):
     def test_the_last_pause_is_still_clipped_at_the_deadline(self) -> None:
         rc, _gate, clk, _gh = self.wait(lambda _at: "build\tpending\tu\t1\tin_progress", wait_for=250)
         self.assertEqual((rc, clk.sleeps), (4, [60, 120, 70]))
+        self.assertEqual(
+            [line for line in self.out.getvalue().splitlines() if "next poll" in line],
+            ["pr-review.sh: build gate for 'o/r#7': next poll at 00:03:00Z "
+             "(polling backoff while the build verdict is pending)",
+             "pr-review.sh: build gate for 'o/r#7': next poll at 00:04:10Z "
+             "(polling backoff while the build verdict is pending)"],
+        )
 
     def test_a_waived_row_keeps_its_status_and_its_key(self) -> None:
         gate = make_gate(FakeGh(), FakeClock())
@@ -1249,6 +1256,12 @@ class RunningPause(unittest.TestCase):
         self.assertEqual(rows, ["waived\tubuntu\tfailure\tu\t1\tcompleted", "pending\tmacos\tpending\tm\t1\tin_progress"])
         gate.summarize(rows)
         self.assertEqual((gate.verdict, gate.check_pending, gate.check_queued), ("pending", 1, 0))
+
+    def test_pending_names_include_checks_without_an_actions_job_url(self) -> None:
+        gate = make_gate(FakeGh(), FakeClock())
+        gate.summarize(["pending\texternal check\tpending\t-\t-\tin_progress",
+                        "pending\tbuild\tpending\thttps://github.com/o/r/actions/runs/7/job/8\t1\tqueued"])
+        self.assertEqual(gate.pending_names, ["external check", "build"])
 
 
 class WaiverKeys(unittest.TestCase):

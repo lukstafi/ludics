@@ -1354,13 +1354,17 @@ test_a_live_round_extends_the_quiet_window() {
 test_a_live_round_extension_is_bounded() {
   reset_fixture
   retune GRACE=5
-  local now
+  retune REVIEW_POLL_CAP=300
+  local now next
   now=$(clock_at)
+  next=$(clock_at 3)
   schedule reactions 1 "[$(reaction eyes "$now")]"
   run_watch 0,0,0 1 0
   assert_eq "$WATCH_RC" 1 "a round with no result cannot extend forever"
   assert_contains "$WATCH_OUT" 'no reviewer activity' "the exhausted extension returns quiet"
   assert_contains "$WATCH_ERR" 'extending watch' "the ordinary window was extended first"
+  assert_contains "$WATCH_ERR" "next poll at ${next#*T} (polling backoff while the review is in flight)" \
+    "a backed-off live review names its next poll on the fixture clock"
   assert_not_contains "$WATCH_OUT" 'in 0s' "the verdict reports the extended elapsed duration"
 }
 

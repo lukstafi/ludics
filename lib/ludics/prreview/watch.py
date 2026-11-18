@@ -53,6 +53,7 @@ tail or the verdict's re-reads were not observed. The last stdout line is always
 import glob
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,7 @@ from typing import assert_never
 
 from ludics.proc import windows_command_line
 from ludics.prreview import knobs
+from ludics.prreview.budget import next_poll
 from ludics.prreview.budget import pause as budget_pause
 from ludics.prreview.core import (
     GhFailed,
@@ -1256,6 +1258,10 @@ class Watch:
                     break
                 if pause > remaining:
                     pause = remaining
+            if last_pause > interval and pause > 0:
+                reason = ("polling backoff while the review is in flight" if tok == "reviewing"
+                          else "polling backoff while review state is unchanged")
+                warn(f"watching {shlex.quote(f'{self.repo}#{pr}')}: {next_poll(self.clock.now() + pause, reason)}")
             self.clock.sleep(pause)
 
         if self.state.tok == "stalled":
