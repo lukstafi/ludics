@@ -911,18 +911,21 @@ native tasks it cues (*Launch*), and stopping it (*Close out*).
   batches and legs, whatever they hold. **The cost is one slot of the home box: workers there get
   one fewer, and the registry queues one fewer assignment there; say so in the wave summary.**
   The loop yields only to measurement: a window held on its box, and a window asked for while it
-  ran. A window a
-  non-standing record keeps from opening is answered *pending* (`execution window` exit 3, and
-  `execution assign` reports it refused as before); the loop's next start yields to its mark, so
-  ask for the window again once the loop's run concludes (`wave drive` retries every 300 s) and it
-  opens after at most the loop's current run, which is never stopped (worker legs on the box still
-  hold it as they always did). A mark nobody asks again lapses in 30 minutes. The home is pinned:
-  only after it has refused every start for `failover_after` seconds (default 1800, about one cc
-  tip run and its poll; a window, the box down) does the loop reserve a slot on the standby and
-  run there (`FAILOVER to <box>`), and the first start home succeeds returns it (`RETURNED to
-  <box>`), releasing the standby's slot; an unknown outcome never fails it over. Neither a stop, a
-  red nor a restart releases the home slot: at close-out run `wave loop <wave.json> <name>
-  --release` after the loop's driver has stopped. The GPU loops keep the yield (below).
+  ran. A window a non-standing record keeps from opening is answered *pending* (`execution window`
+  exit 3, and `execution assign` reports it refused as before); the loop's next start yields to its
+  mark, so a window asked again once the loop's run concludes opens after at most the loop's
+  current run, which is never stopped (worker legs on the box still hold it as they always did).
+  Reserve your own window with `execution window --wait-pending <seconds>` (as a long run): it asks
+  again every 60 s until the window opens or the bound runs out (exit 3 again, the mark renewed).
+  `wave drive` keeps its 300 s retry for a worker's window, since one driver answers every worker
+  in turn and a wait inside one call would hold them all. A mark nobody asks again lapses in 30
+  minutes. The home is pinned: only after it has refused every start for `failover_after`
+  seconds (default 1800, about one cc tip run and its poll; a window, the box down) does the
+  loop reserve a slot on the standby and run there (`FAILOVER to <box>`), and the first start
+  home succeeds returns it (`RETURNED to <box>`), releasing the standby's slot; an unknown
+  outcome never fails it over. Neither a stop, a red nor a restart releases the home slot: at
+  close-out run `wave loop <wave.json> <name> --release` after the loop's driver has stopped.
+  The GPU loops keep the yield (below).
 
   **On a red at the tip, halt launches at once** (`fleet-worker.sh halt "<red at <sha>, rerun
   pending>"`): the rerun below puts the tip's run back in flight, where the base gate's interim

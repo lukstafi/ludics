@@ -943,9 +943,10 @@ class WindowPayload(unittest.TestCase):
             self.assertEqual(caught.exception.rc, 2, text)
 
 
-class WindowGap(unittest.TestCase):
-    """ludics-lite#667: ``execution window`` asks for FLEET_WINDOW_GAP (or none with ``--no-gap``),
-    and waits out the registry's gap answer (exit 3) with no lock held before asking again."""
+class WindowCase(unittest.TestCase):
+    """The window cases' fixture: a one-request reservation file, the config, and ``run_window``, which
+    drives ``cmd_execution`` with the registry's answers queued and a monotonic clock only the sleeps
+    (and a given ask's own time) move. It holds no case of its own."""
 
     def setUp(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
@@ -957,6 +958,47 @@ class WindowGap(unittest.TestCase):
 
     def cfg(self, **env: str) -> Any:
         return load_config("/nonexistent/issue-wave/scripts/fleet-worker.sh", env, host="testbox")
+
+    def run_window(self, answers: list[Any], words: list[str] | None = None, delays: list[float] | None = None, *,
+                   endpoint_map: str | None = "",
+                   **env: str) -> tuple[int, str, str, list[Any], list[float]]:
+        calls: list[Any] = []
+        slept: list[float] = []
+        clock = [1000.0]  # the monotonic clock, moved only by the sleeps
+
+        def sleep(seconds: float) -> None:
+            slept.append(seconds)
+            clock[0] += seconds
+
+        def unresolved(cfg: Any, payload: str, action: str, *, refusal_status: int = 1) -> tuple[str, str]:
+            return payload, ""
+
+        def run_on(cfg: Any, box: str, script: str, argv: list[str], capture: bool = False) -> Any:
+            # The payload is the script's fd-3 line, argv only says so (ludics-lite#636).
+            self.assertEqual(argv[6], PAYLOAD_ON_FD)
+            framed = script.split("3<<'FLEET_EXECUTION_PY_PAYLOAD' <<'FLEET_EXECUTION_PY'\n", 1)[1].split("\n", 1)[0]
+            calls.append(json.loads(json.loads(framed)))
+            clock[0] += delays.pop(0) if delays else 0.0  # the ask's own time, when given
+            return answers.pop(0)
+
+        out, err = io.StringIO(), io.StringIO()
+        with (mock.patch.object(execution, "check_identity"), mock.patch.object(execution, "checked_request"),
+              mock.patch.object(execution, "with_resolution", side_effect=unresolved),
+              mock.patch.object(execution, "endpoint_map", return_value=endpoint_map),
+              mock.patch.object(execution, "my_token", return_value="tok"),
+              mock.patch.object(execution, "coordinator_id", return_value="coord"),
+              mock.patch.object(execution, "execution_refresh"),
+              mock.patch.object(execution, "run_on", side_effect=run_on),
+              mock.patch.object(execution.time, "sleep", side_effect=sleep),
+              mock.patch.object(execution.time, "monotonic", side_effect=lambda: clock[0]),
+              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
+            rc = execution.cmd_execution(self.cfg(**env), ["window", *(words or []), "testbox", self.file])
+        return rc, out.getvalue(), err.getvalue(), calls, slept
+
+
+class WindowGap(WindowCase):
+    """ludics-lite#667: ``execution window`` asks for FLEET_WINDOW_GAP (or none with ``--no-gap``),
+    and waits out the registry's gap answer (exit 3) with no lock held before asking again."""
 
     def test_the_gap_is_the_knob_or_none_with_no_gap_right_after_window(self) -> None:
         cfg = self.cfg()
@@ -1000,34 +1042,6 @@ class WindowGap(unittest.TestCase):
                      execution.Done(3, '{"gap":{"wait":"5"}}'), execution.Done(3, "[]")):
             self.assertIsNone(execution.gap_wait(done), done)
 
-    def run_window(self, answers: list[Any], words: list[str] | None = None, *, endpoint_map: str | None = "",
-                   **env: str) -> tuple[int, str, str, list[Any], list[float]]:
-        calls: list[Any] = []
-        slept: list[float] = []
-
-        def unresolved(cfg: Any, payload: str, action: str, *, refusal_status: int = 1) -> tuple[str, str]:
-            return payload, ""
-
-        def run_on(cfg: Any, box: str, script: str, argv: list[str], capture: bool = False) -> Any:
-            # The payload is the script's fd-3 line, argv only says so (ludics-lite#636).
-            self.assertEqual(argv[6], PAYLOAD_ON_FD)
-            framed = script.split("3<<'FLEET_EXECUTION_PY_PAYLOAD' <<'FLEET_EXECUTION_PY'\n", 1)[1].split("\n", 1)[0]
-            calls.append(json.loads(json.loads(framed)))
-            return answers.pop(0)
-
-        out, err = io.StringIO(), io.StringIO()
-        with (mock.patch.object(execution, "check_identity"), mock.patch.object(execution, "checked_request"),
-              mock.patch.object(execution, "with_resolution", side_effect=unresolved),
-              mock.patch.object(execution, "endpoint_map", return_value=endpoint_map),
-              mock.patch.object(execution, "my_token", return_value="tok"),
-              mock.patch.object(execution, "coordinator_id", return_value="coord"),
-              mock.patch.object(execution, "execution_refresh"),
-              mock.patch.object(execution, "run_on", side_effect=run_on),
-              mock.patch.object(execution.time, "sleep", side_effect=slept.append),
-              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
-            rc = execution.cmd_execution(self.cfg(**env), ["window", *(words or []), "testbox", self.file])
-        return rc, out.getvalue(), err.getvalue(), calls, slept
-
     def test_endpoint_map_refusal_needs_action_only_during_assignment(self) -> None:
         with mock.patch.dict(os.environ, {"LUDICS_EXECUTION_ASSIGN_STEP": ""}):
             self.assertEqual(self.run_window([], endpoint_map=None), (1, "", "", [], []))
@@ -1055,6 +1069,81 @@ class WindowGap(unittest.TestCase):
         self.assertIn('"wait":60', out)
         rc, out, _, _, slept = self.run_window([execution.Done(1, "")])
         self.assertEqual((rc, out, slept), (1, "", []), "a refusal is no gap")
+
+
+class WindowPendingWait(WindowCase):
+    """ludics#1208, THE PENDING WAIT: ``execution window --wait-pending <seconds>`` asks again at each
+    poll while the registry answers pending, until the window opens or the bound runs out."""
+
+    PENDING = execution.Done(3, '{"pending":{"box":"testbox","id":"w2","blockers":["leg"],"expires":"2026-11-18T12:30:00+00:00"}}')
+    OPENED = execution.Done(0, '{"request_id":"w2"}')
+
+    def test_the_flag_comes_after_the_deadline_and_reads_the_poll_only_with_it(self) -> None:
+        cfg = self.cfg(FLEET_WINDOW_PENDING_POLL="soon")
+        self.assertEqual(execution.window_wait_pending(cfg, ["window", "b", "f"]), (["window", "b", "f"], 0, 60),
+                         "without the flag the knob is never read")
+        args, _ = execution.window_deadline(["window", "--deadline", "90", "--wait-pending", "600", "b", "f"])
+        self.assertEqual(execution.window_wait_pending(self.cfg(), args), (["window", "b", "f"], 600, 60))
+        self.assertEqual(execution.window_wait_pending(self.cfg(FLEET_WINDOW_PENDING_POLL=""), args)[2], 60)
+        for bad in (["window", "--wait-pending"], ["window", "--wait-pending", "0", "b", "f"],
+                    ["window", "--wait-pending", "1.5", "b", "f"], ["window", "--wait-pending", "soon", "b", "f"]):
+            with self.assertRaises(cli.Exit) as caught:
+                execution.window_wait_pending(self.cfg(), bad)
+            self.assertEqual(caught.exception.rc, 2, bad)
+            self.assertIn("--wait-pending takes a positive whole number of seconds", caught.exception.message)
+        self.assertEqual(execution.window_wait_pending(self.cfg(FLEET_WINDOW_PENDING_POLL="900"), args)[2], 900)
+        for poll in ("0", "901", "soon", "-1"):
+            with self.assertRaises(cli.Exit) as caught:
+                execution.window_wait_pending(self.cfg(FLEET_WINDOW_PENDING_POLL=poll), ["window", "--wait-pending", "9", "b", "f"])
+            self.assertEqual(caught.exception.rc, 2, poll)
+            self.assertIn("FLEET_WINDOW_PENDING_POLL must be a whole number of seconds from 1 to 900", caught.exception.message)
+
+    def test_only_the_registrys_pending_answer_is_waited_on(self) -> None:
+        self.assertEqual(execution.pending_answer(self.PENDING),
+                         {"box": "testbox", "id": "w2", "blockers": ["leg"], "expires": "2026-11-18T12:30:00+00:00"})
+        gap = execution.Done(3, '{"gap":{"box":"testbox","wait":10}}')
+        for done in (gap, execution.Done(0, self.PENDING.out), execution.Done(1, self.PENDING.out),
+                     execution.Done(3, "nope"), execution.Done(3, '{"pending":true}'), execution.Done(3, "[]"),
+                     execution.Done(UNREACHABLE, self.PENDING.out)):
+            self.assertIsNone(execution.pending_answer(done), done)
+
+    def test_a_pending_window_asked_again_opens_within_the_bound(self) -> None:
+        rc, out, err, calls, slept = self.run_window([self.PENDING, self.PENDING, self.OPENED],
+                                                     ["--no-gap", "--wait-pending", "300"])
+        self.assertEqual((rc, out, slept, len(calls)), (0, '{"request_id":"w2"}\n', [60, 60], 3))
+        self.assertEqual(calls[0], calls[2], "each ask carries the same payload")
+        self.assertEqual(err, "EXECUTION WINDOW testbox: w2 pending; asking again every 60s for up to 300s (--wait-pending)\n")
+        rc, _, _, calls, slept = self.run_window([self.PENDING, self.OPENED], ["--no-gap", "--wait-pending", "300"],
+                                                 FLEET_WINDOW_PENDING_POLL="5")
+        self.assertEqual((rc, slept, len(calls)), (0, [5], 2), "the poll is the knob's")
+
+    def test_a_bound_that_runs_out_answers_pending_after_a_last_ask(self) -> None:
+        rc, out, err, calls, slept = self.run_window([self.PENDING] * 4, ["--no-gap", "--wait-pending", "150"])
+        self.assertEqual((rc, out, slept, len(calls)), (3, self.PENDING.out + "\n", [60, 60, 30], 4),
+                         "the last ask is made when the bound is spent, so it renews the mark")
+        self.assertTrue(err.endswith("EXECUTION WINDOW testbox: w2 still pending after 150s (--wait-pending);"
+                                     " its mark stands until 2026-11-18T12:30:00+00:00\n"), err)
+
+    def test_a_reply_past_the_bound_to_an_earlier_ask_is_asked_again(self) -> None:
+        # The second ask is made at 60 s of a 65 s bound, and its reply arrives at 66 s: that ask was
+        # not the last, so the window is asked for again at once, and opens.
+        rc, out, _, calls, slept = self.run_window([self.PENDING, self.PENDING, self.OPENED],
+                                                   ["--no-gap", "--wait-pending", "65"], delays=[0, 6, 0])
+        self.assertEqual((rc, out, slept, len(calls)), (0, '{"request_id":"w2"}\n', [60], 3))
+
+    def test_the_plain_form_answers_pending_once(self) -> None:
+        rc, out, err, calls, slept = self.run_window([self.PENDING], ["--no-gap"])
+        self.assertEqual((rc, out, err, slept, len(calls)), (3, self.PENDING.out + "\n", "", [], 1))
+        rc, _, _, calls, slept = self.run_window([self.PENDING])
+        self.assertEqual((rc, slept, len(calls)), (3, [], 1), "a gap asked for waits for no pending answer either")
+
+    def test_the_gap_and_the_pending_wait_take_turns_and_any_other_answer_ends_it(self) -> None:
+        gap = execution.Done(3, '{"gap":{"box":"testbox","after":"w1","ago":50,"gap":60,"wait":10,"standing":["s"]}}')
+        rc, _, _, calls, slept = self.run_window([self.PENDING, gap, self.PENDING, self.OPENED], ["--wait-pending", "300"])
+        self.assertEqual((rc, slept, [c.get("gap") for c in calls]), (0, [60, 10, 60], [60, 60, 50, 50]),
+                         "a pending ask asks for the gap left; the gap is waited out between pending asks")
+        rc, out, _, calls, slept = self.run_window([self.PENDING, execution.Done(1, "")], ["--no-gap", "--wait-pending", "300"])
+        self.assertEqual((rc, out, slept, len(calls)), (1, "", [60], 2), "a refusal ends the wait")
 
 
 class EndpointMap(unittest.TestCase):

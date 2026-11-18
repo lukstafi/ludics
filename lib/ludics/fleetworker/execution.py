@@ -98,6 +98,25 @@ since a retry must compose the same payload; ``--from-bg-run``'s refusals (``bg_
 ludics#713, moved to Python beside this rule) are not brought under it yet;
 and the other verbs keep their own lines (``execution leg``'s far side, ``tip-run``'s, the
 registry's, ``execution slot``'s), but for leg.py's recorded-checkout refusal, THE CHECKOUT's twin.
+
+THE PENDING WAIT (ludics#1208). A window its box's non-standing correctness records keep from
+opening is answered pending (exit 3, and a mark a reserved loop's next start yields to:
+registry.py's THE PENDING WINDOW), and it opens only when someone asks again. ``execution window
+--wait-pending <seconds>`` asks again itself: at each pending answer it waits, no lock held, the
+lesser of ``FLEET_WINDOW_PENDING_POLL`` seconds (60; at most half the mark's PENDING_TTL, so no mark
+lapses between two asks) and what is left of the bound, then asks with the same payload (a head-of
+request resolved afresh, the gap it asks for unchanged), and each ask renews the mark. It ends at
+the first answer that is not pending: the window's record (exit 0), a refusal, an unreachable
+anchor, or a gap answer, which THE GAP waits out as before (and a pending answer after it waits
+again). The bound is wall-clock seconds from the first pending answer, and the last ask is the first
+one made once it is spent (a reply that arrives past the bound to an ask made before it is asked
+again): an answer still pending then is printed with exit 3, as the plain form's, its mark renewed
+by that ask and lapsing on its own. It says on stderr once that it waits, and once that the bound
+ran out. The bound and the gap are separate budgets, so the call waits at most the two together plus
+each ask's own time. ``--deadline`` counts from the drained hold's opening, which no pending answer
+reaches, so time spent pending never spends it. Without the flag nothing changes: one answer,
+printed. The boundary: it reads only the registry's ``{"pending": ...}`` answer; the mark, its
+renewal and its lapse are the registry's, unchanged, and nothing here stops the loop's running run.
 """
 
 import json
@@ -118,7 +137,7 @@ from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
 from ludics.fleetworker.preflight import knob, refresh_box
-from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED, ASSIGN_STATUS_ARG
+from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED, ASSIGN_STATUS_ARG, PENDING_TTL
 from ludics.fleetworker.transport import (
     BG_RUN_TAG,
     PAYLOAD_ON_FD,
@@ -1278,7 +1297,8 @@ LIST_USAGE = "execution list: expected --active, --compact or --host <box>"
 USAGE = (
     "execution: list, slot -- <command>, hold -- <command>,"
     " integration-records <owner/repo> [--verdict pass|fail] [--pinned-backend <backend>] [--shas], leg --request <id> ... -- <runner>,"
-    " run|reserve|dispatch|record|reconcile|rebind|conclude <json-file>, window [--no-gap] [--deadline <s>] <box> <json-file>,"
+    " run|reserve|dispatch|record|reconcile|rebind|conclude <json-file>, window [--no-gap] [--deadline <s>]"
+    " [--wait-pending <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
     " tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> -- <command>, tip-run --wait <id>,"
     " assign <base.json> <requests file|-> [--request <id>]... [--message <file>] [--unstick <box> <name>],"
@@ -1741,8 +1761,10 @@ def _nonempty(path: str) -> bool:
         return False
 
 
-WINDOW_USAGE = "execution window [--no-gap] [--deadline <seconds>] <box> <measurement reserve.json>"
+WINDOW_USAGE = ("execution window [--no-gap] [--deadline <seconds>] [--wait-pending <seconds>] <box>"
+                " <measurement reserve.json>")
 WINDOW_GAP = 60  # FLEET_WINDOW_GAP's default, in seconds (ludics-lite#667)
+PENDING_POLL = 60  # FLEET_WINDOW_PENDING_POLL's default: seconds between a pending wait's asks (ludics#1208)
 
 
 def window_gap(cfg: Config, args: list[str]) -> tuple[list[str], int]:
@@ -1768,16 +1790,48 @@ def window_deadline(args: list[str]) -> tuple[list[str], int | None]:
     return args, None
 
 
-def gap_wait(done: Done) -> int | None:
-    """The seconds the registry's gap answer (exit 3, ``{"gap": {..., "wait": <n>}}``) says to wait,
-    or None for any other outcome, which is said and returned as it stands."""
+def window_wait_pending(cfg: Config, args: list[str]) -> tuple[list[str], int, int]:
+    """THE PENDING WAIT (ludics#1208, the header): the window's words without ``--wait-pending
+    <seconds>``, which may only come right after ``window`` (and its ``--no-gap`` and ``--deadline``),
+    its bound (0 without the flag), and the seconds between its asks: FLEET_WINDOW_PENDING_POLL (a
+    whole number of seconds, at most half the mark's PENDING_TTL, so no mark lapses between two asks
+    however slow an ask is; 60 when unset or empty), read only with the flag."""
+    if len(args) > 1 and args[1] == "--wait-pending":
+        if len(args) < 3 or not re.fullmatch(r"[0-9]+", args[2]) or int(args[2]) < 1:
+            die("execution window: --wait-pending takes a positive whole number of seconds")
+        text = knob(cfg, "FLEET_WINDOW_PENDING_POLL", str(PENDING_POLL))
+        if not re.fullmatch(r"[0-9]+", text) or not 1 <= int(text) <= PENDING_TTL // 2:
+            die(f"execution window: FLEET_WINDOW_PENDING_POLL must be a whole number of seconds from 1 to"
+                f" {PENDING_TTL // 2}, not {text!r}")
+        return [args[0], *args[3:]], int(args[2]), int(text)
+    return args, 0, PENDING_POLL
+
+
+def registry_answer(done: Done) -> dict[str, Any] | None:
+    """The registry's exit-3 answer, decoded (a gap's or THE PENDING WINDOW's: registry.py's
+    ``outcome``), or None for any other outcome: another exit, an unreachable anchor, or stdout that
+    is not one JSON object."""
     if done.rc != 3 or done.unreachable:
         return None
     try:
         decoded: Any = json.loads(done.out)
     except ValueError:
         return None
-    wait = field(cast(dict[str, Any], decoded), "gap", "wait") if isinstance(decoded, dict) else None
+    return cast(dict[str, Any], decoded) if isinstance(decoded, dict) else None
+
+
+def pending_answer(done: Done) -> dict[str, Any] | None:
+    """The registry's pending answer (exit 3, ``{"pending": {"box", "id", "blockers", "expires"}}``,
+    registry.py's THE PENDING WINDOW), or None for any other outcome, a gap answer included."""
+    pending = (registry_answer(done) or {}).get("pending")
+    return cast(dict[str, Any], pending) if isinstance(pending, dict) else None
+
+
+def gap_wait(done: Done) -> int | None:
+    """The seconds the registry's gap answer (exit 3, ``{"gap": {..., "wait": <n>}}``) says to wait,
+    or None for any other outcome, which is said and returned as it stands."""
+    answer = registry_answer(done)
+    wait = field(answer, "gap", "wait") if answer is not None else None
     return wait if type(wait) is int and wait > 0 else None
 
 
@@ -1825,6 +1879,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
     payload = "{}"
     resolution = ""
     gap = 0  # a window's gap, and its wrapped requests (THE GAP below)
+    pending_bound, pending_poll = 0, PENDING_POLL  # a window's --wait-pending (THE PENDING WAIT below)
     requests: list[dict[str, Any]] = []
     match action:
         case "list":
@@ -1909,6 +1964,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             # a payload measuring on any other. THE GAP (ludics-lite#667): see the loop below.
             args, gap = window_gap(cfg, args)
             args, deadline = window_deadline(args)
+            args, pending_bound, pending_poll = window_wait_pending(cfg, args)
             requests = window_lines(args, deadline)
             payload = with_gap(requests, gap)
             check_identity(cfg)
@@ -1931,21 +1987,43 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
         cfg.boxes, cfg.slots, map_spec, fleet_name(cfg, cfg.anchor), fleet_name(cfg, cfg.lab_host),
         *([ASSIGN_STATUS_ARG] if assignment_step else []),
     ]  # fmt: skip
+    asked = time.monotonic()  # when the answer in hand was asked for (THE PENDING WAIT's last ask)
     done = run_on(cfg, cfg.anchor, script, argv, capture=True)
     left = gap
-    while action == "window" and left > 0 and (wait := gap_wait(done)) is not None:
-        # THE GAP (ludics-lite#667): the registry wrote nothing and said why on stderr. Waited here,
-        # no lock held, then asked again with the gap less what was waited, so the whole wait is
-        # the gap at most and a gap of 0 is never answered with another -- a head-of request
-        # resolved afresh, as at any dispatch.
-        wait = min(wait, left)
-        err(f"EXECUTION WINDOW {args[1]}: waiting {wait}s, then opening the window (FLEET_WINDOW_GAP={gap};"
-            " --no-gap opens it at once)")
-        time.sleep(wait)
-        left -= wait
+    until: float | None = None  # THE PENDING WAIT's end, set at its first pending answer
+    while action == "window":
+        if left > 0 and (wait := gap_wait(done)) is not None:
+            # THE GAP (ludics-lite#667): the registry wrote nothing and said why on stderr. Waited
+            # here, no lock held, then asked again with the gap less what was waited, so the whole
+            # wait is the gap at most and a gap of 0 is never answered with another -- a head-of
+            # request resolved afresh, as at any dispatch.
+            wait = min(wait, left)
+            err(f"EXECUTION WINDOW {args[1]}: waiting {wait}s, then opening the window (FLEET_WINDOW_GAP={gap};"
+                " --no-gap opens it at once)")
+            time.sleep(wait)
+            left -= wait
+        elif pending_bound and (pending := pending_answer(done)) is not None:
+            # THE PENDING WAIT (the header): the registry renewed the mark and said so on stderr.
+            # Waited here, no lock held, then asked again as the gap asks, until the bound is spent.
+            moment = time.monotonic()
+            if until is None:
+                until = moment + pending_bound
+                err(f"EXECUTION WINDOW {args[1]}: {pending.get('id')} pending; asking again every {pending_poll}s"
+                    f" for up to {pending_bound}s (--wait-pending)")
+            if asked >= until:
+                # Only an ask made once the bound was spent is the last one: a reply that arrives
+                # after the bound to an ask made before it is asked again at once.
+                err(f"EXECUTION WINDOW {args[1]}: {pending.get('id')} still pending after {pending_bound}s"
+                    f" (--wait-pending); its mark stands until {pending.get('expires')}")
+                break
+            if (pause := min(pending_poll, until - moment)) > 0:
+                time.sleep(pause)
+        else:
+            break
         payload, resolution = with_resolution(cfg, with_gap(requests, left), action, refusal_status=refusal_status)
         # The payload rides the script, never argv (ludics-lite#636): a new payload is a new script.
         script = head + registry_command(source, payload)
+        asked = time.monotonic()
         done = run_on(cfg, cfg.anchor, script, argv, capture=True)
     out = substitution(done.out)
     cli.emit(out)
