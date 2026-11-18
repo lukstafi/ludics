@@ -2,4 +2,5 @@
 
 Every request you make re-reads your whole context, so its size is the wave's main cost.
 - Read logs with `tail` or `grep`, never whole. Run independent read-only commands together.
-- Go straight from the merge to the after-merge brainstorm and the hand-back.
+- Go straight from the merge to the after-merge brainstorm, then start your final reply with
+  `HANDBACK @@T@@` on its own line.

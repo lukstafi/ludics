@@ -186,6 +186,16 @@ class Outcomes(unittest.TestCase):
         self.assertIn("ASSIGN REFUSED m: the window exited 1", err)
         self.assertEqual(self.calls, [["execution", "run", "a"], ["execution", "window", "--deadline", "600", "tuf", "m"]])
 
+    def test_action_required_survives_other_refusals_and_assignments_unless_the_outcome_is_unknown(self) -> None:
+        requests = self.write("r.txt", message(block("a"), block("b"), block("c")))
+        answers = {"a": Done(5, ""), "b": Done(1, ""), "c": Done(0, "{}")}
+        rc, out, _ = self.assign([self.base, requests], answers)
+        self.assertEqual(rc, 5)
+        self.assertEqual([line for line in out.splitlines() if line.startswith("EXECUTION_ASSIGNED")],
+                         ["EXECUTION_ASSIGNED c"])
+        rc, _, _ = self.assign([self.base, requests], {**answers, "b": Done(4, "")})
+        self.assertEqual(rc, 4)
+
     def test_assigned_legs_and_already_retry_preserve_each_placement_once(self) -> None:
         # The actual shipped store applies each write; no mock of the union logic.
         with contextlib.redirect_stdout(io.StringIO()):

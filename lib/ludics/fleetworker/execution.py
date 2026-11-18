@@ -118,6 +118,7 @@ from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
 from ludics.fleetworker.lease import LEASE_MUTATION
 from ludics.fleetworker.preflight import knob, refresh_box
+from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED, ASSIGN_STATUS_ARG
 from ludics.fleetworker.transport import (
     BG_RUN_TAG,
     PAYLOAD_ON_FD,
@@ -137,6 +138,7 @@ from ludics.fleetworker.transport import (
 )
 
 REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registry.py")
+ASSIGN_STEP_ENV = "LUDICS_EXECUTION_ASSIGN_STEP"
 
 # The far side's interpreter: the first that reports >= 3.12, in scripts/py's order
 # (farside.FLEET_PYTHON, which the preflight's probe of a box shares).
@@ -1327,7 +1329,7 @@ def checkout_arg(checkout: str, mode: str) -> str:
     return checkout
 
 
-def fail(refusal: tuple[str, int] | Refusal | None) -> None:
+def fail(refusal: tuple[str, int] | Refusal | None, *, refusal_status: int = 1) -> None:
     """Print a refusal and exit with its status; nothing for None."""
     match refusal:
         case None:
@@ -1336,7 +1338,7 @@ def fail(refusal: tuple[str, int] | Refusal | None) -> None:
             concluded(refusal)
         case (text, rc):
             cli.say(text)
-            raise cli.Exit(rc)
+            raise cli.Exit(refusal_status if rc == 1 else rc)
         case _:
             assert_never(refusal)
 
@@ -1462,7 +1464,7 @@ def gh_timeout(cfg: Config) -> float:
     return int(value)
 
 
-def checked_request(cfg: Config, payload: str, action: str) -> None:
+def checked_request(cfg: Config, payload: str, action: str, *, refusal_status: int = 1) -> None:
     """A reserve, run or window request whose requested_revision names only commits that resolve.
     A payload that does not parse is left to the registry, which refuses it."""
     try:
@@ -1471,10 +1473,11 @@ def checked_request(cfg: Config, payload: str, action: str) -> None:
         return
     if action == "window":
         decoded = cast(dict[str, Any], decoded).get("request") if isinstance(decoded, dict) else None
-    fail(revision.request_refusal(decoded, gh_timeout(cfg), lambda request: held(cfg, request, action)))
+    fail(revision.request_refusal(decoded, gh_timeout(cfg), lambda request: held(cfg, request, action)),
+         refusal_status=refusal_status)
 
 
-def with_resolution(cfg: Config, payload: str, action: str) -> tuple[str, str]:
+def with_resolution(cfg: Config, payload: str, action: str, *, refusal_status: int = 1) -> tuple[str, str]:
     """A dispatch step (``run``, ``window``, ``dispatch``) of a request that follows a branch
     (``head-of:<branch>``, ludics-lite#558): the payload with the commit the branch names on GitHub
     NOW as ``resolved_revision``, and the line saying so once the registry has accepted it. Any other
@@ -1511,7 +1514,7 @@ def with_resolution(cfg: Config, payload: str, action: str) -> tuple[str, str]:
     repo = jq_text(cast(dict[str, Any], request).get("repository"))
     sha = revision.branch_head(repo, branch, gh_timeout(cfg))
     if not isinstance(sha, str):
-        fail(sha)
+        fail(sha, refusal_status=refusal_status)
         return payload, ""
     target["resolved_revision"] = sha
     line = f"EXECUTION RESOLVED {jq_text(request_id)}: head-of:{branch} is {sha} in {repo}, read at assignment"
@@ -1816,6 +1819,8 @@ def window_lines(args: list[str], deadline: int | None = None) -> list[dict[str,
 
 def cmd_execution(cfg: Config, args: list[str]) -> int:
     action = args[0] if args else ""
+    assignment_step = action in ("run", "window") and os.environ.get(ASSIGN_STEP_ENV) == "1"
+    refusal_status = ASSIGN_ACTION_REQUIRED if assignment_step else 1
     payload = "{}"
     resolution = ""
     gap = 0  # a window's gap, and its wrapped requests (THE GAP below)
@@ -1888,9 +1893,9 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             elif action in ("dispatch", "record", "reconcile"):
                 payload = checked_evidence(cfg, payload, "", action)
             else:
-                checked_request(cfg, payload, action)
+                checked_request(cfg, payload, action, refusal_status=refusal_status)
             if action in ("run", "dispatch"):
-                payload, resolution = with_resolution(cfg, payload, action)
+                payload, resolution = with_resolution(cfg, payload, action, refusal_status=refusal_status)
         case "window":
             # THE MEASUREMENT WINDOW (ludics-lite#481): the box is named apart from the payload so
             # the call says which box's standing reservations it suspends, and the registry refuses
@@ -1900,8 +1905,8 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             requests = window_lines(args, deadline)
             payload = with_gap(requests, gap)
             check_identity(cfg)
-            checked_request(cfg, payload, action)
-            payload, resolution = with_resolution(cfg, payload, action)
+            checked_request(cfg, payload, action, refusal_status=refusal_status)
+            payload, resolution = with_resolution(cfg, payload, action, refusal_status=refusal_status)
         case _:
             die(USAGE)
     source = registry_source()
@@ -1909,7 +1914,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
     if action in ("reserve", "run", "dispatch", "window") or (action == "list" and "--host" in args):
         found = endpoint_map(cfg)
         if found is None:
-            return 1
+            return refusal_status
         map_spec = found
     token = my_token(cfg)
     head = prelude(cfg, cfg.anchor) + (LEASE_MUTATION if action != "list" else "shift 3\n")
@@ -1917,6 +1922,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
     argv = [
         "EXECUTION", token, cfg.lock_wait, action, coordinator_id(cfg), token, PAYLOAD_ON_FD,
         cfg.boxes, cfg.slots, map_spec, fleet_name(cfg, cfg.anchor), fleet_name(cfg, cfg.lab_host),
+        *([ASSIGN_STATUS_ARG] if assignment_step else []),
     ]  # fmt: skip
     done = run_on(cfg, cfg.anchor, script, argv, capture=True)
     left = gap
@@ -1930,7 +1936,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             " --no-gap opens it at once)")
         time.sleep(wait)
         left -= wait
-        payload, resolution = with_resolution(cfg, with_gap(requests, left), action)
+        payload, resolution = with_resolution(cfg, with_gap(requests, left), action, refusal_status=refusal_status)
         # The payload rides the script, never argv (ludics-lite#636): a new payload is a new script.
         script = head + registry_command(source, payload)
         done = run_on(cfg, cfg.anchor, script, argv, capture=True)

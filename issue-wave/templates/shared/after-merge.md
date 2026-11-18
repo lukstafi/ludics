@@ -12,8 +12,8 @@
    nothing and spawn nothing; the coordinator combines proposals across workers and files them.
 3. Do NOT remove your worktree or its branch; the coordinator does that at close-out. Leave the
    worktree clean (no untracked data of yours).
-4. Your final message is the hand-back. Its first line is `HANDBACK @@T@@`, alone. Then: the PR by
-   its URL (`https://github.com/@@REPO@@/pull/<n>`) and the merge SHA; issues closed; the decisions you
+4. Start your final reply with the plain line `HANDBACK @@T@@`, before any heading or prose.
+   Follow it with the PR URL (`https://github.com/@@REPO@@/pull/<n>`) and the merge SHA; issues closed; the decisions you
    made (and where documented); the startup facts; each test batch with its exit status and run
    directory; the last batch's run directory and the SHA and dirty state it ran at; the review
    rounds and what was deferred; your after-merge proposals; and anything the coordinator must file

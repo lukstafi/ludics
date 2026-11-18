@@ -42,9 +42,11 @@ class RegistryCase(unittest.TestCase):
         shutil.rmtree(self.root)
 
     def call(self, action: str, payload: object, boxes: str = "mac", slots: str = "",
-             map_spec: str = "") -> tuple[int, Any, str]:
+             map_spec: str = "", *, assignment: bool = False) -> tuple[int, Any, str]:
         out, err = io.StringIO(), io.StringIO()
         argv = ["-", self.root, action, "owner", "token", json.dumps(payload), boxes, slots, map_spec]
+        if assignment:
+            argv.extend(["", "", "--assignment-status"])
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 rc = registry.run(argv)
@@ -56,6 +58,22 @@ class RegistryCase(unittest.TestCase):
 
 
 class Registry(RegistryCase):
+    def test_fleet_configuration_refusals_need_action_only_during_assignment(self) -> None:
+        correctness = request("bad-slots")
+        measurement = {"box": "mac", "request": request("bad-anchor", kind="measurement")}
+        cases: tuple[tuple[str, object, str, str, str], ...] = (
+            ("run", correctness, "mac=bad", "", "FLEET_BOX_CORRECTNESS_SLOTS entry must be"),
+            ("window", measurement, "", "rog mac", "anchor's and lab host's names were not passed"),
+        )
+        for verb, payload, slots, map_spec, diagnostic in cases:
+            with self.subTest(verb=verb):
+                stand_alone, _, err = self.call(verb, payload, slots=slots, map_spec=map_spec)
+                assignment, out, assign_err = self.call(verb, payload, slots=slots, map_spec=map_spec, assignment=True)
+                self.assertEqual((stand_alone, assignment, out), (1, 5, None))
+                self.assertEqual(assign_err, err)
+                self.assertIn(diagnostic, err)
+        self.assertEqual(self.call("list", {})[:2], (0, []))
+
     def test_conclude_names_all_missing_fields_together(self) -> None:
         self.assertEqual(self.call("reserve", request("a"))[0], 0)
         rc, _, err = self.call("conclude", {"request_id": "a", "verdict": "pass", "evidence": "terminal"})

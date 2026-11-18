@@ -287,9 +287,11 @@ driver hands you as an attention line.
    exact `RUN /absolute/path` lines select `board close --no-pr --run` (one flag per line);
    without either a PR or a run line the hand-back stays attention. Each turn is
    answered once: the ledger is `logs/drive.jsonl`. Anything a marker does not answer becomes an
-   attention line and is yours: a design question, a plan, a worker that vanished, an assignment
-   refused six times or in part, a review with no verdict, a merge that no posted clearance
-   of its head covers.
+   attention line and is yours. This includes design questions, plans, vanished workers, reviews
+   with no verdict and merges without posted clearance for their head. An assignment that
+   needs a change or reconciliation goes to attention on the first try, as does a partial
+   assignment. A busy box or other retryable refusal goes to attention after six tries. Read
+   the assignment diagnostics and relay the cure before asking the worker to try again.
    The heartbeat prints each new attention line and returns early when one arrives. Answer the
    turn by hand; the worker's next turn is the driver's again. `wave turn <wave.json> <task>`
    answers one worker's turn, once, when no driver runs. The driver does not end when its queue is

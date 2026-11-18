@@ -54,7 +54,8 @@ block, in file order, then has one outcome, said in one line on stderr:
   stdout, the record), else the request's ``requested_revision``.
 - ``ASSIGN REFUSED <id>: ...``: the step exited nonzero but 4 (its refusal is above); nothing is
   printed for it. A window that exited 3 is pending (registry.py, THE PENDING WINDOW), and the line
-  says so: the same call later is its retry.
+  says so: the same call later is its retry. An exit 2 or 5 needs a change or reconciliation before
+  trying that block again. It wins over other refusals in this call, even if some blocks assigned.
 - ``ASSIGN ALREADY <id>: ...``: the registry already holds the request past ``reserved`` (an earlier
   call dispatched it, or it is concluded), so it is not asked again and nothing is printed: a
   ``run`` would refuse it, and an assignment printed twice is two runs. A still-``reserved`` record is
@@ -91,9 +92,11 @@ once, only when something was assigned; a failed unstick leaves the records disp
 with the command that resends the file (exit 4): never assign again.
 
 Exit: 0 every selected request ASSIGNED or ALREADY (and the unstick, if asked, landed); 1 one or
-more REFUSED or BOARD NOTE failures, none UNKNOWN; 2 usage, nothing asked; 4 one or more UNKNOWN,
-a registry that could not be read first, or an unstick that did not land. What the steps print themselves (the record, the
-refresh line, a refusal) goes to stderr.
+more REFUSED or BOARD NOTE failures that can be retried, none UNKNOWN; 2 usage, nothing asked;
+4 one or more UNKNOWN, a registry that could not be read first, or an unstick that did not land;
+5 one or more refusals need action before retry and none are UNKNOWN. An exit 5 with a message
+still dispatched the assignments in that message. What the steps print themselves (the record,
+the refresh line, a refusal) goes to stderr.
 """
 
 import json
@@ -111,6 +114,7 @@ from ludics.fleetworker import execution
 from ludics.fleetworker.board import record_placement
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
 from ludics.fleetworker.transport import Done, err, run
 
 USAGE = ("execution assign <base.json> <requests file|-> [--request <id>]... [--no-gap] [--deadline <seconds>]"
@@ -248,7 +252,7 @@ def block_problem(block: Any) -> str | None:
     if unknown:
         return f"names {', '.join(unknown)}; a request block takes only {', '.join(sorted(BLOCK_FIELDS))}"
     for key in BLOCK_REQUIRED:
-        if not (isinstance(fields.get(key), str) and fields[key]):
+        if not (isinstance(fields.get(key), str) and fields[key].strip()):
             return f"must give {key}, a nonempty string"
     if fields["kind"] not in ("correctness", "measurement"):
         return "kind must be correctness or measurement"
@@ -356,7 +360,7 @@ def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> Done:
         descriptor, path = tempfile.mkstemp(prefix="fw-assign.", suffix=".json", dir=os.environ.get("TMPDIR") or "/tmp")
         with os.fdopen(descriptor, "w", encoding="utf-8") as f:
             f.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
-        done = run([script, *args, path], capture=True)
+        done = run([script, *args, path], capture=True, env={**os.environ, execution.ASSIGN_STEP_ENV: "1"})
     except OSError as exc:
         err(f"execution assign: cannot stage the payload: {exc.strerror}; nothing asked")
         return Done(1, "")
@@ -446,13 +450,14 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
 
     fw = fleet_worker_word(cfg)
     texts: list[str] = []
-    refused = unknown = False
+    refusal_status = 0
+    unknown = False
     for block in selected:
         request_id, kind, box = block["request_id"], block["kind"], block["execution_host"]
         record = execution.record_of(records, request_id)
         if record is not None and record.get("state") != "reserved":
             if not placement(block, record):
-                refused = True
+                refusal_status = refusal_status or 1
             err(f"ASSIGN ALREADY {request_id}: the registry holds it {execution.jq_text(record.get('state'))};"
                 " an earlier call dispatched it, so it is not asked or assigned again")
             continue
@@ -467,11 +472,11 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
         if answer.rc != 0:
             # A window exiting 3 is pending (registry.py, THE PENDING WINDOW): refused for now, asked again later.
             pending = "; it is pending: ask again once the box's records conclude" if verb[1] == "window" and answer.rc == 3 else ""
-            err(f"ASSIGN REFUSED {request_id}: the {verb[1]} exited {answer.rc} (above); nothing assigned{pending}")
-            refused = True
+            err(f"ASSIGN REFUSED {execution.shown(request_id)}: the {verb[1]} exited {answer.rc} (above); nothing assigned{pending}")
+            refusal_status = ASSIGN_ACTION_REQUIRED if answer.rc in (2, ASSIGN_ACTION_REQUIRED) else refusal_status or 1
             continue
         if not placement(block):
-            refused = True
+            refusal_status = refusal_status or 1
         revision = assigned_revision(answer.out, block)
         if revision is None:
             err(f"ASSIGN UNKNOWN {request_id}: dispatched, but no resolved_revision could be read off its record (above);"
@@ -503,4 +508,4 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
                 return 4
     elif parsed.unstick is not None:
         err("ASSIGN UNSTICK SKIPPED: nothing was assigned")
-    return 4 if unknown else 1 if refused else 0
+    return 4 if unknown else refusal_status

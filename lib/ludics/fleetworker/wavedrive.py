@@ -88,13 +88,31 @@ THE ANSWERS:
             with no message printed means every block was such: the worker is resumed with that
             call's saved message, and where none was saved the turn is attention. Exit 0 with a
             message and such a block beside it has resumed the worker with part of its
-            assignments, which is attention at once. Exit 1 with nothing
-            assigned (every block refused: a busy box, a window; assign prints no message then)
-            is tried again each ``RETRY`` seconds, ``TRIES`` times, then attention. Exit 1 with
-            some blocks assigned has resumed the worker with those, so the turn is over and the
-            refused blocks are attention at once: the worker waits for them in a turn this
-            driver will read as new. Any other nonzero exit is attention at once (exit 4 above
-            all: assign's own line says never to assign again).
+            assignments, which is attention at once. Exit 1 with no message is tried again each
+            ``RETRY`` seconds, ``TRIES`` times, then attention (for example, a full box or pending
+            window). The closed list of incurable refusals is assign usage (exit 2), and the
+            following cases reported by assign as exit 5:
+            - run/window usage
+            - rejected revision checks (invalid revision or repository, an absent commit, a
+              missing or unreadable-by-this-token ``head-of:`` branch returning 404, or a
+              successful GitHub response that does not match the requested commit or name a head)
+            - invalid request fields, issue or request id, including an id collision by case
+            - a host outside the exact fleet roster, an empty or aliased roster, an unreadable
+              or invalid configured endpoint map, an invalid correctness slot spec, an anchor
+              without the required lab lock configuration, or an outstanding record on a host
+              no longer in the roster
+            - a reserved id whose assignment or window definition differs, or whose reservation
+              was adopted and needs reconciliation.
+            The code sources are ``registry.AssignmentInput``, ``execution.cmd_execution`` (the
+            endpoint map and revision refusals through ``execution.fail(..., refusal_status=...)``),
+            and assign's usage exits.
+            Only assign's status classifies these refusals. Its diagnostics and the worker's
+            text are not searched for refusal reasons. Exit 1 or 5 with assignments in the
+            message has resumed the worker with those, so it is attention at once for the
+            unassigned blocks. Do not replay the assigned blocks. Exit 5 with no message is
+            attention at once so the coordinator can relay the cure from assign's diagnostics.
+            Other nonzero exits are also attention (exit 4 can require reconciliation before
+            any further assignment).
   result    each line needs ``request_id``, an absolute ``run`` and a 40-hex ``observed_sha``, and is
             concluded off the run record: ``execution conclude --from-run``, and when that refuses,
             ``--from-bg-run`` (a refused conclusion concludes nothing, so trying both reads is
@@ -274,6 +292,7 @@ from typing import Any, cast
 from ludics import bgrun, cli
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
 from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
 from ludics.fleetworker.transport import Done, substitution
 from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
@@ -803,10 +822,13 @@ class Driver:
                                   " the worker those assignments", message)
         if done.rc == 0:
             return self.note(worker, turn, "request", "answered", f"assigned and resumed with {out}")
-        if done.rc == 1 and done.out.strip():
+        if done.rc in (1, ASSIGN_ACTION_REQUIRED) and done.out.strip():
             return self.attention(worker, turn, "request", "execution assign refused some of the turn's blocks and resumed the"
                                   f" worker with the rest ({out}); its lines name the refused ones, which the worker still waits for",
                                   message)
+        if done.rc == ASSIGN_ACTION_REQUIRED:
+            return self.attention(worker, turn, "request", "execution assign needs action before retrying; read its"
+                                  " refusal above and relay the cure to the worker", message)
         tries = int(last.get("tries", 0)) + 1 if last is not None and last.get("status") == "retry" else 1
         if done.rc == 1 and tries < TRIES:
             return self.note(worker, turn, "request", "retry", f"execution assign refused a block (try {tries} of {TRIES})",
