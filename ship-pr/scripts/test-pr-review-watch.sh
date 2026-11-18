@@ -2218,6 +2218,33 @@ test_a_stalled_round_is_nudged_once_and_watched() {
     "the move after it is the once-per-head remedy"
   assert_contains "$WATCH_OUT" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
     "the fallback reads both feed fields through retry"
+  local filter feed
+  filter=${WATCH_OUT##* --jq \'}
+  filter=${filter%%\'*}
+  feed=$(jq -r "$filter" <<'JSON'
+{
+  "comments": [
+    {"createdAt":"2026-09-01T01:02:00Z","author":{"login":"codex"},"body":"No findings after re-review."},
+    {"createdAt":"2026-09-01T01:00:00Z","author":{"login":"worker"},"body":"Requesting review."}
+  ],
+  "reviews":[
+    {"submittedAt":"2026-09-01T01:01:00Z","state":"CHANGES_REQUESTED","author":{"login":"codex"},
+     "commit":{"oid":"abc123"},"body":"One finding."}
+  ]
+}
+JSON
+  ) || bail "the fallback's jq filter failed"
+  assert_eq "$feed" "$(cat <<'FEED'
+2026-09-01T01:00:00Z COMMENT worker
+Requesting review.
+
+2026-09-01T01:01:00Z CHANGES_REQUESTED codex abc123
+One finding.
+
+2026-09-01T01:02:00Z COMMENT codex
+No findings after re-review.
+FEED
+  )" "the fallback orders comments and reviews by timestamp"
   [ "$(($(cat "$SHIP_PR_TEST_CLOCK") - start))" -ge "$GRACE" ] ||
     bail "the request's grace was not waited out ($(($(cat "$SHIP_PR_TEST_CLOCK") - start))s)"
   # A post that fails is sent once, whatever its error, and the window still runs to its end.

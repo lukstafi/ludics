@@ -326,10 +326,10 @@ gh() {
 # rendering (ludics-lite#403), asked through the two entry points of ludics.prreview that
 # pr-review.sh's command line does not route to (`status-state <pr> [<pending-request watermark>]`,
 # `status-line <state line> [<pr number>]`), so every case here judges what `status` and `watch`
-# run. The arguments are what the reads take from their caller (watch_nudge_after, PR_NUM).
+# run. Both entry points use the fixture PR number.
 run_status() {
   STATE=$(py_forward call status-state 7 "${watch_nudge_after:-}")
-  LINE=$(py_forward call status-line "$STATE" "${PR_NUM:-}")
+  LINE=$(py_forward call status-line "$STATE" 7)
 }
 
 # cmd_status in a subshell: its exit code is the assertion, and it must not end this reporter.

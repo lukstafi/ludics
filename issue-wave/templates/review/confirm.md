@@ -5,7 +5,7 @@ An earlier review of this PR, at head `@@REVIEWED_SHA@@`, found blocking defects
 blocking finding, by a fix or by a rebuttal that holds against the code. Read top-level PR comments
 and review summaries for the worker's replies:
 
-    gh pr view @@PR@@ --repo @@REPO@@ --json comments,reviews --jq '.comments[], .reviews[] | ([.state // "COMMENT", .author.login, .commit.oid] | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
+    gh pr view @@PR@@ --repo @@REPO@@ --json comments,reviews --jq '[.comments[], .reviews[]] | sort_by(.submittedAt // .createdAt)[] | ([.submittedAt // .createdAt, .state // "COMMENT", .author.login, .commit.oid] | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
 
 Read the change since the reviewed head, `git -C @@CHECKOUT@@ diff @@REVIEWED_SHA@@ @@SHA@@`, not
 the whole PR again. Report a new blocking finding only where that change introduced one. For each

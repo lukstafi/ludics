@@ -1314,7 +1314,8 @@ def pr_feed_command(repo: str, pr: str) -> str:
     target = shlex.quote(pr) if pr else "<pr>"
     repository = shlex.quote(repo) if repo else "<owner/repo>"
     render = (
-        r'.comments[], .reviews[] | ([.state // "COMMENT", .author.login, .commit.oid]'
+        r'[.comments[], .reviews[]] | sort_by(.submittedAt // .createdAt)[]'
+        r' | ([.submittedAt // .createdAt, .state // "COMMENT", .author.login, .commit.oid]'
         r' | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
     )
     return (

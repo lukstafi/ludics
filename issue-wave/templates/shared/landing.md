@@ -44,7 +44,7 @@ to `@@MAIN@@`.
   thread with a fix or a rebuttal, `reply` and `resolve` per thread, and push once per CI cycle. If
   the watch goes quiet suspiciously long, read the top-level comments and review summaries:
 
-      gh pr view <pr> --repo @@REPO@@ --json comments,reviews --jq '.comments[], .reviews[] | ([.state // "COMMENT", .author.login, .commit.oid] | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
+      gh pr view <pr> --repo @@REPO@@ --json comments,reviews --jq '[.comments[], .reviews[]] | sort_by(.submittedAt // .createdAt)[] | ([.submittedAt // .createdAt, .state // "COMMENT", .author.login, .commit.oid] | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
 
   Open the PR conversation for inline threads.
 - **A stalled round**: `watch` nudges a STALLED round itself, once per head, when no 👍, no verdict
