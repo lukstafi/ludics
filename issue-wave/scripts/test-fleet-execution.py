@@ -130,8 +130,8 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
         del broken[missing]
         sibling_path.write_text(json.dumps(broken))
         change('dispatch', dict(request_id=identity, evidence='must fail closed'), expected=1)
-        on_file = json.loads((root / 'executions' / (identity + '.json')).read_text())
-        assert {k: v for k, v in on_file.items() if k != 'lease_token'} == first  # no listing prints it
+        # The record on file, byte for byte (its lease token too, which no listing prints).
+        assert (root / 'executions' / (identity + '.json')).read_bytes() == owner_bytes
     broken = json.loads(sibling_bytes)
     del broken['request']['execution_host']
     sibling_path.write_text(json.dumps(broken))
