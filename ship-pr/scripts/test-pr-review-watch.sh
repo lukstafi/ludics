@@ -2219,7 +2219,7 @@ test_a_stalled_round_is_nudged_once_and_watched() {
   assert_contains "$WATCH_OUT" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
     "the fallback reads both feed fields through retry"
   local filter feed
-  filter=${WATCH_OUT##* --jq \'}
+  filter=${WATCH_OUT##* --json comments,reviews --jq \'}
   filter=${filter%%\'*}
   feed=$(jq -r "$filter" <<'JSON'
 {
@@ -2358,6 +2358,8 @@ test_a_stalled_round_with_something_standing_is_never_nudged() {
       assert_contains "$WATCH_OUT" "a 👍 from ${REVIEWER} is on the PR" "thumb: the 👍 is named"
       assert_contains "$WATCH_OUT" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
         "the barred nudge points to both feed fields"
+      assert_contains "$WATCH_OUT" "retry --read api --paginate repos/$REPO/issues/7/reactions --jq " \
+        "the barred nudge points to the reaction list"
       ;;
     verdict) assert_contains "$WATCH_OUT" "no-findings verdict for head ${H2:0:7}" "verdict: it is named" ;;
     completed-row) assert_contains "$WATCH_OUT" "Code Review Completed" "completed-row: it is named" ;;

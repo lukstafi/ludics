@@ -1309,18 +1309,28 @@ def conflict_note(merge: str, repo: str, pr: str) -> str:
             return ""
 
 
+PR_FEED_FILTER = (
+    r'[.comments[], .reviews[]] | sort_by(.submittedAt // .createdAt)[]'
+    r' | ([.submittedAt // .createdAt, .state // "COMMENT", .author.login, .commit.oid]'
+    r' | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
+)
+
+
 def pr_feed_command(repo: str, pr: str) -> str:
     """Manual read of top-level comments and review summaries. Check PR reactions separately."""
     target = shlex.quote(pr) if pr else "<pr>"
     repository = shlex.quote(repo) if repo else "<owner/repo>"
-    render = (
-        r'[.comments[], .reviews[]] | sort_by(.submittedAt // .createdAt)[]'
-        r' | ([.submittedAt // .createdAt, .state // "COMMENT", .author.login, .commit.oid]'
-        r' | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
-    )
     return (
         f"~/.claude/skills/ship-pr/scripts/pr-review.sh retry --read pr view {target}"
-        f" --repo {repository} --json comments,reviews --jq {shlex.quote(render)}"
+        f" --repo {repository} --json comments,reviews --jq {shlex.quote(PR_FEED_FILTER)}"
+    )
+
+
+def pr_reactions_command(repo: str, pr: str) -> str:
+    endpoint = shlex.quote(f"repos/{repo or '<owner/repo>'}/issues/{pr or '<pr>'}/reactions")
+    return (
+        f"~/.claude/skills/ship-pr/scripts/pr-review.sh retry --read api --paginate {endpoint}"
+        " --jq '.[] | [.content, .user.login, .created_at] | @tsv'"
     )
 
 
@@ -1349,8 +1359,8 @@ def status_line(state: State, repo: str, pr: str) -> str:
                 f"STALLED — {detail} for {age}, longer than a round takes. `watch` nudges it"
                 " itself, once per head, when no 👍, verdict or request stands for the head, and"
                 f" keeps watching. Outside a watch, FIRST read the PR feed ({pr_feed_command(repo, pr)})"
-                " for a verdict and check the PR conversation for a 👍. If neither stands for the"
-                " current head, nudge once"
+                f" and the PR reactions ({pr_reactions_command(repo, pr)}). If both reads succeed"
+                " and show no 👍 and no verdict or standing request for this head, nudge once"
                 f" (pr-review.sh comment {repo}#{p} '@codex review'); never while a 👍 may stand,"
                 f" since a re-request CLEARS it{c}"
             )

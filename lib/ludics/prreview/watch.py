@@ -90,6 +90,7 @@ from ludics.prreview.state import (
     is_init_failure,
     nudge_read,
     pr_feed_command,
+    pr_reactions_command,
     review_rounds,
     stall_nudge_read,
     state_threads,
@@ -801,8 +802,9 @@ class Watch:
             case NudgeBarred(why=why):
                 return (
                     f"{flag}not nudged — {why}. Read the PR feed"
-                    f" ({pr_feed_command(self.repo, self.pr)}) before any move and check PR"
-                    " reactions. Never re-request while a 👍 may stand"
+                    f" ({pr_feed_command(self.repo, self.pr)}) and check PR reactions"
+                    f" ({pr_reactions_command(self.repo, self.pr)})."
+                    " Never re-request while a 👍 may stand"
                 )
             case NudgeClear(head=head):
                 pr_state, now_head = self.write_gate()

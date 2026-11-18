@@ -1546,7 +1546,8 @@ test_an_old_eyes_over_a_fresh_push_is_its_pickup_then_its_stall() {
   assert_contains "$(state_detail "$STATE")" "with nothing posted since" "aged from the 👀, as before"
   assert_contains "$LINE" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
     "the stalled fallback reads both feed fields through retry"
-  assert_contains "$LINE" "check the PR conversation for a 👍" "reactions need a separate read"
+  assert_contains "$LINE" "retry --read api --paginate repos/$REPO/issues/7/reactions --jq " \
+    "reactions can be read from a headless worker"
 }
 
 # --- an approval over open review threads (ludics-lite#289) -----------------------------------
