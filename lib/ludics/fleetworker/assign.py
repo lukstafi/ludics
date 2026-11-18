@@ -252,7 +252,7 @@ def block_problem(block: Any) -> str | None:
     if unknown:
         return f"names {', '.join(unknown)}; a request block takes only {', '.join(sorted(BLOCK_FIELDS))}"
     for key in BLOCK_REQUIRED:
-        if not (isinstance(fields.get(key), str) and fields[key]):
+        if not (isinstance(fields.get(key), str) and fields[key].strip()):
             return f"must give {key}, a nonempty string"
     if fields["kind"] not in ("correctness", "measurement"):
         return "kind must be correctness or measurement"

@@ -1914,7 +1914,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
     if action in ("reserve", "run", "dispatch", "window") or (action == "list" and "--host" in args):
         found = endpoint_map(cfg)
         if found is None:
-            return 1
+            return refusal_status
         map_spec = found
     token = my_token(cfg)
     head = prelude(cfg, cfg.anchor) + (LEASE_MUTATION if action != "list" else "shift 3\n")

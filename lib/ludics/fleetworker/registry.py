@@ -845,9 +845,9 @@ def correctness_slots(spec: str, canonical_hosts: set[str]) -> dict[str, int]:
     for pair in spec.split():
         box, _, count = pair.partition("=")
         if not box or not count.isdigit() or int(count) < 1:
-            refuse(f"FLEET_BOX_CORRECTNESS_SLOTS entry must be <box>=<positive n>: {pair}")
+            raise AssignmentInput(f"FLEET_BOX_CORRECTNESS_SLOTS entry must be <box>=<positive n>: {pair}")
         if box not in canonical_hosts:
-            refuse(f"FLEET_BOX_CORRECTNESS_SLOTS names {box}, which is not in FLEET_BOXES")
+            raise AssignmentInput(f"FLEET_BOX_CORRECTNESS_SLOTS names {box}, which is not in FLEET_BOXES")
         slots[box] = int(count)
     return slots
 
@@ -898,18 +898,18 @@ LANE_LOCKS: list[int] = []   # lane-lock descriptors held SHARED until this proc
 def check_lab_host(host: str, box: str, anchor: str, lab: str) -> None:
     """Refuse unless this anchor is the machine whose lock directory holds the lab's lane locks."""
     if not anchor or not lab:
-        refuse(f"{host} is lab box {box}, and the anchor's and lab host's names were not passed, so this "
-               f"anchor cannot be shown to hold the lab's lane locks")
+        raise AssignmentInput(f"{host} is lab box {box}, and the anchor's and lab host's names were not passed, so this "
+                              "anchor cannot be shown to hold the lab's lane locks")
     if anchor.casefold() != lab.casefold():
-        refuse(f"{host} is lab box {box}, whose lane lock is a flock on the lab host {lab} (FLEET_LAB_HOST), "
-               f"but this registry, on the anchor {anchor} (FLEET_ANCHOR), reads {anchor}'s lock directory, "
-               f"so a running lane could not be seen: the anchor must be the machine that runs "
-               f"wake-lab.sh and the sweep, and FLEET_LAB_HOST names that machine")
+        raise AssignmentInput(f"{host} is lab box {box}, whose lane lock is a flock on the lab host {lab} (FLEET_LAB_HOST), "
+                              f"but this registry, on the anchor {anchor} (FLEET_ANCHOR), reads {anchor}'s lock directory, "
+                              "so a running lane could not be seen: the anchor must be the machine that runs "
+                              "wake-lab.sh and the sweep, and FLEET_LAB_HOST names that machine")
     site = Path(os.environ.get("WAKE_LAB_HOSTS") or Path.home() / ".config/wake-lab/hosts.sh")
     if not (site.is_file() and os.access(site, os.R_OK)):
-        refuse(f"{host} is lab box {box}, and the anchor {anchor}, declared the lab host, has no readable "
-               f"wake-lab site file ({site}), so it cannot be the machine whose wake-lab.sh drives the "
-               f"lab and holds its lane locks: a running lane could not be seen")
+        raise AssignmentInput(f"{host} is lab box {box}, and the anchor {anchor}, declared the lab host, has no readable "
+                              f"wake-lab site file ({site}), so it cannot be the machine whose wake-lab.sh drives the "
+                              "lab and holds its lane locks: a running lane could not be seen")
 
 
 def check_lane_lock(host: str, map_spec: str, anchor: str, lab: str) -> None:

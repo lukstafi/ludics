@@ -3839,6 +3839,10 @@ expect "a block naming a field outside the allowlist refuses the call, nothing a
 [ -z "$(state_as as-7)" ] && ok "...not even its well-formed sibling" || ko "as-7 was reserved: $(state_as as-7)"
 expect "a runner without its clone is refused" 2 "a runner needs clone" -- \
   "${FWA[@]}" execution assign "$(as_base subagent)" "$(as_msg noclone "$(as_block as-9 testbox correctness "$asha" '{"runner":"true","checkout":"/w"}')")"
+expect "an all-whitespace request id is refused before dispatch" 2 "must give request_id, a nonempty string" -- \
+  "${FWA[@]}" execution assign "$(as_base subagent)" "$(as_msg blank-id "$(as_block ' ' testbox correctness "$asha" '{"command":"true"}')")"
+expect "an all-whitespace measurement host is refused before dispatch" 2 "must give execution_host, a nonempty string" -- \
+  "${FWA[@]}" execution assign "$(as_base subagent)" "$(as_msg blank-host "$(as_block as-no-host ' ' measurement "$asha" '{"command":"true"}')")"
 expect "a message with no block is refused" 2 "no EXECUTION_REQUEST ... END_EXECUTION_REQUEST block" -- \
   "${FWA[@]}" execution assign "$(as_base subagent)" "$TMP/as-base-subagent.json"
 expect "--unstick needs the --message file it sends" 2 "--unstick sends the --message file" -- \

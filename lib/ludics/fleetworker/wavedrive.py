@@ -97,8 +97,10 @@ THE ANSWERS:
               missing or unreadable-by-this-token ``head-of:`` branch returning 404, or a
               successful GitHub response that does not match the requested commit or name a head)
             - invalid request fields, issue or request id, including an id collision by case
-            - a host outside the exact fleet roster, an empty or aliased roster or conflicting
-              endpoint map, or an outstanding record on a host no longer in the roster
+            - a host outside the exact fleet roster, an empty or aliased roster, an unreadable
+              or invalid configured endpoint map, an invalid correctness slot spec, an anchor
+              without the required lab lock configuration, or an outstanding record on a host
+              no longer in the roster
             - a reserved id whose assignment or window definition differs, or whose reservation
               was adopted and needs reconciliation.
             Only assign's status classifies these refusals. Its diagnostics and the worker's

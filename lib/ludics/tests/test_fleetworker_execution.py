@@ -1000,11 +1000,12 @@ class WindowGap(unittest.TestCase):
                      execution.Done(3, '{"gap":{"wait":"5"}}'), execution.Done(3, "[]")):
             self.assertIsNone(execution.gap_wait(done), done)
 
-    def run_window(self, answers: list[Any], words: list[str] | None = None, **env: str) -> tuple[int, str, str, list[Any], list[float]]:
+    def run_window(self, answers: list[Any], words: list[str] | None = None, *, endpoint_map: str | None = "",
+                   **env: str) -> tuple[int, str, str, list[Any], list[float]]:
         calls: list[Any] = []
         slept: list[float] = []
 
-        def unresolved(cfg: Any, payload: str, action: str) -> tuple[str, str]:
+        def unresolved(cfg: Any, payload: str, action: str, *, refusal_status: int = 1) -> tuple[str, str]:
             return payload, ""
 
         def run_on(cfg: Any, box: str, script: str, argv: list[str], capture: bool = False) -> Any:
@@ -1017,7 +1018,7 @@ class WindowGap(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with (mock.patch.object(execution, "check_identity"), mock.patch.object(execution, "checked_request"),
               mock.patch.object(execution, "with_resolution", side_effect=unresolved),
-              mock.patch.object(execution, "endpoint_map", return_value=""),
+              mock.patch.object(execution, "endpoint_map", return_value=endpoint_map),
               mock.patch.object(execution, "my_token", return_value="tok"),
               mock.patch.object(execution, "coordinator_id", return_value="coord"),
               mock.patch.object(execution, "execution_refresh"),
@@ -1026,6 +1027,12 @@ class WindowGap(unittest.TestCase):
               contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
             rc = execution.cmd_execution(self.cfg(**env), ["window", *(words or []), "testbox", self.file])
         return rc, out.getvalue(), err.getvalue(), calls, slept
+
+    def test_endpoint_map_refusal_needs_action_only_during_assignment(self) -> None:
+        with mock.patch.dict(os.environ, {"LUDICS_EXECUTION_ASSIGN_STEP": ""}):
+            self.assertEqual(self.run_window([], endpoint_map=None), (1, "", "", [], []))
+        with mock.patch.dict(os.environ, {"LUDICS_EXECUTION_ASSIGN_STEP": "1"}):
+            self.assertEqual(self.run_window([], endpoint_map=None), (5, "", "", [], []))
 
     def test_a_gap_answer_is_waited_then_asked_again_and_the_record_printed_once(self) -> None:
         gap = execution.Done(3, '{"gap":{"box":"testbox","after":"w1","ago":50,"gap":60,"wait":10,"standing":["s"]}}')
