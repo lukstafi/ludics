@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import tempfile
 import unittest
@@ -14,7 +15,7 @@ from unittest import mock
 
 from ludics import cli
 from ludics.fleetworker import assign, execution, boardstore
-from ludics.fleetworker.assign import (assigned_revision, base_problem, block_problem, cmd_assign, fleet_worker_word,
+from ludics.fleetworker.assign import (StepResult, assigned_revision, base_problem, block_problem, cmd_assign, fleet_worker_word,
                                        leg_command, parse, payload_of, read_blocks)
 from ludics.fleetworker.config import Config, load_config
 from ludics.fleetworker.transport import Done
@@ -151,9 +152,9 @@ class Outcomes(unittest.TestCase):
             f.write(text)
         return path
 
-    def assign(self, args: list[str], answers: dict[str, Done], records: Sequence[dict[str, Any]] = (),
+    def assign(self, args: list[str], answers: dict[str, StepResult], records: Sequence[dict[str, Any]] = (),
                unstick_rc: int = 0) -> tuple[int, str, str]:
-        def call(_cfg: Config, verb: Sequence[str], payload: dict[str, Any]) -> Done:
+        def call(_cfg: Config, verb: Sequence[str], payload: dict[str, Any]) -> StepResult:
             self.calls.append([*verb, payload["request_id"]])
             return answers[payload["request_id"]]
 
@@ -178,7 +179,7 @@ class Outcomes(unittest.TestCase):
 
     def test_one_refused_among_two_leaves_the_other_assigned(self) -> None:
         requests = self.write("r.txt", message(block("a"), block("m", host="tuf", kind="measurement")))
-        rc, out, err = self.assign([self.base, requests, "--deadline", "600"], {"a": Done(0, "{}"), "m": Done(1, "")})
+        rc, out, err = self.assign([self.base, requests, "--deadline", "600"], {"a": StepResult(0, "{}"), "m": StepResult(1, "")})
         self.assertEqual(rc, 1)
         self.assertIn("EXECUTION_ASSIGNED a\n", out)
         self.assertNotIn("EXECUTION_ASSIGNED m", out)
@@ -186,15 +187,48 @@ class Outcomes(unittest.TestCase):
         self.assertIn("ASSIGN REFUSED m: the window exited 1", err)
         self.assertEqual(self.calls, [["execution", "run", "a"], ["execution", "window", "--deadline", "600", "tuf", "m"]])
 
+    def test_a_step_that_cannot_start_reports_the_executable(self) -> None:
+        missing = os.path.join(self.dir, "missing fleet-worker.sh")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            answer = assign.step(load_config(missing, {"HOME": "/nowhere"}), ["execution", "run"], block("a"))
+        self.assertEqual((answer.rc, answer.out), (127, ""))
+        self.assertIn(f"{shlex.quote(missing)}: No such file or directory", err.getvalue())
+
+    def test_a_steps_progress_reaches_the_reader_while_the_step_is_still_waiting(self) -> None:
+        progress = "waiting for the window gap"
+        release = os.path.join(self.dir, "saw-progress")
+        script = self.write("fleet-worker.sh", "#!/bin/sh\n"
+                            f"printf '%s\\n' {shlex.quote(progress)} >&2\n"
+                            "for attempt in 1 2 3 4 5 6 7 8 9 10; do\n"
+                            f"  if [ -f {shlex.quote(release)} ]; then printf '%s\\n' pending; exit 3; fi\n"
+                            "  sleep 0.1\n"
+                            "done\n"
+                            "exit 9\n")
+        os.chmod(script, 0o755)
+
+        class Reader(io.StringIO):
+            def write(self, text: str, /) -> int:
+                if progress in text:
+                    with open(release, "w"):
+                        pass
+                return super().write(text)
+
+        with contextlib.redirect_stderr(Reader()):
+            answer = assign.step(load_config(script, {"HOME": "/nowhere"}), ["execution", "window"], block("m"))
+        self.assertEqual((answer.rc, answer.out), (3, "pending\n"))
+
     def test_action_required_survives_other_refusals_and_assignments_unless_the_outcome_is_unknown(self) -> None:
         requests = self.write("r.txt", message(block("a"), block("b"), block("c")))
-        answers = {"a": Done(5, ""), "b": Done(1, ""), "c": Done(0, "{}")}
-        rc, out, _ = self.assign([self.base, requests], answers)
+        answers = {"a": StepResult(5, "", "push the branch"), "b": StepResult(1, ""), "c": StepResult(0, "{}")}
+        rc, out, err = self.assign([self.base, requests], answers)
         self.assertEqual(rc, 5)
         self.assertEqual([line for line in out.splitlines() if line.startswith("EXECUTION_ASSIGNED")],
                          ["EXECUTION_ASSIGNED c"])
-        rc, _, _ = self.assign([self.base, requests], {**answers, "b": Done(4, "")})
+        self.assertEqual(err.splitlines()[-1], "ASSIGN ACTION REQUIRED a: push the branch")
+        rc, _, err = self.assign([self.base, requests], {**answers, "b": StepResult(4, "")})
         self.assertEqual(rc, 4)
+        self.assertNotIn("ASSIGN ACTION REQUIRED", err)
 
     def test_assigned_legs_and_already_retry_preserve_each_placement_once(self) -> None:
         # The actual shipped store applies each write; no mock of the union logic.
@@ -206,7 +240,7 @@ class Outcomes(unittest.TestCase):
         requests = self.write("r.txt", message(block("a", runner="check", clone="/repo", checkout="/wt"),
                                                block("b", host="tuf", runner="check", clone="/repo", checkout="/wt")))
         args = [self.base, requests]
-        self.assertEqual(self.assign(args, {"a": Done(0, "{}"), "b": Done(0, "{}")} )[0], 0)
+        self.assertEqual(self.assign(args, {"a": StepResult(0, "{}"), "b": StepResult(0, "{}")} )[0], 0)
         records = [{"request_id": name, "state": state, "checkout": "/wt",
                     "request": {**BASE, "execution_host": host}}
                    for name, state, host in (("a", "launching", "rog"), ("b", "concluded", "tuf"))]
@@ -230,7 +264,7 @@ class Outcomes(unittest.TestCase):
     def test_board_failure_keeps_assignment_and_retry_repairs_without_dispatch(self) -> None:
         requests = self.write("r.txt", message(block("a", checkout="/wt")))
         self.placement_rc = 4
-        rc, out, err = self.assign([self.base, requests], {"a": Done(0, "{}")})
+        rc, out, err = self.assign([self.base, requests], {"a": StepResult(0, "{}")})
         self.assertEqual(rc, 1)
         self.assertIn("EXECUTION_ASSIGNED a", out)
         self.assertIn("ASSIGN BOARD NOTE", err)
@@ -244,8 +278,8 @@ class Outcomes(unittest.TestCase):
         requests = self.write("r.txt", message(block("a", checkout="/wt"), block("b", checkout="/other")))
         records = [{"request_id": "a", "state": "launching", "checkout": "/wt",
                     "request": {**BASE, "execution_host": "rog"}}]
-        def call(_cfg: Config, _verb: Sequence[str], _payload: dict[str, Any]) -> Done:
-            return Done(0, "{}")
+        def call(_cfg: Config, _verb: Sequence[str], _payload: dict[str, Any]) -> StepResult:
+            return StepResult(0, "{}")
 
         out, err = io.StringIO(), io.StringIO()
         with (mock.patch.object(execution, "listing", return_value=Done(0, json.dumps(records))),
@@ -268,13 +302,13 @@ class Outcomes(unittest.TestCase):
 
     def test_refused_unknown_and_checkoutless_requests_add_no_placement(self) -> None:
         requests = self.write("r.txt", message(block("a", checkout="/wt"), block("b", checkout="/other"), block("c")))
-        self.assign([self.base, requests], {"a": Done(1, ""), "b": Done(4, ""), "c": Done(0, "{}")})
+        self.assign([self.base, requests], {"a": StepResult(1, ""), "b": StepResult(4, ""), "c": StepResult(0, "{}")})
         self.assertEqual(self.placements, [])
 
     def test_a_refused_window_alone_prints_nothing(self) -> None:
         requests = self.write("r.txt", message(block("m", kind="measurement")))
         msg = os.path.join(self.dir, "msg.txt")
-        rc, out, _ = self.assign([self.base, requests, "--message", msg, "--unstick", "box", "w"], {"m": Done(1, "")})
+        rc, out, _ = self.assign([self.base, requests, "--message", msg, "--unstick", "box", "w"], {"m": StepResult(1, "")})
         self.assertEqual((rc, out), (1, ""))
         self.assertFalse(os.path.exists(msg), "a call that assigns nothing writes no message")
         self.assertEqual(self.unsticks, [], "and unsticks nothing")
@@ -282,7 +316,7 @@ class Outcomes(unittest.TestCase):
     def test_a_retry_assigns_nothing_twice(self) -> None:
         requests = self.write("r.txt", message(block("a"), block("b", host="tuf")))
         records = [{"request_id": "a", "state": "launching"}, {"request_id": "b", "state": "reserved"}]
-        rc, out, err = self.assign([self.base, requests], {"b": Done(0, "{}")}, records)
+        rc, out, err = self.assign([self.base, requests], {"b": StepResult(0, "{}")}, records)
         self.assertEqual(rc, 0)
         self.assertIn("ASSIGN ALREADY a: the registry holds it launching", err)
         self.assertNotIn("EXECUTION_ASSIGNED a", out)
@@ -291,7 +325,7 @@ class Outcomes(unittest.TestCase):
 
     def test_an_unknown_outcome_is_exit_4(self) -> None:
         requests = self.write("r.txt", message(block("a"), block("h", requested_revision="head-of:x")))
-        rc, out, err = self.assign([self.base, requests], {"a": Done(4, ""), "h": Done(0, "{}")})
+        rc, out, err = self.assign([self.base, requests], {"a": StepResult(4, ""), "h": StepResult(0, "{}")})
         self.assertEqual(rc, 4)
         self.assertEqual(out, "")
         self.assertIn("ASSIGN UNKNOWN a: the run's outcome is unknown", err)
@@ -301,7 +335,7 @@ class Outcomes(unittest.TestCase):
         requests = self.write("r.txt", message(block("a"), block("b", host="tuf")))
         msg = os.path.join(self.dir, "msg.txt")
         rc, out, _ = self.assign([self.base, requests, "--request", "b", "--message", msg, "--unstick", "box", "w"],
-                                 {"b": Done(0, "{}")})
+                                 {"b": StepResult(0, "{}")})
         self.assertEqual(rc, 0)
         self.assertEqual(self.calls, [["execution", "run", "b"]])
         with open(msg, encoding="utf-8") as f:
@@ -312,7 +346,7 @@ class Outcomes(unittest.TestCase):
     def test_a_failed_unstick_is_exit_4_naming_the_resend(self) -> None:
         requests = self.write("r.txt", message(block("a")))
         msg = os.path.join(self.dir, "msg.txt")
-        rc, _, err = self.assign([self.base, requests, "--message", msg, "--unstick", "box", "w"], {"a": Done(0, "{}")},
+        rc, _, err = self.assign([self.base, requests, "--message", msg, "--unstick", "box", "w"], {"a": StepResult(0, "{}")},
                                  unstick_rc=1)
         self.assertEqual(rc, 4)
         self.assertIn(f"resend with: fleet-worker.sh unstick box w --message {msg} -- never assign again", err)
@@ -337,7 +371,7 @@ class Outcomes(unittest.TestCase):
         requests = self.write("r.txt", message(block("a")))
         out, said = io.StringIO(), io.StringIO()
 
-        def call(_cfg: Config, _verb: Sequence[str], _payload: dict[str, Any]) -> Done:
+        def call(_cfg: Config, _verb: Sequence[str], _payload: dict[str, Any]) -> StepResult:
             self.fail("the registry was asked")
 
         with (mock.patch.object(execution, "listing", return_value=Done(1, "EXECUTION REFUSED: busy")),

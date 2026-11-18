@@ -63,6 +63,11 @@ block, in file order, then has one outcome, said in one line on stderr:
 - ``ASSIGN UNKNOWN <id>: ...``: the step exited 4 (the anchor did not answer), or exited 0 with a
   record this verb cannot read the revision off; reconcile it, never retry it blind.
 
+An assign that returns exit 5 ends stderr with one ``ASSIGN ACTION REQUIRED `` summary, with the
+ID and diagnostic for each step that exited 2 or 5. Only the step's first ``fleet-worker.sh: ``
+usage line (exit 2) or ``EXECUTION REFUSED: `` admission line (exit 5) supplies diagnostic text.
+The child's other stderr is relayed live and its stdout is echoed afterwards.
+
 So a RETRY after a partial failure is the same call again: what was assigned answers ALREADY and is
 not dispatched or printed again, a refused request is asked afresh, and an unknown one is answered by
 the registry's retry rule (``run`` refuses a dispatched record, so it is never launched twice). The
@@ -103,13 +108,14 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from ludics import cli
+from ludics import cli, proc
 from ludics.fleetworker import execution
 from ludics.fleetworker.board import record_placement
 from ludics.fleetworker.config import Config
@@ -127,6 +133,8 @@ OPEN, CLOSE = "EXECUTION_REQUEST", "END_EXECUTION_REQUEST"
 OBJECT_ID = re.compile(r"[0-9a-f]{40}")
 HEAD_OF = "head-of:"
 ABSOLUTE = re.compile(r"/|[A-Za-z]:[/\\]")
+ACTION_REQUIRED_LINE = "ASSIGN ACTION REQUIRED "
+ACTION_DIAGNOSTIC_PREFIX = {2: "fleet-worker.sh: ", ASSIGN_ACTION_REQUIRED: "EXECUTION REFUSED: "}
 
 
 @dataclass
@@ -352,29 +360,63 @@ def assignment_text(block: dict[str, Any], command: str, revision: str) -> str:
     ))
 
 
-def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> Done:
-    """This checkout's fleet-worker.sh with ``args`` and the payload file last: stdout captured
-    (the record) and echoed on stderr, stderr the caller's."""
+@dataclass(frozen=True)
+class StepResult(Done):
+    diagnostic: str = ""
+
+
+def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> StepResult:
+    """This checkout's fleet-worker.sh with ``args`` and the payload file last. Relay stderr
+    as it arrives so an operator sees the reason before a window sleeps."""
     script = os.path.join(cfg.here, os.path.basename(cfg.script))
     path = ""
+    diagnostics: dict[str, str] = {}
     try:
         descriptor, path = tempfile.mkstemp(prefix="fw-assign.", suffix=".json", dir=os.environ.get("TMPDIR") or "/tmp")
         with os.fdopen(descriptor, "w", encoding="utf-8") as f:
             f.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
-        done = run([script, *args, path], capture=True, env={**os.environ, execution.ASSIGN_STEP_ENV: "1"})
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # Spool stdout so a large registry response cannot block the child as we relay stderr.
+        with tempfile.TemporaryFile() as stdout:
+            try:
+                child = subprocess.Popen(
+                    [script, *args, path], stdout=stdout, stderr=subprocess.PIPE,
+                    env={**os.environ, execution.ASSIGN_STEP_ENV: "1"},
+                )
+            except OSError as exc:
+                err(f"{execution.shown(script)}: {exc.strerror}")
+                return StepResult(127, "")
+            with child:
+                assert child.stderr is not None
+                for raw in child.stderr:
+                    line = proc.decode(raw)
+                    sys.stderr.write(line)
+                    sys.stderr.flush()
+                    for prefix in ACTION_DIAGNOSTIC_PREFIX.values():
+                        if line.startswith(prefix):
+                            diagnostics.setdefault(prefix, line.splitlines()[0].removeprefix(prefix))
+                rc = child.wait()
+            stdout.seek(0)
+            out = proc.decode(stdout.read())
     except OSError as exc:
         err(f"execution assign: cannot stage the payload: {exc.strerror}; nothing asked")
-        return Done(1, "")
+        return StepResult(1, "")
     finally:
         if path:
             try:
                 os.unlink(path)
             except OSError:
                 pass
-    if done.out:
-        sys.stderr.write(done.out if done.out.endswith("\n") else done.out + "\n")
-        sys.stderr.flush()
-    return done
+    if out:
+        err(out.removesuffix("\n"))
+    prefix = ACTION_DIAGNOSTIC_PREFIX.get(rc)
+    if prefix is None:
+        return StepResult(rc, out)
+    detail = diagnostics.get(prefix) or next(
+        (line.removeprefix(prefix) for line in out.splitlines() if line.startswith(prefix)), ""
+    )
+    return StepResult(rc, out, detail)
 
 
 def unstick(cfg: Config, box: str, name: str, message: str) -> int:
@@ -382,7 +424,7 @@ def unstick(cfg: Config, box: str, name: str, message: str) -> int:
     return run([script, "unstick", box, name, "--message", message], stdout_to_stderr=True).rc
 
 
-Step = Callable[[Config, Sequence[str], dict[str, Any]], Done]
+Step = Callable[[Config, Sequence[str], dict[str, Any]], StepResult]
 Unstick = Callable[[Config, str, str, str], int]
 
 
@@ -451,6 +493,7 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
 
     fw = fleet_worker_word(cfg)
     texts: list[str] = []
+    action_required: list[str] = []
     refusal_status = 0
     unknown = False
     for block in selected:
@@ -471,10 +514,16 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
             unknown = True
             continue
         if answer.rc != 0:
+            shown_id = execution.shown(request_id) if request_id.isprintable() else ascii(request_id)
             # A window exiting 3 is pending (registry.py, THE PENDING WINDOW): refused for now, asked again later.
             pending = "; it is pending: ask again once the box's records conclude" if verb[1] == "window" and answer.rc == 3 else ""
-            err(f"ASSIGN REFUSED {execution.shown(request_id)}: the {verb[1]} exited {answer.rc} (above); nothing assigned{pending}")
-            refusal_status = ASSIGN_ACTION_REQUIRED if answer.rc in (2, ASSIGN_ACTION_REQUIRED) else refusal_status or 1
+            err(f"ASSIGN REFUSED {shown_id}: the {verb[1]} exited {answer.rc} (above); nothing assigned{pending}")
+            if answer.rc in (2, ASSIGN_ACTION_REQUIRED):
+                detail = answer.diagnostic or "inspect the assignment diagnostic before retrying"
+                action_required.append(f"{shown_id}: {detail}")
+                refusal_status = ASSIGN_ACTION_REQUIRED
+            else:
+                refusal_status = refusal_status or 1
             continue
         if not placement(block):
             refusal_status = refusal_status or 1
@@ -509,4 +558,6 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
                 return 4
     elif parsed.unstick is not None:
         err("ASSIGN UNSTICK SKIPPED: nothing was assigned")
+    if not unknown and refusal_status == ASSIGN_ACTION_REQUIRED:
+        err(ACTION_REQUIRED_LINE + "; ".join(action_required))
     return 4 if unknown else refusal_status

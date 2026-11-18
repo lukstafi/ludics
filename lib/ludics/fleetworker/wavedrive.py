@@ -106,11 +106,12 @@ THE ANSWERS:
             The code sources are ``registry.AssignmentInput``, ``execution.cmd_execution`` (the
             endpoint map and revision refusals through ``execution.fail(..., refusal_status=...)``),
             and assign's usage exits.
-            Only assign's status classifies these refusals. Its diagnostics and the worker's
-            text are not searched for refusal reasons. Exit 1 or 5 with assignments in the
+            Only assign's status classifies these refusals. Exit 1 or 5 with assignments in the
             message has resumed the worker with those, so it is attention at once for the
             unassigned blocks. Do not replay the assigned blocks. Exit 5 with no message is
-            attention at once so the coordinator can relay the cure from assign's diagnostics.
+            attention at once. Its note copies the final line of assign's stderr only when
+            framed by ``ASSIGN ACTION REQUIRED ``. Earlier stderr lines, stdout and the worker's
+            request text supply no detail to that note.
             Other nonzero exits are also attention (exit 4 can require reconciliation before
             any further assignment).
   result    each line needs ``request_id``, an absolute ``run`` and a 40-hex ``observed_sha``, and is
@@ -290,6 +291,7 @@ from dataclasses import dataclass, replace
 from typing import Any, cast
 
 from ludics import bgrun, cli
+from ludics.fleetworker.assign import ACTION_REQUIRED_LINE
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
@@ -828,8 +830,10 @@ class Driver:
                                   f" worker with the rest ({out}); its lines name the refused ones, which the worker still waits for",
                                   message)
         if done.rc == ASSIGN_ACTION_REQUIRED:
-            return self.attention(worker, turn, "request", "execution assign needs action before retrying; read its"
-                                  " refusal above and relay the cure to the worker", message)
+            report = self.err.rstrip("\n").rpartition("\n")[2]
+            detail = report[len(ACTION_REQUIRED_LINE):] if report.startswith(ACTION_REQUIRED_LINE) else ""
+            detail = detail or "read the assignment diagnostic before retrying"
+            return self.attention(worker, turn, "request", f"execution assign needs action before retrying: {detail}", message)
         tries = int(last.get("tries", 0)) + 1 if last is not None and last.get("status") == "retry" else 1
         if done.rc == 1 and tries < TRIES:
             return self.note(worker, turn, "request", "retry", f"execution assign refused a block (try {tries} of {TRIES})",
