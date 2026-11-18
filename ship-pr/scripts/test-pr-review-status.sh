@@ -326,10 +326,10 @@ gh() {
 # rendering (ludics-lite#403), asked through the two entry points of ludics.prreview that
 # pr-review.sh's command line does not route to (`status-state <pr> [<pending-request watermark>]`,
 # `status-line <state line> [<pr number>]`), so every case here judges what `status` and `watch`
-# run. The arguments are what the reads take from their caller (watch_nudge_after, PR_NUM).
+# run. Both entry points use the fixture PR number.
 run_status() {
   STATE=$(py_forward call status-state 7 "${watch_nudge_after:-}")
-  LINE=$(py_forward call status-line "$STATE" "${PR_NUM:-}")
+  LINE=$(py_forward call status-line "$STATE" 7)
 }
 
 # cmd_status in a subshell: its exit code is the assertion, and it must not end this reporter.
@@ -1544,6 +1544,10 @@ test_an_old_eyes_over_a_fresh_push_is_its_pickup_then_its_stall() {
   run_status
   assert_eq "$(state_tok "$STATE")" stalled "past the pickup the 👀 is the stall it is"
   assert_contains "$(state_detail "$STATE")" "with nothing posted since" "aged from the 👀, as before"
+  assert_contains "$LINE" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
+    "the stalled fallback reads both feed fields through retry"
+  assert_contains "$LINE" "retry --read api --paginate repos/$REPO/issues/7/reactions --jq " \
+    "reactions can be read from a headless worker"
 }
 
 # --- an approval over open review threads (ludics-lite#289) -----------------------------------
@@ -2253,6 +2257,8 @@ test_a_failed_run_counts_the_requests_on_its_head() {
   run_status
   assert_eq "$(state_detail "$STATE" | cut -d'|' -f2)" run-again "a failure answering a request on this head"
   assert_contains "$LINE" "reviewer's run FAILED AGAIN on head 1e14b13" "is surfaced, not re-requested"
+  assert_contains "$LINE" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
+    "the fallback reads both feed fields through retry"
   assert_contains "$LINE" "request at 2026-09-04T22:47:00Z" "naming the request it answers"
   # A request in the head commit's own second counts as on it: the clock cannot say otherwise.
   COMMENTS_JSON="[$(failed_run_summary 1 "$FAILED_RUN_ROW"),$(request_comment 2 "$HEAD_AT")]"

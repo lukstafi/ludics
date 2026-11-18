@@ -26,6 +26,7 @@ from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
 from ludics.fleetworker.wavebrief import Part, cmd_render, render
+from ludics.prreview.state import PR_FEED_FILTER
 from ludics.tests.fake import Answer, FakeTool, When
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "issue-wave", "scripts", "fleet-worker.sh")
@@ -1392,9 +1393,12 @@ class Review(WaveDirCase):
         for want in (f"o/staging#7, head `{self.base}`", "delegation wave wv", "The PR is for issue o/up#42",
                      "`gh issue view 42 --repo o/up --json number,title,body,comments`", f"show origin/main:<path>",
                      f"### Review checkpoint (at-open): head {self.base[:8]}", "VERDICT: blocking (<n> blocking, <m> suggestions)",
-                     "which of the PR's predicted measured consequences has no measurement yet",
+                     f"`{os.path.join(self.wavedir, 'briefs', 'brief-t42.md')}`",
+                     "task's backend scope for dedicated probes",
+                     "project's full-suite requirements for controls",
+                     "missing measurements for the PR's predicted consequences",
                      "any such unmeasured consequence is **blocking**",
-                     'window and even if the PR says "Part of"'):
+                     'even if the PR says "Part of"'):
             self.assertIn(want, prompt)
         self.assertNotIn("confirm review", prompt)
         self.assertNotIn("@@", prompt)
@@ -1545,8 +1549,10 @@ class Review(WaveDirCase):
             prompt = self.read(stem + ".prompt.md")
             for want in ("This is a confirm review, not a first review", f"at head `{self.base}`", f"`{self.stem()}.md`",
                          f"diff {self.base} {fixed}", f"### Review checkpoint (confirm): head {fixed[:8]}",
+                         f"gh pr view 7 --repo o/staging --json comments,reviews --jq {shlex.quote(PR_FEED_FILTER)}",
+                         "task's backend scope for dedicated probes",
                          "any such unmeasured consequence is **blocking**",
-                         'window and even if the PR says "Part of"'):
+                         'even if the PR says "Part of"'):
                 self.assertIn(want, prompt)
             self.assertTrue(self.read(stem + ".message.md").startswith(f"MERGE CLEARED 7 {fixed}\nVERDICT: clean\n"))
             self.assertEqual(self.shim_calls[-1], ["fleet-worker.sh", "board", "set", "wv", "t42", f"confirm=clean@{fixed[:8]}"])
@@ -1727,6 +1733,10 @@ class ShippedTemplate(unittest.TestCase):
                             self.assertIn("fails on authentication or", brief)
                             self.assertIn("Any other failed push is not that gate.", brief)
                             self.assertIn("`pr-review.sh rerun lukstafi/ludics#<pr> <run id>...`", brief)
+                            self.assertIn("gh pr view <pr> --repo lukstafi/ludics --json comments,reviews"
+                                          f" --jq {shlex.quote(PR_FEED_FILTER)}", brief)
+                            self.assertIn("gh api --paginate 'repos/lukstafi/ludics/issues/<pr>/reactions'", brief)
+                            self.assertIn("gh api --paginate 'repos/lukstafi/ludics/pulls/<pr>/comments'", brief)
                             self.assertEqual(brief.count("- Credentials:"), 1, "a rule both transports follow is stated once")
                             if profile == "native":
                                 self.assertIn("You are a native Codex worker", brief)

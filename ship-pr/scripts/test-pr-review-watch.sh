@@ -2220,6 +2220,35 @@ test_a_stalled_round_is_nudged_once_and_watched() {
   assert_eq "$(nudges_posted)" 1 "still one nudge for the head, never a second"
   assert_contains "$WATCH_OUT" "this watch's own '@codex review' on head ${H2:0:7}" \
     "the move after it is the once-per-head remedy"
+  assert_contains "$WATCH_OUT" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
+    "the fallback reads both feed fields through retry"
+  local filter feed
+  filter=${WATCH_OUT##* --json comments,reviews --jq \'}
+  filter=${filter%%\'*}
+  feed=$(jq -r "$filter" <<'JSON'
+{
+  "comments": [
+    {"createdAt":"2026-09-01T01:02:00Z","author":{"login":"codex"},"body":"No findings after re-review."},
+    {"createdAt":"2026-09-01T01:00:00Z","author":{"login":"worker"},"body":"Requesting review."}
+  ],
+  "reviews":[
+    {"submittedAt":"2026-09-01T01:01:00Z","state":"CHANGES_REQUESTED","author":{"login":"codex"},
+     "commit":{"oid":"abc123"},"body":"One finding."}
+  ]
+}
+JSON
+  ) || bail "the fallback's jq filter failed"
+  assert_eq "$feed" "$(cat <<'FEED'
+2026-09-01T01:00:00Z COMMENT worker
+Requesting review.
+
+2026-09-01T01:01:00Z CHANGES_REQUESTED codex abc123
+One finding.
+
+2026-09-01T01:02:00Z COMMENT codex
+No findings after re-review.
+FEED
+  )" "the fallback orders comments and reviews by timestamp"
   [ "$(($(cat "$SHIP_PR_TEST_CLOCK") - start))" -ge "$GRACE" ] ||
     bail "the request's grace was not waited out ($(($(cat "$SHIP_PR_TEST_CLOCK") - start))s)"
   # A post that fails is sent once, whatever its error, and the window still runs to its end.
@@ -2329,7 +2358,13 @@ test_a_stalled_round_with_something_standing_is_never_nudged() {
     [ "$(poll_rounds)" -ge 5 ] || bail "$kind: the stall ended the wait before the window did"
     assert_contains "$WATCH_OUT" "not nudged — " "$kind: the line says it was not nudged, and why"
     case "$kind" in
-    thumb) assert_contains "$WATCH_OUT" "a 👍 from ${REVIEWER} is on the PR" "thumb: the 👍 is named" ;;
+    thumb)
+      assert_contains "$WATCH_OUT" "a 👍 from ${REVIEWER} is on the PR" "thumb: the 👍 is named"
+      assert_contains "$WATCH_OUT" "retry --read pr view 7 --repo $REPO --json comments,reviews --jq " \
+        "the barred nudge points to both feed fields"
+      assert_contains "$WATCH_OUT" "retry --read api --paginate repos/$REPO/issues/7/reactions --jq " \
+        "the barred nudge points to the reaction list"
+      ;;
     verdict) assert_contains "$WATCH_OUT" "no-findings verdict for head ${H2:0:7}" "verdict: it is named" ;;
     completed-row) assert_contains "$WATCH_OUT" "Code Review Completed" "completed-row: it is named" ;;
     request)

@@ -42,15 +42,24 @@ to `@@MAIN@@`.
   `gh run rerun` yourself.
 - Review loop: `pr-review.sh watch` (a long run) waits for the reviewer's round. Answer every
   thread with a fix or a rebuttal, `reply` and `resolve` per thread, and push once per CI cycle. If
-  the watch goes quiet suspiciously long, read the feed directly (`gh pr view <pr> --repo @@REPO@@
-  --comments`) rather than re-arming it.
+  the watch goes quiet suspiciously long, read the top-level comments and review summaries:
+
+      gh pr view <pr> --repo @@REPO@@ --json comments,reviews --jq '[.comments[], .reviews[]] | sort_by(.submittedAt // .createdAt)[] | ([.submittedAt // .createdAt, .state // "COMMENT", .author.login, .commit.oid] | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
+
+  Read inline review comments separately:
+
+      gh api --paginate 'repos/@@REPO@@/pulls/<pr>/comments' --jq '.[] | {path,line,body}'
 - **A stalled round**: `watch` nudges a STALLED round itself, once per head, when no 👍, no verdict
   and no request stands for the head, and keeps watching. If `status` or a watch's exit still reads
-  STALLED, FIRST read the full PR feed yourself: the reviewer's no-findings verdict can arrive as a
-  plain comment ("Didn't find any major issues ... Reviewed commit: <sha>"), and a re-request CLEARS
-  an existing 👍. If the feed holds no verdict and no 👍 for the current head, post ONE nudge
-  yourself, `pr-review.sh comment @@REPO@@#<pr> '@codex review'`, and re-arm the watch. No
-  coordinator permission is needed. Never re-request while an approval may stand.
+  STALLED, FIRST read the PR feed above and the PR's reactions. The reviewer's no-findings verdict
+  can arrive as a plain comment ("Didn't find any major issues ... Reviewed commit: <sha>"), and
+  a re-request clears an existing 👍.
+
+      gh api --paginate 'repos/@@REPO@@/issues/<pr>/reactions' --jq '.[] | [.content, .user.login, .created_at] | @tsv'
+
+  If both reads succeed and show no 👍 and no verdict or standing request for this head, post one
+  nudge with `pr-review.sh comment @@REPO@@#<pr> '@codex review'` and re-arm the watch. No coordinator
+  permission is needed. Never re-request while an approval may stand.
 - Convergence (from round 3 if round 1 had five or more findings, else from round 5): classify
   findings as silent or loud.
   - A silent defect (a claim that cannot fail, a sweep deleting what it should not, an oracle an
