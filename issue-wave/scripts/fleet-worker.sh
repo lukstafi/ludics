@@ -182,12 +182,15 @@
 #                          # not clean draws an OBSERVED-FROM WARNING on stderr (every form); every
 #                          # --observed-from must be the record's checkout when it names one, or is refused
 #   fleet-worker.sh execution run <json-file>          # reserve + dispatch in one step
-#   fleet-worker.sh execution window [--no-gap] [--deadline <seconds>] <box> <json-file> # `run` for a
+#   fleet-worker.sh execution window [--no-gap] [--deadline <seconds>] [--wait-pending <seconds>]
+#                          <box> <json-file>  # `run` for a
 #                          # measurement that suspends the box's standing reservations, restored
 #                          # when it concludes; it first waits out FLEET_WINDOW_GAP after the box's
 #                          # last measurement while a batch is waiting for the box (none with
 #                          # --no-gap); --deadline: the seconds from its opening by which it will be
-#                          # concluded, which a bare --wait-window waits to (ludics-lite#737)
+#                          # concluded, which a bare --wait-window waits to (ludics-lite#737);
+#                          # --wait-pending: a pending answer (exit 3) is asked again every
+#                          # FLEET_WINDOW_PENDING_POLL seconds (60) until it opens or the bound runs out
 #   fleet-worker.sh execution conclude --from-run <run-dir> --request <id> --sha <sha>
 #                          [--box <box>] [--evidence <text>]   # verdict, log and checkout read from a
 #                                                     # test-run.sh record on the reserved box

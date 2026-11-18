@@ -355,20 +355,22 @@ find the gap between its runs. (A window behind another measurement is refused a
 measurement per box, and a loop starts no run beside a measurement anyway.) So that one refusal is
 an answer instead, given once every other admission check has passed (the lane lock, the halt and
 THE HALT'S TRIAGE: a window they refuse is refused as before, and leaves no mark): the registry
-writes the mark `pending-windows/<request id, lowercased>.json`
-under the state root -- `{box, id, worker, seen, expires}`, `expires` PENDING_TTL seconds from this
-anchor's clock, replaced whole on each retry -- removes every mark already expired, and exits 3 with
-`{"pending": {"box", "id", "blockers", "expires"}}` on stdout and an `EXECUTION WINDOW <box>: ...
-pending` line on stderr. Nothing else is written: no record, no suspension. The window's opening
-removes its own mark (after its record is published; a crash between them leaves a mark that
-expires). `pending-windows` is a lease-free reader, SHARED like `list`: a JSON array of the live
-marks, each with `expires_left` in whole seconds by this anchor's clock, and a mark it cannot read
-(or a directory it cannot list) as `{"id", "unreadable": true}`, which a reader counts on every box. Its one reader is a
-reserved loop run's start (tiprun.py, THE RESERVED RUN), which yields to a live mark on its box; a
-running run is never touched by one. The boundary: a mark says a window was asked for and could not
-open, not that anyone will ask again; the retry is its coordinator's (`wave drive`'s RETRY, or by
-hand), and a mark nobody renews holds a loop back for PENDING_TTL seconds at most. Only that
-capacity refusal writes one: a halt, a lane lock, a gap answer and any other refusal write none.
+writes the mark `pending-windows/<request id, lowercased>.json` under the state root -- `{box, id,
+worker, seen, expires}`, `expires` PENDING_TTL seconds from this anchor's clock, replaced whole on
+each retry -- removes every mark already expired, and exits 3 with `{"pending": {"box", "id",
+"blockers", "expires"}}` on stdout and an `EXECUTION WINDOW <box>: ... pending` line on stderr.
+Nothing else is written: no record, no suspension. The window's opening removes its own mark (after
+its record is published; a crash between them leaves a mark that expires). `pending-windows` is a
+lease-free reader, SHARED like `list`: a JSON array of the live marks, each with `expires_left` in
+whole seconds by this anchor's clock, and a mark it cannot read (or a directory it cannot list) as
+`{"id", "unreadable": true}`, which a reader counts on every box. Its one reader is a reserved loop
+run's start (tiprun.py, THE RESERVED RUN), which yields to a live mark on its box; a running run is
+never touched by one. The boundary: a mark says a window was asked for and could not open, not that
+anyone will ask again; the retry is its coordinator's (`execution window --wait-pending`, which asks
+again each poll until the window opens or its bound runs out: execution.py's THE PENDING WAIT;
+`wave drive`'s RETRY; or by hand), and a mark nobody renews holds a loop back for PENDING_TTL
+seconds at most. Only that capacity refusal writes one: a halt, a lane lock, a gap answer and any
+other refusal write none.
 
 THE BACKEND MARK (after ludics-lite#793). `pinned_backend` is a top-level record field saying that
 the run's starter checked its command pins that backend: `execution tip-run` writes it on the

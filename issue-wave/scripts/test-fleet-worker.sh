@@ -3399,8 +3399,21 @@ expect "a window the worker's leg keeps from opening is pending" 3 "window tip-m
   "${FWT[@]}" execution window --no-gap testbox "$TMP/tip-m.json"
 expect "...and the reserved loop's next start yields to it" 1 "^TIP-RUN NOT STARTED tip-r2: pending window tip-m (w2, [0-9]*s left) waits for testbox" -- \
   "${FWT[@]}" execution tip-run "$(ccreq tip-r2)" --checkout "$tco" --cpu --reserved tip-slot -- echo never
-fixture_done tip-slot
+# THE PENDING WAIT (ludics#1208): --wait-pending asks again each poll. A bound that runs out answers
+# pending as the plain form does, its mark renewed; one the leg's conclusion beats opens the window.
+expect "a --wait-pending window whose bound runs out is still pending" 3 "tip-m still pending after 2s (--wait-pending)" -- \
+  env FLEET_WINDOW_PENDING_POLL=1 "${FWT[@]}" execution window --no-gap --wait-pending 2 testbox "$TMP/tip-m.json"
+expect "...its mark intact: the reserved loop still yields to it" 1 "^TIP-RUN NOT STARTED tip-r3: pending window tip-m" -- \
+  "${FWT[@]}" execution tip-run "$(ccreq tip-r3)" --checkout "$tco" --cpu --reserved tip-slot -- echo never
+env FLEET_WINDOW_PENDING_POLL=1 "${FWT[@]}" execution window --no-gap --wait-pending 60 testbox "$TMP/tip-m.json" > "$TMP/tip-wait.log" 2>&1 &
+twait=$!
+for _ in $(seq 40); do grep -q "tip-m pending; asking again" "$TMP/tip-wait.log" 2>/dev/null && break; sleep 1; done
 fixture_done tip-leg
+wait "$twait"; trc=$?
+[ "$trc" -eq 0 ] && grep -q "^EXECUTION WINDOW testbox: tip-m open; suspended " "$TMP/tip-wait.log" &&
+  ok "...and one whose blocker concludes within the bound opens the window" || ko "the pending wait (exit $trc): $(cat "$TMP/tip-wait.log")"
+fixture_done tip-m
+fixture_done tip-slot
 # The token taken only if free now: a batch holding the box's one GPU token turns the run away, and
 # what was reserved is concluded not-launched.
 "${FWT[@]}" execution slot -- sleep 30 > "$TMP/tip-holder.log" 2>&1 &

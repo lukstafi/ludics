@@ -137,8 +137,10 @@ changed (SIGPIPE, SIGXFSZ ignored) are put back for the command.
 # has, and that slot must be held NOW (a non-blocking flock on it must fail), so a marker exported
 # by hand, or outliving its batch, is said so and ignored and a slot is taken as usual. Whether
 # the slot may hold the GPU is judged from the current token spec, not from the marker's own word,
-# and a GPU batch inside a slot an enclosing batch took as --cpu is refused: the enclosing
-# declaration was wrong, and running would put a GPU batch past the tokens.
+# and a GPU batch is refused only inside a slot past the token count (one only a --cpu batch can
+# take): the enclosing declaration was wrong, and running would put a GPU batch past the tokens. A
+# --cpu enclosing batch in a slot that is a token -- every slot, on a box with as many tokens as
+# slots -- admits a GPU batch inside it.
 #
 # The measurement check is a point-in-time gate read from the anchor's registry, exactly as
 # `execution dispatch` is: it refuses to start a batch beside an outstanding measurement, and

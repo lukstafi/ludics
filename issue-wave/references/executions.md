@@ -189,7 +189,15 @@ cannot admit a batch after its old cutoff. The stored legacy deadline remains as
 so older fleet callers can still read and conclude records; their waits retain the older bound.
 Current listings project the separate hold deadline. A failure to publish a known window's opening refuses the hold before its
 command starts; an unreadable initial registry retains the hold's existing warning and fail-open
-behaviour, so its waiters retain the pending bound. It bounds the waiters and nothing else. While the window is open:
+behaviour, so its waiters retain the pending bound. It bounds the waiters and nothing else.
+A window that non-standing correctness records on the box (a worker's leg, a loop run) keep from
+opening is answered *pending*, exit 3, leaving a mark a reserved loop run yields to (the loop run,
+[below](#reserve-launch-observe-conclude); ludics#1187). `execution window --wait-pending <seconds>`
+(after `--deadline`) asks again by itself every `FLEET_WINDOW_PENDING_POLL` seconds (60) until the
+window opens or the bound, counted from the first pending answer, runs out; then it answers pending
+as the plain form does, its last ask having renewed the mark (ludics#1208). The bound spends none
+of `--deadline`'s budget, which starts at the hold's opening, and a gap answer met on the way is
+waited out on its own budget as before. While the window is open:
 
 - `execution slot` on the box refuses a batch with `EXECUTION SLOT REFUSED <box>: measurement window
   <id> is open on <box> ...`, so a caller knows to retry after it closes rather than to debug or to
@@ -748,21 +756,19 @@ must name as `--target-repo` to be handed it (SKILL.md's *Base gate*).
 A loop run - the GPU integration loop's, or the cc loop's local run - is one call (ludics-lite#615):
 `fleet-worker.sh execution tip-run <reserve.json> [--tip <branch>] [--base <branch>] --checkout <dir>
 [--id-prefix <prefix>] [--runs <dir>] [--cpu] [--full-loop] [--reserved <id>] -- <command...>`.
-Its request is the coordinator's non-standing `correctness` request whose `requested_revision`
-is exactly one full
-SHA, or names none under
-`--tip`, which writes the branch's head on GitHub into it; under `--id-prefix` it names no
-`request_id` either, and the run takes `<prefix>-<n>`, one past the highest `<n>` the registry holds
-under the prefix (ludics-lite#714). A request whose `purpose` begins `GPU integration loop,
-<backend>:` runs only a command pinning exactly that backend, by the project's `.github/fleet-leg`
-at the commit (the leg's backend pin, below; ludics-lite#793): an unpinned command, one pinning
-another backend, and a commit without the file are refused. Such a run's record carries two
-marks (ludics#1158): `pinned_backend`, that the pin was checked, and `full_loop`, `true` only under
-`--full-loop`, its caller's statement that the command is the loop's full one (`wave loop` passes it
-for the loop's own command, never for `--rerun`'s narrowed one; the flag on a purpose naming no
-backend is refused). `integration-records --pinned-backend` reads only full-loop passes (and a
-pinned record from before the field, which was a full run), so a targeted rerun never advances the
-backend's last green. A checkout whose filesystem has under
+Its request is the coordinator's non-standing `correctness` request whose `requested_revision` is
+exactly one full SHA, or names none under `--tip`, which writes the branch's head on GitHub into
+it; under `--id-prefix` it names no `request_id` either, and the run takes `<prefix>-<n>`, one past
+the highest `<n>` the registry holds under the prefix (ludics-lite#714). A request whose `purpose`
+begins `GPU integration loop, <backend>:` runs only a command pinning exactly that backend, by the
+project's `.github/fleet-leg` at the commit (the leg's backend pin, below; ludics-lite#793): an
+unpinned command, one pinning another backend, and a commit without the file are refused. Such a
+run's record carries two marks (ludics#1158): `pinned_backend`, that the pin was checked, and
+`full_loop`, `true` only under `--full-loop`, its caller's statement that the command is the loop's
+full one (`wave loop` passes it for the loop's own command, never for `--rerun`'s narrowed one; the
+flag on a purpose naming no backend is refused). `integration-records --pinned-backend` reads only
+full-loop passes (and a pinned record from before the field, which was a full run), so a targeted
+rerun never advances the backend's last green. A checkout whose filesystem has under
 `FLEET_LEG_MIN_FREE_GIB` free is refused before the fetch, the checkout and the slot (the leg's
 free-space floor, below; ludics#991), naming the box, the free space and the floor, and a read that
 fails is a `TIP-RUN NOTE <box>:` on stderr and the run goes on. Without `--reserved` (a GPU loop's
@@ -772,22 +778,21 @@ correctness batch like a worker's, in the slot its loop owns: `<id>` is the loop
 reservation on the box (`"slot_reservation": true` beside its `run` payload, one per box, which
 `wave loop` takes for a loop whose entry says `reserve_slot`), and while it stands workers' batches
 there take one slot fewer (3 of a four-slot box's 4) and the registry queues one fewer non-standing
-assignment there, admitting the loop's own run past that count (its payload names the
-reservation, `reserved_by`; a GPU loop's run counts and is counted as before). Such a run yields
-only to measurement: a measurement outstanding on the box (an open window suspends the
-reservation), a
+assignment there, admitting the loop's own run past that count (its payload names the reservation,
+`reserved_by`; a GPU loop's run counts and is counted as before). Such a run yields only to
+measurement: a measurement outstanding on the box (an open window suspends the reservation), a
 **pending window** there, and another loop run in its checkout or still starting; a worker's leg or
 an assigned suite does not turn it away. A window a non-standing correctness record keeps from
-opening is answered pending (`execution window` exit 3, `{"pending": ...}`) and leaves a mark on the
-anchor for 1800 s, renewed by each retry and removed when the window opens; a reserved run reads the
-marks before it reserves, so the window opens at the first retry after the loop's current run, which
-is never stopped. Then it
-runs `execution run`, starts nothing on a remote box whose skills checkout the refresh did not
-bring current, checks the SHA out
-detached in the clean checkout on the box (fetching only when it lacks it; before that it fetches
-the base, as the leg does below, into `origin/<branch>`: the branch `--base` names, else `--tip`'s,
-else `origin/HEAD`'s, and a failed fetch refuses the run, ludics#1067; both fetches are bounded by
-`FLEET_FETCH_TIMEOUT`, 300 s by default, read where the verb runs as the leg reads it), and starts the command
+opening is answered pending (`execution window` exit 3, `{"pending": ...}`) and leaves a mark on
+the anchor for 1800 s, renewed by each retry (`--wait-pending` retries by itself, above) and
+removed when the window opens; a reserved run reads the marks before it reserves, so the window
+opens at the first retry after the loop's current run, which is never stopped. Then it runs
+`execution run`, starts nothing on a remote box whose skills checkout the refresh did not bring
+current, checks the SHA out detached in the clean checkout on the box (fetching only when it lacks
+it; before that it fetches the base, as the leg does below, into `origin/<branch>`: the branch
+`--base` names, else `--tip`'s, else `origin/HEAD`'s, and a failed fetch refuses the run,
+ludics#1067; both fetches are bounded by `FLEET_FETCH_TIMEOUT`, 300 s by default, read where the
+verb runs as the leg reads it), and starts the command
 there under `execution slot --bg <runs> --wait 0` (with `--reserved <id>`, which takes only the
 reserved slot, the box's highest; default `<runs>`: `tip-runs` in the state
 directory, `~/.local/state/issue-wave` on the box unless `ISSUE_WAVE_STATE` names another), so it

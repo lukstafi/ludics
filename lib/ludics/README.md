@@ -313,6 +313,8 @@ fleetworker/registry.py:time_left
 
 fleetworker/execution.py:window_gap
 fleetworker/execution.py:window_deadline
+fleetworker/execution.py:window_wait_pending
+fleetworker/execution.py:pending_answer
 fleetworker/execution.py:gap_wait
 fleetworker/execution.py:window_payload
 fleetworker/execution.py:with_gap
