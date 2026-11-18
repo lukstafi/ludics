@@ -1557,10 +1557,11 @@ def await_measurements(cfg: Config, box: str, records: list[dict[str, Any]], bou
                 if isinstance(final, Unread):
                     unread = final
                 else:
+                    unread = None
                     final_holding = holding_in(final)
                     if (not isinstance(final_holding, Ended) and refresh_openings(final_holding)
                             and time.monotonic() < deadline):
-                        records, unread = final, None
+                        records = final
                         continue
             if unread is not None:
                 for line in unread.lines:

@@ -1055,6 +1055,30 @@ class WindowDeadline(unittest.TestCase):
                 self.assertEqual(reader.call_count, 2)
                 self.assertEqual(reader.call_args.kwargs, {"timeout": slot.WINDOW_OPEN_CHECK})
 
+    def test_a_successful_final_pending_check_clears_an_earlier_failed_poll(self) -> None:
+        pending = {**measurement("win", due_in=10), "hold_opened_at": None}
+        unread = Unread(4, ("EXECUTION SLOT UNREACHABLE anchor: registry unread, no slot taken",),
+                        "anchor unreachable")
+        cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh", {"FLEET_LOCAL_BOX": "testbox"}, host="testbox")
+        clock = [0.0]
+        out = io.StringIO()
+
+        def nap(seconds: float) -> None:
+            clock[0] += seconds
+
+        with mock.patch.object(slot.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(slot.time, "sleep", side_effect=nap), \
+                mock.patch.object(slot, "read_registry", side_effect=[unread, [pending]]) as reader, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            result = await_measurements(cfg, "testbox", [pending], slot.BY_DEADLINE, ["true"])
+
+        self.assertEqual(reader.call_count, 2)
+        self.assertEqual(reader.call_args.kwargs, {"timeout": slot.WINDOW_OPEN_CHECK})
+        self.assertEqual(result, 1, out.getvalue())
+        self.assertRegex(out.getvalue(),
+                         r"\AEXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 10s"
+                         r" \(--wait-window, to measurement win's deadline \S+\); no slot taken\n\Z")
+
     def test_a_later_window_does_not_move_the_cutoff(self) -> None:
         # Frozen at the start: the next window's later deadline is the gap's to let the waiter out of.
         first, later = measurement("a", due_in=1), measurement("b", due_in=7200)

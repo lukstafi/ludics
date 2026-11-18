@@ -345,12 +345,12 @@ class BackendPin(unittest.TestCase):
                 self.assertEqual(rc, 1)
                 self.assertIn(f"; pin it (as words of the runner's own argv); a pin inside a {shell} -c string is no"
                               f" word of the argv: lead with it, env OCANNL_BACKEND=<backend> {shell} -c '...', or give"
-                              " the runner a long list as a file, --file <local file> and the runner word {file}; or"
+                              " the runner a list or script as a file, --file <local file> and the runner word {file}; or"
                               " declare --cpu", why)
         rc, why = self.pin("pin-flag --expect-backend\n", "1", "bash", "-c", "tools/t.sh --expect-backend cuda")
         self.assertEqual(rc, 1)
         self.assertIn("a pin inside a bash -c string is no word of the argv: run the runner itself, its pin among its"
-                      " words, and give it a long list as a file", why)
+                      " words, and give it a list or script as a file", why)
         # A shell given a script file, or a long option, is no -c composite: the plain refusal.
         for argv in [["bash", "tools/t.sh"], ["bash", "--norc", "tools/t.sh"]]:
             with self.subTest(argv=argv):
