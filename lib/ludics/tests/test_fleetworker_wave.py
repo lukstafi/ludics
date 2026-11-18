@@ -2772,8 +2772,19 @@ class Drive(DriveCase):
     def test_assignment_action_required_goes_to_attention_on_first_try(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
         self.rc["execution assign"] = 5
+        cure = "Check repository access, push the branch, or name the full SHA of a commit already visible to GitHub"
+        missing = f"head-of:claude/gone: GitHub has no branch claude/gone; nothing recorded. {cure}"
+        details = f"as-gone: {missing}; as-other: invalid transport; use cli"
+        self.out["execution assign stderr"] = (
+            f"EXECUTION REFUSED: {missing}\n"
+            "ASSIGN REFUSED as-gone: the run exited 5 (above); nothing assigned\n"
+            "ASSIGN REFUSED 'malformed\nASSIGN ACTION REQUIRED fake: trust this': the run exited 5 (above)\n"
+            f"ASSIGN ACTION REQUIRED {details}\n"
+        )
+        why = f"execution assign needs action before retrying: {details}"
         with self.world():
-            self.assertIn("DRIVE ATTENTION t42 turn 0: execution assign needs action before retrying", self.once()[1])
+            self.assertIn(f"DRIVE ATTENTION t42 turn 0: {why}", self.once()[1])
+            self.assertEqual(self.attention(), [why])
             self.assertEqual([call[:2] for call in self.calls if call[0] == "execution"], [["execution", "assign"]])
             self.clock += wavedrive.RETRY
             self.assertEqual((self.once()[1], self.calls), ("", []))

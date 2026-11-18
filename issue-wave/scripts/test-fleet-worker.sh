@@ -3855,6 +3855,8 @@ as_run "$(as_base subagent)" "$(as_msg gone "$(as_block as-gone testbox correctn
 [ "$rc" -eq 5 ] && [ -z "$msg" ] && grep -Fq "GitHub has no branch claude/gone" <<<"$said" &&
   [ -z "$(state_as as-gone)" ] && ok "a missing head-of branch needs action, with no assignment or record" ||
   ko "missing branch outcome (rc=$rc): $msg -- $said"
+grep -q '^ASSIGN ACTION REQUIRED as-gone: .*Check repository access, push the branch, or name the full SHA of a commit already visible to GitHub$' <<<"${said##*$'\n'}" &&
+  ok "...the driver diagnostic names the request and carries the missing-branch cure" || ko "missing branch diagnostic: $said"
 SHIM_GH_NO_COMMIT="$asha" as_run "$(as_base subagent)" "$(as_msg absent "$(as_block as-absent testbox correctness "$asha" '{"command":"true"}')")"
 [ "$rc" -eq 5 ] && [ -z "$msg" ] && grep -Fq "is no commit of o/r" <<<"$said" &&
   [ -z "$(state_as as-absent)" ] && ok "a missing SHA needs action, with no assignment or record" ||

@@ -432,19 +432,23 @@ class Session(Scratch):
 
     def test_a_quota_probe_in_another_process_reports_its_recheck(self) -> None:
         b = self.budget(alive=True)
-        b.wait_until = T0 + 15
         self.plant(T0, "repos/o/r/pulls/7", 600)
         os.mkdir(b.probe_lock)
         with open(os.path.join(b.probe_lock, "owner"), "w", encoding="utf-8") as owner:
             owner.write(f"4243\n{T0}\n")
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertIsNotNone(b.gate("read"))
-        self.assertEqual((self.gh.calls, self.clock.slept), ([], [5, 5, 5]))
-        lines = err.getvalue().splitlines()
-        self.assertEqual(len(lines), 1, lines)
-        self.assertEqual(lines[0], "pr-review.sh: quota hold: next poll at 08:00:05Z "
-                         "(another process is probing GitHub, rechecking every 5s)")
+        for remaining, sleeps in ((15, [5, 5, 5]), (1, [1])):
+            with self.subTest(remaining=remaining):
+                self.clock.t = T0
+                self.clock.slept.clear()
+                b.wait_until = T0 + remaining
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertIsNotNone(b.gate("read"))
+                self.assertEqual((self.gh.calls, self.clock.slept), ([], sleeps))
+                lines = err.getvalue().splitlines()
+                self.assertEqual(len(lines), 1, lines)
+                self.assertEqual(lines[0], f"pr-review.sh: quota hold: next poll at 08:00:{sleeps[0]:02d}Z "
+                                 "(another process is probing GitHub, rechecking every 5s)")
 
     def test_a_hold_waited_out_then_transport_is_not_quota_stopped(self) -> None:
         # ludics-lite#795: the gate reads quota_stopped() to tell a read the budget stopped (3 at

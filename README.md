@@ -820,8 +820,9 @@ a start refused before `run.sh` concludes its reservation `not-launched`, while 
 The supervision fixtures keep closing-reference reads on paginated GraphQL for gh 2.46;
 package cases refuse partial closing populations and preserve the open-PR cap (#1189).
 The `execution assign` section distinguishes requests that need action, including missing branches
-and noncanonical hosts, from full boxes and pending windows. Driver unit cases pin first-try
-attention and the six-try backoff.
+and noncanonical hosts, from full boxes and pending windows. It checks that a missing branch's
+`ASSIGN ACTION REQUIRED` summary carries the request ID and the cure. Driver unit cases pin
+first-try attention and the six-try backoff.
 The suite runs its ~1000 assertions top to bottom in one shell, which takes about
 sixteen minutes on CI's Ubuntu runner, twenty-four on its macOS one, and up to sixteen on a mac
 shared with other workers. Arguments

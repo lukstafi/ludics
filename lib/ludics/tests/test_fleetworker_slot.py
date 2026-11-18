@@ -18,7 +18,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import holders, slot
+from ludics.fleetworker import holders, leg, slot
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.slot import (
     Covered,
@@ -771,7 +771,8 @@ class WindowWait(unittest.TestCase):
         with mock.patch.object(slot, "read_registry", side_effect=slow), contextlib.redirect_stdout(out), \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
-        self.assertIn("still holds testbox after 1s (--wait-window); no slot taken", out.getvalue())
+        self.assertEqual(out.getvalue(), "EXECUTION SLOT REFUSED testbox: wait cutoff elapsed after 1s"
+                                        " (--wait-window); no slot taken\n")
 
     def test_every_read_in_the_wait_is_a_heartbeat_and_the_first_is_at_once(self) -> None:
         # THE WAITERS (ludics-lite#719): the anchor hears of this waiter from the wait's start.
@@ -855,7 +856,7 @@ class WindowWait(unittest.TestCase):
         with mock.patch.object(slot, "read_registry", side_effect=reads), contextlib.redirect_stdout(out), \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(await_measurements(cfg, "testbox", [measurement("win")], 1, ["echo"]), 1)
-        self.assertEqual(out.getvalue(), "EXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 1s"
+        self.assertEqual(out.getvalue(), "EXECUTION SLOT REFUSED testbox: wait cutoff elapsed after 1s"
                                          " (--wait-window); no slot taken\n")
 
     def test_a_late_read_that_fails_is_the_refusal(self) -> None:
@@ -1061,10 +1062,18 @@ class WindowDeadline(unittest.TestCase):
                         "anchor unreachable")
         cfg = load_config("/x/issue-wave/scripts/fleet-worker.sh",
                           {"FLEET_LOCAL_BOX": "testbox", "FLEET_SLOT_WINDOW_POLL": "15"}, host="testbox")
-        for description, final in (("still pending", [pending]), ("free box", [])):
+        for description, final, reason in (
+            ("still pending", [pending], "measurement win still holds testbox"),
+            ("free box", [], "wait cutoff elapsed"),
+            ("leg ended", [pending], "wait cutoff elapsed"),
+        ):
             with self.subTest(final=description):
                 clock = [0.0]
                 out = io.StringIO()
+                leg_ended = description == "leg ended"
+                voice = leg.LEG_VOICE if leg_ended else slot.SLOT_VOICE
+                def leg_holders(read: list[dict[str, Any]]) -> list[dict[str, Any]] | slot.Ended:
+                    return slot.Ended(read) if read is final else read
 
                 def nap(seconds: float) -> None:
                     clock[0] += seconds
@@ -1073,14 +1082,15 @@ class WindowDeadline(unittest.TestCase):
                         mock.patch.object(slot.time, "sleep", side_effect=nap), \
                         mock.patch.object(slot, "read_registry", side_effect=[unread, final]) as reader, \
                         contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                    result = await_measurements(cfg, "testbox", [pending], slot.BY_DEADLINE, ["true"])
+                    result = await_measurements(cfg, "testbox", [pending], slot.BY_DEADLINE, ["true"],
+                                                voice, leg_holders if leg_ended else None)
 
                 self.assertEqual(reader.call_count, 2)
                 self.assertEqual(reader.call_args.kwargs, {"timeout": slot.WINDOW_OPEN_CHECK})
                 self.assertEqual(result, 1, out.getvalue())
                 self.assertRegex(out.getvalue(),
-                                 r"\AEXECUTION SLOT REFUSED testbox: measurement win still holds testbox after 10s"
-                                 r" \(--wait-window, to measurement win's deadline \S+\); no slot taken\n\Z")
+                                 rf"\A{voice.prefix} REFUSED testbox: {reason} after 10s"
+                                 rf" \(--wait-window, to measurement win's deadline \S+\); {voice.refused}\n\Z")
 
     def test_a_later_window_does_not_move_the_cutoff(self) -> None:
         # Frozen at the start: the next window's later deadline is the gap's to let the waiter out of.
