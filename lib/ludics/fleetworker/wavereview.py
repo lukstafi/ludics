@@ -15,8 +15,9 @@ WHAT IT DOES, in this order:
 
 1. The wave file names a reviewer (``review``, wave.py's header) and ``vars.MAIN``, the base branch.
    The task is an issue's or a source task as ``wave prep`` reads it (``waveprep.subject``).
-   With neither subject flag, the prep manifest's launch record identifies a source task by
-   its empty issue ref and supplies its issue number.
+   With neither subject flag, the prep manifest's launch record supplies the issue number
+   and identifies a source task by its empty issue ref. Explicit subject flags must agree
+   with a recorded subject. A legacy manifest without a launch record uses the CLI subject.
 2. ONE CALL per PR, kind and head: an exclusive ``flock`` on ``reviews/<stem>.lock``, taken without
    waiting and held to the end, so a call retried while the first still reviews refuses (exit 1)
    and neither a second reviewer runs nor a second comment is posted. A record of this PR, kind
@@ -107,9 +108,8 @@ from ludics.fleetworker.takeover import gh_json
 from ludics.fleetworker.transport import run, substitution
 from ludics.fleetworker.wave import USAGE, Review, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import Part, render, write_atomically
-from ludics.fleetworker.wavelaunch import read_manifest
+from ludics.fleetworker.wavelaunch import Record, record_of
 from ludics.fleetworker.waveprep import SHA40, TASK, TEMPLATES, subject
-from ludics.fleetworker.waveprep import Stop as PrepStop
 
 KINDS = ("at-open", "confirm")
 SHIPPED = ("checkpoint.md", "issue.md", "source.md", "confirm.md", "verdict.md")
@@ -229,6 +229,30 @@ class Call:
         return Stop(rc, f"WAVE REVIEW {word} {self.task}: {self.where}: {why}")
 
 
+def task_manifest(wave: Wave, task: str) -> tuple[Record | None, str]:
+    """The prep record and rendered task section, if recorded by the version that prepared it."""
+    path = os.path.join(wave.directory, "prep", f"{task}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data: Any = json.load(f)
+    except FileNotFoundError:
+        return None, ""
+    except (OSError, ValueError) as exc:
+        die(f"wave review: cannot read prep manifest {path!r} ({exc})")
+    manifest = cast(dict[str, Any], data) if isinstance(data, dict) else {}
+    if manifest.get("task") != task or manifest.get("wave") != wave.wave:
+        die(f"wave review: prep manifest {path!r} belongs to a different task or wave")
+    if "launch" not in manifest:
+        return None, ""
+    launch = record_of(manifest["launch"])
+    if launch is None or launch.wave != wave.wave or launch.repository != wave.repository or not launch.number.isdigit():
+        die(f"wave review: prep manifest {path!r} needs a launch record for this wave and repository")
+    recorded: Any = manifest.get("task_section", "")
+    if not isinstance(recorded, str):
+        die(f"wave review: prep manifest {path!r} has a non-text task section")
+    return launch, recorded
+
+
 def parse(args: list[str]) -> Call:
     if len(args) < 4 or any(word.startswith("--") for word in args[:4]):
         die(f"wave review: name the wave file, the task, the PR and its head; usage: {USAGE}")
@@ -264,22 +288,12 @@ def parse(args: list[str]) -> Call:
         die("wave review: --posted records a comment a real call left; it takes no --dry-run")
     if again and (dry_run or opts["--posted"]):
         die("wave review: --again starts a new round, to be reviewed and posted; it takes no --dry-run and no --posted")
-    task_section = ""
-    manifest_path = os.path.join(wave.directory, "prep", f"{task}.json")
-    if os.path.lexists(manifest_path):
-        try:
-            manifest, launch, _ = read_manifest(manifest_path, task)
-        except PrepStop as exc:
-            die("wave review: " + exc.line.split(": ", 1)[-1])
-        if manifest.get("task") != task or launch.wave != wave.wave or launch.repository != wave.repository:
-            die(f"wave review: prep manifest {manifest_path!r} belongs to a different task, wave or repository")
-        if not (opts["--issue"] or opts["--source"] or launch.issue_ref):
-            opts["--source"] = launch.number
-        recorded: Any = manifest.get("task_section", "")
-        if not isinstance(recorded, str):
-            die(f"wave review: prep manifest {manifest_path!r} has a non-text task section")
-        task_section = recorded
+    launch, task_section = task_manifest(wave, task)
+    if launch is not None and not (opts["--issue"] or opts["--source"]):
+        opts["--issue" if launch.issue_ref else "--source"] = launch.number
     number, issue_ref, source_ref = subject(wave, task, opts["--issue"], opts["--source"], "review")
+    if launch is not None and (number != launch.number or issue_ref != launch.issue_ref):
+        die(f"wave review: the subject {issue_ref or source_ref!r} differs from prep for {task!r}; review the prepared subject")
     return Call(wave, wave.review, task, pr.lstrip("#"), sha, opts["--kind"], issue_ref, source_ref, number, dry_run,
                 opts["--posted"], again, task_section)
 
