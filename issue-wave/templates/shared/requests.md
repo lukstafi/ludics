@@ -20,14 +20,13 @@ For a native Windows witness on a dual-boot box, use this separate block instead
 `EXECUTION_REQUEST` for a `-win` host. End the turn; the driver hands it to coordinator
 attention immediately, without assignment retries. The coordinator owns the Linux-side
 measurement reservation, boot and recovery (see *Bounded native Windows verification* in
-`issue-wave/references/executions.md`). Supply the pushed revision, script contents or a
-retrievable script path, its cap, Windows checkout and evidence paths; do not boot the box.
+`issue-wave/references/executions.md`). Supply the pushed revision, the absolute local script
+path for the coordinator to review, and the cap. The site supplies the Windows paths.
 
     WINDOWS_WITNESS_REQUEST
     {"request_id":"@@WAVE@@-@@T@@-windows-<k>","linux_host":"<dual-boot Linux fleet name>",
      "windows_host":"<native Windows ssh alias>","requested_revision":"<full pushed 40-hex SHA>",
-     "script":"<script path or contents>","cap_seconds":120,"checkout":"<Windows checkout>",
-     "purpose":"<Windows witness needed>","evidence":"<fresh Windows log and error paths>"}
+     "script":"<absolute local script path>","cap_seconds":120,"purpose":"<Windows witness needed>"}
     END_WINDOWS_WITNESS_REQUEST
 
 Do not combine this block with other handoff markers. Wait for the coordinator's result or

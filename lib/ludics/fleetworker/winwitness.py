@@ -27,10 +27,10 @@ registry is asked or any box is touched:
   the reservation's execution host), ``windows_host`` (the site's ``windows_host`` for that box,
   exactly), ``requested_revision`` (a full 40-hex SHA: the staging checks the commit out, and the
   registry checks it resolves), ``script`` (a string) and ``cap_seconds`` (a whole number, 1 to the
-  site's ``max_cap_seconds``). Optional: ``purpose``. ``script``, ``checkout`` and ``evidence``,
-  which the brief template asks the worker for, are NOT used: the script is ``--script``'s, and the
-  Windows paths are the site's, so a worker never names a path the box writes nor swaps the bytes
-  the coordinator reviewed (the block is in the transcript).
+  site's ``max_cap_seconds``). Optional: ``purpose``. The coordinator uses the block's local
+  ``script`` path for review and passes the reviewed copy as ``--script``. Legacy ``checkout`` and
+  ``evidence`` fields are accepted as strings; Windows paths come from the site. The block is
+  kept in the transcript.
 - ``--script <file>``: the script the coordinator reviewed, a copy of its own (the worker's path
   stays the worker's to change). Its bytes are read once, here; their sha256 is in the
   reservation's evidence and the staging script carries them.
@@ -41,7 +41,9 @@ registry is asked or any box is touched:
   names it, and it must be on ``linux_host``'s row of ``wake-lab.sh endpoint-map``),
   ``root`` (required: the directory each witness gets a fresh ``<root>/<request_id>`` in),
   ``bash`` (Git Bash; ``C:/Program Files/Git/usr/bin/bash.exe``, the driver's default),
-  ``max_cap_seconds`` (3600) and ``stage_seconds`` (900, the staging's whole ssh call), and ``wake``
+  ``max_cap_seconds`` (3600), ``stage_seconds`` (900, the staging's whole ssh call),
+  ``staging_line_endings`` (optional, exactly the JSON string ``"lf"``, read only from the site
+  file), and ``wake``
   (an absolute local path to an executable file, run directly for the endpoint map, the boots and
   ``status`` alike; this checkout's ``scripts/wake-lab.sh``). A Windows path must match WINDOWS_PATH, a drive letter and then only letters, digits, blanks and ``._/\\()-``: every one of
   them reaches a cmd.exe command line inside double quotes, where a quote, ``%``, ``^``, ``&``,
@@ -56,14 +58,16 @@ THE STAGING, one ssh call to ``windows_host`` (``cmd.exe /d /s /c ""<bash>" --no
 nothing the request names is a cmd.exe word but the request id (allowlisted above): it refuses an
 existing ``<root>/<id>``, makes a fresh repository ``<root>/<id>/checkout``, fetches the one commit
 from ``https://github.com/<the base's repository>.git`` (``--depth 1``: the revision the registry
-checked resolves there, and no clone has to be provisioned or pruned; no credential prompt), checks it out detached with
-the box's own git configuration (its ``core.autocrlf`` included, as a developer's clone there would
-be: a repository that needs LF says so in its ``.gitattributes``), reads its ``HEAD`` back, writes the
+checked resolves there, and no clone has to be provisioned or pruned; no credential prompt), checks it
+out detached with the box's Git settings by default, reads its ``HEAD`` back, writes the
 worker's script, the wrapper ``witness.sh`` and this checkout's ``windows-driver.ps1`` beside it
 (base64 on the wire), and prints ``observed_sha: <sha>`` last. Only that line, equal to the
 revision, with exit 0, counts as staged: the record's ``observed_sha`` is what the staging read, not
 a coordinator's say-so. The pinned driver closes the first half of #562 (the documented driver path
 was never provisioned): every witness runs the driver of the checkout that runs the verb.
+With ``staging_line_endings: "lf"``, the verb sets ``core.autocrlf=false`` and ``core.eol=lf`` in
+the fresh witness repository before checkout. Git still applies file attributes and filters.
+Files outside Git's text conversion keep their line endings under this policy.
 
 THE RUN. ``powershell -File <root>/<id>/windows-driver.ps1 -ScriptPath <root>/<id>/witness.sh
 -LogPath <root>/<id>/run.log -ErrorPath <root>/<id>/run.err -CapSeconds <cap> -BashPath <bash>``,
@@ -153,7 +157,7 @@ USAGE = ("execution windows-witness <base.json> <message file|-> --site <site.js
 OPEN, CLOSE = "WINDOWS_WITNESS_REQUEST", "END_WINDOWS_WITNESS_REQUEST"
 BLOCK_REQUIRED = ("request_id", "linux_host", "windows_host", "requested_revision", "script", "cap_seconds")
 BLOCK_FIELDS = frozenset((*BLOCK_REQUIRED, "purpose", "checkout", "evidence"))
-SITE_FIELDS = frozenset(("windows_host", "root", "bash", "max_cap_seconds", "stage_seconds", "wake"))
+SITE_FIELDS = frozenset(("windows_host", "root", "bash", "max_cap_seconds", "stage_seconds", "staging_line_endings", "wake"))
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 DEFAULT_BASH = "C:/Program Files/Git/usr/bin/bash.exe"
 WINDOWS_PATH = re.compile(r"[A-Za-z]:[/\\][A-Za-z0-9 ._/\\()-]*")
@@ -172,6 +176,7 @@ class Site:
     max_cap: int
     stage_cap: int
     wake: str
+    staging_lf: bool = False
 
 
 @dataclass(frozen=True)
@@ -305,11 +310,14 @@ def site_entry(site: Any, host: str, default_wake: str) -> Site | str:
     for key in ("max_cap_seconds", "stage_seconds"):
         if key in fields and not whole(fields[key]):
             return f"the site's {host}.{key} must be a positive whole number"
+    staging_lf = fields.get("staging_line_endings") == "lf"
+    if "staging_line_endings" in fields and not staging_lf:
+        return f"the site's {host}.staging_line_endings must be the string 'lf' if present"
     wake = fields.get("wake", default_wake)
     if not (isinstance(wake, str) and os.path.isabs(wake)):
         return f"the site's {host}.wake must be an absolute local path"
     return Site(fields["windows_host"], paths["root"], paths["bash"],
-                fields.get("max_cap_seconds", 3600), fields.get("stage_seconds", 900), wake)
+                fields.get("max_cap_seconds", 3600), fields.get("stage_seconds", 900), wake, staging_lf=staging_lf)
 
 
 def endpoint_problem(map_text: str, linux_host: str, windows_host: str) -> str | None:
@@ -394,11 +402,18 @@ def staging_script(site: Site, request_id: str, revision: str, url: str, script:
         '[ ! -e "$dir" ] || fail "$dir exists: a request id is staged once"',
         'mkdir -p "$root" && mkdir "$dir" || fail "cannot make $dir"',
         'git init --quiet "$dir/checkout" || fail "cannot make a repository at $dir/checkout"',
+    ]
+    if site.staging_lf:
+        lines.append(
+            'git -C "$dir/checkout" config --local core.autocrlf false'
+            ' && git -C "$dir/checkout" config --local core.eol lf || fail "cannot set LF staging for $dir/checkout"'
+        )
+    lines.extend((
         'git -C "$dir/checkout" fetch --quiet --no-tags --depth 1 "$url" "$sha" || fail "cannot fetch $sha from $url"',
         'git -C "$dir/checkout" checkout --quiet --detach FETCH_HEAD || fail "cannot check $sha out"',
         'observed=$(git -C "$dir/checkout" rev-parse HEAD) || fail "cannot read the checkout\'s HEAD"',
         '[ "$observed" = "$sha" ] || fail "the checkout is at $observed, not $sha"',
-    ]
+    ))
     for name, data in files:
         encoded = base64.b64encode(data).decode("ascii")
         lines.append(f"printf '%s' '{encoded}' | base64 -d > \"$dir\"/{name} || fail 'cannot write {name}'")
