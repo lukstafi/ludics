@@ -5,13 +5,18 @@ the old commit for over 17 minutes: ``watch`` reported approved and ``merge`` th
 both for a head that was no longer the branch's, and nothing said so. Everything else in this
 package reads the PR's ``.head.sha``, so this is the one read that looks past it.
 
-THE READ. Two REST reads, in this order, each fresh (no round snapshot): ``repos/<repo>/pulls/<n>``
+THE READ. Normally two fresh REST reads in this order: ``repos/<repo>/pulls/<n>``
 for the PR's state, head SHA, head branch and head repository, then the refs API in the HEAD
 repository, ``repos/<head repo>/git/ref/heads/<branch>``, for ``.object.sha``. The head repository,
 not the base: a fork PR's branch lives on the fork. The refs API rather than ``git ls-remote``
 because it needs no clone and no git credential, and rides the session's retry and polling budget
 like every other read here. ``git/ref`` is an exact match (``git/matching-refs`` is the prefix one),
 so a branch that is a prefix of another does not read the longer one's tip.
+
+A build-backed merge attempt reads the head OID, ref name, repository and ref target OID in the
+same GraphQL response as the live base (merge.py's ``built_base_tip``). This path requires full
+GitHub commit SHAs. A null head ref is equivalent to the refs API's 404. A present ref with no
+target OID is unread. Both transports use the same classifier.
 
 BOUNDARY (a fail-closed allowlist). ``Clear`` is exactly: the PR read answered and is not ``open``
 (a merged PR's head is frozen and its branch may be gone or reused, so nothing is compared and
@@ -25,7 +30,8 @@ shape outside these fields (a jq error on it included), a head repository that i
 
 What each command does with it: ``status`` and ``watch`` warn and go on, and a ``Lags``, ``Gone`` or
 ``Unread`` puts its mark in front of an ``approved`` line, so an approval of a head that is not the
-branch's never stands unqualified. ``merge`` refuses (``merge.py``'s ``branch_tip_gate``).
+branch's never stands unqualified. ``merge`` refuses at its final read (``merge.py``'s
+``branch_tip_gate`` or ``built_base_tip``).
 
 WHERE THE GUARANTEE STOPS. This compares two reads at one moment, and says nothing of the moment
 after. A push landing after the read is ``merge``'s existing head pin to catch
@@ -36,6 +42,8 @@ it. Nor does anything here wake a stuck PR: an amend and a force-push is what ha
 """
 
 import re
+import shlex
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered
@@ -46,6 +54,7 @@ from ludics.prreview.state import State
 PR_JQ = '[(.state // "-"), (.head.sha // "-"), (.head.ref // "-"), (.head.repo.full_name // "-")] | @tsv'
 REF_JQ = '.object.sha // "-"'
 _OWNER_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass(frozen=True)
@@ -83,26 +92,45 @@ def read_tip(session: GhSession, repo: str, pr: str) -> Tip:
     if not isinstance(pull, GhOk):
         return Unread(f"the PR read failed: {session.err_line()}")
     state, head, branch, head_repo = tab_fields(pull.stdout, 4)
+
+    def read_ref() -> str | None | Unread:
+        ref = session.retry(
+            "read", ["api", f"repos/{head_repo}/git/ref/heads/{encode_ref(branch)}", "--jq", REF_JQ]
+        )
+        match ref:
+            case GhOk(stdout=tip):
+                return tip
+            case GhFailed() if "HTTP 404" in session.err_line():
+                return None
+            case GhFailed() | GhUnanswered():
+                return Unread(f"the refs read failed: {session.err_line()}")
+
+    return classify_tip(state, head, branch, head_repo, read_ref)
+
+
+def classify_tip(
+    state: str, head: str, branch: str, head_repo: str,
+    read_ref: Callable[[], str | None | Unread], *, full_shas: bool = False,
+) -> Tip:
+    """Classify the PR and its live head ref. None from the transport means an absent ref."""
     if state == "closed":
         return Clear()
     if state != "open" or head in ("", "-") or branch in ("", "-"):
-        return Unread(f"the PR read answered state={state or '-'} head={head or '-'} branch={branch or '-'}")
+        return Unread(f"the PR read answered state={state or '-'} head={head or '-'} branch={shlex.quote(branch or '-')}")
+    if full_shas and not FULL_SHA.fullmatch(head):
+        return Unread("the PR answered no full head SHA")
     if head_repo == "-":
         return Gone(head, branch, head_repo)
     if not _OWNER_NAME.fullmatch(head_repo):
-        return Unread(f"the PR read answered no head repository ({head_repo or '-'})")
-    ref = session.retry(
-        "read", ["api", f"repos/{head_repo}/git/ref/heads/{encode_ref(branch)}", "--jq", REF_JQ]
-    )
-    match ref:
-        case GhOk(stdout=tip):
-            if tip in ("", "-") or len(tip.split()) != 1:
-                return Unread(f"the refs API answered no SHA for {branch} on {head_repo}")
-            return Clear(head) if tip == head else Lags(head, tip, branch, head_repo)
-        case GhFailed() if "HTTP 404" in session.err_line():
-            return Gone(head, branch, head_repo)
-        case GhFailed() | GhUnanswered():
-            return Unread(f"the refs read failed: {session.err_line()}")
+        return Unread(f"the PR read answered no head repository ({shlex.quote(head_repo or '-')})")
+    tip = read_ref()
+    if isinstance(tip, Unread):
+        return tip
+    if tip is None:
+        return Gone(head, branch, head_repo)
+    if tip in ("", "-") or len(tip.split()) != 1 or (full_shas and not FULL_SHA.fullmatch(tip)):
+        return Unread(f"the refs API answered no SHA for {shlex.quote(branch)} on {shlex.quote(head_repo)}")
+    return Clear(head) if tip == head else Lags(head, tip, branch, head_repo)
 
 
 def mark(tip: Tip) -> str:
@@ -127,7 +155,7 @@ def warning(tip: Tip, repo: str, pr: str) -> str:
             return ""
         case Lags():
             return (
-                f"{where}'s head {tip.head} is NOT its branch's tip: {tip.branch} on {tip.head_repo}"
+                f"{where}'s head {tip.head} is NOT its branch's tip: {shlex.quote(tip.branch)} on {shlex.quote(tip.head_repo)}"
                 f" stands at {tip.tip}. GitHub has not moved the PR to that push, or it landed just"
                 " now, so anything read for this PR is about a head that is no longer the branch's."
                 " Read it again in a minute; a lag that stands has been cleared by a new push (git"
@@ -135,7 +163,7 @@ def warning(tip: Tip, repo: str, pr: str) -> str:
             )
         case Gone():
             what = (
-                f"its branch {tip.branch} is gone from {tip.head_repo}, or that repository is not"
+                f"its branch {shlex.quote(tip.branch)} is gone from {shlex.quote(tip.head_repo)}, or that repository is not"
                 " visible to this token"
                 if tip.head_repo != "-" else "its head repository is gone"
             )

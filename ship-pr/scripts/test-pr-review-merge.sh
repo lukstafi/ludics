@@ -97,6 +97,11 @@ RUNS_READ_FAIL=""
 # directory merge runs in (a clone of the fixture remote; build_fixture below).
 GATED_HEAD=head-sha
 BASE_TIP=base-tip
+BUILD_LIVE_REMOTE=""                   # a moving-base case reads main from this bare repository
+BUILD_LATER=""                         # a successor already in the bare repository's object store
+BUILD_TIP_LATER=""                     # an ill-shaped live-tip answer after the build
+BUILD_TARGET_LATER=""                  # a retarget after the build
+BUILD_MOVE_ON_CALL=""                  # first merge write advances main and returns this refusal
 COMPARE_FORWARD=""                     # nonempty = the compare from the tip to the head (the PR's paths)
 COMPARE_REVERSE=""                     # nonempty = the compare from the head to the tip (the base's)
 MERGE_BUILD_CONFIG=""                  # nonempty = the config's contents; empty = no file (a 404)
@@ -423,7 +428,14 @@ gh() {
   "api repos/$REPO/commits/"*)
     case "$*" in
     *committer.date*) printf '2026-09-01T00:00:00Z\n' ;;
-    *) printf '%s\n' "$BASE_TIP" ;;
+    *)
+      printf 'CALL live-base-tip\n' >>"$CALLS_FILE"
+      if [ -n "$BUILD_LIVE_REMOTE" ]; then
+        git --git-dir="$BUILD_LIVE_REMOTE" rev-parse --verify "refs/heads/$PR_BASE"
+      else
+        printf '%s\n' "$BASE_TIP"
+      fi
+      ;;
     esac
     ;;
   # The drift read's two compares: nothing behind, and no path changed on the base's side --
@@ -526,6 +538,27 @@ gh() {
     ;;
   "api graphql")
     case "$*" in
+    *'query MergeBuildRefs'*)
+      local state=OPEN target tip head_tip
+      printf 'CALL merge-build-refs\n' >>"$CALLS_FILE"
+      target=${BUILD_TARGET_LATER:-$PR_BASE}
+      tip=$BASE_TIP
+      if [ -n "$BUILD_LIVE_REMOTE" ]; then
+        tip=$(git --git-dir="$BUILD_LIVE_REMOTE" rev-parse --verify "refs/heads/$PR_BASE") || return 1
+      fi
+      head_tip=${BRANCH_TIP_LATER:-${BRANCH_TIP:-$CURRENT_HEAD}}
+      if [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
+        state=MERGED
+      fi
+      gh_fixture_parse "$@"
+      gh_fixture_answer "$(jq -cn --arg state "$state" --arg target "$target" --arg tip "${BUILD_TIP_LATER:-$tip}" \
+        --arg head "$CURRENT_HEAD" --arg head_tip "$head_tip" --arg repo "${HEAD_REPO:-$REPO}" '
+        {data:{repository:{pullRequest:{
+          state:$state, baseRefName:$target, baseRef:{name:$target,target:{oid:$tip}},
+          headRefOid:$head, headRef:{target:{oid:$head_tip}}, headRefName:"claude/topic",
+          headRepository:{nameWithOwner:$repo}
+        }}}}')"
+      ;;
     *reviewThreads*)
       printf 'CALL reviewThreads\n' >>"$CALLS_FILE"
       reads=$(fixture_call_count threads) || return 1
@@ -563,6 +596,16 @@ gh() {
     esac
     if [ -n "$MERGE_REFUSAL" ]; then
       printf '%s\n' "$MERGE_REFUSAL" >&2
+      return 1
+    fi
+    if [ -n "$BUILD_MOVE_ON_CALL" ] && [ ! -f "$TEST_ROOT/merge-failed-once" ]; then
+      : >"$TEST_ROOT/merge-failed-once"
+      git --git-dir="$BUILD_LIVE_REMOTE" update-ref refs/heads/main "$BUILD_LATER" "$BASE_TIP" || return 1
+      if [[ "$BUILD_MOVE_ON_CALL" == gateway* ]]; then
+        printf '%s\n' 'gh: HTTP 503: Service Unavailable' >&2
+      else
+        printf '%s\n' 'GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)' >&2
+      fi
       return 1
     fi
     # The stale pre-recompute verdict: the first attempt fails as not mergeable, await_mergeable
@@ -731,6 +774,11 @@ reset() {
   RUNS_READ_FAIL=""
   GATED_HEAD=head-sha
   BASE_TIP=base-tip
+  BUILD_LIVE_REMOTE=""
+  BUILD_LATER=""
+  BUILD_TIP_LATER=""
+  BUILD_TARGET_LATER=""
+  BUILD_MOVE_ON_CALL=""
   COMPARE_FORWARD=""
   COMPARE_REVERSE=""
   MERGE_BUILD_CONFIG=""
@@ -3395,11 +3443,16 @@ build_fixture() { # <kind>
   printf '%s\n' 'Notes' 'a' 'b' 'c' 'd' 'e' 'f' 'g' >"$work/notes.md"
   case "$1" in
   ml-*) printf '%s\n' '(* The library. *)' 'let a = 1' '' '' '' '' '' 'let b = 2 (* two *)' >"$work/lib.ml" ;;
+  compile-clash)
+    printf '%s\n' '#include "api.h"' 'int setting(void) { return 0; }' >"$work/api.c"
+    printf '%s\n' '/* Public declarations. */' >"$work/api.h"
+    ;;
   esac
   build_git "$work" add -A
   build_git "$work" commit -q -m base
   build_git "$work" push -q "$remote" HEAD:refs/heads/main
   base=$(git -C "$work" rev-parse HEAD)
+  BUILD_START=$base
   # Cloned before either side moves, so its origin/main is behind the base's tip: a fetch that
   # moved it (a configured refmap) would show in assert_clone_untouched.
   git clone -q "$remote" "$root/clone"
@@ -3417,6 +3470,7 @@ build_fixture() { # <kind>
   base-red-clash) printf 'hook\n' >>"$work/api.sh" ;;
   notes) printf 'pr\n' >>"$work/notes.md" ;;
   ml-*) printf '%s\n' '(* The library. *)' 'let a = 1' '' '' '' '' '' 'let b = 3 (* two *)' >"$work/lib.ml" ;;
+  compile-clash) printf '%s\n' 'int setting(void);' >>"$work/api.h" ;;
   split)
     printf '%s\n' '. ./api.sh' 'hook' >"$work/use.sh"
     build_git "$work" add use.sh
@@ -3440,6 +3494,9 @@ build_fixture() { # <kind>
     ;;
   ml-code)
     printf '%s\n' '(* The library. *)' 'let a = 0' '' '' '' '' '' 'let b = 2 (* two *)' >"$work/lib.ml"
+    ;;
+  compile-clash)
+    printf '%s\n' '#include "api.h"' 'double setting(void) { return 0; }' >"$work/api.c"
     ;;
   *)
     printf '%s\n' 'seam() { :; }' '# one' '# two' '# three' '# four' 'keep() { :; }' \
@@ -3536,9 +3593,260 @@ test_a_merge_commit_that_builds_merges() {
   fi
   assert_eq "$MERGE_RC" 0 "a merge commit that builds merges ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDOUT" "merge build $REPO#7: PASSED" "says the build passed"
+  assert_eq "$(grep -cF "merge build $REPO#7: PASSED" "$OUT_FILE")" 1 "an unchanged base builds once"
+  assert_eq "$(merge_calls)" 1 "one merge write follows the build"
   assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
   assert_clone_untouched
 }
+
+moving_build_fixture() { # <kind>
+  build_fixture "$1"
+  BUILD_LIVE_REMOTE=$(git -C "$BUILD_CLONE" remote get-url origin)
+  BUILD_WORK="$TEST_ROOT/build-$1/work"
+  build_git "$BUILD_WORK" commit -q --allow-empty -m 'next sibling'
+  BUILD_LATER=$(git -C "$BUILD_WORK" rev-parse HEAD)
+  build_git "$BUILD_WORK" commit -q --allow-empty -m 'another sibling'
+  BUILD_LAST=$(git -C "$BUILD_WORK" rev-parse HEAD)
+  build_git "$BUILD_WORK" push -q "$BUILD_LIVE_REMOTE" HEAD:refs/heads/future
+  export BUILD_PROBE="$TEST_ROOT/build-probe.sh" BUILD_PROBE_LOG="$TEST_ROOT/build-parents"
+  export BUILD_PROBE_REMOTE="$BUILD_LIVE_REMOTE" BUILD_PROBE_MOVES="" BUILD_PROBE_RED="" BUILD_PROBE_COMPILER=""
+  : >"$BUILD_PROBE_LOG"
+  # The ref move is evidence only if the command itself saw the candidate Git constructed.
+  cat >"$BUILD_PROBE" <<'EOF'
+set -eu
+base=$(git rev-parse HEAD^1)
+head=$(git rev-parse HEAD^2)
+test "$base" = "$SHIP_PR_MERGE_BASE_SHA"
+test "$head" = "$SHIP_PR_MERGE_HEAD_SHA"
+printf '%s %s %s\n' "$1" "$base" "$head" >>"$BUILD_PROBE_LOG"
+while IFS=' ' read -r from to; do
+  if [ "$base" = "$from" ] && [ "$(git --git-dir="$BUILD_PROBE_REMOTE" rev-parse refs/heads/main)" = "$from" ]; then
+    git --git-dir="$BUILD_PROBE_REMOTE" update-ref refs/heads/main "$to" "$from"
+  fi
+done <<END_MOVES
+$BUILD_PROBE_MOVES
+END_MOVES
+if [ "$base" = "$BUILD_PROBE_RED" ]; then
+  printf '%s\n' 'known baseline red' >&2
+  exit 1
+fi
+if [ -n "$BUILD_PROBE_COMPILER" ]; then
+  cc -fsyntax-only api.c
+else
+  sh ./api.sh
+fi
+EOF
+  MERGE_BUILD_CONFIG=$'command sh "$BUILD_PROBE" full\ntrigger always\ntimeout 120'
+}
+
+test_a_build_whose_base_moves_refreshes_with_the_full_command() {
+  reset
+  moving_build_fixture compatible
+  BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "refreshing a local build" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the refreshed candidate passes ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+    "the full command rebuilt the new first parent with the same head"
+  assert_eq "$(merge_calls)" 1 "only the refreshed candidate reaches the merge call"
+  assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the call still pins the head"
+  assert_clone_untouched
+}
+
+test_two_green_heads_cannot_land_a_union_that_fails_to_compile() {
+  local first second landing
+  reset
+  moving_build_fixture compile-clash
+  first=$BUILD_TIP
+  second=$BUILD_HEAD
+  git --git-dir="$BUILD_LIVE_REMOTE" update-ref refs/heads/main "$BUILD_START" "$first"
+  git --git-dir="$BUILD_LIVE_REMOTE" update-ref refs/pull/7/head "$first" "$second"
+  GATED_HEAD=$first CURRENT_HEAD=$first BASE_TIP=$BUILD_START
+  SERIES_JSON="[$(commit_row "$first" 'Change the implementation.')]"
+  BUILD_PROBE_COMPILER=1 FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "gating the first sibling" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the implementation change builds and its merge is accepted ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" "full $BUILD_START $first" "the first sibling really ran the compiler"
+  assert_eq "$(merge_calls)" 1 "the first sibling reaches its merge write"
+  # Expose that merge on the remote while the second sibling's initial candidate is being built.
+  landing=$(build_git "$BUILD_WORK" commit-tree "$first^{tree}" -p "$BUILD_START" -p "$first" -m 'Merge the implementation')
+  build_git "$BUILD_WORK" push -q "$BUILD_LIVE_REMOTE" "$landing:refs/heads/accepted-sibling"
+  git --git-dir="$BUILD_LIVE_REMOTE" update-ref refs/pull/7/head "$second" "$first"
+  GATED_HEAD=$second CURRENT_HEAD=$second
+  SERIES_JSON="[$(commit_row "$second" 'Declare the old interface.')]"
+  : >"$BUILD_PROBE_LOG"
+  BUILD_PROBE_COMPILER=1 BUILD_PROBE_MOVES="$BUILD_START $landing" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  assert_eq "$(git --git-dir="$BUILD_LIVE_REMOTE" rev-parse refs/heads/main)" "$landing" "the first sibling landed"
+  assert_eq "$MERGE_RC" 1 "the union fails to compile ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+    "$(printf 'full %s %s\n' "$BUILD_START" "$second" "$landing" "$second" "$landing" "$second")" \
+    "the second gate tries its original candidate, the union, and the new base alone"
+  assert_contains "$MERGE_STDOUT" "conflicting types for" "the compiler caught the interface change"
+  assert_contains "$MERGE_STDOUT" "main alone PASSED" "the failure belongs to the union"
+  assert_no_merge_call
+  assert_clone_untouched
+}
+
+test_a_refresh_runs_the_recheck_and_drops_the_old_shared_failure() {
+  reset
+  moving_build_fixture compatible
+  MERGE_BUILD_CONFIG+=$'\nrecheck sh "$BUILD_PROBE" cheap'
+  BUILD_PROBE_RED="$BUILD_TIP" BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box \
+    run_merge --override 'known shared failure under repair'
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "replacing the old shared failure" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the cheap command reads a green new candidate ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+    "$(printf 'full %s %s\nfull %s %s\ncheap %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+    "the old failure was compared with its base and the new base got the cheap command"
+  assert_not_contains "$MERGE_OUTPUT" "OVERRIDE: merging $REPO#7 over a merge-build failure" \
+    "the latest verdict supersedes the old override"
+  assert_eq "$(merge_calls)" 1 "the refreshed candidate reaches the call"
+}
+
+test_a_refresh_cannot_waive_a_new_shared_base_failure() {
+  reset
+  moving_build_fixture compatible
+  BUILD_PROBE_RED="$BUILD_LATER" BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box \
+    run_merge --override 'a failure established on the original base'
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "requiring a fresh override" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "a shared failure on the refreshed base requires its own override ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "main at $BUILD_LATER alone fails the same way" "the failure is on the new base"
+  assert_contains "$MERGE_STDERR" "--override covers only the initial build on base $BUILD_TIP" "the earlier base is named"
+  assert_contains "$MERGE_STDERR" "--override reason for $BUILD_LATER" "the caller needs a reason for this failure"
+  assert_no_merge_call
+}
+
+test_a_refresh_runs_the_new_candidates_plan_before_the_build() {
+  reset
+  moving_build_fixture compatible
+  export BUILD_PROBE_NEXT="$BUILD_LATER"
+  MERGE_BUILD_CONFIG+=$'\nplan if [ "$SHIP_PR_MERGE_BASE_SHA" = "$BUILD_PROBE_NEXT" ]; then printf "%s\\n" "ship-pr-merge-plan: unadmitted runtest"; else printf "%s\\n" "ship-pr-merge-plan: nothing-owed"; fi'
+  BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "planning the refreshed candidate" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "the new plan's unadmitted verdict refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "merged with ${BUILD_LATER:0:8} owes runtest" "the plan read the new base"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" "full $BUILD_TIP $BUILD_HEAD" "the new candidate took no build slot"
+  assert_no_merge_call
+}
+
+test_a_base_that_moves_again_after_refresh_is_refused() {
+  reset
+  moving_build_fixture compatible
+  BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST")
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "bounding the refresh" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "only one refresh is allowed ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "moved after refreshing the merge build ($BUILD_LATER -> $BUILD_LAST)" \
+    "the refusal names the last built and newly observed bases"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+    "there is no third build"
+  assert_no_merge_call
+}
+
+test_a_build_with_an_unread_current_base_is_refused() {
+  reset
+  moving_build_fixture compatible
+  BUILD_TIP_LATER=not-a-sha
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "requiring a live tip" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 3 "an invalid live-tip response leaves no verdict ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "The merge-build verdict applies only to $BUILD_TIP" "the diagnosis names the built base"
+  assert_no_merge_call
+}
+
+test_a_build_cannot_authorize_a_retargeted_merge() {
+  reset
+  moving_build_fixture compatible
+  BUILD_TARGET_LATER=release/next
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "detecting a retarget" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "the changed target requires a fresh gate ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "retargeted from main at $BUILD_TIP to release/next" "both targets are named"
+  assert_no_merge_call
+}
+
+test_a_build_cannot_authorize_a_head_lagging_its_live_ref() {
+  reset
+  moving_build_fixture compatible
+  BRANCH_TIP_LATER=$BUILD_LATER
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "checking a late head push" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "the final ref read refuses the new lag ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "stands at $BRANCH_TIP_LATER" "the actual source branch tip is named"
+  assert_no_merge_call
+}
+
+test_a_base_modified_merge_response_refreshes_the_next_attempt() {
+  reset
+  moving_build_fixture compatible
+  BUILD_MOVE_ON_CALL=base-modified
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "refreshing before a merge retry" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the refreshed attempt is accepted ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
+    "the retry built the live base"
+  assert_eq "$(merge_calls)" 2 "the rejected attempt and the refreshed attempt"
+}
+
+test_a_gateway_refusal_never_resends_a_stale_build() (
+  reset
+  moving_build_fixture compatible
+  retune API_ATTEMPTS=3
+  BUILD_MOVE_ON_CALL=gateway
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "checking a gateway resend" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "a stale build cannot authorize a gateway resend ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "moved before a merge request could be resent ($BUILD_TIP -> $BUILD_LATER)" \
+    "both bases are named"
+  assert_eq "$(merge_calls)" 1 "no write was resent"
+)
+
+test_a_gateway_resend_confirms_a_pr_merged_meanwhile() (
+  reset
+  moving_build_fixture compatible
+  retune API_ATTEMPTS=3
+  BUILD_MOVE_ON_CALL=gateway-merged
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "confirming a concurrent merge" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the landed head matches the gated head ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "the landing was confirmed"
+  assert_eq "$(merge_calls)" 1 "the write was not resent"
+)
 
 # The base moved, and the paths both sides changed hold no build input: the config is read, nothing
 # is built, and the merge proceeds. So with no path changed on both sides (the default trigger). With
@@ -3869,6 +4177,7 @@ test_a_repository_without_the_config_builds_nothing() {
   assert_eq "$MERGE_RC" 0 "no config: the merge proceeds as before ($MERGE_OUTPUT)"
   assert_contains "$MERGE_CALLS" "CALL merge-build-config" "the config was looked for"
   assert_not_contains "$MERGE_OUTPUT" "merge build" "and nothing was built"
+  assert_eq "$(grep -c '^CALL live-base-tip$' "$CALLS_FILE")" 1 "only the existing drift read asks for the tip"
   assert_contains "$MERGE_CALLS" "pr merge 7" "the merge is made"
 }
 
@@ -4161,6 +4470,18 @@ tests=(
   test_require_green_takes_a_waived_red
   test_a_merge_commit_that_does_not_build_is_refused
   test_a_merge_commit_that_builds_merges
+  test_a_build_whose_base_moves_refreshes_with_the_full_command
+  test_two_green_heads_cannot_land_a_union_that_fails_to_compile
+  test_a_refresh_runs_the_recheck_and_drops_the_old_shared_failure
+  test_a_refresh_cannot_waive_a_new_shared_base_failure
+  test_a_refresh_runs_the_new_candidates_plan_before_the_build
+  test_a_base_that_moves_again_after_refresh_is_refused
+  test_a_build_with_an_unread_current_base_is_refused
+  test_a_build_cannot_authorize_a_retargeted_merge
+  test_a_build_cannot_authorize_a_head_lagging_its_live_ref
+  test_a_base_modified_merge_response_refreshes_the_next_attempt
+  test_a_gateway_refusal_never_resends_a_stale_build
+  test_a_gateway_resend_confirms_a_pr_merged_meanwhile
   test_no_build_input_on_both_sides_builds_nothing
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges

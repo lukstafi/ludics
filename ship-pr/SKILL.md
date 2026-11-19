@@ -1333,9 +1333,9 @@ or GitHub's 300-file compare cap made a list potentially incomplete; it never me
 the read.
 
 **A green head merges as it is.** An overlap with the base, same-region or not, is information, not
-a reason to rebase: read those files for semantic drift, then merge. Interactions with the siblings
-merged meanwhile, past the merge build below, are the integration loop's to catch on the merged tip (standalone, the post-merge
-owner's, below), as for any clean merge. Rebase, or merge the base in where the branch is shared,
+a reason to rebase: read those files for semantic drift, then merge. The integration loop catches
+interactions that fall outside the merge build below (standalone, the post-merge owner's).
+Rebase, or merge the base in where the branch is shared,
 only for a textual conflict: `CONFLICTS`, or `merge` refusing the PR as not mergeable. Push that
 resolution once the head's own run has finished, never while it is in flight: a CI with
 `cancel-in-progress` cancels that run, and its verdict on the change itself with it. A count the
@@ -1346,7 +1346,7 @@ compare API could not answer prints `UNKNOWN`, which is not "not behind": check 
 five shared paths changed "all in DISJOINT hunks" — and the merge did not compile, leaving master
 red for an hour. A repository that names a build in `.github/ship-pr-merge-build` on its default
 branch (read like the advisory list: only a 404 the listing confirms is "no file") gets one local
-check before the merge call. When the file's trigger holds (by default, a path in the drift read's
+check on a stable base. When the file's trigger holds (by default, a path in the drift read's
 intersection matches one of its `input` globs; under `trigger always`, on every merge) or the two
 sides are UNKNOWN, `merge` builds the
 gated head merged with the base's tip in a scratch repository that borrows the objects of the clone
@@ -1375,7 +1375,17 @@ timeout 1200
 
 Any other line refuses the merge with exit 2. The merge still waits only on the head's own verdict,
 never on the base tip's CI, so roll-forward stands, and a repository without the file merges as
-before. A shared path renamed on either side counts by its other name too. Run such a merge on a
+before. Just before each merge attempt with a completed build, `merge` reads both live refs
+together (#1241). If the base tip moved, it builds the new candidate with the same gated head and
+re-runs the pre-call checks. It re-runs any configured plan and uses the same `timeout` for the optional
+`recheck <shell command>` or, if absent, for `command` again. If the refreshed tree and its base
+share a red, run `merge` again with an override reason that cites the new base SHA and failure.
+A second move, or a move before a
+gateway resend, refuses with both SHAs. A retarget or an unread base also requires a fresh
+invocation. GitHub pins only the head. A base that moves after the final re-read and before the
+merge call remains the integration loop's to catch.
+
+A shared path renamed on either side counts by its other name too. Run such a merge on a
 POSIX host (the fleet's macOS and Linux boxes; Windows is refused) from a full clone of the
 repository: one with no remote naming it, a shallow one (which may lack the merge base) or a
 partial one (a promisor remote) is exit 2. A

@@ -671,17 +671,21 @@ class GhSession:
         the status line could be read instead (``include``; ludics-lite#612); None otherwise."""
         return self._status
 
-    def retry(self, mode: Mode, args: Sequence[str], *, include: bool = False) -> GhResult:
+    def retry(
+        self, mode: Mode, args: Sequence[str], *, include: bool = False,
+        before_retry: Callable[[], None] | None = None,
+    ) -> GhResult:
         """``gh_retry <mode> <args>`` for THIS script's own arguments. gh refusing one of them
         raises ``GhRefusedOwn`` (exit 2 for the whole command).
 
         ``include``: the call is a ``gh api`` call that prints its answer (no --paginate, --silent
         or --verbose); ``--include`` is appended, the header block is taken off stdout, and an
         answer gh could not read is classified by its status (the boundary at
-        ``gh_unreadable_answer``)."""
+        ``gh_unreadable_answer``). ``before_retry`` can revalidate a precondition just before a
+        resend, after the backoff. The budget gates the resend after revalidation."""
         if include:
             args = [*args, "--include"]
-        result = self._retry(mode, args, "own", budgeted=True, include=include)
+        result = self._retry(mode, args, "own", budgeted=True, include=include, before_retry=before_retry)
         match result:
             case GhArgsRefused() | GhOutputWithheld():
                 raise AssertionError("an own call's refusal raises, it is never returned")
@@ -689,14 +693,15 @@ class GhSession:
                 return result
 
     def retry_caller(
-        self, mode: Mode, args: Sequence[str], *, listed: bool, budgeted: bool = False
+        self, mode: Mode, args: Sequence[str], *, listed: bool, budgeted: bool = False,
+        before_retry: Callable[[], None] | None = None,
     ) -> GhCallerResult:
         """``gh_retry`` with ``GH_RETRY_CALLER_ARGS`` set: a CALLER's arguments (``cmd_retry``).
         ``listed`` (the command passed ``gh_api_only_command``): a refusal of the arguments
         returns ``GhArgsRefused`` on the first attempt. Unlisted: stderr is not read as gh's.
         ``budgeted``: the call is still this script's own (merge's, with a caller's ``gh pr merge``
         flags forwarded), so it passes the polling budget; a ``retry`` caller's is outside it."""
-        return self._retry(mode, args, "listed" if listed else "unlisted", budgeted=budgeted)
+        return self._retry(mode, args, "listed" if listed else "unlisted", budgeted=budgeted, before_retry=before_retry)
 
     def _retry(
         self,
@@ -706,6 +711,7 @@ class GhSession:
         *,
         budgeted: bool,
         include: bool = False,
+        before_retry: Callable[[], None] | None = None,
     ) -> GhCallerResult:
         self._unclear_attempts = 0
         self._status = None
@@ -716,6 +722,11 @@ class GhSession:
         quota_unheld = 0
         budget = self.budget if budgeted else None
         while True:
+            if attempt > 1 and before_retry is not None:
+                # A nested read can retry too. Its attempts are separate from this call's.
+                unclear = self._unclear_attempts
+                before_retry()
+                self._unclear_attempts = unclear
             # The polling budget: an own call goes to github.com or not at all, and no call while a
             # hold stands.
             if budget is not None:

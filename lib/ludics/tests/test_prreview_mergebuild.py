@@ -173,6 +173,23 @@ class Grammar(unittest.TestCase):
                 self.assertIsNone(config)
                 self.assertIn(named, err)
 
+    def test_a_recheck_is_optional_and_cannot_replace_the_initial_command(self) -> None:
+        config, err = parsed("command make\ntrigger always\nrecheck  make compile \n")
+        self.assertEqual(config and (config.command, config.recheck), ("make", "make compile"), err)
+        self.assertEqual(err, "")
+        config, _ = parsed("command make\ntrigger always\n")
+        self.assertEqual(config, BuildConfig("make", (), trigger="always"))
+        for text, named in (
+            ("command make\ntrigger always\nrecheck\n", "blank line: recheck"),
+            ("command make\ntrigger always\nrecheck a\nrecheck b\n", "second recheck line"),
+            ("trigger always\nrecheck make\n", "needs one `command` line"),
+            ("command make\ntrigger always\nrecheck-timeout 5\n", "recheck-timeout 5"),
+        ):
+            with self.subTest(text=text):
+                config, err = parsed(text)
+                self.assertIsNone(config)
+                self.assertIn(named, err)
+
 
 class Inputs(unittest.TestCase):
     def test_a_glob_matches_the_whole_path_and_star_crosses_slashes(self) -> None:
@@ -421,10 +438,11 @@ class Repo(unittest.TestCase):
         shared: str | None = None
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             try:
-                shared = mergebuild._build(  # pyright: ignore[reportPrivateUsage]
+                verdict = mergebuild._build(  # pyright: ignore[reportPrivateUsage]
                     "owner/repo", "7", gated, "main", self.tip, BuildConfig(command, ("*.sh",), 60), "test",
                     override=override,
                 )
+                shared = verdict.shared_failure if verdict is not None else None
             except cli.Exit as exc:
                 rc = exc.rc
                 out.write(exc.message + "\n")

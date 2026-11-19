@@ -17,7 +17,8 @@ review round:
   --wait that did not end green, the close-out refusals, the base drift, the build of
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue, an
-  ABSENT verdict's base (ludics-lite#523), and the branch tip last; then what the merge goes over (an override's
+  ABSENT verdict's base (ludics-lite#523), then the head branch tip (read with the current base
+  when a local build ran, #1241); then what the merge goes over (an override's
   waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
@@ -53,10 +54,11 @@ import re
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal, assert_never
+from functools import partial
+from typing import Literal, NoReturn, assert_never
 
 from ludics import cli
-from ludics.prreview.branchtip import Clear, Gone, Lags, Unread, read_tip, warning
+from ludics.prreview.branchtip import FULL_SHA, Clear, Gone, Lags, Tip, Unread, classify_tip, read_tip, warning
 from ludics.prreview.checks import parse_wait
 from ludics.prreview.closekw import MultiClose, SeriesClose
 from ludics.prreview.core import (
@@ -75,7 +77,7 @@ from ludics.prreview.core import (
 from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, RunKey, load_gate_config
-from ludics.prreview.mergebuild import Ceiling, clone_of, clone_preflight, merge_build
+from ludics.prreview.mergebuild import BuildVerdict, Ceiling, clone_of, clone_preflight, merge_build, refresh_build
 from ludics.prreview.runners import (
     HeadRun,
     Idle,
@@ -642,6 +644,10 @@ class Recovery:
         return Wait(until) if acted else Idle()
 
 
+class _AlreadyMerged(Exception):
+    """A pre-write build check saw a landing. Confirm it without another merge write."""
+
+
 class Merge:
     def __init__(
         self, session: GhSession, repo: str, num: str, config: GateConfig, clock: Clock, opts: Options
@@ -810,8 +816,10 @@ class Merge:
         call, is the one that decides, so unread there is exit 3. That read is the guarantee, and it
         stops at the call: ``--match-head-commit`` binds the call to the gated head at GitHub, and
         a push landing after this read is that pin's, as far as it reaches (branchtip.py)."""
+        self.require_branch_tip(read_tip(self.session, self.repo, self.num), last=last)
+
+    def require_branch_tip(self, tip: Tip, *, last: bool) -> None:
         repo, pr = self.repo, self.num
-        tip = read_tip(self.session, repo, pr)
         match tip:
             case Clear():
                 return
@@ -880,12 +888,16 @@ class Merge:
             ),
         ))
 
-    def announce(self) -> None:
+    def announce(self, shared: str | None) -> None:
         """Say what the merge goes over, once, after every refusal before the call has passed."""
         for line, record in self.announced:
             cli.say(line)
             warn(*record)
         self.announced = []
+        if shared:
+            repo, pr, why = self.repo, self.num, self.opts.override
+            cli.say(f"OVERRIDE: merging {repo}#{pr} over {shared} — {why}")
+            warn(f"OVERRIDE: merging {repo}#{pr} over {shared}: the base's own failure, not the merge's — {why}")
 
     def judge(self) -> None:
         """The gate's verdict, and every refusal the merge makes on it."""
@@ -1076,10 +1088,69 @@ class Merge:
     # field; any other wording, or this message on a line with anything else, stays ambiguous.
     _CONFLICTS = "GraphQL: Pull Request has merge conflicts (mergePullRequest)"
 
-    def merge_call(self) -> None:
+    _BUILD_REFS_QUERY = (
+        "query MergeBuildRefs($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n)"
+        "{state baseRefName baseRef{name target{oid}} headRefName headRefOid headRef{target{oid}}"
+        " headRepository{nameWithOwner}}}}"
+    )
+    _BUILD_REFS_JQ = (
+        '.data.repository.pullRequest | [(.state // "-"), (.baseRefName // "-"), (.baseRef.name // "-"),'
+        ' (.baseRef.target.oid // "-"), (.headRefOid // "-"),'
+        ' (if .headRef == null then "-" else (.headRef.target.oid // "!") end),'
+        ' (.headRefName // "-"), (.headRepository.nameWithOwner // "-")] | @tsv'
+    )
+
+    def built_base_tip(self, build: BuildVerdict) -> str:
+        """Check both live refs in one response so neither waits behind a separate read."""
+        repo, pr = self.repo, self.num
+        owner, _, name = repo.partition("/")
+        result = self.session.retry("read", [
+            "api", "graphql", "-f", f"query={self._BUILD_REFS_QUERY}", "-f", f"o={owner}",
+            "-f", f"r={name}", "-F", f"n={pr}", "--jq", self._BUILD_REFS_JQ,
+        ])
+        branch = shlex.quote(build.base_ref)
+        state, base, base_ref, tip, head, head_tip, head_ref, head_repo = tab_fields(
+            result.stdout if isinstance(result, GhOk) else "", 8,
+        )
+        if state == "MERGED":
+            raise _AlreadyMerged
+        if state == "CLOSED":
+            fail(1, f"NOT merging {repo}#{pr}: the PR closed after the merge build.")
+        if state != "OPEN" or base in ("", "-"):
+            detail = self.session.err_line() or "no open PR and target branch in the response"
+            fail(3, f"NOT merging {repo}#{pr}: the target of the merge build on {branch} at {build.base_sha}",
+                 f"could not be re-read ({detail}). Re-run merge.")
+        if base != build.base_ref:
+            fail(1, f"NOT merging {repo}#{pr}: the PR was retargeted from {branch} at {build.base_sha}",
+                 f"to {shlex.quote(base)} after its merge build. Re-run merge.")
+        if base_ref != base or not FULL_SHA.fullmatch(tip):
+            fail(3, f"NOT merging {repo}#{pr}: could not re-read a full commit SHA for the tip of {branch}.",
+                 f"The merge-build verdict applies only to {build.base_sha}. Re-run merge.")
+        observed_tip = None if head_tip == "-" else head_tip
+        self.require_branch_tip(
+            classify_tip(state.lower(), head, head_ref, head_repo, lambda: observed_tip, full_shas=True), last=True,
+        )
+        if head != build.head_sha:
+            fail(1, f"NOT merging {repo}#{pr}: its head moved from {build.head_sha} to {head}. Re-run merge.")
+        return tip
+
+    def refuse_stale_build(self, build: BuildVerdict, tip: str, when: str) -> NoReturn:
+        fail(
+            1, f"NOT merging {self.repo}#{self.num}: {shlex.quote(build.base_ref)} moved {when}",
+            f"({build.base_sha} -> {tip}). Re-run merge.",
+        )
+
+    def recheck_before_resend(self, build: BuildVerdict) -> None:
+        tip = self.built_base_tip(build)
+        if tip != build.base_sha:
+            self.refuse_stale_build(build, tip, "before a merge request could be resent")
+
+    def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
         attempt = 1
+        refreshed = False
+        sent_build: BuildVerdict | None = None
         while True:
             self.multi.warn(pr, again=True)
             self.series.warn(pr, gate.check_sha)
@@ -1095,14 +1166,28 @@ class Merge:
                     )
                 attempt += 1
                 continue
-            self.branch_tip_gate(last=True)
-            self.announce()
+            if build is None:
+                self.branch_tip_gate(last=True)
+            else:
+                tip = self.built_base_tip(build)
+                if tip != build.base_sha:
+                    if refreshed:
+                        self.refuse_stale_build(build, tip, "after refreshing the merge build")
+                    warn(f"{repo}#{pr}'s base moved since its merge build ({build.base_sha} -> {tip}); rebuilding")
+                    build = refresh_build(
+                        repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling, discard_override=bool(opts.override),
+                    )
+                    refreshed = True
+                    continue
+            self.announce(build.shared_failure if build is not None and build is not sent_build else None)
+            sent_build = build
+            before_retry = partial(self.recheck_before_resend, build) if build is not None else None
             args = ["pr", "merge", pr, "--repo", repo, "--match-head-commit", gate.check_sha, *opts.gh_args]
             if opts.forwarded:
                 # Still this script's own call, so the polling budget gates it.
-                result = self.session.retry_caller("write", args, listed=False, budgeted=True)
+                result = self.session.retry_caller("write", args, listed=False, budgeted=True, before_retry=before_retry)
             else:
-                result = self.session.retry("write", args)
+                result = self.session.retry("write", args, before_retry=before_retry)
             match result:
                 case GhOk(stdout=out):
                     cli.emit(out)
@@ -1136,9 +1221,11 @@ class Merge:
                         )
                     warn(
                         f"{repo}#{pr}'s BASE moved during the merge call, not its head (still",
-                        f"{gate.check_sha[:8]}); re-reading the drift and retrying",
+                        f"{gate.check_sha[:8]});",
+                        "re-reading the drift and retrying" if build is None else "checking the merge-build base before retrying",
                     )
-                    self.drift()
+                    if build is None:
+                        self.drift()
                     attempt += 1
                     continue
             if any(s in err for s in ("was modified", "does not match", "head commit", "expected head")):
@@ -1184,7 +1271,7 @@ class Merge:
     # merged anchor, whose head.sha must be its merge commit's second parent).
     _STATE_JQ = '"merged=\\(.merged) state=\\(.state)\\t\\(.head.sha // "-")"'
 
-    def confirm(self) -> int:
+    def confirm(self, *, already_merged: bool = False) -> int:
         """The merged state over REST: ``gh pr merge`` returns 0 having only ENABLED auto-merge when
         the base defers merges, so its status is not the answer.
 
@@ -1227,6 +1314,11 @@ class Merge:
                     "not this merge. It has landed, so do NOT re-merge; judge what landed on the base.",
                 )
             return 0
+        if already_merged:
+            fail(
+                3, f"{repo}#{pr} read as merged in GraphQL but the landing could not be confirmed over REST",
+                f"({line}). Re-read the PR before attempting another merge.",
+            )
         if self.opts.require_green:
             disable = self.session.retry("write", ["pr", "merge", pr, "--repo", repo, "--disable-auto"])
             if isinstance(disable, GhOk):
@@ -1298,17 +1390,14 @@ class Merge:
         # ludics-lite#611): after the drift read it is decided on, before the merge call.
         # Under --override it may go over a failure the base alone shares (mergebuild.py's THE
         # BASE ALONE, #860), announced with the gate's override, just before the call.
-        shared = merge_build(
+        build = merge_build(
             self.session, self.repo, self.num, self.gate.check_sha, drift, self.config.limits.contents_dir_cap,
             checkout=self.opts.checkout, ceiling=ceiling, override=self.opts.override,
         )
-        if shared:
-            repo, pr, why = self.repo, self.num, self.opts.override
-            self.announced.append((
-                f"OVERRIDE: merging {repo}#{pr} over {shared} — {why}",
-                (f"OVERRIDE: merging {repo}#{pr} over {shared}: the base's own failure, not the merge's — {why}",),
-            ))
-        self.merge_call()
+        try:
+            self.merge_call(build, ceiling)
+        except _AlreadyMerged:
+            return self.confirm(already_merged=True)
         return self.confirm()
 
 
