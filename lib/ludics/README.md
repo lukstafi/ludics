@@ -598,6 +598,13 @@ The two whitespace regression cases fail against the pre-guard commit 4c0158d7 a
 A missing board-writer identity becomes an assignment NOTE rather than aborting the
 remaining requests. Board mutations share one lease-protocol helper.
 
+Agent notes (wave-20261119-ludics, t1239): once `Popen` succeeds, an assign step's output I/O
+failure returns exit 4 and reports `ASSIGN UNKNOWN` with reconciliation guidance. Exit 4
+still reaches driver attention if the diagnostic stream is unusable. Payload staging still
+reports `nothing asked` with exit 1, and the executable-start failure keeps its diagnostic.
+The new regression fails on base `10c992e3` for stderr relay, stdout seek and read, and a
+persistent stderr failure. The batch log is `wave-20261119-ludics/scratch/t1239/runs/negative.log`.
+
 Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `lib/`
 `test_*.py` module paths at `PYTHON_TEST_CUTS`. CI passes job-index/job-total, so losing
 one matrix row refuses against the cut count; new modules enter a range automatically.

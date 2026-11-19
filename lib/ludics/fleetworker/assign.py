@@ -60,8 +60,12 @@ block, in file order, then has one outcome, said in one line on stderr:
   call dispatched it, or it is concluded), so it is not asked again and nothing is printed: a
   ``run`` would refuse it, and an assignment printed twice is two runs. A still-``reserved`` record is
   dispatched by ``run`` like a new one.
-- ``ASSIGN UNKNOWN <id>: ...``: the step exited 4 (the anchor did not answer), or exited 0 with a
-  record this verb cannot read the revision off; reconcile it, never retry it blind.
+- ``ASSIGN UNKNOWN <id>: ...``: the step exited 4 (the anchor did not answer), output could not be
+  collected after the child started, or the step exited 0 with a record this verb cannot read the
+  revision off. Reconcile it before retrying. If reporting the unknown outcome also fails, the
+  call stops with exit 4 before publishing an assignment message.
+
+A payload staging error before child startup says ``nothing asked`` and is a retryable refusal.
 
 An assign that returns exit 5 ends stderr with one ``ASSIGN ACTION REQUIRED `` summary, with the
 ID and diagnostic for each step that exited 2 or 5. Only the step's first ``fleet-worker.sh: ``
@@ -370,6 +374,7 @@ def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> StepResul
     as it arrives so an operator sees the reason before a window sleeps."""
     script = os.path.join(cfg.here, os.path.basename(cfg.script))
     path = ""
+    started = False
     diagnostics: dict[str, str] = {}
     try:
         descriptor, path = tempfile.mkstemp(prefix="fw-assign.", suffix=".json", dir=os.environ.get("TMPDIR") or "/tmp")
@@ -387,6 +392,7 @@ def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> StepResul
             except OSError as exc:
                 err(f"{execution.shown(script)}: {exc.strerror}")
                 return StepResult(127, "")
+            started = True
             with child:
                 assert child.stderr is not None
                 for raw in child.stderr:
@@ -399,7 +405,11 @@ def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> StepResul
                 rc = child.wait()
             stdout.seek(0)
             out = proc.decode(stdout.read())
+        if out:
+            err(out.removesuffix("\n"))
     except OSError as exc:
+        if started:
+            return StepResult(4, "", f"could not collect the step's output after it started: {exc.strerror or exc}")
         err(f"execution assign: cannot stage the payload: {exc.strerror}; nothing asked")
         return StepResult(1, "")
     finally:
@@ -408,8 +418,6 @@ def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> StepResul
                 os.unlink(path)
             except OSError:
                 pass
-    if out:
-        err(out.removesuffix("\n"))
     prefix = ACTION_DIAGNOSTIC_PREFIX.get(rc)
     if prefix is None:
         return StepResult(rc, out)
@@ -510,7 +518,14 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
             *(["--deadline", parsed.deadline] if parsed.deadline else []), box]
         answer = call(cfg, verb, payload_of(base_fields, block))
         if answer.rc == 4 or answer.unreachable:
-            err(f"ASSIGN UNKNOWN {request_id}: the {verb[1]}'s outcome is unknown (above); reconcile it, never retry it blind")
+            detail = answer.diagnostic or "above"
+            shown_id = execution.shown(request_id) if request_id.isprintable() else ascii(request_id)
+            try:
+                err(f"ASSIGN UNKNOWN {shown_id}: the {verb[1]}'s outcome is unknown ({detail});"
+                    " reconcile it, never retry it blind")
+            except OSError:
+                # A failed relay and this report may share the same broken stream.
+                return 4
             unknown = True
             continue
         if answer.rc != 0:

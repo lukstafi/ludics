@@ -2,6 +2,7 @@
 "execution assign" section drives the verb end to end, against the registry)."""
 
 import contextlib
+import errno
 import io
 import json
 import os
@@ -194,6 +195,57 @@ class Outcomes(unittest.TestCase):
             answer = assign.step(load_config(missing, {"HOME": "/nowhere"}), ["execution", "run"], block("a"))
         self.assertEqual((answer.rc, answer.out), (127, ""))
         self.assertIn(f"{shlex.quote(missing)}: No such file or directory", err.getvalue())
+
+    def test_a_step_that_cannot_stage_its_payload_asks_nothing(self) -> None:
+        problem = OSError(errno.ENOSPC, "fixture: no space for payload")
+        err = io.StringIO()
+        with (mock.patch.object(tempfile, "mkstemp", side_effect=problem),
+              mock.patch.object(assign.subprocess, "Popen") as launch,
+              contextlib.redirect_stderr(err)):
+            answer = assign.step(self.cfg, ["execution", "run"], block("a"))
+        launch.assert_not_called()
+        self.assertEqual((answer.rc, answer.out), (1, ""))
+        self.assertIn("cannot stage the payload: fixture: no space for payload; nothing asked", err.getvalue())
+
+    def test_post_start_io_errors_require_reconciliation(self) -> None:
+        script = self.write("fleet-worker.sh", "#!/bin/sh\nprintf '%s\\n' started >&2\nprintf '%s\\n' '{}'\n")
+        os.chmod(script, 0o755)
+        cfg = load_config(script, {"HOME": "/nowhere"})
+        requests = self.write("r.txt", message(block("a", checkout="/wt")))
+
+        for fault in ("relay", "seek", "read", "persistent relay"):
+            with self.subTest(fault=fault), tempfile.TemporaryFile() as captured:
+                problem = OSError(errno.EIO, f"fixture: {fault}")
+                err, out = io.StringIO(), io.StringIO()
+                spool = mock.MagicMock(wraps=captured)
+                spool.__enter__.return_value = spool
+                if fault in ("seek", "read"):
+                    getattr(spool, fault).side_effect = problem
+
+                def write_stderr(text: str) -> int:
+                    if fault == "persistent relay" or (fault == "relay" and text == "started\n"):
+                        raise problem
+                    return err.write(text)
+
+                stream = mock.Mock(wraps=err)
+                stream.write.side_effect = write_stderr
+                msg = os.path.join(self.dir, "assignment.txt")
+                resend = mock.Mock(return_value=0)
+                with (mock.patch.object(tempfile, "TemporaryFile", return_value=spool),
+                      mock.patch.object(execution, "listing", return_value=Done(0, "[]")),
+                      mock.patch.object(assign, "record_placement") as placement,
+                      contextlib.redirect_stdout(out), contextlib.redirect_stderr(stream)):
+                    rc = cmd_assign(cfg, [self.base, requests, "--message", msg, "--unstick", "box", "w"], resend=resend)
+                stream.write.assert_any_call("started\n")
+                self.assertEqual((rc, out.getvalue()), (4, ""))
+                placement.assert_not_called()
+                resend.assert_not_called()
+                self.assertFalse(os.path.exists(msg))
+                self.assertNotIn("nothing asked", err.getvalue())
+                if fault != "persistent relay":
+                    self.assertIn("ASSIGN UNKNOWN a: the run's outcome is unknown", err.getvalue())
+                    self.assertIn(f"fixture: {fault}", err.getvalue())
+                    self.assertIn("reconcile it, never retry it blind", err.getvalue())
 
     def test_a_steps_progress_reaches_the_reader_while_the_step_is_still_waiting(self) -> None:
         progress = "waiting for the window gap"
