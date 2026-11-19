@@ -78,6 +78,26 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
         return {r['request_id']: r for r in json.loads(run('execution', 'list'))}
 
     run('claim')
+    # t2332's argument-only shorthand consumed a reservation for a leg the worker could not run.
+    assign_base = root / 'assign-base.json'
+    assign_base.write_text(json.dumps(dict(wave='wave', worker='assigner', transport='subagent',
+                                          agent_host='fixture', repository='owner/repo', purpose='fixture')))
+    assign_block = dict(request_id='assign-cpu', execution_host='rog', kind='correctness',
+                        requested_revision='b' * 40, clone='/srv/project clone', checkout='/srv/project worktree',
+                        runner='run --cpu build @test/operations/scans -j 4')
+    assignment = subprocess.run(
+        ['bash', str(SCRIPT), 'execution', 'assign', str(assign_base), '-'],
+        input=f'EXECUTION_REQUEST\n{json.dumps(assign_block)}\nEND_EXECUTION_REQUEST\n',
+        env=env, text=True, capture_output=True, timeout=20,
+    )
+    assert (assignment.returncode, assignment.stdout) == (2, ''), assignment
+    assert '"command"' in assignment.stderr, assignment.stderr
+    correction = (f"execution leg --request assign-cpu --rev {'b' * 40} --checkout '/srv/project clone'"
+                  " --worktree '/srv/project worktree' --wait-window --cpu -- <runner-executable> <runner-args>")
+    assert correction in assignment.stderr, assignment.stderr
+    assert records() == {}
+    print('PASS: a CPU flag in runner shorthand is refused before reservation with the full command form')
+
     change('reserve', {**request('bad-triage'), 'triage_reason': True}, expected=1)
     change('reserve', {**request('premarked'), 'triage_reason': 'future triage'}, expected=1)
     assert records() == {}

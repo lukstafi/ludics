@@ -620,6 +620,13 @@ persistent stderr failure. The batch log is `wave-20261119-ludics/scratch/t1239/
 A subprocess case also pins exit 4 through Python shutdown with a broken buffered stderr pipe.
 It observed exit 120 on the initial fix in the same directory's `shutdown-negative.log`.
 
+Agent notes (wave-20261119-ludics, t1245): `execution assign` refuses literal `--cpu` and
+`--gpu` words in `runner` before asking the registry. The refusal shows the full `command`
+form with explicit slot placement. `.github/fleet-leg` defines hooks and backend pins, so the
+worker supplies the runner executable. The cross-box fixture fails on base `ef3bef15`, which
+prints an assignment with `-- run --cpu build ...` and moves the request to `launching`.
+Evidence is in `wave-20261119-ludics/scratch/t1245/runs/negative.log`.
+
 Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `lib/`
 `test_*.py` module paths at `PYTHON_TEST_CUTS`. CI passes job-index/job-total, so losing
 one matrix row refuses against the cut count; new modules enter a range automatically.

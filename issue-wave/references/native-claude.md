@@ -199,9 +199,12 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    args>` ([executions.md](executions.md#a-leg-on-another-box)), run from the worker's own box;
    its `checkout` is the leg's `--worktree`, not the box's clone, since a leg under a record that
    names a checkout refuses any other worktree (ludics-lite#749). Or the block names the leg's
-   box-relative runner instead of `command`: `"runner": "<runner args>"` with `"clone": "<the box's
-   checkout>"`, and the assignment wraps it into that leg form, with `--wait-window` for correctness
-   (ludics#869).
+   box-relative runner instead of `command`: `"runner": "<runner-executable> <runner-args>"` with
+   `"clone": "<the box's checkout>"`. Include the executable. The assignment adds `--wait-window`
+   for correctness. If you need `--cpu`, `--gpu` or another leg option, give the full leg in
+   `command` and put the leg options before its `--`. Use `command` also for a runner that takes a
+   literal `--cpu` or `--gpu` argument, with that runner argument after `--`. Keep `checkout` for
+   the worktree and put the clone path in the leg's `--checkout` (ludics#869, #1245).
 
    The task notification that follows is this handoff, not completion. Several blocks are
    assigned together, each on its own outcome (step 3), so a resumed worker holds every assignment
