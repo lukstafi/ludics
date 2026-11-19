@@ -32,9 +32,14 @@ path for the coordinator to review, and the cap. The site supplies the Windows p
 Do not combine this block with other handoff markers. Wait for the coordinator's result or
 repair instructions; an attention handoff is not authorization to run or retry the witness.
 
-For a cross-box leg you may give `"runner":"<runner args>","clone":"<the box's checkout>"` in place
-of `"command"`; `execution assign` wraps it into the `execution leg` form, with `--wait-window`
-for correctness (ludics#869). Read `issue-wave/references/executions.md`, *A leg on another box*,
+For a cross-box leg you may give `"runner":"<runner-executable> <runner-args>","clone":"<the box's checkout>"`
+in place of `"command"`. Give the executable and arguments as an array or one line of shell words.
+Use the full `"command"` for shell syntax such as redirection. `execution assign` wraps it into the leg form,
+with `--wait-window` for correctness. To specify leg options such as `--cpu` or `--gpu`, give the
+full leg in `"command"`, putting leg options before `--`. The full command form also lets you pass
+a runner's own `--cpu` or `--gpu` argument after `--`. Keep `"checkout"` for the worktree and put
+the clone path in the leg's `--checkout` (ludics#869, #1245).
+Read `issue-wave/references/executions.md`, *A leg on another box*,
 before writing a leg yourself: it runs from `@@HOST@@` as `~/.claude/skills/issue-wave/scripts/fleet-worker.sh
 execution leg --request <id> --rev <sha> --checkout <the box's clone> --worktree <that
 clone>-worktrees/@@WORKER@@ -- <command>` as a long run (*Blocking rule*). The far-side worktree is yours;

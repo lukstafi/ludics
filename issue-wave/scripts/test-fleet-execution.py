@@ -4,6 +4,7 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -78,6 +79,33 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
         return {r['request_id']: r for r in json.loads(run('execution', 'list'))}
 
     run('claim')
+    # t2332's argument-only shorthand consumed a reservation for a leg the worker could not run.
+    assign_base = root / 'assign-base.json'
+    assign_base.write_text(json.dumps(dict(wave='wave', worker='assigner', transport='subagent',
+                                          agent_host='fixture', repository='owner/repo', purpose='fixture')))
+    lease_text = 'EXECUTION REFUSED fixture: coordinator lease held by fixture'
+    assign_block = dict(request_id='assign-cpu', execution_host='rog', kind='correctness',
+                        requested_revision='b' * 40, clone=f'/srv/{lease_text}', checkout='/srv/project worktree',
+                        runner='run --cpu build @test/operations/scans -j 4')
+    assignment = subprocess.run(
+        ['bash', str(SCRIPT), 'execution', 'assign', str(assign_base), '-'],
+        input=f'EXECUTION_REQUEST\n{json.dumps(assign_block)}\nEND_EXECUTION_REQUEST\n',
+        env=env, text=True, capture_output=True, timeout=20,
+    )
+    assert (assignment.returncode, assignment.stdout) == (2, ''), assignment
+    _, marker, advice = assignment.stderr.partition(' with "command": ')
+    assert marker, assignment.stderr
+    words = shlex.shlex(advice, posix=True)
+    words.whitespace_split = True
+    launcher = next(iter(words))
+    assert Path(launcher).expanduser().resolve() == SCRIPT.resolve(), assignment.stderr
+    correction = ("execution leg --request <request-id> --rev <full-SHA> --checkout <clone>"
+                  " --worktree <checkout> --wait-window [--cpu|--gpu] -- <runner-executable> <runner-args>")
+    assert correction in assignment.stderr, assignment.stderr
+    assert lease_text not in assignment.stderr, assignment.stderr
+    assert records() == {}
+    print('PASS: a CPU flag in runner shorthand is refused before reservation with the full command form')
+
     change('reserve', {**request('bad-triage'), 'triage_reason': True}, expected=1)
     change('reserve', {**request('premarked'), 'triage_reason': 'future triage'}, expected=1)
     assert records() == {}
