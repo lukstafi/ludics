@@ -175,10 +175,41 @@ class Registry(RegistryCase):
             with self.subTest(action=action, payload=payload):
                 rc, out, err = registry_call(self.root, action, payload, token)
                 self.assertEqual(rc, 0, err)
-                self.assertNotIn(token, out)
+                self.assertFalse(token in out, f"{action} printed the lease token")  # not the whole listing
                 listed = json.loads(out)
                 self.assertEqual(sorted(r["request_id"] for r in listed), ids)
                 self.assertTrue(all("lease_token" not in r and ("history" in r) != compact for r in listed), listed)
+
+    def test_no_action_answer_prints_the_lease_token(self) -> None:
+        # THE LEASE TOKEN (ludics#1232): every action's answer drops it, a retry's included, while the
+        # record on file keeps it. One box, one slot: each record is concluded before the next is taken.
+        token = "SEKRIT-1232-lease-token"
+        sha, new = "a" * 40, "c" * 40
+        not_launched = {"verdict": "not-launched", "log": "/l", "evidence": "never launched"}
+        window: dict[str, object] = {"box": "mac", "request": request("w", kind="measurement"), "deadline": 60}
+        steps: tuple[tuple[str, dict[str, object]], ...] = (
+            ("reserve", request("r")), ("reserve", request("r")),
+            ("dispatch", {"request_id": "r", "evidence": "go"}),
+            ("record", {"request_id": "r", "state": "running", "evidence": "batch"}),
+            ("reconcile", {"request_id": "r", "state": "reserved", "evidence": "nothing ran"}),
+            ("conclude", {"request_id": "r", **not_launched}), ("conclude", {"request_id": "r", **not_launched}),
+            ("run", request("e", requested_revision=sha)),
+            ("rebind", {"request_id": "e", "evidence": "rebased", "rebound_revision": new}),
+            ("rebind", {"request_id": "e", "evidence": "rebased", "rebound_revision": new}),
+            ("conclude", {"request_id": "e", **not_launched}),
+            ("window", window), ("hold-open", {"request_id": "w", "execution_host": "mac", "evidence": "drained"}),
+            ("hold-open", {"request_id": "w", "execution_host": "mac", "evidence": "drained"}),
+            ("conclude", {"request_id": "w", **not_launched}), ("window", window))
+        for index, (action, payload) in enumerate(steps):
+            with self.subTest(step=index, action=action):
+                rc, out, err = registry_call(self.root, action, payload, token)
+                self.assertEqual(rc, 0, err)
+                self.assertFalse(token in out, f"{action}'s answer printed the lease token")  # not the whole record
+                answered = json.loads(out)
+                self.assertEqual(answered["request_id"], payload.get("request_id", "w"))
+                self.assertFalse("lease_token" in answered, f"{action}'s answer has a lease_token")
+                with open(os.path.join(self.root, "executions", f"{answered['request_id']}.json"), encoding="utf-8") as f:
+                    self.assertEqual(json.load(f)["lease_token"], token, "the record on file keeps it")
 
     def test_list_host_selects_one_box_an_alias_its_roster_entry(self) -> None:
         roster, endpoints = "mac rog-nv-linux", "rog rog-nv-linux rog-nv-wsl\n"

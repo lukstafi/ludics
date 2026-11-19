@@ -12,7 +12,12 @@ package's unit tests import; `main` runs when the module is run as a program, as
 `runpy.run_path`, and not on import.
 
 Argv: <state root> <action> <coordinator> <lease token> <json payload> <FLEET_BOXES>
-      [<FLEET_BOX_CORRECTNESS_SLOTS> [<endpoint map> [<anchor> <lab host>]]]
+      [<FLEET_BOX_CORRECTNESS_SLOTS> [<endpoint map> [<anchor> <lab host> [--assignment-status]]]]
+
+`--assignment-status` (ASSIGN_STATUS_ARG, the eleventh word) comes only from assign's internal
+`run` and `window` calls: an AssignmentInput refusal then exits ASSIGN_ACTION_REQUIRED (5), not 1
+(`outcome`). test-fleet-worker.sh's `execution assign` section drives it end to end (its
+`as-unreservable` fixture).
 
 The payload (ludics-lite#636): the word `-` says it is on file descriptor 3, where fleet-worker puts
 it -- one line, the payload as a JSON string, read to its end and closed (`payload_word`); any other
@@ -55,10 +60,11 @@ THE LEASE TOKEN (ludics#1204). A record's `lease_token` is the token of the coor
 it (or last reconciled it to reserved): `run`, `dispatch` and `rebind` compare the caller's token
 with it, reading the record's own file here, after fleet-worker's LEASE_MUTATION has compared that
 token with the anchor's lease. No reader takes it from anything this module prints: a caller's
-token is its own (`identity.my_token`). So nothing printed to a lease-free caller carries it: every
-listing form (`list`, with or without `active`, `compact` and `host`, and `wait`, which answers
-with that listing) drops it, `compact` drops `history` besides, and so does `hold-open`'s answer.
-The actions taken under the lease answer with the whole record, to the caller that holds the token.
+token is its own (`identity.my_token`). So nothing this module prints carries it (`lease_free`):
+every listing form (`list`, with or without `active`, `compact` and `host`, and `wait`, which
+answers with that listing) drops it, `compact` drops `history` besides, and every action's answer
+drops it too (ludics#1232), a retry's included, those taken under the lease as well as
+`hold-open`'s: their output lands in coordinator, bg-run and windows-witness logs other sessions read.
 
 A coordinator's correctness request may carry `"integration": true` (ludics-lite#401): the run is
 the repository's full integration suite at a merged tip, and once concluded pass or fail at an
@@ -968,8 +974,8 @@ def check_lane_lock(host: str, map_spec: str, anchor: str, lab: str) -> None:
 
 
 def lease_free(record: Record, compact: bool = False) -> Record:
-    """A record as a lease-free action prints it (THE LEASE TOKEN): never its ``lease_token``, nor,
-    compact, its ``history``."""
+    """A record as this module prints it, in a listing or an action's answer (THE LEASE TOKEN):
+    never its ``lease_token``, nor, compact, its ``history``."""
     hidden = {"lease_token", "history"} if compact else {"lease_token"}
     return {key: value for key, value in record.items() if key not in hidden}
 
@@ -1557,7 +1563,7 @@ def main(argv: list[str]) -> None:
             if action == "reserve":
                 sync_directory(directory.parent)
                 sync_directory(directory)
-                print(json.dumps(record, indent=2))
+                print(json.dumps(lease_free(record), indent=2))
                 return
             if action == "window":
                 # A retried window never dispatches again: it finishes the suspensions below.
@@ -1569,7 +1575,7 @@ def main(argv: list[str]) -> None:
                 if record["state"] == "concluded":
                     sync_directory(directory.parent)
                     sync_directory(directory)
-                    print(json.dumps(record, indent=2))
+                    print(json.dumps(lease_free(record), indent=2))
                     return
                 dispatch = False
             else:
@@ -1711,7 +1717,7 @@ def main(argv: list[str]) -> None:
             if action == "conclude" and record["history"][-1]["data"] == data:
                 sync_directory(directory.parent)
                 sync_directory(directory)
-                print(json.dumps(record, indent=2))
+                print(json.dumps(lease_free(record), indent=2))
                 return
             refuse("assignment already concluded")
         if record["state"] == "suspended" and action != "conclude":
@@ -1776,7 +1782,7 @@ def main(argv: list[str]) -> None:
                 # A retry, or a rebind to what already binds: answered with the record, nothing written.
                 sync_directory(directory.parent)
                 sync_directory(directory)
-                print(json.dumps(record, indent=2))
+                print(json.dumps(lease_free(record), indent=2))
                 return
             seen = record.get("observed_sha")
             if seen is not None and seen != new:
@@ -1855,7 +1861,7 @@ def main(argv: list[str]) -> None:
                            if r.get("suspended_by") == identity and r["state"] == "suspended")
         print(f"EXECUTION WINDOW {host}: {identity} open; suspended "
               + (", ".join(suspended) or "nothing (no standing reservation on the box)"), file=sys.stderr)
-    print(json.dumps(lease_free(record) if action == "hold-open" else record, indent=2))
+    print(json.dumps(lease_free(record), indent=2))
 
 
 def run(argv: list[str]) -> int:

@@ -3972,6 +3972,10 @@ grep -Fq 'base64 -d > "$dir"/windows-driver.ps1' "$ww/staged.sh" && grep -Fq "sh
   ok "...the staging script sent is the one kept beside the transcript" || ko "staging script: $(head -c 300 "$ww/staged.sh")"
 grep -q '^exit: 0$' "$ww/ww-1.log" && grep -Fq '"boot-windows", "--as=ww-1", "testbox"' "$ww/ww-1.log" &&
   ok "...the transcript keeps every command and the driver's output" || ko "transcript: $(cat "$ww/ww-1.log")"
+# ludics#1232: the run's and the conclusion's answers are in it as records, without the lease token.
+wtoken=$(jq -r '.lease_token // empty' "$ISSUE_WAVE_STATE/executions/ww-1.json")
+[ -n "$wtoken" ] && grep -Fq '"state": "concluded"' "$ww/ww-1.log" && ! grep -Fq "$wtoken" "$ww/ww-1.log" &&
+  ok "...its registry records are lease-free: the token on file is not in it" || ko "transcript and the lease token (${#wtoken} chars on file)"
 ww_run ww-2 WW_EXIT=3
 [ "$rc" -eq 1 ] && [ "$(record_of ww-2 | jq -r '.verdict')" = fail ] && ok "a failing script concludes fail, exit 1" || ko "a failing script (rc=$rc): $said"
 ww_run ww-3 WW_FAIL=boot-windows
