@@ -37,28 +37,41 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``updated_at`` stamp), at the row's end: every launch, ``wave launch``'s and a native
         coordinator's ``state=launched`` alike, is timed by one clock with no step of its own. A
         row keeps its first stamp (a finisher's relaunch is not a new launch time), and a set that
-        names ``launched_at`` itself writes its own value. THE COUNTERS START AT ZERO: a set that
-        creates a row also writes ``interventions=0`` and ``routine_answers=0`` after its own pairs
-        (unless it names them), so a row that has the fields was measured from its start and a row
-        without them (one made before ludics#1214) was not; a set on an existing row, ``--new-row``
-        again included, keeps the counts.
+        names ``launched_at`` itself writes its own value. THE RELAUNCH COUNT (ludics#1236; the
+        decision is ``ludics.fleetworker.tally``'s header): a set that names ``state`` with
+        ``launched`` as its first word, on a row that had ``launched_at`` before it, is a second
+        launch of the task -- a native respawn, a finisher spawned from ``board takeover`` -- and
+        counts one more ``relaunches`` in the same publish, as ``tally`` counts one (its log line,
+        and its ``BOARD TALLY`` line after the ``BOARD SET`` one). Two such sets count nothing: one
+        that names ``relaunches`` itself (it writes its own value), and one on a row that is the
+        same CLI worker's before and after it (``transport`` ``cli`` or absent both times, the same
+        ``worker``), since one CLI name launches again only through ``launch --replace``, which
+        counts its own. A value already there that is no count refuses the set, nothing written.
+        THE COUNTERS START AT ZERO: a set that creates a row also writes ``interventions=0``,
+        ``routine_answers=0`` and ``relaunches=0`` after its own pairs (unless it names them), so a
+        row that has the fields was measured from its start and a row without them (one made before
+        ludics#1214, or for ``relaunches`` before ludics#1236) was not; a set on an existing row,
+        ``--new-row`` again included, keeps the counts.
   tally {"counter", "why", "wave", "task"} | {"counter", "why", "worker", "hosts": [box, ...], "done": [word, ...]}
-        one more of a row's coordinator turns (ludics#1214; the classifier and its closed list are
-        ``ludics.fleetworker.tally``'s, near side): ``counter`` is ``interventions`` or
-        ``routine_answers``, and its value goes up by one under the same lease lock as set, in one
-        publish, so two tallies never read one starting value. The value is a decimal count
-        (``0`` or no leading zero), and a row without the key counts from 0; any other value refuses,
-        nothing written. A row with neither counter (one made before ludics#1214, its turns until now
-        uncounted) also gets ``counted_from``, the tally's now, so its counts never read as a whole
-        task's. An ``interventions`` tally also appends one log line in the same replace,
-        ``<task> interventions=<n>: <why>``; a ``routine_answers`` tally logs nothing. The row is
+        one more of a row's coordinator turns or relaunches (ludics#1214, ludics#1236; the
+        classifier and its closed list are ``ludics.fleetworker.tally``'s, near side): ``counter``
+        is ``interventions``, ``routine_answers`` or ``relaunches``, and its value goes up by one
+        under the same lease lock as set, in one publish, so two tallies never read one starting
+        value. The value is a decimal count (``0`` or no leading zero), and a row without the key
+        counts from 0; any other value refuses, nothing written. A row with none of the counters
+        (one made before ludics#1214, its turns until now uncounted) also gets ``counted_from``,
+        the tally's now, so its counts never read as a whole task's; a row with the others but
+        without this one (``relaunches`` on a row made before ludics#1236) gets ``<counter>_from``
+        instead. An ``interventions`` or ``relaunches`` tally also appends one log line in the same
+        replace, ``<task> <counter>=<n>: <why>``; a ``routine_answers`` tally logs nothing. The row is
         named by ``wave`` and ``task`` (no row refuses, with the nearest task, as set does; no board
-        refuses), or, for ``unstick``, which knows only a box and a worker, by ``worker`` and
+        refuses), or, for ``unstick`` and ``launch --replace``, which know only a box and a worker, by ``worker`` and
         ``hosts`` (every spelling of the box the near side knows: its fleet name, and ``local`` for
         this box, since a wave file may name either and prep writes it as given): every board under ``boards/`` (listed and read as ``scan`` lists and reads them, by
         one listing; a board that does not load, or is no regular file, is skipped) is searched for the rows whose ``worker`` field is ``worker``, whose
-        ``agent_host`` is one of ``hosts``, whose ``transport`` is ``cli`` or absent (an unstick reaches only
-        a CLI worker, so a native row of the same name is never charged with it) and whose state's
+        ``agent_host`` is one of ``hosts``, whose ``transport`` is ``cli`` or absent (a CLI row: an unstick
+        or a launch reaches only a CLI worker, so a native row of the same name is never charged
+        with it) and whose state's
         first word (its ``state``, else its ``status``; ``;:,.`` stripped, case ignored) is none of
         ``done``. Exactly one is counted; none, or more than one, is ``BOARD TALLY NOTE
         ...; nothing counted`` on stdout, exit 0: a worker outside any wave is no refusal, and an
@@ -357,7 +370,8 @@ def launched(state: str) -> bool:
     return bool(words) and words[0].rstrip(";:,.").lower() == "launched"
 
 
-COUNTERS = ("interventions", "routine_answers")  # tally's counters (the header)
+COUNTERS = ("interventions", "routine_answers", "relaunches")  # tally's counters (the header)
+LOGGED = ("interventions", "relaunches")  # the counters whose every count is a log line too
 COUNT = re.compile(r"0|[1-9][0-9]*")
 
 
@@ -367,26 +381,51 @@ def counter_ok(value: Any) -> str:
     return cast(str, value)
 
 
-def count(path: Path, doc: Doc, row: Doc, coordinator: str, payload: Doc) -> str:
-    """``tally``'s write (the header): the row's counter one more, an intervention's log line, one
-    publish; the acknowledgement it returns."""
-    counter = counter_ok(payload.get("counter"))
-    why = text_ok(payload.get("why"), "a tally's why")
+def cli_row(fields: dict[str, str]) -> bool:
+    """A CLI worker's row: ``transport`` ``cli`` or absent (the header's tally by worker, and THE
+    RELAUNCH COUNT's exception)."""
+    return fields.get("transport", "cli") == "cli"
+
+
+def bump(doc: Doc, row: Doc, counter: str, why: str, coordinator: str, now: str) -> str:
+    """One more of the row's ``counter`` (the header's tally), written into ``doc`` and not yet
+    published: the acknowledgement line, or a refusal for a value that is no count."""
     fields = cast(dict[str, str], row["fields"])
     old = fields.get(counter, "0")
     if not COUNT.fullmatch(old):
         refuse(f"the row of {json.dumps(row['task'])} holds {counter}={json.dumps(old)}, no count; nothing counted")
-    now = now_utc().strftime(STAMP)
     if not any(key in fields for key in COUNTERS):
         fields["counted_from"] = now  # a row made before THE COUNTERS START AT ZERO: its counts are partial
+    elif counter not in fields:
+        fields[f"{counter}_from"] = now  # a row made before this counter was: its count of it is partial
     new = str(int(old) + 1)
     fields[counter] = new
-    if counter == "interventions":
-        line = f"{row['task']} interventions={new}: {why.strip() or '(no reason given)'}"
+    if counter in LOGGED:
+        line = f"{row['task']} {counter}={new}: {why.strip() or '(no reason given)'}"
         cast(list[Doc], doc["log"]).append({"at": now, "by": coordinator, "text": line})
     row["updated_at"] = doc["updated_at"] = now
-    publish(path, doc)
     return f"BOARD TALLY {doc['wave']}: {json.dumps(row['task'])} {counter}={new}"
+
+
+def count(path: Path, doc: Doc, row: Doc, coordinator: str, payload: Doc) -> str:
+    """``tally``'s write (the header): the row's counter one more, its log line, one publish; the
+    acknowledgement it returns."""
+    counter = counter_ok(payload.get("counter"))
+    why = text_ok(payload.get("why"), "a tally's why")
+    said = bump(doc, row, counter, why, coordinator, now_utc().strftime(STAMP))
+    publish(path, doc)
+    return said
+
+
+def relaunched(before: dict[str, str] | None, after: dict[str, str], pairs: list[tuple[str, str]]) -> bool:
+    """THE RELAUNCH COUNT's test (the header): the set names a ``launched`` state on a row stamped
+    before it, names no ``relaunches`` itself, and is no set on the same CLI worker's row."""
+    named = {key for key, _ in pairs}
+    if before is None or "launched_at" not in before or "state" not in named or "relaunches" in named:
+        return False
+    if not launched(after.get("state", "")):
+        return False
+    return not (cli_row(before) and cli_row(after) and before.get("worker") == after.get("worker"))
 
 
 def tally_by_worker(root: str, coordinator: str, payload: Doc) -> None:
@@ -416,7 +455,7 @@ def tally_by_worker(root: str, coordinator: str, payload: Doc) -> None:
             words = (fields["state"] if "state" in fields else fields.get("status", "")).split()
             word = words[0].rstrip(";:,.").lower() if words else ""
             if (fields.get("worker") == worker and fields.get("agent_host") in hosts and word not in done
-                    and fields.get("transport", "cli") == "cli"):
+                    and cli_row(fields)):
                 found.append((path, doc, row))
     who = f"worker {json.dumps(worker)} on {' or '.join(json.dumps(h) for h in hosts)}"
     if not found:
@@ -596,6 +635,7 @@ def main(argv: list[str]) -> None:
             else:
                 created = False
             fields = cast(dict[str, str], row["fields"])
+            before = None if created else dict(fields)
             for key, value in pairs:
                 fields[key] = value
             if created:
@@ -607,6 +647,10 @@ def main(argv: list[str]) -> None:
             # ASCII whatever the task holds (json escapes it; wave and keys are ASCII by grammar), so
             # no stdout encoding can fail the acknowledgement.
             said = f"BOARD SET {wave}: {json.dumps(task)} " + " ".join(key for key, _ in pairs)
+            if relaunched(before, fields, pairs):  # THE RELAUNCH COUNT (the header)
+                assert before is not None
+                why = f"state={json.dumps(fields['state'], ensure_ascii=False)} on a row launched at {before['launched_at']}"
+                said += "\n" + bump(doc, row, "relaunches", why, coordinator, now)
         case "note":
             pairs = fields_ok(payload.get("fields"))
             notes = cast(dict[str, str], doc["notes"])

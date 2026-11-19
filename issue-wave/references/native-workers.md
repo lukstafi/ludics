@@ -115,7 +115,10 @@ replacement's brief is `fleet-worker.sh board takeover <wave> <task>`: the store
 generated *State at takeover* from those keys and the live sources (worktree HEAD, the PR, the
 registry's outstanding requests for the worker, its bg-run verdicts), each missing key printed as
 missing. Exit 3 means the brief itself could not be read, so the output is no brief. It reads and
-writes nothing else: establishing that the old writer is gone stays the step below.
+writes nothing else: establishing that the old writer is gone stays the step below. The
+replacement's spawn writes its `agent=` and `state=launched` on the same row, and that second
+`state=launched` counts the finisher in the row's `relaunches` (ludics#1236), as it counts any
+native respawn; so write `state=launched` once per spawn, and a resumed worker's row its phase's word.
 
 Use the runtime's messages and bounded waits, retaining real identities. Follow up in the same
 agent when work is unfinished and observe the response. A returned turn is read by its final

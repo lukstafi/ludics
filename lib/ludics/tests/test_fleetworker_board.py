@@ -24,7 +24,7 @@ CHECKOUT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.pa
 HOSTILE = "a|b (c) #d /e `f` $(g) 'q' \"dq\" s/x/y/g \\ & * [x](y) <br> ü"
 
 
-ZERO = {"interventions": "0", "routine_answers": "0"}  # THE COUNTERS START AT ZERO (boardstore.py's header)
+ZERO = {"interventions": "0", "routine_answers": "0", "relaunches": "0"}  # THE COUNTERS START AT ZERO (boardstore.py's header)
 
 
 class StoreCase(unittest.TestCase):
@@ -186,9 +186,9 @@ class Store(StoreCase):
         self.assertEqual(rc, 0)
         lines = out.split("\n")
         self.assertEqual(lines[:5], ["# Board: w", "", "- base: abc<br>def", "",
-                                     "| task | state | note | interventions | routine_answers | pr |"])
-        self.assertEqual(lines[5:8], ["| --- | --- | --- | --- | --- | --- |", "| ll#1 | a\\|b | x<br>y | 0 | 0 |  |",
-                                      "| ll#2 |  |  | 0 | 0 | `#3` |"])
+                                     "| task | state | note | interventions | routine_answers | relaunches | pr |"])
+        self.assertEqual(lines[5:8], ["| --- | --- | --- | --- | --- | --- | --- |", "| ll#1 | a\\|b | x<br>y | 0 | 0 | 0 |  |",
+                                      "| ll#2 |  |  | 0 | 0 | 0 | `#3` |"])
         self.assertEqual(lines[9], "## Log")
         self.assertRegex(lines[10], r"^- \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ one \| two$")
 
@@ -198,7 +198,7 @@ class Store(StoreCase):
         rc, out, _ = self.call("show", {"wave": "w"})
         self.assertEqual(rc, 0)
         lines = out.split("\n")
-        self.assertEqual(lines[4], "| t | x\\\\\\|y | one<br>two<br>three<br>four<br>five | bell\ufffd\ttab\ufffd | 0 | 0 |")
+        self.assertEqual(lines[4], "| t | x\\\\\\|y | one<br>two<br>three<br>four<br>five | bell\ufffd\ttab\ufffd | 0 | 0 | 0 |")
         self.assertTrue(lines[7].endswith(" x<br>y"), lines)
         self.assertEqual(len(out.splitlines()), len(lines) - 1, "no line break but the view's own")
         self.assertEqual(self.doc()["tasks"][0]["fields"]["a"], "x\\|y", "the document keeps the text as given")
@@ -337,7 +337,7 @@ class Tally(StoreCase):
         self.set("t1", ("state", "pending"))
         self.set("t2", ("state", "pending"), ("interventions", "3"))
         self.assertEqual(self.fields("t1"), {"state": "pending", **ZERO})
-        self.assertEqual(self.fields("t2"), {"state": "pending", "interventions": "3", "routine_answers": "0"},
+        self.assertEqual(self.fields("t2"), {"state": "pending", "interventions": "3", "routine_answers": "0", "relaunches": "0"},
                          "a set that names a counter writes its own")
         self.assertEqual(self.tally("interventions", wave="w", task="t1")[0], 0)
         self.set("t1", ("state", "launched"))  # --new-row again, as a retried first write or a relaunch sends it
@@ -351,7 +351,7 @@ class Tally(StoreCase):
         self.assertEqual(self.tally("routine_answers", "\"REVIEW_POSTED 1\"", wave="w", task="t1")[0], 0)
         self.assertEqual(self.tally("interventions", "message \"why?\"", wave="w", task="t1")[0], 0)
         self.assertEqual(self.fields("t1"), {"state": "launched", "interventions": "2", "routine_answers": "1",
-                                             "launched_at": self.fields("t1")["launched_at"]})
+                                             "relaunches": "0", "launched_at": self.fields("t1")["launched_at"]})
         self.assertEqual(self.fields("t2"), {"state": "launched", **ZERO, "launched_at": self.fields("t2")["launched_at"]},
                          "a sibling row is not touched")
         self.assertEqual([line["text"] for line in self.doc()["log"]],
@@ -426,6 +426,74 @@ class Tally(StoreCase):
         self.set("t2", ("state", "launched"))
         self.tally("interventions", wave="w", task="t2")
         self.assertNotIn("counted_from", self.fields("t2"), "a row counted from its creation needs no mark")
+
+    def test_a_second_launch_counts_one_relaunch_and_a_first_launch_none(self) -> None:
+        """THE RELAUNCH COUNT (ludics#1236's decision): a native respawn or a finisher is a second
+        ``state=launched`` on a row the first launch stamped, one ``relaunches`` each, logged."""
+        self.set("t1", ("state", "pending"), ("transport", "subagent"))
+        rc, out, _ = self.set("t1", ("agent", "a1"), ("state", "launched"))
+        self.assertEqual((rc, out), (0, 'BOARD SET w: "t1" agent state\n'), "a first launch counts nothing")
+        self.set("t1", ("state", "implementing"), ("pr", "7"))
+        self.set("t1", ("pr", "8"))
+        self.assertEqual(self.fields("t1")["relaunches"], "0", "a set that names no launched state counts nothing")
+        stamp = self.fields("t1")["launched_at"]
+        rc, out, _ = self.set("t1", ("agent", "a2"), ("state", "Launched; a finisher from board takeover"))
+        self.assertEqual((rc, out), (0, 'BOARD SET w: "t1" agent state\nBOARD TALLY w: "t1" relaunches=1\n'))
+        rc, out, _ = self.set("t1", ("agent", "a3"), ("state", "launched"))
+        self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "t1" relaunches=2', "a respawn of a row still launched counts")
+        fields = self.fields("t1")
+        self.assertEqual((fields["relaunches"], fields["interventions"], fields["launched_at"]), ("2", "0", stamp),
+                         "never an intervention, and the row keeps its first stamp")
+        self.assertEqual([line["text"] for line in self.doc()["log"]],
+                         [f't1 relaunches=1: state="Launched; a finisher from board takeover" on a row launched at {stamp}',
+                          f't1 relaunches=2: state="launched" on a row launched at {stamp}'])
+        self.set("t1", ("state", "launched"), ("relaunches", "5"))
+        self.assertEqual(self.fields("t1")["relaunches"], "5", "a set that names relaunches writes its own, counting nothing")
+        self.set("t2", ("transport", "subagent"), ("state", "launched"))
+        self.assertEqual(self.fields("t2")["relaunches"], "0", "a row created launched is a first launch")
+
+    def test_the_same_cli_workers_relaunch_is_the_launchs_to_count(self) -> None:
+        """A CLI name launches again only through ``launch --replace``, which counts its own; any
+        other change of worker or transport is a relaunch the board sees."""
+        self.set("c1", ("worker", "w1-1"), ("transport", "cli"), ("state", "launched"))
+        self.set("c1", ("state", "launched; replaced"))
+        self.set("c2", ("worker", "w1-2"), ("state", "launched"))  # no transport: a CLI row, as a tally by worker reads it
+        self.set("c2", ("state", "launched"))
+        self.assertEqual((self.fields("c1")["relaunches"], self.fields("c2")["relaunches"]), ("0", "0"))
+        rc, out, _ = self.set("c1", ("worker", "w1-1b"), ("state", "launched"))
+        self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "c1" relaunches=1', "a CLI relaunch under a new name")
+        rc, out, _ = self.set("c2", ("transport", "subagent"), ("agent", "f1"), ("state", "launched"))
+        self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "c2" relaunches=1', "a native finisher of a CLI worker")
+        self.set("c2", ("state", "implementing"))
+        rc, out, _ = self.set("c2", ("transport", "cli"), ("worker", "w1-2"), ("state", "launched"))
+        self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "c2" relaunches=2', "a row native before the set is no same CLI worker")
+
+    def test_a_relaunch_on_an_older_row_says_its_count_is_partial_or_refuses(self) -> None:
+        self.set("t1", ("transport", "subagent"), ("state", "launched"))
+        doc = self.doc()
+        fields = doc["tasks"][0]["fields"]
+        del fields["relaunches"]  # a row made after ludics#1214 and before ludics#1236
+        with open(os.path.join(self.root, "boards", "w.json"), "w") as f:
+            json.dump(doc, f)
+        self.set("t1", ("state", "launched"))
+        fields = self.fields("t1")
+        self.assertEqual(fields["relaunches"], "1")
+        self.assertRegex(fields["relaunches_from"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertNotIn("counted_from", fields, "its other counts were measured from its start")
+        self.set("t1", ("relaunches", "x"))
+        before = self.doc()
+        rc, out, err = self.set("t1", ("state", "launched"))
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn('holds relaunches="x", no count; nothing counted', err)
+        self.assertEqual(self.doc(), before, "a set whose count refuses writes nothing")
+
+    def test_a_tally_by_worker_counts_a_relaunch_on_the_cli_row(self) -> None:
+        done = list(takeover.DONE_STATES)
+        self.set("t1", ("worker", "w1-42"), ("agent_host", "mac"), ("state", "reviewing"))
+        rc, out, _ = self.tally("relaunches", "launch --replace mac/w1-42", worker="w1-42", hosts=["mac"], done=done)
+        self.assertEqual((rc, out), (0, 'BOARD TALLY w: "t1" relaunches=1\n'))
+        self.assertEqual(self.doc()["log"][-1]["text"], "t1 relaunches=1: launch --replace mac/w1-42")
+        self.assertEqual(self.fields("t1")["interventions"], "0")
 
 
 class Classify(unittest.TestCase):
@@ -542,6 +610,37 @@ class TallyVerbs(StoreCase):
         }, host="testbox")
         _, _, err = self.run_verb(tally.after_unstick, cfg, "testbox", "w1-77", "", kill=True, interrupt=False)
         self.assertEqual(err, 'BOARD TALLY w: "t2" interventions=1\n', "a row prep wrote as agent_host=local is this box's")
+
+    def test_launch_replace_counts_a_relaunch_only_when_it_replaced_a_record(self) -> None:
+        """``launch --replace`` (ludics#1236): one ``relaunches`` on the CLI row when the far side
+        archived a record under the launch's stamp, nothing for a --replace that found none."""
+        cfg = load_config(os.path.join(CHECKOUT, "issue-wave", "scripts", "fleet-worker.sh"), {
+            "FLEET_ANCHOR": "local", "FLEET_ANCHOR_STATE": self.root, "FLEET_SKILLS_REPO": CHECKOUT,
+            "FLEET_BOXES": "local", "PATH": os.environ.get("PATH", ""), "HOME": self.root,
+            "ISSUE_WAVE_STATE": os.path.join(self.root, "state"),
+        }, host="testbox")
+        self.set("t2", ("worker", "w1-77"), ("agent_host", "local"), ("state", "implementing"))
+        replaced = os.path.join(self.root, "state", "replaced")
+        os.makedirs(os.path.join(replaced, "w1-77-20261119T100000Z-1"))
+        self.assertEqual(self.run_verb(tally.after_replace, cfg, "local", "w1-77", "20261119T100000Z-2"), (None, "", ""),
+                         "no record archived under this launch's stamp: a first launch, counted nowhere")
+        rc, out, err = self.run_verb(tally.after_replace, cfg, "local", "w1-77", "20261119T100000Z-1")
+        self.assertEqual((rc, out, err), (None, "", 'BOARD TALLY w: "t2" relaunches=1\n'))
+        self.assertEqual(self.doc()["log"][-1]["text"], "t2 relaunches=1: launch --replace local/w1-77")
+        with open(os.path.join(replaced, "w1-77-odd"), "w") as f:
+            f.write("")
+        _, _, err = self.run_verb(tally.after_replace, cfg, "local", "w1-77", "odd")
+        self.assertIn("BOARD TALLY WARNING local/w1-77: the launch exited 0, and whether it replaced a record could not be"
+                      " read (exit 2)", err)
+        with mock.patch.object(tally, "run_on", return_value=Done(255, "")):
+            _, _, err = self.run_verb(tally.after_replace, cfg, "local", "w1-77", "20261119T100000Z-1")
+        self.assertIn("could not be read (exit 255)", err, "a box that does not answer is no first launch")
+        with mock.patch.object(tally, "run_on", return_value=Done(0, "")), mock.patch.object(tally, "mutate", return_value=Done(1, "")), \
+                contextlib.redirect_stderr(io.StringIO()) as err2:
+            tally.after_replace(cfg, "local", "w1-77", "x")
+        self.assertIn("BOARD TALLY WARNING local/w1-77: the launch replaced a record, and its relaunch was not counted (board"
+                      " exit 1)", err2.getvalue())
+        self.assertEqual(self.doc()["tasks"][1]["fields"]["relaunches"], "1")
 
     def fields_of(self) -> dict[str, str]:
         return self.doc()["tasks"][0]["fields"]

@@ -341,6 +341,10 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         return 4
     if done.unreachable:
         return _unreachable(f"LAUNCH UNREACHABLE {box}")
+    if done.rc == 0 and replace:
+        # The row's relaunch, when this launch replaced a record (tally.py: THE RELAUNCH DECISION),
+        # on stderr, never this launch's exit.
+        tally.after_replace(cfg, box, name, when)
     return done.rc
 
 

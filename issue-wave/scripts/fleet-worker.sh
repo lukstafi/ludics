@@ -100,6 +100,8 @@
 #                          # preflight's sibling reach probes (a wave with no cross-box legs)
 #                          # --result-file writes remote JSON (worker, host, session, worktree);
 #                          # human output uses stderr on this opt-in path. Use a fresh result file.
+#                          # A --replace that replaced a record counts one relaunches on the
+#                          # worker's board row, on stderr (ludics#1236, tally.py)
 #   fleet-worker.sh attach <box> <name> [--interval <sec>]
 #   fleet-worker.sh status <box> <name>
 #   fleet-worker.sh status --json [--since <hours>]   # observers' read, no lease: lease host/since
