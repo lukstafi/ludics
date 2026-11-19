@@ -2941,8 +2941,10 @@ class Drive(DriveCase):
                 with self.subTest(outcome):
                     self.assertIn(f"DRIVE ATTENTION t42 turn {turn}: execution assign exit 4: read its lines before anything else", out)
                     self.assertEqual("resumed" in out, outcome == "landed", out)
-                    if outcome != "landed":
-                        self.assertIn(f"no unstick of assign's landed ({outcome}): the worker still waits", out)
+                    if outcome in ("failed", "unreadable"):  # it may have reached the worker: reconcile, never resend blind
+                        self.assertIn(f"no unstick of assign's is known to have landed ({outcome}): reconcile the worker's state", out)
+                    elif outcome != "landed":
+                        self.assertIn(f"no unstick of assign's ran ({outcome}): the worker was not sent its assignments", out)
         self.assertEqual(self.ledger(), [(t, "request", "attention") for t in range(len(cases))])
 
     def test_a_refused_assignment_is_tried_again_then_handed_up_and_exit_4_at_once(self) -> None:

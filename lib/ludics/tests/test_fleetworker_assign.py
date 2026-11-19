@@ -102,11 +102,15 @@ class Readers(unittest.TestCase):
         self.assertIn("not one JSON object", base_problem([BASE]) or "")
 
     def test_parse(self) -> None:
-        got = parse(["--request", "a", "/b.json", "-", "--request", "a", "--no-gap", "--deadline", "60"])
-        self.assertEqual((got.base, got.requests, got.only, got.no_gap, got.deadline), ("/b.json", "-", ["a"], True, "60"))
+        got = parse(["--request", "a", "/b.json", "-", "--request", "a", "--no-gap", "--deadline", "60", "--status", "/s"])
+        self.assertEqual((got.base, got.requests, got.only, got.no_gap, got.deadline, got.status),
+                         ("/b.json", "-", ["a"], True, "60", "/s"))
         err = io.StringIO()
         for args in (["/b.json"], ["/b.json", "/r", "--oops"], ["/b.json", "/r", "--deadline", "0"],
-                     ["/b.json", "/r", "--unstick", "box", "w"]):
+                     ["/b.json", "/r", "--unstick", "box", "w"],
+                     # THE STATUS never replaces the message a resend sends, nor what assign reads (ludics#1234).
+                     ["/b.json", "/r", "--message", "/m", "--status", "/m"], ["/b.json", "/r", "--status", "/b.json"],
+                     ["/b.json", "/r", "--status", "/r"], ["/b.json", "/r", "--status", ""]):
             with contextlib.redirect_stderr(err), self.assertRaises(cli.Exit) as caught:
                 parse(args)
             self.assertEqual(caught.exception.rc, 2, args)
@@ -479,6 +483,14 @@ sys.exit(rc)
         self.assertEqual((rc, self.status(status)["unstick"]), (4, "message-unwritten"))
         rc, _, _ = self.assign([self.base, requests, "--status", status], {"a": StepResult(0, "{}")})
         self.assertEqual(self.status(status), {"exit": 0, "unstick": "not-asked", "tally": [], "lease_lost": ""})
+
+    def test_an_unwritable_status_is_a_note_above_the_action_required_summary(self) -> None:
+        requests = self.write("r.txt", message(block("a")))
+        status = os.path.join(self.dir, "no", "status.json")
+        rc, _, err = self.assign([self.base, requests, "--status", status], {"a": StepResult(ASSIGN_ACTION_REQUIRED, "", "bad id")})
+        self.assertEqual(rc, ASSIGN_ACTION_REQUIRED)
+        self.assertIn("ASSIGN STATUS NOTE: the status could not be written to", err)
+        self.assertTrue(err.rstrip("\n").rpartition("\n")[2].startswith("ASSIGN ACTION REQUIRED a: bad id"), err)
 
     def test_a_lost_lease_is_its_own_exit_from_a_step_a_placement_or_the_unstick(self) -> None:
         """ludics#1234: LEASE_LOST_STATUS from any gated call is assign's exit, over every other outcome, and the status

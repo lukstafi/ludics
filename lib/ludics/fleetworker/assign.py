@@ -234,6 +234,8 @@ def parse(args: list[str]) -> AssignArgs:
         die(USAGE)
     if unstick is not None and not message:
         die("execution assign: --unstick sends the --message file; name one, where the text is kept for a resend")
+    if status and os.path.realpath(status) in {os.path.realpath(p) for p in (message, *positional) if p and p != "-"}:
+        die("execution assign: --status names a file of its own, never the --message file, the base or the requests")
     return AssignArgs(positional[0], positional[1], list(dict.fromkeys(only)), no_gap, deadline, message, unstick, status)
 
 
@@ -570,11 +572,14 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
     parsed = parse(args)
     status = Status("not-asked" if parsed.unstick is None else "nothing-assigned")
 
-    def finish(rc: int) -> int:
-        """The exit, a lost lease winning over every other outcome, and THE STATUS written for it."""
+    def finish(rc: int, last: str = "") -> int:
+        """The exit, a lost lease winning over every other outcome, and THE STATUS written for it; ``last``
+        (the ACTION REQUIRED summary) is said after the status, so it stays stderr's final line."""
         rc = LEASE_LOST_STATUS if status.lease_lost else rc
         if parsed.status:
             write_status(parsed.status, rc, status)
+        if last:
+            err(last)
         return rc
 
     try:
@@ -737,6 +742,6 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
                 return finish(4)
     elif parsed.unstick is not None:
         err("ASSIGN UNSTICK SKIPPED: nothing was assigned")
-    if not unknown and not status.lease_lost and refusal_status == ASSIGN_ACTION_REQUIRED:
-        err(ACTION_REQUIRED_LINE + "; ".join(action_required))
-    return finish(4 if unknown else refusal_status)
+    summary = ACTION_REQUIRED_LINE + "; ".join(action_required) if (
+        not unknown and not status.lease_lost and refusal_status == ASSIGN_ACTION_REQUIRED) else ""
+    return finish(4 if unknown else refusal_status, summary)

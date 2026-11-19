@@ -83,8 +83,8 @@ THE ANSWERS:
             coordinator follows executions.md, Bounded native Windows verification.
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
             <worker> --status <file>``: it reserves, dispatches and resumes in one call, and its
-            status file (assign.py, THE STATUS; removed before the call, and read only when its
-            ``exit`` is the call's) says what its unstick did. Exit ``LEASE_LOST_STATUS`` (6, lease.py,
+            status file (assign.py, THE STATUS; removed before the call, unread when that removal
+            fails, and read only when its ``exit`` is the call's) says what its unstick did. Exit ``LEASE_LOST_STATUS`` (6, lease.py,
             THE LOST LEASE STATUS) is a lost lease: it ends the driver, as any lost lease does, and
             is read off that status alone, never off assign's lines. A block an earlier call
             dispatched (assign's ``ASSIGN ALREADY`` line: a driver that died before it resumed
@@ -119,8 +119,10 @@ THE ANSWERS:
             Other nonzero exits are also attention (exit 4 can require reconciliation before
             any further assignment); exit 4's line says whether the worker was resumed, which is
             exactly when the status's ``unstick`` is ``landed`` (an UNKNOWN beside an assignment),
-            and otherwise that no unstick of assign's landed, naming the status's outcome
-            (``failed``: ``ASSIGN UNSTICK FAILED``; ``message-unwritten``; or an unreadable status).
+            and otherwise names the status's outcome: ``failed`` (``ASSIGN UNSTICK FAILED``) or an
+            unreadable status (missing, malformed, another call's, or one left that could not be
+            removed first) is not known to have landed, so the worker's state is reconciled before
+            any resend; ``message-unwritten`` and the other outcomes ran no unstick.
             Every answer ends with the status's ``tally`` lines, the unstick's own ``BOARD TALLY``
             lines (assign ran it: the answered note, the mixed-``ALREADY`` and partial-assignment
             attention, and an exit 4 beside a message), so a lost count is never silent; an answer
@@ -852,13 +854,16 @@ class Driver:
     def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None) -> None:
         out = self.turn_file(worker, turn, "assigned.md")
         status_file = self.turn_file(worker, turn, "assign-status.json")
+        stale = False  # a file left by an earlier try of this turn, which this call cannot be told from
         try:
-            os.unlink(status_file)  # a file left by an earlier try of this turn is not this call's
+            os.unlink(status_file)
+        except FileNotFoundError:
+            pass
         except OSError:
-            pass  # none to remove, or one that stays: its ``exit`` must still be this call's to be read
+            stale = True
         done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
                          "--message", out, "--unstick", worker.box, worker.name, "--status", status_file)
-        status = assign_status(status_file, done.rc)
+        status = None if stale else assign_status(status_file, done.rc)
         if done.rc == LEASE_LOST_STATUS:
             where = status["lease_lost"] if status is not None and status["lease_lost"] else "one of its calls"
             raise LeaseLost(f"execution assign exit {done.rc}: the lease refused {where}")
@@ -896,9 +901,12 @@ class Driver:
                              tries=tries, next=now() + RETRY)
         resumed = ""
         if done.rc == 4:
+            # Only a landed unstick says the worker has its message; a failed or unread one may have reached it.
             outcome = status["unstick"] if status is not None else "unreadable"
             resumed = (f"; its unstick landed: the worker was resumed with {out}" if outcome == "landed" else
-                       f"; no unstick of assign's landed ({outcome}): the worker still waits for its assignments")
+                       f"; no unstick of assign's is known to have landed ({outcome}): reconcile the worker's state"
+                       f" before sending it {out}, and never assign again" if outcome in ("failed", "unreadable") else
+                       f"; no unstick of assign's ran ({outcome}): the worker was not sent its assignments")
         self.attention(worker, turn, "request", f"execution assign exit {done.rc}" + (f" after {tries} tries" if done.rc == 1 else "")
                        + f": read its lines before anything else{resumed}; the request is in the turn's message{counted}", message)
 
