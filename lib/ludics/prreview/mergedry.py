@@ -1,4 +1,4 @@
-"""``pr-review.sh [--repo owner/name] merge-build --base <rev> --head <rev> [--config <file>]
+"""``pr-review.sh [--repo owner/name] merge-build [--plan-only] --base <rev> --head <rev> [--config <file>]
 [-C <dir>]``: the merge build alone, as a dry run (ludics-lite#751; mergebuild.py's THE DRY RUN).
 
 Why. A merge-build config is judged only by the default branch's copy (mergebuild.py's THE CONFIG
@@ -29,6 +29,12 @@ a diff that fails is exit 3, never an empty side.
 Exit: what merge's build step would make of the pair. 0 the merge would proceed (PASSED, or a ``no
 build`` line saying why); 1 refused (the build failed, or the two do not merge cleanly); 2 usage,
 the config, the checkout or a revision; 3 could not run; 4 the build's timeout passed.
+
+PLAN ONLY uses the same candidate, config, trigger and plan as the dry run. It stops before the
+slot probe and reads the existing verdict allowlist and closed no-verdict list (mergebuild.py's
+THE PLAN). Exit 0 for admitted, nothing owed or no applicable plan, 1 for unadmitted or a
+conflict, 2 for usage or prerequisites, and 3 when the read could not reach a verdict. An
+admitted plan leaves admission to the merge build.
 """
 
 import os
@@ -50,7 +56,7 @@ from ludics.prreview.mergebuild import (
     run_git,
 )
 
-USAGE = "usage: merge-build --base <rev> --head <rev> [--config <file>] [-C <dir>]"
+USAGE = "usage: merge-build [--plan-only] --base <rev> --head <rev> [--config <file>] [-C <dir>]"
 
 
 def local_sides(root: str, merge_base: str, side: str) -> tuple[list[str], dict[str, list[str]]] | None:
@@ -106,6 +112,7 @@ def _take(rest: list[str], flag: str) -> tuple[str, list[str]]:
 
 def run(session: GhSession, args: list[str]) -> int:
     base_arg = head_arg = config_file = checkout = None
+    plan_only = False
     rest = list(args)
     while rest:
         arg = rest[0]
@@ -117,6 +124,9 @@ def run(session: GhSession, args: list[str]) -> int:
             config_file, rest = _take(rest, arg)
         elif arg == "-C":
             checkout, rest = _take(rest, arg)
+        elif arg == "--plan-only":
+            plan_only = True
+            rest = rest[1:]
         elif arg.startswith(("--base=", "--head=", "--config=")):
             flag, _, value = arg.partition("=")
             if not value:
@@ -175,6 +185,7 @@ def run(session: GhSession, args: list[str]) -> int:
         f"merge build {label}: base {base_arg} = {base}, head {head_arg} = {head}, merge base {merge_base[:8]};"
         f" the head changed {len(drift.pr_paths)} path(s), the base {len(drift.base_paths)}, both {len(drift.overlap or [])}"
     )
+    activity = "plan" if plan_only else "build"
     config: BuildConfig | None
     if config_file is not None:
         try:
@@ -189,14 +200,20 @@ def run(session: GhSession, args: list[str]) -> int:
     else:
         config = read_config(session, repo, load_gate_config(os.environ).limits.contents_dir_cap, stop="merge-build")
         if config is None:
-            cli.say(f"merge build {label}: no build — {repo}'s default branch has no {CONFIG_FILE}")
+            cli.say(f"merge build {label}: no {activity} — {repo}'s default branch has no {CONFIG_FILE}")
             return 0
         source = f"{repo}'s default branch's {CONFIG_FILE}"
+    if plan_only and config.plan is None:
+        cli.say(f"merge build {label}: no plan — no plan line in the merge-build config ({source})")
+        return 0
     why, why_not = build_reason(drift, config)
     if why is None:
-        cli.say(f"merge build {label}: no build — {why_not} ({source})")
+        cli.say(f"merge build {label}: no {activity} — {why_not} ({source})")
         return 0
     if os.name == "nt":
-        fail(2, "merge-build: the merge build runs on POSIX hosts only (the fleet's macOS and Linux boxes).")
-    dry_build(repo, head, base_arg, base, config, f"{why} ({source})", root, comment_candidates(drift, config))
+        fail(2, f"merge-build: the merge {activity} runs on POSIX hosts only (the fleet's macOS and Linux boxes).")
+    dry_build(
+        repo, head, base_arg, base, config, f"{why} ({source})", root, comment_candidates(drift, config),
+        plan_only=plan_only,
+    )
     return 0

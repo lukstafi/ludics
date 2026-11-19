@@ -1163,6 +1163,23 @@ class Plan(Repo):
         self.assertIn("the plan owes nothing", out)
         self.assertIn("PASSED", out)
 
+    def test_plan_only_stops_before_the_slot_probe(self) -> None:
+        head, tip = self.sides("keep", "seam() { :; }")
+        git(self.clone, "fetch", "-q", "--no-tags", "--refmap=", "origin", "refs/pull/7/head", "refs/heads/main")
+        refs = self.refs()
+        for word in ("admitted runtest", "nothing-owed"):
+            with self.subTest(word=word):
+                verdict = f"ship-pr-merge-plan: {word}"
+                config = BuildConfig(self.BUILD, ("*.sh",), 60, plan=f"printf '%s\\n' {shlex.quote(verdict)}")
+                out = io.StringIO()
+                with (
+                    mock.patch.object(mergebuild, "_slot_runner", side_effect=AssertionError("a slot was probed")),
+                    contextlib.redirect_stdout(out),
+                ):
+                    mergebuild.dry_build("owner/repo", head, "main", tip, config, "test", self.clone, plan_only=True)
+                self.assertIn(verdict, out.getvalue())
+                self.assert_untouched(refs)
+
     def test_the_plan_runs_under_the_commands_contract(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
         plan = ('test "$(git rev-parse HEAD^1)" = "$SHIP_PR_MERGE_BASE_SHA" && test "$(git rev-parse HEAD^2)" = "$SHIP_PR_MERGE_HEAD_SHA"'

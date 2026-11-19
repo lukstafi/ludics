@@ -69,7 +69,7 @@ prreview/threads.py        the review-threads walk and the open-thread gate (res
 prreview/branchtip.py      whether a PR's head is its branch's tip (status, watch, merge; #960)
 prreview/drift.py          warn_base_drift (merge, watch), and read_base_drift's Drift for the merge build
 prreview/commentonly.py    whether a change is to comments only (the merge build's comments lines, #861)
-prreview/mergebuild.py     merge's build of the would-be merge commit (.github/ship-pr-merge-build, #611)
+prreview/mergebuild.py     merge's build of the would-be merge commit (.github/ship-pr-merge-build, #611) and its plan (#1218)
 prreview/mergedry.py       merge-build, that build alone as a dry run for two revisions (#751)
 prreview/buildhistory.py   what a repository's merge build has taken on this box, for an overrun's advice (#982)
 prreview/localreview.py    local-review, the local Codex review before a PR opens (#750)
@@ -563,6 +563,11 @@ shown without a count cap, and the complete log is retained. Targeted unit negat
 middle diagnostics and cleanup survival. Review regression tests distinguish unstarted receipts,
 scan overrun diagnostics once, handle unreadable logs, and enforce replacement decoding; all fail
 against pre-fix `e23e7b0a`.
+
+Agent notes (wave-20261119-ludics, t1233; refs #1233): `merge-build --plan-only` uses the dry
+run's local revisions and the same plan reader as `merge`. It stops before the build slot probe.
+Unadmitted exits 1 and no verdict exits 3. The shell cases for an unrecorded run, an admitted
+record, an absent plan line and a malformed verdict all fail on the launch base `10c992e3`.
 
 ## Checking
 
