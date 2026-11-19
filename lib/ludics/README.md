@@ -562,6 +562,14 @@ prreview/rerun.py
     ship-pr/scripts/test-pr-review-budget.sh
 ```
 
+Agent notes (#1241): `Merge.merge_call` carries `BuildVerdict` and checks both live refs in one
+GraphQL response just before sending the merge. A moved base gets one `refresh_build`, including
+a fresh plan and the configured `recheck` or `command`. A red on that candidate needs its own
+override. A move before a gateway resend asks for a fresh invocation, and a concurrent landing
+is confirmed over REST. The merge harness changes a bare remote during the build and verifies the
+actual candidate parents. Its C implementation and header compile in separate candidates, and
+the refreshed build refuses their combined tree when the compiler reports conflicting types.
+
 Agent notes (wave-20261117-ludics, t1188; refs #1188): merge-build artifacts live beside the JSONL
 receipts in ship-pr state, independent of wave state. One directory per PR/head retains build and
 base log/status files on pass and refusal; retries overwrite, old heads need manual removal.

@@ -5,9 +5,11 @@ import io
 import os
 import unittest
 from collections.abc import Sequence
+from unittest import mock
 
 from ludics import cli, proc
 from ludics.prreview import core
+from ludics.prreview.budget import Budget
 from ludics.prreview.core import (
     Config,
     GhArgsRefused,
@@ -252,6 +254,38 @@ class Retry(unittest.TestCase):
                 "pr-review.sh: gh api failed (attempt 1/5), retrying in 5s: gh: HTTP 503",
                 s.stderr.getvalue(),
             )
+
+    def test_a_gateway_resend_can_revalidate_after_backoff(self) -> None:
+        write = ["pr", "merge", "7", "--repo", "o/r"]
+        read = ["api", "repos/o/r/commits/main"]
+        with FakeTool("gh") as gh:
+            gh.script(GATEWAY, SERVER_ERROR, Answer(0, "tip\n"), SERVER_ERROR)
+            s = Session()
+
+            def revalidate() -> None:
+                self.assertEqual(s.sleeps, [5], "the backoff preceded revalidation")
+                self.assertEqual(s.retry("read", read), GhOk("tip"))
+
+            with contextlib.redirect_stderr(s.stderr):
+                self.assertEqual(s.session.retry("write", write, before_retry=revalidate), GhFailed())
+            self.assertEqual(gh.calls(), [write, read, read, write])
+            self.assertEqual(s.session.unclear_attempts(), 1, "only the last write could have landed")
+
+    def test_a_gateway_resend_respects_a_hold_that_starts_during_revalidation(self) -> None:
+        write = ["pr", "merge", "7", "--repo", "o/r"]
+        budget = mock.Mock(spec=Budget)
+        budget.gate.return_value = None
+        with FakeTool("gh") as gh:
+            gh.script(GATEWAY)
+            session = GhSession(config(), sleep=lambda _s: None, budget=budget)
+
+            def revalidate() -> None:
+                budget.gate.return_value = "standing quota hold"
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(session.retry("write", write, before_retry=revalidate), GhUnanswered())
+            self.assertEqual(gh.calls(), [write])
+            self.assertTrue(session.quota_stopped())
 
     def test_a_504_repeats_a_read_and_never_a_write(self) -> None:
         # The gateway stopped waiting on a backend that may have finished the POST (#708).

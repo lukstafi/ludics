@@ -9,7 +9,7 @@ and did not compile (#1139's new test used a hook as a ref that #1142 had just m
 ``Seam``). GitHub's verdict is for the head, so a semantic conflict between two greens was
 invisible until master's run. This does not undermine the roll-forward policy (ahrefs/ocannl#861):
 the merge still waits only on the PR's own head verdict, never on the base tip's CI; the added
-check is one bounded LOCAL build of the merge commit, made only where the repository asks for it.
+check is a bounded LOCAL build of the merge commit, made only where the repository asks for it.
 
 THE CONFIG. ``.github/ship-pr-merge-build`` on the repository's DEFAULT branch, read the way the
 advisory list ``.github/ship-pr-advisory-checks`` is (gate.py): a raw Contents read; a 404 counts as
@@ -21,6 +21,7 @@ naming it:
 
     # a comment (first non-blank character `#`), and blank lines, are ignored
     command <shell command>    exactly one: run by `sh -c` at the root of the merged tree
+    recheck <shell command>    at most one: replaces `command` only on a refresh (BASE FRESHNESS)
     input <glob>               one or more: the BUILD INPUTS (below); under `trigger always`
                                any number, since no input decides that build
     comments <glob>            any number: a build input a side changed in comments only does
@@ -33,6 +34,21 @@ naming it:
     plan <shell command>       at most one: THE PLAN (#1218), run before the slot is taken
     plan-timeout <seconds>     at most one, 1 to 86400 (default 300): the plan's bound; refused
                                without a `plan` line
+
+BASE FRESHNESS (#1241). A passing build or one accepted over a failure shared with the base
+admits only the candidate it built. Before each merge attempt, one GraphQL response binds the
+PR's target name to its live ref and checks the head against its live ref and the gated SHA.
+If the base tip moved, rebuild with the same gated head, the
+new tip and the original default-branch config. The refresh reruns the plan and runs ``recheck``
+if named, else ``command``, using the same timeout and failure comparison. It does not repeat
+the trigger or the comments-only decision. A red on a refreshed base requires a fresh override
+reason, so a reason supplied for the previous base cannot admit it. Repeat the pre-call checks
+after that build. A further
+move, or movement before a gateway resend, refuses with both base SHAs and asks for a fresh
+invocation. A retarget refuses with both branches, and an unread target or tip refuses without
+guessing. If the read sees an already merged PR, confirm the landing over REST instead of writing.
+Skipped builds and dry runs carry no verdict to refresh. GitHub pins only the head:
+base movement between the last re-read and the call itself stays with the integration loop.
 
 BUILD INPUTS -- the boundary. A path is a build input when one ``input`` glob matches the WHOLE
 repository-relative path (``/``-separated) under Python's ``fnmatch.fnmatchcase``: case-sensitive,
@@ -292,7 +308,7 @@ import tempfile
 import time
 from collections import Counter
 from collections.abc import Generator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import FrameType
 from typing import Literal, NoReturn, assert_never
@@ -357,6 +373,7 @@ class BuildConfig:
     comments: tuple[str, ...] = ()  # COMMENTS ONLY's globs
     plan: str | None = None  # THE PLAN's command; None: no plan, the build as before
     plan_timeout: int = PLAN_TIMEOUT
+    recheck: str | None = None
 
 
 def build_of(command: Sequence[str]) -> str | None:
@@ -377,6 +394,7 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
     trigger: Trigger | None = None
     plan: str | None = None
     plan_timeout: int | None = None
+    recheck: str | None = None
     for raw in text.split("\n"):
         line = (raw[:-1] if raw.endswith("\r") else raw).strip(" \t")
         if not line or line.startswith("#"):
@@ -389,6 +407,11 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
                 warn(f"{where} names a second command line; a merge build runs one command: {line}")
                 return None
             command = value
+        elif key == "recheck" and value:
+            if recheck is not None:
+                warn(f"{where} names a second recheck line: {line}")
+                return None
+            recheck = value
         elif key == "input" and value:
             inputs.append(value)
         elif key == "comments" and value:
@@ -426,7 +449,7 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
                 return None
         else:
             warn(
-                f"{where} holds a line that is none of `command <shell command>`, `input <glob>`,",
+                f"{where} holds a line that is none of `command <shell command>`, `recheck <shell command>`, `input <glob>`,",
                 f"`comments <glob>`, `timeout <seconds>`, `trigger same-input|any-input|always`, `plan <shell command>`,",
                 f"`plan-timeout <seconds>`, a # comment or a blank line: {line}",
             )
@@ -448,7 +471,7 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
         return None
     return BuildConfig(
         command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout, trigger or "same-input", tuple(comments),
-        plan, PLAN_TIMEOUT if plan_timeout is None else plan_timeout,
+        plan, PLAN_TIMEOUT if plan_timeout is None else plan_timeout, recheck,
     )
 
 
@@ -934,15 +957,23 @@ def config_touched(drift: Drift) -> bool:
     return any(n == CONFIG_FILE for p in drift.pr_paths for n in (p, *drift.renamed.get(p, [])))
 
 
+@dataclass(frozen=True)
+class BuildVerdict:
+    head_sha: str
+    base_ref: str
+    base_sha: str
+    config: BuildConfig
+    shared_failure: str | None = None
+
+
 def merge_build(
     session: GhSession, repo: str, pr: str, gated: str, drift: Drift, cap: int, *,
     checkout: str | None = None, ceiling: Ceiling | None = None, override: str = "",
-) -> str | None:
+) -> BuildVerdict | None:
     """Build the would-be merge commit when the config and the drift read ask for it (the module
     docstring); return to merge, or end the command with its refusal. ``checkout`` is ``merge
-    -C``'s clone (None: the working directory); ``override`` is ``--override``'s reason. Returns
-    what the override goes over (THE BASE ALONE: a failure the base shares), for merge to
-    announce; None when the merge goes over nothing here."""
+    -C``'s clone (None: the working directory); ``override`` is ``--override``'s reason. A skipped
+    build returns None."""
     touched = config_touched(drift)
 
     def note(state: str) -> None:
@@ -988,6 +1019,23 @@ def merge_build(
     )
 
 
+def refresh_build(
+    repo: str, pr: str, verdict: BuildVerdict, base_sha: str, *,
+    checkout: str | None, ceiling: Ceiling | None,
+) -> BuildVerdict:
+    """Rebuild an admitted candidate on the newly observed base (BASE FRESHNESS)."""
+    config = verdict.config
+    if config.recheck is not None:
+        config = replace(config, command=config.recheck)
+    refreshed = _build(
+        repo, pr, verdict.head_sha, verdict.base_ref, base_sha, config,
+        "refreshing the merge-build verdict after base movement",
+        checkout=checkout, ceiling=ceiling,
+    )
+    assert refreshed is not None  # Only a COMMENTS ONLY read can skip inside _build.
+    return refreshed
+
+
 @dataclass(frozen=True)
 class _Subject:
     """Whose build it is, in its lines: ``label`` after ``merge build``, ``stop`` leading a
@@ -1006,12 +1054,11 @@ def _build(
     repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str, *,
     checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False, override: str = "",
     candidates: Candidates | None = None, plan_only: bool = False,
-) -> str | None:
+) -> BuildVerdict | None:
     """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
-    clone ``checkout`` names as it is, with nothing fetched. Returns what an ``override`` goes over
-    (THE BASE ALONE: a failure the base shares), else None. ``candidates``: what COMMENTS ONLY
-    reads again before the slot is taken (None: nothing; the build stands). ``plan_only`` stops
-    before the slot probe (mergedry.py's PLAN ONLY)."""
+    clone ``checkout`` names as it is, with nothing fetched. Returns None when COMMENTS ONLY
+    skips the build or when ``plan_only`` stops before the slot probe (mergedry.py's PLAN ONLY).
+    ``candidates``: what COMMENTS ONLY reads again before the slot is taken."""
     if dry:
         what = f"{gated[:8]} into {base_ref}"
         stop = "plan not read" if plan_only else "NOT built"
@@ -1028,7 +1075,7 @@ def _build(
 def _build_in_scratch(
     subject: _Subject, repo: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str,
     where: str, ceiling: Ceiling | None, override: str, candidates: Candidates | None, *, plan_only: bool,
-) -> str | None:
+) -> BuildVerdict | None:
     stop, pr = subject.stop, subject.pr
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
     # (a whole build tree, and the repository it is in) is swept by the next `watch`
@@ -1126,12 +1173,13 @@ def _build_in_scratch(
         )
         if ran.status == "0":
             cli.say(f"merge build {subject.label}: PASSED in {ran.took}s ({config.command})")
-            return None
+            return BuildVerdict(gated, base_ref, tip, config)
         if ran.status:
             cli.say(f"merge build {subject.label}: FAILED (exit {ran.status}) after {ran.took}s; its output:")
             for line in _shown(ran.log):
                 cli.say(f"  | {line}")
-            return _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
+            shared = _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
+            return BuildVerdict(gated, base_ref, tip, config, shared)
         _no_verdict(subject.label, stop, config, ran, "the build of its merge commit")
     finally:
         # Held from its first instruction (as in _supervised), so no signal skips the removal.
@@ -1647,7 +1695,7 @@ def _log_lines(log: str) -> Counter[str] | None:
 def _against_base(
     subject: _Subject, config: BuildConfig, runner: str | None, ceiling: Ceiling | None, scratch: str,
     tree: str, objects: str, quiet: list[str], base_ref: str, tip: str, gated: str, merged: _Ran, override: str,
-) -> str | None:
+) -> str:
     """THE BASE ALONE (module docstring): after the merge's build FAILED, the same command on the
     base tip's tree with the merge's parents, and the verdict: a refusal, or -- under ``override``,
     for a failure the base shares -- what the override goes over."""
