@@ -329,6 +329,11 @@ When the tracker lives in a different repo from the PRs (a staging fork carrying
 carrying issues is a common pairing), comment on the tracking issue with what this PR does. On a
 multi-PR arc that comment is what makes the phases legible later.
 
+Right after a push, fetch the PR's base branch from the target repository and run
+`pr-review.sh --repo <target-owner>/<target-repo> merge-build --plan-only --base <fetched-base-sha> --head HEAD`
+to learn what run is owed while review and CI are in flight. A repository with no applicable
+plan answers `no plan`.
+
 ## Monitor
 
 Poll for the review yourself. A repository with automatic reviews on starts its review

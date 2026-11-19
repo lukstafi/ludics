@@ -1077,6 +1077,9 @@ changed a shared input in comments alone builds nothing, while code on both side
 needs code on each side. `lib/ludics/tests/test_prreview_commentonly.py` pins the comment reader's
 allowlist: OCaml's nested and doc comments, strings, quoted strings and character literals inside and
 outside comments, dune's `;` comments and strings, and each form it gives up on (read as code).
+`test-pr-review-merge.sh` also exercises `merge-build --plan-only` with an owed run before and
+after a record admits it, a config with no plan line, and a malformed verdict. The plan-only
+unit case refuses any slot probe.
 
 `test-pr-review-retry.sh` drives `retry`: the plain retry's classification, and `retry run
 watch`, which addresses its run as

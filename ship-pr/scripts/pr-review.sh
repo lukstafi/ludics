@@ -265,12 +265,15 @@
 #                                          # gated one (gh makes no merge request for a
 #                                          # merged PR) is exit 1, "MERGED at an UNJUDGED
 #                                          # head" (ludics#823; see prreview/merge.py)
-#   pr-review.sh merge-build --base <rev> --head <rev> [--config <file>] [-C <dir>]
+#   pr-review.sh merge-build [--plan-only] --base <rev> --head <rev> [--config <file>] [-C <dir>]
 #                                          # the merge build alone, a DRY RUN in a local checkout
 #                                          # (no PR read, no fetch, no merge): a config's
 #                                          # negative control, the PR's own copy included
 #                                          # (ludics-lite#751; see prreview/mergedry.py). Exit as
 #                                          # merge's build step: 0 would proceed, 1 refused.
+#                                          # --plan-only stops before the slot probe and build:
+#                                          # 0 admitted, nothing owed or no plan; 1 unadmitted or
+#                                          # conflict; 2 usage/prerequisite; 3 no verdict or read failure.
 #   pr-review.sh local-review <base> [--out <dir>] [-C <dir>]
 #                                          # the local Codex review before the PR opens: HEAD
 #                                          # against its merge base with origin/<base>, the
@@ -835,9 +838,10 @@ main() {
     py_forward exec "$@"
     ;;
   *) die "usage: pr-review.sh [--repo owner/name] {poll|watch|status|rounds|checks|merge|reply|resolve} <pr> ...
-  pr-review.sh [--repo owner/name] merge-build --base <rev> --head <rev> [--config <file>] [-C <dir>]
+  pr-review.sh [--repo owner/name] merge-build [--plan-only] --base <rev> --head <rev> [--config <file>] [-C <dir>]
                                              # merge's build of the would-be merge commit alone,
                                              # a dry run: no PR read, no fetch, no merge
+                                             # --plan-only reports the plan before the build slot
   pr-review.sh local-review <base> [--out <dir>] [-C <dir>]  # the local Codex review before the
                                              # PR opens: HEAD against origin/<base>'s merge base,
                                              # the transcript to <dir>/run.log, the verdict alone

@@ -3694,6 +3694,79 @@ test_a_plan_whose_owed_run_a_record_admits_goes_on_to_the_build() {
   assert_clone_untouched
 }
 
+# The plan-only read judges the same candidate without the build or a PR read.
+PLAN_ONLY_CONFIG="$MERGE_BUILD_SH"$'\nplan if test -f "$PLAN_RECORD"; then verdict=admitted; else verdict=unadmitted; fi; printf "%s\\n" "ship-pr-merge-plan: $verdict runtest"'
+
+plan_only_fixture() {
+  reset
+  build_fixture compatible
+  git -C "$BUILD_CLONE" fetch -q --no-tags --refmap= origin refs/pull/7/head refs/heads/main
+}
+
+read_plan_only() {
+  run_dry --plan-only --base "$BUILD_TIP" --head "$BUILD_HEAD"
+}
+
+assert_plan_only_stopped_before_the_build() {
+  assert_not_contains "$MERGE_OUTPUT" "this box has no run-time slots" "the build never reached its slot"
+  assert_not_contains "$MERGE_OUTPUT" "PASSED" "the build never ran"
+  assert_eq "$MERGE_CALLS" "CALL merge-build-config" "only the default branch's config was read"
+  assert_clone_untouched
+}
+
+test_plan_only_reports_an_owed_unrecorded_run() {
+  plan_only_fixture
+  MERGE_BUILD_CONFIG=$PLAN_ONLY_CONFIG
+  PLAN_RECORD="$TEST_ROOT/missing-record" read_plan_only
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_eq "$MERGE_RC" 2 "running the plan is POSIX-only ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "runs on POSIX hosts only" "the refusal says where the plan runs"
+  else
+    assert_eq "$MERGE_RC" 1 "the same unrecorded run would refuse the merge ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "(ship-pr-merge-plan: unadmitted runtest)" "the plan names what it owes"
+  fi
+  assert_plan_only_stopped_before_the_build
+}
+
+test_plan_only_reports_a_record_that_admits_the_run() {
+  plan_only_fixture
+  MERGE_BUILD_CONFIG=$PLAN_ONLY_CONFIG
+  : >"$TEST_ROOT/plan-record"
+  PLAN_RECORD="$TEST_ROOT/plan-record" read_plan_only
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_eq "$MERGE_RC" 2 "running the plan is POSIX-only ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "runs on POSIX hosts only" "the refusal says where the plan runs"
+  else
+    assert_eq "$MERGE_RC" 0 "the record admits the owed run in the plan ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDOUT" "(ship-pr-merge-plan: admitted runtest)" "the plan names what was admitted"
+  fi
+  assert_plan_only_stopped_before_the_build
+}
+
+test_plan_only_reports_no_plan_when_the_config_has_no_plan_line() {
+  plan_only_fixture
+  MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
+  read_plan_only
+  assert_eq "$MERGE_RC" 0 "a config without a plan line is a closed answer ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "no plan — no plan line" "the read names the absence of a plan"
+  assert_plan_only_stopped_before_the_build
+}
+
+test_plan_only_reports_the_shared_no_verdict_reason() {
+  plan_only_fixture
+  MERGE_BUILD_CONFIG="$MERGE_BUILD_SH"$'\nplan printf "%s\\n" "ship-pr-merge-plan: unsupported"'
+  read_plan_only
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_eq "$MERGE_RC" 2 "running the plan is POSIX-only ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "runs on POSIX hosts only" "the refusal says where the plan runs"
+  else
+    assert_eq "$MERGE_RC" 3 "a plan without a verdict is unresolved ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "the plan gave NO VERDICT" "a malformed line gave no verdict"
+    assert_contains "$MERGE_STDERR" "none of the verdict shapes" "the read reports the same closed-list reason as merge"
+  fi
+  assert_plan_only_stopped_before_the_build
+}
+
 # #860: a red the base's tip already has fails every merge build. The merge's build fails, the same
 # command on the base alone fails the same way, and the merge is refused naming --override; under a
 # cited --override it merges, announcing what it went over. One with a failure of its own beside
@@ -4095,6 +4168,10 @@ tests=(
   test_trigger_always_builds_every_merge
   test_a_plan_owing_an_unrecorded_run_is_refused_before_the_build
   test_a_plan_whose_owed_run_a_record_admits_goes_on_to_the_build
+  test_plan_only_reports_an_owed_unrecorded_run
+  test_plan_only_reports_a_record_that_admits_the_run
+  test_plan_only_reports_no_plan_when_the_config_has_no_plan_line
+  test_plan_only_reports_the_shared_no_verdict_reason
   test_a_merge_build_failure_the_base_shares_merges_under_override
   test_a_merge_build_with_a_failure_of_its_own_is_refused_under_override
   test_a_comment_only_shared_change_merges_without_a_build

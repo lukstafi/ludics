@@ -1005,26 +1005,29 @@ class _Subject:
 def _build(
     repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str, *,
     checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False, override: str = "",
-    candidates: Candidates | None = None,
+    candidates: Candidates | None = None, plan_only: bool = False,
 ) -> str | None:
     """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
     clone ``checkout`` names as it is, with nothing fetched. Returns what an ``override`` goes over
     (THE BASE ALONE: a failure the base shares), else None. ``candidates``: what COMMENTS ONLY
-    reads again before the slot is taken (None: nothing; the build stands)."""
+    reads again before the slot is taken (None: nothing; the build stands). ``plan_only`` stops
+    before the slot probe (mergedry.py's PLAN ONLY)."""
     if dry:
         what = f"{gated[:8]} into {base_ref}"
-        subject = _Subject(f"{what} (dry run)", f"merge-build {what}: NOT built", f"merge-build {what}: merge would REFUSE it", "", repo)
+        stop = "plan not read" if plan_only else "NOT built"
+        subject = _Subject(f"{what} (dry run)", f"merge-build {what}: {stop}", f"merge-build {what}: merge would REFUSE it", "", repo)
     else:
         subject = _Subject(f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr, repo)
     with _INTERRUPTS.installed():
         return _build_in_scratch(
-            subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override, candidates
+            subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override, candidates,
+            plan_only=plan_only,
         )
 
 
 def _build_in_scratch(
     subject: _Subject, repo: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str,
-    where: str, ceiling: Ceiling | None, override: str, candidates: Candidates | None,
+    where: str, ceiling: Ceiling | None, override: str, candidates: Candidates | None, *, plan_only: bool,
 ) -> str | None:
     stop, pr = subject.stop, subject.pr
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
@@ -1097,9 +1100,13 @@ def _build_in_scratch(
             # COMMENTS ONLY: read again before the checkout and the slot.
             why_not = _comments_only(subject, quiet, tree, tip, gated, written, config, candidates)
             if why_not:
-                cli.say(f"merge build {subject.label}: no build — {why_not}")
+                activity = "plan" if plan_only else "build"
+                cli.say(f"merge build {subject.label}: no {activity} — {why_not}")
                 return None
-        merge_sha, err = _commit_out(quiet, tree, written, tip, gated, f"ship-pr merge build of {subject.label}", "the merge commit")
+        merge_sha, err = _commit_out(
+            quiet, tree, written, tip, gated, f"ship-pr merge build of {subject.label}", "the merge commit",
+            checkout=not plan_only,
+        )
         if err:
             fail(3, f"{stop}: {err}.")
         # PROVENANCE (#1024): the scratch goes with the build, so the output is what names it.
@@ -1109,7 +1116,9 @@ def _build_in_scratch(
         )
         if config.plan is not None:
             # THE PLAN: before the slot probe, so a refusal takes no slot.
-            _plan(subject, config, quiet, tree, scratch, merge_sha, tip, gated, objects)
+            _plan(subject, config, quiet, tree, scratch, merge_sha, tip, gated, objects, plan_only=plan_only)
+        if plan_only:
+            return None
         runner = _slot_runner()
         ran = _run(
             subject, config, runner, ceiling, tree, scratch, "build", tip, gated,
@@ -1315,10 +1324,11 @@ def _comments_only(
 
 
 def _commit_out(
-    quiet: list[str], tree: str, written: str, tip: str, gated: str, message: str, what: str
+    quiet: list[str], tree: str, written: str, tip: str, gated: str, message: str, what: str, *,
+    checkout: bool = True,
 ) -> tuple[str, str]:
     """A commit of the tree ``written`` with the merge's two parents (THE COMMAND'S CONTRACT),
-    checked out in full at ``tree``: ``(its sha, "")``, or ``("", what went wrong)``."""
+    checked out in full at ``tree`` for a build: ``(its sha, "")`` or ``("", what went wrong)``."""
     ident = dict(os.environ)
     for role in ("AUTHOR", "COMMITTER"):
         ident[f"GIT_{role}_NAME"] = "ship-pr merge build"
@@ -1327,6 +1337,8 @@ def _commit_out(
     sha = commit.stdout.strip()
     if commit.rc != 0 or not _SHA.fullmatch(sha):
         return "", f"{what} could not be written ({_first_line(commit)})"
+    if not checkout:
+        return sha, ""
     out = _git([*quiet, "-c", "core.sparseCheckout=false", "checkout", "--quiet", "--detach", sha], tree)
     if out.rc != 0:
         return "", f"{what} could not be checked out ({_first_line(out)})"
@@ -1348,13 +1360,16 @@ class _Ran:
     earlier: tuple[buildhistory.Row, ...] = ()
 
 
-def _retain(repo: str, pr: str, head: str, name: str, log: str, status: str) -> str | None:
+def _retain(
+    repo: str, pr: str, head: str, name: str, log: str, status: str, *, plan_only: bool = False,
+) -> str | None:
     """Retain command artifacts before scratch cleanup; retries replace the same head's files."""
     root = buildhistory.state_root(repo)
     if root is None:
         return None  # fixtures can explicitly disable state; config-only dry runs have no repo
-    directory = os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"),
-                                            pr or "dry-run", head))
+    # A plan-only read can use another base for the same head as a full dry run.
+    run = pr or ("plan-only" if plan_only else "dry-run")
+    directory = os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"), run, head))
     try:
         os.makedirs(directory, exist_ok=True)
         for source, leaf in ((log, f"{name}.log"), (status, f"{name}.status")):
@@ -1427,10 +1442,11 @@ def _run(
 
 
 def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, scratch: str, merge_sha: str, tip: str,
-          gated: str, objects: str) -> None:
+          gated: str, objects: str, *, plan_only: bool) -> None:
     """THE PLAN (module docstring): run ``config.plan`` in a checkout of its own of the merge
     commit, bare, before the slot probe; return to build (the build's ``tree`` untouched), or end
-    the command with the refusal when the plan's verdict is ``unadmitted``."""
+    the command with the refusal when the plan's verdict is ``unadmitted``. The plan-only read
+    ends with exit 3 on the same no-verdict reasons that send a merge on to the build."""
     assert config.plan is not None
     label = subject.label
     log = os.path.join(scratch, "plan.log")
@@ -1449,7 +1465,7 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
             unstarted = str(exc)
     took = int(time.monotonic() - started)
     rc_text = _status_text(status)
-    log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status)
+    log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status, plan_only=plan_only)
     if log_dir:
         cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
     # Its checkout goes now, so the build's slot is not taken beside it.
@@ -1468,19 +1484,26 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
     else:
         verdict = plan_verdict(log)
     if isinstance(verdict, str):
-        cli.say(f"merge build {label}: the plan gave NO VERDICT after {took}s: {verdict}; the build decides")
+        result = f"merge build {label}: the plan gave NO VERDICT after {took}s: {verdict}"
+        if not plan_only:
+            cli.say(f"{result}; the build decides")
         for line in _shown(log, diagnostics=False)[-OVERRUN_LINES:] if os.path.exists(log) else []:
             cli.say(f"  | {line}")
+        if plan_only:
+            fail(3, result)
     elif verdict.word == "unadmitted":
         cli.say(f"merge build {label}: the plan says no record admits what it owes, after {took}s; its output:")
         for line in _shown(log):
             cli.say(f"  | {line}")
+        after_record = "then repeat this read." if plan_only else "then merge again; --override does not go over this."
         fail(
             1,
             f"{subject.refuse}: the plan of {gated[:8]} merged with {tip[:8]} owes {verdict.what or 'a run'}, and no",
             f"record admits it ({verdict.line}). Nothing was built and no slot was taken. Record (or waive)",
-            "what it owes as the repository's plan says, then merge again; --override does not go over this.",
+            f"what it owes as the repository's plan says, {after_record}",
         )
+    elif plan_only:
+        cli.say(f"merge build {label}: plan verdict ({verdict.line}). The build decides admission.")
     elif verdict.word == "admitted":
         cli.say(
             f"merge build {label}: the plan owes {verdict.what or 'a run'}, and a record admits it ({took}s);"
@@ -1745,11 +1768,15 @@ def _fetch_gated(subject: _Subject, root: str, remote: str, quiet: list[str], ga
 
 def dry_build(
     repo: str, head: str, base_ref: str, base: str, config: BuildConfig, why: str, checkout: str,
-    candidates: Candidates | None = None,
+    candidates: Candidates | None = None, *, plan_only: bool = False,
 ) -> None:
     """THE DRY RUN's build (mergedry.py): ``head`` merged into ``base`` in ``checkout`` as it is,
-    ``candidates`` read again as merge's are (COMMENTS ONLY)."""
-    _build(repo, "", head, base_ref, base, config, why, checkout=checkout, dry=True, candidates=candidates)
+    ``candidates`` read again as merge's are (COMMENTS ONLY). The plan-only read ends before the
+    slot probe."""
+    _build(
+        repo, "", head, base_ref, base, config, why, checkout=checkout, dry=True, candidates=candidates,
+        plan_only=plan_only,
+    )
 
 
 def run_git(args: list[str], cwd: str) -> proc.Completed:

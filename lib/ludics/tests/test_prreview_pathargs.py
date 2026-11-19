@@ -58,6 +58,7 @@ NOT_PATHS: frozenset[tuple[str, str]] = frozenset({
     ("merge.py", "--match-head-commit="), ("merge.py", "--override"), ("merge.py", "--override="),
     ("merge.py", "--require-green"), ("merge.py", "--rerun-failed-once"), ("merge.py", "--wait"), ("merge.py", "--wait="),
     ("mergedry.py", "--base"), ("mergedry.py", "--base="), ("mergedry.py", "--head"), ("mergedry.py", "--head="),
+    ("mergedry.py", "--plan-only"),
     ("reply.py", "--allow-mention"), ("reply.py", "--anchor"), ("reply.py", "--anchor="),
     ("retry.py", "--read"), ("retry.py", "--write"),
     ("runwatch.py", "--compact"), ("runwatch.py", "--exit-status"), ("runwatch.py", "--interval"),
