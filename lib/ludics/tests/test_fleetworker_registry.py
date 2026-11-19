@@ -1322,8 +1322,15 @@ class WindowDeadline(RegistryCase):
         self.call("conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null", "evidence": "unit"})
         self.assertEqual(self.opening()[0], 1)
 
+    def on_file(self, identity: str = "w") -> Any:
+        """The record as written, lease token and all: an answer is lease-free (THE LEASE TOKEN), so a
+        test that plants a record builds it from the file, never from the answer."""
+        with open(os.path.join(self.root, "executions", f"{identity}.json"), encoding="utf-8") as stream:
+            return json.load(stream)
+
     def test_historical_windows_without_a_hold_opening_still_validate(self) -> None:
-        _, record, _ = self.window(extra={"deadline": 60})
+        self.assertEqual(self.window(extra={"deadline": 60})[0], 0)
+        record = self.on_file()
         del record["hold_opened_at"]
         del record["hold_deadline_at"]
         record["deadline_at"] = (datetime.fromisoformat(record["created_at"]) + timedelta(seconds=60)).isoformat()
@@ -1346,7 +1353,8 @@ class WindowDeadline(RegistryCase):
                                  datetime.fromisoformat(record["created_at"]) + timedelta(seconds=record["deadline"]))
 
     def test_hold_timing_fields_are_validated_as_one_pair(self) -> None:
-        _, good, _ = self.window(extra={"deadline": 60})
+        self.assertEqual(self.window(extra={"deadline": 60})[0], 0)
+        good = self.on_file()
         path = os.path.join(self.root, "executions", "w.json")
         for key, value in (("hold_deadline_at", "soon"), ("hold_opened_at", "soon")):
             for corrupt in ({**good, key: value}, {k: v for k, v in good.items() if k != key}):
