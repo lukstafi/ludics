@@ -4,6 +4,7 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -92,7 +93,12 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
         env=env, text=True, capture_output=True, timeout=20,
     )
     assert (assignment.returncode, assignment.stdout) == (2, ''), assignment
-    assert '"command"' in assignment.stderr, assignment.stderr
+    _, marker, advice = assignment.stderr.partition(' with "command": ')
+    assert marker, assignment.stderr
+    words = shlex.shlex(advice, posix=True)
+    words.whitespace_split = True
+    launcher = next(iter(words))
+    assert Path(launcher).expanduser().resolve() == SCRIPT.resolve(), assignment.stderr
     correction = ("execution leg --request <request-id> --rev <full-SHA> --checkout <clone>"
                   " --worktree <checkout> --wait-window [--cpu|--gpu] -- <runner-executable> <runner-args>")
     assert correction in assignment.stderr, assignment.stderr

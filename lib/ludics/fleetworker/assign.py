@@ -45,8 +45,9 @@ the registry is asked, so a malformed request reserves nothing, and neither do i
   shell words before asking the registry. Redirection and control operator tokens, and words
   starting with ``#``, also require an array for literal arguments or a full ``command`` for shell
   syntax. It does not expand shell syntax, inspect the project for an executable, or infer whether
-  a flag belongs to the leg or the runner. Use a full ``command`` when either flag is needed. A
-  string runner follows ``--`` as written; an array is
+  a flag belongs to the leg or the runner. Use a full ``command`` when either slot flag is needed.
+  Other option names keep their runner meaning in this shorthand. A string runner follows
+  ``--`` as written; an array is
   shell-joined. This fleet-worker.sh is named by its absolute path, ``$HOME`` written ``~``, so the
   worker's own box reads the same layout. A block with ``command`` is assigned that text unchanged.
 
@@ -265,7 +266,7 @@ def is_absolute(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and bool(ABSOLUTE.match(value))
 
 
-def runner_problem(runner: str | list[str], kind: str, revision: str) -> str | None:
+def runner_problem(runner: str | list[str], kind: str, revision: str, fw: str) -> str | None:
     if isinstance(runner, str):
         lexer = shlex.shlex(runner, posix=True, punctuation_chars=SHELL_PUNCTUATION)
         lexer.whitespace_split = True
@@ -286,18 +287,17 @@ def runner_problem(runner: str | list[str], kind: str, revision: str) -> str | N
         return None
 
     # The driver still scans stderr for lease refusals. Show the form without echoing request data.
-    slot = " --wait-window [--cpu|--gpu]" if kind == "correctness" else ""
+    options = leg_words("<request-id>", "<full-SHA>", "<clone>", "<checkout>", kind)
+    slot = " [--cpu|--gpu]" if kind == "correctness" else ""
     guidance = (" Put the leg's slot flag before -- if needed. Keep runner-owned flags after --."
                 if slot else " Measurement legs take no slot flags. Keep runner-owned flags after --.")
     if revision.startswith(HEAD_OF):
         guidance += " Pin the same full SHA in the command and requested_revision."
     return (f'runner contains {" and ".join(sorted(flags))}. Replace "runner" and "clone" with "command": '
-            "fleet-worker.sh execution leg --request <request-id> --rev <full-SHA>"
-            f" --checkout <clone> --worktree <checkout>{slot} -- <runner-executable> <runner-args>."
-            f"{guidance}")
+            f"{fw} {' '.join(options)}{slot} -- <runner-executable> <runner-args>.{guidance}")
 
 
-def block_problem(block: Any) -> str | None:
+def block_problem(block: Any, *, fw: str = "fleet-worker.sh") -> str | None:
     """One block's shape (see the header): None, or why it is refused."""
     if not isinstance(block, dict):
         return "is not one JSON object"
@@ -334,7 +334,7 @@ def block_problem(block: Any) -> str | None:
     revision = fields["requested_revision"]
     if not (OBJECT_ID.fullmatch(revision) or revision.startswith(HEAD_OF)):
         return "a runner's requested_revision must be a full 40-hex SHA or head-of:<branch>: the leg moves to one commit"
-    return runner_problem(cast(str | list[str], runner), fields["kind"], revision)
+    return runner_problem(cast(str | list[str], runner), fields["kind"], revision, fw)
 
 
 def fleet_worker_word(cfg: Config) -> str:
@@ -346,14 +346,19 @@ def fleet_worker_word(cfg: Config) -> str:
     return shlex.quote(path)
 
 
+def leg_words(request_id: str, revision: str, clone: str, worktree: str, kind: str) -> list[str]:
+    words = ["execution", "leg", "--request", request_id, "--rev", revision,
+             "--checkout", clone, "--worktree", worktree]
+    if kind == "correctness":
+        words.append("--wait-window")
+    return words
+
+
 def leg_command(fw: str, block: dict[str, Any], revision: str) -> str:
     """THE RUNNER (see the header): the block's runner wrapped into the leg form."""
     runner = block["runner"]
     tail = runner if isinstance(runner, str) else shlex.join(cast(list[str], runner))
-    words = ["execution", "leg", "--request", block["request_id"], "--rev", revision,
-             "--checkout", block["clone"], "--worktree", block["checkout"]]
-    if block["kind"] == "correctness":
-        words.append("--wait-window")
+    words = leg_words(block["request_id"], revision, block["clone"], block["checkout"], block["kind"])
     return f"{fw} {shlex.join(words)} -- {tail}"
 
 
@@ -489,9 +494,10 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
     read = read_blocks(read_text(parsed.requests, "the requests"))
     if isinstance(read, str):
         die(f"execution assign: {read} in {execution.shown(parsed.requests)}")
+    fw = fleet_worker_word(cfg)
     blocks: list[dict[str, Any]] = []
     for n, block in enumerate(read, 1):
-        problem = block_problem(block)
+        problem = block_problem(block, fw=fw)
         if problem:
             name = cast(dict[str, Any], block).get("request_id") if isinstance(block, dict) else None
             label = f" ({name})" if isinstance(name, str) and execution.shown(name) == name else ""
@@ -543,7 +549,6 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
 
     texts: list[str] = []
     action_required: list[str] = []
-    fw = fleet_worker_word(cfg)
     refusal_status = 0
     unknown = False
     for block in selected:
