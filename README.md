@@ -819,6 +819,8 @@ a start refused before `run.sh` concludes its reservation `not-launched`, while 
 `run.sh` had run stays `LAUNCH UNKNOWN` with its reservation and record kept (#1023).
 The supervision fixtures keep closing-reference reads on paginated GraphQL for gh 2.46;
 package cases refuse partial closing populations and preserve the open-PR cap (#1189).
+The `wave kit` section checks that the review prompt carries the prepared task's scope and
+that a confirm can clear a finding rebutted only in an inline PR reply (#1235).
 The `execution assign` section distinguishes requests that need action, including missing branches
 and noncanonical hosts, from full boxes and pending windows. It checks that a missing branch's
 `ASSIGN ACTION REQUIRED` summary carries the request ID and the cure. Driver unit cases pin

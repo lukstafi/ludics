@@ -186,6 +186,14 @@ names the explicit revision, so a stacked launch keeps its own base (#1099).
 The Prep unit cases and the "wave kit" shell section pin this boundary; the new cases fail
 against the pre-change implementation (missing fallback, provenance and BASE_ORIGIN).
 
+## Wave review evidence
+
+Prep records the rendered task section for the review checkpoint. Review includes that section
+beside the issue, with the worker's brief available for tasks prepared before the snapshot.
+For a post-wave task, the launch record supplies the source issue number when the caller omits
+the subject flags. Confirm can read the current PR's inline comments and replies with one
+paginated GET. The Review unit cases and the `wave kit` shell section pin these inputs (#1235).
+
 ## Which suites drive each module
 
 The unit tests (`lib/ludics/tests/test_*.py`) run whole, by discovery, before every push that

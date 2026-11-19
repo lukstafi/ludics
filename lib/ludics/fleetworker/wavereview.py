@@ -14,7 +14,9 @@ merge. This verb is those steps, the verdict parsed:
 WHAT IT DOES, in this order:
 
 1. The wave file names a reviewer (``review``, wave.py's header) and ``vars.MAIN``, the base branch.
-   The task is an issue's or a ``--source`` task as ``wave prep`` reads it (``waveprep.subject``).
+   The task is an issue's or a source task as ``wave prep`` reads it (``waveprep.subject``).
+   With neither subject flag, the prep manifest's launch record identifies a source task by
+   its empty issue ref and supplies its issue number.
 2. ONE CALL per PR, kind and head: an exclusive ``flock`` on ``reviews/<stem>.lock``, taken without
    waiting and held to the end, so a call retried while the first still reviews refuses (exit 1)
    and neither a second reviewer runs nor a second comment is posted. A record of this PR, kind
@@ -30,12 +32,16 @@ WHAT IT DOES, in this order:
    (``issue-wave/templates/review/``; a wave directory's ``review/<part>`` overrides one), then the
    project's part when there is one: ``<wave dir>/review/project.md``, else ``review.project_part``
    read from the checkout at ``origin/<MAIN>`` (the base's copy, so a PR does not write its own
-   reviewer's instructions).
+   reviewer's instructions). The prep manifest's rendered task section is included whole beside
+   the issue or source. This reads that named field as prose and never searches Markdown for
+   headings or scope keywords. For older or manual tasks, the reviewer can read the worker brief.
 7. The reviewer, headless, the prompt on its stdin (``reviewer_argv``). Its final message is the
    review. READ-ONLY is its tool list, a fail-closed allowlist, not only the prompt's word: the
    file readers, ``git -C <checkout>`` with a reading verb (``GIT_READS``), ``gh`` with a reading
-   one (``GH_READS``), and the filters a pipe ends in (``FILTERS``); every other command is
-   refused by the CLI, the editing tools by name. What that does not stop: an allowed verb's own
+   one (``GH_READS``), one exact paginated GET of the current PR's inline comments (including
+   replies in resolved threads) for confirms, and the filters a pipe ends in (``FILTERS``).
+   Other API paths and arguments are outside the allowlist, and editing tools are refused by name.
+   What that does not stop: an allowed verb's own
    writing option (``git show --output=<file>``), and anything ``gh`` reads with the fleet's token.
 8. THE VERDICT, below, and what it decides.
 9. The PR is read again (step 4's check: a recorded review, a dry run's included, is never posted
@@ -101,7 +107,9 @@ from ludics.fleetworker.takeover import gh_json
 from ludics.fleetworker.transport import run, substitution
 from ludics.fleetworker.wave import USAGE, Review, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import Part, render, write_atomically
+from ludics.fleetworker.wavelaunch import read_manifest
 from ludics.fleetworker.waveprep import SHA40, TASK, TEMPLATES, subject
+from ludics.fleetworker.waveprep import Stop as PrepStop
 
 KINDS = ("at-open", "confirm")
 SHIPPED = ("checkpoint.md", "issue.md", "source.md", "confirm.md", "verdict.md")
@@ -111,7 +119,7 @@ PART_NAMES: dict[str, frozenset[str]] = {
     "checkpoint.md": COMMON_NAMES | {"BRIEF"},
     "issue.md": COMMON_NAMES | {"ISSUE", "ISSUE_N", "ISSUE_REPO"},
     "source.md": COMMON_NAMES | {"SOURCE", "BRIEF"},
-    "confirm.md": COMMON_NAMES | {"REVIEWED_SHA", "REVIEW_FILE"},
+    "confirm.md": COMMON_NAMES | {"REVIEWED_SHA", "REVIEW_FILE", "INLINE_COMMENTS"},
     "verdict.md": COMMON_NAMES,
 }
 FETCH_TIMEOUT = 300.0
@@ -124,13 +132,16 @@ GH_READS = ("pr view", "pr diff", "issue view")
 FILTERS = ("head", "tail", "wc", "grep")
 
 
-def reviewer_argv(review: Review, checkout: str) -> tuple[str, list[str]]:
+def reviewer_argv(call: "Call") -> tuple[str, list[str]]:
     """The tool and arguments that run ``review.kind`` headless, the prompt on stdin and one JSON
     object on stdout whose ``result`` is the final message, with READ-ONLY's tool list (the header,
     step 7). wave.py's ``REVIEW_KINDS`` is the allowlist; a kind without a line here cannot be parsed."""
+    review, checkout = call.review, call.wave.checkout
     if review.kind == "claude":
         allowed = ([f"Bash(git -C {checkout} {verb}:*)" for verb in GIT_READS] + [f"Bash(gh {verb}:*)" for verb in GH_READS]
                    + [f"Bash({name}:*)" for name in FILTERS] + ["Read", "Grep", "Glob"])
+        if call.kind == "confirm":
+            allowed.append(f"Bash({call.inline_comments})")
         return "claude", ["-p", "--model", review.model, "--output-format", "json", "--no-session-persistence",
                           "--allowedTools", *allowed, "--disallowedTools", "Edit", "Write", "NotebookEdit"]
     raise AssertionError(f"no reviewer for kind {review.kind}")
@@ -196,6 +207,7 @@ class Call:
     dry_run: bool
     posted: str  # --posted <url>: the comment an ambiguous post left, found on the PR
     again: bool = False  # --again: a new round on a head already reviewed and posted
+    task_section: str = ""
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.wave.directory, *parts)
@@ -207,6 +219,10 @@ class Call:
     @property
     def where(self) -> str:
         return f"{self.wave.repository}#{self.pr} {self.kind} at {self.sha[:8]}"
+
+    @property
+    def inline_comments(self) -> str:
+        return f"gh api --method GET --paginate repos/{self.wave.repository}/pulls/{self.pr}/comments"
 
     def refused(self, why: str, rc: int = 1) -> Stop:
         word = "REFUSED" if rc == 1 else "NO VERDICT"
@@ -248,9 +264,24 @@ def parse(args: list[str]) -> Call:
         die("wave review: --posted records a comment a real call left; it takes no --dry-run")
     if again and (dry_run or opts["--posted"]):
         die("wave review: --again starts a new round, to be reviewed and posted; it takes no --dry-run and no --posted")
+    task_section = ""
+    manifest_path = os.path.join(wave.directory, "prep", f"{task}.json")
+    if os.path.lexists(manifest_path):
+        try:
+            manifest, launch, _ = read_manifest(manifest_path, task)
+        except PrepStop as exc:
+            die("wave review: " + exc.line.split(": ", 1)[-1])
+        if manifest.get("task") != task or launch.wave != wave.wave or launch.repository != wave.repository:
+            die(f"wave review: prep manifest {manifest_path!r} belongs to a different task, wave or repository")
+        if not (opts["--issue"] or opts["--source"] or launch.issue_ref):
+            opts["--source"] = launch.number
+        recorded: Any = manifest.get("task_section", "")
+        if not isinstance(recorded, str):
+            die(f"wave review: prep manifest {manifest_path!r} has a non-text task section")
+        task_section = recorded
     number, issue_ref, source_ref = subject(wave, task, opts["--issue"], opts["--source"], "review")
     return Call(wave, wave.review, task, pr.lstrip("#"), sha, opts["--kind"], issue_ref, source_ref, number, dry_run,
-                opts["--posted"], again)
+                opts["--posted"], again, task_section)
 
 
 # --- the record -----------------------------------------------------------------------------------
@@ -395,15 +426,18 @@ def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
         values |= {"ISSUE": call.issue_ref, "ISSUE_N": call.number, "ISSUE_REPO": call.wave.issue_repository}
         parts.append(read_part(call, "issue.md"))
     else:
-        if not os.path.isfile(brief):
+        if not call.task_section and not os.path.isfile(brief):
             raise call.refused(f"a --source task is judged against its brief, and {brief} is no file")
         values["SOURCE"] = call.source_ref
         parts.append(read_part(call, "source.md"))
+    if call.task_section:
+        parts.append(Part("recorded task section", "## Assigned scope\n\n" + call.task_section))
     project = project_part(call)
     if project is not None:
         parts.append(project)
     if earlier is not None:
-        values |= {"REVIEWED_SHA": str(earlier["sha"]), "REVIEW_FILE": str(earlier.get("review", ""))}
+        values |= {"REVIEWED_SHA": str(earlier["sha"]), "REVIEW_FILE": str(earlier.get("review", "")),
+                   "INLINE_COMMENTS": call.inline_comments}
         parts.append(read_part(call, "confirm.md"))
     parts.append(read_part(call, "verdict.md"))
     result = render(parts, values)
@@ -414,7 +448,7 @@ def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
 
 def run_reviewer(call: Call, prompt: str) -> str:
     """Step 7: the reviewer's final message."""
-    tool, argv = reviewer_argv(call.review, call.wave.checkout)
+    tool, argv = reviewer_argv(call)
     done = proc.run_tool(tool, argv, cwd=call.wave.directory, stdin=prompt.encode("utf-8", "surrogateescape"),
                          timeout=float(call.review.timeout))
     with open(call.stem + ".run.json", "w", encoding="utf-8", errors="surrogateescape") as f:
