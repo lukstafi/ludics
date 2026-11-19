@@ -604,6 +604,8 @@ still reaches driver attention if the diagnostic stream is unusable. Payload sta
 reports `nothing asked` with exit 1, and the executable-start failure keeps its diagnostic.
 The new regression fails on base `10c992e3` for stderr relay, stdout seek and read, and a
 persistent stderr failure. The batch log is `wave-20261119-ludics/scratch/t1239/runs/negative.log`.
+A subprocess case also pins exit 4 through Python shutdown with a broken buffered stderr pipe.
+It observed exit 120 on the initial fix in the same directory's `shutdown-negative.log`.
 
 Python unit sharding (#1164): `scripts/run-python-tests.py` partitions sorted `lib/`
 `test_*.py` module paths at `PYTHON_TEST_CUTS`. CI passes job-index/job-total, so losing

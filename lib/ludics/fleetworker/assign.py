@@ -116,6 +116,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -524,7 +525,15 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
                 err(f"ASSIGN UNKNOWN {shown_id}: the {verb[1]}'s outcome is unknown ({detail});"
                     " reconcile it, never retry it blind")
             except OSError:
-                # A failed relay and this report may share the same broken stream.
+                # Python can replace exit 4 with 120 if it flushes this failed stream at shutdown.
+                with suppress(OSError):
+                    stderr_fd = sys.stderr.fileno()
+                    null_fd = os.open(os.devnull, os.O_WRONLY)
+                    if null_fd != stderr_fd:
+                        try:
+                            os.dup2(null_fd, stderr_fd)
+                        finally:
+                            os.close(null_fd)
                 return 4
             unknown = True
             continue

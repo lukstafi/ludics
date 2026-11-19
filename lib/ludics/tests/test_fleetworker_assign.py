@@ -8,6 +8,8 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Sequence
@@ -246,6 +248,29 @@ class Outcomes(unittest.TestCase):
                     self.assertIn("ASSIGN UNKNOWN a: the run's outcome is unknown", err.getvalue())
                     self.assertIn(f"fixture: {fault}", err.getvalue())
                     self.assertIn("reconcile it, never retry it blind", err.getvalue())
+
+    def test_persistent_stderr_failure_preserves_exit_4_at_shutdown(self) -> None:
+        script = self.write("fleet-worker.sh", "#!/bin/sh\nprintf '%s\\n' started >&2\n")
+        os.chmod(script, 0o755)
+        requests = self.write("r.txt", message(block("a")))
+        run = subprocess.run([sys.executable, "-c", """
+import os
+import sys
+from unittest.mock import patch
+from ludics import cli
+from ludics.fleetworker import assign, execution
+from ludics.fleetworker.config import load_config
+from ludics.fleetworker.transport import Done
+
+reader, writer = os.pipe()
+os.close(reader)
+sys.stderr = os.fdopen(writer, "w", buffering=4096)
+cfg = load_config(sys.argv[1], {"HOME": "/nowhere"})
+with patch.object(execution, "listing", return_value=Done(0, "[]")):
+    rc = cli.main_guard("fleet-worker.sh", lambda args: assign.cmd_assign(cfg, args), sys.argv[2:])
+sys.exit(rc)
+""", script, self.base, requests], capture_output=True, text=True, timeout=10)
+        self.assertEqual((run.returncode, run.stdout), (4, ""), run.stderr)
 
     def test_a_steps_progress_reaches_the_reader_while_the_step_is_still_waiting(self) -> None:
         progress = "waiting for the window gap"
