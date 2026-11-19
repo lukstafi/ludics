@@ -135,7 +135,7 @@ from ludics.fleetworker import cotenants, revision
 from ludics.fleetworker.config import Config, in_roster
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
-from ludics.fleetworker.lease import LEASE_MUTATION
+from ludics.fleetworker.lease import ASSIGN_STEP_ENV, LEASE_LOST_STATUS, LEASE_MUTATION, lease_mutation
 from ludics.fleetworker.preflight import knob, refresh_box
 from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED, ASSIGN_STATUS_ARG, PENDING_TTL
 from ludics.fleetworker.transport import (
@@ -157,7 +157,6 @@ from ludics.fleetworker.transport import (
 )
 
 REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registry.py")
-ASSIGN_STEP_ENV = "LUDICS_EXECUTION_ASSIGN_STEP"
 
 # The far side's interpreter: the first that reports >= 3.12, in scripts/py's order
 # (farside.FLEET_PYTHON, which the preflight's probe of a box shares).
@@ -1301,7 +1300,7 @@ USAGE = (
     " [--wait-pending <s>] <box> <json-file>,"
     " conclude --from-run|--from-bg-run <run-dir> --request <id>, conclude --standing-handback --request <id> ...,"
     " tip-run <json-file> [--tip <branch>] [--base <branch>] --checkout <dir> -- <command>, tip-run --wait <id>,"
-    " assign <base.json> <requests file|-> [--request <id>]... [--message <file>] [--unstick <box> <name>],"
+    " assign <base.json> <requests file|-> [--request <id>]... [--message <file>] [--unstick <box> <name>] [--status <file>],"
     " or windows-witness <base.json> <message file|-> --site <site.json> --transcript <path> --script <file>"
 )
 CONCLUDE_USAGE = "execution conclude <json-file> [--observed-from <checkout>]"
@@ -1980,7 +1979,9 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             return refusal_status
         map_spec = found
     token = my_token(cfg)
-    head = prelude(cfg, cfg.anchor) + (LEASE_MUTATION if action != "list" else "shift 3\n")
+    # A step of assign says a lost lease apart from its other refusals (lease.py, THE LOST LEASE STATUS).
+    mutation = lease_mutation(LEASE_LOST_STATUS) if assignment_step else LEASE_MUTATION
+    head = prelude(cfg, cfg.anchor) + (mutation if action != "list" else "shift 3\n")
     script = head + registry_command(source, payload)
     argv = [
         "EXECUTION", token, cfg.lock_wait, action, coordinator_id(cfg), token, PAYLOAD_ON_FD,

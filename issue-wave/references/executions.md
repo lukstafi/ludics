@@ -1227,7 +1227,8 @@ Start a new tracked `attach` waiter and record the unstick/runner evidence on th
 
 Dispatch preceding the unstick is a point-in-time gate just as it precedes an ssh runner call.
 If the unstick fails or its outcome is unclear (`ASSIGN UNSTICK FAILED`, exit 4), retain ownership
-and reconcile whether anything started; never blindly dispatch or unstick twice. The kept
+and reconcile whether anything started; never blindly dispatch or unstick twice. Exit 6
+(`ASSIGN LEASE LOST`) means the lease is another coordinator's: stop; its holder reconciles. The kept
 `--message` file is what a resend sends, and a second `assign` dispatches nothing it already
 dispatched. When the result turn ends, verify actual runner
 termination and conclude with its evidence before resuming ordinary implementation/review. An

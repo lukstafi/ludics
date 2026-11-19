@@ -82,10 +82,12 @@ surely: its retry is the one counted). ``board tally`` counts what it is given, 
 
 The board is best effort (boardstore.py's header): a tally that fails, or finds no row, is one
 ``BOARD TALLY WARNING`` or ``BOARD TALLY NOTE`` line on stderr, and the unstick's exit is its own;
-``wave drive`` carries such a line into the note of every answer whose unstick it called or
-``execution assign`` called for it (``said``): the ``answered`` notes, and the attention lines of a
-partly assigned turn (wavedrive.py's *request* answer names them), so a lost count is never silent;
-an unstick that exits non-zero prints no such line, so the answers that resumed nobody carry none.
+``wave drive`` carries such a line into the note of every answer whose unstick it called (``said``,
+over that unstick's own stderr) or ``execution assign`` called for it (``said_lines`` over the
+unstick's own stderr alone, which assign's ``--status`` file carries: never a step's line): the
+``answered`` notes, and the attention lines of a partly assigned turn (wavedrive.py's *request*
+answer names them), so a lost count is never silent; an unstick that exits non-zero prints no such
+line, so the answers that resumed nobody carry none.
 A lost acknowledgement and a retry may count twice: reconcile with ``board show``, never by sending
 a worker a message again.
 """
@@ -197,10 +199,19 @@ def after_replace(cfg: Config, box: str, name: str, stamp: str) -> None:
             f" exit {rc}); reconcile with board show")
 
 
+def said_lines(stderr: str) -> list[str]:
+    """The tally's WARNING and NOTE lines an unstick printed on its stderr, in order."""
+    return [line.strip() for line in stderr.splitlines() if line.strip().startswith(SAID)]
+
+
+def suffix(lines: list[str]) -> str:
+    """``wave drive``'s note suffix of tally lines, or ""."""
+    return "".join(f"; {line}" for line in lines)
+
+
 def said(stderr: str) -> str:
     """``wave drive``'s note suffix: the tally's WARNING and NOTE lines an unstick printed, or ""."""
-    lines = [line.strip() for line in stderr.splitlines() if line.strip().startswith(SAID)]
-    return "".join(f"; {line}" for line in lines)
+    return suffix(said_lines(stderr))
 
 
 def cmd_tally(cfg: Config, args: list[str]) -> int:

@@ -58,7 +58,7 @@ from ludics.fleetworker import boardstore
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
-from ludics.fleetworker.lease import LEASE_MUTATION
+from ludics.fleetworker.lease import LEASE_LOST_STATUS, lease_mutation
 from ludics.fleetworker.takeover import DONE_STATES, LIVE_STATES, board_document, cmd_takeover, phase_of, row_state, state_word
 from ludics.fleetworker.transport import Done, PAYLOAD_ON_FD, err, prelude, run_on, shipped_python
 
@@ -183,10 +183,11 @@ def cmd_check(cfg: Config, args: list[str]) -> int:
     return 3 if left else 0
 
 
-def mutate(cfg: Config, action: str, raw: str, *, stdout_to_stderr: bool = False) -> Done:
-    """One board mutation, checked and performed under the shared coordinator lease protocol."""
+def mutate(cfg: Config, action: str, raw: str, *, stdout_to_stderr: bool = False, lost: int = 1) -> Done:
+    """One board mutation, checked and performed under the shared coordinator lease protocol; a lease
+    that is not this coordinator's exits ``lost`` (lease.py, THE LOST LEASE STATUS)."""
     check_identity(cfg)
-    script = prelude(cfg, cfg.anchor) + LEASE_MUTATION + store_command(raw)
+    script = prelude(cfg, cfg.anchor) + lease_mutation(lost) + store_command(raw)
     return run_on(cfg, cfg.anchor, script,
                   ["BOARD", my_token(cfg), cfg.lock_wait, action, coordinator_id(cfg), PAYLOAD_ON_FD],
                   stdout_to_stderr=stdout_to_stderr)
@@ -223,9 +224,10 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
 
 
 def record_placement(cfg: Config, wave: str, worker: str, host: str, checkout: str) -> int:
-    """Assign's idempotent placement union, performed inside the board writer's lease lock."""
+    """Assign's idempotent placement union, performed inside the board writer's lease lock: 0, 1
+    refused, ``LEASE_LOST_STATUS`` the lease is not this coordinator's, 4 the anchor did not answer."""
     raw = json.dumps({"wave": wave, "worker": worker, "host": host, "checkout": checkout})
-    done = mutate(cfg, "placement", raw, stdout_to_stderr=True)
+    done = mutate(cfg, "placement", raw, stdout_to_stderr=True, lost=LEASE_LOST_STATUS)
     return 4 if done.unreachable else done.rc
 
 

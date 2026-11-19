@@ -2527,6 +2527,9 @@ class DriveCase(WaveDirCase):
         self.unread = 0
         self.statuses: list[str] = []  # status lines answered first, one a read, before the scripted one
         self.status_reads = 0
+        # execution assign's --status file (assign.py, THE STATUS): these fields over one derived from its
+        # rc and stdout; None writes no file.
+        self.assign_status: dict[str, Any] | None = {}
 
     def execute(self, argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
         tool, args = os.path.basename(argv[0]), list(argv[1:])
@@ -2551,6 +2554,11 @@ class DriveCase(WaveDirCase):
             return rc, self.runs + "\n", ""
         if key == "bg-run.sh wait":
             return rc, self.out.get(key, "rc=0\n"), ""
+        if key == "execution assign" and "--status" in args and self.assign_status is not None:
+            printed = bool(self.out.get(key, "").strip())
+            unstick = "landed" if printed and rc in (0, 1, 5) else "failed" if printed else "nothing-assigned"
+            with open(args[args.index("--status") + 1], "w", encoding="utf-8") as f:
+                json.dump({"exit": rc, "unstick": unstick, "tally": [], "lease_lost": ""} | self.assign_status, f)
         return rc, self.out.get(key, ""), self.out.get(key + " stderr", "")
 
     def status_line(self, state: str = "", results: int | str | None = None) -> str:
@@ -2651,7 +2659,8 @@ class Drive(DriveCase):
             msg = f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.md"
             self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"],
                                           ["execution", "assign", f"{self.wavedir}/reserve/t42-base.json", msg, "--message",
-                                           f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.assigned.md", "--unstick", "far", "w1-42"]])
+                                           f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.assigned.md", "--unstick", "far", "w1-42",
+                                           "--status", f"{self.wavedir}/msgs/t42.w1-42.0199-a.0.assign-status.json"]])
             with open(msg) as f:
                 self.assertEqual(f.read(), self.message)
             self.assertIn("DRIVE t42 turn 0: request answered: assigned and resumed", out)
@@ -2715,10 +2724,33 @@ class Drive(DriveCase):
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
             self.assertIn("refused some of the turn's blocks", out)
-            self.resumes, self.out = 3, {"execution assign stderr": refusal + "\n"}
-            rc, out = self.once()
-            self.assertEqual(rc, 1)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's", out)
+
+    def test_assigns_lost_lease_is_its_status_and_never_its_words(self) -> None:
+        """ludics#1234: assign's stderr relays its steps' lines, so the driver stops on its LEASE_LOST_STATUS
+        alone: a failure whose diagnostic carries the refusal's words is a refusal, and a reworded refusal
+        under that status still stops it."""
+        refusal = "EXECUTION REFUSED fleet: coordinator lease held by session-other -- not you (adopted since your gate?)"
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        with self.world():
+            for turn, rc in enumerate((1, 4, 5)):
+                self.resumes, self.rc["execution assign"] = turn, rc
+                self.out = {"execution assign stderr": f"step said: {refusal}\n{refusal}\nASSIGN REFUSED a: the run exited 1 (above)\n"}
+                got, out = self.once()
+                with self.subTest(rc=rc):
+                    self.assertEqual(got, 0, out)
+                    self.assertNotIn("DRIVE STOPPED", out)
+                    self.assertIn("request retry: execution assign refused a block" if rc == 1 else f"DRIVE ATTENTION t42 turn {turn}:", out)
+            self.resumes, self.rc["execution assign"] = 3, wavedrive.LEASE_LOST_STATUS
+            self.out = {"execution assign stderr": "the anchor says this coordinator no longer leads the fleet\n"}
+            self.assign_status = {"lease_lost": "the run of a"}
+            got, out = self.once()
+            self.assertEqual(got, 1, out)
+            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (execution assign exit 6: the lease refused the run of a)", out)
+            # No readable status: the exit alone still stops it.
+            self.assign_status = None
+            got, out = self.once()
+            self.assertEqual(got, 1, out)
+            self.assertIn("(execution assign exit 6: the lease refused one of its calls)", out)
 
     def test_the_coordinator_is_told_before_a_turn_is_made_final(self) -> None:
         self.message = "NEEDS_DESIGN x\n"
@@ -2805,8 +2837,10 @@ class Drive(DriveCase):
         driver keeps out of the ledger on success; a tally's NOTE or WARNING line rides into the note instead."""
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
         self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
+        # The tally lines are the unstick's own, which assign's status carries (ludics#1234); its stderr is not read for them.
         self.out["execution assign stderr"] = ("ASSIGN ASSIGNED x\nBOARD TALLY w: \"t42\" routine_answers=1\n"
                                                "BOARD TALLY WARNING far/w1-42: not counted (board exit 1)\n")
+        self.assign_status = {"tally": ["BOARD TALLY WARNING far/w1-42: not counted (board exit 1)"]}
         with self.world():
             out = self.once()[1]
             self.assertIn("request answered: assigned and resumed with", out)
@@ -2838,12 +2872,13 @@ class Drive(DriveCase):
                    ("partly needing action", 5, "ASSIGN REFUSED a: the run exited 5 (above); nothing assigned\n",
                     "execution assign refused some of the turn's blocks and resumed the worker with the rest"),
                    ("an UNKNOWN beside an assignment", 4, "ASSIGN UNKNOWN a: dispatched, but no resolved_revision\n",
-                    "execution assign exit 4: read its lines before anything else")]
+                    "execution assign exit 4: read its lines before anything else; its unstick landed: the worker was resumed with")]
         with self.world():
             for turn, (what, rc, lines, why) in enumerate(resumed):
                 self.resumes, self.rc["execution assign"] = turn, rc
                 self.out["execution assign"] = "EXECUTION_ASSIGNED b\ncommand: true\n"
                 self.out["execution assign stderr"] = f"{lines}BOARD TALLY NOTE: no row of worker \"w1-42\"\n{warning}\n"
+                self.assign_status = {"unstick": "landed", "tally": ['BOARD TALLY NOTE: no row of worker "w1-42"', warning]}
                 out = self.once()[1]
                 with self.subTest(what):  # each path on its own, so the base fails every one, not only the first
                     self.assertIn(f"DRIVE ATTENTION t42 turn {turn}: {why}", out)
@@ -2851,6 +2886,7 @@ class Drive(DriveCase):
                     self.assertTrue(self.attention()[-1].endswith(f"; {warning}"), self.attention()[-1])
             # No message printed: assign's unstick never ran, so a stray tally line on its stderr is not this turn's.
             self.out["execution assign"] = ""
+            self.assign_status = {}
             for turn, (what, rc) in enumerate([("exit 5 with no message", 5), ("exit 4 with no message", 4),
                                                 ("every block ALREADY, no saved message", 0)], start=len(resumed)):
                 self.resumes, self.rc["execution assign"] = turn, rc
@@ -2861,6 +2897,57 @@ class Drive(DriveCase):
                     self.assertNotIn("BOARD TALLY", out)
         self.assertEqual(self.ledger(), [(t, "request", "attention") for t in range(len(resumed) + 3)])
         self.assertEqual(sum("BOARD TALLY" in why for why in self.attention()), len(resumed))
+
+    def test_a_steps_echoed_tally_line_adds_no_warning_and_a_missing_status_says_its_count_is_unread(self) -> None:
+        """ludics#1234: the tally lines are the status's, the unstick's own; a step's echoed BOARD TALLY WARNING on assign's
+        stderr is not one, and an answer whose status cannot be read says so rather than nothing."""
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        self.out["execution assign"] = "EXECUTION_ASSIGNED x\ncommand: true\n"
+        self.out["execution assign stderr"] = ("ASSIGN ASSIGNED x\n"
+                                               "BOARD TALLY WARNING far/w1-42: echoed by the step's own test output\n")
+        with self.world():
+            out = self.once()[1]
+            self.assertIn("request answered: assigned and resumed with", out)
+            self.assertNotIn("BOARD TALLY", out)
+            self.resumes, self.rc["execution assign"] = 1, 1
+            out = self.once()[1]
+            self.assertIn("resumed the worker with the rest", out)
+            self.assertNotIn("BOARD TALLY", out)
+            # A status of another call (its exit is not this one's) is no status, nor is a malformed one.
+            for turn, bad in enumerate(({"exit": 0}, {"unstick": "resumed"}, {"tally": ["two\nlines"]}, {"extra": 1}), start=2):
+                self.resumes, self.rc["execution assign"], self.assign_status = turn, 1, bad
+                out = self.once()[1]
+                with self.subTest(bad=bad):
+                    self.assertIn("; no readable assign status (", out)
+                    self.assertNotIn("BOARD TALLY", out)
+        self.assertEqual(sum("BOARD TALLY" in why for why in self.attention()), 0)
+
+    def test_exit_4_says_resumed_exactly_when_assigns_unstick_landed(self) -> None:
+        """ludics#1234 (wave-20261118-ludics p2's second finding): an exit 4 beside a message is an UNKNOWN beside a landed
+        unstick, ASSIGN UNSTICK FAILED or a message that could not be written; only the first resumed the worker."""
+        self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
+        self.rc["execution assign"] = 4
+        self.out["execution assign"] = "EXECUTION_ASSIGNED b\ncommand: true\n"
+        cases: list[tuple[str, dict[str, Any] | None]] = [
+            ("landed", {"unstick": "landed"}), ("failed", {"unstick": "failed"}),
+            ("message-unwritten", {"unstick": "message-unwritten"}), ("unreadable", None),
+            ("nothing-assigned", {"unstick": "nothing-assigned"}),
+            # No message printed and no readable status: assign never reached its unstick, so there is nothing to resend.
+            ("nothing-assigned", None)]
+        with self.world():
+            for turn, (outcome, status) in enumerate(cases):
+                self.resumes, self.assign_status = turn, status
+                if outcome == "nothing-assigned":
+                    self.out["execution assign"] = ""
+                out = self.once()[1]
+                with self.subTest(outcome):
+                    self.assertIn(f"DRIVE ATTENTION t42 turn {turn}: execution assign exit 4: read its lines before anything else", out)
+                    self.assertEqual("resumed" in out, outcome == "landed", out)
+                    if outcome in ("failed", "unreadable"):  # it may have reached the worker: reconcile, never resend blind
+                        self.assertIn(f"no unstick of assign's is known to have landed ({outcome}): reconcile the worker's state", out)
+                    elif outcome != "landed":
+                        self.assertIn(f"no unstick of assign's ran ({outcome}): the worker was not sent its assignments", out)
+        self.assertEqual(self.ledger(), [(t, "request", "attention") for t in range(len(cases))])
 
     def test_a_refused_assignment_is_tried_again_then_handed_up_and_exit_4_at_once(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
@@ -3140,12 +3227,13 @@ class Drive(DriveCase):
 
     def test_a_lost_lease_ends_the_driver_and_a_stop_file_or_a_second_driver_too(self) -> None:
         self.message = "EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\n"
-        self.rc["execution assign"] = 1
+        self.rc["execution assign"] = wavedrive.LEASE_LOST_STATUS
         self.out["execution assign stderr"] = "EXECUTION REFUSED fleet: coordinator lease held by session-other\n"
+        self.assign_status = {"lease_lost": "the run of x"}
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 1)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (EXECUTION REFUSED fleet: coordinator lease held by session-other)", out)
+            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (execution assign exit 6: the lease refused the run of x)", out)
             self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "a takeover is no turn's verdict")
             self.rc, self.out = {}, {"execution assign": "EXECUTION_ASSIGNED x\n"}
             naps: list[float] = []
@@ -3200,7 +3288,8 @@ class DriveClaude(DriveCase):
             self.assertEqual(rc, 0, out)
             self.assertEqual(self.calls, [["log", "far", "w1-42", "--last-result"],
                                           ["execution", "assign", f"{self.wavedir}/reserve/t42-base.json", f"{self.wavedir}/msgs/t42.w1-42.0199-a.1.md",
-                                           "--message", f"{self.wavedir}/msgs/t42.w1-42.0199-a.1.assigned.md", "--unstick", "far", "w1-42"]])
+                                           "--message", f"{self.wavedir}/msgs/t42.w1-42.0199-a.1.assigned.md", "--unstick", "far", "w1-42",
+                                           "--status", f"{self.wavedir}/msgs/t42.w1-42.0199-a.1.assign-status.json"]])
             self.assertIn("DRIVE t42 turn 1: request answered", out)
             self.assertEqual(self.status_reads, 2, "the status is read again around the message")
             self.assertEqual((self.once()[1], self.calls), ("", []), "an idle worker whose turn was answered is not read again")
