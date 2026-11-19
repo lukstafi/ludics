@@ -493,7 +493,9 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
     for n, block in enumerate(read, 1):
         problem = block_problem(block)
         if problem:
-            die(f"execution assign: block {n} {problem}; nothing assigned")
+            name = cast(dict[str, Any], block).get("request_id") if isinstance(block, dict) else None
+            label = f" ({name})" if isinstance(name, str) and execution.shown(name) == name else ""
+            die(f"execution assign: block {n}{label} {problem}; nothing assigned")
         blocks.append(cast(dict[str, Any], block))
     ids = [block["request_id"] for block in blocks]
     twice = sorted({i for i in ids if ids.count(i) > 1})
