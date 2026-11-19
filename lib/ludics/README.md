@@ -577,6 +577,14 @@ is confirmed over REST. The merge harness changes a bare remote during the build
 actual candidate parents. Its C implementation and header compile in separate candidates, and
 the refreshed build refuses their combined tree when the compiler reports conflicting types.
 
+Agent notes (wave-20261119-ludics, t1242; refs #1242): `Merge.checkpoint_gate` reads the PR's
+issue comments once, at the top of `merge_call`, for the gated head; `prreview/checkpoint.py`
+owns the posted form (heading, footer suffix, verdict grammar) and `wave review` imports it, so a
+change to what the checkpoint posts changes what `merge` reads in the same file. Every merge
+fixture answers `issues/7/comments?per_page=100` (an empty list is "no checkpoint"); a fixture
+that does not is a bail or exit 3, never a pass. A heading names only a sha8, so a fixture whose
+head is not hex can never clear a hold.
+
 Agent notes (wave-20261117-ludics, t1188; refs #1188): merge-build artifacts live beside the JSONL
 receipts in ship-pr state, independent of wave state. One directory per PR/head retains build and
 base log/status files on pass and refusal; retries overwrite, old heads need manual removal.
