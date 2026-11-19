@@ -1578,6 +1578,8 @@ The build gate's own nonzero exits are the table under the gate above. Two of th
 and 7 (a run cancelled with no red, rerun once and cancelled again). Neither is a moment to re-arm
 the same wait: read the run the refusal names first.
 
+A wave's review checkpoint holds the merge too: when the PR's newest at-open checkpoint verdict is blocking, `merge` refuses (exit 1) until a confirm posted after it clears the head being merged, and `--over-checkpoint '<why>'` goes over that hold only by posting the reason on the PR.
+
 ### After it lands
 
 Then clean up, but not with `gh pr merge --delete-branch`: from a worktree its cleanup fails *after*
