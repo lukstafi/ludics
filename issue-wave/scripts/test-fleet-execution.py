@@ -795,8 +795,8 @@ def measurement_window():
         (root / 'executions' / 'iterate-b.json').write_text(
             json.dumps({**before['iterate-b'], 'lease_token': tokens_before['iterate-b']}))
         out, err = window({**request('window-1', kind='measurement'), 'evidence': 'invoking the runner'})
-        answered = {k: v for k, v in json.loads(out).items() if k != 'lease_token'}  # the window's own answer has it
-        assert answered == records()['window-1'] and 'suspended iterate-a, iterate-b, iterate-c' in err, err
+        # Lease-free as the listing is, so the two are equal as printed (ludics#1232).
+        assert json.loads(out) == records()['window-1'] and 'suspended iterate-a, iterate-b, iterate-c' in err, err
         assert records()['iterate-b']['state'] == 'suspended'
         assert [e['action'] for e in records()['window-1']['history']] == ['reserve', 'dispatch']
         assert partial['suspended_from'] == records()['iterate-b']['suspended_from']

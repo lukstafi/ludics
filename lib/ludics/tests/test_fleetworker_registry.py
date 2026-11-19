@@ -175,10 +175,41 @@ class Registry(RegistryCase):
             with self.subTest(action=action, payload=payload):
                 rc, out, err = registry_call(self.root, action, payload, token)
                 self.assertEqual(rc, 0, err)
-                self.assertNotIn(token, out)
+                self.assertFalse(token in out, f"{action} printed the lease token")  # not the whole listing
                 listed = json.loads(out)
                 self.assertEqual(sorted(r["request_id"] for r in listed), ids)
                 self.assertTrue(all("lease_token" not in r and ("history" in r) != compact for r in listed), listed)
+
+    def test_no_action_answer_prints_the_lease_token(self) -> None:
+        # THE LEASE TOKEN (ludics#1232): every action's answer drops it, a retry's included, while the
+        # record on file keeps it. One box, one slot: each record is concluded before the next is taken.
+        token = "SEKRIT-1232-lease-token"
+        sha, new = "a" * 40, "c" * 40
+        not_launched = {"verdict": "not-launched", "log": "/l", "evidence": "never launched"}
+        window: dict[str, object] = {"box": "mac", "request": request("w", kind="measurement"), "deadline": 60}
+        steps: tuple[tuple[str, dict[str, object]], ...] = (
+            ("reserve", request("r")), ("reserve", request("r")),
+            ("dispatch", {"request_id": "r", "evidence": "go"}),
+            ("record", {"request_id": "r", "state": "running", "evidence": "batch"}),
+            ("reconcile", {"request_id": "r", "state": "reserved", "evidence": "nothing ran"}),
+            ("conclude", {"request_id": "r", **not_launched}), ("conclude", {"request_id": "r", **not_launched}),
+            ("run", request("e", requested_revision=sha)),
+            ("rebind", {"request_id": "e", "evidence": "rebased", "rebound_revision": new}),
+            ("rebind", {"request_id": "e", "evidence": "rebased", "rebound_revision": new}),
+            ("conclude", {"request_id": "e", **not_launched}),
+            ("window", window), ("hold-open", {"request_id": "w", "execution_host": "mac", "evidence": "drained"}),
+            ("hold-open", {"request_id": "w", "execution_host": "mac", "evidence": "drained"}),
+            ("conclude", {"request_id": "w", **not_launched}), ("window", window))
+        for index, (action, payload) in enumerate(steps):
+            with self.subTest(step=index, action=action):
+                rc, out, err = registry_call(self.root, action, payload, token)
+                self.assertEqual(rc, 0, err)
+                self.assertFalse(token in out, f"{action}'s answer printed the lease token")  # not the whole record
+                answered = json.loads(out)
+                self.assertEqual(answered["request_id"], payload.get("request_id", "w"))
+                self.assertFalse("lease_token" in answered, f"{action}'s answer has a lease_token")
+                with open(os.path.join(self.root, "executions", f"{answered['request_id']}.json"), encoding="utf-8") as f:
+                    self.assertEqual(json.load(f)["lease_token"], token, "the record on file keeps it")
 
     def test_list_host_selects_one_box_an_alias_its_roster_entry(self) -> None:
         roster, endpoints = "mac rog-nv-linux", "rog rog-nv-linux rog-nv-wsl\n"
@@ -1291,8 +1322,15 @@ class WindowDeadline(RegistryCase):
         self.call("conclude", {"request_id": "w", "verdict": "not-launched", "log": "/dev/null", "evidence": "unit"})
         self.assertEqual(self.opening()[0], 1)
 
+    def on_file(self, identity: str = "w") -> Any:
+        """The record as written, lease token and all: an answer is lease-free (THE LEASE TOKEN), so a
+        test that plants a record builds it from the file, never from the answer."""
+        with open(os.path.join(self.root, "executions", f"{identity}.json"), encoding="utf-8") as stream:
+            return json.load(stream)
+
     def test_historical_windows_without_a_hold_opening_still_validate(self) -> None:
-        _, record, _ = self.window(extra={"deadline": 60})
+        self.assertEqual(self.window(extra={"deadline": 60})[0], 0)
+        record = self.on_file()
         del record["hold_opened_at"]
         del record["hold_deadline_at"]
         record["deadline_at"] = (datetime.fromisoformat(record["created_at"]) + timedelta(seconds=60)).isoformat()
@@ -1315,7 +1353,8 @@ class WindowDeadline(RegistryCase):
                                  datetime.fromisoformat(record["created_at"]) + timedelta(seconds=record["deadline"]))
 
     def test_hold_timing_fields_are_validated_as_one_pair(self) -> None:
-        _, good, _ = self.window(extra={"deadline": 60})
+        self.assertEqual(self.window(extra={"deadline": 60})[0], 0)
+        good = self.on_file()
         path = os.path.join(self.root, "executions", "w.json")
         for key, value in (("hold_deadline_at", "soon"), ("hold_opened_at", "soon")):
             for corrupt in ({**good, key: value}, {k: v for k, v in good.items() if k != key}):
