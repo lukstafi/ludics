@@ -108,14 +108,18 @@ other first word and on a `status` key, and writes both. The takeover keys are `
 `none`), `farside` (`<box>:<path>` far-side worktrees), `plan_dir` and `state`. Their grammars
 and the state words are `lib/ludics/fleetworker/takeover.py`'s. The writers check the lease
 themselves; check it before interventions. A board write that fails may or may not have landed: re-read with `board show`
-before retrying it.
+before retrying it (a retried second `state=launched` counts one more relaunch).
 
 When a worker died with its process (a coordinator restart kills every in-process worker), its
 replacement's brief is `fleet-worker.sh board takeover <wave> <task>`: the stored brief, then a
 generated *State at takeover* from those keys and the live sources (worktree HEAD, the PR, the
 registry's outstanding requests for the worker, its bg-run verdicts), each missing key printed as
 missing. Exit 3 means the brief itself could not be read, so the output is no brief. It reads and
-writes nothing else: establishing that the old writer is gone stays the step below.
+writes nothing else: establishing that the old writer is gone stays the step below. The
+replacement's spawn writes its `transport=`, `agent=` and `state=launched` on the same row in one
+`board set` (a native finisher of a CLI worker changes the transport), and that second
+`state=launched` counts the finisher in the row's `relaunches` (ludics#1236), as it counts any
+native respawn; so write `state=launched` once per spawn, and a resumed worker's row its phase's word.
 
 Use the runtime's messages and bounded waits, retaining real identities. Follow up in the same
 agent when work is unfinished and observe the response. A returned turn is read by its final

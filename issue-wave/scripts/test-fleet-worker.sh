@@ -2288,6 +2288,22 @@ got=$("$FW" board show tally --json | jq -r '[.log[].text] | join("|")')
 [ "$got" = 't-wt interventions=1: "Now the next step."|t-wt interventions=2: unstick --kill ("REVIEW_POSTED 7 0123456789abcdef0123456789abcdef01234567")' ] &&
   ok "...and each intervention its log line" || ko "log: $got"
 settle wt
+# ludics#1236: a launch --replace that replaced the worker's record counts one relaunch on its row
+# (tally.py's THE RELAUNCH DECISION); the first launch above counted none, nor does a --replace that
+# found no record to replace.
+[ "$("$FW" board show tally --json | jq -r '.tasks[0].fields.relaunches')" = 0 ] &&
+  ok "a first launch counts no relaunch" || ko "relaunches: $("$FW" board show tally --json | jq -c '.tasks[0].fields')"
+expect "a launch --replace counts one relaunch on the worker's row" 0 '^BOARD TALLY tally: "t-wt" relaunches=1$' -- \
+  "$FW" launch testbox wt --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" --replace
+settle wt
+got=$("$FW" board show tally --json | jq -r '.tasks[0].fields | "\(.relaunches) \(.interventions)"')
+[ "$got" = "1 2" ] && ok "...apart from its interventions" || ko "counts: $got"
+"$FW" board set --new-row tally t-wn worker=wn agent_host=testbox state=launched >/dev/null
+out=$("$FW" launch testbox wn --target-repo example/project --kind claude --brief "$brief" --cwd "$proj" --replace 2>&1)
+grep -q '^LAUNCHED testbox/wn ' <<<"$out" && ! grep -q 'BOARD TALLY' <<<"$out" &&
+  [ "$("$FW" board show tally --json | jq -r '.tasks[1].fields.relaunches')" = 0 ] &&
+  ok "...and a --replace that replaced no record is a first launch, counted nowhere" || ko "first --replace: $out"
+settle wn
 # A message still queued when the process is killed is fed to the resumed one, before the new one.
 "$FW" launch testbox wr --target-repo example/project --kind claude --brief "$TMP/bg4.md" --cwd "$proj" >/dev/null
 for i in $(seq 1 20); do grep -q '"background_tasks_changed","tasks":\[{' "$ISSUE_WAVE_STATE/workers/wr/stream.jsonl" 2>/dev/null && break; sleep 0.25; done
@@ -2744,7 +2760,7 @@ want=$(printf '%s\n' "ll#1" "$hostile" "$hostile" "$hostile" "$hostile" "#12 (dr
 [ ! -e "$TMP/pwned" ] && ok "...and nothing in it ran" || ko "a value was run as a command"
 [ "$(jq -r '.log[0].by' "$TMP/board.json")" = test-coordinator ] && ok "a log line names its coordinator" || ko "log by: $(jq -c '.log[0]' "$TMP/board.json")"
 expect "show renders the markdown view, the pipe escaped" 0 '^| ll#1 | a\\|b (c) #d /e `f` ' -- "$FW" board show bw
-grep -q '^| task | state | pr | interventions | routine_answers |$' <<<"$out" && grep -q '^## Log$' <<<"$out" && ok "...with the table header and the log" || ko "view: $out"
+grep -q '^| task | state | pr | interventions | routine_answers | relaunches |$' <<<"$out" && grep -q '^## Log$' <<<"$out" && ok "...with the table header and the log" || ko "view: $out"
 expect "another coordinator reads the board without the lease" 0 "^# Board: bw$" -- "${B[@]}" board show bw
 expect "...and without any identity" 0 "^# Board: bw$" -- env -u FLEET_COORDINATOR "$FW" board show bw
 expect "...but cannot write it" 1 "BOARD REFUSED fleet: coordinator lease held by" -- "${B[@]}" board log bw "not mine"
@@ -2803,6 +2819,8 @@ setup_step "could not set ls-1's launched_at (setup)" "$FW" board set ls ls-1 la
 setup_step "could not relaunch the ls-1 row (setup)" "$FW" board set ls ls-1 "state=launched again"
 [ "$(jq -r '.tasks[0].fields.launched_at' "$ISSUE_WAVE_STATE/boards/ls.json")" = 2000-01-01T00:00:00Z ] &&
   ok "...and a relaunch keeps the stamp the row has" || ko "ls board after relaunch: $(cat "$ISSUE_WAVE_STATE/boards/ls.json")"
+[ "$(jq -r '.tasks[0].fields.relaunches' "$ISSUE_WAVE_STATE/boards/ls.json")" = 0 ] &&
+  ok "...counted on a CLI row only by the launch --replace that made it (ludics#1236)" || ko "ls board: $(cat "$ISSUE_WAVE_STATE/boards/ls.json")"
 # status --json (ludics#1165): the observers' read through the shim, with no lease and no identity --
 # every board, each row's phase derived as check reads it, the lease's host and never its token.
 expect "status --json reads every board without the lease or any identity" 0 '^{"version": 1, ' -- \
@@ -2872,6 +2890,16 @@ expect "takeover of a task the board does not hold is refused" 1 '^BOARD REFUSED
 expect "...as is one of a wave with no board" 1 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board takeover none tk-1
 expect "takeover takes a wave and a task" 2 "board takeover: expected <wave> <task>" -- "$FW" board takeover bw
 expect "takeover against an anchor that does not answer is unreachable" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board takeover bw tk-1
+# ludics#1236: a finisher spawned from the takeover brief counts one relaunch on the task's row, by its
+# spawn's second state=launched (boardstore.py's THE RELAUNCH COUNT); the takeover, a read, counts nothing.
+setup_step "could not launch tk-1 natively (setup)" "$FW" board set bw tk-1 transport=subagent agent=a1 state=launched
+"$FW" board takeover bw tk-1 >/dev/null 2>&1; "$FW" board takeover bw tk-1 >/dev/null 2>&1
+[ "$("$FW" board show bw --json | jq -r '.tasks[] | select(.task == "tk-1") | .fields.relaunches')" = 0 ] &&
+  ok "a first launch and two takeover reads count no relaunch" || ko "tk-1: $("$FW" board show bw --json | jq -c '.tasks[] | select(.task == "tk-1")')"
+expect "...and the finisher's spawn counts one" 0 '^BOARD TALLY bw: "tk-1" relaunches=1$' -- "$FW" board set bw tk-1 agent=a2 "state=launched; finisher"
+tkstamp=$("$FW" board show bw --json | jq -r '.tasks[] | select(.task == "tk-1") | .fields.launched_at')
+[ "$(jq -r '.log[-1].text' "$ISSUE_WAVE_STATE/boards/bw.json")" = "tk-1 relaunches=1: state=\"launched; finisher\" on a row launched at $tkstamp" ] &&
+  ok "...with its log line" || ko "log: $(jq -c '.log[-1]' "$ISSUE_WAVE_STATE/boards/bw.json")"
 expect "show against an anchor that does not answer is unreachable" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board show bw
 expect "...and so is a write" 4 "^BOARD UNREACHABLE far-anchor$" -- env FLEET_ANCHOR=far-anchor "$FW" board log bw x
 }

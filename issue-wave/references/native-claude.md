@@ -266,8 +266,10 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    `PEER_PLAN`, ... the closed list in `lib/ludics/fleetworker/tally.py`) counts in the row's
    `routine_answers`, anything else (an escalation's answer, a nudge, a forwarded finding) in its
    `interventions`, with one board log line. A CLI worker's `unstick` counts its own, so CLI and
-   native rows carry the same two fields. A tally that refuses or does not answer is re-read with
-   `board show` before it is tried again; the message is never sent again to repair a count.
+   native rows carry the same two fields. A respawn or finisher is no message: the board counts it
+   in `relaunches` at the second `state=launched` its spawn writes (ludics#1236), with no tally. A
+   tally that refuses or does not answer is re-read with `board show` before it is tried again; the
+   message is never sent again to repair a count.
 
 The same request and result lines work for a Codex native worker that prefers them; what
 differs is only that Codex may keep its turn open and wait.

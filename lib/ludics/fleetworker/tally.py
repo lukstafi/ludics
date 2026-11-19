@@ -1,16 +1,50 @@
 """``tally``: a task's coordinator turns on its board row, routine or not, the same for every
-transport (ludics#1214).
+transport (ludics#1214), and its relaunches beside them (ludics#1236).
 
 issue-wave SKILL.md's *Codex model choice* compares worker models by "review rounds, coordinator
 interventions and time to merge", and the boards could not count the middle one: a CLI worker's
 ``msgs/`` files counted every driver answer, a native worker's messages lived only in its
 coordinator's transcript, and resumes only in per-worker meta on the agent host. So each row
-carries two counters, written by the verbs that send a worker its messages, and never summed:
+carries three counters, written by the verbs that send a worker its messages or launch it again,
+and never summed:
 
   interventions     the coordinator turns that needed judgment
   routine_answers   the protocol's answers, which a rule gives
+  relaunches        the task's worker launched again: a relaunch or a finisher
 
-Two writers, one classifier (``classify``):
+THE RELAUNCH DECISION (the maintainer's, ludics#1236:
+https://github.com/lukstafi/ludics/issues/1236#issuecomment-7007592831): relaunches and finishers
+count, in ``relaunches=`` and never in ``interventions=``. A finisher is the heaviest way a
+coordinator steps in, and a comparison that omits it can rank well an arm whose workers needed
+replacing; mixed into the message count it would hide which kind of intervention an arm needed.
+Each counts once: a CLI ``launch --replace`` that replaced a worker's record; a native respawn, seen
+as a second ``state=launched`` on a row that already has ``launched_at``; and a finisher, the worker
+spawned from ``board takeover``'s brief, as a relaunch of the same task on that task's row (its
+spawn writes that second ``state=launched``). A first launch counts nothing. One writer per kind,
+so no relaunch is counted twice:
+
+  fleet-worker.sh launch <box> <worker> --replace ...   after a launch that exits 0 and replaced a
+                                                 record (the far side's archive of it under the
+                                                 launch's own stamp is there), ``after_replace``'s
+                                                 tally of the CLI row by worker and host
+  fleet-worker.sh board set <wave> <task> state=launched ...
+                                                 every other relaunch: the store's THE RELAUNCH
+                                                 COUNT (boardstore.py), which skips a set on the
+                                                 same CLI worker's row (its worker and agent_host
+                                                 unchanged), the launch's to count
+
+``board takeover`` itself writes nothing (takeover.py): it may be read, and read again, without a
+spawn. A CLI worker launched again under a new name, or on another box, counts where its row is
+set ``launched`` with that name or that ``agent_host``; a native finisher of a CLI worker, where
+its row is set ``launched`` with its own ``transport``. A ``launch --replace`` whose worker no row
+names (a name reused outside a wave) is a ``BOARD TALLY NOTE``, as an unstick's is. The boundary:
+the board sees a native relaunch only through the ``state=launched`` its spawn writes, so a spawn
+that writes none counts nothing and two such writes for one spawn count two (native-workers.md asks
+for one per spawn, and a retry of one whose acknowledgement was lost is one more: re-read with
+``board show`` first); a count is corrected by a set that names ``relaunches``, after a ``board
+show``.
+
+The turns: two writers, one classifier (``classify``):
 
   fleet-worker.sh unstick <box> <worker> ...     after an unstick that exits 0, its own tally of the
                                                  row (boardstore's ``tally`` by worker and host);
@@ -41,8 +75,8 @@ routine; the classifier judges the message's form, never its sender, so a protoc
 coordinator sends by hand (a PEER_PLAN relay to a CLI worker, a review answered while the driver is
 down) is routine for both transports alike.
 
-NOT COUNTED, deliberately: a launch, a relaunch or a finisher (``launch --replace``, a fresh agent),
-``close``, board edits, the driver's attention lines, a decision ``wave decide`` posts, a hand-back's
+NOT COUNTED as a turn, deliberately: a launch, a relaunch or a finisher (``relaunches`` counts the
+last two, above), ``close``, board edits, the driver's attention lines, a decision ``wave decide`` posts, a hand-back's
 closure, PR comments and CI reruns, and an unstick that exits non-zero (it reached no worker, or not
 surely: its retry is the one counted). ``board tally`` counts what it is given, once per call.
 
@@ -64,7 +98,7 @@ from ludics.fleetworker.board import mutate
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.takeover import DONE_STATES
-from ludics.fleetworker.transport import err, fleet_name, is_local
+from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run_on
 
 USAGE = "board tally <wave> <task> --message <file>"
 ROUTINE = ("REVIEW_POSTED", "MERGE CLEARED", "MERGE NOT CLEARED", "EXECUTION_ASSIGNED", "EXECUTION_CONCLUDED",
@@ -130,6 +164,36 @@ def after_unstick(cfg: Config, box: str, name: str, message: str, *, kill: bool,
         return
     if rc != 0:
         err(f"BOARD TALLY WARNING {host}/{name}: the unstick reached the worker, and its turn was not counted (board"
+            f" exit {rc}); reconcile with board show")
+
+
+# Whether the launch replaced a record: the far side's archive of it, ``$STATE/replaced/<name>-<stamp>``
+# under the launch's own stamp (farside.LAUNCH_START), is a directory. Exit 0 yes, NOT_REPLACED no
+# (nothing at all is there); any other status, a shell's or ssh's included, is unknown.
+NOT_REPLACED = 3
+REPLACED = f'[ -d "$STATE/replaced/$1" ] && exit 0; [ -e "$STATE/replaced/$1" ] || [ -L "$STATE/replaced/$1" ] || exit {NOT_REPLACED}; exit 2\n'
+
+
+def after_replace(cfg: Config, box: str, name: str, stamp: str) -> None:
+    """``launch --replace``'s own tally, after it exited 0 (THE RELAUNCH DECISION, the header): one
+    ``relaunches`` on the CLI row when the launch replaced a record, nothing when it found none to
+    replace (a first launch), all on stderr: never changes the launch's exit."""
+    host = fleet_name(cfg, box)
+    try:
+        seen = run_on(cfg, box, prelude(cfg, box) + REPLACED, [f"{name}-{stamp}"], capture=True)
+        if seen.rc == NOT_REPLACED:
+            return
+        if seen.rc != 0:
+            err(f"BOARD TALLY WARNING {host}/{name}: the launch exited 0, and whether it replaced a record"
+                f" could not be read (exit {seen.rc}), so its relaunch was not counted; reconcile with board show")
+            return
+        rc = tally(cfg, {"worker": name, "hosts": spellings(cfg, box), "done": list(DONE_STATES), "counter": "relaunches",
+                         "why": f"launch --replace {host}/{name}"}, stdout_to_stderr=True)
+    except (OSError, SystemExit) as exc:
+        err(f"BOARD TALLY WARNING {host}/{name}: the launch exited 0, and its relaunch was not counted ({exc})")
+        return
+    if rc != 0:
+        err(f"BOARD TALLY WARNING {host}/{name}: the launch replaced a record, and its relaunch was not counted (board"
             f" exit {rc}); reconcile with board show")
 
 
