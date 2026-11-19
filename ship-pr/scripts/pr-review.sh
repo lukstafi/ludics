@@ -203,7 +203,7 @@
 #                                          # `retry` one (ludics#1111; see prreview/rerun.py)
 #   pr-review.sh merge <pr> [--override "<why this red is unrelated>"] [--wait]
 #                           [--rerun-failed-once] [--allow-no-verdict] [--require-green]
-#                           [-C <clone>]
+#                           [--over-checkpoint "<why>"] [-C <clone>]
 #                                          # (the options may also stand before <pr>, as in
 #                                          # `merge -C <clone> <pr>`)
 #                                          # checks, then merge; refuses on an open review thread
@@ -214,6 +214,11 @@
 #                                          # merge queue, and on a deferred auto-merge (which it
 #                                          # disables again); and WARNS
 #                                          # loudly when the branch is far behind its base.
+#                                          # A wave's review checkpoint whose newest at-open
+#                                          # verdict blocks holds it (1) until a confirm
+#                                          # clears the head; --over-checkpoint posts its
+#                                          # reason on the PR and goes over the hold (#1242;
+#                                          # see prreview/checkpoint.py).
 #                                          # --override waives exactly the reds of the gate's
 #                                          # FIRST read (by check suite and name), never a check
 #                                          # with no verdict yet: that one is waited for under

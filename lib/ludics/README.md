@@ -67,6 +67,7 @@ prreview/state.py          status_state, status_line, approval_gate, gated_state
 prreview/poll.py           cmd_poll (poll, and every watch round)
 prreview/threads.py        the review-threads walk and the open-thread gate (resolve, status, merge)
 prreview/branchtip.py      whether a PR's head is its branch's tip (status, watch, merge; #960)
+prreview/checkpoint.py     the review checkpoint's posted form (wave review writes it) and its hold on merge (#1242)
 prreview/drift.py          warn_base_drift (merge, watch), and read_base_drift's Drift for the merge build
 prreview/commentonly.py    whether a change is to comments only (the merge build's comments lines, #861)
 prreview/mergebuild.py     merge's build of the would-be merge commit (.github/ship-pr-merge-build, #611) and its plan (#1218)
@@ -528,6 +529,12 @@ prreview/checks.py prreview/runners.py prreview/jobsteps.py
     ship-pr/scripts/test-pr-review-budget.sh
     ship-pr/scripts/test-pr-review-lib.sh
 
+prreview/checkpoint.py
+    ship-pr/scripts/test-pr-review-merge.sh
+    lib/ludics/tests/test_prreview_merge.py
+    issue-wave/scripts/test-fleet-worker.sh "wave kit"
+    lib/ludics/tests/test_fleetworker_wave.py
+
 prreview/merge.py prreview/closekw.py
     ship-pr/scripts/test-pr-review-merge.sh
     ship-pr/scripts/test-pr-review-base-drift.sh
@@ -569,6 +576,15 @@ override. A move before a gateway resend asks for a fresh invocation, and a conc
 is confirmed over REST. The merge harness changes a bare remote during the build and verifies the
 actual candidate parents. Its C implementation and header compile in separate candidates, and
 the refreshed build refuses their combined tree when the compiler reports conflicting types.
+
+Agent notes (wave-20261119-ludics, t1242; refs #1242): `Merge.checkpoint_gate` reads the PR's
+issue comments before every attempt in `merge_call`, ahead of the merge build's last ref check,
+for the gated head; `prreview/checkpoint.py`
+owns the posted form (heading, footer suffix, verdict grammar) and `wave review` imports it, so a
+change to what the checkpoint posts changes what `merge` reads in the same file. Every merge
+fixture answers `issues/7/comments?per_page=100` (an empty list is "no checkpoint"); a fixture
+that does not is a bail or exit 3, never a pass. A heading names only a sha8, so a fixture whose
+head is not hex can never clear a hold.
 
 Agent notes (wave-20261117-ludics, t1188; refs #1188): merge-build artifacts live beside the JSONL
 receipts in ship-pr state, independent of wave state. One directory per PR/head retains build and

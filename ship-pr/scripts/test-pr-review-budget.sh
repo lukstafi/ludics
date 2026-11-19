@@ -275,6 +275,8 @@ gh() {
   "repos/$REPO") body='{"default_branch":""}' ;;
   # The open review threads a merge reads after its gate: none.
   graphql) body=$(review_threads_answer '[]' "$@") ;;
+  # No review checkpoint post (checkpoint.py, #1242).
+  "repos/$REPO/issues/7/comments?per_page=100") body='[]' ;;
   "repos/$REPO/actions/jobs/201")
     body=$(jq -cn --arg complete "$JOB_STEPS_COMPLETE" --arg earlier "$JOB_EARLIER_CONCLUSION" '{name:"build",status:"in_progress",conclusion:null,
       steps:[{name:"Build",status:"completed",conclusion:$earlier}, {name:"Complete job",status:(if $complete == "yes" then "completed" else "in_progress" end),

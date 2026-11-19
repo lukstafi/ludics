@@ -16,6 +16,7 @@ import subprocess
 import unittest
 from collections.abc import Sequence
 
+from ludics.prreview.checkpoint import Post, headed, heading, hold_of, parse_verdict, post_of
 from ludics.tests.fake import Answer, FakeTool, When
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
@@ -60,6 +61,8 @@ GREEN: list[Route] = [
     (["commits/main"], 0, "tipsha\n", ""),
     (["compare/"], 0, COMPARE + "\n", ""),
     (["reviewThreads"], 0, THREADS + "\n", ""),
+    # The review checkpoint's posts (checkpoint.py, #1242): none.
+    (["issues/7/comments?per_page=100"], 0, "[]\n", ""),
 ]
 
 
@@ -100,6 +103,33 @@ class Production(unittest.TestCase):
                 self.assertTrue(done.stdout.endswith("o/r#7 merged=true state=closed\n"), done.stdout)
                 merges = [c for c in self.calls() if c[:2] == ["pr", "merge"]]
                 self.assertEqual(merges, [["pr", "merge", "7", "--repo", "o/r", "--match-head-commit", "headsha", "--merge"]])
+
+    def test_a_blocking_checkpoint_holds_the_merge_and_an_override_posts_first(self) -> None:
+        hexed: list[Route] = [(w if isinstance(w, When) else [n.replace("headsha", H) for n in w], rc, out.replace("headsha", H), err)
+                              for w, rc, out, err in GREEN]
+        comments = (["issues/7/comments?per_page=100"], 0, json.dumps([posted("at-open", "aaaaaaaa", BLOCKING)]) + "\n", "")
+        post = (When(prefix=("api", "-X", "POST")), 0, "https://github.com/o/r/pull/7#issuecomment-9\n", "")
+        for entry in self.entries():
+            with self.subTest(entry=entry[0], case="held"):
+                self.route([comments, *hexed])
+                done = self.run_cmd(entry, "merge", "o/r#7")
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn(f"REFUSING to merge o/r#7 at {H[:8]}: the review checkpoint holds it", done.stderr)
+                self.assertIn(f"CONFIRM_REQUEST 7 {H}", done.stderr)
+                self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
+            with self.subTest(entry=entry[0], case="over"):
+                self.route([post, comments, *hexed])
+                done = self.run_cmd(entry, "merge", "o/r#7", "--over-checkpoint", "the maintainer cleared it")
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                writes = [i for i, c in enumerate(self.calls()) if c[:3] == ["api", "-X", "POST"] or c[:2] == ["pr", "merge"]]
+                self.assertEqual([self.calls()[i][:2] for i in writes], [["api", "-X"], ["pr", "merge"]], "the post, then the merge")
+                body = [a for a in self.calls()[writes[0]] if a.startswith("body=")][0]
+                self.assertIn("the maintainer cleared it", body)
+            with self.subTest(entry=entry[0], case="cleared"):
+                cleared = json.dumps([posted("at-open", "aaaaaaaa", BLOCKING), posted("confirm", H, "VERDICT: clean")])
+                self.route([(["issues/7/comments?per_page=100"], 0, cleared + "\n", ""), *hexed])
+                done = self.run_cmd(entry, "merge", "o/r#7")
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
     def _tip_answers(self, rc: int, out: str, err: str = "") -> list[Route]:
         """GREEN with the refs read answering otherwise."""
@@ -412,6 +442,71 @@ class Production(unittest.TestCase):
                 self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
                 self.assertIn("is not a merge-build config", done.stderr)
                 self.assertEqual([c for c in self.calls() if c[:2] == ["pr", "merge"]], [])
+
+
+H = "1f230a8f" + "5" * 32  # a hex head: a checkpoint heading names its sha8
+
+
+def posted(kind: str, head: str, verdict: str, label: str = "Claude Opus 5.5 review checkpoint") -> dict[str, str]:
+    """A checkpoint post as ``wave review`` writes it (checkpoint.py's THE POSTED FORM)."""
+    return {"html_url": f"https://github.com/o/r/pull/7#{kind}-{head[:8]}",
+            "body": f"{heading(kind, head)}\n\nA finding.\n\n{verdict}\n\n(Posted by the wave coordinator, {label})"}
+
+
+BLOCKING = "VERDICT: blocking (1 blocking, 0 suggestions)"
+
+
+class Checkpoint(unittest.TestCase):
+    """checkpoint.py's boundary and hold, on posts alone (ludics#1242)."""
+
+    def posts(self, *comments: dict[str, str]) -> list[Post]:
+        return [p for c in comments if (p := post_of(c["html_url"], c["body"])) is not None]
+
+    def test_the_posted_form_reads_and_nothing_else_is_a_post(self) -> None:
+        post = post_of("u", posted("at-open", H, BLOCKING)["body"])
+        assert post is not None
+        self.assertEqual((post.kind, post.head, post.verdict.blocking), ("at-open", H[:8], 1))
+        self.assertIsNone(post_of("u", "### Review checkpoint (at-open): head 1f230a8f\n\n" + BLOCKING
+                                  + "\n\n(Posted by the wave coordinator, Claude Opus 5.5)"), "another coordinator post")
+        self.assertIsNone(post_of("u", heading("at-open", H) + "\n\n" + BLOCKING), "no footer")
+        self.assertIsNone(post_of("u", ""), "an empty body")
+        odd = post_of("u", posted("at open", H, "VERDICT: clean")["body"])
+        assert odd is not None
+        self.assertEqual((odd.kind, odd.at_open, odd.blocks), ("", True, True), "an unreadable heading is a blocking at-open")
+        self.assertTrue(self.posts(posted("at-open", H, "VERDICT: fine"))[0].verdict.blocks, "an unreadable verdict blocks")
+        self.assertEqual(parse_verdict("x\nVERDICT: clean\n").word, "clean", "wavereview's grammar, shared")
+
+    def test_wave_review_writes_the_heading_and_counts_are_bounded(self) -> None:
+        mine = heading("confirm", H)
+        self.assertEqual(headed("confirm", H, f"\n{mine}\n\nOK.\n\nVERDICT: clean\n"), f"{mine}\n\nOK.\n\nVERDICT: clean\n")
+        wrong = headed("confirm", H, "### Review checkpoint (at-open): head aaaaaaaa\n\nVERDICT: clean\n")
+        post = post_of("u", wrong + "\n(Posted by the wave coordinator, Claude Opus 5.5 review checkpoint)")
+        assert post is not None
+        self.assertEqual((post.kind, post.head), ("confirm", H[:8]), "the reviewed kind and head, not the reviewer's typing")
+        self.assertEqual(parse_verdict("VERDICT: blocking (999999999 blocking, 0 suggestions)").blocking, 999999999)
+        for count in ("1" * 10, "1" * 5000):
+            with self.subTest(digits=len(count)):
+                self.assertEqual(parse_verdict(f"VERDICT: blocking ({count} blocking, 0 suggestions)").word, "unreadable")
+
+    def test_the_hold(self) -> None:
+        at_open, older = posted("at-open", "aaaaaaaa", BLOCKING), "0123abcd" + "0" * 32
+        cases: list[tuple[str, list[dict[str, str]], bool]] = [
+            ("no post", [], False),
+            ("a non-blocking at-open", [posted("at-open", "aaaaaaaa", "VERDICT: suggestions (0 blocking, 1 suggestions)")], False),
+            ("blocking, no confirm", [at_open], True),
+            ("a clearing confirm for this head", [at_open, posted("confirm", H, "VERDICT: clean")], False),
+            ("a clearing confirm for an older head", [at_open, posted("confirm", older, "VERDICT: clean")], True),
+            ("a blocking confirm for this head", [at_open, posted("confirm", H, BLOCKING)], True),
+            ("a clearing confirm, then a blocking one", [at_open, posted("confirm", H, "VERDICT: clean"),
+                                                         posted("confirm", H, BLOCKING)], True),
+            ("a blocking confirm, then a clearing one", [at_open, posted("confirm", H, BLOCKING),
+                                                         posted("confirm", H, "VERDICT: clean")], False),
+            ("a confirm before the newest at-open", [posted("confirm", H, "VERDICT: clean"), at_open], True),
+            ("a newer non-blocking at-open", [at_open, posted("at-open", H, "VERDICT: clean")], False),
+        ]
+        for name, comments, holds in cases:
+            with self.subTest(name):
+                self.assertEqual(hold_of(self.posts(*comments), H) is not None, holds)
 
 
 if __name__ == "__main__":

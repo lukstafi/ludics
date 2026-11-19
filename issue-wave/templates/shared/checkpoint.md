@@ -20,4 +20,7 @@ checkpoint, and a second only when the first is blocking.
    - `MERGE NOT CLEARED <PR number> <head sha>`: blocking findings remain. Fix or rebut each and
      reply on the PR, then ask again. When you rebutted and pushed nothing, ask at the same SHA.
 
+   `pr-review.sh merge` reads the checkpoint's posts on the PR and refuses a head no confirm has
+   cleared, naming this step.
+
 After a verdict that is not blocking you merge when the ship-pr loop ends, without asking.

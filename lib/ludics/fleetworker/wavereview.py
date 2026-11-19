@@ -51,12 +51,13 @@ WHAT IT DOES, in this order:
    message for the worker is written, the record is written, and the row gets
    ``review=<word>@<sha8>`` (``confirm=...`` for a confirm).
 
-THE VERDICT, a fail-closed grammar. The review's last non-blank line, trailing blanks dropped, is
+THE VERDICT (and the posted form a merge reads: prreview/checkpoint.py, which owns the grammar and
+the heading), a fail-closed grammar. The review's last non-blank line, trailing blanks dropped, is
 the verdict line when it is, whole, one of
     VERDICT: clean                                      (or with counts, 0 blocking)
     VERDICT: suggestions                                (or with counts, 0 blocking)
     VERDICT: blocking (<n> blocking, <m> suggestions)   (the counts required)
-with decimal counts. Only the blocking count decides: more than zero blocks. Anything else is
+with decimal counts of at most nine digits. Only the blocking count decides: more than zero blocks. Anything else is
 ``unreadable``: no such line, another word, a count that contradicts its word (``clean (1 blocking,
 ...)``), a line wrapped in backticks, text after it. Unreadable is treated as blocking, never as a
 merge, and the line this verb prints says ``decision=unreadable`` for the coordinator to read the
@@ -110,6 +111,7 @@ from ludics.fleetworker.wave import USAGE, Review, Wave, load_wave, shim, utc_no
 from ludics.fleetworker.wavebrief import Part, render, write_atomically
 from ludics.fleetworker.wavelaunch import Record, record_of
 from ludics.fleetworker.waveprep import SHA40, TASK, TEMPLATES, subject
+from ludics.prreview.checkpoint import LABEL_SUFFIX, UNREADABLE, Verdict, headed, heading, parse_verdict
 
 KINDS = ("at-open", "confirm")
 SHIPPED = ("checkpoint.md", "issue.md", "source.md", "confirm.md", "verdict.md")
@@ -124,7 +126,6 @@ PART_NAMES: dict[str, frozenset[str]] = {
 }
 FETCH_TIMEOUT = 300.0
 PR_NUMBER = re.compile(r"[1-9][0-9]*")
-VERDICT = re.compile(r"VERDICT: (clean|suggestions|blocking)(?: \((0|[1-9][0-9]*) blocking, (0|[1-9][0-9]*) suggestions\))?")
 
 
 GIT_READS = ("show", "diff", "log", "cat-file", "ls-tree", "grep", "blame", "merge-base", "rev-parse", "rev-list")
@@ -145,34 +146,6 @@ def reviewer_argv(call: "Call") -> tuple[str, list[str]]:
         return "claude", ["-p", "--model", review.model, "--output-format", "json", "--no-session-persistence",
                           "--allowedTools", *allowed, "--disallowedTools", "Edit", "Write", "NotebookEdit"]
     raise AssertionError(f"no reviewer for kind {review.kind}")
-
-
-@dataclass(frozen=True)
-class Verdict:
-    word: str  # clean, suggestions, blocking or unreadable
-    blocking: int
-    suggestions: int
-    line: str  # the verdict line as written; "" when none was read
-
-    @property
-    def blocks(self) -> bool:
-        return self.word == "unreadable" or self.blocking > 0
-
-
-UNREADABLE = Verdict("unreadable", 0, 0, "")
-
-
-def parse_verdict(review: str) -> Verdict:
-    """THE VERDICT (the header)."""
-    lines = [line.rstrip() for line in review.split("\n") if line.strip()]
-    found = VERDICT.fullmatch(lines[-1]) if lines else None
-    if found is None:
-        return UNREADABLE
-    word, counted = found.group(1), found.group(2) is not None
-    blocking, suggestions = (int(found.group(2)), int(found.group(3))) if counted else (0, 0)
-    if (word == "blocking" and not counted) or (word != "blocking" and blocking > 0):
-        return UNREADABLE
-    return Verdict(word, blocking, suggestions, lines[-1])
 
 
 def decision_of(kind: str, verdict: Verdict) -> str:
@@ -507,7 +480,7 @@ def post(cfg: Config, call: Call) -> str:
     """Step 9's comment: its URL."""
     helper = os.path.join(cfg.checkout, "ship-pr", "scripts", "pr-review.sh")
     done = run([helper, "comment", f"{call.wave.repository}#{call.pr}", "--body-file", call.stem + ".md",
-                "--coordinator", f"{call.review.label} review checkpoint"], capture=True)
+                "--coordinator", f"{call.review.label}{LABEL_SUFFIX}"], capture=True)
     lines = substitution(done.out).splitlines()
     url = lines[-1].strip() if lines else ""
     if done.rc == 0 and url.startswith("https://"):
@@ -568,12 +541,13 @@ def reviewed_locked(cfg: Config, call: Call) -> int:
         if call.kind == "confirm" and earlier is None:
             raise call.refused(f"no at-open review of #{call.pr} is recorded under {call.path('reviews')}; nothing to confirm")
         if earlier is not None and not verdict_of(earlier).blocks:
-            review = (f"### Review checkpoint (confirm): head {call.sha[:8]}\n\nThe at-open review, at"
+            review = (f"{heading('confirm', call.sha)}\n\nThe at-open review, at"
                       f" {str(earlier['sha'])[:8]}, was not blocking, so there is nothing to confirm.\n\nVERDICT: clean\n")
         else:
             prompt = prompt_of(call, earlier)
             write_atomically(call.stem + ".prompt.md", prompt)
             review = run_reviewer(call, prompt)
+        review = headed(call.kind, call.sha, review)
         verdict = parse_verdict(review)
         write_atomically(call.stem + ".md", review)
         write_record(call, verdict, "", call.dry_run)

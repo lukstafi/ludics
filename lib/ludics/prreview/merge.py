@@ -1,5 +1,5 @@
 """``pr-review.sh merge <pr> [-C <clone>] [--override <reason>] [--wait[=s]] [--rerun-failed-once]
-[--allow-no-verdict] [--require-green] [-- <gh pr merge args...>]``: read the build signal, then merge the head it was
+[--allow-no-verdict] [--require-green] [--over-checkpoint <reason>] [-- <gh pr merge args...>]``: read the build signal, then merge the head it was
 read for. ``-C`` names the clone the merge build uses (mergebuild.py), read first of all. Every
 option may also stand before ``<pr>`` (``merge -C <clone> <pr>``, as ``git -C`` is written), up to a
 ``--``.
@@ -17,14 +17,15 @@ review round:
   --wait that did not end green, the close-out refusals, the base drift, the build of
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue, an
-  ABSENT verdict's base (ludics-lite#523), then the head branch tip (read with the current base
+  ABSENT verdict's base (ludics-lite#523), the review checkpoint's hold on the gated head with
+  ``--over-checkpoint``'s one post (checkpoint.py, #1242; read again before a gateway resend), then the head branch tip (read with the current base
   when a local build ran, #1241); then what the merge goes over (an override's
   waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
 
 Exit: 0 merged at the gated head; 1 refused (red, a moved head, a head that is not the branch's, a
-real conflict, an open thread, a deferred merge) or merged at a head the gate did not judge;
+real conflict, an open thread, a review checkpoint that holds it, a deferred merge) or merged at a head the gate did not judge;
 2 usage; 3 something that decides it could not be read (the branch tip at the last read before the
 call included) -- under ``--wait``, a read of the gate's
 that did not answer (the head's, the check runs', the workflow runs') is read again after a pause
@@ -58,6 +59,7 @@ from functools import partial
 from typing import Literal, NoReturn, assert_never
 
 from ludics import cli
+from ludics.prreview.checkpoint import hold_of, read_posts
 from ludics.prreview.branchtip import FULL_SHA, Clear, Gone, Lags, Tip, Unread, classify_tip, read_tip, warning
 from ludics.prreview.checks import parse_wait
 from ludics.prreview.closekw import MultiClose, SeriesClose
@@ -74,6 +76,7 @@ from ludics.prreview.core import (
     pr_arg,
     warn,
 )
+from ludics.prreview.reply import MARKER, mention_refusal
 from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, RunKey, load_gate_config
@@ -95,7 +98,7 @@ from ludics.prreview.threads import merge_threads_gate
 
 USAGE = (
     "usage: merge <pr> [-C <clone>] [--override <reason>] [--wait[=seconds]] [--rerun-failed-once]"
-    " [--allow-no-verdict] [-- <gh pr merge args...>]"
+    " [--allow-no-verdict] [--over-checkpoint <reason>] [-- <gh pr merge args...>]"
 )
 
 _SPACE = " \t\n\r\f\v"
@@ -113,6 +116,9 @@ class Options:
     rerun_failed_once: bool = False
     gh_args: list[str] = field(default_factory=lambda: list[str]())
     forwarded: bool = False
+    # ``--over-checkpoint <reason>`` (#1242): merge over the review checkpoint's hold, the reason
+    # posted on the PR just before the merge call (checkpoint.py).
+    over_checkpoint: str = ""
     # ``-C <dir>``: the clone the merge build uses (mergebuild.py, ludics-lite#730); None is the
     # working directory. It never names the repository, which comes from the PR argument (#92).
     checkout: str | None = None
@@ -132,6 +138,12 @@ def parse(args: list[str], config: GateConfig) -> Options:
             opts.override = rest[1]
             rest = rest[2:]
             continue
+        if arg == "--over-checkpoint":
+            if len(rest) < 2 or not rest[1]:
+                die("merge: --over-checkpoint needs a reason: why this head merges without a confirm clearing it")
+            opts.over_checkpoint = rest[1]
+            rest = rest[2:]
+            continue
         if arg == "-C":
             if len(rest) < 2 or not rest[1]:
                 die("merge: -C needs a directory, a clone of the PR's repository for the merge build")
@@ -140,6 +152,8 @@ def parse(args: list[str], config: GateConfig) -> Options:
             continue
         if arg.startswith("--override="):
             opts.override = arg[len("--override=") :]
+        elif arg.startswith("--over-checkpoint="):
+            opts.over_checkpoint = arg[len("--over-checkpoint=") :]
         elif arg == "--wait":
             opts.wait_for = config.checks_wait
         elif arg.startswith("--wait="):
@@ -203,6 +217,13 @@ def parse(args: list[str], config: GateConfig) -> Options:
             "cancelled) check is known-unrelated to this PR — e.g. --override 'ci Deps step fails on an opam solve,",
             "same red on master before this branch existed'.",
         )
+    if opts.over_checkpoint and not any(_REASON.search(line) for line in opts.over_checkpoint.split("\n")):
+        die(
+            f"merge: --over-checkpoint takes a REASON in words, not '{opts.over_checkpoint}'. Say why this head",
+            "merges without a confirm clearing it; the reason is posted on the PR.",
+        )
+    if opts.over_checkpoint:
+        mention_refusal("merge", opts.over_checkpoint)
     return opts
 
 
@@ -669,6 +690,11 @@ class Merge:
         # before the first merge call. Said at the verdict, "merging" stood above a refusal that
         # followed it -- --require-green's, the merge build's, an open thread's (ludics-lite#684).
         self.announced: list[tuple[str, tuple[str, ...]]] = []
+        # The hold --over-checkpoint's reason was last posted for (checkpoint_gate), and whether
+        # its "nothing to go over" note was said: a hold read on a later attempt that is not the
+        # one posted is posted too, so no attempt goes over a hold unrecorded.
+        self.over_checkpoint_posted: str | None = None
+        self.over_checkpoint_noted = False
 
     def drift(self) -> Drift:
         return read_base_drift(self.session, self.repo, self.num, self.config.stale_base)
@@ -1145,6 +1171,62 @@ class Merge:
         if tip != build.base_sha:
             self.refuse_stale_build(build, tip, "before a merge request could be resent")
 
+    def checkpoint_gate(self) -> None:
+        """The review checkpoint's hold on the gated head (checkpoint.py, #1242), read before every
+        attempt, ahead of the merge build's last ref check, so the read after a rebuild is the one
+        the call goes on and an override's post is behind that check too. A hold refuses, exit 1,
+        unless --over-checkpoint, whose reason is posted once per hold it goes over (a hold first
+        read on a retry, or another than the one posted, is posted then); an unread read is 3
+        (``read_posts``)."""
+        repo, pr, head, why = self.repo, self.num, self.gate.check_sha, self.opts.over_checkpoint
+        hold = hold_of(read_posts(self.session, repo, pr), head)
+        if hold is None:
+            if why and not self.over_checkpoint_noted:
+                warn(f"--over-checkpoint: the review checkpoint does not hold {repo}#{pr} at {head[:8]}; nothing is posted")
+                self.over_checkpoint_noted = True
+            return
+        if not why:
+            fail(
+                1,
+                f"REFUSING to merge {repo}#{pr} at {head[:8]}: the review checkpoint holds it — {hold}.",
+                "The CONFIRM checkpoint is owed for this head: a wave worker ends its turn with",
+                f"`CONFIRM_REQUEST {pr} {head}`, which the coordinator answers with",
+                f"`fleet-worker.sh wave review <wave.json> <task> {pr} {head} --kind confirm`. Merge again once",
+                "a confirm clears this head. Only to merge over the hold on purpose: --over-checkpoint '<why>',",
+                "which posts the reason on the PR.",
+            )
+        if self.over_checkpoint_posted == hold:
+            return
+        body = f"Merging at head {head[:8]} over the review checkpoint (`merge --over-checkpoint`): {why}\n\nThe hold it goes over: {hold}.{MARKER}"
+        cli.say(f"OVER-CHECKPOINT: merging {repo}#{pr} over its review checkpoint — {why}")
+        result = self.session.retry(
+            "write",
+            ["api", "-X", "POST", f"repos/{repo}/issues/{pr}/comments", "-f", f"body={body}", "--jq", ".html_url"],
+            include=True,
+        )
+        match result:
+            case GhOk(stdout=url):
+                self.over_checkpoint_posted = hold
+                cli.say(f"OVER-CHECKPOINT: the reason is posted: {url}")
+            case GhUnanswered():
+                fail(3, f"NOT merged: --over-checkpoint's reason could not be posted on {repo}#{pr}, refused at the",
+                     f"gateway ({self.session.err_line()}); nothing was posted. Retry.")
+            case GhFailed():
+                if api_rejection(self.session.err_line()):
+                    fail(1, f"NOT merged: --over-checkpoint's reason was REJECTED on {repo}#{pr}: {self.session.err_line()}.")
+                fail(3, f"NOT merged: posting --over-checkpoint's reason on {repo}#{pr} failed AMBIGUOUSLY",
+                     f"({self.session.err_line()}); it may have landed. Read the PR before re-running merge.")
+            case _:
+                assert_never(result)
+
+    def before_resend(self, build: BuildVerdict | None) -> None:
+        """What a gateway resend of the merge call re-reads, in the loop's order: the review
+        checkpoint (a hold posted during the backoff refuses, review of #1256), then the merge
+        build's refs when a build ran."""
+        self.checkpoint_gate()
+        if build is not None:
+            self.recheck_before_resend(build)
+
     def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
@@ -1166,6 +1248,7 @@ class Merge:
                     )
                 attempt += 1
                 continue
+            self.checkpoint_gate()
             if build is None:
                 self.branch_tip_gate(last=True)
             else:
@@ -1181,7 +1264,7 @@ class Merge:
                     continue
             self.announce(build.shared_failure if build is not None and build is not sent_build else None)
             sent_build = build
-            before_retry = partial(self.recheck_before_resend, build) if build is not None else None
+            before_retry = partial(self.before_resend, build)
             args = ["pr", "merge", pr, "--repo", repo, "--match-head-commit", gate.check_sha, *opts.gh_args]
             if opts.forwarded:
                 # Still this script's own call, so the polling budget gates it.

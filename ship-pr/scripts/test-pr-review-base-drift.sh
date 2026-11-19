@@ -93,6 +93,8 @@ gh() {
     ;;
   "repos/$REPO") response='{"default_branch":"main"}' ;;
   "repos/$REPO/pulls/7/commits?per_page=100") response='[{"sha":"head-sha","commit":{"message":"A commit."}}]' ;;
+  # No review checkpoint post (checkpoint.py, #1242).
+  "repos/$REPO/issues/7/comments?per_page=100") response='[]' ;;
   graphql)
     case "$FIXTURE_QUERY" in
     *mergeQueue*) response='{"data":{"repository":{"mergeQueue":null}}}' ;;
