@@ -690,8 +690,11 @@ class Merge:
         # before the first merge call. Said at the verdict, "merging" stood above a refusal that
         # followed it -- --require-green's, the merge build's, an open thread's (ludics-lite#684).
         self.announced: list[tuple[str, tuple[str, ...]]] = []
-        # Whether --over-checkpoint's reason is posted (checkpoint_gate): once per merge.
-        self.over_checkpoint_posted = False
+        # The hold --over-checkpoint's reason was last posted for (checkpoint_gate), and whether
+        # its "nothing to go over" note was said: a hold read on a later attempt that is not the
+        # one posted is posted too, so no attempt goes over a hold unrecorded.
+        self.over_checkpoint_posted: str | None = None
+        self.over_checkpoint_noted = False
 
     def drift(self) -> Drift:
         return read_base_drift(self.session, self.repo, self.num, self.config.stale_base)
@@ -1172,13 +1175,15 @@ class Merge:
         """The review checkpoint's hold on the gated head (checkpoint.py, #1242), read before every
         attempt, ahead of the merge build's last ref check, so the read after a rebuild is the one
         the call goes on and an override's post is behind that check too. A hold refuses, exit 1,
-        unless --over-checkpoint, whose reason is posted once; an unread read is 3 (``read_posts``)."""
+        unless --over-checkpoint, whose reason is posted once per hold it goes over (a hold first
+        read on a retry, or another than the one posted, is posted then); an unread read is 3
+        (``read_posts``)."""
         repo, pr, head, why = self.repo, self.num, self.gate.check_sha, self.opts.over_checkpoint
         hold = hold_of(read_posts(self.session, repo, pr), head)
         if hold is None:
-            if why and not self.over_checkpoint_posted:
+            if why and not self.over_checkpoint_noted:
                 warn(f"--over-checkpoint: the review checkpoint does not hold {repo}#{pr} at {head[:8]}; nothing is posted")
-            self.over_checkpoint_posted = True
+                self.over_checkpoint_noted = True
             return
         if not why:
             fail(
@@ -1190,9 +1195,8 @@ class Merge:
                 "a confirm clears this head. Only to merge over the hold on purpose: --over-checkpoint '<why>',",
                 "which posts the reason on the PR.",
             )
-        if self.over_checkpoint_posted:
+        if self.over_checkpoint_posted == hold:
             return
-        self.over_checkpoint_posted = True
         body = f"Merging at head {head[:8]} over the review checkpoint (`merge --over-checkpoint`): {why}\n\nThe hold it goes over: {hold}.{MARKER}"
         cli.say(f"OVER-CHECKPOINT: merging {repo}#{pr} over its review checkpoint — {why}")
         result = self.session.retry(
@@ -1202,6 +1206,7 @@ class Merge:
         )
         match result:
             case GhOk(stdout=url):
+                self.over_checkpoint_posted = hold
                 cli.say(f"OVER-CHECKPOINT: the reason is posted: {url}")
             case GhUnanswered():
                 fail(3, f"NOT merged: --over-checkpoint's reason could not be posted on {repo}#{pr}, refused at the",

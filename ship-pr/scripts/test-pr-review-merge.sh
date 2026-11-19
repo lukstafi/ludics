@@ -2475,36 +2475,70 @@ checkpoint_post() { # <kind> <head> <verdict line> [<footer label>]
      body: ("### Review checkpoint (\($kind)): head \($head)\n\nA finding.\n\n\($verdict)\n\n(Posted by the wave coordinator, \($label))")}'
 }
 
-test_a_blocking_checkpoint_holds_the_merge_until_a_confirm_clears_the_head() {
+# One case per refusal, so the negative control shows each failing on the base on its own.
+CHECKPOINT_BLOCKING=$(checkpoint_post at-open aaaaaaaa11 'VERDICT: blocking (1 blocking, 0 suggestions)')
+
+test_a_blocking_checkpoint_with_no_confirm_refuses() {
   checkpoint_reset
-  local blocking
-  blocking=$(checkpoint_post at-open aaaaaaaa11 'VERDICT: blocking (1 blocking, 0 suggestions)')
-  CHECKPOINT_COMMENTS="[$blocking]"
+  CHECKPOINT_COMMENTS="[$CHECKPOINT_BLOCKING]"
   run_merge
   assert_eq "$MERGE_RC" 1 "a blocking at-open verdict with no confirm refuses ($MERGE_OUTPUT)"
   assert_contains "$MERGE_OUTPUT" "REFUSING to merge $REPO#7 at 1f230a8f: the review checkpoint holds it" "naming the hold"
   assert_contains "$MERGE_OUTPUT" "no confirm has been posted after it" "and that no confirm followed"
   assert_contains "$MERGE_OUTPUT" "CONFIRM_REQUEST 7 $CHECKPOINT_HEAD" "naming the confirm checkpoint"
   assert_no_merge_call
-  # A confirm for an older head does not count.
-  CHECKPOINT_COMMENTS="[$blocking,$(checkpoint_post confirm 0123abcd99 'VERDICT: clean')]"
+}
+
+test_a_confirm_cleared_for_an_older_head_does_not_count() {
+  checkpoint_reset
+  CHECKPOINT_COMMENTS="[$CHECKPOINT_BLOCKING,$(checkpoint_post confirm 0123abcd99 'VERDICT: clean')]"
   run_merge
   assert_eq "$MERGE_RC" 1 "a confirm cleared for an older head does not clear this one ($MERGE_OUTPUT)"
   assert_contains "$MERGE_OUTPUT" "the newest names another head, 0123abcd" "naming the head it cleared"
   assert_no_merge_call
-  # A confirm at this head that is not cleared holds it too.
-  CHECKPOINT_COMMENTS="[$blocking,$(checkpoint_post confirm "$CHECKPOINT_HEAD" 'VERDICT: blocking (1 blocking, 1 suggestions)')]"
+}
+
+test_a_blocking_confirm_at_the_head_refuses() {
+  checkpoint_reset
+  CHECKPOINT_COMMENTS="[$CHECKPOINT_BLOCKING,$(checkpoint_post confirm "$CHECKPOINT_HEAD" 'VERDICT: blocking (1 blocking, 1 suggestions)')]"
   run_merge
   assert_eq "$MERGE_RC" 1 "a blocking confirm at this head refuses ($MERGE_OUTPUT)"
   assert_contains "$MERGE_OUTPUT" "the confirm for this head is not cleared" "saying so"
   assert_no_merge_call
-  # A confirm posted BEFORE the newest at-open does not answer it.
-  CHECKPOINT_COMMENTS="[$(checkpoint_post confirm "$CHECKPOINT_HEAD" 'VERDICT: clean'),$blocking]"
+}
+
+test_a_confirm_before_the_newest_at_open_does_not_count() {
+  checkpoint_reset
+  CHECKPOINT_COMMENTS="[$(checkpoint_post confirm "$CHECKPOINT_HEAD" 'VERDICT: clean'),$CHECKPOINT_BLOCKING]"
   run_merge
   assert_eq "$MERGE_RC" 1 "a confirm older than the newest at-open verdict does not count ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "no confirm has been posted after it" "saying so"
   assert_no_merge_call
-  # The control: a clearing confirm for this head, after the at-open review, merges.
-  CHECKPOINT_COMMENTS="[$blocking,$(checkpoint_post confirm "$CHECKPOINT_HEAD" 'VERDICT: suggestions (0 blocking, 2 suggestions)')]"
+}
+
+test_an_unreadable_checkpoint_verdict_refuses() {
+  checkpoint_reset
+  CHECKPOINT_COMMENTS="[$(checkpoint_post at-open aaaaaaaa11 'VERDICT: fine')]"
+  run_merge
+  assert_eq "$MERGE_RC" 1 "an unreadable at-open verdict holds the merge ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "no readable verdict line, taken as blocking" "saying why"
+  assert_no_merge_call
+}
+
+test_an_unreadable_checkpoint_heading_refuses() {
+  checkpoint_reset
+  CHECKPOINT_COMMENTS="[$(checkpoint_post 'at open' aaaaaaaa11 'VERDICT: clean')]"
+  run_merge
+  assert_eq "$MERGE_RC" 1 "an unreadable heading holds the merge ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "with an unreadable heading, taken as a blocking at-open review" "saying why"
+  assert_no_merge_call
+}
+
+# The controls, which merge on the base as well: a clearing confirm, no checkpoint post, and a
+# non-blocking at-open verdict.
+test_a_confirm_clearing_the_head_merges() {
+  checkpoint_reset
+  CHECKPOINT_COMMENTS="[$CHECKPOINT_BLOCKING,$(checkpoint_post confirm "$CHECKPOINT_HEAD" 'VERDICT: suggestions (0 blocking, 2 suggestions)')]"
   run_merge
   assert_eq "$MERGE_RC" 0 "a confirm clearing this head merges ($MERGE_OUTPUT)"
   assert_eq "$(grep -c -x 'CALL checkpoint' "$CALLS_FILE")" 1 "on one read of the checkpoint"
@@ -2521,16 +2555,6 @@ test_a_pr_without_a_blocking_checkpoint_merges_as_before() {
   CHECKPOINT_COMMENTS="[$(checkpoint_post at-open aaaaaaaa11 'VERDICT: suggestions (0 blocking, 1 suggestions)')]"
   run_merge
   assert_eq "$MERGE_RC" 0 "a non-blocking at-open verdict merges ($MERGE_OUTPUT)"
-  # An at-open post whose verdict or heading does not read is held, fail-closed.
-  CHECKPOINT_COMMENTS="[$(checkpoint_post at-open aaaaaaaa11 'VERDICT: fine')]"
-  run_merge
-  assert_eq "$MERGE_RC" 1 "an unreadable at-open verdict holds the merge ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_OUTPUT" "no readable verdict line, taken as blocking" "saying why"
-  CHECKPOINT_COMMENTS="[$(checkpoint_post 'at open' aaaaaaaa11 'VERDICT: clean')]"
-  run_merge
-  assert_eq "$MERGE_RC" 1 "an unreadable heading holds the merge ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_OUTPUT" "with an unreadable heading, taken as a blocking at-open review" "saying why"
-  assert_no_merge_call
 }
 
 # The checkpoint is read before EVERY attempt, as the threads are: a blocking review posted while
@@ -2553,6 +2577,27 @@ test_the_checkpoint_is_read_before_every_merge_attempt() {
   assert_eq "$(grep -c -x 'CALL over-checkpoint' "$CALLS_FILE")" 1 "posting its reason once"
 }
 
+# The checkpoint review of #1256: an override whose first attempt read no hold went over one the
+# retry read without posting it. Each hold gone over is posted, before the call that goes over it.
+test_an_override_posts_each_hold_it_goes_over() {
+  checkpoint_reset
+  MERGE_NOT_MERGEABLE=1
+  CHECKPOINT_COMMENTS_LATER="[$CHECKPOINT_BLOCKING]"
+  # A hold that appears only on the retry is posted then: no attempt goes over a hold unposted.
+  run_merge --over-checkpoint 'the maintainer cleared it on the issue'
+  assert_eq "$MERGE_RC" 0 "an override lands on the retry ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c -x 'CALL over-checkpoint' "$CALLS_FILE")" 1 "the hold the retry read is posted"
+  assert_eq "$(grep -x -e 'CALL over-checkpoint' -e 'CALL pr merge.*' "$CALLS_FILE" | sed -n 2p)" "CALL over-checkpoint" \
+    "between the first merge call and the second"
+  # A different hold on the retry is posted too: the record names the hold actually gone over.
+  rm -f "$TEST_ROOT/merge-failed-once"
+  CHECKPOINT_COMMENTS="[$(checkpoint_post at-open aaaaaaaa11 'VERDICT: fine')]"
+  run_merge --over-checkpoint 'the maintainer cleared it on the issue'
+  assert_eq "$MERGE_RC" 0 "an override lands on the retry ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c -x 'CALL over-checkpoint' "$CALLS_FILE")" 2 "each hold gone over is posted"
+  assert_contains "$(cat "$TEST_ROOT/over-checkpoint")" "VERDICT: blocking (1 blocking, 0 suggestions)" "the last post names the retry's hold"
+}
+
 test_an_unread_checkpoint_is_unknown_not_none() {
   reset
   CHECKPOINT_FAIL=1
@@ -2563,7 +2608,10 @@ test_an_unread_checkpoint_is_unknown_not_none() {
   run_merge --over-checkpoint 'merging over the hold on purpose'
   assert_eq "$MERGE_RC" 3 "the override does not go over an unread read ($MERGE_OUTPUT)"
   assert_no_merge_call
-  CHECKPOINT_FAIL=""
+}
+
+test_a_checkpoint_page_that_is_no_comment_list_is_unknown() {
+  reset
   CHECKPOINT_COMMENTS='{"message":"Not Found"}'
   run_merge
   assert_eq "$MERGE_RC" 3 "a page that is not a list of comments is exit 3 too ($MERGE_OUTPUT)"
@@ -4596,10 +4644,18 @@ tests=(
   test_an_open_review_thread_refuses_the_merge
   test_an_unread_thread_connection_refuses_as_transport
   test_a_thread_opened_between_merge_attempts_refuses_the_retry
-  test_a_blocking_checkpoint_holds_the_merge_until_a_confirm_clears_the_head
+  test_a_blocking_checkpoint_with_no_confirm_refuses
+  test_a_confirm_cleared_for_an_older_head_does_not_count
+  test_a_blocking_confirm_at_the_head_refuses
+  test_a_confirm_before_the_newest_at_open_does_not_count
+  test_an_unreadable_checkpoint_verdict_refuses
+  test_an_unreadable_checkpoint_heading_refuses
+  test_a_confirm_clearing_the_head_merges
   test_a_pr_without_a_blocking_checkpoint_merges_as_before
   test_an_unread_checkpoint_is_unknown_not_none
   test_the_checkpoint_is_read_before_every_merge_attempt
+  test_an_override_posts_each_hold_it_goes_over
+  test_a_checkpoint_page_that_is_no_comment_list_is_unknown
   test_over_checkpoint_posts_its_reason_before_the_merge_call
   test_a_quoted_closing_sentence_in_a_commit_body_warns
   test_a_commit_closing_the_pr_own_issue_is_silent
