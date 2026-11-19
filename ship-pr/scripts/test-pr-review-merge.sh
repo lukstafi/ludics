@@ -67,6 +67,7 @@ FAIL_GRAPHQL=""                        # nonempty = the review-threads read gets
 CHECKPOINT_COMMENTS='[]'
 CHECKPOINT_COMMENTS_LATER=""           # nonempty = what the SECOND checkpoint read on answers with
 CHECKPOINT_FAIL=""
+MERGE_GATEWAY_ONCE=""                  # nonempty = the FIRST pr merge call is refused at the gateway (a 503)
 SERIES_JSON=""                         # the PR's commits as the endpoint serves them (see reset)
 SERIES_JSON_LATER=""                   # nonempty = what the SECOND series read on answers with
 SERIES_COUNT=""                        # nonempty = the commit count the PR states, over the rows'
@@ -635,6 +636,11 @@ gh() {
       printf 'gh: Pull request is not mergeable\n' >&2
       return 1
     fi
+    if [ -n "$MERGE_GATEWAY_ONCE" ] && [ ! -f "$TEST_ROOT/merge-failed-once" ]; then
+      : >"$TEST_ROOT/merge-failed-once"
+      printf '%s\n' 'gh: HTTP 503: Service Unavailable' >&2
+      return 1
+    fi
     if [ -n "$MERGE_BASE_MODIFIED" ] && [ ! -f "$TEST_ROOT/merge-failed-once" ]; then
       : >"$TEST_ROOT/merge-failed-once"
       printf 'GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)\n' >&2
@@ -792,6 +798,7 @@ reset() {
   CHECKPOINT_COMMENTS='[]'
   CHECKPOINT_COMMENTS_LATER=""
   CHECKPOINT_FAIL=""
+  MERGE_GATEWAY_ONCE=""
   rm -f "$TEST_ROOT/over-checkpoint"
   SERIES_JSON="[$(commit_row head-sha 'A commit with nothing to close.')]"
   SERIES_JSON_LATER=""
@@ -2597,6 +2604,26 @@ test_an_override_posts_each_hold_it_goes_over() {
   assert_eq "$(grep -c -x 'CALL over-checkpoint' "$CALLS_FILE")" 2 "each hold gone over is posted"
   assert_contains "$(cat "$TEST_ROOT/over-checkpoint")" "VERDICT: blocking (1 blocking, 0 suggestions)" "the last post names the retry's hold"
 }
+
+# The Codex review of #1256: a gateway refusal of the merge call is resent inside the session's
+# retry, without coming back to the attempt loop, so the resend callback reads the checkpoint too.
+test_a_hold_posted_during_a_gateway_backoff_refuses_the_resend() (
+  checkpoint_reset
+  retune API_ATTEMPTS=3
+  MERGE_GATEWAY_ONCE=1
+  CHECKPOINT_COMMENTS_LATER="[$CHECKPOINT_BLOCKING]"
+  run_merge
+  assert_eq "$MERGE_RC" 1 "the resend is refused on the hold posted during the backoff ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "the review checkpoint holds it" "naming the hold"
+  assert_eq "$(grep -c -x 'CALL checkpoint' "$CALLS_FILE")" 2 "read before the call and before its resend"
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "and nothing was resent"
+  # The control: no hold appears, and the resend lands.
+  rm -f "$TEST_ROOT/merge-failed-once"
+  CHECKPOINT_COMMENTS_LATER=""
+  run_merge
+  assert_eq "$MERGE_RC" 0 "the resend lands ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 2 "the refused call and its resend"
+)
 
 test_an_unread_checkpoint_is_unknown_not_none() {
   reset
@@ -4655,6 +4682,7 @@ tests=(
   test_an_unread_checkpoint_is_unknown_not_none
   test_the_checkpoint_is_read_before_every_merge_attempt
   test_an_override_posts_each_hold_it_goes_over
+  test_a_hold_posted_during_a_gateway_backoff_refuses_the_resend
   test_a_checkpoint_page_that_is_no_comment_list_is_unknown
   test_over_checkpoint_posts_its_reason_before_the_merge_call
   test_a_quoted_closing_sentence_in_a_commit_body_warns

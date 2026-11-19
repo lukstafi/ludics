@@ -18,7 +18,7 @@ review round:
   the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue, an
   ABSENT verdict's base (ludics-lite#523), the review checkpoint's hold on the gated head with
-  ``--over-checkpoint``'s one post (checkpoint.py, #1242), then the head branch tip (read with the current base
+  ``--over-checkpoint``'s one post (checkpoint.py, #1242; read again before a gateway resend), then the head branch tip (read with the current base
   when a local build ran, #1241); then what the merge goes over (an override's
   waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
@@ -1219,6 +1219,14 @@ class Merge:
             case _:
                 assert_never(result)
 
+    def before_resend(self, build: BuildVerdict | None) -> None:
+        """What a gateway resend of the merge call re-reads, in the loop's order: the review
+        checkpoint (a hold posted during the backoff refuses, review of #1256), then the merge
+        build's refs when a build ran."""
+        self.checkpoint_gate()
+        if build is not None:
+            self.recheck_before_resend(build)
+
     def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
@@ -1256,7 +1264,7 @@ class Merge:
                     continue
             self.announce(build.shared_failure if build is not None and build is not sent_build else None)
             sent_build = build
-            before_retry = partial(self.recheck_before_resend, build) if build is not None else None
+            before_retry = partial(self.before_resend, build)
             args = ["pr", "merge", pr, "--repo", repo, "--match-head-commit", gate.check_sha, *opts.gh_args]
             if opts.forwarded:
                 # Still this script's own call, so the polling budget gates it.
