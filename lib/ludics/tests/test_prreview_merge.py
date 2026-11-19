@@ -16,7 +16,7 @@ import subprocess
 import unittest
 from collections.abc import Sequence
 
-from ludics.prreview.checkpoint import Post, heading, hold_of, parse_verdict, post_of
+from ludics.prreview.checkpoint import Post, headed, heading, hold_of, parse_verdict, post_of
 from ludics.tests.fake import Answer, FakeTool, When
 
 LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
@@ -475,6 +475,18 @@ class Checkpoint(unittest.TestCase):
         self.assertEqual((odd.kind, odd.at_open, odd.blocks), ("", True, True), "an unreadable heading is a blocking at-open")
         self.assertTrue(self.posts(posted("at-open", H, "VERDICT: fine"))[0].verdict.blocks, "an unreadable verdict blocks")
         self.assertEqual(parse_verdict("x\nVERDICT: clean\n").word, "clean", "wavereview's grammar, shared")
+
+    def test_wave_review_writes_the_heading_and_counts_are_bounded(self) -> None:
+        mine = heading("confirm", H)
+        self.assertEqual(headed("confirm", H, f"\n{mine}\n\nOK.\n\nVERDICT: clean\n"), f"{mine}\n\nOK.\n\nVERDICT: clean\n")
+        wrong = headed("confirm", H, "### Review checkpoint (at-open): head aaaaaaaa\n\nVERDICT: clean\n")
+        post = post_of("u", wrong + "\n(Posted by the wave coordinator, Claude Opus 5.5 review checkpoint)")
+        assert post is not None
+        self.assertEqual((post.kind, post.head), ("confirm", H[:8]), "the reviewed kind and head, not the reviewer's typing")
+        self.assertEqual(parse_verdict("VERDICT: blocking (999999999 blocking, 0 suggestions)").blocking, 999999999)
+        for count in ("1" * 10, "1" * 5000):
+            with self.subTest(digits=len(count)):
+                self.assertEqual(parse_verdict(f"VERDICT: blocking ({count} blocking, 0 suggestions)").word, "unreadable")
 
     def test_the_hold(self) -> None:
         at_open, older = posted("at-open", "aaaaaaaa", BLOCKING), "0123abcd" + "0" * 32

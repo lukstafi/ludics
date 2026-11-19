@@ -15,13 +15,13 @@ review round:
   mergebuild.py's ``clone_preflight``) and conflict preflight (ludics-lite#729,
   ``conflict_preflight``), the gate (with the override's waiver), the branch tip again after a
   --wait that did not end green, the close-out refusals, the base drift, the build of
-  the would-be merge commit where the repository asks for one (mergebuild.py, #611); the review
-  checkpoint's hold on the gated head, once (checkpoint.py, #1242); then before
+  the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue, an
-  ABSENT verdict's base (ludics-lite#523), then the head branch tip (read with the current base
+  ABSENT verdict's base (ludics-lite#523), the review checkpoint's hold on the gated head with
+  ``--over-checkpoint``'s one post (checkpoint.py, #1242), then the head branch tip (read with the current base
   when a local build ran, #1241); then what the merge goes over (an override's
   waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
-  passed, and ``--over-checkpoint``'s reason posted on the PR then (checkpoint.py); then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
+  passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
 
 Exit: 0 merged at the gated head; 1 refused (red, a moved head, a head that is not the branch's, a
@@ -690,8 +690,8 @@ class Merge:
         # before the first merge call. Said at the verdict, "merging" stood above a refusal that
         # followed it -- --require-green's, the merge build's, an open thread's (ludics-lite#684).
         self.announced: list[tuple[str, tuple[str, ...]]] = []
-        # --over-checkpoint's post (checkpoint_gate), made once, with the announcements.
-        self.over_checkpoint: str | None = None
+        # Whether --over-checkpoint's reason is posted (checkpoint_gate): once per merge.
+        self.over_checkpoint_posted = False
 
     def drift(self) -> Drift:
         return read_base_drift(self.session, self.repo, self.num, self.config.stale_base)
@@ -1169,14 +1169,16 @@ class Merge:
             self.refuse_stale_build(build, tip, "before a merge request could be resent")
 
     def checkpoint_gate(self) -> None:
-        """The review checkpoint's hold on the gated head (checkpoint.py, #1242): read once, before
-        the first attempt. A hold refuses, exit 1, unless --over-checkpoint, whose post waits for
-        ``post_over_checkpoint``; an unread one is 3 (``read_posts``)."""
+        """The review checkpoint's hold on the gated head (checkpoint.py, #1242), read before every
+        attempt, ahead of the merge build's last ref check, so the read after a rebuild is the one
+        the call goes on and an override's post is behind that check too. A hold refuses, exit 1,
+        unless --over-checkpoint, whose reason is posted once; an unread read is 3 (``read_posts``)."""
         repo, pr, head, why = self.repo, self.num, self.gate.check_sha, self.opts.over_checkpoint
         hold = hold_of(read_posts(self.session, repo, pr), head)
         if hold is None:
-            if why:
+            if why and not self.over_checkpoint_posted:
                 warn(f"--over-checkpoint: the review checkpoint does not hold {repo}#{pr} at {head[:8]}; nothing is posted")
+            self.over_checkpoint_posted = True
             return
         if not why:
             fail(
@@ -1188,17 +1190,11 @@ class Merge:
                 "a confirm clears this head. Only to merge over the hold on purpose: --over-checkpoint '<why>',",
                 "which posts the reason on the PR.",
             )
-        self.over_checkpoint = (f"Merging at head {head[:8]} over the review checkpoint (`merge --over-checkpoint`):"
-                                f" {why}\n\nThe hold it goes over: {hold}.{MARKER}")
-
-    def post_over_checkpoint(self) -> None:
-        """--over-checkpoint's reason on the PR, once, just before the first merge call: no
-        override of the checkpoint is silent. A post that may have landed is not sent twice."""
-        body, self.over_checkpoint = self.over_checkpoint, None
-        if body is None:
+        if self.over_checkpoint_posted:
             return
-        repo, pr = self.repo, self.num
-        cli.say(f"OVER-CHECKPOINT: merging {repo}#{pr} over its review checkpoint — {self.opts.over_checkpoint}")
+        self.over_checkpoint_posted = True
+        body = f"Merging at head {head[:8]} over the review checkpoint (`merge --over-checkpoint`): {why}\n\nThe hold it goes over: {hold}.{MARKER}"
+        cli.say(f"OVER-CHECKPOINT: merging {repo}#{pr} over its review checkpoint — {why}")
         result = self.session.retry(
             "write",
             ["api", "-X", "POST", f"repos/{repo}/issues/{pr}/comments", "-f", f"body={body}", "--jq", ".html_url"],
@@ -1207,7 +1203,6 @@ class Merge:
         match result:
             case GhOk(stdout=url):
                 cli.say(f"OVER-CHECKPOINT: the reason is posted: {url}")
-                return
             case GhUnanswered():
                 fail(3, f"NOT merged: --over-checkpoint's reason could not be posted on {repo}#{pr}, refused at the",
                      f"gateway ({self.session.err_line()}); nothing was posted. Retry.")
@@ -1222,7 +1217,6 @@ class Merge:
     def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
-        self.checkpoint_gate()
         attempt = 1
         refreshed = False
         sent_build: BuildVerdict | None = None
@@ -1241,6 +1235,7 @@ class Merge:
                     )
                 attempt += 1
                 continue
+            self.checkpoint_gate()
             if build is None:
                 self.branch_tip_gate(last=True)
             else:
@@ -1255,7 +1250,6 @@ class Merge:
                     refreshed = True
                     continue
             self.announce(build.shared_failure if build is not None and build is not sent_build else None)
-            self.post_over_checkpoint()
             sent_build = build
             before_retry = partial(self.recheck_before_resend, build) if build is not None else None
             args = ["pr", "merge", pr, "--repo", repo, "--match-head-commit", gate.check_sha, *opts.gh_args]

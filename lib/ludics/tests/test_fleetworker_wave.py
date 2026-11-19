@@ -1554,6 +1554,10 @@ class Review(WaveDirCase):
                          'even if the PR says "Part of"'):
                 self.assertIn(want, prompt)
             self.assertTrue(self.read(stem + ".message.md").startswith(f"MERGE CLEARED 7 {fixed}\nVERDICT: clean\n"))
+            # The reviewer headed it at-open: the posted review leads with the kind and head reviewed,
+            # which is what a merge reads (prreview/checkpoint.py, #1242).
+            posted = self.read(stem + ".md")
+            self.assertTrue(posted.startswith(f"### Review checkpoint (confirm): head {fixed[:8]}\n\n### Review checkpoint (at-open)"), posted)
             self.assertEqual(self.shim_calls[-1], ["fleet-worker.sh", "board", "set", "wv", "t42", f"confirm=clean@{fixed[:8]}"])
         os.remove(stem + ".json")
         with self.world(verdict="VERDICT: blocking (1 blocking, 0 suggestions)", head=fixed):

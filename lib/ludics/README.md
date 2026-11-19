@@ -578,7 +578,8 @@ actual candidate parents. Its C implementation and header compile in separate ca
 the refreshed build refuses their combined tree when the compiler reports conflicting types.
 
 Agent notes (wave-20261119-ludics, t1242; refs #1242): `Merge.checkpoint_gate` reads the PR's
-issue comments once, at the top of `merge_call`, for the gated head; `prreview/checkpoint.py`
+issue comments before every attempt in `merge_call`, ahead of the merge build's last ref check,
+for the gated head; `prreview/checkpoint.py`
 owns the posted form (heading, footer suffix, verdict grammar) and `wave review` imports it, so a
 change to what the checkpoint posts changes what `merge` reads in the same file. Every merge
 fixture answers `issues/7/comments?per_page=100` (an empty list is "no checkpoint"); a fixture

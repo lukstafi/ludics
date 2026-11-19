@@ -57,7 +57,7 @@ the verdict line when it is, whole, one of
     VERDICT: clean                                      (or with counts, 0 blocking)
     VERDICT: suggestions                                (or with counts, 0 blocking)
     VERDICT: blocking (<n> blocking, <m> suggestions)   (the counts required)
-with decimal counts. Only the blocking count decides: more than zero blocks. Anything else is
+with decimal counts of at most nine digits. Only the blocking count decides: more than zero blocks. Anything else is
 ``unreadable``: no such line, another word, a count that contradicts its word (``clean (1 blocking,
 ...)``), a line wrapped in backticks, text after it. Unreadable is treated as blocking, never as a
 merge, and the line this verb prints says ``decision=unreadable`` for the coordinator to read the
@@ -111,7 +111,7 @@ from ludics.fleetworker.wave import USAGE, Review, Wave, load_wave, shim, utc_no
 from ludics.fleetworker.wavebrief import Part, render, write_atomically
 from ludics.fleetworker.wavelaunch import Record, record_of
 from ludics.fleetworker.waveprep import SHA40, TASK, TEMPLATES, subject
-from ludics.prreview.checkpoint import LABEL_SUFFIX, UNREADABLE, Verdict, heading, parse_verdict
+from ludics.prreview.checkpoint import LABEL_SUFFIX, UNREADABLE, Verdict, headed, heading, parse_verdict
 
 KINDS = ("at-open", "confirm")
 SHIPPED = ("checkpoint.md", "issue.md", "source.md", "confirm.md", "verdict.md")
@@ -547,6 +547,7 @@ def reviewed_locked(cfg: Config, call: Call) -> int:
             prompt = prompt_of(call, earlier)
             write_atomically(call.stem + ".prompt.md", prompt)
             review = run_reviewer(call, prompt)
+        review = headed(call.kind, call.sha, review)
         verdict = parse_verdict(review)
         write_atomically(call.stem + ".md", review)
         write_record(call, verdict, "", call.dry_run)

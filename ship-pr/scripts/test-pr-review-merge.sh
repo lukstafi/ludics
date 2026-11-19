@@ -65,6 +65,7 @@ FAIL_GRAPHQL=""                        # nonempty = the review-threads read gets
 # serves them (checkpoint_post rows); CHECKPOINT_FAIL nonempty = that read gets a 503. The
 # --over-checkpoint post is logged as CALL over-checkpoint and its body kept in the file below.
 CHECKPOINT_COMMENTS='[]'
+CHECKPOINT_COMMENTS_LATER=""           # nonempty = what the SECOND checkpoint read on answers with
 CHECKPOINT_FAIL=""
 SERIES_JSON=""                         # the PR's commits as the endpoint serves them (see reset)
 SERIES_JSON_LATER=""                   # nonempty = what the SECOND series read on answers with
@@ -530,12 +531,17 @@ gh() {
       ;;
     *"repos/$REPO/issues/7/comments?per_page=100")
       printf 'CALL checkpoint\n' >>"$CALLS_FILE"
+      reads=$(fixture_call_count checkpoint) || return 1
       if [ -n "$CHECKPOINT_FAIL" ]; then
         printf 'gh: 503 No server is currently available to service your request\n' >&2
         return 1
       fi
       gh_fixture_parse "$@"
-      gh_fixture_answer "$CHECKPOINT_COMMENTS"
+      if [ -n "$CHECKPOINT_COMMENTS_LATER" ] && [ "$reads" -ge 2 ]; then
+        gh_fixture_answer "$CHECKPOINT_COMMENTS_LATER"
+      else
+        gh_fixture_answer "$CHECKPOINT_COMMENTS"
+      fi
       ;;
     *"repos/$REPO/pulls/7/commits"*)
       printf 'CALL commits\n' >>"$CALLS_FILE"
@@ -784,6 +790,7 @@ reset() {
   THREADS_JSON_LATER=""
   FAIL_GRAPHQL=""
   CHECKPOINT_COMMENTS='[]'
+  CHECKPOINT_COMMENTS_LATER=""
   CHECKPOINT_FAIL=""
   rm -f "$TEST_ROOT/over-checkpoint"
   SERIES_JSON="[$(commit_row head-sha 'A commit with nothing to close.')]"
@@ -2524,6 +2531,26 @@ test_a_pr_without_a_blocking_checkpoint_merges_as_before() {
   assert_eq "$MERGE_RC" 1 "an unreadable heading holds the merge ($MERGE_OUTPUT)"
   assert_contains "$MERGE_OUTPUT" "with an unreadable heading, taken as a blocking at-open review" "saying why"
   assert_no_merge_call
+}
+
+# The checkpoint is read before EVERY attempt, as the threads are: a blocking review posted while
+# the first attempt was refused as not mergeable (or while a moved base was rebuilt) holds the retry,
+# and an override's reason is posted once, however many attempts follow.
+test_the_checkpoint_is_read_before_every_merge_attempt() {
+  checkpoint_reset
+  MERGE_NOT_MERGEABLE=1
+  CHECKPOINT_COMMENTS_LATER="[$(checkpoint_post at-open aaaaaaaa11 'VERDICT: blocking (1 blocking, 0 suggestions)')]"
+  run_merge
+  assert_eq "$MERGE_RC" 1 "the retry is held by the review posted since the first attempt ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "the review checkpoint holds it" "naming the hold"
+  assert_eq "$(grep -c -x 'CALL checkpoint' "$CALLS_FILE")" 2 "one read per attempt"
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "and only the first attempt was made"
+  rm -f "$TEST_ROOT/merge-failed-once"
+  CHECKPOINT_COMMENTS=$CHECKPOINT_COMMENTS_LATER
+  run_merge --over-checkpoint 'the maintainer cleared it on the issue'
+  assert_eq "$MERGE_RC" 0 "an override lands on the retry ($MERGE_OUTPUT)"
+  assert_eq "$(grep -c -x 'CALL checkpoint' "$CALLS_FILE")" 2 "read before each attempt"
+  assert_eq "$(grep -c -x 'CALL over-checkpoint' "$CALLS_FILE")" 1 "posting its reason once"
 }
 
 test_an_unread_checkpoint_is_unknown_not_none() {
@@ -4572,6 +4599,7 @@ tests=(
   test_a_blocking_checkpoint_holds_the_merge_until_a_confirm_clears_the_head
   test_a_pr_without_a_blocking_checkpoint_merges_as_before
   test_an_unread_checkpoint_is_unknown_not_none
+  test_the_checkpoint_is_read_before_every_merge_attempt
   test_over_checkpoint_posts_its_reason_before_the_merge_call
   test_a_quoted_closing_sentence_in_a_commit_body_warns
   test_a_commit_closing_the_pr_own_issue_is_silent

@@ -4,16 +4,16 @@ A wave's review checkpoint (issue-wave's ``wave review``, fleetworker/wavereview
 reviewer's review on the PR when it opens (``at-open``) and, after a blocking one, again before the
 merge (``confirm``). The worker is told to ask for the confirm; nothing held the merge until it did
 (wave-20261118-ocannl's t2329 merged on a blocking at-open verdict). ``merge`` now reads the PR's
-checkpoint posts before its first merge call and REFUSES (exit 1) when the newest at-open verdict
+checkpoint posts before every merge attempt and REFUSES (exit 1) when the newest at-open verdict
 blocks and no confirm posted after it clears the head being merged. ``--over-checkpoint <reason>``
 merges over a hold, posting the reason on the PR just before the merge call; nothing goes over it
 silently, and nothing goes over a read that did not answer (exit 3, retried).
 
-THE POSTED FORM, which wavereview.py writes and this module owns (``heading``, ``LABEL_SUFFIX``,
+THE POSTED FORM, which wavereview.py writes and this module owns (``headed``, ``LABEL_SUFFIX``,
 ``parse_verdict``): a PR comment whose last non-blank line is the footer ``pr-review.sh comment
 --coordinator '<label> review checkpoint'`` writes, ``(Posted by the wave coordinator, <label>
 review checkpoint)``; whose first non-blank line is ``### Review checkpoint (<kind>): head
-<sha8>``; and whose last non-blank line above the footer is the verdict line (THE VERDICT below).
+<sha8>`` (wave review writes that line from the kind and head it reviewed, ``headed``); and whose last non-blank line above the footer is the verdict line (THE VERDICT below).
 
 THE BOUNDARY, a fail-closed allowlist. Read: the PR's issue comments (REST
 ``issues/<pr>/comments``, every page; a page that is not a list of comments, or a read that does
@@ -40,7 +40,7 @@ the verdict line when it is, whole, one of
     VERDICT: clean                                      (or with counts, 0 blocking)
     VERDICT: suggestions                                (or with counts, 0 blocking)
     VERDICT: blocking (<n> blocking, <m> suggestions)   (the counts required)
-with decimal counts. Only the blocking count decides: more than zero blocks. Anything else is
+with decimal counts of at most nine digits. Only the blocking count decides: more than zero blocks. Anything else is
 ``unreadable``, which blocks.
 """
 
@@ -54,12 +54,21 @@ from ludics.prreview.core import GhOk, GhSession, fail, json_stream
 LABEL_SUFFIX = " review checkpoint"
 KINDS = ("at-open", "confirm")
 HEADING = re.compile(r"### Review checkpoint \((at-open|confirm)\): head ([0-9a-f]{8})")
-VERDICT = re.compile(r"VERDICT: (clean|suggestions|blocking)(?: \((0|[1-9][0-9]*) blocking, (0|[1-9][0-9]*) suggestions\))?")
+VERDICT = re.compile(r"VERDICT: (clean|suggestions|blocking)(?: \((0|[1-9][0-9]{0,8}) blocking, (0|[1-9][0-9]{0,8}) suggestions\))?")
 
 
 def heading(kind: str, sha: str) -> str:
     """A checkpoint post's first line, as the reviewer is told to write it and HEADING reads it."""
     return f"### Review checkpoint ({kind}): head {sha[:8]}"
+
+
+def headed(kind: str, sha: str, review: str) -> str:
+    """The review as posted: its first non-blank line is ``heading(kind, sha)``, the reviewer's own
+    first line kept below it when it is not that line, so what a merge reads is the head and kind
+    reviewed, never the reviewer's typing of them."""
+    first = heading(kind, sha)
+    body = review.lstrip("\n")
+    return body if body.split("\n", 1)[0].rstrip() == first else f"{first}\n\n{body}"
 
 
 @dataclass(frozen=True)
