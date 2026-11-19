@@ -1069,6 +1069,13 @@ class Merge:
             "merges without the verdict instead.",
         )
 
+    # GitHub's GraphQL answer to the merge of a PR that conflicts with its base (ludics#1244, seen on
+    # ocannl-staging#2155): no merge happened, so it is a refusal, not an ambiguous write. A CLOSED
+    # form: the whole first stderr line, exactly as gh prints it (`GraphQL: `, the message, then the
+    # error's path; core.py's grammar). It takes the "not mergeable" re-read of the mergeable
+    # field; any other wording, or this message on a line with anything else, stays ambiguous.
+    _CONFLICTS = "GraphQL: Pull Request has merge conflicts (mergePullRequest)"
+
     def merge_call(self) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
@@ -1140,7 +1147,7 @@ class Merge:
                     f"NOT merged: {repo}#{pr}'s head is no longer {gate.check_sha[:8]}, the commit the build",
                     f"signal was read for ({err}). A push moved it; re-run merge so the gate reads the new head.",
                 )
-            if "not mergeable" in err or "cannot be cleanly created" in err:
+            if "not mergeable" in err or "cannot be cleanly created" in err or err == self._CONFLICTS:
                 if attempt >= 3:
                     fail(
                         1,
