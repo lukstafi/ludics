@@ -321,7 +321,7 @@ def runner_problem(runner: str | list[str], kind: str, revision: str, fw: str) -
     if not flags:
         return None
 
-    # The driver still scans stderr for lease refusals. Show the form without echoing request data.
+    # Show the form without echoing request data (a usage refusal: exit 2, no THE STATUS file).
     options = leg_words("<request-id>", "<full-SHA>", "<clone>", "<checkout>", kind)
     slot = " [--cpu|--gpu]" if kind == "correctness" else ""
     guidance = (" Put the leg's slot flag before -- if needed. Keep runner-owned flags after --."
