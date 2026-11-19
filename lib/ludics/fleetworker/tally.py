@@ -36,11 +36,13 @@ so no relaunch is counted twice:
 ``board takeover`` itself writes nothing (takeover.py): it may be read, and read again, without a
 spawn. A CLI worker launched again under a new name, or on another box, counts where its row is
 set ``launched`` with that name or that ``agent_host``; a native finisher of a CLI worker, where
-its row is set ``launched`` with its own ``transport``. A ``launch --replace`` whose worker no row names (a name reused outside a wave) is a
-``BOARD TALLY NOTE``, as an unstick's is. The boundary: the board sees a native relaunch only
-through the ``state=launched`` its spawn writes, so a spawn that writes none counts nothing and two
-such writes for one spawn count two (native-workers.md asks for one per spawn); a count is
-corrected by a set that names ``relaunches``, after a ``board show``.
+its row is set ``launched`` with its own ``transport``. A ``launch --replace`` whose worker no row
+names (a name reused outside a wave) is a ``BOARD TALLY NOTE``, as an unstick's is. The boundary:
+the board sees a native relaunch only through the ``state=launched`` its spawn writes, so a spawn
+that writes none counts nothing and two such writes for one spawn count two (native-workers.md asks
+for one per spawn, and a retry of one whose acknowledgement was lost is one more: re-read with
+``board show`` first); a count is corrected by a set that names ``relaunches``, after a ``board
+show``.
 
 The turns: two writers, one classifier (``classify``):
 

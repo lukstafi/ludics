@@ -108,7 +108,7 @@ other first word and on a `status` key, and writes both. The takeover keys are `
 `none`), `farside` (`<box>:<path>` far-side worktrees), `plan_dir` and `state`. Their grammars
 and the state words are `lib/ludics/fleetworker/takeover.py`'s. The writers check the lease
 themselves; check it before interventions. A board write that fails may or may not have landed: re-read with `board show`
-before retrying it.
+before retrying it (a retried second `state=launched` counts one more relaunch).
 
 When a worker died with its process (a coordinator restart kills every in-process worker), its
 replacement's brief is `fleet-worker.sh board takeover <wave> <task>`: the stored brief, then a

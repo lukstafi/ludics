@@ -31,7 +31,9 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``new_row`` is true, when it joins the table's end (#1114: a task typed wrong, ``2032`` for
         ``t2032``, made an empty second row each time); the refusal names the nearest task the
         board has. ``new_row`` on a task that has its row is no refusal, as ``create`` is none on
-        a board that exists, so a retried first write is safe. THE LAUNCH STAMP: a set that leaves
+        a board that exists, so a retried first write is safe -- except a retried second
+        ``state=launched``, which counts again (THE RELAUNCH COUNT): re-read with ``show`` before
+        retrying any write (below). THE LAUNCH STAMP: a set that leaves
         the row's ``state`` with ``launched`` as its first word (``;:,.`` stripped, case ignored),
         on a row with no ``launched_at``, also writes ``launched_at``, this module's now (the
         ``updated_at`` stamp), at the row's end: every launch, ``wave launch``'s and a native
@@ -47,7 +49,8 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         same CLI worker's before and after it (``transport`` ``cli`` or absent both times, the same
         ``worker`` and the same ``agent_host``, compared as written: this store knows no box's
         other spellings), since one CLI name launches again on its box only through ``launch
-        --replace``, which counts its own. A value already there that is no count refuses the set, nothing written.
+        --replace``, which counts its own. A value already there that is no count refuses the set,
+        nothing written.
         THE COUNTERS START AT ZERO: a set that creates a row also writes ``interventions=0``,
         ``routine_answers=0`` and ``relaunches=0`` after its own pairs (unless it names them), so a
         row that has the fields was measured from its start and a row without them (one made before
