@@ -1555,7 +1555,8 @@ with a message byte-identical to a genuine conflict. Seen back to back on ocannl
 conflict-resolution merge. `merge` re-reads `.mergeable` over REST until it is non-null and retries
 on `true`, so a nonzero exit from it already means the recompute settled: `mergeable=false` is base
 drift needing a merge or rebase of the base branch, and only a repeated failure after that is a
-conflict you must resolve.
+conflict you must resolve. GitHub's `Pull Request has merge conflicts (mergePullRequest)` takes the
+same re-read: no merge happened, so it is never an ambiguous write.
 
 The build gate's own nonzero exits are the table under the gate above. Two of them come after
 `merge --wait` has already made its one recovery on a head run: 6 (a job that never got a runner)

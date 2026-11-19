@@ -2840,6 +2840,33 @@ test_not_mergeable_is_decided_by_the_mergeable_field() {
   assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 3 "after three calls"
 }
 
+# ludics#1244. GitHub's GraphQL answer to merging a conflicting PR (ocannl-staging#2155) said no
+# merge happened, yet read as an ambiguous write. That exact line takes the mergeable-field re-read
+# above; any other line, a near miss of it included, is still ambiguous.
+test_graphqls_merge_conflicts_answer_is_a_conflict() {
+  local other
+  reset
+  MERGE_REFUSAL='GraphQL: Pull Request has merge conflicts (mergePullRequest)'
+  MERGEABLE=false
+  run_merge
+  assert_eq "$MERGE_RC" 1 "the conflict answer is a conflict, not an ambiguous write ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "really does not merge cleanly (mergeable=false after the recompute)" \
+    "decided by the mergeable field"
+  assert_contains "$MERGE_OUTPUT" "merge or rebase the base branch in" "with the bring-the-base-in step"
+  assert_not_contains "$MERGE_OUTPUT" "AMBIGUOUSLY" "never as a write that may have landed"
+  assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 1 "with no retry"
+  for other in 'GraphQL: Something went wrong while executing your query. (mergePullRequest)' \
+    'gh: Pull Request has merge conflicts' \
+    'GraphQL: Pull Request has merge conflicts (mergePullRequest), and more'; do
+    reset
+    MERGE_REFUSAL=$other
+    MERGEABLE=false
+    run_merge
+    assert_eq "$MERGE_RC" 3 "an answer outside the closed form stays ambiguous ($other: $MERGE_OUTPUT)"
+    assert_contains "$MERGE_OUTPUT" "gh pr merge failed AMBIGUOUSLY" "as a write that may have landed ($other)"
+  done
+}
+
 # ludics#823. `gh pr merge` on a PR it finds already merged makes no merge request (the fixture
 # gh's stated assumption above), so --match-head-commit binds nothing and merged=true alone does
 # not say the gated head landed. confirm() reads the head the PR merged at: another head than the
@@ -4039,6 +4066,7 @@ tests=(
   test_a_settled_red_is_rerun_once_with_rerun_failed_once
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
+  test_graphqls_merge_conflicts_answer_is_a_conflict
   test_a_pr_merged_elsewhere_at_an_unjudged_head_is_not_this_merge
   test_a_retry_onto_a_pr_merged_meanwhile_at_an_unjudged_head_is_not_this_merge
   test_a_pr_merged_elsewhere_at_the_judged_head_is_merged

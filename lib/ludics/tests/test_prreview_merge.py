@@ -167,6 +167,23 @@ class Production(unittest.TestCase):
                 self.assertIn("It may have LANDED", done.stderr)
                 self.assertEqual(len([c for c in self.calls() if c[:2] == ["pr", "merge"]]), 1)
 
+    def test_graphqls_merge_conflicts_answer_is_a_conflict(self) -> None:
+        """#1244: GitHub's GraphQL answer to merging a conflicting PR says no merge happened, so it
+        takes the mergeable-field re-read (false: bring the base in), never the ambiguous exit 3."""
+        conflict = [
+            (MERGE, 1, "", "GraphQL: Pull Request has merge conflicts (mergePullRequest)\n"),
+            ([".mergeable | tostring"], 0, "false\n", ""),
+            *GREEN,
+        ]
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]):
+                self.route(conflict)
+                done = self.run_cmd(entry, "merge", "o/r#7")
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("really does not merge cleanly (mergeable=false after the recompute)", done.stderr)
+                self.assertNotIn("AMBIGUOUSLY", done.stderr)
+                self.assertEqual(len([c for c in self.calls() if c[:2] == ["pr", "merge"]]), 1)
+
     def test_checks_ends_with_its_trailer_and_a_red_is_one(self) -> None:
         red = [(["check-runs"], 0, "ci\tfailure\thttps://u\t1\n", ""), *GREEN]
         for entry in self.entries():
