@@ -460,12 +460,12 @@ class Tally(StoreCase):
         self.set("c2", ("worker", "w1-2"), ("state", "launched"))  # no transport: a CLI row, as a tally by worker reads it
         self.set("c2", ("state", "launched"))
         self.assertEqual((self.fields("c1")["relaunches"], self.fields("c2")["relaunches"]), ("0", "0"))
-        rc, out, _ = self.set("c1", ("worker", "w1-1b"), ("state", "launched"))
+        _, out, _ = self.set("c1", ("worker", "w1-1b"), ("state", "launched"))
         self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "c1" relaunches=1', "a CLI relaunch under a new name")
-        rc, out, _ = self.set("c2", ("transport", "subagent"), ("agent", "f1"), ("state", "launched"))
+        _, out, _ = self.set("c2", ("transport", "subagent"), ("agent", "f1"), ("state", "launched"))
         self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "c2" relaunches=1', "a native finisher of a CLI worker")
         self.set("c2", ("state", "implementing"))
-        rc, out, _ = self.set("c2", ("transport", "cli"), ("worker", "w1-2"), ("state", "launched"))
+        _, out, _ = self.set("c2", ("transport", "cli"), ("worker", "w1-2"), ("state", "launched"))
         self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "c2" relaunches=2', "a row native before the set is no same CLI worker")
 
     def test_a_relaunch_on_an_older_row_says_its_count_is_partial_or_refuses(self) -> None:
