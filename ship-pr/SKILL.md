@@ -329,7 +329,7 @@ When the tracker lives in a different repo from the PRs (a staging fork carrying
 carrying issues is a common pairing), comment on the tracking issue with what this PR does. On a
 multi-PR arc that comment is what makes the phases legible later.
 
-Right after a push, if the repository configures a merge-build plan, run `pr-review.sh --repo <owner>/<repo> merge-build --plan-only --base origin/<base> --head HEAD` with the current base tip and the pushed head available locally to find out what run is owed while review and CI are in flight.
+Right after a push, if the repository configures a merge-build plan, fetch the PR's base branch from the target repository and run `pr-review.sh --repo <target-owner>/<target-repo> merge-build --plan-only --base <fetched-base-sha> --head HEAD` to learn what run is owed while review and CI are in flight.
 
 ## Monitor
 

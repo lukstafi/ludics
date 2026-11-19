@@ -1167,6 +1167,7 @@ class Plan(Repo):
         head, tip = self.sides("keep", "seam() { :; }")
         git(self.clone, "fetch", "-q", "--no-tags", "--refmap=", "origin", "refs/pull/7/head", "refs/heads/main")
         refs = self.refs()
+        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/plan-only" / head
         for word in ("admitted runtest", "nothing-owed"):
             with self.subTest(word=word):
                 verdict = f"ship-pr-merge-plan: {word}"
@@ -1174,10 +1175,13 @@ class Plan(Repo):
                 out = io.StringIO()
                 with (
                     mock.patch.object(mergebuild, "_slot_runner", side_effect=AssertionError("a slot was probed")),
+                    mock.patch.object(mergebuild, "_git", wraps=mergebuild._git) as git_calls,  # pyright: ignore[reportPrivateUsage]
                     contextlib.redirect_stdout(out),
                 ):
                     mergebuild.dry_build("owner/repo", head, "main", tip, config, "test", self.clone, plan_only=True)
                 self.assertIn(verdict, out.getvalue())
+                self.assertEqual([Path(call.args[1]).name for call in git_calls.call_args_list if "checkout" in call.args[0]], ["plan"])
+                self.assertEqual((retained / "plan.log").read_text().strip(), verdict)
                 self.assert_untouched(refs)
 
     def test_the_plan_runs_under_the_commands_contract(self) -> None:

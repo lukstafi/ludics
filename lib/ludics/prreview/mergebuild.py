@@ -1103,7 +1103,10 @@ def _build_in_scratch(
                 activity = "plan" if plan_only else "build"
                 cli.say(f"merge build {subject.label}: no {activity} — {why_not}")
                 return None
-        merge_sha, err = _commit_out(quiet, tree, written, tip, gated, f"ship-pr merge build of {subject.label}", "the merge commit")
+        merge_sha, err = _commit_out(
+            quiet, tree, written, tip, gated, f"ship-pr merge build of {subject.label}", "the merge commit",
+            checkout=not plan_only,
+        )
         if err:
             fail(3, f"{stop}: {err}.")
         # PROVENANCE (#1024): the scratch goes with the build, so the output is what names it.
@@ -1321,10 +1324,11 @@ def _comments_only(
 
 
 def _commit_out(
-    quiet: list[str], tree: str, written: str, tip: str, gated: str, message: str, what: str
+    quiet: list[str], tree: str, written: str, tip: str, gated: str, message: str, what: str, *,
+    checkout: bool = True,
 ) -> tuple[str, str]:
     """A commit of the tree ``written`` with the merge's two parents (THE COMMAND'S CONTRACT),
-    checked out in full at ``tree``: ``(its sha, "")``, or ``("", what went wrong)``."""
+    checked out in full at ``tree`` for a build: ``(its sha, "")`` or ``("", what went wrong)``."""
     ident = dict(os.environ)
     for role in ("AUTHOR", "COMMITTER"):
         ident[f"GIT_{role}_NAME"] = "ship-pr merge build"
@@ -1333,6 +1337,8 @@ def _commit_out(
     sha = commit.stdout.strip()
     if commit.rc != 0 or not _SHA.fullmatch(sha):
         return "", f"{what} could not be written ({_first_line(commit)})"
+    if not checkout:
+        return sha, ""
     out = _git([*quiet, "-c", "core.sparseCheckout=false", "checkout", "--quiet", "--detach", sha], tree)
     if out.rc != 0:
         return "", f"{what} could not be checked out ({_first_line(out)})"
@@ -1354,13 +1360,16 @@ class _Ran:
     earlier: tuple[buildhistory.Row, ...] = ()
 
 
-def _retain(repo: str, pr: str, head: str, name: str, log: str, status: str) -> str | None:
+def _retain(
+    repo: str, pr: str, head: str, name: str, log: str, status: str, *, plan_only: bool = False,
+) -> str | None:
     """Retain command artifacts before scratch cleanup; retries replace the same head's files."""
     root = buildhistory.state_root(repo)
     if root is None:
         return None  # fixtures can explicitly disable state; config-only dry runs have no repo
-    directory = os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"),
-                                            pr or "dry-run", head))
+    # A plan-only read can use another base for the same head as a full dry run.
+    run = pr or ("plan-only" if plan_only else "dry-run")
+    directory = os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"), run, head))
     try:
         os.makedirs(directory, exist_ok=True)
         for source, leaf in ((log, f"{name}.log"), (status, f"{name}.status")):
@@ -1456,7 +1465,7 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
             unstarted = str(exc)
     took = int(time.monotonic() - started)
     rc_text = _status_text(status)
-    log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status)
+    log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status, plan_only=plan_only)
     if log_dir:
         cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
     # Its checkout goes now, so the build's slot is not taken beside it.

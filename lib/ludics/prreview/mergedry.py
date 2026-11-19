@@ -16,8 +16,8 @@ or, without it, the copy on the default branch of the repository ``--repo``/``RE
 exactly as merge reads it; with neither, exit 2. When a repository is named, the checkout must have
 a remote naming it, as merge's clone must; with ``--config`` alone any checkout serves. It must be a
 FULL clone (neither shallow nor partial), checked before any diff: rename detection in a partial
-clone would fetch the blobs it lacks. As in merge, the config is read first, and a side that
-changed nothing is ``no build`` unless its trigger is ``always``.
+clone would fetch the blobs it lacks. As in merge, the config determines the trigger, and a side
+that changed nothing is ``no build`` unless its trigger is ``always``.
 
 THE TWO SIDES stand in for merge's drift read: ``git diff --name-status -M`` from the two
 revisions' merge base to the head (the PR's side) and to the base (the base's advance), each with
@@ -30,10 +30,11 @@ Exit: what merge's build step would make of the pair. 0 the merge would proceed 
 build`` line saying why); 1 refused (the build failed, or the two do not merge cleanly); 2 usage,
 the config, the checkout or a revision; 3 could not run; 4 the build's timeout passed.
 
-PLAN ONLY uses the same candidate, config, trigger and plan as the dry run. It stops before the
-slot probe and reads the existing verdict allowlist and closed no-verdict list (mergebuild.py's
-THE PLAN). Exit 0 for admitted, nothing owed or no applicable plan, 1 for unadmitted or a
-conflict, 2 for usage or prerequisites, and 3 when the read could not reach a verdict. An
+PLAN ONLY uses the same candidate, config, trigger and plan as the dry run. It checks the
+candidate out only for the plan and stops before the slot probe. Its verdict allowlist and closed
+no-verdict list are mergebuild.py's THE PLAN. When a repo is named, logs use a separate
+``plan-only`` directory. Exit 0 for admitted, nothing owed or no applicable plan, 1 for unadmitted
+or a conflict, 2 for usage or prerequisites, and 3 when the read could not reach a verdict. An
 admitted plan leaves admission to the merge build.
 """
 
