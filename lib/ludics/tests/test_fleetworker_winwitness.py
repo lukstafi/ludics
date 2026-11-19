@@ -288,7 +288,8 @@ class StagedScripts(unittest.TestCase):
         revision = subprocess.check_output(["git", "-C", origin, "rev-parse", "HEAD"], text=True).strip()
         config = os.path.join(self.dir, "global.gitconfig")
         with open(config, "w", encoding="ascii") as f:
-            f.write("[core]\n\tautocrlf = true\n\teol = crlf\n")
+            f.write(f"[core]\n\tautocrlf = true\n\teol = crlf\n\tattributesFile = {os.devnull}\n")
+        env = {"GIT_CONFIG_GLOBAL": config, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1"}
         host = "rog-nv-linux"
         for request, fields, expected in (("inherit", SITE[host], b"x\r\n"),
                                           ("lf", {**SITE[host], "staging_line_endings": "lf"}, b"x\n")):
@@ -297,7 +298,7 @@ class StagedScripts(unittest.TestCase):
                 self.assertIsInstance(site, Site, site)
                 assert isinstance(site, Site)
                 self.site = replace(site, root=self.site.root, bash=self.site.bash)
-                with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": config, "GIT_CONFIG_NOSYSTEM": "1"}):
+                with mock.patch.dict(os.environ, env):
                     done = self.stage(revision, request=request)
                 self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
                 for name in ("README", "source.sh"):
