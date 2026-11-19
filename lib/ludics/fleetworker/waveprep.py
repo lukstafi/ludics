@@ -218,6 +218,7 @@ class Prep:
     base_origin: str = ""
     default_tip: str | None = None
     done: list[str] = field(default_factory=lambda: [])
+    task_section: str = ""  # The rendered task part of the brief, saved for the review checkpoint.
 
     def __post_init__(self) -> None:
         chosen = self.wave.profiles[self.profile] if self.profile else Profile(self.wave.transport, self.wave.kind)
@@ -625,7 +626,10 @@ def rendered(prep: Prep, parts: list[Part], values: dict[str, str]) -> str:
 
 
 def brief_text(prep: Prep) -> str:
-    parts = [*common_parts(prep), *(p for p in (part(prep, "tasks", f"{prep.task}.md"),) if p)]
+    parts = common_parts(prep)
+    task_part = part(prep, "tasks", f"{prep.task}.md")
+    assert task_part is not None
+    parts.append(task_part)
     if prep.legs:
         item = part(prep, "leg.md")
         assert item is not None
@@ -643,7 +647,9 @@ def brief_text(prep: Prep) -> str:
     values = values_of(prep)
     if "PROJECT" in names(parts):
         values["PROJECT"] = project_value(prep)
-    return rendered(prep, parts, values)
+    brief = rendered(prep, parts, values)
+    prep.task_section = rendered(prep, [task_part], values)
+    return brief
 
 
 def reservation(prep: Prep, box: str, checkout: str, purpose: str) -> dict[str, Any]:
@@ -677,7 +683,7 @@ def record(prep: Prep, step: str) -> None:
     os.makedirs(os.path.dirname(prep.manifest), exist_ok=True)
     write_atomically(prep.manifest, json.dumps({
         "task": prep.task, "wave": prep.wave.wave, "worker": prep.worker, "branch": prep.branch, "base": prep.base,
-        "worktree": prep.worktree, "standing": [prep.standing_id(b) for b in prep.boxes],
+        "worktree": prep.worktree, "standing": [prep.standing_id(b) for b in prep.boxes], "task_section": prep.task_section,
         # THE LAUNCH RECORD: everything ``wave launch`` does for a CLI task, as prepared here. It reads
         # this and re-derives nothing from the wave file, so no later edit of that file can make it
         # launch one thing and reserve or record another (wavelaunch.py).

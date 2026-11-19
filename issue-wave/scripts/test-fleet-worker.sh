@@ -915,6 +915,9 @@ if [ "$1 $2" = "pr view" ]; then
   [ "${SHIM_GH:-}" != down ] || { printf 'error connecting to api.github.com\n' >&2; exit 1; }
   cat "$SHIM_GH_PR_VIEW"; exit 0
 fi
+if [ "$*" = "api --method GET --paginate repos/example/project/pulls/12/comments" ] && [ -n "${SHIM_GH_INLINE_REPLIES:-}" ]; then
+  cat "$SHIM_GH_INLINE_REPLIES"; exit 0
+fi
 if [ "$*" = "auth git-credential get" ]; then
   cat > /dev/null
   case "${SHIM_GH_CRED:-}" in none) exit 1 ;; hang) sleep 30 ;; esac
@@ -6537,7 +6540,7 @@ expect "render substitutes literally" 0 "^WAVE RENDER $K/out.md: 1 part(s), 5 va
   "${FWK[@]}" wave render --set WORKER=w --set "WT=/a|b" --set BR=b --set BASE=x --set T=unused --out "$K/out.md" "$K/common.md"
 [ "$(cat "$K/out.md")" = 'Worker w: /a|b on b at x (`$(touch "$TMP/pwned")` | & \1)' ] && [ ! -e "$TMP/pwned" ] &&
   ok "...every byte of the prose and the values as given" || ko "rendered: $(cat "$K/out.md")"
-printf '# Task @@T@@: @@ISSUE@@\n' > "$K/tasks/t77.md"
+printf '# Task @@T@@: @@ISSUE@@\n\nVerification is cc only. Live GPU evidence is out of scope.\n' > "$K/tasks/t77.md"
 jq -n --arg co "$proj" '{wave:"wkv", repository:"example/project", checkout:$co, worker_prefix:"wk", agent_host:"testbox",
   transport:"subagent", kind:"claude", standing_purpose:"standing iteration for @@T@@",
   loops:{cc:{box:"testbox", purpose:"cc integration loop", checkout:"/nowhere", tip:"master", command:["true"], cpu:true, poll:1}}}' > "$K/wave.json"
@@ -6618,6 +6621,18 @@ mkdir -p "$K/bin"
 cat > "$K/bin/claude" <<'REVIEWER'
 #!/usr/bin/env bash
 cat > "$REVIEW_STDIN"
+if [ -n "${SHIM_GH_INLINE_REPLIES:-}" ]; then
+  endpoint=repos/example/project/pulls/12/comments
+  command="gh api --method GET --paginate $endpoint"
+  for arg do
+    [ "$arg" = "Bash($command)" ] && permitted=1
+  done
+  if [ "${permitted:-}" = 1 ] && grep -Fxq "    $command" "$REVIEW_STDIN"; then
+    evidence=$(gh api --method GET --paginate "$endpoint") || exit 1
+    reply=$(jq -er '.[] | select(.in_reply_to_id == 100) | .body' <<<"$evidence") || exit 1
+    REVIEW_SAYS=$(printf 'REBUTTED: %s\n\nVERDICT: clean' "$reply")
+  fi
+fi
 jq -n --arg r "$REVIEW_SAYS" '{type:"result", is_error:false, result:$r}'
 REVIEWER
 chmod +x "$K/bin/claude"
@@ -6628,8 +6643,17 @@ expect "a dry-run review reads a blocking verdict whole: confirm, never merge" 0
   env REVIEW_SAYS=$'### Review checkpoint (at-open): head x\n\nA finding.\n\nVERDICT: blocking (1 blocking, 2 suggestions)' "${FWR[@]}" wave review "$K/wave.json" t77 12 "$pbase" --kind at-open --dry-run
 grep -q "example/project#12, head \`$pbase\`" "$K/review-stdin" && grep -q "^The PR is for issue example/project#77" "$K/review-stdin" && ! grep -q '@@' "$K/review-stdin" &&
   ok "...the reviewer got the rendered shipped prompt on its stdin" || ko "the reviewer's stdin: $(head -n 5 "$K/review-stdin" 2>&1)"
+grep -Fxq 'Verification is cc only. Live GPU evidence is out of scope.' "$K/review-stdin" &&
+  grep -Fq 'Omit blocking findings based solely on requirements the task' "$K/review-stdin" &&
+  ok "...and the reviewer judges the scoped-out GPU witness outside the assignment" || ko "the at-open prompt omits the assigned scope"
 grep -q "^REVIEW_POSTED 12 $pbase$" "$K/reviews/12-at-open-${pbase:0:12}.message.md" && grep -q 'CONFIRM_REQUEST 12 <head sha>' "$K/reviews/12-at-open-${pbase:0:12}.message.md" &&
   ok "...and the worker's message asks for the confirm" || ko "message: $(cat "$K/reviews/12-at-open-${pbase:0:12}.message.md" 2>&1)"
+printf '%s\n' '[{"id":100,"body":"A finding."},{"id":101,"in_reply_to_id":100,"body":"The run record includes the control witness."}]' > "$K/inline-replies.json"
+expect "confirm can clear a finding rebutted only in an inline reply" 0 "verdict=clean blocking=0 suggestions=0 decision=cleared" -- \
+  env SHIM_GH_INLINE_REPLIES="$K/inline-replies.json" REVIEW_SAYS='VERDICT: blocking (1 blocking, 0 suggestions)' \
+  "${FWR[@]}" wave review "$K/wave.json" t77 12 "$pbase" --kind confirm --dry-run
+grep -Fxq 'REBUTTED: The run record includes the control witness.' "$K/reviews/12-confirm-${pbase:0:12}.md" &&
+  ok "...the confirm received the worker's inline reply" || ko "the confirm omitted the rebuttal"
 rm -f "$K/reviews/12-at-open-${pbase:0:12}.json"
 expect "...and a review that ends on no verdict line is unreadable, taken as blocking" 0 "verdict=unreadable blocking=0 suggestions=0 decision=unreadable" -- \
   env REVIEW_SAYS=$'Mostly suggestions.\n\nVERDICT: blocking (1 blocking, 2 suggestions), I think' "${FWR[@]}" wave review "$K/wave.json" t77 12 "$pbase" --kind at-open --dry-run

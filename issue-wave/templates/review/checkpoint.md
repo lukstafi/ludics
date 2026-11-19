@@ -20,9 +20,12 @@ and a command outside the forms below is refused. Read with:
 The project's own rules are its `AGENTS.md` or `CLAUDE.md` at the root of the tree, and the notes
 they point to. Read them at the base, and hold the PR to them.
 
-Read the task's assigned verification in the worker brief at `@@BRIEF@@`, if present. Use the
-task's backend scope for dedicated probes and the project's full-suite requirements for controls
-in the full suite.
+Use the assigned task section to determine which parts of the issue and which verification the
+worker was assigned. Apply explicit task scope ahead of the issue's general acceptance criteria
+and shared verification rules. Omit blocking findings based solely on requirements the task
+explicitly excludes. Read the worker brief at `@@BRIEF@@` for shared context and for the task
+section when it is absent here. Use the task's backend scope for dedicated probes and the
+project's full-suite requirements for controls in the full suite.
 
 Look especially for:
 

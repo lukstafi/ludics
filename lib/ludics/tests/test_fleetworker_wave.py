@@ -1618,6 +1618,86 @@ class Review(WaveDirCase):
             self.assertIn(f"`{self.wavedir}/briefs/brief-p8.md`", prompt)
             self.assertNotIn("gh issue view", prompt)
 
+    def test_review_infers_a_post_wave_source_from_its_prep_manifest(self) -> None:
+        path, task, opts = waveprep.parse([self.path, "p8", "--source", "1910", "--base", self.base])
+        prep = waveprep.build(self.cfg, path, task, opts)
+        os.makedirs(os.path.join(self.wavedir, "briefs"))
+        self.write("briefs/brief-p8.md", waveprep.brief_text(prep))
+        waveprep.record(prep, waveprep.READY)
+        # The launch record also suffices for tasks prepared before the section was recorded.
+        manifest = json.loads(self.read(prep.manifest))
+        manifest.pop("task_section", None)
+        self.write("prep/p8.json", json.dumps(manifest))
+        with self.world():
+            rc, out, err = self.review(task="p8")
+        self.assertEqual(rc, 0, out + err)
+        prompt = self.read(self.stem() + ".prompt.md")
+        self.assertIn("proposed by the work on\no/up#1910", prompt)
+        self.assertNotIn("gh issue view", prompt)
+
+    def test_review_uses_the_brief_for_a_legacy_manifest_without_launch_metadata(self) -> None:
+        os.makedirs(os.path.join(self.wavedir, "prep"))
+        os.makedirs(os.path.join(self.wavedir, "briefs"))
+        self.write("prep/p8.json", json.dumps({"task": "p8", "wave": "wv", "done": [waveprep.READY]}))
+        self.write("briefs/brief-p8.md", "## The task\n")
+        with self.world():
+            rc, out, err = self.review("--source", "1910", task="p8")
+        self.assertEqual(rc, 0, out + err)
+        prompt = self.read(self.stem() + ".prompt.md")
+        self.assertIn(f"`{self.wavedir}/briefs/brief-p8.md`", prompt)
+        self.assertIn("proposed by the work on\no/up#1910", prompt)
+
+    def prep_issue_override(self) -> None:
+        path, task, opts = waveprep.parse([self.path, "t42", "--issue", "99", "--base", self.base])
+        prep = waveprep.build(self.cfg, path, task, opts)
+        waveprep.brief_text(prep)
+        waveprep.record(prep, waveprep.READY)
+
+    def test_review_uses_the_prepared_issue_instead_of_the_task_number(self) -> None:
+        self.prep_issue_override()
+        with self.world():
+            rc, out, err = self.review()
+        self.assertEqual(rc, 0, out + err)
+        prompt = self.read(self.stem() + ".prompt.md")
+        self.assertIn("The PR is for issue o/up#99", prompt)
+        self.assertIn("# Task t42: o/up#99", prompt)
+
+    def test_review_refuses_a_subject_that_conflicts_with_the_prepared_scope(self) -> None:
+        self.prep_issue_override()
+        with self.world():
+            rc, out, err = self.review("--issue", "42")
+            self.assertEqual(self.claude.calls(), [])
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("the subject 'o/up#42' differs from prep for 't42'", err)
+
+    def test_at_open_carries_the_rendered_task_scope_beside_the_issue(self) -> None:
+        self.write("tasks/t42.md", "# Task @@T@@\n\nVerification for @@ISSUE@@ is cc only. Live GPU evidence is out of scope.\n")
+        path, task, opts = waveprep.parse([self.path, "t42", "--base", self.base])
+        prep = waveprep.build(self.cfg, path, task, opts)
+        waveprep.brief_text(prep)
+        waveprep.record(prep, waveprep.READY)
+        self.write("tasks/t42.md", "This edit came after prep.\n")
+        with self.world():
+            rc, out, err = self.review()
+        self.assertEqual(rc, 0, out + err)
+        prompt = self.read(self.stem() + ".prompt.md")
+        self.assertIn("Omit blocking findings based solely on requirements the task\nexplicitly excludes.", prompt)
+        self.assertIn("## Assigned scope\n\n# Task t42\n\nVerification for o/up#42 is cc only."
+                      " Live GPU evidence is out of scope.\n", prompt)
+        self.assertNotIn("This edit came after prep.", prompt)
+        self.assertNotIn("@@", prompt)
+
+    def test_confirm_offers_only_the_current_prs_inline_comment_read(self) -> None:
+        with self.world():
+            self.assertEqual(self.review()[0], 0)
+            _, out, err = self.review(kind="confirm")
+            ran = self.claude.calls()
+        self.assertEqual(len(ran), 2, out + err)
+        command = "gh api --method GET --paginate repos/o/staging/pulls/7/comments"
+        self.assertFalse(any("gh api" in arg for arg in ran[0]))
+        self.assertEqual([arg for arg in ran[1] if "gh api" in arg], [f"Bash({command})"])
+        self.assertIn("\n    " + command + "\n", self.read(self.stem("confirm") + ".prompt.md"))
+
     def test_the_project_part_is_the_waves_or_the_bases_copy(self) -> None:
         repo = os.path.join(self.dir, "repo")
         os.makedirs(os.path.join(repo, ".github"))

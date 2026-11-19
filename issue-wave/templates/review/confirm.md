@@ -2,10 +2,14 @@
 
 An earlier review of this PR, at head `@@REVIEWED_SHA@@`, found blocking defects. It is in
 `@@REVIEW_FILE@@`: read it first. Your job now is to decide whether the current head resolves each
-blocking finding, by a fix or by a rebuttal that holds against the code. Read top-level PR comments
-and review summaries for the worker's replies:
+blocking finding, by a fix or by a rebuttal that holds against the code. Read the top-level PR
+comments, review summaries and inline replies for the worker's evidence.
 
     gh pr view @@PR@@ --repo @@REPO@@ --json comments,reviews --jq '[.comments[], .reviews[]] | sort_by(.submittedAt // .createdAt)[] | ([.submittedAt // .createdAt, .state // "COMMENT", .author.login, .commit.oid] | map(select(. != null)) | join(" ")) + "\n\(.body)\n"'
+
+    @@INLINE_COMMENTS@@
+
+An inline reply's `in_reply_to_id` names its parent comment. Read replies in resolved threads too.
 
 Read the change since the reviewed head, `git -C @@CHECKOUT@@ diff @@REVIEWED_SHA@@ @@SHA@@`, not
 the whole PR again. Report a new blocking finding only where that change introduced one. For each
