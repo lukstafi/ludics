@@ -101,7 +101,6 @@ BUILD_LIVE_REMOTE=""                   # a moving-base case reads main from this
 BUILD_LATER=""                         # a successor already in the bare repository's object store
 BUILD_TIP_LATER=""                     # an ill-shaped live-tip answer after the build
 BUILD_TARGET_LATER=""                  # a retarget after the build
-BUILD_HEAD_LATER=""                    # a push the final ref read sees and the PR head has not picked up
 BUILD_MOVE_ON_CALL=""                  # first merge write advances main and returns this refusal
 COMPARE_FORWARD=""                     # nonempty = the compare from the tip to the head (the PR's paths)
 COMPARE_REVERSE=""                     # nonempty = the compare from the head to the tip (the base's)
@@ -547,7 +546,7 @@ gh() {
       if [ -n "$BUILD_LIVE_REMOTE" ]; then
         tip=$(git --git-dir="$BUILD_LIVE_REMOTE" rev-parse --verify "refs/heads/$PR_BASE") || return 1
       fi
-      head_tip=${BUILD_HEAD_LATER:-${BRANCH_TIP_LATER:-${BRANCH_TIP:-$CURRENT_HEAD}}}
+      head_tip=${BRANCH_TIP_LATER:-${BRANCH_TIP:-$CURRENT_HEAD}}
       if [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
         state=MERGED
       fi
@@ -779,7 +778,6 @@ reset() {
   BUILD_LATER=""
   BUILD_TIP_LATER=""
   BUILD_TARGET_LATER=""
-  BUILD_HEAD_LATER=""
   BUILD_MOVE_ON_CALL=""
   COMPARE_FORWARD=""
   COMPARE_REVERSE=""
@@ -3723,8 +3721,9 @@ test_a_refresh_cannot_waive_a_new_shared_base_failure() {
     return 0
   fi
   assert_eq "$MERGE_RC" 1 "a shared failure on the refreshed base requires its own override ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_STDERR" "main at ${BUILD_LATER:0:8} alone fails the same way" "the failure is on the new base"
-  assert_contains "$MERGE_STDERR" "the red, the base sha, its owner" "the caller needs a reason for this failure"
+  assert_contains "$MERGE_STDERR" "main at $BUILD_LATER alone fails the same way" "the failure is on the new base"
+  assert_contains "$MERGE_STDERR" "--override covers only the initial build on base $BUILD_TIP" "the earlier base is named"
+  assert_contains "$MERGE_STDERR" "--override reason for $BUILD_LATER" "the caller needs a reason for this failure"
   assert_no_merge_call
 }
 
@@ -3792,14 +3791,14 @@ test_a_build_cannot_authorize_a_retargeted_merge() {
 test_a_build_cannot_authorize_a_head_lagging_its_live_ref() {
   reset
   moving_build_fixture compatible
-  BUILD_HEAD_LATER=$BUILD_LATER
+  BRANCH_TIP_LATER=$BUILD_LATER
   FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
     assert_posix_only_refusal "checking a late head push" "trigger always: every merge of this repository is built"
     return 0
   fi
   assert_eq "$MERGE_RC" 1 "the final ref read refuses the new lag ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_STDERR" "stands at $BUILD_HEAD_LATER" "the actual source branch tip is named"
+  assert_contains "$MERGE_STDERR" "stands at $BRANCH_TIP_LATER" "the actual source branch tip is named"
   assert_no_merge_call
 }
 

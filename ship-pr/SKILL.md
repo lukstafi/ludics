@@ -1378,8 +1378,9 @@ never on the base tip's CI, so roll-forward stands, and a repository without the
 before. Just before each merge attempt with a completed build, `merge` reads both live refs
 together (#1241). If the base tip moved, it builds the new candidate with the same gated head and
 re-runs the pre-call checks. It re-runs any configured plan and uses the same `timeout` for the optional
-`recheck <shell command>` or, if absent, for `command` again. A red on the refreshed base
-requires an override reason for that base. A second move, or a move before a
+`recheck <shell command>` or, if absent, for `command` again. If the refreshed tree and its base
+share a red, run `merge` again with an override reason that cites the new base SHA and failure.
+A second move, or a move before a
 gateway resend, refuses with both SHAs. A retarget or an unread base also requires a fresh
 invocation. GitHub pins only the head. A base that moves after the final re-read and before the
 merge call remains the integration loop's to catch.

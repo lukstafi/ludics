@@ -58,7 +58,7 @@ from functools import partial
 from typing import Literal, NoReturn, assert_never
 
 from ludics import cli
-from ludics.prreview.branchtip import Clear, Gone, Lags, Unread, read_tip, warning
+from ludics.prreview.branchtip import FULL_SHA, Clear, Gone, Lags, Tip, Unread, classify_tip, read_tip, warning
 from ludics.prreview.checks import parse_wait
 from ludics.prreview.closekw import MultiClose, SeriesClose
 from ludics.prreview.core import (
@@ -100,7 +100,6 @@ USAGE = (
 
 _SPACE = " \t\n\r\f\v"
 _REASON = re.compile(f"[^{_SPACE}]+[{_SPACE}]+[^{_SPACE}]+")
-_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass
@@ -817,8 +816,10 @@ class Merge:
         call, is the one that decides, so unread there is exit 3. That read is the guarantee, and it
         stops at the call: ``--match-head-commit`` binds the call to the gated head at GitHub, and
         a push landing after this read is that pin's, as far as it reaches (branchtip.py)."""
+        self.require_branch_tip(read_tip(self.session, self.repo, self.num), last=last)
+
+    def require_branch_tip(self, tip: Tip, *, last: bool) -> None:
         repo, pr = self.repo, self.num
-        tip = read_tip(self.session, repo, pr)
         match tip:
             case Clear():
                 return
@@ -1094,7 +1095,8 @@ class Merge:
     )
     _BUILD_REFS_JQ = (
         '.data.repository.pullRequest | [(.state // "-"), (.baseRefName // "-"), (.baseRef.name // "-"),'
-        ' (.baseRef.target.oid // "-"), (.headRefOid // "-"), (.headRef.target.oid // "-"),'
+        ' (.baseRef.target.oid // "-"), (.headRefOid // "-"),'
+        ' (if .headRef == null then "-" else (.headRef.target.oid // "!") end),'
         ' (.headRefName // "-"), (.headRepository.nameWithOwner // "-")] | @tsv'
     )
 
@@ -1121,19 +1123,13 @@ class Merge:
         if base != build.base_ref:
             fail(1, f"NOT merging {repo}#{pr}: the PR was retargeted from {branch} at {build.base_sha}",
                  f"to {shlex.quote(base)} after its merge build. Re-run merge.")
-        if base_ref != base or not _COMMIT_SHA.fullmatch(tip):
+        if base_ref != base or not FULL_SHA.fullmatch(tip):
             fail(3, f"NOT merging {repo}#{pr}: could not re-read a full commit SHA for the tip of {branch}.",
                  f"The merge-build verdict applies only to {build.base_sha}. Re-run merge.")
-        if not _COMMIT_SHA.fullmatch(head) or head_ref in ("", "-") or not head_repo:
-            fail(3, f"NOT merging {repo}#{pr}: its head branch could not be re-read after the merge build. Re-run merge.")
-        if head_tip == "-":
-            gone = Gone(head, shlex.quote(head_ref), shlex.quote(head_repo))
-            fail(1, f"REFUSING to merge {repo}#{pr}: {warning(gone, repo, pr)} Nothing was merged.")
-        if head_repo == "-" or not _COMMIT_SHA.fullmatch(head_tip):
-            fail(3, f"NOT merging {repo}#{pr}: its head branch answered no full commit SHA. Re-run merge.")
-        if head_tip != head:
-            lags = Lags(head, head_tip, shlex.quote(head_ref), shlex.quote(head_repo))
-            fail(1, f"REFUSING to merge {repo}#{pr}: {warning(lags, repo, pr)} Nothing was merged.")
+        observed_tip = None if head_tip == "-" else head_tip
+        self.require_branch_tip(
+            classify_tip(state.lower(), head, head_ref, head_repo, lambda: observed_tip, full_shas=True), last=True,
+        )
         if head != build.head_sha:
             fail(1, f"NOT merging {repo}#{pr}: its head moved from {build.head_sha} to {head}. Re-run merge.")
         return tip
@@ -1179,7 +1175,7 @@ class Merge:
                         self.refuse_stale_build(build, tip, "after refreshing the merge build")
                     warn(f"{repo}#{pr}'s base moved since its merge build ({build.base_sha} -> {tip}); rebuilding")
                     build = refresh_build(
-                        repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling,
+                        repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling, discard_override=bool(opts.override),
                     )
                     refreshed = True
                     continue

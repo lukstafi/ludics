@@ -1021,7 +1021,7 @@ def merge_build(
 
 def refresh_build(
     repo: str, pr: str, verdict: BuildVerdict, base_sha: str, *,
-    checkout: str | None, ceiling: Ceiling | None,
+    checkout: str | None, ceiling: Ceiling | None, discard_override: bool,
 ) -> BuildVerdict:
     """Rebuild an admitted candidate on the newly observed base (BASE FRESHNESS)."""
     config = verdict.config
@@ -1030,7 +1030,7 @@ def refresh_build(
     refreshed = _build(
         repo, pr, verdict.head_sha, verdict.base_ref, base_sha, config,
         "refreshing the merge-build verdict after base movement",
-        checkout=checkout, ceiling=ceiling,
+        checkout=checkout, ceiling=ceiling, prior_override_base=verdict.base_sha if discard_override else None,
     )
     assert refreshed is not None  # Only a COMMENTS ONLY read can skip inside _build.
     return refreshed
@@ -1048,12 +1048,13 @@ class _Subject:
     refuse: str
     pr: str
     repo: str
+    prior_override_base: str | None = None
 
 
 def _build(
     repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str, *,
     checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False, override: str = "",
-    candidates: Candidates | None = None, plan_only: bool = False,
+    candidates: Candidates | None = None, plan_only: bool = False, prior_override_base: str | None = None,
 ) -> BuildVerdict | None:
     """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
     clone ``checkout`` names as it is, with nothing fetched. Returns None when COMMENTS ONLY
@@ -1064,7 +1065,9 @@ def _build(
         stop = "plan not read" if plan_only else "NOT built"
         subject = _Subject(f"{what} (dry run)", f"merge-build {what}: {stop}", f"merge-build {what}: merge would REFUSE it", "", repo)
     else:
-        subject = _Subject(f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr, repo)
+        subject = _Subject(
+            f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr, repo, prior_override_base,
+        )
     with _INTERRUPTS.installed():
         return _build_in_scratch(
             subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override, candidates,
@@ -1768,6 +1771,13 @@ def _against_base(
     shared = f"a merge-build failure {base_ref} at {tip8} alone shares ({config.command}: exit {rc})"
     if override:
         return shared
+    if subject.prior_override_base is not None:
+        fail(
+            1, *plain,
+            f"and {shlex.quote(base_ref)} at {tip} alone fails the same way.",
+            f"The supplied --override covers only the initial build on base {subject.prior_override_base}.",
+            f"To merge over this red, re-run merge with an --override reason for {tip} naming the red and its owner.",
+        )
     fail(
         1, *plain,
         f"and {base_ref} at {tip8} alone fails the same way: the failure is the base's, not the merge's. Only",
