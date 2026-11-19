@@ -30,11 +30,13 @@ so no relaunch is counted twice:
   fleet-worker.sh board set <wave> <task> state=launched ...
                                                  every other relaunch: the store's THE RELAUNCH
                                                  COUNT (boardstore.py), which skips a set on the
-                                                 same CLI worker's row, the launch's to count
+                                                 same CLI worker's row (its worker and agent_host
+                                                 unchanged), the launch's to count
 
 ``board takeover`` itself writes nothing (takeover.py): it may be read, and read again, without a
-spawn. A CLI worker launched again under a new name counts where its row is set ``launched`` with
-that name. A ``launch --replace`` whose worker no row names (a name reused outside a wave) is a
+spawn. A CLI worker launched again under a new name, or on another box, counts where its row is
+set ``launched`` with that name or that ``agent_host``; a native finisher of a CLI worker, where
+its row is set ``launched`` with its own ``transport``. A ``launch --replace`` whose worker no row names (a name reused outside a wave) is a
 ``BOARD TALLY NOTE``, as an unstick's is. The boundary: the board sees a native relaunch only
 through the ``state=launched`` its spawn writes, so a spawn that writes none counts nothing and two
 such writes for one spawn count two (native-workers.md asks for one per spawn); a count is

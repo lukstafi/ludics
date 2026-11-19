@@ -116,7 +116,8 @@ generated *State at takeover* from those keys and the live sources (worktree HEA
 registry's outstanding requests for the worker, its bg-run verdicts), each missing key printed as
 missing. Exit 3 means the brief itself could not be read, so the output is no brief. It reads and
 writes nothing else: establishing that the old writer is gone stays the step below. The
-replacement's spawn writes its `agent=` and `state=launched` on the same row, and that second
+replacement's spawn writes its `transport=`, `agent=` and `state=launched` on the same row in one
+`board set` (a native finisher of a CLI worker changes the transport), and that second
 `state=launched` counts the finisher in the row's `relaunches` (ludics#1236), as it counts any
 native respawn; so write `state=launched` once per spawn, and a resumed worker's row its phase's word.
 

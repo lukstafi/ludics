@@ -467,6 +467,11 @@ class Tally(StoreCase):
         self.set("c2", ("state", "implementing"))
         _, out, _ = self.set("c2", ("transport", "cli"), ("worker", "w1-2"), ("state", "launched"))
         self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "c2" relaunches=2', "a row native before the set is no same CLI worker")
+        self.set("c3", ("worker", "w1-3"), ("agent_host", "mac"), ("transport", "cli"), ("state", "launched"))
+        self.set("c3", ("agent", "f1"), ("state", "launched"))
+        self.assertEqual(self.fields("c3")["relaunches"], "0", "a native finisher that leaves the transport cli is not seen")
+        _, out, _ = self.set("c3", ("agent_host", "rog"), ("state", "launched"))
+        self.assertEqual(out.splitlines()[-1], 'BOARD TALLY w: "c3" relaunches=1', "the same name on another box")
 
     def test_a_relaunch_on_an_older_row_says_its_count_is_partial_or_refuses(self) -> None:
         self.set("t1", ("transport", "subagent"), ("state", "launched"))

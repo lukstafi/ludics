@@ -45,8 +45,9 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         and its ``BOARD TALLY`` line after the ``BOARD SET`` one). Two such sets count nothing: one
         that names ``relaunches`` itself (it writes its own value), and one on a row that is the
         same CLI worker's before and after it (``transport`` ``cli`` or absent both times, the same
-        ``worker``), since one CLI name launches again only through ``launch --replace``, which
-        counts its own. A value already there that is no count refuses the set, nothing written.
+        ``worker`` and the same ``agent_host``, compared as written: this store knows no box's
+        other spellings), since one CLI name launches again on its box only through ``launch
+        --replace``, which counts its own. A value already there that is no count refuses the set, nothing written.
         THE COUNTERS START AT ZERO: a set that creates a row also writes ``interventions=0``,
         ``routine_answers=0`` and ``relaunches=0`` after its own pairs (unless it names them), so a
         row that has the fields was measured from its start and a row without them (one made before
@@ -419,13 +420,15 @@ def count(path: Path, doc: Doc, row: Doc, coordinator: str, payload: Doc) -> str
 
 def relaunched(before: dict[str, str] | None, after: dict[str, str], pairs: list[tuple[str, str]]) -> bool:
     """THE RELAUNCH COUNT's test (the header): the set names a ``launched`` state on a row stamped
-    before it, names no ``relaunches`` itself, and is no set on the same CLI worker's row."""
+    before it, names no ``relaunches`` itself, and is no set on the same CLI worker's row (its
+    ``worker`` and ``agent_host`` unchanged)."""
     named = {key for key, _ in pairs}
     if before is None or "launched_at" not in before or "state" not in named or "relaunches" in named:
         return False
     if not launched(after.get("state", "")):
         return False
-    return not (cli_row(before) and cli_row(after) and before.get("worker") == after.get("worker"))
+    same = all(before.get(key) == after.get(key) for key in ("worker", "agent_host"))
+    return not (cli_row(before) and cli_row(after) and same)
 
 
 def tally_by_worker(root: str, coordinator: str, payload: Doc) -> None:
