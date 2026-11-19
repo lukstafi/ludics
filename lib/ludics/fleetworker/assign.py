@@ -507,6 +507,7 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
     unknown = False
     for block in selected:
         request_id, kind, box = block["request_id"], block["kind"], block["execution_host"]
+        shown_id = execution.shown(request_id) if request_id.isprintable() else ascii(request_id)
         record = execution.record_of(records, request_id)
         if record is not None and record.get("state") != "reserved":
             if not placement(block, record):
@@ -520,7 +521,6 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
         answer = call(cfg, verb, payload_of(base_fields, block))
         if answer.rc == 4 or answer.unreachable:
             detail = answer.diagnostic or "above"
-            shown_id = execution.shown(request_id) if request_id.isprintable() else ascii(request_id)
             try:
                 err(f"ASSIGN UNKNOWN {shown_id}: the {verb[1]}'s outcome is unknown ({detail});"
                     " reconcile it, never retry it blind")
@@ -538,7 +538,6 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
             unknown = True
             continue
         if answer.rc != 0:
-            shown_id = execution.shown(request_id) if request_id.isprintable() else ascii(request_id)
             # A window exiting 3 is pending (registry.py, THE PENDING WINDOW): refused for now, asked again later.
             pending = "; it is pending: ask again once the box's records conclude" if verb[1] == "window" and answer.rc == 3 else ""
             err(f"ASSIGN REFUSED {shown_id}: the {verb[1]} exited {answer.rc} (above); nothing assigned{pending}")
