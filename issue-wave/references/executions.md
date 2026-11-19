@@ -1296,7 +1296,8 @@ since the reboot ends everything running there; `--as` names that reservation, a
 active one on the box refuses the reboot; `<box>` is the short name, `rog`, or the reservation's
 fleet name, `rog-nv-linux`, which `wake-lab.sh endpoint-map` maps to it) reboots it into Windows for one boot and exits 0 only once its native Git
 Bash answers; `wake-lab.sh boot-linux --as=<request_id> <box>` returns it, and `wake-lab.sh status <box>` then shows
-`os=linux`. Exit 3 is `NEEDS A PERSON`: tell the user at once rather than retrying. The README's lab
+`os=linux`. Once Linux is confirmed, follow [*Reserve, launch, observe, conclude*](#reserve-launch-observe-conclude)
+to conclude the reservation. Exit 3 is `NEEDS A PERSON`: tell the user at once rather than retrying. The README's lab
 section has the one-time sudoers grant each box needs. tuf is refused (no Wake-on-LAN).
 
 ### Coordinator recipe for a worker's Windows witness
@@ -1329,11 +1330,18 @@ Around it, the coordinator:
   machine facts: one JSON object from a box's Linux fleet name to its native Windows ssh alias
   `windows_host` (its `win` or `lan` route, never `wsl`) and its Windows `root` (each witness gets a
   fresh `<root>/<request_id>`, kept afterwards as evidence), and optionally `bash`,
-  `max_cap_seconds` and `stage_seconds`, for example `{"rog-nv-linux": {"windows_host":
-  "rog-nv-win", "root": "C:/Users/<you>/witness"}}`. The request's `windows_host` must be the
-  site's. Its `script`, `checkout` and `evidence` fields are not used: the script run is your
-  `--script` copy, so the bytes you reviewed are the bytes staged, and no worker names a path the
-  box writes.
+  `max_cap_seconds`, `stage_seconds` and `staging_line_endings`. For a project whose CI expects LF,
+  use that project's site file with `"staging_line_endings": "lf"` on the box entry. The only
+  accepted value is `"lf"`. It sets `core.autocrlf=false` and `core.eol=lf` in the fresh witness
+  repository before the first checkout. Git still applies the repository's file attributes.
+  Omit the field to inherit the box's Git settings. The request's `windows_host` must match the
+  site's, and its `script` is the local path to review. The verb stages your reviewed `--script`
+  copy and uses the site's Windows paths.
+
+  ```json
+  {"rog-nv-linux": {"windows_host": "rog-lan", "root": "C:/Users/you/witness", "staging_line_endings": "lf"}}
+  ```
+
 - **After, by exit.** 0 and 1 are concluded (`pass`; `fail`, `timeout` or `not-launched`) with
   Linux confirmed: send the worker the verdict and the transcript, which is the evidence. 2
   reserved nothing and touched nothing: fix the input, or wait until the box is free. 3 is

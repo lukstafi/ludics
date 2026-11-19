@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import unittest
 from collections.abc import Generator
+from dataclasses import replace
 from typing import Any
 from unittest import mock
 
@@ -112,6 +113,14 @@ class Readers(unittest.TestCase):
         self.assertIn("not an alias of rog-nv-linux", endpoint_problem(MAP, "rog-nv-linux", "minix-amd-win") or "")
         self.assertIn("on no row", endpoint_problem(MAP, "tuf-amd-linux", "tuf-amd-win") or "")
         self.assertIn("on no row", endpoint_problem("", "rog-nv-linux", "rog-nv-win") or "")
+
+    def test_the_site_line_endings_allowlist(self) -> None:
+        host = "rog-nv-linux"
+        for value in (None, True, 1, "", "LF", "crlf", "inherit", {"core.autocrlf": False}):
+            with self.subTest(value=value):
+                fields = {**SITE[host], "staging_line_endings": value}
+                self.assertIn("staging_line_endings must be the string 'lf'", site_said({host: fields}, host))
+        self.assertIn("names staging_line_endings", block_problem(block(staging_line_endings="lf")) or "")
 
     def test_staged_sha_needs_the_line_last_and_exit_zero(self) -> None:
         self.assertTrue(staged_sha(0, f"x\r\nobserved_sha: {A}\r\n", A))
@@ -228,7 +237,8 @@ class StagedScripts(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.dir], check=False))
-        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+               "-c", "core.autocrlf=false"]
         origin = os.path.join(self.dir, "origin")
         subprocess.run([*git, "init", "-q", origin], check=True)
         with open(os.path.join(origin, "README"), "w") as f:
@@ -246,11 +256,11 @@ class StagedScripts(unittest.TestCase):
 
     def stage(self, revision: str, script: bytes = b"printf 'from the worker\\n'\n", request: str = "r1") -> subprocess.CompletedProcess[str]:
         text = staging_script(self.site, request, revision, self.url, script, b"# the driver\n")
-        return subprocess.run(["bash", "--noprofile", "--norc", "-s"], input=text, capture_output=True, text=True)
+        return subprocess.run([self.site.bash, "--noprofile", "--norc", "-s"], input=text, capture_output=True, text=True)
 
     def witness(self, request: str = "r1") -> subprocess.CompletedProcess[str]:
         path = os.path.join(self.site.root, request, "witness.sh")
-        return subprocess.run(["bash", "--noprofile", "--norc", "--", path], capture_output=True, text=True)
+        return subprocess.run([self.site.bash, "--noprofile", "--norc", "--", path], capture_output=True, text=True)
 
     def test_a_staged_revision_runs_the_script_from_its_checkout(self) -> None:
         done = self.stage(self.later, b"pwd -P\nprintf 'rev=%s\\n' \"$WITNESS_REVISION\"\n")
@@ -266,6 +276,34 @@ class StagedScripts(unittest.TestCase):
         self.assertIn(os.path.join(directory, "checkout"), lines)
         self.assertIn(f"rev={self.later}", lines)
         self.assertTrue(any(line.startswith("git --version: git version") for line in lines))
+
+    def test_staging_line_endings_on_the_first_checkout(self) -> None:
+        origin = os.path.join(self.dir, "origin")
+        with open(os.path.join(origin, ".gitattributes"), "w", encoding="ascii") as f:
+            f.write("source.sh text\n")
+        with open(os.path.join(origin, "source.sh"), "w", encoding="ascii") as f:
+            f.write("x\n")
+        subprocess.run([*self.git, "-C", origin, "add", ".gitattributes", "source.sh"], check=True)
+        subprocess.run([*self.git, "-C", origin, "commit", "-q", "-m", "Mark a file as text"], check=True)
+        revision = subprocess.check_output(["git", "-C", origin, "rev-parse", "HEAD"], text=True).strip()
+        config = os.path.join(self.dir, "global.gitconfig")
+        with open(config, "w", encoding="ascii") as f:
+            f.write(f"[core]\n\tautocrlf = true\n\teol = crlf\n\tattributesFile = {os.devnull}\n")
+        env = {"GIT_CONFIG_GLOBAL": config, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1"}
+        host = "rog-nv-linux"
+        for request, fields, expected in (("inherit", SITE[host], b"x\r\n"),
+                                          ("lf", {**SITE[host], "staging_line_endings": "lf"}, b"x\n")):
+            with self.subTest(policy=request):
+                site = site_entry({host: fields}, host, "/wake")
+                self.assertIsInstance(site, Site, site)
+                assert isinstance(site, Site)
+                self.site = replace(site, root=self.site.root, bash=self.site.bash)
+                with mock.patch.dict(os.environ, env):
+                    done = self.stage(revision, request=request)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                for name in ("README", "source.sh"):
+                    with open(os.path.join(self.site.root, request, "checkout", name), "rb") as f:
+                        self.assertEqual(f.read(), expected, name)
 
     def test_the_scripts_status_is_the_last_line(self) -> None:
         self.assertEqual(self.stage(self.sha, b"printf 'exit: 0\\n'\nexit 3\n").returncode, 0)
@@ -462,6 +500,9 @@ class Steps(unittest.TestCase):
                         (fleet, "#!/bin/bash\nprintf '%s\\n' fake-registry\n"),
                         (ssh, "#!/bin/bash\ncase \"${*: -1}\" in *' -s\"') cat >/dev/null; printf 'observed_sha: %s\\n' "
                               + A + " ;; *) printf '%s\\n' fake-verifier ;; esac\n"),
+                        # Self-signalling exercises the child's trap. Signalling the verifier process
+                        # during boot-windows exercises the parent's deferral. With the deferral
+                        # removed, default TERM kills the test before it observes recovery and exit 4.
                         (wake, "#!/bin/bash\n[ \"$1\" != status ] || { printf '%s\\n' 'dual  os=linux'; exit 0; }\n"
                                "trap \"printf '%s\\\\n' child-term-trap\" TERM\nkill -TERM \"$$\"\nprintf '%s\\n' \"$1\"\n"
                                + ('[ "$1" != boot-windows ] || kill -TERM "$PPID"\n' if cancel else ""))):
