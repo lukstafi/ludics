@@ -74,14 +74,14 @@ class Readers(unittest.TestCase):
     def test_runner_words_with_slot_flags_require_a_full_command(self) -> None:
         for runner, flag in (("tools/check.sh '--cpu'", "--cpu"), (["tools/check.sh", "--gpu"], "--gpu")):
             with self.subTest(runner=runner):
-                problem = block_problem(block("a b", runner=runner, clone="/c", checkout="/w"))
-                self.assertIn(f"execution leg --request 'a b' --rev {SHA} --checkout /c --worktree /w"
-                              f" --wait-window {flag} -- <runner-executable>", problem or "")
+                problem = block_problem(block("a", runner=runner, clone="/c", checkout="/w")) or ""
+                self.assertIn(f"runner contains {flag}", problem)
+                self.assertIn("--wait-window [--cpu|--gpu] -- <runner-executable>", problem)
+                self.assertIn("Keep runner-owned flags after --", problem)
         problem = block_problem(block("a", kind="measurement", runner=["bench", "--gpu"], clone="/c",
                                       checkout="/w", requested_revision="head-of:topic"))
-        self.assertIn("execution leg --request a --rev '<full-SHA>' --checkout /c --worktree /w"
-                      " -- <runner-executable>", problem or "")
-        self.assertIn("pin the same full SHA in the command and requested_revision", problem or "")
+        self.assertIn("--worktree <checkout> -- <runner-executable>", problem or "")
+        self.assertIn("Pin the same full SHA in the command and requested_revision", problem or "")
 
     def test_runner_reading_checks_complete_words_without_expanding_shell_syntax(self) -> None:
         for runner in ("tools/check.sh '--cpu label'", ["tools/check.sh", "--gpu label"], 'tools/check.sh "$FLAGS"'):
@@ -89,6 +89,10 @@ class Readers(unittest.TestCase):
                 self.assertIsNone(block_problem(block("a", runner=runner, clone="/c", checkout="/w")))
         self.assertIn("complete shell words",
                       block_problem(block("a", runner="tools/check.sh '", clone="/c", checkout="/w")) or "")
+        for runner in ("tools/check.sh --cpu>/tmp/log", "tools/check.sh # --cpu", "tools/check.sh\ntrue"):
+            with self.subTest(runner=runner):
+                problem = block_problem(block("a", runner=runner, clone="/c", checkout="/w"))
+                self.assertIn('a full leg in "command" for shell syntax', problem or "")
 
     def test_the_base_allowlist(self) -> None:
         self.assertIsNone(base_problem(BASE))

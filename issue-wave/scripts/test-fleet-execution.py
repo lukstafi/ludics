@@ -82,8 +82,9 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
     assign_base = root / 'assign-base.json'
     assign_base.write_text(json.dumps(dict(wave='wave', worker='assigner', transport='subagent',
                                           agent_host='fixture', repository='owner/repo', purpose='fixture')))
+    lease_text = 'EXECUTION REFUSED fixture: coordinator lease held by fixture'
     assign_block = dict(request_id='assign-cpu', execution_host='rog', kind='correctness',
-                        requested_revision='b' * 40, clone='/srv/project clone', checkout='/srv/project worktree',
+                        requested_revision='b' * 40, clone=f'/srv/{lease_text}', checkout='/srv/project worktree',
                         runner='run --cpu build @test/operations/scans -j 4')
     assignment = subprocess.run(
         ['bash', str(SCRIPT), 'execution', 'assign', str(assign_base), '-'],
@@ -92,9 +93,10 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
     )
     assert (assignment.returncode, assignment.stdout) == (2, ''), assignment
     assert '"command"' in assignment.stderr, assignment.stderr
-    correction = (f"execution leg --request assign-cpu --rev {'b' * 40} --checkout '/srv/project clone'"
-                  " --worktree '/srv/project worktree' --wait-window --cpu -- <runner-executable> <runner-args>")
+    correction = ("execution leg --request <request-id> --rev <full-SHA> --checkout <clone>"
+                  " --worktree <checkout> --wait-window [--cpu|--gpu] -- <runner-executable> <runner-args>")
     assert correction in assignment.stderr, assignment.stderr
+    assert lease_text not in assignment.stderr, assignment.stderr
     assert records() == {}
     print('PASS: a CPU flag in runner shorthand is refused before reservation with the full command form')
 

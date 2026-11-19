@@ -33,7 +33,8 @@ Do not combine this block with other handoff markers. Wait for the coordinator's
 repair instructions; an attention handoff is not authorization to run or retry the witness.
 
 For a cross-box leg you may give `"runner":"<runner-executable> <runner-args>","clone":"<the box's checkout>"`
-in place of `"command"`. Include the executable. `execution assign` wraps it into the leg form,
+in place of `"command"`. Give the executable and arguments as an array or one line of shell words.
+Use the full `"command"` for shell syntax such as redirection. `execution assign` wraps it into the leg form,
 with `--wait-window` for correctness. To specify leg options such as `--cpu` or `--gpu`, give the
 full leg in `"command"`, putting leg options before `--`. The full command form also lets you pass
 a runner's own `--cpu` or `--gpu` argument after `--`. Keep `"checkout"` for the worktree and put
