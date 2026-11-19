@@ -2931,7 +2931,9 @@ class Drive(DriveCase):
         cases: list[tuple[str, dict[str, Any] | None]] = [
             ("landed", {"unstick": "landed"}), ("failed", {"unstick": "failed"}),
             ("message-unwritten", {"unstick": "message-unwritten"}), ("unreadable", None),
-            ("nothing-assigned", {"unstick": "nothing-assigned"})]
+            ("nothing-assigned", {"unstick": "nothing-assigned"}),
+            # No message printed and no readable status: assign never reached its unstick, so there is nothing to resend.
+            ("nothing-assigned", None)]
         with self.world():
             for turn, (outcome, status) in enumerate(cases):
                 self.resumes, self.assign_status = turn, status

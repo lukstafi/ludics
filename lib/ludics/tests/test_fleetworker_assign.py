@@ -505,6 +505,8 @@ sys.exit(rc)
         self.assertIn("EXECUTION_ASSIGNED a\n", out)
         self.assertIn("ASSIGN LEASE LOST b: the run was refused on the lease (above); nothing assigned", err)
         self.assertIn("ASSIGN UNSTICK SKIPPED: the lease was lost (the run of b)", err)
+        self.assertIn("ASSIGN SKIPPED c: the lease was lost (the run of b); nothing asked", err)
+        self.assertEqual(self.calls, [["execution", "run", "a"], ["execution", "run", "b"]], "a lost lease ends the asking")
         self.assertEqual(self.unsticks, [])
         self.assertEqual(self.status(status), {"exit": lost, "unstick": "lease-lost", "tally": [], "lease_lost": "the run of b"})
         self.placement_rc = lost

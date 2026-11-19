@@ -121,7 +121,7 @@ THE ANSWERS:
             exactly when the status's ``unstick`` is ``landed`` (an UNKNOWN beside an assignment),
             and otherwise names the status's outcome: ``failed`` (``ASSIGN UNSTICK FAILED``) or an
             unreadable status (missing, malformed, another call's, or one left that could not be
-            removed first) is not known to have landed, so the worker's state is reconciled before
+            removed first) beside a printed message is not known to have landed, so the worker's state is reconciled before
             any resend; ``message-unwritten`` and the other outcomes ran no unstick.
             Every answer ends with the status's ``tally`` lines, the unstick's own ``BOARD TALLY``
             lines (assign ran it: the answered note, the mixed-``ALREADY`` and partial-assignment
@@ -902,7 +902,8 @@ class Driver:
         resumed = ""
         if done.rc == 4:
             # Only a landed unstick says the worker has its message; a failed or unread one may have reached it.
-            outcome = status["unstick"] if status is not None else "unreadable"
+            # No message printed: assign never reached its unstick, whatever became of its status.
+            outcome = status["unstick"] if status is not None else "unreadable" if done.out.strip() else "nothing-assigned"
             resumed = (f"; its unstick landed: the worker was resumed with {out}" if outcome == "landed" else
                        f"; no unstick of assign's is known to have landed ({outcome}): reconcile the worker's state"
                        f" before sending it {out}, and never assign again" if outcome in ("failed", "unreadable") else

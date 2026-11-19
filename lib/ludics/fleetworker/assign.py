@@ -74,7 +74,8 @@ block, in file order, then has one outcome, said in one line on stderr:
 - ``ASSIGN LEASE LOST <id>: ...``: the step exited ``LEASE_LOST_STATUS``, the lease is not this
   coordinator's (lease.py, THE LOST LEASE STATUS, which every step of assign is asked for through
   ``ASSIGN_STEP_ENV``); nothing is printed for it. So does a board placement write (below) that
-  exits so.
+  exits so. A lost lease ends the asking: each later block is ``ASSIGN SKIPPED <id>: ...``, nothing
+  asked of the registry or the board.
 
 A payload staging error before child startup says ``nothing asked`` and is a retryable refusal.
 
@@ -449,9 +450,31 @@ class StepResult(Done):
     diagnostic: str = ""
 
 
+def relay(argv: list[str], stdout: Any) -> tuple[int, list[str]] | None:
+    """``argv`` as a step of assign (``ASSIGN_STEP_ENV``: its lost lease is ``LEASE_LOST_STATUS``), its stdout
+    to ``stdout`` and its stderr relayed as it arrives, so an operator sees the reason before a window
+    sleeps, and kept: the status and the kept lines, or None when it could not start (said). An OSError
+    once it started propagates: that outcome is the caller's to call unknown."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        child = subprocess.Popen(argv, stdout=stdout, stderr=subprocess.PIPE, env={**os.environ, execution.ASSIGN_STEP_ENV: "1"})
+    except OSError as exc:
+        err(f"{execution.shown(argv[0])}: {exc.strerror}")
+        return None
+    kept: list[str] = []
+    with child:
+        assert child.stderr is not None
+        for raw in child.stderr:
+            line = proc.decode(raw)
+            sys.stderr.write(line)
+            sys.stderr.flush()
+            kept.append(line)
+        return child.wait(), kept
+
+
 def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> StepResult:
-    """This checkout's fleet-worker.sh with ``args`` and the payload file last. Relay stderr
-    as it arrives so an operator sees the reason before a window sleeps."""
+    """This checkout's fleet-worker.sh with ``args`` and the payload file last, through ``relay``."""
     script = os.path.join(cfg.here, os.path.basename(cfg.script))
     path = ""
     started = False
@@ -460,29 +483,19 @@ def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> StepResul
         descriptor, path = tempfile.mkstemp(prefix="fw-assign.", suffix=".json", dir=os.environ.get("TMPDIR") or "/tmp")
         with os.fdopen(descriptor, "w", encoding="utf-8") as f:
             f.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
-        sys.stdout.flush()
-        sys.stderr.flush()
         # Spool stdout so a large registry response cannot block the child as we relay stderr.
         with tempfile.TemporaryFile() as stdout:
-            try:
-                child = subprocess.Popen(
-                    [script, *args, path], stdout=stdout, stderr=subprocess.PIPE,
-                    env={**os.environ, execution.ASSIGN_STEP_ENV: "1"},
-                )
-            except OSError as exc:
-                err(f"{execution.shown(script)}: {exc.strerror}")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            started = True  # relay says a child that could not start itself; any OSError from it came after
+            ran = relay([script, *args, path], stdout)
+            if ran is None:
                 return StepResult(127, "")
-            started = True
-            with child:
-                assert child.stderr is not None
-                for raw in child.stderr:
-                    line = proc.decode(raw)
-                    sys.stderr.write(line)
-                    sys.stderr.flush()
-                    for prefix in ACTION_DIAGNOSTIC_PREFIX.values():
-                        if line.startswith(prefix):
-                            diagnostics.setdefault(prefix, line.splitlines()[0].removeprefix(prefix))
-                rc = child.wait()
+            rc, lines = ran
+            for line in lines:
+                for prefix in ACTION_DIAGNOSTIC_PREFIX.values():
+                    if line.startswith(prefix):
+                        diagnostics.setdefault(prefix, line.splitlines()[0].removeprefix(prefix))
             stdout.seek(0)
             out = proc.decode(stdout.read())
         if out:
@@ -512,24 +525,14 @@ def unstick(cfg: Config, box: str, name: str, message: str) -> Done:
     on our stderr, its stderr relayed as it arrives and kept, the status and that stderr returned
     (THE STATUS reads the tally lines off it)."""
     script = os.path.join(cfg.here, os.path.basename(cfg.script))
-    sys.stdout.flush()
-    sys.stderr.flush()
-    kept: list[str] = []
+    stdout = sys.stderr.fileno()
     try:
-        child = subprocess.Popen([script, "unstick", box, name, "--message", message], stdout=sys.stderr.fileno(),
-                                 stderr=subprocess.PIPE, env={**os.environ, execution.ASSIGN_STEP_ENV: "1"})
+        ran = relay([script, "unstick", box, name, "--message", message], stdout)
     except OSError as exc:
-        err(f"{execution.shown(script)}: {exc.strerror}")
-        return Done(127, "")
-    with child:
-        assert child.stderr is not None
-        for raw in child.stderr:
-            line = proc.decode(raw)
-            sys.stderr.write(line)
-            sys.stderr.flush()
-            kept.append(line)
-        rc = child.wait()
-    return Done(rc, "".join(kept))
+        # It started, so it may have reached the worker: a failed unstick (THE STATUS's "failed"), never "landed".
+        err(f"execution assign: the unstick's output could not be read after it started: {exc.strerror or exc}")
+        return Done(4, "")
+    return Done(127, "") if ran is None else Done(ran[0], "".join(ran[1]))
 
 
 Step = Callable[[Config, Sequence[str], dict[str, Any]], StepResult]
@@ -656,6 +659,10 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
     for block in selected:
         request_id, kind, box = block["request_id"], block["kind"], block["execution_host"]
         shown_id = execution.shown(request_id) if request_id.isprintable() else ascii(request_id)
+        if status.lease_lost:
+            # Every later call would be refused under the lease lock too: a lost lease ends the asking.
+            err(f"ASSIGN SKIPPED {shown_id}: the lease was lost ({status.lease_lost}); nothing asked")
+            continue
         record = execution.record_of(records, request_id)
         if record is not None and record.get("state") != "reserved":
             if not placement(block, record):
