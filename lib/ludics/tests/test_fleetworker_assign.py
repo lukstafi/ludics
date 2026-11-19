@@ -21,6 +21,7 @@ from ludics.fleetworker import assign, execution, boardstore
 from ludics.fleetworker.assign import (StepResult, assigned_revision, base_problem, block_problem, cmd_assign, fleet_worker_word,
                                        leg_command, parse, payload_of, read_blocks)
 from ludics.fleetworker.config import Config, load_config
+from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
 from ludics.fleetworker.transport import Done
 
 SHA = "b" * 40
@@ -179,14 +180,15 @@ class Outcomes(unittest.TestCase):
         return path
 
     def assign(self, args: list[str], answers: dict[str, StepResult], records: Sequence[dict[str, Any]] = (),
-               unstick_rc: int = 0) -> tuple[int, str, str]:
+               unstick_rc: int = 0, unstick_err: str = "", step_err: str = "") -> tuple[int, str, str]:
         def call(_cfg: Config, verb: Sequence[str], payload: dict[str, Any]) -> StepResult:
             self.calls.append([*verb, payload["request_id"]])
+            sys.stderr.write(step_err)  # what step() relays of a child's stderr
             return answers[payload["request_id"]]
 
-        def resend(_cfg: Config, box: str, name: str, file: str) -> int:
+        def resend(_cfg: Config, box: str, name: str, file: str) -> Done:
             self.unsticks.append((box, name, file))
-            return unstick_rc
+            return Done(unstick_rc, unstick_err)
 
         def placement(_cfg: Config, wave: str, worker: str, host: str, checkout: str) -> int:
             self.placements.append((wave, worker, host, checkout))
@@ -450,6 +452,61 @@ sys.exit(rc)
                                  unstick_rc=1)
         self.assertEqual(rc, 4)
         self.assertIn(f"resend with: fleet-worker.sh unstick box w --message {msg} -- never assign again", err)
+
+    def status(self, path: str) -> dict[str, Any]:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_the_status_carries_the_unsticks_outcome_and_its_own_tally_lines_alone(self) -> None:
+        """ludics#1234: a step's echoed BOARD TALLY line is relayed and never the status's; the unstick's are."""
+        requests = self.write("r.txt", message(block("a")))
+        msg, status = os.path.join(self.dir, "msg.txt"), os.path.join(self.dir, "status.json")
+        echoed = "BOARD TALLY WARNING far/w: printed by the step\n"
+        warning = "BOARD TALLY WARNING box/w: the unstick reached the worker, and its turn was not counted (board exit 1)"
+        rc, _, err = self.assign([self.base, requests, "--message", msg, "--unstick", "box", "w", "--status", status], {"a": StepResult(0, "{}")},
+                                 unstick_err=f"UNSTICKED box/w\n{warning}\n", step_err=echoed)
+        self.assertEqual(rc, 0)
+        self.assertIn("printed by the step", err)
+        self.assertEqual(self.status(status), {"exit": 0, "unstick": "landed", "tally": [warning], "lease_lost": ""})
+        rc, _, _ = self.assign([self.base, requests, "--message", msg, "--unstick", "box", "w", "--status", status],
+                               {"a": StepResult(0, "{}")}, unstick_rc=1)
+        self.assertEqual((rc, self.status(status)["unstick"]), (4, "failed"))
+        rc, _, _ = self.assign([self.base, requests, "--message", msg, "--unstick", "box", "w", "--status", status],
+                               {"a": StepResult(1, "")})
+        self.assertEqual(self.status(status), {"exit": 1, "unstick": "nothing-assigned", "tally": [], "lease_lost": ""})
+        rc, _, _ = self.assign([self.base, requests, "--message", os.path.join(self.dir, "no", "msg.txt"), "--unstick", "box", "w",
+                                "--status", status], {"a": StepResult(0, "{}")})
+        self.assertEqual((rc, self.status(status)["unstick"]), (4, "message-unwritten"))
+        rc, _, _ = self.assign([self.base, requests, "--status", status], {"a": StepResult(0, "{}")})
+        self.assertEqual(self.status(status), {"exit": 0, "unstick": "not-asked", "tally": [], "lease_lost": ""})
+
+    def test_a_lost_lease_is_its_own_exit_from_a_step_a_placement_or_the_unstick(self) -> None:
+        """ludics#1234: LEASE_LOST_STATUS from any gated call is assign's exit, over every other outcome, and the status
+        names the call; a lost lease sends the worker nothing."""
+        lost = 6  # lease.LEASE_LOST_STATUS, spelled out so the base fails on the outcome rather than the name
+        self.assertEqual(assign.LEASE_LOST_STATUS, lost)
+        requests = self.write("r.txt", message(block("a"), block("b", host="tuf"), block("c", checkout="/w/c")))
+        msg, status = os.path.join(self.dir, "msg.txt"), os.path.join(self.dir, "status.json")
+        args = [self.base, requests, "--message", msg, "--unstick", "box", "w", "--status", status]
+        rc, out, err = self.assign(args, {"a": StepResult(0, "{}"), "b": StepResult(lost, ""), "c": StepResult(4, "")})
+        self.assertEqual(rc, lost)
+        self.assertIn("EXECUTION_ASSIGNED a\n", out)
+        self.assertIn("ASSIGN LEASE LOST b: the run was refused on the lease (above); nothing assigned", err)
+        self.assertIn("ASSIGN UNSTICK SKIPPED: the lease was lost (the run of b)", err)
+        self.assertEqual(self.unsticks, [])
+        self.assertEqual(self.status(status), {"exit": lost, "unstick": "lease-lost", "tally": [], "lease_lost": "the run of b"})
+        self.placement_rc = lost
+        rc, _, err = self.assign(args, {"a": StepResult(0, "{}"), "b": StepResult(0, "{}"), "c": StepResult(0, "{}")})
+        self.assertEqual((rc, self.status(status)["lease_lost"]), (lost, "the placement of c"))
+        self.assertIn("ASSIGN LEASE LOST c: its placement write was refused on the lease (above)", err)
+        self.placement_rc = 0
+        rc, _, _ = self.assign(args, {"a": StepResult(0, "{}"), "b": StepResult(0, "{}"), "c": StepResult(0, "{}")}, unstick_rc=lost)
+        self.assertEqual(rc, lost)
+        self.assertEqual(self.status(status), {"exit": lost, "unstick": "failed", "tally": [], "lease_lost": "the unstick of box/w"})
+        # An exit 1 or 5 whose diagnostic quotes a lease refusal is that exit: assign reads statuses, never words.
+        quoted = StepResult(ASSIGN_ACTION_REQUIRED, "EXECUTION REFUSED fleet: coordinator lease held by other -- not you\n")
+        rc, _, _ = self.assign([self.base, requests, "--status", status], {"a": quoted, "b": StepResult(1, ""), "c": StepResult(0, "{}")})
+        self.assertEqual((rc, self.status(status)["lease_lost"]), (ASSIGN_ACTION_REQUIRED, ""))
 
     def test_shape_refusals_ask_nothing(self) -> None:
         for name, text in (("dup", message(block("a"), block("a"))), ("bad", message(block("a"), {"request_id": "z"}))):

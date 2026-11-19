@@ -82,7 +82,11 @@ THE ANSWERS:
   windows   attention immediately, once per returned turn, naming the saved request. The
             coordinator follows executions.md, Bounded native Windows verification.
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
-            <worker>``: it reserves, dispatches and resumes in one call. A block an earlier call
+            <worker> --status <file>``: it reserves, dispatches and resumes in one call, and its
+            status file (assign.py, THE STATUS; removed before the call, and read only when its
+            ``exit`` is the call's) says what its unstick did. Exit ``LEASE_LOST_STATUS`` (6, lease.py,
+            THE LOST LEASE STATUS) is a lost lease: it ends the driver, as any lost lease does, and
+            is read off that status alone, never off assign's lines. A block an earlier call
             dispatched (assign's ``ASSIGN ALREADY`` line: a driver that died before it resumed
             the worker) is not assigned again, so its text is not in this call's message. Exit 0
             with no message printed means every block was such: the worker is resumed with that
@@ -113,14 +117,17 @@ THE ANSWERS:
             framed by ``ASSIGN ACTION REQUIRED ``. Earlier stderr lines, stdout and the worker's
             request text supply no detail to that note.
             Other nonzero exits are also attention (exit 4 can require reconciliation before
-            any further assignment). Every answer whose assign printed a message (assign tried its
-            unstick then: the answered note, the mixed-``ALREADY`` and partial-assignment
-            attention, and an exit 4 beside a message) ends with the unstick's ``BOARD TALLY``
-            lines (``tally.said``), so a lost count is never silent; an answer with no message
-            printed reached no unstick of assign's and carries none. The boundary: ``said`` reads
-            every line of assign's stderr that starts with ``BOARD TALLY WARNING`` or ``NOTE``,
-            and does not tell the unstick's lines from a step's, so a step echoing such a line
-            adds a false warning (loud: ``board show`` reconciles it), never hides a real one.
+            any further assignment); exit 4's line says whether the worker was resumed, which is
+            exactly when the status's ``unstick`` is ``landed`` (an UNKNOWN beside an assignment),
+            and otherwise that no unstick of assign's landed, naming the status's outcome
+            (``failed``: ``ASSIGN UNSTICK FAILED``; ``message-unwritten``; or an unreadable status).
+            Every answer ends with the status's ``tally`` lines, the unstick's own ``BOARD TALLY``
+            lines (assign ran it: the answered note, the mixed-``ALREADY`` and partial-assignment
+            attention, and an exit 4 beside a message), so a lost count is never silent; an answer
+            whose assign ran no unstick carries none. The boundary: only the status file is read
+            for these, never assign's stderr, so a step's echoed ``BOARD TALLY WARNING`` adds
+            nothing; an answer whose assign printed a message and left no readable status says
+            that instead, since its count is then unread.
   result    each line needs ``request_id``, an absolute ``run`` and a 40-hex ``observed_sha``, and is
             concluded off the run record: ``execution conclude --from-run``, and when that refuses,
             ``--from-bg-run`` (a refused conclusion concludes nothing, so trying both reads is
@@ -276,9 +283,10 @@ no hand-back's proposals (the editorial pass is the
 coordinator's, at close-out, over ``handbacks/``), and decides nothing a marker does not state. It
 proves the lease through the lease-gated verbs it calls (``unstick``, ``execution assign`` and
 ``conclude``, ``board close``, and ``wave review`` in its run): one of them refused with a lease
-refusal line (``LEASE_LOST``) ends the driver (exit 1), since a takeover is not a refusal to retry.
-The refusal is read off those verbs' failures only, never off what a worker wrote: a final message
-that quotes the phrase is a message.
+refusal line (``LEASE_LOST``), or ``execution assign`` exiting ``LEASE_LOST_STATUS`` (its only lease
+answer: assign's streams carry the worker's words and its steps' lines), ends the driver (exit 1),
+since a takeover is not a refusal to retry. The refusal line is read off the other verbs' failures
+only, never off what a worker wrote: a final message that quotes the phrase is a message.
 
 It stops on a stop file (``<wave dir>/drive.stop``, read before each tick) with exit 0, on a board
 it cannot read as this wave's (exit 1; an anchor that does not answer is tried again), and on a
@@ -301,9 +309,10 @@ from ludics import bgrun, cli
 from ludics.fleetworker.assign import ACTION_REQUIRED_LINE
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.lease import LEASE_LOST_STATUS
 from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
 from ludics.fleetworker.takeover import DONE_STATES, board_document, state_word
-from ludics.fleetworker.tally import said
+from ludics.fleetworker.tally import said, suffix
 from ludics.fleetworker.transport import Done, substitution
 from ludics.fleetworker.wave import USAGE, WORD, Wave, load_wave, shim, utc_now
 from ludics.fleetworker.wavebrief import write_atomically
@@ -355,9 +364,10 @@ REVIEWED = re.compile(r"WAVE REVIEW \S+: .* decision=([a-z]+) comment=\S+ messag
 # A lease refusal as lease.py's gates print it: `<VERB> REFUSED <label>: coordinator lease held by ...`,
 # on a line of its own or inside the line of a verb that wraps a step's refusal (`board close`: `...
 # board log exit 1 (BOARD REFUSED fleet: coordinator lease held by ...)`). Read only where no worker's
-# words are: the output of a lease-gated verb that exited nonzero (``Driver.call``'s ``gated``; of
-# ``execution assign`` its stderr alone, since its stdout is the assignment message, built from the
-# worker's request) and a failed review's log. Never a final message or a status summary.
+# words are: the output of a lease-gated verb that exited nonzero (``Driver.call``'s ``gated``) and a
+# failed review's log. Never a final message, a status summary, or ``execution assign``'s streams
+# (its stdout is the assignment message, built from the worker's request, and its stderr relays its
+# steps' lines): assign's lost lease is its exit status, LEASE_LOST_STATUS.
 LEASE_LOST = re.compile(r"\b[A-Z][A-Z -]* REFUSED [^:\n]*: coordinator lease held by [^\n]*")
 ALREADY = re.compile(r"ASSIGN ALREADY (\S+):")
 
@@ -478,6 +488,32 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
 
 class LeaseLost(Exception):
     """A verb refused because the lease is another coordinator's: the driver's to stop on."""
+
+
+UNSTICK_OUTCOMES = ("landed", "failed", "not-asked", "nothing-assigned", "message-unwritten", "lease-lost")
+
+
+def assign_status(path: str, rc: int) -> dict[str, Any] | None:
+    """``execution assign``'s status file (assign.py, THE STATUS), read fail-closed: None unless it is
+    one object of its four fields, its ``exit`` this call's status, its ``unstick`` a known outcome,
+    its ``tally`` single lines and its ``lease_lost`` a single line."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data: Any = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    status = cast(dict[str, Any], data)
+    tally: Any = status.get("tally")
+    lines = cast(list[Any], tally) if isinstance(tally, list) else None
+    lost: Any = status.get("lease_lost")
+    if (set(status) != {"exit", "unstick", "tally", "lease_lost"} or type(status["exit"]) is not int or status["exit"] != rc
+            or status["unstick"] not in UNSTICK_OUTCOMES or lines is None
+            or not all(isinstance(line, str) and line and "\n" not in line for line in lines)
+            or not isinstance(lost, str) or "\n" in lost):
+        return None
+    return status
 
 
 @dataclass(frozen=True)
@@ -663,11 +699,11 @@ class Driver:
 
     def call(self, *args: str, timeout: float | None = None, gated: str = "") -> Done:
         """This fleet-worker.sh with ``args``, its stdout captured and its stderr kept in ``self.err``.
-        ``gated`` names a verb that proves the lease, and which of its streams hold no worker's words
-        (``both``, or ``stderr``): a lease refusal there (LEASE_LOST), on a failure, ends the driver."""
+        ``gated="both"`` names a verb that proves the lease and whose streams hold no worker's words:
+        a lease refusal there (LEASE_LOST), on a failure, ends the driver."""
         rc, out, self.err = execute([self.script, *args], timeout)
         if gated and rc != 0:
-            lost = LEASE_LOST.search(self.err if gated == "stderr" else out + "\n" + self.err)
+            lost = LEASE_LOST.search(out + "\n" + self.err)
             if lost:
                 raise LeaseLost(lost.group(0).strip())
         return Done(rc, out)
@@ -815,11 +851,22 @@ class Driver:
 
     def assign(self, worker: Worker, turn: int, message: str, last: dict[str, Any] | None) -> None:
         out = self.turn_file(worker, turn, "assigned.md")
+        status_file = self.turn_file(worker, turn, "assign-status.json")
+        try:
+            os.unlink(status_file)  # a file left by an earlier try of this turn is not this call's
+        except OSError:
+            pass  # none to remove, or one that stays: its ``exit`` must still be this call's to be read
         done = self.call("execution", "assign", self.path("reserve", f"{worker.task}-base.json"), message,
-                         "--message", out, "--unstick", worker.box, worker.name, gated="stderr")
+                         "--message", out, "--unstick", worker.box, worker.name, "--status", status_file)
+        status = assign_status(status_file, done.rc)
+        if done.rc == LEASE_LOST_STATUS:
+            where = status["lease_lost"] if status is not None and status["lease_lost"] else "one of its calls"
+            raise LeaseLost(f"execution assign exit {done.rc}: the lease refused {where}")
         earlier = ALREADY.findall(self.err)
-        # A printed message means assign tried its unstick: every such answer, attention or not, carries its tally lines.
-        counted = said(self.err) if done.out.strip() else ""
+        # Every answer carries the tally lines of the unstick assign ran (none when it ran none); a printed
+        # message with no readable status says its count is unread rather than nothing.
+        counted = suffix(status["tally"]) if status is not None else (
+            f"; no readable assign status ({status_file}): its unstick's tally is unread" if done.out.strip() else "")
         if done.rc == 0 and not done.out.strip():
             # Nothing assigned by this call: an earlier one dispatched every block and never resumed the worker.
             if os.path.isfile(out):
@@ -847,8 +894,13 @@ class Driver:
         if done.rc == 1 and tries < TRIES:
             return self.note(worker, turn, "request", "retry", f"execution assign refused a block (try {tries} of {TRIES})",
                              tries=tries, next=now() + RETRY)
+        resumed = ""
+        if done.rc == 4:
+            outcome = status["unstick"] if status is not None else "unreadable"
+            resumed = (f"; its unstick landed: the worker was resumed with {out}" if outcome == "landed" else
+                       f"; no unstick of assign's landed ({outcome}): the worker still waits for its assignments")
         self.attention(worker, turn, "request", f"execution assign exit {done.rc}" + (f" after {tries} tries" if done.rc == 1 else "")
-                       + f": read its lines before anything else; the request is in the turn's message{counted}", message)
+                       + f": read its lines before anything else{resumed}; the request is in the turn's message{counted}", message)
 
     def conclude(self, worker: Worker, turn: int, message: str, what: Turn) -> None:
         lines: list[str] = []

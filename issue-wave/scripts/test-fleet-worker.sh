@@ -2440,6 +2440,8 @@ expect "unstick refuses when the recorded worktree is gone, before touching the 
 rm -f "$ISSUE_WAVE_STATE/workers/wo/exit.prev" "$ISSUE_WAVE_STATE/workers/wo/meta.prev"
 mv "$proj.moved" "$proj"
 expect "a non-holder cannot unstick" 1 "UNSTICK REFUSED testbox/wo: coordinator lease held by" -- env FLEET_COORDINATOR=other-session "$FW" unstick testbox wo --message "$TMP/msg.md"
+expect "...and as a step of execution assign it exits the lost lease status (ludics#1234)" 6 "UNSTICK REFUSED testbox/wo: coordinator lease held by" -- \
+  env LUDICS_EXECUTION_ASSIGN_STEP=1 FLEET_COORDINATOR=other-session "$FW" unstick testbox wo --message "$TMP/msg.md"
 
 printf 'SLEEP 5\n' > "$TMP/slow5.md"
 "$FW" launch testbox dup --target-repo example/project --kind claude --brief "$TMP/slow5.md" --cwd "$proj" >"$TMP/dup-a.out" 2>&1 & da=$!
@@ -3936,6 +3938,21 @@ expect "a message with no block is refused" 2 "no EXECUTION_REQUEST ... END_EXEC
   "${FWA[@]}" execution assign "$(as_base subagent)" "$TMP/as-base-subagent.json"
 expect "--unstick needs the --message file it sends" 2 "--unstick sends the --message file" -- \
   "${FWA[@]}" execution assign "$(as_base subagent)" "$two" --unstick testbox w869
+# ludics#1234: a lost lease is assign's own exit, read off its gated calls' statuses (a new block's run,
+# an ALREADY block's placement write), never their words; its --status file names the call.
+lost_msg=$(as_msg lost "$(as_block as-lost testbox correctness "$asha" '{"command":"true"}')")
+msg=$(env FLEET_COORDINATOR=other-session "${FWA[@]}" execution assign "$(as_base subagent)" "$lost_msg" --message "$TMP/as-lost.md" \
+  --unstick testbox w869 --status "$TMP/as-status.json" 2>"$TMP/as-said"); rc=$?; said=$(cat "$TMP/as-said")
+[ "$rc" -eq 6 ] && [ -z "$msg" ] && grep -q '^ASSIGN LEASE LOST as-lost: the run was refused on the lease' <<<"$said" &&
+  [ -z "$(state_as as-lost)" ] && ok "a run refused on the lease is assign's lost lease status, nothing reserved" ||
+  ko "a lost lease at the run (rc=$rc): $msg -- $said"
+[ "$(jq -c . "$TMP/as-status.json")" = '{"exit":6,"unstick":"nothing-assigned","tally":[],"lease_lost":"the run of as-lost"}' ] &&
+  ok "...and its status file names the call" || ko "status: $(cat "$TMP/as-status.json")"
+msg=$(env FLEET_COORDINATOR=other-session "${FWA[@]}" execution assign "$(as_base subagent)" "$two" --request as-1 \
+  --status "$TMP/as-status.json" 2>"$TMP/as-said"); rc=$?; said=$(cat "$TMP/as-said")
+[ "$rc" -eq 6 ] && grep -q '^ASSIGN LEASE LOST as-1: its placement write was refused on the lease' <<<"$said" &&
+  [ "$(jq -r .lease_lost "$TMP/as-status.json")" = "the placement of as-1" ] &&
+  ok "...as is an ALREADY block's placement write refused on the lease" || ko "a lost lease at the placement (rc=$rc): $said"
 for id in as-1 as-2 as-3 as-5 as-fill; do fixture_done "$id"; done
 }
 

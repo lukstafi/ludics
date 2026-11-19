@@ -6,7 +6,7 @@ a window the registry had REFUSED, since nothing tied the message to the step's 
 those steps, in that order, with the message printed only for a request whose step exited 0:
 
     execution assign <base.json> <requests file|-> [--request <id>]... [--no-gap] [--deadline <s>]
-                     [--message <file>] [--unstick <box> <name>]
+                     [--message <file>] [--unstick <box> <name>] [--status <file>]
 
 It composes the existing ``execution run`` and ``execution window`` calls, each a fleet-worker.sh
 of this checkout invoked as the coordinator invokes it, so every check they make (the lease, the
@@ -71,6 +71,10 @@ block, in file order, then has one outcome, said in one line on stderr:
   collected after the child started, or the step exited 0 with a record this verb cannot read the
   revision off. Reconcile it before retrying. If reporting the unknown outcome also fails, the
   call stops with exit 4 before publishing an assignment message.
+- ``ASSIGN LEASE LOST <id>: ...``: the step exited ``LEASE_LOST_STATUS``, the lease is not this
+  coordinator's (lease.py, THE LOST LEASE STATUS, which every step of assign is asked for through
+  ``ASSIGN_STEP_ENV``); nothing is printed for it. So does a board placement write (below) that
+  exits so.
 
 A payload staging error before child startup says ``nothing asked`` and is a retryable refusal.
 
@@ -104,13 +108,36 @@ line per assignment; for a native worker it is what the coordinator sends with S
 ``--message <file>`` writes the same text to the file, and only when something was assigned, so a
 retry that assigns nothing never overwrites the earlier message. ``--unstick <box> <name>`` (a CLI
 worker; it requires ``--message``) then runs ``fleet-worker.sh unstick <box> <name> --message <file>``
-once, only when something was assigned; a failed unstick leaves the records dispatched and is said
-with the command that resends the file (exit 4): never assign again.
+once, only when something was assigned and the lease was not lost; a failed unstick leaves the
+records dispatched and is said with the command that resends the file (exit 4): never assign again.
+
+THE STATUS (ludics#1234). ``--status <file>`` writes one JSON object to the file as assign's last
+act, whatever its exit but usage (2, nothing asked, no file written), so a caller reads the outcome
+of this call and no line of its stderr, where the steps' relayed lines sit beside assign's own:
+
+  exit        assign's exit status, so a reader can tell the file is this call's
+  unstick     the ``--unstick`` outcome, a closed set: ``landed`` (it exited 0: the worker was
+              resumed with the message file), ``failed`` (it ran and exited nonzero: never assume
+              it reached the worker), ``not-asked`` (no ``--unstick``), and, asked but not run,
+              ``nothing-assigned``, ``message-unwritten`` (the ``--message`` file could not be
+              written) and ``lease-lost`` (a step had already found the lease lost)
+  tally       the ``BOARD TALLY WARNING`` and ``NOTE`` lines of the unstick's own stderr
+              (``tally.said_lines``), in order; empty unless it ran
+  lease_lost  which call found the lease lost (``the run of <id>``, ``the placement of <id>``, ``the
+              unstick of <box>/<name>``), the first one; empty when none did
+
+The boundary: the file says what assign observed of its own calls; it reads no step's output for
+the tally (a step's echoed ``BOARD TALLY WARNING`` is not the unstick's), and its lease answer is the
+exit status of the gated calls, never their words. The file is replaced whole (a temporary file
+renamed over it); one that cannot be written is a ``ASSIGN STATUS NOTE`` line, and the exit is
+unchanged.
 
 Exit: 0 every selected request ASSIGNED or ALREADY (and the unstick, if asked, landed); 1 one or
 more REFUSED or BOARD NOTE failures that can be retried, none UNKNOWN; 2 usage, nothing asked;
 4 one or more UNKNOWN, a registry that could not be read first, or an unstick that did not land;
-5 one or more refusals need action before retry and none are UNKNOWN. An exit 5 with a message
+5 one or more refusals need action before retry and none are UNKNOWN; ``LEASE_LOST_STATUS`` (6) a
+step, a placement write or the unstick found the lease not this coordinator's, which wins over every
+other outcome (the new holder reconciles what this call dispatched). An exit 5 or 6 with a message
 still dispatched the assignments in that message. What the steps print themselves (the record,
 the refresh line, a refusal) goes to stderr.
 """
@@ -132,11 +159,13 @@ from ludics.fleetworker import execution
 from ludics.fleetworker.board import record_placement
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.lease import LEASE_LOST_STATUS
 from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
-from ludics.fleetworker.transport import Done, err, run
+from ludics.fleetworker.tally import said_lines
+from ludics.fleetworker.transport import Done, err
 
 USAGE = ("execution assign <base.json> <requests file|-> [--request <id>]... [--no-gap] [--deadline <seconds>]"
-         " [--message <file>] [--unstick <box> <name>]")
+         " [--message <file>] [--unstick <box> <name>] [--status <file>]")
 BASE_REQUIRED = ("wave", "worker", "transport", "agent_host", "repository")
 BASE_FIELDS = frozenset((*BASE_REQUIRED, "issue", "purpose"))
 BLOCK_REQUIRED = ("request_id", "execution_host", "kind", "requested_revision")
@@ -160,6 +189,7 @@ class AssignArgs:
     deadline: str = ""
     message: str = ""
     unstick: tuple[str, str] | None = None
+    status: str = ""
 
 
 def parse(args: list[str]) -> AssignArgs:
@@ -167,12 +197,12 @@ def parse(args: list[str]) -> AssignArgs:
     positional: list[str] = []
     only: list[str] = []
     no_gap = False
-    deadline = message = ""
+    deadline = message = status = ""
     unstick: tuple[str, str] | None = None
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg in ("--request", "--deadline", "--message"):
+        if arg in ("--request", "--deadline", "--message", "--status"):
             if i + 1 >= len(args) or not args[i + 1]:
                 die(f"execution assign: expected a value for {arg} ({USAGE})")
             value = args[i + 1]
@@ -182,6 +212,8 @@ def parse(args: list[str]) -> AssignArgs:
                 if not re.fullmatch(r"[0-9]+", value) or int(value) < 1:
                     die("execution assign: --deadline takes a positive whole number of seconds")
                 deadline = value
+            elif arg == "--status":
+                status = value
             else:
                 message = value
             i += 2
@@ -202,7 +234,7 @@ def parse(args: list[str]) -> AssignArgs:
         die(USAGE)
     if unstick is not None and not message:
         die("execution assign: --unstick sends the --message file; name one, where the text is kept for a resend")
-    return AssignArgs(positional[0], positional[1], list(dict.fromkeys(only)), no_gap, deadline, message, unstick)
+    return AssignArgs(positional[0], positional[1], list(dict.fromkeys(only)), no_gap, deadline, message, unstick, status)
 
 
 def read_text(path: str, what: str) -> str:
@@ -473,17 +505,78 @@ def step(cfg: Config, args: Sequence[str], payload: dict[str, Any]) -> StepResul
     return StepResult(rc, out, detail)
 
 
-def unstick(cfg: Config, box: str, name: str, message: str) -> int:
+def unstick(cfg: Config, box: str, name: str, message: str) -> Done:
+    """This checkout's ``unstick``, a step of assign (its lost lease is ``LEASE_LOST_STATUS``): its stdout
+    on our stderr, its stderr relayed as it arrives and kept, the status and that stderr returned
+    (THE STATUS reads the tally lines off it)."""
     script = os.path.join(cfg.here, os.path.basename(cfg.script))
-    return run([script, "unstick", box, name, "--message", message], stdout_to_stderr=True).rc
+    sys.stdout.flush()
+    sys.stderr.flush()
+    kept: list[str] = []
+    try:
+        child = subprocess.Popen([script, "unstick", box, name, "--message", message], stdout=sys.stderr.fileno(),
+                                 stderr=subprocess.PIPE, env={**os.environ, execution.ASSIGN_STEP_ENV: "1"})
+    except OSError as exc:
+        err(f"{execution.shown(script)}: {exc.strerror}")
+        return Done(127, "")
+    with child:
+        assert child.stderr is not None
+        for raw in child.stderr:
+            line = proc.decode(raw)
+            sys.stderr.write(line)
+            sys.stderr.flush()
+            kept.append(line)
+        rc = child.wait()
+    return Done(rc, "".join(kept))
 
 
 Step = Callable[[Config, Sequence[str], dict[str, Any]], StepResult]
-Unstick = Callable[[Config, str, str, str], int]
+Unstick = Callable[[Config, str, str, str], Done]
+
+
+@dataclass
+class Status:
+    """THE STATUS (the header): this call's outcome as ``--status`` writes it."""
+
+    unstick: str
+    tally: list[str] = field(default_factory=lambda: list[str]())
+    lease_lost: str = ""
+
+    def lost(self, where: str) -> None:
+        self.lease_lost = self.lease_lost or where
+
+
+def write_status(path: str, rc: int, status: Status) -> None:
+    """THE STATUS, replaced whole; a failure is a NOTE and never changes the exit."""
+    text = json.dumps({"exit": rc, "unstick": status.unstick, "tally": status.tally, "lease_lost": status.lease_lost},
+                      ensure_ascii=False) + "\n"
+    staged = ""
+    try:
+        descriptor, staged = tempfile.mkstemp(prefix=".assign-status.", dir=os.path.dirname(os.path.abspath(path)))
+        with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(staged, path)
+    except OSError as exc:
+        with suppress(OSError):  # a stderr that failed already (ASSIGN UNKNOWN's report) keeps the exit
+            err(f"ASSIGN STATUS NOTE: the status could not be written to {execution.shown(path)} ({exc.strerror}): {text.rstrip()}")
+        if staged:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
 
 
 def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unstick = unstick) -> int:
     parsed = parse(args)
+    status = Status("not-asked" if parsed.unstick is None else "nothing-assigned")
+
+    def finish(rc: int) -> int:
+        """The exit, a lost lease winning over every other outcome, and THE STATUS written for it."""
+        rc = LEASE_LOST_STATUS if status.lease_lost else rc
+        if parsed.status:
+            write_status(parsed.status, rc, status)
+        return rc
+
     try:
         base: Any = json.loads(read_text(parsed.base, "the base"))
     except ValueError:
@@ -523,7 +616,7 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
         if done.out:
             err(done.out.rstrip("\n"))
         err(f"ASSIGN UNKNOWN: the registry on {cfg.anchor} could not be read; nothing asked")
-        return 4
+        return finish(4)
 
     def placement(block: dict[str, Any], record: dict[str, Any] | None = None) -> bool:
         if "checkout" not in block:
@@ -541,6 +634,10 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
         except cli.Exit as exc:
             err(f"ASSIGN BOARD NOTE {execution.shown(block['request_id'])}: {exc.message};"
                 " placement was not written, and remaining requests will still be handled")
+            return False
+        if rc == LEASE_LOST_STATUS:
+            err(f"ASSIGN LEASE LOST {execution.shown(block['request_id'])}: its placement write was refused on the lease (above)")
+            status.lost(f"the placement of {execution.shown(block['request_id'])}")
             return False
         if rc:
             err(f"ASSIGN BOARD NOTE {execution.shown(block['request_id'])}: placement write exit {rc};"
@@ -580,8 +677,12 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
                             os.dup2(null_fd, stderr_fd)
                         finally:
                             os.close(null_fd)
-                return 4
+                return finish(4)  # THE STATUS is a file: it still reaches the caller
             unknown = True
+            continue
+        if answer.rc == LEASE_LOST_STATUS:
+            err(f"ASSIGN LEASE LOST {shown_id}: the {verb[1]} was refused on the lease (above); nothing assigned")
+            status.lost(f"the {verb[1]} of {shown_id}")
             continue
         if answer.rc != 0:
             # A window exiting 3 is pending (registry.py, THE PENDING WINDOW): refused for now, asked again later.
@@ -617,16 +718,25 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
             except OSError as exc:
                 err(f"ASSIGN UNKNOWN: the message could not be written to {execution.shown(parsed.message)}"
                     f" ({exc.strerror}); it is the text above")
-                return 4
-        if parsed.unstick is not None:
+                status.unstick = "not-asked" if parsed.unstick is None else "message-unwritten"
+                return finish(4)
+        if parsed.unstick is not None and status.lease_lost:
+            status.unstick = "lease-lost"
+            err(f"ASSIGN UNSTICK SKIPPED: the lease was lost ({status.lease_lost}); the assignments above are"
+                f" dispatched and kept in {execution.shown(parsed.message)} for the lease's holder")
+        elif parsed.unstick is not None:
             box, name = parsed.unstick
-            if resend(cfg, box, name, parsed.message) != 0:
+            sent = resend(cfg, box, name, parsed.message)
+            status.unstick, status.tally = ("landed" if sent.rc == 0 else "failed"), said_lines(sent.out)
+            if sent.rc == LEASE_LOST_STATUS:
+                status.lost(f"the unstick of {box}/{name}")
+            if sent.rc != 0:
                 err(f"ASSIGN UNSTICK FAILED {box}/{name}: the assignments are dispatched; once the worker's state is"
                     f" known, resend with: fleet-worker.sh unstick {shlex.quote(box)} {shlex.quote(name)} --message"
                     f" {execution.shown(parsed.message)} -- never assign again")
-                return 4
+                return finish(4)
     elif parsed.unstick is not None:
         err("ASSIGN UNSTICK SKIPPED: nothing was assigned")
-    if not unknown and refusal_status == ASSIGN_ACTION_REQUIRED:
+    if not unknown and not status.lease_lost and refusal_status == ASSIGN_ACTION_REQUIRED:
         err(ACTION_REQUIRED_LINE + "; ".join(action_required))
-    return 4 if unknown else refusal_status
+    return finish(4 if unknown else refusal_status)

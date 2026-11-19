@@ -34,14 +34,15 @@ HALT_STATE = r"""read_halt() {
 }
 """
 
-# Far side for the anchor: lease + halt checks. Args: verb label force token. Prints nothing when
-# the coordinator may proceed; otherwise one refusal line, exit 1.
-ANCHOR_GATE = HALT_STATE + r"""verb="$1" label="$2" force="$3" token="$4"
+# Far side for the anchor: lease + halt checks. Args: verb label force token [lost]. Prints nothing
+# when the coordinator may proceed; otherwise one refusal line, exit 1, or ``lost`` (default 1) when
+# the lease is not this coordinator's (nobody's, or another's): THE LOST LEASE STATUS.
+ANCHOR_GATE = HALT_STATE + r"""verb="$1" label="$2" force="$3" token="$4" lost="${5:-1}"
 lease="$ANCHOR_STATE/COORDINATOR"
-if [ ! -f "$lease" ]; then echo "$verb REFUSED $label: no coordinator lease on the anchor -- run \`fleet-worker.sh claim\` first"; exit 1; fi
+if [ ! -f "$lease" ]; then echo "$verb REFUSED $label: no coordinator lease on the anchor -- run \`fleet-worker.sh claim\` first"; exit "$lost"; fi
 held=$(sed -n 's/^token=//p' "$lease"); host=$(sed -n 's/^host=//p' "$lease"); since=$(sed -n 's/^since=//p' "$lease")
 if [ -z "$token" ] || [ "$held" != "$token" ]; then
-  echo "$verb REFUSED $label: coordinator lease held by $host since $since -- adopt it with \`fleet-worker.sh claim --take\` only if that coordinator is gone"; exit 1
+  echo "$verb REFUSED $label: coordinator lease held by $host since $since -- adopt it with \`fleet-worker.sh claim --take\` only if that coordinator is gone"; exit "$lost"
 fi
 if [ "$force" != 1 ]; then
   read_halt || { printf '%s\n' "$verb REFUSED $label: cannot read HALT on $BOX; launches refused"; exit 1; }
@@ -51,15 +52,40 @@ if [ "$force" != 1 ]; then
 fi
 """
 
+# THE LOST LEASE STATUS (ludics#1234): the exit a lease-gated call gives a lease that is not this
+# coordinator's when its caller asks for one apart from its other refusals (exit 1). ``execution
+# assign`` asks it of its steps (``ASSIGN_STEP_ENV``: the run or window, the unstick) and of its board
+# placement write, and exits with it itself, so ``wave drive`` reads a lost lease off that status and
+# no diagnostic's words. Free in every caller that asks it: the registry exits 0-5, a far side's
+# transport failure is UNREACHABLE.
+LEASE_LOST_STATUS = 6
+ASSIGN_STEP_ENV = "LUDICS_EXECUTION_ASSIGN_STEP"
+
+
+def lost_status() -> int:
+    """THE LOST LEASE STATUS this process's lease gates exit with: ``LEASE_LOST_STATUS`` in a step of
+    ``execution assign`` (its ``ASSIGN_STEP_ENV``), else 1, every other caller's refusal."""
+    return LEASE_LOST_STATUS if os.environ.get(ASSIGN_STEP_ENV) == "1" else 1
+
+
 # Far side: take the lease lock (shared with claim --take and release), verify the caller still
-# holds the lease, then run the mutation. Args: verb token lockwait, then the action's.
-LEASE_MUTATION = r"""verb="$1" token="$2" lockwait="$3"; shift 3
+# holds the lease, then run the mutation. Args: verb token lockwait, then the action's. The lease
+# refusal exits @LOST@: ``lease_mutation`` names it (THE LOST LEASE STATUS); LEASE_MUTATION is 1.
+_LEASE_MUTATION = r"""verb="$1" token="$2" lockwait="$3"; shift 3
 mkdir -p "$ANCHOR_STATE" 2>/dev/null; lease="$ANCHOR_STATE/COORDINATOR"; lock="$lease.lock"
 msg=$(take_lock "$lock" "$lockwait" "$verb FAILED: lease lock on $BOX") || { echo "$msg"; exit 1; }
 trap 'release_lock "$lock"' EXIT
 held=$(sed -n 's/^token=//p' "$lease" 2>/dev/null); hhost=$(sed -n 's/^host=//p' "$lease" 2>/dev/null)
-[ -n "$token" ] && [ "$held" = "$token" ] || { echo "$verb REFUSED fleet: coordinator lease held by ${hhost:-nobody} -- not you (adopted since your gate?)"; exit 1; }
+[ -n "$token" ] && [ "$held" = "$token" ] || { echo "$verb REFUSED fleet: coordinator lease held by ${hhost:-nobody} -- not you (adopted since your gate?)"; exit @LOST@; }
 """
+
+
+def lease_mutation(lost: int = 1) -> str:
+    """The lease-mutation prelude, its lease refusal exiting ``lost`` and every other exit unchanged."""
+    return _LEASE_MUTATION.replace("@LOST@", str(lost))
+
+
+LEASE_MUTATION = lease_mutation()
 
 # The lease is one file on the anchor, created with an atomic link so two coordinators starting at
 # once cannot both win, naming the holder's host and token. Args: host token take lockwait.
@@ -237,13 +263,14 @@ def _anchor(cfg: Config, script: str, args: list[str], unreachable_line: str) ->
     return done.rc
 
 
-def anchor_gate(cfg: Config, verb: str, label: str, force: bool) -> int:
-    """0 proceed, 1 refused (its line printed), 4 the anchor did not answer."""
+def anchor_gate(cfg: Config, verb: str, label: str, force: bool, lost: int = 1) -> int:
+    """0 proceed, 1 refused (its line printed), ``lost`` the lease is not this coordinator's (its line
+    printed; THE LOST LEASE STATUS), 4 the anchor did not answer."""
     check_identity(cfg)
     return _anchor(
         cfg,
         ANCHOR_GATE,
-        [verb, label, "1" if force else "0", my_token(cfg)],
+        [verb, label, "1" if force else "0", my_token(cfg), str(lost)],
         f"{verb} REFUSED {label}: anchor {cfg.anchor} unreachable (lease and halt live there)",
     )
 
