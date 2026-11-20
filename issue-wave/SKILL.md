@@ -368,8 +368,9 @@ maintainer has read it ([coordinator-kit.md](references/coordinator-kit.md#when-
 step 10).
 
 **Planning mode, per issue.** Every D3 gets `paired+critique` and an issue on the D2/D3 border gets
-`paired`. Either way a second model plans the issue read-only next to the worker (GPT Astra, or
-Opus for an Astra worker), and the worker reconciles the two plans before it codes
+`paired`. Either way a model of the other family plans the issue read-only next to the worker (GPT
+Astra beside a Claude worker, Opus beside a GPT one), and the worker reconciles the two plans
+before it codes
 ([paired-planning.md](references/paired-planning.md)). D1 and plain D2 issues get neither. List the
 mode per issue in the wave summary, where it is veto-able like tier 2. Under a Claude coordinator a
 Codex worker's issue pairs like any other. Under any other coordinator, pairing one is a tier-3
@@ -393,8 +394,8 @@ explicit provider, model and transport choices** - this is the one statement of 
 every reference defers to it. **Where the user left them open, a Claude Code coordinator runs a
 mixed wave that A/B tests GPT against Opus** (the maintainer's default of 2026-11-17, replacing
 the 2026-11-13 split by difficulty). Every issue, of every tier, goes to one arm by its issue
-number. Odd issues go to the GPT arm, a Codex CLI worker on the issue's home box: Sol, or Astra for
-a D3 (*Codex model choice*). Even issues go to the Opus arm, a Claude Opus worker: native, or in a
+number. Odd issues go to the GPT arm, a Codex CLI worker on the issue's home box: Sol below D2,
+and from D2 up Sol or Astra by the issue number again (*Codex model choice*). Even issues go to the Opus arm, a Claude Opus worker: native, or in a
 sprint a Claude CLI worker when the issue is homed off the agent host (the sprint's *Native or CLI
 by home box* rule decides only this arm's transport). A post-wave task takes its source issue's
 arm, and post-wave batching groups tasks by area within each arm. Never pick the arm for fit: that
@@ -658,12 +659,19 @@ transport when a task reaches those paths.
 
 ### Codex model choice
 
-Unless the user specifies otherwise, a Codex worker runs Sol at high reasoning effort
-(`gpt-6.2-sol`, high) on D1 to D2/D3 issues, and Astra at high (`gpt-6.2-astra`, high) on a D3 (the
-maintainer's call of 2026-11-17). The paired planner runs Astra at high (`peer-plan.sh`'s
-defaults), except beside an Astra worker, where it runs Opus at high (`peer-plan.sh start --model
-opus`), so the second plan is always a second model's reading. Opus, not Fable: a peer stronger
-than either arm's model would help the GPT arm alone. Keep D1/D2/D3 as implementation-difficulty
+Unless the user specifies otherwise, a Codex worker runs at high reasoning effort, on Sol
+(`gpt-6.2-sol`) for a D1 or D1/D2 issue. From D2 up the issue number picks the model a second
+time: of the GPT arm's odd numbers, one that leaves 1 when divided by 4 goes to Sol and one that
+leaves 3 goes to Astra (`gpt-6.2-astra`). This replaces the call of 2026-11-17, Astra for a D3
+alone: under it the two models shared no tier, and three waves gave Astra two tasks, so nothing
+told the model from the difficulty. A post-wave task takes its source issue's model. As with the
+arm, never pick the model for fit, and a task changes model only on the user's word, marked in the
+wave summary as a reassignment. The paired planner is the other family's model at high: Astra
+beside a Claude worker (`peer-plan.sh`'s defaults), Opus beside any GPT worker (`peer-plan.sh start
+--model opus`). So the second plan is always a second family's reading, and Sol and Astra plan
+against the same peer: under the earlier rule a Sol worker reconciled against Astra's own plan,
+which a Sol-against-Astra reading cannot take apart. Opus, not Fable: a peer stronger than either
+arm's model would help the GPT arm alone. Keep D1/D2/D3 as implementation-difficulty
 labels. Assess semantic coupling, verification risk (low: local deterministic acceptance; medium:
 timing-sensitive claims or extensive negative controls; high: platform semantics, GPU searches or
 expanding language-feature combinations) and delivery overhead (shared files, dependencies, slow CI
@@ -682,7 +690,13 @@ The 2026-11-13 split rested on qualitative observations. A retrospective of past
 separate the model from its wave, project, box and era. Assigning both arms within the same waves
 removes the wave, project and era, but the arms still differ in transport and box (the GPT arm runs
 as a CLI worker on the home box, Opus mostly natively on the agent host). So read a result as a
-comparison of the two worker profiles, not of the models alone. The board row holds what that
+comparison of the two worker profiles, not of the models alone. Sol against Astra differs in the
+model alone (same transport, boxes, planner and planning mode), and is read the same way within a
+tier group, D2 apart from D2/D3 with D3, once each model has ten merged tasks in the group: a
+smaller count is a description. A reading of the code itself pairs PRs by area before any diff is
+read and takes a blind judge of each family, since a judge of one family prefers its own (the
+2026-11-20 retrospective). When a reading is in, the maintainer sets the default for that group and
+its split ends. The board row holds what that
 comparison groups by: `tier=` (prep's `--tier`, or a queue entry's `tier`), `model=` (a profile's
 model and effort; a native row's from its launch) and `launched_at` (stamped by the board on the
 row's first `state=launched`), beside `pr`, `review`, `confirm` and `merge`. Give every task its
@@ -703,7 +717,7 @@ when they may have moved. A box whose codex predates them is refused at `preflig
 Codex probe runs with the worker's args: update that box's codex rather than falling back to an
 older model. Name the effort as well as the model, because the config default differs by box. A CLI
 worker gets `-- -m gpt-6.2-sol -c model_reasoning_effort=high`, and a wave file's profiles name
-both: `sol` (`"model": "gpt-6.2-sol", "effort": "high"`) and, for D3s, `astra` (`"model":
+both: `sol` (`"model": "gpt-6.2-sol", "effort": "high"`) and `astra` (`"model":
 "gpt-6.2-astra", "effort": "high"`). Neither model names its own ID reliably when asked, so the
 record is the check: `launch` prints the `model=` and `effort=` its args resolve to, and the
 worker's `meta` keeps them (ludics#539).
