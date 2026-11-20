@@ -1140,8 +1140,9 @@ class Merge:
         )
 
     # Fail-closed allowlist for the final failed `gh pr merge` answer (#1257). Read exactly
-    # GhSession.err_line(), the whole first stderr line. GraphQL rows include the mutation path
-    # (core.py's grammar). The CLI preflight rows fill only the target repository and PR number.
+    # GhSession.err_line(), the whole first stderr line from a colour-disabled CLI. GraphQL rows
+    # include the mutation path (core.py's grammar). The CLI preflight rows fill only the target
+    # repository and PR number.
     # Stdout, later lines, fragments, extra text, and other answers are outside this table:
     # the write may have landed, so report ambiguity and ask for REST confirmation.
     _MERGE_REFUSALS: dict[str, Literal["base-moved", "head-moved", "recheck-mergeable"]] = {

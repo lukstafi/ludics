@@ -3352,7 +3352,7 @@ test_a_conflicting_pr_is_refused_before_the_wait() {
   done
   # Without --wait nothing is read early: the gate is one read and the call's refusal answers it.
   reset
-    MERGE_REFUSAL="X Pull request $REPO#7 is not mergeable: the merge commit cannot be cleanly created."
+  MERGE_REFUSAL="X Pull request $REPO#7 is not mergeable: the merge commit cannot be cleanly created."
   MERGEABLE=false
   MERGEABILITY=$'false\tdirty'
   run_merge
