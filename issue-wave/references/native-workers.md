@@ -58,7 +58,8 @@ Residence does not preclude checks on other boxes; each execution is reserved se
 6. Spawn with that brief, recording the returned agent identity or canonical task name. Do
    not infer a runtime ID from an app thread ID. Record the returned identity on the prepared
    row with `fleet-worker.sh board spawned <wave> <task> --agent <id> --transport subagent
-   [--model <m>]`. Supply the model when the runtime's choice differs from the prepared row.
+   [--model <m>]`. This command is the board update for the native launch step in SKILL.md.
+   Supply the model when the runtime's choice differs from the prepared row.
    Validate the worker's startup report before calling the launch successful: actual absolute
    worktree, branch, base SHA, agent identity, and a harmless successful Git mutation such as
    `git update-index --refresh` with exit status.
