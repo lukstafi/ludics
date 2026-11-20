@@ -17,10 +17,11 @@ review round:
   --wait that did not end green, the close-out refusals, the base drift, the build of
   the would-be merge commit where the repository asks for one (mergebuild.py, #611), then the
   repository's merge lease when configured; then before
-  EVERY attempt: the body again, the commit series, the open review threads, the merge queue, an
-  ABSENT verdict's base (ludics-lite#523), the review checkpoint's hold on the gated head with
-  ``--over-checkpoint``'s one post (checkpoint.py, #1242; read again before a gateway resend), then the head branch tip (read with the current base
-  when a local build ran, #1241); then what the merge goes over (an override's
+  EVERY attempt and gateway resend: the body again, the commit series, the open review threads,
+  the merge queue, an ABSENT verdict's base (ludics-lite#523), the review checkpoint's hold on the
+  gated head with ``--over-checkpoint``'s one post (checkpoint.py, #1242), then the lease's ownership
+  and the head branch tip (read with the current base when a local build ran, #1241);
+  then what the merge goes over (an override's
   waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
@@ -40,8 +41,8 @@ The lease cannot fence web merges, direct pushes, deferred auto-merges or any ot
 this protocol, including a request already sent by a holder that loses its lease. GitHub pins only
 the head. Before every send, the live base must equal the checked base. A moved base gets up to
 two refreshes, with a proven disjoint fast-forward delta required for the second. A base that moves
-before a gateway resend still refuses. The interval between the last read and GitHub's write
-remains the integration loop's to catch.
+before a gateway resend still refuses, as does movement of an ABSENT verdict's base at that point.
+The interval between the last read and GitHub's write remains the integration loop's to catch.
 
 Exit: 0 merged at the gated head; 1 refused (red, a moved head, a head that is not the branch's, a
 real conflict, an open thread, a review checkpoint that holds it, a deferred merge) or merged at a head the gate did not judge;
@@ -879,10 +880,10 @@ class Merge:
                     fail(3, f"NOT merging {repo}#{pr}: {warning(tip, repo, pr)} Nothing was merged. Retry.")
                 warn(warning(tip, repo, pr), "Going on; the last read before the merge call decides.")
 
-    def absent_base_holds(self) -> bool:
+    def absent_base_holds(self, *, resend: bool) -> bool:
         """``absent_base_holds``: is the PR's base still the one the ABSENT verdict was read against?
-        A moved base is gated again (no wait, no waiver) and answers False once that read passes on
-        the SAME head; any other outcome is a refusal, with the gate's status."""
+        An outer attempt can gate a moved base again (no wait, no waiver) and answers False once
+        that passes on the SAME head. A gateway resend needs a fresh invocation if the base moved."""
         repo, pr = self.repo, self.num
         gated = self.gate.check_sha
         was = self.gate.gate_base
@@ -896,6 +897,12 @@ class Merge:
         base = read.stdout
         if base == was:
             return True
+        if resend:
+            fail(
+                1,
+                f"NOT merged: {repo}#{pr}'s base moved before a merge request could be resent",
+                f"({was} -> {base}), and its ABSENT verdict was read against the old base. Re-run merge.",
+            )
         warn(
             f"{repo}#{pr}'s base moved since its ABSENT verdict was read ({was[:8]} -> {base[:8]});",
             "gating the head again against the new base",
@@ -1189,11 +1196,6 @@ class Merge:
             f"({build.base_sha} -> {tip}). Re-run merge.{retained_build_logs(build.log_paths)}",
         )
 
-    def recheck_before_resend(self, build: BuildVerdict) -> None:
-        tip = self.built_base_tip(build)
-        if tip != build.base_sha:
-            self.refuse_stale_build(build, tip, "before a merge request could be resent")
-
     def checkpoint_gate(self) -> None:
         """The review checkpoint's hold on the gated head (checkpoint.py, #1242), read before every
         attempt, ahead of the merge build's last ref check, so the read after a rebuild is the one
@@ -1242,15 +1244,35 @@ class Merge:
             case _:
                 assert_never(result)
 
-    def before_resend(self, build: BuildVerdict | None, lease: MergeLease | None) -> None:
-        """What a gateway resend of the merge call re-reads, in the loop's order: the review
-        checkpoint (a hold posted during the backoff refuses, review of #1256), then the merge
-        build's refs when a build ran."""
+    def pre_merge_reads(
+        self, build: BuildVerdict | None, lease: MergeLease | None, *, resend: bool,
+    ) -> tuple[bool, str | None]:
+        """Return whether the gate still holds and the new base tip if it moved after a build.
+
+        Both callers check in this order because review state and refs can change without
+        changing the gated head. Re-gating on a moved ABSENT base restarts the sequence.
+        """
+        self.multi.warn(self.num, again=True)
+        self.series.warn(self.num, self.gate.check_sha)
+        merge_threads_gate(self.session, self.repo, self.num, self.config.threads_page_cap)
+        if self.opts.require_green:
+            self.refuse_merge_queue()
+        if self.gate.verdict == "absent" and not self.absent_base_holds(resend=resend):
+            return False, None
         self.checkpoint_gate()
-        if build is not None:
-            if lease is not None:
-                lease.verify()
-            self.recheck_before_resend(build)
+        if build is None:
+            self.branch_tip_gate(last=True)
+            return True, None
+        if lease is not None:
+            lease.verify()
+        tip = self.built_base_tip(build)
+        return True, tip if tip != build.base_sha else None
+
+    def before_resend(self, build: BuildVerdict | None, lease: MergeLease | None) -> None:
+        _, tip = self.pre_merge_reads(build, lease, resend=True)
+        if tip is not None:
+            assert build is not None
+            self.refuse_stale_build(build, tip, "before a merge request could be resent")
 
     def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None, lease: MergeLease | None = None) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
@@ -1261,12 +1283,8 @@ class Merge:
         before_dispatch = lease.require_current if lease is not None else None
         sent_build: BuildVerdict | None = None
         while True:
-            self.multi.warn(pr, again=True)
-            self.series.warn(pr, gate.check_sha)
-            merge_threads_gate(self.session, repo, pr, self.config.threads_page_cap)
-            if opts.require_green:
-                self.refuse_merge_queue()
-            if gate.verdict == "absent" and not self.absent_base_holds():
+            base_holds, tip = self.pre_merge_reads(build, lease, resend=False)
+            if not base_holds:
                 if attempt >= 3:
                     fail(
                         1,
@@ -1275,23 +1293,17 @@ class Merge:
                     )
                 attempt += 1
                 continue
-            self.checkpoint_gate()
-            if build is None:
-                self.branch_tip_gate(last=True)
-            else:
-                if lease is not None:
-                    lease.verify()
-                tip = self.built_base_tip(build)
-                if tip != build.base_sha:
-                    if refreshes >= _MAX_BUILD_REFRESHES:
-                        self.refuse_stale_build(build, tip, f"after refreshing the merge build {_MAX_BUILD_REFRESHES} times (refresh limit)")
-                    warn(f"{repo}#{pr}'s base moved since its merge build ({build.base_sha} -> {tip}); rebuilding")
-                    build = refresh_build(
-                        repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling, prior_override_base=override_base,
-                        require_disjoint=refreshes > 0,
-                    )
-                    refreshes += 1
-                    continue
+            if tip is not None:
+                assert build is not None
+                if refreshes >= _MAX_BUILD_REFRESHES:
+                    self.refuse_stale_build(build, tip, f"after refreshing the merge build {_MAX_BUILD_REFRESHES} times (refresh limit)")
+                warn(f"{repo}#{pr}'s base moved since its merge build ({build.base_sha} -> {tip}); rebuilding")
+                build = refresh_build(
+                    repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling, prior_override_base=override_base,
+                    require_disjoint=refreshes > 0,
+                )
+                refreshes += 1
+                continue
             if lease is not None:
                 lease.require_current()
             self.announce(build.shared_failure if build is not None and build is not sent_build else None)

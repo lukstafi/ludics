@@ -104,6 +104,18 @@ class Production(unittest.TestCase):
                 merges = [c for c in self.calls() if c[:2] == ["pr", "merge"]]
                 self.assertEqual(merges, [["pr", "merge", "7", "--repo", "o/r", "--match-head-commit", "headsha", "--merge"]])
 
+    def test_a_forwarded_gateway_resend_rechecks_before_sending_the_same_arguments(self) -> None:
+        self.route([(MERGE, 1, "", "gh: HTTP 503: Service Unavailable\n"), *GREEN])
+        done = self.run_cmd(self.entries()[0], "merge", "o/r#7", "--", "--merge", SHIP_PR_API_ATTEMPTS="2")
+        self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+        calls = self.calls()
+        first, second = [i for i, args in enumerate(calls) if args[:2] == ["pr", "merge"]]
+        self.assertEqual(calls[first], calls[second])
+        rereads = calls[first + 1 : second]
+        self.assertTrue(any("reviewThreads" in arg for args in rereads for arg in args), rereads)
+        self.assertEqual(rereads[-1][1], "repos/o/r/git/ref/heads/topic")
+        self.assertEqual(rereads, calls[first - len(rereads) : first])
+
     def test_a_blocking_checkpoint_holds_the_merge_and_an_override_posts_first(self) -> None:
         hexed: list[Route] = [(w if isinstance(w, When) else [n.replace("headsha", H) for n in w], rc, out.replace("headsha", H), err)
                               for w, rc, out, err in GREEN]

@@ -1396,6 +1396,7 @@ or lost lease refuses a new merge write. Removing the line restores unleased mer
 cannot fence web merges, direct pushes, deferred auto-merges or other writers outside this
 protocol. GitHub pins only the head, so the integration loop still catches movement between the
 last read and the merge call.
+After a gateway backoff, the resend repeats the attempt's pre-merge reads in order. A moved checked base requires a fresh invocation.
 
 A shared path renamed on either side counts by its other name too. Run such a merge on a
 POSIX host (the fleet's macOS and Linux boxes; Windows is refused) from a full clone of the
