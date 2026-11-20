@@ -601,6 +601,11 @@ run's local revisions and the same plan reader as `merge`. It stops before the b
 Unadmitted exits 1 and no verdict exits 3. The shell cases for an unrecorded run, an admitted
 record, an absent plan line and a malformed verdict all fail on the launch base `10c992e3`.
 
+Agent notes (wave-20261120-ludics, t1260; refs #1260): the plan checks the supervisor's deadline
+before reading the status for its verdict. The fixture forces that deadline after the wrapper
+writes status 0 or 9. Status 9 is misreported as the plan's exit on launch base `e841b7cd`.
+A plan that exits 124 within the bound reports its own status. Both cases go on to the build.
+
 ## Checking
 
 Placement recovery (#1133, #1160): `wave launch` reads a caller-named JSON result file,

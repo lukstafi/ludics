@@ -195,10 +195,10 @@ three shapes:
                                               go over it (the shared red it is for is a build's)
 
 Anything else is NO VERDICT, said as which of this closed list it is, and the merge goes on to the
-build exactly as without a plan: the plan could not be started (its checkout included); it exited
-nonzero (127, a command not found, included: a verdict line beside a nonzero exit is not read); it
-did not finish within its bound (the bound's answer wins over a status written as it struck); its
-wrapper ended before it did; it printed no such line; it printed more than one; its one line
+build exactly as without a plan: the plan could not be started (its checkout included); the
+supervisor hit the bound (a timeout regardless of the status written); the plan exited nonzero
+within the bound (including 124 or 127, and its verdict line is ignored); its wrapper ended
+before it did; it printed no such line; it printed more than one; its one line
 matches no shape (a line past ``SHOWN_BYTES`` is never read whole, so never matches); its output
 could not be read. So a plan never admits a merge -- the build keeps owning admission, whatever
 the plan said -- and refuses one only by its own ``unadmitted``. The plan runs only where a build
@@ -869,10 +869,17 @@ def _end_group_held(child: subprocess.Popen[bytes]) -> None:
         pass
 
 
+@dataclass(frozen=True)
+class _Supervised(proc.Completed):
+    """The supervisor's deadline is distinct from the child's own exit status."""
+
+    timed_out: bool = False
+
+
 def _supervised(
     argv: list[str], cwd: str, bound: float, env: dict[str, str], *, merged: bool = False, end_group: bool = False,
     forward: bool = False,
-) -> proc.Completed:
+) -> _Supervised:
     """``argv`` in a session of its own under ``bound`` (124 past it, as ``proc.run_tool`` reports
     a timeout), stdin ``/dev/null``, its output captured (stderr into stdout when ``merged``) -- or,
     when ``forward``, not captured at all: both its streams are this process's stderr descriptor,
@@ -887,7 +894,7 @@ def _supervised(
     if full is None:
         prefix = proc.command_argv(argv[0], env)
         if prefix is None:
-            return proc.Completed(127, "", f"{argv[0]}: command not found\n")
+            return _Supervised(127, "", f"{argv[0]}: command not found\n")
         full = [*prefix, *argv[1:]]
     child: subprocess.Popen[bytes] | None = None
     if forward:
@@ -914,12 +921,13 @@ def _supervised(
                 out, err = child.communicate(timeout=5)
             except (subprocess.TimeoutExpired, ValueError):
                 out, err = b"", b""
-            return proc.Completed(
-                124, proc.decode(out or b""), proc.decode(err or b"") + f"{argv[0]}: no answer in {bound:g}s\n"
+            return _Supervised(
+                124, proc.decode(out or b""), proc.decode(err or b"") + f"{argv[0]}: no answer in {bound:g}s\n",
+                timed_out=True,
             )
         if end_group:
             _end_group(child)
-        return proc.Completed(child.returncode, proc.decode(out or b""), proc.decode(err or b""))
+        return _Supervised(child.returncode, proc.decode(out or b""), proc.decode(err or b""))
     except BaseException:
         # The hold first, before any call: CPython runs a signal handler only at a call or a
         # backward jump, so no second signal cuts in between the exception and the hold.
@@ -1505,7 +1513,7 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
     checkout = os.path.join(scratch, "plan")
     cli.say(f"merge build {label}: its plan first, bare and before any slot, bound {config.plan_timeout}s: {config.plan}")
     started = time.monotonic()
-    done: proc.Completed | None = None
+    done: _Supervised | None = None
     unstarted = _plan_checkout(quiet, checkout, scratch, tree, objects, merge_sha)
     if not unstarted:
         wrapped = ["sh", "-c", _PLAN_WRAPPER, _PLAN_WRAPPER_NAME, config.plan, log, status]
@@ -1515,7 +1523,6 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
         except (ValueError, OSError) as exc:
             unstarted = str(exc)
     took = int(time.monotonic() - started)
-    rc_text = _status_text(status)
     log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status, plan_only=plan_only)
     if log_dir:
         cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
@@ -1526,14 +1533,16 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
     verdict: PlanVerdict | str
     if done is None:
         verdict = f"it could not be started ({unstarted})"
-    elif rc_text and rc_text != "0":
-        verdict = f"it exited {rc_text}"
-    elif done.rc == 124:
+    elif done.timed_out:
         verdict = f"it did not finish within {config.plan_timeout}s (the plan-timeout)"
-    elif done.rc != 0 or not rc_text:
-        verdict = f"its wrapper exited {done.rc} before it did ({_first_line(done)})"
     else:
-        verdict = plan_verdict(log)
+        rc_text = _status_text(status)
+        if rc_text and rc_text != "0":
+            verdict = f"it exited {rc_text}"
+        elif done.rc != 0 or not rc_text:
+            verdict = f"its wrapper exited {done.rc} before it did ({_first_line(done)})"
+        else:
+            verdict = plan_verdict(log)
     if isinstance(verdict, str):
         result = f"merge build {label}: the plan gave NO VERDICT after {took}s: {verdict}"
         if not plan_only:
