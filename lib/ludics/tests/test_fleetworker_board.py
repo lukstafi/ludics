@@ -566,6 +566,11 @@ class Classify(unittest.TestCase):
                      "EXECUTION_REQUEST", "PLAN_READY", "EXECUTION_RESULT {}"):
             self.assertEqual(tally.classify(text)[0], "interventions", repr(text))
 
+    def test_a_windows_witness_result_is_a_routine_answer(self) -> None:
+        self.assertEqual(tally.classify("WINDOWS_WITNESS_RESULT w-t-windows-1\npass\ntranscript")[0], "routine_answers")
+        for text in ("WINDOWS_WITNESS_REQUEST", "WINDOWS_WITNESS_RESULTX", "continue\nWINDOWS_WITNESS_RESULT"):
+            self.assertEqual(tally.classify(text)[0], "interventions", repr(text))
+
     def test_kill_and_interrupt_are_interventions_whatever_the_message(self) -> None:
         self.assertEqual(tally.classify("REVIEW_POSTED 1 a", kill=True), ("interventions", 'unstick --kill ("REVIEW_POSTED 1 a")'))
         self.assertEqual(tally.classify("", interrupt=True), ("interventions", "unstick --interrupt (no message)"))

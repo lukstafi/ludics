@@ -696,20 +696,19 @@ tier group, D2 apart from D2/D3 with D3, once each model has ten merged tasks in
 smaller count is a description. A reading of the code itself pairs PRs by area before any diff is
 read and takes a blind judge of each family, since a judge of one family prefers its own (the
 2026-11-20 retrospective). When a reading is in, the maintainer sets the default for that group and
-its split ends. The board row holds what that
-comparison groups by: `tier=` (prep's `--tier`, or a queue entry's `tier`), `model=` (a profile's
-model and effort; a native row's from its launch) and `launched_at` (stamped by the board on the
-row's first `state=launched`), beside `pr`, `review`, `confirm` and `merge`. Give every task its
-tier at prep, so no comparison has to recover it from the task part's prose. It counts the
-coordinator's turns too: `interventions=` (turns that needed judgment: an escalation's answer, a
-nudge, an `unstick --kill` or `--interrupt`) apart from `routine_answers=` (the protocol's answers),
-and `relaunches=` beside them (the task's worker launched again: a CLI `launch --replace`, a native
-respawn, a finisher from `board takeover`; never folded into `interventions=`, ludics#1236), all
-from 0 at the row's creation. `unstick` and `launch --replace` count their own, so a CLI row needs
-no step; beside each message to a native worker run `board tally`
-([native-claude.md](references/native-claude.md#worker-channel)), and the board counts a native
-relaunch itself, at the second `state=launched` its spawn writes. The message's first line decides
-a turn's counter, by the closed list in `lib/ludics/fleetworker/tally.py`.
+its split ends. Read the comparison's task fields with `fleet-worker.sh status --json`.
+`tier` comes from prep's `--tier` or the queue entry, `model` from the profile or native launch,
+and `launched_at` from the board's first launch stamp. Give every task its tier at prep.
+Use `pr` to find the review rounds and `merge` to identify the merged revision. Compare
+`interventions` (turns that needed judgment, such as an escalation's answer, a nudge, or
+`unstick --kill` or `--interrupt`) alongside `routine_answers` (the protocol's answers) and
+`relaunches` (a CLI `launch --replace`, a native respawn, or a finisher from `board takeover`,
+ludics#1236). The counts start at zero on new rows. Older rows can lack fields or carry the
+partial-count markers `counted_from` and `<counter>_from`. `unstick` and `launch --replace`
+count their own. Beside each message to a native worker run `board tally`. `board spawned`
+counts a native relaunch when the row already has `launched_at`. The message's first non-blank
+line decides a turn's counter by the closed list in `lib/ludics/fleetworker/tally.py`.
+See [the native worker channel](references/native-claude.md#worker-channel).
 
 The IDs are the ones `~/.codex/models_cache.json` lists on the worker's box (2026-11-17 on
 mac-studio: `gpt-6.2-sol` and `gpt-6.2-astra`); read them there rather than from this paragraph

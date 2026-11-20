@@ -185,7 +185,7 @@ class Document(Anchor):
         self.assertEqual(list(new), ["wave", "created_at", "created_by", "updated_at", "notes", "tasks"])
         self.assertEqual(new["created_by"], "coord")
         t1, t2 = new["tasks"]
-        self.assertEqual(list(t1), TASK_KEYS)
+        self.assertEqual(list(t1), [*TASK_KEYS, "interventions", "routine_answers", "relaunches"])
         self.assertEqual({k: t1[k] for k in ("state", "state_word", "phase", "exec_hosts", "agent", "pr")},
                          {"state": "implementing", "state_word": "implementing", "phase": "active",
                           "exec_hosts": ["mac-studio", "rog"], "agent": "a1", "pr": "5"})
@@ -195,6 +195,32 @@ class Document(Anchor):
                           "issue": None, "exec_hosts": []})
         old = doc["waves"][1]["tasks"][0]
         self.assertEqual((old["state"], old["state_word"], old["phase"]), ("merged #12", "merged", "merged"))
+
+    def test_the_comparison_fields_read_as_stored(self) -> None:
+        fields = {
+            "tier": "D2", "model": "sol", "launched_at": "2026-11-17T09:48:55Z",
+            "interventions": "2", "routine_answers": "5", "relaunches": "1",
+            "counted_from": "2026-11-17T10:00:00Z", "interventions_from": "2026-11-17T10:01:00Z",
+            "routine_answers_from": "2026-11-17T10:02:00Z", "relaunches_from": "2026-11-17T10:03:00Z",
+        }
+        self.row("w", "t1", **fields)
+        self.row("w", "t2", state="pending")
+        doc = self.document()
+        self.assertEqual(doc["version"], 1)
+        counted, fresh = doc["waves"][0]["tasks"]
+        self.assertEqual({key: counted[key] for key in fields if key in counted}, fields)
+        self.assertEqual({key: fresh[key] for key in ("interventions", "routine_answers", "relaunches")},
+                         {"interventions": "0", "routine_answers": "0", "relaunches": "0"})
+        self.assertEqual(set(fresh) - set(TASK_KEYS), {"interventions", "routine_answers", "relaunches"})
+
+    def test_the_comparison_fields_are_absent_on_a_legacy_row(self) -> None:
+        at = "2026-11-17T09:48:55Z"
+        self.write("boards/w.json", json.dumps({
+            "board": 1, "wave": "w", "created_at": at, "created_by": "coord", "updated_at": at, "notes": {},
+            "tasks": [{"task": "t1", "fields": {"status": "merged"}, "updated_at": at}], "log": [],
+        }))
+        task = self.document()["waves"][0]["tasks"][0]
+        self.assertEqual(list(task), TASK_KEYS)
 
     def test_since_selects_boards(self) -> None:
         self.fixture()

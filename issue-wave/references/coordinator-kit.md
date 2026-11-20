@@ -301,6 +301,10 @@ driver hands you as an attention line.
    `touch <wave dir>/drive.stop` ends it at its next tick.
    The markers, the answers and what is deliberately left to you are `wavedrive.py`'s header.
 
+   When the Windows witness recipe calls for relaying a result, resume the worker by hand.
+   Start the message with `WINDOWS_WITNESS_RESULT <request_id>` on its own line, then give the
+   verdict and transcript. The first line identifies the reply for the board's routine tally.
+
    The driver also launches what you queue. Write each CLI task's part (`tasks/<task>.md`) and
    list the tasks in `queue.json`, in the order you want them started:
 

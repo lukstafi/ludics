@@ -55,6 +55,7 @@ non-blank line, read as whitespace-separated words, begins with the words of one
   REVIEW_POSTED, MERGE CLEARED, MERGE NOT CLEARED           the review checkpoint's answers
   EXECUTION_ASSIGNED, EXECUTION_CONCLUDED, EXECUTION_REFUSED,
   EXECUTION_PENDING, EXECUTION_DEFERRED                     the execution requests' answers
+  WINDOWS_WITNESS_RESULT                                  the coordinator's Windows witness result
   PEER_PLAN, PEER_PLAN_UNAVAILABLE, PEER_CRITIQUE           paired planning's relays
 
 compared exactly (case kept, a word whole: ``REVIEW_POSTEDX`` or a backticked marker is not one).
@@ -96,8 +97,8 @@ from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run
 
 USAGE = "board tally <wave> <task> --message <file>"
 ROUTINE = ("REVIEW_POSTED", "MERGE CLEARED", "MERGE NOT CLEARED", "EXECUTION_ASSIGNED", "EXECUTION_CONCLUDED",
-           "EXECUTION_REFUSED", "EXECUTION_PENDING", "EXECUTION_DEFERRED", "PEER_PLAN", "PEER_PLAN_UNAVAILABLE",
-           "PEER_CRITIQUE")
+           "EXECUTION_REFUSED", "EXECUTION_PENDING", "EXECUTION_DEFERRED", "WINDOWS_WITNESS_RESULT", "PEER_PLAN",
+           "PEER_PLAN_UNAVAILABLE", "PEER_CRITIQUE")
 SHOWN = 120  # the most of a first line a log line repeats
 SAID = ("BOARD TALLY WARNING", "BOARD TALLY NOTE")
 
