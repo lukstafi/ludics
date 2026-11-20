@@ -4092,10 +4092,11 @@ test_a_second_move_that_overlaps_the_pr_is_refused() {
 }
 
 test_a_base_that_outruns_the_refresh_limit_is_refused() {
+  local state="$TEST_ROOT/refresh limit state" kept base
   reset
   moving_build_fixture compatible
   BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST" "$BUILD_LAST" "$BUILD_NEXT")
-  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  BUDGET_DIR="$state" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
     assert_posix_only_refusal "bounding the refreshes" "trigger always: every merge of this repository is built"
     return 0
@@ -4106,6 +4107,13 @@ test_a_base_that_outruns_the_refresh_limit_is_refused() {
   assert_eq "$(cat "$BUILD_PROBE_LOG")" \
     "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD" "$BUILD_LAST" "$BUILD_HEAD")" \
     "two refreshes ran"
+  kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
+  for base in "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LAST"; do
+    [ -f "$kept/$base/build.log" ] || bail "the build log for $base must survive both refreshes"
+    assert_eq "$(cat "$kept/$base/build.status")" 0 "the retained build for $base passed"
+    assert_contains "$MERGE_STDERR" "$kept/$base/build.log" "the refusal names the retained log for $base"
+  done
+  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_NEXT/build.log" "the final unbuilt tip has no build log"
   assert_no_merge_call
 }
 
