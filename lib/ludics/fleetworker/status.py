@@ -80,6 +80,7 @@ HOURS = re.compile(r"[0-9]+(\.[0-9]+)?")
 # derived ones.
 ROW_KEYS = ("issue", "repository", "pr", "merge", "branch", "worker", "agent", "agent_host")
 TAIL_KEYS = ("worktree", "kind", "model", "transport")
+# Keep these exclusions aligned with the shipped registry.lease_free compact listing.
 SECRET_KEYS = frozenset({"history", "lease_token"})
 
 

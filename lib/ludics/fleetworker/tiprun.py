@@ -580,7 +580,6 @@ def far_facts(text: str) -> dict[str, str]:
 
 def fleet_worker(cfg: Config, args: list[str], payload: dict[str, Any] | None = None, *, verb: str = "TIP-RUN") -> int:
     """Run this fleet-worker.sh with ``args`` (and a payload file appended), its stdout on stderr."""
-    script = os.path.join(cfg.here, os.path.basename(cfg.script))
     path = ""
     try:
         if payload is not None:
@@ -588,7 +587,7 @@ def fleet_worker(cfg: Config, args: list[str], payload: dict[str, Any] | None = 
             with os.fdopen(descriptor, "w", encoding="utf-8") as f:
                 f.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n")
             args = [*args, path]
-        return run([script, *args], stdout_to_stderr=True).rc
+        return run(cfg.shim_command(*args), stdout_to_stderr=True).rc
     except OSError as exc:
         err(f"{verb}: cannot stage a payload: {exc.strerror}")
         return 1
@@ -602,11 +601,12 @@ def fleet_worker(cfg: Config, args: list[str], payload: dict[str, Any] | None = 
 
 def not_started(cfg: Config, request_id: str, why: str, log: str, *, verb: str = "TIP-RUN") -> int:
     """Conclude the dispatched reservation not-launched, then say so; exit 1, or 4 when the
-    conclusion did not land (the record stays dispatched)."""
+    conclusion did not land (the record stays dispatched). Preserve a driver's distinct lease refusal."""
     done = {"request_id": request_id, "verdict": "not-launched", "log": log, "evidence": f"{verb.lower()}: {why}"}
-    if fleet_worker(cfg, ["execution", "conclude"], done, verb=verb) != 0:
+    rc = fleet_worker(cfg, ["execution", "conclude"], done, verb=verb)
+    if rc != 0:
         cli.say(f"{verb} UNKNOWN {request_id}: nothing started ({why}), but the not-launched conclusion did not land (above); conclude it")
-        return 4
+        return rc if rc == lease.LEASE_LOST_STATUS else 4
     cli.say(f"{verb} NOT STARTED {request_id}: {why}")
     return 1
 

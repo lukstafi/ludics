@@ -976,6 +976,7 @@ def check_lane_lock(host: str, map_spec: str, anchor: str, lab: str) -> None:
 def lease_free(record: Record, compact: bool = False) -> Record:
     """A record as this module prints it, in a listing or an action's answer (THE LEASE TOKEN):
     never its ``lease_token``, nor, compact, its ``history``."""
+    # status.SECRET_KEYS also filters compact records before publishing them.
     hidden = {"lease_token", "history"} if compact else {"lease_token"}
     return {key: value for key, value in record.items() if key not in hidden}
 

@@ -85,6 +85,10 @@ def local_path(value: str, env: Mapping[str, str]) -> str:
     return value
 
 
+# Private shim argument for the driver's lease-gated calls and their nested fleet mutations.
+LEASE_STATUS_ARG = "--lease-status"
+
+
 @dataclass(frozen=True)
 class Config:
     script: str
@@ -108,6 +112,12 @@ class Config:
     feeder_wait: str
     lock_wait: str
     env: Mapping[str, str]
+    lease_loss_status: int = 1
+
+    def shim_command(self, *args: str) -> list[str]:
+        """Carry the lease-status request only to another fleet verb, including a nested mutation."""
+        prefix = [LEASE_STATUS_ARG] if self.lease_loss_status != 1 else []
+        return [os.path.join(self.here, os.path.basename(self.script)), *prefix, *args]
 
     def path(self, value: str) -> str:
         return local_path(value, self.env)

@@ -104,10 +104,10 @@ from typing import Any, cast
 from ludics import cli, proc
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.lease import anchor_gate
+from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate
 from ludics.fleetworker.takeover import gh_json
 from ludics.fleetworker.transport import run, substitution
-from ludics.fleetworker.wave import USAGE, Review, Wave, load_wave, shim, utc_now
+from ludics.fleetworker.wave import USAGE, Review, Wave, load_wave, utc_now
 from ludics.fleetworker.wavebrief import Part, render, write_atomically
 from ludics.fleetworker.wavelaunch import Record, record_of
 from ludics.fleetworker.waveprep import SHA40, TASK, TEMPLATES, subject
@@ -558,10 +558,12 @@ def reviewed_locked(cfg: Config, call: Call) -> int:
     write_record(call, verdict, comment, call.dry_run)
     if not call.dry_run:
         key = "review" if call.kind == "at-open" else "confirm"
-        rc = run([shim(cfg), "board", "set", call.wave.wave, call.task, f"{key}={verdict.word}@{call.sha[:8]}"],
+        rc = run(cfg.shim_command("board", "set", call.wave.wave, call.task, f"{key}={verdict.word}@{call.sha[:8]}"),
                  stdout_to_stderr=True).rc
         if rc != 0:
             cli.say(f"WAVE REVIEW NOTE {call.task}: board set exited {rc}; the row does not carry this review (the record does)")
+            if rc == LEASE_LOST_STATUS:
+                return rc
     cli.say(line_of(call, verdict, comment))
     return 0
 
