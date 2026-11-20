@@ -1457,8 +1457,8 @@ refused); it reads no PR, fetches nothing and merges nothing. A config change's 
 that run on a pair the config must refuse.
 
 The build prints its retained log/status directory, kept under ship-pr's state directory as
-`merge-builds/logs/<owner>--<repo>/<pr>/<head>/` on success and refusal alike (retries replace that
-head's files; old heads remain until manual removal), and records it in the JSONL receipt.
+`merge-builds/logs/<owner>--<repo>/<pr>/<head>/<base>/` on success and refusal alike, and records it
+in the JSONL receipt. Same-candidate retries replace those files. Old candidates remain until manual removal.
 
 **A merge build that overruns its bound** ends `merge` with exit 4 and no verdict. The refusal shows
 how far the build got and what the same command has taken on this box, and says when a re-run will

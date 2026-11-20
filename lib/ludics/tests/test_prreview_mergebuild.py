@@ -504,7 +504,8 @@ class Build(Repo):
 
     def test_log_and_status_survive_cleanup_on_pass_and_refusal(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
-        directory = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head
+        kept_head = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head
+        directory = kept_head / self.tip
         seen = Path(self.dir) / "scratch-tree"
         for status in (0, 1):
             with self.subTest(status=status):
@@ -524,6 +525,7 @@ class Build(Repo):
                             (Path(self.dir) / "state/merge-builds/owner--repo.jsonl").read_text().splitlines()]
                 self.assertEqual(receipts[-1]["log_dir"], str(directory))
                 self.assertEqual(receipts[-1]["outcome"], "passed" if status == 0 else "failed")
+                self.assertEqual(list(kept_head.iterdir()), [directory], "same-pair retries reuse the directory")
                 if status:
                     self.assertEqual((directory / "base.log").read_text(), "evidence 1\n")
 
@@ -1171,7 +1173,7 @@ class Plan(Repo):
         self.assertIn("Nothing was built and no slot was taken", out)
         self.assertIn("  | owed: the whole suite", out, "the plan's output is shown")
         self.assertNotIn("the build ran", out)
-        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head
+        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head / self.tip
         self.assertIn("ship-pr-merge-plan: unadmitted", (retained / "plan.log").read_text())
         self.assertEqual((retained / "plan.status").read_text().strip(), "0")
         self.assertFalse((retained / "build.log").exists(), "no build ran")
@@ -1199,7 +1201,7 @@ class Plan(Repo):
         head, tip = self.sides("keep", "seam() { :; }")
         git(self.clone, "fetch", "-q", "--no-tags", "--refmap=", "origin", "refs/pull/7/head", "refs/heads/main")
         refs = self.refs()
-        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/plan-only" / head
+        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/plan-only" / head / tip
         for word in ("admitted runtest", "nothing-owed"):
             with self.subTest(word=word):
                 verdict = f"ship-pr-merge-plan: {word}"
@@ -1275,7 +1277,7 @@ class Plan(Repo):
                 raise subprocess.TimeoutExpired(argv, timeout)
             return out, err
 
-        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head
+        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head / self.tip
         for status in (0, 9):
             with self.subTest(status=status):
                 with mock.patch.object(subprocess.Popen, "communicate", new=struck):

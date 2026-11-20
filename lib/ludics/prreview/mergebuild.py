@@ -239,18 +239,18 @@ NUL in it, past the argument limit) is a config error (exit 2); anything else it
 outside its tree, a network call, a process it detaches with ``setsid``) is the command's
 business, as it would be from a developer's shell.
 
-LOG RETENTION (#1188). After each command attempt, before scratch cleanup, copy its log and status
-to ``merge-builds/logs/<owner>--<repo>/<pr>/<head>/`` under ship-pr's state directory
+LOG RETENTION (#1188, #1263). After each command attempt, before scratch cleanup, copy its log and status
+to ``merge-builds/logs/<owner>--<repo>/<pr>/<head>/<base>/`` under ship-pr's state directory
 (budget.budget_dir), independent of ISSUE_WAVE_STATE so wave cleanup cannot remove the evidence.
-Retries replace that head's files; base-alone attempts use ``base.log`` and ``base.status``, THE
-PLAN ``plan.log`` and ``plan.status``. Dry
-runs naming a repository use ``dry-run`` in place of the PR; config-only dry runs and fixtures
-explicitly disabling state have no durable directory, as with history. Missing files (a command
+Retries of the same head and candidate base replace that command's files. Base-alone attempts
+use ``base.log`` and ``base.status``, THE PLAN ``plan.log`` and ``plan.status``.
+Dry runs naming a repository use ``dry-run`` or ``plan-only`` in place of the PR. Config-only dry runs
+and fixtures explicitly disabling state have no durable directory, as with history. Missing files (a command
 never started or did not finish) are retained as empty files. A copy error refuses with exit 3. The
 directory is printed and recorded as ``log_dir`` in the JSONL receipt, including failures and slot
-refusals. One directory per head bounds retries, not total disk usage: old heads are left for manual
-removal of ``merge-builds/logs``; no automatic sweep is promised. Interrupts before the copy and
-SIGKILL remain outside retention's readiness boundary.
+refusals. A stale-build or refresh refusal reports the build logs already retained by the gate.
+Directories for distinct candidates and legacy head-only artifacts remain until manual removal of
+``merge-builds/logs``. Interrupts before the copy and SIGKILL remain outside retention's readiness boundary.
 
 DIAGNOSTIC SCAN -- the boundary. In addition to the bounded head/tail display, scan the complete
 log in bounded chunks for physical lines whose first SHOWN_BYTES bytes, decoded as UTF-8 with
@@ -318,6 +318,7 @@ from typing import Literal, NoReturn, assert_never
 
 from ludics import cli, fs, proc
 from ludics.prreview import buildhistory, commentonly
+from ludics.prreview.branchtip import FULL_SHA
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
 from ludics.prreview.drift import Drift
@@ -990,6 +991,14 @@ class BuildVerdict:
     base_sha: str
     config: BuildConfig
     shared_failure: str | None = None
+    log_paths: tuple[str, ...] = ()
+
+
+def retained_build_logs(paths: tuple[str, ...]) -> str:
+    """The durable build logs to append to a freshness refusal."""
+    if not paths:
+        return ""
+    return "\nRetained build logs:\n" + "\n".join(f"  {shlex.quote(path)}" for path in paths)
 
 
 def merge_build(
@@ -1033,10 +1042,10 @@ def merge_build(
             f"NOT merging {repo}#{pr}: {why}, and the PR's base branch could not be read (above),",
             "so the merge commit cannot be built. Retry.",
         )
-    if not drift.base_sha:
+    if not drift.base_sha or not FULL_SHA.fullmatch(drift.base_sha):
         fail(
             3,
-            f"NOT merging {repo}#{pr}: {why}, and the tip of {drift.base_ref} could not be read (above),",
+            f"NOT merging {repo}#{pr}: {why}, and no full commit SHA could be read for the tip of {shlex.quote(drift.base_ref)},",
             "so the merge commit cannot be built. Retry.",
         )
     return _build(
@@ -1058,6 +1067,7 @@ def refresh_build(
         "refreshing the merge-build verdict after base movement",
         checkout=checkout, ceiling=ceiling, prior_override_base=prior_override_base,
         disjoint_from=verdict.base_sha if require_disjoint else None,
+        previous_logs=verdict.log_paths,
     )
     # A refresh cannot take either of _build's no-verdict paths: comments-only skip or plan-only.
     assert refreshed is not None
@@ -1114,6 +1124,7 @@ def _build(
     checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False, override: str = "",
     candidates: Candidates | None = None, plan_only: bool = False, prior_override_base: str | None = None,
     disjoint_from: str | None = None,
+    previous_logs: tuple[str, ...] = (),
 ) -> BuildVerdict | None:
     """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
     clone ``checkout`` names as it is, with nothing fetched. Returns None when COMMENTS ONLY
@@ -1131,13 +1142,14 @@ def _build(
     with _INTERRUPTS.installed():
         return _build_in_scratch(
             subject, repo, gated, base_ref, tip, config, why, checkout or os.getcwd(), ceiling, override, candidates,
-            plan_only=plan_only,
+            plan_only=plan_only, previous_logs=previous_logs,
         )
 
 
 def _build_in_scratch(
     subject: _Subject, repo: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str,
     where: str, ceiling: Ceiling | None, override: str, candidates: Candidates | None, *, plan_only: bool,
+    previous_logs: tuple[str, ...],
 ) -> BuildVerdict | None:
     stop, pr = subject.stop, subject.pr
     # pr-review's own temporary family, keyed by the owning pid, so a SIGKILLed merge's leftover
@@ -1145,6 +1157,7 @@ def _build_in_scratch(
     # (watch.tmp_sweep_stale). Logs are retained separately below. It is made and removed
     # with signals held, so no signal leaves it behind.
     scratch: str | None = None
+    log_paths = previous_logs
     try:
         with _INTERRUPTS.held():
             scratch = os.path.realpath(tempfile.mkdtemp(prefix=f"pr-review-build.{proc.own_pid()}."))
@@ -1236,16 +1249,23 @@ def _build_in_scratch(
             subject, config, runner, ceiling, tree, scratch, "build", tip, gated,
             f"{why}; building {gated[:8]} merged with {base_ref} at {tip[:8]} ({merge_sha[:8]})",
         )
+        if ran.log_dir is not None:
+            log_paths = tuple(dict.fromkeys((*log_paths, os.path.join(ran.log_dir, "build.log"))))
+        verdict = BuildVerdict(gated, base_ref, tip, config, log_paths=log_paths)
         if ran.status == "0":
             cli.say(f"merge build {subject.label}: PASSED in {ran.took}s ({config.command})")
-            return BuildVerdict(gated, base_ref, tip, config)
-        if ran.status:
-            cli.say(f"merge build {subject.label}: FAILED (exit {ran.status}) after {ran.took}s; its output:")
-            for line in _shown(ran.log):
-                cli.say(f"  | {line}")
-            shared = _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
-            return BuildVerdict(gated, base_ref, tip, config, shared)
-        _no_verdict(subject.label, stop, config, ran, "the build of its merge commit")
+            return verdict
+        if not ran.status:
+            _no_verdict(subject.label, stop, config, ran, "the build of its merge commit")
+        cli.say(f"merge build {subject.label}: FAILED (exit {ran.status}) after {ran.took}s; its output:")
+        for line in _shown(ran.log):
+            cli.say(f"  | {line}")
+        shared = _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
+        return replace(verdict, shared_failure=shared)
+    except cli.Exit as exc:
+        if previous_logs:
+            raise cli.Exit(exc.rc, exc.message + retained_build_logs(log_paths), raw=exc.raw) from None
+        raise
     finally:
         # Held from its first instruction (as in _supervised), so no signal skips the removal.
         # Inline, not _remove_held: a call is where CPython runs a signal handler, so a helper's
@@ -1463,26 +1483,28 @@ class _Ran:
     """One run of the command: ``status`` is the status file's text ("" when the command never
     ended on its own: the wrapper's refusal, the deadline), ``done`` the wrapper's own result,
     ``took`` the seconds the command ran (with no sign of its start, the whole wait for the
-    wrapper) and ``started`` whether it did start; ``earlier`` the build history as this run found it."""
+    wrapper), ``log_dir`` the durable copy's directory when kept, and ``started`` whether it did start;
+    ``earlier`` the build history as this run found it."""
 
     status: str
     done: proc.Completed
     took: int
     log: str
+    log_dir: str | None
     started: bool = True
     earlier: tuple[buildhistory.Row, ...] = ()
 
 
 def _retain(
-    repo: str, pr: str, head: str, name: str, log: str, status: str, *, plan_only: bool = False,
+    repo: str, pr: str, head: str, base: str, name: str, log: str, status: str, *, plan_only: bool = False,
 ) -> str | None:
-    """Retain command artifacts before scratch cleanup; retries replace the same head's files."""
+    """Retain command artifacts before scratch cleanup, keyed by both candidate parents."""
     root = buildhistory.state_root(repo)
     if root is None:
         return None  # fixtures can explicitly disable state; config-only dry runs have no repo
-    # A plan-only read can use another base for the same head as a full dry run.
+    # A plan-only read leaves the full run's plan evidence intact even for the same candidate.
     run = pr or ("plan-only" if plan_only else "dry-run")
-    directory = os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"), run, head))
+    directory = os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"), run, head, base))
     try:
         os.makedirs(directory, exist_ok=True)
         for source, leaf in ((log, f"{name}.log"), (status, f"{name}.status")):
@@ -1537,7 +1559,7 @@ def _run(
     rc_text = _status_text(status)
     ran_for = _ran_for(status, rc_text != "")
     earlier = buildhistory.read(subject.repo, config.command)
-    log_dir = _retain(subject.repo, subject.pr, gated, name, log, status)
+    log_dir = _retain(subject.repo, subject.pr, gated, tip, name, log, status)
     if log_dir:
         cli.say(f"merge build {subject.label}: retained log/status in {shlex.quote(log_dir)}")
     outcome: buildhistory.Recorded
@@ -1551,7 +1573,7 @@ def _run(
         outcome = "failed"
     buildhistory.record(subject.repo, config.command, outcome, took if ran_for is None else ran_for,
                         config.timeout, log_dir=log_dir)
-    return _Ran(rc_text, done, took if ran_for is None else ran_for, log, ran_for is not None, tuple(earlier))
+    return _Ran(rc_text, done, took if ran_for is None else ran_for, log, log_dir, ran_for is not None, tuple(earlier))
 
 
 def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, scratch: str, merge_sha: str, tip: str,
@@ -1577,7 +1599,7 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
         except (ValueError, OSError) as exc:
             unstarted = str(exc)
     took = int(time.monotonic() - started)
-    log_dir = _retain(subject.repo, subject.pr, gated, "plan", log, status, plan_only=plan_only)
+    log_dir = _retain(subject.repo, subject.pr, gated, tip, "plan", log, status, plan_only=plan_only)
     if log_dir:
         cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
     # Its checkout goes now, so the build's slot is not taken beside it.
