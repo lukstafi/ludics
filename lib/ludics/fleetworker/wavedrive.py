@@ -216,7 +216,7 @@ it, one a tick (THE GATE and the halt are read once a tick, for the cues and the
 A PAIRED LAUNCH, of an entry whose ``mode`` is not ``none``, is told once its launch answers: one
 non-final attention line, ``launched <mode> at <sha>: start its peer planner on that sha with
 --model <m>``, the planner ``peer_model`` names for the worker's model (peerplan/plan.py: Opus
-beside an Astra worker). The worker's model is the launch record's (what ``wave launch`` ran),
+beside a GPT worker). The worker's model is the launch record's (what ``wave launch`` ran),
 else the ``model=`` its ``LAUNCHED`` line resolved from the box's config (read from both of the
 launch's streams: a structured launch prints it on stderr), else, with no record, the profile's;
 with none, the line names both planners and says to read the worker's meta first. The
@@ -1255,7 +1255,7 @@ class Driver:
                 model = worker_model(self.prepared(queued.task), substitution(done.out) + "\n" + self.err,
                                      self.wave.profiles[queued.profile].model)
                 which = (f"with --model {peer_model(model)} (the worker runs {model})" if model else
-                         f"with --model opus if the worker runs Astra, else the default {peer_model('')}: no model is on record"
+                         f"with --model opus if the worker runs a GPT model, else the default {peer_model('')}: no model is on record"
                          " or in the launch's output, so read the worker's meta first")
                 self.tell(slot, LAUNCH, f"launched {queued.mode} at {base}: start its peer planner on that sha {which}"
                                        " (paired-planning.md, Coordinator, step 1)")

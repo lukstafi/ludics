@@ -90,9 +90,10 @@ def git(*args: str) -> str:
 
 
 class PeerModel(unittest.TestCase):
-    def test_opus_beside_an_astra_worker_and_the_default_beside_any_other(self) -> None:
+    def test_opus_beside_a_gpt_worker_and_the_default_beside_any_other(self) -> None:
         self.assertEqual(plan.peer_model("gpt-6.2-astra"), "opus")
-        self.assertEqual(plan.peer_model("gpt-6.2-sol"), plan.DEFAULT_MODEL)
+        self.assertEqual(plan.peer_model("gpt-6.2-sol"), "opus")
+        self.assertEqual(plan.peer_model("claude-opus-5-5"), plan.DEFAULT_MODEL)
         self.assertEqual(plan.peer_model(""), plan.DEFAULT_MODEL)
 
 

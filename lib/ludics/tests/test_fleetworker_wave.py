@@ -3458,7 +3458,7 @@ class Queue(DriveCase):
             self.assertEqual(self.calls[0], ["halted"])
             self.assertIn("DRIVE t50 launch: launch answered: WAVE LAUNCH t50: launched far/w1-50", out)
             self.assertIn(f"DRIVE ATTENTION t50 launch: launched paired at {B}: start its peer planner on that sha"
-                          " with --model gpt-6.2-astra (the worker runs gpt-6.1-sol)", out)
+                          " with --model opus (the worker runs gpt-6.1-sol)", out)
             self.rows = [row("t50")]  # launched: its row is live
             out = self.once()[1]
             self.assertNotIn("peer planner", out, "an unpaired launch names no planner")
