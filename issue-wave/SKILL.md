@@ -699,13 +699,15 @@ read and takes a blind judge of each family, since a judge of one family prefers
 its split ends. Read the comparison's task fields with `fleet-worker.sh status --json`.
 `tier` comes from prep's `--tier` or the queue entry, `model` from the profile or native launch,
 and `launched_at` from the board's first launch stamp. Give every task its tier at prep.
-Use `pr` to find the review rounds and `merge` to identify the merged revision. Compare
+The board row also has `review` and `confirm` for checkpoint verdicts. Use `pr` to find the review
+rounds and `merge` to identify the merged revision. Compare
 `interventions` (turns that needed judgment, such as an escalation's answer, a nudge, or
 `unstick --kill` or `--interrupt`) alongside `routine_answers` (the protocol's answers) and
 `relaunches` (a CLI `launch --replace`, a native respawn, or a finisher from `board takeover`,
-ludics#1236). The counts start at zero on new rows. Older rows can lack fields or carry the
-partial-count markers `counted_from` and `<counter>_from`. `unstick` and `launch --replace`
-count their own. Beside each message to a native worker run `board tally`. `board spawned`
+ludics#1236). Each relaunch contributes to `relaunches` alone. The counts start at zero on new
+rows. Older rows can lack fields or carry the partial-count markers `counted_from` and
+`<counter>_from`. `unstick` and `launch --replace` count their own. Beside each message to a
+native worker run `board tally`. `board spawned`
 counts a native relaunch when the row already has `launched_at`. The message's first non-blank
 line decides a turn's counter by the closed list in `lib/ludics/fleetworker/tally.py`.
 See [the native worker channel](references/native-claude.md#worker-channel).

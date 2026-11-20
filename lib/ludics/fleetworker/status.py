@@ -32,7 +32,8 @@ THE DOCUMENT, version 1 (this header is the one statement of it). One JSON objec
                 when present on the row, as stored strings (including a recorded "0"):
                 ``tier``, ``launched_at``, ``interventions``, ``routine_answers``, ``relaunches``,
                 ``counted_from``, ``interventions_from``, ``routine_answers_from``, ``relaunches_from``.
-                The latter four are the board's partial-count markers (boardstore's tally).
+                The latter four are the board's partial-count markers. The board's tally writes
+                counts as decimal strings.
   executions    the registry's open records, as ``execution list --active --compact`` gives them (the
                 compact form drops ``history`` and ``lease_token``, the coordinator's token, and this
                 verb drops those two keys again should a record carry them), or null when unread
