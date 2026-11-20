@@ -101,6 +101,42 @@ class ClientLease(unittest.TestCase):
         self.assertIn("merge lease ownership expired or was lost", refused.exception.message)
         self.assertEqual(call.call_args_list, [mock.call("take", timeout=20), mock.call("renew"), mock.call("release")])
 
+    def test_an_unanswered_renewal_keeps_the_live_proof_and_can_recover(self) -> None:
+        lease = mergelease.MergeLease("owner/name", "7")
+        elapsed = mock.Mock(return_value=10.0)
+        with (
+            mock.patch.object(mergelease, "_lease_time", elapsed),
+            mock.patch.object(lease, "_call", side_effect=[
+                "taken\n", cli.Exit(3, "merge lease renew failed on local (exit 255)."), "renewed\n", "released\n",
+            ]) as call,
+            lease.held(FuncClock()),
+        ):
+            elapsed.return_value = 40.0
+            lease.verify()
+            elapsed.return_value = 70.0
+            lease.verify()
+            elapsed.return_value = 10.0 + mergelease.TTL
+            lease.require_current()
+        self.assertEqual(
+            call.call_args_list, [mock.call("take", timeout=20), mock.call("renew"), mock.call("renew"), mock.call("release")],
+        )
+
+    def test_an_unanswered_renewal_after_expiry_names_the_anchor_failure(self) -> None:
+        lease = mergelease.MergeLease("owner/name", "7")
+        elapsed = mock.Mock(return_value=10.0)
+        with (
+            mock.patch.object(mergelease, "_lease_time", elapsed),
+            mock.patch.object(lease, "_call", side_effect=[
+                "taken\n", cli.Exit(3, "merge lease renew failed on local (exit 255)."), "released\n",
+            ]),
+            self.assertRaises(cli.Exit) as refused,
+            lease.held(FuncClock()),
+        ):
+            elapsed.return_value = 10.0 + mergelease.TTL
+            lease.verify()
+        self.assertEqual(refused.exception.rc, 3)
+        self.assertIn("Last renewal: merge lease renew failed on local (exit 255).", refused.exception.message)
+
     def test_a_lease_expiring_during_the_quota_gate_blocks_dispatch(self) -> None:
         args = ["pr", "merge", "7", "--repo", "owner/name"]
         for forwarded in (False, True):

@@ -728,10 +728,14 @@ def clone_preflight(session: GhSession, repo: str, pr: str, where: str) -> None:
     )
 
 
+def fleet_worker_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "issue-wave" / "scripts" / "fleet-worker.sh"
+
+
 def _slot_runner() -> str | None:
     """fleet-worker.sh beside this package, when this box has run-time slots (its probe answers the
     PROBE line); None to run bare (issue-wave/references/executions.md: any other answer)."""
-    here = Path(__file__).resolve().parents[3] / "issue-wave" / "scripts" / "fleet-worker.sh"
+    here = fleet_worker_path()
     try:
         if fs.absent(here):
             return None

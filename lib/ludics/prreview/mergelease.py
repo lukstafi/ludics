@@ -1,7 +1,8 @@
 """Near side of merge.py's MERGE LEASE. Anchor replies must match the requested action.
 
-Reads only the configured fleet anchor and its merge-lease protocol. A missing reply, a failed
-transaction, or a reply outside the action's allowlist leaves no proof of ownership for a write.
+Reads only the configured fleet anchor and its merge-lease protocol. Only a recognized acquisition
+or renewal sets a deadline. An unanswered renewal leaves the current deadline in force. An
+explicit loss or a reply outside the renewal allowlist invalidates the proof immediately.
 """
 
 import os
@@ -22,6 +23,7 @@ from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.transport import emit_var, far_argv
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import fail, warn
+from ludics.prreview.mergebuild import fleet_worker_path
 
 WAIT = 1800
 TTL = 120
@@ -48,8 +50,7 @@ class MergeLease:
         self.pr = pr
         self.subject = f"{shlex.quote(repo)}#{pr}"
         self._token = uuid4().hex
-        script = str(Path(__file__).resolve().parents[3] / "issue-wave" / "scripts" / "fleet-worker.sh")
-        cfg = load_config(script, os.environ)
+        cfg = load_config(str(fleet_worker_path()), os.environ)
         if why := pin_refusal(cfg):
             fail(3, f"NOT merging {self.subject}: merge lease anchor differs from the fleet pin. {why}")
         self._anchor = shlex.quote(cfg.anchor)
@@ -68,15 +69,16 @@ class MergeLease:
         self._stopped = threading.Event()
         self._valid_until = 0.0
         self._lost = False
+        self._renewal_failure = ""
 
     def _call(self, action: _Action, *, timeout: float = _CALL_TIMEOUT) -> str:
         argv = far_argv(self._cfg, self._cfg.anchor, [action, self.repo, self._token, self.pr, str(TTL)])
         try:
             done = proc.run_tool(argv[0], argv[1:], stdin=self._script, timeout=timeout)
         except OSError as exc:
-            fail(3, f"NOT merging {self.subject}: merge lease {action} could not reach {self._anchor} ({exc.strerror}).")
+            fail(3, f"merge lease {action} could not reach {self._anchor} ({exc.strerror}).")
         if done.rc != 0:
-            fail(3, f"NOT merging {self.subject}: merge lease {action} failed on {self._anchor} (exit {done.rc}).")
+            fail(3, f"merge lease {action} failed on {self._anchor} (exit {done.rc}).")
         return done.stdout
 
     def _take(self, clock: Clock) -> None:
@@ -88,7 +90,10 @@ class MergeLease:
                 fail(1, f"NOT merging {self.subject}: merge lease wait ran out after {WAIT}s on {self._anchor}",
                      f"while held by {shlex.quote(self.repo)}#{holder}. Re-run merge.")
             started = _lease_time()
-            reply = self._call("take", timeout=min(_CALL_TIMEOUT, max(1, remaining)))
+            try:
+                reply = self._call("take", timeout=min(_CALL_TIMEOUT, max(1, remaining)))
+            except cli.Exit as exc:
+                fail(exc.rc, f"NOT merging {self.subject}: {exc.message}")
             if _TAKE.fullmatch(reply) is None:
                 fail(3, f"NOT merging {self.subject}: merge lease take received an unrecognized answer from {self._anchor}.")
             status, _, pr = reply.rstrip("\n").partition("\t")
@@ -109,12 +114,18 @@ class MergeLease:
                 return
             started = _lease_time()
             try:
-                renewed = self._call("renew") == "renewed\n"
-            except cli.Exit:
-                renewed = False
-            if renewed:
+                reply = self._call("renew")
+            except cli.Exit as exc:
+                self._renewal_failure = exc.message
+                return
+            if reply == "renewed\n":
+                self._renewal_failure = ""
                 self._valid_until = started + TTL - 1
             else:
+                self._renewal_failure = (
+                    "The anchor no longer recognizes the lease token." if reply == "lost\n"
+                    else "The anchor returned an unrecognized renewal reply."
+                )
                 self._lost = True
 
     def _heartbeat(self) -> None:
@@ -148,4 +159,5 @@ class MergeLease:
 
     def require_current(self) -> None:
         if self._lost or _lease_time() >= self._valid_until:
-            fail(3, f"NOT merging {self.subject}: merge lease ownership expired or was lost on {self._anchor}. Re-run merge.")
+            detail = f" Last renewal: {self._renewal_failure}" if self._renewal_failure else ""
+            fail(3, f"NOT merging {self.subject}: merge lease ownership expired or was lost on {self._anchor}.{detail} Re-run merge.")

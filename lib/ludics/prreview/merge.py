@@ -30,9 +30,11 @@ config makes upgraded callers sharing the same fleet anchor and state directory 
 case-normalized ``owner/name``. The initial build runs in parallel. The lease covers final checks, refreshes (slot
 waits included), and the merge call and its resends. An owner token and 120-second expiry on the
 anchor's clock live under ``FLEET_ANCHOR_STATE/merge-leases/``. Renewal while held keeps a live
-holder current. A dead holder's token expires, and a waiter can take over. A wait past 1800 seconds
-or a lost or unread lease refuses a new merge write. Removing the config line restores unleased
-merges. Roll out the reader on every merging box, then drain in-flight merges before enabling it.
+holder current. An unanswered renewal leaves the current proof usable until its deadline. A dead
+holder's token expires, and a waiter can take over. A wait past 1800 seconds or an expired or lost
+lease refuses a new merge write. Removing the config line restores unleased merges. Roll out the
+reader on every merging box, then drain in-flight merges before enabling it. Older readers reject
+the new config line and exit 2.
 
 The lease cannot fence web merges, direct pushes, deferred auto-merges or any other writer outside
 this protocol, including a request already sent by a holder that loses its lease. GitHub pins only

@@ -1388,7 +1388,8 @@ retarget or an unread base also requires a fresh invocation.
 On a busy fleet repository, add `lease fleet` alongside `trigger always` to serialize the final
 checks, refreshes and merge call across boxes. The initial builds run in parallel. Every merging
 box must carry this reader and resolve the same fleet anchor and state directory. Drain in-flight
-merges before enabling the line, since they still use the config they read at the gate. A waiter
+merges before enabling the line, since they still use the config they read at the gate. Older
+readers reject `lease fleet` with exit 2. A waiter
 has 1,800 seconds to acquire the lease, including time a holder spends waiting
 for a refresh's slot. A dead holder's lease expires 120 seconds after its last renewal. A timeout
 or lost lease refuses a new merge write. Removing the line restores unleased merges. The lease
