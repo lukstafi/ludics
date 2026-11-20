@@ -1,8 +1,8 @@
 name: windows git bash
 
 # ship-pr's shell suites and selected Python fixtures under Git for Windows' MINGW64 bash on
-# windows-latest (ludics-lite#318), nightly and on demand. The job runs over an hour, and neither
-# a pull request's checks nor main's verdict (`pr-review.sh base` folds push runs only) waits on it.
+# windows-latest (ludics-lite#318). The hour-plus runtime puts the job on a nightly and on-demand
+# schedule (ludics-lite#339), outside the pull request and main push checks.
 # A dispatched run does put check runs on the head it ran at, so `checks`/`merge` judge it there.
 #
 # Windows evidence for a branch whose change needs it, not for every scripts PR: `gh workflow run
@@ -89,7 +89,7 @@ jobs:
           case "$SUITE" in
           '' | test_fleetworker_winwitness_staging.py | test_checkprompts_cli.py) ;;
           test-*.sh) [ -f "ship-pr/scripts/$SUITE" ] || { echo "::error title=No such suite::ship-pr/scripts/$SUITE does not exist"; exit 1; } ;;
-          *) printf '::error title=No such suite::unsupported suite %q\n' "$SUITE"; exit 1 ;;
+          *) printf '::error title=No such suite::suite accepts a ship-pr/scripts/test-*.sh filename, test_fleetworker_winwitness_staging.py, or test_checkprompts_cli.py. Got %q\n' "$SUITE"; exit 1 ;;
           esac
       # Every suite step below runs whether or not an earlier suite failed, but only once the
       # proof passed, and only the named suite when one was dispatched; a failure names its suite
