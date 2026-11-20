@@ -3925,7 +3925,7 @@ test_a_build_whose_base_moves_refreshes_with_the_full_command() {
 }
 
 test_two_green_heads_cannot_land_a_union_that_fails_to_compile() {
-  local first second landing
+  local first second landing state="$TEST_ROOT/compiler build state" kept
   reset
   moving_build_fixture compile-clash
   first=$BUILD_TIP
@@ -3949,7 +3949,7 @@ test_two_green_heads_cannot_land_a_union_that_fails_to_compile() {
   GATED_HEAD=$second CURRENT_HEAD=$second
   SERIES_JSON="[$(commit_row "$second" 'Declare the old interface.')]"
   : >"$BUILD_PROBE_LOG"
-  BUILD_PROBE_COMPILER=1 BUILD_PROBE_MOVES="$BUILD_START $landing" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  BUDGET_DIR="$state" BUILD_PROBE_COMPILER=1 BUILD_PROBE_MOVES="$BUILD_START $landing" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   assert_eq "$(git --git-dir="$BUILD_LIVE_REMOTE" rev-parse refs/heads/main)" "$landing" "the first sibling landed"
   assert_eq "$MERGE_RC" 1 "the union fails to compile ($MERGE_OUTPUT)"
   assert_eq "$(cat "$BUILD_PROBE_LOG")" \
@@ -3957,6 +3957,11 @@ test_two_green_heads_cannot_land_a_union_that_fails_to_compile() {
     "the second gate tries its original candidate, the union, and the new base alone"
   assert_contains "$MERGE_STDOUT" "conflicting types for" "the compiler caught the interface change"
   assert_contains "$MERGE_STDOUT" "main alone PASSED" "the failure belongs to the union"
+  kept="$state/merge-builds/logs/${REPO/\//--}/7/$second"
+  assert_contains "$MERGE_STDERR" "$kept/$BUILD_START/build.log" "the refusal names the original build log"
+  assert_contains "$MERGE_STDERR" "$kept/$landing/build.log" "the refusal names the failed union's build log"
+  assert_eq "$(cat "$kept/$BUILD_START/build.status")" 0 "the retained original candidate passed"
+  assert_eq "$(cat "$kept/$landing/build.status")" 1 "the retained union failed"
   assert_no_merge_call
   assert_clone_untouched
 }
@@ -4023,11 +4028,12 @@ test_a_second_refresh_refers_to_the_original_override_base() {
 }
 
 test_a_refresh_runs_the_new_candidates_plan_before_the_build() {
+  local state="$TEST_ROOT/plan refresh state" kept
   reset
   moving_build_fixture compatible
   export BUILD_PROBE_NEXT="$BUILD_LATER"
   MERGE_BUILD_CONFIG+=$'\nplan if [ "$SHIP_PR_MERGE_BASE_SHA" = "$BUILD_PROBE_NEXT" ]; then printf "%s\\n" "ship-pr-merge-plan: unadmitted runtest"; else printf "%s\\n" "ship-pr-merge-plan: nothing-owed"; fi'
-  BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  BUDGET_DIR="$state" BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
     assert_posix_only_refusal "planning the refreshed candidate" "trigger always: every merge of this repository is built"
     return 0
@@ -4035,6 +4041,9 @@ test_a_refresh_runs_the_new_candidates_plan_before_the_build() {
   assert_eq "$MERGE_RC" 1 "the new plan's unadmitted verdict refuses ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDERR" "merged with ${BUILD_LATER:0:8} owes runtest" "the plan read the new base"
   assert_eq "$(cat "$BUILD_PROBE_LOG")" "full $BUILD_TIP $BUILD_HEAD" "the new candidate took no build slot"
+  kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
+  assert_contains "$MERGE_STDERR" "$kept/$BUILD_TIP/build.log" "the refusal names the original build log"
+  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_LATER/build.log" "the unbuilt candidate has no build log"
   assert_no_merge_call
 }
 

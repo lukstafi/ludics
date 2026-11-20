@@ -248,8 +248,7 @@ Dry runs naming a repository use ``dry-run`` or ``plan-only`` in place of the PR
 and fixtures explicitly disabling state have no durable directory, as with history. Missing files (a command
 never started or did not finish) are retained as empty files. A copy error refuses with exit 3. The
 directory is printed and recorded as ``log_dir`` in the JSONL receipt, including failures and slot
-refusals. A stale-build refusal, or a refresh refused after the build's log was copied, reports
-the build logs retained so far by that gate.
+refusals. A stale-build or refresh refusal reports the build logs already retained by the gate.
 Directories for distinct candidates and legacy head-only artifacts remain until manual removal of
 ``merge-builds/logs``. Interrupts before the copy and SIGKILL remain outside retention's readiness boundary.
 
@@ -319,6 +318,7 @@ from typing import Literal, NoReturn, assert_never
 
 from ludics import cli, fs, proc
 from ludics.prreview import buildhistory, commentonly
+from ludics.prreview.branchtip import FULL_SHA
 from ludics.prreview.clock import Clock
 from ludics.prreview.core import GhFailed, GhOk, GhSession, GhUnanswered, fail, warn
 from ludics.prreview.drift import Drift
@@ -1042,7 +1042,7 @@ def merge_build(
             f"NOT merging {repo}#{pr}: {why}, and the PR's base branch could not be read (above),",
             "so the merge commit cannot be built. Retry.",
         )
-    if not drift.base_sha or not _SHA.fullmatch(drift.base_sha):
+    if not drift.base_sha or not FULL_SHA.fullmatch(drift.base_sha):
         fail(
             3,
             f"NOT merging {repo}#{pr}: {why}, and no full commit SHA could be read for the tip of {shlex.quote(drift.base_ref)},",
@@ -1157,6 +1157,7 @@ def _build_in_scratch(
     # (watch.tmp_sweep_stale). Logs are retained separately below. It is made and removed
     # with signals held, so no signal leaves it behind.
     scratch: str | None = None
+    log_paths = previous_logs
     try:
         with _INTERRUPTS.held():
             scratch = os.path.realpath(tempfile.mkdtemp(prefix=f"pr-review-build.{proc.own_pid()}."))
@@ -1248,25 +1249,23 @@ def _build_in_scratch(
             subject, config, runner, ceiling, tree, scratch, "build", tip, gated,
             f"{why}; building {gated[:8]} merged with {base_ref} at {tip[:8]} ({merge_sha[:8]})",
         )
-        log_paths = previous_logs
         if ran.log_dir is not None:
             log_paths = tuple(dict.fromkeys((*log_paths, os.path.join(ran.log_dir, "build.log"))))
         verdict = BuildVerdict(gated, base_ref, tip, config, log_paths=log_paths)
         if ran.status == "0":
             cli.say(f"merge build {subject.label}: PASSED in {ran.took}s ({config.command})")
             return verdict
-        try:
-            if not ran.status:
-                _no_verdict(subject.label, stop, config, ran, "the build of its merge commit")
-            cli.say(f"merge build {subject.label}: FAILED (exit {ran.status}) after {ran.took}s; its output:")
-            for line in _shown(ran.log):
-                cli.say(f"  | {line}")
-            shared = _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
-        except cli.Exit as exc:
-            if previous_logs:
-                raise cli.Exit(exc.rc, exc.message + retained_build_logs(log_paths), raw=exc.raw) from None
-            raise
+        if not ran.status:
+            _no_verdict(subject.label, stop, config, ran, "the build of its merge commit")
+        cli.say(f"merge build {subject.label}: FAILED (exit {ran.status}) after {ran.took}s; its output:")
+        for line in _shown(ran.log):
+            cli.say(f"  | {line}")
+        shared = _against_base(subject, config, runner, ceiling, scratch, tree, objects, quiet, base_ref, tip, gated, ran, override)
         return replace(verdict, shared_failure=shared)
+    except cli.Exit as exc:
+        if previous_logs:
+            raise cli.Exit(exc.rc, exc.message + retained_build_logs(log_paths), raw=exc.raw) from None
+        raise
     finally:
         # Held from its first instruction (as in _supervised), so no signal skips the removal.
         # Inline, not _remove_held: a call is where CPython runs a signal handler, so a helper's
