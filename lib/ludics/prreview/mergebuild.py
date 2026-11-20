@@ -880,8 +880,9 @@ def _supervised(
     argv: list[str], cwd: str, bound: float, env: dict[str, str], *, merged: bool = False, end_group: bool = False,
     forward: bool = False,
 ) -> _Supervised:
-    """``argv`` in a session of its own under ``bound`` (124 past it, as ``proc.run_tool`` reports
-    a timeout), stdin ``/dev/null``, its output captured (stderr into stdout when ``merged``) -- or,
+    """``argv`` in a session of its own under ``bound``. A supervisor timeout returns 124 (as
+    ``proc.run_tool`` does) and sets ``timed_out``. A child's own exit 124 leaves ``timed_out`` false.
+    Stdin is ``/dev/null``, and output is captured (stderr into stdout when ``merged``) -- or,
     when ``forward``, not captured at all: both its streams are this process's stderr descriptor,
     so what it says reaches the caller as it says it (THE WINDOW WAIT), and the result's output is
     empty but for this function's own timeout line. Its
