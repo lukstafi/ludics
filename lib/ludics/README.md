@@ -644,6 +644,13 @@ persistent stderr failure. The batch log is `wave-20261119-ludics/scratch/t1239/
 A subprocess case also pins exit 4 through Python shutdown with a broken buffered stderr pipe.
 It observed exit 120 on the initial fix in the same directory's `shutdown-negative.log`.
 
+Agent notes (wave-20261120-ludics, t1261): after dispatch, an interrupted assignment report
+returns exit 4 and records it in `--status`. A known lease loss retains exit 6 and its source.
+The assignment message and unstick may be incomplete, so reconcile the registry and worker
+before retrying. The new cases fail on `e841b7cd9` with uncaught `EIO` from the assignment,
+placement, and lease diagnostics and with SIGPIPE from the assignment message. The base run
+is `wave-20261120-ludics/scratch/t1261/runs/negative-reporting.log`.
+
 Agent notes (wave-20261119-ludics, t1245): `execution assign` refuses literal `--cpu` and
 `--gpu` words in `runner` before asking the registry. The refusal shows the full `command`
 form with explicit slot placement. `.github/fleet-leg` defines hooks and backend pins, so the
