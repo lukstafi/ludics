@@ -22,6 +22,7 @@ naming it:
     # a comment (first non-blank character `#`), and blank lines, are ignored
     command <shell command>    exactly one: run by `sh -c` at the root of the merged tree
     recheck <shell command>    at most one: replaces `command` only on a refresh (BASE FRESHNESS)
+    lease fleet                at most one, requires `trigger always`: merge.py's MERGE LEASE
     input <glob>               one or more: the BUILD INPUTS (below); under `trigger always`
                                any number, since no input decides that build
     comments <glob>            any number: a build input a side changed in comments only does
@@ -43,10 +44,12 @@ new tip and the original default-branch config. The refresh reruns the plan and 
 if named, else ``command``, using the same timeout and failure comparison. It does not repeat
 the trigger or the comments-only decision. A red on a refreshed base requires a fresh override
 reason, so a reason supplied for the previous base cannot admit it. Repeat the pre-call checks
-after that build. A further
-move, or movement before a gateway resend, refuses with both base SHAs and asks for a fresh
-invocation. A retarget refuses with both branches, and an unread target or tip refuses without
-guessing. If the read sees an already merged PR, confirm the landing over REST instead of writing.
+after that build. One more refresh is allowed for a fast-forward delta whose paths are disjoint
+from the PR's paths at the previous merge base. Git's NUL-delimited name-only diffs count both
+names of renames. Unread comparisons, overlap, exhaustion, and movement before a gateway resend
+refuse with both base SHAs (merge.py's MERGE LEASE). A retarget refuses with both branches, and an
+unread target or tip refuses without guessing. If the read sees an already merged PR, confirm the
+landing over REST instead of writing.
 Skipped builds and dry runs carry no verdict to refresh. GitHub pins only the head:
 base movement between the last re-read and the call itself stays with the integration loop.
 
@@ -262,9 +265,9 @@ within the bound: exit 4, saying how far it got (the size of its output and its 
 buildhistory.py has of the command on this box, which says whether a re-run is likely to repeat the
 overrun (#982). Could not run (the slot refused, a fetch or git step failed): exit 3.
 After the command ends, however it ends, its process group is ended too, so a process it left
-behind does not outlive the merge; interrupted, see INTERRUPTS. The build judges the base tip the drift read;
-a base that moves again between the build and the merge call is not rebuilt (that, again, is the
-integration loop's). One flag reaches a failed build, and only as THE BASE ALONE says.
+behind does not outlive the merge; interrupted, see INTERRUPTS. Each build judges its own base tip.
+BASE FRESHNESS says when merge refreshes that verdict. One flag reaches a failed build, and only
+as THE BASE ALONE says.
 
 THE BASE ALONE (#860). A red the base's tip already has (a scan the command runs, failing on
 master) fails every merge build that triggers, so without this no PR could merge over it, cited
@@ -374,6 +377,7 @@ class BuildConfig:
     plan: str | None = None  # THE PLAN's command; None: no plan, the build as before
     plan_timeout: int = PLAN_TIMEOUT
     recheck: str | None = None
+    fleet_lease: bool = False
 
 
 def build_of(command: Sequence[str]) -> str | None:
@@ -395,6 +399,7 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
     plan: str | None = None
     plan_timeout: int | None = None
     recheck: str | None = None
+    fleet_lease = False
     for raw in text.split("\n"):
         line = (raw[:-1] if raw.endswith("\r") else raw).strip(" \t")
         if not line or line.startswith("#"):
@@ -412,6 +417,11 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
                 warn(f"{where} names a second recheck line: {line}")
                 return None
             recheck = value
+        elif key == "lease" and value == "fleet":
+            if fleet_lease:
+                warn(f"{where} names a second `lease fleet` line")
+                return None
+            fleet_lease = True
         elif key == "input" and value:
             inputs.append(value)
         elif key == "comments" and value:
@@ -451,7 +461,7 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
             warn(
                 f"{where} holds a line that is none of `command <shell command>`, `recheck <shell command>`, `input <glob>`,",
                 f"`comments <glob>`, `timeout <seconds>`, `trigger same-input|any-input|always`, `plan <shell command>`,",
-                f"`plan-timeout <seconds>`, a # comment or a blank line: {line}",
+                f"`plan-timeout <seconds>`, `lease fleet`, a # comment or a blank line: {line}",
             )
             return None
     if command is None or (not inputs and trigger != "always"):
@@ -469,9 +479,12 @@ def parse_config(text: str, where: str) -> BuildConfig | None:
     if plan_timeout is not None and plan is None:
         warn(f"{where} has a `plan-timeout` line and no `plan` line: there is no plan for it to bound.")
         return None
+    if fleet_lease and trigger != "always":
+        warn(f"{where}'s `lease fleet` requires `trigger always` so every merge participates")
+        return None
     return BuildConfig(
         command, tuple(inputs), DEFAULT_TIMEOUT if timeout is None else timeout, trigger or "same-input", tuple(comments),
-        plan, PLAN_TIMEOUT if plan_timeout is None else plan_timeout, recheck,
+        plan, PLAN_TIMEOUT if plan_timeout is None else plan_timeout, recheck, fleet_lease,
     )
 
 
@@ -715,10 +728,14 @@ def clone_preflight(session: GhSession, repo: str, pr: str, where: str) -> None:
     )
 
 
+def fleet_worker_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "issue-wave" / "scripts" / "fleet-worker.sh"
+
+
 def _slot_runner() -> str | None:
     """fleet-worker.sh beside this package, when this box has run-time slots (its probe answers the
     PROBE line); None to run bare (issue-wave/references/executions.md: any other answer)."""
-    here = Path(__file__).resolve().parents[3] / "issue-wave" / "scripts" / "fleet-worker.sh"
+    here = fleet_worker_path()
     try:
         if fs.absent(here):
             return None
@@ -1030,7 +1047,7 @@ def merge_build(
 
 def refresh_build(
     repo: str, pr: str, verdict: BuildVerdict, base_sha: str, *,
-    checkout: str | None, ceiling: Ceiling | None, discard_override: bool,
+    checkout: str | None, ceiling: Ceiling | None, prior_override_base: str | None, require_disjoint: bool = False,
 ) -> BuildVerdict:
     """Rebuild an admitted candidate on the newly observed base (BASE FRESHNESS)."""
     config = verdict.config
@@ -1039,10 +1056,41 @@ def refresh_build(
     refreshed = _build(
         repo, pr, verdict.head_sha, verdict.base_ref, base_sha, config,
         "refreshing the merge-build verdict after base movement",
-        checkout=checkout, ceiling=ceiling, prior_override_base=verdict.base_sha if discard_override else None,
+        checkout=checkout, ceiling=ceiling, prior_override_base=prior_override_base,
+        disjoint_from=verdict.base_sha if require_disjoint else None,
     )
-    assert refreshed is not None  # Only a COMMENTS ONLY read can skip inside _build.
+    # A refresh cannot take either of _build's no-verdict paths: comments-only skip or plan-only.
+    assert refreshed is not None
     return refreshed
+
+
+def _require_disjoint(stop: str, tree: str, quiet: list[str], head: str, base_ref: str, previous: str, tip: str) -> None:
+    """The extra refresh reads the new base delta against the PR's paths at the previous base."""
+    moved = f"{stop}: {shlex.quote(base_ref)} moved after refreshing the merge build ({previous} -> {tip})"
+    ancestor = _git([*quiet, "merge-base", "--is-ancestor", previous, tip], tree)
+    if ancestor.rc == 1:
+        fail(1, f"{moved}. Second refresh rule: the base advance is not a fast-forward. Re-run merge.")
+    if ancestor.rc != 0:
+        fail(3, f"{moved}. Second refresh rule: could not read the base ancestry ({_first_line(ancestor)}). Re-run merge.")
+    common = _git([*quiet, "merge-base", "--all", previous, head], tree)
+    fork = common.stdout.strip()
+    if common.rc != 0 or not _SHA.fullmatch(fork):
+        fail(3, f"{moved}. Second refresh rule: could not read a unique PR merge base. Re-run merge.")
+
+    def paths(start: str, end: str) -> set[str]:
+        # Treat renames as deletions plus additions so both names count regardless of similarity.
+        diff = _git([
+            *quiet, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--ignore-submodules=none",
+            start, end, "--",
+        ], tree)
+        if diff.rc != 0 or (diff.stdout and not diff.stdout.endswith("\0")):
+            fail(3, f"{moved}. Second refresh rule: could not read changed paths for {start} -> {end}. Re-run merge.")
+        return set(diff.stdout.split("\0")[:-1])
+
+    overlap = paths(previous, tip) & paths(fork, head)
+    if overlap:
+        names = _named([shlex.quote(path) for path in sorted(overlap)])
+        fail(1, f"{moved}. Second refresh rule: the base delta overlaps the PR at {names}. Re-run merge.")
 
 
 @dataclass(frozen=True)
@@ -1058,12 +1106,14 @@ class _Subject:
     pr: str
     repo: str
     prior_override_base: str | None = None
+    disjoint_from: str | None = None
 
 
 def _build(
     repo: str, pr: str, gated: str, base_ref: str, tip: str, config: BuildConfig, why: str, *,
     checkout: str | None = None, ceiling: Ceiling | None = None, dry: bool = False, override: str = "",
     candidates: Candidates | None = None, plan_only: bool = False, prior_override_base: str | None = None,
+    disjoint_from: str | None = None,
 ) -> BuildVerdict | None:
     """The build under the INTERRUPTS boundary (module docstring). ``dry``: THE DRY RUN's, in the
     clone ``checkout`` names as it is, with nothing fetched. Returns None when COMMENTS ONLY
@@ -1075,7 +1125,8 @@ def _build(
         subject = _Subject(f"{what} (dry run)", f"merge-build {what}: {stop}", f"merge-build {what}: merge would REFUSE it", "", repo)
     else:
         subject = _Subject(
-            f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr, repo, prior_override_base,
+            f"{repo}#{pr}", f"NOT merging {repo}#{pr}", f"REFUSING to merge {repo}#{pr}", pr, repo,
+            prior_override_base, disjoint_from,
         )
     with _INTERRUPTS.installed():
         return _build_in_scratch(
@@ -1141,6 +1192,8 @@ def _build_in_scratch(
         made = _new_repo(scratch, tree, objects)
         if made:
             fail(3, f"{stop}: the build's repository could not be made ({made}).")
+        if subject.disjoint_from is not None:
+            _require_disjoint(stop, tree, quiet, gated, base_ref, subject.disjoint_from, tip)
         merged = _git([*quiet, "merge-tree", "--write-tree", "--no-messages", tip, gated], tree)
         if merged.rc == 1:
             fail(

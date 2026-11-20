@@ -674,6 +674,7 @@ class GhSession:
     def retry(
         self, mode: Mode, args: Sequence[str], *, include: bool = False,
         before_retry: Callable[[], None] | None = None,
+        before_dispatch: Callable[[], None] | None = None,
     ) -> GhResult:
         """``gh_retry <mode> <args>`` for THIS script's own arguments. gh refusing one of them
         raises ``GhRefusedOwn`` (exit 2 for the whole command).
@@ -682,10 +683,13 @@ class GhSession:
         or --verbose); ``--include`` is appended, the header block is taken off stdout, and an
         answer gh could not read is classified by its status (the boundary at
         ``gh_unreadable_answer``). ``before_retry`` can revalidate a precondition just before a
-        resend, after the backoff. The budget gates the resend after revalidation."""
+        resend, after the backoff. The budget gates the resend after revalidation.
+        ``before_dispatch`` checks a local precondition on every send after the budget gate."""
         if include:
             args = [*args, "--include"]
-        result = self._retry(mode, args, "own", budgeted=True, include=include, before_retry=before_retry)
+        result = self._retry(
+            mode, args, "own", budgeted=True, include=include, before_retry=before_retry, before_dispatch=before_dispatch,
+        )
         match result:
             case GhArgsRefused() | GhOutputWithheld():
                 raise AssertionError("an own call's refusal raises, it is never returned")
@@ -695,13 +699,17 @@ class GhSession:
     def retry_caller(
         self, mode: Mode, args: Sequence[str], *, listed: bool, budgeted: bool = False,
         before_retry: Callable[[], None] | None = None,
+        before_dispatch: Callable[[], None] | None = None,
     ) -> GhCallerResult:
         """``gh_retry`` with ``GH_RETRY_CALLER_ARGS`` set: a CALLER's arguments (``cmd_retry``).
         ``listed`` (the command passed ``gh_api_only_command``): a refusal of the arguments
         returns ``GhArgsRefused`` on the first attempt. Unlisted: stderr is not read as gh's.
         ``budgeted``: the call is still this script's own (merge's, with a caller's ``gh pr merge``
         flags forwarded), so it passes the polling budget; a ``retry`` caller's is outside it."""
-        return self._retry(mode, args, "listed" if listed else "unlisted", budgeted=budgeted, before_retry=before_retry)
+        return self._retry(
+            mode, args, "listed" if listed else "unlisted", budgeted=budgeted,
+            before_retry=before_retry, before_dispatch=before_dispatch,
+        )
 
     def _retry(
         self,
@@ -712,6 +720,7 @@ class GhSession:
         budgeted: bool,
         include: bool = False,
         before_retry: Callable[[], None] | None = None,
+        before_dispatch: Callable[[], None] | None = None,
     ) -> GhCallerResult:
         self._unclear_attempts = 0
         self._status = None
@@ -736,6 +745,8 @@ class GhSession:
                     self._err_line = held
                     self._quota = True
                     return GhUnanswered()
+            if before_dispatch is not None:
+                before_dispatch()
             done = self._run("gh", args)
             err = proc.substitution(done.stderr)
             included = split_included(done.stdout) if include else None

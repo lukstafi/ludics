@@ -3842,14 +3842,28 @@ test_a_merge_commit_that_builds_merges() {
   assert_clone_untouched
 }
 
-moving_build_fixture() { # <kind>
+moving_build_fixture() { # <kind> [overlap]
   build_fixture "$1"
   BUILD_LIVE_REMOTE=$(git -C "$BUILD_CLONE" remote get-url origin)
   BUILD_WORK="$TEST_ROOT/build-$1/work"
-  build_git "$BUILD_WORK" commit -q --allow-empty -m 'next sibling'
+  printf '%s\n' 'first sibling' >"$BUILD_WORK/sibling-one.md"
+  build_git "$BUILD_WORK" add sibling-one.md
+  build_git "$BUILD_WORK" commit -q -m 'next sibling'
   BUILD_LATER=$(git -C "$BUILD_WORK" rev-parse HEAD)
-  build_git "$BUILD_WORK" commit -q --allow-empty -m 'another sibling'
+  if [ "${2:-}" = overlap ]; then
+    # Touch the PR's file in a separate hunk that still merges and runs cleanly.
+    printf '%s\n' '# another sibling' 'seam() { :; }' '# one' '# two' '# three' '# four' 'keep() { :; }' \
+      '# five' '# six' '# seven' '# eight' >"$BUILD_WORK/api.sh"
+  else
+    printf '%s\n' 'second sibling' >"$BUILD_WORK/sibling-two.md"
+  fi
+  build_git "$BUILD_WORK" add -A
+  build_git "$BUILD_WORK" commit -q -m 'another sibling'
   BUILD_LAST=$(git -C "$BUILD_WORK" rev-parse HEAD)
+  printf '%s\n' 'third sibling' >"$BUILD_WORK/sibling-three.md"
+  build_git "$BUILD_WORK" add sibling-three.md
+  build_git "$BUILD_WORK" commit -q -m 'yet another sibling'
+  BUILD_NEXT=$(git -C "$BUILD_WORK" rev-parse HEAD)
   build_git "$BUILD_WORK" push -q "$BUILD_LIVE_REMOTE" HEAD:refs/heads/future
   export BUILD_PROBE="$TEST_ROOT/build-probe.sh" BUILD_PROBE_LOG="$TEST_ROOT/build-parents"
   export BUILD_PROBE_REMOTE="$BUILD_LIVE_REMOTE" BUILD_PROBE_MOVES="" BUILD_PROBE_RED="" BUILD_PROBE_COMPILER=""
@@ -3862,6 +3876,9 @@ head=$(git rev-parse HEAD^2)
 test "$base" = "$SHIP_PR_MERGE_BASE_SHA"
 test "$head" = "$SHIP_PR_MERGE_HEAD_SHA"
 printf '%s %s %s\n' "$1" "$base" "$head" >>"$BUILD_PROBE_LOG"
+if [ -n "${BUILD_LEASE_RECORD:-}" ]; then
+  cut -f2 "$BUILD_LEASE_RECORD" >>"$BUILD_LEASE_PROBE"
+fi
 while IFS=' ' read -r from to; do
   if [ "$base" = "$from" ] && [ "$(git --git-dir="$BUILD_PROBE_REMOTE" rev-parse refs/heads/main)" = "$from" ]; then
     git --git-dir="$BUILD_PROBE_REMOTE" update-ref refs/heads/main "$to" "$from"
@@ -3970,6 +3987,21 @@ test_a_refresh_cannot_waive_a_new_shared_base_failure() {
   assert_no_merge_call
 }
 
+test_a_second_refresh_refers_to_the_original_override_base() {
+  reset
+  moving_build_fixture compatible
+  BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST")
+  BUILD_PROBE_RED="$BUILD_LAST" FLEET_LOCAL_BOX=not-a-fleet-box run_merge --override 'a failure on the original base'
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "requiring a fresh override after the second refresh" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "the original override cannot cover the second refresh ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "main at $BUILD_LAST alone fails the same way" "the last base got its own build"
+  assert_contains "$MERGE_STDERR" "--override covers only the initial build on base $BUILD_TIP" "the original base is named"
+  assert_no_merge_call
+}
+
 test_a_refresh_runs_the_new_candidates_plan_before_the_build() {
   reset
   moving_build_fixture compatible
@@ -3986,21 +4018,89 @@ test_a_refresh_runs_the_new_candidates_plan_before_the_build() {
   assert_no_merge_call
 }
 
-test_a_base_that_moves_again_after_refresh_is_refused() {
+test_a_base_that_moves_twice_by_disjoint_changes_is_rebuilt_and_merged() {
   reset
   moving_build_fixture compatible
   BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST")
   FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
-    assert_posix_only_refusal "bounding the refresh" "trigger always: every merge of this repository is built"
+    assert_posix_only_refusal "refreshing after two moves" "trigger always: every merge of this repository is built"
     return 0
   fi
-  assert_eq "$MERGE_RC" 1 "only one refresh is allowed ($MERGE_OUTPUT)"
+  assert_eq "$MERGE_RC" 0 "the second disjoint move gets a verdict ($MERGE_OUTPUT)"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+    "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD" "$BUILD_LAST" "$BUILD_HEAD")" \
+    "the same head built against all three bases"
+  assert_eq "$(merge_calls)" 1 "only the latest candidate reaches the merge call"
+  assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the call still pins the head"
+  assert_clone_untouched
+}
+
+test_a_second_move_that_overlaps_the_pr_is_refused() {
+  local replacement
+  reset
+  moving_build_fixture compatible overlap
+  # A replacement in the caller's clone would hide the overlap from a diff made there.
+  replacement=$(build_git "$BUILD_WORK" commit-tree "${BUILD_LATER}^{tree}" -p "$BUILD_LATER" -m 'hide the last change')
+  git -C "$BUILD_CLONE" fetch -q --no-write-fetch-head --refmap= "$BUILD_WORK" "$BUILD_LAST" "$replacement"
+  git -C "$BUILD_CLONE" replace "$BUILD_LAST" "$replacement"
+  BUILD_REFS=$(git -C "$BUILD_CLONE" for-each-ref --format='%(refname) %(objectname)')
+  BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST")
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "rejecting a second move with overlap" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "the overlap refuses even though the union merges textually ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDERR" "moved after refreshing the merge build ($BUILD_LATER -> $BUILD_LAST)" \
     "the refusal names the last built and newly observed bases"
+  assert_contains "$MERGE_STDERR" "Second refresh rule: the base delta overlaps the PR at api.sh" \
+    "the refusal names the overlap rule and file"
   assert_eq "$(cat "$BUILD_PROBE_LOG")" "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
-    "there is no third build"
+    "the overlapping candidate never builds"
   assert_no_merge_call
+  assert_clone_untouched
+}
+
+test_a_base_that_outruns_the_refresh_limit_is_refused() {
+  reset
+  moving_build_fixture compatible
+  BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST" "$BUILD_LAST" "$BUILD_NEXT")
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "bounding the refreshes" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 1 "a disjoint third move refuses ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "moved after refreshing the merge build 2 times (refresh limit) ($BUILD_LAST -> $BUILD_NEXT)" \
+    "the refusal names exhaustion and both bases"
+  assert_eq "$(cat "$BUILD_PROBE_LOG")" \
+    "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD" "$BUILD_LAST" "$BUILD_HEAD")" \
+    "two refreshes ran"
+  assert_no_merge_call
+}
+
+test_a_merge_takes_over_an_expired_lease_for_the_refresh() {
+  reset
+  moving_build_fixture compatible
+  MERGE_BUILD_CONFIG+=$'\nlease fleet'
+  export FLEET_ANCHOR=local FLEET_ANCHOR_STATE="$TEST_ROOT/lease-anchor"
+  export BUILD_LEASE_RECORD="$FLEET_ANCHOR_STATE/merge-leases/owner-example/repo.lease"
+  export BUILD_LEASE_PROBE="$TEST_ROOT/lease-probe"
+  unset FLEET_REGISTRY_PIN
+  mkdir -p "$(dirname "$BUILD_LEASE_RECORD")"
+  printf '%s\t%s\t%s\n' 00000000000000000000000000000001 8 1 >"$BUILD_LEASE_RECORD"
+  BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "refreshing under a lease" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the expired lease is taken over and the new candidate merges ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "took over the expired merge lease of $REPO#8" "the old holder is identified"
+  assert_eq "$(cat "$BUILD_LEASE_PROBE")" "$(printf '8\n7\n')" "the initial build is unleased and the refresh is leased"
+  assert_eq "$(merge_calls)" 1 "the latest candidate reaches the merge call"
+  [ ! -e "$BUILD_LEASE_RECORD" ] || bail "the merge lease survived the call"
+  assert_clone_untouched
 }
 
 test_a_build_with_an_unread_current_base_is_refused() {
@@ -4731,8 +4831,12 @@ tests=(
   test_two_green_heads_cannot_land_a_union_that_fails_to_compile
   test_a_refresh_runs_the_recheck_and_drops_the_old_shared_failure
   test_a_refresh_cannot_waive_a_new_shared_base_failure
+  test_a_second_refresh_refers_to_the_original_override_base
   test_a_refresh_runs_the_new_candidates_plan_before_the_build
-  test_a_base_that_moves_again_after_refresh_is_refused
+  test_a_base_that_moves_twice_by_disjoint_changes_is_rebuilt_and_merged
+  test_a_second_move_that_overlaps_the_pr_is_refused
+  test_a_base_that_outruns_the_refresh_limit_is_refused
+  test_a_merge_takes_over_an_expired_lease_for_the_refresh
   test_a_build_with_an_unread_current_base_is_refused
   test_a_build_cannot_authorize_a_retargeted_merge
   test_a_build_cannot_authorize_a_head_lagging_its_live_ref

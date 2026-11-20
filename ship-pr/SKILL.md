@@ -1380,10 +1380,22 @@ together (#1241). If the base tip moved, it builds the new candidate with the sa
 re-runs the pre-call checks. It re-runs any configured plan and uses the same `timeout` for the optional
 `recheck <shell command>` or, if absent, for `command` again. If the refreshed tree and its base
 share a red, run `merge` again with an override reason that cites the new base SHA and failure.
-A second move, or a move before a
-gateway resend, refuses with both SHAs. A retarget or an unread base also requires a fresh
-invocation. GitHub pins only the head. A base that moves after the final re-read and before the
-merge call remains the integration loop's to catch.
+`merge` can refresh twice. The second refresh requires a fast-forward delta that touches no PR
+path. It still needs a green verdict on the new union. Overlap, an unreadable comparison, a third
+move, or a move before a gateway resend refuses with the applicable rule and both SHAs. A
+retarget or an unread base also requires a fresh invocation.
+
+On a busy fleet repository, add `lease fleet` alongside `trigger always` to serialize the final
+checks, refreshes and merge call across boxes. The initial builds run in parallel. Every merging
+box must carry this reader and resolve the same fleet anchor and state directory. Drain in-flight
+merges before enabling the line, since they still use the config they read at the gate. Older
+readers reject `lease fleet` with exit 2. A waiter
+has 1,800 seconds to acquire the lease, including time a holder spends waiting
+for a refresh's slot. A dead holder's lease expires 120 seconds after its last renewal. A timeout
+or lost lease refuses a new merge write. Removing the line restores unleased merges. The lease
+cannot fence web merges, direct pushes, deferred auto-merges or other writers outside this
+protocol. GitHub pins only the head, so the integration loop still catches movement between the
+last read and the merge call.
 
 A shared path renamed on either side counts by its other name too. Run such a merge on a
 POSIX host (the fleet's macOS and Linux boxes; Windows is refused) from a full clone of the

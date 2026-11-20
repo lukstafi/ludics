@@ -566,6 +566,10 @@ prreview/mergebuild.py prreview/commentonly.py prreview/mergedry.py prreview/bui
     lib/ludics/tests/test_prreview_buildhistory.py
     lib/ludics/tests/test_prreview_commentonly.py
 
+prreview/mergelease.py fleetworker/mergelease.py
+    ship-pr/scripts/test-pr-review-merge.sh
+    lib/ludics/tests/test_prreview_mergelease.py
+
 prreview/localreview.py
     lib/ludics/tests/test_prreview_localreview.py
 
@@ -574,13 +578,20 @@ prreview/rerun.py
     ship-pr/scripts/test-pr-review-budget.sh
 ```
 
-Agent notes (#1241): `Merge.merge_call` carries `BuildVerdict` and checks both live refs in one
-GraphQL response just before sending the merge. A moved base gets one `refresh_build`, including
-a fresh plan and the configured `recheck` or `command`. A red on that candidate needs its own
+Agent notes (#1241, #1269): `Merge.merge_call` carries `BuildVerdict` and checks both live refs in
+one GraphQL response just before sending the merge. A moved base gets `refresh_build`, including
+a fresh plan and the configured `recheck` or `command`. The extra refresh is reserved for a
+fast-forward delta with paths disjoint from the PR. A red on either refreshed candidate needs its own
 override. A move before a gateway resend asks for a fresh invocation, and a concurrent landing
 is confirmed over REST. The merge harness changes a bare remote during the build and verifies the
 actual candidate parents. Its C implementation and header compile in separate candidates, and
 the refreshed build refuses their combined tree when the compiler reports conflicting types.
+The same harness proves the exhausted and overlapping deltas never reach a write. With
+`lease fleet` and `trigger always`, it also witnesses an expired holder replaced between the initial
+build and the refresh. The lease units cover concurrent acquisition and the old token's inability
+to renew or release the successor's lease. The four new gate and lease cases fail at the launch
+base `e841b7cd9`: it stops after the first refresh and rejects `lease fleet`. The overlap check
+uses the build's scratch repository so a local replacement ref cannot hide a shared path.
 
 Agent notes (wave-20261119-ludics, t1242; refs #1242): `Merge.checkpoint_gate` reads the PR's
 issue comments before every attempt in `merge_call`, ahead of the merge build's last ref check,
