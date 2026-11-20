@@ -1,8 +1,8 @@
 name: windows git bash
 
-# ship-pr's shell suites under Git for Windows' MINGW64 bash on windows-latest (ludics-lite#318),
-# nightly and on demand. Not per push (ludics-lite#339): the job runs over an hour, and neither
-# a pull request's checks nor main's verdict (`pr-review.sh base` folds push runs only) waits on it.
+# ship-pr's shell suites and selected Python fixtures under Git for Windows' MINGW64 bash on
+# windows-latest (ludics-lite#318). The hour-plus runtime puts the job on a nightly and on-demand
+# schedule (ludics-lite#339), outside the pull request and main push checks.
 # A dispatched run does put check runs on the head it ran at, so `checks`/`merge` judge it there.
 #
 # Windows evidence for a branch whose change needs it, not for every scripts PR: `gh workflow run
@@ -13,10 +13,9 @@ name: windows git bash
 # `.windows.`, the criterion ludics-lite#288 states for a Windows leg) and every suite is gated on
 # it. Every `ship-pr/scripts/test-*.sh` has a run line in the `git-bash` job here, which
 # `scripts/check-prompts.sh` holds. KNOWN RED steps (`continue-on-error: true`) still run, fail
-# and annotate, with the issue that removes the line named at the step. Not run here: the Python
-# fixtures (the hostile pass is Ubuntu-only by design) and the repo and fleet suites, which are
-# not ship-pr code (the fleet launcher needs tmux, which Git for Windows does not ship). One
-# exception: the prompt checker's suite, ported off bash under ludics-lite#403, runs last.
+# and annotate, with the issue that removes the line named at the step. Python coverage is limited
+# to the Windows-witness first checkout and the prompt checker's suite (ported off bash under
+# ludics-lite#403). The Ubuntu hostile pass and the repo and fleet shell suites run in other lanes.
 
 on:
   schedule:
@@ -25,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: One ship-pr suite by file name (e.g. test-pr-review-watch.sh), or test_checkprompts_cli.py; empty runs all
+        description: One ship-pr suite by file name, test_fleetworker_winwitness_staging.py, or test_checkprompts_cli.py; empty runs all
         required: false
         default: ''
 
@@ -88,9 +87,9 @@ jobs:
           echo "jq:            $(jq --version), and jq -r ends a line with: $(printf '"x"' | jq -r . | od -An -c | tr -s ' ')"
           # A suite name that matches no step would skip them all and read green.
           case "$SUITE" in
-          '' | test_checkprompts_cli.py) ;;
+          '' | test_fleetworker_winwitness_staging.py | test_checkprompts_cli.py) ;;
           test-*.sh) [ -f "ship-pr/scripts/$SUITE" ] || { echo "::error title=No such suite::ship-pr/scripts/$SUITE does not exist"; exit 1; } ;;
-          *) echo "::error title=No such suite::suite takes a ship-pr/scripts/test-*.sh file name, got '$SUITE'"; exit 1 ;;
+          *) printf '::error title=No such suite::suite accepts a ship-pr/scripts/test-*.sh filename, test_fleetworker_winwitness_staging.py, or test_checkprompts_cli.py. Got %q\n' "$SUITE"; exit 1 ;;
           esac
       # Every suite step below runs whether or not an earlier suite failed, but only once the
       # proof passed, and only the named suite when one was dispatched; a failure names its suite
@@ -160,6 +159,11 @@ jobs:
       - name: pr-review fixtures, the live-API contract's own logic
         if: ${{ !cancelled() && steps.platform.outcome == 'success' && (!inputs.suite || inputs.suite == 'test-pr-review-api-contract.sh') }}
         run: ship-pr/scripts/test-pr-review-api-contract.sh || { echo '::error title=Git Bash suite failed::test-pr-review-api-contract.sh'; exit 1; }
+      - name: Windows witness first checkout
+        if: ${{ !cancelled() && steps.platform.outcome == 'success' && (!inputs.suite || inputs.suite == 'test_fleetworker_winwitness_staging.py') }}
+        run: |
+          scripts/py -m unittest -v ludics.tests.test_fleetworker_winwitness_staging.StagedScripts.test_staging_line_endings_on_the_first_checkout ||
+            { printf '%s\n' '::error title=Git Bash suite failed::Windows witness first checkout'; exit 1; }
       - name: prompt checker fixtures
         # A unittest module of the package, run through scripts/py (ludics-lite#403). What the
         # native Windows interpreter cannot set up -- a symbolic link, a backslash or a tab in a
