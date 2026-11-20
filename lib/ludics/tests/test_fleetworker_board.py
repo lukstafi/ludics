@@ -49,6 +49,9 @@ class StoreCase(unittest.TestCase):
         return self.call("set", {"wave": "w", "create": create, "new_row": new_row, "task": task,
                                  "fields": [list(p) for p in pairs]})
 
+    def spawned(self, task: str, agent: str, transport: str, **extra: str) -> tuple[int, str, str]:
+        return self.call("spawned", {"wave": "w", "task": task, "agent": agent, "transport": transport, **extra})
+
 
 class Store(StoreCase):
     def test_a_writer_refuses_an_unknown_wave_unless_create(self) -> None:
@@ -427,6 +430,56 @@ class Tally(StoreCase):
         self.tally("interventions", wave="w", task="t2")
         self.assertNotIn("counted_from", self.fields("t2"), "a row counted from its creation needs no mark")
 
+    def test_first_spawn_records_the_runtime_facts_without_counting_a_relaunch(self) -> None:
+        self.set("t1", ("state", "pending"), ("model", "planned"))
+        rc, out, err = self.spawned("t1", "a1", "subagent", model="actual/high")
+        self.assertEqual((rc, out, err), (0, 'BOARD SPAWNED w: "t1"\n', ""))
+        fields = self.fields("t1")
+        self.assertRegex(fields.pop("launched_at"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(fields, {"state": "launched", "model": "actual/high", "agent": "a1",
+                                  "transport": "subagent", **ZERO})
+        self.assertEqual(self.doc()["log"], [])
+
+    def test_second_spawn_counts_even_when_the_transport_is_unchanged(self) -> None:
+        for transport in ("cli", "subagent"):
+            with self.subTest(transport=transport):
+                self.set(transport, ("transport", transport), ("agent", "a1"), ("model", "planned"),
+                         ("state", "launched"), ("launched_at", "2000-01-01T00:00:00Z"))
+                rc, out, err = self.spawned(transport, "a2", transport)
+                self.assertEqual((rc, out, err),
+                                 (0, f'BOARD SPAWNED w: "{transport}"\nBOARD TALLY w: "{transport}" relaunches=1\n', ""))
+                fields = self.fields(transport)
+                self.assertEqual((fields["agent"], fields["transport"], fields["model"], fields["launched_at"],
+                                  fields["relaunches"], fields["interventions"]),
+                                 ("a2", transport, "planned", "2000-01-01T00:00:00Z", "1", "0"))
+                self.assertEqual(self.doc()["log"][-1]["text"],
+                                 f'{transport} relaunches=1: board spawned agent="a2" on a row launched at 2000-01-01T00:00:00Z')
+        self.assertEqual(len(self.doc()["log"]), 2)
+
+    def test_cli_to_native_finisher_counts_once_on_the_original_row(self) -> None:
+        self.set("t1", ("worker", "w1-1"), ("transport", "cli"), ("state", "launched"))
+        stamp = self.fields("t1")["launched_at"]
+        self.set("t1", ("state", "implementing"), ("pr", "7"))
+        rc, out, err = self.spawned("t1", "finisher", "subagent", model="new")
+        self.assertEqual((rc, out, err), (0, 'BOARD SPAWNED w: "t1"\nBOARD TALLY w: "t1" relaunches=1\n', ""))
+        fields = self.fields("t1")
+        self.assertEqual(fields, {**ZERO, "worker": "w1-1", "transport": "subagent", "state": "launched",
+                                  "launched_at": stamp, "pr": "7", "agent": "finisher", "model": "new", "relaunches": "1"})
+        self.assertEqual(len(self.doc()["log"]), 1)
+        self.assertEqual(len(self.doc()["tasks"]), 1)
+
+    def test_spawn_refusals_publish_nothing(self) -> None:
+        self.set("t1", ("state", "launched"), ("relaunches", "bad"))
+        before = self.doc()
+        for task, transport, reason in (("t2", "subagent", 'no task "t2"'),
+                                        ("t1", "", "transport must not be blank"),
+                                        ("t1", "subagent", 'holds relaunches="bad"')):
+            with self.subTest(task=task, transport=transport):
+                rc, out, err = self.spawned(task, "a2", transport)
+                self.assertEqual((rc, out), (1, ""))
+                self.assertIn(reason, err)
+                self.assertEqual(self.doc(), before)
+
     def test_a_second_launch_counts_one_relaunch_and_a_first_launch_none(self) -> None:
         """THE RELAUNCH COUNT (ludics#1236's decision): a native respawn or a finisher is a second
         ``state=launched`` on a row the first launch stamped, one ``relaunches`` each, logged."""
@@ -667,6 +720,20 @@ class CommandLine(unittest.TestCase):
             ("set", {"wave": "w", "create": True, "new_row": False, "task": "ll#1", "fields": [["state", "a=b"], ["pr", ""]]}),
         )
 
+    def test_spawned_takes_named_runtime_facts(self) -> None:
+        self.assertEqual(
+            self.payload("spawned", "w", "ll#1", "--model", "model/high", "--transport", "subagent", "--agent", "a=b"),
+            ("spawned", {"wave": "w", "task": "ll#1", "model": "model/high", "transport": "subagent", "agent": "a=b"}),
+        )
+
+    def test_spawned_refuses_missing_and_repeated_options(self) -> None:
+        for options in ((), ("--agent", "a"), ("--transport", "subagent"), ("--agent", "--transport", "subagent"),
+                        ("--agent", "a", "--transport", "subagent", "--agent", "b"),
+                        ("--agent", "a", "--transport", "subagent", "--model"),
+                        ("--agent", "a", "--transport", "subagent", "--new-row")):
+            with self.subTest(options=options):
+                self.assertIn("board spawned: expected", self.refused("spawned", "w", "t", *options))
+
     def test_new_row_is_sets_alone_and_read_with_create_in_either_order(self) -> None:
         for flags in (["--create", "--new-row"], ["--new-row", "--create"]):
             got = self.payload("set", *flags, "w", "t", "k=v")[1]
@@ -685,7 +752,7 @@ class CommandLine(unittest.TestCase):
         self.assertIn("expected <key>=<value>, got \"--create\"", self.refused("set", "w", "t", "k=v", "--create"))
 
     def test_usage_refusals(self) -> None:
-        self.assertIn("expected set, note, log, show, check, takeover, close or tally", self.refused())
+        self.assertIn("expected set, spawned, note, log, show, check, takeover, close or tally", self.refused())
         self.assertIn("board show: expected <wave> [--json]", self.refused("show"))
         self.assertIn("board show: expected <wave> [--json]", self.refused("show", "w", "--md"))
         self.assertIn("board set: expected <task>", self.refused("set", "w"))

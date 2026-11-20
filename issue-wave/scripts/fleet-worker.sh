@@ -265,6 +265,9 @@
 #                          # task's row, each key set; any text in a value, split at the first `=`;
 #                          # a task with no row yet is refused, naming the nearest, without --new-row;
 #                          # warns on a `state` with no state word and on `status` (takeover.py)
+#   fleet-worker.sh board spawned <wave> <task> --agent <id> --transport <t> [--model <m>]
+#                          # records the spawn on an existing row; an already launched row counts
+#                          # one relaunch, in the same write (ludics#1264)
 #   fleet-worker.sh board note [--create] <wave> <key>=<value>...   # the wave's own facts
 #   fleet-worker.sh board log <wave> <text>...   # one line appended to its log, stamped
 #   fleet-worker.sh board show <wave> [--json]   # the markdown view (or the document); no lease;

@@ -56,10 +56,13 @@ Residence does not preclude checks on other boxes; each execution is reserved se
    `--wait`, what blocks dispatch, the `--force --allow-red-base` exception, the point-in-time
    caveat and the base-SHA rules are SKILL.md's *Base gate*.
 6. Spawn with that brief, recording the returned agent identity or canonical task name. Do
-   not infer a runtime ID from an app thread ID. Validate the worker's startup report before
-   calling the launch successful: actual absolute worktree, branch, base SHA, agent identity,
-   and a harmless successful Git mutation such as `git update-index --refresh` with exit
-   status.
+   not infer a runtime ID from an app thread ID. Record the returned identity on the prepared
+   row with `fleet-worker.sh board spawned <wave> <task> --agent <id> --transport subagent
+   [--model <m>]`. This command is the board update for the native launch step in SKILL.md.
+   Supply the model when the runtime's choice differs from the prepared row.
+   Validate the worker's startup report before calling the launch successful: actual absolute
+   worktree, branch, base SHA, agent identity, and a harmless successful Git mutation such as
+   `git update-index --refresh` with exit status.
 
 The default self-contained brief (SKILL.md: *The brief*) includes issue repository/number and
 comments to read, scope, absolute assigned worktree and branch, verified base SHA, agent and
@@ -97,7 +100,7 @@ the verb (a markdown file under `FLEET_ANCHOR_STATE`, such as `<wave>-board.md`)
 to its close-out, and recovery reads it there: `board show` reads only the structured boards and
 refuses a wave it has none for. Store wave and coordinator identity as notes, and per worker
 its `state`, last observation, remaining gates and hand-back beside the **takeover keys**,
-written at launch (before the spawn, then `agent` after it) and again whenever one changes.
+written at prep, updated by `board spawned`, and maintained whenever one changes.
 A `state` starts with one of the state words, then any text (`merged #812 at 1a2b3c4`): `pending`
 at the brief, `launched` at the spawn, a live word for each later phase, and a done word
 (`merged`, `done`, `closed`, `dropped`) once the hand-back is verified. `board set` warns on any
@@ -107,8 +110,9 @@ other first word and on a `status` key, and writes both. The takeover keys are `
 `runs` (the worker's bg-run parent), `standing` and `requests` (request ids, space-separated, or
 `none`), `farside` (`<box>:<path>` far-side worktrees), `plan_dir` and `state`. Their grammars
 and the state words are `lib/ludics/fleetworker/takeover.py`'s. The writers check the lease
-themselves; check it before interventions. A board write that fails may or may not have landed: re-read with `board show`
-before retrying it (a retried second `state=launched` counts one more relaunch).
+themselves; check it before interventions. Re-read with `board show` before retrying a failed or
+unacknowledged board write. For a spawn, check the returned agent identity and relaunch record:
+repeating a recorded spawn increments the count again.
 
 When a worker died with its process (a coordinator restart kills every in-process worker), its
 replacement's brief is `fleet-worker.sh board takeover <wave> <task>`: the stored brief, then a
@@ -116,10 +120,9 @@ generated *State at takeover* from those keys and the live sources (worktree HEA
 registry's outstanding requests for the worker, its bg-run verdicts), each missing key printed as
 missing. Exit 3 means the brief itself could not be read, so the output is no brief. It reads and
 writes nothing else: establishing that the old writer is gone stays the step below. The
-replacement's spawn writes its `transport=`, `agent=` and `state=launched` on the same row in one
-`board set` (a native finisher of a CLI worker changes the transport), and that second
-`state=launched` counts the finisher in the row's `relaunches` (ludics#1236), as it counts any
-native respawn; so write `state=launched` once per spawn, and a resumed worker's row its phase's word.
+replacement uses the same `board spawned` command on the existing row. It counts a native
+respawn or a CLI-to-native finisher in the row's `relaunches` (ludics#1264). When resuming an
+existing worker, update the row to its phase's state word.
 
 Use the runtime's messages and bounded waits, retaining real identities. Follow up in the same
 agent when work is unfinished and observe the response. A returned turn is read by its final

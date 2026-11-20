@@ -7,6 +7,8 @@ Its header is the contract: the document, what it accepts, and the markdown view
 
   board set [--create] [--new-row] <wave> <task> <key=value>...   a task's row (lease); a task with
                                                       no row yet refuses without ``--new-row``
+  board spawned <wave> <task> --agent <id> --transport <t> [--model <m>]
+                                                      records a spawn on an existing row (lease)
   board note [--create] <wave> <key=value>...         the wave's own facts (lease)
   board log <wave> <text>...                          one appended log line, the words joined (lease)
   board show <wave> [--json]                          the markdown view, or the document (no lease);
@@ -62,8 +64,10 @@ from ludics.fleetworker.lease import LEASE_LOST_STATUS, lease_mutation
 from ludics.fleetworker.takeover import DONE_STATES, LIVE_STATES, board_document, cmd_takeover, phase_of, row_state, state_word
 from ludics.fleetworker.transport import Done, PAYLOAD_ON_FD, err, prelude, run_on, shipped_python
 
+SPAWNED_USAGE = "board spawned <wave> <task> --agent <id> --transport <t> [--model <m>]"
 USAGE = (
-    "board set [--create] [--new-row] <wave> <task> <key=value>... | board note [--create] <wave> <key=value>... | "
+    f"board set [--create] [--new-row] <wave> <task> <key=value>... | {SPAWNED_USAGE} | "
+    "board note [--create] <wave> <key=value>... | "
     "board log <wave> <text>... | board show <wave> [--json] | board check <wave> | board takeover <wave> <task> | "
     "board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>] | board tally <wave> <task> --message <file>"
 )
@@ -98,6 +102,24 @@ def fields_of(words: list[str], action: str) -> list[list[str]]:
     return pairs
 
 
+def spawned_payload(args: list[str]) -> dict[str, object]:
+    if len(args) < 2 or not args[0] or not args[1]:
+        die(f"board spawned: expected <wave> <task> ({SPAWNED_USAGE})")
+    wave, task = args[:2]
+    options = args[2:]
+    if len(options) % 2:
+        die(f"board spawned: expected {SPAWNED_USAGE}")
+    payload: dict[str, object] = {"wave": wave, "task": task}
+    for flag, value in zip(options[::2], options[1::2], strict=True):
+        key = flag[2:]
+        if flag not in ("--agent", "--transport", "--model") or key in payload or not value.strip() or value.startswith("--"):
+            die(f"board spawned: expected {SPAWNED_USAGE}")
+        payload[key] = value
+    if "agent" not in payload or "transport" not in payload:
+        die(f"board spawned: expected {SPAWNED_USAGE}")
+    return payload
+
+
 def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
     """The action and the store's payload for a ``board`` command line, or a usage refusal (exit 2)."""
     action = args[0] if args else ""
@@ -106,8 +128,10 @@ def payload_of(args: list[str]) -> tuple[str, dict[str, object]]:
         if rest[1:] not in ([], ["--json"]) or not rest:
             die(f"board show: expected <wave> [--json] ({USAGE})")
         return action, {"wave": rest[0], "json": rest[1:] == ["--json"]}
+    if action == "spawned":
+        return action, spawned_payload(rest)
     if action not in ("set", "note", "log"):
-        die(f"board: expected set, note, log, show, check, takeover, close or tally ({USAGE})")
+        die(f"board: expected set, spawned, note, log, show, check, takeover, close or tally ({USAGE})")
     flags: set[str] = set()
     while rest and rest[0] in ("--create", "--new-row") and rest[0] not in flags:
         flags.add(rest[0])
