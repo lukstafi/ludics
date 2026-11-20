@@ -594,6 +594,12 @@ to renew or release the successor's lease. The four new gate and lease cases fai
 base `e841b7cd9`: it stops after the first refresh and rejects `lease fleet`. The overlap check
 uses the build's scratch repository so a local replacement ref cannot hide a shared path.
 
+Agent notes (#1257): `Merge.merge_call` classifies failed merge answers by whole first stderr
+line. The allowlist binds CLI preflight refusals to the target PR and GraphQL refusals to the
+`mergePullRequest` path. Unrecognised answers require REST confirmation before another write.
+The merge harness pins every row and a near miss of it. The near misses fail at launch base
+`33c755a3`, where the refusal words and HTTP status fragments decide the outcome by substring.
+
 Agent notes (wave-20261119-ludics, t1242; refs #1242): `Merge.checkpoint_gate` reads the PR's
 issue comments before every attempt in `merge_call`, ahead of the merge build's last ref check,
 for the gated head; `prreview/checkpoint.py`

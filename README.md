@@ -1224,6 +1224,8 @@ posts the request, where it used to end on it unposted. `test-pr-review-watch.sh
 and on an unread connection (exit 3), with one read per merge attempt and gateway resend, so a
 thread opened during either gap refuses the next write. It also pins the pre-merge read order
 on a resend and exit 3 before any write when a built merge's live head ref has a null target.
+Each allowlisted merge refusal takes its existing route, and a near miss of each answer stays
+ambiguous with one merge call.
 It also pins the commit-series scan (ludics-lite#296): each
 commit message read with the body's filter, a quoted closing sentence warned about by commit and
 line, a commit closing the PR's own issue silent, the series read after the gate and before every

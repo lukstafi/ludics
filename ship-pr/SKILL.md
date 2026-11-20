@@ -1585,6 +1585,7 @@ on `true`, so a nonzero exit from it already means the recompute settled: `merge
 drift needing a merge or rebase of the base branch, and only a repeated failure after that is a
 conflict you must resolve. GitHub's `Pull Request has merge conflicts (mergePullRequest)` takes the
 same re-read: no merge happened, so it is never an ambiguous write.
+The merge-call allowlist reads the whole first stderr line. For an unrecognised answer, exit 3 asks you to confirm over REST before retrying.
 
 The build gate's own nonzero exits are the table under the gate above. Two of them come after
 `merge --wait` has already made its one recovery on a head run: 6 (a job that never got a runner)

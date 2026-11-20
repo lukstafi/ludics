@@ -1139,12 +1139,20 @@ class Merge:
             "merges without the verdict instead.",
         )
 
-    # GitHub's GraphQL answer to the merge of a PR that conflicts with its base (ludics#1244, seen on
-    # ocannl-staging#2155): no merge happened, so it is a refusal, not an ambiguous write. A CLOSED
-    # form: the whole first stderr line, exactly as gh prints it (`GraphQL: `, the message, then the
-    # error's path; core.py's grammar). It takes the "not mergeable" re-read of the mergeable
-    # field; any other wording, or this message on a line with anything else, stays ambiguous.
-    _CONFLICTS = "GraphQL: Pull Request has merge conflicts (mergePullRequest)"
+    # Fail-closed allowlist for the final failed `gh pr merge` answer (#1257). Read exactly
+    # GhSession.err_line(), the whole first stderr line from a colour-disabled CLI. GraphQL rows
+    # include the mutation path (core.py's grammar). The CLI preflight rows fill only the target
+    # repository and PR number.
+    # Stdout, later lines, fragments, extra text, and other answers are outside this table:
+    # the write may have landed, so report ambiguity and ask for REST confirmation.
+    _MERGE_REFUSALS: dict[str, Literal["base-moved", "head-moved", "recheck-mergeable"]] = {
+        "GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)": "base-moved",
+        "GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)": "head-moved",
+        "GraphQL: Pull Request has merge conflicts (mergePullRequest)": "recheck-mergeable",
+        "X Pull request {repo}#{pr} is not mergeable: the merge commit cannot be cleanly created.": "recheck-mergeable",
+        "X Pull request {repo}#{pr} is not mergeable: the base branch policy prohibits the merge.": "recheck-mergeable",
+        "X Pull request {repo}#{pr} is not mergeable: the head branch is not up to date with the base branch.": "recheck-mergeable",
+    }
 
     _BUILD_REFS_QUERY = (
         "query MergeBuildRefs($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n)"
@@ -1289,6 +1297,7 @@ class Merge:
     def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None, lease: MergeLease | None = None) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
+        refusals = {line.format(repo=repo, pr=pr.lstrip("0")): route for line, route in self._MERGE_REFUSALS.items()}
         attempt = 1
         refreshes = 0
         override_base = build.base_sha if build is not None and opts.override else None
@@ -1338,7 +1347,8 @@ class Merge:
                 case _:
                     assert_never(result)
             err = self.session.err_line()
-            if "Base branch was modified" in err:
+            refusal = refusals.get(err)
+            if refusal == "base-moved":
                 head = self.session.retry("read", ["api", f"repos/{repo}/pulls/{pr}", "--jq", '.head.sha // "-"'])
                 if not isinstance(head, GhOk) or head.stdout in ("", "-"):
                     fail(
@@ -1369,13 +1379,13 @@ class Merge:
                         self.drift()
                     attempt += 1
                     continue
-            if any(s in err for s in ("was modified", "does not match", "head commit", "expected head")):
+            if refusal in ("head-moved", "base-moved"):
                 fail(
                     1,
                     f"NOT merged: {repo}#{pr}'s head is no longer {gate.check_sha[:8]}, the commit the build",
                     f"signal was read for ({err}). A push moved it; re-run merge so the gate reads the new head.",
                 )
-            if "not mergeable" in err or "cannot be cleanly created" in err or err == self._CONFLICTS:
+            if refusal == "recheck-mergeable":
                 if attempt >= 3:
                     fail(
                         1,
@@ -1398,8 +1408,6 @@ class Merge:
                     f"{repo}#{pr} failed to merge as 'not mergeable' and its mergeable field is",
                     f"{mergeable} — GitHub is still computing, or did not answer. Re-read before concluding.",
                 )
-            if api_rejection(err):
-                fail(1, f"gh pr merge was rejected: {err}")
             fail(
                 3,
                 f"gh pr merge failed AMBIGUOUSLY: {err}. It may have LANDED — confirm over",

@@ -13,8 +13,10 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import unittest
 from collections.abc import Sequence
+from pathlib import Path
 
 from ludics.prreview.checkpoint import Post, headed, heading, hold_of, parse_verdict, post_of
 from ludics.tests.fake import Answer, FakeTool, When
@@ -225,6 +227,40 @@ class Production(unittest.TestCase):
                 self.assertIn("really does not merge cleanly (mergeable=false after the recompute)", done.stderr)
                 self.assertNotIn("AMBIGUOUSLY", done.stderr)
                 self.assertEqual(len([c for c in self.calls() if c[:2] == ["pr", "merge"]]), 1)
+
+    def test_merge_refusals_read_only_the_whole_first_stderr_line(self) -> None:
+        conflict = "GraphQL: Pull Request has merge conflicts (mergePullRequest)\n"
+        unknown = "GraphQL: Could not read the head commit. (mergePullRequest)\n"
+        for out, err in ((conflict, unknown), ("", unknown + conflict)):
+            with self.subTest(out=out, err=err):
+                self.route([(MERGE, 1, out, err), *GREEN])
+                done = self.run_cmd(self.entries()[0], "merge", "o/r#7")
+                self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+                self.assertIn(f"gh pr merge failed AMBIGUOUSLY: {unknown.strip()}", done.stderr)
+                self.assertEqual(self.calls()[-1][:2], ["pr", "merge"])
+                self.assertEqual(len([c for c in self.calls() if c[:2] == ["pr", "merge"]]), 1)
+
+    def test_merge_requests_plain_gh_output_even_when_color_is_forced(self) -> None:
+        gh = Path(self.dir, "gh")
+        plain = gh.rename(gh.with_name("gh-plain"))
+        refusal = "X Pull request o/r#7 is not mergeable: the merge commit cannot be cleanly created.\n"
+        coloured = "\x1b[31mX\x1b[0m" + refusal[1:]
+        gh.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            'if sys.argv[1:3] == ["pr", "merge"] and not os.getenv("NO_COLOR"):\n'
+            f"    sys.stderr.write({coloured!r})\n"
+            "    sys.exit(1)\n"
+            f"os.execv(sys.executable, [sys.executable, {str(plain)!r}, *sys.argv[1:]])\n",
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+        for entry in self.entries():
+            with self.subTest(entry=entry[0]):
+                self.route([(MERGE, 1, "", refusal), ([".mergeable | tostring"], 0, "false\n", ""), *GREEN])
+                done = self.run_cmd(entry, "merge", "o/r#7", CLICOLOR_FORCE="1", NO_COLOR="")
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertIn("really does not merge cleanly", done.stderr)
 
     def test_checks_ends_with_its_trailer_and_a_red_is_one(self) -> None:
         red = [(["check-runs"], 0, "ci\tfailure\thttps://u\t1\n", ""), *GREEN]

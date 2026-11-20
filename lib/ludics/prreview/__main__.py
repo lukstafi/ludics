@@ -11,8 +11,9 @@ case with a ``cmd_<name>`` stub (lib/ludics/README.md).
 
 import os
 import sys
+from collections.abc import Sequence
 
-from ludics import cli
+from ludics import cli, proc
 from ludics.prreview import budget
 from ludics.prreview.clock import clock_from_env, plain_sleep
 from ludics.prreview.core import PROG, GhSession, die, load_config
@@ -23,6 +24,13 @@ PORTED = (
 )
 # Entry points for the suites, which pr-review.sh's command line does not route to (see status.py).
 INTERNAL = ("status-state", "status-line")
+
+
+def _merge_tool(name: str, args: Sequence[str]) -> proc.Completed:
+    if name == "gh" and tuple(args[:2]) == ("pr", "merge"):
+        # Merge reads the exact CLI preflight line, even when the caller forces gh colour.
+        return proc.run_tool(name, args, env={**os.environ, "NO_COLOR": "1", "CLICOLOR_FORCE": "0"})
+    return proc.run_tool(name, args)
 
 
 def dispatch(argv: list[str]) -> int:
@@ -41,7 +49,10 @@ def dispatch(argv: list[str]) -> int:
     # subcommand, as the shell validated them when it was sourced). The observer lock a command
     # takes is released however it ends.
     shared = budget.from_env(env, clock_from_env(env))
-    session = GhSession(config, sleep=plain_sleep(env), budget=shared)
+    session = GhSession(
+        config, run=_merge_tool if args[:1] == ["merge"] else None,
+        sleep=plain_sleep(env), budget=shared,
+    )
     try:
         return _run(session, args, env)
     finally:
