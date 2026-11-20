@@ -69,8 +69,9 @@ block, in file order, then has one outcome, said in one line on stderr:
   dispatched by ``run`` like a new one.
 - ``ASSIGN UNKNOWN <id>: ...``: the step exited 4 (the anchor did not answer), output could not be
   collected after the child started, or the step exited 0 with a record this verb cannot read the
-  revision off. Reconcile it before retrying. If reporting the unknown outcome also fails, the
-  call stops with exit 4 before publishing an assignment message.
+  revision off. Reconcile it before retrying. If stderr fails while reporting this unknown step
+  result, the call stops with exit 4 before publishing an assignment message. A stream that still
+  fails to flush is redirected to the null device so shutdown preserves the exit.
 - ``ASSIGN LEASE LOST <id>: ...``: the step exited ``LEASE_LOST_STATUS``, the lease is not this
   coordinator's (lease.py, THE LOST LEASE STATUS, which every step of assign is asked for through
   ``ASSIGN_STEP_ENV``); nothing is printed for it. So does a board placement write (below) that
@@ -78,6 +79,11 @@ block, in file order, then has one outcome, said in one line on stderr:
   asked of the registry or the board.
 
 A payload staging error before child startup says ``nothing asked`` and is a retryable refusal.
+Once a step has dispatched or returned an unknown outcome, an I/O error that escapes a subsequent
+placement, relay or report stops the call with exit 4 and writes ``--status`` if supplied. This
+includes a closed stdout pipe during assignment publication, where exit 4 supersedes the generic
+CLI's SIGPIPE exit. A known lost lease still takes precedence. Check the registry and worker state
+before retrying. The status says how far the call got with ``--unstick``.
 
 An assign that returns exit 5 ends stderr with one ``ASSIGN ACTION REQUIRED `` summary, with the
 ID and diagnostic for each step that exited 2 or 5. Only the step's first ``fleet-worker.sh: ``
@@ -118,10 +124,10 @@ of this call and no line of its stderr, where the steps' relayed lines sit besid
 
   exit        assign's exit status, so a reader can tell the file is this call's
   unstick     the ``--unstick`` outcome, a closed set: ``landed`` (it exited 0: the worker was
-              resumed with the message file), ``failed`` (it ran and exited nonzero: never assume
-              it reached the worker), ``not-asked`` (no ``--unstick``), and, asked but not run,
-              ``nothing-assigned``, ``message-unwritten`` (the ``--message`` file could not be
-              written) and ``lease-lost`` (a step had already found the lease lost)
+              resumed with the message file), ``failed`` (attempted without a confirmed success),
+              ``not-asked`` (no ``--unstick``), and, asked but not run, ``nothing-assigned`` (no
+              message reached the unstick stage), ``message-unwritten`` (the ``--message`` file
+              could not be written) and ``lease-lost`` (a step had already found the lease lost)
   tally       the ``BOARD TALLY WARNING`` and ``NOTE`` lines of the unstick's own stderr
               (``tally.said_lines``), in order; empty unless it ran
   lease_lost  which call found the lease lost (``the run of <id>``, ``the placement of <id>``, ``the
@@ -153,7 +159,7 @@ import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, TextIO, cast
 
 from ludics import cli, proc
 from ludics.fleetworker import execution
@@ -551,6 +557,21 @@ class Status:
         self.lease_lost = self.lease_lost or where
 
 
+def flush_or_discard(stream: TextIO) -> None:
+    """Keep a failed buffered write from replacing the outcome with exit 120 at shutdown."""
+    try:
+        stream.flush()
+    except OSError:
+        with suppress(OSError):
+            fd = stream.fileno()
+            null_fd = os.open(os.devnull, os.O_WRONLY)
+            if null_fd != fd:
+                try:
+                    os.dup2(null_fd, fd)
+                finally:
+                    os.close(null_fd)
+
+
 def write_status(path: str, rc: int, status: Status) -> None:
     """THE STATUS, replaced whole; a failure is a NOTE and never changes the exit."""
     text = json.dumps({"exit": rc, "unstick": status.unstick, "tally": status.tally, "lease_lost": status.lease_lost},
@@ -562,8 +583,11 @@ def write_status(path: str, rc: int, status: Status) -> None:
             f.write(text)
         os.replace(staged, path)
     except OSError as exc:
-        with suppress(OSError):  # a stderr that failed already (ASSIGN UNKNOWN's report) keeps the exit
+        try:
             err(f"ASSIGN STATUS NOTE: the status could not be written to {execution.shown(path)} ({exc.strerror}): {text.rstrip()}")
+        except OSError:
+            flush_or_discard(sys.stdout)
+            flush_or_discard(sys.stderr)
         if staged:
             try:
                 os.unlink(staged)
@@ -644,111 +668,113 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
                 " placement was not written, and remaining requests will still be handled")
             return False
         if rc == LEASE_LOST_STATUS:
-            err(f"ASSIGN LEASE LOST {execution.shown(block['request_id'])}: its placement write was refused on the lease (above)")
             status.lost(f"the placement of {execution.shown(block['request_id'])}")
+            err(f"ASSIGN LEASE LOST {execution.shown(block['request_id'])}: its placement write was refused on the lease (above)")
             return False
         if rc:
             err(f"ASSIGN BOARD NOTE {execution.shown(block['request_id'])}: placement write exit {rc};"
                 " retry this assign call to repair the row without dispatching again")
         return rc == 0
 
-    texts: list[str] = []
-    action_required: list[str] = []
-    refusal_status = 0
-    unknown = False
-    for block in selected:
-        request_id, kind, box = block["request_id"], block["kind"], block["execution_host"]
-        shown_id = execution.shown(request_id) if request_id.isprintable() else ascii(request_id)
-        if status.lease_lost:
-            # Every later call would be refused under the lease lock too: a lost lease ends the asking.
-            err(f"ASSIGN SKIPPED {shown_id}: the lease was lost ({status.lease_lost}); nothing asked")
-            continue
-        record = execution.record_of(records, request_id)
-        if record is not None and record.get("state") != "reserved":
-            if not placement(block, record):
-                refusal_status = refusal_status or 1
-            err(f"ASSIGN ALREADY {request_id}: the registry holds it {execution.jq_text(record.get('state'))};"
-                " an earlier call dispatched it, so it is not asked or assigned again")
-            continue
-        verb = ["execution", "run"] if kind == "correctness" else [
-            "execution", "window", *(["--no-gap"] if parsed.no_gap else []),
-            *(["--deadline", parsed.deadline] if parsed.deadline else []), box]
-        answer = call(cfg, verb, payload_of(base_fields, block))
-        if answer.rc == 4 or answer.unreachable:
-            detail = answer.diagnostic or "above"
-            try:
+    reconcile_on_io_error = False
+    try:
+        texts: list[str] = []
+        action_required: list[str] = []
+        refusal_status = 0
+        unknown = False
+        for block in selected:
+            request_id, kind, box = block["request_id"], block["kind"], block["execution_host"]
+            shown_id = execution.shown(request_id) if request_id.isprintable() else ascii(request_id)
+            if status.lease_lost:
+                # Every later call would be refused under the lease lock too: a lost lease ends the asking.
+                err(f"ASSIGN SKIPPED {shown_id}: the lease was lost ({status.lease_lost}); nothing asked")
+                continue
+            record = execution.record_of(records, request_id)
+            if record is not None and record.get("state") != "reserved":
+                if not placement(block, record):
+                    refusal_status = refusal_status or 1
+                err(f"ASSIGN ALREADY {request_id}: the registry holds it {execution.jq_text(record.get('state'))};"
+                    " an earlier call dispatched it, so it is not asked or assigned again")
+                continue
+            verb = ["execution", "run"] if kind == "correctness" else [
+                "execution", "window", *(["--no-gap"] if parsed.no_gap else []),
+                *(["--deadline", parsed.deadline] if parsed.deadline else []), box]
+            answer = call(cfg, verb, payload_of(base_fields, block))
+            if answer.rc == 4 or answer.unreachable:
+                detail = answer.diagnostic or "above"
+                reconcile_on_io_error = True
                 err(f"ASSIGN UNKNOWN {shown_id}: the {verb[1]}'s outcome is unknown ({detail});"
                     " reconcile it, never retry it blind")
-            except OSError:
-                # Python can replace exit 4 with 120 if it flushes this failed stream at shutdown.
-                with suppress(OSError):
-                    stderr_fd = sys.stderr.fileno()
-                    null_fd = os.open(os.devnull, os.O_WRONLY)
-                    if null_fd != stderr_fd:
-                        try:
-                            os.dup2(null_fd, stderr_fd)
-                        finally:
-                            os.close(null_fd)
-                return finish(4)  # THE STATUS is a file: it still reaches the caller
-            unknown = True
-            continue
-        if answer.rc == LEASE_LOST_STATUS:
-            err(f"ASSIGN LEASE LOST {shown_id}: the {verb[1]} was refused on the lease (above); nothing assigned")
-            status.lost(f"the {verb[1]} of {shown_id}")
-            continue
-        if answer.rc != 0:
-            # A window exiting 3 is pending (registry.py, THE PENDING WINDOW): refused for now, asked again later.
-            pending = "; it is pending: ask again once the box's records conclude" if verb[1] == "window" and answer.rc == 3 else ""
-            err(f"ASSIGN REFUSED {shown_id}: the {verb[1]} exited {answer.rc} (above); nothing assigned{pending}")
-            if answer.rc in (2, ASSIGN_ACTION_REQUIRED):
-                detail = answer.diagnostic or "inspect the assignment diagnostic before retrying"
-                action_required.append(f"{shown_id}: {detail}")
-                refusal_status = ASSIGN_ACTION_REQUIRED
-            else:
+                unknown = True
+                continue
+            if answer.rc == LEASE_LOST_STATUS:
+                status.lost(f"the {verb[1]} of {shown_id}")
+                err(f"ASSIGN LEASE LOST {shown_id}: the {verb[1]} was refused on the lease (above); nothing assigned")
+                continue
+            if answer.rc != 0:
+                # A window exiting 3 is pending (registry.py, THE PENDING WINDOW): refused for now, asked again later.
+                pending = "; it is pending: ask again once the box's records conclude" if verb[1] == "window" and answer.rc == 3 else ""
+                err(f"ASSIGN REFUSED {shown_id}: the {verb[1]} exited {answer.rc} (above); nothing assigned{pending}")
+                if answer.rc in (2, ASSIGN_ACTION_REQUIRED):
+                    detail = answer.diagnostic or "inspect the assignment diagnostic before retrying"
+                    action_required.append(f"{shown_id}: {detail}")
+                    refusal_status = ASSIGN_ACTION_REQUIRED
+                else:
+                    refusal_status = refusal_status or 1
+                continue
+            reconcile_on_io_error = True
+            if not placement(block):
                 refusal_status = refusal_status or 1
-            continue
-        if not placement(block):
-            refusal_status = refusal_status or 1
-        revision = assigned_revision(answer.out, block)
-        if revision is None:
-            err(f"ASSIGN UNKNOWN {request_id}: dispatched, but no resolved_revision could be read off its record (above);"
-                " reconcile it, and assign its resolved_revision by hand")
-            unknown = True
-            continue
-        command = block["command"] if "command" in block else leg_command(fw, block, revision)
-        texts.append(assignment_text(block, command, revision))
-        err(f"ASSIGN ASSIGNED {request_id} {kind} {box} {revision}")
-    if texts:
-        texts.append(f"Run only the {len(texts)} assignment{'s' if len(texts) > 1 else ''} above, and end your turn with"
-                     " one EXECUTION_RESULT line for each.")
-        message = "\n\n".join(texts)
-        cli.say(message)
-        if parsed.message:
-            try:
-                with open(parsed.message, "w", encoding="utf-8") as f:
-                    f.write(message + "\n")
-            except OSError as exc:
-                err(f"ASSIGN UNKNOWN: the message could not be written to {execution.shown(parsed.message)}"
-                    f" ({exc.strerror}); it is the text above")
-                status.unstick = "not-asked" if parsed.unstick is None else "message-unwritten"
-                return finish(4)
-        if parsed.unstick is not None and status.lease_lost:
-            status.unstick = "lease-lost"
-            err(f"ASSIGN UNSTICK SKIPPED: the lease was lost ({status.lease_lost}); the assignments above are"
-                f" dispatched and kept in {execution.shown(parsed.message)} for the lease's holder")
+            revision = assigned_revision(answer.out, block)
+            if revision is None:
+                err(f"ASSIGN UNKNOWN {request_id}: dispatched, but no resolved_revision could be read off its record (above);"
+                    " reconcile it, and assign its resolved_revision by hand")
+                unknown = True
+                continue
+            command = block["command"] if "command" in block else leg_command(fw, block, revision)
+            texts.append(assignment_text(block, command, revision))
+            err(f"ASSIGN ASSIGNED {request_id} {kind} {box} {revision}")
+        if texts:
+            texts.append(f"Run only the {len(texts)} assignment{'s' if len(texts) > 1 else ''} above, and end your turn with"
+                         " one EXECUTION_RESULT line for each.")
+            message = "\n\n".join(texts)
+            cli.say(message)
+            sys.stdout.flush()
+            if parsed.message:
+                try:
+                    with open(parsed.message, "w", encoding="utf-8") as f:
+                        f.write(message + "\n")
+                except OSError as exc:
+                    status.unstick = "not-asked" if parsed.unstick is None else "message-unwritten"
+                    err(f"ASSIGN UNKNOWN: the message could not be written to {execution.shown(parsed.message)}"
+                        f" ({exc.strerror}); it is the text above")
+                    return finish(4)
+            if parsed.unstick is not None and status.lease_lost:
+                status.unstick = "lease-lost"
+                err(f"ASSIGN UNSTICK SKIPPED: the lease was lost ({status.lease_lost}); the assignments above are"
+                    f" dispatched and kept in {execution.shown(parsed.message)} for the lease's holder")
+            elif parsed.unstick is not None:
+                box, name = parsed.unstick
+                # A failed relay can leave the worker resumed with no observed result.
+                status.unstick = "failed"
+                sent = resend(cfg, box, name, parsed.message)
+                status.unstick, status.tally = ("landed" if sent.rc == 0 else "failed"), said_lines(sent.out)
+                if sent.rc == LEASE_LOST_STATUS:
+                    status.lost(f"the unstick of {box}/{name}")
+                if sent.rc != 0:
+                    err(f"ASSIGN UNSTICK FAILED {box}/{name}: the assignments are dispatched; once the worker's state is"
+                        f" known, resend with: fleet-worker.sh unstick {shlex.quote(box)} {shlex.quote(name)} --message"
+                        f" {execution.shown(parsed.message)} -- never assign again")
+                    return finish(4)
         elif parsed.unstick is not None:
-            box, name = parsed.unstick
-            sent = resend(cfg, box, name, parsed.message)
-            status.unstick, status.tally = ("landed" if sent.rc == 0 else "failed"), said_lines(sent.out)
-            if sent.rc == LEASE_LOST_STATUS:
-                status.lost(f"the unstick of {box}/{name}")
-            if sent.rc != 0:
-                err(f"ASSIGN UNSTICK FAILED {box}/{name}: the assignments are dispatched; once the worker's state is"
-                    f" known, resend with: fleet-worker.sh unstick {shlex.quote(box)} {shlex.quote(name)} --message"
-                    f" {execution.shown(parsed.message)} -- never assign again")
-                return finish(4)
-    elif parsed.unstick is not None:
-        err("ASSIGN UNSTICK SKIPPED: nothing was assigned")
-    summary = ACTION_REQUIRED_LINE + "; ".join(action_required) if (
-        not unknown and not status.lease_lost and refusal_status == ASSIGN_ACTION_REQUIRED) else ""
-    return finish(4 if unknown else refusal_status, summary)
+            err("ASSIGN UNSTICK SKIPPED: nothing was assigned")
+        summary = ACTION_REQUIRED_LINE + "; ".join(action_required) if (
+            not unknown and not status.lease_lost and refusal_status == ASSIGN_ACTION_REQUIRED) else ""
+        return finish(4 if unknown else refusal_status, summary)
+
+    except OSError:
+        if not reconcile_on_io_error:
+            raise
+        flush_or_discard(sys.stdout)
+        flush_or_discard(sys.stderr)
+        return finish(4)

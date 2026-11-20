@@ -278,11 +278,14 @@ class Outcomes(unittest.TestCase):
                     self.assertIn(f"fixture: {fault}", err.getvalue())
                     self.assertIn("reconcile it, never retry it blind", err.getvalue())
 
-    def test_persistent_stderr_failure_preserves_exit_4_at_shutdown(self) -> None:
+    def test_persistent_reporting_failure_preserves_exit_4_at_shutdown(self) -> None:
         script = self.write("fleet-worker.sh", "#!/bin/sh\nprintf '%s\\n' started >&2\n")
         os.chmod(script, 0o755)
         requests = self.write("r.txt", message(block("a")))
-        run = subprocess.run([sys.executable, "-c", """
+        for stream in ("stderr", "stdout"):
+            with self.subTest(stream=stream):
+                status = os.path.join(self.dir, f"status-{stream}.json")
+                run = subprocess.run([sys.executable, "-c", """
 import os
 import sys
 from unittest.mock import patch
@@ -293,13 +296,16 @@ from ludics.fleetworker.transport import Done
 
 reader, writer = os.pipe()
 os.close(reader)
-sys.stderr = os.fdopen(writer, "w", buffering=4096)
-cfg = load_config(sys.argv[1], {"HOME": "/nowhere"})
+setattr(sys, sys.argv[1], os.fdopen(writer, "w", buffering=4096))
+cfg = load_config(sys.argv[2], {"HOME": "/nowhere"})
 with patch.object(execution, "listing", return_value=Done(0, "[]")):
-    rc = cli.main_guard("fleet-worker.sh", lambda args: assign.cmd_assign(cfg, args), sys.argv[2:])
+    rc = cli.main_guard("fleet-worker.sh", lambda args: assign.cmd_assign(cfg, args), sys.argv[3:])
 sys.exit(rc)
-""", script, self.base, requests], capture_output=True, text=True, timeout=10)
-        self.assertEqual((run.returncode, run.stdout), (4, ""), run.stderr)
+""", stream, script, self.base, requests, "--status", status], capture_output=True, text=True, timeout=10)
+                self.assertEqual((run.returncode, run.stdout), (4, ""), run.stderr)
+                self.assertEqual(self.status(status), {"exit": 4, "unstick": "not-asked", "tally": [], "lease_lost": ""})
+                if stream == "stdout":
+                    self.assertIn("ASSIGN ASSIGNED a ", run.stderr)
 
     def test_a_steps_progress_reaches_the_reader_while_the_step_is_still_waiting(self) -> None:
         progress = "waiting for the window gap"
@@ -379,6 +385,39 @@ sys.exit(rc)
             "checkout": "/wt", "request": {**BASE, "execution_host": "rog"}}])[0], 0)
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(len(self.placements), 2)
+
+    def test_post_dispatch_report_eio_reaches_status_without_retry(self) -> None:
+        requests = self.write("r.txt", message(block("a", checkout="/wt"), block("b")))
+        msg = os.path.join(self.dir, "assignment.txt")
+        for prefix, placement_rc, expected, lease in (
+            ("ASSIGN ASSIGNED a ", 0, 4, ""),
+            ("ASSIGN BOARD NOTE a:", 1, 4, ""),
+            ("ASSIGN LEASE LOST a:", 6, 6, "the placement of a"),
+        ):
+            with self.subTest(prefix=prefix):
+                status = os.path.join(self.dir, f"status-{placement_rc}.json")
+                out, diagnostic = io.StringIO(), io.StringIO()
+
+                def write_stderr(line: str) -> int:
+                    if line.startswith(prefix):
+                        raise OSError(errno.EIO, "fixture: reporting failed")
+                    return diagnostic.write(line)
+
+                stream = mock.Mock(wraps=diagnostic)
+                stream.write.side_effect = write_stderr
+                call = mock.Mock(return_value=StepResult(0, "{}"))
+                resend = mock.Mock()
+                with (mock.patch.object(execution, "listing", return_value=Done(0, "[]")),
+                      mock.patch.object(assign, "record_placement", return_value=placement_rc),
+                      contextlib.redirect_stdout(out), contextlib.redirect_stderr(stream)):
+                    rc = cli.main_guard("fleet-worker.sh", lambda args: cmd_assign(self.cfg, args, call=call, resend=resend),
+                                        [self.base, requests, "--message", msg, "--unstick", "box", "w", "--status", status])
+                self.assertTrue(any(args[0].startswith(prefix) for args, _ in stream.write.call_args_list))
+                self.assertEqual((rc, out.getvalue()), (expected, ""))
+                self.assertEqual(self.status(status), {"exit": expected, "unstick": "nothing-assigned", "tally": [], "lease_lost": lease})
+                call.assert_called_once()
+                resend.assert_not_called()
+                self.assertFalse(os.path.exists(msg))
 
     def test_missing_identity_is_a_board_note_and_remaining_requests_are_handled(self) -> None:
         requests = self.write("r.txt", message(block("a", checkout="/wt"), block("b", checkout="/other")))
