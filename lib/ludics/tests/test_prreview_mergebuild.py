@@ -1248,18 +1248,37 @@ class Plan(Repo):
         self.assertNotIn("NO VERDICT", out)
 
     def test_a_status_written_as_the_bound_struck_is_no_verdict(self) -> None:
-        """The bound's answer wins: a late `unadmitted` never refuses (local review)."""
+        """A raced status cannot supply a verdict or the reason there was none."""
         head, _ = self.sides("keep", "seam() { :; }")
-        real = mergebuild._supervised  # pyright: ignore[reportPrivateUsage]
+        communicate = subprocess.Popen[bytes].communicate
 
-        def struck(argv: list[str], *args: object, **kwargs: object) -> proc.Completed:
-            done = real(argv, *args, **kwargs)  # type: ignore[arg-type]
-            return proc.Completed(124, done.stdout, done.stderr) if argv[3:4] == ["merge-plan"] else done
+        def struck(child: subprocess.Popen[bytes], input: bytes | None = None,
+                   timeout: float | None = None) -> tuple[bytes, bytes]:
+            out, err = communicate(child, input, timeout)
+            argv = child.args
+            # Let the wrapper write its real status, then report the deadline to the supervisor.
+            if timeout == 60 and isinstance(argv, list) and argv[3:4] == ["merge-plan"]:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return out, err
 
-        with mock.patch.object(mergebuild, "_supervised", side_effect=struck):
-            rc, out = self.planned(head, "echo 'ship-pr-merge-plan: unadmitted x'")
+        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head
+        for status in (0, 9):
+            with self.subTest(status=status):
+                with mock.patch.object(subprocess.Popen, "communicate", new=struck):
+                    rc, out = self.planned(head, f"echo 'ship-pr-merge-plan: unadmitted x'; exit {status}")
+                self.assertEqual((retained / "plan.status").read_text().strip(), str(status))
+                self.assertEqual(rc, 0, out)
+                self.assertIn("the plan gave NO VERDICT", out)
+                self.assertIn("it did not finish within 60s (the plan-timeout)", out)
+                self.assertIn("PASSED", out)
+
+    def test_a_plan_that_exits_124_within_its_bound_reports_its_status(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.planned(head, "echo 'ship-pr-merge-plan: unadmitted x'; exit 124")
         self.assertEqual(rc, 0, out)
-        self.assertIn("it did not finish within 60s (the plan-timeout)", out)
+        self.assertIn("the plan gave NO VERDICT", out)
+        self.assertIn("it exited 124", out)
+        self.assertNotIn("the plan-timeout", out)
         self.assertIn("PASSED", out)
 
     def test_a_verdict_line_past_the_read_bound_is_never_read_whole(self) -> None:

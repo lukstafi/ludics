@@ -16,8 +16,9 @@ or, without it, the copy on the default branch of the repository ``--repo``/``RE
 exactly as merge reads it; with neither, exit 2. When a repository is named, the checkout must have
 a remote naming it, as merge's clone must; with ``--config`` alone any checkout serves. It must be a
 FULL clone (neither shallow nor partial), checked before any diff: rename detection in a partial
-clone would fetch the blobs it lacks. As in merge, the config is read first, and a side that
-changed nothing is ``no build`` unless its trigger is ``always``.
+clone would fetch the blobs it lacks. The dry run resolves both revisions and reads their local
+drift before it reads the config. A side that changed nothing is ``no build`` unless the
+config's trigger is ``always``.
 
 THE TWO SIDES stand in for merge's drift read: ``git diff --name-status -M`` from the two
 revisions' merge base to the head (the PR's side) and to the base (the base's advance), each with
