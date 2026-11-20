@@ -335,7 +335,10 @@ class BackendPin(unittest.TestCase):
                                       ' In a runner request, use {"leg_options":["--cpu"]} for a correctness leg that'
                                       ' holds no GPU (replacing any --gpu), or {"leg_options":["--reads-no-config"]}'
                                       " for a runner that reads no project configuration. Keep other entries in leg_options."
-                                      " In a full leg command, put the option before --")
+                                      " In a full leg command, put the option before --."
+                                      " Send the refusal log to the coordinator before resubmitting an assignment."
+                                      " To reassign the same correctness request, the coordinator reconciles it to reserved"
+                                      " after verifying that nothing ran and no process remains")
 
     def test_a_shell_composite_is_refused_naming_the_form_that_carries_its_pin(self) -> None:
         # ludics#864 (gh-ocannl-1687): the pin inside the -c string is one word to the reader.

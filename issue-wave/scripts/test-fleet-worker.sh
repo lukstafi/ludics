@@ -4609,7 +4609,6 @@ n=$(marks); was=$(git -C "$lwt" rev-parse HEAD)
 expect "a GPU leg whose runner pins no backend is refused, naming the pins the repository asks for" 1 \
   "EXECUTION LEG REFUSED testbox: this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: --expect-backend <backend>, env LEG_BACKEND=<backend>;" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- tools/check.sh
-pin_advice=$(sed -n 's/.*\({"leg_options":\["--reads-no-config"\]}\).*/\1/p' <<<"$out")
 [ "$(marks)" = "$n" ] && [ "$(git -C "$lwt" rev-parse HEAD)" = "$was" ] && ok "...the worktree not moved, the runner not run" || ko "the unpinned leg moved the worktree or ran"
 expect "...as is one whose pin follows the runner's --" 1 "its runner pins no backend" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- tools/check.sh -- --expect-backend cc
@@ -4665,11 +4664,22 @@ expect "a misplaced --reads-no-config is refused at assignment with the correcte
   'runner contains --reads-no-config. .*"leg_options": \["--reads-no-config"\], "runner":' -- \
   lassign leg-misplaced '["tools/check.sh","--reads-no-config"]' '{}'
 lfinish_assigned leg-misplaced
+n=$(marks)
+expect "an unpinned assigned runner is refused by the backend check" 1 'its runner pins no backend' -- \
+  lrun_assigned leg-advice '["tools/check.sh"]' '{}'
+pin_advice=$(sed -n 's/.*\({"leg_options":\["--reads-no-config"\]}\).*/\1/p' <<<"$out")
 if [ -n "$pin_advice" ]; then
-  expect "the backend-pin advice can be submitted and the assigned leg runs" 0 '^execution-leg: exit: 0$' -- \
-    lrun_assigned leg-advice '["tools/check.sh"]' "$pin_advice"
+  if [ "$(marks)" = "$n" ] && grep -Fq 'the coordinator reconciles it to reserved' <<<"$out"; then
+    printf '%s\n' '{"request_id":"leg-advice","state":"reserved","evidence":"backend-pin refusal before the runner started"}' \
+      > "$TMP/leg-advice-reconcile.json"
+    setup_step "could not reconcile the pin refusal" "${FWL[@]}" execution reconcile "$TMP/leg-advice-reconcile.json"
+    expect "the backend-pin advice can be submitted and the reassigned leg runs" 0 '^execution-leg: exit: 0$' -- \
+      lrun_assigned leg-advice '["tools/check.sh"]' "$pin_advice"
+  else
+    ko "the backend-pin refusal ran the runner or omitted recovery advice"
+  fi
 else
-  ko "the backend-pin advice can be submitted and the assigned leg runs: no leg_options in the refusal"
+  ko "the backend-pin advice can be submitted and the reassigned leg runs: no leg_options in the refusal"
 fi
 lfinish_assigned leg-advice
 expect "...but a .github/fleet-leg line it cannot read still refuses it" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one the fleet reads" -- \

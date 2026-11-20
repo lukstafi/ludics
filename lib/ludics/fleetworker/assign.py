@@ -45,6 +45,8 @@ the registry is asked, so a malformed request reserves nothing, and neither do i
   ``--gpu``, ``--wait <seconds>`` and ``--wait-window[=<seconds>]``. Each option occurs at most once.
   A supplied window bound replaces the default. The reservation and the shorthand fields own
   ``--box``, ``--request``, ``--rev``, ``--checkout`` and ``--worktree``.
+  Assignment checks remote and branch name syntax, and the ``--file`` / ``{file}`` pairing for a
+  runner array. The leg checks file readability, remote refs and the runtime argv of a string runner.
   The shorthand takes the complete runner command, including its executable. The exact words
   ``--cpu``, ``--gpu`` and ``--reads-no-config`` in ``runner`` are refused before asking the registry.
   Other words (e.g. ``--file``) retain their runner meaning. Redirection and control operator tokens,
@@ -314,13 +316,18 @@ def is_absolute(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and bool(ABSOLUTE.match(value))
 
 
-def leg_options_problem(options: Any, kind: str) -> str | None:
+def leg_options_problem(options: Any, kind: str, runner: str | list[str]) -> str | None:
     if not isinstance(options, list):
         return "leg_options must be an array of argv words"
     words = cast(list[Any], options)
     if not all(isinstance(word, str) and word and "\0" not in word for word in words):
         return "leg_options must be an array of nonempty strings without NUL bytes"
+    try:
+        "".join(words).encode("utf-8")
+    except UnicodeEncodeError:
+        return "leg_options must be encodable as UTF-8"
     seen: set[str] = set()
+    shipped = ""
     i = 0
     while i < len(words):
         word = cast(str, words[i])
@@ -340,11 +347,20 @@ def leg_options_problem(options: Any, kind: str) -> str | None:
         if flag in leg.OPTIONAL_VALUE_FLAGS or flag in ("--wait", "--deadline"):
             if i == len(words) or words[i].startswith("--"):
                 return f"leg_options {flag} needs a value in the next array entry"
-            if flag == "--wait" and not leg.WHOLE.fullmatch(words[i]):
+            value = cast(str, words[i])
+            if flag == "--wait" and not leg.WHOLE.fullmatch(value):
                 return "leg_options --wait takes a whole number of seconds"
-            if flag == "--deadline" and not leg.SECONDS.fullmatch(words[i]):
+            if flag == "--deadline" and not leg.SECONDS.fullmatch(value):
                 return "leg_options --deadline takes a positive whole number of seconds"
+            if flag == "--remote" and not leg.remote_name_ok(value):
+                return "leg_options --remote must be a remote's name"
+            if flag == "--base" and not leg.base_branch_ok(value):
+                return "leg_options --base must be a branch name"
+            if flag == "--file":
+                shipped = value
             i += 1
+    if isinstance(runner, list):
+        return leg.file_word_problem(shipped, runner)
     return None
 
 
@@ -427,8 +443,9 @@ def block_problem(block: Any) -> str | None:
     revision = fields["requested_revision"]
     if not (OBJECT_ID.fullmatch(revision) or revision.startswith(HEAD_OF)):
         return "a runner's requested_revision must be a full 40-hex SHA or head-of:<branch>: the leg moves to one commit"
-    return (leg_options_problem(fields.get("leg_options", []), fields["kind"])
-            or runner_problem(cast(str | list[str], runner), fields["kind"], revision))
+    argv = cast(str | list[str], runner)
+    return (leg_options_problem(fields.get("leg_options", []), fields["kind"], argv)
+            or runner_problem(argv, fields["kind"], revision))
 
 
 def fleet_worker_word(cfg: Config) -> str:

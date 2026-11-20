@@ -926,6 +926,11 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
     `"leg_options":["--reads-no-config"]`;
   - a leg that holds no GPU: `--cpu`, which skips it too.
 
+  The backend-pin refusal occurs after dispatch, before the runner starts. Send the refusal log
+  to the coordinator before resubmitting an assignment. To reuse the same correctness request
+  ID, the coordinator verifies that nothing ran and no process remains, then reconciles the
+  request to `reserved` before assigning again.
+
   The pin shows that a backend was named, never that the run held it: that evidence is the
   runner's own check (`--expect-backend`), and a leg the pin admitted is no GPU evidence. A `--cpu`
   or `--reads-no-config` leg, and a repository without the file, are not checked (the file is still parsed,

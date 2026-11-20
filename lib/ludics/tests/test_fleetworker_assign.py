@@ -88,18 +88,22 @@ class Readers(unittest.TestCase):
 
     def test_leg_options_are_a_closed_argv_allowlist(self) -> None:
         leg = block("a", runner=["check", "--file", "input"], clone="/c", checkout="/w")
-        self.assertIsNone(block_problem({**leg, "leg_options": ["--cpu", "--reads-no-config", "--wait", "0",
-                                                               "--wait-window=20", "--deadline", "30",
-                                                               "--file", "local list", "--remote", "origin",
-                                                               "--base", "main", "--control", "local patch"]}))
+        self.assertIsNone(block_problem({**leg, "runner": ["check", "--file", "{file}"],
+                                         "leg_options": ["--cpu", "--reads-no-config", "--wait", "0",
+                                                         "--wait-window=20", "--deadline", "30",
+                                                         "--file", "local list", "--remote", "origin",
+                                                         "--base", "main", "--control", "local patch"]}))
         self.assertIsNone(block_problem({**leg, "kind": "measurement",
                                          "leg_options": ["--reads-no-config", "--deadline", "20"]}))
         for options, problem in [
             ("--cpu", "array of argv words"), ([1], "array of nonempty strings"),
-            (["--file", "x\0y"], "without NUL"), (["--"], "unsupported option --"),
+            (["--file", "x\0y"], "without NUL"), (["--file", "\ud800"], "encodable as UTF-8"),
+            (["--"], "unsupported option --"),
             (["--box", "other"], "unsupported option --box"), (["--rev", SHA], "unsupported option --rev"),
             (["--checkout", "/different"], "unsupported option --checkout"),
             (["--file=x"], "unsupported option --file=x"), (["--file", "--cpu"], "needs a value"),
+            (["--remote", "origin/main"], "must be a remote's name"),
+            (["--base", "release..candidate"], "must be a branch name"),
             (["--wait-window=no"], "whole number of seconds"), (["--wait", "-1"], "whole number of seconds"),
             (["--deadline", "0"], "positive whole number"),
             (["--wait-window", "--wait-window=1"], "gives --wait-window twice"),
@@ -112,6 +116,13 @@ class Readers(unittest.TestCase):
                 self.assertIn("only for correctness",
                               block_problem({**leg, "kind": "measurement", "leg_options": [flag]}) or "")
         self.assertIn("only for runner requests", block_problem(block("a", leg_options=[])) or "")
+
+    def test_file_pairing_is_checked_when_the_runner_argv_is_known(self) -> None:
+        leg = block("a", runner=["check", "prefix{file}"], clone="/c", checkout="/w")
+        self.assertIn("which the runner does not have",
+                      block_problem({**leg, "leg_options": ["--file", "list"]}) or "")
+        self.assertIn("which was not given", block_problem({**leg, "runner": ["check", "{file}"]}) or "")
+        self.assertIsNone(block_problem({**leg, "runner": 'check "$LIST"', "leg_options": ["--file", "list"]}))
 
     def test_runner_reading_checks_complete_words_without_expanding_shell_syntax(self) -> None:
         for runner in ("tools/check.sh '--cpu label'", ["tools/check.sh", "--gpu label"], 'tools/check.sh "$FLAGS"'):
@@ -173,12 +184,12 @@ class Composition(unittest.TestCase):
                          f"fw execution leg --request a --rev {SHA} --checkout /srv/p --worktree /srv/wt -- bench 'a b'")
 
     def test_leg_options_and_runner_argv_take_their_own_sides_of_the_separator(self) -> None:
-        request = block("a", runner=["check", "--file", "runner input"], clone="/c", checkout="/w",
+        request = block("a", runner=["check", "--file", "runner input", "{file}"], clone="/c", checkout="/w",
                         leg_options=["--wait-window=20", "--file", "my list; 'quoted'"])
         self.assertEqual(shlex.split(leg_command("fw", request, SHA)),
                          ["fw", "execution", "leg", "--request", "a", "--rev", SHA, "--checkout", "/c",
                           "--worktree", "/w", "--wait-window=20", "--file", "my list; 'quoted'",
-                          "--", "check", "--file", "runner input"])
+                          "--", "check", "--file", "runner input", "{file}"])
 
     def test_the_fleet_worker_is_named_from_home(self) -> None:
         cfg = load_config("/home/u/.claude/skills/issue-wave/scripts/fleet-worker.sh", {"HOME": "/home/u"})

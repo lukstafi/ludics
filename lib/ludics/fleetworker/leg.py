@@ -564,7 +564,12 @@ backend_pin() {
       esac ;;
   esac
   printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin it (as words of the runner's own argv)$hint."
-  printf '%s' ' In a runner request, use {"leg_options":["--cpu"]} for a correctness leg that holds no GPU (replacing any --gpu), or {"leg_options":["--reads-no-config"]} for a runner that reads no project configuration. Keep other entries in leg_options. In a full leg command, put the option before --'
+  printf '%s' \
+    ' In a runner request, use {"leg_options":["--cpu"]} for a correctness leg that holds no GPU (replacing any --gpu),' \
+    ' or {"leg_options":["--reads-no-config"]} for a runner that reads no project configuration.' \
+    ' Keep other entries in leg_options. In a full leg command, put the option before --.' \
+    ' Send the refusal log to the coordinator before resubmitting an assignment.' \
+    ' To reassign the same correctness request, the coordinator reconciles it to reserved after verifying that nothing ran and no process remains'
   return 1
 }
 backend_pin_to() {
@@ -1330,6 +1335,24 @@ def box_path(value: str, flag: str) -> str:
     return value
 
 
+def remote_name_ok(name: str) -> bool:
+    return bool(REMOTE.fullmatch(name)) and not name.startswith("-")
+
+
+def base_branch_ok(name: str) -> bool:
+    return ref_name_ok(name) and revision.git_branch_ok(name)
+
+
+def file_word_problem(shipped: str, runner: list[str]) -> str | None:
+    if shipped and FILE_WORD not in runner:
+        shown = execution.shown(shipped) if shipped.isprintable() else ascii(shipped)
+        return (f"--file {shown} is shipped to the box for the runner word {FILE_WORD}, which the runner"
+                f" does not have: name it where the runner reads the file (e.g. --targets-file {FILE_WORD})")
+    if not shipped and FILE_WORD in runner:
+        return f"the runner word {FILE_WORD} names the leg's --file <local file>, which was not given"
+    return None
+
+
 def cmd_leg(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     try:
         return leg_command(cfg, args, hold=hold)
@@ -1392,7 +1415,7 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     if checkout.rstrip("/") == worktree.rstrip("/"):
         die("execution leg: --worktree must not be --checkout; a leg moves only a linked worktree")
     remote = values.get("--remote", "origin")
-    if not REMOTE.fullmatch(remote) or remote.startswith("-"):
+    if not remote_name_ok(remote):
         die(f"execution leg: --remote must be a remote's name, not {remote!r}")
     if not ref_name_ok(rev) or (not OBJECT_ID.fullmatch(rev) and not revision.git_branch_ok(rev)):
         die(f"execution leg: --rev must be a full commit SHA or a branch name, not {rev!r}")
@@ -1400,7 +1423,7 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
         die(f"execution leg: --rev {rev} looks like an abbreviated or uppercase SHA: give the full one (git rev-parse)")
     # THE BASE (see the header): a branch of --remote, by git's rules and the registry's alphabet.
     base = values.get("--base", "")
-    if base and (not ref_name_ok(base) or not revision.git_branch_ok(base) or base.startswith("-")):
+    if base and not base_branch_ok(base):
         die(f"execution leg: --base must be a branch name of {remote}, not {base!r}")
     control = values.get("--control", "")
     if control and not (os.path.isfile(control) and os.access(control, os.R_OK)):
@@ -1409,11 +1432,9 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
     shipped = values.get("--file", "")
     if shipped and not (os.path.isfile(shipped) and os.access(shipped, os.R_OK)):
         die(f"execution leg: --file {shipped} is not a readable file on this box")
-    if shipped and FILE_WORD not in runner:
-        die(f"execution leg: --file {shipped} is shipped to the box for the runner word {FILE_WORD}, which the runner"
-            f" does not have: name it where the runner reads the file (e.g. --targets-file {FILE_WORD})")
-    if not shipped and FILE_WORD in runner:
-        die(f"execution leg: the runner word {FILE_WORD} names the leg's --file <local file>, which was not given")
+    file_problem = file_word_problem(shipped, runner)
+    if file_problem:
+        die(f"execution leg: {file_problem}")
 
     fetch_timeout = fetch_timeout_s(cfg)
     min_free_gib(cfg)  # a usage error before the reservation is read; run_leg passes it on
