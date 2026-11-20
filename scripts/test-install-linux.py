@@ -4,6 +4,7 @@
 Bench command assertions read the first whitespace-delimited word of each fake log
 record. Arguments are deliberately ignored; this is not a shell command parser.
 """
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -384,13 +385,30 @@ case "$1" in
   -X) echo "smoke $d $5" >> "$CALLS"; [ ! -e "$d/smoke-fails" ] && [ -z "${FAKE_SMOKE_FAIL-}" ] ;;
 esac
 """
-    FAKE_DIGEST_TOOL = r"""import hashlib, sys
-args = sys.argv[1:]
-digests, fixture = args[args.index('--digests') + 1], args[-1]
-sha = hashlib.sha256(open(fixture, 'rb').read()).hexdigest()
-ok = any(line.split()[:1] == [sha] for line in open(digests) if not line.startswith('#'))
-print(fixture, 'MATCH' if ok else 'MISMATCH')
-sys.exit(0 if ok else 1)
+    FAKE_DIGEST_TOOL = r"""import argparse, hashlib, sys
+from pathlib import Path
+from types import SimpleNamespace
+
+def read_digests(path):
+    entries = {}
+    for line in Path(path).read_text().splitlines():
+        if line.strip() and not line.startswith('#'):
+            sha, _, name, origin, *_ = line.split()
+            entries.setdefault(name, []).append(SimpleNamespace(sha256=sha, origin=origin))
+    return entries
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--check', required=True, action='store_true')
+    parser.add_argument('--digests', type=Path, required=True)
+    parser.add_argument('--expect-origin')
+    parser.add_argument('fixture', type=Path)
+    args = parser.parse_args()
+    sha = hashlib.sha256(args.fixture.read_bytes()).hexdigest()
+    origins = {r.origin for r in read_digests(args.digests).get(args.fixture.name, []) if r.sha256 == sha}
+    ok = bool(origins) and (args.expect_origin is None or args.expect_origin in origins)
+    print(args.fixture.name, 'MATCH' if ok else 'MISMATCH', 'expected', args.expect_origin)
+    sys.exit(0 if ok else 1)
 """
     BENCH_STUB = (
         'BENCH_VENV=$PWD/venvs/ocannl-bench; BENCH_CHECKOUT=$PWD/ocannl; scratch=$PWD/scratch; '
@@ -405,30 +423,48 @@ sys.exit(0 if ok else 1)
         'timeout() { shift; "$@"; }; flock() { echo "flock $*" >> "$CALLS"; }; '
         'sudo() { echo "sudo $*" >> "$CALLS"; [ "$1" != -n ] || return "${SUDO_N_RC:-1}"; '
         '[ "$1" != apt-get ] || touch "$FAKE_INCLUDE/Python.h"; }; '
-        'ssh() { echo "ssh $*" >> "$CALLS"; (cd "$ANCHOR/benchmarks/fixtures" && find . -maxdepth 1 -type f -name "*.safetensors" -print0); }; '
+        'ssh() { echo "ssh $*" >> "$CALLS"; (cd "$ANCHOR" && bash -c "${@: -1}"); }; '
         'scp() { echo "scp $*" >> "$CALLS"; local a dest=${@: -1}; '
-        'for a; do case $a in *:*) cp "$ANCHOR/${a#*:ocannl-staging/}" "$dest";; esac; done; }; '
+        'for a; do case $a in *:*) '
+        'if [[ ${a##*/} == "${FAKE_SCP_FAIL:-}" ]]; then '
+        '[[ -d $dest ]] || printf "partial" > "$dest"; return 1; fi; '
+        'cp "$ANCHOR/${a#*:}" "$dest" || return;; esac; done; }; '
         'mkvenv() { local d=$1; shift; mkdir -p "$d/bin"; cp "$FAKE_PY" "$d/bin/python"; printf "%s\\n" "$@" > "$d/installed"; }; ')
     NVIDIA_PINS = 'numpy==2.5.3 safetensors==0.8.0 tinygrad==0.14.0 torch==2.14.0+cu130'
 
     def bench_setup(self, fixtures=('a', 'b'), recorded=('a', 'b')):
-        import hashlib
         (self.root / 'fake-python').write_text(self.FAKE_VENV_PYTHON)
         (self.root / 'fake-python').chmod(0o755)
-        for d in ['scratch', 'include', 'anchor/benchmarks/fixtures', 'venvs', 'ocannl/benchmarks/fixtures']:
+        for d in ['scratch', 'include', 'anchor/ocannl-staging/benchmarks/fixtures', 'venvs', 'ocannl/benchmarks/fixtures']:
             (self.root / d).mkdir(parents=True, exist_ok=True)
         (self.root / 'include/Python.h').write_text('')
-        (self.root / 'anchor/benchmarks/fixture_digest.py').write_text(self.FAKE_DIGEST_TOOL)
-        rows = ['# measurement-boxes: m4-max']
+        anchor = self.root / 'anchor/ocannl-staging/benchmarks'
+        (anchor / 'fixture_digest.py').write_text(self.FAKE_DIGEST_TOOL)
+        (anchor / 'check-box.sh').write_text(
+            '#!/bin/sh\n[ "$1" = --canonical-box ] || exit 2\nprintf "%s\\n" "id-$2"\n')
+        rows = ['# measurement-boxes: m4-max id-minix-amd-linux id-rog-nv-linux']
         for name in fixtures:
             body = ('fixture ' + name + '\n').encode()
-            (self.root / 'anchor/benchmarks/fixtures' / (name + '.safetensors')).write_bytes(body)
+            (anchor / 'fixtures' / (name + '.safetensors')).write_bytes(body)
             if name in recorded:
-                rows.append(hashlib.sha256(body).hexdigest() + '  ' + str(len(body)) + '  '
-                            + name + '.safetensors  m4-max  content-v1')
-        (self.root / 'anchor/benchmarks/fixtures/DIGESTS.txt').write_text('\n'.join(rows) + '\n')
+                rows.append(self.digest_row(name, body, 'm4-max'))
+        (anchor / 'fixtures/DIGESTS.txt').write_text('\n'.join(rows) + '\n')
         # The box's own record is stale: the anchor's is the one a copy is checked against.
         (self.root / 'ocannl/benchmarks/fixtures/DIGESTS.txt').write_text('# measurement-boxes: m4-max\n')
+
+    def digest_row(self, name, body, origin):
+        return f'{hashlib.sha256(body).hexdigest()}  {len(body)}  {name}.safetensors  {origin}  content-v1'
+
+    def origin_fixture(self, name, body=None, source='id-minix-amd-linux', origin='id-minix-amd-linux'):
+        anchor = self.root / 'anchor/ocannl-staging/benchmarks/fixtures'
+        body = ('origin fixture ' + name + '\n').encode() if body is None else body
+        if source is not None:
+            path = anchor / 'by-origin' / source / (name + '.safetensors')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+        with (anchor / 'DIGESTS.txt').open('a') as digests:
+            digests.write(self.digest_row(name, body, origin) + '\n')
+        return body
 
     def calls(self):
         path = self.root / 'calls'
@@ -568,7 +604,7 @@ sys.exit(0 if ok else 1)
         fixtures = self.root / 'ocannl/benchmarks/fixtures'
         (fixtures / 'a.safetensors').write_text('this box own bytes\n')
         result = self.run_shell(self.BENCH_STUB + 'bench_provision', False)
-        self.assertIn('matching nothing', result.stderr)
+        self.assertIn('Not installed after a failed copy or digest check', result.stderr)
         self.assertIn('c.safetensors', result.stderr)
         self.assertEqual((fixtures / 'a.safetensors').read_text(), 'this box own bytes\n')
         self.assertEqual((fixtures / 'b.safetensors').read_text(), 'fixture b\n')
@@ -576,9 +612,80 @@ sys.exit(0 if ok else 1)
         self.assertNotIn('a.safetensors', ''.join(l for l in self.calls().splitlines() if l.startswith('scp')))
         self.assertEqual([p.name for p in fixtures.glob('.incoming*')], [])
 
+    def test_bench_origin_fixtures_install_only_the_native_box_originals(self):
+        stub = self.check_setup()
+        own_a = self.origin_fixture('a')  # The shared a validates for another origin.
+        own_c = self.origin_fixture('c')
+        self.origin_fixture('foreign', source='id-rog-nv-linux', origin='id-rog-nv-linux')
+        result = self.run_shell(stub + 'bench_venv_only')
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        self.assertTrue((fixtures / 'c.safetensors').is_file(), result.stdout + result.stderr)
+        self.assertEqual((fixtures / 'c.safetensors').read_bytes(), own_c)
+        self.assertIn('c.safetensors MATCH expected id-minix-amd-linux', result.stdout)
+        self.assertEqual((fixtures / 'a.safetensors').read_bytes(), own_a)
+        self.assertEqual((fixtures / 'b.safetensors').read_text(), 'fixture b\n')
+        self.assertFalse((fixtures / 'foreign.safetensors').exists())
+        self.assertNotIn('foreign.safetensors', self.calls() + result.stderr)
+        self.assertNotIn('WARNING', result.stderr)
+
+    def test_bench_origin_fixtures_refuse_bytes_recorded_only_for_another_box(self):
+        self.bench_setup()
+        self.origin_fixture('a', origin='id-rog-nv-linux')
+        self.origin_fixture('a', b'expected minix bytes', source=None)
+        result = self.run_shell(self.BENCH_STUB + 'bench_fixtures minix-amd-linux', False)
+        self.assertIn('a.safetensors MISMATCH expected id-minix-amd-linux', result.stdout)
+        self.assertIn('WARNING: id-minix-amd-linux has no local file for a.safetensors', result.stderr)
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        self.assertFalse((fixtures / 'a.safetensors').exists())
+        self.assertTrue((fixtures / 'b.safetensors').exists())
+        self.assertEqual(list(fixtures.glob('.incoming*')), [])
+
+    def test_bench_origin_fixtures_never_publish_a_failed_transfer(self):
+        self.bench_setup()
+        self.origin_fixture('broken')
+        result = self.run_shell(self.BENCH_STUB + 'FAKE_SCP_FAIL=broken.safetensors bench_fixtures minix-amd-linux', False)
+        self.assertIn('Cannot copy by-origin/id-minix-amd-linux/broken.safetensors', result.stderr)
+        self.assertIn('WARNING: id-minix-amd-linux has no local file for broken.safetensors', result.stderr)
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        self.assertFalse((fixtures / 'broken.safetensors').exists())
+        self.assertTrue((fixtures / 'a.safetensors').exists())
+        self.assertEqual(list(fixtures.glob('.incoming*')), [])
+
+    def test_bench_origin_fixtures_recover_with_a_shared_copy_of_the_same_origin(self):
+        self.bench_setup(fixtures=('a', 'b'), recorded=('b',))
+        self.origin_fixture('a', origin='id-rog-nv-linux')
+        self.origin_fixture('a', b'fixture a\n', source=None)
+        result = self.run_shell(self.BENCH_STUB + 'bench_fixtures minix-amd-linux')
+        self.assertIn('Digest check failed for by-origin/id-minix-amd-linux/a.safetensors', result.stderr)
+        self.assertIn('a.safetensors MATCH expected id-minix-amd-linux', result.stdout)
+        self.assertNotIn('no local file', result.stderr)
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        self.assertEqual((fixtures / 'a.safetensors').read_bytes(), b'fixture a\n')
+
+    def test_bench_origin_fixtures_stop_before_copying_when_the_resolver_transfer_fails(self):
+        self.bench_setup()
+        self.origin_fixture('a')
+        result = self.run_shell(self.BENCH_STUB + 'FAKE_SCP_FAIL=check-box.sh bench_fixtures minix-amd-linux', False)
+        self.assertIn('Cannot copy check-box.sh', result.stderr)
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        self.assertEqual(list(fixtures.glob('*.safetensors')), [])
+
+    def test_bench_origin_fixtures_warn_about_missing_own_rows_on_a_rerun(self):
+        self.bench_setup()
+        self.origin_fixture('missing', source=None)
+        self.origin_fixture('foreign', source=None, origin='id-rog-nv-linux')
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        for name in ('a', 'b'):
+            (fixtures / (name + '.safetensors')).write_text('already here')
+        # The source directory itself may be absent.
+        result = self.run_shell(self.BENCH_STUB + 'bench_provision cpu minix-amd-linux')
+        self.assertEqual(result.stderr, 'WARNING: id-minix-amd-linux has no local file for '
+                                        'missing.safetensors (recorded in DIGESTS.txt).\n')
+        self.assertEqual(list(fixtures.glob('.incoming*')), [])
+
     def test_bench_fixture_names_outside_the_allowlist_are_refused(self):
         self.bench_setup()
-        (self.root / 'anchor/benchmarks/fixtures/bad name.safetensors').write_text('x\n')
+        (self.root / 'anchor/ocannl-staging/benchmarks/fixtures/bad name.safetensors').write_text('x\n')
         result = self.run_shell(self.BENCH_STUB + 'bench_provision', False)
         self.assertIn('Refusing anchor fixture name', result.stderr)
         self.assertEqual([p.name for p in (self.root / 'ocannl/benchmarks/fixtures').glob('.incoming*')], [])
@@ -685,8 +792,13 @@ exit "${FAKE_CHECK_RC:-0}"
 
     def test_bench_check_not_run_without_an_endpoint_a_store_or_a_tip(self):
         stub = self.check_setup()
-        for env, why in [('ENDPOINT=; ', 'FLEET_LOCAL_BOX is unset'),
-                         ('export FAKE_CANON_RC=2; ', 'check-box.sh --canonical-box minix-amd-linux exited 2 at '),
+        result = self.run_shell('ENDPOINT=; ' + stub + 'bench_venv_only', False)
+        self.assertEqual(result.returncode, 4)
+        self.assertIn('FLEET_LOCAL_BOX is unset. Copying shared fixtures only.', result.stdout)
+        self.assertIn('Box check NOT RUN (exit 4): FLEET_LOCAL_BOX is unset', result.stdout)
+        self.assertIsNone(self.check_args())
+        self.assertTrue((self.root / 'venvs/ocannl-bench').is_symlink())
+        for env, why in [('export FAKE_CANON_RC=2; ', 'check-box.sh --canonical-box minix-amd-linux exited 2 at '),
                          ('export FAKE_CANON_OUT=; ', "check-box.sh --canonical-box minix-amd-linux answered '', not one box name"),
                          ("export FAKE_CANON_OUT='-x'; ", 'check-box.sh --canonical-box minix-amd-linux answered -x, not one box name'),
                          ("export FAKE_CANON_OUT=$'a\\nb'; ", "check-box.sh --canonical-box minix-amd-linux answered $'a\\nb', not one box name"),

@@ -514,41 +514,113 @@ bench_link_checkout() {
   fi
 }
 
-# Copies the fixtures this box lacks from the anchor's main checkout, never regenerating one. Each
-# is staged beside the others and installed only when the anchor's own fixture_digest.py --check
-# finds it among the anchor's DIGESTS.txt rows, both fetched from that same checkout: a box's
-# shared checkout can be weeks behind main, and its DIGESTS.txt would refuse fixtures recorded
-# since. An existing fixture is never replaced (it may be this box's own recorded bytes). Reads
-# only regular files named <name>.safetensors with a portable name, listed NUL-delimited; any
-# other name on the anchor is refused, not skipped.
-bench_fixtures() {
-  local dir=$BENCH_CHECKOUT/benchmarks/fixtures anchor=${FLEET_ANCHOR:-mac-studio} name missing=() failed=()
-  local remote=$BENCH_ANCHOR_CHECKOUT/benchmarks check=$scratch/anchor-digest
-  [[ -d $dir ]] || fail "No $dir: is $BENCH_CHECKOUT an OCANNL checkout?"
-  ssh -o BatchMode=yes "$anchor" "cd $remote/fixtures && find . -maxdepth 1 -type f -name '*.safetensors' -print0" > "$scratch/anchor-fixtures" ||
-    fail "Cannot list the fixtures in $anchor:$remote/fixtures."
-  while IFS= read -r -d '' name; do
-    [[ $name =~ ^\./[A-Za-z0-9][A-Za-z0-9_.-]*\.safetensors$ ]] || fail "Refusing anchor fixture name: $(printf '%q' "$name")"
-    name=${name#./}
-    [[ -e $dir/$name || -L $dir/$name ]] || missing+=("$name")
-  done < "$scratch/anchor-fixtures"
-  [[ ${#missing[@]} -gt 0 ]] || return 0
-  mkdir -p "$check"
-  scp -q "$anchor:$remote/fixture_digest.py" "$anchor:$remote/fixtures/DIGESTS.txt" "$check/" ||
-    fail "Cannot copy fixture_digest.py and DIGESTS.txt from $anchor:$remote."
-  BENCH_STAGE=$(mktemp -d "$dir/.incoming.XXXXXX")
-  BENCH_STAGE=$(CDPATH= cd "$BENCH_STAGE" && pwd -P)
-  for name in "${missing[@]}"; do
-    scp -q -p "$anchor:$remote/fixtures/$name" "$BENCH_STAGE/$name" ||
-      fail "Cannot copy $name from $anchor."
-    if python3 "$check/fixture_digest.py" --check --digests "$check/DIGESTS.txt" "$BENCH_STAGE/$name"; then
-      mv -- "$BENCH_STAGE/$name" "$dir/$name"
-    else
-      failed+=("$name")
+# check-box owns the endpoint mapping. Accept only one portable box name on exit 0, so an older
+# script's usage, an unsafe path component, or diagnostic output cannot select an origin.
+bench_canonical_box() {
+  local tool=$1 endpoint=$2 source=$3 id rc
+  if id=$(bash "$tool" --canonical-box "$endpoint"); then
+    if [[ $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+      printf '%s\n' "$id"
+      return
     fi
+    printf 'check-box.sh --canonical-box %q answered %q, not one box name.\n' "$endpoint" "$id"
+  else
+    rc=$?
+    printf 'check-box.sh --canonical-box %q exited %s at %s, so no measurement-box ID.\n' "$endpoint" "$rc" "$source"
+  fi
+  return 1
+}
+
+# The anchor's parser owns the digest format. Report only its parsed rows for this box with
+# no regular file at the destination. Existing files are left for the separate readiness check.
+bench_warn_missing_fixtures() {
+  local check=$1 dir=$2 id=$3 name
+  python3 -I -B - "$check" "$dir" "$id" > "$scratch/missing-fixtures" <<'PY' ||
+import sys
+from pathlib import Path
+
+check, dest, origin = sys.argv[1:]
+sys.path.insert(0, check)
+from fixture_digest import read_digests
+
+for name, rows in read_digests(Path(check) / "DIGESTS.txt").items():
+    if any(row.origin == origin for row in rows) and not (Path(dest) / name).is_file():
+        print(name)
+PY
+    fail "Cannot read anchor digest rows for $(printf '%q' "$id")."
+  while IFS= read -r name; do
+    printf 'WARNING: %q has no local file for %q (recorded in DIGESTS.txt).\n' "$id" "$name" >&2
+  done < "$scratch/missing-fixtures"
+}
+
+# Only direct, regular <name>.safetensors files with portable basenames are read, from the
+# anchor's top level and this box's by-origin directory. Other origins and nested files are
+# outside the scan. Use the anchor's checker and DIGESTS.txt together because the box's record
+# may lag. Stage before verification and preserve existing paths: provisioning fills gaps.
+bench_fixtures() {
+  local endpoint=$1 dir=$BENCH_CHECKOUT/benchmarks/fixtures anchor=${FLEET_ANCHOR:-mac-studio}
+  local remote=$BENCH_ANCHOR_CHECKOUT/benchmarks check=$scratch/anchor-digest
+  local id='' own='' path name index retry sources=() failed=() expect=()
+  local predicate="-maxdepth 1 -type f -name '*.safetensors' -print0" list
+  [[ -d $dir ]] || fail "No $(printf '%q' "$dir"): is $(printf '%q' "$BENCH_CHECKOUT") an OCANNL checkout?"
+  mkdir -p "$check"
+  if [[ -n $endpoint ]]; then
+    # A shared copy installed before resolving an explicit endpoint could hide its original on
+    # rerun, when the populated destination is preserved.
+    scp -q "$anchor:$remote/check-box.sh" "$check/" ||
+      fail "Cannot copy check-box.sh from $(printf '%q' "$anchor:$remote") to resolve the fixture origin."
+    id=$(bench_canonical_box "$check/check-box.sh" "$endpoint" "$(printf '%q' "$anchor:$remote")") ||
+      fail "$id"
+    own=by-origin/$id
+  else
+    printf '%s\n' "FLEET_LOCAL_BOX is unset. Copying shared fixtures only. Set it to copy the box's originals and report missing digest rows."
+  fi
+  list="find . $predicate"
+  # A box's own original takes precedence over a shared file of the same name.
+  [[ -z $own ]] || list="if [ -d $own ]; then find $own $predicate || exit; fi; $list"
+  ssh -o BatchMode=yes "$anchor" "cd $remote/fixtures && { $list; }" > "$scratch/anchor-fixtures" ||
+    fail "Cannot list the fixtures in $(printf '%q' "$anchor:$remote/fixtures")."
+  while IFS= read -r -d '' path; do
+    name=${path##*/}
+    [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*\.safetensors$ &&
+       ( $path == "./$name" || ( -n $own && $path == "$own/$name" ) ) ]] ||
+      fail "Refusing anchor fixture name: $(printf '%q' "$path")"
+    [[ -e $dir/$name || -L $dir/$name ]] || sources+=("$path")
+  done < "$scratch/anchor-fixtures"
+  [[ -n $id || ${#sources[@]} -gt 0 ]] || return 0
+  scp -q "$anchor:$remote/fixture_digest.py" "$anchor:$remote/fixtures/DIGESTS.txt" "$check/" ||
+    fail "Cannot copy fixture_digest.py and DIGESTS.txt from $(printf '%q' "$anchor:$remote")."
+  for path in ${sources[@]+"${sources[@]}"}; do
+    name=${path##*/}
+    [[ ! -e $dir/$name && ! -L $dir/$name ]] || continue
+    # A shared copy can recover a rejected original only when it matches the same origin.
+    retry=''
+    for index in ${failed[@]+"${!failed[@]}"}; do
+      if [[ ${failed[index]} == "$name" ]]; then retry=$index; break; fi
+    done
+    if [[ -z $BENCH_STAGE ]]; then
+      BENCH_STAGE=$(mktemp -d "$dir/.incoming.XXXXXX")
+      BENCH_STAGE=$(CDPATH= cd "$BENCH_STAGE" && pwd -P)
+    fi
+    expect=()
+    [[ $path == ./* && -z $retry ]] || expect=(--expect-origin "$id")
+    if ! scp -q -p "$anchor:$remote/fixtures/${path#./}" "$BENCH_STAGE/$name"; then
+      printf 'WARNING: Cannot copy %q from %q.\n' "$path" "$anchor" >&2
+    elif python3 "$check/fixture_digest.py" --check --digests "$check/DIGESTS.txt" ${expect[@]+"${expect[@]}"} "$BENCH_STAGE/$name"; then
+      mv -- "$BENCH_STAGE/$name" "$dir/$name"
+      [[ -z $retry ]] || unset "failed[$retry]"
+      continue
+    else
+      printf 'WARNING: Digest check failed for %q from %q.\n' "$path" "$anchor" >&2
+    fi
+    # The next source needs a fresh destination even when scp preserved a read-only mode.
+    [[ ! -e $BENCH_STAGE/$name ]] || rm -- "$BENCH_STAGE/$name"
+    [[ -n $retry ]] || failed+=("$name")
   done
-  rm -rf -- "${BENCH_STAGE:?}"; BENCH_STAGE=''
-  [[ ${#failed[@]} -eq 0 ]] || fail "Not installed, matching nothing in $anchor:$remote/fixtures/DIGESTS.txt: ${failed[*]}"
+  if [[ -n $BENCH_STAGE ]]; then rm -rf -- "${BENCH_STAGE:?}"; BENCH_STAGE=''; fi
+  [[ -z $id ]] || bench_warn_missing_fixtures "$check" "$dir" "$id"
+  [[ ${#failed[@]} -eq 0 ]] ||
+    fail "Not installed after a failed copy or digest check: $(printf '%q ' "${failed[@]}")"
 }
 
 # A failed or interrupted build never leaves its fresh directory or a staged fixture behind.
@@ -558,7 +630,7 @@ bench_cleanup() {
 }
 
 bench_provision() {
-  local gpu=${1:-} gfx='' spec index torch stamp fresh warning
+  local gpu=${1:-} endpoint=${2:-} gfx='' spec index torch stamp fresh warning
   [[ -n $gpu ]] || gpu=$(bench_gpu_detect)
   [[ $gpu != amd ]] || gfx=$(bench_amd_gfx)
   spec=$(bench_torch_spec "$gpu" "$gfx")
@@ -588,7 +660,7 @@ bench_provision() {
   bench_record_requirements
   if [[ -d $BENCH_CHECKOUT/benchmarks ]]; then
     bench_link_checkout
-    bench_fixtures
+    bench_fixtures "$endpoint"
   else
     printf 'No %s/benchmarks: skipping its .venv link and the fixtures.\n' "$BENCH_CHECKOUT"
   fi
@@ -628,13 +700,10 @@ bench_check() {
     return
   fi
   sha=$(git -C "$tip" rev-parse HEAD)
-  if id=$(bash "$tip/benchmarks/check-box.sh" --canonical-box "$endpoint"); then rc=0; else rc=$?; fi
-  if [[ $rc -ne 0 ]]; then
-    bench_not_run "check-box.sh --canonical-box $(printf '%q' "$endpoint") exited $rc at $(printf '%q' "$url") $sha, so no measurement-box ID."
+  if ! id=$(bench_canonical_box "$tip/benchmarks/check-box.sh" "$endpoint" "$(printf '%q' "$url") $sha"); then
+    bench_not_run "$id"
     return
   fi
-  [[ $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] ||
-    { bench_not_run "check-box.sh --canonical-box $(printf '%q' "$endpoint") answered $(printf '%q' "$id"), not one box name."; return; }
   printf 'Box check: check-box.sh --box %s --box-only (FLEET_LOCAL_BOX %q) at %q %s\n' "$id" "$endpoint" "$url" "$sha"
   if bash "$tip/benchmarks/check-box.sh" --box "$id" --box-only --venv "$BENCH_VENV" \
        --fixture-dir "$BENCH_CHECKOUT/benchmarks/fixtures"; then rc=0; else rc=$?; fi
@@ -656,7 +725,7 @@ bench_venv_only() {
   scratch=$(mktemp -d)
   scratch=$(cd "$scratch" && pwd -P)
   trap 'rm -rf -- "$scratch"; bench_cleanup' EXIT
-  bench_provision "$@"
+  bench_provision "${1:-}" "${FLEET_LOCAL_BOX:-}"
   bench_check "${FLEET_LOCAL_BOX:-}"
 }
 
@@ -921,7 +990,7 @@ main() {
     if ask 'Build OCANNL now?'; then (cd "$HOME/ocannl-staging"; dune build); fi
   fi
   if ask 'Provision the shared benchmark venv (~/.venvs/ocannl-bench) and copy the fixtures from the anchor?'; then
-    bench_provision
+    bench_provision '' "$box"
     bench_check "$box" || true  # its last line is the verdict; the setup itself is done
   fi
   printf '\nSetup stages finished. Open a new login shell before using the tools.\n'
