@@ -32,23 +32,29 @@ the registry is asked, so a malformed request reserves nothing, and neither do i
   (strings), and exactly one of ``command`` (a string, sent as written) or ``runner`` (a string, or
   an array of strings, the box-relative runner command of a leg). Optional: ``checkout`` (absolute;
   kept beside the request as the record's, THE CHECKOUT), ``log`` (a string, ``-`` when absent),
-  ``purpose`` (a string, preferred to the base's; one of the two must give it), and ``clone``, the leg's ``--checkout``: the
-  box's git checkout the leg's worktree is made from. An unterminated block, a block in a block,
+  ``purpose`` (a string, preferred to the base's; one of the two must give it), and, with ``runner``,
+  ``clone`` (the leg's ``--checkout``) and ``leg_options`` (see THE RUNNER). An unterminated block, a block in a block,
   no block, two blocks with one ``request_id``, and a ``--request`` naming no block are refused.
 - THE RUNNER (quirk 9): a block with ``runner`` is assigned as the leg form, ``<this fleet-worker.sh>
-  execution leg --request <id> --rev <revision> --checkout <clone> --worktree <checkout> [--wait-window]
+  execution leg --request <id> --rev <revision> --checkout <clone> --worktree <checkout> [leg options]
   -- <runner>`` -- its ``clone`` and ``checkout`` required (absolute), its ``requested_revision`` a full
   40-hex SHA or ``head-of:<branch>`` (free text names no commit a leg can move to), ``--wait-window``
-  added for a correctness leg and never for a measurement, whose leg refuses it (``execution
-  leg``'s THE WINDOW WAIT is the slot's). The shorthand takes the complete runner command, including
-  its executable. It refuses literal ``--cpu`` or ``--gpu`` in an argument array or a single line of
-  shell words before asking the registry. Redirection and control operator tokens, and words
-  starting with ``#``, also require an array for literal arguments or a full ``command`` for shell
+  defaulted for correctness. The closed ``leg_options`` allowlist (an array of argv words):
+  ``--remote <name>``, ``--base <branch>``, ``--control <patch>``, ``--file <local file>``,
+  ``--reads-no-config``, ``--deadline <positive seconds>``; correctness also takes ``--cpu`` or
+  ``--gpu``, ``--wait <seconds>`` and ``--wait-window[=<seconds>]``. Each option occurs at most once.
+  A supplied window bound replaces the default. The reservation and the shorthand fields own
+  ``--box``, ``--request``, ``--rev``, ``--checkout`` and ``--worktree``.
+  Assignment checks remote and branch name syntax, and the ``--file`` / ``{file}`` pairing for a
+  runner array. The leg checks file readability, remote refs and the runtime argv of a string runner.
+  The shorthand takes the complete runner command, including its executable. The exact words
+  ``--cpu``, ``--gpu`` and ``--reads-no-config`` in ``runner`` are refused before asking the registry.
+  Other words (e.g. ``--file``) retain their runner meaning. Redirection and control operator tokens,
+  and words starting with ``#``, require an array for literal arguments or a full ``command`` for shell
   syntax. It does not expand shell syntax, inspect the project for an executable, or infer whether
-  a flag belongs to the leg or the runner. Use a full ``command`` when either slot flag is needed.
-  Other option names keep their runner meaning in this shorthand. A string runner follows
-  ``--`` as written; an array is
-  shell-joined. This fleet-worker.sh is named by its absolute path, ``$HOME`` written ``~``, so the
+  a flag belongs to the leg or the runner. Use a full ``command`` for a runner that owns one of the
+  reserved words. A string runner follows ``--`` as written; an array is shell-joined.
+  This fleet-worker.sh is named by its absolute path, ``$HOME`` written ``~``, so the
   worker's own box reads the same layout. A block with ``command`` is assigned that text unchanged.
 
 THE ASSIGNMENT. ``--request <id>`` (repeatable) selects blocks; none selects every block. The
@@ -162,7 +168,7 @@ from dataclasses import dataclass, field
 from typing import Any, TextIO, cast
 
 from ludics import cli, proc
-from ludics.fleetworker import execution
+from ludics.fleetworker import execution, leg
 from ludics.fleetworker.board import record_placement
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
@@ -176,11 +182,14 @@ USAGE = ("execution assign <base.json> <requests file|-> [--request <id>]... [--
 BASE_REQUIRED = ("wave", "worker", "transport", "agent_host", "repository")
 BASE_FIELDS = frozenset((*BASE_REQUIRED, "issue", "purpose"))
 BLOCK_REQUIRED = ("request_id", "execution_host", "kind", "requested_revision")
-BLOCK_FIELDS = frozenset((*BLOCK_REQUIRED, "checkout", "command", "runner", "clone", "log", "purpose"))
+BLOCK_FIELDS = frozenset((*BLOCK_REQUIRED, "checkout", "command", "runner", "clone", "leg_options", "log", "purpose"))
 OPEN, CLOSE = "EXECUTION_REQUEST", "END_EXECUTION_REQUEST"
 OBJECT_ID = re.compile(r"[0-9a-f]{40}")
 HEAD_OF = "head-of:"
 LEG_SLOT_FLAGS = frozenset(("--cpu", "--gpu"))
+RUNNER_LEG_FLAGS = LEG_SLOT_FLAGS | {"--reads-no-config"}
+CORRECTNESS_LEG_OPTIONS = LEG_SLOT_FLAGS | {"--wait", "--wait-window"}
+LEG_OPTIONS = leg.OPTIONAL_VALUE_FLAGS | CORRECTNESS_LEG_OPTIONS | {"--reads-no-config", "--deadline"}
 SHELL_PUNCTUATION = "();<>|&"
 ABSOLUTE = re.compile(r"/|[A-Za-z]:[/\\]")
 ACTION_REQUIRED_LINE = "ASSIGN ACTION REQUIRED "
@@ -307,7 +316,55 @@ def is_absolute(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and bool(ABSOLUTE.match(value))
 
 
-def runner_problem(runner: str | list[str], kind: str, revision: str, fw: str) -> str | None:
+def leg_options_problem(options: Any, kind: str, runner: str | list[str]) -> str | None:
+    if not isinstance(options, list):
+        return "leg_options must be an array of argv words"
+    words = cast(list[Any], options)
+    if not all(isinstance(word, str) and word and "\0" not in word for word in words):
+        return "leg_options must be an array of nonempty strings without NUL bytes"
+    try:
+        "".join(words).encode("utf-8")
+    except UnicodeEncodeError:
+        return "leg_options must be encodable as UTF-8"
+    seen: set[str] = set()
+    shipped = ""
+    i = 0
+    while i < len(words):
+        word = cast(str, words[i])
+        flag, equals, bound = word.partition("=")
+        if flag not in LEG_OPTIONS or (equals and flag != "--wait-window"):
+            return f"leg_options has unsupported option {execution.shown(word) if word.isprintable() else ascii(word)}"
+        if flag in CORRECTNESS_LEG_OPTIONS and kind == "measurement":
+            return f"leg_options {flag} is only for correctness requests"
+        if flag in seen:
+            return f"leg_options gives {flag} twice"
+        seen.add(flag)
+        if LEG_SLOT_FLAGS <= seen:
+            return "leg_options --cpu and --gpu are exclusive"
+        i += 1
+        if equals and not leg.WHOLE.fullmatch(bound):
+            return "leg_options --wait-window=<seconds> takes a whole number of seconds"
+        if flag in leg.OPTIONAL_VALUE_FLAGS or flag in ("--wait", "--deadline"):
+            if i == len(words) or words[i].startswith("--"):
+                return f"leg_options {flag} needs a value in the next array entry"
+            value = cast(str, words[i])
+            if flag == "--wait" and not leg.WHOLE.fullmatch(value):
+                return "leg_options --wait takes a whole number of seconds"
+            if flag == "--deadline" and not leg.SECONDS.fullmatch(value):
+                return "leg_options --deadline takes a positive whole number of seconds"
+            if flag == "--remote" and not leg.remote_name_ok(value):
+                return "leg_options --remote must be a remote's name"
+            if flag == "--base" and not leg.base_branch_ok(value):
+                return "leg_options --base must be a branch name"
+            if flag == "--file":
+                shipped = value
+            i += 1
+    if isinstance(runner, list):
+        return leg.file_word_problem(shipped, runner)
+    return None
+
+
+def runner_problem(runner: str | list[str], kind: str, revision: str) -> str | None:
     if isinstance(runner, str):
         lexer = shlex.shlex(runner, posix=True, punctuation_chars=SHELL_PUNCTUATION)
         lexer.whitespace_split = True
@@ -323,22 +380,31 @@ def runner_problem(runner: str | list[str], kind: str, revision: str, fw: str) -
         words = runner
     if not words or not words[0]:
         return "runner must begin with its executable"
-    flags = LEG_SLOT_FLAGS.intersection(words)
+    flags = RUNNER_LEG_FLAGS.intersection(words)
     if not flags:
         return None
 
     # Show the form without echoing request data (a usage refusal: exit 2, no THE STATUS file).
-    options = leg_words("<request-id>", "<full-SHA>", "<clone>", "<checkout>", kind)
-    slot = " [--cpu|--gpu]" if kind == "correctness" else ""
-    guidance = (" Put the leg's slot flag before -- if needed. Keep runner-owned flags after --."
-                if slot else " Measurement legs take no slot flags. Keep runner-owned flags after --.")
+    choices = flags if kind == "correctness" else flags - LEG_SLOT_FLAGS
+    guidance = ""
+    if choices:
+        options = [sorted(choices)]
+        if LEG_SLOT_FLAGS <= choices:
+            options = [sorted(choices - {flag}) for flag in sorted(LEG_SLOT_FLAGS)]
+        blocks = [json.dumps({"leg_options": option, "runner": ["<executable>", "<remaining args>"]})
+                  for option in options]
+        guidance = (' Move leg flags into "leg_options", keeping any existing leg options and other fields: '
+                    + " or ".join(blocks) + ".")
+    if kind == "measurement" and flags & LEG_SLOT_FLAGS:
+        guidance += " Omit leg slot flags for a measurement."
+    guidance += (' For runner-owned flags, replace "runner", "clone" and any "leg_options"'
+                 ' with a full leg in "command" with those flags after --.')
     if revision.startswith(HEAD_OF):
         guidance += " Pin the same full SHA in the command and requested_revision."
-    return (f'runner contains {" and ".join(sorted(flags))}. Replace "runner" and "clone" with "command": '
-            f"{fw} {' '.join(options)}{slot} -- <runner-executable> <runner-args>.{guidance}")
+    return f'runner contains {" and ".join(sorted(flags))}.{guidance}'
 
 
-def block_problem(block: Any, *, fw: str = "fleet-worker.sh") -> str | None:
+def block_problem(block: Any) -> str | None:
     """One block's shape (see the header): None, or why it is refused."""
     if not isinstance(block, dict):
         return "is not one JSON object"
@@ -363,6 +429,8 @@ def block_problem(block: Any, *, fw: str = "fleet-worker.sh") -> str | None:
             return "command must be a nonempty string"
         if "clone" in fields:
             return "clone is a runner's leg --checkout; a command names its own"
+        if "leg_options" in fields:
+            return "leg_options is only for runner requests; a command carries its own leg options"
         return None
     runner = fields["runner"]
     words = cast(list[Any], runner) if isinstance(runner, list) else None
@@ -375,7 +443,9 @@ def block_problem(block: Any, *, fw: str = "fleet-worker.sh") -> str | None:
     revision = fields["requested_revision"]
     if not (OBJECT_ID.fullmatch(revision) or revision.startswith(HEAD_OF)):
         return "a runner's requested_revision must be a full 40-hex SHA or head-of:<branch>: the leg moves to one commit"
-    return runner_problem(cast(str | list[str], runner), fields["kind"], revision, fw)
+    argv = cast(str | list[str], runner)
+    return (leg_options_problem(fields.get("leg_options", []), fields["kind"], argv)
+            or runner_problem(argv, fields["kind"], revision))
 
 
 def fleet_worker_word(cfg: Config) -> str:
@@ -387,19 +457,16 @@ def fleet_worker_word(cfg: Config) -> str:
     return shlex.quote(path)
 
 
-def leg_words(request_id: str, revision: str, clone: str, worktree: str, kind: str) -> list[str]:
-    words = ["execution", "leg", "--request", request_id, "--rev", revision,
-             "--checkout", clone, "--worktree", worktree]
-    if kind == "correctness":
-        words.append("--wait-window")
-    return words
-
-
 def leg_command(fw: str, block: dict[str, Any], revision: str) -> str:
     """THE RUNNER (see the header): the block's runner wrapped into the leg form."""
     runner = block["runner"]
     tail = runner if isinstance(runner, str) else shlex.join(cast(list[str], runner))
-    words = leg_words(block["request_id"], revision, block["clone"], block["checkout"], block["kind"])
+    options = cast(list[str], block.get("leg_options", []))
+    words = ["execution", "leg", "--request", block["request_id"], "--rev", revision,
+             "--checkout", block["clone"], "--worktree", block["checkout"]]
+    if block["kind"] == "correctness" and not any(word.partition("=")[0] == "--wait-window" for word in options):
+        words.append("--wait-window")
+    words.extend(options)
     return f"{fw} {shlex.join(words)} -- {tail}"
 
 
@@ -622,7 +689,7 @@ def cmd_assign(cfg: Config, args: list[str], *, call: Step = step, resend: Unsti
     fw = fleet_worker_word(cfg)
     blocks: list[dict[str, Any]] = []
     for n, block in enumerate(read, 1):
-        problem = block_problem(block, fw=fw)
+        problem = block_problem(block)
         if problem:
             name = cast(dict[str, Any], block).get("request_id") if isinstance(block, dict) else None
             label = f" ({name})" if isinstance(name, str) and execution.shown(name) == name else ""

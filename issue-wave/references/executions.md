@@ -843,6 +843,16 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   after <n>s (--wait-window); nothing ran`). The slot on the box then takes the leg's
   `--wait-window` as any batch's, so a window opened in between is waited for there: two waits,
   each under the bound.
+- **The runner request form.** Give `runner` (an argv array or one line of shell words), `clone`
+  (the box's Git checkout) and `checkout` (the far-side worktree) with a full pushed SHA or
+  `head-of:<branch>`. Assignment puts the optional `leg_options` array before the leg's `--` and
+  defaults to `--wait-window` for correctness. The array takes `--remote <name>`, `--base <branch>`,
+  `--control <patch>`, `--file <local file>`, `--deadline <positive seconds>` and
+  `--reads-no-config`. Correctness also takes `--cpu` or `--gpu`, `--wait <seconds>` and
+  `--wait-window[=<seconds>]`. Give each option and its value as separate entries, except for the
+  optional `=seconds` on `--wait-window`. Assignment reserves the literal words `--cpu`, `--gpu`
+  and `--reads-no-config` for `leg_options`. A runner that owns one of these words uses a full
+  `command`, with its argument after the leg's `--`. A runner's own `--file` stays in `runner`.
 - **The configuration.** The slot or hold on the box runs under the caller's fleet configuration,
   not the box's `~/.config/fleet/env.sh`: its roster, anchor and anchor state, lab host, slot and
   token specs and skills checkout travel with it (ludics-lite#632; `execution tip-run` does the
@@ -912,8 +922,14 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   - a long alias list as a file the runner reads, never a `$(cat ...)` inside `sh -c`: `--file
     <local file>` and the runner word `{file}` (*The file* below);
   - a runner that reads none of the project's configuration (a standalone driver probe):
-    `--reads-no-config`, which skips the pin (below);
+    `--reads-no-config`, which skips the pin (below). In a runner request give
+    `"leg_options":["--reads-no-config"]`;
   - a leg that holds no GPU: `--cpu`, which skips it too.
+
+  The backend-pin refusal occurs after dispatch, before the runner starts. Send the refusal log
+  to the coordinator before resubmitting an assignment. To reuse the same correctness request
+  ID, the coordinator verifies that nothing ran and no process remains, then reconciles the
+  request to `reserved` before assigning again.
 
   The pin shows that a backend was named, never that the run held it: that evidence is the
   runner's own check (`--expect-backend`), and a leg the pin admitted is no GPU evidence. A `--cpu`

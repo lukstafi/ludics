@@ -417,7 +417,8 @@ fleetworker/tiprun.py
     issue-wave/scripts/test-fleet-worker.sh "launch /" tip-run
 
 fleetworker/assign.py
-    issue-wave/scripts/test-fleet-worker.sh "execution assign" board "execution windows-witness"
+    issue-wave/scripts/test-fleet-worker.sh "execution assign" board "execution windows-witness" "execution leg"
+    issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/winwitness.py
     issue-wave/scripts/test-fleet-worker.sh "execution windows-witness"

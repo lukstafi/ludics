@@ -4308,8 +4308,9 @@ need_lease
 # exits with its `verdict` file's status, 4 when a control patch added `broken`; it ends with a
 # runner sentinel as OCANNL's test-run.sh does, so the leg's own must come after it.
 # Four slots here, the first the one GPU token, so a batch declared --cpu shows in the slot it takes.
-FWL=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4 other=2" FLEET_BOX_GPU_TOKENS="testbox=1"
-  FLEET_SKILLS_REPO="$TMP/dispatcher" "$FW")
+FWL_ENV=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4 other=2" FLEET_BOX_GPU_TOKENS="testbox=1"
+  FLEET_SKILLS_REPO="$TMP/dispatcher")
+FWL=("${FWL_ENV[@]}" "$FW")
 lsrc="$TMP/leg src"; lremote="$TMP/leg.git"; lco="$TMP/leg co"; lwt="$TMP/leg wts/w 1"
 export LEG_MARK="$TMP/leg-ran"; : > "$LEG_MARK"
 git init -q -b main "$lsrc" && mkdir -p "$lsrc/tools" && printf '0\n' > "$lsrc/verdict" && printf 'leg fixture\n' > "$lsrc/README"
@@ -4622,7 +4623,7 @@ expect "...and so does one holding a NUL byte, which a shell variable would drop
 # ludics#864: the forms the pin gate refused in wave-20261102, each now passing or refused naming
 # the form that passes. A shell composite carries its pin as a leading env pin, never inside -c.
 expect "a GPU leg whose runner is a bash -c composite is refused, naming the leading env pin and --file" 1 \
-  "a pin inside a bash -c string is no word of the argv: lead with it, env LEG_BACKEND=<backend> bash -c '...', or keep that leading env pin and give the runner a list or script as a file, --file <local file> and the runner word {file}; or declare --cpu .*, or --reads-no-config for a runner" -- \
+  "a pin inside a bash -c string is no word of the argv: lead with it, env LEG_BACKEND=<backend> bash -c '...', or keep that leading env pin and give the runner a list or script as a file, --file <local file> and the runner word {file}" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- bash -c 'tools/check.sh --expect-backend cc'
 expect "...and the composite behind a leading env pin runs" 0 "runner argv: \\[--expect-backend\\] \\[cc\\]" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" -- env LEG_BACKEND=cc bash -c 'tools/check.sh --expect-backend cc'
@@ -4630,6 +4631,57 @@ expect "...and the composite behind a leading env pin runs" 0 "runner argv: \\[-
 expect "a --reads-no-config leg is asked no pin, and says so" 0 "^EXECUTION LEG testbox: --reads-no-config: the runner is declared to read none of the project's configuration, so no backend pin was asked of it (.github/fleet-leg at $lpin); its result is no backend's evidence$" -- \
   leg --request leg-a --rev pinned --checkout "$lco" --worktree "$lwt" --reads-no-config -- tools/check.sh
 [ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...and runs the runner to its sentinel" || ko "the --reads-no-config leg did not run: $out"
+# ludics#1262: stay on the request path, from worker JSON through dispatch to the assigned command.
+jq -n '{wave:"w", worker:"leg-assign", transport:"subagent", agent_host:"testbox", repository:"o/r",
+  purpose:"leg options fixture"}' > "$TMP/leg-assign-base.json"
+lassign() { # <id> <JSON argv> <extra request fields>
+  {
+    printf '%s\n' EXECUTION_REQUEST
+    jq -cn --arg id "$1" --argjson runner "$2" --argjson extra "$3" --arg clone "$lco" \
+      --arg checkout "$TMP/$1" --arg rev "$lpin" '{request_id:$id, execution_host:"testbox",
+        kind:"correctness", requested_revision:$rev, clone:$clone, checkout:$checkout, runner:$runner} + $extra'
+    printf '%s\n' END_EXECUTION_REQUEST
+  } > "$TMP/leg-assign-request.txt"
+  "${FWL[@]}" execution assign "$TMP/leg-assign-base.json" "$TMP/leg-assign-request.txt"
+}
+lrun_assigned() {
+  local assignment command
+  assignment=$(lassign "$@") || return $?
+  command=$(sed -n 's/^command: //p' <<<"$assignment")
+  [ -n "$command" ] || return 1
+  "${FWL_ENV[@]}" /bin/bash -c "$command"
+}
+lfinish_assigned() {
+  if "$FW" execution list --active | jq -e --arg id "$1" 'any(.[]; .request_id == $id)' >/dev/null; then
+    fixture_done "$1"
+  fi
+}
+expect "a leg_options request runs with its own --reads-no-config and passes through the runner's --file" 0 \
+  '^runner argv: \[--file\] \[runner input\]$' -- lrun_assigned leg-options \
+  '["tools/check.sh","--file","runner input"]' '{"leg_options":["--reads-no-config"]}'
+lfinish_assigned leg-options
+expect "a misplaced --reads-no-config is refused at assignment with the corrected request fields" 2 \
+  'runner contains --reads-no-config. .*"leg_options": \["--reads-no-config"\], "runner":' -- \
+  lassign leg-misplaced '["tools/check.sh","--reads-no-config"]' '{}'
+lfinish_assigned leg-misplaced
+n=$(marks)
+expect "an unpinned assigned runner is refused by the backend check" 1 'its runner pins no backend' -- \
+  lrun_assigned leg-advice '["tools/check.sh"]' '{}'
+pin_advice=$(sed -n 's/.*\({"leg_options":\["--reads-no-config"\]}\).*/\1/p' <<<"$out")
+if [ -n "$pin_advice" ]; then
+  if [ "$(marks)" = "$n" ] && grep -Fq 'the coordinator reconciles it to reserved' <<<"$out"; then
+    printf '%s\n' '{"request_id":"leg-advice","state":"reserved","evidence":"backend-pin refusal before the runner started"}' \
+      > "$TMP/leg-advice-reconcile.json"
+    setup_step "could not reconcile the pin refusal" "${FWL[@]}" execution reconcile "$TMP/leg-advice-reconcile.json"
+    expect "the backend-pin advice can be submitted and the reassigned leg runs" 0 '^execution-leg: exit: 0$' -- \
+      lrun_assigned leg-advice '["tools/check.sh"]' "$pin_advice"
+  else
+    ko "the backend-pin refusal ran the runner or omitted recovery advice"
+  fi
+else
+  ko "the backend-pin advice can be submitted and the reassigned leg runs: no leg_options in the refusal"
+fi
+lfinish_assigned leg-advice
 expect "...but a .github/fleet-leg line it cannot read still refuses it" 1 "EXECUTION LEG REFUSED testbox: .github/fleet-leg line 1 is not one the fleet reads" -- \
   leg --request leg-a --rev badpin --checkout "$lco" --worktree "$lwt" --reads-no-config -- tools/check.sh
 expect "execution hold takes --reads-no-config only with --worktree" 2 "execution hold: --reads-no-config goes with --worktree" -- \

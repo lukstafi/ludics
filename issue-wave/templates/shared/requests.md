@@ -34,11 +34,12 @@ repair instructions; an attention handoff is not authorization to run or retry t
 
 For a cross-box leg you may give `"runner":"<runner-executable> <runner-args>","clone":"<the box's checkout>"`
 in place of `"command"`. Give the executable and arguments as an array or one line of shell words.
-Use the full `"command"` for shell syntax such as redirection. `execution assign` wraps it into the leg form,
-with `--wait-window` for correctness. To specify leg options such as `--cpu` or `--gpu`, give the
-full leg in `"command"`, putting leg options before `--`. The full command form also lets you pass
-a runner's own `--cpu` or `--gpu` argument after `--`. Keep `"checkout"` for the worktree and put
-the clone path in the leg's `--checkout` (ludics#869, #1245).
+Use `"leg_options":["--reads-no-config"]` for a runner that reads no project configuration, or
+`"leg_options":["--cpu","--deadline","120"]` for a bounded CPU correctness leg. Assignment places
+those words before the leg's `--` and defaults to `--wait-window` for correctness.
+Keep `"checkout"` for the far-side worktree and `"clone"` for its Git checkout. Use a full
+`"command"` for shell syntax such as redirection or to pass a runner's own literal
+`--cpu`, `--gpu` or `--reads-no-config` after the leg's `--` (ludics#1262).
 Read `issue-wave/references/executions.md`, *A leg on another box*,
 before writing a leg yourself: it runs from `@@HOST@@` as `~/.claude/skills/issue-wave/scripts/fleet-worker.sh
 execution leg --request <id> --rev <sha> --checkout <the box's clone> --worktree <that
@@ -47,7 +48,7 @@ the far-side clone is served to every session there and stays clean on its main 
 far-side paths absolutely (an unquoted `~` expands to YOUR home). A measurement is timing only: the
 build, the fixtures and a dry run go first under your standing reservation. A measurement on
 `@@HOST@@` is `fleet-worker.sh execution hold --request <id> -- <runner>` as a long run;
-on another box an `execution leg` with `--deadline <s>` only (no `--cpu/--gpu/--wait/--wait-window`).
+on another box an `execution leg` whose only timing or slot option is `--deadline <s>`.
 An assigned correctness command on `@@HOST@@` runs as
 `fleet-worker.sh execution slot --wait-window --cpu -- <command>` (use `--gpu` for a GPU batch).
 A command already wrapped as `execution leg` runs as written: the leg selects slot or hold from
@@ -56,14 +57,11 @@ its record's kind. Follow the assignment's form; `execution hold --request` refu
 ### Multi-command legs with `--file`
 
 For several commands, put them in a local script under your scratch directory, starting with
-`set -eu`. Request the complete leg as `"command"` (rather than the `"runner"` / `"clone"`
-shorthand, which does not carry leg options). For example, use this command in the request:
+`set -eu`. With `"clone"` and `"checkout"` set, include these fields in the request:
 
-```sh
-~/.claude/skills/issue-wave/scripts/fleet-worker.sh execution leg \
-  --request <id> --rev <sha> --checkout <the box's clone> \
-  --worktree <that clone>-worktrees/@@WORKER@@ --wait-window \
-  --file <absolute local script path> -- env <backend-variable>=<backend> /bin/bash '{file}'
+```json
+{"leg_options":["--file","<absolute local script path>"],
+ "runner":["env","<backend-variable>=<backend>","/bin/bash","{file}"]}
 ```
 
 This example assumes the project supplies an environment pin (`pin-env`).
@@ -72,9 +70,8 @@ paths as needed). The pin must be a leading argv word after `env`; putting it in
 or `bash -ec` string hides it from the guard. `--file` ships the local file to the execution box;
 each runner word exactly equal to `{file}` becomes the shipped copy's absolute path. A word
 merely containing `{file}` is not replaced. `--file` and the `{file}` word must occur together.
-The copy lives outside the worktree and is removed when the leg ends. For a measurement, omit
-`--wait-window` and use only `--deadline <s>` as described above. This is a request example;
-wait for assignment before running it.
+The copy lives outside the worktree and is removed when the leg ends. For a measurement with a
+deadline, append `"--deadline","<seconds>"` to the array. Wait for assignment before running it.
 
 You will be resumed with one of:
 

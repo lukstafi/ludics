@@ -331,9 +331,14 @@ class BackendPin(unittest.TestCase):
                 self.assertEqual(rc, 1)
                 self.assertEqual(why, "this leg may hold the GPU (no --cpu), but its runner pins no backend, and"
                                       " .github/fleet-leg asks for one of: --expect-backend <backend>,"
-                                      " env OCANNL_BACKEND=<backend>; pin it (as words of the runner's own argv);"
-                                      " or declare --cpu for a leg that holds no GPU, or --reads-no-config for a runner that"
-                                      " reads none of the project's configuration")
+                                      " env OCANNL_BACKEND=<backend>; pin it (as words of the runner's own argv)."
+                                      ' In a runner request, use {"leg_options":["--cpu"]} for a correctness leg that'
+                                      ' holds no GPU (replacing any --gpu), or {"leg_options":["--reads-no-config"]}'
+                                      " for a runner that reads no project configuration. Keep other entries in leg_options."
+                                      " In a full leg command, put the option before --."
+                                      " Send the refusal log to the coordinator before resubmitting an assignment."
+                                      " To reassign the same correctness request, the coordinator reconciles it to reserved"
+                                      " after verifying that nothing ran and no process remains")
 
     def test_a_shell_composite_is_refused_naming_the_form_that_carries_its_pin(self) -> None:
         # ludics#864 (gh-ocannl-1687): the pin inside the -c string is one word to the reader.
@@ -346,8 +351,7 @@ class BackendPin(unittest.TestCase):
                 self.assertIn(f"; pin it (as words of the runner's own argv); a pin inside a {shell} -c string is no"
                               f" word of the argv: lead with it, env OCANNL_BACKEND=<backend> {shell} -c '...', or"
                               " keep that leading env pin and give the runner a list or script as a file,"
-                              " --file <local file> and the runner word {file}; or"
-                              " declare --cpu", why)
+                              " --file <local file> and the runner word {file}.", why)
         rc, why = self.pin("pin-flag --expect-backend\n", "1", "bash", "-c", "tools/t.sh --expect-backend cuda")
         self.assertEqual(rc, 1)
         self.assertIn("a pin inside a bash -c string is no word of the argv: run the runner itself, its pin among its"
