@@ -190,6 +190,20 @@ class Grammar(unittest.TestCase):
                 self.assertIsNone(config)
                 self.assertIn(named, err)
 
+    def test_a_fleet_lease_requires_every_merge_to_build(self) -> None:
+        config, err = parsed("command make\ntrigger always\nlease fleet\n")
+        self.assertEqual(config, BuildConfig("make", (), trigger="always", fleet_lease=True))
+        self.assertEqual(err, "")
+        for text, named in (
+            ("command make\ninput *.c\nlease fleet\n", "requires `trigger always`"),
+            ("command make\ntrigger always\nlease fleet\nlease fleet\n", "second `lease fleet` line"),
+            ("command make\ntrigger always\nlease local\n", "lease local"),
+        ):
+            with self.subTest(text=text):
+                config, err = parsed(text)
+                self.assertIsNone(config)
+                self.assertIn(named, err)
+
 
 class Inputs(unittest.TestCase):
     def test_a_glob_matches_the_whole_path_and_star_crosses_slashes(self) -> None:

@@ -15,7 +15,8 @@ review round:
   mergebuild.py's ``clone_preflight``) and conflict preflight (ludics-lite#729,
   ``conflict_preflight``), the gate (with the override's waiver), the branch tip again after a
   --wait that did not end green, the close-out refusals, the base drift, the build of
-  the would-be merge commit where the repository asks for one (mergebuild.py, #611); then before
+  the would-be merge commit where the repository asks for one (mergebuild.py, #611), then the
+  repository's merge lease when configured; then before
   EVERY attempt: the body again, the commit series, the open review threads, the merge queue, an
   ABSENT verdict's base (ludics-lite#523), the review checkpoint's hold on the gated head with
   ``--over-checkpoint``'s one post (checkpoint.py, #1242; read again before a gateway resend), then the head branch tip (read with the current base
@@ -23,6 +24,22 @@ review round:
   waived red, a merge-build failure the base alone shares, an unread signal), announced once, after every refusal before the first call has
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
+
+MERGE LEASE (#1269). ``lease fleet`` with ``trigger always`` in the default-branch merge-build
+config makes upgraded callers sharing the same fleet anchor and state directory serialize per
+case-normalized ``owner/name``. The initial build runs in parallel. The lease covers final checks, refreshes (slot
+waits included), and the merge call and its resends. An owner token and 120-second expiry on the
+anchor's clock live under ``FLEET_ANCHOR_STATE/merge-leases/``. Renewal while held keeps a live
+holder current. A dead holder's token expires, and a waiter can take over. A wait past 1800 seconds
+or a lost or unread lease refuses a new merge write. Removing the config line restores unleased
+merges. Roll out the reader on every merging box, then drain in-flight merges before enabling it.
+
+The lease cannot fence web merges, direct pushes, deferred auto-merges or any other writer outside
+this protocol, including a request already sent by a holder that loses its lease. GitHub pins only
+the head. Before every send, the live base must equal the checked base. A moved base gets up to
+two refreshes, with a proven disjoint fast-forward delta required for the second. A base that moves
+before a gateway resend still refuses. The interval between the last read and GitHub's write
+remains the integration loop's to catch.
 
 Exit: 0 merged at the gated head; 1 refused (red, a moved head, a head that is not the branch's, a
 real conflict, an open thread, a review checkpoint that holds it, a deferred merge) or merged at a head the gate did not judge;
@@ -81,6 +98,7 @@ from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, RunKey, load_gate_config
 from ludics.prreview.mergebuild import BuildVerdict, Ceiling, clone_of, clone_preflight, merge_build, refresh_build
+from ludics.prreview.mergelease import MergeLease
 from ludics.prreview.runners import (
     HeadRun,
     Idle,
@@ -103,6 +121,7 @@ USAGE = (
 
 _SPACE = " \t\n\r\f\v"
 _REASON = re.compile(f"[^{_SPACE}]+[{_SPACE}]+[^{_SPACE}]+")
+_MAX_BUILD_REFRESHES = 2
 
 
 @dataclass
@@ -1219,19 +1238,23 @@ class Merge:
             case _:
                 assert_never(result)
 
-    def before_resend(self, build: BuildVerdict | None) -> None:
+    def before_resend(self, build: BuildVerdict | None, lease: MergeLease | None) -> None:
         """What a gateway resend of the merge call re-reads, in the loop's order: the review
         checkpoint (a hold posted during the backoff refuses, review of #1256), then the merge
         build's refs when a build ran."""
         self.checkpoint_gate()
         if build is not None:
+            if lease is not None:
+                lease.verify()
             self.recheck_before_resend(build)
 
-    def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None) -> None:
+    def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None, lease: MergeLease | None = None) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
         repo, pr, opts, gate = self.repo, self.num, self.opts, self.gate
         attempt = 1
-        refreshed = False
+        refreshes = 0
+        override_base = build.base_sha if build is not None and opts.override else None
+        before_dispatch = lease.require_current if lease is not None else None
         sent_build: BuildVerdict | None = None
         while True:
             self.multi.warn(pr, again=True)
@@ -1252,25 +1275,32 @@ class Merge:
             if build is None:
                 self.branch_tip_gate(last=True)
             else:
+                if lease is not None:
+                    lease.verify()
                 tip = self.built_base_tip(build)
                 if tip != build.base_sha:
-                    if refreshed:
-                        self.refuse_stale_build(build, tip, "after refreshing the merge build")
+                    if refreshes >= _MAX_BUILD_REFRESHES:
+                        self.refuse_stale_build(build, tip, f"after refreshing the merge build {_MAX_BUILD_REFRESHES} times (refresh limit)")
                     warn(f"{repo}#{pr}'s base moved since its merge build ({build.base_sha} -> {tip}); rebuilding")
                     build = refresh_build(
-                        repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling, discard_override=bool(opts.override),
+                        repo, pr, build, tip, checkout=opts.checkout, ceiling=ceiling, prior_override_base=override_base,
+                        require_disjoint=refreshes > 0,
                     )
-                    refreshed = True
+                    refreshes += 1
                     continue
+            if lease is not None:
+                lease.require_current()
             self.announce(build.shared_failure if build is not None and build is not sent_build else None)
             sent_build = build
-            before_retry = partial(self.before_resend, build)
+            before_retry = partial(self.before_resend, build, lease)
             args = ["pr", "merge", pr, "--repo", repo, "--match-head-commit", gate.check_sha, *opts.gh_args]
             if opts.forwarded:
                 # Still this script's own call, so the polling budget gates it.
-                result = self.session.retry_caller("write", args, listed=False, budgeted=True, before_retry=before_retry)
+                result = self.session.retry_caller(
+                    "write", args, listed=False, budgeted=True, before_retry=before_retry, before_dispatch=before_dispatch,
+                )
             else:
-                result = self.session.retry("write", args, before_retry=before_retry)
+                result = self.session.retry("write", args, before_retry=before_retry, before_dispatch=before_dispatch)
             match result:
                 case GhOk(stdout=out):
                     cli.emit(out)
@@ -1478,7 +1508,12 @@ class Merge:
             checkout=self.opts.checkout, ceiling=ceiling, override=self.opts.override,
         )
         try:
-            self.merge_call(build, ceiling)
+            if build is not None and build.config.fleet_lease:
+                lease = MergeLease(self.repo, self.num)
+                with lease.held(self.clock):
+                    self.merge_call(build, ceiling, lease)
+            else:
+                self.merge_call(build, ceiling)
         except _AlreadyMerged:
             return self.confirm(already_merged=True)
         return self.confirm()
