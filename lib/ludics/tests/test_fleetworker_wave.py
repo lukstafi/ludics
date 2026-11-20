@@ -2831,7 +2831,7 @@ class Drive(DriveCase):
             self.assign_status = {"lease_lost": "the run of a"}
             got, out = self.once()
             self.assertEqual(got, 1, out)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (execution assign exit 6: the lease refused the run of a)", out)
+            self.assertIn("DRIVE STOPPED wv: coordinator lease lost (execution assign exit 6: the lease refused the run of a)", out)
             # No readable status: the exit alone still stops it.
             self.assign_status = None
             got, out = self.once()
@@ -3337,7 +3337,7 @@ class Drive(DriveCase):
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 1)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (execution assign exit 6: the lease refused the run of x)", out)
+            self.assertIn("DRIVE STOPPED wv: coordinator lease lost (execution assign exit 6: the lease refused the run of x)", out)
             self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "a takeover is no turn's verdict")
             self.rc, self.out = {}, {"execution assign": "EXECUTION_ASSIGNED x\n"}
             naps: list[float] = []

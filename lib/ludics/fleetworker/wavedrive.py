@@ -87,8 +87,8 @@ THE ANSWERS:
             fails, and read only when its ``exit`` is the call's) says what its unstick did.
             Exit ``LEASE_LOST_STATUS`` (6) ends the driver. All lease-gated verbs now report loss
             by status (#1259), retiring the lease-refusal regex for diagnostics and review logs.
-            A block an earlier call dispatched (assign's ``ASSIGN ALREADY`` line: a driver that died before it resumed
-            the worker) is not assigned again, so its text is not in this call's message. Exit 0
+            A block an earlier call dispatched (assign's ``ASSIGN ALREADY`` line: a driver that died
+            before it resumed the worker) is not assigned again, so its text is not in this call's message. Exit 0
             with no message printed means every block was such: the worker is resumed with that
             call's saved message, and where none was saved the turn is attention. Exit 0 with a
             message and such a block beside it has resumed the worker with part of its
@@ -306,7 +306,7 @@ from typing import Any, cast
 
 from ludics import bgrun, cli
 from ludics.fleetworker.assign import ACTION_REQUIRED_LINE
-from ludics.fleetworker.config import Config
+from ludics.fleetworker.config import LEASE_STATUS_ARG, Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import LEASE_LOST_STATUS
 from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
@@ -478,7 +478,7 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
 
 
 class LeaseLost(Exception):
-    """A verb refused because the lease is another coordinator's: the driver's to stop on."""
+    """A gated verb reported an absent or foreign coordinator lease."""
 
 
 UNSTICK_OUTCOMES = ("landed", "failed", "not-asked", "nothing-assigned", "message-unwritten", "lease-lost")
@@ -615,7 +615,7 @@ class Driver:
     def __init__(self, cfg: Config, wave: Wave) -> None:
         self.cfg, self.wave = cfg, wave
         self.script = shim(cfg)
-        self.gated_shim = replace(cfg, lease_loss_status=LEASE_LOST_STATUS).shim_command()
+        self.gated_shim = [self.script, LEASE_STATUS_ARG]
         self.ledger_path = self.path("logs", "drive.jsonl")
         self.ledger: list[dict[str, Any]] = []
         self.err = ""  # the last call's stderr
@@ -694,6 +694,7 @@ class Driver:
         command = self.gated_shim if gated else [self.script]
         rc, out, self.err = execute([*command, *args], timeout)
         if gated and rc == LEASE_LOST_STATUS:
+            cli.emit(substitution(out))
             verb = " ".join(args[:2]) if args[0] in ("board", "execution", "wave") else args[0]
             raise LeaseLost(f"{verb} exit {rc}")
         return Done(rc, out)
@@ -964,9 +965,9 @@ class Driver:
         verdict = bgrun.parse(line, rc)
         if verdict is not None and verdict.word in (bgrun.Word.RUNNING, bgrun.Word.STARTING):
             return
-        if verdict is not None and verdict.status == LEASE_LOST_STATUS:
-            raise LeaseLost(f"wave review exit {verdict.status}")
         log = os.path.join(where, "log")
+        if verdict is not None and verdict.status == LEASE_LOST_STATUS:
+            raise LeaseLost(f"wave review exit {verdict.status}, log {log}")
         said: re.Match[str] | None = None
         if verdict is not None and verdict.word is bgrun.Word.RC and verdict.status == 0:
             try:
@@ -1289,7 +1290,7 @@ def locked(cfg: Config, wave: Wave, body: Callable[[Driver], int]) -> int:
         try:
             return body(Driver(cfg, wave))
         except LeaseLost as lost:
-            cli.say(f"DRIVE STOPPED {wave.wave}: the lease is another coordinator's ({lost})")
+            cli.say(f"DRIVE STOPPED {wave.wave}: coordinator lease lost ({lost})")
             return 1
 
 
