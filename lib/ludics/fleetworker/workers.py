@@ -32,7 +32,7 @@ from ludics.fleetworker import farside, tally, tiprun
 from ludics.fleetworker.config import Config, fetch_timeout_s, short_hostname
 from ludics.fleetworker.gate import base_gate
 from ludics.fleetworker.identity import die, gen_uuid
-from ludics.fleetworker.lease import anchor_gate, lost_status
+from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate, lost_status
 from ludics.fleetworker.preflight import knob, run_preflight, siblings_of
 from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, put_file, run_on, substitution
 
@@ -317,6 +317,9 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         rc = anchor_gate(cfg, "LAUNCH", label, force)
         if rc != 0:
             run_on(cfg, box, prelude(cfg, box) + farside.LAUNCH_DROP_BRIEF, [f"{name}-{when}.md"])
+            if rc == LEASE_LOST_STATUS:
+                cli.say(f"LAUNCH REFUSED {label}: reconcile reservation {request_id}; worker startup was not attempted")
+                return rc
             return tiprun.not_started(cfg, request_id, f"{label}: post-reservation launch gate refused (exit {rc})",
                                       "none: worker startup was not attempted", verb="LAUNCH")
     done = run_on(cfg, box, farside.structured_launch(script) if result_file else script, far_args, capture=bool(result_file))
@@ -471,8 +474,7 @@ def cmd_unstick(cfg: Config, args: list[str]) -> int:
     mid = gen_uuid()
     rid = gen_uuid() if interrupt else ""
     label = f"{box}/{name}"
-    # execution assign's unstick says a lost lease apart (lease.py, THE LOST LEASE STATUS); every other's is 1.
-    rc = anchor_gate(cfg, "UNSTICK", label, True, lost_status())
+    rc = anchor_gate(cfg, "UNSTICK", label, True, lost_status(cfg.lease_loss_status))
     if rc != 0:
         return rc
     # No message (a bare --interrupt): nothing to stage, and an empty stamp tells the far side so.
@@ -487,7 +489,7 @@ def cmd_unstick(cfg: Config, args: list[str]) -> int:
             return 1
     # Re-read the lease after the upload, right before the worker is touched: an adoption that
     # completed meanwhile fences this intervention (residual window: one ssh round trip).
-    rc = anchor_gate(cfg, "UNSTICK", label, True, lost_status())
+    rc = anchor_gate(cfg, "UNSTICK", label, True, lost_status(cfg.lease_loss_status))
     if rc != 0:
         return rc
     script = prelude(cfg, box) + farside.ghprobe(knob(cfg, "FLEET_GH_TIMEOUT", "30")) + farside.UNSTICK

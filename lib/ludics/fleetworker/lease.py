@@ -55,17 +55,25 @@ fi
 # THE LOST LEASE STATUS (ludics#1234): the exit a lease-gated call gives a lease that is not this
 # coordinator's when its caller asks for one apart from its other refusals (exit 1). ``execution
 # assign`` asks it of its steps (``ASSIGN_STEP_ENV``: the run or window, the unstick) and of its board
-# placement write, and exits with it itself, so ``wave drive`` reads a lost lease off that status and
+# placement write, and exits with it itself, as do the driver's other gated verbs
+# (``--lease-status``, independent of assign's input classification). The driver reads that status and
 # no diagnostic's words. Free in every caller that asks it: the registry exits 0-5, a far side's
 # transport failure is UNREACHABLE.
 LEASE_LOST_STATUS = 6
 ASSIGN_STEP_ENV = "LUDICS_EXECUTION_ASSIGN_STEP"
 
 
-def lost_status() -> int:
-    """THE LOST LEASE STATUS this process's lease gates exit with: ``LEASE_LOST_STATUS`` in a step of
-    ``execution assign`` (its ``ASSIGN_STEP_ENV``), else 1, every other caller's refusal."""
-    return LEASE_LOST_STATUS if os.environ.get(ASSIGN_STEP_ENV) == "1" else 1
+def lost_status(default: int = 1) -> int:
+    """Return LEASE_LOST_STATUS for an ASSIGN_STEP_ENV step, else the caller's default.
+
+    Assign's unstick requests the distinct status even when run outside the driver.
+    """
+    return LEASE_LOST_STATUS if os.environ.get(ASSIGN_STEP_ENV) == "1" else default
+
+
+def mutation_failure_status(rc: int) -> int:
+    """Pass through an unreachable anchor or lost lease. Other mutation failures return 1."""
+    return rc if rc in (4, LEASE_LOST_STATUS) else 1
 
 
 # Far side: take the lease lock (shared with claim --take and release), verify the caller still
@@ -263,14 +271,14 @@ def _anchor(cfg: Config, script: str, args: list[str], unreachable_line: str) ->
     return done.rc
 
 
-def anchor_gate(cfg: Config, verb: str, label: str, force: bool, lost: int = 1) -> int:
-    """0 proceed, 1 refused (its line printed), ``lost`` the lease is not this coordinator's (its line
-    printed; THE LOST LEASE STATUS), 4 the anchor did not answer."""
+def anchor_gate(cfg: Config, verb: str, label: str, force: bool, lost: int | None = None) -> int:
+    """0 proceed, 1 refused (its line printed), the requested loss status (THE LOST LEASE STATUS) for an absent or
+    foreign lease, 4 the anchor did not answer."""
     check_identity(cfg)
     return _anchor(
         cfg,
         ANCHOR_GATE,
-        [verb, label, "1" if force else "0", my_token(cfg), str(lost)],
+        [verb, label, "1" if force else "0", my_token(cfg), str(cfg.lease_loss_status if lost is None else lost)],
         f"{verb} REFUSED {label}: anchor {cfg.anchor} unreachable (lease and halt live there)",
     )
 

@@ -121,6 +121,8 @@ class StandingLaunch(unittest.TestCase):
             (4, 0, 0, 0, 0, 4, "reservation req outcome unknown; reconcile", ["prepare", "stage", "run", "cleanup"]),
             (0, 1, 0, 0, 0, 1, "cannot stage the brief", ["prepare", "stage"]),
             (0, 0, 1, 0, 0, 1, "LAUNCH NOT STARTED req", ["prepare", "stage", "run", "cleanup", "conclude"]),
+            (0, 0, 6, 0, 0, 6, "reconcile reservation req", ["prepare", "stage", "run", "cleanup"]),
+            (0, 0, 1, 0, 6, 6, "not-launched conclusion did not land", ["prepare", "stage", "run", "cleanup", "conclude"]),
             (0, 0, 1, 0, 1, 4, "LAUNCH UNKNOWN req", ["prepare", "stage", "run", "cleanup", "conclude"]),
             (0, 0, 0, 1, 0, 4, "reservation req remains dispatched", ["prepare", "stage", "run", "start"]),
             (0, 0, 0, 255, 0, 4, "reservation req remains dispatched", ["prepare", "stage", "run", "start"]),

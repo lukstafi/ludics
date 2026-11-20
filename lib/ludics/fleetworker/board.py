@@ -240,7 +240,7 @@ def cmd_board(cfg: Config, args: list[str]) -> int:
         argv = ["BOARD", "x", "x", action, "x", PAYLOAD_ON_FD]
         done = run_on(cfg, cfg.anchor, script, argv)
     else:
-        done = mutate(cfg, action, raw)
+        done = mutate(cfg, action, raw, lost=cfg.lease_loss_status)
     if done.unreachable:
         cli.say(f"BOARD UNREACHABLE {cfg.anchor}")
         return 4
@@ -259,5 +259,5 @@ def forget_row(cfg: Config, wave: str, task: str, worker: str, state: str = "pen
     """``wave unprep``'s internal row removal: a compare-and-delete inside the board writer's lease
     lock (boardstore.py's forget contract). 0 removed or no row, 1 refused, 4 the anchor did not answer."""
     raw = json.dumps({"wave": wave, "task": task, "worker": worker, "state": state})
-    done = mutate(cfg, "forget", raw, stdout_to_stderr=True)
+    done = mutate(cfg, "forget", raw, stdout_to_stderr=True, lost=cfg.lease_loss_status)
     return 4 if done.unreachable else done.rc

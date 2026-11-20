@@ -59,7 +59,8 @@ red base, a preflight) left nothing, and a re-run is the retry. ``LAUNCH UNKNOWN
 started the worker: read ``status`` and ``execution list`` before anything else, as launch's line
 says. Past step 4 the worker runs, so nothing after it stops the verb: a leg that could not be
 reserved and a row that could not be set are each a ``WAVE LAUNCH NOTE`` line, and the exit is 3,
-launched with something to reconcile. The manifest's record is what refuses a second launch; a
+launched with something to reconcile. A driver's lost lease (exit 6) ends further anchor writes,
+but a worker already started still gets its local manifest record. The manifest's record is what refuses a second launch; a
 launch that ran and whose record was not written (a crash between steps 4 and 7) is refused by
 step 3, on the worktree it left, or by ``launch`` itself, on the worker's record on its box.
 
@@ -78,8 +79,9 @@ from ludics import cli
 from ludics.fleetworker.boardstore import placement_word
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.lease import LEASE_LOST_STATUS
 from ludics.fleetworker.transport import prelude, run, run_on, substitution
-from ludics.fleetworker.wave import USAGE, Wave, load_wave, shim
+from ludics.fleetworker.wave import USAGE, Wave, load_wave
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.waveprep import READY, Rivalry, Stop, check_rivals, task_lock
 
@@ -223,12 +225,12 @@ def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
         if made.unreachable or made.rc != 0:
             raise Stop(4 if made.unreachable else 1, f"WAVE LAUNCH {'UNKNOWN' if made.unreachable else 'REFUSED'} {task}:"
                        f" cannot make {runs} on {record.host} (exit {made.rc}); nothing launched")
-    script = shim(cfg)
+    command = cfg.shim_command()
     payload = os.path.join(wave.directory, "reserve", f"{task}.json")
     brief = os.path.join(wave.directory, "briefs", f"brief-{task}.md")
     with tempfile.TemporaryDirectory(prefix="ludics-launch-") as result_dir:
         result_path = os.path.join(result_dir, "result.json")
-        started = run([script, "launch", record.host, record.worker, "--target-repo", record.repository, "--kind", record.kind,
+        started = run([*command, "launch", record.host, record.worker, "--target-repo", record.repository, "--kind", record.kind,
                        "--brief", brief, "--repo", record.host_checkout, "--branch", record.branch, "--base", record.base,
                        "--base-branch", record.main, "--standing", payload, "--result-file", result_path,
                        "--", *cli_args(record)], capture=True)
@@ -253,13 +255,17 @@ def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
             return 4
     notes: list[str] = []
     reserved: list[Leg] = []
+    lost_lease = False
     for leg in record.legs:
-        rc = run([script, "execution", "run", os.path.join(wave.directory, "reserve", f"{task}-{leg.suffix}.json")],
+        rc = run([*command, "execution", "run", os.path.join(wave.directory, "reserve", f"{task}-{leg.suffix}.json")],
                  stdout_to_stderr=True).rc
         if rc == 0:
             reserved.append(leg)
         else:
             notes.append(f"the standing leg on {leg.box} is not reserved (execution run exit {rc})")
+            if rc == LEASE_LOST_STATUS:
+                lost_lease = True
+                break
     far_words: list[str] = []
     for box, checkout in [(record.host, worktree), *((leg.box, leg.worktree) for leg in reserved)]:
         try:
@@ -268,11 +274,15 @@ def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
             notes.append(f"cannot record farside placement {shlex.quote(box + ':' + checkout)} ({exc}); reconcile by hand")
     far = " ".join(dict.fromkeys(far_words))
     standing = " ".join([record.standing, *(leg.standing for leg in reserved)])
-    rc = run([script, "board", "set", record.wave, task, f"worktree={worktree}", "state=launched", f"standing={standing}",
-              f"exec_hosts={','.join([record.host, *(leg.box for leg in reserved)])}", f"farside={far or 'none'}"],
-             stdout_to_stderr=True).rc
-    if rc != 0:
-        notes.append(f"the row is not set (board set exit {rc}): worktree={worktree} state=launched standing={standing}")
+    if lost_lease:
+        notes.append("the lease was lost after startup; reconcile the remaining legs and the board row")
+    else:
+        rc = run([*command, "board", "set", record.wave, task, f"worktree={worktree}", "state=launched", f"standing={standing}",
+                  f"exec_hosts={','.join([record.host, *(leg.box for leg in reserved)])}", f"farside={far or 'none'}"],
+                 stdout_to_stderr=True).rc
+        if rc != 0:
+            notes.append(f"the row is not set (board set exit {rc}): worktree={worktree} state=launched standing={standing}")
+        lost_lease = rc == LEASE_LOST_STATUS
     try:
         write_atomically(manifest_path, json.dumps({**manifest, "worktree": worktree, "done": [*done, f"launched {record.host}/{record.worker}"]},
                                                    indent=1) + "\n")
@@ -281,6 +291,8 @@ def launched_locked(cfg: Config, wave: Wave, path: str, task: str) -> int:
     for note in notes:
         cli.say(f"WAVE LAUNCH NOTE {task}: {note}")
     cli.say(f"WAVE LAUNCH {task}: launched {record.host}/{record.worker} worktree {worktree} standing {standing}")
+    if lost_lease:
+        return LEASE_LOST_STATUS
     return 3 if notes else 0
 
 

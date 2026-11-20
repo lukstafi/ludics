@@ -20,10 +20,11 @@ every verb first checks the registry pin (``config.pin_refusal``, ludics-lite#63
 import os
 import re
 import sys
+from dataclasses import replace
 
 from ludics import cli
 from ludics.fleetworker import board, execution, farsideclose, gate, lease, preflight, siblingscan, status, supervision, wave, workers
-from ludics.fleetworker.config import Config, load_config, pin_refusal
+from ludics.fleetworker.config import LEASE_STATUS_ARG, Config, load_config, pin_refusal
 from ludics.fleetworker.identity import PROG, die
 
 VERBS = (
@@ -90,7 +91,11 @@ def dispatch(argv: list[str]) -> int:
         # Under a coordinator's far side, a box that would read another registry than the
         # coordinator's refuses every verb before it reads anything (ludics-lite#632).
         cli.exit_with(1, refusal)
-    return run_verb(cfg, argv[1] if len(argv) > 1 else "", argv[2:])
+    args = argv[1:]
+    if args[:1] == [LEASE_STATUS_ARG]:
+        cfg = replace(cfg, lease_loss_status=lease.LEASE_LOST_STATUS)
+        args = args[1:]
+    return run_verb(cfg, args[0] if args else "", args[1:])
 
 
 def run_verb(cfg: Config, verb: str, rest: list[str]) -> int:

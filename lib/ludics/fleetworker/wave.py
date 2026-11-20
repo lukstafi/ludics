@@ -463,7 +463,7 @@ def load_wave(path: str, verb: str) -> Wave:
 
 def shim(cfg: Config) -> str:
     """This fleet-worker.sh, as tip-run's ``fleet_worker`` names it."""
-    return os.path.join(cfg.here, os.path.basename(cfg.script))
+    return cfg.shim_command()[0]
 
 
 def loop_log(wave: Wave, name: str) -> str:

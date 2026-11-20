@@ -87,6 +87,7 @@ from ludics.fleetworker.config import Config
 from ludics.fleetworker import execution as ex
 from ludics.fleetworker.execution import field, listing, record_of, recorded_checkout, records_of
 from ludics.fleetworker.identity import die
+from ludics.fleetworker.lease import mutation_failure_status
 from ludics.fleetworker.takeover import KEYS, board_document, gh_json, row_of
 from ludics.fleetworker.transport import run, substitution
 
@@ -207,7 +208,7 @@ def to_conclude(wave: str, task: str, records: list[dict[str, Any]], ids: list[s
 
 def stepped(cfg: Config, args: list[str]) -> tuple[int, str]:
     """This fleet-worker.sh with ``args``: its status and its output, captured."""
-    done = run([os.path.join(cfg.here, os.path.basename(cfg.script)), *args], capture=True)
+    done = run(cfg.shim_command(*args), capture=True)
     return done.rc, substitution(done.out)
 
 
@@ -362,7 +363,7 @@ def cmd_close(cfg: Config, args: list[str]) -> int:
 
     def stopped(what: str, rc: int, said: str) -> cli.Exit:
         where = f"{len(landed)} concluded here, " if landed else ""
-        return refused(wave, task, f"{what} exit {rc} ({said}); {where}the row is not set; a re-run resumes", 4 if rc == 4 else 1)
+        return refused(wave, task, f"{what} exit {rc} ({said}); {where}the row is not set; a re-run resumes", mutation_failure_status(rc))
 
     unused: list[str] = []
     for request, checkout in todo:

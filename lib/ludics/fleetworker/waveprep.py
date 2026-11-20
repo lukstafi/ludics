@@ -166,10 +166,10 @@ from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import gh_timeout, listing, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.lease import anchor_gate
+from ludics.fleetworker.lease import anchor_gate, mutation_failure_status
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import run
-from ludics.fleetworker.wave import USAGE, Leg, Profile, Wave, load_wave, shim
+from ludics.fleetworker.wave import USAGE, Leg, Profile, Wave, load_wave
 from ludics.fleetworker.wavebrief import PLACEHOLDER, Part, render, write_atomically
 
 MODES = ("none", "paired", "paired+critique")
@@ -740,7 +740,7 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
         raise fail("scratch", f"cannot make the wave's directories ({exc.strerror})")
     if not prep.remote:
         record(prep, f"scratch {os.path.join(prep.scratch, 'runs')}")
-    script = shim(cfg)
+    command = cfg.shim_command()
     for name, payload in payloads:
         path = prep.path("reserve", name)
         try:
@@ -750,9 +750,9 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
         if prep.cli:
             record(prep, f"standing payload {payload['request_id']} for {payload['execution_host']} ({path}), unreserved")
             continue
-        rc = run([script, "execution", "run", path], stdout_to_stderr=True).rc
+        rc = run([*command, "execution", "run", path], stdout_to_stderr=True).rc
         if rc != 0:
-            raise fail("reservation", f"execution run {path} exited {rc} (above)", 4 if rc == 4 else 1)
+            raise fail("reservation", f"execution run {path} exited {rc} (above)", mutation_failure_status(rc))
         record(prep, f"standing reservation {payload['request_id']} on {payload['execution_host']} ({path})")
     brief_path = prep.path("briefs", f"brief-{prep.task}.md")
     base_path = prep.path("reserve", f"{prep.task}-base.json")
@@ -767,9 +767,9 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
         raise fail("brief", f"cannot write the brief or the assign base ({exc.strerror})")
     record(prep, f"brief {brief_path} and assign base {base_path}")
     fields = board_fields(prep, brief_path)
-    rc = run([script, "board", "set", "--create", "--new-row", prep.wave.wave, prep.task, *fields], stdout_to_stderr=True).rc
+    rc = run([*command, "board", "set", "--create", "--new-row", prep.wave.wave, prep.task, *fields], stdout_to_stderr=True).rc
     if rc != 0:
-        raise fail("board", f"board set exited {rc} (above)", 4 if rc == 4 else 1)
+        raise fail("board", f"board set exited {rc} (above)", mutation_failure_status(rc))
     record(prep, f"board row {prep.wave.wave} {prep.task} (state=pending)")
     record(prep, READY)
 

@@ -135,7 +135,7 @@ from ludics.fleetworker import cotenants, revision
 from ludics.fleetworker.config import Config, in_roster
 from ludics.fleetworker.farside import FLEET_PYTHON
 from ludics.fleetworker.identity import check_identity, coordinator_id, die, my_token
-from ludics.fleetworker.lease import ASSIGN_STEP_ENV, LEASE_LOST_STATUS, LEASE_MUTATION, lease_mutation
+from ludics.fleetworker.lease import ASSIGN_STEP_ENV, LEASE_LOST_STATUS, lease_mutation
 from ludics.fleetworker.preflight import knob, refresh_box
 from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED, ASSIGN_STATUS_ARG, PENDING_TTL
 from ludics.fleetworker.transport import (
@@ -1979,8 +1979,7 @@ def cmd_execution(cfg: Config, args: list[str]) -> int:
             return refusal_status
         map_spec = found
     token = my_token(cfg)
-    # A step of assign says a lost lease apart from its other refusals (lease.py, THE LOST LEASE STATUS).
-    mutation = lease_mutation(LEASE_LOST_STATUS) if assignment_step else LEASE_MUTATION
+    mutation = lease_mutation(LEASE_LOST_STATUS if assignment_step else cfg.lease_loss_status)
     head = prelude(cfg, cfg.anchor) + (mutation if action != "list" else "shift 3\n")
     script = head + registry_command(source, payload)
     argv = [

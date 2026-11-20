@@ -84,11 +84,11 @@ THE ANSWERS:
   request   ``execution assign <reserve/<task>-base.json> <message> --message <file> --unstick <box>
             <worker> --status <file>``: it reserves, dispatches and resumes in one call, and its
             status file (assign.py, THE STATUS; removed before the call, unread when that removal
-            fails, and read only when its ``exit`` is the call's) says what its unstick did. Exit ``LEASE_LOST_STATUS`` (6, lease.py,
-            THE LOST LEASE STATUS) is a lost lease: it ends the driver, as any lost lease does, and
-            is read off that status alone, never off assign's lines. A block an earlier call
-            dispatched (assign's ``ASSIGN ALREADY`` line: a driver that died before it resumed
-            the worker) is not assigned again, so its text is not in this call's message. Exit 0
+            fails, and read only when its ``exit`` is the call's) says what its unstick did.
+            Exit ``LEASE_LOST_STATUS`` (6) ends the driver. All lease-gated verbs now report loss
+            by status (#1259), retiring the lease-refusal regex for diagnostics and review logs.
+            A block an earlier call dispatched (assign's ``ASSIGN ALREADY`` line: a driver that died
+            before it resumed the worker) is not assigned again, so its text is not in this call's message. Exit 0
             with no message printed means every block was such: the worker is resumed with that
             call's saved message, and where none was saved the turn is attention. Exit 0 with a
             message and such a block beside it has resumed the worker with part of its
@@ -140,8 +140,9 @@ THE ANSWERS:
             meanwhile); the ledger keeps the run directory, and a later tick reads it with
             ``bg-run.sh wait``. Finished with exit 0, its line names the message file the worker is
             resumed with; ``decision=unreadable`` is attention besides (the worker is resumed, the
-            review is the coordinator's to read). Any other end is attention, but for a review
-            its log shows refused on the lease: that ends the driver as any lost lease does. ``--again`` is passed
+            review is the coordinator's to read). Exit 6 marks the round interrupted and stops
+            the driver. On restart the same round runs without ``--again``, recovering its saved reply
+            if already posted. Every other unsuccessful end is attention. ``--again`` is passed
             when the ledger holds an answered review of the same PR, kind and head in an earlier
             turn: a new request from the worker is a new round (wavereview.py).
   handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` in the message. The message
@@ -282,13 +283,10 @@ final, holding the slot, since it cannot know how the launch ended. An anchor, a
 
 WHAT IT DOES NOT DO. It scopes nothing and orders nothing (the queue is the coordinator's), reads
 no hand-back's proposals (the editorial pass is the
-coordinator's, at close-out, over ``handbacks/``), and decides nothing a marker does not state. It
-proves the lease through the lease-gated verbs it calls (``unstick``, ``execution assign`` and
-``conclude``, ``board close``, and ``wave review`` in its run): one of them refused with a lease
-refusal line (``LEASE_LOST``), or ``execution assign`` exiting ``LEASE_LOST_STATUS`` (its only lease
-answer: assign's streams carry the worker's words and its steps' lines), ends the driver (exit 1),
-since a takeover is not a refusal to retry. The refusal line is read off the other verbs' failures
-only, never off what a worker wrote: a final message that quotes the phrase is a message.
+coordinator's, at close-out, over ``handbacks/``), and decides nothing a marker does not state.
+The driver requests ``--lease-status`` for unstick, execution conclude, board close, gate and
+wave prep/unprep/launch/review. A review's completed command status comes from bg-run. Assign
+reports a lost lease itself.
 
 It stops on a stop file (``<wave dir>/drive.stop``, read before each tick) with exit 0, on a board
 it cannot read as this wave's (exit 1; an anchor that does not answer is tried again), and on a
@@ -350,6 +348,7 @@ POLL = 30
 ATTACH_WAIT = 60.0  # attach answers at once for an exited worker; one that started running since is left for the next tick
 RETRY, TRIES = 300, 6
 FINAL = ("answered", "attention")
+OPEN_REVIEW = ("reviewing", "review-interrupted")
 RETURNED = re.compile(r"(EXITED\([0-9]+\)|IDLE)")
 GONE = ("ORPHANED", "VANISHED", "UNKNOWN")  # states that are no returned turn and will not become one
 WORKING = "RUNNING"  # the worker's state while its turn runs (farside.py's state_of), not bg-run.sh's verdict word
@@ -363,14 +362,6 @@ PULL = re.compile(r"/pull/([1-9][0-9]*)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 REF = re.compile(r"[^#\s]+#([1-9][0-9]*)")
 REVIEWED = re.compile(r"WAVE REVIEW \S+: .* decision=([a-z]+) comment=\S+ message=(.+?\.message\.md)(?: \(already reviewed.*)?")
-# A lease refusal as lease.py's gates print it: `<VERB> REFUSED <label>: coordinator lease held by ...`,
-# on a line of its own or inside the line of a verb that wraps a step's refusal (`board close`: `...
-# board log exit 1 (BOARD REFUSED fleet: coordinator lease held by ...)`). Read only where no worker's
-# words are: the output of a lease-gated verb that exited nonzero (``Driver.call``'s ``gated``) and a
-# failed review's log. Never a final message, a status summary, or ``execution assign``'s streams
-# (its stdout is the assignment message, built from the worker's request, and its stderr relays its
-# steps' lines): assign's lost lease is its exit status, LEASE_LOST_STATUS.
-LEASE_LOST = re.compile(r"\b[A-Z][A-Z -]* REFUSED [^:\n]*: coordinator lease held by [^\n]*")
 ALREADY = re.compile(r"ASSIGN ALREADY (\S+):")
 
 
@@ -489,7 +480,7 @@ def read_queue(wave: Wave) -> tuple[dict[str, int], list[Queued]] | str | None:
 
 
 class LeaseLost(Exception):
-    """A verb refused because the lease is another coordinator's: the driver's to stop on."""
+    """A gated verb reported an absent or foreign coordinator lease."""
 
 
 UNSTICK_OUTCOMES = ("landed", "failed", "not-asked", "nothing-assigned", "message-unwritten", "lease-lost")
@@ -626,6 +617,7 @@ class Driver:
     def __init__(self, cfg: Config, wave: Wave) -> None:
         self.cfg, self.wave = cfg, wave
         self.script = shim(cfg)
+        self.gated_shim = replace(cfg, lease_loss_status=LEASE_LOST_STATUS).shim_command()
         self.ledger_path = self.path("logs", "drive.jsonl")
         self.ledger: list[dict[str, Any]] = []
         self.err = ""  # the last call's stderr
@@ -699,15 +691,14 @@ class Driver:
         with open(self.path("logs", "drive.log"), "a", encoding="utf-8") as f:
             f.write(f"{utc_now()} {line}\n")
 
-    def call(self, *args: str, timeout: float | None = None, gated: str = "") -> Done:
-        """This fleet-worker.sh with ``args``, its stdout captured and its stderr kept in ``self.err``.
-        ``gated="both"`` names a verb that proves the lease and whose streams hold no worker's words:
-        a lease refusal there (LEASE_LOST), on a failure, ends the driver."""
-        rc, out, self.err = execute([self.script, *args], timeout)
-        if gated and rc != 0:
-            lost = LEASE_LOST.search(out + "\n" + self.err)
-            if lost:
-                raise LeaseLost(lost.group(0).strip())
+    def call(self, *args: str, timeout: float | None = None, gated: bool = False) -> Done:
+        """Run a fleet verb, requesting the distinct lease status only for gated calls."""
+        command = self.gated_shim if gated else [self.script]
+        rc, out, self.err = execute([*command, *args], timeout)
+        if gated and rc == LEASE_LOST_STATUS:
+            cli.emit(substitution(out))
+            verb = " ".join(args[:2]) if args[0] in ("board", "execution", "wave") else args[0]
+            raise LeaseLost(f"{verb} exit {rc}")
         return Done(rc, out)
 
     # --- one worker, one tick ---------------------------------------------------------------------
@@ -770,7 +761,7 @@ class Driver:
             return  # a status line that is no state's (a transient failure): read again next tick
         if worker.count == "results" and state == "IDLE" and not self.replied(read):
             return  # a message the CLI has not echoed yet: this idle turn is not its reply
-        if last is not None and last.get("status") == "reviewing":
+        if last is not None and last.get("status") in OPEN_REVIEW:
             return self.collect(worker, turn, last)
         if last is not None and last.get("status") == "retry" and now() < float(last.get("next", 0)):
             return
@@ -819,7 +810,7 @@ class Driver:
             if (e.get("task") == worker.task and e.get("worker") == worker.name and e.get("session") == worker.session
                     and e.get("count") == worker.count and isinstance(e.get("turn"), int) and 0 <= e["turn"] < turn):
                 lasts[e["turn"]] = e
-        pending = [e for _, e in sorted(lasts.items()) if e.get("status") == "reviewing"]
+        pending = [e for _, e in sorted(lasts.items()) if e.get("status") in OPEN_REVIEW]
         return pending[0] if pending else None
 
     @staticmethod
@@ -843,7 +834,7 @@ class Driver:
         return read_log
 
     def resume(self, worker: Worker, turn: int, kind: str, message: str, text: str, **more: Any) -> bool:
-        done = self.call("unstick", worker.box, worker.name, "--message", message, gated="both")
+        done = self.call("unstick", worker.box, worker.name, "--message", message, gated=True)
         if done.rc != 0:
             self.attention(worker, turn, kind, f"{text}, and the worker was NOT resumed (unstick exit {done.rc}:"
                                                f" {substitution(done.out)[-200:]}); resume it with {message}", message)
@@ -926,7 +917,7 @@ class Driver:
                                                               " 40-hex observed_sha; nothing more concluded", message)
             verdict = ""
             for form in ("--from-run", "--from-bg-run"):
-                done = self.call("execution", "conclude", form, where, "--request", request, "--sha", sha, gated="both")
+                done = self.call("execution", "conclude", form, where, "--request", request, "--sha", sha, gated=True)
                 if done.rc == 0:
                     try:
                         record: Any = json.loads(done.out)
@@ -947,9 +938,9 @@ class Driver:
         write_atomically(out, "\n".join(lines) + "\n\nContinue with your task.\n")
         self.resume(worker, turn, "result", out, "; ".join(lines))
 
-    def review(self, worker: Worker, turn: int, what: Turn) -> None:
+    def review(self, worker: Worker, turn: int, what: Turn, *, replay: bool = False) -> None:
         mine = (worker.name, worker.session, turn, worker.count)
-        again = any(e.get("task") == worker.task and (e.get("worker"), e.get("session"), e.get("turn"), e.get("count", "resumes")) != mine
+        again = not replay and any(e.get("task") == worker.task and (e.get("worker"), e.get("session"), e.get("turn"), e.get("count", "resumes")) != mine
                     and e.get("status") == "answered" and e.get("kind") == what.kind and e.get("pr") == what.pr
                     and e.get("sha") == what.sha for e in self.ledger)
         subject: list[str] = []
@@ -961,7 +952,7 @@ class Driver:
         runs = self.path("logs", "drive-runs")
         os.makedirs(runs, exist_ok=True)
         helper = os.path.join(self.cfg.here, "bg-run.sh")
-        rc, out, _ = execute([helper, "spawn", runs, "--", self.script, "wave", "review", self.wave.path, worker.task, what.pr,
+        rc, out, _ = execute([helper, "spawn", runs, "--", *self.gated_shim, "wave", "review", self.wave.path, worker.task, what.pr,
                               what.sha, "--kind", kind, *subject, *(["--again"] if again else [])])
         where = substitution(out).splitlines()[-1] if out.strip() else ""
         if rc != 0 or not where.startswith("/"):
@@ -971,12 +962,18 @@ class Driver:
 
     def collect(self, worker: Worker, turn: int, last: dict[str, Any]) -> None:
         where, kind = str(last.get("run", "")), str(last.get("kind"))
+        if last.get("status") == "review-interrupted":
+            return self.review(worker, turn, Turn(kind, pr=last["pr"], sha=last["sha"]), replay=True)
         rc, out, _ = execute([os.path.join(self.cfg.here, "bg-run.sh"), "wait", where, "--within", "1"])
         line = substitution(out).splitlines()[-1] if out.strip() else ""
         verdict = bgrun.parse(line, rc)
         if verdict is not None and verdict.word in (bgrun.Word.RUNNING, bgrun.Word.STARTING):
             return
         log = os.path.join(where, "log")
+        if verdict is not None and verdict.status == LEASE_LOST_STATUS:
+            reason = f"wave review exit {verdict.status}, log {log}"
+            self.note(worker, turn, kind, "review-interrupted", reason, run=where, pr=last["pr"], sha=last["sha"])
+            raise LeaseLost(reason)
         said: re.Match[str] | None = None
         if verdict is not None and verdict.word is bgrun.Word.RC and verdict.status == 0:
             try:
@@ -986,14 +983,6 @@ class Driver:
                 found = []
             said = found[-1] if found else None
         if said is None:
-            try:
-                with open(log, encoding="utf-8", errors="replace") as f:
-                    found = LEASE_LOST.search(f.read())
-                    lost = found.group(0).strip() if found else ""
-            except OSError:
-                lost = ""
-            if lost:
-                raise LeaseLost(lost)
             return self.attention(worker, turn, kind, f"the review did not end with a verdict ({line or 'no wait line'}); its log"
                                                       " says why, and the worker waits", log)
         decision, message = said.group(1), said.group(2)
@@ -1051,7 +1040,7 @@ class Driver:
         if uncovered:
             self.tell(worker, turn, uncovered, kept)
         form = ["--pr", pr] if pr else ["--no-pr", *[arg for directory in runs for arg in ("--run", directory)]]
-        done = self.call("board", "close", self.wave.wave, worker.task, *form, "--evidence", f"hand-back {kept}", gated="both")
+        done = self.call("board", "close", self.wave.wave, worker.task, *form, "--evidence", f"hand-back {kept}", gated=True)
         said = substitution(done.out).splitlines()[-1] if done.out.strip() else f"board close exit {done.rc}"
         if done.rc != 0:
             return self.attention(worker, turn, "handback", f"board close refused: {said}", kept)
@@ -1175,7 +1164,7 @@ class Driver:
         """THE GATE (the header)."""
         if now() < self.gate_next:
             return False
-        done = self.call("gate", "--target-repo", self.wave.repository, "--base-branch", self.wave.vars["MAIN"], "--no-wait", gated="both")
+        done = self.call("gate", "--target-repo", self.wave.repository, "--base-branch", self.wave.vars["MAIN"], "--no-wait", gated=True)
         if done.rc != 4:
             self.gate_pending_tip = None
             self.gate_pending_told = False
@@ -1216,7 +1205,7 @@ class Driver:
             # A fenced manifest, its row there or not, is an un-prepare that stopped: it is finished first.
             moved = (f"{main} moved since the task was prepared at {record.base[:12]} (now {sha.strip()[:12]})" if not fenced and record
                      else "an un-prepare of the task stopped before it ended (its manifest ends with the fence)")
-            done = self.call("wave", "unprep", self.wave.path, queued.task, gated="both")
+            done = self.call("wave", "unprep", self.wave.path, queued.task, gated=True)
             said = (substitution(done.out).splitlines() or [f"wave unprep exit {done.rc}"])[-1]
             if done.rc == 4:
                 return  # a read that did not answer: the next tick's
@@ -1235,7 +1224,7 @@ class Driver:
                              *(["--mode", queued.mode] if queued.mode else []),
                              *(["--issue", queued.issue] if queued.issue else []),
                              *(["--source", queued.source] if queued.source else []),
-                             *(["--tier", queued.tier] if queued.tier else []), gated="both")
+                             *(["--tier", queued.tier] if queued.tier else []), gated=True)
             if done.rc == 4:
                 return
             if done.rc != 0:
@@ -1246,7 +1235,7 @@ class Driver:
         # A SLOT HELD (the header): the launch is on record before it is made, so a driver that stops
         # inside it leaves a line the next one reads.
         self.note(slot, LAUNCH, "launch", "launching", f"wave launch on {host}", holds=host)
-        done = self.call("wave", "launch", self.wave.path, queued.task, gated="both")
+        done = self.call("wave", "launch", self.wave.path, queued.task, gated=True)
         said = (substitution(done.out).splitlines() or [f"wave launch exit {done.rc}"])[-1]
         if done.rc == 0:
             if queued.mode and queued.mode != "none":
@@ -1307,7 +1296,7 @@ def locked(cfg: Config, wave: Wave, body: Callable[[Driver], int]) -> int:
         try:
             return body(Driver(cfg, wave))
         except LeaseLost as lost:
-            cli.say(f"DRIVE STOPPED {wave.wave}: the lease is another coordinator's ({lost})")
+            cli.say(f"DRIVE STOPPED {wave.wave}: coordinator lease lost ({lost})")
             return 1
 
 

@@ -84,10 +84,10 @@ from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import listing, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.lease import anchor_gate
+from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate, mutation_failure_status
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import prelude, run, run_on, substitution
-from ludics.fleetworker.wave import USAGE, Wave, load_wave, shim
+from ludics.fleetworker.wave import USAGE, Wave, load_wave
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.wavelaunch import STATE, WORKTREE_STATE, Record, record_of
 from ludics.fleetworker.waveprep import READY, TASK, Stop, task_lock
@@ -272,7 +272,7 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
         done = [*done, FENCE]
     rc = forget_row(cfg, wave.wave, task, record.worker)
     if rc != 0:
-        return failed("row", f"the row's removal exited {rc} (above)", 4 if rc == 4 else 1)
+        return failed("row", f"the row's removal exited {rc} (above)", mutation_failure_status(rc))
     removed.append(f"the board row {wave.wave} {task}, if it was there")
     if not record.remote:
         for directory in (os.path.join(record.scratch, "runs"), record.scratch):
@@ -292,8 +292,10 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
             pass
         except OSError as exc:
             return failed("files", f"cannot remove {shlex.quote(item)} ({exc.strerror})")
-    logged = run([shim(cfg), "board", "log", wave.wave, f"{task} unprepared: its prep at {record.base[:12]} taken back"
-                  " (wave unprep), to be prepared again under its own id"], stdout_to_stderr=True).rc
+    logged = run(cfg.shim_command("board", "log", wave.wave, f"{task} unprepared: its prep at {record.base[:12]} taken back"
+                  " (wave unprep), to be prepared again under its own id"), stdout_to_stderr=True).rc
+    if logged == LEASE_LOST_STATUS:
+        return failed("log", f"board log exited {logged} (above)", logged)
     if logged != 0:
         notes.append(f"the board log line was not written (board log exit {logged})")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

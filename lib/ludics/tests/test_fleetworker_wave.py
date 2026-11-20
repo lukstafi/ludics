@@ -324,6 +324,17 @@ class Prep(WaveDirCase):
         self.assertEqual(rc, 1)
         self.assertIn("the worktree path", out)
 
+    def test_prep_lease_loss_preserves_a_nested_mutation_status(self) -> None:
+        with self.world():
+            for task, step in (("t42", "execution run"), ("t43", "board set")):
+                with self.subTest(step=step):
+                    self.write(f"tasks/{task}.md", "# Task @@T@@")
+                    self.shim_rc = {step: 6}
+                    rc, out, _ = self.prep(task, "--base", "main")
+                    self.assertEqual(rc, 6, out)
+                    self.assertIn("WAVE PREP MADE", out)
+                    self.assertIn(step, out)
+
     # --- THE PARTS and THE PROJECT PART (ludics#1072) ---------------------------------------------
 
     def rewave(self, **more: Any) -> None:
@@ -862,6 +873,20 @@ class MixedWave(WaveDirCase):
             self.assertIn("farside=far:/home/u/repo-worktrees/w1-42", self.shim_calls[-1])
             self.assertEqual(self.manifest()["done"][-1], "launched far/w1-42", "the worker runs: the launch is recorded")
 
+    def test_lease_loss_after_startup_records_the_worker(self) -> None:
+        with self.world():
+            for task, step in (("t42", "execution run"), ("t43", "board set")):
+                with self.subTest(step=step):
+                    self.shim_rc.clear()
+                    self.assertEqual(self.prep(task, "--base", "main", "--profile", "sol", "--host", "far", "--legs", "gpu-box")[0], 0)
+                    assert self.result is not None
+                    self.result["worker"] = f"w1-{task[1:]}"
+                    self.shim_rc = {step: 6}
+                    rc, out, _ = self.start(task)
+                    self.assertEqual(rc, 6, out)
+                    self.assertEqual(self.shim_calls[-1][:2], step.split())
+                    self.assertEqual(self.manifest(task)["done"][-1], f"launched far/w1-{task[1:]}")
+
     def test_launch_row_reads_the_worker_placement_from_the_structured_result(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
@@ -1197,6 +1222,21 @@ class Unprep(MixedWave):
         self.assertEqual(self.manifest(), before, "no fence")
         self.assertEqual((len(self.files()), self.forget_calls, self.tombs()), (3, [], []))
 
+    def test_unprep_lease_loss_keeps_the_fence_for_the_next_coordinator(self) -> None:
+        with self.world():
+            self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
+            self.forget_rc = [6]
+            self.shim_rc["board log"] = 6
+            for step in ("row", "log"):
+                with self.subTest(step=step):
+                    rc, out, _ = self.unprep()
+                    self.assertEqual(rc, 6, out)
+                    self.assertIn(f"at {step}:", out)
+                    self.assertEqual(self.manifest()["done"][-1], waveunprep.FENCE)
+            self.shim_rc.clear()
+            self.assertEqual(self.unprep()[0], 0)
+            self.assertEqual(len(self.tombs()), 1)
+
     def test_what_may_have_launched_or_is_not_this_preps_refuses_removing_nothing(self) -> None:
         with self.world():
             self.assertEqual(self.prep("t42", "--base", "main", "--profile", "sol", "--host", "far")[0], 0)
@@ -1366,6 +1406,32 @@ class Review(WaveDirCase):
         with open(path, encoding="utf-8") as f:
             return f.read()
 
+    def test_gated_calls_request_exit_six_from_the_local_anchor(self) -> None:
+        driver = wavedrive.Driver(self.cfg, wave.load_wave(self.path, "drive"))
+        env = {"PATH": os.environ["PATH"], "HOME": self.dir, "FLEET_COORDINATOR": "driver",
+               "FLEET_LOCAL_BOX": "testbox", "FLEET_ANCHOR": "local", "FLEET_BOXES": "testbox",
+               "ISSUE_WAVE_STATE": self.wavedir, "FLEET_ANCHOR_STATE": self.wavedir}
+        self.write("conclusion.json", json.dumps({"request_id": "x", "verdict": "not-launched", "log": "none", "evidence": "no start"}))
+        with mock.patch.dict(os.environ, env, clear=True):
+            for setup in (["claim"], ["board", "set", "--create", "--new-row", "wv", "t42", "repository=o/staging",
+                                      "standing=none", "state=pending"], ["release"]):
+                self.assertEqual(driver.call(*setup).rc, 0, setup)
+            for args in (["unstick", "local", "w", "--message", self.path],
+                         ["execution", "conclude", os.path.join(self.wavedir, "conclusion.json")], ["board", "close", "wv", "t42", "--no-pr"],
+                         ["gate", "--target-repo", "o/staging", "--no-wait"],
+                         ["wave", "prep", self.path, "t42", "--base", self.base],
+                         ["wave", "unprep", self.path, "t42"],
+                         ["launch", "local", "w", "--kind", "codex", "--target-repo", "o/staging",
+                          "--brief", self.path, "--cwd", self.dir],
+                         ["wave", "review", self.path, "t42", "7", self.base, "--kind", "at-open"]):
+                with self.subTest(args=args):
+                    direct = driver.call(*args)
+                    self.assertEqual(direct.rc, 1, direct.out)
+                    self.assertIn("coordinator lease", direct.out)
+                    with contextlib.redirect_stdout(io.StringIO()) as diagnostic, self.assertRaisesRegex(wavedrive.LeaseLost, "exit 6"):
+                        driver.call(*args, gated=True)
+                    self.assertIn("coordinator lease", diagnostic.getvalue())
+
     def test_a_blocking_at_open_review_is_posted_and_asks_for_a_confirm(self) -> None:
         with self.world() as (gh, gated):
             rc, out, err = self.review()
@@ -1436,6 +1502,16 @@ class Review(WaveDirCase):
             rc, out, _ = self.review()
             self.assertEqual((rc, len(self.claude.calls()), self.shim_calls), (0, 1, []))
             self.assertTrue(out.endswith(" (already reviewed; --again starts a new round on this head)\n") and f"comment={COMMENT}" in out, out)
+
+    def test_review_board_lease_loss_keeps_the_posted_record(self) -> None:
+        with self.world():
+            self.shim_rc = {"board set": 6}
+            rc, out, _ = self.review()
+            self.assertEqual(rc, 6, out)
+            rc, out, _ = self.review()
+            self.assertEqual(rc, 0, out)
+            self.assertIn("already reviewed", out)
+            self.assertEqual(len(self.claude.calls()), 1)
 
     def test_a_post_that_failed_is_posted_by_the_rerun_without_another_review(self) -> None:
         with self.world() as (gh, _):
@@ -2526,6 +2602,7 @@ class DriveCase(WaveDirCase):
         self.calls: list[list[str]] = []
         self.clock: float = 1000.0
         self.attach_waits: list[float | None] = []
+        self.review_gated = False
         self.runs = os.path.join(self.wavedir, "logs", "drive-runs", "run-1")
         self.results: int | str | None = None  # a Claude worker's results= (None: a Codex worker's status line)
         self.unread = 0
@@ -2537,6 +2614,9 @@ class DriveCase(WaveDirCase):
 
     def execute(self, argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
         tool, args = os.path.basename(argv[0]), list(argv[1:])
+        gated = args[:1] == ["--lease-status"]
+        if gated:
+            args = args[1:]
         if tool == "git":
             return self.rc.get(f"git {args[2]}", 0), self.out.get(f"git {args[2]}", B + "\n" if args[2] == "rev-parse" else ""), ""
         key = f"{tool} {args[0]}" if tool == "bg-run.sh" else " ".join(
@@ -2547,6 +2627,8 @@ class DriveCase(WaveDirCase):
         if key != "status":
             self.calls.append([tool, *args] if tool == "bg-run.sh" else args)
         rc = self.rc.get(key, 0)
+        if rc == 6 and not gated and key != "execution assign":
+            rc = 1  # A lease gate reserves exit 6 only when its caller requested it.
         if key == "status":
             self.status_reads += 1
             if self.statuses:
@@ -2555,6 +2637,7 @@ class DriveCase(WaveDirCase):
         if key == "log":
             return rc, self.message if rc == 0 else "NO RESULT far/w1-42: latest turn ended turn.failed\n", ""
         if key == "bg-run.sh spawn":
+            self.review_gated = "--lease-status" in args
             return rc, self.runs + "\n", ""
         if key == "bg-run.sh wait":
             return rc, self.out.get(key, "rc=0\n"), ""
@@ -2718,7 +2801,7 @@ class Drive(DriveCase):
             rc, out = self.once()
             self.assertEqual(rc, 0, out)
             self.assertIn("DRIVE ATTENTION t42 turn 0: no marker this driver answers", out)
-            # The same line from a lease-gated verb that failed is the refusal; from one that succeeded, or mid-line, it is text.
+            # Quoted words remain diagnostic even on a failed call.
             self.resumes, self.message = 1, f"REVIEW_REQUEST 7 {A}\n"
             self.out = {"execution assign": f"quoted: {refusal}\n"}
             self.assertEqual(self.once()[0], 0)
@@ -2749,7 +2832,7 @@ class Drive(DriveCase):
             self.assign_status = {"lease_lost": "the run of a"}
             got, out = self.once()
             self.assertEqual(got, 1, out)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (execution assign exit 6: the lease refused the run of a)", out)
+            self.assertIn("DRIVE STOPPED wv: coordinator lease lost (execution assign exit 6: the lease refused the run of a)", out)
             # No readable status: the exit alone still stops it.
             self.assign_status = None
             got, out = self.once()
@@ -3033,6 +3116,19 @@ class Drive(DriveCase):
             self.message = f"{line}\n"
             self.assertIn("and the worker was NOT resumed (unstick exit 1", self.once()[1])
 
+    def test_result_lease_loss_stops_at_conclusion_or_resume(self) -> None:
+        self.message = f'EXECUTION_RESULT {{"request_id":"x","run":"/runs/7","observed_sha":"{A}"}}\n'
+        self.out["execution conclude --from-run"] = '{"verdict":"pass"}'
+        with self.world():
+            for step in ("execution conclude --from-run", "unstick"):
+                with self.subTest(step=step):
+                    self.resumes += 1
+                    self.rc = {step: 6}
+                    rc, out = self.once()
+                    self.assertEqual(rc, 1, out)
+                    self.assertIn("DRIVE STOPPED", out)
+                    self.assertEqual(self.calls[-1][:len(step.split())], step.split())
+
     def test_a_plain_result_directory_tells_the_coordinator_what_to_relay(self) -> None:
         self.message = 'EXECUTION_RESULT {"request_id":"wv-t42-rog-1","run":"/scratch/runs","exit":0,"observed_sha":"' + A + '"}\n'
         self.rc["execution conclude --from-run"] = 1
@@ -3059,7 +3155,7 @@ class Drive(DriveCase):
         self.message = f"The PR is open.\n\nREVIEW_REQUEST 7 {A}\n"
         with self.world():
             out = self.once()[1]
-            self.assertEqual(self.calls[1], ["bg-run.sh", "spawn", f"{self.wavedir}/logs/drive-runs", "--", wavedrive.shim(self.cfg),
+            self.assertEqual(self.calls[1], ["bg-run.sh", "spawn", f"{self.wavedir}/logs/drive-runs", "--", wavedrive.shim(self.cfg), "--lease-status",
                                              "wave", "review", self.path, "t42", "7", A, "--kind", "at-open", "--issue", "42"])
             self.assertIn(f"review reviewing: wave review at-open of #7 at {A[:8]} started in {self.runs}", out)
             self.out["bg-run.sh wait"], self.rc["bg-run.sh wait"] = "RUNNING after 1 s of --within 1\n", 3
@@ -3101,17 +3197,44 @@ class Drive(DriveCase):
                 self.assertNotIn("unstick", [c[0] for c in self.calls])
             self.resumes, self.rc["bg-run.sh spawn"] = 4, 1
             self.assertIn("the review could not be started (bg-run.sh spawn exit 1)", self.once()[1])
-            # A review refused on the lease is a takeover: the driver ends, and the turn is not made final.
+            # A failed review can quote the former lease diagnostic in its log.
             self.resumes, self.rc = 5, {}
             self.out["bg-run.sh wait"] = "rc=0\n"
             self.once()
             with open(os.path.join(self.runs, "log"), "w") as f:
                 f.write("WAVE REVIEW REFUSED fleet: coordinator lease held by session-other\n")
             self.out["bg-run.sh wait"] = "rc=1\n"
+            self.assertIn("the review did not end with a verdict", self.once()[1])
+
+    def test_review_lease_loss_uses_the_completed_command_status(self) -> None:
+        self.message = f"REVIEW_REQUEST 7 {A}\n"
+        with self.world():
+            self.once()
+            self.out["bg-run.sh wait"] = "rc=6 (finished earlier, at 12:00)\n"
             rc, out = self.once()
-            self.assertEqual(rc, 1)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (WAVE REVIEW REFUSED fleet: coordinator lease held by session-other)", out)
-            self.assertEqual(self.ledger()[-1], (5, "review", "reviewing"))
+            self.assertEqual(rc, 1, out)
+            self.assertIn("wave review exit 6", out)
+            self.assertTrue(self.review_gated)
+            self.assertEqual(self.ledger()[-1], (0, "review", "review-interrupted"))
+
+    def test_restarting_after_review_lease_loss_replays_the_same_round(self) -> None:
+        self.message = f"REVIEW_REQUEST 7 {A}\n"
+        with self.world():
+            self.once()
+            self.review_log("confirm")
+            self.once()
+            self.resumes = 1
+            self.once()
+            self.assertIn("--again", self.calls[-1])
+            self.out["bg-run.sh wait"] = "rc=6\n"
+            self.assertEqual(self.once()[0], 1)
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.calls[-1][:2], ["bg-run.sh", "spawn"])
+            self.assertNotIn("--again", self.calls[-1])
+            self.out["bg-run.sh wait"] = "rc=0\n"
+            self.assertIn("resumed with", self.once()[1])
+            self.assertEqual(self.ledger()[-1], (1, "review", "answered"))
 
     def test_no_pr_handback_uses_only_absolute_run_lines(self) -> None:
         with self.world():
@@ -3136,14 +3259,11 @@ class Drive(DriveCase):
             with open(kept) as f:
                 self.assertEqual(f.read(), self.message)
             self.assertIn('handback answered: BOARD CLOSE wv: "t42" merged o/staging#7', out)
-            # A lease refusal that board close wraps in its own line is the takeover it is.
             self.resumes = 1
-            self.rc["board close"] = 1
-            self.out["board close"] = ('BOARD CLOSE REFUSED wv: "t42": board log exit 1 (BOARD REFUSED fleet: coordinator lease held by'
-                                       " session-other -- not you (adopted since your gate?)); the row is not set; a re-run resumes\n")
+            self.rc["board close"] = 6
             rc, out = self.once()
-            self.assertEqual(rc, 1)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (BOARD REFUSED fleet: coordinator lease held by session-other", out)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("board close exit 6", out)
             self.assertEqual([e[0] for e in self.ledger()], [0], "a takeover is no verdict on the turn")
             self.rows = [row("t42", pr="9")]
             self.rc["board close"], self.out["board close"] = 1, "BOARD CLOSE REFUSED wv: \"t42\": o/staging#9 is OPEN, not merged; nothing closed\n"
@@ -3237,7 +3357,7 @@ class Drive(DriveCase):
         with self.world():
             rc, out = self.once()
             self.assertEqual(rc, 1)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's (execution assign exit 6: the lease refused the run of x)", out)
+            self.assertIn("DRIVE STOPPED wv: coordinator lease lost (execution assign exit 6: the lease refused the run of x)", out)
             self.assertFalse(os.path.exists(os.path.join(self.wavedir, "logs", "drive.jsonl")), "a takeover is no turn's verdict")
             self.rc, self.out = {}, {"execution assign": "EXECUTION_ASSIGNED x\n"}
             naps: list[float] = []
@@ -3902,8 +4022,22 @@ class Queue(DriveCase):
             self.rc, self.out = {"wave prep": 1}, {"wave prep stderr": "WAVE PREP REFUSED fleet: coordinator lease held by session-other\n"}
             os.remove(os.path.join(self.wavedir, "logs", "drive.jsonl"))
             rc, out = self.once()
-            self.assertEqual(rc, 1)
-            self.assertIn("DRIVE STOPPED wv: the lease is another coordinator's", out)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("the queued task was not prepared", out)
+
+    def test_queue_lease_loss_stops_at_each_gated_verb(self) -> None:
+        self.queue({"task": "t51", "profile": "sol", "host": "far"})
+        with self.world():
+            for step in ("gate", "wave prep", "wave unprep", "wave launch"):
+                with self.subTest(step=step):
+                    if step.startswith("wave ") and step != "wave prep":
+                        self.rows = [row("t51", state="pending")]
+                        self.manifest("t51", "far", A if step == "wave unprep" else B)
+                    self.rc = {step: 6}
+                    rc, out = self.once()
+                    self.assertEqual(rc, 1, out)
+                    self.assertIn(f"({step} exit 6)", out)
+                    self.assertEqual(self.calls[-1][:len(step.split())], step.split())
 
     def test_a_launch_that_may_have_started_a_worker_holds_its_hosts_slot_until_its_row_says(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"},
@@ -3930,7 +4064,7 @@ class Queue(DriveCase):
         self.queue({"task": "t50", "profile": "sol", "host": "far"}, {"task": "t51", "profile": "sol", "host": "far"}, capacity={"far": 1})
 
         def dies(argv: list[str], timeout: float | None = None) -> tuple[int, str, str]:
-            if argv[1:3] == ["wave", "launch"]:
+            if argv[1:4] == ["--lease-status", "wave", "launch"]:
                 raise KeyboardInterrupt
             return self.execute(argv, timeout)
 
