@@ -140,8 +140,9 @@ THE ANSWERS:
             meanwhile); the ledger keeps the run directory, and a later tick reads it with
             ``bg-run.sh wait``. Finished with exit 0, its line names the message file the worker is
             resumed with; ``decision=unreadable`` is attention besides (the worker is resumed, the
-            review is the coordinator's to read). Any other end is attention, but for a review
-            its log shows refused on the lease: that ends the driver as any lost lease does. ``--again`` is passed
+            review is the coordinator's to read). Exit 6 marks the round interrupted and stops
+            the driver. On restart the same round runs without ``--again``, recovering its saved reply
+            if already posted. Every other unsuccessful end is attention. ``--again`` is passed
             when the ledger holds an answered review of the same PR, kind and head in an earlier
             turn: a new request from the worker is a new round (wavereview.py).
   handback  the PR is the row's ``pr``, else the first ``/pull/<n>`` in the message. The message
@@ -347,6 +348,7 @@ POLL = 30
 ATTACH_WAIT = 60.0  # attach answers at once for an exited worker; one that started running since is left for the next tick
 RETRY, TRIES = 300, 6
 FINAL = ("answered", "attention")
+OPEN_REVIEW = ("reviewing", "review-interrupted")
 RETURNED = re.compile(r"(EXITED\([0-9]+\)|IDLE)")
 GONE = ("ORPHANED", "VANISHED", "UNKNOWN")  # states that are no returned turn and will not become one
 WORKING = "RUNNING"  # the worker's state while its turn runs (farside.py's state_of), not bg-run.sh's verdict word
@@ -759,7 +761,7 @@ class Driver:
             return  # a status line that is no state's (a transient failure): read again next tick
         if worker.count == "results" and state == "IDLE" and not self.replied(read):
             return  # a message the CLI has not echoed yet: this idle turn is not its reply
-        if last is not None and last.get("status") == "reviewing":
+        if last is not None and last.get("status") in OPEN_REVIEW:
             return self.collect(worker, turn, last)
         if last is not None and last.get("status") == "retry" and now() < float(last.get("next", 0)):
             return
@@ -808,7 +810,7 @@ class Driver:
             if (e.get("task") == worker.task and e.get("worker") == worker.name and e.get("session") == worker.session
                     and e.get("count") == worker.count and isinstance(e.get("turn"), int) and 0 <= e["turn"] < turn):
                 lasts[e["turn"]] = e
-        pending = [e for _, e in sorted(lasts.items()) if e.get("status") == "reviewing"]
+        pending = [e for _, e in sorted(lasts.items()) if e.get("status") in OPEN_REVIEW]
         return pending[0] if pending else None
 
     @staticmethod
@@ -936,9 +938,9 @@ class Driver:
         write_atomically(out, "\n".join(lines) + "\n\nContinue with your task.\n")
         self.resume(worker, turn, "result", out, "; ".join(lines))
 
-    def review(self, worker: Worker, turn: int, what: Turn) -> None:
+    def review(self, worker: Worker, turn: int, what: Turn, *, replay: bool = False) -> None:
         mine = (worker.name, worker.session, turn, worker.count)
-        again = any(e.get("task") == worker.task and (e.get("worker"), e.get("session"), e.get("turn"), e.get("count", "resumes")) != mine
+        again = not replay and any(e.get("task") == worker.task and (e.get("worker"), e.get("session"), e.get("turn"), e.get("count", "resumes")) != mine
                     and e.get("status") == "answered" and e.get("kind") == what.kind and e.get("pr") == what.pr
                     and e.get("sha") == what.sha for e in self.ledger)
         subject: list[str] = []
@@ -960,6 +962,8 @@ class Driver:
 
     def collect(self, worker: Worker, turn: int, last: dict[str, Any]) -> None:
         where, kind = str(last.get("run", "")), str(last.get("kind"))
+        if last.get("status") == "review-interrupted":
+            return self.review(worker, turn, Turn(kind, pr=last["pr"], sha=last["sha"]), replay=True)
         rc, out, _ = execute([os.path.join(self.cfg.here, "bg-run.sh"), "wait", where, "--within", "1"])
         line = substitution(out).splitlines()[-1] if out.strip() else ""
         verdict = bgrun.parse(line, rc)
@@ -967,7 +971,9 @@ class Driver:
             return
         log = os.path.join(where, "log")
         if verdict is not None and verdict.status == LEASE_LOST_STATUS:
-            raise LeaseLost(f"wave review exit {verdict.status}, log {log}")
+            reason = f"wave review exit {verdict.status}, log {log}"
+            self.note(worker, turn, kind, "review-interrupted", reason, run=where, pr=last["pr"], sha=last["sha"])
+            raise LeaseLost(reason)
         said: re.Match[str] | None = None
         if verdict is not None and verdict.word is bgrun.Word.RC and verdict.status == 0:
             try:

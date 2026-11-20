@@ -1428,8 +1428,9 @@ class Review(WaveDirCase):
                     direct = driver.call(*args)
                     self.assertEqual(direct.rc, 1, direct.out)
                     self.assertIn("coordinator lease", direct.out)
-                    with self.assertRaisesRegex(wavedrive.LeaseLost, "exit 6"):
+                    with contextlib.redirect_stdout(io.StringIO()) as diagnostic, self.assertRaisesRegex(wavedrive.LeaseLost, "exit 6"):
                         driver.call(*args, gated=True)
+                    self.assertIn("coordinator lease", diagnostic.getvalue())
 
     def test_a_blocking_at_open_review_is_posted_and_asks_for_a_confirm(self) -> None:
         with self.world() as (gh, gated):
@@ -3214,7 +3215,26 @@ class Drive(DriveCase):
             self.assertEqual(rc, 1, out)
             self.assertIn("wave review exit 6", out)
             self.assertTrue(self.review_gated)
-            self.assertEqual(self.ledger()[-1], (0, "review", "reviewing"))
+            self.assertEqual(self.ledger()[-1], (0, "review", "review-interrupted"))
+
+    def test_restarting_after_review_lease_loss_replays_the_same_round(self) -> None:
+        self.message = f"REVIEW_REQUEST 7 {A}\n"
+        with self.world():
+            self.once()
+            self.review_log("confirm")
+            self.once()
+            self.resumes = 1
+            self.once()
+            self.assertIn("--again", self.calls[-1])
+            self.out["bg-run.sh wait"] = "rc=6\n"
+            self.assertEqual(self.once()[0], 1)
+            rc, out = self.once()
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.calls[-1][:2], ["bg-run.sh", "spawn"])
+            self.assertNotIn("--again", self.calls[-1])
+            self.out["bg-run.sh wait"] = "rc=0\n"
+            self.assertIn("resumed with", self.once()[1])
+            self.assertEqual(self.ledger()[-1], (1, "review", "answered"))
 
     def test_no_pr_handback_uses_only_absolute_run_lines(self) -> None:
         with self.world():
