@@ -560,19 +560,18 @@ PY
 bench_fixtures() {
   local endpoint=$1 dir=$BENCH_CHECKOUT/benchmarks/fixtures anchor=${FLEET_ANCHOR:-mac-studio}
   local remote=$BENCH_ANCHOR_CHECKOUT/benchmarks check=$scratch/anchor-digest
-  local id='' own='' path name rejection sources=() failed=() expect=()
+  local id='' own='' path name index retry sources=() failed=() expect=()
   local predicate="-maxdepth 1 -type f -name '*.safetensors' -print0" list
   [[ -d $dir ]] || fail "No $(printf '%q' "$dir"): is $(printf '%q' "$BENCH_CHECKOUT") an OCANNL checkout?"
   mkdir -p "$check"
   if [[ -n $endpoint ]]; then
-    if ! scp -q "$anchor:$remote/check-box.sh" "$check/"; then
-      printf 'WARNING: Cannot copy check-box.sh from %q. Copying shared fixtures only.\n' "$anchor:$remote" >&2
-    elif id=$(bench_canonical_box "$check/check-box.sh" "$endpoint" "$(printf '%q' "$anchor:$remote")"); then
-      own=by-origin/$id
-    else
-      printf 'WARNING: %s Copying shared fixtures only.\n' "$id" >&2
-      id=''
-    fi
+    # A shared copy installed before resolving an explicit endpoint could hide its original on
+    # rerun, when the populated destination is preserved.
+    scp -q "$anchor:$remote/check-box.sh" "$check/" ||
+      fail "Cannot copy check-box.sh from $(printf '%q' "$anchor:$remote") to resolve the fixture origin."
+    id=$(bench_canonical_box "$check/check-box.sh" "$endpoint" "$(printf '%q' "$anchor:$remote")") ||
+      fail "$id"
+    own=by-origin/$id
   fi
   list="find . $predicate"
   # A box's own original takes precedence over a shared file of the same name.
@@ -592,24 +591,29 @@ bench_fixtures() {
   for path in ${sources[@]+"${sources[@]}"}; do
     name=${path##*/}
     [[ ! -e $dir/$name && ! -L $dir/$name ]] || continue
-    # A rejected original must not be masked by a shared copy for another origin.
-    for rejection in ${failed[@]+"${failed[@]}"}; do
-      [[ $rejection != "$name" ]] || continue 2
+    # A shared copy can recover a rejected original only when it matches the same origin.
+    retry=''
+    for index in ${failed[@]+"${!failed[@]}"}; do
+      if [[ ${failed[index]} == "$name" ]]; then retry=$index; break; fi
     done
     if [[ -z $BENCH_STAGE ]]; then
       BENCH_STAGE=$(mktemp -d "$dir/.incoming.XXXXXX")
       BENCH_STAGE=$(CDPATH= cd "$BENCH_STAGE" && pwd -P)
     fi
     expect=()
-    [[ $path == ./* ]] || expect=(--expect-origin "$id")
+    [[ $path == ./* && -z $retry ]] || expect=(--expect-origin "$id")
     if ! scp -q -p "$anchor:$remote/fixtures/${path#./}" "$BENCH_STAGE/$name"; then
-      printf 'ERROR: Cannot copy %q from %q.\n' "$path" "$anchor" >&2
-      failed+=("$name")
+      printf 'WARNING: Cannot copy %q from %q.\n' "$path" "$anchor" >&2
     elif python3 "$check/fixture_digest.py" --check --digests "$check/DIGESTS.txt" ${expect[@]+"${expect[@]}"} "$BENCH_STAGE/$name"; then
       mv -- "$BENCH_STAGE/$name" "$dir/$name"
+      [[ -z $retry ]] || unset "failed[$retry]"
+      continue
     else
-      failed+=("$name")
+      printf 'WARNING: Digest check failed for %q from %q.\n' "$path" "$anchor" >&2
     fi
+    # The next source needs a fresh destination even when scp preserved a read-only mode.
+    [[ ! -e $BENCH_STAGE/$name ]] || rm -- "$BENCH_STAGE/$name"
+    [[ -n $retry ]] || failed+=("$name")
   done
   if [[ -n $BENCH_STAGE ]]; then rm -rf -- "${BENCH_STAGE:?}"; BENCH_STAGE=''; fi
   [[ -z $id ]] || bench_warn_missing_fixtures "$check" "$dir" "$id"

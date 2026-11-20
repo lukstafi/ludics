@@ -123,12 +123,14 @@ does not tell us the target Unix username.
   takes direct fixture files from `by-origin/<id>/` and the top level, giving the box's own
   original precedence for a missing filename. It stages the copy and installs it when the
   anchor's `fixture_digest.py --check` verifies it against the anchor's `DIGESTS.txt`. Copies from
-  `by-origin/<id>/` must match that box's row. An unresolved ID limits copying to the top level.
+  `by-origin/<id>/` must match that box's row, as must a shared copy used to recover a rejected
+  original. With no fleet endpoint, provisioning uses the top level. If a supplied endpoint
+  cannot be resolved, it stops before copying fixtures so a rerun can still prefer the original.
   Provisioning leaves existing paths in place, warns for each row of this box that still has no
-  local fixture file, and exits 1 if any attempted copy or digest check failed. The box check
-  below determines readiness and handles existing fixtures. `python3-dev` (for `torch.compile` and tinygrad's GPU
-  backends) is installed by the shared setup; the standalone mode installs it when sudo can run,
-  and otherwise ends with a WARNING naming the command. The standalone mode, from the Mac:
+  local fixture file, and exits 1 if a copy or digest failure left a candidate uninstalled.
+  The box check below determines readiness and handles existing fixtures. The shared setup
+  installs `python3-dev` for `torch.compile` and tinygrad's GPU backends. Standalone provisioning
+  installs it when sudo can run and otherwise ends with a WARNING naming the command. The standalone mode, from the Mac:
   `git -C ~/ludics fetch -q origin && ssh <box> "bash <(printf %s $(git -C ~/ludics show
   origin/main:scripts/install-linux.sh | base64 | tr -d '\n') | base64 -d) --bench-venv"`
   (append `nvidia`, `amd` or `cpu` to override the detection; `ssh -t` lets sudo prompt). Run it

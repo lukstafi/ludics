@@ -426,7 +426,8 @@ if __name__ == '__main__':
         'ssh() { echo "ssh $*" >> "$CALLS"; (cd "$ANCHOR" && bash -c "${@: -1}"); }; '
         'scp() { echo "scp $*" >> "$CALLS"; local a dest=${@: -1}; '
         'for a; do case $a in *:*) '
-        '[[ ${a##*/} != "${FAKE_SCP_FAIL:-}" ]] || { printf "partial" > "$dest"; return 1; }; '
+        'if [[ ${a##*/} == "${FAKE_SCP_FAIL:-}" ]]; then '
+        '[[ -d $dest ]] || printf "partial" > "$dest"; return 1; fi; '
         'cp "$ANCHOR/${a#*:}" "$dest" || return;; esac; done; }; '
         'mkvenv() { local d=$1; shift; mkdir -p "$d/bin"; cp "$FAKE_PY" "$d/bin/python"; printf "%s\\n" "$@" > "$d/installed"; }; ')
     NVIDIA_PINS = 'numpy==2.5.3 safetensors==0.8.0 tinygrad==0.14.0 torch==2.14.0+cu130'
@@ -649,6 +650,25 @@ if __name__ == '__main__':
         self.assertFalse((fixtures / 'broken.safetensors').exists())
         self.assertTrue((fixtures / 'a.safetensors').exists())
         self.assertEqual(list(fixtures.glob('.incoming*')), [])
+
+    def test_bench_origin_fixtures_recover_with_a_shared_copy_of_the_same_origin(self):
+        self.bench_setup(fixtures=('a', 'b'), recorded=('b',))
+        self.origin_fixture('a', origin='id-rog-nv-linux')
+        self.origin_fixture('a', b'fixture a\n', source=None)
+        result = self.run_shell(self.BENCH_STUB + 'bench_fixtures minix-amd-linux')
+        self.assertIn('Digest check failed for by-origin/id-minix-amd-linux/a.safetensors', result.stderr)
+        self.assertIn('a.safetensors MATCH expected id-minix-amd-linux', result.stdout)
+        self.assertNotIn('no local file', result.stderr)
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        self.assertEqual((fixtures / 'a.safetensors').read_bytes(), b'fixture a\n')
+
+    def test_bench_origin_fixtures_stop_before_copying_when_the_resolver_transfer_fails(self):
+        self.bench_setup()
+        self.origin_fixture('a')
+        result = self.run_shell(self.BENCH_STUB + 'FAKE_SCP_FAIL=check-box.sh bench_fixtures minix-amd-linux', False)
+        self.assertIn('Cannot copy check-box.sh', result.stderr)
+        fixtures = self.root / 'ocannl/benchmarks/fixtures'
+        self.assertEqual(list(fixtures.glob('*.safetensors')), [])
 
     def test_bench_origin_fixtures_warn_about_missing_own_rows_on_a_rerun(self):
         self.bench_setup()
