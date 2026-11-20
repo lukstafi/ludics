@@ -74,8 +74,8 @@ SERIES_COUNT=""                        # nonempty = the commit count the PR stat
 SERIES_FAIL=""                         # nonempty = the commits read answers with a 503
 ADVISORY_FAIL=""                       # nonempty = the advisory-list read answers with a 503
 # An ABSENT verdict's base, re-read before each merge attempt (ludics-lite#523). The gate reads
-# base-sha until the merge loop's first base read; from that read on, every read answers BASE_MOVED
-# when it is set -- the base advanced between the gate's read and the merge call.
+# base-sha until BASE_MOVE_AFTER_READS base re-reads; from then on, every read answers BASE_MOVED
+# when it is set.
 BASE_MOVED=""
 BASE_MOVE_AFTER_READS=1                 # which explicit base re-read first sees BASE_MOVED
 BASE_READ_FAIL=""                      # nonempty = the merge loop's base read answers with a 503
@@ -334,6 +334,14 @@ gh() {
         return 1
       fi
       printf '%s\t%s\n' "$reads" "$PR_BASE"
+      ;;
+    *'--jq .merged')
+      printf 'CALL merged-after-resend-refusal\n' >>"$CALLS_FILE"
+      if [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
+        printf '%s\n' true
+      else
+        printf '%s\n' false
+      fi
       ;;
     # The merged-state read after the call: the state, a tab, the head the PR stands at (ludics#823:
     # a merged PR's head is the head it was merged at). Above the head reads, whose `.head.sha`
@@ -4315,6 +4323,23 @@ test_a_gateway_resend_confirms_a_pr_merged_meanwhile() (
   assert_eq "$(merge_calls)" 1 "the write was not resent"
 )
 
+test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile() (
+  reset
+  moving_build_fixture compatible
+  retune API_ATTEMPTS=3
+  BUILD_MOVE_ON_CALL=gateway-merged
+  THREADS_JSON_LATER="[$(review_thread 4095865442 false)]"
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "confirming a concurrent merge" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the gated head landed concurrently despite the open thread ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "the landing was confirmed"
+  assert_eq "$(grep -c -x 'CALL merge-build-refs' "$CALLS_FILE")" 1 "the thread stopped the resend before the ref read"
+  assert_eq "$(merge_calls)" 1 "the write was not resent"
+)
+
 # The base moved, and the paths both sides changed hold no build input: the config is read, nothing
 # is built, and the merge proceeds. So with no path changed on both sides (the default trigger). With
 # a side that changed nothing, no trigger can hold, and the config is not even read.
@@ -4972,6 +4997,7 @@ tests=(
   test_a_base_modified_merge_response_refreshes_the_next_attempt
   test_a_gateway_refusal_never_resends_a_stale_build
   test_a_gateway_resend_confirms_a_pr_merged_meanwhile
+  test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile
   test_no_build_input_on_both_sides_builds_nothing
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges

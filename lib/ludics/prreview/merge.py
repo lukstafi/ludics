@@ -26,6 +26,8 @@ review round:
   passed; then the call, bound to the gated head (``--match-head-commit``), and the merged state confirmed
   over REST, with the head it merged at (``confirm``, ludics#823).
 
+A resend gate that refuses can still confirm a concurrent landing over REST without a new write.
+
 MERGE LEASE (#1269). ``lease fleet`` with ``trigger always`` in the default-branch merge-build
 config makes upgraded callers sharing the same fleet anchor and state directory serialize per
 case-normalized ``owner/name``. The initial build runs in parallel. The lease covers final checks, refreshes (slot
@@ -690,7 +692,7 @@ class Recovery:
 
 
 class _AlreadyMerged(Exception):
-    """A pre-write build check saw a landing. Confirm it without another merge write."""
+    """A pre-write check saw a landing. Confirm it without another merge write."""
 
 
 class Merge:
@@ -1269,10 +1271,20 @@ class Merge:
         return True, tip if tip != build.base_sha else None
 
     def before_resend(self, build: BuildVerdict | None, lease: MergeLease | None) -> None:
-        _, tip = self.pre_merge_reads(build, lease, resend=True)
-        if tip is not None:
-            assert build is not None
-            self.refuse_stale_build(build, tip, "before a merge request could be resent")
+        try:
+            _, tip = self.pre_merge_reads(build, lease, resend=True)
+            if tip is not None:
+                assert build is not None
+                self.refuse_stale_build(build, tip, "before a merge request could be resent")
+        except cli.Exit as refusal:
+            if refusal.rc in (1, 3):
+                # A gate can stop these reads before the live refs report a concurrent merge.
+                merged = self.session.retry(
+                    "read", ["api", f"repos/{self.repo}/pulls/{self.num}", "--jq", ".merged"],
+                )
+                if isinstance(merged, GhOk) and merged.stdout == "true":
+                    raise _AlreadyMerged from None
+            raise
 
     def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None, lease: MergeLease | None = None) -> None:
         """The attempts: every pre-call read, the bound call, and its failures told apart."""
@@ -1445,7 +1457,7 @@ class Merge:
             return 0
         if already_merged:
             fail(
-                3, f"{repo}#{pr} read as merged in GraphQL but the landing could not be confirmed over REST",
+                3, f"{repo}#{pr} read as merged before the write but the landing could not be confirmed over REST",
                 f"({line}). Re-read the PR before attempting another merge.",
             )
         if self.opts.require_green:
