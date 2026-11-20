@@ -1,0 +1,3 @@
+This file exists only on the branch api-contract-anchor, the head of the live-API contract's
+open-PR anchor (ship-pr/scripts/pr-review-api-contract.sh, CONTRACT_OPEN_PR). That PR stays a
+draft, is never merged, and its head never moves.
