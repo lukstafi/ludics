@@ -74,9 +74,10 @@ SERIES_COUNT=""                        # nonempty = the commit count the PR stat
 SERIES_FAIL=""                         # nonempty = the commits read answers with a 503
 ADVISORY_FAIL=""                       # nonempty = the advisory-list read answers with a 503
 # An ABSENT verdict's base, re-read before each merge attempt (ludics-lite#523). The gate reads
-# base-sha until the merge loop's first base read; from that read on, every read answers BASE_MOVED
-# when it is set -- the base advanced between the gate's read and the merge call.
+# base-sha until BASE_MOVE_AFTER_READS base re-reads; from then on, every read answers BASE_MOVED
+# when it is set.
 BASE_MOVED=""
+BASE_MOVE_AFTER_READS=1                 # which explicit base re-read first sees BASE_MOVED
 BASE_READ_FAIL=""                      # nonempty = the merge loop's base read answers with a 503
 HEAD_AFTER_MOVE=""                     # nonempty = the head the gate reads once the base moved
 MOVED_RUN_RC=""                        # 4 = once the base has moved, a run is queued on it (no verdict)
@@ -108,6 +109,7 @@ BUILD_LIVE_REMOTE=""                   # a moving-base case reads main from this
 BUILD_LATER=""                         # a successor already in the bare repository's object store
 BUILD_TIP_LATER=""                     # an ill-shaped live-tip answer after the build
 BUILD_TARGET_LATER=""                  # a retarget after the build
+BUILD_HEAD_TARGET_NULL=""              # a present live head ref with no target after the build
 BUILD_MOVE_ON_CALL=""                  # first merge write advances main and returns this refusal
 COMPARE_FORWARD=""                     # nonempty = the compare from the tip to the head (the PR's paths)
 COMPARE_REVERSE=""                     # nonempty = the compare from the head to the tip (the base's)
@@ -290,7 +292,7 @@ fixture_read_fails() {
 fixture_base() {
   if [ -n "$BASE_KEEPS_MOVING" ]; then
     printf 'moved-%s\n' "$(fixture_call_total base-sha)"
-  elif [ -n "$BASE_MOVED" ] && [ "$(fixture_call_total base-sha)" -ge 1 ]; then
+  elif [ -n "$BASE_MOVED" ] && [ "$(fixture_call_total base-sha)" -ge "$BASE_MOVE_AFTER_READS" ]; then
     printf '%s\n' "$BASE_MOVED"
   else
     printf '%s\n' base-sha
@@ -332,6 +334,14 @@ gh() {
         return 1
       fi
       printf '%s\t%s\n' "$reads" "$PR_BASE"
+      ;;
+    *'--jq .merged')
+      printf 'CALL merged-after-resend-refusal\n' >>"$CALLS_FILE"
+      if [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
+        printf '%s\n' true
+      else
+        printf '%s\n' false
+      fi
       ;;
     # The merged-state read after the call: the state, a tab, the head the PR stands at (ludics#823:
     # a merged PR's head is the head it was merged at). Above the head reads, whose `.head.sha`
@@ -409,6 +419,7 @@ gh() {
       fi
       ;;
     *'.body'*)
+      printf 'CALL body\n' >>"$CALLS_FILE"
       reads=$(fixture_call_count body) || return 1
       if [ -n "$BODY_FAIL" ]; then
         printf 'gh: Not Found (HTTP 404)\n' >&2
@@ -573,10 +584,12 @@ gh() {
       fi
       gh_fixture_parse "$@"
       gh_fixture_answer "$(jq -cn --arg state "$state" --arg target "$target" --arg tip "${BUILD_TIP_LATER:-$tip}" \
-        --arg head "$CURRENT_HEAD" --arg head_tip "$head_tip" --arg repo "${HEAD_REPO:-$REPO}" '
+        --arg head "$CURRENT_HEAD" --arg head_tip "$head_tip" --arg repo "${HEAD_REPO:-$REPO}" \
+        --arg head_target_null "$BUILD_HEAD_TARGET_NULL" '
         {data:{repository:{pullRequest:{
           state:$state, baseRefName:$target, baseRef:{name:$target,target:{oid:$tip}},
-          headRefOid:$head, headRef:{target:{oid:$head_tip}}, headRefName:"claude/topic",
+          headRefOid:$head, headRef:{target:(if $head_target_null == "" then {oid:$head_tip} else null end)},
+          headRefName:"claude/topic",
           headRepository:{nameWithOwner:$repo}
         }}}}')"
       ;;
@@ -806,6 +819,7 @@ reset() {
   SERIES_FAIL=""
   ADVISORY_FAIL=""
   BASE_MOVED=""
+  BASE_MOVE_AFTER_READS=1
   BASE_READ_FAIL=""
   HEAD_AFTER_MOVE=""
   MOVED_RUN_RC=""
@@ -820,6 +834,7 @@ reset() {
   BUILD_LATER=""
   BUILD_TIP_LATER=""
   BUILD_TARGET_LATER=""
+  BUILD_HEAD_TARGET_NULL=""
   BUILD_MOVE_ON_CALL=""
   COMPARE_FORWARD=""
   COMPARE_REVERSE=""
@@ -1715,6 +1730,20 @@ test_an_absent_verdict_rereads_its_base_before_the_call() {
   assert_no_merge_call
 }
 
+test_an_absent_base_that_moves_during_gateway_backoff_refuses_the_resend() (
+  reset
+  retune API_ATTEMPTS=3
+  NO_CHECKS=1
+  MERGE_GATEWAY_ONCE=1
+  BASE_MOVED=moved-base
+  BASE_MOVE_AFTER_READS=2
+  run_merge
+  assert_eq "$MERGE_RC" 1 "the resend cannot reuse the verdict on the old base ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "(base-sha -> moved-base), and its ABSENT verdict was read against the old base" \
+    "both bases and the stale verdict are named"
+  assert_eq "$(merge_calls)" 1 "only the first call reached the gateway"
+)
+
 # ludics-lite#471: gh refusing the merge call's own flags is a gh/script version mismatch, exit 2
 # on the one call. With the caller's flags forwarded after `--`, the call is the caller's (review
 # of #490): a refusal there may be the caller's typo, and a forwarded `--delete-branch` runs git
@@ -2456,6 +2485,38 @@ test_a_thread_opened_between_merge_attempts_refuses_the_retry() {
   assert_eq "$MERGE_RC" 0 "the retry lands ($MERGE_OUTPUT)"
   assert_eq "$(grep -c -x 'CALL reviewThreads' "$CALLS_FILE")" 2 "one read per attempt"
 }
+
+test_a_thread_opened_during_gateway_backoff_refuses_the_resend() (
+  reset
+  retune API_ATTEMPTS=3
+  MERGE_GATEWAY_ONCE=1
+  THREADS_JSON_LATER="[$(review_thread 4095865442 false)]"
+  run_merge
+  assert_eq "$MERGE_RC" 1 "the resend is refused on the thread opened during backoff ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "1 review thread(s) still UNRESOLVED — 4095865442" "naming the thread"
+  assert_eq "$(grep -c -x 'CALL reviewThreads' "$CALLS_FILE")" 2 "the resend re-reads threads"
+  assert_eq "$(merge_calls)" 1 "only the first call reached the gateway"
+)
+
+test_a_clear_gateway_resend_repeats_the_attempt_reads_in_order() (
+  local order pass
+  reset
+  retune API_ATTEMPTS=3
+  MERGE_GATEWAY_ONCE=1
+  run_merge --require-green
+  assert_eq "$MERGE_RC" 0 "the resend lands ($MERGE_OUTPUT)"
+  pass=$(printf '%s\n' 'CALL body' 'CALL commits-count' 'CALL commits' 'CALL reviewThreads' \
+    'CALL mergeQueue' 'CALL checkpoint' "CALL repos/$REPO/git/ref/heads/claude/topic" 'CALL pr merge')
+  order=$(awk '
+    /^CALL body$/ { bodies++ }
+    bodies >= 2 {
+      if (/^CALL api graphql .*mergeQueue/) { print "CALL mergeQueue" }
+      else if (/^CALL pr merge /) { print "CALL pr merge" }
+      else { print }
+    }
+  ' "$CALLS_FILE")
+  assert_eq "$order" "$(printf '%s\n%s' "$pass" "$pass")" "the first send and its resend read the same gates in order"
+)
 
 test_an_unread_thread_connection_refuses_as_transport() {
   reset
@@ -4198,6 +4259,20 @@ test_a_build_cannot_authorize_a_head_lagging_its_live_ref() {
   assert_no_merge_call
 }
 
+test_a_build_with_a_present_head_ref_and_null_target_is_unread() {
+  reset
+  moving_build_fixture compatible
+  BUILD_HEAD_TARGET_NULL=1
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "checking a head ref with no target" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 3 "a present ref with no target leaves its tip unread ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "the refs API answered no SHA" "the target SHA is missing"
+  assert_no_merge_call
+}
+
 test_a_base_modified_merge_response_refreshes_the_next_attempt() {
   reset
   moving_build_fixture compatible
@@ -4245,6 +4320,23 @@ test_a_gateway_resend_confirms_a_pr_merged_meanwhile() (
   fi
   assert_eq "$MERGE_RC" 0 "the landed head matches the gated head ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "the landing was confirmed"
+  assert_eq "$(merge_calls)" 1 "the write was not resent"
+)
+
+test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile() (
+  reset
+  moving_build_fixture compatible
+  retune API_ATTEMPTS=3
+  BUILD_MOVE_ON_CALL=gateway-merged
+  THREADS_JSON_LATER="[$(review_thread 4095865442 false)]"
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "confirming a concurrent merge" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 0 "the gated head landed concurrently despite the open thread ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "the landing was confirmed"
+  assert_eq "$(grep -c -x 'CALL merge-build-refs' "$CALLS_FILE")" 1 "the thread stopped the resend before the ref read"
   assert_eq "$(merge_calls)" 1 "the write was not resent"
 )
 
@@ -4785,6 +4877,7 @@ tests=(
   test_the_body_is_rescanned_before_a_retried_merge
   test_a_base_moved_during_the_call_is_not_a_head_move
   test_an_absent_verdict_rereads_its_base_before_the_call
+  test_an_absent_base_that_moves_during_gateway_backoff_refuses_the_resend
   test_no_warning_when_the_base_is_not_the_default_branch
   test_an_unread_default_branch_is_not_an_inert_keyword
   test_a_repository_named_like_a_keyword_is_not_a_keyword
@@ -4828,6 +4921,8 @@ tests=(
   test_an_open_review_thread_refuses_the_merge
   test_an_unread_thread_connection_refuses_as_transport
   test_a_thread_opened_between_merge_attempts_refuses_the_retry
+  test_a_thread_opened_during_gateway_backoff_refuses_the_resend
+  test_a_clear_gateway_resend_repeats_the_attempt_reads_in_order
   test_a_blocking_checkpoint_with_no_confirm_refuses
   test_a_confirm_cleared_for_an_older_head_does_not_count
   test_a_blocking_confirm_at_the_head_refuses
@@ -4898,9 +4993,11 @@ tests=(
   test_a_build_with_an_unread_current_base_is_refused
   test_a_build_cannot_authorize_a_retargeted_merge
   test_a_build_cannot_authorize_a_head_lagging_its_live_ref
+  test_a_build_with_a_present_head_ref_and_null_target_is_unread
   test_a_base_modified_merge_response_refreshes_the_next_attempt
   test_a_gateway_refusal_never_resends_a_stale_build
   test_a_gateway_resend_confirms_a_pr_merged_meanwhile
+  test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile
   test_no_build_input_on_both_sides_builds_nothing
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges

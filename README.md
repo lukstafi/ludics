@@ -1221,8 +1221,10 @@ only items about the head are that comment, over a first failure, prints it for 
 posts the request, where it used to end on it unposted. `test-pr-review-watch.sh` runs PR #277's two-head shape through a watch
 (findings on the previous head scrolled past as NOT about head, the 👍 on the head above it), and
 `test-pr-review-merge.sh` pins `merge` refusing on an open thread (exit 1, no flag bypassing it)
-and on an unread connection (exit 3), with one read per merge attempt, so a thread opened
-between attempts refuses the retry. It also pins the commit-series scan (ludics-lite#296): each
+and on an unread connection (exit 3), with one read per merge attempt and gateway resend, so a
+thread opened during either gap refuses the next write. It also pins the pre-merge read order
+on a resend and exit 3 before any write when a built merge's live head ref has a null target.
+It also pins the commit-series scan (ludics-lite#296): each
 commit message read with the body's filter, a quoted closing sentence warned about by commit and
 line, a commit closing the PR's own issue silent, the series read after the gate and before every
 merge attempt for the gated head (a base can move between attempts), a repeated finding printed
