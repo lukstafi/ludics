@@ -693,6 +693,11 @@ Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its 
 batches it runs (`execution slot`) and, on the anchor, the registry. The one verb `fleet-worker.sh`
 still answers itself is `execution slot --probe`, which must answer on a box without Python 3.12.
 
+Agent notes (#1271): the shared `take_lock` retries a failed claim with a missing directory up
+to three times per call, even at zero contention wait. A base counterexample removes the lock
+after the real `mkdir` fails and before the directory check. A file blocking the parent path
+checks the retry count and the unwritable diagnostic, alongside the fleet suite's permissions case.
+
 Request-kind routing (#1155): a direct `execution hold --request` reads the registry before
 creating the slot directory or taking locks, and refuses correctness with the `execution slot`
 remedy. Refusal preserves the caller's CPU/GPU and wait choices rather than guessing them.

@@ -40,11 +40,13 @@ def far_config(cfg: Config, box: str, box_env: Mapping[str, str]) -> Config:
     return load_config(SCRIPT, {**box_env, **dict(forwarded(cfg, box))}, host="far")
 
 
-def run_far(cfg: Config, box: str, tail: str, env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+def run_far(cfg: Config, box: str, tail: str, env: Mapping[str, str],
+            *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     """The far side's prelude and ``tail``, run here by bash as ``bash -s`` would run it on the box."""
     bash = shutil.which("bash") or "/bin/bash"
     return subprocess.run([bash, "-s"], input=prelude(cfg, box) + tail, capture_output=True, text=True,
-                          env={"PATH": os.environ.get("PATH", ""), "HOME": "/home/far", **env}, check=False)
+                          env={"PATH": os.environ.get("PATH", ""), "HOME": "/home/far", **env},
+                          check=False, timeout=timeout)
 
 
 class Forwarded(unittest.TestCase):
@@ -118,6 +120,44 @@ class FleetWorker(unittest.TestCase):
         # far sides that start a fleet-worker.sh (the shell suite drives the leg's over ssh).
         self.assertIn('fleet_worker "${wrap[@]}" -- bash "$results.sh"', leg.LEG)
         self.assertIn('dir=$(fleet_worker "$fw" execution slot --bg', tiprun.FAR)
+
+
+class TakeLock(unittest.TestCase):
+    def test_release_after_failed_mkdir_is_retried_with_zero_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = os.path.join(tmp, "lock")
+            os.mkdir(lock)
+            done = run_far(coordinator(), "far", r"""
+mkdir() {
+  command mkdir "$@" && return 0
+  rmdir "$1" || exit 2
+  return 1
+}
+take_lock "$LOCK" 0 fixture || exit $?
+test -f "$LOCK/pid" && test -f "$LOCK/start"
+""", {"LOCK": lock}, timeout=5)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(done.stdout, "")
+
+    def test_uncreatable_lock_exhausts_three_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = os.path.join(tmp, "file")
+            with open(parent, "w", encoding="utf-8"):
+                pass
+            done = run_far(coordinator(), "far", r"""
+attempts=0
+mkdir() {
+  attempts=$((attempts + 1))
+  command mkdir "$@"
+}
+take_lock "$LOCK" 0 fixture
+rc=$?
+printf 'attempts=%s\n' "$attempts"
+exit "$rc"
+""", {"LOCK": os.path.join(parent, "lock")}, timeout=5)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertRegex(done.stdout, r"^fixture: cannot create lock .* \(unwritable\?\)\n")
+        self.assertTrue(done.stdout.endswith("\nattempts=4\n"), done.stdout)
 
 
 class Pin(unittest.TestCase):

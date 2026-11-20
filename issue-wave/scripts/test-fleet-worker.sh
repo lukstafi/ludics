@@ -1346,6 +1346,20 @@ expect "a first claim also waits on the lease lock and fails after the bound" 1 
 rmdir "$ISSUE_WAVE_STATE/COORDINATOR.lock"
 expect "coordinator: nobody yet, exit 3" 3 "nobody holds the lease" -- "$FW" coordinator
 expect "claim takes the lease" 0 "CLAIMED coordinator lease on testbox" -- "$FW" claim
+# Reproduce the holder's release after the real mkdir loses, before take_lock can see the lock.
+mkdir "$TMP/bin-release-lock" "$ISSUE_WAVE_STATE/COORDINATOR.lock"
+cat > "$TMP/bin-release-lock/mkdir" <<EOF
+#!/usr/bin/env bash
+if [ "\$#" -eq 1 ] && [ "\$1" = "\$ISSUE_WAVE_STATE/COORDINATOR.lock" ] && [ -d "\$1" ]; then
+  "$REAL_MKDIR" "\$@" && exit 0
+  rmdir "\$1" || exit 2
+  exit 1
+fi
+exec "$REAL_MKDIR" "\$@"
+EOF
+chmod +x "$TMP/bin-release-lock/mkdir"
+expect "claim takes the lock when it is released just after mkdir fails" 0 "CLAIMED already held" -- \
+  env PATH="$TMP/bin-release-lock:$PATH" FLEET_LOCK_WAIT=0 "$FW" claim
 expect "claim again is idempotent for the holder" 0 "CLAIMED already held" -- "$FW" claim
 expect "coordinator: me" 0 "COORDINATOR: you" -- "$FW" coordinator
 expect "a second coordinator's claim is refused while held" 1 "CLAIM REFUSED: coordinator lease held by" -- "${B[@]}" claim
