@@ -133,13 +133,22 @@ start_is() {
   esac
 }
 take_lock() {
-  local lock="$1" wait="$2" label="$3" waited=0 holder hstart
+  local lock="$1" wait="$2" label="$3" waited=0 missing_retries=3 holder hstart
   # The claim is the mkdir AND the start file's exclusive creation: bash's noclobber opens with
   # O_EXCL, while uutils's mkdir (Ubuntu's coreutils since 25.10) can report success to both of two
   # racers (#921), which let two launches, two unsticks or two owners of one worktree through
   # (#953). A racer whose mkdir succeeded but whose start file exists already is a contender.
   until mkdir "$lock" 2>/dev/null && ( set -C; : > "$lock/start" ) 2>/dev/null; do
-    [ -d "$lock" ] || { echo "$label: cannot create lock $lock (unwritable?)"; return 1; }
+    if [ ! -d "$lock" ]; then
+      # A holder can release the directory between the failed mkdir and this check.
+      # Give that race a bounded retry budget even when the caller has no wait for a holder.
+      if [ "$missing_retries" -eq 0 ]; then
+        printf '%s: cannot create lock %q (unwritable?)\n' "$label" "$lock"
+        return 1
+      fi
+      missing_retries=$((missing_retries - 1))
+      continue
+    fi
     holder=$(cat "$lock/pid" 2>/dev/null); hstart=$(cat "$lock/start" 2>/dev/null)
     if [ -n "$holder" ] && { ! kill -0 "$holder" 2>/dev/null || ! start_is "$holder" "$hstart"; }; then
       rm -f "$lock/pid" "$lock/start"; rmdir "$lock" 2>/dev/null; continue   # dead or reused pid: reclaim
