@@ -572,6 +572,8 @@ bench_fixtures() {
     id=$(bench_canonical_box "$check/check-box.sh" "$endpoint" "$(printf '%q' "$anchor:$remote")") ||
       fail "$id"
     own=by-origin/$id
+  else
+    printf '%s\n' "FLEET_LOCAL_BOX is unset. Copying shared fixtures only. Set it to copy the box's originals and report missing digest rows."
   fi
   list="find . $predicate"
   # A box's own original takes precedence over a shared file of the same name.

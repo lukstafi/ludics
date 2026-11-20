@@ -792,8 +792,13 @@ exit "${FAKE_CHECK_RC:-0}"
 
     def test_bench_check_not_run_without_an_endpoint_a_store_or_a_tip(self):
         stub = self.check_setup()
-        for env, why in [('ENDPOINT=; ', 'FLEET_LOCAL_BOX is unset'),
-                         ('export FAKE_CANON_RC=2; ', 'check-box.sh --canonical-box minix-amd-linux exited 2 at '),
+        result = self.run_shell('ENDPOINT=; ' + stub + 'bench_venv_only', False)
+        self.assertEqual(result.returncode, 4)
+        self.assertIn('FLEET_LOCAL_BOX is unset. Copying shared fixtures only.', result.stdout)
+        self.assertIn('Box check NOT RUN (exit 4): FLEET_LOCAL_BOX is unset', result.stdout)
+        self.assertIsNone(self.check_args())
+        self.assertTrue((self.root / 'venvs/ocannl-bench').is_symlink())
+        for env, why in [('export FAKE_CANON_RC=2; ', 'check-box.sh --canonical-box minix-amd-linux exited 2 at '),
                          ('export FAKE_CANON_OUT=; ', "check-box.sh --canonical-box minix-amd-linux answered '', not one box name"),
                          ("export FAKE_CANON_OUT='-x'; ", 'check-box.sh --canonical-box minix-amd-linux answered -x, not one box name'),
                          ("export FAKE_CANON_OUT=$'a\\nb'; ", "check-box.sh --canonical-box minix-amd-linux answered $'a\\nb', not one box name"),
