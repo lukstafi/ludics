@@ -17,32 +17,24 @@ https://github.com/lukstafi/ludics/issues/1236#issuecomment-7007592831): relaunc
 count, in ``relaunches=`` and never in ``interventions=``. A finisher is the heaviest way a
 coordinator steps in, and a comparison that omits it can rank well an arm whose workers needed
 replacing; mixed into the message count it would hide which kind of intervention an arm needed.
-Each counts once: a CLI ``launch --replace`` that replaced a worker's record; a native respawn, seen
-as a second ``state=launched`` on a row that already has ``launched_at``; and a finisher, the worker
-spawned from ``board takeover``'s brief, as a relaunch of the same task on that task's row (its
-spawn writes that second ``state=launched``). A first launch counts nothing. One writer per kind,
-so no relaunch is counted twice:
+The first launch counts nothing. A CLI replacement, a native respawn, and a finisher from a
+``board takeover`` brief each count on the original task's row. Each launch path has one writer:
 
   fleet-worker.sh launch <box> <worker> --replace ...   after a launch that exits 0 and replaced a
                                                  record (the far side's archive of it under the
                                                  launch's own stamp is there), ``after_replace``'s
                                                  tally of the CLI row by worker and host
-  fleet-worker.sh board set <wave> <task> state=launched ...
-                                                 every other relaunch: the store's THE RELAUNCH
-                                                 COUNT (boardstore.py), which skips a set on the
-                                                 same CLI worker's row (its worker and agent_host
-                                                 unchanged), the launch's to count
+  fleet-worker.sh board spawned <wave> <task> --agent <id> --transport <t> [--model <m>]
+                                                 a recorded spawn on a row with ``launched_at``
+                                                 (boardstore.py, ludics#1264)
 
 ``board takeover`` itself writes nothing (takeover.py): it may be read, and read again, without a
-spawn. A CLI worker launched again under a new name, or on another box, counts where its row is
-set ``launched`` with that name or that ``agent_host``; a native finisher of a CLI worker, where
-its row is set ``launched`` with its own ``transport``. A ``launch --replace`` whose worker no row
-names (a name reused outside a wave) is a ``BOARD TALLY NOTE``, as an unstick's is. The boundary:
-the board sees a native relaunch only through the ``state=launched`` its spawn writes, so a spawn
-that writes none counts nothing and two such writes for one spawn count two (native-workers.md asks
-for one per spawn, and a retry of one whose acknowledgement was lost is one more: re-read with
-``board show`` first); a count is corrected by a set that names ``relaunches``, after a ``board
-show``.
+spawn. Legacy ``board set state=launched`` calls still count under THE RELAUNCH COUNT in
+``boardstore.py``, including a CLI worker launched under a new name or on another box. A
+``launch --replace`` whose worker no row names (a name reused outside a wave) is a ``BOARD TALLY
+NOTE``, as an unstick's is. The board records reported spawns only. Check ``board show`` after a
+lost acknowledgement, since repeating a recorded spawn increments the count again. Correct a
+count with a set that names ``relaunches`` after reading the row.
 
 The turns: two writers, one classifier (``classify``):
 

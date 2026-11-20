@@ -2790,10 +2790,10 @@ expect "a field without = is a usage error" 2 "board set: expected <key>=<value>
 expect "show of a wave with no board refuses with its own exit, 5" 5 "^BOARD REFUSED: no board for wave none on the anchor$" -- "$FW" board show none
 expect "...but a state root that is no directory is a plain refusal, never no board" 1 "is not a directory$" -- \
   env FLEET_ANCHOR_STATE="$TMP/no-such-state" "$FW" board show none
-expect "an unknown board action is a usage error" 2 "board: expected set, note, log, show, check, takeover, close or tally" -- "$FW" board edit bw
+expect "an unknown board action is a usage error" 2 "board: expected set, spawned, note, log, show, check, takeover, close or tally" -- "$FW" board edit bw
 # board tally (ludics#1214): a native worker's message, counted on its row by its first line.
-[ "$(jq -r '.tasks[0].fields | "\(.interventions) \(.routine_answers)"' "$ISSUE_WAVE_STATE/boards/bw.json")" = "0 0" ] &&
-  ok "a row starts its two counters at 0" || ko "row: $(jq -c '.tasks[0].fields' "$ISSUE_WAVE_STATE/boards/bw.json")"
+[ "$(jq -r '.tasks[0].fields | "\(.interventions) \(.routine_answers) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/bw.json")" = "0 0 0" ] &&
+  ok "a row starts its three counters at 0" || ko "row: $(jq -c '.tasks[0].fields' "$ISSUE_WAVE_STATE/boards/bw.json")"
 printf 'EXECUTION_ASSIGNED bw-r1\ncommand: true\n' > "$TMP/assigned.md"
 printf 'Your plan misses #1210: read it, then go on.\n' > "$TMP/followup.md"
 expect "board tally counts a protocol answer in routine_answers" 0 '^BOARD TALLY bw: "ll#1" routine_answers=1$' -- "$FW" board tally bw "ll#1" --message "$TMP/assigned.md"
@@ -2837,6 +2837,21 @@ setup_step "could not relaunch the ls-1 row (setup)" "$FW" board set ls ls-1 "st
   ok "...and a relaunch keeps the stamp the row has" || ko "ls board after relaunch: $(cat "$ISSUE_WAVE_STATE/boards/ls.json")"
 [ "$(jq -r '.tasks[0].fields.relaunches' "$ISSUE_WAVE_STATE/boards/ls.json")" = 0 ] &&
   ok "...counted on a CLI row only by the launch --replace that made it (ludics#1236)" || ko "ls board: $(cat "$ISSUE_WAVE_STATE/boards/ls.json")"
+# A spawn is one board mutation (ludics#1264), even when the preceding transport was CLI.
+setup_step "could not prepare the native spawn row (setup)" "$FW" board set --create --new-row sp native state=pending
+expect "a first spawn updates a prepared row" 0 '^BOARD SPAWNED sp: "native"$' -- \
+  "$FW" board spawned sp native --agent a1 --transport subagent --model actual/high
+[ "$(jq -r '.tasks[0].fields | "\(.agent) \(.transport) \(.model) \(.state) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/sp.json")" = "a1 subagent actual/high launched 0" ] &&
+  ok "...the spawn records the runtime facts and leaves the count at zero" || ko "sp board: $(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+expect "a native respawn counts one relaunch" 0 '^BOARD TALLY sp: "native" relaunches=1$' -- \
+  "$FW" board spawned sp native --agent a2 --transport subagent
+setup_step "could not prepare the CLI finisher row (setup)" "$FW" board set --new-row sp cli transport=cli worker=cli state=launched
+expect "a CLI-to-native finisher counts one relaunch" 0 '^BOARD TALLY sp: "cli" relaunches=1$' -- \
+  "$FW" board spawned sp cli --agent f1 --transport subagent
+expect "another coordinator cannot record a spawn" 1 "BOARD REFUSED fleet: coordinator lease held by" -- \
+  "${B[@]}" board spawned sp cli --agent f2 --transport subagent
+[ "$(jq -r '.tasks[1].fields | "\(.agent) \(.transport) \(.state) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/sp.json")" = "f1 subagent launched 1" ] &&
+  ok "...the finisher is recorded and the refused spawn changes nothing" || ko "sp board: $(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
 # status --json (ludics#1165): the observers' read through the shim, with no lease and no identity --
 # every board, each row's phase derived as check reads it, the lease's host and never its token.
 expect "status --json reads every board without the lease or any identity" 0 '^{"version": 1, ' -- \

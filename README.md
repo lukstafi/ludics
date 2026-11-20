@@ -812,6 +812,8 @@ line removed, where the guard must find what their authors found by accident.
 `test-fleet-worker.sh board` drives no-PR close-out through the real conclude CLI and registry
 (#1123): passed and failed runs conclude their own standing record and finish the row, and a
 repeated close writes nothing. The fixtures use payload files rather than accepting JSON in argv.
+The same section records a first native spawn, a native respawn and a CLI-to-native finisher
+through `board spawned`, checking the recorded facts, the relaunch counts and the lease (#1264).
 
 `test-fleet-worker.sh` launch cases also pin `--standing`: a refused reservation leaves the
 prepared worktree, starts no worker, and a retry cannot silently adopt an outstanding dispatch;
