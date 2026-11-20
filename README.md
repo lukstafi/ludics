@@ -495,6 +495,7 @@ ship-pr/scripts/test-pr-review-budget.sh
 ship-pr/scripts/test-pr-review-api-contract.sh
 scripts/test-wake-lab.sh
 scripts/test-wake-lab-linux.sh
+scripts/py -m unittest -v ludics.tests.test_fleetworker_winwitness_staging.StagedScripts.test_staging_line_endings_on_the_first_checkout
 scripts/py -m unittest ludics.tests.test_checkprompts_cli
 scripts/test-check-jq-shapes.sh
 scripts/test-check-scratch-dirs.sh
@@ -671,7 +672,8 @@ boxes boot native Ubuntu a fleet leg there costs a reboot. That job is its own w
 `windows-git-bash.yml`, run nightly and on dispatch rather than per push, since it takes close to
 an hour (ludics-lite#339). A PR does not dispatch it by default; one whose change needs Windows
 evidence (it fixes a Windows failure, or changes behavior only Windows exercises) dispatches it,
-`gh workflow run windows-git-bash.yml --ref <branch> [-f suite=<test-*.sh>]`, and cites the run.
+`gh workflow run windows-git-bash.yml --ref <branch> [-f suite=<fixture filename>]`, and cites the run.
+Select `test_fleetworker_winwitness_staging.py` to run the first-checkout case against Git for Windows.
 A red scheduled run opens an issue. Its first step proves the platform from
 inside the shell the suites run in (`uname -s` is `MINGW*`/`MSYS*` and `git --version` carries
 `.windows.`), every suite is gated on that proof, and the job's header names what it does not

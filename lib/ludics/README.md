@@ -423,6 +423,11 @@ fleetworker/winwitness.py
     issue-wave/scripts/test-fleet-worker.sh "execution windows-witness"
     lib/ludics/tests/test_fleetworker_winwitness.py
 
+fleetworker/winwitness_staging.py
+    issue-wave/scripts/test-fleet-worker.sh "execution windows-witness"
+    lib/ludics/tests/test_fleetworker_winwitness.py
+    lib/ludics/tests/test_fleetworker_winwitness_staging.py
+
 fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker/waveloop.py fleetworker/wavereview.py fleetworker/wavelaunch.py fleetworker/waveunprep.py fleetworker/wavedrive.py fleetworker/wavedecide.py
     issue-wave/scripts/test-fleet-worker.sh "wave kit"
     lib/ludics/tests/test_fleetworker_wave.py
@@ -794,14 +799,19 @@ deferred boot/recovery cancellation with isolated child sessions.
 
 Agent notes (wave-20261118-ludics, t1206): that recipe is now the verb `execution
 windows-witness` (`fleetworker/winwitness.py`), and executions.md keeps no Python block: the
-recipe's fake-call tests moved to `test_fleetworker_winwitness.py`, which also runs the staging
-script and `witness.sh` with a local bash and git (POSIX paths standing in for the site's), and
-the fleet suite's "execution windows-witness" section drives the verb against the registry with a
+recipe's fake-call tests moved to `test_fleetworker_winwitness.py`, and the fleet suite's
+"execution windows-witness" section drives the verb against the registry with a
 fake wake-lab (the site's `wake`) and an ssh that answers the Windows alias. The verb composes its
 measurement from `assign`'s base and `assign.read_blocks` (#159), stages the revision, the script
 and this checkout's `windows-driver.ps1` itself (#562), and confirms Linux by `boot-linux` and
 `status`'s `os=linux`. Its Windows paths come from a coordinator-private site file, so the box's
 layout never enters this public repository.
+
+Agent notes (wave-20261120-ludics, t1266; refs #1266): the site reader and staging script generator
+live in `winwitness_staging.py`, which native Windows Python can import. The Git Bash lane runs
+the first-checkout case from `test_fleetworker_winwitness_staging.py`. It feeds the generated
+script to Bash and reads raw checkout bytes with isolated, inherited `core.autocrlf=true` and
+`core.eol=crlf`, both with the site's LF policy and with the field omitted.
 
 Agent notes (wave-20261115-ludics, p3): `wavedrive.py`'s THE GATE defines the ten-minute,
 non-final pending notice and its in-memory reset conditions; its remote-tip sample is diagnostic

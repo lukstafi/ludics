@@ -1,7 +1,7 @@
-"""ludics.fleetworker.winwitness: ``execution windows-witness``'s readers, the scripts it stages on
-Windows (run here with a local bash and git), and every failure path of its steps against fake
-registry, wake-lab and ssh calls (the shell suite's "execution windows-witness" section drives the
-verb end to end, against the registry)."""
+"""Readers and coordinator steps for ``execution windows-witness``, with fake registry, wake-lab
+and SSH calls. The shell suite's "execution windows-witness" section drives the verb end to end.
+The generated scripts run in ``test_fleetworker_winwitness_staging.py``.
+"""
 
 import contextlib
 import io
@@ -12,15 +12,14 @@ import subprocess
 import tempfile
 import unittest
 from collections.abc import Generator
-from dataclasses import replace
 from typing import Any
 from unittest import mock
 
 from ludics import cli
 from ludics.fleetworker import winwitness
 from ludics.fleetworker.config import load_config
-from ludics.fleetworker.winwitness import (Plan, Site, block_problem, endpoint_problem, execute, parse, plan_of,
-                                           site_entry, staged_sha, staging_script)
+from ludics.fleetworker.winwitness import Plan, block_problem, endpoint_problem, execute, parse, plan_of
+from ludics.fleetworker.winwitness_staging import DEFAULT_BASH, Site, site_entry, staged_sha
 
 A = "a" * 40
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "issue-wave", "scripts", "fleet-worker.sh")
@@ -87,7 +86,7 @@ class Readers(unittest.TestCase):
         got = site_entry(SITE, "rog-nv-linux", "/wake")
         assert isinstance(got, Site)
         self.assertEqual((got.root, got.bash, got.max_cap, got.stage_cap, got.wake),
-                         ("C:/witness", winwitness.DEFAULT_BASH, 3600, 900, "/wake"))
+                         ("C:/witness", DEFAULT_BASH, 3600, 900, "/wake"))
         self.assertIn("no entry for minix", site_said(SITE, "minix-amd-linux"))
         for bad in ('C:/a"b', "C:/a%PATH%", "C:/a&b", "C:/a^b", "C:/a|b", "C:/a<b", "C:/a!b", "relative/x", "/posix", "C:/"):
             with self.subTest(bad=bad):
@@ -231,108 +230,6 @@ def staged_text(plan: Plan) -> str:
     raise AssertionError("no script.sh line")
 
 
-class StagedScripts(unittest.TestCase):
-    """The staging script and witness.sh are bash: run them here, the site's paths POSIX ones."""
-
-    def setUp(self) -> None:
-        self.dir = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.dir], check=False))
-        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
-               "-c", "core.autocrlf=false"]
-        origin = os.path.join(self.dir, "origin")
-        subprocess.run([*git, "init", "-q", origin], check=True)
-        with open(os.path.join(origin, "README"), "w") as f:
-            f.write("x\n")
-        subprocess.run([*git, "-C", origin, "add", "README"], check=True)
-        subprocess.run([*git, "-C", origin, "commit", "-q", "-m", "one"], check=True)
-        self.sha = subprocess.run(["git", "-C", origin, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        subprocess.run([*git, "-C", origin, "commit", "-q", "--allow-empty", "-m", "two"], check=True)
-        self.later = subprocess.run(["git", "-C", origin, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        # GitHub serves any reachable commit by its SHA; a local origin does once it is told to.
-        subprocess.run(["git", "-C", origin, "config", "uploadpack.allowAnySHA1InWant", "true"], check=True)
-        self.url = "file://" + origin
-        self.git = git
-        self.site = Site("win", os.path.join(self.dir, "root"), "/bin/bash", 60, 60, "/w")
-
-    def stage(self, revision: str, script: bytes = b"printf 'from the worker\\n'\n", request: str = "r1") -> subprocess.CompletedProcess[str]:
-        text = staging_script(self.site, request, revision, self.url, script, b"# the driver\n")
-        return subprocess.run([self.site.bash, "--noprofile", "--norc", "-s"], input=text, capture_output=True, text=True)
-
-    def witness(self, request: str = "r1") -> subprocess.CompletedProcess[str]:
-        path = os.path.join(self.site.root, request, "witness.sh")
-        return subprocess.run([self.site.bash, "--noprofile", "--norc", "--", path], capture_output=True, text=True)
-
-    def test_a_staged_revision_runs_the_script_from_its_checkout(self) -> None:
-        done = self.stage(self.later, b"pwd -P\nprintf 'rev=%s\\n' \"$WITNESS_REVISION\"\n")
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertTrue(staged_sha(done.returncode, done.stdout, self.later), done.stdout)
-        directory = os.path.join(self.site.root, "r1")
-        with open(os.path.join(directory, "windows-driver.ps1")) as f:
-            self.assertEqual(f.read(), "# the driver\n")
-        run = self.witness()
-        lines = run.stdout.splitlines()
-        self.assertEqual(lines[-1], "exit: 0", run.stdout + run.stderr)
-        self.assertIn(f"observed_sha: {self.later}", lines)
-        self.assertIn(os.path.join(directory, "checkout"), lines)
-        self.assertIn(f"rev={self.later}", lines)
-        self.assertTrue(any(line.startswith("git --version: git version") for line in lines))
-
-    def test_staging_line_endings_on_the_first_checkout(self) -> None:
-        origin = os.path.join(self.dir, "origin")
-        with open(os.path.join(origin, ".gitattributes"), "w", encoding="ascii") as f:
-            f.write("source.sh text\n")
-        with open(os.path.join(origin, "source.sh"), "w", encoding="ascii") as f:
-            f.write("x\n")
-        subprocess.run([*self.git, "-C", origin, "add", ".gitattributes", "source.sh"], check=True)
-        subprocess.run([*self.git, "-C", origin, "commit", "-q", "-m", "Mark a file as text"], check=True)
-        revision = subprocess.check_output(["git", "-C", origin, "rev-parse", "HEAD"], text=True).strip()
-        config = os.path.join(self.dir, "global.gitconfig")
-        with open(config, "w", encoding="ascii") as f:
-            f.write(f"[core]\n\tautocrlf = true\n\teol = crlf\n\tattributesFile = {os.devnull}\n")
-        env = {"GIT_CONFIG_GLOBAL": config, "GIT_CONFIG_NOSYSTEM": "1", "GIT_ATTR_NOSYSTEM": "1"}
-        host = "rog-nv-linux"
-        for request, fields, expected in (("inherit", SITE[host], b"x\r\n"),
-                                          ("lf", {**SITE[host], "staging_line_endings": "lf"}, b"x\n")):
-            with self.subTest(policy=request):
-                site = site_entry({host: fields}, host, "/wake")
-                self.assertIsInstance(site, Site, site)
-                assert isinstance(site, Site)
-                self.site = replace(site, root=self.site.root, bash=self.site.bash)
-                with mock.patch.dict(os.environ, env):
-                    done = self.stage(revision, request=request)
-                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-                for name in ("README", "source.sh"):
-                    with open(os.path.join(self.site.root, request, "checkout", name), "rb") as f:
-                        self.assertEqual(f.read(), expected, name)
-
-    def test_the_scripts_status_is_the_last_line(self) -> None:
-        self.assertEqual(self.stage(self.sha, b"printf 'exit: 0\\n'\nexit 3\n").returncode, 0)
-        run = self.witness()
-        self.assertEqual((run.returncode, run.stdout.splitlines()[-1]), (3, "exit: 3"))
-
-    def test_the_verdict_is_its_own_line_after_unterminated_output(self) -> None:
-        self.assertEqual(self.stage(self.sha, b"printf 'no final newline'\n").returncode, 0)
-        run = self.witness()
-        self.assertEqual((run.returncode, run.stdout.splitlines()[-2:]), (0, ["no final newline", "exit: 0"]))
-
-    def test_a_moved_checkout_is_refused_before_the_script(self) -> None:
-        self.assertEqual(self.stage(self.later, b"printf 'RAN\\n'\n").returncode, 0)
-        subprocess.run([*self.git, "-C", os.path.join(self.site.root, "r1", "checkout"), "commit", "-q", "--allow-empty", "-m", "moved"], check=True)
-        run = self.witness()
-        self.assertEqual((run.returncode, run.stdout.splitlines()[-1]), (2, "exit: 2"))
-        self.assertNotIn("RAN", run.stdout)
-
-    def test_staging_refusals(self) -> None:
-        self.assertEqual(self.stage(self.sha).returncode, 0)
-        again = self.stage(self.sha)
-        self.assertEqual(again.returncode, 1)
-        self.assertIn("exists: a request id is staged once", again.stdout)
-        missing = self.stage("c" * 40, request="r2")
-        self.assertEqual(missing.returncode, 1)
-        self.assertIn("WITNESS STAGE FAILED: cannot fetch", missing.stdout)
-        self.assertFalse(staged_sha(missing.returncode, missing.stdout, "c" * 40))
-
-
 # --- the steps, against fakes -------------------------------------------------------------------
 
 FAILURES = ("none", "reserve", "reserve-published", "reserve-unlisted", "reserve-unreachable", "reserve-timeout", "windows",
@@ -343,7 +240,7 @@ FAILURES = ("none", "reserve", "reserve-published", "reserve-unlisted", "reserve
 
 
 def fake_plan(directory: str, fleet: str = "/fake/fleet", wake: str = "/fake/wake") -> Plan:
-    site = Site("dual-win", "C:/witness", winwitness.DEFAULT_BASH, 3600, 30, wake)
+    site = Site("dual-win", "C:/witness", DEFAULT_BASH, 3600, 30, wake)
     transcript = os.path.join(directory, "transcript.log")
     with open(transcript + ".reserve.json", "w") as f:
         json.dump({"request_id": "win-1"}, f)

@@ -1331,7 +1331,9 @@ Around it, the coordinator:
   machine facts: one JSON object from a box's Linux fleet name to its native Windows ssh alias
   `windows_host` (its `win` or `lan` route, never `wsl`) and its Windows `root` (each witness gets a
   fresh `<root>/<request_id>`, kept afterwards as evidence), and optionally `bash`,
-  `max_cap_seconds`, `stage_seconds` and `staging_line_endings`. For a project whose CI expects LF,
+  `max_cap_seconds`, `stage_seconds`, `staging_line_endings` and `wake`. Set `wake` to an absolute
+  local path to an executable to override this checkout's `scripts/wake-lab.sh` for the endpoint
+  map, boot and status calls. For a project whose CI expects LF,
   use that project's site file with `"staging_line_endings": "lf"` on the box entry. The only
   accepted value is `"lf"`. It sets `core.autocrlf=false` and `core.eol=lf` in the fresh witness
   repository before the first checkout. Git still applies the repository's file attributes.
