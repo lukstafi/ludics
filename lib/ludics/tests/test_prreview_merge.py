@@ -226,6 +226,18 @@ class Production(unittest.TestCase):
                 self.assertNotIn("AMBIGUOUSLY", done.stderr)
                 self.assertEqual(len([c for c in self.calls() if c[:2] == ["pr", "merge"]]), 1)
 
+    def test_merge_refusals_read_only_the_whole_first_stderr_line(self) -> None:
+        conflict = "GraphQL: Pull Request has merge conflicts (mergePullRequest)\n"
+        unknown = "GraphQL: Could not read the head commit. (mergePullRequest)\n"
+        for out, err in ((conflict, unknown), ("", unknown + conflict)):
+            with self.subTest(out=out, err=err):
+                self.route([(MERGE, 1, out, err), *GREEN])
+                done = self.run_cmd(self.entries()[0], "merge", "o/r#7")
+                self.assertEqual(done.returncode, 3, done.stdout + done.stderr)
+                self.assertIn(f"gh pr merge failed AMBIGUOUSLY: {unknown.strip()}", done.stderr)
+                self.assertEqual(self.calls()[-1][:2], ["pr", "merge"])
+                self.assertEqual(len([c for c in self.calls() if c[:2] == ["pr", "merge"]]), 1)
+
     def test_checks_ends_with_its_trailer_and_a_red_is_one(self) -> None:
         red = [(["check-runs"], 0, "ci\tfailure\thttps://u\t1\n", ""), *GREEN]
         for entry in self.entries():

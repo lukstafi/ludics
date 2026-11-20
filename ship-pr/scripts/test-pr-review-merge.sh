@@ -646,7 +646,7 @@ gh() {
     # then reads mergeable=true and cmd_merge retries. One failure only, so the retry lands.
     if [ -n "$MERGE_NOT_MERGEABLE" ] && [ ! -f "$TEST_ROOT/merge-failed-once" ]; then
       : >"$TEST_ROOT/merge-failed-once"
-      printf 'gh: Pull request is not mergeable\n' >&2
+      printf 'X Pull request %s#7 is not mergeable: the merge commit cannot be cleanly created.\n' "$REPO" >&2
       return 1
     fi
     if [ -n "$MERGE_GATEWAY_ONCE" ] && [ ! -f "$TEST_ROOT/merge-failed-once" ]; then
@@ -1672,6 +1672,33 @@ test_a_base_moved_during_the_call_is_not_a_head_move() {
   assert_contains "$MERGE_OUTPUT" "ABSENT verdict was recognized against the old base" \
     "the refusal names the base as the reason"
   assert_eq "$(grep -c 'pr merge' <<<"$MERGE_CALLS")" 1 "and is not retried"
+}
+
+test_a_head_moved_during_the_call_is_refused() {
+  reset
+  MERGE_REFUSAL='GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)'
+  run_merge
+  assert_eq "$MERGE_RC" 1 "a moved head must be judged again ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "head is no longer head-sha" "the head move is named"
+  assert_eq "$(merge_calls)" 1 "without retrying the stale head"
+}
+
+assert_ambiguous_merge_answer() {
+  reset
+  MERGE_REFUSAL=$1
+  run_merge
+  assert_eq "$MERGE_RC" 3 "the answer is ambiguous ($MERGE_REFUSAL: $MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "gh pr merge failed AMBIGUOUSLY: $MERGE_REFUSAL" "quoting the answer"
+  assert_contains "$MERGE_STDERR" "before retrying" "requiring REST confirmation first"
+  assert_eq "$(merge_calls)" 1 "without another merge call"
+}
+
+test_base_move_words_under_another_graphql_path_are_ambiguous() {
+  assert_ambiguous_merge_answer 'GraphQL: Base branch was modified. Review and try the merge again. (otherMutation)'
+}
+
+test_head_move_words_under_another_graphql_path_are_ambiguous() {
+  assert_ambiguous_merge_answer 'GraphQL: Head branch was modified. Review and try the merge again. (otherMutation)'
 }
 
 # ludics-lite#523: an ABSENT verdict can rest on the base, and the merge call binds only the head,
@@ -3171,7 +3198,7 @@ test_an_unread_build_signal_never_merges() {
 # is unknown, exit 3; and a merge that keeps failing so after three attempts is base drift.
 test_not_mergeable_is_decided_by_the_mergeable_field() {
   reset
-  MERGE_REFUSAL='gh: Pull request is not mergeable'
+  MERGE_REFUSAL="X Pull request $REPO#7 is not mergeable: the merge commit cannot be cleanly created."
   MERGEABLE=false
   run_merge
   assert_eq "$MERGE_RC" 1 "mergeable=false after the recompute is a real conflict ($MERGE_OUTPUT)"
@@ -3179,17 +3206,46 @@ test_not_mergeable_is_decided_by_the_mergeable_field() {
     "and says so"
   assert_eq "$(grep -c 'pr merge' <<<"$MERGE_CALLS")" 1 "with no retry"
   reset
-  MERGE_REFUSAL='gh: Pull request is not mergeable'
+  MERGE_REFUSAL="X Pull request $REPO#7 is not mergeable: the merge commit cannot be cleanly created."
   MERGEABLE=FAIL
   run_merge
   assert_eq "$MERGE_RC" 3 "an unread mergeable field is unknown ($MERGE_OUTPUT)"
   assert_contains "$MERGE_OUTPUT" "its mergeable field is unknown" "and is named as such"
   reset
-  MERGE_REFUSAL='gh: Pull request is not mergeable'
+  MERGE_REFUSAL="X Pull request $REPO#7 is not mergeable: the merge commit cannot be cleanly created."
   run_merge
   assert_eq "$MERGE_RC" 1 "a merge that keeps failing as not mergeable stops ($MERGE_OUTPUT)"
   assert_contains "$MERGE_OUTPUT" "keeps failing as not mergeable after 3 attempts" "naming the count"
   assert_eq "$(grep -c '^CALL pr merge' "$CALLS_FILE")" 3 "after three calls"
+}
+
+test_gh_preflight_policy_and_behind_answers_reread_mergeability() {
+  local line
+  for line in "X Pull request $REPO#7 is not mergeable: the base branch policy prohibits the merge." \
+    "X Pull request $REPO#7 is not mergeable: the head branch is not up to date with the base branch."; do
+    reset
+    MERGE_REFUSAL=$line
+    run_merge
+    assert_eq "$MERGE_RC" 1 "repeated preflight refusals stop ($MERGE_OUTPUT)"
+    assert_contains "$MERGE_STDERR" "keeps failing as not mergeable after 3 attempts" "the retry bound ($line)"
+    assert_eq "$(merge_calls)" 3 "mergeable=true permits two retries ($line)"
+  done
+}
+
+test_conflict_answer_with_extra_words_is_ambiguous() {
+  assert_ambiguous_merge_answer 'GraphQL: Pull Request has merge conflicts (mergePullRequest), not mergeable elsewhere'
+}
+
+test_gh_preflight_conflict_line_with_a_suffix_is_ambiguous() {
+  assert_ambiguous_merge_answer "X Pull request $REPO#7 is not mergeable: the merge commit cannot be cleanly created. Extra detail."
+}
+
+test_gh_preflight_policy_line_with_another_pr_is_ambiguous() {
+  assert_ambiguous_merge_answer "X Pull request $REPO#8 is not mergeable: the base branch policy prohibits the merge."
+}
+
+test_gh_preflight_behind_line_with_a_prefix_is_ambiguous() {
+  assert_ambiguous_merge_answer "GraphQL: X Pull request $REPO#7 is not mergeable: the head branch is not up to date with the base branch."
 }
 
 # ludics#1244. GitHub's GraphQL answer to merging a conflicting PR (ocannl-staging#2155) said no
@@ -3282,7 +3338,7 @@ test_a_conflicting_pr_is_refused_before_the_wait() {
     retune CHECKS_INTERVAL=1
     CHECK_ROWS="$(row pending ci pending)"
     CHECK_ROWS_LATER="$(row green ci success)"
-    MERGE_REFUSAL='gh: Pull request is not mergeable'
+    MERGE_REFUSAL="X Pull request $REPO#7 is not mergeable: the merge commit cannot be cleanly created."
     MERGEABLE=false
     MERGEABILITY=$answer
     run_merge --wait=30
@@ -3296,7 +3352,7 @@ test_a_conflicting_pr_is_refused_before_the_wait() {
   done
   # Without --wait nothing is read early: the gate is one read and the call's refusal answers it.
   reset
-  MERGE_REFUSAL='gh: Pull request is not mergeable'
+    MERGE_REFUSAL="X Pull request $REPO#7 is not mergeable: the merge commit cannot be cleanly created."
   MERGEABLE=false
   MERGEABILITY=$'false\tdirty'
   run_merge
@@ -3655,15 +3711,11 @@ test_an_absent_base_that_keeps_moving_stops_after_three_reads() {
   assert_no_merge_call
 }
 
-# The answer to a merge call is the API's: a 4xx is a rejection (exit 1), anything else that is not
-# a gateway refusal may have landed (exit 3, pinned above), and a state read that did not answer
-# after a call that returned 0 is never reported as landed or not.
-test_a_rejected_merge_call_and_an_unconfirmed_state() {
-  reset
-  MERGE_REFUSAL='gh: Required status check "ci" is expected. (HTTP 405)'
-  run_merge
-  assert_eq "$MERGE_RC" 1 "a 4xx is the API's answer ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_OUTPUT" "gh pr merge was rejected: gh: Required status check" "quoting it"
+test_an_http_status_quoted_in_a_graphql_error_is_ambiguous() {
+  assert_ambiguous_merge_answer 'GraphQL: Upstream returned HTTP 405 while executing your query. (mergePullRequest)'
+}
+
+test_a_successful_merge_call_with_an_unconfirmed_state_is_unknown() {
   reset
   STATE_FAIL=1
   run_merge
@@ -4876,6 +4928,9 @@ tests=(
   test_the_local_qualified_spelling_is_the_same_issue
   test_the_body_is_rescanned_before_a_retried_merge
   test_a_base_moved_during_the_call_is_not_a_head_move
+  test_a_head_moved_during_the_call_is_refused
+  test_base_move_words_under_another_graphql_path_are_ambiguous
+  test_head_move_words_under_another_graphql_path_are_ambiguous
   test_an_absent_verdict_rereads_its_base_before_the_call
   test_an_absent_base_that_moves_during_gateway_backoff_refuses_the_resend
   test_no_warning_when_the_base_is_not_the_default_branch
@@ -4958,6 +5013,11 @@ tests=(
   test_an_unread_build_signal_never_merges
   test_not_mergeable_is_decided_by_the_mergeable_field
   test_graphqls_merge_conflicts_answer_is_a_conflict
+  test_gh_preflight_policy_and_behind_answers_reread_mergeability
+  test_conflict_answer_with_extra_words_is_ambiguous
+  test_gh_preflight_conflict_line_with_a_suffix_is_ambiguous
+  test_gh_preflight_policy_line_with_another_pr_is_ambiguous
+  test_gh_preflight_behind_line_with_a_prefix_is_ambiguous
   test_a_pr_merged_elsewhere_at_an_unjudged_head_is_not_this_merge
   test_a_retry_onto_a_pr_merged_meanwhile_at_an_unjudged_head_is_not_this_merge
   test_a_pr_merged_elsewhere_at_the_judged_head_is_merged
@@ -4973,7 +5033,8 @@ tests=(
   test_a_wait_rides_out_failed_round_reads
   test_a_base_that_moves_during_every_call_stops_after_three
   test_an_absent_base_that_keeps_moving_stops_after_three_reads
-  test_a_rejected_merge_call_and_an_unconfirmed_state
+  test_an_http_status_quoted_in_a_graphql_error_is_ambiguous
+  test_a_successful_merge_call_with_an_unconfirmed_state_is_unknown
   test_a_deferred_close_out_that_cannot_be_disarmed_is_loud
   test_an_unread_merge_queue_refuses_a_close_out
   test_require_green_takes_a_waived_red
