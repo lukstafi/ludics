@@ -211,7 +211,9 @@ THE FILE (ludics#864). ``--file <local file>`` copies a file of the caller's box
 pre-push run reads) to the box's state directory beside the control patch, under the request and the
 invocation's token, and each runner word that is exactly ``{file}`` becomes that copy's absolute path,
 so a long list reaches the runner as a file it reads (OCANNL's ``--targets-file {file}``) rather than
-through a ``sh -c`` that would hide the pin. A ``--file`` with no ``{file}`` word, and a ``{file}``
+through a ``sh -c`` that would hide the pin. For a multi-step script use
+``--file /absolute/path/check.sh -- env BACKEND=example /bin/bash '{file}'``, with the project's
+declared environment pin in place of ``BACKEND=example``. A ``--file`` with no ``{file}`` word, and a ``{file}``
 word with no ``--file``, are usage errors; a word that merely contains ``{file}`` is not replaced. The
 copy is removed when the leg ends, as the patch is; it is never in the worktree, which stays clean.
 
@@ -404,6 +406,7 @@ USAGE = (
     " [--wait <seconds>] [--wait-window[=<seconds>]] [--deadline <seconds>] -- <runner command...>"
 )
 FILE_WORD = "{file}"  # the runner word THE FILE replaces with the shipped copy's path
+OPTIONAL_VALUE_FLAGS = frozenset(("--remote", "--base", "--control", "--file"))
 DISPATCHED = ("launching", "running", "uncertain")
 HEX = re.compile(r"[0-9a-fA-F]{7,}")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -560,7 +563,8 @@ backend_pin() {
           fi ;;
       esac ;;
   esac
-  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin it (as words of the runner's own argv)$hint; or declare --cpu for a leg that holds no GPU, or --reads-no-config for a runner that reads none of the project's configuration"
+  printf '%s' "this leg may hold the GPU (no --cpu), but its runner pins no backend, and .github/fleet-leg asks for one of: $pin_asks; pin it (as words of the runner's own argv)$hint."
+  printf '%s' ' In a runner request, use {"leg_options":["--cpu"]} for a correctness leg that holds no GPU (replacing any --gpu), or {"leg_options":["--reads-no-config"]} for a runner that reads no project configuration. Keep other entries in leg_options. In a full leg command, put the option before --'
   return 1
 }
 backend_pin_to() {
@@ -1351,7 +1355,7 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
             no_config = True
             i += 1
             continue
-        if arg in ("--request", "--box", "--rev", "--checkout", "--worktree", "--remote", "--base", "--control", "--file"):
+        if arg in ("--request", "--box", "--rev", "--checkout", "--worktree") or arg in OPTIONAL_VALUE_FLAGS:
             if i + 1 >= len(args) or not args[i + 1]:
                 die(f"execution leg: expected a value for {arg}")
             values[arg] = args[i + 1]

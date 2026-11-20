@@ -72,17 +72,46 @@ class Readers(unittest.TestCase):
                                               requested_revision="head-of:claude/x")))
         self.assertIn("runner must be", block_problem(block("a", runner=[], clone="/c", checkout="/wt")) or "")
 
-    def test_runner_words_with_slot_flags_require_a_full_command(self) -> None:
-        for runner, flag in (("tools/check.sh '--cpu'", "--cpu"), (["tools/check.sh", "--gpu"], "--gpu")):
+    def test_misplaced_leg_flags_name_the_request_form(self) -> None:
+        for runner, flag in (("tools/check.sh '--cpu'", "--cpu"), (["tools/check.sh", "--gpu"], "--gpu"),
+                             ("tools/check.sh --reads-no-config", "--reads-no-config"),
+                             (["tools/check.sh", "--reads-no-config"], "--reads-no-config")):
             with self.subTest(runner=runner):
                 problem = block_problem(block("a", runner=runner, clone="/c", checkout="/w")) or ""
                 self.assertIn(f"runner contains {flag}", problem)
-                self.assertIn("--wait-window [--cpu|--gpu] -- <runner-executable>", problem)
-                self.assertIn("Keep runner-owned flags after --", problem)
+                self.assertIn(f'"leg_options": ["{flag}"]', problem)
+                self.assertIn('full leg in "command" with those flags after --', problem)
         problem = block_problem(block("a", kind="measurement", runner=["bench", "--gpu"], clone="/c",
                                       checkout="/w", requested_revision="head-of:topic"))
-        self.assertIn("--worktree <checkout> -- <runner-executable>", problem or "")
+        self.assertIn("Omit leg slot flags for a measurement", problem or "")
         self.assertIn("Pin the same full SHA in the command and requested_revision", problem or "")
+
+    def test_leg_options_are_a_closed_argv_allowlist(self) -> None:
+        leg = block("a", runner=["check", "--file", "input"], clone="/c", checkout="/w")
+        self.assertIsNone(block_problem({**leg, "leg_options": ["--cpu", "--reads-no-config", "--wait", "0",
+                                                               "--wait-window=20", "--deadline", "30",
+                                                               "--file", "local list", "--remote", "origin",
+                                                               "--base", "main", "--control", "local patch"]}))
+        self.assertIsNone(block_problem({**leg, "kind": "measurement",
+                                         "leg_options": ["--reads-no-config", "--deadline", "20"]}))
+        for options, problem in [
+            ("--cpu", "array of argv words"), ([1], "array of nonempty strings"),
+            (["--file", "x\0y"], "without NUL"), (["--"], "unsupported option --"),
+            (["--box", "other"], "unsupported option --box"), (["--rev", SHA], "unsupported option --rev"),
+            (["--checkout", "/different"], "unsupported option --checkout"),
+            (["--file=x"], "unsupported option --file=x"), (["--file", "--cpu"], "needs a value"),
+            (["--wait-window=no"], "whole number of seconds"), (["--wait", "-1"], "whole number of seconds"),
+            (["--deadline", "0"], "positive whole number"),
+            (["--wait-window", "--wait-window=1"], "gives --wait-window twice"),
+            (["--cpu", "--gpu"], "exclusive"),
+        ]:
+            with self.subTest(options=options):
+                self.assertIn(problem, block_problem({**leg, "leg_options": options}) or "")
+        for flag in ("--cpu", "--gpu", "--wait", "--wait-window=20"):
+            with self.subTest(flag=flag):
+                self.assertIn("only for correctness",
+                              block_problem({**leg, "kind": "measurement", "leg_options": [flag]}) or "")
+        self.assertIn("only for runner requests", block_problem(block("a", leg_options=[])) or "")
 
     def test_runner_reading_checks_complete_words_without_expanding_shell_syntax(self) -> None:
         for runner in ("tools/check.sh '--cpu label'", ["tools/check.sh", "--gpu label"], 'tools/check.sh "$FLAGS"'):
@@ -142,6 +171,14 @@ class Composition(unittest.TestCase):
         measured = {**leg, "kind": "measurement", "runner": ["bench", "a b"]}
         self.assertEqual(leg_command("fw", measured, SHA),
                          f"fw execution leg --request a --rev {SHA} --checkout /srv/p --worktree /srv/wt -- bench 'a b'")
+
+    def test_leg_options_and_runner_argv_take_their_own_sides_of_the_separator(self) -> None:
+        request = block("a", runner=["check", "--file", "runner input"], clone="/c", checkout="/w",
+                        leg_options=["--wait-window=20", "--file", "my list; 'quoted'"])
+        self.assertEqual(shlex.split(leg_command("fw", request, SHA)),
+                         ["fw", "execution", "leg", "--request", "a", "--rev", SHA, "--checkout", "/c",
+                          "--worktree", "/w", "--wait-window=20", "--file", "my list; 'quoted'",
+                          "--", "check", "--file", "runner input"])
 
     def test_the_fleet_worker_is_named_from_home(self) -> None:
         cfg = load_config("/home/u/.claude/skills/issue-wave/scripts/fleet-worker.sh", {"HOME": "/home/u"})

@@ -4,7 +4,6 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -93,18 +92,11 @@ with tempfile.TemporaryDirectory(prefix='fleet-execution-') as temporary:
         env=env, text=True, capture_output=True, timeout=20,
     )
     assert (assignment.returncode, assignment.stdout) == (2, ''), assignment
-    _, marker, advice = assignment.stderr.partition(' with "command": ')
-    assert marker, assignment.stderr
-    words = shlex.shlex(advice, posix=True)
-    words.whitespace_split = True
-    launcher = next(iter(words))
-    assert Path(launcher).expanduser().resolve() == SCRIPT.resolve(), assignment.stderr
-    correction = ("execution leg --request <request-id> --rev <full-SHA> --checkout <clone>"
-                  " --worktree <checkout> --wait-window [--cpu|--gpu] -- <runner-executable> <runner-args>")
-    assert correction in assignment.stderr, assignment.stderr
+    assert '"leg_options": ["--cpu"]' in assignment.stderr, assignment.stderr
+    assert 'full leg in "command" with those flags after --' in assignment.stderr, assignment.stderr
     assert lease_text not in assignment.stderr, assignment.stderr
     assert records() == {}
-    print('PASS: a CPU flag in runner shorthand is refused before reservation with the full command form')
+    print('PASS: a CPU flag in runner shorthand is refused before reservation with the leg_options form')
 
     change('reserve', {**request('bad-triage'), 'triage_reason': True}, expected=1)
     change('reserve', {**request('premarked'), 'triage_reason': 'future triage'}, expected=1)
