@@ -106,11 +106,6 @@ def staging_script(site: Site, request_id: str, revision: str, url: str, script:
         'mkdir -p "$root" && mkdir "$dir" || fail "cannot make $dir"',
         'git init --quiet "$dir/checkout" || fail "cannot make a repository at $dir/checkout"',
     ]
-    if site.staging_lf:
-        lines.append(
-            'git -C "$dir/checkout" config --local core.autocrlf false'
-            ' && git -C "$dir/checkout" config --local core.eol lf || fail "cannot set LF staging for $dir/checkout"'
-        )
     lines.extend((
         'git -C "$dir/checkout" fetch --quiet --no-tags --depth 1 "$url" "$sha" || fail "cannot fetch $sha from $url"',
         'git -C "$dir/checkout" checkout --quiet --detach FETCH_HEAD || fail "cannot check $sha out"',
