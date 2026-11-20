@@ -79,10 +79,11 @@ block, in file order, then has one outcome, said in one line on stderr:
   asked of the registry or the board.
 
 A payload staging error before child startup says ``nothing asked`` and is a retryable refusal.
-An I/O error that interrupts reporting after a successful dispatch also stops the call with exit 4
-and writes ``--status`` if supplied. A known lost lease still takes precedence. Check the registry
-and the worker's state before retrying: some steps may have dispatched before the failure, and the
-status says how far the call got with ``--unstick``.
+Once a step has dispatched or returned an unknown outcome, an I/O error that escapes a subsequent
+placement, relay or report stops the call with exit 4 and writes ``--status`` if supplied. This
+includes a closed stdout pipe during assignment publication, where exit 4 supersedes the generic
+CLI's SIGPIPE exit. A known lost lease still takes precedence. Check the registry and worker state
+before retrying. The status says how far the call got with ``--unstick``.
 
 An assign that returns exit 5 ends stderr with one ``ASSIGN ACTION REQUIRED `` summary, with the
 ID and diagnostic for each step that exited 2 or 5. Only the step's first ``fleet-worker.sh: ``
