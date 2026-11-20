@@ -84,7 +84,7 @@ from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import listing, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate
+from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate, mutation_failure_status
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import prelude, run, run_on, substitution
 from ludics.fleetworker.wave import USAGE, Wave, load_wave
@@ -272,7 +272,7 @@ def unprepared(cfg: Config, wave: Wave, task: str) -> int:
         done = [*done, FENCE]
     rc = forget_row(cfg, wave.wave, task, record.worker)
     if rc != 0:
-        return failed("row", f"the row's removal exited {rc} (above)", rc if rc in (4, LEASE_LOST_STATUS) else 1)
+        return failed("row", f"the row's removal exited {rc} (above)", mutation_failure_status(rc))
     removed.append(f"the board row {wave.wave} {task}, if it was there")
     if not record.remote:
         for directory in (os.path.join(record.scratch, "runs"), record.scratch):

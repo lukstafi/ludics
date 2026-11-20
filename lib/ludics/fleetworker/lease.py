@@ -64,8 +64,16 @@ ASSIGN_STEP_ENV = "LUDICS_EXECUTION_ASSIGN_STEP"
 
 
 def lost_status(default: int = 1) -> int:
-    """Assign's unstick requests the distinct status even when run outside the driver."""
+    """Return LEASE_LOST_STATUS for an ASSIGN_STEP_ENV step, else the caller's default.
+
+    Assign's unstick requests the distinct status even when run outside the driver.
+    """
     return LEASE_LOST_STATUS if os.environ.get(ASSIGN_STEP_ENV) == "1" else default
+
+
+def mutation_failure_status(rc: int) -> int:
+    """Pass through an unreachable anchor or lost lease. Other mutation failures return 1."""
+    return rc if rc in (4, LEASE_LOST_STATUS) else 1
 
 
 # Far side: take the lease lock (shared with claim --take and release), verify the caller still

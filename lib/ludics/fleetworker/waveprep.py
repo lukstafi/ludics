@@ -166,7 +166,7 @@ from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.execution import gh_timeout, listing, records_of
 from ludics.fleetworker.identity import die
-from ludics.fleetworker.lease import LEASE_LOST_STATUS, anchor_gate
+from ludics.fleetworker.lease import anchor_gate, mutation_failure_status
 from ludics.fleetworker.takeover import board_status, row_of
 from ludics.fleetworker.transport import run
 from ludics.fleetworker.wave import USAGE, Leg, Profile, Wave, load_wave
@@ -752,7 +752,7 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
             continue
         rc = run([*command, "execution", "run", path], stdout_to_stderr=True).rc
         if rc != 0:
-            raise fail("reservation", f"execution run {path} exited {rc} (above)", rc if rc in (4, LEASE_LOST_STATUS) else 1)
+            raise fail("reservation", f"execution run {path} exited {rc} (above)", mutation_failure_status(rc))
         record(prep, f"standing reservation {payload['request_id']} on {payload['execution_host']} ({path})")
     brief_path = prep.path("briefs", f"brief-{prep.task}.md")
     base_path = prep.path("reserve", f"{prep.task}-base.json")
@@ -769,7 +769,7 @@ def write(cfg: Config, prep: Prep, brief: str, payloads: list[tuple[str, dict[st
     fields = board_fields(prep, brief_path)
     rc = run([*command, "board", "set", "--create", "--new-row", prep.wave.wave, prep.task, *fields], stdout_to_stderr=True).rc
     if rc != 0:
-        raise fail("board", f"board set exited {rc} (above)", rc if rc in (4, LEASE_LOST_STATUS) else 1)
+        raise fail("board", f"board set exited {rc} (above)", mutation_failure_status(rc))
     record(prep, f"board row {prep.wave.wave} {prep.task} (state=pending)")
     record(prep, READY)
 

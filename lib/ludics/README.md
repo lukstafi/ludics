@@ -648,7 +648,9 @@ remaining requests. Board mutations share one lease-protocol helper.
 Agent notes (wave-20261120-ludics, t1259). The driver asks its gated fleet verbs for
 `--lease-status` and stops on exit 6. Nested fleet writes carry the argument. A completed
 review reports its status through bg-run. After startup, wave launch records the worker
-locally even if a standing leg or board row loses the lease. On restart, an interrupted review
+locally even if a standing leg or board row loses the lease. If the final board log loses the
+lease during driver-requested wave unprep, the fenced manifest stays in place. The next
+coordinator can rerun unprep to finish the log and rename the manifest. On restart, an interrupted review
 replays its own round. On base `e841b7cd`, all 14 selected tests failed (29 assertions),
 including diagnostic false positives and each gated verb. All 14 passed on the branch.
 The restart case also failed before the recovery change (`1d4335f7`). Logs are under

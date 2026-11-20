@@ -307,7 +307,7 @@ from typing import Any, cast
 
 from ludics import bgrun, cli
 from ludics.fleetworker.assign import ACTION_REQUIRED_LINE
-from ludics.fleetworker.config import LEASE_STATUS_ARG, Config
+from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import LEASE_LOST_STATUS
 from ludics.fleetworker.registry import ASSIGN_ACTION_REQUIRED
@@ -617,7 +617,7 @@ class Driver:
     def __init__(self, cfg: Config, wave: Wave) -> None:
         self.cfg, self.wave = cfg, wave
         self.script = shim(cfg)
-        self.gated_shim = [self.script, LEASE_STATUS_ARG]
+        self.gated_shim = replace(cfg, lease_loss_status=LEASE_LOST_STATUS).shim_command()
         self.ledger_path = self.path("logs", "drive.jsonl")
         self.ledger: list[dict[str, Any]] = []
         self.err = ""  # the last call's stderr
