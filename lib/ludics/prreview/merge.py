@@ -99,7 +99,9 @@ from ludics.prreview.reply import MARKER, mention_refusal
 from ludics.prreview.drift import Drift, read_base_drift
 from ludics.prreview.clock import Clock, clock_from_env
 from ludics.prreview.gate import Gate, GateConfig, RunKey, load_gate_config
-from ludics.prreview.mergebuild import BuildVerdict, Ceiling, clone_of, clone_preflight, merge_build, refresh_build
+from ludics.prreview.mergebuild import (
+    BuildVerdict, Ceiling, clone_of, clone_preflight, merge_build, refresh_build, retained_build_logs,
+)
 from ludics.prreview.mergelease import MergeLease
 from ludics.prreview.runners import (
     HeadRun,
@@ -1184,7 +1186,7 @@ class Merge:
     def refuse_stale_build(self, build: BuildVerdict, tip: str, when: str) -> NoReturn:
         fail(
             1, f"NOT merging {self.repo}#{self.num}: {shlex.quote(build.base_ref)} moved {when}",
-            f"({build.base_sha} -> {tip}). Re-run merge.",
+            f"({build.base_sha} -> {tip}). Re-run merge.{retained_build_logs(build.log_paths)}",
         )
 
     def recheck_before_resend(self, build: BuildVerdict) -> None:

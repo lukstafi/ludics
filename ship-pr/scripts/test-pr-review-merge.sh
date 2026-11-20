@@ -3826,10 +3826,12 @@ test_a_merge_commit_that_does_not_build_is_refused() {
 
 # The control: the same layout, whose merge commit builds, merges -- bound to the gated head.
 test_a_merge_commit_that_builds_merges() {
+  local state="$TEST_ROOT/stable build state" kept
+  local -a logs
   reset
   build_fixture compatible
   MERGE_BUILD_CONFIG=$MERGE_BUILD_SH
-  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  BUDGET_DIR="$state" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
     assert_posix_only_refusal "a merge commit that would build"
     return 0
@@ -3837,6 +3839,13 @@ test_a_merge_commit_that_builds_merges() {
   assert_eq "$MERGE_RC" 0 "a merge commit that builds merges ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDOUT" "merge build $REPO#7: PASSED" "says the build passed"
   assert_eq "$(grep -cF "merge build $REPO#7: PASSED" "$OUT_FILE")" 1 "an unchanged base builds once"
+  kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
+  shopt -s nullglob
+  logs=("$kept"/*/build.log)
+  [ ! -e "$kept/build.log" ] || bail "the stable base should have no head-only build log"
+  assert_eq "${#logs[@]}" 1 "an unchanged base keeps one build log"
+  assert_eq "${logs[0]}" "$kept/$BUILD_TIP/build.log" "the retained log belongs to the candidate base"
+  assert_eq "$(cat "$kept/$BUILD_TIP/build.status")" 0 "the retained candidate passed"
   assert_eq "$(merge_calls)" 1 "one merge write follows the build"
   assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
   assert_clone_untouched
@@ -3972,9 +3981,11 @@ test_a_refresh_runs_the_recheck_and_drops_the_old_shared_failure() {
 }
 
 test_a_refresh_cannot_waive_a_new_shared_base_failure() {
+  local state="$TEST_ROOT/refreshed build state" kept original refreshed
   reset
   moving_build_fixture compatible
-  BUILD_PROBE_RED="$BUILD_LATER" BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box \
+  MERGE_BUILD_CONFIG+=$'\nrecheck sh "$BUILD_PROBE" cheap'
+  BUDGET_DIR="$state" BUILD_PROBE_RED="$BUILD_LATER" BUILD_PROBE_MOVES="$BUILD_TIP $BUILD_LATER" FLEET_LOCAL_BOX=not-a-fleet-box \
     run_merge --override 'a failure established on the original base'
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
     assert_posix_only_refusal "requiring a fresh override" "trigger always: every merge of this repository is built"
@@ -3984,6 +3995,15 @@ test_a_refresh_cannot_waive_a_new_shared_base_failure() {
   assert_contains "$MERGE_STDERR" "main at $BUILD_LATER alone fails the same way" "the failure is on the new base"
   assert_contains "$MERGE_STDERR" "--override covers only the initial build on base $BUILD_TIP" "the earlier base is named"
   assert_contains "$MERGE_STDERR" "--override reason for $BUILD_LATER" "the caller needs a reason for this failure"
+  kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
+  original="$kept/$BUILD_TIP"
+  refreshed="$kept/$BUILD_LATER"
+  [ -f "$original/build.log" ] || bail "the original candidate's log must survive the failed refresh"
+  assert_eq "$(cat "$original/build.status")" 0 "the retained initial candidate passed"
+  assert_eq "$(cat "$refreshed/build.log")" "known baseline red" "the retained refresh log has the new failure"
+  assert_eq "$(cat "$refreshed/build.status")" 1 "the retained refreshed candidate failed"
+  assert_contains "$MERGE_STDERR" "$original/build.log" "the refusal names the original candidate's log"
+  assert_contains "$MERGE_STDERR" "$refreshed/build.log" "the refusal names the refreshed candidate's log"
   assert_no_merge_call
 }
 
@@ -4103,6 +4123,22 @@ test_a_merge_takes_over_an_expired_lease_for_the_refresh() {
   assert_clone_untouched
 }
 
+test_a_build_with_a_symbolic_initial_base_is_refused() {
+  reset
+  build_fixture compatible
+  BASE_TIP=HEAD
+  MERGE_BUILD_CONFIG=$'command true\ntrigger always'
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "requiring an initial tip SHA" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 3 "a symbolic tip cannot identify the candidate ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "no full commit SHA could be read for the tip of main" "the initial tip has no candidate SHA"
+  assert_not_contains "$MERGE_STDOUT" "PASSED in" "the build did not run against a symbolic tip"
+  assert_no_merge_call
+}
+
 test_a_build_with_an_unread_current_base_is_refused() {
   reset
   moving_build_fixture compatible
@@ -4161,11 +4197,12 @@ test_a_base_modified_merge_response_refreshes_the_next_attempt() {
 }
 
 test_a_gateway_refusal_never_resends_a_stale_build() (
+  local state="$TEST_ROOT/gateway build state" kept
   reset
   moving_build_fixture compatible
   retune API_ATTEMPTS=3
   BUILD_MOVE_ON_CALL=gateway
-  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  BUDGET_DIR="$state" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
     assert_posix_only_refusal "checking a gateway resend" "trigger always: every merge of this repository is built"
     return 0
@@ -4173,6 +4210,9 @@ test_a_gateway_refusal_never_resends_a_stale_build() (
   assert_eq "$MERGE_RC" 1 "a stale build cannot authorize a gateway resend ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDERR" "moved before a merge request could be resent ($BUILD_TIP -> $BUILD_LATER)" \
     "both bases are named"
+  kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
+  assert_contains "$MERGE_STDERR" "$kept/$BUILD_TIP/build.log" "the refusal names the retained build log"
+  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_LATER/build.log" "the live tip has no build log"
   assert_eq "$(merge_calls)" 1 "no write was resent"
 )
 
@@ -4837,6 +4877,7 @@ tests=(
   test_a_second_move_that_overlaps_the_pr_is_refused
   test_a_base_that_outruns_the_refresh_limit_is_refused
   test_a_merge_takes_over_an_expired_lease_for_the_refresh
+  test_a_build_with_a_symbolic_initial_base_is_refused
   test_a_build_with_an_unread_current_base_is_refused
   test_a_build_cannot_authorize_a_retargeted_merge
   test_a_build_cannot_authorize_a_head_lagging_its_live_ref
