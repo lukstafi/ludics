@@ -3711,7 +3711,7 @@ class BriefTemplateTest(Case):
             ("the old whole common part", lambda: write(os.path.join(R, T, "common.md"), "x\n"),
              f"FAIL: {T}common.md: is no part wave prep reads there (it reads who.md, tests.md, blocking.md, context.md,"),
             ("a directory for no kind", lambda: write(os.path.join(R, "issue-wave", "templates", "native-gpt", "who.md"), ""),
-             "FAIL: issue-wave/templates/native-gpt: is no template directory: native-<kind> or cli-<kind> (kinds: claude, codex),"
+             "FAIL: issue-wave/templates/native-gpt: is no template directory: native-<kind> or cli-<kind> (kinds: claude, codex, gemini),"
              " shared or review"),
             ("no native-claude", lambda: os.rename(os.path.join(R, T), os.path.join(R, "issue-wave", "templates", "native-codex")),
              "FAIL: issue-wave/templates: has no native-claude/"),

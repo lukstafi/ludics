@@ -65,13 +65,13 @@ a ``review``: the review checkpoint's protocol, wavereview.py) and ``after-merge
 first of: the wave directory's ``common/<part>``; the shipped part of the worker's own kind,
 ``issue-wave/templates/<native|cli>-<kind>/<part>``; the shipped ``issue-wave/templates/shared/<part>``.
 The repository ships a kind's ``OWN`` parts (who it is, how it runs tests, how it holds a long run,
-its context) for ``native-claude``, ``native-codex`` and ``cli-codex``, and the ``SHARED`` parts
+its context) for ``native-claude``, ``native-codex``, ``cli-codex`` and ``cli-gemini``, and the ``SHARED`` parts
 once, so a rule both transports follow is stated in one file. A part found nowhere refuses, naming
 it: a kind with no shipped directory (``cli-claude``) takes its own parts from the wave directory.
 
 THE PARTS, where each other part is found (ludics#1072): the wave directory's part wins; for the
 two ``PLANNING`` parts (``planning-paired.md``, ``planning-paired+critique.md``) the shipped one of
-the worker's kind stands in when the wave directory has none (``native-claude`` and ``cli-codex`` ship them); any
+the worker's kind stands in when the wave directory has none (``native-claude``, ``cli-codex`` and ``cli-gemini`` ship them); any
 other part is the wave directory's or refuses. The shipped parts are the reference brief, where
 a worker's rules live (issue-wave SKILL.md's *The brief* says what a task part adds to them), and
 are read by check-prompts (checkprompts/brieftemplate.py). They hold no project fact: the NAMEs they use are the built-ins

@@ -65,6 +65,7 @@ SECTIONS=(
   "failure verdicts"
   "unstick"
   "codex workers"
+  "gemini workers"
   "log --last-result (fixture streams)"
   "halt"
   "board"
@@ -742,6 +743,28 @@ printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n{
 [ -n "$out" ] && printf '%s\n' "$text" > "$out"
 exit 0
 EOF
+# agy (Antigravity, the gemini kind): `--input-format stream-json --output-format stream-json ...
+# [--conversation <id>]`, the prompt one stream-json user line on stdin; init, then one result.
+cat > "$TMP/bin/agy" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = --version ] && { echo "1.0.0-shim"; exit 0; }
+cid=""; model=""; log=""; resumed=""
+while [ $# -gt 0 ]; do case "$1" in --conversation) cid="$2"; resumed=1; shift ;; --model) model="$2"; shift ;; --log-file) log="$2"; shift ;; esac; shift; done
+[ -z "$log" ] || : > "$log"
+[ -n "$cid" ] || cid="agy-shim-$(date +%s)-$$"
+msg=$(jq -r '.message.content // empty' 2>/dev/null)
+[ -n "$msg" ] || { echo "Error: no stream-json user message on stdin" >&2; exit 1; }
+if [ "$model" = gemini-unservable ]; then jq -cn --arg c "$cid" '{event:"result",result:{conversation_id:$c,status:"ERROR",response:"",error:"unknown model gemini-unservable"}}'; exit 1; fi
+if [ -n "${SHIM_AGY_SILENT_RESUME:-}" ] && [ -n "$resumed" ]; then exit 0; fi
+jq -cn --arg c "$cid" '{event:"init",conversation_id:$c,init:{model:"shim"}}'
+sleep 1
+text="gemini did: $(LC_ALL=C; printf '%s' "${msg:0:40}" | tr '\n' ' ')"
+# SHIM_AGY_SAY names a file whose content is this turn's final message, whole (a marker a driver reads).
+if [ -n "${SHIM_AGY_SAY:-}" ] && [ -s "$SHIM_AGY_SAY" ]; then text=$(cat "$SHIM_AGY_SAY"); fi
+jq -cn --arg c "$cid" '{event:"step_update",step_update:{conversation_id:$c,step_index:0,state:"DONE",step_type:"user_input"}}'
+jq -cn --arg c "$cid" --arg t "$text" '{event:"result",result:{conversation_id:$c,status:"SUCCESS",response:$t,num_turns:1}}'
+exit 0
+EOF
 REAL_GIT=$(command -v git)
 cat > "$TMP/bin/git" <<EOF
 #!/usr/bin/env bash
@@ -944,7 +967,7 @@ case "${SHIM_GH:-}" in
 esac
 echo "${SHIM_GH_LOGIN:-shim-user}"
 SHIMEOF
-chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/tmux" "$TMP/bin/ssh" "$TMP/bin/gh"
+chmod +x "$TMP/bin/claude" "$TMP/bin/codex" "$TMP/bin/agy" "$TMP/bin/tmux" "$TMP/bin/ssh" "$TMP/bin/gh"
 export SHIM_GH_COMMIT_LOG="$TMP/gh-commits.log"
 # Through GIT_CONFIG_GLOBAL, not ~/.gitconfig: some sections preflight under a HOME of their own.
 export GIT_CONFIG_GLOBAL="$TMP/gitconfig"
@@ -2639,6 +2662,53 @@ rm -f "$HOME/.codex/config.toml"
 "$FW" attach testbox c4 --interval 1 >/dev/null
 }
 
+section "gemini workers" && {
+need_lease
+expect "gemini launch captures the conversation id from the stream" 0 "LAUNCHED testbox/g1 kind=gemini session=agy-shim-" -- \
+  "$FW" launch testbox g1 --target-repo example/project --kind gemini --brief "$brief" --cwd "$proj"
+g1=$ISSUE_WAVE_STATE/workers/g1
+grep -qF -- "agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions --log-file $(printf '%q' "$g1/agy.log") < $(printf '%q' "$g1/brief.jsonl") >> " "$g1/run.sh" &&
+  ok "gemini command shape (the brief as one stream-json line on stdin, the state dir on the command line)" || ko "gemini command: $(cat "$g1/run.sh")"
+[ "$(jq -r '.message.content' "$g1/brief.jsonl")" = "$(cat "$brief")" ] && [ "$(grep -c '' "$g1/brief.jsonl")" = 1 ] &&
+  ok "...and brief.jsonl is the brief whole, one line, no shell word of it in run.sh" || ko "brief.jsonl: $(cat "$g1/brief.jsonl")"
+expect "gemini attach reads the result's SUCCESS and its response" 0 "DONE testbox/g1 exit=0 result status=SUCCESS turns=1 gemini did: Fix issue" -- "$FW" attach testbox g1 --interval 1
+expect "gemini log prints each turn's response" 0 "gemini did: Fix issue" -- "$FW" log testbox g1
+expect "gemini status names the last event" 0 "kind=gemini session=agy-shim-.* last=result:SUCCESS" -- "$FW" status testbox g1
+sed -i.bak '/^session=/d' "$g1/meta" && rm -f "$g1/meta.bak"
+expect "status recovers the conversation id from the stream when meta lacks it" 0 "session=agy-shim-" -- "$FW" status testbox g1
+expect "gemini unstick resumes the conversation in a new process" 0 "RESUMED testbox/g1 kind=gemini session=agy-shim-.*(gemini: one process per turn)" -- "$FW" unstick testbox g1 --message "$TMP/msg.md"
+cid=$(sed -n '/^session=/ { s/^session=//; p; q; }' "$g1/meta")
+grep -qF -- "--log-file $(printf '%q' "$g1/agy.log") --conversation $cid < $(printf '%q' "$g1/messages")/" "$g1/run.sh" &&
+  ok "gemini resume command shape" || ko "gemini resume: $(cat "$g1/run.sh")"
+expect "the resumed gemini turn's verdict carries the NEW message" 0 "DONE testbox/g1 exit=0 result status=SUCCESS .*gemini did: Stop and answer now" -- "$FW" attach testbox g1 --interval 1
+expect "a resumed turn that emits nothing is FAILED" 1 "FAILED testbox/g1 exit=0 no terminal event" -- \
+  env SHIM_AGY_SILENT_RESUME=1 bash -c '"$0" unstick testbox g1 --message "$1" && "$0" attach testbox g1 --interval 1' "$FW" "$TMP/msg.md"
+expect "a gemini launch names the model its args resolve to" 0 "LAUNCHED testbox/g2 kind=gemini session=agy-shim-[^ ]* model=gemini-4-neon-high effort=default " -- \
+  "$FW" launch testbox g2 --target-repo example/project --kind gemini --brief "$brief" --cwd "$proj" --no-cross -- --model gemini-4-neon-high
+"$FW" attach testbox g2 --interval 1 >/dev/null
+expect "a resume without args reuses the launch's" 0 "RESUMED testbox/g2 kind=gemini .* model=gemini-4-neon-high args=recorded " -- "$FW" unstick testbox g2 --message "$TMP/msg.md"
+grep -qF -- " --model gemini-4-neon-high --conversation " "$ISSUE_WAVE_STATE/workers/g2/run.sh" || grep -qF -- " --conversation " "$ISSUE_WAVE_STATE/workers/g2/run.sh" && grep -qF -- "gemini-4-neon-high" "$ISSUE_WAVE_STATE/workers/g2/run.sh" &&
+  ok "...the resume's command carries the recorded args" || ko "g2 resume: $(cat "$ISSUE_WAVE_STATE/workers/g2/run.sh")"
+"$FW" attach testbox g2 --interval 1 >/dev/null
+expect "a launch whose model this box's agy cannot serve is refused at the preflight" 1 "LAUNCH REFUSED testbox/g3: .*agy cannot run headless in a tmux session with --model gemini-unservable" -- \
+  "$FW" launch testbox g3 --target-repo example/project --kind gemini --brief "$brief" --cwd "$proj" --no-cross -- --model gemini-unservable
+[ ! -e "$ISSUE_WAVE_STATE/workers/g3" ] && ok "...leaving no record" || ko "a refused launch left $ISSUE_WAVE_STATE/workers/g3"
+head -c 200000 /dev/zero | tr '\0' 'x' > "$TMP/huge-brief.md"
+expect "a brief past agy's one-message bound is refused, not sent cut" 1 "LAUNCH REFUSED testbox/g4: the message is 200000 bytes, past agy's one-message bound (180000)" -- \
+  "$FW" launch testbox g4 --target-repo example/project --kind gemini --brief "$TMP/huge-brief.md" --cwd "$proj" --no-cross
+# The bound is the content's bytes, not its JSON encoding's: quotes and newlines double under JSON.
+head -c 100000 /dev/zero | tr '\0' '"' > "$TMP/quoted-brief.md"
+expect "a brief under the bound whose JSON encoding is past it still launches" 0 "LAUNCHED testbox/g5 kind=gemini" -- \
+  "$FW" launch testbox g5 --target-repo example/project --kind gemini --brief "$TMP/quoted-brief.md" --cwd "$proj" --no-cross
+"$FW" attach testbox g5 --interval 1 >/dev/null
+n5=$(sed -n 's/^resumes=//p' "$ISSUE_WAVE_STATE/workers/g5/meta")
+expect "a resume message past the bound is refused before anything is stopped" 1 "UNSTICK REFUSED testbox/g5: the message is 200000 bytes, past agy's one-message bound (180000): agy would cut its end; nothing was changed" -- \
+  "$FW" unstick testbox g5 --kill --message "$TMP/huge-brief.md"
+[ "$(sed -n 's/^resumes=//p' "$ISSUE_WAVE_STATE/workers/g5/meta")" = "$n5" ] && ok "...and the record is as it was" || ko "g5 meta after a refused resume: $(cat "$ISSUE_WAVE_STATE/workers/g5/meta")"
+expect "a launch naming its own conversation is refused before the probe speaks into it" 2 "launch: a gemini worker's conversation is its own" -- \
+  "$FW" launch testbox g6 --target-repo example/project --kind gemini --brief "$brief" --cwd "$proj" --no-cross -- --conversation c-someone
+}
+
 section "log --last-result (fixture streams)" && {
 # Hand-written records: the far side reads meta's kind and stream.jsonl, nothing else, so a
 # fixture stream pins the turn rules (farside.LOG_LAST_RESULT) without a CLI run.
@@ -2694,6 +2764,18 @@ printf '%s\n' '{"type":"thread.started","thread_id":"t1"}' '{"type":"turn.starte
 expect "...and a latest turn that failed is NO RESULT naming the failure" 1 "^NO RESULT testbox/lr-codex: the latest turn ended turn.failed: Selected model is at capacity$" -- "$FW" log testbox lr-codex --last-result
 jq -cn '{type:"thread.started",thread_id:"t2"}, {type:"turn.started"}, {type:"item.completed",item:{type:"agent_message",text:"mid-turn"}}' | fixture_stream lr-codex-none codex
 expect "a codex stream with no ended turn is NO RESULT" 1 "^NO RESULT testbox/lr-codex-none: no turn.completed or turn.failed in the stream" -- "$FW" log testbox lr-codex-none --last-result
+# gemini: every agy turn ends with one result event; each resume appends one.
+jq -cn '
+  {event:"init",conversation_id:"g1"}, {event:"result",result:{conversation_id:"g1",status:"SUCCESS",response:"gemini turn one final"}},
+  {event:"init",conversation_id:"g1"}, {event:"step_update",step_update:{step_type:"agent_response",state:"ACTIVE",text_delta:"partial"}},
+  {event:"result",result:{conversation_id:"g1",status:"SUCCESS",response:"EXECUTION_RESULT /state/result.json\ngemini turn two final"}},
+  {event:"init",conversation_id:"g1"}, {event:"step_update",step_update:{step_type:"agent_response",state:"ACTIVE",text_delta:"a turn never finished"}}' | fixture_stream lr-gemini gemini
+printf 'EXECUTION_RESULT /state/result.json\ngemini turn two final\n' > "$TMP/want-gemini"
+expect_exact "a gemini stream prints the response of the last ended turn" 0 "$TMP/want-gemini" -- "$FW" log testbox lr-gemini --last-result
+printf '%s\n' '{"event":"init","conversation_id":"g1"}' '{"event":"result","result":{"conversation_id":"g1","status":"ERROR","response":"","error":"quota exhausted"}}' >> "$ISSUE_WAVE_STATE/workers/lr-gemini/stream.jsonl"
+expect "...and a latest turn that ended ERROR is NO RESULT naming it" 1 "^NO RESULT testbox/lr-gemini: the latest turn ended ERROR: quota exhausted$" -- "$FW" log testbox lr-gemini --last-result
+jq -cn '{event:"init",conversation_id:"g2"}' | fixture_stream lr-gemini-none gemini
+expect "a gemini stream with no result is NO RESULT" 1 "^NO RESULT testbox/lr-gemini-none: no result event in the stream" -- "$FW" log testbox lr-gemini-none --last-result
 }
 
 section "halt" && {

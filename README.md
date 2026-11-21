@@ -139,7 +139,8 @@ refuses it, and for a CLI worker it runs the probe again as a tmux session of th
 worker would start in, whose environment the worker inherits.
 Provider/model, launch transport and execution placement are separate choices. Both Codex and
 Claude Code support their own native subagents in coordinator-created external worktrees, or
-CLI workers launched with `--kind codex` or `--kind claude`. Only the CLI route provides
+CLI workers launched with `--kind codex`, `--kind claude` or `--kind gemini` (Antigravity's `agy`, one
+process per turn as codex). Only the CLI route provides
 cross-provider delegation, and it can place the agent directly on the best iteration box.
 Native workers use their runtime tools and a shared anchor board; CLI workers use the launcher's
 tracked process lifecycle. See [Native workers](issue-wave/references/native-workers.md) for placement and

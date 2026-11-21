@@ -91,6 +91,7 @@ session_of() {
   local s; s=$(meta_get "$1" session)
   [ -n "$s" ] || s=$(jq -Rr 'fromjson? | select(.type=="thread.started") | .thread_id' "$1/stream.jsonl" 2>/dev/null | head -n1)
   [ -n "$s" ] || s=$(jq -Rr 'fromjson? | select(.type=="system" and .subtype=="init") | .session_id' "$1/stream.jsonl" 2>/dev/null | head -n1)
+  [ -n "$s" ] || s=$(jq -Rr 'fromjson? | select(.event=="init") | .conversation_id // empty' "$1/stream.jsonl" 2>/dev/null | head -n1)
   printf '%s' "$s"
 }
 # A literal string as an ERE, for pgrep/pkill -f.
@@ -198,13 +199,13 @@ bounded() {
   wait "$pid" 2>/dev/null
   cat "$out"; rm -f "$out" "$rcf"; return "$rc"
 }
-# The pattern that finds a worker's CLI by its own command line: a claude or codex command
-# word, then the session id (claude, and codex after a resume) or this worker's state dir
-# (codex's -o). The command-word anchor keeps a `tail -f .../stream.jsonl` or an editor on a
+# The pattern that finds a worker's CLI by its own command line: a claude, codex or agy command
+# word, then the session id (claude, and codex or agy after a resume) or this worker's state dir
+# (codex's -o, agy's --log-file). The command-word anchor keeps a `tail -f .../stream.jsonl` or an editor on a
 # record file from reading as the worker - or from being killed as one. Same pattern everywhere.
 live_pat() {
   local d="$WORKERS/$1" p sid; p=$(re_lit "$WORKERS/$1/"); sid=$(session_of "$d"); [ -n "$sid" ] && p="$(re_lit "$sid")|$p"
-  printf '(^|/| )(claude|codex)( |$).*(%s)' "$p"
+  printf '(^|/| )(claude|codex|agy)( |$).*(%s)' "$p"
 }
 # tmux gone but the CLI reparented and still running: a live writer, not a finished worker.
 orphaned() { ! alive "$1" && pgrep -f -- "$(live_pat "$1")" >/dev/null 2>&1; }
@@ -230,10 +231,35 @@ meta_set() {
 # rec_args from it (no file, a record from before it: none).
 args_save() { local d="$1"; shift; { [ "$#" -eq 0 ] || printf '%s\0' "$@"; } > "$d/cli-args.new" 2>/dev/null && mv -f "$d/cli-args.new" "$d/cli-args" 2>/dev/null; }
 args_load() { local a; rec_args=(); [ -f "$1/cli-args" ] || return 0; while IFS= read -r -d '' a; do rec_args+=("$a"); done < "$1/cli-args"; }
+# A gemini worker's turn (agy, Antigravity's CLI): one process per turn, as codex's, its prompt one
+# stream-json user message on stdin, read to EOF. agy keeps about the first 191 KB of one message
+# and drops the rest behind a `<truncated N bytes>` marker (probed on agy 1.5.14), so a message
+# past AGY_BOUND bytes is refused rather than sent cut. --log-file names this worker's state dir
+# on the command line, live_pat's anchor for a first turn (a resume carries its conversation id
+# too). --dangerously-skip-permissions is agy's codex --yolo: its headless default asks for
+# permissions it cannot get, and the worktree is the worker's own.
+AGY_BOUND=180000
+# agy_message <message.md> <message.jsonl>: the message as that one input line.
+# The bound is the message's own bytes, as agy counts them, not its JSON encoding's.
+agy_message() {
+  local n; n=$(wc -c < "$1" 2>/dev/null | tr -d ' ')
+  [ -n "$n" ] && [ "$n" -le "$AGY_BOUND" ] || { echo "the message is ${n:-an unreadable number of} bytes, past agy's one-message bound ($AGY_BOUND): agy would cut its end"; return 2; }
+  jq -Rsc '{event: "user", message: {content: .}}' < "$1" > "$2" 2>/dev/null || return 1
+}
+# agy_run <dir> <cwd> <message.jsonl> <agy args...>: the run.sh of one turn.
+agy_run() {
+  local d="$1" cwd="$2" in="$3" a; shift 3
+  printf 'cd %q || { echo 97 > %q; exit 97; }\n' "$cwd" "$d/exit"
+  printf 'agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions --log-file %q' "$d/agy.log"
+  for a in "$@"; do printf ' %q' "$a"; done
+  printf ' < %q >> %q 2>> %q\n' "$in" "$d/stream.jsonl" "$d/stderr.log"
+  printf 'echo $? > %q\n' "$d/exit"
+}
 # cli_model <kind> <args...>: the model and reasoning effort the worker's CLI resolves, for meta
 # (ludics#539: neither model reports its own id reliably, and the stream records none), as four
 # lines: model, where it came from, effort, where it came from. A flag wins (codex: -m/--model, -c
-# model=..., -c model_reasoning_effort=...; claude: --model, --effort); else, for codex, the
+# model=..., -c model_reasoning_effort=...; claude and gemini: --model, --effort; an agy model's
+# slug carries its effort too, gemini-4-neon-high); else, for codex, the
 # top-level key of ~/.codex/config.toml on this box (a -p/--profile is not read: `config`); else
 # `default`, the CLI's own. Its boundary: what the args and that file say, not what the CLI did.
 cli_model() {
@@ -241,11 +267,11 @@ cli_model() {
   for a in "$@"; do
     v=""
     case "$kind:$prev:$a" in
-      codex:-m:*|codex:--model:*|claude:--model:*) m=$a; mf=args ;;
-      claude:--effort:*) e=$a; ef=args ;;
+      codex:-m:*|codex:--model:*|claude:--model:*|gemini:--model:*) m=$a; mf=args ;;
+      claude:--effort:*|gemini:--effort:*) e=$a; ef=args ;;
       codex:-c:*|codex:--config:*) v=$a ;;
-      codex:*:--model=*|claude:*:--model=*) m=${a#--model=}; mf=args ;;
-      claude:*:--effort=*) e=${a#--effort=}; ef=args ;;
+      codex:*:--model=*|claude:*:--model=*|gemini:*:--model=*) m=${a#--model=}; mf=args ;;
+      claude:*:--effort=*|gemini:*:--effort=*) e=${a#--effort=}; ef=args ;;
       codex:*:--config=*) v=${a#--config=} ;;
     esac
     case "$v" in
@@ -797,6 +823,12 @@ if [ "$codex" = 1 ] || [ "$codex" = native ]; then
     # A status read is not a proof either way; only a live headless turn is, and that turn runs
     # below, in tmux, once the tmux checks have passed.
   fi
+elif [ "$codex" = gemini ]; then
+  # agy keeps an SSH session's token in a file of its own, apart from the desktop keyring's, so a
+  # desktop sign-in does not reach a worker started over ssh (minix, 2026-11-21: "not logged in and
+  # no controlling terminal"): only the live turn below, in a tmux session, proves it can run.
+  # The tmux session resolves agy for the probe below; this shell's PATH is the check only without one.
+  [ "$probe" = 1 ] || command -v agy >/dev/null 2>&1 || note "no agy on PATH"
 elif [ "$codex" = 0 ]; then
   command -v claude >/dev/null 2>&1 || note "no claude on PATH"
   # `claude auth status` reports loggedIn:true over an expired, unrefreshable OAuth session
@@ -831,17 +863,27 @@ esac
 # .zshenv, put /opt/homebrew/bin first and ran a stale Homebrew codex that refused the wave's
 # model, while this shell's probe, with no -m, passed. codex_seen names the binary and version
 # that session resolved, on the OK line; a different one on this shell's PATH is said there too.
+# A gemini worker's probe is the same, through agy: its turn's `result` must say SUCCESS. It runs
+# in the probe's own directory, not /, where agy would take the whole filesystem as its workspace.
 codex_seen=""
-if [ "$codex" = 1 ] && [ "$probe" = 1 ] && [ -n "$tmux_ok" ] && command -v codex >/dev/null 2>&1; then
+case "$codex" in 1) pcli=codex ;; gemini) pcli=agy ;; *) pcli="" ;; esac
+if [ -n "$pcli" ] && [ "$probe" = 1 ] && [ -n "$tmux_ok" ] && { [ "$pcli" = agy ] || command -v "$pcli" >/dev/null 2>&1; }; then
   cpd=$(mktemp -d "${TMPDIR:-/tmp}/fw-codexprobe.XXXXXX"); cps="fw-codexprobe-$$"
   printf 'Reply with the single word ok.' > "$cpd/prompt"
   {
-    printf 'cd / || { echo 97 > %q; exit 97; }\n' "$cpd/rc"
-    printf 'command -v codex > %q 2>/dev/null\n' "$cpd/path"
-    printf 'codex --version < /dev/null > %q 2>&1\n' "$cpd/version"
-    printf 'codex exec --json --ephemeral --skip-git-repo-check -C /'
-    for a in "$@"; do printf ' %q' "$a"; done
-    printf ' - < %q > %q 2>&1\n' "$cpd/prompt" "$cpd/out"
+    printf 'cd %q || { echo 97 > %q; exit 97; }\n' "$cpd" "$cpd/rc"
+    printf 'command -v %s > %q 2>/dev/null\n' "$pcli" "$cpd/path"
+    printf '%s --version < /dev/null > %q 2>&1\n' "$pcli" "$cpd/version"
+    if [ "$pcli" = codex ]; then
+      printf 'codex exec --json --ephemeral --skip-git-repo-check -C /'
+      for a in "$@"; do printf ' %q' "$a"; done
+      printf ' - < %q > %q 2>&1\n' "$cpd/prompt" "$cpd/out"
+    else
+      jq -Rsc '{event: "user", message: {content: .}}' < "$cpd/prompt" > "$cpd/prompt.jsonl"
+      printf 'agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions'
+      for a in "$@"; do printf ' %q' "$a"; done
+      printf ' < %q > %q 2> %q\n' "$cpd/prompt.jsonl" "$cpd/out" "$cpd/err"
+    fi
     printf 'echo $? > %q\n' "$cpd/rc"
   } > "$cpd/run.sh"
   if perr=$(tm_new -d -s "$cps" "bash $(printf '%q' "$cpd/run.sh")" 2>&1); then
@@ -851,17 +893,26 @@ if [ "$codex" = 1 ] && [ "$probe" = 1 ] && [ -n "$tmux_ok" ] && command -v codex
     done
     tm kill-session -t "=$cps" 2>/dev/null   # a probe past its bound; a finished one has gone itself
     cpath=$(head -n1 "$cpd/path" 2>/dev/null); cver=$(head -n1 "$cpd/version" 2>/dev/null | cut -c1-60)
-    codex_seen="codex in a tmux session: ${cpath:-not on its PATH}${cver:+ ($cver)}"
-    spath=$(command -v codex)
-    [ -z "$cpath" ] || [ "$cpath" = "$spath" ] || codex_seen="$codex_seen; this shell's is $spath"
+    codex_seen="$pcli in a tmux session: ${cpath:-not on its PATH}${cver:+ ($cver)}"
+    spath=$(command -v "$pcli")
+    [ -z "$cpath" ] || [ "$cpath" = "$spath" ] || codex_seen="$codex_seen; this shell's is ${spath:-not on its PATH}"
+    # codex: a turn.completed in the output; agy: the stream's last result SUCCESS, and exit 0.
+    if [ "$pcli" = codex ]; then grep -q '"type":"turn.completed"' "$cpd/out" 2>/dev/null; passed=$?
+    else
+      [ "$(cat "$cpd/rc" 2>/dev/null)" = 0 ] &&
+        [ "$(jq -Rrn '[inputs | fromjson? | select(type == "object" and .event == "result")] | last | .result.status // ""' "$cpd/out" 2>/dev/null)" = SUCCESS ]
+      passed=$?
+    fi
     if [ ! -e "$cpd/rc" ]; then
-      note "codex headless probe in a tmux session timed out after ${probe_timeout}s ($codex_seen)"
-    elif ! grep -q '"type":"turn.completed"' "$cpd/out" 2>/dev/null; then
-      why=$(grep -o '"message":"[^"]*"' "$cpd/out" 2>/dev/null | head -n1 | cut -c1-120)
-      note "codex cannot run headless in a tmux session${1:+ with $*}: ${why:-$(head -n1 "$cpd/out" 2>/dev/null | cut -c1-120)} ($codex_seen)"
+      note "$pcli headless probe in a tmux session timed out after ${probe_timeout}s ($codex_seen)"
+    elif [ -z "$cpath" ]; then
+      note "no $pcli on the PATH of a tmux session on $BOX, where a CLI worker would start ($codex_seen)"
+    elif [ "$passed" != 0 ]; then
+      why=$(cat "$cpd/out" "$cpd/err" 2>/dev/null | grep -oE '"(message|error)": ?"[^"]*"' | head -n1 | cut -c1-120)
+      note "$pcli cannot run headless in a tmux session${1:+ with $*}: ${why:-$(head -n1 "$cpd/out" 2>/dev/null | cut -c1-120)} ($codex_seen)"
     fi
   else
-    note "tmux on $BOX refused the codex probe session ($(printf '%s' "$perr" | tail -n1 | cut -c1-120)), so it would refuse a CLI worker's too"
+    note "tmux on $BOX refused the $pcli probe session ($(printf '%s' "$perr" | tail -n1 | cut -c1-120)), so it would refuse a CLI worker's too"
   fi
   rm -rf "$cpd"
 fi
@@ -1214,6 +1265,9 @@ if [ "$kind" = claude ]; then
   line=$(user_line "$d/brief.md" "$bid") && [ -n "$line" ] && printf '%s\n' "$line" > "$d/input.jsonl" 2>/dev/null ||
     refuse "cannot write the brief to the input channel $d/input.jsonl"
   stream_run "$d" "$cwd" 1 --session-id "$sid" "$@" > "$d/run.sh" || refuse "cannot write $d/run.sh"
+elif [ "$kind" = gemini ]; then
+  why=$(agy_message "$d/brief.md" "$d/brief.jsonl") || refuse "${why:-cannot write the brief as the agy input line $d/brief.jsonl}"
+  agy_run "$d" "$cwd" "$d/brief.jsonl" "$@" > "$d/run.sh" || refuse "cannot write $d/run.sh"
 else
   {
     printf 'cd %q || { echo 97 > %q; exit 97; }\n' "$cwd" "$d/exit"
@@ -1246,11 +1300,11 @@ fi
 started=1
 # Ownership is now visible as a live session; the box-wide lock can go.
 release_lock "$blaunch"; blaunch=""
-if [ "$kind" = codex ]; then
-  # The thread id is the resume address; it is the first event, but the exec takes a moment. If
-  # this connection drops before it is recorded, session_of recovers it from the stream later.
+if [ "$kind" = codex ] || [ "$kind" = gemini ]; then
+  # The thread (agy: conversation) id is the resume address; it is the first event, but the exec
+  # takes a moment. If this connection drops before it is recorded, session_of recovers it later.
   for i in $(seq 1 60); do
-    sid=$(jq -Rr 'fromjson? | select(.type=="thread.started") | .thread_id' "$d/stream.jsonl" 2>/dev/null | head -n1)
+    sid=$(jq -Rr 'fromjson? | select(.type=="thread.started" or .event=="init") | .thread_id // .conversation_id // empty' "$d/stream.jsonl" 2>/dev/null | head -n1)
     [ -n "$sid" ] && break
     [ -f "$d/exit" ] && break
     sleep 1
@@ -1383,6 +1437,10 @@ verdict() {
             ok_event=$(printf '%s' "$summary" | grep -c '^turn.completed')
             last=$(turn | jq -Rr 'fromjson? | select(.type=="item.completed" and .item.type=="agent_message") | .item.text' 2>/dev/null | tail -n1 | cut -c1-200)
             [ -n "$last" ] && summary="$summary | $last" ;;
+    # agy ends each turn with one `result` event; its status (SUCCESS, ERROR, ...) is the verdict.
+    gemini) summary=$(turn | jq -Rr 'fromjson? | select(.event=="result") | "result status=\(.result.status) turns=\(.result.num_turns) "
+              + ((.result.error // .result.response // "")|tostring|.[0:200]|gsub("\n";" "))' 2>/dev/null | tail -n1)
+            ok_event=$(turn | jq -Rrn '[inputs | fromjson? | select(.event=="result")] | last | if . != null and .result.status == "SUCCESS" then 1 else 0 end' 2>/dev/null) ;;
   esac
   [ -n "$summary" ] || summary="no terminal event in the stream"
   # An ended stream process whose last turn never ended (a turn a ScheduleWakeup or a task began,
@@ -1407,6 +1465,7 @@ verdict() {
     case "$kind" in
       claude) final=$(turn | jq -Rrn '[inputs | fromjson? | select(.type=="result") | (.result // "" | tostring)] | last // ""' 2>/dev/null) ;;
       codex)  final=$(turn | jq -Rrn '[inputs | fromjson? | select(.type=="item.completed" and .item.type=="agent_message") | (.item.text // "" | tostring)] | last // ""' 2>/dev/null) ;;
+      gemini) final=$(turn | jq -Rrn '[inputs | fromjson? | select(.event=="result") | (.result.response // "" | tostring)] | last // ""' 2>/dev/null) ;;
     esac
     echo "DONE $BOX/$name exit=0 $summary$(strand_mark "${final:-}")"; return 0
   fi
@@ -1456,6 +1515,7 @@ quiet=$(( $(now) - $(mtime "$d/stream.jsonl") ))
 case "$kind" in
   claude) last=$(tail -n 1 "$d/stream.jsonl" 2>/dev/null | jq -Rr 'fromjson? | .type + (if .type=="assistant" then ":" + ([.message.content[]? | .type] | join(",")) else "" end)' 2>/dev/null) ;;
   codex)  last=$(tail -n 1 "$d/stream.jsonl" 2>/dev/null | jq -Rr 'fromjson? | .type + (if .item then ":" + .item.type else "" end)' 2>/dev/null) ;;
+  gemini) last=$(tail -n 1 "$d/stream.jsonl" 2>/dev/null | jq -Rr 'fromjson? | .event + (if .step_update then ":" + (.step_update.step_type // "") + ":" + (.step_update.state // "") elif .result then ":" + (.result.status // "") else "" end)' 2>/dev/null) ;;
 esac
 events=$(grep -c . "$d/stream.jsonl" 2>/dev/null); events=${events:-0}
 if git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1; then
@@ -1498,6 +1558,7 @@ LOG = r"""name="$1" n="$2"; d="$WORKERS/$name"
 case "$(meta_get "$d" kind)" in
   claude) jq -Rr 'fromjson? | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text' "$d/stream.jsonl" 2>/dev/null | tail -n "$n" ;;
   codex)  jq -Rr 'fromjson? | select(.type=="item.completed" and .item.type=="agent_message") | .item.text' "$d/stream.jsonl" 2>/dev/null | tail -n "$n" ;;
+  gemini) jq -Rr 'fromjson? | select(.event=="result") | .result.response // empty' "$d/stream.jsonl" 2>/dev/null | tail -n "$n" ;;
 esac
 if [ -s "$d/stderr.log" ]; then echo "--- stderr (tail):"; tail -n 5 "$d/stderr.log"; fi
 """
@@ -1514,6 +1575,9 @@ if [ -s "$d/stderr.log" ]; then echo "--- stderr (tail):"; tail -n 5 "$d/stderr.
 #           is a new process appending a new turn); the message is the last `agent_message` item
 #           inside the last turn that ended. A turn that failed has no final message, nor does a
 #           completed one with no agent_message; an unterminated turn (a killed exec) is skipped.
+#   gemini: the `.result.response` of the last `result` event (agy ends every turn with one, each
+#           resume a new process appending a new turn), when its status is SUCCESS; an ERROR or
+#           other status has no final message, nor does a SUCCESS with an empty response.
 # Anything else is one line, `NO RESULT <box>/<name>: <why>`, exit 1 (UNKNOWN stays exit 3).
 LOG_LAST_RESULT = r"""name="$1"; d="$WORKERS/$name"
 [ -f "$d/meta" ] || { echo "UNKNOWN $BOX/$name: never launched here"; exit 3; }
@@ -1535,6 +1599,11 @@ case "$kind" in
       elif .type == "turn.failed" then {why: "the latest turn ended turn.failed: \(.err[0:200] | gsub("\n"; " "))"}
       elif .text == null then {why: "the latest turn completed with no agent_message"}
       else {text: .text} end' ;;
+  gemini) prog='[inputs | fromjson? | select(type == "object" and .event == "result")] | last
+    | if . == null then {why: "no result event in the stream: no turn has ended yet"}
+      elif (.result.status // "") != "SUCCESS" then {why: "the latest turn ended \(.result.status // "with no status"): \((.result.error // "") | tostring | .[0:200] | gsub("\n"; " "))"}
+      elif (.result.response | type) == "string" and (.result.response | length) > 0 then {text: .result.response}
+      else {why: "the latest turn ended SUCCESS with no response"} end' ;;
   *) echo "NO RESULT $BOX/$name: unknown worker kind '$kind'"; exit 1 ;;
 esac
 [ -r "$d/stream.jsonl" ] || { echo "NO RESULT $BOX/$name: no stream yet"; exit 1; }
@@ -1688,8 +1757,15 @@ for om in "$WORKERS"/*/meta; do
   running "$oname" && { echo "UNSTICK REFUSED $BOX/$name: worktree $cwd is now owned by live worker $oname on this box"; exit 1; }
 done
 grep -q '^session=' "$d/meta" || echo "session=$sid" >> "$d/meta"
+# A gemini message is encoded and held to agy's bound before anything is stopped: a refusal
+# after a --kill would leave the worker killed and nothing started in its place.
+if [ "$kind" = gemini ]; then
+  why2=$(agy_message "$d/messages/$stamp.md" "$d/messages/$stamp.jsonl") ||
+    { echo "UNSTICK REFUSED $BOX/$name: ${why2:-cannot write the message as the agy input line}; nothing was changed"; exit 1; }
+fi
 # Why this unstick resumes rather than appends, for the RESUMED line.
 if [ "$kind" = codex ]; then why="codex: one process per turn"
+elif [ "$kind" = gemini ]; then why="gemini: one process per turn"
 elif running "$name"; then why="kill-and-resume: --kill stopped the live CLI"
 else why="resume: the CLI had ended"; fi
 if alive "$name"; then
@@ -1745,6 +1821,8 @@ if [ "$kind" = claude ]; then
     il=$(grep -c '' "$d/input.jsonl" 2>/dev/null); il=${il:-0}
   fi
   stream_run "$d" "$cwd" "$from" --resume "$sid" "$@" > "$d/run.sh" 2>/dev/null
+elif [ "$kind" = gemini ]; then
+  agy_run "$d" "$cwd" "$d/messages/$stamp.jsonl" --conversation "$sid" "$@" > "$d/run.sh" 2>/dev/null
 else
   {
     printf 'cd %q || { echo 97 > %q; exit 97; }\n' "$cwd" "$d/exit"
