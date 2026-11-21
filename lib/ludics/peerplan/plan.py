@@ -95,10 +95,13 @@ def is_clone(worktree: str) -> bool:
     return os.path.isdir(os.path.join(worktree, ".git"))
 
 
-def remove_worktree(checkout: str, worktree: str) -> proc.Completed | None:
+def remove_worktree(d: str, checkout: str, worktree: str) -> proc.Completed | None:
     """The planner's directory removed: a clone deleted, a worktree removed through git; None when
-    a clone went, else git's answer."""
+    a clone went, else git's answer. A clone is deleted only at ``<d>/worktree`` and only when it
+    carries this plan directory's mark (``ludics.agy.owned``): a recorded path is not proof."""
     if is_clone(worktree):
+        if os.path.realpath(worktree) != os.path.realpath(os.path.join(d, "worktree")) or not agy.owned(worktree, d):
+            raise OSError(f"{worktree} is a clone this plan directory did not make; it is kept")
         shutil.rmtree(worktree)
         return None
     if os.path.isdir(worktree):
@@ -351,7 +354,7 @@ def start(args: Sequence[str]) -> int:
         # Nothing has started: undo the directory (and the worktree, once added), so a retry at
         # the same path is a fresh start rather than a refusal.
         try:
-            remove_worktree(checkout, worktree)
+            remove_worktree(d, checkout, worktree)
         except OSError:
             pass
         proc.run_tool("git", ["-C", checkout, "worktree", "prune"], stdin=subprocess.DEVNULL)
@@ -364,7 +367,7 @@ def launch(
 ) -> int:
     """``start`` from the fresh ``<d>`` on: the worktree, the record, the brief and the run."""
     if is_gemini(values.get("--model") or DEFAULT_MODEL):
-        why = agy.clone(checkout, sha, worktree)
+        why = agy.clone(checkout, sha, worktree, d)
         if why:
             raise cli.Exit(1, f"the gemini planner's clone could not be made: {why}")
     else:
@@ -470,7 +473,7 @@ def clean(args: Sequence[str]) -> int:
     except OSError as exc:
         raise cli.Exit(1, f"cannot read runs under {shlex.quote(runs)}: {exc}; worktree kept") from exc
     try:
-        done = remove_worktree(meta.checkout, meta.worktree)
+        done = remove_worktree(d, meta.checkout, meta.worktree)
     except OSError as exc:
         raise cli.Exit(1, f"cannot remove the clone {meta.worktree}: {exc}") from exc
     if done is not None and done.rc != 0:
@@ -505,6 +508,11 @@ def run_planner(d: str, kind: str) -> int:
         if agy.size(brief) > agy.MESSAGE_BOUND:
             raise cli.Exit(1, f"the {kind} brief is {agy.size(brief)} bytes, past agy's one-message bound"
                               f" ({agy.MESSAGE_BOUND}): agy would cut its end; nothing run")
+        if kind == "critique":
+            # The planning turn could write; the critique reads the base both planners were given.
+            why = agy.restore(meta.worktree, meta.base)
+            if why:
+                raise cli.Exit(1, f"the clone {meta.worktree} could not be restored to {meta.base[:12]}: {why}; nothing run")
         argv = agy.argv(meta.model, conversation=read(os.path.join(d, "thread")).strip() if kind == "critique" else "")
         stdin = agy.message(brief)
     elif claude:
@@ -523,7 +531,7 @@ def run_planner(d: str, kind: str) -> int:
             argv = ["exec", "resume", tid, "--json", "-m", meta.model, "-c", effort, "-c", 'sandbox_mode="read-only"', "-o", out, "-"]
     # No timeout: run_tool would start the planner in a session of its own, out of reach of the
     # `bg-run.sh stop` that bounds an overdue planner. Unbounded, it stays in the run's group.
-    done = proc.run_tool(tool, argv, cwd=meta.worktree, stdin=stdin)
+    done = proc.run_tool(tool, argv, cwd=meta.worktree, stdin=stdin, env=agy.environment() if gemini else None)
     write(os.path.join(d, f"{kind}.jsonl"), done.stdout)
     sys.stderr.write(done.stderr)
     if claude or gemini:

@@ -50,8 +50,11 @@ WHAT IT DOES, in this order:
      permission rules cannot be the bound). The reviewer runs with every tool approved in a
      disposable local clone of the checkout at ``<sha>``, with no remote and ``origin/<MAIN>`` as
      the checkout has it: the clone is its working directory and its ``@@CHECKOUT@@``, and is
-     removed after the turn, so nothing it writes reaches the checkout. Posting, pushing and
-     running builds or suites are forbidden by the shipped ``clone.md`` part, not by a tool list.
+     removed after the turn (a SIGTERM, ``bg-run.sh stop``'s, included), so nothing it writes
+     reaches the checkout. The part names the PR's diff as ``git diff <fork> <sha>`` in the
+     clone, ``<fork>`` the merge base of the PR's ``baseRefOid`` and ``<sha>``, so the diff read is
+     the reviewed head's whatever GitHub's head is meanwhile. Posting, pushing and running builds
+     or suites are forbidden by the shipped ``clone.md`` part, not by a tool list.
 8. THE VERDICT, below, and what it decides.
 9. The PR is read again (step 4's check: a recorded review, a dry run's included, is never posted
    on a PR that closed or whose head moved since). Then the review is posted on the PR
@@ -108,6 +111,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import tempfile
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -131,7 +135,7 @@ SHIPPED = ("checkpoint.md", "clone.md", "issue.md", "source.md", "confirm.md", "
 COMMON_NAMES = frozenset({"WAVE", "KIND", "REPO", "PR", "SHA", "SHA8", "CHECKOUT", "MAIN"})
 PART_NAMES: dict[str, frozenset[str]] = {
     "checkpoint.md": COMMON_NAMES | {"BRIEF"},
-    "clone.md": COMMON_NAMES,
+    "clone.md": COMMON_NAMES | {"FORK"},
     "issue.md": COMMON_NAMES | {"ISSUE", "ISSUE_N", "ISSUE_REPO"},
     "source.md": COMMON_NAMES | {"SOURCE", "BRIEF"},
     "confirm.md": COMMON_NAMES | {"REVIEWED_SHA", "REVIEW_FILE", "INLINE_COMMENTS"},
@@ -213,6 +217,7 @@ class Call:
     again: bool = False  # --again: a new round on a head already reviewed and posted
     task_section: str = ""
     clone: str = ""  # a gemini reviewer's clone, its working directory (step 7)
+    fork: str = ""  # the merge base of the PR's baseRefOid and <sha>, named to a gemini reviewer
 
     def path(self, *parts: str) -> str:
         return os.path.join(self.wave.directory, *parts)
@@ -436,23 +441,46 @@ def project_part(call: Call) -> Part | None:
 
 
 @contextlib.contextmanager
-def review_clone(call: Call) -> Generator[None]:
-    """A gemini reviewer's working directory (the header, step 7), removed afterwards whatever happened."""
+def review_clone(cfg: Config, call: Call) -> Generator[None]:
+    """A gemini reviewer's working directory and the PR's fork point (the header, step 7); the
+    clone is removed afterwards whatever happened, a SIGTERM included."""
+    from ludics.fleetworker.execution import gh_timeout
+
+    view = proc.run_tool("gh", ["pr", "view", call.pr, "--repo", call.wave.repository, "--json", "baseRefOid"],
+                         timeout=gh_timeout(cfg))
+    try:
+        data: Any = json.loads(view.stdout) if view.rc == 0 else None
+    except ValueError:
+        data = None
+    base = cast(dict[str, Any], data).get("baseRefOid") if isinstance(data, dict) else None
+    if not (isinstance(base, str) and SHA40.fullmatch(base)):
+        raise call.refused(f"the PR's baseRefOid could not be read (gh exit {view.rc}); nothing reviewed", 4)
+    if git(call, "cat-file", "-e", f"{base}^{{commit}}").rc != 0 and \
+            git(call, "fetch", "-q", "origin", base, timeout=FETCH_TIMEOUT).rc != 0:
+        raise call.refused(f"the PR's base {base[:12]} could not be fetched into {call.wave.checkout}; nothing reviewed", 4)
+    fork = git(call, "merge-base", base, call.sha)
     main = git(call, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{call.wave.vars['MAIN']}")
-    if main.rc != 0:
-        raise call.refused(f"origin/{call.wave.vars['MAIN']} could not be read in {call.wave.checkout}; nothing reviewed", 4)
+    if fork.rc != 0 or main.rc != 0:
+        raise call.refused(f"the PR's fork point or origin/{call.wave.vars['MAIN']} could not be read in"
+                           f" {call.wave.checkout}; nothing reviewed", 4)
+
+    def stopped(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = signal.signal(signal.SIGTERM, stopped)
     parent = tempfile.mkdtemp(prefix="wave-review-")
     try:
         clone = os.path.join(parent, "clone")
-        why = agy.clone(call.wave.checkout, call.sha, clone,
+        why = agy.clone(call.wave.checkout, call.sha, clone, call.stem,
                         {f"refs/remotes/origin/{call.wave.vars['MAIN']}": main.stdout.strip()})
         if why:
             raise call.refused(f"the reviewer's clone could not be made: {why}; nothing reviewed", 4)
-        call.clone = clone
+        call.clone, call.fork = clone, fork.stdout.strip()
         yield
     finally:
         shutil.rmtree(parent, ignore_errors=True)
-        call.clone = ""
+        call.clone = call.fork = ""
+        signal.signal(signal.SIGTERM, previous)
 
 
 def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
@@ -462,7 +490,7 @@ def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
               "SHA8": call.sha[:8], "CHECKOUT": call.wave.checkout, "MAIN": call.wave.vars["MAIN"], "BRIEF": brief}
     gemini = call.review.kind == "gemini"
     if gemini:
-        values["CHECKOUT"] = call.clone
+        values |= {"CHECKOUT": call.clone, "FORK": call.fork}
     parts = [read_part(call, "checkpoint.md"), *([read_part(call, "clone.md")] if gemini else [])]
     if call.issue_ref:
         values |= {"ISSUE": call.issue_ref, "ISSUE_N": call.number, "ISSUE_REPO": call.wave.issue_repository}
@@ -478,6 +506,9 @@ def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
     if project is not None:
         parts.append(project)
     if earlier is not None:
+        if not os.path.isfile(str(earlier.get("review", ""))):
+            raise call.refused(f"the at-open review this confirm checks, {earlier.get('review')!r}, is missing or unreadable;"
+                               " nothing reviewed")
         values |= {"REVIEWED_SHA": str(earlier["sha"]), "REVIEW_FILE": str(earlier.get("review", "")),
                    "INLINE_COMMENTS": call.inline_comments}
         parts.append(read_part(call, "confirm.md"))
@@ -494,7 +525,8 @@ def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
 def run_reviewer(call: Call, prompt: str) -> str:
     """Step 7: the reviewer's final message."""
     tool, argv, stdin = reviewer_call(call, prompt)
-    done = proc.run_tool(tool, argv, cwd=call.clone or call.wave.directory, stdin=stdin, timeout=float(call.review.timeout))
+    done = proc.run_tool(tool, argv, cwd=call.clone or call.wave.directory, stdin=stdin, timeout=float(call.review.timeout),
+                         env=agy.environment() if call.clone else None)
     with open(call.stem + ".run.json", "w", encoding="utf-8", errors="surrogateescape") as f:
         f.write(done.stdout)
     if done.rc != 0:
@@ -596,7 +628,7 @@ def reviewed_locked(cfg: Config, call: Call) -> int:
             review = (f"{heading('confirm', call.sha)}\n\nThe at-open review, at"
                       f" {str(earlier['sha'])[:8]}, was not blocking, so there is nothing to confirm.\n\nVERDICT: clean\n")
         else:
-            with review_clone(call) if call.review.kind == "gemini" else contextlib.nullcontext():
+            with review_clone(cfg, call) if call.review.kind == "gemini" else contextlib.nullcontext():
                 prompt = prompt_of(call, earlier)
                 write_atomically(call.stem + ".prompt.md", prompt)
                 review = run_reviewer(call, prompt)

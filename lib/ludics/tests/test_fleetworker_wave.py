@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
@@ -1894,7 +1895,8 @@ class GeminiReview(WaveDirCase):
         with (FakeTool("gh") as gh, FakeTool("agy") as agy,
               mock.patch.object(wavereview, "anchor_gate", return_value=0),
               mock.patch.object(wavereview, "run", side_effect=self.helper_run)):
-            gh.route((When(prefix=("pr", "view")), Answer(stdout=json.dumps({"state": "OPEN", "headRefOid": head}))))
+            gh.route((When(prefix=("pr", "view"), has=("baseRefOid",)), Answer(stdout=json.dumps({"baseRefOid": self.base}))),
+                     (When(prefix=("pr", "view")), Answer(stdout=json.dumps({"state": "OPEN", "headRefOid": head}))))
             agy.script(answer)
             self.agy = agy
             yield gh
@@ -1920,7 +1922,8 @@ class GeminiReview(WaveDirCase):
         self.assertNotIn(f"git -C {os.path.join(self.dir, 'repo')}", prompt, "the reviewer is pointed at its clone, never the checkout")
         order = [prompt.index(want) for want in (
             f"o/staging#7, head `{self.head}`", f"`git -C {clone.group(1)} show origin/main:<path>`",
-            "## This review runs in a clone", "post nothing on GitHub", "run no build or test suite",
+            "## This review runs in a clone", f"    git -C {clone.group(1)} diff {self.base} {self.head}\n", "post nothing on GitHub",
+            "and run no",
             "`gh issue view 42 --repo o/up --json number,title,body,comments`", "## Your answer")]
         self.assertEqual(order, sorted(order))
         self.assertTrue(self.read(self.stem() + ".md").startswith(f"### Review checkpoint (at-open): head {self.head[:8]}"))
@@ -1938,6 +1941,9 @@ class GeminiReview(WaveDirCase):
                         f.write(subprocess.run(["git", "-C", cwd, *cmd], capture_output=True, text=True).stdout)
                     f.write("alternates\n" if os.path.exists(os.path.join(cwd, ".git", "objects", "info", "alternates"))
                             else "own-objects\n")
+                    shared = [p for p in glob.glob(os.path.join(cwd, ".git", "objects", "**", "*"), recursive=True)
+                              if os.path.isfile(p) and os.stat(p).st_nlink > 1]
+                    f.write("hardlinked\n" if shared else "copied\n")
                 with open(os.path.join(cwd, "scratch.txt"), "w") as f:
                     f.write("a reviewer's scratch file\n")
             return real(name, args, **kw)
@@ -1945,9 +1951,43 @@ class GeminiReview(WaveDirCase):
         with self.gworld(agy_answer(self.said("VERDICT: clean"))), mock.patch.object(wavereview.proc, "run_tool", side_effect=recording):
             rc, out, _ = self.review(sha=self.head)
         self.assertEqual(rc, 0, out)
-        self.assertEqual(self.read(seen).split(), [self.head, self.base, "own-objects"], "no remote is listed")
+        self.assertEqual(self.read(seen).split(), [self.head, self.base, "own-objects", "copied"],
+                         "no remote is listed, and no object file is shared with the checkout")
         self.assertFalse(os.path.exists(os.path.join(self.dir, "repo", "scratch.txt")), "a write in the clone never reaches the checkout")
         self.assertEqual(git("-C", os.path.join(self.dir, "repo"), "status", "--porcelain"), "")
+
+    def test_no_hook_runs_and_an_inherited_git_dir_points_nowhere(self) -> None:
+        repo = os.path.join(self.dir, "repo")
+        hooks, ran = os.path.join(self.dir, "hooks"), os.path.join(self.dir, "hook-ran")
+        os.makedirs(hooks)
+        with open(os.path.join(hooks, "post-checkout"), "w") as f:
+            f.write(f"#!/bin/sh\ntouch {shlex.quote(ran)}\n")
+        os.chmod(os.path.join(hooks, "post-checkout"), 0o755)
+        before = git("-C", repo, "for-each-ref")
+        hostile = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": hooks,
+                   "GIT_DIR": os.path.join(repo, ".git")}
+        with self.gworld(agy_answer(self.said("VERDICT: clean"))), mock.patch.dict(os.environ, hostile):
+            rc, out, _ = self.review(sha=self.head)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(os.path.exists(ran), "no hook runs while the clone is made")
+        self.assertEqual(git("-C", repo, "for-each-ref"), before, "the checkout's refs are untouched")
+
+    def test_a_sigterm_mid_turn_still_removes_the_clone(self) -> None:
+        real, seen = proc.run_tool, list[str]()
+
+        def killed(name: str, args: Any, **kw: Any) -> Any:
+            if name == "agy":
+                seen.append(kw["cwd"])
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(name, args, **kw)
+
+        with (self.gworld(agy_answer(self.said("VERDICT: clean"))), mock.patch.object(wavereview.proc, "run_tool", side_effect=killed),
+              self.assertRaises(SystemExit) as stop):
+            self.review(sha=self.head)
+        self.assertEqual(stop.exception.code, 128 + signal.SIGTERM)
+        self.assertEqual(len(seen), 1)
+        self.assertFalse(os.path.exists(seen[0]), "the clone is removed on a SIGTERM too")
+        self.assertIsNot(signal.getsignal(signal.SIGTERM), None)
 
     def test_the_prompt_reaches_agy_as_one_stream_json_message(self) -> None:
         call = wavereview.parse([self.path, "t42", "7", self.head, "--kind", "at-open"])
@@ -1995,6 +2035,13 @@ class GeminiReview(WaveDirCase):
         for want in ("This is a confirm review, not a first review", f"`{self.stem()}.md`",
                      f"git -C {clone.group(1)} diff {self.head} {fixed}"):
             self.assertIn(want, prompt)
+        os.remove(self.stem("confirm", fixed) + ".json")
+        os.remove(self.stem() + ".md")
+        with self.gworld(agy_answer(self.said("VERDICT: clean", fixed, "confirm")), head=fixed):
+            rc, out, _ = self.review(kind="confirm", sha=fixed)
+            self.assertEqual(self.agy.calls(), [])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("is missing or unreadable", out)
 
 
 class ShippedTemplate(unittest.TestCase):

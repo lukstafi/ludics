@@ -71,7 +71,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 argv = sys.argv[1:]
 stdin = sys.stdin.read()
 with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
-    log.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin}) + "\\n")
+    log.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "pre": os.path.exists("agy-scratch.txt")}) + "\\n")
 mode = os.environ.get("FAKE_AGY_MODE", "ok")
 with open("agy-scratch.txt", "w") as f:  # a write of its own, in the directory it runs in
     f.write("x")
@@ -296,12 +296,26 @@ class PeerPlan(unittest.TestCase):
             self.assertEqual(f.read(), "resume")
         second = self.codex_calls(self.agy)[1]
         self.assertEqual(second.argv[-2:], ["--conversation", "conv-1"])
+        with open(os.path.join(self.agy.dir, "calls.jsonl"), encoding="utf-8") as f:
+            pres = [json.loads(line)["pre"] for line in f if line.strip()]
+        self.assertEqual(pres, [False, False], "the critique resumes in the clone restored to the base, the plan's write gone")
         self.assertEqual(os.path.realpath(second.cwd), os.path.realpath(wt), "agy resumes a conversation in its workspace")
         self.assertIn("my plan", json.loads(second.stdin)["message"]["content"])
         done = self.entry("clean", self.dir)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertFalse(os.path.exists(wt), "clean removes the clone")
         self.assertTrue(os.path.exists(os.path.join(self.dir, "astra-plan.md")), "and keeps the record")
+
+    def test_clean_keeps_a_clone_without_this_plans_mark(self) -> None:
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--model", "gemini-4-neon-high")
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        wt = os.path.join(self.dir, "worktree")
+        os.remove(os.path.join(wt, ".git", "ludics-clone"))
+        done = self.entry("clean", self.dir)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("is a clone this plan directory did not make; it is kept", done.stdout + done.stderr)
+        self.assertTrue(os.path.isdir(wt))
 
     def test_a_gemini_planner_error_result_is_no_plan(self) -> None:
         os.environ["FAKE_AGY_MODE"] = "error"
