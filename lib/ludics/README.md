@@ -292,18 +292,23 @@ fleetworker/farside.py:LAUNCH_RESULT fleetworker/farside.py:structured_launch
 fleetworker/farside.py:LAUNCH_STANDING_START fleetworker/farside.py:VERDICT fleetworker/farside.py:ATTACH
 fleetworker/farside.py:CLOSE
     issue-wave/scripts/test-fleet-worker.sh preflight "the real checkout" "base gate" "coordinator lease" halt "launch /" "failure verdicts" unstick "codex workers" "gemini workers" usage
+    lib/ludics/tests/test_bash_fragments.py
 
 fleetworker/farside.py:STATUS
     issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts" unstick "codex workers" "gemini workers" usage
+    lib/ludics/tests/test_bash_fragments.py
 
 fleetworker/farside.py:LOG fleetworker/farside.py:LOG_LAST_RESULT
     issue-wave/scripts/test-fleet-worker.sh "launch /" "codex workers" "gemini workers" "log --last-result"
+    lib/ludics/tests/test_bash_fragments.py
 
 fleetworker/farside.py:UNSTICK
     issue-wave/scripts/test-fleet-worker.sh unstick "failure verdicts" "codex workers" "gemini workers" usage
+    lib/ludics/tests/test_bash_fragments.py
 
 fleetworker/farside.py:LS
     issue-wave/scripts/test-fleet-worker.sh "launch /" "failure verdicts"
+    lib/ludics/tests/test_bash_fragments.py
 
 fleetworker/execution.py fleetworker/registry.py
     issue-wave/scripts/test-fleet-worker.sh execution "prs (" refresh "base gate" "launch /" "wave kit" board

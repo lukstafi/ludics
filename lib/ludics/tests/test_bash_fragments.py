@@ -1,37 +1,51 @@
-"""Every bash fragment the package ships to a box parses, under ``bash`` and ``/bin/bash``.
+"""Every shell fragment the package ships to a box parses, under the shells that run it.
 
 The far side of fleet-worker.sh is bash held in Python string constants (farside.py's ``LAUNCH_START``,
 ``UNSTICK`` ...), composed with a prelude and run on a box over ``bash -s``. A fragment that does not
 parse fails only there, at run time: on 2026-11-21 an apostrophe inside ``"${why:-...agy's...}"``
-(bash reads a ``'`` in a double-quoted ``${...}`` default as an opening quote) broke four of them,
+(bash 3.2 reads a ``'`` in a double-quoted ``${...}`` default as an opening quote) broke four of them,
 and only a hand-run ``bash -n`` caught it. ``scripts/check-parse-guards.sh`` parses the ``.sh``
-files, not these.
+files, not these. macOS boxes run ``/bin/bash`` 3.2, so a run there checks what Linux CI's bash 5
+cannot.
 
 THE BOUNDARY, a fail-closed allowlist of modules: every module of ``ludics.fleetworker`` and the
-modules in ``EXTRA_MODULES``. In them, every module-level constant whose name is ALL-CAPS (a
-leading underscore allowed) and whose value is a str containing ``$`` is read as a bash fragment,
-except the constants ``NOT_BASH`` names. A new non-bash constant with a ``$`` in it fails this test
-by name, to be added to ``NOT_BASH``, so a bash fragment is never skipped silently. A constant
-imported from another module is checked once, where it is defined. Out of the boundary: bash built
-at run time (f-strings, joins), lowercase names, and the other packages (checkprompts' regexes,
-prreview's GraphQL), which ship no bash to a box. The check is ``bash -n``: the fragment's syntax,
-alone, not its behaviour or its composition with the prelude.
+modules in ``EXTRA_MODULES``. In them:
+- every constant a module ASSIGNS at its top level (read from its source, so an imported constant
+  is checked once, under the module that defines it), whose name is ALL-CAPS (a leading underscore
+  allowed) and whose value is a str containing ``$``, is a fragment, run by ``bash`` and
+  ``/bin/bash``, unless ``SH`` names it (run by ``sh``) or ``NOT_SHELL`` does (not shell at all: a
+  new such constant fails here by name until it is named, so a fragment is never skipped silently);
+- every quoted heredoc inside a fragment (``<<'TAG'`` or ``<<"TAG"``, its body data to the outer
+  ``bash -n``) is a fragment of its own, ``<fragment> <<TAG``: those shipped today are bash a box
+  runs later (GHPROBE's probe, LEG's results script); one that is not would be named in
+  ``NOT_SHELL`` the same way. An unquoted heredoc's body is the outer script's expansion and is not
+  read.
+Out of the boundary: shell built at run time (f-strings, joins), lowercase names, and the other
+packages (checkprompts' regexes, prreview's GraphQL), which ship no shell to a box. The check is
+``-n``: each fragment's syntax alone, not its behaviour or its composition with a prelude.
 """
 
+import ast
 import importlib
+import inspect
 import os
 import pkgutil
+import re
 import shutil
 import subprocess
 import unittest
 from types import ModuleType
+from unittest import mock
 
 import ludics.fleetworker
 
 EXTRA_MODULES = ("ludics.prreview.mergebuild", "ludics.prreview.mergelease")
-# Constants with a `$` that are not bash: GraphQL queries the supervision read sends.
-NOT_BASH = frozenset({"ludics.fleetworker.supervision.XREF_QUERY", "ludics.fleetworker.supervision.CLOSING_QUERY"})
-SHELLS = tuple(dict.fromkeys(s for s in ("bash", "/bin/bash") if shutil.which(s) or os.path.exists(s)))
+# Run as `sh -c`, so held to sh's grammar (dash on Ubuntu), not bash's.
+SH = frozenset({"ludics.prreview.mergebuild._WRAPPER", "ludics.prreview.mergebuild._PLAN_WRAPPER"})
+# Constants with a `$` that are not shell: GraphQL queries the supervision read sends.
+NOT_SHELL = frozenset({"ludics.fleetworker.supervision.XREF_QUERY", "ludics.fleetworker.supervision.CLOSING_QUERY"})
+BASHES = tuple(dict.fromkeys(s for s in ("bash", "/bin/bash") if shutil.which(s) or os.path.exists(s)))
+HEREDOC = re.compile(r"<<-?[ \t]*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n(.*?)\n[ \t]*\2[ \t]*$", re.M | re.S)
 
 
 def modules() -> list[ModuleType]:
@@ -39,52 +53,85 @@ def modules() -> list[ModuleType]:
     return [importlib.import_module(name) for name in [*names, *EXTRA_MODULES]]
 
 
+def assigned(module: ModuleType) -> set[str]:
+    """The names a module's own source assigns at its top level."""
+    names: set[str] = set()
+    for node in ast.parse(inspect.getsource(module)).body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return names
+
+
+def with_heredocs(found: dict[str, str]) -> dict[str, str]:
+    """``found`` and, for each quoted heredoc in a fragment, its body as ``<key> <<TAG``."""
+    out = dict(found)
+    for key, text in found.items():
+        for _quote, tag, body in HEREDOC.findall(text):
+            out[f"{key} <<{tag}"] = body
+    return out
+
+
 def fragments() -> dict[str, str]:
-    """``<module>.<NAME>`` -> the fragment, for every constant in THE BOUNDARY. A value several
-    modules hold (one imports it from another) is keyed by the first of them by name."""
+    """``<module>.<NAME>`` (and ``<module>.<NAME> <<TAG``) -> the fragment, THE BOUNDARY's."""
     found: dict[str, str] = {}
-    seen: set[int] = set()
-    for module in sorted(modules(), key=lambda m: m.__name__):
+    for module in modules():
+        own = assigned(module)
         for name, value in vars(module).items():
-            if isinstance(value, str) and "$" in value and name.lstrip("_").isupper() and id(value) not in seen:
-                seen.add(id(value))
+            if name in own and isinstance(value, str) and "$" in value and name.lstrip("_").isupper():
                 found[f"{module.__name__}.{name}"] = value
-    return found
+    return with_heredocs(found)
 
 
-class BashFragments(unittest.TestCase):
-    def test_every_fragment_parses_under_each_bash(self) -> None:
+def shells(key: str) -> tuple[str, ...]:
+    return ("sh",) if key in SH else BASHES
+
+
+def problems(found: dict[str, str]) -> list[str]:
+    """Each fragment that does not parse, with its shell: the one check the tests make."""
+    out: list[str] = []
+    for key, text in sorted(found.items()):
+        if key in NOT_SHELL:
+            continue
+        for shell in shells(key):
+            done = subprocess.run([shell, "-n", "-c", text], capture_output=True, text=True, check=False)
+            if done.returncode != 0:
+                out.append(f"{key} does not parse under {shell}: {done.stderr.strip()[:300]} (not shell? name it in NOT_SHELL)")
+    return out
+
+
+class ShellFragments(unittest.TestCase):
+    def test_every_fragment_parses_under_its_shells(self) -> None:
         found = fragments()
         self.assertGreater(len(found), 50, "the boundary finds the far side's fragments at all")
-        self.assertIn("ludics.fleetworker.farside.UNSTICK", found)
-        self.assertTrue(SHELLS, "no bash to parse with")
-        for key, text in sorted(found.items()):
-            if key in NOT_BASH:
-                continue
-            for shell in SHELLS:
-                with self.subTest(fragment=key, shell=shell):
-                    done = subprocess.run([shell, "-n", "-c", text], capture_output=True, text=True, check=False)
-                    self.assertEqual(done.returncode, 0, f"{key} does not parse under {shell}: {done.stderr.strip()[:300]}"
-                                     f" (not bash? name it in NOT_BASH)")
+        for key in ("ludics.fleetworker.farside.UNSTICK", "ludics.fleetworker.farside.FLEET_PYTHON",
+                    "ludics.fleetworker.farside.GHPROBE <<PROBE", "ludics.fleetworker.leg.LEG <<FLEET_LEG_RUNS"):
+            self.assertIn(key, found, "a fragment is named by the module that defines it, a heredoc by its tag")
+        self.assertNotIn("ludics.fleetworker.board.FLEET_PYTHON", found, "an imported constant is not checked again")
+        self.assertTrue(BASHES, "no bash to parse with")
+        self.assertEqual(problems(found), [])
 
-    def test_not_bash_names_constants_that_exist(self) -> None:
+    def test_the_exemptions_name_fragments_that_exist(self) -> None:
         found = fragments()
-        self.assertEqual(sorted(NOT_BASH - found.keys()), [], "a NOT_BASH entry names no constant in the boundary")
+        self.assertEqual(sorted((NOT_SHELL | SH) - found.keys()), [], "an exemption names nothing in the boundary")
 
-    def test_a_broken_fragment_is_caught(self) -> None:
-        """The negative control: a fragment that does not parse is refused under each shell; and the
-        2026-11-21 shape, an apostrophe in a double-quoted ``${...:-}`` default, wherever the shell's
-        bash reads it so (3.2 does; a later bash may not, which the far side cannot count on)."""
-        for shell in SHELLS:
-            with self.subTest(shell=shell):
-                done = subprocess.run([shell, "-n", "-c", "if true; then\n  echo x\n"], capture_output=True, check=False)
-                self.assertNotEqual(done.returncode, 0)
+    def test_a_broken_fragment_is_reported_by_name_through_the_same_check(self) -> None:
+        """The negative controls go through ``problems``: a fragment that does not parse is named
+        with each shell; the 2026-11-21 shape under a bash 3.2 (a later bash may read it, which the
+        far side cannot count on); a broken body inside a quoted heredoc; and, where sh is a POSIX sh,
+        a bash-only construct in a fragment ``SH`` names."""
+        broken = {"x.BROKEN": 'if [ -n "$x" ]; then\n  echo x\n'}
+        self.assertEqual([p.split(":")[0] for p in problems(broken)], [f"x.BROKEN does not parse under {s}" for s in BASHES])
+        heredoc = 'cat > "$f" <<\'BODY\'\nif [ -n "$y" ]; then\n  echo y\nBODY\nbash "$f"\n'
+        self.assertEqual(problems({"x.OUTER": heredoc}), [], "the outer script reads the body as data")
+        self.assertEqual({p.split(" does not")[0] for p in problems(with_heredocs({"x.OUTER": heredoc}))}, {"x.OUTER <<BODY"})
         apostrophe = 'x=1 || echo "${why:-cannot write agy\'s line}"\nfor i in 1; do\n  s=$(echo a | cut -c1)\ndone\n'
-        for shell in SHELLS:
-            version = subprocess.run([shell, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True, check=False).stdout
-            if version.strip() == "3":
-                with self.subTest(shell=shell, case="apostrophe"):
-                    self.assertNotEqual(subprocess.run([shell, "-n", "-c", apostrophe], capture_output=True, check=False).returncode, 0)
+        old = [s for s in BASHES if subprocess.run([s, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True,
+                                                   text=True, check=False).stdout.strip() == "3"]
+        self.assertEqual(len(problems({"x.APOSTROPHE": apostrophe})), len(old))
+        # Where sh is a POSIX sh (dash, Ubuntu's): macOS's sh is bash and reads a bash array.
+        if subprocess.run(["sh", "-n", "-c", "a=(1 2)"], capture_output=True, check=False).returncode != 0:
+            with mock.patch(f"{__name__}.SH", frozenset({"x.SH"})):
+                self.assertTrue(problems({"x.SH": 'a=(1 2); echo "${a[0]}$x"\n'}), "sh refuses a bash array")
 
 
 if __name__ == "__main__":
