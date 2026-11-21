@@ -355,7 +355,7 @@ WORKING = "RUNNING"  # the worker's state while its turn runs (farside.py's stat
 STATUS = re.compile(r"(\S+) \S+/\S+ .*?\bsession=(\S*) .*\bresumes=([0-9]*)(?: results=(\S+))?")
 # A stream worker's turn state, listed background tasks and messages not yet echoed (farside.STATUS).
 CHANNEL = re.compile(r"\| turn=(\S+) background_tasks=(\S+) unread=([0-9]+) \|")
-SERVED = ("codex", "claude")
+SERVED = ("codex", "claude", "gemini")
 ASK = re.compile(r"(REVIEW|CONFIRM)_REQUEST #?([1-9][0-9]*) ([0-9a-f]{40})")
 RESULT = re.compile(r"EXECUTION_RESULT (\{.*\})")
 PULL = re.compile(r"/pull/([1-9][0-9]*)")

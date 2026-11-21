@@ -416,7 +416,7 @@ workers can skip it.
 | Transport | Provider and agent host | Launch and supervision |
 | --- | --- | --- |
 | Native worker | Coordinator's provider; the agent host is wherever the runtime runs its subagents, never a box that is merely reachable ([native-workers.md](references/native-workers.md#placement-and-launch)) | Coordinator-created external worktree, the runtime's spawn/message/wait tools and the board: [native-workers.md](references/native-workers.md) plus your coordinator's file, [native-claude.md](references/native-claude.md) or [native-codex.md](references/native-codex.md). |
-| CLI worker | Claude or Codex, independent of the coordinator; any reachable fleet box | `wave launch`, or `queue.json` and `wave drive`; by hand `fleet-worker.sh launch --kind claude` or `--kind codex`, then `attach/status/unstick`: [cli-claude.md](references/cli-claude.md), with [cli-codex.md](references/cli-codex.md) for a Codex coordinator. |
+| CLI worker | Claude, Codex or Gemini (Antigravity's `agy`), independent of the coordinator; any reachable fleet box | `wave launch`, or `queue.json` and `wave drive`; by hand `fleet-worker.sh launch --kind claude`, `--kind codex` or `--kind gemini`, then `attach/status/unstick`: [cli-claude.md](references/cli-claude.md), with [cli-codex.md](references/cli-codex.md) for a Codex coordinator. |
 | App worker (Codex) | Codex, on a box the app has as a project host; the user's explicit choice | [separate-codex.md](references/separate-codex.md). An ordinary supervised wave never implies it. |
 | App worker (Claude) | Claude, on a box that is one of the user's saved SSH connections in the Claude desktop app, with the coordinator in that app; the user's explicit choice | `start_session` with `target: "ssh"`: [app-claude.md](references/app-claude.md). An ordinary supervised wave never implies it. |
 
@@ -458,8 +458,8 @@ not queue is yours to watch for.
 ### Skill-freshness preflight
 
 Per launch, on the launching box (ludics-lite#3): `launch` runs it itself before every worker,
-and `fleet-worker.sh preflight <box>` runs it alone: `--codex` for a Codex CLI host, as the early
-check before its first launch, and `--native-codex` or `--native-claude` once per box for native
+and `fleet-worker.sh preflight <box>` runs it alone: `--codex` for a Codex CLI host and
+`--gemini` for a Gemini one, as the early check before its first launch, and `--native-codex` or `--native-claude` once per box for native
 workers, which take the same freshness, skill-link and cross-box checks without CLI login, a
 headless model probe, or tmux. Every mode brings that box's `~/ludics` to upstream main and
 refuses on anything short of it:
@@ -571,7 +571,7 @@ The worker's rules live in the template, `issue-wave/templates/`, and are not re
   the measurement forms, landing through ship-pr (the local review, stall recovery, the convergence
   policy, credit for its own model, verification ending at its own merge), the review checkpoint,
   and the after-merge hand-back;
-- each kind's own four parts, `native-claude/` and `cli-codex/`: who it is and its shell traps,
+- each kind's own four parts, `native-claude/`, `cli-codex/` and `cli-gemini/`: who it is and its shell traps,
   the slot-wrapped batch and the commit gate read off the batch's own status (*Never pipe a
   suite*), blocking on every run before yielding, and context discipline;
 - the paired-planning parts, `planning-paired.md` and `planning-paired+critique.md`;

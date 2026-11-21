@@ -12,11 +12,11 @@ WHAT IT READS, a fail-closed allowlist. The obligation exists when
 without it has no template to keep, as the suites' trees of copied prompts do not).
 - THE FILES. ``issue-wave/templates/`` holds ``shared`` (waveprep's ``SHARED`` parts, exactly:
   the sections every transport's brief states once), directories ``native-<kind>`` and
-  ``cli-<kind>`` for a kind wave.json takes (claude, codex), optionally ``review`` (the review
+  ``cli-<kind>`` for a kind wave.json takes (claude, codex, gemini), optionally ``review`` (the review
   checkpoint's prompt, wavereview.py), and nothing else. A kind's directory holds every one of
   waveprep's ``OWN`` parts, may hold its ``PLANNING`` parts, and holds nothing else: half a brief
   is not shipped. ``native-claude`` is required, with its planning parts; ``native-codex`` and
-  ``cli-codex`` need only their own (``cli-codex`` ships the planning parts too). ``review`` holds exactly wavereview's parts. All are regular
+  ``cli-codex`` and ``cli-gemini`` need only their own (both ship the planning parts too). ``review`` holds exactly wavereview's parts. All are regular
   files; anything missing or extra fails.
 - THE NAMES. Each shipped part, and the project part, renders through wavebrief's own ``render``
   with one value for each NAME it may use: a common part the built-ins every task is given (no
@@ -53,7 +53,7 @@ from ludics.fleetworker.wavereview import COMMON_NAMES as REVIEW_NAMES, PART_NAM
 
 PREP = "lib/ludics/fleetworker/waveprep.py"
 TEMPLATES = "issue-wave/templates"
-KINDS = ("claude", "codex")
+KINDS = ("claude", "codex", "gemini")
 PROJECT_PART = ".github/wave-brief.md"
 REVIEW = "review"
 SHARED_DIR = "shared"

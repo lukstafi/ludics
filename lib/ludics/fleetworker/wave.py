@@ -40,7 +40,7 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     for a --source task), its branch ``<kind>/<worker>``
   agent_host        the box the workers' agents run on                required
   transport         the workers' transport (``subagent``, ...)         required
-  kind              ``claude`` or ``codex``                             required
+  kind              ``claude``, ``codex`` or ``gemini`` (CLI only)      required
   standing_purpose  the agent host's standing reservation purpose,    required
                     rendered with the task's placeholders (waveprep.py)
   issue_repository  <owner>/<name> the issues live in                 default: repository
@@ -66,7 +66,8 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     kind of worker ``wave prep --profile`` gives a task in place of the wave's
                     own transport and kind (a mixed wave: native Claude workers beside Codex CLI
                     ones); ``transport`` is ``subagent`` or ``cli``, and ``model`` and ``effort``
-                    are a CLI worker's (``wave launch`` passes them to its CLI)
+                    are a CLI worker's (``wave launch`` passes them to its CLI); ``gemini``
+                    (Antigravity's agy) has no native transport, so it is ``cli`` only
   hosts             {<box>: {checkout, scratch}}: where a CLI worker     default: {}
                     lives on a box that is not the agent host: the box's clone of the repository
                     (its worktree goes under ``<checkout>-worktrees/``) and the directory its
@@ -170,7 +171,8 @@ TOP_REQUIRED = ("wave", "repository", "checkout", "worker_prefix", "agent_host",
 TOP_OPTIONAL = ("issue_repository", "vars", "legs", "loops", "project_part", "review", "profiles", "hosts")
 PROFILE_REQUIRED, PROFILE_OPTIONAL = ("transport", "kind"), ("model", "effort")
 PROFILE_TRANSPORTS = ("subagent", "cli")
-KINDS = ("claude", "codex")
+KINDS = ("claude", "codex", "gemini")
+NO_NATIVE = "gemini"  # a kind no coordinator's runtime spawns: CLI workers only
 HOST_REQUIRED = ("checkout", "scratch")
 REVIEW_REQUIRED, REVIEW_OPTIONAL = ("kind", "model"), ("label", "project_part", "timeout")
 REVIEW_KINDS = ("claude", "gemini")
@@ -351,7 +353,7 @@ def parse_wave(path: str, data: Any) -> Wave:
     w = "the wave file"
     kind = text(top, "kind", w)
     if kind not in KINDS:
-        raise ValueError(f"{w}.kind must be claude or codex, not {json.dumps(kind)}")
+        raise ValueError(f"{w}.kind must be one of {', '.join(KINDS)}, not {json.dumps(kind)}")
     profiles: dict[str, Profile] = {}
     for name, entry in objects(top.get("profiles", {}), "profiles").items():
         what = f"profiles.{name}"
@@ -362,6 +364,8 @@ def parse_wave(path: str, data: Any) -> Wave:
         if transport not in PROFILE_TRANSPORTS or its_kind not in KINDS:
             raise ValueError(f"{what} must have a transport of {' or '.join(PROFILE_TRANSPORTS)} and a kind of"
                              f" {' or '.join(KINDS)}, not {json.dumps(transport)} and {json.dumps(its_kind)}")
+        if (transport, its_kind) == ("subagent", NO_NATIVE):
+            raise ValueError(f"{what}: a {NO_NATIVE} worker has no native transport (no runtime spawns agy); its transport is cli")
         profiles[name] = Profile(transport, its_kind, *(text(entry, key, what, REVIEW_NAME) if key in entry else ""
                                                         for key in PROFILE_OPTIONAL))
     hosts: dict[str, Host] = {}

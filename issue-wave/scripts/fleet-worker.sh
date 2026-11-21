@@ -12,9 +12,14 @@
 # coordinator needs later is a file there: the JSONL stream, stderr, the exit code, and a meta
 # file naming the kind, the cwd and the session id that addresses every intervention.
 #
-# The two kinds differ in their input channel (ludics-lite#259):
+# The kinds differ in their input channel (ludics-lite#259):
 #   - codex: one `codex exec --json` turn per process, brief on stdin; the process ends with the
 #     turn, and `unstick` resumes the thread in a new process (kill-and-resume);
+#   - gemini: the same shape through Antigravity's `agy`: one `agy --input-format stream-json
+#     --output-format stream-json --dangerously-skip-permissions` turn per process, its prompt one
+#     JSON user line on stdin (brief.jsonl, then messages/<stamp>.jsonl), the turn's verdict its
+#     `result` event's status, and `unstick` resumes the conversation (`--conversation <id>`) in a
+#     new process. A prompt past agy's one-message bound (~191 KB kept) is refused, not sent cut;
 #   - claude: ONE long-lived `claude -p --input-format stream-json --output-format stream-json
 #     --replay-user-messages` process (meta `channel=stream-json`) whose stdin is fed from the
 #     append-only file input.jsonl, one JSON user message per line, the brief first. A `tail -f`
@@ -78,10 +83,10 @@
 # Usage:
 #   fleet-worker.sh claim [--take]         # take the fleet's coordinator lease (--take adopts)
 #   fleet-worker.sh coordinator | release  # who holds it (exit 0 me, 1 other, 3 nobody) / give it up
-#   fleet-worker.sh preflight <box> [--codex|--native-codex|--native-claude] [--no-probe] [--no-cross] [-- <codex args>]
-#                          # launch runs this itself, too; --codex probes a headless turn in a
-#                          # throwaway session of the box's tmux server with the worker's own args
-#                          # and names the codex binary and version that session resolved
+#   fleet-worker.sh preflight <box> [--codex|--gemini|--native-codex|--native-claude] [--no-probe] [--no-cross] [-- <CLI args>]
+#                          # launch runs this itself, too; --codex (--gemini) probes a headless turn
+#                          # in a throwaway session of the box's tmux server with the worker's own
+#                          # args and names the codex (agy) binary and version that session resolved
 #   fleet-worker.sh refresh <box> [<box> ...]   # fast-forward each box's skills checkout alone, or
 #                          # report why not (never resets); `execution run`/`dispatch` run it
 #                          # on the execution host
@@ -89,7 +94,7 @@
 #                          [--wait <seconds>]  # read again after a NO VERDICT (exit 4) until a read passes, a refusal
 #                          # no re-read lifts arrives (red, unknown, halt ...: at once), or no read may start
 #                          # before the deadline; pause FLEET_GATE_REREAD_INTERVAL (60) s; #872, gate.py THE WAIT
-#   fleet-worker.sh launch <box> <name> --target-repo <owner/repo> --kind claude|codex --brief <file>
+#   fleet-worker.sh launch <box> <name> --target-repo <owner/repo> --kind claude|codex|gemini --brief <file>
 #                          [--standing <reserve.json>] [--result-file <local path>]
 #                          (--cwd <dir> | --repo <checkout-dir> --branch <branch> [--base <ref>])
 #                          [--base-branch <branch>] [--force --allow-red-base <reason>]

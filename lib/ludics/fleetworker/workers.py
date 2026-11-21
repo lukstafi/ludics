@@ -175,8 +175,8 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
             case _:
                 die(f"launch: unknown option {arg}")
         i += 1
-    if kind not in ("claude", "codex"):
-        die("launch: --kind claude|codex")
+    if kind not in ("claude", "codex", "gemini"):
+        die("launch: --kind claude|codex|gemini")
     if not feeder_wait_ok(cfg):
         die("launch: FLEET_FEEDER_WAIT must be a positive number of seconds")
     if "\n" in cwd + repo + branch + base:
@@ -215,9 +215,8 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     # the sibling reach probes, for a wave with no cross-box legs: each sleeping sibling costs one
     # FLEET_CROSS_TIMEOUT, serially, on every launch.
     cross = "" if no_cross else siblings_of(cfg, box)
-    done = run_preflight(
-        cfg, box, "1" if kind == "codex" else "0", "1", cross, capture=True, cli_args=extra if kind == "codex" else []
-    )
+    mode = {"codex": "1", "gemini": "gemini"}.get(kind, "0")
+    done = run_preflight(cfg, box, mode, "1", cross, capture=True, cli_args=extra if mode != "0" else [])
     if done.unreachable:
         return _unreachable(f"LAUNCH UNREACHABLE {box}")
     pf = substitution(done.out)

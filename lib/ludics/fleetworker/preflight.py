@@ -95,6 +95,8 @@ def cmd_preflight(cfg: Config, args: list[str]) -> int:
         match arg:
             case "--codex":
                 codex = "1"
+            case "--gemini":
+                codex = "gemini"
             case "--native-codex":
                 codex = "native"
             case "--native-claude":
@@ -105,8 +107,8 @@ def cmd_preflight(cfg: Config, args: list[str]) -> int:
                 cross = ""
             case _:
                 die(f"preflight: unknown option {arg}")
-    if cli_args and codex != "1":
-        die("preflight: -- <codex args> goes with --codex (the args a Codex CLI worker will run with)")
+    if cli_args and codex not in ("1", "gemini"):
+        die("preflight: -- <args> goes with --codex or --gemini (the args a Codex or Gemini CLI worker will run with)")
     done = run_preflight(cfg, box, codex, probe, cross, cli_args=cli_args)
     if done.unreachable:
         cli.say(f"PREFLIGHT UNREACHABLE {box}")

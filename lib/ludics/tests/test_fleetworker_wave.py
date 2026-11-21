@@ -100,7 +100,7 @@ class WaveFile(unittest.TestCase):
         self.assertEqual(wave.parse_wave("/tmp/x/wave.json", {**good, "project_part": ".github/wave-brief.md"}).project_part,
                          ".github/wave-brief.md")
         cases: list[tuple[dict[str, Any], str]] = [({**good, "extra": 1}, "unknown key"), ({k: v for k, v in good.items() if k != "kind"}, "lacks kind"),
-                             ({**good, "kind": "gpt"}, "claude or codex"), ({**good, "vars": {"WT": "x"}}, "gives itself"),
+                             ({**good, "kind": "gpt"}, "one of claude, codex, gemini"), ({**good, "vars": {"WT": "x"}}, "gives itself"),
                              ({**good, "checkout": "rel"}, "absolute"), ({**good, "legs": {"b": {"checkout": "/c"}}}, "lacks"),
                              ({**good, "loops": {"cc": {**good["loops"]["cc"], "command": []}}}, "argv words"),
                              ({**good, "legs": {**good["legs"], "other-box": {**good["legs"]["gpu-box"], "checkout": "/o"}}},
@@ -592,6 +592,7 @@ class MixedWave(WaveDirCase):
         for more, word in (({"profiles": {"x": {"transport": "app", "kind": "codex"}}}, "a transport of subagent or cli"),
                            ({"profiles": {"x": {"transport": "cli", "kind": "gpt"}}}, "a kind of claude or codex"),
                            ({"profiles": {"x": {"transport": "cli"}}}, "profiles.x lacks kind"),
+                           ({"profiles": {"x": {"transport": "subagent", "kind": "gemini"}}}, "a gemini worker has no native transport"),
                            ({"profiles": {"x": {"transport": "cli", "kind": "codex", "args": ["-m"]}}}, "unknown key"),
                            ({"profiles": {"x": {"transport": "cli", "kind": "codex", "model": "a;b"}}}, "does not match"),
                            ({"hosts": {"far": {"checkout": "/c"}}}, "hosts.far lacks scratch"),
@@ -2111,10 +2112,11 @@ class ShippedTemplate(unittest.TestCase):
                                 self.assertNotIn("Codex", brief.split("## Landing: ship-pr")[0])
 
     def test_the_parts_are_split_as_the_code_says_and_no_kind_restates_a_shared_one(self) -> None:
-        listed = {name: sorted(os.listdir(os.path.join(waveprep.TEMPLATES, name))) for name in ("shared", "native-claude", "native-codex", "cli-codex")}
+        listed = {name: sorted(os.listdir(os.path.join(waveprep.TEMPLATES, name))) for name in ("shared", "native-claude", "native-codex", "cli-codex", "cli-gemini")}
         self.assertEqual(listed["shared"], sorted(waveprep.SHARED))
         self.assertEqual(listed["native-claude"], sorted(waveprep.OWN + waveprep.PLANNING))
         self.assertEqual(listed["cli-codex"], sorted(waveprep.OWN + waveprep.PLANNING))
+        self.assertEqual(listed["cli-gemini"], sorted(waveprep.OWN + waveprep.PLANNING))
         self.assertEqual(listed["native-codex"], sorted(waveprep.OWN))
         self.assertEqual(set(waveprep.OWN) | set(waveprep.SHARED), set(waveprep.COMMON))
         # The shared parts name neither transport's mechanism for holding a run: that is each kind's blocking.md.

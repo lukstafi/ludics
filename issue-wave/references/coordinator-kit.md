@@ -41,10 +41,10 @@ A wave copies no brief text forward. The repository ships the reference template
 - `shared/`: where the worker works, its startup check, the task, requests, landing through
   ship-pr, the review checkpoint (only for a wave file that names a `review`) and the steps after
   the merge;
-- `native-claude/`, `native-codex/` and `cli-codex/`: what differs by the worker's kind. That is
+- `native-claude/`, `native-codex/`, `cli-codex/` and `cli-gemini/`: what differs by the worker's kind. That is
   who it is, how it runs tests, how it holds a long run, and how it keeps its context lean;
-- `planning-paired.md` and `planning-paired+critique.md` in `native-claude/` and `cli-codex/`, the
-  paired-planning additions. The two kinds carry the same text: a CLI worker ends its turn on
+- `planning-paired.md` and `planning-paired+critique.md` in `native-claude/`, `cli-codex/` and
+  `cli-gemini/`, the paired-planning additions. The kinds carry the same text: a CLI worker ends its turn on
   `PLAN_READY` and is resumed with the peer plan by `unstick`
   ([paired-planning.md](paired-planning.md)).
 
@@ -132,7 +132,11 @@ as a host:
 task. For a CLI task it makes nothing on the box and reserves nothing: `fleet-worker.sh launch`
 makes a CLI worker's worktree and takes its standing reservation in one fenced step. `wave launch
 <wave.json> <task>` runs that launch from what prep recorded, then reserves the task's legs and
-sets its row. A Codex CLI worker's brief is the shipped one (`cli-codex/` with `shared/`).
+sets its row. A Codex CLI worker's brief is the shipped one (`cli-codex/` with `shared/`), and so is
+a Gemini one's (`cli-gemini/`; a profile `{"transport": "cli", "kind": "gemini", "model":
+"gemini-4-neon-high"}`, the agy slug carrying the effort). A Gemini worker's box needs agy signed
+in for SSH sessions, whose token agy keeps apart from the desktop's: `ssh -t <box> agy` once;
+`preflight <box> --gemini` probes a headless turn in a tmux session there.
 
 ## Templates
 
