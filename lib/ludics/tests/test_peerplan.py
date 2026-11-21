@@ -65,6 +65,23 @@ print(json.dumps({"type": "result", "is_error": error, "session_id": "sid-1",
                   "result": "Credit balance is too low" if error else ("resume" if "--resume" in argv else "plan")}))
 """
 
+FAKE_AGY = """\
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+argv = sys.argv[1:]
+stdin = sys.stdin.read()
+with open(os.path.join(here, "calls.jsonl"), "a", encoding="utf-8") as log:
+    log.write(json.dumps({"argv": argv, "cwd": os.getcwd(), "stdin": stdin, "pre": os.path.exists("agy-scratch.txt")}) + "\\n")
+mode = os.environ.get("FAKE_AGY_MODE", "ok")
+with open("agy-scratch.txt", "w") as f:  # a write of its own, in the directory it runs in
+    f.write("x")
+said = "resume" if "--conversation" in argv else "plan"
+result = {"conversation_id": "conv-1", "status": "ERROR" if mode == "error" else "SUCCESS",
+          "response": "" if mode == "error" else said}
+print(json.dumps({"event": "init", "conversation_id": "conv-1", "init": {}}))
+print(json.dumps({"event": "result", "result": result}))
+"""
+
 
 @dataclass(frozen=True)
 class Call:
@@ -137,6 +154,12 @@ class PeerPlan(unittest.TestCase):
         self.claude.__enter__()
         self.addCleanup(self.claude.__exit__, None, None, None)
         os.environ.pop("FAKE_CLAUDE_MODE", None)
+        self.agy = FakeTool("agy")
+        with open(os.path.join(self.agy.dir, "agy"), "w", encoding="utf-8") as f:
+            f.write(f"#!{sys.executable}\n{FAKE_AGY}")
+        self.agy.__enter__()
+        self.addCleanup(self.agy.__exit__, None, None, None)
+        os.environ.pop("FAKE_AGY_MODE", None)
         self.dir = os.path.join(self.tmp, "plans", "w-7")
 
     def answer_gh(self, login: str = "maint", issue: Answer = Answer(stdout=json.dumps(ISSUE))) -> None:
@@ -240,6 +263,68 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(second.argv[-2:], ["--resume", "sid-1"])
         self.assertIn("--tools", second.argv)
         self.assertIn("my plan", second.stdin)
+
+    def test_a_gemini_planner_runs_agy_in_a_clone_and_resumes_its_conversation(self) -> None:
+        """THE PLANNER: a gemini-... model plans through agy with every tool approved, in a clone with no
+        remote: its own write stays in the clone, and the checkout gains no worktree."""
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--model", "gemini-4-neon-high")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        wt = os.path.join(self.dir, "worktree")
+        with open(os.path.join(self.dir, "astra-plan.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "plan")
+        with open(os.path.join(self.dir, "thread"), encoding="utf-8") as f:
+            self.assertEqual(f.read().strip(), "conv-1")
+        first = self.codex_calls(self.agy)[0]
+        self.assertEqual(first.argv, ["--model", "gemini-4-neon-high", "--input-format", "stream-json", "--output-format",
+                                      "stream-json", "--dangerously-skip-permissions"])
+        self.assertEqual(os.path.realpath(first.cwd), os.path.realpath(wt))
+        self.assertIn("one of two planners", json.loads(first.stdin)["message"]["content"])
+        self.assertTrue(os.path.isdir(os.path.join(wt, ".git")), "a clone, not a worktree")
+        self.assertEqual(git("-C", wt, "remote"), "", "the clone has no remote")
+        self.assertEqual(git("-C", wt, "rev-parse", "HEAD"), git("-C", self.repo, "rev-parse", "main"))
+        self.assertNotIn(os.path.realpath(wt), git("-C", self.repo, "worktree", "list"))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "agy-scratch.txt")))
+        mine = os.path.join(self.dir, "claude-plan.md")
+        with open(mine, "w", encoding="utf-8") as f:
+            f.write("my plan\n")
+        done = self.entry("critique", self.dir, "--plan", mine)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        with open(os.path.join(self.dir, "critique.md"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "resume")
+        second = self.codex_calls(self.agy)[1]
+        self.assertEqual(second.argv[-2:], ["--conversation", "conv-1"])
+        with open(os.path.join(self.agy.dir, "calls.jsonl"), encoding="utf-8") as f:
+            pres = [json.loads(line)["pre"] for line in f if line.strip()]
+        self.assertEqual(pres, [False, False], "the critique resumes in the clone restored to the base, the plan's write gone")
+        self.assertEqual(os.path.realpath(second.cwd), os.path.realpath(wt), "agy resumes a conversation in its workspace")
+        self.assertIn("my plan", json.loads(second.stdin)["message"]["content"])
+        done = self.entry("clean", self.dir)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse(os.path.exists(wt), "clean removes the clone")
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "astra-plan.md")), "and keeps the record")
+
+    def test_clean_keeps_a_clone_without_this_plans_mark(self) -> None:
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--model", "gemini-4-neon-high")
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        wt = os.path.join(self.dir, "worktree")
+        os.remove(os.path.join(wt, ".git", "ludics-clone"))
+        done = self.entry("clean", self.dir)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("is a clone this plan directory did not make; it is kept", done.stdout + done.stderr)
+        self.assertTrue(os.path.isdir(wt))
+
+    def test_a_gemini_planner_error_result_is_no_plan(self) -> None:
+        os.environ["FAKE_AGY_MODE"] = "error"
+        self.addCleanup(os.environ.pop, "FAKE_AGY_MODE", None)
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--model", "gemini-4-neon-high")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=1")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "astra-plan.md")))
 
     def test_an_opus_planner_error_result_is_no_plan(self) -> None:
         os.environ["FAKE_CLAUDE_MODE"] = "error"

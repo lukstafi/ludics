@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import shlex
+import signal
 import subprocess
 import tempfile
 import time
@@ -19,7 +20,7 @@ from collections.abc import Generator
 from typing import Any
 from unittest import mock
 
-from ludics import cli
+from ludics import cli, proc
 from ludics.fleetworker import farside, gate, revision, takeover, tally, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep, workers
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
@@ -1859,13 +1860,18 @@ def agy_stream(response: str, status: str = "SUCCESS", denied: list[dict[str, st
     if denied is not None:
         result["denied_actions"] = denied
     return "\n".join(json.dumps(e) for e in (
-        {"event": "init", "conversation_id": "c1", "init": {"model": "gemini-4-neon-high", "permission_mode": "strict"}},
+        {"event": "init", "conversation_id": "c1", "init": {"model": "gemini-4-neon-high", "permission_mode": "request-review"}},
         {"event": "step_update", "step_update": {"conversation_id": "c1", "step_index": 0, "state": "DONE", "step_type": "user_input"}},
         {"event": "result", "result": result})) + "\n"
 
 
+def agy_answer(response: str, **more: Any) -> Answer:
+    return Answer(stdout=agy_stream(response, **more))
+
+
 class GeminiReview(WaveDirCase):
-    """A gemini reviewer (agy) runs with every tool refused, its reads made by the verb and inlined."""
+    """A gemini reviewer (agy) runs with every tool approved in a disposable clone at the head,
+    with no remote: nothing it writes reaches the checkout."""
 
     helper_run, review, read = Review.helper_run, Review.review, Review.read
 
@@ -1877,32 +1883,20 @@ class GeminiReview(WaveDirCase):
                                 review={"kind": "gemini", "model": "gemini-4-neon-high", "label": "Gemini 4 Neon"}), f)
         repo = os.path.join(self.dir, "repo")
         commit = ("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m")
-        with open(os.path.join(repo, "AGENTS.md"), "w") as f:
-            f.write("Rule: every scan states its boundary.\n")
-        git("-C", repo, "add", "AGENTS.md")
-        git("-C", repo, *commit, "rules")
-        git("-C", repo, "push", "-q", "origin", "main")
-        self.fork = git("-C", repo, "rev-parse", "HEAD")
         with open(os.path.join(repo, "a.ml"), "w") as f:
-            f.write("let x = 1 (* ```` four ticks and @@NOT_A_NAME@@ *)\n")
-        with open(os.path.join(repo, "blob.bin"), "wb") as f:
-            f.write(b"\0\1\2")
-        git("-C", repo, "add", "a.ml", "blob.bin")
+            f.write("let x = 1\n")
+        git("-C", repo, "add", "a.ml")
         git("-C", repo, *commit, "change")
         self.head = git("-C", repo, "rev-parse", "HEAD")
 
     @contextlib.contextmanager
-    def gworld(self, answer: Answer, head: str = "", base: str | None = None) -> Generator[FakeTool]:
-        head, base = head or self.head, self.fork if base is None else base
+    def gworld(self, answer: Answer, head: str = "") -> Generator[FakeTool]:
+        head = head or self.head
         with (FakeTool("gh") as gh, FakeTool("agy") as agy,
               mock.patch.object(wavereview, "anchor_gate", return_value=0),
               mock.patch.object(wavereview, "run", side_effect=self.helper_run)):
-            gh.route((When(prefix=("pr", "view"), has=("title,body,headRefOid,baseRefOid",)),
-                      Answer(stdout=json.dumps({"title": "Scan PR", "body": "Adds a scan.", "headRefOid": head, "baseRefOid": base}))),
-                     (When(prefix=("pr", "view"), has=("comments,reviews",)), Answer(stdout="worker: REBUTTED with evidence\n")),
-                     (When(prefix=("pr", "view")), Answer(stdout=json.dumps({"state": "OPEN", "headRefOid": head}))),
-                     (When(prefix=("issue", "view")), Answer(stdout=json.dumps({"number": 42, "title": "Issue title", "body": "Do it."}))),
-                     (When(prefix=("api",)), Answer(stdout="[{\"id\": 5, \"body\": \"inline note\"}]")))
+            gh.route((When(prefix=("pr", "view"), has=("baseRefOid",)), Answer(stdout=json.dumps({"baseRefOid": self.base}))),
+                     (When(prefix=("pr", "view")), Answer(stdout=json.dumps({"state": "OPEN", "headRefOid": head}))))
             agy.script(answer)
             self.agy = agy
             yield gh
@@ -1910,89 +1904,90 @@ class GeminiReview(WaveDirCase):
     def said(self, verdict: str, head: str = "", kind: str = "at-open") -> str:
         return f"### Review checkpoint ({kind}): head {(head or self.head)[:8]}\n\nA finding.\n\n{verdict}"
 
-    def test_a_gemini_review_runs_with_no_tools_and_its_reads_inlined(self) -> None:
-        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: blocking (1 blocking, 0 suggestions)")))):
+    def stem(self, kind: str = "at-open", head: str = "") -> str:
+        return os.path.join(self.wavedir, "reviews", f"7-{kind}-{(head or self.head)[:12]}")
+
+    def test_a_gemini_review_runs_in_a_clone_at_the_head_with_every_tool_approved(self) -> None:
+        with self.gworld(agy_answer(self.said("VERDICT: blocking (1 blocking, 0 suggestions)"))):
             rc, out, err = self.review(sha=self.head)
             ran = self.agy.calls()
         self.assertEqual(rc, 0, out + err)
         self.assertIn("verdict=blocking blocking=1 suggestions=0 decision=confirm", out)
         self.assertEqual(ran, [["--model", "gemini-4-neon-high", "--input-format", "stream-json", "--output-format", "stream-json",
-                                "--settings", '{"toolPermission":"strict"}']])
-        stem = os.path.join(self.wavedir, "reviews", f"7-at-open-{self.head[:12]}")
-        prompt = self.read(stem + ".prompt.md")
+                                "--dangerously-skip-permissions"]])
+        prompt = self.read(self.stem() + ".prompt.md")
+        clone = re.search(r"Your working directory is a disposable clone of the repository at the head, `([^`]+)`", prompt)
+        assert clone is not None, prompt
+        self.assertFalse(os.path.exists(clone.group(1)), "the clone is removed after the turn")
+        self.assertNotIn(f"git -C {os.path.join(self.dir, 'repo')}", prompt, "the reviewer is pointed at its clone, never the checkout")
         order = [prompt.index(want) for want in (
-            f"o/staging#7, head `{self.head}`", "## This review runs without tools", "The PR is for issue o/up#42",
-            "## Materials", "### The PR\n\n`gh pr view 7 --repo o/staging --json title,body,headRefOid,baseRefOid`", "Adds a scan.",
-            f"### The PR's diff\n\n`git diff {self.fork} {self.head}`", "+let x = 1", "### The issue, with its comments", "Do it.",
-            "### The project's AGENTS.md at the base", "every scan states its boundary",
-            '### "a.ml" at the head', 'Changed files not shown (binary, unreadable, or past agy\'s message bound): "blob.bin".',
-            "## Your answer")]
-        self.assertEqual(order, sorted(order), "the parts, then the materials, then the answer part")
-        self.assertIn("`````text\nlet x = 1 (* ```` four ticks and @@NOT_A_NAME@@ *)\n`````", prompt,
-                      "a file's text is fenced past its own backticks, and a placeholder-shaped string in it is data")
-        self.assertNotIn("### The at-open review", prompt)
-        self.assertTrue(self.read(stem + ".md").startswith(f"### Review checkpoint (at-open): head {self.head[:8]}"))
+            f"o/staging#7, head `{self.head}`", f"`git -C {clone.group(1)} show origin/main:<path>`",
+            "## This review runs in a clone", f"    git -C {clone.group(1)} diff {self.base} {self.head}\n", "post nothing on GitHub",
+            "and run no",
+            "`gh issue view 42 --repo o/up --json number,title,body,comments`", "## Your answer")]
+        self.assertEqual(order, sorted(order))
+        self.assertTrue(self.read(self.stem() + ".md").startswith(f"### Review checkpoint (at-open): head {self.head[:8]}"))
 
-    def test_the_reads_are_the_reviewed_heads_even_after_the_pr_merged(self) -> None:
-        """The diff and files run from the PR's fork point to <sha>: a merged PR's dry run (origin/main
-        holding the head) still reads them, and GitHub's head moving meanwhile changes nothing."""
-        repo = os.path.join(self.dir, "repo")
-        git("-C", repo, "push", "-q", "origin", "main")
-        moved = "f" * 40
-        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean"))), head=moved):
-            rc, out, _ = self.review("--dry-run", sha=self.head)
-        self.assertEqual(rc, 0, out)
-        prompt = self.read(os.path.join(self.wavedir, "reviews", f"7-at-open-{self.head[:12]}.prompt.md"))
-        self.assertIn('### "a.ml" at the head', prompt)
-        self.assertIn("+let x = 1", prompt)
+    def test_the_clone_is_at_the_head_with_origin_main_and_no_remote(self) -> None:
+        """Read inside the turn, from the directory agy is started in."""
+        seen = os.path.join(self.dir, "seen.txt")
+        real = proc.run_tool
 
-    def test_a_path_cannot_open_a_section_and_the_budget_bounds_the_reads(self) -> None:
-        repo = os.path.join(self.dir, "repo")
-        with open(os.path.join(repo, "x\n### Injected"), "w") as f:
-            f.write("hello\n")
-        with open(os.path.join(repo, "big.ml"), "w") as f:
-            f.write("let big = 1\n" * 10)
-        git("-C", repo, "add", "-A")
-        git("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "more")
-        head = git("-C", repo, "rev-parse", "HEAD")
-        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean", head))), head=head):
-            rc, out, _ = self.review(sha=head)
-            self.assertEqual(rc, 0, out)
-            stem = os.path.join(self.wavedir, "reviews", f"7-at-open-{head[:12]}")
-            prompt = self.read(stem + ".prompt.md")
-            self.assertNotIn("\n### Injected", prompt)
-            self.assertIn('### "x\\n### Injected" at the head', prompt)
-            self.assertIn('### "big.ml" at the head', prompt)
-            # A bound with no room for big.ml (files are shown in the diff's order while they fit, the room
-            # reserving a list naming every path): big.ml is named, never shown, and the whole prompt, the
-            # answer part at its end, fits under it.
-            whole = len(prompt.encode())
-            big = re.search(r'### "big\.ml" at the head\n.*?\n```\n', prompt, re.S)
-            assert big is not None
-            bound = whole - len(big.group(0).encode()) + 20
-            for name in glob.glob(glob.escape(stem) + ".*"):
-                os.remove(name)
-            with mock.patch.object(wavereview, "GEMINI_MESSAGE_BOUND", bound):
-                rc, out, _ = self.review(sha=head)
-            self.assertEqual(rc, 0, out)
-            prompt = self.read(stem + ".prompt.md")
-            self.assertLessEqual(len(prompt.encode()), bound)
-            self.assertNotIn('### "big.ml" at the head', prompt)
-            self.assertIn('"big.ml"', prompt.split("Changed files not shown", 1)[1])
-            self.assertTrue(prompt.rstrip().endswith("A review that ends on any other line is taken as\n  blocking."), prompt[-200:])
-            for name in glob.glob(glob.escape(stem) + ".*"):
-                os.remove(name)
-            with mock.patch.object(wavereview, "GEMINI_MESSAGE_BOUND", 3000):
-                rc, out, _ = self.review(sha=head)
-            self.assertEqual(rc, 4, out)
-            self.assertIn("a gemini reviewer cannot read this PR whole", out)
+        def recording(name: str, args: Any, **kw: Any) -> Any:
+            if name == "agy":
+                cwd = kw["cwd"]
+                with open(seen, "w") as f:
+                    for cmd in (["rev-parse", "HEAD", "refs/remotes/origin/main"], ["remote"]):
+                        f.write(subprocess.run(["git", "-C", cwd, *cmd], capture_output=True, text=True).stdout)
+                    f.write("alternates\n" if os.path.exists(os.path.join(cwd, ".git", "objects", "info", "alternates"))
+                            else "own-objects\n")
+                    shared = [p for p in glob.glob(os.path.join(cwd, ".git", "objects", "**", "*"), recursive=True)
+                              if os.path.isfile(p) and os.stat(p).st_nlink > 1]
+                    f.write("hardlinked\n" if shared else "copied\n")
+                with open(os.path.join(cwd, "scratch.txt"), "w") as f:
+                    f.write("a reviewer's scratch file\n")
+            return real(name, args, **kw)
 
-    def test_an_unreadable_base_is_no_verdict(self) -> None:
-        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean"))), base=""):
+        with self.gworld(agy_answer(self.said("VERDICT: clean"))), mock.patch.object(wavereview.proc, "run_tool", side_effect=recording):
             rc, out, _ = self.review(sha=self.head)
-            self.assertEqual(self.agy.calls(), [])
-        self.assertEqual(rc, 4, out)
-        self.assertIn("baseRefOid could not be read", out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.read(seen).split(), [self.head, self.base, "own-objects", "copied"],
+                         "no remote is listed, and no object file is shared with the checkout")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "repo", "scratch.txt")), "a write in the clone never reaches the checkout")
+        self.assertEqual(git("-C", os.path.join(self.dir, "repo"), "status", "--porcelain"), "")
+
+    def test_no_hook_runs_and_an_inherited_git_dir_points_nowhere(self) -> None:
+        repo = os.path.join(self.dir, "repo")
+        hooks, ran = os.path.join(self.dir, "hooks"), os.path.join(self.dir, "hook-ran")
+        os.makedirs(hooks)
+        with open(os.path.join(hooks, "post-checkout"), "w") as f:
+            f.write(f"#!/bin/sh\ntouch {shlex.quote(ran)}\n")
+        os.chmod(os.path.join(hooks, "post-checkout"), 0o755)
+        before = git("-C", repo, "for-each-ref")
+        hostile = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": hooks,
+                   "GIT_DIR": os.path.join(repo, ".git")}
+        with self.gworld(agy_answer(self.said("VERDICT: clean"))), mock.patch.dict(os.environ, hostile):
+            rc, out, _ = self.review(sha=self.head)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(os.path.exists(ran), "no hook runs while the clone is made")
+        self.assertEqual(git("-C", repo, "for-each-ref"), before, "the checkout's refs are untouched")
+
+    def test_a_sigterm_mid_turn_still_removes_the_clone(self) -> None:
+        real, seen = proc.run_tool, list[str]()
+
+        def killed(name: str, args: Any, **kw: Any) -> Any:
+            if name == "agy":
+                seen.append(kw["cwd"])
+                os.kill(os.getpid(), signal.SIGTERM)
+            return real(name, args, **kw)
+
+        with (self.gworld(agy_answer(self.said("VERDICT: clean"))), mock.patch.object(wavereview.proc, "run_tool", side_effect=killed),
+              self.assertRaises(SystemExit) as stop):
+            self.review(sha=self.head)
+        self.assertEqual(stop.exception.code, 128 + signal.SIGTERM)
+        self.assertEqual(len(seen), 1)
+        self.assertFalse(os.path.exists(seen[0]), "the clone is removed on a SIGTERM too")
+        self.assertIsNot(signal.getsignal(signal.SIGTERM), None)
 
     def test_the_prompt_reaches_agy_as_one_stream_json_message(self) -> None:
         call = wavereview.parse([self.path, "t42", "7", self.head, "--kind", "at-open"])
@@ -2002,39 +1997,51 @@ class GeminiReview(WaveDirCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(json.loads(lines[0]), {"event": "user", "message": {"content": "review this \udc80 byte\nline two"}})
 
-    def test_a_gemini_tool_call_or_a_failed_turn_is_no_verdict(self) -> None:
-        for answer, why in ((Answer(stdout=agy_stream("", denied=[{"action": "command", "display_name": "Bash"}])),
-                             "strict mode refused it (command)"),
-                            (Answer(stdout=agy_stream("partial", status="ERROR")), "its result is ERROR with no response"),
-                            (Answer(stdout=agy_stream("   ")), "its result is SUCCESS with no response"),
+    def test_a_denied_permission_or_a_failed_turn_is_no_verdict(self) -> None:
+        for answer, why in ((agy_answer("", denied=[{"action": "command", "display_name": "Bash"}]),
+                             "agy refused it a permission (command)"),
+                            (agy_answer("partial", status="ERROR"), "its result is ERROR with no response"),
+                            (agy_answer("   "), "its result is SUCCESS with no response"),
                             (Answer(stdout="not a stream\n"), "its result is missing with no response"),
                             (Answer(rc=1, stderr="not signed in"), "the reviewer (agy) exited 1 (not signed in)")):
             with self.subTest(why=why), self.gworld(answer):
                 rc, out, _ = self.review(sha=self.head)
                 self.assertEqual((rc, self.shim_calls), (4, []), out)
                 self.assertIn(why, out)
-                self.assertFalse(os.path.exists(os.path.join(self.wavedir, "reviews", f"7-at-open-{self.head[:12]}.json")))
+                self.assertFalse(os.path.exists(self.stem() + ".json"))
 
-    def test_a_gemini_confirm_inlines_the_earlier_review_the_feed_and_the_change_since(self) -> None:
-        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: blocking (1 blocking, 0 suggestions)")))):
+    def test_a_prompt_past_agys_message_bound_is_no_verdict(self) -> None:
+        with self.gworld(agy_answer(self.said("VERDICT: clean"))), mock.patch("ludics.agy.MESSAGE_BOUND", 500):
+            rc, out, _ = self.review(sha=self.head)
+            self.assertEqual(self.agy.calls(), [])
+        self.assertEqual(rc, 4, out)
+        self.assertIn("past agy's one-message bound (500)", out)
+
+    def test_a_gemini_confirm_reviews_in_a_clone_of_the_new_head(self) -> None:
+        with self.gworld(agy_answer(self.said("VERDICT: blocking (1 blocking, 0 suggestions)"))):
             self.assertEqual(self.review(sha=self.head)[0], 0)
         repo = os.path.join(self.dir, "repo")
         with open(os.path.join(repo, "a.ml"), "a") as f:
             f.write("let y = 2\n")
         git("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "fix")
         fixed = git("-C", repo, "rev-parse", "HEAD")
-        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean", fixed, "confirm"))), head=fixed) as gh:
+        with self.gworld(agy_answer(self.said("VERDICT: clean", fixed, "confirm")), head=fixed):
             rc, out, _ = self.review(kind="confirm", sha=fixed)
-            asked = gh.calls()
         self.assertEqual(rc, 0, out)
         self.assertIn("decision=cleared", out)
-        self.assertIn(["pr", "view", "7", "--repo", "o/staging", "--json", "comments,reviews", "--jq", PR_FEED_FILTER], asked)
-        self.assertIn(["api", "--method", "GET", "--paginate", "repos/o/staging/pulls/7/comments"], asked)
-        prompt = self.read(os.path.join(self.wavedir, "reviews", f"7-confirm-{fixed[:12]}.prompt.md"))
-        for want in ("This is a confirm review, not a first review", "### The at-open review", "A finding.",
-                     "### The PR's comments and reviews", "REBUTTED with evidence", "### The PR's inline comments", "inline note",
-                     f"### The change since the reviewed head\n\n`git diff {self.head} {fixed}`", "+let y = 2"):
+        prompt = self.read(self.stem("confirm", fixed) + ".prompt.md")
+        clone = re.search(r"disposable clone of the repository at the head, `([^`]+)`", prompt)
+        assert clone is not None
+        for want in ("This is a confirm review, not a first review", f"`{self.stem()}.md`",
+                     f"git -C {clone.group(1)} diff {self.head} {fixed}"):
             self.assertIn(want, prompt)
+        os.remove(self.stem("confirm", fixed) + ".json")
+        os.remove(self.stem() + ".md")
+        with self.gworld(agy_answer(self.said("VERDICT: clean", fixed, "confirm")), head=fixed):
+            rc, out, _ = self.review(kind="confirm", sha=fixed)
+            self.assertEqual(self.agy.calls(), [])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("is missing or unreadable", out)
 
 
 class ShippedTemplate(unittest.TestCase):
