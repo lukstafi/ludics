@@ -242,7 +242,8 @@ class PeerPlan(unittest.TestCase):
             self.assertEqual(f.read().strip(), "sid-1")
         self.assertFalse(os.path.exists(os.path.join(self.codex.dir, "calls.jsonl")), "no codex run")
         first = self.codex_calls(self.claude)[0]
-        self.assertEqual(first.argv, ["-p", "--model", "fable", "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob"])
+        self.assertEqual(first.argv, ["-p", "--model", "fable", "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob",
+                                      "--strict-mcp-config"])
         self.assertEqual(os.path.realpath(first.cwd), os.path.realpath(wt))
         self.assertIn("one of two planners", first.stdin)
         mine = os.path.join(self.dir, "claude-plan.md")
@@ -255,7 +256,7 @@ class PeerPlan(unittest.TestCase):
             self.assertEqual(f.read(), "resume")
         second = self.codex_calls(self.claude)[1]
         self.assertEqual(second.argv[-2:], ["--resume", "sid-1"])
-        self.assertIn("--tools", second.argv)
+        self.assertEqual(second.argv[:-2], first.argv, "the critique keeps the plan's tool bound, MCP servers included")
         self.assertIn("my plan", second.stdin)
 
     def test_a_gemini_planner_runs_agy_in_a_clone_and_resumes_its_conversation(self) -> None:

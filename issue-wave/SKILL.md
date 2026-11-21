@@ -677,10 +677,12 @@ rounds (the checkpoint's verdicts and the reviewer's findings), coordinator inte
 launch-to-merge time, separating queueing, CI and dependency waits from active work where possible.
 The 2026-11-13 split rested on qualitative observations. A retrospective of past waves could not
 separate the model from its wave, project, box and era. Assigning both arms within the same waves
-removes the wave, project and era, and the arms share transport, boxes, planner, planning mode and
+removes the wave, project and era, and the arms share transport, planner, planning mode and
 reviewer. They still differ in the CLI that runs the model (codex against agy), so read a result
-as a comparison of the two worker profiles, not of the models alone. Read it within a tier group,
-D2 apart from D2/D3 with D3, once each arm has ten merged tasks in the group: a smaller count is a
+as a comparison of the two worker profiles, not of the models alone. The issue number picks the
+arm and the placement table the box, so the arms' boxes can differ: read `agent_host` first, and
+compare within a box or report the imbalance. Read it within a tier group (D1 with D1/D2, D2,
+D2/D3 with D3) once each arm has ten merged tasks in the group: a smaller count is a
 description. A reading of the code itself pairs PRs by area before any diff is
 read and takes a blind judge of each family, since a judge of one family prefers its own (the
 2026-11-20 retrospective). When a reading is in, the maintainer sets the default for that group and
@@ -715,7 +717,7 @@ worker's `meta` keeps them (ludics#539).
 
 The coordinator's job between launch and last merge. **Who answers a returned turn** is set by the
 worker's kind. The handoff driver, `fleet-worker.sh wave drive <wave.json>`, answers every turn of a
-CLI worker, Claude or Codex, that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
+CLI worker, Claude, Codex or Gemini, that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
 worker, concludes an `EXECUTION_RESULT`, runs `wave review` for a `REVIEW_REQUEST` or
 `CONFIRM_REQUEST`, and saves a `HANDBACK` under `handbacks/` and closes its row with `board close`
 ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 9;
