@@ -2694,8 +2694,19 @@ expect "a launch whose model this box's agy cannot serve is refused at the prefl
   "$FW" launch testbox g3 --target-repo example/project --kind gemini --brief "$brief" --cwd "$proj" --no-cross -- --model gemini-unservable
 [ ! -e "$ISSUE_WAVE_STATE/workers/g3" ] && ok "...leaving no record" || ko "a refused launch left $ISSUE_WAVE_STATE/workers/g3"
 head -c 200000 /dev/zero | tr '\0' 'x' > "$TMP/huge-brief.md"
-expect "a brief past agy's one-message bound is refused, not sent cut" 1 "LAUNCH REFUSED testbox/g4: the message is [0-9]* bytes as agy's input line, past its one-message bound (180000)" -- \
+expect "a brief past agy's one-message bound is refused, not sent cut" 1 "LAUNCH REFUSED testbox/g4: the message is 200000 bytes, past agy's one-message bound (180000)" -- \
   "$FW" launch testbox g4 --target-repo example/project --kind gemini --brief "$TMP/huge-brief.md" --cwd "$proj" --no-cross
+# The bound is the content's bytes, not its JSON encoding's: quotes and newlines double under JSON.
+head -c 100000 /dev/zero | tr '\0' '"' > "$TMP/quoted-brief.md"
+expect "a brief under the bound whose JSON encoding is past it still launches" 0 "LAUNCHED testbox/g5 kind=gemini" -- \
+  "$FW" launch testbox g5 --target-repo example/project --kind gemini --brief "$TMP/quoted-brief.md" --cwd "$proj" --no-cross
+"$FW" attach testbox g5 --interval 1 >/dev/null
+n5=$(sed -n 's/^resumes=//p' "$ISSUE_WAVE_STATE/workers/g5/meta")
+expect "a resume message past the bound is refused before anything is stopped" 1 "UNSTICK REFUSED testbox/g5: the message is 200000 bytes, past agy's one-message bound (180000): agy would cut its end; nothing was changed" -- \
+  "$FW" unstick testbox g5 --kill --message "$TMP/huge-brief.md"
+[ "$(sed -n 's/^resumes=//p' "$ISSUE_WAVE_STATE/workers/g5/meta")" = "$n5" ] && ok "...and the record is as it was" || ko "g5 meta after a refused resume: $(cat "$ISSUE_WAVE_STATE/workers/g5/meta")"
+expect "a launch naming its own conversation is refused before the probe speaks into it" 2 "launch: a gemini worker's conversation is its own" -- \
+  "$FW" launch testbox g6 --target-repo example/project --kind gemini --brief "$brief" --cwd "$proj" --no-cross -- --conversation c-someone
 }
 
 section "log --last-result (fixture streams)" && {

@@ -100,7 +100,7 @@ class WaveFile(unittest.TestCase):
         self.assertEqual(wave.parse_wave("/tmp/x/wave.json", {**good, "project_part": ".github/wave-brief.md"}).project_part,
                          ".github/wave-brief.md")
         cases: list[tuple[dict[str, Any], str]] = [({**good, "extra": 1}, "unknown key"), ({k: v for k, v in good.items() if k != "kind"}, "lacks kind"),
-                             ({**good, "kind": "gpt"}, "one of claude, codex, gemini"), ({**good, "vars": {"WT": "x"}}, "gives itself"),
+                             ({**good, "kind": "gpt"}, "one of claude, codex, gemini"), ({**good, "kind": "gemini"}, "a gemini wave's own workers are CLI workers"), ({**good, "vars": {"WT": "x"}}, "gives itself"),
                              ({**good, "checkout": "rel"}, "absolute"), ({**good, "legs": {"b": {"checkout": "/c"}}}, "lacks"),
                              ({**good, "loops": {"cc": {**good["loops"]["cc"], "command": []}}}, "argv words"),
                              ({**good, "legs": {**good["legs"], "other-box": {**good["legs"]["gpu-box"], "checkout": "/o"}}},

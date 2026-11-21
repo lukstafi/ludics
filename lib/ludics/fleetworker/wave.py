@@ -354,6 +354,8 @@ def parse_wave(path: str, data: Any) -> Wave:
     kind = text(top, "kind", w)
     if kind not in KINDS:
         raise ValueError(f"{w}.kind must be one of {', '.join(KINDS)}, not {json.dumps(kind)}")
+    if kind == NO_NATIVE and top.get("transport") != "cli":
+        raise ValueError(f"{w}: a {NO_NATIVE} wave's own workers are CLI workers (no runtime spawns agy); its transport is cli")
     profiles: dict[str, Profile] = {}
     for name, entry in objects(top.get("profiles", {}), "profiles").items():
         what = f"profiles.{name}"

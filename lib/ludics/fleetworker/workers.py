@@ -177,6 +177,9 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
         i += 1
     if kind not in ("claude", "codex", "gemini"):
         die("launch: --kind claude|codex|gemini")
+    if kind == "gemini" and any(a in ("--conversation", "--continue", "-c") or a.startswith("--conversation=") for a in extra):
+        die("launch: a gemini worker's conversation is its own: --conversation and --continue are the launcher's to pass, on a"
+            " recorded resume, never a launch's (the preflight's probe would otherwise speak into that conversation)")
     if not feeder_wait_ok(cfg):
         die("launch: FLEET_FEEDER_WAIT must be a positive number of seconds")
     if "\n" in cwd + repo + branch + base:

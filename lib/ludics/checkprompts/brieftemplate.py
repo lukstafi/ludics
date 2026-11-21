@@ -106,7 +106,8 @@ def template_files(report: Report, tree: Tree) -> list[tuple[str, frozenset[str]
         return None
     out: list[tuple[str, frozenset[str]]] = []
     bad = False
-    kinds = {f"{transport}-{kind}" for transport in ("native", "cli") for kind in KINDS}
+    # gemini has no native transport (wave.py's NO_NATIVE), so no native-gemini directory either.
+    kinds = {f"{transport}-{kind}" for transport in ("native", "cli") for kind in KINDS if (transport, kind) != ("native", "gemini")}
     for name in sorted(listed):
         if name not in kinds | {SHARED_DIR, REVIEW} or tree.is_link(f"{TEMPLATES}/{name}"):
             report.ko(f"{TEMPLATES}/{name}", f"is no template directory: native-<kind> or cli-<kind> (kinds: {', '.join(KINDS)}),"

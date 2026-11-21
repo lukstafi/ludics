@@ -240,9 +240,11 @@ args_load() { local a; rec_args=(); [ -f "$1/cli-args" ] || return 0; while IFS=
 # permissions it cannot get, and the worktree is the worker's own.
 AGY_BOUND=180000
 # agy_message <message.md> <message.jsonl>: the message as that one input line.
+# The bound is the message's own bytes, as agy counts them, not its JSON encoding's.
 agy_message() {
+  local n; n=$(wc -c < "$1" 2>/dev/null | tr -d ' ')
+  [ -n "$n" ] && [ "$n" -le "$AGY_BOUND" ] || { echo "the message is ${n:-an unreadable number of} bytes, past agy's one-message bound ($AGY_BOUND): agy would cut its end"; return 2; }
   jq -Rsc '{event: "user", message: {content: .}}' < "$1" > "$2" 2>/dev/null || return 1
-  [ "$(wc -c < "$2" | tr -d ' ')" -le "$AGY_BOUND" ] || { echo "the message is $(wc -c < "$2" | tr -d ' ') bytes as agy's input line, past its one-message bound ($AGY_BOUND): agy would cut its end"; return 2; }
 }
 # agy_run <dir> <cwd> <message.jsonl> <agy args...>: the run.sh of one turn.
 agy_run() {
@@ -825,7 +827,8 @@ elif [ "$codex" = gemini ]; then
   # agy keeps an SSH session's token in a file of its own, apart from the desktop keyring's, so a
   # desktop sign-in does not reach a worker started over ssh (minix, 2026-11-21: "not logged in and
   # no controlling terminal"): only the live turn below, in a tmux session, proves it can run.
-  command -v agy >/dev/null 2>&1 || note "no agy on PATH"
+  # The tmux session resolves agy for the probe below; this shell's PATH is the check only without one.
+  [ "$probe" = 1 ] || command -v agy >/dev/null 2>&1 || note "no agy on PATH"
 elif [ "$codex" = 0 ]; then
   command -v claude >/dev/null 2>&1 || note "no claude on PATH"
   # `claude auth status` reports loggedIn:true over an expired, unrefreshable OAuth session
@@ -864,7 +867,7 @@ esac
 # in the probe's own directory, not /, where agy would take the whole filesystem as its workspace.
 codex_seen=""
 case "$codex" in 1) pcli=codex ;; gemini) pcli=agy ;; *) pcli="" ;; esac
-if [ -n "$pcli" ] && [ "$probe" = 1 ] && [ -n "$tmux_ok" ] && command -v "$pcli" >/dev/null 2>&1; then
+if [ -n "$pcli" ] && [ "$probe" = 1 ] && [ -n "$tmux_ok" ] && { [ "$pcli" = agy ] || command -v "$pcli" >/dev/null 2>&1; }; then
   cpd=$(mktemp -d "${TMPDIR:-/tmp}/fw-codexprobe.XXXXXX"); cps="fw-codexprobe-$$"
   printf 'Reply with the single word ok.' > "$cpd/prompt"
   {
@@ -879,7 +882,7 @@ if [ -n "$pcli" ] && [ "$probe" = 1 ] && [ -n "$tmux_ok" ] && command -v "$pcli"
       jq -Rsc '{event: "user", message: {content: .}}' < "$cpd/prompt" > "$cpd/prompt.jsonl"
       printf 'agy --input-format stream-json --output-format stream-json --dangerously-skip-permissions'
       for a in "$@"; do printf ' %q' "$a"; done
-      printf ' < %q > %q 2>&1\n' "$cpd/prompt.jsonl" "$cpd/out"
+      printf ' < %q > %q 2> %q\n' "$cpd/prompt.jsonl" "$cpd/out" "$cpd/err"
     fi
     printf 'echo $? > %q\n' "$cpd/rc"
   } > "$cpd/run.sh"
@@ -892,12 +895,20 @@ if [ -n "$pcli" ] && [ "$probe" = 1 ] && [ -n "$tmux_ok" ] && command -v "$pcli"
     cpath=$(head -n1 "$cpd/path" 2>/dev/null); cver=$(head -n1 "$cpd/version" 2>/dev/null | cut -c1-60)
     codex_seen="$pcli in a tmux session: ${cpath:-not on its PATH}${cver:+ ($cver)}"
     spath=$(command -v "$pcli")
-    [ -z "$cpath" ] || [ "$cpath" = "$spath" ] || codex_seen="$codex_seen; this shell's is $spath"
-    if [ "$pcli" = codex ]; then pass='"type":"turn.completed"'; else pass='"status":"SUCCESS"'; fi
+    [ -z "$cpath" ] || [ "$cpath" = "$spath" ] || codex_seen="$codex_seen; this shell's is ${spath:-not on its PATH}"
+    # codex: a turn.completed in the output; agy: the stream's last result SUCCESS, and exit 0.
+    if [ "$pcli" = codex ]; then grep -q '"type":"turn.completed"' "$cpd/out" 2>/dev/null; passed=$?
+    else
+      [ "$(cat "$cpd/rc" 2>/dev/null)" = 0 ] &&
+        [ "$(jq -Rrn '[inputs | fromjson? | select(type == "object" and .event == "result")] | last | .result.status // ""' "$cpd/out" 2>/dev/null)" = SUCCESS ]
+      passed=$?
+    fi
     if [ ! -e "$cpd/rc" ]; then
       note "$pcli headless probe in a tmux session timed out after ${probe_timeout}s ($codex_seen)"
-    elif ! grep -q "$pass" "$cpd/out" 2>/dev/null; then
-      why=$(grep -oE '"(message|error)":"[^"]*"' "$cpd/out" 2>/dev/null | head -n1 | cut -c1-120)
+    elif [ -z "$cpath" ]; then
+      note "no $pcli on the PATH of a tmux session on $BOX, where a CLI worker would start ($codex_seen)"
+    elif [ "$passed" != 0 ]; then
+      why=$(cat "$cpd/out" "$cpd/err" 2>/dev/null | grep -oE '"(message|error)": ?"[^"]*"' | head -n1 | cut -c1-120)
       note "$pcli cannot run headless in a tmux session${1:+ with $*}: ${why:-$(head -n1 "$cpd/out" 2>/dev/null | cut -c1-120)} ($codex_seen)"
     fi
   else
@@ -1746,6 +1757,12 @@ for om in "$WORKERS"/*/meta; do
   running "$oname" && { echo "UNSTICK REFUSED $BOX/$name: worktree $cwd is now owned by live worker $oname on this box"; exit 1; }
 done
 grep -q '^session=' "$d/meta" || echo "session=$sid" >> "$d/meta"
+# A gemini message is encoded and held to agy's bound before anything is stopped: a refusal
+# after a --kill would leave the worker killed and nothing started in its place.
+if [ "$kind" = gemini ]; then
+  why2=$(agy_message "$d/messages/$stamp.md" "$d/messages/$stamp.jsonl") ||
+    { echo "UNSTICK REFUSED $BOX/$name: ${why2:-cannot write the message as the agy input line}; nothing was changed"; exit 1; }
+fi
 # Why this unstick resumes rather than appends, for the RESUMED line.
 if [ "$kind" = codex ]; then why="codex: one process per turn"
 elif [ "$kind" = gemini ]; then why="gemini: one process per turn"
@@ -1805,8 +1822,6 @@ if [ "$kind" = claude ]; then
   fi
   stream_run "$d" "$cwd" "$from" --resume "$sid" "$@" > "$d/run.sh" 2>/dev/null
 elif [ "$kind" = gemini ]; then
-  why2=$(agy_message "$d/messages/$stamp.md" "$d/messages/$stamp.jsonl") ||
-    { echo "UNSTICK REFUSED $BOX/$name: ${why2:-cannot write the message as the agy input line}; nothing was changed"; exit 1; }
   agy_run "$d" "$cwd" "$d/messages/$stamp.jsonl" --conversation "$sid" "$@" > "$d/run.sh" 2>/dev/null
 else
   {
