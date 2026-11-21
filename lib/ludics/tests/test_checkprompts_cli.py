@@ -3762,7 +3762,7 @@ class BriefTemplateTest(Case):
 
         def review_tree() -> None:
             brief_tree(R)
-            for part, text in (("checkpoint.md", "Review @@REPO@@#@@PR@@ at @@SHA8@@ of @@WAVE@@.\n"), ("inline.md", "No tools (@@KIND@@).\n"),
+            for part, text in (("checkpoint.md", "Review @@REPO@@#@@PR@@ at @@SHA8@@ of @@WAVE@@.\n"), ("clone.md", "In a clone of @@REPO@@ (@@KIND@@).\n"),
                                ("issue.md", "For @@ISSUE@@.\n"),
                                ("source.md", "From @@SOURCE@@, see `@@BRIEF@@`.\n"), ("confirm.md", "After @@REVIEWED_SHA@@.\n"),
                                ("verdict.md", "End on the verdict (@@KIND@@).\n")):

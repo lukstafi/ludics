@@ -42,6 +42,8 @@ lib/ludics/cli.py                shared by every entry point: Exit, main (the ca
                                  it ended the shell's printf), say/emit/note
 lib/ludics/proc.py               run_tool, the shell bridge, and Git Bash's PATH lookup and quoting
 lib/ludics/bgrun.py              bg-run.sh wait's verdict line: parse, its one reader
+lib/ludics/agy.py                one headless agy (Gemini) turn in a disposable clone: argv, message,
+                                 result, clone (the gemini reviewer's and planner's)
 lib/ludics/prreview/core.py      pr-review.sh's prelude: fail/die/warn, Config, GhSession
                                  (gh_retry and its classification), parse_ref/pr_arg,
                                  checkout_pr, repo_from_cwd, api_list, mark_of
@@ -251,6 +253,10 @@ cli.py proc.py
 fs.py
     lib/ludics/tests/test_prreview_budget.py
     lib/ludics/tests/test_prreview_mergebuild.py
+    lib/ludics/tests/test_peerplan.py
+
+agy.py
+    lib/ludics/tests/test_fleetworker_wave.py
     lib/ludics/tests/test_peerplan.py
 
 bgrun.py

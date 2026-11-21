@@ -47,7 +47,10 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    It reads the issue with `gh` (the planner's sandbox has no network) and adds a detached
    worktree of the base under `<plan-dir>`. Then it starts Astra (`gpt-6.2-astra`, high;
    `--model`/`--effort` to change them; `--model opus` beside a GPT worker, which runs Opus at
-   high through `claude -p` with only read and search tools) there in the background, read-only,
+   high through `claude -p` with only read and search tools; a `gemini-...` model such as
+   `gemini-4-neon-high` runs through `agy` in a clone of the base with no remote, in place of the
+   worktree, since agy has no read-only mode: what it writes stays in the clone) there in the
+   background, read-only,
    and prints a `bg-run.sh` run directory. A native Codex coordinator, whose local `spawn` runs die
    ([native-codex.md](native-codex.md#local-managed-command-sessions)), passes `--managed` to
    `start` and `critique` instead. That only allocates and records the run directory, and the

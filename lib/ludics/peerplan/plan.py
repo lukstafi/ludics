@@ -24,9 +24,15 @@ no deadline of its own: ``bg-run.sh stop <run>`` ends it, codex included.
 THE PLANNER is named by ``--model``. A model in ``CLAUDE_MODELS`` (``opus``) or one named
 ``claude-...`` runs as ``claude -p`` with the tools ``Read,Grep,Glob`` and nothing else: no tool
 that writes, runs a command or reaches the network is offered, which is its read-only sandbox.
-Every other model runs as ``codex exec -s read-only``. The plan, the session id in ``<dir>/thread``
-and the critique's resume of that session follow the same files for both; a claude run's
-``<kind>.jsonl`` holds its one JSON result. ``astra-plan.md`` is the peer's plan whatever its
+A model named ``gemini-...`` (an Antigravity slug, its effort in the name: ``gemini-4-neon-high``)
+runs as one ``agy`` turn with every tool approved, and its bound is not a tool list but its
+directory (``ludics.agy``'s header says why): its ``<dir>/worktree`` is a local clone of
+``<checkout>`` at ``<base>`` with no remote, not a worktree, so nothing it writes reaches the
+checkout, and the brief's read-only line is the rest of the bound. ``--effort`` is not passed to
+it: the slug carries it. Every other model runs as ``codex exec -s read-only``. The plan, the
+session id in ``<dir>/thread`` (agy's ``conversation_id``) and the critique's resume of that
+session follow the same files for all three; a claude run's ``<kind>.jsonl`` holds its one JSON
+result, an agy run's its event stream. ``astra-plan.md`` is the peer's plan whatever its
 model: the name predates THE PLANNER, and every reader and brief names it. Only the default model (Astra) is shipped as a
 default: a coordinator names ``--model opus`` where issue-wave asks for it (beside a GPT worker),
 the rule ``peer_model`` states for the wave driver's paired-launch notice.
@@ -53,7 +59,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from ludics import bgrun, cli, fs, proc
+from ludics import agy, bgrun, cli, fs, proc
 from ludics.peerplan import transcript
 
 PROG = "peer-plan.sh"
@@ -76,6 +82,28 @@ def peer_model(worker_model: str) -> str:
 def is_claude(model: str) -> bool:
     """THE PLANNER (the header): which CLI runs ``model``."""
     return model in CLAUDE_MODELS or model.startswith("claude-")
+
+
+def is_gemini(model: str) -> bool:
+    """THE PLANNER (the header): an Antigravity model, run by ``agy`` in a clone."""
+    return model.startswith("gemini-")
+
+
+def is_clone(worktree: str) -> bool:
+    """Whether the planner's directory is a gemini planner's clone (its own ``.git`` directory)
+    rather than a worktree of the checkout (a ``.git`` file)."""
+    return os.path.isdir(os.path.join(worktree, ".git"))
+
+
+def remove_worktree(checkout: str, worktree: str) -> proc.Completed | None:
+    """The planner's directory removed: a clone deleted, a worktree removed through git; None when
+    a clone went, else git's answer."""
+    if is_clone(worktree):
+        shutil.rmtree(worktree)
+        return None
+    if os.path.isdir(worktree):
+        return proc.run_tool("git", ["-C", checkout, "worktree", "remove", "--force", worktree], stdin=subprocess.DEVNULL)
+    return proc.run_tool("git", ["-C", checkout, "worktree", "prune"], stdin=subprocess.DEVNULL)
 
 USAGE = f"""\
 usage: {PROG} start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref> [--model <m>] [--effort <e>] [--managed]
@@ -322,10 +350,10 @@ def start(args: Sequence[str]) -> int:
     except cli.Exit:
         # Nothing has started: undo the directory (and the worktree, once added), so a retry at
         # the same path is a fresh start rather than a refusal.
-        if os.path.isdir(worktree):
-            proc.run_tool(
-                "git", ["-C", checkout, "worktree", "remove", "--force", worktree], stdin=subprocess.DEVNULL
-            )
+        try:
+            remove_worktree(checkout, worktree)
+        except OSError:
+            pass
         proc.run_tool("git", ["-C", checkout, "worktree", "prune"], stdin=subprocess.DEVNULL)
         shutil.rmtree(d, ignore_errors=True)
         raise
@@ -335,11 +363,16 @@ def launch(
     d: str, ref: str, checkout: str, sha: str, worktree: str, values: dict[str, str], issue: str, trusted: list[str]
 ) -> int:
     """``start`` from the fresh ``<d>`` on: the worktree, the record, the brief and the run."""
-    added = proc.run_tool(
-        "git", ["-C", checkout, "worktree", "add", "--detach", worktree, sha], stdin=subprocess.DEVNULL
-    )
-    if added.rc != 0:
-        raise cli.Exit(1, f"git worktree add failed (exit {added.rc}): {last_line(added.stderr)}")
+    if is_gemini(values.get("--model") or DEFAULT_MODEL):
+        why = agy.clone(checkout, sha, worktree)
+        if why:
+            raise cli.Exit(1, f"the gemini planner's clone could not be made: {why}")
+    else:
+        added = proc.run_tool(
+            "git", ["-C", checkout, "worktree", "add", "--detach", worktree, sha], stdin=subprocess.DEVNULL
+        )
+        if added.rc != 0:
+            raise cli.Exit(1, f"git worktree add failed (exit {added.rc}): {last_line(added.stderr)}")
     meta = Meta(
         issue=ref,
         checkout=checkout,
@@ -436,13 +469,11 @@ def clean(args: Sequence[str]) -> int:
                     raise cli.Exit(1, f"the run {shlex.quote(run)} is still live: bg-run.sh stop {shlex.quote(run)} first")
     except OSError as exc:
         raise cli.Exit(1, f"cannot read runs under {shlex.quote(runs)}: {exc}; worktree kept") from exc
-    if os.path.isdir(meta.worktree):
-        done = proc.run_tool(
-            "git", ["-C", meta.checkout, "worktree", "remove", "--force", meta.worktree], stdin=subprocess.DEVNULL
-        )
-    else:
-        done = proc.run_tool("git", ["-C", meta.checkout, "worktree", "prune"], stdin=subprocess.DEVNULL)
-    if done.rc != 0:
+    try:
+        done = remove_worktree(meta.checkout, meta.worktree)
+    except OSError as exc:
+        raise cli.Exit(1, f"cannot remove the clone {meta.worktree}: {exc}") from exc
+    if done is not None and done.rc != 0:
         raise cli.Exit(1, f"git could not remove {meta.worktree} (exit {done.rc}): {last_line(done.stderr)}")
     cli.say(f"CLEANED {d}")
     return 0
@@ -467,8 +498,16 @@ def run_planner(d: str, kind: str) -> int:
     meta = load_meta(d)
     out = os.path.join(d, "astra-plan.md" if kind == "plan" else "critique.md")
     brief = read(os.path.join(d, "plan-brief.md" if kind == "plan" else "critique-brief.md"))
-    claude = is_claude(meta.model)
-    if claude:
+    claude, gemini = is_claude(meta.model), is_gemini(meta.model)
+    stdin = brief.encode("utf-8")
+    if gemini:
+        tool = "agy"
+        if agy.size(brief) > agy.MESSAGE_BOUND:
+            raise cli.Exit(1, f"the {kind} brief is {agy.size(brief)} bytes, past agy's one-message bound"
+                              f" ({agy.MESSAGE_BOUND}): agy would cut its end; nothing run")
+        argv = agy.argv(meta.model, conversation=read(os.path.join(d, "thread")).strip() if kind == "critique" else "")
+        stdin = agy.message(brief)
+    elif claude:
         tool = "claude"
         argv = ["-p", "--model", meta.model, "--effort", meta.effort, "--output-format", "json", "--tools", CLAUDE_TOOLS]
         if kind == "critique":
@@ -484,11 +523,17 @@ def run_planner(d: str, kind: str) -> int:
             argv = ["exec", "resume", tid, "--json", "-m", meta.model, "-c", effort, "-c", 'sandbox_mode="read-only"', "-o", out, "-"]
     # No timeout: run_tool would start the planner in a session of its own, out of reach of the
     # `bg-run.sh stop` that bounds an overdue planner. Unbounded, it stays in the run's group.
-    done = proc.run_tool(tool, argv, cwd=meta.worktree, stdin=brief.encode("utf-8"))
+    done = proc.run_tool(tool, argv, cwd=meta.worktree, stdin=stdin)
     write(os.path.join(d, f"{kind}.jsonl"), done.stdout)
     sys.stderr.write(done.stderr)
-    if claude:
-        text, tid, failed = claude_result(done.stdout)
+    if claude or gemini:
+        if claude:
+            text, tid, failed = claude_result(done.stdout)
+        else:
+            text, tid, why = agy.result(done.stdout)
+            failed = bool(why) and done.rc == 0
+            if why:
+                cli.note(PROG, f"agy gave no {kind}: {why}")
         if text and not failed and done.rc == 0:
             write(out, text)
     else:
