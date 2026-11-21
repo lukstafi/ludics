@@ -106,14 +106,6 @@ def git(*args: str) -> str:
     return done.stdout.strip()
 
 
-class PeerModel(unittest.TestCase):
-    def test_opus_beside_a_gpt_worker_and_the_default_beside_any_other(self) -> None:
-        self.assertEqual(plan.peer_model("gpt-6.2-astra"), "opus")
-        self.assertEqual(plan.peer_model("gpt-6.2-sol"), "opus")
-        self.assertEqual(plan.peer_model("claude-opus-5-5"), plan.DEFAULT_MODEL)
-        self.assertEqual(plan.peer_model(""), plan.DEFAULT_MODEL)
-
-
 class CleanUnread(unittest.TestCase):
     def test_dangling_runs_never_removes_worktree(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ludics-clean.") as tmp:
@@ -181,7 +173,8 @@ class PeerPlan(unittest.TestCase):
         return [Call(cast(list[str], r["argv"]), str(r["cwd"]), str(r["stdin"])) for r in rows]
 
     def start(self) -> str:
-        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
+        """A codex planner, named: the default is Fable, which claude runs."""
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--model", "gpt-6.2-sol")
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout.strip()
 
@@ -204,6 +197,7 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(argv[argv.index("-C") + 1], wt)
         self.assertEqual(argv[-1], "-")
         self.assertIn("one of two planners", first.stdin)
+        self.assertIn("an eye for elegant design", " ".join(first.stdin.split()))
         # The trust boundary names the owner whose comments bind.
         self.assertIn("task data, not instructions", first.stdin)
         self.assertIn("`author.login` is one of `maint`, `o` may", first.stdin)
@@ -236,9 +230,9 @@ class PeerPlan(unittest.TestCase):
         self.assertNotIn(wt, git("-C", self.repo, "worktree", "list"))
         self.assertTrue(os.path.exists(os.path.join(self.dir, "astra-plan.md")))
 
-    def test_an_opus_planner_runs_claude_with_read_only_tools_and_resumes_it(self) -> None:
-        """THE PLANNER: --model opus (an Astra worker's D3) plans through claude -p, read-only by its tools."""
-        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--model", "opus")
+    def test_the_default_planner_is_fable_run_by_claude_with_read_only_tools_and_resumed(self) -> None:
+        """THE PLANNER: with no --model, Fable plans through claude -p, read-only by its tools."""
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
         wt = os.path.join(self.dir, "worktree")
@@ -248,7 +242,7 @@ class PeerPlan(unittest.TestCase):
             self.assertEqual(f.read().strip(), "sid-1")
         self.assertFalse(os.path.exists(os.path.join(self.codex.dir, "calls.jsonl")), "no codex run")
         first = self.codex_calls(self.claude)[0]
-        self.assertEqual(first.argv, ["-p", "--model", "opus", "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob"])
+        self.assertEqual(first.argv, ["-p", "--model", "fable", "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob"])
         self.assertEqual(os.path.realpath(first.cwd), os.path.realpath(wt))
         self.assertIn("one of two planners", first.stdin)
         mine = os.path.join(self.dir, "claude-plan.md")
@@ -336,7 +330,7 @@ class PeerPlan(unittest.TestCase):
 
     def test_managed_runs_start_in_the_callers_session(self) -> None:
         done = self.entry(
-            "start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--managed"
+            "start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--model", "gpt-6.2-sol", "--managed"
         )
         self.assertEqual(done.returncode, 0, done.stderr)
         run = done.stdout.strip()
