@@ -53,8 +53,8 @@ WHAT IT DOES, in this order:
      reads the shipped parts name are made here and inlined (``materials``, after the shipped
      ``inline.md`` that says so). The reads, a closed list: the PR's title, body, head and base, its
      diff from its fork point to ``<sha>``, read locally, the issue with its comments, the worker brief, the base's root ``AGENTS.md`` and
-     ``CLAUDE.md``, each changed file's text at the head (``HEAD_TEXT_BUDGET`` characters in all,
-     the rest named), and for a confirm the at-open review, the PR's comments and reviews, its
+     ``CLAUDE.md``, each changed file's text at the head (as many as the room left under
+     ``GEMINI_MESSAGE_BOUND`` holds, the rest named), and for a confirm the at-open review, the PR's comments and reviews, its
      inline comments and the diff since the reviewed head. A tool call ends agy's turn with an
      empty response: that is no final message, exit 4, never a verdict.
 8. THE VERDICT, below, and what it decides.
@@ -150,8 +150,10 @@ FILTERS = ("head", "tail", "wc", "grep")
 
 # agy's one fail-closed mode: every tool refused (the header, step 7).
 GEMINI_SETTINGS = '{"toolPermission":"strict"}'
-# The characters of changed files' head text a gemini prompt inlines; past it a file is named, not shown.
-HEAD_TEXT_BUDGET = 400_000
+# The UTF-8 bytes a gemini prompt may take whole. agy cuts one message at about 191 KB (probed on
+# 1.5.14: a 400 KB message kept 191,391 bytes and a `<truncated N bytes>` marker, its tail -- the
+# answer part -- lost), so the prompt is held under it with a margin, changed files filling the rest.
+GEMINI_MESSAGE_BOUND = 180_000
 
 
 def reviewer_call(call: "Call", prompt: str) -> tuple[str, list[str], bytes]:
@@ -475,7 +477,11 @@ def named(path: str) -> str:
     return json.dumps(path)
 
 
-def materials(cfg: Config, call: Call, earlier: dict[str, Any] | None, brief: str) -> str:
+def size(text: str) -> int:
+    return len(text.encode("utf-8", "surrogateescape"))
+
+
+def materials(cfg: Config, call: Call, earlier: dict[str, Any] | None, brief: str, room: int) -> str:
     """The reads a ``gemini`` reviewer cannot make (the header, step 7), made here: a closed list.
     The diff and the changed files are read locally between the PR's fork point (the merge base of
     its ``baseRefOid`` and ``<sha>``) and ``<sha>`` itself, so they are the reviewed head's whatever
@@ -526,21 +532,8 @@ def materials(cfg: Config, call: Call, earlier: dict[str, Any] | None, brief: st
         shown = git(call, "show", f"{main}:{rules}")
         if shown.rc == 0:
             sections.append(fenced(f"The project's {rules} at the base", f"git show {main}:{rules}", shown.stdout))
-    left, skipped = HEAD_TEXT_BUDGET, list[str]()
-    for path in filter(None, local("diff", "--name-only", "--diff-filter=d", "-z", fork, call.sha).split("\0")):
-        size = git(call, "cat-file", "-s", f"{call.sha}:{path}").stdout.strip()
-        if not size.isdigit() or int(size) > left:  # its byte size bounds its characters: no read past the budget
-            skipped.append(path)
-            continue
-        shown = git(call, "show", f"{call.sha}:{path}")
-        if shown.rc != 0 or "\0" in shown.stdout:
-            skipped.append(path)
-            continue
-        left -= len(shown.stdout)
-        sections.append(fenced(f"{named(path)} at the head", f"git show {call.sha[:12]}:{named(path)}", shown.stdout))
-    if skipped:
-        sections.append("Changed files not shown (binary, unreadable, or past the inlined budget): "
-                        + ", ".join(named(path) for path in skipped) + ".")
+    paths = [p for p in local("diff", "--name-only", "--diff-filter=d", "-z", fork, call.sha).split("\0") if p]
+    at = len(sections)  # the changed files go here, in the room the other reads leave
     if earlier is not None:
         review = str(earlier.get("review", ""))
         try:
@@ -552,6 +545,25 @@ def materials(cfg: Config, call: Call, earlier: dict[str, Any] | None, brief: st
         gh("The PR's inline comments", call.inline_comments.split()[1:])
         sections.append(fenced("The change since the reviewed head", f"git diff {earlier['sha']} {call.sha}",
                                local("diff", str(earlier["sha"]), call.sha)))
+    skipped = "Changed files not shown (binary, unreadable, or past agy's message bound): {}."
+    left = room - size("## Materials\n\n" + "\n\n".join(sections) + "\n\n" + skipped.format(", ".join(map(named, paths))))
+    if left < 0:
+        raise call.refused(f"the review's reads alone are {room - left} bytes, past the {room} left under agy's one-message"
+                           f" bound (GEMINI_MESSAGE_BOUND): a gemini reviewer cannot read this PR whole; nothing reviewed", 4)
+    files, unshown = list[str](), list[str]()
+    for path in paths:
+        bytes_ = git(call, "cat-file", "-s", f"{call.sha}:{path}").stdout.strip()
+        if not bytes_.isdigit() or int(bytes_) > left:  # the size first: nothing past the room is read
+            unshown.append(path)
+            continue
+        shown = git(call, "show", f"{call.sha}:{path}")
+        section = fenced(f"{named(path)} at the head", f"git show {call.sha[:12]}:{named(path)}", shown.stdout)
+        if shown.rc != 0 or "\0" in shown.stdout or size(section) + 2 > left:
+            unshown.append(path)
+            continue
+        left -= size(section) + 2
+        files.append(section)
+    sections[at:at] = files + ([skipped.format(", ".join(map(named, unshown)))] if unshown else [])
     return "## Materials\n\n" + "\n\n".join(sections) + "\n"
 
 
@@ -586,7 +598,9 @@ def prompt_of(cfg: Config, call: Call, earlier: dict[str, Any] | None) -> str:
     if problems:
         raise call.refused("the prompt does not render: " + "; ".join(problems))
     texts = [r for r in rendered if isinstance(r, str)]
-    return texts[0] + "\n" + materials(cfg, call, earlier, brief) + "\n" + texts[1] if inline else texts[0]
+    if not inline:
+        return texts[0]
+    return texts[0] + "\n" + materials(cfg, call, earlier, brief, GEMINI_MESSAGE_BOUND - size(texts[0] + "\n\n" + texts[1])) + "\n" + texts[1]
 
 
 def run_reviewer(call: Call, prompt: str) -> str:

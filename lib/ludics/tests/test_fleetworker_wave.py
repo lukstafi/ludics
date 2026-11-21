@@ -1925,7 +1925,7 @@ class GeminiReview(WaveDirCase):
             "## Materials", "### The PR\n\n`gh pr view 7 --repo o/staging --json title,body,headRefOid,baseRefOid`", "Adds a scan.",
             f"### The PR's diff\n\n`git diff {self.fork} {self.head}`", "+let x = 1", "### The issue, with its comments", "Do it.",
             "### The project's AGENTS.md at the base", "every scan states its boundary",
-            '### "a.ml" at the head', 'Changed files not shown (binary, unreadable, or past the inlined budget): "blob.bin".',
+            '### "a.ml" at the head', 'Changed files not shown (binary, unreadable, or past agy\'s message bound): "blob.bin".',
             "## Your answer")]
         self.assertEqual(order, sorted(order), "the parts, then the materials, then the answer part")
         self.assertIn("`````text\nlet x = 1 (* ```` four ticks and @@NOT_A_NAME@@ *)\n`````", prompt,
@@ -1955,14 +1955,37 @@ class GeminiReview(WaveDirCase):
         git("-C", repo, "add", "-A")
         git("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "more")
         head = git("-C", repo, "rev-parse", "HEAD")
-        with (mock.patch.object(wavereview, "HEAD_TEXT_BUDGET", 80),
-              self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean", head))), head=head)):
+        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean", head))), head=head):
             rc, out, _ = self.review(sha=head)
-        self.assertEqual(rc, 0, out)
-        prompt = self.read(os.path.join(self.wavedir, "reviews", f"7-at-open-{head[:12]}.prompt.md"))
-        self.assertNotIn("\n### Injected", prompt)
-        self.assertIn('### "x\\n### Injected" at the head', prompt)
-        self.assertIn('"big.ml"', prompt.split("Changed files not shown", 1)[1], "a file past the budget is named, not shown")
+            self.assertEqual(rc, 0, out)
+            stem = os.path.join(self.wavedir, "reviews", f"7-at-open-{head[:12]}")
+            prompt = self.read(stem + ".prompt.md")
+            self.assertNotIn("\n### Injected", prompt)
+            self.assertIn('### "x\\n### Injected" at the head', prompt)
+            self.assertIn('### "big.ml" at the head', prompt)
+            # A bound with no room for big.ml (files are shown in the diff's order while they fit, the room
+            # reserving a list naming every path): big.ml is named, never shown, and the whole prompt, the
+            # answer part at its end, fits under it.
+            whole = len(prompt.encode())
+            big = re.search(r'### "big\.ml" at the head\n.*?\n```\n', prompt, re.S)
+            assert big is not None
+            bound = whole - len(big.group(0).encode()) + 20
+            for name in glob.glob(glob.escape(stem) + ".*"):
+                os.remove(name)
+            with mock.patch.object(wavereview, "GEMINI_MESSAGE_BOUND", bound):
+                rc, out, _ = self.review(sha=head)
+            self.assertEqual(rc, 0, out)
+            prompt = self.read(stem + ".prompt.md")
+            self.assertLessEqual(len(prompt.encode()), bound)
+            self.assertNotIn('### "big.ml" at the head', prompt)
+            self.assertIn('"big.ml"', prompt.split("Changed files not shown", 1)[1])
+            self.assertTrue(prompt.rstrip().endswith("A review that ends on any other line is taken as\n  blocking."), prompt[-200:])
+            for name in glob.glob(glob.escape(stem) + ".*"):
+                os.remove(name)
+            with mock.patch.object(wavereview, "GEMINI_MESSAGE_BOUND", 3000):
+                rc, out, _ = self.review(sha=head)
+            self.assertEqual(rc, 4, out)
+            self.assertIn("a gemini reviewer cannot read this PR whole", out)
 
     def test_an_unreadable_base_is_no_verdict(self) -> None:
         with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean"))), base=""):
