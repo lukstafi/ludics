@@ -27,6 +27,8 @@ review round:
   over REST, with the head it merged at (``confirm``, ludics#823).
 
 A resend gate that refuses can still confirm a concurrent landing over REST without a new write.
+Its refusal stands as given only on REST's ``merged: false``; an unanswered probe is exit 3, landing
+unknown: a forwarded ``--delete-branch`` can fail its cleanup with a gateway's text after the merge landed.
 
 MERGE LEASE (#1269). ``lease fleet`` with ``trigger always`` in the default-branch merge-build
 config makes upgraded callers sharing the same fleet anchor and state directory serialize per
@@ -1292,6 +1294,17 @@ class Merge:
                 )
                 if isinstance(merged, GhOk) and merged.stdout == "true":
                     raise _AlreadyMerged from None
+                # A resend's gateway text can follow a landing (a forwarded --delete-branch's
+                # cleanup), and the same outage can fail this probe: the refusal stands as it is
+                # only on a REST "false".
+                if not (isinstance(merged, GhOk) and merged.stdout == "false"):
+                    answer = f"it answered {merged.stdout!r}" if isinstance(merged, GhOk) else self.session.err_line()
+                    fail(
+                        3,
+                        f"UNKNOWN whether {self.repo}#{self.num} merged: a gate stopped the resend of a merge request",
+                        f"the gateway refused, and REST did not say whether it landed ({answer}). The gate's refusal:",
+                        f"{refusal.message} -- Read the PR's state before re-running merge.",
+                    )
             raise
 
     def merge_call(self, build: BuildVerdict | None, ceiling: Ceiling | None, lease: MergeLease | None = None) -> None:

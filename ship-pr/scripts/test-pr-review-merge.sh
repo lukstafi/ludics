@@ -127,6 +127,7 @@ CONFLICT_STATE=clean
 HEAD_RUNS=""                           # nonempty = the head's workflow runs, as the feed's JSON
 RUN_JOBS=""                            # nonempty = every run's jobs, as the feed's JSON (no RUNNER_CASE)
 STATE_FAIL=""                          # nonempty = the merged-state read after the call does not answer
+MERGED_PROBE_FAIL=""                   # nonempty = a refused resend's `.merged` probe gets a 503
 DISABLE_AUTO_FAIL=""                   # nonempty = `pr merge --disable-auto` is refused
 MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 503
 # A build job that never got a runner (ludics-lite#560/#728; prreview/runners.py). RUNNER_CASE names
@@ -337,7 +338,10 @@ gh() {
       ;;
     *'--jq .merged')
       printf 'CALL merged-after-resend-refusal\n' >>"$CALLS_FILE"
-      if [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
+      if [ -n "$MERGED_PROBE_FAIL" ]; then
+        printf 'gh: 503 No server is currently available to service your request\n' >&2
+        return 1
+      elif [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
         printf '%s\n' true
       else
         printf '%s\n' false
@@ -848,6 +852,7 @@ reset() {
   HEAD_RUNS=""
   RUN_JOBS=""
   STATE_FAIL=""
+  MERGED_PROBE_FAIL=""
   DISABLE_AUTO_FAIL=""
   MERGE_QUEUE_FAIL=""
   RUNNER_CASE=""
@@ -2523,6 +2528,24 @@ test_a_thread_opened_during_gateway_backoff_refuses_the_resend() (
   assert_contains "$MERGE_STDERR" "1 review thread(s) still UNRESOLVED — 4095865442" "naming the thread"
   assert_eq "$(grep -c -x 'CALL reviewThreads' "$CALLS_FILE")" 2 "the resend re-reads threads"
   assert_eq "$(merge_calls)" 1 "only the first call reached the gateway"
+)
+
+# The same refused resend when the `.merged` probe meets the outage behind the resend: a write's
+# gateway text can follow a landing (a forwarded --delete-branch's cleanup), so whether the PR
+# merged is unknown, exit 3, never 1's "not merged" and never the gate's bare "Re-run merge".
+test_a_refused_gateway_resend_with_an_unanswered_probe_is_unknown() (
+  reset
+  retune API_ATTEMPTS=3
+  MERGE_GATEWAY_ONCE=1
+  THREADS_JSON_LATER="[$(review_thread 4095865442 false)]"
+  MERGED_PROBE_FAIL=1
+  run_merge
+  assert_eq "$MERGE_RC" 3 "an unanswered probe leaves the landing unknown ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "UNKNOWN whether $REPO#7 merged" "says the landing is unknown"
+  assert_contains "$MERGE_STDERR" "1 review thread(s) still UNRESOLVED — 4095865442" "quotes the gate's refusal"
+  assert_contains "$MERGE_STDERR" "Read the PR's state before re-running merge." "and to read the PR first"
+  assert_eq "$(grep -c -x 'CALL merged-after-resend-refusal' "$CALLS_FILE")" 3 "the probe was retried"
+  assert_eq "$(merge_calls)" 1 "the write was not resent"
 )
 
 test_a_clear_gateway_resend_repeats_the_attempt_reads_in_order() (
@@ -5059,6 +5082,7 @@ tests=(
   test_a_gateway_refusal_never_resends_a_stale_build
   test_a_gateway_resend_confirms_a_pr_merged_meanwhile
   test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile
+  test_a_refused_gateway_resend_with_an_unanswered_probe_is_unknown
   test_no_build_input_on_both_sides_builds_nothing
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges
