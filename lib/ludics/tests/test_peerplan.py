@@ -182,7 +182,7 @@ class PeerPlan(unittest.TestCase):
         run = self.start()
         self.assertEqual(self.wait(run), "rc=0")
         wt = os.path.join(self.dir, "worktree")
-        with open(os.path.join(self.dir, "astra-plan.md"), encoding="utf-8") as f:
+        with open(os.path.join(self.dir, "peer-plan.md"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "plan")
         with open(os.path.join(self.dir, "thread"), encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), "tid-1")
@@ -228,7 +228,7 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertFalse(os.path.exists(wt))
         self.assertNotIn(wt, git("-C", self.repo, "worktree", "list"))
-        self.assertTrue(os.path.exists(os.path.join(self.dir, "astra-plan.md")))
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "peer-plan.md")))
 
     def test_the_default_planner_is_fable_run_by_claude_with_read_only_tools_and_resumed(self) -> None:
         """THE PLANNER: with no --model, Fable plans through claude -p, read-only by its tools."""
@@ -236,7 +236,7 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
         wt = os.path.join(self.dir, "worktree")
-        with open(os.path.join(self.dir, "astra-plan.md"), encoding="utf-8") as f:
+        with open(os.path.join(self.dir, "peer-plan.md"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "plan", "the peer's plan keeps its file, whatever the model")
         with open(os.path.join(self.dir, "thread"), encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), "sid-1")
@@ -267,7 +267,7 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
         wt = os.path.join(self.dir, "worktree")
-        with open(os.path.join(self.dir, "astra-plan.md"), encoding="utf-8") as f:
+        with open(os.path.join(self.dir, "peer-plan.md"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "plan")
         with open(os.path.join(self.dir, "thread"), encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), "conv-1")
@@ -299,7 +299,7 @@ class PeerPlan(unittest.TestCase):
         done = self.entry("clean", self.dir)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertFalse(os.path.exists(wt), "clean removes the clone")
-        self.assertTrue(os.path.exists(os.path.join(self.dir, "astra-plan.md")), "and keeps the record")
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "peer-plan.md")), "and keeps the record")
 
     def test_clean_keeps_a_clone_without_this_plans_mark(self) -> None:
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
@@ -319,7 +319,7 @@ class PeerPlan(unittest.TestCase):
                           "--model", "gemini-4-neon-high")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.wait(done.stdout.strip()), "rc=1")
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "astra-plan.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "peer-plan.md")))
 
     def test_an_opus_planner_error_result_is_no_plan(self) -> None:
         os.environ["FAKE_CLAUDE_MODE"] = "error"
@@ -327,7 +327,7 @@ class PeerPlan(unittest.TestCase):
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--model", "opus")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.wait(done.stdout.strip()), "rc=1")
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "astra-plan.md")), "an error result is never written as a plan")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "peer-plan.md")), "an error result is never written as a plan")
 
     def test_managed_runs_start_in_the_callers_session(self) -> None:
         done = self.entry(
@@ -584,7 +584,7 @@ class SavePlan(unittest.TestCase):
     def test_the_last_message_with_a_block_wins(self) -> None:
         done = self.save(
             assistant(text("PLAN_READY\nfirst\nEND_PLAN_READY"), mid="msg_1"),
-            user("PEER_PLAN /p/astra-plan.md"),
+            user("PEER_PLAN /p/peer-plan.md"),
             assistant(text("PLAN_READY\nsecond\nEND_PLAN_READY\n\nPLAN_READY\nthird\nEND_PLAN_READY"), mid="msg_2"),
             assistant(text("Reconciled; posting the comment."), mid="msg_3"),
         )

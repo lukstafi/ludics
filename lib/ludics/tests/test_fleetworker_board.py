@@ -642,7 +642,7 @@ class TallyVerbs(StoreCase):
             self.assertEqual(self.run_verb(board.cmd_board, self.cfg, args)[0], 2, args)
 
     def test_unstick_counts_by_worker_on_stderr_and_a_failure_is_a_warning(self) -> None:
-        self.write("PEER_PLAN /x/astra-plan.md\n")
+        self.write("PEER_PLAN /x/peer-plan.md\n")
         rc, out, err = self.run_verb(tally.after_unstick, self.cfg, "testbox", "w1-42", self.message, kill=False, interrupt=False)
         self.assertEqual((rc, out, err), (None, "", 'BOARD TALLY w: "t1" routine_answers=1\n'))
         with mock.patch.object(tally, "spellings", return_value=["local", "testbox"]) as named:
