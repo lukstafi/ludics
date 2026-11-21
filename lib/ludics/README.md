@@ -176,8 +176,8 @@ base they fail on the missing built-in and the accepted remote path (ludics#1134
 other shipped kinds. Its four own parts describe mid-turn coordinator messages and local
 managed foreground command sessions, following `references/native-codex.md`. Shared handoff
 blocks retain their format; the native worker sends them by message and waits for dispatch.
-No planning parts ship for this kind: Codex-coordinated pairing requires explicit confirmation
-and wave-local parts. The Prep regression renders without wave-local common parts; running it
+The shipped planning parts (`templates/shared/`, waveprep's `PAIRED` kinds) are not for this
+kind: Codex-coordinated pairing requires explicit confirmation and wave-local parts. The Prep regression renders without wave-local common parts; running it
 against the pre-template base must refuse on missing who.md, rather than pass with placeholders.
 
 ## Stacked wave prep briefs

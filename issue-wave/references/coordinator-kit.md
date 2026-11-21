@@ -39,21 +39,18 @@ A wave copies no brief text forward. The repository ships the reference template
 `issue-wave/templates/`, one section to a part, and a rule every transport follows is in one file:
 
 - `shared/`: where the worker works, its startup check, the task, requests, landing through
-  ship-pr, the review checkpoint (only for a wave file that names a `review`) and the steps after
-  the merge;
+  ship-pr, the review checkpoint (only for a wave file that names a `review`), the steps after
+  the merge, and the paired-planning additions, `planning-paired.md` and
+  `planning-paired+critique.md` ([paired-planning.md](paired-planning.md));
 - `native-claude/`, `native-codex/`, `cli-codex/` and `cli-gemini/`: what differs by the worker's kind. That is
-  who it is, how it runs tests, how it holds a long run, and how it keeps its context lean;
-- `planning-paired.md` and `planning-paired+critique.md` in `native-claude/`, `cli-codex/` and
-  `cli-gemini/`, the paired-planning additions. The kinds carry the same text: a CLI worker ends its turn on
-  `PLAN_READY` and is resumed with the peer plan by `unstick`
-  ([paired-planning.md](paired-planning.md)).
+  who it is, how it runs tests, how it holds a long run, and how it keeps its context lean.
 
 `wave prep` puts the common sections in a fixed order and takes each from the wave directory's
 `common/<part>` when it has one, else from the worker's own kind, else from `shared/`
 (waveprep.py's header, *THE COMMON PARTS*). A wave directory's `common.md` replaces all of them.
 Nothing is shipped for a Claude CLI worker's own four parts, so such a wave writes them under
 `common/`. Native Codex uses managed foreground command sessions and messages its coordinator
-mid-turn. It ships no planning parts: under a Codex coordinator, pairing a Codex worker needs
+mid-turn. The shipped planning parts are not for it: under a Codex coordinator, pairing a Codex worker needs
 the user's tier-3 confirmation (issue-wave SKILL.md's pairing rule, *Planning mode, per issue*
 in its [Decision gate](../SKILL.md#decision-gate-before-launch-batched-fatigue-aware)); an approved paired wave
 supplies its own planning parts.

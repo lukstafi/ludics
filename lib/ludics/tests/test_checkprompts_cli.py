@@ -3663,8 +3663,8 @@ def brief_tree(root: str) -> None:
         write(os.path.join(template, part), f"## {part}, for `@@WORKER@@`\n")
     for part in BRIEF_SHARED:
         write(os.path.join(root, "issue-wave", "templates", "shared", part), f"## {part}, in `@@WT@@`\n")
-    write(os.path.join(template, "planning-paired.md"), BRIEF_PLANNING)
-    write(os.path.join(template, "planning-paired+critique.md"), BRIEF_PLANNING)
+    for part in ("planning-paired.md", "planning-paired+critique.md"):
+        write(os.path.join(root, "issue-wave", "templates", "shared", part), BRIEF_PLANNING)
     write(os.path.join(root, ".github", "wave-brief.md"), BRIEF_PROJECT)
 
 
@@ -3683,13 +3683,13 @@ class BriefTemplateTest(Case):
         result = self.expect("a root without waveprep.py owes no template", 0, "0 failed")
         self.lacks("no prep", "brief template", result)
 
-    def test_a_cli_kind_ships_its_own_parts_and_need_not_ship_planning_ones(self) -> None:
+    def test_a_cli_kind_ships_its_own_parts(self) -> None:
         brief_tree(self.root)
         for part in BRIEF_OWN:
             write(os.path.join(self.root, "issue-wave", "templates", "cli-codex", part), f"## {part} on `@@HOST@@`\n")
         self.expect("a CLI kind with its four own parts passes", 0, BRIEF_OK.replace("14 parts", "18 parts"))
 
-    def test_native_codex_uses_the_kind_rules_without_planning_parts(self) -> None:
+    def test_native_codex_uses_the_kind_rules(self) -> None:
         brief_tree(self.root)
         template = os.path.join(self.root, "issue-wave", "templates", "native-codex")
         for part in BRIEF_OWN:
@@ -3704,12 +3704,14 @@ class BriefTemplateTest(Case):
         cases: tuple[tuple[str, Callable[[], None], str], ...] = (
             ("a missing template directory", lambda: shutil.rmtree(os.path.join(R, "issue-wave", "templates")),
              "FAIL: lib/ludics/fleetworker/waveprep.py: issue-wave/templates/ is missing"),
-            ("a missing shipped part", lambda: os.remove(os.path.join(R, T, "planning-paired.md")),
-             f"FAIL: {T}planning-paired.md: is missing, or no regular file"),
+            ("a missing planning part", lambda: os.remove(os.path.join(R, S, "planning-paired.md")),
+             f"FAIL: {S}planning-paired.md: is missing, or no regular file"),
+            ("a planning part restated in a kind", lambda: write(os.path.join(R, T, "planning-paired.md"), BRIEF_PLANNING),
+             f"FAIL: {T}planning-paired.md: is no part wave prep reads there (it reads who.md, tests.md, blocking.md, context.md)"),
             ("a file prep never reads", lambda: write(os.path.join(R, T, "planning-pair.md"), "x\n"),
              f"FAIL: {T}planning-pair.md: is no part wave prep reads there"),
             ("the old whole common part", lambda: write(os.path.join(R, T, "common.md"), "x\n"),
-             f"FAIL: {T}common.md: is no part wave prep reads there (it reads who.md, tests.md, blocking.md, context.md,"),
+             f"FAIL: {T}common.md: is no part wave prep reads there (it reads who.md, tests.md, blocking.md, context.md)"),
             ("a directory for no kind", lambda: write(os.path.join(R, "issue-wave", "templates", "native-gpt", "who.md"), ""),
              "FAIL: issue-wave/templates/native-gpt: is no template directory: native-<kind> or cli-<kind> (kinds: claude, codex, gemini),"
              " shared or review"),
@@ -3731,8 +3733,8 @@ class BriefTemplateTest(Case):
              f"FAIL: {T}who.md: {T}who.md:9: @@ISSUE@@ is not rendered (no value for ISSUE)"),
             ("a leg name in a shared part", lambda: append(os.path.join(R, S, "requests.md"), "@@LEG_WT@@\n"),
              f"FAIL: {S}requests.md: {S}requests.md:2: @@LEG_WT@@ is not rendered"),
-            ("a name no wave file supplies", lambda: append(os.path.join(R, T, "planning-paired.md"), "@@COORD@@\n"),
-             f"FAIL: {T}planning-paired.md: {T}planning-paired.md:4: @@COORD@@ is not rendered"),
+            ("a name no wave file supplies", lambda: append(os.path.join(R, S, "planning-paired.md"), "@@COORD@@\n"),
+             f"FAIL: {S}planning-paired.md: {S}planning-paired.md:4: @@COORD@@ is not rendered"),
             ("PROJECT in the project part", lambda: append(os.path.join(R, ".github", "wave-brief.md"), "@@PROJECT@@\n"),
              "FAIL: .github/wave-brief.md: .github/wave-brief.md:5: @@PROJECT@@ is not rendered"),
             ("a reference to no file", lambda: append(os.path.join(R, T, "who.md"), "See `issue-wave/references/gone.md`.\n"),
@@ -3745,8 +3747,8 @@ class BriefTemplateTest(Case):
              f"FAIL: {T}who.md: `issue-wave/references/notes.md`, *Idle*: issue-wave/references/notes.md has no heading"),
             ("a heading across a line break", lambda: write(os.path.join(R, "lib", "ludics", "README.md"), "# lib\n"),
              "*Which suites drive each module*: lib/ludics/README.md has no heading with that text"),
-            ("a retired step", lambda: append(os.path.join(R, T, "planning-paired+critique.md"), "Call `set_monitor` with auto_fix off.\n"),
-             f"FAIL: {T}planning-paired+critique.md: line 4 holds 'set_monitor', a retired brief step (#1078"),
+            ("a retired step", lambda: append(os.path.join(R, S, "planning-paired+critique.md"), "Call `set_monitor` with auto_fix off.\n"),
+             f"FAIL: {S}planning-paired+critique.md: line 4 holds 'set_monitor', a retired brief step (#1078"),
             ("a retired step in the project part", lambda: append(os.path.join(R, ".github", "wave-brief.md"), "**Auto-fix off on your PR**\n"),
              "FAIL: .github/wave-brief.md: line 5 holds 'Auto-fix off', a retired brief step"),
         )
