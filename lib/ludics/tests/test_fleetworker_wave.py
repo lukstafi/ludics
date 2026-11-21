@@ -1882,6 +1882,7 @@ class GeminiReview(WaveDirCase):
         git("-C", repo, "add", "AGENTS.md")
         git("-C", repo, *commit, "rules")
         git("-C", repo, "push", "-q", "origin", "main")
+        self.fork = git("-C", repo, "rev-parse", "HEAD")
         with open(os.path.join(repo, "a.ml"), "w") as f:
             f.write("let x = 1 (* ```` four ticks and @@NOT_A_NAME@@ *)\n")
         with open(os.path.join(repo, "blob.bin"), "wb") as f:
@@ -1891,16 +1892,15 @@ class GeminiReview(WaveDirCase):
         self.head = git("-C", repo, "rev-parse", "HEAD")
 
     @contextlib.contextmanager
-    def gworld(self, answer: Answer, head: str = "") -> Generator[FakeTool]:
-        head = head or self.head
+    def gworld(self, answer: Answer, head: str = "", base: str | None = None) -> Generator[FakeTool]:
+        head, base = head or self.head, self.fork if base is None else base
         with (FakeTool("gh") as gh, FakeTool("agy") as agy,
               mock.patch.object(wavereview, "anchor_gate", return_value=0),
               mock.patch.object(wavereview, "run", side_effect=self.helper_run)):
-            gh.route((When(prefix=("pr", "view"), has=("title,body,headRefOid",)),
-                      Answer(stdout=json.dumps({"title": "Scan PR", "body": "Adds a scan.", "headRefOid": head}))),
+            gh.route((When(prefix=("pr", "view"), has=("title,body,headRefOid,baseRefOid",)),
+                      Answer(stdout=json.dumps({"title": "Scan PR", "body": "Adds a scan.", "headRefOid": head, "baseRefOid": base}))),
                      (When(prefix=("pr", "view"), has=("comments,reviews",)), Answer(stdout="worker: REBUTTED with evidence\n")),
                      (When(prefix=("pr", "view")), Answer(stdout=json.dumps({"state": "OPEN", "headRefOid": head}))),
-                     (When(prefix=("pr", "diff")), Answer(stdout="diff --git a/a.ml b/a.ml\n+let x = 1\n")),
                      (When(prefix=("issue", "view")), Answer(stdout=json.dumps({"number": 42, "title": "Issue title", "body": "Do it."}))),
                      (When(prefix=("api",)), Answer(stdout="[{\"id\": 5, \"body\": \"inline note\"}]")))
             agy.script(answer)
@@ -1922,16 +1922,54 @@ class GeminiReview(WaveDirCase):
         prompt = self.read(stem + ".prompt.md")
         order = [prompt.index(want) for want in (
             f"o/staging#7, head `{self.head}`", "## This review runs without tools", "The PR is for issue o/up#42",
-            "## Materials", "### The PR\n\n`gh pr view 7 --repo o/staging --json title,body,headRefOid`", "Adds a scan.",
-            "### The PR's diff", "### The issue, with its comments", "Do it.",
+            "## Materials", "### The PR\n\n`gh pr view 7 --repo o/staging --json title,body,headRefOid,baseRefOid`", "Adds a scan.",
+            f"### The PR's diff\n\n`git diff {self.fork} {self.head}`", "+let x = 1", "### The issue, with its comments", "Do it.",
             "### The project's AGENTS.md at the base", "every scan states its boundary",
-            "### `a.ml` at the head", "Changed files not shown (binary, unreadable, or past the inlined budget): `blob.bin`.",
+            '### "a.ml" at the head', 'Changed files not shown (binary, unreadable, or past the inlined budget): "blob.bin".',
             "## Your answer")]
         self.assertEqual(order, sorted(order), "the parts, then the materials, then the answer part")
         self.assertIn("`````text\nlet x = 1 (* ```` four ticks and @@NOT_A_NAME@@ *)\n`````", prompt,
                       "a file's text is fenced past its own backticks, and a placeholder-shaped string in it is data")
         self.assertNotIn("### The at-open review", prompt)
         self.assertTrue(self.read(stem + ".md").startswith(f"### Review checkpoint (at-open): head {self.head[:8]}"))
+
+    def test_the_reads_are_the_reviewed_heads_even_after_the_pr_merged(self) -> None:
+        """The diff and files run from the PR's fork point to <sha>: a merged PR's dry run (origin/main
+        holding the head) still reads them, and GitHub's head moving meanwhile changes nothing."""
+        repo = os.path.join(self.dir, "repo")
+        git("-C", repo, "push", "-q", "origin", "main")
+        moved = "f" * 40
+        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean"))), head=moved):
+            rc, out, _ = self.review("--dry-run", sha=self.head)
+        self.assertEqual(rc, 0, out)
+        prompt = self.read(os.path.join(self.wavedir, "reviews", f"7-at-open-{self.head[:12]}.prompt.md"))
+        self.assertIn('### "a.ml" at the head', prompt)
+        self.assertIn("+let x = 1", prompt)
+
+    def test_a_path_cannot_open_a_section_and_the_budget_bounds_the_reads(self) -> None:
+        repo = os.path.join(self.dir, "repo")
+        with open(os.path.join(repo, "x\n### Injected"), "w") as f:
+            f.write("hello\n")
+        with open(os.path.join(repo, "big.ml"), "w") as f:
+            f.write("let big = 1\n" * 10)
+        git("-C", repo, "add", "-A")
+        git("-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "more")
+        head = git("-C", repo, "rev-parse", "HEAD")
+        with (mock.patch.object(wavereview, "HEAD_TEXT_BUDGET", 80),
+              self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean", head))), head=head)):
+            rc, out, _ = self.review(sha=head)
+        self.assertEqual(rc, 0, out)
+        prompt = self.read(os.path.join(self.wavedir, "reviews", f"7-at-open-{head[:12]}.prompt.md"))
+        self.assertNotIn("\n### Injected", prompt)
+        self.assertIn('### "x\\n### Injected" at the head', prompt)
+        self.assertIn('"big.ml"', prompt.split("Changed files not shown", 1)[1], "a file past the budget is named, not shown")
+
+    def test_an_unreadable_base_is_no_verdict(self) -> None:
+        with self.gworld(Answer(stdout=agy_stream(self.said("VERDICT: clean"))), base=""):
+            rc, out, _ = self.review(sha=self.head)
+            self.assertEqual(self.agy.calls(), [])
+        self.assertEqual(rc, 4, out)
+        self.assertIn("baseRefOid could not be read", out)
 
     def test_the_prompt_reaches_agy_as_one_stream_json_message(self) -> None:
         call = wavereview.parse([self.path, "t42", "7", self.head, "--kind", "at-open"])

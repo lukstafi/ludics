@@ -51,8 +51,8 @@ WHAT IT DOES, in this order:
      unprompted, a deny rule matches only a named command, and allow rules admit nothing under
      ``strict``), so it runs under ``toolPermission: strict``, which refuses every tool, and the
      reads the shipped parts name are made here and inlined (``materials``, after the shipped
-     ``inline.md`` that says so). The reads, a closed list: the PR's title, body and head, its
-     diff, the issue with its comments, the worker brief, the base's root ``AGENTS.md`` and
+     ``inline.md`` that says so). The reads, a closed list: the PR's title, body, head and base, its
+     diff from its fork point to ``<sha>``, read locally, the issue with its comments, the worker brief, the base's root ``AGENTS.md`` and
      ``CLAUDE.md``, each changed file's text at the head (``HEAD_TEXT_BUDGET`` characters in all,
      the rest named), and for a confirm the at-open review, the PR's comments and reviews, its
      inline comments and the diff since the reviewed head. A tool call ends agy's turn with an
@@ -179,7 +179,7 @@ def final_message(kind: str, stdout: str) -> tuple[str, str]:
     """The reviewer's final message, or "" and why there is none."""
     if kind == "gemini":
         result: dict[str, Any] = {}
-        for raw in stdout.splitlines():  # agy's stream: one event per line, the turn's ``result`` last
+        for raw in stdout.split("\n"):  # agy's stream: one event per LF line (never splitlines: U+0085 is JSON text)
             try:
                 event: Any = json.loads(raw)
             except ValueError:
@@ -469,26 +469,49 @@ def fenced(label: str, command: str, text: str) -> str:
     return f"### {label}\n\n{said}{fence}text\n{text.rstrip(chr(10))}\n{fence}"
 
 
+def named(path: str) -> str:
+    """A PR-controlled path as one escaped line (JSON string syntax): a newline in a file name
+    cannot open a section of its own outside the fences."""
+    return json.dumps(path)
+
+
 def materials(cfg: Config, call: Call, earlier: dict[str, Any] | None, brief: str) -> str:
-    """The reads a ``gemini`` reviewer cannot make (the header, step 7), made here: a closed list."""
+    """The reads a ``gemini`` reviewer cannot make (the header, step 7), made here: a closed list.
+    The diff and the changed files are read locally between the PR's fork point (the merge base of
+    its ``baseRefOid`` and ``<sha>``) and ``<sha>`` itself, so they are the reviewed head's whatever
+    GitHub's head is meanwhile, and a merged PR's dry run still has them."""
     from ludics.fleetworker.execution import gh_timeout
 
     repo, main = call.wave.repository, f"origin/{call.wave.vars['MAIN']}"
     sections: list[str] = []
 
-    def gh(label: str, args: list[str]) -> None:
+    def gh(label: str, args: list[str]) -> str:
         done = proc.run_tool("gh", args, timeout=gh_timeout(cfg))
         if done.rc != 0:
             raise call.refused(f"the reviewer's read `gh {' '.join(args[:3])}` exited {done.rc}"
                                f" ({done.stderr.strip()[-200:]}); nothing reviewed", 4)
         sections.append(fenced(label, "gh " + " ".join(args), done.stdout))
+        return done.stdout
 
-    def shown(rev: str, path: str) -> str | None:
-        done = git(call, "show", f"{rev}:{path}")
-        return done.stdout if done.rc == 0 else None
+    def local(*args: str) -> str:
+        done = git(call, *args, timeout=FETCH_TIMEOUT if args[0] == "fetch" else None)
+        if done.rc != 0:
+            raise call.refused(f"`git {' '.join(args[:2])}` failed in {call.wave.checkout} ({done.stderr.strip()[-200:]});"
+                               " nothing reviewed", 4)
+        return done.stdout
 
-    gh("The PR", ["pr", "view", call.pr, "--repo", repo, "--json", "title,body,headRefOid"])
-    gh("The PR's diff", ["pr", "diff", call.pr, "--repo", repo])
+    pr: Any = None
+    try:
+        pr = json.loads(gh("The PR", ["pr", "view", call.pr, "--repo", repo, "--json", "title,body,headRefOid,baseRefOid"]))
+    except ValueError:
+        pass
+    base = cast(dict[str, Any], pr).get("baseRefOid") if isinstance(pr, dict) else None
+    if not (isinstance(base, str) and SHA40.fullmatch(base)):
+        raise call.refused("the PR's baseRefOid could not be read; nothing reviewed", 4)
+    if git(call, "cat-file", "-e", f"{base}^{{commit}}").rc != 0:
+        local("fetch", "-q", "origin", base)
+    fork = local("merge-base", base, call.sha).strip()
+    sections.append(fenced("The PR's diff", f"git diff {fork} {call.sha}", local("diff", fork, call.sha)))
     if call.issue_ref:
         gh("The issue, with its comments",
            ["issue", "view", call.number, "--repo", call.wave.issue_repository, "--json", "number,title,body,comments"])
@@ -500,23 +523,24 @@ def materials(cfg: Config, call: Call, earlier: dict[str, Any] | None, brief: st
     except OSError as exc:
         raise call.refused(f"cannot read {brief} ({exc.strerror})") from None
     for rules in ("AGENTS.md", "CLAUDE.md"):
-        text = shown(main, rules)
-        if text is not None:
-            sections.append(fenced(f"The project's {rules} at the base", f"git show {main}:{rules}", text))
-    names = git(call, "diff", "--name-only", "--diff-filter=d", "-z", f"{main}...{call.sha}")
-    if names.rc != 0:
-        raise call.refused(f"the PR's changed files cannot be listed in {call.wave.checkout} ({names.stderr.strip()[-200:]})", 4)
+        shown = git(call, "show", f"{main}:{rules}")
+        if shown.rc == 0:
+            sections.append(fenced(f"The project's {rules} at the base", f"git show {main}:{rules}", shown.stdout))
     left, skipped = HEAD_TEXT_BUDGET, list[str]()
-    for path in filter(None, names.stdout.split("\0")):
-        text = shown(call.sha, path)
-        if text is None or "\0" in text or len(text) > left:
+    for path in filter(None, local("diff", "--name-only", "--diff-filter=d", "-z", fork, call.sha).split("\0")):
+        size = git(call, "cat-file", "-s", f"{call.sha}:{path}").stdout.strip()
+        if not size.isdigit() or int(size) > left:  # its byte size bounds its characters: no read past the budget
             skipped.append(path)
             continue
-        left -= len(text)
-        sections.append(fenced(f"`{path}` at the head", f"git show {call.sha[:12]}:{path}", text))
+        shown = git(call, "show", f"{call.sha}:{path}")
+        if shown.rc != 0 or "\0" in shown.stdout:
+            skipped.append(path)
+            continue
+        left -= len(shown.stdout)
+        sections.append(fenced(f"{named(path)} at the head", f"git show {call.sha[:12]}:{named(path)}", shown.stdout))
     if skipped:
         sections.append("Changed files not shown (binary, unreadable, or past the inlined budget): "
-                        + ", ".join(f"`{path}`" for path in skipped) + ".")
+                        + ", ".join(named(path) for path in skipped) + ".")
     if earlier is not None:
         review = str(earlier.get("review", ""))
         try:
@@ -526,10 +550,8 @@ def materials(cfg: Config, call: Call, earlier: dict[str, Any] | None, brief: st
             raise call.refused(f"cannot read the at-open review {review!r} ({exc.strerror})") from None
         gh("The PR's comments and reviews", ["pr", "view", call.pr, "--repo", repo, "--json", "comments,reviews", "--jq", PR_FEED_FILTER])
         gh("The PR's inline comments", call.inline_comments.split()[1:])
-        since = git(call, "diff", str(earlier["sha"]), call.sha)
-        if since.rc != 0:
-            raise call.refused(f"the change since {str(earlier['sha'])[:8]} cannot be read ({since.stderr.strip()[-200:]})", 4)
-        sections.append(fenced("The change since the reviewed head", f"git diff {earlier['sha']} {call.sha}", since.stdout))
+        sections.append(fenced("The change since the reviewed head", f"git diff {earlier['sha']} {call.sha}",
+                               local("diff", str(earlier["sha"]), call.sha)))
     return "## Materials\n\n" + "\n\n".join(sections) + "\n"
 
 
