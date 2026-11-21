@@ -116,8 +116,8 @@ class ShellFragments(unittest.TestCase):
 
     def test_a_broken_fragment_is_reported_by_name_through_the_same_check(self) -> None:
         """The negative controls go through ``problems``: a fragment that does not parse is named
-        with each shell; the 2026-11-21 shape under a bash 3.2 (a later bash may read it, which the
-        far side cannot count on); a broken body inside a quoted heredoc; and, where sh is a POSIX sh,
+        with each shell; the 2026-11-21 shape under every bash 3.2 (a later one may report it too,
+        as 5.2 does, or not: the test requires only the 3.2s); a broken body inside a quoted heredoc; and, where sh is a POSIX sh,
         a bash-only construct in a fragment ``SH`` names."""
         broken = {"x.BROKEN": 'if [ -n "$x" ]; then\n  echo x\n'}
         self.assertEqual([p.split(":")[0] for p in problems(broken)], [f"x.BROKEN does not parse under {s}" for s in BASHES])
@@ -127,7 +127,8 @@ class ShellFragments(unittest.TestCase):
         apostrophe = 'x=1 || echo "${why:-cannot write agy\'s line}"\nfor i in 1; do\n  s=$(echo a | cut -c1)\ndone\n'
         old = [s for s in BASHES if subprocess.run([s, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True,
                                                    text=True, check=False).stdout.strip() == "3"]
-        self.assertEqual(len(problems({"x.APOSTROPHE": apostrophe})), len(old))
+        reported = {p.split(" does not parse under ")[1].split(":")[0] for p in problems({"x.APOSTROPHE": apostrophe})}
+        self.assertLessEqual(set(old), reported, "every bash 3.2 reports it (a later one may too: bash 5.2 does)")
         # Where sh is a POSIX sh (dash, Ubuntu's): macOS's sh is bash and reads a bash array.
         if subprocess.run(["sh", "-n", "-c", "a=(1 2)"], capture_output=True, check=False).returncode != 0:
             with mock.patch(f"{__name__}.SH", frozenset({"x.SH"})):
