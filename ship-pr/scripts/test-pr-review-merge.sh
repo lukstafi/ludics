@@ -2530,6 +2530,24 @@ test_a_thread_opened_during_gateway_backoff_refuses_the_resend() (
   assert_eq "$(merge_calls)" 1 "only the first call reached the gateway"
 )
 
+# The same refused resend when the `.merged` probe meets the outage behind the resend: a write's
+# gateway text can follow a landing (a forwarded --delete-branch's cleanup), so whether the PR
+# merged is unknown, exit 3, never 1's "not merged" and never the gate's bare "Re-run merge".
+test_a_refused_gateway_resend_with_an_unanswered_probe_is_unknown() (
+  reset
+  retune API_ATTEMPTS=3
+  MERGE_GATEWAY_ONCE=1
+  THREADS_JSON_LATER="[$(review_thread 4095865442 false)]"
+  MERGED_PROBE_FAIL=1
+  run_merge
+  assert_eq "$MERGE_RC" 3 "an unanswered probe leaves the landing unknown ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_STDERR" "UNKNOWN whether $REPO#7 merged" "says the landing is unknown"
+  assert_contains "$MERGE_STDERR" "1 review thread(s) still UNRESOLVED — 4095865442" "quotes the gate's refusal"
+  assert_contains "$MERGE_STDERR" "Read the PR's state before re-running merge." "and to read the PR first"
+  assert_eq "$(grep -c -x 'CALL merged-after-resend-refusal' "$CALLS_FILE")" 3 "the probe was retried"
+  assert_eq "$(merge_calls)" 1 "the write was not resent"
+)
+
 test_a_clear_gateway_resend_repeats_the_attempt_reads_in_order() (
   local order pass
   reset
@@ -4394,27 +4412,6 @@ test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile() (
   assert_eq "$MERGE_RC" 0 "the gated head landed concurrently despite the open thread ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDOUT" "$REPO#7 merged=true state=MERGED" "the landing was confirmed"
   assert_eq "$(grep -c -x 'CALL merge-build-refs' "$CALLS_FILE")" 1 "the thread stopped the resend before the ref read"
-  assert_eq "$(merge_calls)" 1 "the write was not resent"
-)
-
-# The same refused resend when the `.merged` probe meets the outage that caused the resend: whether
-# the PR merged meanwhile is unknown, so the refusal is 3, never 1's "not merged".
-test_a_refused_gateway_resend_with_an_unanswered_probe_is_unknown() (
-  reset
-  moving_build_fixture compatible
-  retune API_ATTEMPTS=3
-  BUILD_MOVE_ON_CALL=gateway-merged
-  THREADS_JSON_LATER="[$(review_thread 4095865442 false)]"
-  MERGED_PROBE_FAIL=1
-  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
-  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
-    assert_posix_only_refusal "an unconfirmed resend refusal" "trigger always: every merge of this repository is built"
-    return 0
-  fi
-  assert_eq "$MERGE_RC" 3 "an unanswered probe leaves the landing unknown ($MERGE_OUTPUT)"
-  assert_contains "$MERGE_OUTPUT" "may have merged" "says the PR may have merged"
-  assert_contains "$MERGE_OUTPUT" "Read the PR before re-running merge" "and to read it first"
-  assert_eq "$(grep -c -x 'CALL merged-after-resend-refusal' "$CALLS_FILE")" 3 "the probe was retried"
   assert_eq "$(merge_calls)" 1 "the write was not resent"
 )
 
