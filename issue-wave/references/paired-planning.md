@@ -76,10 +76,10 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    with `--managed` passes it here too, and runs `bg-run.sh start <run> -- peer-plan.sh _run
    critique <plan-dir>` in a managed session, as for the plan.
 3. **Resume the worker** (SendMessage for a native worker, `unstick <box> <name> --message <file>`
-   for a CLI one) with `PEER_PLAN`, followed by `<plan-dir>/astra-plan.md` verbatim, and for
+   for a CLI one) with `PEER_PLAN`, followed by `<plan-dir>/peer-plan.md` verbatim, and for
    `paired+critique` `PEER_CRITIQUE`, followed by `<plan-dir>/critique.md` verbatim. A native
    worker on the coordinator's own box gets the absolute paths instead, `PEER_PLAN
-   <plan-dir>/astra-plan.md` and `PEER_CRITIQUE <plan-dir>/critique.md`, and reads them in full:
+   <plan-dir>/peer-plan.md` and `PEER_CRITIQUE <plan-dir>/critique.md`, and reads them in full:
    the plans then stay out of the coordinator's context, about 21 KB per D3 (wave-20261102). A run that
    ends other than `rc=0` is not retried. Resume with `PEER_PLAN_UNAVAILABLE <the verdict and
    the run's log tail>`, or with the plan and `PEER_CRITIQUE_UNAVAILABLE <...>`. The worker then

@@ -364,8 +364,19 @@ class Prep(WaveDirCase):
         self.assertTrue(brief.startswith("Worker w1-42 of wv (session-1)"), brief[:200])
         self.assertIn("## Paired planning (mode: paired)", brief)
         self.assertIn("one comment on o/up#42 (`gh issue comment 42 --repo\n  o/up --body-file <file>`)", brief)
-        with open(os.path.join(waveprep.shipped_dir("claude"), "planning-paired.md")) as f:
+        with open(os.path.join(waveprep.TEMPLATES, "shared", "planning-paired.md")) as f:
             self.assertIn("@@ISSUE@@", f.read(), "the fixture reads the shipped part, not a copy")
+
+    def test_the_shipped_planning_part_stands_in_for_no_native_codex_or_claude_cli_worker(self) -> None:
+        for more in ({"kind": "codex"}, {"kind": "claude", "transport": "cli"}):
+            with self.subTest(**more):
+                self.rewave(**more)
+                with self.world():
+                    rc, out, _ = self.prep("t42", "--base", "main", "--mode", "paired")
+                self.assertEqual(rc, 1, out)
+                self.assertIn(f"WAVE PREP REFUSED t42: the template part {self.wavedir}/planning-paired.md does not exist", out)
+                self.assertNotIn("nor the shipped", out)
+                self.assert_made_nothing(out)
 
     def test_native_codex_without_wave_common_parts_renders(self) -> None:
         os.unlink(os.path.join(self.wavedir, "common.md"))
@@ -2112,11 +2123,9 @@ class ShippedTemplate(unittest.TestCase):
 
     def test_the_parts_are_split_as_the_code_says_and_no_kind_restates_a_shared_one(self) -> None:
         listed = {name: sorted(os.listdir(os.path.join(waveprep.TEMPLATES, name))) for name in ("shared", "native-claude", "native-codex", "cli-codex", "cli-gemini")}
-        self.assertEqual(listed["shared"], sorted(waveprep.SHARED))
-        self.assertEqual(listed["native-claude"], sorted(waveprep.OWN + waveprep.PLANNING))
-        self.assertEqual(listed["cli-codex"], sorted(waveprep.OWN + waveprep.PLANNING))
-        self.assertEqual(listed["cli-gemini"], sorted(waveprep.OWN + waveprep.PLANNING))
-        self.assertEqual(listed["native-codex"], sorted(waveprep.OWN))
+        self.assertEqual(listed.pop("shared"), sorted(waveprep.SHARED + waveprep.PLANNING))
+        for kind, parts in listed.items():
+            self.assertEqual(parts, sorted(waveprep.OWN), kind)
         self.assertEqual(set(waveprep.OWN) | set(waveprep.SHARED), set(waveprep.COMMON))
         # The shared parts name neither transport's mechanism for holding a run: that is each kind's blocking.md.
         for name in waveprep.SHARED:
@@ -2139,11 +2148,11 @@ class ShippedTemplate(unittest.TestCase):
                 "worker_prefix": "wx", "agent_host": "mac-studio", "transport": "subagent", "kind": "claude",
                 "standing_purpose": "standing iteration for @@T@@", "project_part": ".github/wave-brief.md",
                 "vars": {"COORDINATOR": "local_c", "MAIN": "main"},
-                "profiles": {"sol": {"transport": "cli", "kind": "codex"}},
+                "profiles": {"sol": {"transport": "cli", "kind": "codex"}, "neon": {"transport": "cli", "kind": "gemini"}},
                 "hosts": {"rog": {"checkout": "/srv/ludics", "scratch": "/srv/scratch"}}})
-            # A Codex CLI worker plans in every mode too: an A/B wave sends it issues of every tier.
+            # A CLI worker plans in every mode too: an A/B wave sends it issues of every tier.
             cases = [("t7", "7", "lukstafi/ludics#7", "", mode, profile, host)
-                     for mode in waveprep.MODES for profile, host in (("", ""), ("sol", "rog"))]
+                     for mode in waveprep.MODES for profile, host in (("", ""), ("sol", "rog"), ("neon", "rog"))]
             cases.append(("p8", "9", "", "lukstafi/ludics#9", "none", "", ""))
             for task, number, issue, source, mode, profile, host in cases:
                 with self.subTest(task=task, mode=mode, profile=profile):

@@ -10,14 +10,13 @@ it with the project part this repository renders into it, ``.github/wave-brief.m
 WHAT IT READS, a fail-closed allowlist. The obligation exists when
 ``lib/ludics/fleetworker/waveprep.py``, the code that looks the template up, is a file (a tree
 without it has no template to keep, as the suites' trees of copied prompts do not).
-- THE FILES. ``issue-wave/templates/`` holds ``shared`` (waveprep's ``SHARED`` parts, exactly:
-  the sections every transport's brief states once), directories ``native-<kind>`` and
-  ``cli-<kind>`` for a kind wave.json takes (claude, codex, gemini), optionally ``review`` (the review
-  checkpoint's prompt, wavereview.py), and nothing else. A kind's directory holds every one of
-  waveprep's ``OWN`` parts, may hold its ``PLANNING`` parts, and holds nothing else: half a brief
-  is not shipped. ``native-claude`` is required, with its planning parts; ``native-codex`` and
-  ``cli-codex`` and ``cli-gemini`` need only their own (both ship the planning parts too). ``review`` holds exactly wavereview's parts. All are regular
-  files; anything missing or extra fails.
+- THE FILES. ``issue-wave/templates/`` holds ``shared`` (waveprep's ``SHARED`` and ``PLANNING``
+  parts, exactly: the sections every transport's brief states once), directories ``native-<kind>``
+  and ``cli-<kind>`` for a kind wave.json takes (claude, codex, gemini), optionally ``review`` (the
+  review checkpoint's prompt, wavereview.py), and nothing else. A kind's directory holds exactly
+  waveprep's ``OWN`` parts: half a brief is not shipped, and no kind restates a planning part.
+  ``native-claude`` and ``shared`` are required. ``review`` holds exactly wavereview's parts. All
+  are regular files; anything missing or extra fails.
 - THE NAMES. Each shipped part, and the project part, renders through wavebrief's own ``render``
   with one value for each NAME it may use: a common part the built-ins every task is given (no
   ISSUE, no SOURCE, no leg NAME; BASE_ORIGIN describes the resolved base), waveprep's
@@ -120,19 +119,12 @@ def template_files(report: Report, tree: Tree) -> list[tuple[str, frozenset[str]
             bad = True
             continue
         reader = "wave review" if name == REVIEW else "wave prep"
-        if name == REVIEW:
-            allowed = required = tuple(REVIEW_PART_NAMES)
-        elif name == SHARED_DIR:
-            allowed = required = SHARED
-        else:
-            allowed, required = OWN + PLANNING, OWN + (PLANNING if name == REQUIRED_KIND else ())
+        allowed = tuple(REVIEW_PART_NAMES) if name == REVIEW else SHARED + PLANNING if name == SHARED_DIR else OWN
         for extra in sorted(set(inside) - set(allowed)):
             report.ko(f"{TEMPLATES}/{name}/{extra}", f"is no part {reader} reads there (it reads {', '.join(allowed)})")
             bad = True
         for part in allowed:
             rel = f"{TEMPLATES}/{name}/{part}"
-            if part not in inside and part not in required:
-                continue
             if not tree.is_file(rel) or tree.is_link(rel):
                 report.ko(rel, f"is missing, or no regular file: {reader} looks this shipped part up")
                 bad = True

@@ -70,9 +70,11 @@ once, so a rule both transports follow is stated in one file. A part found nowhe
 it: a kind with no shipped directory (``cli-claude``) takes its own parts from the wave directory.
 
 THE PARTS, where each other part is found (ludics#1072): the wave directory's part wins; for the
-two ``PLANNING`` parts (``planning-paired.md``, ``planning-paired+critique.md``) the shipped one of
-the worker's kind stands in when the wave directory has none (``native-claude``, ``cli-codex`` and ``cli-gemini`` ship them); any
-other part is the wave directory's or refuses. The shipped parts are the reference brief, where
+two ``PLANNING`` parts (``planning-paired.md``, ``planning-paired+critique.md``) the shipped
+``issue-wave/templates/shared/<part>`` stands in when the wave directory has none and the worker's
+kind is one of ``PAIRED`` (``native-claude``, ``cli-codex``, ``cli-gemini``; a native Codex worker
+sends its plan mid-turn, and nothing is shipped for a Claude CLI worker, so a paired wave of
+either supplies its own); any other part is the wave directory's or refuses. The shipped parts are the reference brief, where
 a worker's rules live (issue-wave SKILL.md's *The brief* says what a task part adds to them), and
 are read by check-prompts (checkprompts/brieftemplate.py). They hold no project fact: the NAMEs they use are the built-ins
 above plus ``SHIPPED_VARS`` (COORDINATOR, the coordinator's session id, and MAIN, the main branch),
@@ -187,6 +189,7 @@ COMMON = ("who.md", "where.md", "startup.md", "task.md", "tests.md", "requests.m
 OWN = ("who.md", "tests.md", "blocking.md", "context.md")
 SHARED = tuple(name for name in COMMON if name not in OWN)
 PLANNING = ("planning-paired.md", "planning-paired+critique.md")
+PAIRED = ("native-claude", "cli-codex", "cli-gemini")  # the kinds the shipped PLANNING parts are for (THE PARTS)
 SHIPPED_VARS = ("COORDINATOR", "MAIN")
 READY = "ready"  # the manifest's last step: every write of prep landed (wave launch starts nothing without it)
 
@@ -530,8 +533,12 @@ def leg_values(prep: Prep, leg: Leg) -> dict[str, str]:
             "LEG_WT": prep.leg_worktree(leg), "LEG_CHECKOUT": leg.checkout}
 
 
+def shipped_kind(kind: str, cli: bool = False) -> str:
+    return f"{'cli' if cli else 'native'}-{kind}"
+
+
 def shipped_dir(kind: str, cli: bool = False) -> str:
-    return os.path.join(TEMPLATES, f"{'cli' if cli else 'native'}-{kind}")
+    return os.path.join(TEMPLATES, shipped_kind(kind, cli))
 
 
 def read_or_none(prep: Prep, path: str) -> Part | None:
@@ -570,7 +577,7 @@ def part(prep: Prep, *name: str, required: bool = True) -> Part | None:
     if found is not None:
         return found
     rel = "/".join(name)
-    shipped = os.path.join(shipped_dir(prep.kind, prep.cli), rel) if rel in PLANNING else ""
+    shipped = os.path.join(TEMPLATES, "shared", rel) if rel in PLANNING and shipped_kind(prep.kind, prep.cli) in PAIRED else ""
     found = read_or_none(prep, shipped) if shipped else None
     if found is None and required:
         raise Stop(1, f"WAVE PREP REFUSED {prep.task}: the template part {path} does not exist"

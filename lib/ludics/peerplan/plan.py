@@ -8,7 +8,7 @@
 
 ``start`` reads the issue with gh (the planner's sandbox has no network), adds a detached worktree
 of ``<checkout>`` at ``<base>`` under ``<dir>``, and starts one read-only planner there in
-the background under ``bg-run.sh spawn``: the planner's plan lands in ``<dir>/astra-plan.md`` and
+the background under ``bg-run.sh spawn``: the planner's plan lands in ``<dir>/peer-plan.md`` and
 its session id in ``<dir>/thread``. ``critique`` resumes that session, still read-only and in the
 same worktree (a resumed session runs where it is started, so the run ``cd``s there), with the
 Claude worker's plan, and the critique lands in ``<dir>/critique.md``. ``save-plan`` writes that
@@ -35,8 +35,7 @@ checkout, and the brief's read-only line is the rest of the bound. ``--effort`` 
 it: the slug carries it. Every other model runs as ``codex exec -s read-only``. The plan, the
 session id in ``<dir>/thread`` (agy's ``conversation_id``) and the critique's resume of that
 session follow the same files for all three; a claude run's ``<kind>.jsonl`` holds its one JSON
-result, an agy run's its event stream. ``astra-plan.md`` is the peer's plan whatever its
-model: the name predates THE PLANNER, and every reader and brief names it.
+result, an agy run's its event stream.
 
 ``--managed`` is for a coordinator that must hold the run in a managed foreground session of its
 own (a native Codex runtime, issue-wave/references/native-codex.md): the run directory is only
@@ -427,7 +426,7 @@ def critique(args: Sequence[str]) -> int:
         raise cli.Exit(1, f"--plan {plan} is missing or empty")
     # _run writes the thread after codex has exited, so a thread file means the planning turn is
     # over: a resume can never be a second writer to a live session.
-    if not nonempty(os.path.join(d, "astra-plan.md")):
+    if not nonempty(os.path.join(d, "peer-plan.md")):
         raise cli.Exit(1, f"no plan in {d} yet: the planning run must end with one first")
     if not nonempty(os.path.join(d, "thread")):
         raise cli.Exit(1, f"the planning run in {d} recorded no session id: there is nothing to resume")
@@ -495,7 +494,7 @@ def claude_result(stdout: str) -> tuple[str, str, bool]:
 def run_planner(d: str, kind: str) -> int:
     """What the background run executes: one planner turn, its output kept in ``<d>/<kind>.jsonl``."""
     meta = load_meta(d)
-    out = os.path.join(d, "astra-plan.md" if kind == "plan" else "critique.md")
+    out = os.path.join(d, "peer-plan.md" if kind == "plan" else "critique.md")
     brief = read(os.path.join(d, "plan-brief.md" if kind == "plan" else "critique-brief.md"))
     claude, gemini = is_claude(meta.model), is_gemini(meta.model)
     stdin = brief.encode("utf-8")
