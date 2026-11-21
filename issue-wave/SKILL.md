@@ -368,9 +368,8 @@ maintainer has read it ([coordinator-kit.md](references/coordinator-kit.md#when-
 step 10).
 
 **Planning mode, per issue.** Every D3 gets `paired+critique` and an issue on the D2/D3 border gets
-`paired`. Either way a model of the other family plans the issue read-only next to the worker (GPT
-Astra beside a Claude worker, Opus beside a GPT one), and the worker reconciles the two plans
-before it codes
+`paired`. Either way Fable plans the issue read-only next to the worker, whatever the worker's
+model (`peer-plan.sh`'s default), and the worker reconciles the two plans before it codes
 ([paired-planning.md](references/paired-planning.md)). D1 and plain D2 issues get neither. List the
 mode per issue in the wave summary, where it is veto-able like tier 2. Under a Claude coordinator a
 Codex worker's issue pairs like any other. Under any other coordinator, pairing one is a tier-3
@@ -392,18 +391,19 @@ launch either provider as CLI workers; cross-provider delegation is the CLI rout
 tools expose the coordinator's own provider and not a provider switch. **Preserve the user's
 explicit provider, model and transport choices** - this is the one statement of that rule, and
 every reference defers to it. **Where the user left them open, a Claude Code coordinator runs a
-mixed wave that A/B tests GPT against Opus** (the maintainer's default of 2026-11-17, replacing
-the 2026-11-13 split by difficulty). Every issue, of every tier, goes to one arm by its issue
-number. Odd issues go to the GPT arm, a Codex CLI worker on the issue's home box: Sol below D2,
-and from D2 up Sol or Astra by the issue number again (*Codex model choice*). Even issues go to the Opus arm, a Claude Opus worker: native, or in a
-sprint a Claude CLI worker when the issue is homed off the agent host (the sprint's *Native or CLI
-by home box* rule decides only this arm's transport). A post-wave task takes its source issue's
+mixed wave that A/B tests GPT Sol against Gemini Neon** (the maintainer's default of 2026-11-21,
+replacing the 2026-11-17 test of GPT against Opus). Every issue, of every tier, goes to one arm by
+its issue number, as a CLI worker on the issue's home box (the sprint's *Native or CLI by home
+box* rule is for Claude workers). Odd issues go to the Sol arm, a Codex worker (*Codex model
+choice*). Even issues go to the Neon arm, a Gemini worker (Antigravity's
+`agy`, `gemini-4-neon-high`). A post-wave task takes its source issue's
 arm, and post-wave batching groups tasks by area within each arm. Never pick the arm for fit: that
 judgment is the selection bias the test exists to remove. A task its arm cannot serve (no box whose
-codex serves the model, a capability the transport lacks) is reported, and it changes arm only on
-the user's word, marked in the wave summary as a reassignment. Planning mode follows the tier, not
-the arm (*Planning mode, per issue*), so a GPT-arm D3 gets `paired+critique` like an Opus one. The
-wave file names a Claude Opus reviewer, so every PR of the wave gets the review checkpoint, and the
+codex or agy serves the model, a capability the transport lacks) is reported, and it changes arm
+only on the user's word, marked in the wave summary as a reassignment. Planning mode follows the
+tier, not the arm (*Planning mode, per issue*), so a Sol-arm D3 gets `paired+critique` like a Neon
+one. The wave file names a Claude Opus reviewer, so every PR of the wave gets the review
+checkpoint, a third family's reading for both arms, and the
 handoff driver answers the CLI workers' routine turns
 ([coordinator-kit.md](references/coordinator-kit.md#a-mixed-wave)). Name each task's tier and arm
 (its profile) in the wave summary, and give `wave prep` the tier, since the comparison groups by
@@ -659,19 +659,8 @@ transport when a task reaches those paths.
 
 ### Codex model choice
 
-Unless the user specifies otherwise, a Codex worker runs at high reasoning effort, on Sol
-(`gpt-6.2-sol`) for a D1 or D1/D2 issue. From D2 up the issue number picks the model a second
-time: of the GPT arm's odd numbers, one that leaves 1 when divided by 4 goes to Sol and one that
-leaves 3 goes to Astra (`gpt-6.2-astra`). This replaces the call of 2026-11-17, Astra for a D3
-alone: under it the two models shared no tier, and three waves gave Astra two tasks, so nothing
-told the model from the difficulty. A post-wave task takes its source issue's model. As with the
-arm, never pick the model for fit, and a task changes model only on the user's word, marked in the
-wave summary as a reassignment. The paired planner is the other family's model at high: Astra
-beside a Claude worker (`peer-plan.sh`'s defaults), Opus beside any GPT worker (`peer-plan.sh start
---model opus`). So the second plan is always a second family's reading, and Sol and Astra plan
-against the same peer: under the earlier rule a Sol worker reconciled against Astra's own plan,
-which a Sol-against-Astra reading cannot take apart. Opus, not Fable: a peer stronger than either
-arm's model would help the GPT arm alone. Keep D1/D2/D3 as implementation-difficulty
+Unless the user specifies otherwise, a Codex worker runs Sol (`gpt-6.2-sol`) at high reasoning
+effort, at every tier. Keep D1/D2/D3 as implementation-difficulty
 labels. Assess semantic coupling, verification risk (low: local deterministic acceptance; medium:
 timing-sensitive claims or extensive negative controls; high: platform semantics, GPU searches or
 expanding language-feature combinations) and delivery overhead (shared files, dependencies, slow CI
@@ -688,12 +677,13 @@ rounds (the checkpoint's verdicts and the reviewer's findings), coordinator inte
 launch-to-merge time, separating queueing, CI and dependency waits from active work where possible.
 The 2026-11-13 split rested on qualitative observations. A retrospective of past waves could not
 separate the model from its wave, project, box and era. Assigning both arms within the same waves
-removes the wave, project and era, but the arms still differ in transport and box (the GPT arm runs
-as a CLI worker on the home box, Opus mostly natively on the agent host). So read a result as a
-comparison of the two worker profiles, not of the models alone. Sol against Astra differs in the
-model alone (same transport, boxes, planner and planning mode), and is read the same way within a
-tier group, D2 apart from D2/D3 with D3, once each model has ten merged tasks in the group: a
-smaller count is a description. A reading of the code itself pairs PRs by area before any diff is
+removes the wave, project and era, and the arms share transport, planner, planning mode and
+reviewer. They still differ in the CLI that runs the model (codex against agy), so read a result
+as a comparison of the two worker profiles, not of the models alone. The issue number picks the
+arm and the placement table the box, so the arms' boxes can differ: read `agent_host` first, and
+compare within a box or report the imbalance. Read it within a tier group (D1 with D1/D2, D2,
+D2/D3 with D3) once each arm has ten merged tasks in the group: a smaller count is a
+description. A reading of the code itself pairs PRs by area before any diff is
 read and takes a blind judge of each family, since a judge of one family prefers its own (the
 2026-11-20 retrospective). When a reading is in, the maintainer sets the default for that group and
 its split ends. Read the comparison's task fields with `fleet-worker.sh status --json`.
@@ -713,13 +703,13 @@ line decides a turn's counter by the closed list in `lib/ludics/fleetworker/tall
 See [the native worker channel](references/native-claude.md#worker-channel).
 
 The IDs are the ones `~/.codex/models_cache.json` lists on the worker's box (2026-11-17 on
-mac-studio: `gpt-6.2-sol` and `gpt-6.2-astra`); read them there rather than from this paragraph
+mac-studio: `gpt-6.2-sol`); read them there rather than from this paragraph
 when they may have moved. A box whose codex predates them is refused at `preflight`, since its
 Codex probe runs with the worker's args: update that box's codex rather than falling back to an
 older model. Name the effort as well as the model, because the config default differs by box. A CLI
-worker gets `-- -m gpt-6.2-sol -c model_reasoning_effort=high`, and a wave file's profiles name
-both: `sol` (`"model": "gpt-6.2-sol", "effort": "high"`) and `astra` (`"model":
-"gpt-6.2-astra", "effort": "high"`). Neither model names its own ID reliably when asked, so the
+worker gets `-- -m gpt-6.2-sol -c model_reasoning_effort=high`, and a wave file's `sol` profile
+names both (`"model": "gpt-6.2-sol", "effort": "high"`). Sol does not name its own ID reliably when
+asked, so the
 record is the check: `launch` prints the `model=` and `effort=` its args resolve to, and the
 worker's `meta` keeps them (ludics#539).
 
@@ -727,7 +717,7 @@ worker's `meta` keeps them (ludics#539).
 
 The coordinator's job between launch and last merge. **Who answers a returned turn** is set by the
 worker's kind. The handoff driver, `fleet-worker.sh wave drive <wave.json>`, answers every turn of a
-CLI worker, Claude or Codex, that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
+CLI worker, Claude, Codex or Gemini, that a marker names: it assigns an `EXECUTION_REQUEST` and resumes the
 worker, concludes an `EXECUTION_RESULT`, runs `wave review` for a `REVIEW_REQUEST` or
 `CONFIRM_REQUEST`, and saves a `HANDBACK` under `handbacks/` and closes its row with `board close`
 ([coordinator-kit.md](references/coordinator-kit.md#when-to-call-each-verb), step 9;

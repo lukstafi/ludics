@@ -5,7 +5,6 @@ import contextlib
 import fcntl
 import glob
 import io
-import dataclasses
 import json
 import os
 import re
@@ -2725,21 +2724,6 @@ def row(task: str, **fields: str) -> dict[str, Any]:
     return {"task": task, "fields": {**base, **fields}}
 
 
-class PairedNotice(unittest.TestCase):
-    def test_the_worker_model_is_the_records_then_the_launch_lines_then_the_profiles(self) -> None:
-        texts: dict[str, str] = {**{key: "x" for key in wavelaunch.TEXTS}, "model": "gpt-6.2-astra"}
-        record = wavelaunch.Record(**texts, remote=True, allow_rival=frozenset(), legs=())
-        line = "preflight ok\nLAUNCHED far/w1-42 kind=codex session=s model=gpt-6.2-astra effort=high cwd=/w\n"
-        self.assertEqual(wavedrive.worker_model(record, "", "gpt-6.2-sol"), "gpt-6.2-astra", "the record is what launch ran")
-        self.assertEqual(wavedrive.worker_model(None, line, ""), "gpt-6.2-astra", "a box's config resolved it")
-        self.assertEqual(wavedrive.worker_model(None, "LAUNCHED far/w1-42 kind=codex session= model= cwd=/w\n", "gpt-6.2-sol"),
-                         "gpt-6.2-sol")
-        self.assertEqual(wavedrive.worker_model(None, "", ""), "")
-        unnamed = dataclasses.replace(record, model="")
-        self.assertEqual(wavedrive.worker_model(unnamed, "", "gpt-6.2-sol"), "", "an edited profile never fills a record's model")
-        self.assertEqual(wavedrive.worker_model(unnamed, line, "gpt-6.2-sol"), "gpt-6.2-astra")
-
-
 class Markers(unittest.TestCase):
     def test_exactly_one_marker_names_a_turn(self) -> None:
         request = "I need a leg.\n\nEXECUTION_REQUEST\n{\"request_id\":\"x\"}\nEND_EXECUTION_REQUEST\n"
@@ -3771,7 +3755,7 @@ class Queue(DriveCase):
             self.assertEqual(self.calls[0], ["halted"])
             self.assertIn("DRIVE t50 launch: launch answered: WAVE LAUNCH t50: launched far/w1-50", out)
             self.assertIn(f"DRIVE ATTENTION t50 launch: launched paired at {B}: start its peer planner on that sha"
-                          " with --model opus (the worker runs gpt-6.1-sol)", out)
+                          " (paired-planning.md, Coordinator, step 1)", out)
             self.rows = [row("t50")]  # launched: its row is live
             out = self.once()[1]
             self.assertNotIn("peer planner", out, "an unpaired launch names no planner")
@@ -3781,14 +3765,6 @@ class Queue(DriveCase):
             self.rows = [row("t50"), row("t51", agent_host="mac")]
             self.state = "RUNNING"
             self.assertEqual((self.once()[1], self.launched()), ("", []), "a task with a row is not started again")
-
-    def test_a_paired_notice_reads_the_model_a_structured_launch_printed_on_stderr(self) -> None:
-        self.queue({"task": "t50", "profile": "sol", "host": "far", "mode": "paired+critique"})
-        self.out["wave launch stderr"] = "LAUNCHED far/w1-50 kind=codex session=s model=gpt-6.2-astra effort=high cwd=/w\n"
-        with self.world():
-            out = self.once()[1]
-        self.assertIn(f"launched paired+critique at {B}: start its peer planner on that sha with --model opus"
-                      " (the worker runs gpt-6.2-astra)", out, "the box's resolved model, not the profile's gpt-6.1-sol")
 
     def test_sustained_pending_gate_notice_resets_without_changing_admission(self) -> None:
         self.queue({"task": "t50", "profile": "sol", "host": "far"})

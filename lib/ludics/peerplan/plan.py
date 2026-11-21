@@ -7,7 +7,7 @@
     peer-plan.sh clean <dir>
 
 ``start`` reads the issue with gh (the planner's sandbox has no network), adds a detached worktree
-of ``<checkout>`` at ``<base>`` under ``<dir>``, and starts one read-only ``codex exec`` there in
+of ``<checkout>`` at ``<base>`` under ``<dir>``, and starts one read-only planner there in
 the background under ``bg-run.sh spawn``: the planner's plan lands in ``<dir>/astra-plan.md`` and
 its session id in ``<dir>/thread``. ``critique`` resumes that session, still read-only and in the
 same worktree (a resumed session runs where it is started, so the run ``cd``s there), with the
@@ -19,11 +19,14 @@ whole (never a partial plan), and refuses once a critique has read it. Each prin
 bg-run directory, to block on with ``bg-run.sh wait``; ``<dir>/plan-run`` and
 ``<dir>/critique-run`` keep them for a coordinator that lost track. ``clean`` removes the worktree
 once no run is live, and keeps every other file: they are the record of the planning. A run has
-no deadline of its own: ``bg-run.sh stop <run>`` ends it, codex included.
+no deadline of its own: ``bg-run.sh stop <run>`` ends it, the planner included.
 
-THE PLANNER is named by ``--model``. A model in ``CLAUDE_MODELS`` (``opus``) or one named
-``claude-...`` runs as ``claude -p`` with the tools ``Read,Grep,Glob`` and nothing else: no tool
-that writes, runs a command or reaches the network is offered, which is its read-only sandbox.
+THE PLANNER is named by ``--model``, by default Fable beside every worker, whatever its model
+(issue-wave SKILL.md's *Planning mode, per issue*). A model in ``CLAUDE_MODELS`` or one named
+``claude-...`` runs as ``claude -p`` with the tools ``Read,Grep,Glob`` and nothing else, and with
+``--strict-mcp-config`` and no MCP config, since ``--tools`` names built-in tools only and the
+coordinator's own MCP servers could write: no tool that writes, runs a command or reaches the
+network is offered, which is its read-only sandbox.
 A model named ``gemini-...`` (an Antigravity slug, its effort in the name: ``gemini-4-neon-high``)
 runs as one ``agy`` turn with every tool approved, and its bound is not a tool list but its
 directory (``ludics.agy``'s header says why): its ``<dir>/worktree`` is a local clone of
@@ -33,9 +36,7 @@ it: the slug carries it. Every other model runs as ``codex exec -s read-only``. 
 session id in ``<dir>/thread`` (agy's ``conversation_id``) and the critique's resume of that
 session follow the same files for all three; a claude run's ``<kind>.jsonl`` holds its one JSON
 result, an agy run's its event stream. ``astra-plan.md`` is the peer's plan whatever its
-model: the name predates THE PLANNER, and every reader and brief names it. Only the default model (Astra) is shipped as a
-default: a coordinator names ``--model opus`` where issue-wave asks for it (beside a GPT worker),
-the rule ``peer_model`` states for the wave driver's paired-launch notice.
+model: the name predates THE PLANNER, and every reader and brief names it.
 
 ``--managed`` is for a coordinator that must hold the run in a managed foreground session of its
 own (a native Codex runtime, issue-wave/references/native-codex.md): the run directory is only
@@ -43,7 +44,7 @@ allocated (``bg-run.sh new``) and recorded, nothing starts, and the caller runs
 ``bg-run.sh start <run> -- peer-plan.sh _run plan|critique <dir>`` in that session.
 
 Exit 0 done, 1 refused or failed (the message says which), 2 a usage error. A run's own status is
-the bg-run verdict's: codex's exit status, or 1 when codex exited 0 and wrote no plan.
+the bg-run verdict's: the planner's exit status, or 1 when it exited 0 and wrote no plan.
 """
 
 import json
@@ -66,17 +67,10 @@ PROG = "peer-plan.sh"
 ROOT = Path(__file__).resolve().parents[3]
 PY = ROOT / "scripts" / "py"
 BG_RUN = ROOT / "issue-wave" / "scripts" / "bg-run.sh"
-DEFAULT_MODEL = "gpt-6.2-astra"
+DEFAULT_MODEL = "fable"
 DEFAULT_EFFORT = "high"
-CLAUDE_MODELS = ("opus",)
+CLAUDE_MODELS = ("fable", "opus")
 CLAUDE_TOOLS = "Read,Grep,Glob"
-
-
-def peer_model(worker_model: str) -> str:
-    """The peer planner beside a worker of ``worker_model`` (issue-wave SKILL.md's *Codex model
-    choice*): Opus beside a GPT worker, Sol or Astra, so the two plans are two families' readings and
-    both GPT models plan against one peer; else (a Claude worker, or no model on record) the default."""
-    return "opus" if worker_model.startswith("gpt-") else DEFAULT_MODEL
 
 
 def is_claude(model: str) -> bool:
@@ -117,7 +111,9 @@ usage: {PROG} start <dir> --issue <owner/repo>#<n> --checkout <path> --base <ref
 PLAN_BRIEF = """\
 You are one of two planners working independently on the same issue. Another model is planning it
 in parallel without seeing your plan, and the implementer will reconcile the two plans before
-writing any code. Your plan is read for its arguments, so give the reasons for each choice.
+writing any code. Your plan is read for its arguments, so give the reasons for each choice. Keep
+an eye for elegant design: shared structure over duplication, and the smallest mechanism that
+states the invariant.
 
 You are read-only: do not create, edit or delete files, and do not try to reach the network. Your
 working directory is the project at the commit the work starts from: read its AGENTS.md or
@@ -517,7 +513,8 @@ def run_planner(d: str, kind: str) -> int:
         stdin = agy.message(brief)
     elif claude:
         tool = "claude"
-        argv = ["-p", "--model", meta.model, "--effort", meta.effort, "--output-format", "json", "--tools", CLAUDE_TOOLS]
+        argv = ["-p", "--model", meta.model, "--effort", meta.effort, "--output-format", "json", "--tools", CLAUDE_TOOLS,
+                "--strict-mcp-config"]
         if kind == "critique":
             argv += ["--resume", read(os.path.join(d, "thread")).strip()]
     else:

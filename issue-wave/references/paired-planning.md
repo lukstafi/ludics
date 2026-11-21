@@ -1,8 +1,7 @@
 # Paired planning
 
 A D3 issue, or one on the D2/D3 border, gets two plans written independently before any code: the
-worker's own, and one from a model of the other family run read-only (GPT Astra through `codex
-exec` beside a Claude worker, Opus through `claude -p` beside a GPT one). The worker
+worker's own, and one from Fable, run read-only through `claude -p`. The worker
 reconciles them, so one implementer, one PR and one review stay as before. What it buys is a
 second model's reading of the design while changing it is still cheap. The first review of a D3
 otherwise does that reading, one round at a time (ludics-lite#547).
@@ -19,9 +18,8 @@ passing:
   is resumed with the worker's plan and critiques it against the code and its own plan.
 - No pairing for D1 and plain D2 issues.
 
-The second planner is the other family's model (issue-wave SKILL.md's *Codex model choice*): Astra
-beside a Claude worker, Opus beside a GPT worker, Sol or Astra, so the two plans are always two
-families' readings and both GPT models plan against the same peer. Under a Claude
+The second planner is Fable beside every worker, whatever its model, so both arms of an A/B plan
+against the same peer. Under a Claude
 coordinator, a Codex worker's issue is paired like any other. Under any other coordinator,
 pairing a Codex worker is the user's call: put it in the decision gate's batched question, and
 the issue plans alone unless the user confirms. Any transport works, because the plans travel
@@ -30,7 +28,7 @@ waits for the user's answer before it launches, as any issue does.
 
 ## Coordinator
 
-All of it runs on the coordinator's box, which needs a Codex login (`codex login status`). The
+All of it runs on the coordinator's box, which needs the `claude` CLI signed in. The
 plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
 
 1. **At launch**: post any decision comments first, because the planner reads the issue only
@@ -45,12 +43,11 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    ```
 
    It reads the issue with `gh` (the planner's sandbox has no network) and adds a detached
-   worktree of the base under `<plan-dir>`. Then it starts Astra (`gpt-6.2-astra`, high;
-   `--model`/`--effort` to change them; `--model opus` beside a GPT worker, which runs Opus at
-   high through `claude -p` with only read and search tools; a `gemini-...` model such as
-   `gemini-4-neon-high` runs through `agy` in a clone of the base with no remote, in place of the
-   worktree, since agy has no read-only mode: what it writes stays in the clone) there in the
-   background, read-only,
+   worktree of the base under `<plan-dir>`. Then it starts Fable (at high, through `claude -p` with
+   only read and search tools; `--model`/`--effort` to change them: a GPT model runs through
+   `codex exec`, and a `gemini-...` model such as `gemini-4-neon-high` through `agy` in a clone of
+   the base with no remote, in place of the worktree, since agy has no read-only mode: what it
+   writes stays in the clone) there in the background, read-only,
    and prints a `bg-run.sh` run directory. A native Codex coordinator, whose local `spawn` runs die
    ([native-codex.md](native-codex.md#local-managed-command-sessions)), passes `--managed` to
    `start` and `critique` instead. That only allocates and records the run directory, and the
@@ -115,8 +112,8 @@ Add this to the brief of a paired worker, with the mode filled in:
   END_PLAN_READY
   ```
 
-- **Then reconcile.** You will be resumed with `PEER_PLAN`, an independent plan by another model
-  (the templates name GPT Astra to a Claude worker), and in `paired+critique` mode with
+- **Then reconcile.** You will be resumed with `PEER_PLAN`, an independent plan by another model,
+  and in `paired+critique` mode with
   `PEER_CRITIQUE`, that planner's critique of your plan, each followed by
   its text or by an absolute path to read in full. Settle each
   material difference on its argument, whichever plan made it (a peer plan is a colleague's

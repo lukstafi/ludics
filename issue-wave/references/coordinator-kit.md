@@ -124,7 +124,7 @@ as a host:
 
 ```json
 "profiles": {"sol": {"transport": "cli", "kind": "codex", "model": "gpt-6.2-sol", "effort": "high"},
-             "astra": {"transport": "cli", "kind": "codex", "model": "gpt-6.2-astra", "effort": "high"}},
+             "neon": {"transport": "cli", "kind": "gemini", "model": "gemini-4-neon-high"}},
 "hosts": {"rog-nv-linux": {"checkout": "/home/lukstafi/ocannl-staging", "scratch": "/home/lukstafi/wave-scratch"}}
 ```
 
@@ -133,8 +133,8 @@ task. For a CLI task it makes nothing on the box and reserves nothing: `fleet-wo
 makes a CLI worker's worktree and takes its standing reservation in one fenced step. `wave launch
 <wave.json> <task>` runs that launch from what prep recorded, then reserves the task's legs and
 sets its row. A Codex CLI worker's brief is the shipped one (`cli-codex/` with `shared/`), and so is
-a Gemini one's (`cli-gemini/`; a profile `{"transport": "cli", "kind": "gemini", "model":
-"gemini-4-neon-high"}`, the agy slug carrying the effort). A Gemini worker's box needs agy signed
+a Gemini one's (`cli-gemini/`; the agy slug carries the effort, so the profile names none). A
+Gemini worker's box needs agy signed
 in for SSH sessions, whose token agy keeps apart from the desktop's: `ssh -t <box> agy` once;
 `preflight <box> --gemini` probes a headless turn in a tmux session there.
 
@@ -284,8 +284,8 @@ driver hands you as an attention line.
 9. **The handoff driver.** A CLI worker ends its turn for every handoff, and most of those turns
    need no judgment. Start one driver per wave, in the background, as soon as it has something to
    serve: with a `queue.json` that is before any worker exists, since the driver launches what is
-   queued; without one, once the first CLI worker is launched. It serves CLI workers, Claude and
-   Codex (a Claude worker's turns are counted by `status`'s `results=`); a native worker's turns are
+   queued; without one, once the first CLI worker is launched. It serves CLI workers, Claude, Codex
+   and Gemini (a Claude worker's turns are counted by `status`'s `results=`); a native worker's turns are
    yours to answer with the same verbs. Once it serves a worker, stop answering that worker's turns
    by hand: a hand answer and the driver's would be two answers to one turn.
 
