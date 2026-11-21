@@ -251,6 +251,17 @@ driver hands you as an attention line.
    `.github/review-checkpoint.md`; this repository has none), and a wave file without the key
    reviews with the shipped parts alone.
 
+   `"kind": "gemini"` runs Antigravity's `agy` instead, the model an agy slug that carries its
+   effort (`agy models` lists them): `{"kind": "gemini", "model": "gemini-4-neon-high", "label":
+   "Gemini 4 Neon"}`. agy's permission rules cannot hold a reviewer to reading, so it runs with
+   every tool refused, and the verb inlines the reads the review needs: the PR, its diff, the
+   issue or brief, the base's root `AGENTS.md`/`CLAUDE.md`, the changed files at the head, and for
+   a confirm the earlier review, the PR's feed and the change since. The prompt is held under
+   agy's ~190 KB cut of one message, so on a large PR some changed files are named, not shown, and
+   a PR whose diff alone passes it gets no verdict (review it with a `claude` reviewer). It cannot
+   follow a lead past those reads, so a finding it could not check says so. The box running `wave
+   review` needs `agy` installed and signed in.
+
    A worker's request for its review, or for the confirm before it merges, is answered with one
    call, run in the background since a review takes minutes:
 

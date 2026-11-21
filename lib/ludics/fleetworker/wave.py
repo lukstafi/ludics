@@ -73,7 +73,8 @@ missing, or a value of the wrong shape is a usage refusal (exit 2) before anythi
                     scratch goes under (``<scratch>/<wave>/<task>``), both absolute there
   review            {kind, model[, label][, project_part][, timeout]}: default: none
                     the review checkpoint's reviewer (wavereview.py): ``kind`` the CLI that runs
-                    it (``claude``, the one kind there is), ``model`` its model, ``label`` the
+                    it (``claude``, or ``gemini`` for Antigravity's ``agy``), ``model`` its model
+                    (an agy model's slug carries its effort: ``gemini-4-neon-high``), ``label`` the
                     name its posts carry (default: the model), ``project_part`` the project's
                     own review part, a path as ``project_part`` above, ``timeout`` whole seconds
                     (default 1800)
@@ -172,7 +173,7 @@ PROFILE_TRANSPORTS = ("subagent", "cli")
 KINDS = ("claude", "codex")
 HOST_REQUIRED = ("checkout", "scratch")
 REVIEW_REQUIRED, REVIEW_OPTIONAL = ("kind", "model"), ("label", "project_part", "timeout")
-REVIEW_KINDS = ("claude",)
+REVIEW_KINDS = ("claude", "gemini")
 # A reviewer's model and label: what a CLI flag and pr-review.sh comment's footer both take.
 REVIEW_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._+/-]*[A-Za-z0-9._+/-])?")
 LEG_REQUIRED, LEG_OPTIONAL = ("checkout", "suffix", "purpose"), ("vars",)

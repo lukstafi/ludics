@@ -36,14 +36,27 @@ WHAT IT DOES, in this order:
    reviewer's instructions). The prep manifest's rendered task section is included whole beside
    the issue or source. This reads that named field as prose and never searches Markdown for
    headings or scope keywords. For older or manual tasks, the reviewer can read the worker brief.
-7. The reviewer, headless, the prompt on its stdin (``reviewer_argv``). Its final message is the
-   review. READ-ONLY is its tool list, a fail-closed allowlist, not only the prompt's word: the
-   file readers, ``git -C <checkout>`` with a reading verb (``GIT_READS``), ``gh`` with a reading
-   one (``GH_READS``), one exact paginated GET of the current PR's inline comments (including
-   replies in resolved threads) for confirms, and the filters a pipe ends in (``FILTERS``).
-   Other API paths and arguments are outside the allowlist, and editing tools are refused by name.
-   What that does not stop: an allowed verb's own
-   writing option (``git show --output=<file>``), and anything ``gh`` reads with the fleet's token.
+7. The reviewer, headless, the prompt on its stdin (``reviewer_call``). Its final message is the
+   review. READ-ONLY is enforced by the CLI, not only the prompt's word, in one of two forms:
+
+   - ``claude``: a tool list, a fail-closed allowlist: the file readers, ``git -C <checkout>``
+     with a reading verb (``GIT_READS``), ``gh`` with a reading one (``GH_READS``), one exact
+     paginated GET of the current PR's inline comments (including replies in resolved threads) for
+     confirms, and the filters a pipe ends in (``FILTERS``). Other API paths and arguments are
+     outside the allowlist, and editing tools are refused by name. What that does not stop: an
+     allowed verb's own writing option (``git show --output=<file>``), and anything ``gh`` reads
+     with the fleet's token.
+   - ``gemini`` (Antigravity's ``agy``): NO TOOLS. agy's allow and deny rules do not bound a
+     reviewer (probed on agy 1.5.14: its default mode ran shell commands and wrote files
+     unprompted, a deny rule matches only a named command, and allow rules admit nothing under
+     ``strict``), so it runs under ``toolPermission: strict``, which refuses every tool, and the
+     reads the shipped parts name are made here and inlined (``materials``, after the shipped
+     ``inline.md`` that says so). The reads, a closed list: the PR's title, body, head and base, its
+     diff from its fork point to ``<sha>``, read locally, the issue with its comments, the worker brief, the base's root ``AGENTS.md`` and
+     ``CLAUDE.md``, each changed file's text at the head (as many as the room left under
+     ``GEMINI_MESSAGE_BOUND`` holds, the rest named), and for a confirm the at-open review, the PR's comments and reviews, its
+     inline comments and the diff since the reviewed head. A tool call ends agy's turn with an
+     empty response: that is no final message, exit 4, never a verdict.
 8. THE VERDICT, below, and what it decides.
 9. The PR is read again (step 4's check: a recorded review, a dry run's included, is never posted
    on a PR that closed or whose head moved since). Then the review is posted on the PR
@@ -112,13 +125,15 @@ from ludics.fleetworker.wavebrief import Part, render, write_atomically
 from ludics.fleetworker.wavelaunch import Record, record_of
 from ludics.fleetworker.waveprep import SHA40, TASK, TEMPLATES, subject
 from ludics.prreview.checkpoint import LABEL_SUFFIX, UNREADABLE, Verdict, headed, heading, parse_verdict
+from ludics.prreview.state import PR_FEED_FILTER
 
 KINDS = ("at-open", "confirm")
-SHIPPED = ("checkpoint.md", "issue.md", "source.md", "confirm.md", "verdict.md")
+SHIPPED = ("checkpoint.md", "inline.md", "issue.md", "source.md", "confirm.md", "verdict.md")
 # The NAMEs each shipped part may use (checkprompts/brieftemplate.py renders each with exactly these).
 COMMON_NAMES = frozenset({"WAVE", "KIND", "REPO", "PR", "SHA", "SHA8", "CHECKOUT", "MAIN"})
 PART_NAMES: dict[str, frozenset[str]] = {
     "checkpoint.md": COMMON_NAMES | {"BRIEF"},
+    "inline.md": COMMON_NAMES,
     "issue.md": COMMON_NAMES | {"ISSUE", "ISSUE_N", "ISSUE_REPO"},
     "source.md": COMMON_NAMES | {"SOURCE", "BRIEF"},
     "confirm.md": COMMON_NAMES | {"REVIEWED_SHA", "REVIEW_FILE", "INLINE_COMMENTS"},
@@ -133,10 +148,17 @@ GH_READS = ("pr view", "pr diff", "issue view")
 FILTERS = ("head", "tail", "wc", "grep")
 
 
-def reviewer_argv(call: "Call") -> tuple[str, list[str]]:
-    """The tool and arguments that run ``review.kind`` headless, the prompt on stdin and one JSON
-    object on stdout whose ``result`` is the final message, with READ-ONLY's tool list (the header,
-    step 7). wave.py's ``REVIEW_KINDS`` is the allowlist; a kind without a line here cannot be parsed."""
+# agy's one fail-closed mode: every tool refused (the header, step 7).
+GEMINI_SETTINGS = '{"toolPermission":"strict"}'
+# The UTF-8 bytes a gemini prompt may take whole. agy cuts one message at about 191 KB (probed on
+# 1.5.14: a 400 KB message kept 191,391 bytes and a `<truncated N bytes>` marker, its tail -- the
+# answer part -- lost), so the prompt is held under it with a margin, changed files filling the rest.
+GEMINI_MESSAGE_BOUND = 180_000
+
+
+def reviewer_call(call: "Call", prompt: str) -> tuple[str, list[str], bytes]:
+    """The tool, its arguments and its stdin that run ``review.kind`` headless under READ-ONLY (the
+    header, step 7). wave.py's ``REVIEW_KINDS`` is the allowlist; a kind without a line here cannot be parsed."""
     review, checkout = call.review, call.wave.checkout
     if review.kind == "claude":
         allowed = ([f"Bash(git -C {checkout} {verb}:*)" for verb in GIT_READS] + [f"Bash(gh {verb}:*)" for verb in GH_READS]
@@ -144,8 +166,45 @@ def reviewer_argv(call: "Call") -> tuple[str, list[str]]:
         if call.kind == "confirm":
             allowed.append(f"Bash({call.inline_comments})")
         return "claude", ["-p", "--model", review.model, "--output-format", "json", "--no-session-persistence",
-                          "--allowedTools", *allowed, "--disallowedTools", "Edit", "Write", "NotebookEdit"]
+                          "--allowedTools", *allowed, "--disallowedTools", "Edit", "Write", "NotebookEdit"], \
+            prompt.encode("utf-8", "surrogateescape")
+    if review.kind == "gemini":
+        # One stream-json user message on stdin, read to EOF (an argument would meet Linux's 128 KiB
+        # bound on one argv string); ASCII-escaped, so an undecodable byte reaches agy as valid JSON.
+        line = json.dumps({"event": "user", "message": {"content": prompt}}) + "\n"
+        return "agy", ["--model", review.model, "--input-format", "stream-json", "--output-format", "stream-json",
+                       "--settings", GEMINI_SETTINGS], line.encode("ascii")
     raise AssertionError(f"no reviewer for kind {review.kind}")
+
+
+def final_message(kind: str, stdout: str) -> tuple[str, str]:
+    """The reviewer's final message, or "" and why there is none."""
+    if kind == "gemini":
+        result: dict[str, Any] = {}
+        for raw in stdout.split("\n"):  # agy's stream: one event per LF line (never splitlines: U+0085 is JSON text)
+            try:
+                event: Any = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and cast(dict[str, Any], event).get("event") == "result":
+                found: Any = cast(dict[str, Any], event).get("result")
+                result = cast(dict[str, Any], found) if isinstance(found, dict) else {}
+        text, denied = result.get("response"), result.get("denied_actions")
+        if isinstance(denied, list) and denied:
+            names = [str(cast(dict[str, Any], d).get("action")) for d in cast(list[Any], denied) if isinstance(d, dict)]
+            return "", f"it called a tool, and strict mode refused it ({', '.join(names) or 'unnamed'})"
+        if result.get("status") != "SUCCESS" or not (isinstance(text, str) and text.strip()):
+            return "", f"its result is {result.get('status') or 'missing'} with no response"
+        return text, ""
+    try:
+        answer: Any = json.loads(stdout)
+    except ValueError:
+        answer = None
+    data = cast(dict[str, Any], answer) if isinstance(answer, dict) else {}
+    text = data.get("result")
+    if data.get("is_error") is not False or not (isinstance(text, str) and text.strip()):
+        return "", "it ended with no final message"
+    return text, ""
 
 
 def decision_of(kind: str, verdict: Verdict) -> str:
@@ -403,12 +462,118 @@ def project_part(call: Call) -> Part | None:
     return Part(f"{os.path.join(call.wave.checkout, where)} at {rev}", shown.stdout)
 
 
-def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
-    """Step 6: the rendered prompt."""
+def fenced(label: str, command: str, text: str) -> str:
+    """One read of ``materials``: its heading, the command that made it, and its output in a fence
+    longer than any backtick run inside it."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    said = f"`{command}`\n\n" if command else ""
+    return f"### {label}\n\n{said}{fence}text\n{text.rstrip(chr(10))}\n{fence}"
+
+
+def named(path: str) -> str:
+    """A PR-controlled path as one escaped line (JSON string syntax): a newline in a file name
+    cannot open a section of its own outside the fences."""
+    return json.dumps(path)
+
+
+def size(text: str) -> int:
+    return len(text.encode("utf-8", "surrogateescape"))
+
+
+def materials(cfg: Config, call: Call, earlier: dict[str, Any] | None, brief: str, room: int) -> str:
+    """The reads a ``gemini`` reviewer cannot make (the header, step 7), made here: a closed list.
+    The diff and the changed files are read locally between the PR's fork point (the merge base of
+    its ``baseRefOid`` and ``<sha>``) and ``<sha>`` itself, so they are the reviewed head's whatever
+    GitHub's head is meanwhile, and a merged PR's dry run still has them."""
+    from ludics.fleetworker.execution import gh_timeout
+
+    repo, main = call.wave.repository, f"origin/{call.wave.vars['MAIN']}"
+    sections: list[str] = []
+
+    def gh(label: str, args: list[str]) -> str:
+        done = proc.run_tool("gh", args, timeout=gh_timeout(cfg))
+        if done.rc != 0:
+            raise call.refused(f"the reviewer's read `gh {' '.join(args[:3])}` exited {done.rc}"
+                               f" ({done.stderr.strip()[-200:]}); nothing reviewed", 4)
+        sections.append(fenced(label, "gh " + " ".join(args), done.stdout))
+        return done.stdout
+
+    def local(*args: str) -> str:
+        done = git(call, *args, timeout=FETCH_TIMEOUT if args[0] == "fetch" else None)
+        if done.rc != 0:
+            raise call.refused(f"`git {' '.join(args[:2])}` failed in {call.wave.checkout} ({done.stderr.strip()[-200:]});"
+                               " nothing reviewed", 4)
+        return done.stdout
+
+    pr: Any = None
+    try:
+        pr = json.loads(gh("The PR", ["pr", "view", call.pr, "--repo", repo, "--json", "title,body,headRefOid,baseRefOid"]))
+    except ValueError:
+        pass
+    base = cast(dict[str, Any], pr).get("baseRefOid") if isinstance(pr, dict) else None
+    if not (isinstance(base, str) and SHA40.fullmatch(base)):
+        raise call.refused("the PR's baseRefOid could not be read; nothing reviewed", 4)
+    if git(call, "cat-file", "-e", f"{base}^{{commit}}").rc != 0:
+        local("fetch", "-q", "origin", base)
+    fork = local("merge-base", base, call.sha).strip()
+    sections.append(fenced("The PR's diff", f"git diff {fork} {call.sha}", local("diff", fork, call.sha)))
+    if call.issue_ref:
+        gh("The issue, with its comments",
+           ["issue", "view", call.number, "--repo", call.wave.issue_repository, "--json", "number,title,body,comments"])
+    try:
+        with open(brief, encoding="utf-8", errors="surrogateescape") as f:
+            sections.append(fenced("The worker brief", "", f.read()))
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise call.refused(f"cannot read {brief} ({exc.strerror})") from None
+    for rules in ("AGENTS.md", "CLAUDE.md"):
+        shown = git(call, "show", f"{main}:{rules}")
+        if shown.rc == 0:
+            sections.append(fenced(f"The project's {rules} at the base", f"git show {main}:{rules}", shown.stdout))
+    paths = [p for p in local("diff", "--name-only", "--diff-filter=d", "-z", fork, call.sha).split("\0") if p]
+    at = len(sections)  # the changed files go here, in the room the other reads leave
+    if earlier is not None:
+        review = str(earlier.get("review", ""))
+        try:
+            with open(review, encoding="utf-8", errors="surrogateescape") as f:
+                sections.append(fenced("The at-open review", "", f.read()))
+        except OSError as exc:
+            raise call.refused(f"cannot read the at-open review {review!r} ({exc.strerror})") from None
+        gh("The PR's comments and reviews", ["pr", "view", call.pr, "--repo", repo, "--json", "comments,reviews", "--jq", PR_FEED_FILTER])
+        gh("The PR's inline comments", call.inline_comments.split()[1:])
+        sections.append(fenced("The change since the reviewed head", f"git diff {earlier['sha']} {call.sha}",
+                               local("diff", str(earlier["sha"]), call.sha)))
+    skipped = "Changed files not shown (binary, unreadable, or past agy's message bound): {}."
+    left = room - size("## Materials\n\n" + "\n\n".join(sections) + "\n\n" + skipped.format(", ".join(map(named, paths))))
+    if left < 0:
+        raise call.refused(f"the review's reads alone are {room - left} bytes, past the {room} left under agy's one-message"
+                           f" bound (GEMINI_MESSAGE_BOUND): a gemini reviewer cannot read this PR whole; nothing reviewed", 4)
+    files, unshown = list[str](), list[str]()
+    for path in paths:
+        bytes_ = git(call, "cat-file", "-s", f"{call.sha}:{path}").stdout.strip()
+        if not bytes_.isdigit() or int(bytes_) > left:  # the size first: nothing past the room is read
+            unshown.append(path)
+            continue
+        shown = git(call, "show", f"{call.sha}:{path}")
+        section = fenced(f"{named(path)} at the head", f"git show {call.sha[:12]}:{named(path)}", shown.stdout)
+        if shown.rc != 0 or "\0" in shown.stdout or size(section) + 2 > left:
+            unshown.append(path)
+            continue
+        left -= size(section) + 2
+        files.append(section)
+    sections[at:at] = files + ([skipped.format(", ".join(map(named, unshown)))] if unshown else [])
+    return "## Materials\n\n" + "\n\n".join(sections) + "\n"
+
+
+def prompt_of(cfg: Config, call: Call, earlier: dict[str, Any] | None) -> str:
+    """Step 6: the rendered prompt; a ``gemini`` reviewer's with its materials before the answer part."""
     brief = call.path("briefs", f"brief-{call.task}.md")
     values = {"WAVE": call.wave.wave, "KIND": call.kind, "REPO": call.wave.repository, "PR": call.pr, "SHA": call.sha,
               "SHA8": call.sha[:8], "CHECKOUT": call.wave.checkout, "MAIN": call.wave.vars["MAIN"], "BRIEF": brief}
-    parts = [read_part(call, "checkpoint.md")]
+    inline = call.review.kind == "gemini"
+    parts = [read_part(call, "checkpoint.md"), *([read_part(call, "inline.md")] if inline else [])]
     if call.issue_ref:
         values |= {"ISSUE": call.issue_ref, "ISSUE_N": call.number, "ISSUE_REPO": call.wave.issue_repository}
         parts.append(read_part(call, "issue.md"))
@@ -426,31 +591,30 @@ def prompt_of(call: Call, earlier: dict[str, Any] | None) -> str:
         values |= {"REVIEWED_SHA": str(earlier["sha"]), "REVIEW_FILE": str(earlier.get("review", "")),
                    "INLINE_COMMENTS": call.inline_comments}
         parts.append(read_part(call, "confirm.md"))
-    parts.append(read_part(call, "verdict.md"))
-    result = render(parts, values)
-    if isinstance(result, list):
-        raise call.refused("the prompt does not render: " + "; ".join(result))
-    return result
+    answer = read_part(call, "verdict.md")
+    # The materials are data, joined after rendering: a placeholder-shaped string in a diff is not one.
+    rendered = [render(parts, values), render([answer], values)] if inline else [render([*parts, answer], values)]
+    problems = [p for r in rendered if isinstance(r, list) for p in r]
+    if problems:
+        raise call.refused("the prompt does not render: " + "; ".join(problems))
+    texts = [r for r in rendered if isinstance(r, str)]
+    if not inline:
+        return texts[0]
+    return texts[0] + "\n" + materials(cfg, call, earlier, brief, GEMINI_MESSAGE_BOUND - size(texts[0] + "\n\n" + texts[1])) + "\n" + texts[1]
 
 
 def run_reviewer(call: Call, prompt: str) -> str:
     """Step 7: the reviewer's final message."""
-    tool, argv = reviewer_argv(call)
-    done = proc.run_tool(tool, argv, cwd=call.wave.directory, stdin=prompt.encode("utf-8", "surrogateescape"),
-                         timeout=float(call.review.timeout))
+    tool, argv, stdin = reviewer_call(call, prompt)
+    done = proc.run_tool(tool, argv, cwd=call.wave.directory, stdin=stdin, timeout=float(call.review.timeout))
     with open(call.stem + ".run.json", "w", encoding="utf-8", errors="surrogateescape") as f:
         f.write(done.stdout)
     if done.rc != 0:
         raise call.refused(f"the reviewer ({tool}) exited {done.rc} ({done.stderr.strip()[-300:]}); its output is"
                            f" {call.stem}.run.json", 4)
-    try:
-        answer: Any = json.loads(done.stdout)
-    except ValueError:
-        answer = None
-    data = cast(dict[str, Any], answer) if isinstance(answer, dict) else {}
-    result = data.get("result")
-    if data.get("is_error") is not False or not (isinstance(result, str) and result.strip()):
-        raise call.refused(f"the reviewer ({tool}) ended with no final message; its output is {call.stem}.run.json", 4)
+    result, why = final_message(call.review.kind, done.stdout)
+    if not result:
+        raise call.refused(f"the reviewer ({tool}) gave no review: {why}; its output is {call.stem}.run.json", 4)
     return result.strip() + "\n"
 
 
@@ -544,7 +708,7 @@ def reviewed_locked(cfg: Config, call: Call) -> int:
             review = (f"{heading('confirm', call.sha)}\n\nThe at-open review, at"
                       f" {str(earlier['sha'])[:8]}, was not blocking, so there is nothing to confirm.\n\nVERDICT: clean\n")
         else:
-            prompt = prompt_of(call, earlier)
+            prompt = prompt_of(cfg, call, earlier)
             write_atomically(call.stem + ".prompt.md", prompt)
             review = run_reviewer(call, prompt)
         review = headed(call.kind, call.sha, review)

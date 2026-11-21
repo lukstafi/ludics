@@ -3762,14 +3762,15 @@ class BriefTemplateTest(Case):
 
         def review_tree() -> None:
             brief_tree(R)
-            for part, text in (("checkpoint.md", "Review @@REPO@@#@@PR@@ at @@SHA8@@ of @@WAVE@@.\n"), ("issue.md", "For @@ISSUE@@.\n"),
+            for part, text in (("checkpoint.md", "Review @@REPO@@#@@PR@@ at @@SHA8@@ of @@WAVE@@.\n"), ("inline.md", "No tools (@@KIND@@).\n"),
+                               ("issue.md", "For @@ISSUE@@.\n"),
                                ("source.md", "From @@SOURCE@@, see `@@BRIEF@@`.\n"), ("confirm.md", "After @@REVIEWED_SHA@@.\n"),
                                ("verdict.md", "End on the verdict (@@KIND@@).\n")):
                 write(os.path.join(R, V, part), text)
             write(os.path.join(R, ".github", "review-checkpoint.md"), "## This project\n\nRead `lib/ludics/README.md` at @@MAIN@@.\n")
 
         review_tree()
-        self.expect("the review parts and the project's review part pass", 0, BRIEF_OK.replace("14 parts", "20 parts"))
+        self.expect("the review parts and the project's review part pass", 0, BRIEF_OK.replace("14 parts", "21 parts"))
         cases: tuple[tuple[str, Callable[[], None], str], ...] = (
             ("a missing review part", lambda: os.remove(os.path.join(R, V, "confirm.md")),
              f"FAIL: {V}confirm.md: is missing, or no regular file: wave review looks this shipped part up"),
