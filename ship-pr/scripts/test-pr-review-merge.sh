@@ -127,6 +127,7 @@ CONFLICT_STATE=clean
 HEAD_RUNS=""                           # nonempty = the head's workflow runs, as the feed's JSON
 RUN_JOBS=""                            # nonempty = every run's jobs, as the feed's JSON (no RUNNER_CASE)
 STATE_FAIL=""                          # nonempty = the merged-state read after the call does not answer
+MERGED_PROBE_FAIL=""                   # nonempty = a refused resend's `.merged` probe gets a 503
 DISABLE_AUTO_FAIL=""                   # nonempty = `pr merge --disable-auto` is refused
 MERGE_QUEUE_FAIL=""                    # nonempty = the merge-queue read gets a 503
 # A build job that never got a runner (ludics-lite#560/#728; prreview/runners.py). RUNNER_CASE names
@@ -337,7 +338,10 @@ gh() {
       ;;
     *'--jq .merged')
       printf 'CALL merged-after-resend-refusal\n' >>"$CALLS_FILE"
-      if [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
+      if [ -n "$MERGED_PROBE_FAIL" ]; then
+        printf 'gh: 503 No server is currently available to service your request\n' >&2
+        return 1
+      elif [ "$BUILD_MOVE_ON_CALL" = gateway-merged ] && [ -f "$TEST_ROOT/merge-failed-once" ]; then
         printf '%s\n' true
       else
         printf '%s\n' false
@@ -848,6 +852,7 @@ reset() {
   HEAD_RUNS=""
   RUN_JOBS=""
   STATE_FAIL=""
+  MERGED_PROBE_FAIL=""
   DISABLE_AUTO_FAIL=""
   MERGE_QUEUE_FAIL=""
   RUNNER_CASE=""
@@ -4392,6 +4397,27 @@ test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile() (
   assert_eq "$(merge_calls)" 1 "the write was not resent"
 )
 
+# The same refused resend when the `.merged` probe meets the outage that caused the resend: whether
+# the PR merged meanwhile is unknown, so the refusal is 3, never 1's "not merged".
+test_a_refused_gateway_resend_with_an_unanswered_probe_is_unknown() (
+  reset
+  moving_build_fixture compatible
+  retune API_ATTEMPTS=3
+  BUILD_MOVE_ON_CALL=gateway-merged
+  THREADS_JSON_LATER="[$(review_thread 4095865442 false)]"
+  MERGED_PROBE_FAIL=1
+  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
+    assert_posix_only_refusal "an unconfirmed resend refusal" "trigger always: every merge of this repository is built"
+    return 0
+  fi
+  assert_eq "$MERGE_RC" 3 "an unanswered probe leaves the landing unknown ($MERGE_OUTPUT)"
+  assert_contains "$MERGE_OUTPUT" "may have merged" "says the PR may have merged"
+  assert_contains "$MERGE_OUTPUT" "Read the PR before re-running merge" "and to read it first"
+  assert_eq "$(grep -c -x 'CALL merged-after-resend-refusal' "$CALLS_FILE")" 3 "the probe was retried"
+  assert_eq "$(merge_calls)" 1 "the write was not resent"
+)
+
 # The base moved, and the paths both sides changed hold no build input: the config is read, nothing
 # is built, and the merge proceeds. So with no path changed on both sides (the default trigger). With
 # a side that changed nothing, no trigger can hold, and the config is not even read.
@@ -5059,6 +5085,7 @@ tests=(
   test_a_gateway_refusal_never_resends_a_stale_build
   test_a_gateway_resend_confirms_a_pr_merged_meanwhile
   test_a_refused_gateway_resend_confirms_a_pr_merged_meanwhile
+  test_a_refused_gateway_resend_with_an_unanswered_probe_is_unknown
   test_no_build_input_on_both_sides_builds_nothing
   test_a_repository_without_the_config_builds_nothing
   test_an_unusable_merge_build_never_merges
