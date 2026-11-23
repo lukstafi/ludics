@@ -8,6 +8,7 @@ test-pr-review-merge.sh runs the same build end to end through `merge`; these pi
 regression would bend first.
 """
 
+import concurrent.futures
 import contextlib
 import io
 import json
@@ -19,6 +20,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -591,6 +593,50 @@ class Build(Repo):
             rc, out = self.build(head)
         self.assertEqual(rc, 3, out)
         self.assertIn("could not retain merge-build log/status", out)
+
+    @unittest.skipUnless(os.name == "posix", "retention locking needs POSIX")
+    def test_same_candidate_retry_waits_before_staging(self) -> None:
+        import fcntl
+
+        scratch = Path(self.dir)
+        first_log, first_status = scratch / "first.log", scratch / "first.status"
+        second_log, second_status = scratch / "second.log", scratch / "second.status"
+        first_log.write_text("first attempt\n")
+        first_status.write_text("0\n")
+        second_log.write_text("second attempt\n")
+        second_status.write_text("1\n")
+        candidate = ("owner/repo", "7", "a" * 40, "b" * 40, "build")
+        flock = fcntl.flock
+        contended = threading.Event()
+
+        def observe_lock(lock: io.BufferedWriter, operation: int) -> None:
+            self.assertEqual(operation, fcntl.LOCK_EX)
+            with self.assertRaises(BlockingIOError):
+                flock(lock, operation | fcntl.LOCK_NB)
+            contended.set()
+            flock(lock, operation)
+
+        def retry() -> str:
+            with mergebuild._retain(*candidate, str(second_log), str(second_status)) as attempt:  # pyright: ignore[reportPrivateUsage]
+                assert attempt is not None
+                return attempt
+
+        with concurrent.futures.ThreadPoolExecutor(1) as workers:
+            with (
+                mergebuild._retain(*candidate, str(first_log), str(first_status)) as attempt,  # pyright: ignore[reportPrivateUsage]
+                mock.patch.object(fcntl, "flock", side_effect=observe_lock),
+            ):
+                assert attempt is not None
+                first = Path(attempt)
+                pending = workers.submit(retry)
+                self.assertTrue(contended.wait(5), "the retry must contend on the first writer's lock")
+                self.assertFalse((first.parent / ".pending").exists(), "the retry is waiting before either copy")
+                self.assertEqual((first / "build.log").read_text(), "first attempt\n")
+                self.assertEqual((first / "build.status").read_text(), "0\n")
+            second = Path(pending.result(timeout=5))
+        self.assertEqual((second / "build.log").read_text(), "second attempt\n")
+        self.assertEqual((second / "build.status").read_text(), "1\n")
+        self.assertFalse(first.exists(), "the retry retired only the previous attempt")
 
     def test_published_pair_has_a_receipt_when_retirement_fails(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")

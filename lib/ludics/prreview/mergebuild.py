@@ -260,9 +260,10 @@ and publish the directory with one rename. Writers for the same candidate and co
 serialize. The attempt directory is printed and recorded as ``log_dir`` in the JSONL build
 receipt, including for failures and slot refusals, before the old attempt path is removed
 by rename and its files deleted. A copy error refuses with exit 3 and leaves the previous
-pair in place. A retirement error refuses with exit 3 and leaves the new receipt readable.
-A missing attempt path means its evidence was replaced or removed. Legacy
-receipts point at the candidate directory and cannot identify a particular attempt. A stale-build
+pair in place. To enforce the retention bound, a retirement error refuses with exit 3 even when
+the build passed. The new receipt still names the published pair. A missing attempt path means
+its evidence was replaced or removed. Legacy receipts point at the candidate directory and
+cannot identify a particular attempt. A stale-build
 or refresh refusal reports the attempt paths of the build logs already retained by the gate.
 Directories for distinct candidates and legacy head-only artifacts remain until manual removal.
 An interruption before publication may leave staging files, and one after publication may leave
