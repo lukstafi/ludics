@@ -381,6 +381,107 @@ class Far(Fixture):
         self.assertTrue((wt / "_build").exists())
         self.assertEqual(self.close(wt, "_build")[0], "REMOVED")
 
+    def set_origin_head(self, branch: str = "main") -> None:
+        self.git(self.co, "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{branch}")
+
+    def write_project_regen(self, text: str) -> None:
+        p = self.co / ".github" / "fleet-regenerable"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(text.encode("utf-8"))
+        self.git(self.co, "add", ".github/fleet-regenerable")
+        self.git(self.co, "commit", "-q", "-m", "regen")
+        self.git(self.co, "push", "-q", "origin", "main")
+        self.set_origin_head("main")
+
+    def test_project_fleet_regenerable_from_origin_head_allows_removal_and_combines_with_cli(self) -> None:
+        self.write_project_regen("# comment\n\n  _build  \n\t**/log_files\t\n")
+        (self.co / "sub").mkdir(exist_ok=True)
+        (self.co / "sub" / "t").write_text("t\n")
+        (self.co / ".gitignore").write_text("_build/\nlog_files/\nextra/\n*.log\n")
+        self.git(self.co, "add", "-A")
+        self.git(self.co, "commit", "-q", "-m", "ignore")
+        self.git(self.co, "push", "-q", "origin", "main")
+        wt = self.worktree("w")
+        (wt / "sub" / "log_files").mkdir(parents=True)
+        (wt / "sub" / "log_files" / "a").write_text("x\n")
+        before = self.git(self.co, "for-each-ref")
+        verdict, why = self.close(wt)
+        self.assertEqual(verdict, "REMOVED", why)
+        self.assertFalse(wt.exists())
+        self.assertEqual(self.git(self.co, "for-each-ref"), before)
+        # CLI --regenerable adds to .github/fleet-regenerable; unlisted ignored file still keeps it.
+        wt2 = self.worktree("w2")
+        (wt2 / "extra").mkdir()
+        (wt2 / "extra" / "b").write_text("x\n")
+        verdict, why = self.close(wt2)
+        self.assertEqual((verdict, why), ("KEPT", "ignored data that --regenerable does not name: extra/"))
+        self.assertTrue((wt2 / "_build").exists())
+        verdict, why = self.close(wt2, "extra")
+        self.assertEqual(verdict, "REMOVED", why)
+        self.assertFalse(wt2.exists())
+
+    def test_project_fleet_regenerable_never_reads_worktree_head_or_non_remote_symref(self) -> None:
+        # Worktree's own unmerged branch adds .github/fleet-regenerable: origin/main lacks it, so KEPT.
+        self.set_origin_head("main")
+        wt = self.worktree("w")
+        (wt / ".github").mkdir(exist_ok=True)
+        (wt / ".github" / "fleet-regenerable").write_text("_build\n")
+        self.git(wt, "add", ".github/fleet-regenerable")
+        self.git(wt, "commit", "-q", "-m", "self-vouch")
+        self.git(wt, "push", "-q", "origin", "HEAD:refs/heads/topic")
+        verdict, why = self.close(wt)
+        self.assertEqual((verdict, why), ("KEPT", "ignored data that --regenerable does not name: _build/"))
+        # A symbolic refs/remotes/origin/HEAD pointing outside refs/remotes/origin/ is never read.
+        self.git(self.co, "branch", "local-topic", self.git(wt, "rev-parse", "HEAD").strip())
+        self.git(self.co, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/local-topic")
+        verdict, why = self.close(wt)
+        self.assertEqual((verdict, why), ("KEPT", "ignored data that --regenerable does not name: _build/"))
+        self.assertTrue(wt.exists())
+
+    def test_project_fleet_regenerable_malformed_cr_nul_or_non_regular_fails_closed(self) -> None:
+        bad_contents = [
+            ("escape", "../escape\n"),
+            ("glob", "*\n"),
+            ("inline-comment", "_build # comment\n"),
+            ("dotgit", ".GIT\n"),
+            ("non-ascii", "café\n"),
+            ("cr", "_build\r\n"),
+            ("nul", "_build\x00\n"),
+        ]
+        for name, content in bad_contents:
+            with self.subTest(name=name):
+                self.write_project_regen(content)
+                wt = self.worktree(f"bad-{name}", build=False)
+                verdict, why = self.close(wt)
+                self.assertEqual(verdict, "KEPT", why)
+                self.assertIn(".github/fleet-regenerable", why)
+                self.assertTrue(wt.exists())
+        # Symlink at .github/fleet-regenerable (mode 120000) is refused.
+        p = self.co / ".github" / "fleet-regenerable"
+        p.unlink()
+        (self.co / "target").write_text("_build\n")
+        p.symlink_to("../target")
+        self.git(self.co, "add", "-A")
+        self.git(self.co, "commit", "-q", "-m", "symlink")
+        self.git(self.co, "push", "-q", "origin", "main")
+        wt = self.worktree("bad-symlink")
+        verdict, why = self.close(wt)
+        self.assertEqual(verdict, "KEPT")
+        self.assertIn("not a regular file (mode 120000)", why)
+        self.assertTrue((wt / "_build").exists())
+
+    def test_repo_own_fleet_regenerable_parses_cleanly(self) -> None:
+        own = ROOT / ".github" / "fleet-regenerable"
+        self.assertTrue(own.is_file(), f"missing {own}")
+        raw = own.read_bytes()
+        self.assertNotIn(b"\x00", raw)
+        self.assertNotIn(b"\r", raw)
+        entries = [line.strip(" \t") for line in raw.decode("utf-8").splitlines()
+                   if line.strip(" \t") and not line.strip(" \t").startswith("#")]
+        self.assertIn("**/__pycache__", entries)
+        for entry in entries:
+            self.assertTrue(farsideclose.regenerable_value(entry), entry)
+
 
 def record(rid: str, *, state: str = "running", host: str = "rog", wave: str = "w", worker: str = "wk", checkout: str = "") -> dict[str, Any]:
     out: dict[str, Any] = {"request_id": rid, "state": state, "request": {"execution_host": host, "wave": wave, "worker": worker}}

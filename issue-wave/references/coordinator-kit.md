@@ -403,3 +403,9 @@ driver hands you as an attention line.
     project's decisions ledger: add them to that file in one commit. A wave's own decision starts
     `unreviewed` there, and the maintainer's `ok`. When the maintainer answers a call the wave
     recorded, record the answer with `--tier 3` and the same `--call`: its row replaces the wave's.
+11. **Close-out worktrees.** Whenever `board close` verifies a task's PR merged (whether called by
+    the driver or by you), it removes the row's `farside` worktrees through `farside-close <wave>
+    --task <task>`, reading the project's `.github/fleet-regenerable` from `origin/<main>` and
+    reporting any refusal as a `NOTE` without failing the close. At wave close-out, run
+    `fleet-worker.sh farside-close <wave>` once to sweep any worktrees kept during the wave
+    (open reservations, unlisted ignored files, unreachable boxes, or `--no-pr` rows).

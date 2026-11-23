@@ -4345,7 +4345,61 @@ expect "a close that lost its last write is finished by a re-run" 0 '; 0 standin
 "$FW" board set --new-row cw t4 repository=o/r pr=7 standing=none "farside=none" >/dev/null
 expect "standing=none closes a task with no reservation" 0 '"t4" merged o/r#7 at aaaaaaaaaaaa; 0 standing concluded, 0 already; row set$' -- "$FW" board close cw t4
 "$FW" board set --new-row cw t5 repository=o/r pr=7 standing=none "farside=other:/wt/a other:/wt/b" >/dev/null
-expect "...and a far-side worktree is named for farside-close, not removed here" 0 '; row set; NOTE 2 far-side worktree(s): farside-close cw --task t5$' -- "$FW" board close cw t5
+expect "...and a far-side worktree that cannot be removed becomes a NOTE, never a failed close" 0 '; row set; NOTE farside-close cw --task t5 (2 kept):' -- "$FW" board close cw t5
+# #1310: merged board close removes farside worktrees under farside-close's own checks (reading
+# .github/fleet-regenerable from origin/<main>), keeps any with an open reservation or unlisted
+# ignored file with a NOTE, and --no-pr / unmerged closes remove nothing.
+FWCF=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4" FLEET_SKILLS_REPO="$HERE/../.." "$FW")
+mkdir -p "$TMP/cw-fc"
+git init -q -b master "$TMP/cw-fc/src" && mkdir -p "$TMP/cw-fc/src/.github"
+printf '_build/\n*.log\n' > "$TMP/cw-fc/src/.gitignore"
+printf '# project regenerable\n_build\n' > "$TMP/cw-fc/src/.github/fleet-regenerable"
+git -C "$TMP/cw-fc/src" add -A && git -C "$TMP/cw-fc/src" commit -q -m init
+git init -q --bare -b master "$TMP/cw-fc/remote.git"
+git -C "$TMP/cw-fc/src" remote add origin "$TMP/cw-fc/remote.git" && git -C "$TMP/cw-fc/src" push -q -u origin master
+git clone -q "$TMP/cw-fc/remote.git" "$TMP/cw-fc/co"
+cw_base=$(git -C "$TMP/cw-fc/co" rev-parse HEAD)
+cw_wt_clean="$TMP/cw-fc/wt-clean"; cw_wt_res="$TMP/cw-fc/wt-res"; cw_wt_ign="$TMP/cw-fc/wt-ign"
+cw_wt_nopr="$TMP/cw-fc/wt-nopr"; cw_wt_open="$TMP/cw-fc/wt-open"
+for d in "$cw_wt_clean" "$cw_wt_res" "$cw_wt_ign" "$cw_wt_nopr" "$cw_wt_open"; do
+  git -C "$TMP/cw-fc/co" worktree add -q --detach "$d" master
+  mkdir -p "$d/_build" && printf 'built\n' > "$d/_build/o"
+done
+# 1) Merged task: .github/fleet-regenerable allows _build, so the worktree goes at board close.
+"$FW" board set --new-row cw t7 repository=o/r pr=7 standing=none "farside=testbox:$cw_wt_clean" >/dev/null
+expect "merged board close removes a clean worktree (reading .github/fleet-regenerable)" 0 '; row set; worktrees: 1 removed$' -- \
+  "${FWCF[@]}" board close cw t7
+[ ! -e "$cw_wt_clean" ] && ok "...and the worktree is gone from disk" || ko "worktree stayed: $cw_wt_clean"
+git -C "$TMP/cw-fc/co" worktree list | grep -Fq "$cw_wt_clean" && ko "git still lists $cw_wt_clean" || ok "...and from git worktree list"
+# 2) Outstanding reservation keeps it with a NOTE, exit 0.
+jq -n --arg co "$cw_wt_res" --arg rev "$cw_base" '{request_id:"c-hold", wave:"cw", worker:"w-hold", transport:"cli",
+  issue:"o/r#1310", purpose:"hold fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
+  requested_revision:$rev, kind:"correctness", checkout:$co}' > "$TMP/c-hold.json"
+setup_step "could not reserve c-hold (setup)" "${FWCF[@]}" execution run "$TMP/c-hold.json"
+"$FW" board set --new-row cw t8 repository=o/r pr=7 standing=none worker=w-hold "farside=testbox:$cw_wt_res" >/dev/null
+expect "merged board close keeps a worktree with an outstanding reservation, with a NOTE" 0 '; row set; NOTE still open: c-hold; NOTE farside-close cw --task t8 (1 kept): FARSIDE KEPT .*outstanding reservation: c-hold$' -- \
+  "${FWCF[@]}" board close cw t8
+[ -d "$cw_wt_res/_build" ] && ok "...and leaves the reserved worktree intact" || ko "reserved worktree went"
+jq -n --arg sha "$cw_base" --arg wt "$cw_wt_res" '{request_id:"c-hold", verdict:"pass", log:"/dev/null",
+  evidence:"fixture", observed_sha:$sha, remote_checkout:$wt, handle:"fixture"}' > "$TMP/c-hold-done.json"
+"${FWCF[@]}" execution conclude "$TMP/c-hold-done.json" >/dev/null || ko "could not conclude c-hold (cleanup)"
+# 3) Unlisted ignored file keeps it, refused as farside-close refuses today, with a NOTE, exit 0.
+printf 'precious\n' > "$cw_wt_ign/extra.log"
+"$FW" board set --new-row cw t9r repository=o/r pr=7 standing=none "farside=testbox:$cw_wt_ign" >/dev/null
+expect "merged board close keeps a worktree with an unlisted ignored file, with a NOTE" 0 '; row set; NOTE farside-close cw --task t9r (1 kept): FARSIDE KEPT .*ignored data that --regenerable does not name: extra\.log$' -- \
+  "${FWCF[@]}" board close cw t9r
+[ -f "$cw_wt_ign/extra.log" ] && [ -d "$cw_wt_ign/_build" ] && ok "...and leaves the worktree and its ignored files intact" || ko "unlisted-ignored worktree changed"
+# 4) --no-pr and unmerged closes remove nothing.
+"$FW" board set --new-row cw t10 repository=o/r standing=none "farside=testbox:$cw_wt_nopr" >/dev/null
+expect "--no-pr board close removes no worktree and keeps the NOTE" 0 '; row set; NOTE 1 far-side worktree(s): farside-close cw --task t10$' -- \
+  "${FWCF[@]}" board close cw t10 --no-pr
+[ -d "$cw_wt_nopr/_build" ] && ok "...--no-pr left the worktree intact" || ko "--no-pr removed worktree"
+"$FW" board set --new-row cw t11 repository=o/r pr=7 standing=none "farside=testbox:$cw_wt_open" >/dev/null
+cpr OPEN - claude/close
+expect "unmerged board close refuses and removes nothing" 1 'o/r#7 is OPEN, not merged; nothing closed' -- \
+  "${FWCF[@]}" board close cw t11
+[ -d "$cw_wt_open/_build" ] && ok "...unmerged close left the worktree intact" || ko "unmerged close removed worktree"
+cpr MERGED "$MERGE" claude/close
 expect "...and without the lease the close writes nothing" 1 "." -- env -u FLEET_COORDINATOR FLEET_COORDINATOR=somebody-else "$FW" board close cw t1 --agent agent-3
 [ "$(cfield t1 agent)" = agent-2 ] && ok "...its row as it was" || ko "a close with no lease set the row: $(cfield t1 agent)"
 # #1109, THE UNUSED LEG: a standing GPU-home-box leg no batch ran under has no worktree to read, and

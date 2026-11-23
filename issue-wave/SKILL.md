@@ -1294,13 +1294,17 @@ spawn task chips only in the explicit spawn mode; in the default mode, collect t
 non-discarded tasks without their own issue for [Post-wave coordination](references/post-wave.md).
 Do not re-brainstorm a worker's merge from the supervision view (its transcript grounds it
 better); run `after-merge` directly only for work the coordinator itself shepherded, collecting
-its proposals for this same editorial pass and chip mode. Worktree removal comes last and is
+its proposals for this same editorial pass and chip mode. Worktree removal is
 transport-specific: native in [native-workers.md](references/native-workers.md#close-out-and-bounded-smoke),
 app in [separate-codex.md](references/separate-codex.md#close-out) or
 [app-claude.md](references/app-claude.md#intervention-and-close-out), CLI in
-[cli-claude.md](references/cli-claude.md#close-out); far-side worktrees, whatever the transport,
-through `fleet-worker.sh farside-close <wave>` ([executions.md](references/executions.md#the-gpu-home-box));
-no checkout is removed while an outstanding reservation refers to it. For a wave with native Claude workers, put the summary of
+[cli-claude.md](references/cli-claude.md#close-out). For a task whose PR `board close` verifies
+merged, `board close` runs `farside-close <wave> --task <task>` right after closing the row
+(reading the project's `.github/fleet-regenerable` from `origin/<main>`, with any refusal printed
+as a `NOTE` rather than failing the close); at wave close-out, `fleet-worker.sh farside-close
+<wave>` ([executions.md](references/executions.md#the-gpu-home-box)) sweeps any far-side or CLI
+worktrees that stayed (kept on an open reservation, an unlisted ignored path, or a `--no-pr`
+close). No checkout is removed while an outstanding reservation refers to it. For a wave with native Claude workers, put the summary of
 `~/.claude/skills/issue-wave/scripts/cache-misses.py --since <the wave's start date> --session
 <coordinator session id>` in the
 report: its exit 1 means a worker turn after a block rewrote the worker's whole context, which a

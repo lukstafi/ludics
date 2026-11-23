@@ -38,22 +38,38 @@ THE GATES, in order; the first that fails keeps the worktree, and says why.
     (assume-unchanged, skip-worktree: refused outright, where that helper probes a copy of the index,
     since a leg's worktree carries neither); no private ref (``refs/worktree/``, ``refs/bisect/``,
     ``refs/rewritten/``).
-  - No ignored data but what ``--regenerable`` names. Ignored files are the class a plain status
+  - No ignored data but what ``--regenerable`` or the repository's ``.github/fleet-regenerable``
+    names. Ignored files are the class a plain status
     does not show, and a removal takes them with the tree. ``--regenerable`` is repeatable, has no
-    default, and is the project's to say (OCANNL's AGENTS.md names its directories). It matches only
+    default, and adds to any entries in ``.github/fleet-regenerable``. Either source matches only
     the entries git's own status reports as WHOLLY ignored directories (one ``!! <path>/`` entry, so
     nothing tracked or untracked is in it, and a symlink, listed without the ``/``, never matches);
     it never walks the tree. A value is one of two shapes, a fail-closed allowlist (ludics#1049):
     ``<path>``, a relative directory path matching that entry exactly (``_build``,
     ``test/config/log_files``), or ``**/<path>``, the same at any depth, the top included
-    (``**/log_files``). Each component is a plain name (letters, digits, ``.``, ``_``, ``-``, no
-    leading ``-``, not ``.``, ``..`` or ``.git``); no other glob, no absolute path, no empty component,
-    so no value escapes the worktree and none matches everything. Any other ignored path keeps the
-    worktree, and is named. post-merge-cleanup.sh's ``--regenerable`` takes the first shape with one
-    component only: it resolves the name on the filesystem and removes it before its gates, where a
-    pattern would need this status-based match first. A list the project keeps in the tree being
-    judged (its ``.github/fleet-leg``) is deliberately not read: the worktree would vouch for the
-    removal of its own data.
+    (``**/log_files``). Each component is a plain ASCII name (letters, digits, ``.``, ``_``, ``-``,
+    no leading ``-``, not ``.``, ``..`` or ``.git``); no other glob, no absolute path, no empty
+    component, so no value escapes the worktree and none matches everything. Any other ignored path
+    keeps the worktree, and is named. post-merge-cleanup.sh's ``--regenerable`` takes the first
+    shape with one component only: it resolves the name on the filesystem and removes it before its
+    gates, where a pattern would need this status-based match first.
+  - THE PROJECT FILE (``.github/fleet-regenerable``, ludics#1310): what it reads and what it
+    deliberately does not, a fail-closed allowlist. On the box, it reads ONLY the blob at
+    ``.github/fleet-regenerable`` in the local remote-tracking commit named by
+    ``refs/remotes/<remote>/HEAD``, which must be a symbolic ref pointing under
+    ``refs/remotes/<remote>/`` and resolving to a commit. It deliberately does NOT read the
+    worktree's working tree, index or ``HEAD``, any local branch (``refs/heads/*``), any other
+    remote's ref, or a symbolic ref pointing outside ``refs/remotes/<remote>/``, and it fetches
+    nothing and moves no ref to read it: an unmerged worktree cannot vouch for the removal of its
+    own ignored data. If ``refs/remotes/<remote>/HEAD`` is absent, points outside
+    ``refs/remotes/<remote>/``, does not resolve to a commit, or that commit has no
+    ``.github/fleet-regenerable``, zero project entries are added and ``--regenerable`` alone
+    applies. When present, the entry must be a regular file (git mode ``100644`` or ``100755``,
+    never a symlink, tree or submodule), hold no NUL byte and no CR (``\r``), and every line
+    after stripping leading/trailing ASCII spaces and tabs must be blank, start with ``#``, or be
+    one valid ``--regenerable`` value (no inline ``#`` comment, no extra words). Any read error,
+    wrong mode, NUL/CR byte or line outside this grammar returns ``KEPT`` naming the file, ref and
+    reason, removing and trimming nothing.
   - HEAD exactly matches a concluded record's observed_sha for this wave and row's nonempty
     worker, execution host and exact checkout (trailing slash ignored), or is on a remote branch.
     Only full lowercase object IDs qualify. Requested/resolved revisions express intent, not an
@@ -165,6 +181,63 @@ hidden=$(printf '%s\n' "$flagged" | grep -c '^[a-zS] ')
 [ "$hidden" -eq 0 ] || kept "$hidden path(s) hidden from status by an index flag (assume-unchanged or skip-worktree)"
 private=$(git -C "$wt" for-each-ref --count=1 --format='%(refname)' refs/worktree/ refs/bisect/ refs/rewritten/ 2>/dev/null) || kept "cannot read its refs"
 [ -z "$private" ] || kept "it holds a private ref: $private"
+# THE PROJECT FILE (.github/fleet-regenerable, ludics#1310): read from local refs/remotes/<remote>/HEAD,
+# never from the worktree or HEAD; fail closed on any unreadable or malformed file.
+valid_regen() {
+  local v="$1" p rest part
+  case "$v" in
+    '**/'*) p=${v:3} ;;
+    *) p=$v ;;
+  esac
+  [ -n "$p" ] || return 1
+  case "$p" in /*|*/|*//*) return 1 ;; esac
+  rest=$p
+  while :; do
+    case "$rest" in
+      */*) part=${rest%%/*}; rest=${rest#*/} ;;
+      *) part=$rest; rest="" ;;
+    esac
+    case "$part" in
+      ''|.|..|.[Gg][Ii][Tt]) return 1 ;;
+      *[!0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._-]*) return 1 ;;
+      .[0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_]*) ;;
+      [0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_]*) ;;
+      *) return 1 ;;
+    esac
+    [ -n "$rest" ] || break
+  done
+  return 0
+}
+allow=("$@")
+rhead=$(git -C "$wt" symbolic-ref -q "refs/remotes/$remote/HEAD" 2>/dev/null) || rhead=""
+case "$rhead" in
+  "refs/remotes/$remote/"?*)
+    rsha=$(git -C "$wt" rev-parse --verify -q "$rhead^{commit}" 2>/dev/null) || rsha=""
+    if [ -n "$rsha" ]; then
+      entry=$(git -C "$wt" ls-tree "$rsha" -- .github/fleet-regenerable 2>/dev/null) || kept "cannot inspect .github/fleet-regenerable at $rhead"
+      if [ -n "$entry" ]; then
+        mode=${entry%% *}
+        case "$mode" in
+          100644|100755) ;;
+          *) kept ".github/fleet-regenerable at $rhead is not a regular file (mode $mode)" ;;
+        esac
+        fsize=$(git -C "$wt" cat-file -s "$rsha:.github/fleet-regenerable" 2>/dev/null) || kept "cannot read .github/fleet-regenerable at $rhead"
+        fbytes=$(git -C "$wt" cat-file blob "$rsha:.github/fleet-regenerable" 2>/dev/null) || kept "cannot read .github/fleet-regenerable at $rhead"
+        ncount=$(git -C "$wt" cat-file blob "$rsha:.github/fleet-regenerable" 2>/dev/null | LC_ALL=C tr -d '\000' | wc -c | tr -d ' ')
+        [ "$ncount" = "$fsize" ] || kept ".github/fleet-regenerable at $rhead holds NUL bytes"
+        sp=" $(printf '\t')" cr=$(printf '\r') ln=0
+        while IFS= read -r raw || [ -n "$raw" ]; do
+          ln=$((ln + 1))
+          case "$raw" in *"$cr"*) kept ".github/fleet-regenerable at $rhead line $ln holds a CR byte" ;; esac
+          line=${raw#"${raw%%[!$sp]*}"}
+          line=${line%"${line##*[!$sp]}"}
+          case "$line" in ''|'#'*) continue ;; esac
+          valid_regen "$line" || kept ".github/fleet-regenerable at $rhead line $ln is not a regenerable directory path: $(printf '%q' "$line")"
+          allow+=("$line")
+        done <<< "$fbytes"
+      fi
+    fi ;;
+esac
 # The ignored paths, NUL-delimited, no quoting by git. A fully ignored directory is one entry, its
 # name ending in `/` (traditional mode, untracked files not listed one by one); a status that fails
 # must not read as none, so its own exit closes the listing, in a record no status entry can be.
@@ -177,7 +250,7 @@ while IFS= read -r -d '' e; do
   esac
   p=${e#\!\! }; hit=""
   # A directory entry only (its `/`): exactly the path, or, for `**/<path>`, the path at any depth.
-  for r in "$@"; do
+  for r in ${allow[@]+"${allow[@]}"}; do
     case "$r" in
       '**/'*) s=${r:3}; case "$p" in "$s/" | */"$s/") hit=1 ;; esac ;;
       *) [ "$p" != "$r/" ] || hit=1 ;;

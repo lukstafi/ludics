@@ -171,9 +171,10 @@ from GitHub, concludes every standing record the row's `standing` key names (`--
 each record's own checkout), logs the close and sets the row. After a partial close, run it again:
 it reads what stands and does only what is missing, and refuses before any write on a PR not merged
 or a row that disagrees with the registry. `lib/ludics/fleetworker/closeout.py` states its recovery
-boundary. Do it before removing the worktree, whose HEAD `conclude` reads, and before
-`farside-close`, which waits for the row it sets and is the coordinator's next step for a row with
-far-side worktrees (the line's `NOTE` names it). Any other task sets its
+boundary. Do it before removing a local native worktree, whose HEAD `conclude` reads; for a merged
+PR whose row names `farside` worktrees, `board close` runs `farside-close <wave> --task <task>`
+right after setting the row and turns any refusal into a `NOTE` for close-out's `farside-close`
+sweep (`--no-pr` removes nothing and keeps the `NOTE`). Any other task sets its
 row's `state` to its done word by hand, as its hand-back is verified. Before the board is
 persisted, `fleet-worker.sh board check <wave>` exits 0 only when every row's state is done; exit 3
 lists each row that is not, a row left `launched` among them.

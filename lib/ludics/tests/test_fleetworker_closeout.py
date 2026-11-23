@@ -319,3 +319,98 @@ class NeverRan(unittest.TestCase):
         for out in ('{"verdict": "pass"}', '{"request_id": "l"}', '["not-launched"]', "", "EXECUTION REFUSED: not-launched",
                     'NOTE\n{"verdict": "not-launched"}'):
             self.assertFalse(closeout.never_ran(out), out)
+
+
+class WorktreeClose(unittest.TestCase):
+    """#1310: merged ``board close`` removes ``farside`` worktrees through ``farside-close --task``;
+    any refusal becomes a NOTE and never fails the close; ``--no-pr`` and unmerged closes remove nothing."""
+
+    def run_merged(self, farside: str, farside_result: tuple[int, str] = (0, "FARSIDE REMOVED box:/wt (t): ok\nFARSIDE CLOSE w: 1 removed")) -> tuple[int, str, list[list[str]]]:
+        doc: dict[str, Any] = {"tasks": [{"task": "t", "fields": {
+            "repository": "o/r", "pr": "7", "standing": "none", **({"farside": farside} if farside else {})}}], "log": []}
+        calls: list[list[str]] = []
+
+        def fake_stepped(_cfg: Any, args: list[str]) -> tuple[int, str]:
+            calls.append(args)
+            if args[:1] == ["farside-close"]:
+                return farside_result
+            return 0, "ok"
+
+        out = io.StringIO()
+        with (mock.patch.object(closeout, "board_document", return_value=doc),
+              mock.patch.object(closeout, "merged_sha", return_value=OID),
+              mock.patch.object(closeout, "listing", return_value=Done(0, "[]")),
+              mock.patch.object(closeout, "stepped", side_effect=fake_stepped),
+              contextlib.redirect_stdout(out)):
+            rc = closeout.cmd_close(CFG, ["w", "t"])
+        return rc, out.getvalue(), calls
+
+    def test_merged_close_with_farside_runs_farside_close_and_reports_cleared(self) -> None:
+        rc, said, calls = self.run_merged("box:/wt")
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls[-1], ["farside-close", "w", "--task", "t"])
+        self.assertIn("; worktrees: 1 removed", said)
+        self.assertNotIn("NOTE", said)
+
+    def test_kept_unreachable_or_refused_farside_close_is_a_note_never_a_failed_close(self) -> None:
+        cases = [
+            (3, "FARSIDE KEPT box:/wt (t): outstanding reservation: r1\nFARSIDE CLOSE w: 1 kept",
+             "NOTE farside-close w --task t (1 kept): FARSIDE KEPT box:/wt (t): outstanding reservation: r1"),
+            (3, "FARSIDE REMOVED box:/a (t): ok\nFARSIDE KEPT box:/b (t): ignored data that --regenerable does not name: x.log\nFARSIDE CLOSE w: 1 kept, 1 removed",
+             "NOTE farside-close w --task t (1 kept, 1 removed): FARSIDE KEPT box:/b (t): ignored data that --regenerable does not name: x.log"),
+            (4, "FARSIDE UNREACHABLE box:/wt (t): box did not answer\nFARSIDE CLOSE w: 1 unreachable",
+             "NOTE farside-close w --task t (1 unreachable): FARSIDE UNREACHABLE box:/wt (t): box did not answer"),
+            (6, "FARSIDE CLOSE REFUSED w: coordinator lease held by other",
+             "NOTE farside-close w --task t (exit 6: FARSIDE CLOSE REFUSED w: coordinator lease held by other)"),
+            (1, "", "NOTE farside-close w --task t (exit 1)"),
+        ]
+        for far_rc, far_out, expected in cases:
+            with self.subTest(rc=far_rc, out=far_out):
+                rc, said, _ = self.run_merged("box:/wt", (far_rc, far_out))
+                self.assertEqual(rc, 0)
+                self.assertIn(expected, said)
+
+    def test_no_farside_or_none_never_calls_farside_close(self) -> None:
+        for farside in ("", "none"):
+            with self.subTest(farside=farside):
+                rc, said, calls = self.run_merged(farside)
+                self.assertEqual(rc, 0)
+                self.assertFalse(any(c[:1] == ["farside-close"] for c in calls), calls)
+                self.assertNotIn("worktrees", said)
+
+    def test_no_pr_close_with_farside_removes_nothing_and_keeps_note(self) -> None:
+        doc: dict[str, Any] = {"tasks": [{"task": "t", "fields": {
+            "repository": "o/r", "standing": "none", "farside": "box:/wt"}}], "log": []}
+        calls: list[list[str]] = []
+
+        def fake_stepped(_c: Any, args: list[str]) -> tuple[int, str]:
+            calls.append(args)
+            return 0, "ok"
+
+        out = io.StringIO()
+        with (mock.patch.object(closeout, "board_document", return_value=doc),
+              mock.patch.object(closeout, "listing", return_value=Done(0, "[]")),
+              mock.patch.object(closeout, "stepped", side_effect=fake_stepped),
+              contextlib.redirect_stdout(out)):
+            rc = closeout.cmd_close(CFG, ["w", "t", "--no-pr"])
+        self.assertEqual(rc, 0)
+        self.assertFalse(any(c[:1] == ["farside-close"] for c in calls), calls)
+        self.assertIn("NOTE 1 far-side worktree(s): farside-close w --task t", out.getvalue())
+
+    def test_unmerged_pr_refuses_before_writing_or_calling_farside_close(self) -> None:
+        doc: dict[str, Any] = {"tasks": [{"task": "t", "fields": {
+            "repository": "o/r", "pr": "7", "standing": "none", "farside": "box:/wt"}}], "log": []}
+        calls: list[list[str]] = []
+
+        def fake_stepped(_c: Any, args: list[str]) -> tuple[int, str]:
+            calls.append(args)
+            return 0, "ok"
+
+        out = io.StringIO()
+        with (mock.patch.object(closeout, "board_document", return_value=doc),
+              mock.patch.object(closeout, "gh_json", return_value={"state": "OPEN"}),
+              mock.patch.object(closeout, "stepped", side_effect=fake_stepped),
+              contextlib.redirect_stdout(out), self.assertRaises(cli.Exit) as caught):
+            closeout.cmd_close(CFG, ["w", "t"])
+        self.assertEqual(caught.exception.rc, 1)
+        self.assertEqual(calls, [])

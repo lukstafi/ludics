@@ -105,9 +105,10 @@ What that leaves to the coordinator:
   ([coordinator-kit.md](coordinator-kit.md#when-to-call-each-verb), step 9) and by you for the rest.
 - **The scratch directory is on the worker's box**, under the wave file's `hosts.<box>.scratch`,
   never a coordinator scratchpad path, which is on another machine or another session's.
-- **Ignored data is yours to remove.** At close-out, `farside-close` keeps a worktree that holds
-  ignored data unless each such directory is named with `--regenerable <dir>` (a `_build`, say, or
-  `'**/log_files'` at any depth), which it then removes with the tree.
+- **Ignored data is yours to remove.** `farside-close` keeps a worktree that holds
+  ignored data unless each such directory is named in the project's `.github/fleet-regenerable` on
+  `origin/<main>` or with `--regenerable <dir>` (a `_build`, say, or `'**/log_files'` at any
+  depth), which it then removes with the tree.
 
 ## Blocking in a headless turn
 
@@ -218,7 +219,9 @@ wait for it, or `unstick --kill` it, never close out over it. Then, and only the
 workers' worktrees on their boxes, once no outstanding reservation refers to the checkout.
 `wave launch` writes each CLI worker's own worktree as a `farside` word on its row;
 `execution assign` adds requested checkouts and execution hosts, including on a retry.
-Run the one close-out call, `fleet-worker.sh farside-close <wave>`
-([executions.md](executions.md#the-gpu-home-box)). The finished worker records under
+`board close` of a merged PR removes that task's `farside` worktrees through `farside-close --task`
+as each row closes (turning any refusal into a `NOTE`), and close-out runs `fleet-worker.sh
+farside-close <wave>` ([executions.md](executions.md#the-gpu-home-box)) to sweep anything that
+stayed. The finished worker records under
 `~/.local/state/issue-wave/workers/` can stay as evidence; `launch` refuses to overwrite one
 without `--replace`.
