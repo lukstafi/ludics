@@ -1,4 +1,4 @@
-"""``pr-review.sh checks`` and ``merge``, end to end on the production path: through
+"""Production runs ``pr-review.sh checks`` and ``merge`` end to end: through
 ``scripts/py -m ludics.prreview`` and through the shell script's ``main`` (which execs the Python),
 with a gh BINARY on PATH that answers by route (tests/fake.py's ``When``) -- no shell
 function, no bridge.
@@ -7,6 +7,8 @@ The fixture suites (test-pr-review-checks-absent.sh, test-pr-review-merge.sh,
 test-pr-review-base-drift.sh) pin the behaviour through the sourced stubs and the shell bridge;
 these pin that the forward carries the arguments, the constants and the exits the same way when
 gh is whatever is on PATH.
+
+RetryGates exercises the retry exit codes in-process by substituting gate and API outcomes.
 """
 
 import json

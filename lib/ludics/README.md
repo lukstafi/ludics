@@ -555,6 +555,7 @@ prreview/checkpoint.py
 
 prreview/merge.py prreview/closekw.py
     ship-pr/scripts/test-pr-review-merge.sh
+    lib/ludics/tests/test_prreview_merge.py
     ship-pr/scripts/test-pr-review-base-drift.sh
     ship-pr/scripts/test-pr-review-checks-absent.sh
     ship-pr/scripts/test-pr-review-budget.sh

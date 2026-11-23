@@ -1491,7 +1491,7 @@ class Merge:
             return 0
         if already_merged:
             fail(
-                3, f"a pre-merge check read {repo}#{pr} as merged but REST could not confirm the landing",
+                3, f"an earlier read found {repo}#{pr} merged but REST could not confirm the landing",
                 f"({line}). Re-read the PR before attempting another merge.",
             )
         if self.opts.require_green:
