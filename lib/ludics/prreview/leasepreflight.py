@@ -24,6 +24,8 @@ from ludics.prreview.mergebuild import fleet_worker_path
 _BOX = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _TIMEOUT = 40
 _ANCHOR = FLEET_PYTHON + """\
+# A local anchor runs from the merge's worktree, and SSH normally starts in its home.
+case "$ANCHOR_STATE" in /*) ;; *) exit 3 ;; esac
 py=$(fleet_python) || exit 1
 CDPATH= cd -P -- "$ANCHOR_STATE" || exit 1
 exec "$py" -B -X utf8 -P - <<'ANCHOR_PY'
@@ -41,7 +43,7 @@ ANCHOR_PY
 _READER = """\
 root=$(CDPATH= cd -P "$HOME/.claude/skills/ship-pr/scripts" && cd -P ../.. && pwd -P) || exit 1
 test -x "$root/ship-pr/scripts/pr-review.sh" || exit 1
-exec "$root/scripts/py" - "$@" <<'READER_PY'
+exec "$root/scripts/py" - "$root" "$@" <<'READER_PY'
 import json
 import os
 import re
@@ -50,17 +52,17 @@ import sys
 from ludics import cli, proc
 from ludics.fleetworker.config import anchor_name, load_config, pin_refusal
 from ludics.fleetworker.transport import emit_var, far_argv
-from ludics.prreview.mergebuild import fleet_worker_path, parse_config
+from ludics.prreview.mergebuild import parse_config
 
 cli.restore_caller_environment(os.environ)
 fixture = parse_config("command true\\ntrigger always\\nlease fleet\\n", "lease preflight fixture")
 accepted = fixture is not None and getattr(fixture, "fleet_lease", False) is True
-cfg = load_config(str(fleet_worker_path()), os.environ)
-if pin_refusal(cfg) or not re.fullmatch(sys.argv[2], cfg.anchor):
+cfg = load_config(os.path.join(sys.argv[1], "issue-wave", "scripts", "fleet-worker.sh"), os.environ)
+if pin_refusal(cfg) or not re.fullmatch(sys.argv[3], cfg.anchor):
     print(json.dumps([accepted, anchor_name(cfg), 2, ""]))
 else:
     argv = far_argv(cfg, cfg.anchor, [])
-    script = emit_var("ANCHOR_STATE", cfg.anchor_state) + sys.argv[1]
+    script = emit_var("ANCHOR_STATE", cfg.anchor_state) + sys.argv[2]
     try:
         done = proc.run_tool(argv[0], argv[1:], stdin=script.encode(), timeout=20)
     except OSError:
@@ -105,6 +107,8 @@ def _probe(cfg: Config, box: str) -> tuple[str, Anchor | None]:
     anchor = f"anchor {shlex.quote(endpoint)}"
     if status in (UNREACHABLE, 124):
         return f"{reader}, {anchor} unreachable (exit {status})", None
+    if status == 3:
+        return f"{reader}, {anchor} state path must be absolute after expanding $HOME", None
     if status:
         return f"{reader}, {anchor} directory probe failed (exit {status})", None
     match _record(reply):

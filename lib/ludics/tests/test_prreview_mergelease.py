@@ -1,10 +1,11 @@
-"""Merge lease transactions and write-side ownership checks (#1269)."""
+"""Fleet lease readiness, lease transactions and write-side ownership checks."""
 
 import concurrent.futures
 import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -86,31 +87,43 @@ class LeasePreflight(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("usage:", err)
 
+    def local_report(self, home: Path, state_path: str) -> tuple[int, str]:
+        skills = home / ".claude" / "skills"
+        skills.mkdir(parents=True)
+        checkout = Path(__file__).resolve().parents[3]
+        (skills / "ship-pr").symlink_to(checkout / "ship-pr", target_is_directory=True)
+        with (
+            mock.patch.dict(os.environ, {
+                "HOME": str(home), "FLEET_ANCHOR": "local", "FLEET_LOCAL_BOX": "caller",
+                "FLEET_ANCHOR_STATE": state_path, "LUDICS_PY_CANDIDATES": sys.executable,
+            }),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            os.environ.pop("FLEET_REGISTRY_PIN", None)
+            rc = cli.main_guard("pr-review.sh", leasepreflight.run, ["owner/name", "--boxes", "caller"])
+        return rc, out.getvalue()
+
     @unittest.skipUnless(os.name == "posix", "the served lease reader is POSIX")
     def test_local_probe_runs_the_served_parser_and_only_reads_anchor_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
-            skills = home / ".claude" / "skills"
-            skills.mkdir(parents=True)
-            checkout = Path(__file__).resolve().parents[3]
-            (skills / "ship-pr").symlink_to(checkout / "ship-pr", target_is_directory=True)
             state = home / "fleet state"
             state.mkdir()
             alias = home / "alias"
             alias.symlink_to(state, target_is_directory=True)
-            with (
-                mock.patch.dict(os.environ, {
-                    "HOME": str(home), "FLEET_ANCHOR": "local", "FLEET_LOCAL_BOX": "caller",
-                    "FLEET_ANCHOR_STATE": "$HOME/alias",
-                }),
-                contextlib.redirect_stdout(io.StringIO()) as out,
-            ):
-                os.environ.pop("FLEET_REGISTRY_PIN", None)
-                rc = leasepreflight.run(["owner/name", "--boxes", "caller"])
+            rc, out = self.local_report(home, "$HOME/alias")
             self.assertEqual(rc, 0)
             info = state.stat()
-            self.assertIn(f"path='{state.resolve()}' device={info.st_dev} inode={info.st_ino}", out.getvalue())
+            self.assertIn(f"path='{state.resolve()}' device={info.st_dev} inode={info.st_ino}", out)
             self.assertEqual(list(state.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "posix", "the served lease reader is POSIX")
+    def test_relative_anchor_cannot_agree_from_the_current_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            rc, out = self.local_report(Path(directory), ".")
+            self.assertEqual(rc, 1)
+            self.assertIn("state path must be absolute", out)
 
 
 @unittest.skipUnless(os.name == "posix", "the lease anchor is POSIX")
@@ -200,7 +213,7 @@ class ClientLease(unittest.TestCase):
         self.assertEqual(call.call_args_list, [mock.call("take", timeout=20), mock.call("renew"), mock.call("release")])
         self.assertEqual(log.getvalue().splitlines(), [
             "pr-review.sh: owner/name#7: acquired merge lease on local",
-            "pr-review.sh: owner/name#7: released merge lease on local",
+            "pr-review.sh: owner/name#7: merge lease release acknowledged on local",
         ])
 
     def test_an_unconfirmed_release_has_no_success_line(self) -> None:
@@ -212,7 +225,7 @@ class ClientLease(unittest.TestCase):
         ):
             pass
         self.assertIn("merge lease release was unconfirmed", log.getvalue())
-        self.assertNotIn("released merge lease", log.getvalue())
+        self.assertNotIn("merge lease release acknowledged", log.getvalue())
 
     def test_an_unanswered_renewal_keeps_the_live_proof_and_can_recover(self) -> None:
         lease = mergelease.MergeLease("owner/name", "7")

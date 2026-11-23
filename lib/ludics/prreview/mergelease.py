@@ -151,7 +151,7 @@ class MergeLease:
             except cli.Exit:
                 released = False
             if released:
-                warn(f"{self.subject}: released merge lease on {self._anchor}")
+                warn(f"{self.subject}: merge lease release acknowledged on {self._anchor}")
             else:
                 warn(f"{self.subject}: merge lease release was unconfirmed on {self._anchor}, and the lease will expire")
 
