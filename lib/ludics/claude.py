@@ -1,6 +1,7 @@
 """One headless read-only ``claude -p`` invocation shared by roles whose writes must not land
-anywhere that matters: the paired planner (``peerplan/plan.py``) and the review checkpoint's
-``claude`` reviewer (``fleetworker/wavereview.py``).
+anywhere that matters: the paired planner (``peerplan/plan.py``), the review checkpoint's
+``claude`` reviewer (``fleetworker/wavereview.py``), and the coordinator preflight probe
+(``fleetworker/preflight.py``).
 
 TWO SEPARATE BOUNDS:
 
