@@ -1214,13 +1214,15 @@ fi
 run_py scripts/test-plain.py -- -v
 if [ "$rc" -eq 125 ] \
   && grep -qF -- 'scripts/test-plain.py -v' <<<"$out" \
+  && grep -qF -- '--command --also scripts/test-plain.py -- python3 ./scripts/test-plain.py -- -v' <<<"$out" \
   && ! grep -qF 'PYTHONPATH=' <<<"$out"; then
-  ok "a *.py suite outside lib/ with leading \`--\` exits 125 with the corrected command"
+  ok "a *.py suite outside lib/ with leading \`--\` exits 125 with both drop-\`--\` and verbatim --command forms"
 else
   ko "outside lib/ *.py leading --: rc=$rc -- $out"
 fi
 # If the first word after `--` is a helper option name, dropping `--` would let the helper consume
-# it (e.g. changing --base): suggest --command to preserve the suite's argv verbatim.
+# it (e.g. changing --base): suggest --command to preserve the suite's argv verbatim, resolving
+# scripts/py from the checkout root so the suggestion works from a subdirectory too.
 run_py scripts/test-plain.py -- --base fixed
 if [ "$rc" -eq 125 ] \
   && grep -qF -- '--command --also scripts/test-plain.py -- python3 ./scripts/test-plain.py --base fixed' <<<"$out" \
@@ -1228,6 +1230,15 @@ if [ "$rc" -eq 125 ] \
   ok "...and when a helper option name follows \`--\`, the correction uses --command instead of dropping \`--\`"
 else
   ko "outside lib/ *.py -- --base: rc=$rc -- $out"
+fi
+q_py=$(printf '%q' "$P/scripts/py")
+out=$(cd "$P/lib" && env -u PYTHONPATH TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" toy/tests/test_calc.py -- --base fixed 2>&1)
+rc=$?
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- "--command --also toy/tests/test_calc.py -- $q_py -m unittest toy.tests.test_calc --base fixed" <<<"$out"; then
+  ok "...and from a subdirectory, a lib/ *.py --command correction names \$TOP/scripts/py"
+else
+  ko "lib/ *.py subdir -- --base: rc=$rc -- $out"
 fi
 py_clean "after the *.py cases"
 
@@ -1361,10 +1372,13 @@ if [ "$rc" -eq 125 ] \
 else
   ko "--command newline symlink target: rc=$rc -- $out"
 fi
-# An external script whose env interpreter is missing is refused on that interpreter (125), never
-# recommended through `env` (where env's 127 would look like a base failure).
+# An external script whose env or direct shebang interpreter is missing (or relative) is refused on
+# that interpreter (125), never recommended through `env` (where env's 127 would look like a base
+# failure).
 printf '#!/usr/bin/env run-against-base-no-such-interpreter\nexit 0\n' >"$TMP/ext-envmiss.sh"
-chmod +x "$TMP/ext-envmiss.sh"
+printf '#!/no/such/run-against-base-interpreter\nexit 0\n' >"$TMP/ext-directmiss.sh"
+printf '#!./rel-interpreter\nexit 0\n' >"$TMP/ext-relinterp.sh"
+chmod +x "$TMP/ext-envmiss.sh" "$TMP/ext-directmiss.sh" "$TMP/ext-relinterp.sh"
 run_rab --command -- "$TMP/ext-envmiss.sh"
 if [ "$rc" -eq 125 ] \
   && grep -qF 'needs run-against-base-no-such-interpreter, which is not on PATH here' <<<"$out" \
@@ -1372,6 +1386,22 @@ if [ "$rc" -eq 125 ] \
   ok "--command refuses an external script with a missing env interpreter without suggesting env"
 else
   ko "--command external missing env interp: rc=$rc -- $out"
+fi
+run_rab --command -- "$TMP/ext-directmiss.sh"
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'needs /no/such/run-against-base-interpreter, which is not an executable file here' <<<"$out" \
+  && ! grep -qF -- '-- env ' <<<"$out"; then
+  ok "--command refuses an external script with a missing direct shebang interpreter without suggesting env"
+else
+  ko "--command external missing direct interp: rc=$rc -- $out"
+fi
+run_rab --command -- "$TMP/ext-relinterp.sh"
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'has a relative shebang interpreter' <<<"$out" \
+  && ! grep -qF -- '-- env ' <<<"$out"; then
+  ok "--command refuses an external script with a relative shebang interpreter without suggesting env"
+else
+  ko "--command external relative interp: rc=$rc -- $out"
 fi
 # An absolute external executable whose path holds `=` gets `sh -c`, since `env` reads `=` as an
 # assignment; a non-executable outside file or a relative escaping path gets no `env` suggestion.
