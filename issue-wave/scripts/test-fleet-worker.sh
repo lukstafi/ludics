@@ -4867,7 +4867,14 @@ git -C "$lsrc" checkout -q -b owed reported && printf '%s\n' 'owed-record tools/
   cat > "$lsrc/tools/owed.sh" <<'OWED' &&
 #!/usr/bin/env bash
 printf '%s\n' 'owed fixture invoked'
-[ "$#" -eq 3 ] && [ "$1" = "$(cat "$LEG_OWED_RECEIPT")" ] &&
+receipt="$LEG_OWED_RECEIPT"
+if [ -n "${LEG_OWED_PRIVATE:-}" ]; then
+  [ "${FLEET_LEG_RECEIPT_DIR:-}" = "$LEG_OWED_PRIVATE" ] && [ -z "${FLEET_LEG_RECEIPT_LINK+x}" ] || exit 93
+  receipt="$FLEET_LEG_RECEIPT_DIR/run-record"
+else
+  [ -z "${FLEET_LEG_RECEIPT_DIR+x}" ] || exit 93
+fi
+[ "$#" -eq 3 ] && cmp -s "$receipt" <(printf '%s\n' "$1") &&
   [ -f "$1" ] && [ "$3" = "$(git rev-parse HEAD)" ] && [ ! -e broken ] || exit 91
 [ "${LEG_OWED_REMOVE:-0}" != 1 ] || rm "$1" || exit 92
 printf 'owed fixture published %s %s\n' "$2" "$3"
@@ -4888,11 +4895,11 @@ no_owed_hook() {
   if grep -q '^owed fixture invoked$' <<<"$out"; then ko "the owed-record hook was called: $out"
   else ok "...the owed-record hook was skipped"; fi
 }
-TMPDIR="$TMP/owed tmp" LEG_OWED_REMOVE=1 FLEET_LEG_RUN_RECORD=/stale \
+TMPDIR="$TMP/owed tmp" LEG_OWED_REMOVE=1 FLEET_LEG_RUN_RECORD=/stale FLEET_LEG_RECEIPT_LINK=/stale FLEET_LEG_RECEIPT_DIR=/stale \
   expect "a clean main pass gives the owed-record hook the on-box record, request and observed SHA" 0 \
   "^owed fixture published leg-a $lowed$" -- owed_leg --control "$TMP/break.patch" -- bash -c '
     if [ -e broken ]; then
-      [ -z "${FLEET_LEG_RUN_RECORD+x}" ] || exit 0
+      [ -z "${FLEET_LEG_RUN_RECORD+x}${FLEET_LEG_RECEIPT_LINK+x}${FLEET_LEG_RECEIPT_DIR+x}" ] || exit 0
     else
       printf "%s\n" "${FLEET_LEG_RUN_RECORD:?}" > "$LEG_OWED_RECEIPT" || exit 1
     fi
@@ -4904,11 +4911,45 @@ LEG_OWED_EXIT=9 expect "an owed-record hook failure warns and keeps the main ver
   owed_leg -- bash -c 'printf "%s\n" "${FLEET_LEG_RUN_RECORD:?}" > "$LEG_OWED_RECEIPT"'
 [ -s "$LEG_OWED_RECEIPT" ] && [ ! -e "$(cat "$LEG_OWED_RECEIPT")" ] &&
   ok "...the leg removed the hook's run record at cleanup" || ko "the run record was not cleaned: $out"
+private_owed_leg() {
+  local mode="$1"
+  TMPDIR="$TMP/owed tmp" LEG_OWED_PRIVATE="$TMP/private receipt state/run-1" owed_leg -- bash -c '
+    # Only the wrapper knows the runner state root.
+    export OCANNL_TOOL_TEST_RUNS="$1"
+    run_dir="$OCANNL_TOOL_TEST_RUNS/run-1"
+    if [ "$2" != stale ]; then
+      mkdir -p "$run_dir" &&
+        printf "%s\n" "${FLEET_LEG_RUN_RECORD:?}" > "$run_dir/run-record" || exit 1
+    fi
+    # An older caller still runs the wrapper, but cannot deliver its private receipt.
+    if [ -n "${FLEET_LEG_RECEIPT_LINK:-}" ]; then
+      ln -s "$run_dir" "$FLEET_LEG_RECEIPT_LINK" || exit 1
+    fi
+    if [ "$2" = fail ]; then
+      [ -L "${FLEET_LEG_RECEIPT_LINK:-}" ] || exit 1
+      exit 7
+    fi
+  ' receipt-wrapper "$TMP/private receipt state" "$mode"
+}
+expect "the owed-record hook sees a receipt in the wrapper's private state" 0 "^owed fixture published leg-a $lowed$" -- \
+  private_owed_leg fresh
+expect "a pointed-to receipt of a previous leg with the same request and SHA is rejected" 0 'WARNING: owed-record tools/owed\.sh failed (exit 91)$' -- \
+  private_owed_leg stale
+grep -q '^owed fixture published' <<<"$out" && ko "the stale receipt was published: $out" || ok "...nothing published"
+expect "a failed leg that registered a private receipt keeps its verdict" 7 '^execution-leg: exit: 7$' -- \
+  private_owed_leg fail
+no_owed_hook
+owed_receipts=("$TMP/owed tmp"/fleet-leg-owed.*)
+[ "${#owed_receipts[@]}" -eq 1 ] && [ ! -e "${owed_receipts[0]}" ] && [ ! -L "${owed_receipts[0]}" ] &&
+  [ -s "$TMP/private receipt state/run-1/run-record" ] &&
+  ok "...only the runner-owned receipt remains" || ko "owed-record temporary state was not cleaned, or the receipt was lost: $out"
 expect "a missing owed-record executable warns and keeps the main verdict" 0 'WARNING: owed-record tools/absent\.sh failed (exit 127)$' -- \
   leg --request leg-a --rev owed-missing --checkout "$lco" --worktree "$lwt" --cpu -- tools/check.sh
 [ "$(last_line)" = "execution-leg: exit: 0" ] && ok "...with the main verdict's sentinel" || ko "unexpected status: $out"
-FLEET_LEG_RUN_RECORD=/stale expect "a leg without an owed-record hook clears a parent's record path" 0 '^execution-leg: exit: 0$' -- \
-  leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- bash -c '[ -z "${FLEET_LEG_RUN_RECORD+x}" ]'
+FLEET_LEG_RUN_RECORD=/stale FLEET_LEG_RECEIPT_LINK=/stale FLEET_LEG_RECEIPT_DIR=/stale \
+  expect "a leg without an owed-record hook clears a parent's record and receipt paths" 0 '^execution-leg: exit: 0$' -- \
+  leg --request leg-a --rev reported --checkout "$lco" --worktree "$lwt" --cpu -- bash -c '
+    [ -z "${FLEET_LEG_RUN_RECORD+x}${FLEET_LEG_RECEIPT_LINK+x}${FLEET_LEG_RECEIPT_DIR+x}" ]'
 expect "a failed main run keeps its verdict with an owed-record hook configured" 7 '^execution-leg: exit: 7$' -- \
   owed_leg -- bash -c 'exit 7'
 no_owed_hook

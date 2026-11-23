@@ -274,12 +274,24 @@ In the worktree on the execution box, the hook receives exactly three arguments:
 this leg's temporary run record on that box, the request ID and the observed commit SHA. The
 path identifies this invocation even when a request is reused. The leg clears any inherited
 ``FLEET_LEG_RUN_RECORD`` and sets it to that path for its own main runner when the hook is
-configured, so the runner can bind its receipt to this invocation. The leg removes the record
-during cleanup. Its contents are internal and kept separate from the leg's verdict markers.
+configured, so the runner can bind its receipt to this invocation. Its contents are internal
+and kept separate from the leg's verdict markers.
+
 The hook runs with closed stdin, in a nested slot with the run's CPU/GPU flags and a
 300-second deadline. Its output goes to stderr. A missing executable, timeout or nonzero exit
 is a warning with the hook status. That status never replaces the runner's or control's verdict.
 The hook is responsible for leaving the worktree unchanged and deciding which runs to publish.
+
+THE RECEIPT POINTER (#1313). The main runner gets ``FLEET_LEG_RECEIPT_LINK``, a vacant path
+beside the record in this invocation's private directory on the box. To select its receipt it
+creates a symlink at that path to the receipt directory's absolute path. After the publication
+checks above, the leg accepts only a symlink to an existing absolute directory and passes its
+exact target to the hook as ``FLEET_LEG_RECEIPT_DIR``. A missing pointer calls the hook with that
+variable unset. An invalid pointer warns and skips publication. The leg clears both inherited
+receipt variables. It reads only this pointer, with no search or receipt-content checks. The
+hook still checks the receipt's binding to the invocation and its eligibility. Leg cleanup
+unlinks the pointer and record, including after a failed or stopped run, and removes their
+directory if empty. The receipt directory belongs to the runner and is kept.
 
 THE FAILING LINES (ludics#1040). A failed leg's log carried the runner's verdict and the names of
 the goldens that differ, but not the claims that failed, so each failed GPU leg cost its worker an
@@ -827,7 +839,7 @@ LEG = NOT_HOME + PIN + SWEEP + WORKTREE + FLOOR + BASE + r"""co=$(expand_tilde "
 # THE STOP (see the header): this shell's pid, first, under the token; the leg keeps it.
 printf 'execution-leg %s: far: %s\n' "$token" "$$"
 # A nested leg must never tag a runner with its enclosing leg's identity.
-unset FLEET_LEG_RUN_RECORD
+unset FLEET_LEG_RUN_RECORD FLEET_LEG_RECEIPT_LINK FLEET_LEG_RECEIPT_DIR
 shift 14
 fw="$SKILLS_REPO/issue-wave/scripts/fleet-worker.sh"
 wrap=("$fw")
@@ -836,13 +848,14 @@ nnest="$1"; shift; nest=()
 while [ "$nnest" -gt 0 ]; do nest+=("$1"); shift; nnest=$((nnest - 1)); done
 patch=""; [ -z "$pname" ] || patch="$STATE/leg-control/$pname"
 lfile=""; [ -z "$fname" ] || lfile="$STATE/leg-files/$fname"
-ref="refs/fleet-leg/$$"; results=""; planned=""; run_record=""
+ref="refs/fleet-leg/$$"; results=""; planned=""; owed_state=""; run_record=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
 cleanup() {
   [ -z "$patch" ] || rm -f "$patch"
   [ -z "$lfile" ] || rm -f "$lfile"
   [ -z "$planned" ] || rm -f "$planned"
-  [ -z "$run_record" ] || rm -f "$run_record"
+  [ -z "$run_record" ] || rm -f "$run_record" "$run_record.receipt"
+  [ -z "$owed_state" ] || rmdir "$owed_state"
   [ -z "$results" ] || rm -f "$results" "$results.sh" "$results.report" "$results.fail" "$results.fail.shown"
   git -C "$co" update-ref -d "$ref" >/dev/null 2>&1
   return 0
@@ -1006,7 +1019,9 @@ fi
 results=$(mktemp "${TMPDIR:-/tmp}/fleet-leg.XXXXXX") || refuse "cannot create a scratch file on $BOX"
 if [ -n "$pin_owed" ]; then
   # Projects get the invocation's identity, independent of the private verdict markers.
-  run_record=$(mktemp "${TMPDIR:-/tmp}/fleet-leg-owed.XXXXXX") || refuse "cannot create an owed-record run file on $BOX"
+  owed_state=$(mktemp -d "${TMPDIR:-/tmp}/fleet-leg-owed.XXXXXX") || refuse "cannot create an owed-record directory on $BOX"
+  owed_dir=$(CDPATH= cd "$owed_state" && pwd -P) || refuse "cannot resolve the owed-record directory on $BOX"
+  run_record="$owed_dir/record"
   printf 'request=%s\nobserved_sha=%s\n' "$request" "$head" >"$run_record" || refuse "cannot write the owed-record run file on $BOX"
 fi
 # The runs, under ONE slot (or the measurement's hold): the main run, then the control. Each step
@@ -1044,10 +1059,22 @@ said() {
 }
 # THE OWED RECORD (see the header): judge the main runner's tree before another hook can change it.
 publish_owed() {
-  local now dirty orc
+  local now dirty orc pointer receipt FLEET_LEG_RECEIPT_DIR
   [ -n "$owed" ] && [ "$1" -eq 0 ] && grep -qx main-started "$results" || return 0
   now=$(git rev-parse --verify -q 'HEAD^{commit}') && [ "$now" = "$head" ] || return 0
   dirty=$(git status --porcelain --untracked-files=all --ignore-submodules=none) && [ -z "$dirty" ] || return 0
+  pointer="$run_record.receipt"
+  if [ -e "$pointer" ] || [ -L "$pointer" ]; then
+    # The sentinel protects trailing newlines from command substitution.
+    if [ -L "$pointer" ] && receipt=$(readlink -n "$pointer" && printf '.'); then
+      receipt=${receipt%.}
+    fi
+    if [[ ${receipt:-} != /* ]] || [ ! -d "$receipt" ]; then
+      printf 'EXECUTION LEG %s: WARNING: owed-record %q skipped: receipt pointer is not a symlink to an absolute directory\n' "$box" "$owed" >&2
+      return 0
+    fi
+    export FLEET_LEG_RECEIPT_DIR="$receipt"
+  fi
   if [ -f "$owed" ] && [ -x "$owed" ]; then
     "$fw" execution slot --deadline 300 "${nest[@]:2}" -- "./$owed" "$run_record" "$request" "$head" </dev/null >&2
     orc=$?
@@ -1093,7 +1120,9 @@ go() {
   "$fw" execution slot "${nest[@]}" -- bash -c '
     case "$4" in */*) [ -f "$4" ] && [ -x "$4" ] ;; *) command -v "$4" >/dev/null ;; esac ||
       { printf "%s-unexecutable\n" "$1" >> "$2"; printf "EXECUTION LEG: %s is not an executable command here\n" "$4" >&2; exit 127; }
-    if [ "$1" = main ] && [ -n "$3" ]; then export FLEET_LEG_RUN_RECORD="$3"; fi
+    if [ "$1" = main ] && [ -n "$3" ]; then
+      export FLEET_LEG_RUN_RECORD="$3" FLEET_LEG_RECEIPT_LINK="$3.receipt"
+    fi
     printf "%s-started\n" "$1" >> "$2"; shift 3; exec "$@"' leg-run "$tag" "$results" "$run_record" "$@" </dev/null
 }
 printf "started\n" >> "$results"
