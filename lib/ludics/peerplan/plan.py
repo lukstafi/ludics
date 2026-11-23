@@ -39,6 +39,7 @@ result, an agy run's its event stream.
 
 With ``--wave`` and ``--task``, the planning run records its model and effort on that existing
 paired row through ``board set``, after preparing the planner command and before dispatch.
+The row's recorded ``plan_dir`` must match the run's absolute plan directory.
 For agy, ``planner`` carries the full slug and ``planner_effort`` is empty. The board records
 the dispatch configuration. The bg-run verdict establishes whether a plan was produced.
 A failed board write ends the run before dispatch, with the board diagnostic in its log.
@@ -559,11 +560,12 @@ def run_planner(d: str, kind: str) -> int:
         recorded_effort = "" if gemini else meta.effort
         recorded = proc.run_tool(
             str(FLEET_WORKER),
-            ["board", "set", meta.wave, meta.task, f"planner={meta.model}", f"planner_effort={recorded_effort}"],
+            ["board", "set", meta.wave, meta.task, f"plan_dir={d}",
+             f"planner={meta.model}", f"planner_effort={recorded_effort}"],
             stdin=subprocess.DEVNULL,
         )
         if recorded.rc != 0:
-            detail = last_line(recorded.stderr) or last_line(recorded.stdout)
+            detail = last_line(recorded.stderr.strip() or recorded.stdout)
             raise cli.Exit(1, f"cannot record the planner for {meta.wave!r} {meta.task!r}"
                            f" (board set exit {recorded.rc}): {detail}")
     # No timeout: run_tool would start the planner in a session of its own, out of reach of the

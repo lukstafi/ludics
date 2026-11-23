@@ -32,8 +32,9 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``t2032``, made an empty second row each time); the refusal names the nearest task the
         board has. ``new_row`` on a task that has its row is no refusal, as ``create`` is none on
         a board that exists.
-        ``planner`` and ``planner_effort`` can be set on rows with ``planning=paired`` or
-        ``planning=paired+critique``. Setting the mode to anything else clears those fields.
+        A write of ``planner`` or ``planner_effort`` takes the existing paired row's
+        ``plan_dir`` as a guard: give the same value in the write. Changing the directory
+        or setting a mode other than ``paired`` or ``paired+critique`` clears the planner fields.
         THE LAUNCH STAMP: a write that leaves the row's ``state`` with ``launched`` as its first
         word (``;:,.`` stripped, case ignored) adds ``launched_at`` if the row has no stamp. The
         stamp is the store's clock (the same as ``updated_at``), and only a set naming
@@ -730,15 +731,22 @@ def main(argv: list[str]) -> None:
                         return
             fields = cast(dict[str, str], row["fields"])
             before = None if created else dict(fields)
-            for key, value in pairs:
-                fields[key] = value
-            if action == "set" and fields.get("planning") not in ("paired", "paired+critique"):
+            if action == "set":
                 changed = dict(pairs)
+                paired = changed.get("planning", fields.get("planning")) in ("paired", "paired+critique")
                 if any(key in changed for key in PLANNER_KEYS):
-                    refuse(f"planner fields require a paired planning mode on {json.dumps(task)}")
-                if "planning" in changed:
+                    if not paired:
+                        refuse(f"planner fields require a paired planning mode on {json.dumps(task)}")
+                    plan_dir = changed.get("plan_dir")
+                    if not plan_dir or plan_dir != fields.get("plan_dir"):
+                        refuse(f"planner fields require the recorded plan_dir on {json.dumps(task)}"
+                               f" (has {json.dumps(fields.get('plan_dir'))}, got {json.dumps(plan_dir)})")
+                if (("planning" in changed and not paired)
+                        or ("plan_dir" in changed and changed["plan_dir"] != fields.get("plan_dir"))):
                     for key in PLANNER_KEYS:
                         fields.pop(key, None)
+            for key, value in pairs:
+                fields[key] = value
             if created:
                 for key in COUNTERS:
                     fields.setdefault(key, "0")  # THE COUNTERS START AT ZERO (the header)

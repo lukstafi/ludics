@@ -178,11 +178,18 @@ class PeerPlan(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("FLEET_REGISTRY_PIN", None)
         self.fleet("claim")
-        self.fleet("board", "set", "--create", "--new-row", "w", "t7", f"planning={mode}", "model=worker/high")
+        self.fleet("board", "set", "--create", "--new-row", "w", "t7",
+                   f"planning={mode}", f"plan_dir={self.dir}", "model=worker/high")
         self.fleet("board", "set", "--new-row", "w", "t8", "state=pending")
 
     def board_fields(self) -> dict[str, dict[str, str]]:
         return {row["task"]: row["fields"] for row in json.loads(self.fleet("board", "show", "w", "--json"))["tasks"]}
+
+    def start_on_board(self, task: str, *args: str) -> str:
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--wave", "w", "--task", task, *args)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
 
     def wait(self, run: str) -> str:
         done = subprocess.run([BG_RUN, "wait", run, "--within", "60"], capture_output=True, text=True, check=False)
@@ -285,10 +292,7 @@ class PeerPlan(unittest.TestCase):
 
     def test_the_paired_row_records_the_default_planner_and_an_unpaired_row_has_none(self) -> None:
         self.paired_board("paired")
-        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
-                          "--wave", "w", "--task", "t7")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        self.assertEqual(self.wait(self.start_on_board("t7")), "rc=0")
         rows = self.board_fields()
         self.assertEqual((rows["t7"]["planner"], rows["t7"]["planner_effort"], rows["t7"]["model"]),
                          ("fable", "high", "worker/high"))
@@ -297,14 +301,31 @@ class PeerPlan(unittest.TestCase):
 
     def test_a_board_refusal_stops_the_run_before_dispatch(self) -> None:
         self.paired_board("paired")
-        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
-                          "--wave", "w", "--task", "t8")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        run = done.stdout.strip()
+        run = self.start_on_board("t8")
         self.assertEqual(self.wait(run), "rc=1")
         with open(os.path.join(run, "log"), encoding="utf-8") as f:
             self.assertIn("planner fields require a paired planning mode", f.read())
         self.assertNotIn("planner", self.board_fields()["t8"])
+        self.assertFalse(os.path.exists(os.path.join(self.claude.dir, "calls.jsonl")))
+
+    def test_a_different_paired_rows_plan_directory_refuses_before_dispatch(self) -> None:
+        self.paired_board("paired")
+        self.fleet("board", "set", "w", "t8", "planning=paired", f"plan_dir={self.dir}-other")
+        before = self.board_fields()
+        run = self.start_on_board("t8")
+        self.assertEqual(self.wait(run), "rc=1")
+        with open(os.path.join(run, "log"), encoding="utf-8") as f:
+            self.assertIn('planner fields require the recorded plan_dir on "t8"', f.read())
+        self.assertEqual(self.board_fields(), before)
+        self.assertFalse(os.path.exists(os.path.join(self.claude.dir, "calls.jsonl")))
+
+    def test_a_stdout_only_board_lease_refusal_is_in_the_run_log(self) -> None:
+        self.paired_board("paired")
+        self.fleet("release")
+        run = self.start_on_board("t7")
+        self.assertEqual(self.wait(run), "rc=1")
+        with open(os.path.join(run, "log"), encoding="utf-8") as f:
+            self.assertIn("coordinator lease held by nobody", f.read())
         self.assertFalse(os.path.exists(os.path.join(self.claude.dir, "calls.jsonl")))
 
     def test_a_claude_critique_refuses_a_whitespace_only_thread_and_bad_effort_exits_cleanly(self) -> None:
@@ -339,10 +360,8 @@ class PeerPlan(unittest.TestCase):
         """THE PLANNER: a gemini-... model plans through agy with every tool approved, in a clone with no
         remote: its own write stays in the clone, and the checkout gains no worktree."""
         self.paired_board("paired")
-        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
-                          "--model", "gemini-4-neon-high", "--effort", "low", "--wave", "w", "--task", "t7")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        run = self.start_on_board("t7", "--model", "gemini-4-neon-high", "--effort", "low")
+        self.assertEqual(self.wait(run), "rc=0")
         fields = self.board_fields()["t7"]
         self.assertEqual((fields["planner"], fields["planner_effort"]), ("gemini-4-neon-high", ""))
         wt = os.path.join(self.dir, "worktree")
@@ -410,12 +429,7 @@ class PeerPlan(unittest.TestCase):
 
     def test_managed_runs_start_in_the_callers_session(self) -> None:
         self.paired_board("paired+critique")
-        done = self.entry(
-            "start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
-            "--wave", "w", "--task", "t7", "--model", "gpt-6.2-sol", "--effort", "medium", "--managed",
-        )
-        self.assertEqual(done.returncode, 0, done.stderr)
-        run = done.stdout.strip()
+        run = self.start_on_board("t7", "--model", "gpt-6.2-sol", "--effort", "medium", "--managed")
         self.assertFalse(os.path.exists(os.path.join(self.codex.dir, "calls.jsonl")), "nothing started")
         self.assertNotIn("planner", self.board_fields()["t7"])
         with open(os.path.join(self.dir, "plan-run"), encoding="utf-8") as f:

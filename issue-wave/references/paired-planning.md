@@ -36,8 +36,8 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    (`git -C <main checkout> rev-parse origin/<base>`), launch the worker from it (`--base <sha>
    --base-branch <base>` for a CLI launch; the start point of a native worker's worktree), and once the launch has
    succeeded, start the planner on the same SHA. For a row made by hand, set
-   `planning=<mode> plan_dir=<plan-dir>` on it before starting the planner. Wave prep already
-   records both.
+   `planning=<mode> plan_dir=<absolute plan-dir>` on it before starting the planner. Wave prep
+   already records both. Use the recorded directory for `start`.
 
    ```bash
    ~/.claude/skills/issue-wave/scripts/peer-plan.sh start <plan-dir> --issue <owner/repo>#<n> \
