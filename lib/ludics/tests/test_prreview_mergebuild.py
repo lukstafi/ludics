@@ -695,6 +695,69 @@ class Build(Repo):
         self.assertEqual(caught.exception.rc, 4, out.getvalue())
         self.assertIn("did not finish within", caught.exception.message)
 
+    def assert_deadline_overrun(self, rc: int, out: str) -> None:
+        with self.subTest(check="verdict"):
+            self.assertEqual(rc, 4, out)
+            self.assertIn("did not finish within", out)
+            self.assertNotIn("PASSED", out)
+        with self.subTest(check="receipt"):
+            path = Path(self.dir) / "state/merge-builds/owner--repo.jsonl"
+            row, = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual((Path(row["log_dir"]) / "build.status").read_text().strip(), "0")
+            self.assertEqual(row["outcome"], "overran")
+        with self.subTest(check="build history"):
+            self.assertEqual([r.outcome for r in buildhistory.read("owner/repo", "true")], ["overran"])
+
+    def test_a_status_at_the_supervisor_build_deadline_is_an_overrun(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        communicate = subprocess.Popen[bytes].communicate
+
+        def struck(child: subprocess.Popen[bytes], input: bytes | None = None,
+                   timeout: float | None = None) -> tuple[bytes, bytes]:
+            out, err = communicate(child, input, timeout)
+            argv = child.args
+            # The actual status write wins the race to disk, while the supervisor's wait expires.
+            if timeout == 60 and isinstance(argv, list) and argv[3:4] == ["merge-build"]:
+                status = argv[6]
+                os.utime(f"{status}.started", (1000, 1000))
+                os.utime(status, (1003, 1003))
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return out, err
+
+        with mock.patch.object(mergebuild, "_slot_runner", return_value=None), \
+                mock.patch.object(subprocess.Popen, "communicate", new=struck):
+            rc, out = self.build(head, "true")
+        self.assert_deadline_overrun(rc, out)
+        self.assertEqual([r.seconds for r in buildhistory.read("owner/repo", "true")], [3])
+
+    def slot_script(self, command: str) -> str:
+        path = Path(self.dir) / "fake-slot.sh"
+        path.write_text(
+            'while [ "$#" -gt 0 ] && [ "$1" != --deadline ]; do shift; done\n'
+            '[ "$2" = 60 ] && [ "$3" = -- ] || exit 2\n'
+            f"shift 3\n{command}\n"
+        )
+        return str(path)
+
+    def test_a_status_at_the_slot_build_deadline_is_an_overrun(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        # Run the real status writer, then report the slot's independent deadline.
+        runner = self.slot_script('"$@" && exit 124')
+        with mock.patch.object(mergebuild, "_slot_runner", return_value=runner):
+            rc, out = self.build(head, "true")
+        self.assert_deadline_overrun(rc, out)
+
+    def test_a_build_that_exits_124_within_its_bound_reports_its_status(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        runner = self.slot_script('exec "$@"')
+        with mock.patch.object(mergebuild, "_slot_runner", return_value=runner):
+            rc, out = self.build(head, "exit 124")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAILED (exit 124)", out)
+        self.assertNotIn("did not finish within", out)
+        rows = (Path(self.dir) / "state/merge-builds/owner--repo.jsonl").read_text().splitlines()
+        self.assertEqual([json.loads(line)["outcome"] for line in rows], ["failed", "failed"])
+
     def overrun(self, head: str, bound: int) -> tuple[str, str]:
         """An overrunning build under ``bound``: (what it said, the refusal)."""
         os.chdir(self.clone)
