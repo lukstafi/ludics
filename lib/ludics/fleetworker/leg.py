@@ -17,7 +17,8 @@ the box it runs on, for a measurement (``hold_in_worktree``, ludics-lite#816).
 THE CLI OPTIONS (ludics#1292). ``CLI_OPTIONS`` is the one table both this verb's parser
 (``parse_args``) and ``execution assign`` read, and is the closed boundary of direct ``execution
 leg`` options: each entry states its argument form (``OptionSpec.value``; ``REQUIRED_VALUE_FLAGS``
-names the entries requiring a value in the next argv entry) and its assignment policy
+names the entries requiring a value in the next argv entry), its parser destination
+(``OptionSpec.target``: ``value``, ``slot`` or ``no_config``), and its assignment policy
 (``AssignPolicy``: ``AllowInLegOptions``, ``SetByAssign``, ``RefuseInRequest``, or ``RunnerOnly``).
 ``parse_args`` accepts only options in ``CLI_OPTIONS`` plus the ``--`` separator before the runner
 argv; words after ``--`` belong to the runner and are outside this table.
@@ -416,6 +417,7 @@ USAGE = (
 )
 FILE_WORD = "{file}"  # the runner word THE FILE replaces with the shipped copy's path
 OptionValue = Literal["none", "string", "whole", "positive", "optional_whole"]
+OptionTarget = Literal["value", "slot", "no_config"]
 
 
 @dataclass(frozen=True)
@@ -424,7 +426,7 @@ class AllowInLegOptions:
 
     kinds: Literal["any", "correctness"] = "any"
     refuse_in_runner: bool = False
-    slot: bool = False
+    exclusive_slot: bool = False
 
 
 @dataclass(frozen=True)
@@ -445,14 +447,14 @@ class RunnerOnly:
 
 
 AssignPolicy = AllowInLegOptions | SetByAssign | RefuseInRequest | RunnerOnly
-ASSIGN_POLICY_TYPES = (AllowInLegOptions, SetByAssign, RefuseInRequest, RunnerOnly)
 
 
 @dataclass(frozen=True)
 class OptionSpec:
-    """One direct CLI option ``execution leg`` accepts, and its assignment policy."""
+    """One direct CLI option ``execution leg`` accepts, its parser target, and its assignment policy."""
 
     value: OptionValue
+    target: OptionTarget
     assign: AssignPolicy
 
     @property
@@ -463,21 +465,21 @@ class OptionSpec:
 
 # THE CLI OPTIONS (ludics#1292): the one table both this parser and execution assign read.
 CLI_OPTIONS: Mapping[str, OptionSpec] = MappingProxyType({
-    "--request": OptionSpec("string", SetByAssign("request_id")),
-    "--box": OptionSpec("string", SetByAssign("reservation execution_host")),
-    "--rev": OptionSpec("string", SetByAssign("requested_revision")),
-    "--checkout": OptionSpec("string", SetByAssign("clone")),
-    "--worktree": OptionSpec("string", SetByAssign("checkout")),
-    "--remote": OptionSpec("string", AllowInLegOptions("any")),
-    "--base": OptionSpec("string", AllowInLegOptions("any")),
-    "--control": OptionSpec("string", AllowInLegOptions("any")),
-    "--file": OptionSpec("string", AllowInLegOptions("any")),
-    "--reads-no-config": OptionSpec("none", AllowInLegOptions("any", refuse_in_runner=True)),
-    "--cpu": OptionSpec("none", AllowInLegOptions("correctness", refuse_in_runner=True, slot=True)),
-    "--gpu": OptionSpec("none", AllowInLegOptions("correctness", refuse_in_runner=True, slot=True)),
-    "--wait": OptionSpec("whole", AllowInLegOptions("correctness")),
-    "--wait-window": OptionSpec("optional_whole", AllowInLegOptions("correctness")),
-    "--deadline": OptionSpec("positive", AllowInLegOptions("any")),
+    "--request": OptionSpec("string", "value", SetByAssign("request_id")),
+    "--box": OptionSpec("string", "value", SetByAssign("reservation execution_host")),
+    "--rev": OptionSpec("string", "value", SetByAssign("requested_revision")),
+    "--checkout": OptionSpec("string", "value", SetByAssign("clone")),
+    "--worktree": OptionSpec("string", "value", SetByAssign("checkout")),
+    "--remote": OptionSpec("string", "value", AllowInLegOptions("any")),
+    "--base": OptionSpec("string", "value", AllowInLegOptions("any")),
+    "--control": OptionSpec("string", "value", AllowInLegOptions("any")),
+    "--file": OptionSpec("string", "value", AllowInLegOptions("any")),
+    "--reads-no-config": OptionSpec("none", "no_config", AllowInLegOptions("any", refuse_in_runner=True)),
+    "--cpu": OptionSpec("none", "slot", AllowInLegOptions("correctness", refuse_in_runner=True, exclusive_slot=True)),
+    "--gpu": OptionSpec("none", "slot", AllowInLegOptions("correctness", refuse_in_runner=True, exclusive_slot=True)),
+    "--wait": OptionSpec("whole", "slot", AllowInLegOptions("correctness")),
+    "--wait-window": OptionSpec("optional_whole", "slot", AllowInLegOptions("correctness")),
+    "--deadline": OptionSpec("positive", "slot", AllowInLegOptions("any")),
 })
 # Direct CLI flags taking a required value in the next argv entry (derived from CLI_OPTIONS).
 REQUIRED_VALUE_FLAGS = frozenset(flag for flag, spec in CLI_OPTIONS.items() if spec.takes_value)
@@ -1464,31 +1466,64 @@ def parse_args(args: list[str]) -> ParsedLeg:
         if equals:
             if spec.value != "optional_whole" or not WHOLE.fullmatch(bound):
                 die(USAGE)
-            slot_flags.append(arg)
+            match spec.target:
+                case "slot":
+                    slot_flags.append(arg)
+                case "value" | "no_config":
+                    raise ValueError(f"{flag}: optional_whole option must target 'slot'")
+                case _:
+                    assert_never(spec.target)
             i += 1
             continue
         match spec.value:
             case "none":
-                if flag == "--reads-no-config":
-                    no_config = True
-                else:
-                    slot_flags.append(flag)
+                match spec.target:
+                    case "no_config":
+                        no_config = True
+                    case "slot":
+                        slot_flags.append(flag)
+                    case "value":
+                        raise ValueError(f"{flag}: target 'value' requires a value")
+                    case _:
+                        assert_never(spec.target)
                 i += 1
             case "optional_whole":
-                slot_flags.append(flag)
+                match spec.target:
+                    case "slot":
+                        slot_flags.append(flag)
+                    case "value" | "no_config":
+                        raise ValueError(f"{flag}: optional_whole option must target 'slot'")
+                    case _:
+                        assert_never(spec.target)
                 i += 1
             case "string":
                 if i + 1 >= len(args) or not args[i + 1]:
                     die(f"execution leg: expected a value for {flag}")
-                values[flag] = args[i + 1]
+                match spec.target:
+                    case "value":
+                        values[flag] = args[i + 1]
+                    case "slot":
+                        slot_flags += [flag, args[i + 1]]
+                    case "no_config":
+                        raise ValueError(f"{flag}: target 'no_config' takes no value")
+                    case _:
+                        assert_never(spec.target)
                 i += 2
             case "whole" | "positive":
-                if flag in slot_flags:
+                if spec.target == "slot" and flag in slot_flags:
                     die(f"execution leg: {flag} given twice")
                 pattern = SECONDS if spec.value == "positive" else WHOLE
                 if i + 1 >= len(args) or not pattern.fullmatch(args[i + 1]):
                     die(f"execution leg: {flag} takes a {'positive ' if spec.value == 'positive' else ''}whole number of seconds")
-                slot_flags += [flag, args[i + 1]]
+                match spec.target:
+                    case "slot":
+                        slot_flags += [flag, args[i + 1]]
+                    case "value":
+                        values[flag] = args[i + 1]
+                    case "no_config":
+                        raise ValueError(f"{flag}: target 'no_config' takes no value")
+                    case _:
+                        assert_never(spec.target)
                 i += 2
             case _:
                 assert_never(spec.value)

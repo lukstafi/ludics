@@ -203,11 +203,11 @@ def option_sets(
     runner_refused: set[str] = set()
     for flag, spec in options.items():
         match spec.assign:
-            case leg.AllowInLegOptions(kinds=kinds, refuse_in_runner=refuse_in_runner, slot=slot):
+            case leg.AllowInLegOptions(kinds=kinds, refuse_in_runner=refuse_in_runner, exclusive_slot=exclusive_slot):
                 allowed.add(flag)
                 if kinds == "correctness":
                     correctness_only.add(flag)
-                if slot:
+                if exclusive_slot:
                     slot_flags.add(flag)
                 if refuse_in_runner:
                     runner_refused.add(flag)
