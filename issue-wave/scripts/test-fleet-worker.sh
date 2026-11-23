@@ -1421,7 +1421,7 @@ expect "two first claims of one new identity leave that identity holding" 0 "COO
 env FLEET_COORDINATOR=fresh "$FW" release >/dev/null; "$FW" claim >/dev/null
 expect "an identity outside the safe set is refused, not folded" 2 "coordinator identity 'team/a' must be" -- env FLEET_COORDINATOR=team/a "$FW" claim
 chmod 555 "$ISSUE_WAVE_STATE"
-expect "release on an unwritable anchor fails at once, not after the lock wait" 1 "RELEASE FAILED: lease lock on testbox: cannot create lock" -- "$FW" release
+expect "release on an unwritable anchor reports the cannot-create-lock diagnostic" 1 "RELEASE FAILED: lease lock on testbox: cannot create lock" -- "$FW" release
 chmod 755 "$ISSUE_WAVE_STATE"
 expect "release drops it" 0 "RELEASED coordinator lease" -- "$FW" release
 expect "coordinator after release: nobody" 3 "nobody holds" -- "$FW" coordinator
@@ -1430,6 +1430,72 @@ expect "coordinator after release: nobody" 3 "nobody holds" -- "$FW" coordinator
 mkdir "$ISSUE_WAVE_STATE/COORDINATOR.lock" && echo 999999 > "$ISSUE_WAVE_STATE/COORDINATOR.lock/pid"
 expect "a lease lock left by a dead holder is reclaimed by the next claim" 0 "CLAIMED coordinator lease on testbox" -- env FLEET_LOCK_WAIT=1 "$FW" claim
 [ -d "$ISSUE_WAVE_STATE/COORDINATOR.lock" ] && ko "the reclaimed lease lock was left behind" || ok "...and released afterwards"
+"$FW" release >/dev/null
+# A contender's ps has already read the process start that differs from the stale record.
+# Delay delivery of that result until another real claim has reclaimed the lock, then keep
+# that successor in its lease mutation until the later contender has answered.
+race="$TMP/lease-reclaim"
+lock="$ISSUE_WAVE_STATE/COORDINATOR.lock"
+mkdir "$race" "$lock"
+printf '%s\n' "$$" > "$lock/pid"
+printf '%s\n' 'stale start' > "$lock/start"
+real_ln=$(command -v ln)
+cat > "$race/ps" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = "-o lstart= -p $RACE_STALE_PID" ] && [ ! -e "$RACE_DIR/stale-ready" ]; then
+  observed=$("$RACE_PS" "$@") || exit 1
+  : > "$RACE_DIR/stale-ready"
+  for _ in $(seq 200); do
+    if [ -e "$RACE_DIR/resume-stale" ]; then printf '%s\n' "$observed"; exit 0; fi
+    sleep 0.1
+  done
+  exit 1
+fi
+exec "$RACE_PS" "$@"
+SH
+cat > "$race/ln" <<'SH'
+#!/usr/bin/env bash
+if [ -z "$RACE_STALE_PID" ] && [ "$#" -eq 2 ] && [ "$2" = "$ISSUE_WAVE_STATE/COORDINATOR" ]; then
+  : > "$RACE_DIR/successor-ready"
+  for _ in $(seq 200); do
+    if [ -e "$RACE_DIR/resume-successor" ]; then exec "$RACE_LN" "$@"; fi
+    sleep 0.1
+  done
+  exit 1
+fi
+exec "$RACE_LN" "$@"
+SH
+chmod +x "$race/ps" "$race/ln"
+env PATH="$race:$PATH" RACE_DIR="$race" RACE_PS="$REAL_PS" RACE_LN="$real_ln" \
+  RACE_STALE_PID="$$" FLEET_LOCK_WAIT=0 "$FW" claim > "$race/stale.out" 2>&1 &
+later=$!
+for _ in $(seq 200); do [ -e "$race/stale-ready" ] && break; sleep 0.1; done
+[ -e "$race/stale-ready" ] || ko "the later contender never read the stale holder's process start"
+# The successor needs the ln shim but must read the stale holder's process start without pausing.
+env PATH="$race:$PATH" RACE_DIR="$race" RACE_PS="$REAL_PS" RACE_LN="$real_ln" \
+  RACE_STALE_PID= FLEET_LOCK_WAIT=0 "$FW" claim > "$race/successor.out" 2>&1 &
+successor=$!
+for _ in $(seq 200); do [ -e "$race/successor-ready" ] && break; sleep 0.1; done
+[ -e "$race/successor-ready" ] || ko "the successor never entered the lease mutation"
+successor_pid=$(cat "$lock/pid" 2>/dev/null)
+successor_start=$(cat "$lock/start" 2>/dev/null)
+: > "$race/resume-stale"
+wait "$later"; later_rc=$?
+if [ "$later_rc" -eq 1 ] && [ -n "$successor_pid" ] &&
+   grep -q "lock .* held by pid $successor_pid for 0s" "$race/stale.out"; then
+  ok "a stale contender reports the successor as the holder"
+else
+  ko "a stale contender did not report the successor as the holder (exit $later_rc): $(cat "$race/stale.out")"
+fi
+if [ -n "$successor_start" ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$successor_pid" ] &&
+   [ "$(cat "$lock/start" 2>/dev/null)" = "$successor_start" ]; then
+  ok "the stale contender leaves the successor's pid and start intact"
+else
+  ko "the stale contender changed the successor's pid or start"
+fi
+: > "$race/resume-successor"
+wait "$successor" && ok "the successor completes its lease mutation" ||
+  ko "the successor failed to claim: $(cat "$race/successor.out")"
 "$FW" release >/dev/null
 expect "claim refuses an unknown option" 2 "claim: unknown option --tak" -- "$FW" claim --tak
 # Lease and halt live on the anchor: one that does not answer is unreachable (exit 4), never a

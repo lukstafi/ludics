@@ -766,6 +766,14 @@ to three times per call, even at zero contention wait. A base counterexample rem
 after the real `mkdir` fails and before the directory check. A file blocking the parent path
 checks the retry count and the unwritable diagnostic, alongside the fleet suite's permissions case.
 
+Agent notes (#1295): `take_lock` rechecks staleness under a flock on the directory inode. The
+same guard protects registration and release. The guard requires Perl and a filesystem that
+supports flock on directories. It disappears with the last descriptor, including on process
+death, so stale pid and ownerless recovery need no separate guard cleanup. Registration and
+reclamation count a busy guard against the caller's wait budget. The coordinator lease
+fixture pauses an obsolete process-start result while a successor acquires the lock. The unit
+fixtures cover a fresh judgment for ownerless locks, guard contention and relative paths.
+
 Request-kind routing (#1155): a direct `execution hold --request` reads the registry before
 creating the slot directory or taking locks, and refuses correctness with the `execution slot`
 remedy. Refusal preserves the caller's CPU/GPU and wait choices rather than guessing them.
