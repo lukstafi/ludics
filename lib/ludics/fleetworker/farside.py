@@ -25,6 +25,13 @@ composition the near side does around it:
                LAUNCH_STANDING_WORKTREE + LAUNCH_STANDING_START (exit LAUNCH_NOT_STARTED)
   VERDICT      the verdict of a finished worker, for ATTACH and CLOSE
   ATTACH, STATUS, LOG, LOG_LAST_RESULT, UNSTICK (after ghprobe), CLOSE, LS
+
+FRESHNESS removes a cache only from an ignored directory record in Git's NUL-delimited status,
+with the configured checkout at the worktree root. The directory must be named __pycache__,
+contain only regular *.pyc files and have no tracked paths in HEAD or the index. Symlinks
+and subdirectories disqualify it. All other status records use the existing divergence rule,
+including the exception for stray .claude/ settings. Cleanup runs under the checkout lock and
+unlinks only the entries it inspected, followed by a non-recursive rmdir.
 """
 
 import re
@@ -470,7 +477,7 @@ tmux_restart_advice() {
 # two can never disagree about what "current" means. The caller defines note() (it appends to
 # $refuse) and runs this before any note of its own, since the fast-forward is attempted only when
 # this function has noted nothing. Brings a clean main to origin/main and never resets anything: a
-# divergent checkout is noted, not repaired. Arg: the fetch's wall-clock bound. Sets repo, before
+# divergent checkout is noted. Arg: the fetch's wall-clock bound. Sets repo, before
 # (HEAD on entry), head, up (origin/main) and other (changes outside the served tree). Returns 2
 # when there is no checkout at all, else 0.
 # checkout_lock <wait> <label> goes first: the lock that serializes everything that fetches or
@@ -486,8 +493,39 @@ FRESHNESS = r"""checkout_lock() {
   take_lock "$plock" "$1" "$2" || return 1
   trap 'release_lock "$plock"' EXIT
 }
+remove_ignored_bytecode_cache() (
+  local path="${1%/}" tracked root parent file
+  local -a files
+  CDPATH= cd -P -- "$repo" || return 1
+  root=$(git rev-parse --show-toplevel) && [ "$PWD" = "$root" ] || return 1
+  # A staged deletion can leave an ignored working copy of a file still tracked in HEAD.
+  tracked=$({ git --literal-pathspecs ls-files -z -- "$path" &&
+    git --literal-pathspecs ls-tree -rz --name-only HEAD -- "$path"; } | wc -c) || return 1
+  [ "$tracked" -eq 0 ] || return 1
+  root=${root%/}
+  parent=${path%__pycache__}
+  # Bind deletion to the physical parent and reject symlinked directories along the path.
+  CDPATH= cd -P -- "./$parent" && [ "${PWD%/}/" = "$root/$parent" ] || return 1
+  [ ! -L __pycache__ ] || return 1
+  (
+    CDPATH= cd -P -- __pycache__ && [ "$PWD" = "$root/$path" ] || return 1
+    unset GLOBIGNORE
+    set +f
+    shopt -u failglob nocasematch
+    shopt -s dotglob nullglob
+    files=(./*)
+    [ "${#files[@]}" -gt 0 ] || return 0
+    for file in "${files[@]}"; do
+      case "$file" in
+        *.pyc) [ -f "$file" ] && [ ! -L "$file" ] || return 1 ;;
+        *) return 1 ;;
+      esac
+    done
+    rm -- "${files[@]}"
+  ) && rmdir -- __pycache__
+)
 skills_freshness() {
-  local prior="$refuse" frc served statusz hidden entry st path from branch pycache pydirs dir
+  local prior="$refuse" frc served statusz hidden entry st path from branch
   repo=$(expand_tilde "$SKILLS_REPO")
   git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 2
   before=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
@@ -495,18 +533,12 @@ skills_freshness() {
   if [ "$frc" -eq 124 ]; then note "git fetch in $repo timed out after ${1}s"; elif [ "$frc" -ne 0 ]; then note "fetch failed (offline?)"; fi
   # The whole checkout is the served tree: every skill directory sits at its root, so any local
   # change - tracked, untracked, even ignored - is divergence to surface, since the deployed
-  # symlinks would serve it. The one exception is a stray .claude/ (settings.local.json appears
+  # symlinks would serve it. A stray .claude/ (settings.local.json appears
   # wherever claude was run inside the checkout): not skill text, so reported rather than refused.
   # The fast-forward below still fails, and refuses, if such a change collides with what upstream brings.
   # NUL-delimited, so a path git would otherwise quote (a space, a quote, a non-ASCII byte) is
   # still classified by its directory rather than falling through as "outside the served tree".
-  # One shape of served change gets its repair named (ludics-lite#585): an ignored Python bytecode
-  # cache under lib/ (`!!` on a path lib/.../__pycache__/...), which scripts/py wrote before it ran
-  # the interpreter with -B. It still refuses; the note names the directories to remove only when
-  # EVERY served entry has that shape and the scan noted nothing else (an index-hidden file, a
-  # status that failed), so the removal it names is the whole repair of the served tree. A single
-  # entry of any other shape, or another note, keeps the plain note.
-  served=0; other=""; pycache=0; pydirs=""
+  served=0; other=""
   statusz=$(mktemp "${TMPDIR:-/tmp}/fw-status.XXXXXX")
   if ! git -C "$repo" status --porcelain -z --untracked-files=all --ignored=matching > "$statusz" 2>/dev/null; then
     rm -f "$statusz"; note "git status failed in $repo (cannot scan the served tree)"; statusz=/dev/null
@@ -518,20 +550,18 @@ skills_freshness() {
   while IFS= read -r -d '' entry; do
     st=${entry:0:2}; path=${entry:3}; from=""
     case "$st" in R*|C*) IFS= read -r -d '' from ;; esac   # a rename's second record is the source
+    case "$st:$path" in
+      '!!:__pycache__/'|'!!:'*'/__pycache__/')
+        if remove_ignored_bytecode_cache "$path" 2>/dev/null; then
+          printf '%s\n' "REMOVED $(printf '%q' "$repo/${path%/}") (ignored bytecode cache)" >&2
+          continue
+        fi ;;
+    esac
     # Both sides of a rename count: a file moved OUT of the served tree is a served file gone.
     case "$path" in .claude/*) case "$from" in ""|.claude/*) other="$other$path " ;; *) served=$((served + 1)) ;; esac ;; *) served=$((served + 1)) ;; esac
-    case "$st:$path" in
-      '!!:lib/__pycache__/'*|'!!:lib/'*'/__pycache__/'*)
-        pycache=$((pycache + 1)); dir=$(printf '%q' "$repo/${path%%/__pycache__/*}/__pycache__")
-        case " $pydirs " in *" $dir "*) ;; *) pydirs="${pydirs:+$pydirs }$dir" ;; esac ;;
-    esac
   done < "$statusz"
   [ "$statusz" = /dev/null ] || rm -f "$statusz"
-  if [ "$served" -gt 0 ] && [ "$pycache" -eq "$served" ] && [ "$refuse" = "$prior" ]; then
-    note "$served local change(s) in the served tree, every one an ignored Python bytecode cache under lib/ (left by a run before scripts/py ran Python with -B, ludics-lite#585) -- repair, on $BOX: rm -rf $pydirs"
-  elif [ "$served" -gt 0 ]; then
-    note "$served local change(s) in the served tree"
-  fi
+  [ "$served" -eq 0 ] || note "$served local change(s) in the served tree"
   branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
   [ "$branch" = main ] || note "checked out $branch, not main"
   if [ "$refuse" = "$prior" ]; then
@@ -1120,7 +1150,7 @@ echo "PREFLIGHT OK $BOX skills=$(echo "$head" | cut -c1-9)${other:+ (changes out
 # holder (a preflight, another refresh) may still fail, so a busy lock is waited out and the
 # checkout then checked here, never read as refreshed by someone else (PR #379 review).
 # Exit 0 current or fast-forwarded, 1 not refreshed (divergent, fetch failed, lock never free): the
-# checkout is reported and left exactly as it is, never reset.
+# checkout is never reset.
 REFRESH = r"""fetch_timeout="$1"
 refuse=""
 note() { refuse="$refuse; $*"; }
@@ -1130,7 +1160,7 @@ if [ "$lrc" -eq 2 ]; then echo "REFRESH FAILED $BOX: no skills checkout at $repo
 skills_freshness "$fetch_timeout"
 if [ $? -eq 2 ]; then echo "REFRESH FAILED $BOX: no skills checkout at $repo"; exit 1; fi
 if [ -n "$refuse" ]; then
-  echo "REFRESH FAILED $BOX: ${refuse#; } -- left as it is, never reset; repair it by hand, then run fleet-worker.sh preflight $BOX"
+  printf '%s\n' "REFRESH FAILED $BOX: ${refuse#; } -- never reset; repair it by hand, then run fleet-worker.sh preflight $BOX"
   exit 1
 fi
 if [ "$before" = "$head" ]; then echo "REFRESH OK $BOX skills=$(echo "$head" | cut -c1-9) (already current)"

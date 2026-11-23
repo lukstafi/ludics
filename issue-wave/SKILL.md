@@ -461,8 +461,12 @@ Per launch, on the launching box (ludics-lite#3): `launch` runs it itself before
 and `fleet-worker.sh preflight <box>` runs it alone: `--codex` for a Codex CLI host and
 `--gemini` for a Gemini one, as the early check before its first launch, and `--native-codex` or `--native-claude` once per box for native
 workers, which take the same freshness, skill-link and cross-box checks without CLI login, a
-headless model probe, or tmux. Every mode brings that box's `~/ludics` to upstream main and
-refuses on anything short of it:
+headless model probe, or tmux. Every mode brings that box's `~/ludics` to upstream main. The
+freshness check removes a directory Git lists as ignored under the worktree root when it is
+named `__pycache__`, has no paths tracked in HEAD or the index, and contains only regular
+`*.pyc` files. Each removal prints `REMOVED <path> (ignored bytecode cache)` on stderr.
+
+Preflight refuses on:
 
 - any local change, tracked or untracked, anywhere in the checkout (the whole tree is served; a
   stray `.claude/` left by running claude inside it is reported, not refused, unless it blocks
