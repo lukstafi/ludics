@@ -45,11 +45,14 @@
 #     finding no interpreter, or hanging past --timeout while it looks, is 125, and so is a base
 #     scripts/py that cannot run; a base without one falls back to python3 and says so; a lib/ path CI's discovery never runs (no
 #     module name, not test_*.py, outside a package) is refused; a *.py outside lib/ runs under
-#     python3;
+#     python3; a *.py suite whose first suite argument is a bare `--` exits 125 with the corrected
+#     command without `--` (#1296);
 #   - --command runs a project's runner (a PATH program, or the run tree's copy of a checkout
 #     file, the working tree's only when --also carries it) from the root of the run's tree, its
 #     argv after the required `--` verbatim; the malformed forms, a program not found or not
-#     startable, and a missing env interpreter exit 125, a hang 124 (#765);
+#     startable, and a missing env interpreter exit 125, a hang 124 (#765); an absolute executable
+#     outside the checkout exits 125 with the corrected `env` (or `sh -c` on `=`) command, while a
+#     symlink into the checkout is refused without suggesting `env` (#1296);
 #   - --revert <commit> <path> undoes that commit's change under the path in the throwaway tree
 #     (the working-tree snapshot without --base): the change's other files and later independent
 #     edits stay, added files go and modes return, overlapping commits revert newest first, and a
@@ -1174,6 +1177,48 @@ if [ "$rc" -eq 0 ] && grep -qF 'runs as: python3 ./scripts/test-plain.py' <<<"$o
 else
   ko "outside lib/: rc=$rc -- $out"
 fi
+# A *.py suite whose first suite argument is a bare `--` is refused (125) with the corrected
+# command (no `--`), so unittest never exits 1 while testing nothing (#1296).
+run_py lib/toy/tests/test_calc.py -- -v -k test_add_nonzero
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'lib/toy/tests/test_calc.py -v -k test_add_nonzero' <<<"$out" \
+  && ! grep -qE 'Ran |FAILED \(|ImportError' <<<"$out"; then
+  ok "a lib/ *.py suite with leading \`--\` exits 125 with the corrected command, never unittest's exit 1"
+else
+  ko "lib/ *.py leading --: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py --base fixed -- -k test_add_nonzero
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'lib/toy/tests/test_calc.py --base fixed -k test_add_nonzero' <<<"$out" \
+  && ! grep -qE 'Ran |FAILED \(|ImportError' <<<"$out"; then
+  ok "...preserving helper options (--base) in the corrected command"
+else
+  ko "lib/ *.py --base then --: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py --
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'drop the `--`:' <<<"$out" \
+  && grep -qE 'lib/toy/tests/test_calc\.py$' <<<"$out" \
+  && ! grep -qE 'Ran |FAILED \(' <<<"$out"; then
+  ok "...and a trailing bare \`--\` with no further arguments exits 125 too"
+else
+  ko "lib/ *.py trailing --: rc=$rc -- $out"
+fi
+run_py lib/toy/tests/test_calc.py --base fixed -- -- -k test_add_nonzero
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'lib/toy/tests/test_calc.py --base fixed -k test_add_nonzero' <<<"$out"; then
+  ok "...and repeated leading \`--\` are all dropped from the corrected command"
+else
+  ko "lib/ *.py repeated --: rc=$rc -- $out"
+fi
+run_py scripts/test-plain.py -- -v
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- 'scripts/test-plain.py -v' <<<"$out" \
+  && ! grep -qF 'PYTHONPATH=' <<<"$out"; then
+  ok "a *.py suite outside lib/ with leading \`--\` exits 125 with the corrected command"
+else
+  ko "outside lib/ *.py leading --: rc=$rc -- $out"
+fi
 py_clean "after the *.py cases"
 
 # ---- --command: a project's own runner, from the root of the run's tree (ludics-lite#765) -------
@@ -1237,6 +1282,80 @@ cmd_refusal "options with no --" 'needs -- <program> [args...]' --command --also
 cmd_refusal "a -- with no program" 'needs a program after the --' --command --
 cmd_refusal "a program not on PATH" 'is not a program on PATH here' --command -- run-against-base-no-such-program
 cmd_refusal "a path outside the checkout" 'is not inside this checkout' --command -- "$TMP/outside.sh"
+# An absolute external executable (e.g. /bin/bash on macOS) exits 125 with the corrected `env`
+# invocation preserving options and args; the corrected form itself runs the control (#1296).
+run_rab --command --also test-toy.sh -- /bin/bash scripts/test-toy.sh one
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'is not inside this checkout' <<<"$out" \
+  && grep -qF -- '--command --also test-toy.sh -- env /bin/bash scripts/test-toy.sh one' <<<"$out"; then
+  ok "--command refuses an absolute external program (/bin/bash) with 125 and the corrected env command"
+else
+  ko "--command /bin/bash: rc=$rc -- $out"
+fi
+run_rab --command --also test-toy.sh -- env /bin/bash scripts/test-toy.sh one
+if [ "$rc" -eq 1 ] && grep -qF 'FAIL: add 2 3' <<<"$out" && grep -qF 'ARGS=[one]' <<<"$out"; then
+  ok "...and the corrected \`-- env /bin/bash ...\` form runs the negative control"
+else
+  ko "--command env /bin/bash control: rc=$rc -- $out"
+fi
+out=$(cd "$R/scripts" && env PATH="/bin:$PATH" TMPDIR="$HTMP" RUN_AGAINST_BASE_GRACE=1 "$RAB" --command --also test-toy.sh -- bash scripts/test-toy.sh one 2>&1)
+rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'FAIL: add 2 3' <<<"$out" && grep -qF 'ARGS=[one]' <<<"$out"; then
+  ok "...and \`env PATH=/bin:\"\$PATH\" ... -- bash ...\` selects /bin/bash under the PATH rule"
+else
+  ko "--command PATH=/bin bash control: rc=$rc -- $out"
+fi
+# A symlink outside the checkout pointing to an external executable gets the `env` correction too
+# (not the checkout-symlink refusal); one pointing INTO the checkout never suggests `env`.
+ln -s /bin/bash "$TMP/ext-bash"
+run_rab --command --also test-toy.sh -- "$TMP/ext-bash" scripts/test-toy.sh
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'is not inside this checkout' <<<"$out" \
+  && grep -qF -- "--command --also test-toy.sh -- env $TMP/ext-bash scripts/test-toy.sh" <<<"$out"; then
+  ok "--command refuses an external symlink to an external executable with the corrected env command"
+else
+  ko "--command external symlink: rc=$rc -- $out"
+fi
+ln -s "$R/scripts/test-toy.sh" "$TMP/ext-into-repo.sh"
+run_rab --command -- "$TMP/ext-into-repo.sh"
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'is a symlink into this checkout' <<<"$out" \
+  && ! grep -qF -- '-- env ' <<<"$out"; then
+  ok "--command refuses an external symlink pointing into the checkout without suggesting env"
+else
+  ko "--command external symlink into checkout: rc=$rc -- $out"
+fi
+# An absolute external executable whose path holds `=` gets `sh -c`, since `env` reads `=` as an
+# assignment; a non-executable outside file or a relative escaping path gets no `env` suggestion.
+mkdir -p "$TMP/dir=eq"
+cp -p "$TMP/outside.sh" "$TMP/dir=eq/prog"
+run_rab --command -- "$TMP/dir=eq/prog" arg1
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'is not inside this checkout' <<<"$out" \
+  && grep -qF -- '-- sh -c ' <<<"$out" \
+  && grep -qF -- "$TMP/dir=eq/prog arg1" <<<"$out" \
+  && ! grep -qF -- '-- env ' <<<"$out"; then
+  ok "--command refuses an external executable containing \`=\` with the sh -c form, not env"
+else
+  ko "--command external = path: rc=$rc -- $out"
+fi
+printf 'plain\n' >"$TMP/plain.txt"
+run_rab --command -- "$TMP/plain.txt"
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'is not inside this checkout' <<<"$out" \
+  && ! grep -qF -- '-- env ' <<<"$out"; then
+  ok "--command refuses a non-executable outside file without suggesting env"
+else
+  ko "--command non-executable outside: rc=$rc -- $out"
+fi
+run_rab --command -- ../../outside.sh
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'is not inside this checkout' <<<"$out" \
+  && ! grep -qF -- '-- env ' <<<"$out"; then
+  ok "--command refuses a relative path escaping the checkout without suggesting env"
+else
+  ko "--command relative outside: rc=$rc -- $out"
+fi
 cmd_refusal "a symlinked program" 'is a symlink' --command -- ./fixlink.sh
 cmd_refusal "a program the base does not hold" 'scripts/test-new.sh is not a regular file in origin/main' --command -- ./test-new.sh
 cmd_refusal "a program whose env interpreter is missing" 'needs run-against-base-no-such-interpreter' --command --also test-envmiss.sh -- ./test-envmiss.sh
