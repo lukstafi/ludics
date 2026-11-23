@@ -197,6 +197,7 @@ class CoordinatorPreflight(WaveDirCase):
                     self.assertIn("PREFLIGHT REFUSED mac planner (claude claude-custom)", err)
                     self.assertIn("claude auth login", err)
                     self.assertIn("claude setup-token", err)
+                    self.assertIn("unset it to use a stored login", err)
                     self.assertNotIn("private diagnostic", err)
                     argv, = claude.calls()
                     self.assertIn("low", argv)
@@ -232,14 +233,16 @@ class CoordinatorPreflight(WaveDirCase):
     def test_non_claude_models_use_their_own_cli(self) -> None:
         self.write("wave.json", json.dumps(wave_data(self.dir, review={"kind": "gemini", "model": "gemini-reviewer"})))
         with FakeTool("codex") as codex, FakeTool("agy") as agy:
-            codex.route((When(has=("gpt-custom", "read-only", "model_reasoning_effort=low")),
+            codex.route((When(has=("gpt-custom", "read-only", "--ephemeral", "model_reasoning_effort=low")),
                          Answer(file_flag="-o", file_text="ok\n")))
-            agy.route((When(prefix=("--model", "gemini-reviewer"), has=("stream-json",)),
+            agy.route((When(prefix=("--model", "gemini-reviewer"), has=("stream-json", '{"toolPermission":"strict"}')),
                        Answer(stdout='{"event":"result","result":{"status":"SUCCESS","response":"ok"}}')))
             rc, out, err = self.probe("--mode", "paired", "--model", "gpt-custom", "--effort", "low")
             self.assertEqual((rc, err), (0, ""))
             self.assertEqual(out.splitlines(), ["PREFLIGHT OK mac planner (codex gpt-custom)",
                                                 "PREFLIGHT OK mac reviewer (agy gemini-reviewer)"])
+            argv, = agy.calls()
+            self.assertNotIn("--dangerously-skip-permissions", argv)
 
 
 class Prep(WaveDirCase):

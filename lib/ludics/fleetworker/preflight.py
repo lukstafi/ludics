@@ -131,7 +131,8 @@ def claude_probe_result(done: proc.Completed) -> str:
     elif done.rc != 0:
         diagnostics.append(done.stdout)
     if any(CLAUDE_AUTH.search(line) for line in diagnostics):
-        return "claude authentication failed. Repair on this box with `claude auth login` or use `claude setup-token` for an unattended token"
+        return ("claude authentication failed. Replace any rejected exported credential or unset it to use a stored login."
+                " Repair on this box with `claude auth login` or use `claude setup-token` for an unattended token")
     return "claude returned no successful headless result"
 
 
@@ -147,10 +148,13 @@ def probe_coordinator_turn(tool: str, model: str, effort: str, timeout: int) -> 
             if effort:
                 argv += ["--effort", effort]
         elif tool == "agy":
-            argv, stdin = agy.argv(model), agy.message(prompt)
+            # The real planner and reviewer need tool access. This prompt needs no approvals.
+            argv = ["--model", model, "--input-format", "stream-json", "--output-format", "stream-json",
+                    "--settings", '{"toolPermission":"strict"}']
+            stdin = agy.message(prompt)
         else:
             argv = ["exec", "--json", "-m", model, "-c", f"model_reasoning_effort={effort}",
-                    "-s", "read-only", "--skip-git-repo-check", "-o", str(answer), "-"]
+                    "-s", "read-only", "--ephemeral", "--skip-git-repo-check", "-o", str(answer), "-"]
         try:
             done = proc.run_tool(tool, argv, cwd=directory, stdin=stdin, timeout=timeout)
         except OSError as exc:

@@ -6752,7 +6752,7 @@ printf '# Task @@T@@: @@ISSUE@@\n\nVerification is cc only. Live GPU evidence is
 jq -n --arg co "$proj" '{wave:"wkv", repository:"example/project", checkout:$co, worker_prefix:"wk", agent_host:"testbox",
   transport:"subagent", kind:"claude", standing_purpose:"standing iteration for @@T@@",
   loops:{cc:{box:"testbox", purpose:"cc integration loop", checkout:"/nowhere", tip:"master", command:["true"], cpu:true, poll:1}}}' > "$K/wave.json"
-expect "coordinator preflight runs the paired planner through the JSON CLI" 0 "^PREFLIGHT OK testbox planner \(claude fable\)$" -- \
+expect "coordinator preflight runs the paired planner through the JSON CLI" 0 "^PREFLIGHT OK testbox planner (claude fable)$" -- \
   "${FWK[@]}" preflight testbox --planner "$K/wave.json" --mode paired
 export SHIM_GH_PR_LIST="$K/prs.json"; echo '[]' > "$SHIM_GH_PR_LIST"
 pbase=$(git -C "$proj" rev-parse HEAD)
