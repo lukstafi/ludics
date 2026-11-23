@@ -372,8 +372,10 @@
 #             answered); 1 the fact does not hold (the window stayed quiet, no such thread, the API
 #             rejected the request, a build check or a checkless workflow run is RED, the merge was
 #             refused); 2
-#             usage/configuration error; 3 TRANSPORT failure — nothing was learned, so retry rather
-#             than concluding anything, which for `watch` includes a verdict WITHHELD because the
+#             usage/configuration error; 3 TRANSPORT failure — retry unread reads. If a merge write
+#             failed ambiguously, confirm over REST (`gh api repos/<owner>/<repo>/pulls/<n>
+#             --jq .merged`) before retrying the write.
+#             For `watch`, 3 includes a verdict WITHHELD because the
 #             final poll or the state re-read behind it did not answer. Under `checks`/`merge`
 #             --wait, a gate read that did not answer (the PR head, the check runs, the
 #             workflow runs) is retried within the wait, so 3 there means the wait was spent with
