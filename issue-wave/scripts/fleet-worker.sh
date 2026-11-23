@@ -96,7 +96,7 @@
 #                          # no re-read lifts arrives (red, unknown, halt ...: at once), or no read may start
 #                          # before the deadline; pause FLEET_GATE_REREAD_INTERVAL (60) s; #872, gate.py THE WAIT
 #   fleet-worker.sh launch <box> <name> --target-repo <owner/repo> --kind claude|codex|gemini --brief <file>
-#                          [--standing <reserve.json>] [--result-file <local path>]
+#                          [--standing <reserve.json>] [--result-file <local path>] [--status <local path>]
 #                          (--cwd <dir> | --repo <checkout-dir> --branch <branch> [--base <ref>])
 #                          [--base-branch <branch>] [--force --allow-red-base <reason>]
 #                          [--replace] [--no-cross] [-- <extra CLI args>]
@@ -309,10 +309,11 @@
 #                          # gives the task one of the wave file's profiles (a mixed wave); a CLI
 #                          # task is prepared with nothing made or reserved; --tier writes the
 #                          # task's difficulty tier to its row as tier= (waveprep.py)
-#   fleet-worker.sh wave launch <wave.json> <task>   # start a prepared CLI worker: the rivals read
+#   fleet-worker.sh wave launch <wave.json> <task> [--status <file>] [--launch-id <id>]   # start a prepared CLI worker: the rivals read
 #                          # again, its scratch on its host, launch --standing with the profile's
 #                          # model and effort, its legs' reservations and the row; exit 3 when it
-#                          # launched with a NOTE to reconcile (wavelaunch.py)
+#                          # launched with a NOTE to reconcile; --status records the outcome JSON
+#                          # (pre-start/not-started/reserved/started/uncertain) bound to --launch-id (wavelaunch.py)
 #   fleet-worker.sh wave unprep <wave.json> <task>   # take a prepared, never-launched CLI task back
 #                          # (its row, files and manifest, by what the manifest names), so it is
 #                          # prepared again under its own id; refuses a native task, a launch on

@@ -277,6 +277,98 @@ class StandingLaunch(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit):
                     workers.standing_request(payload.name, "box", "o/r")
 
+    def test_launch_status_distinguishes_pre_start_reserved_started_and_uncertain(self) -> None:
+        """ludics#1290: launch --status proves pre-start lease loss and never claims it after reservation or start."""
+        cfg = load_config(SCRIPT, {"FLEET_LOCAL_BOX": "box"}, host="box")
+        cases = [
+            # gates, reserve_rc, start_rc, conclude_rc, want_rc, want_outcome
+            ([6], 0, 0, 0, 6, "pre-start"),
+            ([0, 6], 0, 0, 0, 6, "pre-start"),
+            ([0, 0], 6, 0, 0, 6, "pre-start"),
+            ([0, 0], 1, 0, 0, 1, "uncertain"),
+            ([0, 0], 4, 0, 0, 4, "uncertain"),
+            ([0, 0, 6], 0, 0, 0, 6, "reserved"),
+            ([0, 0, 1], 0, 0, 6, 6, "reserved"),
+            ([0, 0, 1], 0, 0, 0, 1, "not-started"),
+            ([0, 0, 0], 0, farside.LAUNCH_NOT_STARTED, 6, 6, "reserved"),
+            ([0, 0, 0], 0, farside.LAUNCH_NOT_STARTED, 0, 1, "not-started"),
+            ([0, 0, 0], 0, 0, 0, 0, "started"),
+            ([0, 0, 0], 0, 2, 0, 4, "uncertain"),
+        ]
+        for gates, reserve_rc, start_rc, conclude_rc, want_rc, want_outcome in cases:
+            def run(*args: object, start_rc: int = start_rc, **kwargs: object) -> Done:
+                script = str(args[2])
+                if script.endswith(farside.LAUNCH_PREPARE):
+                    return Done(0, "/checkout\n")
+                if script.endswith(farside.LAUNCH_DROP_BRIEF):
+                    return Done(0, "")
+                return Done(start_rc, "")
+
+            def worker(_cfg: object, args: list[str], _payload: dict[str, Any], *, verb: str,
+                       reserve_rc: int = reserve_rc, conclude_rc: int = conclude_rc) -> int:
+                return reserve_rc if args[1] == "run" else conclude_rc
+
+            with tempfile.TemporaryDirectory() as d:
+                payload = os.path.join(d, "standing.json")
+                status_file = os.path.join(d, "status.json")
+                with open(payload, "w", encoding="utf-8") as f:
+                    json.dump({"request_id": "req", "standing": True, "kind": "correctness",
+                               "execution_host": "box", "repository": "o/r"}, f)
+                with (self.subTest(gates=gates, reserve_rc=reserve_rc, start_rc=start_rc, conclude_rc=conclude_rc),
+                      patch.object(workers, "anchor_gate", side_effect=gates),
+                      patch.object(workers, "base_gate", return_value=0),
+                      patch.object(workers, "run_preflight", return_value=Done(0, "OK")),
+                      patch.object(workers, "run_on", side_effect=run),
+                      patch.object(workers, "put_file", return_value=Done(0, "")),
+                      patch.object(workers.tiprun, "fleet_worker", side_effect=worker),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    rc = workers.cmd_launch(cfg, ["local", "w", "--target-repo", "o/r", "--kind", "codex",
+                                                  "--cwd", "/checkout", "--brief", payload,
+                                                  "--standing", payload, "--status", status_file])
+                self.assertEqual(rc, want_rc)
+                read = workers.read_launch_status(status_file, want_rc, "box", "w")
+                self.assertIsNotNone(read)
+                assert read is not None
+                self.assertEqual(read["outcome"], want_outcome)
+
+    def test_launch_status_usage_guards_and_unwritable_note(self) -> None:
+        cfg = load_config(SCRIPT, {"FLEET_LOCAL_BOX": "box"}, host="box")
+        with tempfile.TemporaryDirectory() as d:
+            brief = os.path.join(d, "brief.md")
+            open(brief, "w", encoding="utf-8").close()
+            for extra, why in (
+                (["--status"], "--status <local path> required"),
+                (["--status", "--no-cross"], "--status <local path> required"),
+                (["--status", os.path.join(d, "a"), "--status", os.path.join(d, "b")], "at most once"),
+                (["--status", brief], "names a file of its own"),
+                (["--result-file", os.path.join(d, "r"), "--status", os.path.join(d, "r")], "names a file of its own"),
+            ):
+                stderr = io.StringIO()
+                with self.subTest(extra=extra), contextlib.redirect_stderr(stderr), self.assertRaises(cli.Exit) as caught:
+                    workers.cmd_launch(cfg, ["local", "w", "--target-repo", "o/r", "--kind", "codex",
+                                             "--cwd", "/checkout", "--brief", brief, *extra])
+                self.assertEqual(caught.exception.rc, 2)
+                self.assertIn(why, caught.exception.message)
+            # Unwritable status path (a directory) emits a NOTE and preserves the exit status.
+            stderr = io.StringIO()
+            with (patch.object(workers, "anchor_gate", return_value=6),
+                  contextlib.redirect_stdout(io.StringIO()),
+                  contextlib.redirect_stderr(stderr)):
+                rc = workers.cmd_launch(cfg, ["local", "w", "--target-repo", "o/r", "--kind", "codex",
+                                              "--cwd", "/checkout", "--brief", brief, "--status", d])
+            self.assertEqual(rc, 6)
+            self.assertIn("LAUNCH STATUS NOTE box/w:", stderr.getvalue())
+            # Fail-closed reader rejects wrong exit, host, worker, outcome, or extra keys.
+            good_path = os.path.join(d, "good.json")
+            workers.write_launch_status(good_path, 6, "box", "w", "pre-start")
+            self.assertIsNotNone(workers.read_launch_status(good_path, 6, "box", "w"))
+            self.assertIsNone(workers.read_launch_status(good_path, 1, "box", "w"))
+            self.assertIsNone(workers.read_launch_status(good_path, 6, "other", "w"))
+            self.assertIsNone(workers.read_launch_status(good_path, 6, "box", "other"))
+            with open(good_path, "w", encoding="utf-8") as f:
+                json.dump({"exit": 6, "host": "box", "worker": "w", "outcome": "pre-start", "extra": 1}, f)
+            self.assertIsNone(workers.read_launch_status(good_path, 6, "box", "w"))
+
 
 class UnstickTally(unittest.TestCase):
     """ludics#1214: an unstick that exited 0 counts its turn on the row (tally.py), and only then."""
