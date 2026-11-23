@@ -122,6 +122,22 @@ class FleetWorker(unittest.TestCase):
         self.assertIn('dir=$(fleet_worker "$fw" execution slot --bg', tiprun.FAR)
 
 
+HOLD_LOCK_GUARD = r"""
+hold_lock_guard() {
+  perl -MFcntl=:flock -e '
+    open my $dir, "<", $ARGV[0] or exit 1;
+    flock($dir, LOCK_EX) or exit 2;
+    open my $ready, ">", $ARGV[1] or exit 3;
+    close $ready;
+    sleep 8;
+  ' "$1" "$1.ready" >/dev/null 2>&1 &
+  guard=$!
+  for _ in $(seq 40); do [ -f "$1.ready" ] && return 0; sleep 0.1; done
+  return 1
+}
+"""
+
+
 class TakeLock(unittest.TestCase):
     def test_release_after_failed_mkdir_is_retried_with_zero_wait(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,6 +174,97 @@ exit "$rc"
         self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
         self.assertRegex(done.stdout, r"^fixture: cannot create lock .* \(unwritable\?\)\n")
         self.assertTrue(done.stdout.endswith("\nattempts=4\n"), done.stdout)
+
+    def test_rechecks_an_ownerless_lock_that_becomes_fresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = os.path.join(tmp, "lock")
+            os.mkdir(lock)
+            done = run_far(coordinator(), "far", r"""
+mtime() {
+  if [ ! -e "$LOCK.observed" ]; then
+    # The directory changes after this read snapshots its old age.
+    touch "$LOCK" "$LOCK.observed" || return 1
+    printf '1\n'
+  else
+    now
+  fi
+}
+take_lock "$LOCK" 0 fixture
+rc=$?
+test -f "$LOCK.observed" && test ! -e "$LOCK/pid" && test ! -e "$LOCK/start" || exit 8
+exit "$rc"
+""", {"LOCK": lock}, timeout=5)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("held for 0s", done.stdout)
+
+    def test_guard_failure_preserves_a_stale_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = os.path.join(tmp, "lock")
+            done = run_far(coordinator(), "far", r"""
+mkdir "$LOCK" || exit 8
+printf '%s\n' "$$" > "$LOCK/pid"
+printf '%s\n' 'stale start' > "$LOCK/start"
+perl() { return 1; }
+take_lock "$LOCK" 0 fixture
+rc=$?
+test "$(cat "$LOCK/pid")" = "$$" && test "$(cat "$LOCK/start")" = 'stale start' || exit 8
+exit "$rc"
+""", {"LOCK": lock}, timeout=5)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("directory flock or metadata write failed", done.stdout)
+
+    def test_busy_guard_charges_the_contenders_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = os.path.join(tmp, "lock")
+            done = run_far(coordinator(), "far", HOLD_LOCK_GUARD + r"""
+mkdir "$LOCK" || exit 8
+printf '%s\n' "$$" > "$LOCK/pid"
+printf '%s\n' 'stale start' > "$LOCK/start"
+hold_lock_guard "$LOCK" || exit 8
+take_lock "$LOCK" 0 reclaim; reclaim_rc=$?
+# The uutils mkdir race can send a contender directly to registration.
+mkdir() { return 0; }
+take_lock "$LOCK" 0 register; register_rc=$?
+alive=0; kill -0 "$guard" 2>/dev/null && alive=1
+kill "$guard" 2>/dev/null
+wait "$guard" 2>/dev/null
+[ "$reclaim_rc" = 1 ] && [ "$register_rc" = 1 ] && [ "$alive" = 1 ] || exit 8
+test "$(cat "$LOCK/pid")" = "$$" && test "$(cat "$LOCK/start")" = 'stale start'
+""", {"LOCK": lock}, timeout=15)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertRegex(done.stdout, r"(?m)^reclaim: .* held by pid [0-9]+ for 0s")
+        self.assertRegex(done.stdout, r"(?m)^register: .* held by pid [0-9]+ for 0s")
+
+    def test_busy_guard_does_not_leave_a_successful_mkdir_behind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = os.path.join(tmp, "lock")
+            done = run_far(coordinator(), "far", HOLD_LOCK_GUARD + r"""
+mkdir() {
+  command mkdir "$@" || return 1
+  hold_lock_guard "$1" || exit 8
+  trap 'kill "$guard" 2>/dev/null; wait "$guard" 2>/dev/null' EXIT
+}
+take_lock "$LOCK" 0 first; first_rc=$?
+test "$first_rc" = 1 && test ! -e "$LOCK" || exit 8
+unset -f mkdir
+# The next claimant can use a new inode even while the guard on the old inode is held.
+kill -0 "$guard" && take_lock "$LOCK" 0 successor || exit 8
+test -s "$LOCK/pid" && test -s "$LOCK/start" && release_lock "$LOCK"
+""", {"LOCK": lock}, timeout=15)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertRegex(done.stdout, r"^first: .* held for 0s")
+
+    def test_relative_paths_work_for_registration_and_release(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            done = run_far(coordinator(), "far", r"""
+CDPATH= cd "$WORK" && mkdir "relative state" || exit 8
+lock="relative state/lock"
+take_lock "$lock" 0 fixture || exit $?
+test -s "$lock/pid" && test -s "$lock/start" || exit 8
+release_lock "$lock" && test ! -e "$lock"
+""", {"WORK": tmp}, timeout=5)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(done.stdout, "")
 
 
 class Pin(unittest.TestCase):
