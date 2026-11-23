@@ -2844,7 +2844,12 @@ class Markers(unittest.TestCase):
                               'EXECUTION_RESULT {"request_id":"...","run":"/abs/path","exit":0,"observed_sha":"<40-hex>"}'),
                              ("The HANDBACK follows\nPR 7", "the last line starts 'PR'"),
                              ("Summary before marker.\nHANDBACK t42\nPR /pull/7", "the last line starts 'PR'"),
-                             (f"REVIEW_REQUEST 7 {A}\nHANDBACK t42\nPR /pull/7", "the last line starts 'PR'"),
+                             (f"REVIEW_REQUEST 7 {A}\nHANDBACK t42\nPR /pull/7", "more than one marker: review, handback"),
+                             (f"CONFIRM_REQUEST 7 {A}\nHANDBACK t42\nPR /pull/7", "more than one marker: confirm, handback"),
+                             ('EXECUTION_RESULT {"request_id":"x"}\nHANDBACK t42\nPR /pull/7',
+                              "more than one marker: result, handback"),
+                             ("EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\nHANDBACK t42\nPR /pull/7",
+                              "more than one marker: request, handback"),
                              ("HANDBACK t42\nPR /pull/7\nEXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST",
                               "more than one marker: request, handback"),
                              (f"HANDBACK t42\n...\nREVIEW_REQUEST 7 {A}", "more than one marker: review, handback"),
@@ -2856,6 +2861,13 @@ class Markers(unittest.TestCase):
             got = wavedrive.classify(message)
             self.assertEqual(got.kind, "other", message)
             self.assertIn(why, got.why)
+
+    def test_farside_gemini_marker_guard_matches_wavedrive(self) -> None:
+        from ludics.fleetworker import farside
+        match = re.search(r"def prefix_has_marker:\s*test\(\"[^\"]*\(\?:([^)]+)\)\"\)", farside.LOG_LAST_RESULT)
+        self.assertIsNotNone(match, "farside.LOG_LAST_RESULT must define prefix_has_marker over MARKER_TOKENS")
+        assert match is not None
+        self.assertEqual(tuple(match.group(1).split("|")), wavedrive.MARKER_TOKENS)
 
     def test_only_live_cli_rows_past_pending_are_served(self) -> None:
         doc = {"tasks": [row("t1"), row("t2", state="pending"), row("t3", state="merged #7 at abc"), row("t4", transport="subagent"),

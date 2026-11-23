@@ -72,8 +72,9 @@ holds, or the turn is attention:
   review    the last line is ``REVIEW_REQUEST <pr> <40-hex sha>``
   confirm   the last line is ``CONFIRM_REQUEST <pr> <40-hex sha>``
   handback  the first line starts with ``HANDBACK``
-Two of them in one message, or none (``NEEDS_DESIGN``, ``PLAN_READY``, a question, a status), is
-attention, named by the last line's first word. A paired worker's PLAN ENVELOPE is read first: a
+Two of them in one message (including a later ``HANDBACK`` line beside another marker or an earlier
+``REVIEW_REQUEST``/``CONFIRM_REQUEST``), or none (``NEEDS_DESIGN``, ``PLAN_READY``, a question, a
+status), is attention, named by the last line's first word. A paired worker's PLAN ENVELOPE is read first: a
 message with a line that is exactly ``PLAN_READY`` and a later one exactly ``END_PLAN_READY`` is
 attention as a plan, whatever lines it holds, since a plan's Verification section may quote a
 marker (an ``EXECUTION_REQUEST`` example) that is no request.
@@ -352,6 +353,11 @@ CHANNEL = re.compile(r"\| turn=(\S+) background_tasks=(\S+) unread=([0-9]+) \|")
 SERVED = ("codex", "claude", "gemini")
 ASK = re.compile(r"(REVIEW|CONFIRM)_REQUEST #?([1-9][0-9]*) ([0-9a-f]{40})")
 RESULT = re.compile(r"EXECUTION_RESULT (\{.*\})")
+# Canonical line-leading marker tokens of THE MARKERS; farside.LOG_LAST_RESULT pins the same tuple.
+MARKER_TOKENS = (
+    "PLAN_READY", "END_PLAN_READY", "WINDOWS_WITNESS_REQUEST",
+    "EXECUTION_REQUEST", "EXECUTION_RESULT", "REVIEW_REQUEST", "CONFIRM_REQUEST", "HANDBACK",
+)
 PULL = re.compile(r"/pull/([1-9][0-9]*)")
 SHA40 = re.compile(r"[0-9a-f]{40}")
 REF = re.compile(r"[^#\s]+#([1-9][0-9]*)")
@@ -550,6 +556,16 @@ def classify(message: str) -> Turn:
     if lines[0].startswith("HANDBACK"):
         pull = PULL.search(message)
         found.append(Turn("handback", pr=pull.group(1) if pull else ""))
+    elif any(line.startswith("HANDBACK") for line in lines[1:]):
+        # A later HANDBACK beside another marker (including an earlier REVIEW/CONFIRM_REQUEST)
+        # must never let the other marker execute alone (#1308).
+        earlier = list(dict.fromkeys([
+            *(t.kind for t in found),
+            *("review" if m.group(1) == "REVIEW" else "confirm"
+              for m in (ASK.fullmatch(line) for line in lines[:-1]) if m),
+        ]))
+        if earlier:
+            return Turn("other", "a final message with more than one marker: " + ", ".join([*earlier, "handback"]))
     if len(found) == 1:
         return found[0]
     if found:

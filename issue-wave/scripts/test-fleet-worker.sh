@@ -2827,6 +2827,22 @@ jq -cn '
   {event:"result",result:{conversation_id:"g6",status:"SUCCESS",response:"HANDBACK t9\ntrailing"}}' | fixture_stream lr-gemini-active gemini
 printf 'HANDBACK t9\ntrailing\n' > "$TMP/want-gemini-active"
 expect_exact "...and a trailing uncompleted step falls back fail-closed to result.response" 0 "$TMP/want-gemini-active" -- "$FW" log testbox lr-gemini-active --last-result
+# Fail-closed marker guard: if any earlier step contains a line starting with a wavedrive marker
+# token (e.g. REVIEW_REQUEST or EXECUTION_RESULT), print result.response whole so classify sees both.
+jq -cn '
+  {event:"init",conversation_id:"g7"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"REVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE",text_delta:"HANDBACK t89\nMerged /pull/17.\n"}},
+  {event:"result",result:{conversation_id:"g7",status:"SUCCESS",response:"REVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nHANDBACK t89\nMerged /pull/17.\n"}}' | fixture_stream lr-gemini-marker-prefix gemini
+printf 'REVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nHANDBACK t89\nMerged /pull/17.\n\n' > "$TMP/want-gemini-marker-prefix"
+expect_exact "...and a marker in an earlier step falls back to result.response whole" 0 "$TMP/want-gemini-marker-prefix" -- "$FW" log testbox lr-gemini-marker-prefix --last-result
+jq -cn '
+  {event:"init",conversation_id:"g8"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"EXECUTION_RESULT {\"request_id\":\"r1\",\"run\":\"/r\",\"exit\":0,\"observed_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE",text_delta:"HANDBACK t89\nMerged /pull/17.\n"}},
+  {event:"result",result:{conversation_id:"g8",status:"SUCCESS",response:"EXECUTION_RESULT {\"request_id\":\"r1\",\"run\":\"/r\",\"exit\":0,\"observed_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\nHANDBACK t89\nMerged /pull/17.\n"}}' | fixture_stream lr-gemini-result-prefix gemini
+printf 'EXECUTION_RESULT {"request_id":"r1","run":"/r","exit":0,"observed_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\nHANDBACK t89\nMerged /pull/17.\n\n' > "$TMP/want-gemini-result-prefix"
+expect_exact "...and an EXECUTION_RESULT in an earlier step also falls back whole" 0 "$TMP/want-gemini-result-prefix" -- "$FW" log testbox lr-gemini-result-prefix --last-result
 }
 
 section "halt" && {
@@ -7064,6 +7080,17 @@ setup_step "could not resume wk-89 (setup)" "$FW" unstick testbox wk-89 --messag
 "$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
 expect "a second marker inside the final gemini step stays attention" 0 \
   "^DRIVE ATTENTION t89 turn 1: a final message with more than one marker: review, handback" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+printf 'REVIEW_REQUEST 17 %s\n' "$pbase" > "$K/agy-progress"
+printf 'HANDBACK t89\nMerged https://github.com/example/project/pull/17.\n' > "$K/agy-say"
+setup_step "could not resume wk-89 for earlier REVIEW_REQUEST (setup)" "$FW" unstick testbox wk-89 --message "$K/retry-msg.md"
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "a REVIEW_REQUEST in an earlier gemini step before HANDBACK stays attention" 0 \
+  "^DRIVE ATTENTION t89 turn 2: a final message with more than one marker: review, handback" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+printf 'EXECUTION_RESULT {"request_id":"req-1","run":"/tmp/run-1","exit":0,"observed_sha":"%s"}\n' "$pbase" > "$K/agy-progress"
+setup_step "could not resume wk-89 for earlier EXECUTION_RESULT (setup)" "$FW" unstick testbox wk-89 --message "$K/retry-msg.md"
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "an EXECUTION_RESULT in an earlier gemini step before HANDBACK stays attention" 0 \
+  "^DRIVE ATTENTION t89 turn 3: a final message with more than one marker: result, handback" -- "${FWD[@]}" wave drive "$K/wave.json" --once
 setup_step "could not close t89's row (setup)" "${FWK[@]}" board set wkv t89 state=dropped
 "$FW" close testbox wk-89 >/dev/null 2>&1
 fixture_done wkv-t89-testbox-iterate

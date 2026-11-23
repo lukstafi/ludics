@@ -1632,8 +1632,12 @@ case "$kind" in
   # agy concatenates every agent_response step of a turn (each reactive-wakeup wait message plus
   # the final reply) into .result.response (#1308). Match codex last-message semantics by taking
   # the last non-empty DONE agent_response step of the last completed turn, verified fail-closed
-  # as a line-boundary suffix of .result.response; fall back to .result.response otherwise.
-  gemini) prog='reduce (inputs | fromjson? | select(type == "object")) as $e ({buf: {}, done: null, last: null};
+  # as a line-boundary suffix of .result.response AND with no line in the stripped prefix starting
+  # with any wavedrive.MARKER_TOKENS marker (pinned in test_fleetworker_wave.py); fall back to
+  # .result.response whole otherwise so wavedrive.classify sees every marker.
+  gemini) prog='def prefix_has_marker:
+      test("(?m)^[ \\t]*(?:PLAN_READY|END_PLAN_READY|WINDOWS_WITNESS_REQUEST|EXECUTION_REQUEST|EXECUTION_RESULT|REVIEW_REQUEST|CONFIRM_REQUEST|HANDBACK)");
+    reduce (inputs | fromjson? | select(type == "object")) as $e ({buf: {}, done: null, last: null};
       if $e.event == "init" then .buf = {} | .done = null
       elif $e.event == "step_update"
            and ($e.step_update | type) == "object"
@@ -1657,7 +1661,10 @@ case "$kind" in
       elif .status != "SUCCESS" then {why: "the latest turn ended \(if .status == "" then "with no status" else .status end): \(.err[0:200] | gsub("\n"; " "))"}
       elif (.resp | type) == "string" and (.resp | length) > 0 then
         .resp as $r | .done as $d
-        | {text: (if ($d | type) == "string" and ($r == $d or ($r | endswith("\n" + $d)) or (($d | startswith("\n")) and ($r | endswith($d)))) then $d else $r end)}
+        | {text: (if ($d | type) == "string"
+                     and ($r == $d or ($r | endswith("\n" + $d)) or (($d | startswith("\n")) and ($r | endswith($d))))
+                     and (($r[0:($r | length) - ($d | length)] | prefix_has_marker) | not)
+                  then $d else $r end)}
       else {why: "the latest turn ended SUCCESS with no response"} end' ;;
   *) echo "NO RESULT $BOX/$name: unknown worker kind '$kind'"; exit 1 ;;
 esac
