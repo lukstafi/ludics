@@ -162,6 +162,16 @@ driver hands you as an attention line.
    preflight <box> --native-claude|--native-codex` for a native worker's box, and `preflight <box>
    --codex` as the early check of a Codex CLI host. `launch` runs the box's preflight itself on
    every CLI launch, so the early check only finds a refusal before a launch meets it.
+
+   From the coordinator's session on the wave's agent host, also run
+   `fleet-worker.sh preflight <box> --planner <wave.json>` before starting a wave with a review
+   checkpoint or paired planning. It probes the configured reviewer. Add `--mode paired` or
+   `--mode paired+critique` to probe the peer planner as well, with the same `--model` and
+   `--effort` overrides as `peer-plan.sh start` if used. Each turn is bounded by
+   `FLEET_PROBE_TIMEOUT` (120 seconds by default). An absent CLI is reported as skipped and gives
+   no readiness evidence. On a refusal, apply the reported repair and repeat the command in the
+   same session before proceeding. The check records no readiness for later launches.
+
 2. **Per task:**
 
    ```

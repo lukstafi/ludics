@@ -20,7 +20,7 @@ from typing import Any
 from unittest import mock
 
 from ludics import cli, proc
-from ludics.fleetworker import farside, gate, revision, takeover, tally, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep, workers
+from ludics.fleetworker import farside, gate, preflight, revision, takeover, tally, wave, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep, workers
 from ludics.fleetworker.boardstore import NO_BOARD_EXIT
 from ludics.fleetworker.config import load_config
 from ludics.fleetworker.transport import UNREACHABLE, Done
@@ -158,6 +158,91 @@ class WaveDirCase(unittest.TestCase):
     def fake_run(self, argv: list[str], **_: Any) -> Done:
         self.shim_calls.append(argv[1:])
         return Done(self.shim_rc.get(" ".join(argv[1:3]), 0), "")
+
+
+class CoordinatorPreflight(WaveDirCase):
+    ok = Answer(stdout='{"type":"result","is_error":false,"result":"ok"}')
+
+    def probe(self, *args: str, box: str = "mac") -> tuple[int, str, str]:
+        cfg = load_config(SCRIPT, {"FLEET_LOCAL_BOX": "mac", "FLEET_PROBE_TIMEOUT": "1"})
+        return captured(preflight.cmd_preflight, cfg, [box, "--planner", self.path, *args])
+
+    def test_default_planner_and_wave_reviewer_each_get_a_headless_turn(self) -> None:
+        self.write("wave.json", json.dumps(wave_data(self.dir, review={"kind": "claude", "model": "opus"})))
+        with FakeTool("claude") as claude:
+            claude.route(
+                (When(prefix=("-p", "--model", "fable"), has=("high", "json")), self.ok),
+                (When(prefix=("-p", "--model", "opus"), has=("json",)), self.ok),
+            )
+            rc, out, err = self.probe("--mode", "paired+critique")
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(out.splitlines(), ["PREFLIGHT OK mac planner (claude fable)",
+                                                "PREFLIGHT OK mac reviewer (claude opus)"])
+            self.assertEqual(len(claude.calls()), 2)
+
+    def test_expired_claude_login_refuses_with_both_repairs(self) -> None:
+        with FakeTool("claude") as claude:
+            failures = [
+                Answer(1, '{"type":"result","terminal_reason":"api_error","is_error":true,'
+                          '"result":"This login reached its time limit and cannot be renewed. private diagnostic"}'),
+                Answer(0, '{"is_error":true,"errors":["authentication_error"]}'),
+                Answer(1, "Not logged in · Please run /login"),
+                Answer(1, stderr="API Error: 401 Unauthorized"),
+            ]
+            for failure in failures:
+                with self.subTest(failure=failure):
+                    claude.script(failure)
+                    rc, out, err = self.probe("--mode", "paired", "--model", "claude-custom", "--effort", "low")
+                    self.assertEqual((rc, out), (1, ""))
+                    self.assertIn("PREFLIGHT REFUSED mac planner (claude claude-custom)", err)
+                    self.assertIn("claude auth login", err)
+                    self.assertIn("claude setup-token", err)
+                    self.assertIn("unset it to use a stored login", err)
+                    self.assertNotIn("private diagnostic", err)
+                    argv, = claude.calls()
+                    self.assertIn("low", argv)
+
+    def test_timeout_refuses_without_suggesting_an_auth_repair(self) -> None:
+        with FakeTool("claude") as claude:
+            with open(os.path.join(claude.dir, "claude"), "w") as f:
+                f.write("#!/bin/sh\nsleep 4\n")
+            rc, out, err = self.probe("--mode", "paired")
+            self.assertEqual((rc, out), (1, ""))
+            self.assertIn("claude headless probe timed out after 1s", err)
+            self.assertNotIn("claude auth login", err)
+
+    def test_success_text_and_unrelated_failure_fields_are_outside_auth_check(self) -> None:
+        with FakeTool("claude") as claude:
+            claude.script(Answer(stdout='{"is_error":false,"result":"not logged in"}'),
+                          Answer(1, '{"is_error":true,"result":"service down","session_id":"invalid api key"}'))
+            self.assertEqual(self.probe("--mode", "paired")[0], 0)
+            rc, _, err = self.probe("--mode", "paired")
+            self.assertEqual(rc, 1)
+            self.assertIn("no successful headless result", err)
+            self.assertNotIn("claude auth login", err)
+
+    def test_no_roles_no_cli_and_no_remote_probe(self) -> None:
+        with FakeTool("claude") as claude:
+            self.assertEqual(self.probe(), (0, "", ""))
+            self.assertEqual(self.probe("--mode", "paired", box="other")[0], 2)
+            self.assertEqual(claude.calls(), [])
+        with mock.patch.dict(os.environ, {"PATH": self.dir}):
+            self.assertEqual(self.probe("--mode", "paired"), (0, "PREFLIGHT SKIP mac planner (claude fable):"
+                                                             " claude is absent from PATH\n", ""))
+
+    def test_non_claude_models_use_their_own_cli(self) -> None:
+        self.write("wave.json", json.dumps(wave_data(self.dir, review={"kind": "gemini", "model": "gemini-reviewer"})))
+        with FakeTool("codex") as codex, FakeTool("agy") as agy:
+            codex.route((When(has=("gpt-custom", "read-only", "--ephemeral", "model_reasoning_effort=low")),
+                         Answer(file_flag="-o", file_text="ok\n")))
+            agy.route((When(prefix=("--model", "gemini-reviewer"), has=("stream-json", '{"toolPermission":"strict"}')),
+                       Answer(stdout='{"event":"result","result":{"status":"SUCCESS","response":"ok"}}')))
+            rc, out, err = self.probe("--mode", "paired", "--model", "gpt-custom", "--effort", "low")
+            self.assertEqual((rc, err), (0, ""))
+            self.assertEqual(out.splitlines(), ["PREFLIGHT OK mac planner (codex gpt-custom)",
+                                                "PREFLIGHT OK mac reviewer (agy gemini-reviewer)"])
+            argv, = agy.calls()
+            self.assertNotIn("--dangerously-skip-permissions", argv)
 
 
 class Prep(WaveDirCase):

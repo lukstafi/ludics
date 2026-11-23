@@ -362,8 +362,9 @@ fleetworker/lease.py
     issue-wave/scripts/test-fleet-execution.py
 
 fleetworker/preflight.py
-    issue-wave/scripts/test-fleet-worker.sh preflight refresh "the real checkout" "launch /" execution
+    issue-wave/scripts/test-fleet-worker.sh preflight refresh "the real checkout" "launch /" execution "wave kit"
     issue-wave/scripts/test-fleet-execution.py
+    lib/ludics/tests/test_fleetworker_wave.py
 
 fleetworker/gate.py
     issue-wave/scripts/test-fleet-worker.sh "base gate" halt "execution run and conclude" "the real checkout" "coordinator lease" "launch /" "failure verdicts" unstick "codex workers" usage

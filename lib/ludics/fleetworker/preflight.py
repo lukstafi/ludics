@@ -8,6 +8,20 @@ whatever its checkout holds (ludics-lite#3). The checks themselves are the far s
 disagree about what "current" means); this module composes them, reads the knobs that bound them,
 and reports the correctness slots this configuration gives each roster box.
 
+COORDINATOR CHECK. ``preflight <box> --planner <wave.json> [--mode none|paired|paired+critique]
+[--model <m>] [--effort <e>]`` runs in the coordinator's own session on the wave's agent host.
+It reads the wave's typed review setting and the explicitly selected planning mode (default none),
+with peer-plan's default model and effort unless overridden. It does not infer modes from briefs,
+queues or board rows. Each selected role gets one tool-free prompt in an empty temporary directory.
+An absent role or executable is skipped. Success is point-in-time evidence for this process's
+environment and the selected models. A refusal records no readiness; repair and repeat the same
+command. This mode does not refresh skills, prepare a task or persist a readiness marker.
+
+CLAUDE AUTH BOUNDARY. After an unsuccessful turn, read stderr and the error result's ``result`` and
+``errors`` strings (or plain stdout if the CLI exited nonzero without a JSON object). Only recognized
+login and credential diagnostics get the auth repair. A successful answer, other JSON fields, and
+unrecognized errors are outside that classification. Raw provider output is never printed.
+
 The bounds, each a wall-clock limit read as the shell read it (``${X:-default}``):
 FLEET_PROBE_TIMEOUT (the live headless turn, 120), FLEET_FETCH_TIMEOUT (the skills fetch, 300),
 FLEET_CROSS_TIMEOUT (each cross-box reach probe, 20), FLEET_GH_TIMEOUT (each GitHub call, 30) and
@@ -15,7 +29,14 @@ FLEET_REFRESH_TIMEOUT (``refresh``'s fetch, 30: it runs after every cross-box ``
 where a coordinator is waiting on it).
 """
 
-from ludics import cli
+import json
+import re
+import shlex
+import tempfile
+from pathlib import Path
+from typing import cast
+
+from ludics import agy, cli, proc
 from ludics.fleetworker import farside
 from ludics.fleetworker.config import (
     GPU_TOKENS_DEFAULT,
@@ -27,6 +48,8 @@ from ludics.fleetworker.config import (
 )
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.transport import Done, err, is_local, prelude, run_on
+from ludics.fleetworker.wave import load_wave
+from ludics.peerplan import plan
 
 # The boxes the site's slot default (config.DEFAULT_SLOTS) gives more than one slot: a spec under
 # the default roster that does not name one of them collapses it to one slot (ludics-lite#329,
@@ -34,6 +57,12 @@ from ludics.fleetworker.transport import Done, err, is_local, prelude, run_on
 # directions -- the site default draws no warning, and an empty spec warns about exactly the boxes
 # the site default gives more than one slot -- so a box added to one and not the other fails there.
 WIDENED = ["mac-studio", "rog-nv-linux", "minix-amd-linux", "tuf-amd-linux", "macbook-pro"]
+
+CLAUDE_AUTH = re.compile(
+    r"login reached its time limit and cannot be renewed|not logged in|please run /login|"
+    r"authentication_error|invalid api key|oauth token has expired|\b401 unauthorized\b",
+    re.IGNORECASE,
+)
 
 
 def knob(cfg: Config, name: str, default: str) -> str:
@@ -81,10 +110,118 @@ def run_preflight(
     return run_on(cfg, box, preflight_script(cfg, box), words, capture=capture)
 
 
+def claude_probe_result(done: proc.Completed) -> str:
+    """An empty string means success; a failure carries the bounded diagnostic above."""
+    try:
+        obj: object = json.loads(done.stdout)
+    except ValueError:
+        obj = None
+    diagnostics = [done.stderr]
+    if isinstance(obj, dict):
+        result = cast(dict[str, object], obj)
+        answer = result.get("result")
+        if done.rc == 0 and result.get("is_error") is False and isinstance(answer, str) and answer.strip():
+            return ""
+        if result.get("is_error") is True:
+            if isinstance(answer, str):
+                diagnostics.append(answer)
+            errors = result.get("errors")
+            if isinstance(errors, list):
+                diagnostics.extend(e for e in cast(list[object], errors) if isinstance(e, str))
+    elif done.rc != 0:
+        diagnostics.append(done.stdout)
+    if any(CLAUDE_AUTH.search(line) for line in diagnostics):
+        return ("claude authentication failed. Replace any rejected exported credential or unset it to use a stored login."
+                " Repair on this box with `claude auth login` or use `claude setup-token` for an unattended token")
+    return "claude returned no successful headless result"
+
+
+def probe_coordinator_turn(tool: str, model: str, effort: str, timeout: int) -> str:
+    """Run an initial headless turn, keeping any resulting files out of the wave and checkout."""
+    prompt = "Reply with the single word ok. Do not use tools.\n"
+    with tempfile.TemporaryDirectory(prefix="fleet-planner-probe-") as directory:
+        answer = Path(directory) / "answer"
+        stdin = prompt.encode()
+        if tool == "claude":
+            argv = ["-p", "--model", model, "--output-format", "json", "--no-session-persistence",
+                    "--tools", "", "--strict-mcp-config"]
+            if effort:
+                argv += ["--effort", effort]
+        elif tool == "agy":
+            # The real planner and reviewer need tool access. This prompt needs no approvals.
+            argv = ["--model", model, "--input-format", "stream-json", "--output-format", "stream-json",
+                    "--settings", '{"toolPermission":"strict"}']
+            stdin = agy.message(prompt)
+        else:
+            argv = ["exec", "--json", "-m", model, "-c", f"model_reasoning_effort={effort}",
+                    "-s", "read-only", "--ephemeral", "--skip-git-repo-check", "-o", str(answer), "-"]
+        try:
+            done = proc.run_tool(tool, argv, cwd=directory, stdin=stdin, timeout=timeout)
+        except OSError as exc:
+            return f"{tool} could not start ({exc.strerror})"
+        if done.rc == 124:
+            return f"{tool} headless probe timed out after {timeout}s"
+        if tool == "claude":
+            return claude_probe_result(done)
+        if done.rc == 0 and (agy.result(done.stdout)[0] if tool == "agy"
+                             else answer.is_file() and answer.read_text(encoding="utf-8").strip()):
+            return ""
+        return f"{tool} returned no successful headless result (exit {done.rc})"
+
+
+def coordinator_preflight(cfg: Config, box: str, args: list[str]) -> int:
+    from ludics.fleetworker.waveprep import MODES  # prep's execution reads also use worker preflight
+
+    if not args or len(args) % 2 == 0 or args[0].startswith("--"):
+        die("preflight --planner: give the wave file, optionally followed by --mode, --model and --effort with values")
+    options: dict[str, str] = {}
+    for name, value in zip(args[1::2], args[2::2], strict=True):
+        if name not in ("--mode", "--model", "--effort") or name in options or not value or value.startswith("--"):
+            die(f"preflight --planner: invalid option or value for {shlex.quote(name)}")
+        options[name] = value
+    mode = options.get("--mode", "none")
+    if mode not in MODES:
+        die(f"preflight --planner: --mode must be one of {', '.join(MODES)}")
+    if mode == "none" and ("--model" in options or "--effort" in options):
+        die("preflight --planner: --model and --effort require a paired --mode")
+    wave = load_wave(args[0], "preflight --planner")
+    if not is_local(cfg, box) or not is_local(cfg, wave.agent_host):
+        die(f"preflight --planner: run on the wave's coordinator box {shlex.quote(wave.agent_host)}")
+
+    roles: list[tuple[str, str, str, str]] = []
+    if mode != "none":
+        model = options.get("--model", plan.DEFAULT_MODEL)
+        tool = "claude" if plan.is_claude(model) else "agy" if plan.is_gemini(model) else "codex"
+        roles.append(("planner", tool, model, options.get("--effort", plan.DEFAULT_EFFORT)))
+    if wave.review is not None:
+        roles.append(("reviewer", "claude" if wave.review.kind == "claude" else "agy", wave.review.model, ""))
+    if not roles:
+        return 0
+
+    bound = knob(cfg, "FLEET_PROBE_TIMEOUT", "120")
+    if not re.fullmatch(r"[1-9][0-9]*", bound):
+        die(f"preflight --planner: FLEET_PROBE_TIMEOUT must be positive whole seconds, got {shlex.quote(bound)}")
+    refused = False
+    for role, tool, model, effort in roles:
+        label = f"{shlex.quote(wave.agent_host)} {role} ({tool} {shlex.quote(model)})"
+        if proc.command_argv(tool) is None:
+            cli.say(f"PREFLIGHT SKIP {label}: {tool} is absent from PATH")
+            continue
+        why = probe_coordinator_turn(tool, model, effort, int(bound))
+        if why:
+            err(f"PREFLIGHT REFUSED {label}: {why}")
+            refused = True
+        else:
+            cli.say(f"PREFLIGHT OK {label}")
+    return int(refused)
+
+
 def cmd_preflight(cfg: Config, args: list[str]) -> int:
     box = args[0] if args else ""
     if not box:
         die("preflight: which box?")
+    if args[1:2] == ["--planner"]:
+        return coordinator_preflight(cfg, box, args[2:])
     codex, probe, cross = "0", "1", siblings_of(cfg, box)
     cli_args: list[str] = []
     rest = args[1:]
