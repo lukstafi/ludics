@@ -592,6 +592,36 @@ class Build(Repo):
         self.assertEqual(rc, 3, out)
         self.assertIn("could not retain merge-build log/status", out)
 
+    def test_published_pair_has_a_receipt_when_retirement_fails(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.build(head, "printf 'first attempt\\n'")
+        self.assertEqual(rc, 0, out)
+        receipt = Path(self.dir) / "state/merge-builds/owner--repo.jsonl"
+        first = Path(json.loads(receipt.read_text())["log_dir"])
+        rmtree = shutil.rmtree
+
+        def fail_retirement(path: str | os.PathLike[str], ignore_errors: bool = False) -> None:
+            if Path(path).name == ".retired":
+                raise PermissionError("retired evidence is read-only")
+            rmtree(path, ignore_errors=ignore_errors)
+
+        with mock.patch.object(mergebuild.shutil, "rmtree", side_effect=fail_retirement):
+            rc, out = self.build(head, "printf 'second attempt\\n'")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("retired evidence is read-only", out)
+        rows = [json.loads(line) for line in receipt.read_text().splitlines()]
+        self.assertEqual(len(rows), 2, "the receipt was written before retirement")
+        second = Path(rows[-1]["log_dir"])
+        self.assertFalse(first.exists(), "the older attempt was renamed before its deletion failed")
+        self.assertIn(f"retained log/status in {shlex.quote(str(second))}", out)
+        self.assertEqual((second / "build.log").read_text(), "second attempt\n")
+        self.assertEqual((second / "build.status").read_text().strip(), "0")
+
+        rc, out = self.build(head, "printf 'third attempt\\n'")
+        self.assertEqual(rc, 0, out)
+        kept, = first.parent.glob("*/build.log")
+        self.assertEqual(kept.read_text(), "third attempt\n")
+
     def test_a_passed_build_names_its_merge_commit_and_both_parents_in_full(self) -> None:
         """PROVENANCE (#1024): the scratch repository goes with the build, so what the build
         tested survives only in its output -- the merge commit and both parents, all 40 hex."""

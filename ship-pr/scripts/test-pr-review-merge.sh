@@ -4449,7 +4449,7 @@ test_a_base_modified_merge_response_refreshes_the_next_attempt() {
 }
 
 test_a_gateway_refusal_never_resends_a_stale_build() (
-  local state="$TEST_ROOT/gateway build state" kept
+  local state="$TEST_ROOT/gateway build state" kept original
   reset
   moving_build_fixture compatible
   retune API_ATTEMPTS=3
@@ -4463,7 +4463,6 @@ test_a_gateway_refusal_never_resends_a_stale_build() (
   assert_contains "$MERGE_STDERR" "moved before a merge request could be resent ($BUILD_TIP -> $BUILD_LATER)" \
     "both bases are named"
   kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
-  local original
   original=$(kept_build_log "$kept/$BUILD_TIP")
   assert_contains "$MERGE_STDERR" "$original" "the refusal names the retained build log"
   assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_LATER/build/" "the live tip has no build log"

@@ -1465,11 +1465,9 @@ refused); it reads no PR, fetches nothing and merges nothing. A config change's 
 that run on a pair the config must refuse.
 
 The build prints its attempt directory under ship-pr's state directory and records it as `log_dir`
-in the JSONL receipt on success and refusal alike. For example, the candidate and its base-alone
-comparison retain their pairs in these directories:
-
-- `merge-builds/logs/owner--repo/7/<head>/<base>/build/<attempt>/`
-- `merge-builds/logs/owner--repo/7/<head>/<base>/base/<attempt>/`
+in the JSONL receipt on success and refusal alike. For PR 7 in `owner/repo`, the build pair lives at
+`merge-builds/logs/owner--repo/7/<head>/<base>/build/<attempt>/` and its base-alone comparison lives at
+`merge-builds/logs/owner--repo/7/<head>/<base>/base/<attempt>/`.
 
 A repository-named dry run retains its build under
 `merge-builds/logs/owner--repo/dry-run/<head>/<base>/build/<attempt>/`.

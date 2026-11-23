@@ -256,11 +256,12 @@ Dry runs naming a repository use ``dry-run`` or ``plan-only`` in place of the PR
 runs and fixtures explicitly disabling state have no durable directory, as with history.
 
 Before scratch cleanup, copy both files aside (a missing log or status becomes an empty file)
-and publish the directory with one rename. Same-command writers for a candidate serialize;
-after publication the old attempt path is removed by rename before its files are deleted.
-A copy error refuses with exit 3 and leaves the previous pair in place. The attempt directory
-is printed and recorded as ``log_dir`` in the JSONL build receipt, including for failures and
-slot refusals. A missing attempt path means its evidence was replaced or removed. Legacy
+and publish the directory with one rename. Writers for the same candidate and command kind
+serialize. The attempt directory is printed and recorded as ``log_dir`` in the JSONL build
+receipt, including for failures and slot refusals, before the old attempt path is removed
+by rename and its files deleted. A copy error refuses with exit 3 and leaves the previous
+pair in place. A retirement error refuses with exit 3 and leaves the new receipt readable.
+A missing attempt path means its evidence was replaced or removed. Legacy
 receipts point at the candidate directory and cannot identify a particular attempt. A stale-build
 or refresh refusal reports the attempt paths of the build logs already retained by the gate.
 Directories for distinct candidates and legacy head-only artifacts remain until manual removal.
@@ -1515,15 +1516,17 @@ class _Ran:
     earlier: tuple[buildhistory.Row, ...] = ()
 
 
+@contextlib.contextmanager
 def _retain(
     repo: str, pr: str, head: str, base: str, name: str, log: str, status: str, *, plan_only: bool = False,
-) -> str | None:
-    """Publish the pair at a unique path within the candidate's retention directory."""
+) -> Generator[str | None]:
+    """Publish the pair, then let the caller report it before retiring earlier evidence."""
     import fcntl  # HOSTS AND CLONES: retention runs only on POSIX.
 
     root = buildhistory.state_root(repo)
     if root is None:
-        return None  # fixtures can explicitly disable state; config-only dry runs have no repo
+        yield None  # fixtures can explicitly disable state; config-only dry runs have no repo
+        return
     # A plan-only read leaves the full run's plan evidence intact even for the same candidate.
     run = pr or ("plan-only" if plan_only else "dry-run")
     candidate = Path(os.path.abspath(os.path.join(root, "logs", repo.replace("/", "--"), run, head, base)))
@@ -1533,7 +1536,11 @@ def _retain(
     retired = directory / ".retired"
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        with (directory / ".lock").open("ab") as lock:
+        lock = (directory / ".lock").open("ab")
+    except OSError as exc:
+        fail(3, f"NOT merging: could not retain merge-build log/status in {shlex.quote(str(directory))}: {exc}")
+    with lock:
+        try:
             fcntl.flock(lock, fcntl.LOCK_EX)
             for leftover in (pending, retired):
                 if leftover.exists():
@@ -1549,15 +1556,18 @@ def _retain(
             finally:
                 if pending.exists():
                     shutil.rmtree(pending)
+        except OSError as exc:
+            fail(3, f"NOT merging: could not retain merge-build log/status in {shlex.quote(str(directory))}: {exc}")
+        yield str(attempt)
+        try:
             for previous in directory.iterdir():
                 if previous != attempt and re.fullmatch(r"[0-9a-f]{32}", previous.name):
                     previous.rename(retired)
                     shutil.rmtree(retired)
             for suffix in ("log", "status"):
                 (candidate / f"{name}.{suffix}").unlink(missing_ok=True)
-    except OSError as exc:
-        fail(3, f"NOT merging: could not retain merge-build log/status in {shlex.quote(str(directory))}: {exc}")
-    return str(attempt)
+        except OSError as exc:
+            fail(3, f"NOT merging: could not retire earlier merge-build log/status in {shlex.quote(str(directory))}: {exc}")
 
 
 def _run(
@@ -1602,9 +1612,6 @@ def _run(
     rc_text = _status_text(status)
     ran_for = _ran_for(status, rc_text != "")
     earlier = buildhistory.read(subject.repo, config.command)
-    log_dir = _retain(subject.repo, subject.pr, gated, tip, name, log, status)
-    if log_dir:
-        cli.say(f"merge build {subject.label}: retained log/status in {shlex.quote(log_dir)}")
     outcome: buildhistory.Recorded
     if ran_for is None:
         outcome = "unstarted"
@@ -1614,8 +1621,11 @@ def _run(
         outcome = "passed"
     else:
         outcome = "failed"
-    buildhistory.record(subject.repo, config.command, outcome, took if ran_for is None else ran_for,
-                        config.timeout, log_dir=log_dir)
+    with _retain(subject.repo, subject.pr, gated, tip, name, log, status) as log_dir:
+        if log_dir:
+            cli.say(f"merge build {subject.label}: retained log/status in {shlex.quote(log_dir)}")
+        buildhistory.record(subject.repo, config.command, outcome, took if ran_for is None else ran_for,
+                            config.timeout, log_dir=log_dir)
     return _Ran("" if timed_out else rc_text, done, took if ran_for is None else ran_for,
                 log, log_dir, ran_for is not None, tuple(earlier))
 
@@ -1643,9 +1653,9 @@ def _plan(subject: _Subject, config: BuildConfig, quiet: list[str], tree: str, s
         except (ValueError, OSError) as exc:
             unstarted = str(exc)
     took = int(time.monotonic() - started)
-    log_dir = _retain(subject.repo, subject.pr, gated, tip, "plan", log, status, plan_only=plan_only)
-    if log_dir:
-        cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
+    with _retain(subject.repo, subject.pr, gated, tip, "plan", log, status, plan_only=plan_only) as log_dir:
+        if log_dir:
+            cli.say(f"merge build {label}: retained the plan's log/status in {shlex.quote(log_dir)}")
     # Its checkout goes now, so the build's slot is not taken beside it.
     _remove_held(checkout)
     # The closed list (THE PLAN): a verdict -- read only when the plan AND its wrapper exited 0 --

@@ -666,6 +666,8 @@ command under `<base>/<build|base|plan>/<attempt>/` after each completed publica
 files. Legacy receipts have no attempt identity. The interrupted-copy fixture on launch base
 `522d89ef` reads the second attempt's log through the first attempt's receipt after the second
 status copy fails. The fixture checks that the first pair survives on the branch.
+The retirement fixture checks that a published pair has a receipt even if removing the retired
+copy fails, and that the next successful retry clears the leftover.
 
 ## Checking
 
