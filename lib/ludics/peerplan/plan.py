@@ -23,10 +23,10 @@ no deadline of its own: ``bg-run.sh stop <run>`` ends it, the planner included.
 
 THE PLANNER is named by ``--model``, by default Fable beside every worker, whatever its model
 (issue-wave SKILL.md's *Planning mode, per issue*). A model in ``CLAUDE_MODELS`` or one named
-``claude-...`` runs as ``claude -p`` with the tools ``Read,Grep,Glob`` and nothing else, and with
-``--strict-mcp-config`` and no MCP config, since ``--tools`` names built-in tools only and the
-coordinator's own MCP servers could write: no tool that writes, runs a command or reaches the
-network is offered, which is its read-only sandbox.
+``claude-...`` runs as ``claude -p`` (built by ``ludics.claude.readonly_argv``) with the tools
+``Read,Grep,Glob`` and nothing else, and with ``--strict-mcp-config`` and no MCP config, since
+``--tools`` names built-in tools only and the coordinator's own MCP servers could write: no tool
+that writes, runs a command or reaches the network is offered, which is its read-only sandbox.
 A model named ``gemini-...`` (an Antigravity slug, its effort in the name: ``gemini-4-neon-high``)
 runs as one ``agy`` turn with every tool approved, and its bound is not a tool list but its
 directory (``ludics.agy``'s header says why): its ``<dir>/worktree`` is a local clone of
@@ -59,7 +59,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from ludics import agy, bgrun, cli, fs, proc
+from ludics import agy, bgrun, claude as claude_cli, cli, fs, proc
 from ludics.peerplan import transcript
 
 PROG = "peer-plan.sh"
@@ -512,10 +512,12 @@ def run_planner(d: str, kind: str) -> int:
         stdin = agy.message(brief)
     elif claude:
         tool = "claude"
-        argv = ["-p", "--model", meta.model, "--effort", meta.effort, "--output-format", "json", "--tools", CLAUDE_TOOLS,
-                "--strict-mcp-config"]
-        if kind == "critique":
-            argv += ["--resume", read(os.path.join(d, "thread")).strip()]
+        argv = claude_cli.readonly_argv(
+            meta.model,
+            claude_cli.BuiltinTools(CLAUDE_TOOLS),
+            effort=meta.effort,
+            resume=read(os.path.join(d, "thread")).strip() if kind == "critique" else "",
+        )
     else:
         tool = "codex"
         effort = f"model_reasoning_effort={meta.effort}"

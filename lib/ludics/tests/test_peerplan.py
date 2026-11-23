@@ -242,8 +242,9 @@ class PeerPlan(unittest.TestCase):
             self.assertEqual(f.read().strip(), "sid-1")
         self.assertFalse(os.path.exists(os.path.join(self.codex.dir, "calls.jsonl")), "no codex run")
         first = self.codex_calls(self.claude)[0]
-        self.assertEqual(first.argv, ["-p", "--model", "fable", "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob",
-                                      "--strict-mcp-config"])
+        self.assertEqual(first.argv, ["-p", "--model", "fable", "--effort", "high", "--output-format", "json",
+                                      "--strict-mcp-config", "--tools", "Read,Grep,Glob"])
+        self.assertNotIn("--mcp-config", first.argv)
         self.assertEqual(os.path.realpath(first.cwd), os.path.realpath(wt))
         self.assertIn("one of two planners", first.stdin)
         mine = os.path.join(self.dir, "claude-plan.md")

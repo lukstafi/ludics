@@ -1540,7 +1540,9 @@ class Review(WaveDirCase):
         self.assertEqual(asked, [["pr", "view", "7", "--repo", "o/staging", "--json", "state,headRefOid"]] * 2,
                          "the PR is read before the reviewer runs and again before its review is posted")
         self.assertEqual(len(ran), 1)
-        self.assertEqual(ran[0][:5], ["-p", "--model", "opus", "--output-format", "json"])
+        self.assertEqual(ran[0][:7], ["-p", "--model", "opus", "--output-format", "json", "--no-session-persistence",
+                                      "--strict-mcp-config"])
+        self.assertNotIn("--mcp-config", ran[0])
         allowed = ran[0][ran[0].index("--allowedTools") + 1:ran[0].index("--disallowedTools")]
         self.assertEqual(ran[0][ran[0].index("--disallowedTools") + 1:], ["Edit", "Write", "NotebookEdit"])
         repo = os.path.join(self.dir, "repo")
@@ -1870,6 +1872,9 @@ class Review(WaveDirCase):
             _, out, err = self.review(kind="confirm")
             ran = self.claude.calls()
         self.assertEqual(len(ran), 2, out + err)
+        for call_argv in ran:
+            self.assertIn("--strict-mcp-config", call_argv)
+            self.assertNotIn("--mcp-config", call_argv)
         command = "gh api --method GET --paginate repos/o/staging/pulls/7/comments"
         self.assertFalse(any("gh api" in arg for arg in ran[0]))
         self.assertEqual([arg for arg in ran[1] if "gh api" in arg], [f"Bash({command})"])

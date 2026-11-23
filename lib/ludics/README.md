@@ -44,6 +44,8 @@ lib/ludics/proc.py               run_tool, the shell bridge, and Git Bash's PATH
 lib/ludics/bgrun.py              bg-run.sh wait's verdict line: parse, its one reader
 lib/ludics/agy.py                one headless agy (Gemini) turn in a disposable clone: argv, message,
                                  result, clone (the gemini reviewer's and planner's)
+lib/ludics/claude.py             shared read-only ``claude -p`` argv builder (--strict-mcp-config
+                                 and explicit built-in tool bounds, for the planner and reviewer)
 lib/ludics/prreview/core.py      pr-review.sh's prelude: fail/die/warn, Config, GhSession
                                  (gh_retry and its classification), parse_ref/pr_arg,
                                  checkout_pr, repo_from_cwd, api_list, mark_of
@@ -256,6 +258,12 @@ fs.py
     lib/ludics/tests/test_peerplan.py
 
 agy.py
+    lib/ludics/tests/test_fleetworker_wave.py
+    lib/ludics/tests/test_peerplan.py
+
+claude.py
+    issue-wave/scripts/test-fleet-worker.sh "wave kit"
+    lib/ludics/tests/test_claude.py
     lib/ludics/tests/test_fleetworker_wave.py
     lib/ludics/tests/test_peerplan.py
 
