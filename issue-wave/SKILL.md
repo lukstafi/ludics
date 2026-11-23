@@ -444,7 +444,8 @@ branch). The verbs do the rest, on one of three routes
   own id; the driver does this itself for a queued task. The raw `launch` and its recovery are
   [cli-claude.md](references/cli-claude.md#launch).
 - **A native task**: `wave prep`, then `fleet-worker.sh gate --target-repo <owner/repo> --wait
-  <seconds>` right before the runtime's spawn, then `agent=`, `model=` and `state=launched` on its row
+  <seconds>` right before the runtime's spawn, then `fleet-worker.sh board spawned <wave> <task>
+  --agent <id> --transport subagent [--model <m>] [--launch-id <id>]` on its row
   ([native-workers.md](references/native-workers.md#placement-and-launch)).
 
 The driver's launches shape yours in two ways. It reads the launch gate with `--no-wait`:

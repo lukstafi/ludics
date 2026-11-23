@@ -7,8 +7,11 @@ Its header is the contract: the document, what it accepts, and the markdown view
 
   board set [--create] [--new-row] <wave> <task> <key=value>...   a task's row (lease); a task with
                                                       no row yet refuses without ``--new-row``
-  board spawned <wave> <task> --agent <id> --transport <t> [--model <m>]
-                                                      records a spawn on an existing row (lease)
+  board spawned <wave> <task> --agent <id> --transport <t> [--model <m>] [--launch-id <id>]
+                                                      records a spawn on an existing row (lease);
+                                                      replaying a recorded launch-attempt ID with
+                                                      the same facts is a no-op answering as the
+                                                      first did
   board note [--create] <wave> <key=value>...         the wave's own facts (lease)
   board log <wave> <text>...                          one appended log line, the words joined (lease)
   board show <wave> [--json]                          the markdown view, or the document (no lease);
@@ -64,7 +67,13 @@ from ludics.fleetworker.lease import LEASE_LOST_STATUS, lease_mutation
 from ludics.fleetworker.takeover import DONE_STATES, LIVE_STATES, board_document, cmd_takeover, phase_of, row_state, state_word
 from ludics.fleetworker.transport import Done, PAYLOAD_ON_FD, err, prelude, run_on, shipped_python
 
-SPAWNED_USAGE = "board spawned <wave> <task> --agent <id> --transport <t> [--model <m>]"
+SPAWNED_USAGE = "board spawned <wave> <task> --agent <id> --transport <t> [--model <m>] [--launch-id <id>]"
+SPAWNED_FLAGS = {
+    "--agent": "agent",
+    "--transport": "transport",
+    "--model": "model",
+    "--launch-id": "launch_id",
+}
 USAGE = (
     f"board set [--create] [--new-row] <wave> <task> <key=value>... | {SPAWNED_USAGE} | "
     "board note [--create] <wave> <key=value>... | "
@@ -111,9 +120,11 @@ def spawned_payload(args: list[str]) -> dict[str, object]:
         die(f"board spawned: expected {SPAWNED_USAGE}")
     payload: dict[str, object] = {"wave": wave, "task": task}
     for flag, value in zip(options[::2], options[1::2], strict=True):
-        key = flag[2:]
-        if flag not in ("--agent", "--transport", "--model") or key in payload or not value.strip() or value.startswith("--"):
+        key = SPAWNED_FLAGS.get(flag)
+        if key is None or key in payload or not value.strip() or value.startswith("--"):
             die(f"board spawned: expected {SPAWNED_USAGE}")
+        if key == "launch_id" and not boardstore.LAUNCH_ID.fullmatch(value):
+            die(f"board spawned: --launch-id must be {boardstore.LAUNCH_ID.pattern} ({SPAWNED_USAGE})")
         payload[key] = value
     if "agent" not in payload or "transport" not in payload:
         die(f"board spawned: expected {SPAWNED_USAGE}")

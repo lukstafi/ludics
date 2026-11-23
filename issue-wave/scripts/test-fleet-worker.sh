@@ -2929,6 +2929,35 @@ expect "another coordinator cannot record a spawn" 1 "BOARD REFUSED fleet: coord
   "${B[@]}" board spawned sp cli --agent f2 --transport subagent
 [ "$(jq -r '.tasks[1].fields | "\(.agent) \(.transport) \(.state) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/sp.json")" = "f1 subagent launched 1" ] &&
   ok "...the finisher is recorded and the refused spawn changes nothing" || ko "sp board: $(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+# ludics#1294: --launch-id makes a replayed spawn report a no-op that answers as the first did,
+# while a second spawn with a new ID under the same agent still counts one relaunch.
+setup_step "could not prepare the keyed spawn row (setup)" "$FW" board set --new-row sp idemp state=pending
+expect "a keyed first spawn records launch_id and leaves relaunches at zero" 0 '^BOARD SPAWNED sp: "idemp"$' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --model actual/high --launch-id sp-idemp-1
+spbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")
+expect "replaying the same launch-attempt ID counts no relaunch" 0 '^BOARD SPAWNED sp: "idemp"$' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --model actual/high --launch-id sp-idemp-1
+! grep -q '^BOARD TALLY ' <<<"$out" && [ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  [ "$(jq -r '.tasks[2].fields | "\(.agent) \(.launch_id) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/sp.json")" = "a1 sp-idemp-1 0" ] &&
+  ok "...the replay writes nothing and keeps relaunches at zero" || ko "sp replay: out=$out board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+expect "a second spawn with a new ID under the same agent counts one relaunch" 0 '^BOARD TALLY sp: "idemp" relaunches=1$' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --model actual/high --launch-id sp-idemp-2
+spbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")
+expect "replaying the relaunch ID answers as the first did without counting again" 0 '^BOARD TALLY sp: "idemp" relaunches=1$' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --model actual/high --launch-id sp-idemp-2
+grep -q '^BOARD SPAWNED sp: "idemp"$' <<<"$out" && [ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  [ "$(jq -r '.tasks[2].fields | "\(.agent) \(.launch_id) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/sp.json")" = "a1 sp-idemp-2 1" ] &&
+  ok "...replaying the relaunch writes nothing and keeps relaunches at one" || ko "sp relaunch replay: out=$out board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+expect "reusing a launch-attempt ID for different spawn facts is refused" 1 '^BOARD REFUSED: launch_id "sp-idemp-2" is already recorded' -- \
+  "$FW" board spawned sp idemp --agent a2 --transport subagent --model actual/high --launch-id sp-idemp-2
+[ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  ok "...the conflicting replay writes nothing" || ko "sp conflict board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+expect "a launch-attempt ID outside the grammar is a usage error" 2 'board spawned: --launch-id must be' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --launch-id bad/id
+expect "board set refuses to write launch_id directly" 1 '^BOARD REFUSED: launch_id is recorded by board spawned, not board set$' -- \
+  "$FW" board set sp idemp launch_id=sp-idemp-3 state=launched
+[ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  ok "...refused board set launch_id writes nothing" || ko "sp set launch_id board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
 # status --json (ludics#1165): the observers' read through the shim, with no lease and no identity --
 # every board, each row's phase derived as check reads it, the lease's host and never its token.
 expect "status --json reads every board without the lease or any identity" 0 '^{"version": 1, ' -- \
