@@ -1589,7 +1589,9 @@ class Review(WaveDirCase):
         self.assertEqual(asked, [["pr", "view", "7", "--repo", "o/staging", "--json", "state,headRefOid"]] * 2,
                          "the PR is read before the reviewer runs and again before its review is posted")
         self.assertEqual(len(ran), 1)
-        self.assertEqual(ran[0][:5], ["-p", "--model", "opus", "--output-format", "json"])
+        self.assertEqual(ran[0][:7], ["-p", "--model", "opus", "--output-format", "json", "--no-session-persistence",
+                                      "--strict-mcp-config"])
+        self.assertNotIn("--mcp-config", ran[0])
         allowed = ran[0][ran[0].index("--allowedTools") + 1:ran[0].index("--disallowedTools")]
         self.assertEqual(ran[0][ran[0].index("--disallowedTools") + 1:], ["Edit", "Write", "NotebookEdit"])
         repo = os.path.join(self.dir, "repo")
@@ -1919,6 +1921,9 @@ class Review(WaveDirCase):
             _, out, err = self.review(kind="confirm")
             ran = self.claude.calls()
         self.assertEqual(len(ran), 2, out + err)
+        for call_argv in ran:
+            self.assertIn("--strict-mcp-config", call_argv)
+            self.assertNotIn("--mcp-config", call_argv)
         command = "gh api --method GET --paginate repos/o/staging/pulls/7/comments"
         self.assertFalse(any("gh api" in arg for arg in ran[0]))
         self.assertEqual([arg for arg in ran[1] if "gh api" in arg], [f"Bash({command})"])
@@ -2889,7 +2894,18 @@ class Markers(unittest.TestCase):
                              ('EXECUTION_RESULT {"request_id":"a"}\nEXECUTION_RESULT {"request_id":"b"', "an EXECUTION_RESULT line that is not"),
                              ('EXECUTION_RESULT\n{"request_id":"a"}', "an EXECUTION_RESULT line that is not"),
                              (f'EXECUTION_RESULT {{}} done\nREVIEW_REQUEST 7 {A}', "an EXECUTION_RESULT line that is not"),
+                             (f"EXECUTION_RESULT req-1 pass 0 {A} /tmp/run/log",
+                              'EXECUTION_RESULT {"request_id":"...","run":"/abs/path","exit":0,"observed_sha":"<40-hex>"}'),
                              ("The HANDBACK follows\nPR 7", "the last line starts 'PR'"),
+                             ("Summary before marker.\nHANDBACK t42\nPR /pull/7", "the last line starts 'PR'"),
+                             (f"REVIEW_REQUEST 7 {A}\nHANDBACK t42\nPR /pull/7", "more than one marker: review, handback"),
+                             (f"CONFIRM_REQUEST 7 {A}\nHANDBACK t42\nPR /pull/7", "more than one marker: confirm, handback"),
+                             ('EXECUTION_RESULT {"request_id":"x"}\nHANDBACK t42\nPR /pull/7',
+                              "more than one marker: result, handback"),
+                             ("EXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST\nHANDBACK t42\nPR /pull/7",
+                              "more than one marker: request, handback"),
+                             ("HANDBACK t42\nPR /pull/7\nEXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST",
+                              "more than one marker: request, handback"),
                              (f"HANDBACK t42\n...\nREVIEW_REQUEST 7 {A}", "more than one marker: review, handback"),
                              (f"EXECUTION_REQUEST\n{{}}\nEND_EXECUTION_REQUEST\nEXECUTION_RESULT {{}}", "more than one marker: request, result"),
                              # A plan's Verification may quote a marker: the envelope is read first.
@@ -2899,6 +2915,13 @@ class Markers(unittest.TestCase):
             got = wavedrive.classify(message)
             self.assertEqual(got.kind, "other", message)
             self.assertIn(why, got.why)
+
+    def test_farside_gemini_marker_guard_matches_wavedrive(self) -> None:
+        from ludics.fleetworker import farside
+        match = re.search(r"def prefix_has_marker:\s*test\(\"[^\"]*\(\?:([^)]+)\)\"\)", farside.LOG_LAST_RESULT)
+        self.assertIsNotNone(match, "farside.LOG_LAST_RESULT must define prefix_has_marker over MARKER_TOKENS")
+        assert match is not None
+        self.assertEqual(tuple(match.group(1).split("|")), wavedrive.MARKER_TOKENS)
 
     def test_only_live_cli_rows_past_pending_are_served(self) -> None:
         doc = {"tasks": [row("t1"), row("t2", state="pending"), row("t3", state="merged #7 at abc"), row("t4", transport="subagent"),

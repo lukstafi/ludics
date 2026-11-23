@@ -4,7 +4,7 @@ ludics-lite#403 moved fleet-worker.sh's near side -- argument parsing, the order
 a status means to the coordinator -- to Python. What runs ON a box stays the bash it was: a far-side
 script is composed here, read by ``bash -s`` on the box (a local child for this box, ``ssh <box>
 bash -s`` for any other: ``transport.run_on``), its arguments as positional parameters. A box needs
-bash, tmux, jq and git for a CLI worker, as it always did; no far side here needs Python (the
+bash, tmux, jq, git and Perl for a CLI worker; no far side here needs Python (the
 preflight only ASKS whether the box has one, below).
 
 Every text is the shell's heredoc byte for byte, so a box runs exactly what it ran before the port,
@@ -112,7 +112,7 @@ alive() { tm has-session -t "=$(sess "$1")" 2>/dev/null; }
 WORKERS="$STATE/workers"
 # take_lock <dir> <wait-seconds> <label>: a mkdir lock that records its holder's pid, so a lock
 # left by a killed shell or a rebooted box is reclaimed instead of wedging the name forever.
-# Prints nothing on success; on failure prints one line and returns 1. Release with rmdir.
+# Prints nothing on success; on failure prints one line and returns 1. Release with release_lock.
 # The holder is identified by pid AND process start time: after a reboot (or plain pid reuse)
 # the recorded pid may belong to an unrelated live process, which a bare kill -0 would treat
 # as the holder forever.
@@ -140,40 +140,104 @@ start_is() {
     *) [ "$(proc_tick "$1")" = "$2" ] ;;
   esac
 }
-take_lock() {
-  local lock="$1" wait="$2" label="$3" waited=0 missing_retries=3 holder hstart
+# Serialize metadata updates on the directory inode itself. The descriptor pins the flock until
+# the subshell exits, even on interruption, without a separate lock file to clean up. A reaper
+# that opened an old directory before its removal must still find that inode at the public name
+# after taking the flock. Registration and release use the same guard, so the stale judgment
+# under the guard stays valid through removal.
+# A busy "try" returns 3 so take_lock can charge it to the lock wait, including a zero wait.
+update_lock_dir() (
+  local dir="$1" mode="$2" rc; shift 2
+  case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+  CDPATH= cd -P -- "$dir" 2>/dev/null || exit 1
+  {
+    rc=0
+    perl -MFcntl=:flock -MErrno=EWOULDBLOCK -e '
+      my $mode = LOCK_EX | ($ARGV[0] eq "try" ? LOCK_NB : 0);
+      exit 0 if flock(STDIN, $mode);
+      exit($! == EWOULDBLOCK && $ARGV[0] eq "try" ? 3 : 2);
+    ' "$mode" <&9 || rc=$?
+    case "$rc" in 0) ;; 3) exit 3 ;; *) exit 2 ;; esac
+    [ . -ef "$dir" ] || exit 1
+    "$@" "$dir"
+  } 2>/dev/null 9<.
+)
+register_lock() {
   # The claim is the mkdir AND the start file's exclusive creation: bash's noclobber opens with
   # O_EXCL, while uutils's mkdir (Ubuntu's coreutils since 25.10) can report success to both of two
   # racers (#921), which let two launches, two unsticks or two owners of one worktree through
   # (#953). A racer whose mkdir succeeded but whose start file exists already is a contender.
-  until mkdir "$lock" 2>/dev/null && ( set -C; : > "$lock/start" ) 2>/dev/null; do
+  [ ! -e pid ] && ( set -C; : > start ) || return 1
+  # Readers outside the guard can see a newly registered pid only after its token exists.
+  proc_start $$ >> start && printf '%s\n' "$$" > pid || return 2
+}
+read_lock() {
+  holder=$(cat "$1/pid" 2>/dev/null) || holder=
+  hstart=$(cat "$1/start" 2>/dev/null) || hstart=
+}
+stale_lock() {
+  if [ -n "$holder" ]; then
+    ! kill -0 "$holder" 2>/dev/null || ! start_is "$holder" "$hstart"
+  else
+    # An ownerless lock older than 30 s can be recovered if the shell died before the pid write.
+    [ $(( $(now) - $(mtime "$1") )) -gt 30 ]
+  fi
+}
+remove_lock_dir() { rm -f pid start && rmdir "$1"; }
+reclaim_lock() {
+  read_lock .
+  stale_lock . && remove_lock_dir "$1"
+}
+release_owned_lock() {
+  [ "$(cat pid)" != "$$" ] || remove_lock_dir "$1"
+}
+release_lock() { update_lock_dir "$1" wait release_owned_lock; }
+take_lock() {
+  local lock="$1" wait="$2" label="$3" waited=0 missing_retries=3 registering=0 holder hstart rc owner
+  while :; do
+    rc=1
+    if [ "$registering" -eq 1 ] || mkdir "$lock" 2>/dev/null; then
+      update_lock_dir "$lock" try register_lock; rc=$?
+      [ "$rc" -ne 0 ] || return 0
+      # A busy guard can delay publishing the files after a successful mkdir.
+      registering=0
+      [ "$rc" -ne 3 ] || registering=1
+    fi
+    if [ "$rc" -eq 1 ] && [ -d "$lock" ]; then
+      read_lock "$lock"
+      if stale_lock "$lock"; then
+        update_lock_dir "$lock" try reclaim_lock; rc=$?
+        [ "$rc" -ne 0 ] || continue
+      fi
+    fi
+    if [ "$rc" -eq 2 ]; then
+      printf '%s: cannot update lock %q (directory flock or metadata write failed)\n' "$label" "$lock"
+      return 1
+    fi
     if [ ! -d "$lock" ]; then
-      # A holder can release the directory between the failed mkdir and this check.
-      # Give that race a bounded retry budget even when the caller has no wait for a holder.
+      # A holder can release between the failed claim and this check. Give that race a
+      # bounded retry budget even when the caller has no wait for a holder.
       if [ "$missing_retries" -eq 0 ]; then
         printf '%s: cannot create lock %q (unwritable?)\n' "$label" "$lock"
         return 1
       fi
       missing_retries=$((missing_retries - 1))
+      registering=0
       continue
     fi
-    holder=$(cat "$lock/pid" 2>/dev/null); hstart=$(cat "$lock/start" 2>/dev/null)
-    if [ -n "$holder" ] && { ! kill -0 "$holder" 2>/dev/null || ! start_is "$holder" "$hstart"; }; then
-      rm -f "$lock/pid" "$lock/start"; rmdir "$lock" 2>/dev/null; continue   # dead or reused pid: reclaim
+    if [ "$waited" -ge "$wait" ]; then
+      # A successful mkdir can outlive a timed-out registration. rmdir only removes an
+      # empty directory, so a racer that has created start keeps its claim.
+      if [ "$registering" -eq 1 ]; then rmdir "$lock" 2>/dev/null; fi
+      read_lock "$lock"
+      owner=
+      [ -z "$holder" ] || owner="by pid $(printf '%q' "$holder") "
+      printf '%s: lock %q held %sfor %ss -- another operation in progress\n' "$label" "$lock" "$owner" "$wait"
+      return 1
     fi
-    # No owner recorded: registration takes milliseconds, so an ownerless lock older than 30 s
-    # was left by a shell that died between mkdir and the pid write. Reclaim it.
-    if [ -z "$holder" ] && [ $(( $(now) - $(mtime "$lock") )) -gt 30 ]; then
-      rm -f "$lock/pid" "$lock/start"; rmdir "$lock" 2>/dev/null; continue
-    fi
-    [ "$waited" -lt "$wait" ] || { echo "$label: lock $lock held ${holder:+by pid $holder }for ${wait}s -- another operation in progress"; return 1; }
     sleep 1; waited=$((waited + 1))
   done
-  # start before pid: a contender that sees a pid without its start time would otherwise read
-  # the mismatch as a reused pid and reclaim a lock that is being taken right now.
-  proc_start $$ >> "$lock/start"; echo $$ > "$lock/pid"
 }
-release_lock() { rm -f "$1/pid" "$1/start"; rmdir "$1" 2>/dev/null; }
 # bounded [--stdin <file>] <secs> <cmd...>: run detached from the caller's stdin, kill the whole
 # group at the deadline (no `timeout` on stock macOS). Output on stdout; exit 124 on expiry.
 # The child's stdin is /dev/null unless --stdin names a file. A pipe into `bounded` is NOT
@@ -1629,10 +1693,42 @@ case "$kind" in
       elif .type == "turn.failed" then {why: "the latest turn ended turn.failed: \(.err[0:200] | gsub("\n"; " "))"}
       elif .text == null then {why: "the latest turn completed with no agent_message"}
       else {text: .text} end' ;;
-  gemini) prog='[inputs | fromjson? | select(type == "object" and .event == "result")] | last
+  # agy concatenates every agent_response step of a turn (each reactive-wakeup wait message plus
+  # the final reply) into .result.response (#1308). Match codex last-message semantics by taking
+  # the last non-empty DONE agent_response step of the last completed turn, verified fail-closed
+  # as a line-boundary suffix of .result.response AND with no line in the stripped prefix starting
+  # with any wavedrive.MARKER_TOKENS marker (pinned in test_fleetworker_wave.py); fall back to
+  # .result.response whole otherwise so wavedrive.classify sees every marker.
+  gemini) prog='def prefix_has_marker:
+      test("(?m)^[ \\t]*(?:PLAN_READY|END_PLAN_READY|WINDOWS_WITNESS_REQUEST|EXECUTION_REQUEST|EXECUTION_RESULT|REVIEW_REQUEST|CONFIRM_REQUEST|HANDBACK)");
+    reduce (inputs | fromjson? | select(type == "object")) as $e ({buf: {}, done: null, last: null};
+      if $e.event == "init" then .buf = {} | .done = null
+      elif $e.event == "step_update"
+           and ($e.step_update | type) == "object"
+           and $e.step_update.step_type == "agent_response"
+           and ($e.step_update.step_index | type) == "number" then
+        ($e.step_update.step_index | tostring) as $k
+        | .buf[$k] = ((.buf[$k] // "") + (if ($e.step_update.text_delta | type) == "string" then $e.step_update.text_delta else "" end))
+        | if $e.step_update.state == "DONE" and (.buf[$k] | test("\\S")) then .done = .buf[$k] else . end
+      elif $e.event == "result" then
+        (if ($e.result | type) == "object" then $e.result else {} end) as $r
+        | .last = {
+            status: ($r.status // "" | tostring),
+            err: ($r.error // "" | tostring),
+            resp: (if ($r.response | type) == "string" then $r.response else null end),
+            done: .done
+          }
+        | .buf = {} | .done = null
+      else . end)
+    | .last
     | if . == null then {why: "no result event in the stream: no turn has ended yet"}
-      elif (.result.status // "") != "SUCCESS" then {why: "the latest turn ended \(.result.status // "with no status"): \((.result.error // "") | tostring | .[0:200] | gsub("\n"; " "))"}
-      elif (.result.response | type) == "string" and (.result.response | length) > 0 then {text: .result.response}
+      elif .status != "SUCCESS" then {why: "the latest turn ended \(if .status == "" then "with no status" else .status end): \(.err[0:200] | gsub("\n"; " "))"}
+      elif (.resp | type) == "string" and (.resp | length) > 0 then
+        .resp as $r | .done as $d
+        | {text: (if ($d | type) == "string"
+                     and ($r == $d or ($r | endswith("\n" + $d)) or (($d | startswith("\n")) and ($r | endswith($d))))
+                     and (($r[0:($r | length) - ($d | length)] | prefix_has_marker) | not)
+                  then $d else $r end)}
       else {why: "the latest turn ended SUCCESS with no response"} end' ;;
   *) echo "NO RESULT $BOX/$name: unknown worker kind '$kind'"; exit 1 ;;
 esac

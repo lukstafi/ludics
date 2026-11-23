@@ -762,7 +762,22 @@ text="gemini did: $(LC_ALL=C; printf '%s' "${msg:0:40}" | tr '\n' ' ')"
 # SHIM_AGY_SAY names a file whose content is this turn's final message, whole (a marker a driver reads).
 if [ -n "${SHIM_AGY_SAY:-}" ] && [ -s "$SHIM_AGY_SAY" ]; then text=$(cat "$SHIM_AGY_SAY"); fi
 jq -cn --arg c "$cid" '{event:"step_update",step_update:{conversation_id:$c,step_index:0,state:"DONE",step_type:"user_input"}}'
-jq -cn --arg c "$cid" --arg t "$text" '{event:"result",result:{conversation_id:$c,status:"SUCCESS",response:$t,num_turns:1}}'
+# SHIM_AGY_PROGRESS (optional) names a file whose lines are emitted as earlier DONE agent_response
+# steps before the final reply, concatenated into .result.response as real agy does (#1308).
+if [ -n "${SHIM_AGY_PROGRESS:-}" ] && [ -s "$SHIM_AGY_PROGRESS" ]; then
+  full="" idx=1
+  while IFS= read -r pline || [ -n "$pline" ]; do
+    jq -cn --arg c "$cid" --argjson i "$idx" --arg d "${pline}"$'\n' \
+      '{event:"step_update",step_update:{conversation_id:$c,step_index:$i,state:"DONE",step_type:"agent_response",text_delta:$d}}'
+    full+="${pline}"$'\n'
+    idx=$((idx + 1))
+  done < "$SHIM_AGY_PROGRESS"
+  jq -cn --arg c "$cid" --argjson i "$idx" --arg d "$text" \
+    '{event:"step_update",step_update:{conversation_id:$c,step_index:$i,state:"DONE",step_type:"agent_response",text_delta:$d}}'
+  jq -cn --arg c "$cid" --arg t "${full}${text}" '{event:"result",result:{conversation_id:$c,status:"SUCCESS",response:$t,num_turns:1}}'
+else
+  jq -cn --arg c "$cid" --arg t "$text" '{event:"result",result:{conversation_id:$c,status:"SUCCESS",response:$t,num_turns:1}}'
+fi
 exit 0
 EOF
 REAL_GIT=$(command -v git)
@@ -1421,7 +1436,7 @@ expect "two first claims of one new identity leave that identity holding" 0 "COO
 env FLEET_COORDINATOR=fresh "$FW" release >/dev/null; "$FW" claim >/dev/null
 expect "an identity outside the safe set is refused, not folded" 2 "coordinator identity 'team/a' must be" -- env FLEET_COORDINATOR=team/a "$FW" claim
 chmod 555 "$ISSUE_WAVE_STATE"
-expect "release on an unwritable anchor fails at once, not after the lock wait" 1 "RELEASE FAILED: lease lock on testbox: cannot create lock" -- "$FW" release
+expect "release on an unwritable anchor reports the cannot-create-lock diagnostic" 1 "RELEASE FAILED: lease lock on testbox: cannot create lock" -- "$FW" release
 chmod 755 "$ISSUE_WAVE_STATE"
 expect "release drops it" 0 "RELEASED coordinator lease" -- "$FW" release
 expect "coordinator after release: nobody" 3 "nobody holds" -- "$FW" coordinator
@@ -1430,6 +1445,72 @@ expect "coordinator after release: nobody" 3 "nobody holds" -- "$FW" coordinator
 mkdir "$ISSUE_WAVE_STATE/COORDINATOR.lock" && echo 999999 > "$ISSUE_WAVE_STATE/COORDINATOR.lock/pid"
 expect "a lease lock left by a dead holder is reclaimed by the next claim" 0 "CLAIMED coordinator lease on testbox" -- env FLEET_LOCK_WAIT=1 "$FW" claim
 [ -d "$ISSUE_WAVE_STATE/COORDINATOR.lock" ] && ko "the reclaimed lease lock was left behind" || ok "...and released afterwards"
+"$FW" release >/dev/null
+# A contender's ps has already read the process start that differs from the stale record.
+# Delay delivery of that result until another real claim has reclaimed the lock, then keep
+# that successor in its lease mutation until the later contender has answered.
+race="$TMP/lease-reclaim"
+lock="$ISSUE_WAVE_STATE/COORDINATOR.lock"
+mkdir "$race" "$lock"
+printf '%s\n' "$$" > "$lock/pid"
+printf '%s\n' 'stale start' > "$lock/start"
+real_ln=$(command -v ln)
+cat > "$race/ps" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = "-o lstart= -p $RACE_STALE_PID" ] && [ ! -e "$RACE_DIR/stale-ready" ]; then
+  observed=$("$RACE_PS" "$@") || exit 1
+  : > "$RACE_DIR/stale-ready"
+  for _ in $(seq 200); do
+    if [ -e "$RACE_DIR/resume-stale" ]; then printf '%s\n' "$observed"; exit 0; fi
+    sleep 0.1
+  done
+  exit 1
+fi
+exec "$RACE_PS" "$@"
+SH
+cat > "$race/ln" <<'SH'
+#!/usr/bin/env bash
+if [ -z "$RACE_STALE_PID" ] && [ "$#" -eq 2 ] && [ "$2" = "$ISSUE_WAVE_STATE/COORDINATOR" ]; then
+  : > "$RACE_DIR/successor-ready"
+  for _ in $(seq 200); do
+    if [ -e "$RACE_DIR/resume-successor" ]; then exec "$RACE_LN" "$@"; fi
+    sleep 0.1
+  done
+  exit 1
+fi
+exec "$RACE_LN" "$@"
+SH
+chmod +x "$race/ps" "$race/ln"
+env PATH="$race:$PATH" RACE_DIR="$race" RACE_PS="$REAL_PS" RACE_LN="$real_ln" \
+  RACE_STALE_PID="$$" FLEET_LOCK_WAIT=0 "$FW" claim > "$race/stale.out" 2>&1 &
+later=$!
+for _ in $(seq 200); do [ -e "$race/stale-ready" ] && break; sleep 0.1; done
+[ -e "$race/stale-ready" ] || ko "the later contender never read the stale holder's process start"
+# The successor needs the ln shim but must read the stale holder's process start without pausing.
+env PATH="$race:$PATH" RACE_DIR="$race" RACE_PS="$REAL_PS" RACE_LN="$real_ln" \
+  RACE_STALE_PID= FLEET_LOCK_WAIT=0 "$FW" claim > "$race/successor.out" 2>&1 &
+successor=$!
+for _ in $(seq 200); do [ -e "$race/successor-ready" ] && break; sleep 0.1; done
+[ -e "$race/successor-ready" ] || ko "the successor never entered the lease mutation"
+successor_pid=$(cat "$lock/pid" 2>/dev/null)
+successor_start=$(cat "$lock/start" 2>/dev/null)
+: > "$race/resume-stale"
+wait "$later"; later_rc=$?
+if [ "$later_rc" -eq 1 ] && [ -n "$successor_pid" ] &&
+   grep -q "lock .* held by pid $successor_pid for 0s" "$race/stale.out"; then
+  ok "a stale contender reports the successor as the holder"
+else
+  ko "a stale contender did not report the successor as the holder (exit $later_rc): $(cat "$race/stale.out")"
+fi
+if [ -n "$successor_start" ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$successor_pid" ] &&
+   [ "$(cat "$lock/start" 2>/dev/null)" = "$successor_start" ]; then
+  ok "the stale contender leaves the successor's pid and start intact"
+else
+  ko "the stale contender changed the successor's pid or start"
+fi
+: > "$race/resume-successor"
+wait "$successor" && ok "the successor completes its lease mutation" ||
+  ko "the successor failed to claim: $(cat "$race/successor.out")"
 "$FW" release >/dev/null
 expect "claim refuses an unknown option" 2 "claim: unknown option --tak" -- "$FW" claim --tak
 # Lease and halt live on the anchor: one that does not answer is unreachable (exit 4), never a
@@ -2771,6 +2852,63 @@ printf '%s\n' '{"event":"init","conversation_id":"g1"}' '{"event":"result","resu
 expect "...and a latest turn that ended ERROR is NO RESULT naming it" 1 "^NO RESULT testbox/lr-gemini: the latest turn ended ERROR: quota exhausted$" -- "$FW" log testbox lr-gemini --last-result
 jq -cn '{event:"init",conversation_id:"g2"}' | fixture_stream lr-gemini-none gemini
 expect "a gemini stream with no result is NO RESULT" 1 "^NO RESULT testbox/lr-gemini-none: no result event in the stream" -- "$FW" log testbox lr-gemini-none --last-result
+# #1308: agy concatenates earlier reactive-wakeup agent_response steps into .result.response;
+# log --last-result returns only the last non-empty DONE agent_response step when it is a
+# line-boundary suffix of .result.response, and falls back fail-closed to .result.response otherwise.
+jq -cn '
+  {event:"init",conversation_id:"g3"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"Waiting for `dune fmt` (`task-360`) to finish.\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE"}},
+  {event:"step_update",step_update:{step_index:3,step_type:"agent_response",state:"DONE",text_delta:"Codex approved PR #2266 (`8ef3a0f9b`). Waiting for CI.\n"}},
+  {event:"step_update",step_update:{step_index:4,step_type:"agent_response",state:"ACTIVE",text_delta:"HANDBACK t2416\n"}},
+  {event:"step_update",step_update:{step_index:4,step_type:"agent_response",state:"DONE",text_delta:"Merged /pull/2266.\n"}},
+  {event:"step_update",step_update:{step_index:5,step_type:"agent_response",state:"DONE",text_delta:""}},
+  {event:"result",result:{conversation_id:"g3",status:"SUCCESS",response:"Waiting for `dune fmt` (`task-360`) to finish.\nCodex approved PR #2266 (`8ef3a0f9b`). Waiting for CI.\nHANDBACK t2416\nMerged /pull/2266.\n"}}' | fixture_stream lr-gemini-steps gemini
+printf 'HANDBACK t2416\nMerged /pull/2266.\n\n' > "$TMP/want-gemini-steps"
+expect_exact "a multi-step gemini stream prints only the last completed agent_response step" 0 "$TMP/want-gemini-steps" -- "$FW" log testbox lr-gemini-steps --last-result
+# Turn isolation: a later turn with no step_update prints its own response, not the earlier turn's step.
+jq -cn '{event:"result",result:{conversation_id:"g3",status:"SUCCESS",response:"turn two plain"}}' >> "$ISSUE_WAVE_STATE/workers/lr-gemini-steps/stream.jsonl"
+printf 'turn two plain\n' > "$TMP/want-gemini-t2"
+expect_exact "...and a later turn without step_updates does not inherit the earlier turn's step" 0 "$TMP/want-gemini-t2" -- "$FW" log testbox lr-gemini-steps --last-result
+# An unlisted leading line inside the final agent_response step itself stays intact (attention in wave drive).
+jq -cn '
+  {event:"init",conversation_id:"g4"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"Merging PR #2301 via pr-review.sh merge --wait.\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE",text_delta:"Summary before marker.\nHANDBACK t724\n"}},
+  {event:"result",result:{conversation_id:"g4",status:"SUCCESS",response:"Merging PR #2301 via pr-review.sh merge --wait.\nSummary before marker.\nHANDBACK t724\n"}}' | fixture_stream lr-gemini-prose gemini
+printf 'Summary before marker.\nHANDBACK t724\n\n' > "$TMP/want-gemini-prose"
+expect_exact "...while prose inside the final step itself stays intact" 0 "$TMP/want-gemini-prose" -- "$FW" log testbox lr-gemini-prose --last-result
+# Fail-closed fallback: if .done is not a line-boundary suffix of .result.response (mid-word suffix
+# or trailing uncompleted text), fall back to .result.response whole.
+jq -cn '
+  {event:"init",conversation_id:"g5"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"HANDBACK t9"}},
+  {event:"result",result:{conversation_id:"g5",status:"SUCCESS",response:"prefixHANDBACK t9"}}' | fixture_stream lr-gemini-midword gemini
+printf 'prefixHANDBACK t9\n' > "$TMP/want-gemini-midword"
+expect_exact "...and a mid-word suffix falls back fail-closed to result.response" 0 "$TMP/want-gemini-midword" -- "$FW" log testbox lr-gemini-midword --last-result
+jq -cn '
+  {event:"init",conversation_id:"g6"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"HANDBACK t9\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"ACTIVE",text_delta:"trailing"}},
+  {event:"result",result:{conversation_id:"g6",status:"SUCCESS",response:"HANDBACK t9\ntrailing"}}' | fixture_stream lr-gemini-active gemini
+printf 'HANDBACK t9\ntrailing\n' > "$TMP/want-gemini-active"
+expect_exact "...and a trailing uncompleted step falls back fail-closed to result.response" 0 "$TMP/want-gemini-active" -- "$FW" log testbox lr-gemini-active --last-result
+# Fail-closed marker guard: if any earlier step contains a line starting with a wavedrive marker
+# token (e.g. REVIEW_REQUEST or EXECUTION_RESULT), print result.response whole so classify sees both.
+jq -cn '
+  {event:"init",conversation_id:"g7"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"REVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE",text_delta:"HANDBACK t89\nMerged /pull/17.\n"}},
+  {event:"result",result:{conversation_id:"g7",status:"SUCCESS",response:"REVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nHANDBACK t89\nMerged /pull/17.\n"}}' | fixture_stream lr-gemini-marker-prefix gemini
+printf 'REVIEW_REQUEST 17 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nHANDBACK t89\nMerged /pull/17.\n\n' > "$TMP/want-gemini-marker-prefix"
+expect_exact "...and a marker in an earlier step falls back to result.response whole" 0 "$TMP/want-gemini-marker-prefix" -- "$FW" log testbox lr-gemini-marker-prefix --last-result
+jq -cn '
+  {event:"init",conversation_id:"g8"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"EXECUTION_RESULT {\"request_id\":\"r1\",\"run\":\"/r\",\"exit\":0,\"observed_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE",text_delta:"HANDBACK t89\nMerged /pull/17.\n"}},
+  {event:"result",result:{conversation_id:"g8",status:"SUCCESS",response:"EXECUTION_RESULT {\"request_id\":\"r1\",\"run\":\"/r\",\"exit\":0,\"observed_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\nHANDBACK t89\nMerged /pull/17.\n"}}' | fixture_stream lr-gemini-result-prefix gemini
+printf 'EXECUTION_RESULT {"request_id":"r1","run":"/r","exit":0,"observed_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\nHANDBACK t89\nMerged /pull/17.\n\n' > "$TMP/want-gemini-result-prefix"
+expect_exact "...and an EXECUTION_RESULT in an earlier step also falls back whole" 0 "$TMP/want-gemini-result-prefix" -- "$FW" log testbox lr-gemini-result-prefix --last-result
 }
 
 section "halt" && {
@@ -2929,6 +3067,35 @@ expect "another coordinator cannot record a spawn" 1 "BOARD REFUSED fleet: coord
   "${B[@]}" board spawned sp cli --agent f2 --transport subagent
 [ "$(jq -r '.tasks[1].fields | "\(.agent) \(.transport) \(.state) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/sp.json")" = "f1 subagent launched 1" ] &&
   ok "...the finisher is recorded and the refused spawn changes nothing" || ko "sp board: $(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+# ludics#1294: --launch-id makes a replayed spawn report a no-op that answers as the first did,
+# while a second spawn with a new ID under the same agent still counts one relaunch.
+setup_step "could not prepare the keyed spawn row (setup)" "$FW" board set --new-row sp idemp state=pending
+expect "a keyed first spawn records launch_id and leaves relaunches at zero" 0 '^BOARD SPAWNED sp: "idemp"$' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --model actual/high --launch-id sp-idemp-1
+spbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")
+expect "replaying the same launch-attempt ID counts no relaunch" 0 '^BOARD SPAWNED sp: "idemp"$' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --model actual/high --launch-id sp-idemp-1
+! grep -q '^BOARD TALLY ' <<<"$out" && [ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  [ "$(jq -r '.tasks[2].fields | "\(.agent) \(.launch_id) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/sp.json")" = "a1 sp-idemp-1 0" ] &&
+  ok "...the replay writes nothing and keeps relaunches at zero" || ko "sp replay: out=$out board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+expect "a second spawn with a new ID under the same agent counts one relaunch" 0 '^BOARD TALLY sp: "idemp" relaunches=1$' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --model actual/high --launch-id sp-idemp-2
+spbefore=$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")
+expect "replaying the relaunch ID answers as the first did without counting again" 0 '^BOARD TALLY sp: "idemp" relaunches=1$' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --model actual/high --launch-id sp-idemp-2
+grep -q '^BOARD SPAWNED sp: "idemp"$' <<<"$out" && [ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  [ "$(jq -r '.tasks[2].fields | "\(.agent) \(.launch_id) \(.relaunches)"' "$ISSUE_WAVE_STATE/boards/sp.json")" = "a1 sp-idemp-2 1" ] &&
+  ok "...replaying the relaunch writes nothing and keeps relaunches at one" || ko "sp relaunch replay: out=$out board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+expect "reusing a launch-attempt ID for different spawn facts is refused" 1 '^BOARD REFUSED: launch_id "sp-idemp-2" is already recorded' -- \
+  "$FW" board spawned sp idemp --agent a2 --transport subagent --model actual/high --launch-id sp-idemp-2
+[ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  ok "...the conflicting replay writes nothing" || ko "sp conflict board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
+expect "a launch-attempt ID outside the grammar is a usage error" 2 'board spawned: --launch-id must be' -- \
+  "$FW" board spawned sp idemp --agent a1 --transport subagent --launch-id bad/id
+expect "board set refuses to write launch_id directly" 1 '^BOARD REFUSED: launch_id is recorded by board spawned, not board set$' -- \
+  "$FW" board set sp idemp launch_id=sp-idemp-3 state=launched
+[ "$spbefore" = "$(git hash-object "$ISSUE_WAVE_STATE/boards/sp.json")" ] &&
+  ok "...refused board set launch_id writes nothing" || ko "sp set launch_id board=$(cat "$ISSUE_WAVE_STATE/boards/sp.json")"
 # status --json (ludics#1165): the observers' read through the shim, with no lease and no identity --
 # every board, each row's phase derived as check reads it, the lease's host and never its token.
 expect "status --json reads every board without the lease or any identity" 0 '^{"version": 1, ' -- \
@@ -4344,8 +4511,87 @@ expect "a close that lost its last write is finished by a re-run" 0 '; 0 standin
 [ "$(clog)" = 1 ] && [ "$(cfield t1 state)" = "merged #7 at ${MERGE:0:12}" ] && ok "...with no second log line" || ko "log $(clog) state $(cfield t1 state)"
 "$FW" board set --new-row cw t4 repository=o/r pr=7 standing=none "farside=none" >/dev/null
 expect "standing=none closes a task with no reservation" 0 '"t4" merged o/r#7 at aaaaaaaaaaaa; 0 standing concluded, 0 already; row set$' -- "$FW" board close cw t4
-"$FW" board set --new-row cw t5 repository=o/r pr=7 standing=none "farside=other:/wt/a other:/wt/b" >/dev/null
-expect "...and a far-side worktree is named for farside-close, not removed here" 0 '; row set; NOTE 2 far-side worktree(s): farside-close cw --task t5$' -- "$FW" board close cw t5
+"$FW" board set --new-row cw t5 repository=o/r pr=7 standing=none transport=subagent "farside=other:/wt/a other:/wt/b" >/dev/null
+expect "...and a far-side worktree that cannot be removed becomes a NOTE, never a failed close" 0 '; row set; NOTE farside-close cw --task t5 (2 kept):' -- "$FW" board close cw t5
+# #1310: merged board close removes farside worktrees under farside-close's own checks (reading
+# .github/fleet-regenerable from origin/<main>), keeps any with an open reservation or unlisted
+# ignored file with a NOTE, closes an IDLE Claude CLI worker before removing its worktree, applies
+# the CLI exit gate to rows without a transport key, and --no-pr / unmerged closes remove nothing.
+FWCF=(env FLEET_BOXES="testbox other" FLEET_BOX_CORRECTNESS_SLOTS="testbox=4" FLEET_SKILLS_REPO="$HERE/../.." "$FW")
+mkdir -p "$TMP/cw-fc"
+git init -q -b master "$TMP/cw-fc/src" && mkdir -p "$TMP/cw-fc/src/.github"
+printf '_build/\n*.log\n' > "$TMP/cw-fc/src/.gitignore"
+printf '# project regenerable\n_build\n' > "$TMP/cw-fc/src/.github/fleet-regenerable"
+git -C "$TMP/cw-fc/src" add -A && git -C "$TMP/cw-fc/src" commit -q -m init
+git init -q --bare -b master "$TMP/cw-fc/remote.git"
+git -C "$TMP/cw-fc/src" remote add origin "$TMP/cw-fc/remote.git" && git -C "$TMP/cw-fc/src" push -q -u origin master
+git clone -q "$TMP/cw-fc/remote.git" "$TMP/cw-fc/co"
+cw_base=$(git -C "$TMP/cw-fc/co" rev-parse HEAD)
+cw_wt_clean="$TMP/cw-fc/wt-clean"; cw_wt_res="$TMP/cw-fc/wt-res"; cw_wt_ign="$TMP/cw-fc/wt-ign"
+cw_wt_nopr="$TMP/cw-fc/wt-nopr"; cw_wt_open="$TMP/cw-fc/wt-open"
+for d in "$cw_wt_clean" "$cw_wt_res" "$cw_wt_ign" "$cw_wt_nopr" "$cw_wt_open"; do
+  git -C "$TMP/cw-fc/co" worktree add -q --detach "$d" master
+  mkdir -p "$d/_build" && printf 'built\n' > "$d/_build/o"
+done
+# 1) Merged task: .github/fleet-regenerable allows _build, so the worktree goes at board close.
+"$FW" board set --new-row cw t7 repository=o/r pr=7 standing=none transport=subagent "farside=testbox:$cw_wt_clean" >/dev/null
+expect "merged board close removes a clean worktree (reading .github/fleet-regenerable)" 0 '; row set; worktrees: 1 removed$' -- \
+  "${FWCF[@]}" board close cw t7
+[ ! -e "$cw_wt_clean" ] && ok "...and the worktree is gone from disk" || ko "worktree stayed: $cw_wt_clean"
+git -C "$TMP/cw-fc/co" worktree list | grep -Fq "$cw_wt_clean" && ko "git still lists $cw_wt_clean" || ok "...and from git worktree list"
+# 2) Outstanding reservation keeps it with a NOTE, exit 0.
+jq -n --arg co "$cw_wt_res" --arg rev "$cw_base" '{request_id:"c-hold", wave:"cw", worker:"w-hold", transport:"cli",
+  issue:"o/r#1310", purpose:"hold fixture", agent_host:"testbox", execution_host:"testbox", repository:"o/r",
+  requested_revision:$rev, kind:"correctness", checkout:$co}' > "$TMP/c-hold.json"
+setup_step "could not reserve c-hold (setup)" "${FWCF[@]}" execution run "$TMP/c-hold.json"
+"$FW" board set --new-row cw t8 repository=o/r pr=7 standing=none transport=subagent worker=w-hold "farside=testbox:$cw_wt_res" >/dev/null
+expect "merged board close keeps a worktree with an outstanding reservation, with a NOTE" 0 '; row set; NOTE still open: c-hold; NOTE farside-close cw --task t8 (1 kept): FARSIDE KEPT .*outstanding reservation: c-hold$' -- \
+  "${FWCF[@]}" board close cw t8
+[ -d "$cw_wt_res/_build" ] && ok "...and leaves the reserved worktree intact" || ko "reserved worktree went"
+jq -n --arg sha "$cw_base" --arg wt "$cw_wt_res" '{request_id:"c-hold", verdict:"pass", log:"/dev/null",
+  evidence:"fixture", observed_sha:$sha, remote_checkout:$wt, handle:"fixture"}' > "$TMP/c-hold-done.json"
+"${FWCF[@]}" execution conclude "$TMP/c-hold-done.json" >/dev/null || ko "could not conclude c-hold (cleanup)"
+# 3) Unlisted ignored file keeps it, refused as farside-close refuses today, with a NOTE, exit 0.
+printf 'precious\n' > "$cw_wt_ign/extra.log"
+"$FW" board set --new-row cw t9r repository=o/r pr=7 standing=none transport=subagent "farside=testbox:$cw_wt_ign" >/dev/null
+expect "merged board close keeps a worktree with an unlisted ignored file, with a NOTE" 0 '; row set; NOTE farside-close cw --task t9r (1 kept): FARSIDE KEPT .*ignored data that --regenerable does not name: extra\.log$' -- \
+  "${FWCF[@]}" board close cw t9r
+[ -f "$cw_wt_ign/extra.log" ] && [ -d "$cw_wt_ign/_build" ] && ok "...and leaves the worktree and its ignored files intact" || ko "unlisted-ignored worktree changed"
+# 4) --no-pr and unmerged closes remove nothing.
+"$FW" board set --new-row cw t10 repository=o/r standing=none transport=subagent "farside=testbox:$cw_wt_nopr" >/dev/null
+expect "--no-pr board close removes no worktree and keeps the NOTE" 0 '; row set; NOTE 1 far-side worktree(s): farside-close cw --task t10$' -- \
+  "${FWCF[@]}" board close cw t10 --no-pr
+[ -d "$cw_wt_nopr/_build" ] && ok "...--no-pr left the worktree intact" || ko "--no-pr removed worktree"
+"$FW" board set --new-row cw t11 repository=o/r pr=7 standing=none transport=subagent "farside=testbox:$cw_wt_open" >/dev/null
+cpr OPEN - claude/close
+expect "unmerged board close refuses and removes nothing" 1 'o/r#7 is OPEN, not merged; nothing closed' -- \
+  "${FWCF[@]}" board close cw t11
+[ -d "$cw_wt_open/_build" ] && ok "...unmerged close left the worktree intact" || ko "unmerged close removed worktree"
+cpr MERGED "$MERGE" claude/close
+# 5) A CLI row (explicit transport=cli or absent transport) whose worker has not exited keeps its worktree.
+"$FW" board set --new-row cw t12 repository=o/r pr=7 standing=none transport=cli agent_host=testbox worker=w-live "farside=testbox:$cw_wt_open" >/dev/null
+expect "CLI board close keeps the worktree when the worker has not exited" 0 '; row set; NOTE CLI worker w-live on testbox is not exited .*; close it first, then run farside-close cw --task t12$' -- \
+  "${FWCF[@]}" board close cw t12
+[ -d "$cw_wt_open/_build" ] && ok "...unexited CLI worker kept its worktree" || ko "unexited CLI worker lost worktree"
+"$FW" board set --new-row cw t12b repository=o/r pr=7 standing=none agent_host=testbox worker=w-legacy "farside=testbox:$cw_wt_open" >/dev/null
+expect "row with absent transport applies the CLI exit gate" 0 '; row set; NOTE CLI worker w-legacy on testbox is not exited .*; close it first, then run farside-close cw --task t12b$' -- \
+  "${FWCF[@]}" board close cw t12b
+[ -d "$cw_wt_open/_build" ] && ok "...absent-transport row kept its worktree" || ko "absent-transport row lost worktree"
+# 6) Positive CLI path: a real IDLE Claude worker is closed, confirmed EXITED via real status, and loses its worktree.
+setup_step "could not launch w-idle-close (setup)" env SHIM_BASE_TIP="$cw_base" "$FW" launch testbox w-idle-close --target-repo example/project --kind claude --brief "$brief" --repo "$TMP/cw-fc/co" --branch claude/idle-close
+setup_step "w-idle-close never became IDLE (setup)" "$FW" attach testbox w-idle-close --interval 1
+cw_wt_idle="$TMP/cw-fc/co-worktrees/w-idle-close"
+mkdir -p "$cw_wt_idle/_build" && printf 'built\n' > "$cw_wt_idle/_build/o"
+cw_idle_st=$("$FW" status testbox w-idle-close)
+grep -q '^IDLE ' <<<"$cw_idle_st" && ok "fixture Claude CLI worker is IDLE before board close" || ko "fixture not IDLE: $cw_idle_st"
+cpr MERGED "$MERGE" claude/idle-close
+"$FW" board set --new-row cw t13 repository=o/r pr=7 standing=none transport=cli agent_host=testbox worker=w-idle-close branch=claude/idle-close "farside=testbox:$cw_wt_idle" >/dev/null
+expect "merged board close closes an IDLE Claude CLI worker and removes its worktree" 0 '; row set; worktrees: 1 removed$' -- \
+  "${FWCF[@]}" board close cw t13
+cw_idle_st=$("$FW" status testbox w-idle-close)
+grep -q '^EXITED(0) ' <<<"$cw_idle_st" && ok "...the Claude CLI worker is now EXITED(0)" || ko "worker did not exit: $cw_idle_st"
+[ ! -e "$cw_wt_idle" ] && ok "...and its worktree is gone from disk" || ko "CLI worktree stayed: $cw_wt_idle"
+cpr MERGED "$MERGE" claude/close
 expect "...and without the lease the close writes nothing" 1 "." -- env -u FLEET_COORDINATOR FLEET_COORDINATOR=somebody-else "$FW" board close cw t1 --agent agent-3
 [ "$(cfield t1 agent)" = agent-2 ] && ok "...its row as it was" || ko "a close with no lease set the row: $(cfield t1 agent)"
 # #1109, THE UNUSED LEG: a standing GPU-home-box leg no batch ran under has no worktree to read, and
@@ -6977,6 +7223,54 @@ expect "a turn answered is never read again, and a closed task is no longer serv
 expect "the heartbeat says the driver's state, and no attention when every turn was answered" 0 "^HEARTBEAT drive: NOT RUNNING; .* DRIVE t81 turn 1: handback answered" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 0
 grep -q "^HEARTBEAT attention" <<<"$out" && ko "attention where none was raised: $out" || ok "...and prints no attention line"
 "$FW" close testbox wk-81 >/dev/null 2>&1
+# #1308: a Gemini (agy) worker whose turn had earlier reactive-wakeup progress steps before its
+# final HANDBACK step is closed by wave drive (with a clean hand-back file), whereas an unlisted
+# leading line or a second marker inside the final step itself stays DRIVE ATTENTION.
+jq '.profiles.neon = {transport:"cli", kind:"gemini"}' "$K/wave.json" > "$K/wave-gemini.json" && mv "$K/wave-gemini.json" "$K/wave.json"
+printf '# Task @@T@@\n' > "$K/tasks/t88.md"
+printf '# Task @@T@@\n' > "$K/tasks/t89.md"
+printf 'Waiting for `dune fmt` (`task-360`) to finish.\nCodex approved PR #2266 (`8ef3a0f9b`). Waiting for CI.\n' > "$K/agy-progress"
+printf 'HANDBACK t88\nMerged https://github.com/example/project/pull/16. Nothing to propose.\n' > "$K/agy-say"
+export SHIM_AGY_PROGRESS="$K/agy-progress" SHIM_AGY_SAY="$K/agy-say"
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t88", profile:"neon", host:"testbox"}]}' > "$K/queue.json"
+expect "wave drive launches a queued gemini task" 0 "^DRIVE t88 launch: launch answered: WAVE LAUNCH t88: launched testbox/wk-88 " -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+"$FW" attach testbox wk-88 --interval 1 >/dev/null 2>&1
+jq -n --arg m "$(printf 'd%.0s' $(seq 40))" '{number:16, state:"MERGED", headRefName:"gemini/wk-88", mergeCommit:{oid:$m}}' > "$K/pr-view.json"
+expect "a gemini hand-back after reactive-wakeup progress steps is closed by wave drive" 0 \
+  '^DRIVE t88 turn 0: handback answered: BOARD CLOSE wkv: "t88" merged example/project#16 at dddddddddddd; 1 standing concluded, 0 already; row set' -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ "$(head -n 1 "$K/handbacks/t88.md")" = "HANDBACK t88" ] && ! grep -q "Waiting for" "$K/handbacks/t88.md" &&
+  ok "...and handbacks/t88.md starts with HANDBACK without leading progress lines" || ko "t88 handback: $(cat "$K/handbacks/t88.md" 2>&1)"
+"$FW" close testbox wk-88 >/dev/null 2>&1
+printf 'Summary before marker.\nHANDBACK t89\nMerged https://github.com/example/project/pull/17.\n' > "$K/agy-say"
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t89", profile:"neon", host:"testbox"}]}' > "$K/queue.json"
+expect "wave drive launches the negative-control gemini task" 0 "^DRIVE t89 launch: launch answered: WAVE LAUNCH t89: launched testbox/wk-89 " -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "an unlisted leading line inside the final gemini step stays attention" 0 \
+  "^DRIVE ATTENTION t89 turn 0: no marker this driver answers;" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+printf 'HANDBACK t89\nMerged https://github.com/example/project/pull/17.\nREVIEW_REQUEST 17 %s\n' "$pbase" > "$K/agy-say"
+printf 'try again\n' > "$K/retry-msg.md"
+setup_step "could not resume wk-89 (setup)" "$FW" unstick testbox wk-89 --message "$K/retry-msg.md"
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "a second marker inside the final gemini step stays attention" 0 \
+  "^DRIVE ATTENTION t89 turn 1: a final message with more than one marker: review, handback" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+printf 'REVIEW_REQUEST 17 %s\n' "$pbase" > "$K/agy-progress"
+printf 'HANDBACK t89\nMerged https://github.com/example/project/pull/17.\n' > "$K/agy-say"
+setup_step "could not resume wk-89 for earlier REVIEW_REQUEST (setup)" "$FW" unstick testbox wk-89 --message "$K/retry-msg.md"
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "a REVIEW_REQUEST in an earlier gemini step before HANDBACK stays attention" 0 \
+  "^DRIVE ATTENTION t89 turn 2: a final message with more than one marker: review, handback" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+printf 'EXECUTION_RESULT {"request_id":"req-1","run":"/tmp/run-1","exit":0,"observed_sha":"%s"}\n' "$pbase" > "$K/agy-progress"
+setup_step "could not resume wk-89 for earlier EXECUTION_RESULT (setup)" "$FW" unstick testbox wk-89 --message "$K/retry-msg.md"
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "an EXECUTION_RESULT in an earlier gemini step before HANDBACK stays attention" 0 \
+  "^DRIVE ATTENTION t89 turn 3: a final message with more than one marker: result, handback" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+setup_step "could not close t89's row (setup)" "${FWK[@]}" board set wkv t89 state=dropped
+"$FW" close testbox wk-89 >/dev/null 2>&1
+fixture_done wkv-t89-testbox-iterate
+unset SHIM_AGY_PROGRESS SHIM_AGY_SAY
 # The queue's waits, end to end (#1130): a prepared task whose base the branch moved past is taken
 # back with wave unprep and prepared again under its own id; a task waiting on its host's one slot
 # starts when the task holding it merges; a task after a native task with no row is told once, and

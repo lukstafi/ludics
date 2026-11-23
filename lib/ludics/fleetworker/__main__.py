@@ -10,8 +10,8 @@ the halt (halt, resume-launches, halted), the native gate (gate), every ``execut
 preflight and refresh (``preflight``), a CLI worker's life (``workers``: launch, attach, status,
 log, unstick, close, ls), the supervision reads (``supervision``: load, prs), the observers' read
 (``status``: status --json), a new scan's check
-of the open sibling heads (``siblingscan``) and the wave board (``board``: set, note, log, show,
-check, takeover, close). The one answer
+of the open sibling heads (``siblingscan``) and the wave board (``board``: set, spawned, note, log,
+show, check, takeover, close, tally). The one answer
 fleet-worker.sh still gives itself is ``execution slot --probe``, which must answer on a box with no
 Python >= 3.12 (THE PROBE WITHOUT PYTHON, in fleet-worker.sh). Under a coordinator's far side,
 every verb first checks the registry pin (``config.pin_refusal``, ludics-lite#632).

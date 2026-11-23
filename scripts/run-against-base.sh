@@ -25,9 +25,11 @@
 #   <suite-path>     a file in the current checkout's working tree (relative to the cwd, or
 #                    absolute)
 # The options come right after the suite path, in any order; the first word that is not one of
-# them, and every word after it, goes to the suite (`--` included: it is the suite's), so a suite
-# whose own first argument is one of these names cannot take it through the helper. A repeated
-# --base or --timeout: the later one wins.
+# them, and every word after it, goes to the suite (`--` included for non-`*.py` suites: it is
+# the suite's), so a suite whose own first argument is one of these names cannot take it through
+# the helper. For a `*.py` suite, a bare `--` as the first suite argument is refused (125) with
+# the corrected command (without `--`), because unittest reads `--` as end-of-options and exits 1
+# while testing nothing (#1296). A repeated --base or --timeout: the later one wins.
 #
 # COMMAND MODE (ludics-lite#765): `--command`, as the FIRST argument, runs a project's own runner
 # instead of one suite file -- OCANNL's `tools/test-run.sh run @dir/runtest-x`, say -- from the
@@ -43,13 +45,24 @@
 #   - a word with a `/`: a file of this checkout, named relative to the cwd or absolute and refused
 #     the ways a suite path is (outside the checkout, a symlink, inside .git or a nested
 #     repository). It runs as the RUN TREE's copy at that path -- the base's, not the working
-#     tree's, unless --also carries it -- since the runner of the base is what runs the base.
+#     tree's, unless --also carries it -- since the runner of the base is what runs the base. An
+#     absolute executable outside this checkout (such as `/bin/bash`) is refused (125) with the
+#     corrected invocation (`-- env <path> ...`, or `sh -c` when the path holds `=`) (#1296).
 # Path arguments of the command are spelled from the root of the checkout, where it runs. The
 # helper does not read or interpret the command or its output beyond the result line: it cannot
 # tell a runner's own refusal or a build failure from a failing test (the output says), so the
 # caller reads the output and shows the head passing too. A runner whose last line is a trace row
 # rather than a verdict names its verdict line with --tally (below). The *.py rules below are the
 # suite form's only.
+#
+# Examples (run from the checkout root):
+#   # Targeted Python unittest (suite form; no `--` before unittest args):
+#   scripts/run-against-base.sh lib/ludics/tests/test_bgrun.py --base origin/main -v -k test_every_form
+#   # Targeted Python unittest (command form, by fully-qualified test name):
+#   scripts/run-against-base.sh --command --also lib/ludics/tests/test_bgrun.py -- scripts/py -m unittest ludics.tests.test_bgrun.Parse.test_every_form
+#   # Command form under macOS Bash 3.2 (external absolute interpreter via `env`, or via PATH):
+#   scripts/run-against-base.sh --command --also scripts/test-py.sh -- env /bin/bash scripts/test-py.sh
+#   env PATH=/bin:"$PATH" scripts/run-against-base.sh --command --also scripts/test-py.sh -- bash scripts/test-py.sh
 #
 #   --base <ref>     the base to run against (default origin/main; with --mutate or --revert, the
 #                    working tree)
@@ -173,6 +186,12 @@ die() {
   printf '%s\n' "run-against-base: $DIE_CTX$*" >&2
   exit 125
 }
+shell_join() {
+  [ $# -gt 0 ] || return 0
+  local s
+  s=$(printf '%q ' "$@")
+  printf '%s' "${s% }"
+}
 
 [ $# -ge 1 ] || die "usage: run-against-base.sh <suite-path> [--base <ref>] [--also <path>]... [--mutate <file> <sed-expr>]... [--revert <commit> <path>]... [--timeout <s>] [--tally <ERE>] [--mutants <file> [--red <ERE>]] [suite args...]
        run-against-base.sh --command [the same options] -- <program> [args...]"
@@ -206,10 +225,11 @@ TALLY=${RUN_AGAINST_BASE_TALLY:-}
 MUTANTS_FILE=
 RED_FLAG=
 RED=${RUN_AGAINST_BASE_RED:-'^(FAIL|ERROR)[: ]'}
+OPTS=()
 ended=
 # The helper's options, up to the first word that is not one: that word and the rest are the
-# suite's. No `--` terminator, because a suite may take `--` itself and always could. In command
-# mode the `--` is required, and nothing else may end the options.
+# suite's. No `--` terminator, because a non-`*.py` suite may take `--` itself and always could.
+# In command mode the `--` is required, and nothing else may end the options.
 while [ $# -gt 0 ]; do
   case "$1" in
   --)
@@ -221,39 +241,46 @@ while [ $# -gt 0 ]; do
   --base)
     [ $# -ge 2 ] || die "--base needs a ref"
     base=$2
+    OPTS+=(--base "$2")
     shift 2
     ;;
   --also)
     [ $# -ge 2 ] || die "--also needs a path"
     ALSO_ARGS+=("$2")
+    OPTS+=(--also "$2")
     shift 2
     ;;
   --mutate)
     [ $# -ge 3 ] || die "--mutate needs a file and a sed expression"
     MUT_ARGS+=("$2")
     MUT_EXPRS+=("$3")
+    OPTS+=(--mutate "$2" "$3")
     shift 3
     ;;
   --revert)
     [ $# -ge 3 ] || die "--revert needs a commit and a path"
     REV_ARGS+=("$2")
     REV_PATHS+=("$3")
+    OPTS+=(--revert "$2" "$3")
     shift 3
     ;;
   --timeout)
     [ $# -ge 2 ] || die "--timeout needs whole seconds"
     TIMEOUT=$2
+    OPTS+=(--timeout "$2")
     shift 2
     ;;
   --tally)
     [ $# -ge 2 ] || die "--tally needs an extended regular expression"
     [ -n "$2" ] || die "--tally: an empty pattern matches every line; name the verdict line"
     TALLY=$2
+    OPTS+=(--tally "$2")
     shift 2
     ;;
   --mutants)
     [ $# -ge 2 ] || die "--mutants needs a file of mutants, one <file> <sed-expr> per line"
     MUTANTS_FILE=$2
+    OPTS+=(--mutants "$2")
     shift 2
     ;;
   --red)
@@ -261,6 +288,7 @@ while [ $# -gt 0 ]; do
     [ -n "$2" ] || die "--red: an empty pattern matches every line; name the failing-case line"
     RED=$2
     RED_FLAG=1
+    OPTS+=(--red "$2")
     shift 2
     ;;
   *)
@@ -292,6 +320,15 @@ TIMEOUT=$((10#$TIMEOUT))
 # be inside it.
 TOP=$(git rev-parse --show-toplevel 2>/dev/null) || die "not inside a git checkout: $PWD"
 TOP=$(CDPATH= cd "$TOP" && pwd -P) || die "cannot resolve the checkout root: $TOP"
+# physdir <path>: sets P_DIR to the physical parent directory of <path> (resolving symlinks
+# before `..`, matching the file the kernel opens, and preserving trailing newlines in directory
+# names through a sentinel `x`), or returns non-zero.
+physdir() {
+  local d
+  d=$(CDPATH= cd -P -- "${1%/*}/" 2>/dev/null && pwd -P && printf x) || return 1
+  d=${d%x}
+  P_DIR=${d%$'\n'}
+}
 # resolve <path>: sets R_ABS and R_REL for a regular working-tree file of this checkout, or dies.
 # The suite, an --also file, a --mutate file and a command-mode program with a `/` are all named
 # this way, and all refused the same ways.
@@ -305,12 +342,8 @@ resolve() {
   # negative control must be the working tree's committed-or-edited file, not something it
   # reaches.
   [ -L "$arg" ] && die "$arg is a symlink; name the file it points at"
-  # Split with parameter expansion, and read the resolved directory back through a trailing `x`:
-  # a command substitution strips trailing newlines, which a git filename may end in, and would
-  # then name a different file than the one checked above.
-  dir=$(CDPATH= cd "${arg%/*}/" && pwd -P && printf x) || die "cannot resolve: $arg"
-  dir=${dir%x}
-  dir=${dir%$'\n'}
+  physdir "$arg" || die "cannot resolve: $arg"
+  dir=$P_DIR
   R_ABS="$dir/${arg##*/}"
   # A file inside a nested repository (a submodule, say) belongs to that repository: the base
   # worktree of this one would hold an empty directory there, and the suite would fail on the
@@ -411,6 +444,73 @@ check_interp() {
   */*) [ "${hit#/}" != "$hit" ] || die "$name needs $interp, found only as the relative $hit, which names something else from the run tree's root; it would not run as checked" ;;
   esac
 }
+# refuse_external_abs <abs-program> [args...]: in --command mode, an absolute executable outside
+# this checkout (such as /bin/bash on macOS) is a common first-use mistake; refuse with 125 and
+# print the corrected invocation (`env <path> ...`, or `sh -c` when the path holds `=`, which env
+# reads as an assignment). Returns 0 for paths inside this checkout, missing paths, or
+# non-executable files so the caller's `resolve` handles them as usual (#1296).
+refuse_external_abs() {
+  local prog=$1 cdir cabs f n fdir t shebang how
+  local -a sb=() fixed=()
+  shift
+  physdir "$prog" || return 0
+  cdir=$P_DIR
+  cabs="$cdir/${prog##*/}"
+  case "$cabs" in "$TOP"/*) return 0 ;; esac
+  [ -f "$prog" ] && [ -x "$prog" ] || return 0
+  f=$prog
+  n=0
+  while [ -L "$f" ]; do
+    [ "$n" -lt 40 ] || die "--command: $(printf '%q' "$prog") is a symlink loop"
+    physdir "$f" || die "--command: cannot resolve the directory of $(printf '%q' "$prog")"
+    fdir=$P_DIR
+    t=$(readlink -n "$f" && printf x) || die "--command: cannot read the symlink $(printf '%q' "$f")"
+    t=${t%x}
+    case "$t" in /*) f=$t ;; *) f="$fdir/$t" ;; esac
+    n=$((n + 1))
+  done
+  physdir "$f" || die "--command: cannot resolve the directory of $(printf '%q' "$prog")"
+  fdir=$P_DIR
+  case "$fdir/" in
+  "$TOP"/*)
+    die "--command: $(printf '%q' "$prog") is a symlink into this checkout ($TOP), so running it externally would run the live working tree's copy; name the checkout file by its path"
+    ;;
+  esac
+  # Check any direct shebang interpreter (including the path to `env` itself): wrapping the script
+  # in `env <script>` would otherwise turn a missing interpreter into env's exit 127.
+  IFS= read -r shebang <"$prog" || true
+  case "$shebang" in
+  '#!'*)
+    set -f
+    read -r -a sb <<<"${shebang#??}"
+    set +f
+    [ "${#sb[@]}" -gt 0 ] \
+      || die "--command: $(printf '%q' "$prog") has an empty shebang; it would never run"
+    case "${sb[0]}" in
+    /*)
+      { [ -f "${sb[0]}" ] && [ -x "${sb[0]}" ]; } \
+        || die "--command: $(printf '%q' "$prog") needs $(printf '%q' "${sb[0]}"), which is not an executable file here; it would never run"
+      ;;
+    *)
+      die "--command: $(printf '%q' "$prog") has a relative shebang interpreter ($(printf '%q' "${sb[0]}")), which names something else from the run tree's root; it would not run as checked"
+      ;;
+    esac
+    ;;
+  esac
+  check_interp "$prog" "$prog" ""
+  case "$prog" in
+  *=*)
+    # shellcheck disable=SC2016 # literal command shown to the caller
+    fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} -- sh -c 'exec "$@"' sh "$prog" ${@+"$@"})
+    how="through sh (env would read '=' as an assignment)"
+    ;;
+  *)
+    fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} -- env "$prog" ${@+"$@"})
+    how="through env (or by bare name on PATH)"
+    ;;
+  esac
+  die "--command: $(printf '%q' "$prog") is not inside this checkout ($TOP); in --command mode a program with a / names a file of this checkout -- to run an external program, run it $how: $(shell_join "${fixed[@]}")"
+}
 # RUN: the words before the suite's own arguments (RUN_SHOWN, when set, how the run names them).
 # A `lib/` module's runner is settled once the base worktree exists (it is the base's scripts/py,
 # when the base has one), so `interp` is left empty for it and its shebang is not read.
@@ -421,6 +521,7 @@ CMD_PATH=
 if [ -n "$CMD_MODE" ]; then
   # The program's two forms (see the header); its file, when it has one, is checked once the run's
   # tree exists, since that copy is the one that runs.
+  case "$cmd_word" in /*) refuse_external_abs "$cmd_word" ${@+"$@"} ;; esac
   case "$cmd_word" in
   */*)
     resolve "$cmd_word"
@@ -501,6 +602,38 @@ else
   *)
     [ -x "$suite_abs" ] || die "$rel is not executable (chmod +x it, as the mode rule asks)"
     RUN=("./$rel")
+    ;;
+  esac
+  # In the suite form there is no `--` separator: the first non-option word ends the helper's
+  # options, and every word from it on goes to the suite. A `*.py` suite handed a leading `--`
+  # (unittest in particular) exits 1 while testing nothing -- which looks like a passing negative
+  # control (#1296). Refuse with 125 and print the corrected command without the leading `--`.
+  case "$rel" in
+  *.py)
+    if [ $# -gt 0 ] && [ "$1" = -- ]; then
+      orig_args=("$@")
+      while [ $# -gt 0 ] && [ "$1" = -- ]; do shift; done
+      case "${1-}" in
+      --base | --also | --mutate | --revert | --timeout | --tally | --mutants | --red)
+        # Dropping `--` would let the helper consume the suite's own leading option; use --command
+        # to pass it verbatim (with $TOP/scripts/py so the command works from any subdirectory).
+        if [ -n "$module" ] && [ -f "$TOP/scripts/py" ] && [ -x "$TOP/scripts/py" ]; then
+          fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- "$TOP/scripts/py" -m unittest "$module" ${@+"$@"})
+        else
+          fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- python3 "./$rel" ${@+"$@"})
+        fi
+        die "in the suite form, there is no \`--\` before a *.py suite's arguments, and $(printf '%q' "$1") is a helper option name -- use --command to pass it to $rel verbatim (or place helper options directly after the suite path): $(shell_join "${fixed[@]}")"
+        ;;
+      *)
+        fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${@+"$@"})
+        if [ -z "$module" ]; then
+          verbatim=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- python3 "./$rel" "${orig_args[@]}")
+          die "in the suite form, there is no \`--\` before a *.py suite's arguments (the first non-option word ends the helper's options, so \`--\` would go straight to $rel); drop the \`--\`: $(shell_join "${fixed[@]}") (or to pass a literal \`--\` to $rel verbatim: $(shell_join "${verbatim[@]}"))"
+        fi
+        die "in the suite form, there is no \`--\` before a *.py suite's arguments (the first non-option word ends the helper's options, so \`--\` would go straight to $rel); drop the \`--\`: $(shell_join "${fixed[@]}")"
+        ;;
+      esac
+    fi
     ;;
   esac
   [ -n "$module" ] || check_interp "$suite_abs" "$rel" "$runner"

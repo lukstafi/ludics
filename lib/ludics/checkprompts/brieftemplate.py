@@ -34,12 +34,15 @@ without it has no template to keep, as the suites' trees of copied prompts do no
 - RETIRED. No part holds a line containing one of ``RETIRED``'s strings: the worker steps a PR
   retired from the brief, each with that PR. The PR that retires a brief step adds its
   string here.
+- REQUIRED. Each shipped part named in ``REQUIRED`` that is present in the tree holds its pinned
+  sentence (whitespace-normalized across Markdown line wraps), so critical handoff-marker rules
+  cannot be edited away silently.
 
-What it deliberately does NOT read: the prose's meaning; whether the template states each rule a
-worker needs (the template is where those rules live, and SKILL.md's *The brief* only says what a
-task part adds: that is the review of the diff that changes either); a word of any other shape (an absolute path, a relative ``../``,
-a placeholder-built path); a heading named in any other form; wave directories, which are not in
-the repository.
+What it deliberately does NOT read: the prose's meaning outside ``REQUIRED``; whether the template
+states each other rule a worker needs (the template is where those rules live, and SKILL.md's *The
+brief* only says what a task part adds: that is the review of the diff that changes either); a word
+of any other shape (an absolute path, a relative ``../``, a placeholder-built path); a heading named
+in any other form; wave directories, which are not in the repository.
 """
 
 import re
@@ -68,6 +71,14 @@ RETIRED: tuple[tuple[str, str], ...] = (
     ("FLEET_AUTOFIX_OFF", "#1078 retired the worker's Auto-fix step"),
     ("Auto-fix off", "#1078 retired the worker's Auto-fix step"),
 )
+REQUIRED: tuple[tuple[str, str, str], ...] = (
+    (f"{TEMPLATES}/cli-gemini/who.md",
+     "Start every hand-back turn's final message with `HANDBACK @@T@@` on its first line, with nothing before it",
+     "#1308 pins the Gemini hand-back first-line rule"),
+    (f"{TEMPLATES}/{SHARED_DIR}/after-merge.md",
+     "Start your final reply with the plain line `HANDBACK @@T@@`, before any heading or prose.",
+     "#1308 pins the shared hand-back first-line rule"),
+)
 SPAN = re.compile(r"`([^`\n]+)`")
 WORD = re.compile(r"[A-Za-z0-9_.+*/-]+")
 HEADING_AFTER = re.compile(r"\A, \*([^*]+)\*")
@@ -91,7 +102,8 @@ def check_brief_template(report: Report, tree: Tree) -> None:
             report.ko(rel, "cannot be read")
             bad = True
             continue
-        for problem in name_problems(rel, text, allowed) + reference_problems(tree, text) + retired_problems(text):
+        for problem in (name_problems(rel, text, allowed) + reference_problems(tree, text)
+                        + retired_problems(text) + required_problems(rel, text)):
             report.ko(rel, problem)
             bad = True
     if not bad:
@@ -195,3 +207,9 @@ def retired_problems(text: str) -> list[str]:
             if needle in line:
                 problems.append(f"line {number} holds {needle!r}, a retired brief step ({why})")
     return problems
+
+
+def required_problems(rel: str, text: str) -> list[str]:
+    normalized = " ".join(text.split())
+    return [f"missing pinned sentence {needle!r} ({why})"
+            for path, needle, why in REQUIRED if path == rel and needle not in normalized]

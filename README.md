@@ -338,8 +338,9 @@ before and after. Nothing re-applies those, and a feature update can reset them,
 
 ## Tests
 
-For a ludics wave, ignored Python caches are regenerable: pass
-`farside-close <wave> --regenerable '**/__pycache__'` at coordinator close-out.
+For a ludics wave, ignored Python caches are listed in `.github/fleet-regenerable`
+(`**/__pycache__`), which `farside-close` reads from `origin/main` automatically (additional
+directories may still be passed with `--regenerable`).
 
 **Before every push, run `scripts/preflight.sh` from the checkout.** It is CI's `lint` job — the
 same command the workflow runs, not a reconstruction of it: shell syntax, the two-way mode rule,
@@ -383,7 +384,9 @@ case does not end the run (#809): `run_tests` runs each case in a subshell of it
 is tallied, the cases after it still run and report, and the run closes with `FAILED: <n> of <m>
 cases: <case>...` on stderr and exits with the first failed case's status. Nothing a case sets in
 the shell reaches the next one; a case whose state the next case reads is declared `chained
-<case>`, runs in the suite's own shell, and its failure still ends the run there.
+<case>`, runs in the suite's own shell, and its failure still ends the run there. Inside a case,
+`assert_*` ends the whole case on its first failure, so a negative control (`run-against-base.sh`)
+shows only a case's first failing refusal; put one refusal per case (#1267).
 
 To show that new fixtures FAIL on the base code — the negative control every issue-wave brief
 asks for — run `scripts/run-against-base.sh <suite-path> [options] [suite args...]`. It makes a
@@ -440,7 +443,14 @@ A project whose tests are not one executable file takes the **command form**,
 same options come before a required `--`, and everything after it is the command's argv, run from
 the root of the run's tree with only the `--also` files carried. A bare `<program>` is looked up on
 PATH. One with a `/` is a file of the checkout, and runs as the run tree's copy (the base's runner
-runs the base). The project names its own runner, so none is built in here. OCANNL, from a worker's
+runs the base); an absolute executable outside the checkout (such as `/bin/bash`) is refused with
+125 and prints the corrected invocation (`-- env <path> ...`, or `sh -c` when the path holds `=`)
+(#1296). To run a suite under macOS Bash 3.2 in command mode, pass it through `env` or select
+`/bin` first on `PATH` (#1237, #1296):
+`scripts/run-against-base.sh --command --also scripts/test-py.sh -- env /bin/bash scripts/test-py.sh`
+or
+`env PATH=/bin:"$PATH" scripts/run-against-base.sh --command --also scripts/test-py.sh -- bash scripts/test-py.sh`.
+The project names its own runner, so none is built in here. OCANNL, from a worker's
 OCANNL worktree:
 `~/ludics/scripts/run-against-base.sh --command --revert <fix-commit> <src-path> --timeout 3600 -- tools/test-run.sh run @test/<dir>/runtest-<name>`.
 The helper cannot tell a runner's own refusal or a build failure from a failing test, so read the
@@ -457,7 +467,13 @@ A `*.py` suite runs the way CI runs it. A file under `lib/` (a `lib/ludics/tests
 file) runs through the base's `scripts/py` as `scripts/py -m unittest <module>` (`ludics.tests.test_x`
 for `lib/ludics/tests/test_x.py`, the name CI's discovery gives it), so `lib/` is on the path with
 no `PYTHONPATH` of yours, the >= 3.12 gate applies, and package and relative imports resolve. The
-suite args go to unittest after the module name: `-v`, `-k <pattern>` to pick cases. A `lib/`
+suite args go to unittest after the module name without any `--` separator: `-v`, `-k <pattern>`
+to pick cases — for example,
+`scripts/run-against-base.sh lib/ludics/tests/test_bgrun.py --base origin/main -v -k test_every_form`
+(or in command mode by fully-qualified test name:
+`scripts/run-against-base.sh --command --also lib/ludics/tests/test_bgrun.py -- scripts/py -m unittest ludics.tests.test_bgrun.Parse.test_every_form`).
+Passing a bare `--` as a `*.py` suite's first suite argument is refused with 125 and prints the
+corrected command without `--`, so unittest can never exit 1 while testing nothing (#1296). A `lib/`
 file that discovery never runs (not `test_*.py`, or below a directory with no `__init__.py`) is
 refused, and so is a run whose `scripts/py` never started an interpreter (125, not a base failure). A base older
 than `scripts/py` falls back to plain `python3 <file>` and says so. A `*.py` file outside `lib/`
@@ -812,11 +828,15 @@ shape with the passing shape beside each, against scratch checkouts that pin the
 scope, and finally against the three suites that rediscovered the fix, each with its resolution
 line removed, where the guard must find what their authors found by accident.
 
+`test-fleet-worker.sh 'coordinator lease'` pauses a stale contender's process-start check until
+a successor enters its lease mutation. It checks the refusal and both files in the successor's lock.
+
 `test-fleet-worker.sh board` drives no-PR close-out through the real conclude CLI and registry
 (#1123): passed and failed runs conclude their own standing record and finish the row, and a
 repeated close writes nothing. The fixtures use payload files rather than accepting JSON in argv.
 The same section records a first native spawn, a native respawn and a CLI-to-native finisher
-through `board spawned`, checking the recorded facts, the relaunch counts and the lease (#1264).
+through `board spawned`, checking the recorded facts, the relaunch counts, launch-attempt ID replay
+idempotency and the lease (#1264, #1294).
 
 `test-fleet-worker.sh` launch cases also pin `--standing`: a refused reservation leaves the
 prepared worktree, starts no worker, and a retry cannot silently adopt an outstanding dispatch;

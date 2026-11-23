@@ -242,8 +242,9 @@ class PeerPlan(unittest.TestCase):
             self.assertEqual(f.read().strip(), "sid-1")
         self.assertFalse(os.path.exists(os.path.join(self.codex.dir, "calls.jsonl")), "no codex run")
         first = self.codex_calls(self.claude)[0]
-        self.assertEqual(first.argv, ["-p", "--model", "fable", "--effort", "high", "--output-format", "json", "--tools", "Read,Grep,Glob",
-                                      "--strict-mcp-config"])
+        self.assertEqual(first.argv, ["-p", "--model", "fable", "--effort", "high", "--output-format", "json",
+                                      "--strict-mcp-config", "--tools", "Read,Grep,Glob"])
+        self.assertNotIn("--mcp-config", first.argv)
         self.assertEqual(os.path.realpath(first.cwd), os.path.realpath(wt))
         self.assertIn("one of two planners", first.stdin)
         mine = os.path.join(self.dir, "claude-plan.md")
@@ -258,6 +259,34 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(second.argv[-2:], ["--resume", "sid-1"])
         self.assertEqual(second.argv[:-2], first.argv, "the critique keeps the plan's tool bound, MCP servers included")
         self.assertIn("my plan", second.stdin)
+
+    def test_a_claude_critique_refuses_a_whitespace_only_thread_and_bad_effort_exits_cleanly(self) -> None:
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        with open(os.path.join(self.dir, "thread"), "w", encoding="utf-8") as f:
+            f.write("   \n")
+        mine = os.path.join(self.dir, "claude-plan.md")
+        with open(mine, "w", encoding="utf-8") as f:
+            f.write("my plan\n")
+        done = self.entry("critique", self.dir, "--plan", mine)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        run = done.stdout.strip()
+        self.assertEqual(self.wait(run), "rc=1")
+        self.assertEqual(len(self.codex_calls(self.claude)), 1, "critique never starts a fresh claude turn without a session id")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "critique.md")))
+        with open(os.path.join(run, "log"), encoding="utf-8") as f:
+            self.assertIn("recorded no session id", f.read())
+
+        bad_dir = os.path.join(self.tmp, "plans", "w-8")
+        done = self.entry("start", bad_dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--effort", "-high")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        bad_run = done.stdout.strip()
+        self.assertEqual(self.wait(bad_run), "rc=1")
+        with open(os.path.join(bad_run, "log"), encoding="utf-8") as f:
+            log = f.read()
+        self.assertIn("effort must not start with '-'", log)
+        self.assertNotIn("Traceback", log)
 
     def test_a_gemini_planner_runs_agy_in_a_clone_and_resumes_its_conversation(self) -> None:
         """THE PLANNER: a gemini-... model plans through agy with every tool approved, in a clone with no

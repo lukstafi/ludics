@@ -211,9 +211,12 @@ driver hands you as an attention line.
 3. **Right before each spawn,** run `fleet-worker.sh gate --wait <seconds>`. Re-check for a
    rival PR by topic first: prep's check covers only the number and the branch. Then spawn the
    worker and record it with `fleet-worker.sh board spawned <wave> <task> --agent <id>
-   --transport subagent [--model <m>]`. Supply the model when the runtime's choice differs from
-   the prepared row. The board stamps `launched_at` on the first spawn, as it does for
-   `wave launch`.
+   --transport subagent [--model <m>] [--launch-id <id>]`. Supply the model when the runtime's
+   choice differs from the prepared row, and pass a stable `--launch-id` per launch attempt —
+   `<wave>-<task-slug>-<n>` (for example `w1123-t1294-1`, replacing characters outside
+   `[A-Za-z0-9._-]` in task names such as `ll#1`, with `<n>` chosen before spawning and reused on
+   every retry of that attempt) — so a lost acknowledgement can be retried safely. The board stamps
+   `launched_at` on the first spawn, as it does for `wave launch`.
 4. **Each worker's EXECUTION_REQUEST** is answered with one call:
 
    ```
@@ -327,9 +330,13 @@ driver hands you as an attention line.
    witness*](executions.md#coordinator-recipe-for-a-workers-windows-witness)), an
    `EXECUTION_REQUEST` is assigned and the worker resumed, an `EXECUTION_RESULT` concluded, a
    `REVIEW_REQUEST` or `CONFIRM_REQUEST` reviewed (step 8) while it serves the other workers, and
-   a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Without a PR,
-   exact `RUN /absolute/path` lines select `board close --no-pr --run` (one flag per line);
-   without either a PR or a run line the hand-back stays attention. Each turn is
+   a `HANDBACK` saved under `handbacks/` and its task closed with `board close`. Without a PR, exact
+   `RUN /absolute/path` lines select `board close --no-pr --run` (one flag per line); without either
+   a PR or a run line the hand-back stays attention. `log --last-result` reads only the turn's last
+   completed message (Codex's last `agent_message`; Gemini's last completed `agent_response` step
+   verified against `result.response`, falling back to `result.response` whole if an earlier step
+   contains a marker), so mid-turn progress steps do not obscure a leading `HANDBACK`, while a
+   malformed `EXECUTION_RESULT` stays attention naming the expected JSON form. Each turn is
    answered once: the ledger is `logs/drive.jsonl`. Anything a marker does not answer becomes an
    attention line and is yours. This includes design questions, plans, vanished workers, reviews
    with no verdict and merges without posted clearance for their head. An assignment that
@@ -404,7 +411,13 @@ driver hands you as an attention line.
     project's decisions ledger: add them to that file in one commit. A wave's own decision starts
     `unreviewed` there, and the maintainer's `ok`. When the maintainer answers a call the wave
     recorded, record the answer with `--tier 3` and the same `--call`: its row replaces the wave's.
-11. **An A/B comparison across waves** is read with one read-only verb (no lease, nothing written):
+11. **Close-out worktrees.** Whenever `board close` verifies a task's PR merged (whether called by
+    the driver or by you), it removes the row's `farside` worktrees through `farside-close <wave>
+    --task <task>`, reading the project's `.github/fleet-regenerable` from `origin/<main>` and
+    reporting any refusal as a `NOTE` without failing the close. At wave close-out, run
+    `fleet-worker.sh farside-close <wave>` once to sweep any worktrees kept during the wave
+    (open reservations, unlisted ignored files, unreachable boxes, or `--no-pr` rows).
+12. **An A/B comparison across waves** is read with one read-only verb (no lease, nothing written):
 
     ```
     fleet-worker.sh wave ab <wave.json>... [--json] [--no-github]

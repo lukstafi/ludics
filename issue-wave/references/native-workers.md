@@ -58,8 +58,12 @@ Residence does not preclude checks on other boxes; each execution is reserved se
 6. Spawn with that brief, recording the returned agent identity or canonical task name. Do
    not infer a runtime ID from an app thread ID. Record the returned identity on the prepared
    row with `fleet-worker.sh board spawned <wave> <task> --agent <id> --transport subagent
-   [--model <m>]`. This command is the board update for the native launch step in SKILL.md.
-   Supply the model when the runtime's choice differs from the prepared row.
+   [--model <m>] [--launch-id <id>]`. This command is the board update for the native launch step in
+   SKILL.md. Supply the model when the runtime's choice differs from the prepared row, and pass a
+   stable `--launch-id` matching `[A-Za-z0-9][A-Za-z0-9._-]*` — use `<wave>-<task-slug>-<n>` (for
+   example `w1123-t1294-1`, replacing characters outside that set in task names such as `ll#1`,
+   where `<n>` is the 1-based attempt number chosen before spawning and reused on every retry of
+   that attempt) — so an unacknowledged report can be retried without counting a duplicate relaunch.
    Validate the worker's startup report before calling the launch successful: actual absolute
    worktree, branch, base SHA, agent identity, and a harmless successful Git mutation such as
    `git update-index --refresh` with exit status.
@@ -111,8 +115,10 @@ other first word and on a `status` key, and writes both. The takeover keys are `
 `none`), `farside` (`<box>:<path>` far-side worktrees), `plan_dir` and `state`. Their grammars
 and the state words are `lib/ludics/fleetworker/takeover.py`'s. The writers check the lease
 themselves; check it before interventions. Re-read with `board show` before retrying a failed or
-unacknowledged board write. For a spawn, check the returned agent identity and relaunch record:
-repeating a recorded spawn increments the count again.
+unacknowledged `board set`, `board note`, `board log` or `board tally` write. For `board spawned`
+with `--launch-id <id>`, retrying with the same ID and runtime facts is a no-op that answers as the
+first call did, so no prior `board show` is needed; without `--launch-id`, re-read first because
+repeating a recorded spawn increments `relaunches` again.
 
 When a worker died with its process (a coordinator restart kills every in-process worker), its
 replacement's brief is `fleet-worker.sh board takeover <wave> <task>`: the stored brief, then a
@@ -171,9 +177,10 @@ from GitHub, concludes every standing record the row's `standing` key names (`--
 each record's own checkout), logs the close and sets the row. After a partial close, run it again:
 it reads what stands and does only what is missing, and refuses before any write on a PR not merged
 or a row that disagrees with the registry. `lib/ludics/fleetworker/closeout.py` states its recovery
-boundary. Do it before removing the worktree, whose HEAD `conclude` reads, and before
-`farside-close`, which waits for the row it sets and is the coordinator's next step for a row with
-far-side worktrees (the line's `NOTE` names it). Any other task sets its
+boundary. Do it before removing a local native worktree, whose HEAD `conclude` reads; for a merged
+PR whose row names `farside` worktrees, `board close` runs `farside-close <wave> --task <task>`
+right after setting the row and turns any refusal into a `NOTE` for close-out's `farside-close`
+sweep (`--no-pr` removes nothing and keeps the `NOTE`). Any other task sets its
 row's `state` to its done word by hand, as its hand-back is verified. Before the board is
 persisted, `fleet-worker.sh board check <wave>` exits 0 only when every row's state is done; exit 3
 lists each row that is not, a row left `launched` among them.

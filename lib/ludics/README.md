@@ -44,6 +44,8 @@ lib/ludics/proc.py               run_tool, the shell bridge, and Git Bash's PATH
 lib/ludics/bgrun.py              bg-run.sh wait's verdict line: parse, its one reader
 lib/ludics/agy.py                one headless agy (Gemini) turn in a disposable clone: argv, message,
                                  result, clone (the gemini reviewer's and planner's)
+lib/ludics/claude.py             shared read-only ``claude -p`` argv builder (--strict-mcp-config
+                                 and explicit built-in tool bounds, for the planner and reviewer)
 lib/ludics/prreview/core.py      pr-review.sh's prelude: fail/die/warn, Config, GhSession
                                  (gh_retry and its classification), parse_ref/pr_arg,
                                  checkout_pr, repo_from_cwd, api_list, mark_of
@@ -256,6 +258,12 @@ fs.py
     lib/ludics/tests/test_peerplan.py
 
 agy.py
+    lib/ludics/tests/test_fleetworker_wave.py
+    lib/ludics/tests/test_peerplan.py
+
+claude.py
+    issue-wave/scripts/test-fleet-worker.sh "wave kit"
+    lib/ludics/tests/test_claude.py
     lib/ludics/tests/test_fleetworker_wave.py
     lib/ludics/tests/test_peerplan.py
 
@@ -787,6 +795,15 @@ Agent notes (#1271): the shared `take_lock` retries a failed claim with a missin
 to three times per call, even at zero contention wait. A base counterexample removes the lock
 after the real `mkdir` fails and before the directory check. A file blocking the parent path
 checks the retry count and the unwritable diagnostic, alongside the fleet suite's permissions case.
+
+Agent notes (#1295): `take_lock` rechecks staleness under a flock on the directory inode. The
+same guard protects registration and release. The guard requires Perl and a filesystem that
+supports flock on directories. It disappears with the last descriptor, including on process
+death, so stale pid and ownerless recovery need no separate guard cleanup. Registration and
+reclamation count a busy guard against the caller's wait budget. If registration times out
+after mkdir, rmdir discards the directory only while it is empty. The coordinator lease
+fixture pauses an obsolete process-start result while a successor acquires the lock. The unit
+fixtures cover a fresh judgment for ownerless locks, guard contention and relative paths.
 
 Request-kind routing (#1155): a direct `execution hold --request` reads the registry before
 creating the slot directory or taking locks, and refuses correctness with the `execution slot`

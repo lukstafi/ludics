@@ -271,9 +271,10 @@
 #                          # task's row, each key set; any text in a value, split at the first `=`;
 #                          # a task with no row yet is refused, naming the nearest, without --new-row;
 #                          # warns on a `state` with no state word and on `status` (takeover.py)
-#   fleet-worker.sh board spawned <wave> <task> --agent <id> --transport <t> [--model <m>]
+#   fleet-worker.sh board spawned <wave> <task> --agent <id> --transport <t> [--model <m>] [--launch-id <id>]
 #                          # records the spawn on an existing row; an already launched row counts
-#                          # one relaunch, in the same write (ludics#1264)
+#                          # one relaunch, in the same write (ludics#1264); with --launch-id, a
+#                          # replay with the same id and facts is a no-op answering as the first did
 #   fleet-worker.sh board note [--create] <wave> <key>=<value>...   # the wave's own facts
 #   fleet-worker.sh board log <wave> <text>...   # one line appended to its log, stamped
 #   fleet-worker.sh board show <wave> [--json]   # the markdown view (or the document); no lease;
@@ -283,7 +284,9 @@
 #   fleet-worker.sh board close <wave> <task> [--pr <n>] [--agent <id>] [--evidence <text>]
 #                          # a merged task's close-out, one line: the merge SHA read from GitHub,
 #                          # every standing record of the row concluded, the log and the row
-#                          # written; a re-run resumes a partial close (fleetworker/closeout.py)
+#                          # written, and any `farside` worktrees removed via `farside-close --task`
+#                          # (refusals become a NOTE, never failing the close); a re-run resumes a
+#                          # partial close (fleetworker/closeout.py)
 #   fleet-worker.sh board takeover <wave> <task>   # the task's stored brief, then its state at
 #                          # takeover from the row's takeover keys and the live sources; no lease;
 #                          # exit 3 when the brief cannot be read (lib/ludics/fleetworker/takeover.py)
@@ -351,7 +354,8 @@
 #                          # remove a closed wave's far-side worktrees, the board's `farside` words,
 #                          # each only past its row's done state, no outstanding reservation, no leg
 #                          # holding it, a clean tree and HEAD on a branch of the remote; else kept,
-#                          # or only --regenerable dirs (a path, or **/<path> at any depth)
+#                          # or only regenerable dirs (from .github/fleet-regenerable on the
+#                          # remote's default branch plus --regenerable, each a path or **/<path>)
 #                          # removed when HEAD alone fails; one line a
 #                          # word, re-runnable; exit 3 when one stayed, 4 when a box did not answer;
 #                          # needs the lease unless --dry-run (lib/ludics/fleetworker/farsideclose.py)

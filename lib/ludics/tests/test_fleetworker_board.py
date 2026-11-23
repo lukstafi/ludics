@@ -480,6 +480,114 @@ class Tally(StoreCase):
                 self.assertIn(reason, err)
                 self.assertEqual(self.doc(), before)
 
+    def test_spawned_with_launch_id_replays_as_noop_and_new_id_same_agent_counts(self) -> None:
+        """THE LAUNCH-ATTEMPT IDENTITY (ludics#1294): replaying a recorded ID with matching facts
+        does not write or move relaunches and answers as the first call did; a new ID under the
+        same agent name still counts one."""
+        self.set("t1", ("state", "pending"), ("model", "planned"))
+        rc, out, err = self.spawned("t1", "a1", "subagent", model="actual/high", launch_id="w-t1-1")
+        self.assertEqual((rc, out, err), (0, 'BOARD SPAWNED w: "t1"\n', ""))
+        fields = self.fields("t1")
+        self.assertEqual((fields["launch_id"], fields["relaunches"], fields["agent"], fields["model"]),
+                         ("w-t1-1", "0", "a1", "actual/high"))
+        self.set("t1", ("state", "implementing"))
+        before_replay = self.doc()
+        with mock.patch.object(boardstore.os, "replace", side_effect=AssertionError("replay must not write")):
+            rc, out, err = self.spawned("t1", "a1", "subagent", model="actual/high", launch_id="w-t1-1")
+        self.assertEqual((rc, out, err), (0, 'BOARD SPAWNED w: "t1"\n', ""))
+        self.assertEqual(self.doc(), before_replay, "replay preserves later state and updated_at")
+        rc, out, err = self.spawned("t1", "a1", "subagent", model="actual/high", launch_id="w-t1-2")
+        want_relaunch = 'BOARD SPAWNED w: "t1"\nBOARD TALLY w: "t1" relaunches=1\n'
+        self.assertEqual((rc, out, err), (0, want_relaunch, ""))
+        self.assertEqual((self.fields("t1")["launch_id"], self.fields("t1")["relaunches"]), ("w-t1-2", "1"))
+        self.assertIn('board spawned agent="a1" launch_id=w-t1-2 on a row launched at', self.doc()["log"][-1]["text"])
+        before_relaunch_replay = self.doc()
+        with mock.patch.object(boardstore.os, "replace", side_effect=AssertionError("replay must not write")):
+            rc, out, err = self.spawned("t1", "a1", "subagent", model="actual/high", launch_id="w-t1-2")
+            self.assertEqual((rc, out, err), (0, want_relaunch, ""), "replaying a relaunch answers as the first did")
+            rc2, out2, err2 = self.spawned("t1", "a1", "subagent", model="actual/high", launch_id="w-t1-1")
+            self.assertEqual((rc2, out2, err2), (0, 'BOARD SPAWNED w: "t1"\n', ""), "a late replay of an earlier ID is also a no-op")
+        self.assertEqual(self.doc(), before_relaunch_replay)
+
+    def test_spawned_replay_conflicts_and_invalid_launch_ids_refuse(self) -> None:
+        self.set("t1", ("state", "pending"), ("model", "planned"))
+        self.assertEqual(self.spawned("t1", "a1", "subagent", model="m1", launch_id="w-t1-1")[0], 0)
+        self.assertEqual(self.spawned("t1", "a1", "subagent", launch_id="w-t1-2")[0], 0)
+        before = self.doc()
+        conflicts: list[tuple[str, str, dict[str, str]]] = [
+            ("a2", "subagent", {"model": "m1", "launch_id": "w-t1-1"}),
+            ("a1", "cli", {"model": "m1", "launch_id": "w-t1-1"}),
+            ("a1", "subagent", {"model": "m2", "launch_id": "w-t1-1"}),
+            ("a1", "subagent", {"launch_id": "w-t1-1"}),
+            ("a1", "subagent", {"model": "m1", "launch_id": "w-t1-2"}),
+        ]
+        for agent, transport, extra in conflicts:
+            with self.subTest(agent=agent, transport=transport, extra=extra):
+                rc, out, err = self.spawned("t1", agent, transport, **extra)
+                self.assertEqual((rc, out), (1, ""))
+                self.assertIn("with different spawn facts", err)
+                self.assertEqual(self.doc(), before)
+        for bad in ("", " ", "-bad", "a/b", "a b", None, 7):
+            with self.subTest(launch_id=bad):
+                rc, out, err = self.call("spawned", {"wave": "w", "task": "t1", "agent": "a1",
+                                                     "transport": "subagent", "launch_id": bad})
+                self.assertEqual((rc, out), (1, ""))
+                self.assertIn("a launch_id must be", err)
+                self.assertEqual(self.doc(), before)
+        rc, out, err = self.set("t1", ("launch_id", "w-t1-3"), ("state", "launched"))
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("launch_id is recorded by board spawned, not board set", err)
+        self.assertEqual(self.doc(), before)
+
+    def test_unkeyed_spawn_after_keyed_clears_launch_id_and_keeps_replay_history(self) -> None:
+        self.set("t1", ("state", "pending"))
+        self.assertEqual(self.spawned("t1", "a1", "subagent", launch_id="w-t1-1")[0], 0)
+        rc, out, _ = self.spawned("t1", "a2", "subagent")
+        self.assertEqual((rc, out), (0, 'BOARD SPAWNED w: "t1"\nBOARD TALLY w: "t1" relaunches=1\n'))
+        self.assertNotIn("launch_id", self.fields("t1"))
+        self.assertEqual(self.fields("t1")["agent"], "a2")
+        before = self.doc()
+        rc, out, _ = self.spawned("t1", "a1", "subagent", launch_id="w-t1-1")
+        self.assertEqual((rc, out), (0, 'BOARD SPAWNED w: "t1"\n'))
+        self.assertEqual(self.doc(), before, "late replay of w-t1-1 does not overwrite a2 or count again")
+        self.assertEqual(self.spawned("t1", "a3", "subagent", launch_id="w-t1-2")[0], 0)
+        self.assertEqual(self.fields("t1")["launch_id"], "w-t1-2")
+        rc, out, _ = self.set("t1", ("agent", "a4"), ("state", "launched"))
+        self.assertEqual((rc, out), (0, 'BOARD SET w: "t1" agent state\nBOARD TALLY w: "t1" relaunches=3\n'))
+        self.assertNotIn("launch_id", self.fields("t1"), "a legacy set relaunch clears the previous launch_id")
+        before_legacy_replay = self.doc()
+        rc, out, _ = self.spawned("t1", "a3", "subagent", launch_id="w-t1-2")
+        self.assertEqual((rc, out), (0, 'BOARD SPAWNED w: "t1"\nBOARD TALLY w: "t1" relaunches=2\n'))
+        self.assertEqual(self.doc(), before_legacy_replay, "earlier keyed spawn still replays as a no-op after a legacy relaunch")
+
+    def test_corrupt_spawns_record_refuses_without_overwriting(self) -> None:
+        path = os.path.join(self.root, "boards", "w.json")
+        self.set("t1", ("state", "pending"))
+        self.assertEqual(self.spawned("t1", "a1", "subagent", launch_id="w-t1-1")[0], 0)
+        with open(path, encoding="utf-8") as f:
+            valid = json.load(f)
+        bad_spawns: list[Any] = [
+            [],
+            {"-bad": {"agent": "a1", "transport": "subagent", "said": "ok"}},
+            {"ok": "not-a-dict"},
+            {"ok": {"agent": "a1", "transport": "subagent"}},
+            {"ok": {"agent": "a1", "transport": "subagent", "said": "ok", "extra": "x"}},
+            {"ok": {"agent": " ", "transport": "subagent", "said": "ok"}},
+            {"ok": {"agent": "a1", "transport": "subagent", "said": ""}},
+        ]
+        for bad in bad_spawns:
+            with self.subTest(spawns=bad):
+                broken = json.loads(json.dumps(valid))
+                broken["tasks"][0]["spawns"] = bad
+                text = json.dumps(broken)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                rc, _, err = self.spawned("t1", "a1", "subagent", launch_id="w-t1-1")
+                self.assertEqual(rc, 1)
+                self.assertIn("is not a valid board", err)
+                with open(path, encoding="utf-8") as f:
+                    self.assertEqual(f.read(), text)
+
     def test_a_second_launch_counts_one_relaunch_and_a_first_launch_none(self) -> None:
         """THE RELAUNCH COUNT (ludics#1236's decision): a native respawn or a finisher is a second
         ``state=launched`` on a row the first launch stamped, one ``relaunches`` each, logged."""
@@ -730,14 +838,25 @@ class CommandLine(unittest.TestCase):
             self.payload("spawned", "w", "ll#1", "--model", "model/high", "--transport", "subagent", "--agent", "a=b"),
             ("spawned", {"wave": "w", "task": "ll#1", "model": "model/high", "transport": "subagent", "agent": "a=b"}),
         )
+        self.assertEqual(
+            self.payload("spawned", "w", "ll#1", "--agent", "a1", "--transport", "subagent", "--launch-id", "w-ll.1_a"),
+            ("spawned", {"wave": "w", "task": "ll#1", "agent": "a1", "transport": "subagent", "launch_id": "w-ll.1_a"}),
+        )
 
     def test_spawned_refuses_missing_and_repeated_options(self) -> None:
         for options in ((), ("--agent", "a"), ("--transport", "subagent"), ("--agent", "--transport", "subagent"),
                         ("--agent", "a", "--transport", "subagent", "--agent", "b"),
                         ("--agent", "a", "--transport", "subagent", "--model"),
+                        ("--agent", "a", "--transport", "subagent", "--launch-id"),
+                        ("--agent", "a", "--transport", "subagent", "--launch-id", "x", "--launch-id", "y"),
+                        ("--agent", "a", "--transport", "subagent", "--launch-id", " "),
                         ("--agent", "a", "--transport", "subagent", "--new-row")):
             with self.subTest(options=options):
                 self.assertIn("board spawned: expected", self.refused("spawned", "w", "t", *options))
+        for bad in ("-bad", "a/b", "a b", "a:b"):
+            with self.subTest(launch_id=bad):
+                self.assertIn("board spawned: --launch-id must be",
+                              self.refused("spawned", "w", "t", "--agent", "a", "--transport", "subagent", "--launch-id", bad))
 
     def test_new_row_is_sets_alone_and_read_with_create_in_either_order(self) -> None:
         for flags in (["--create", "--new-row"], ["--new-row", "--create"]):
