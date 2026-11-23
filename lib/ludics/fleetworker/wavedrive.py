@@ -67,8 +67,8 @@ holds, or the turn is attention:
             never assigned; its payload is kept verbatim, not parsed or executed)
   request   a line that is exactly ``EXECUTION_REQUEST``
   result    one or more lines ``EXECUTION_RESULT {json}``, and no line that starts with
-            ``EXECUTION_RESULT`` and is not that, whole (a wrapped or cut result is never dropped
-            beside a good one: the turn is attention)
+            ``EXECUTION_RESULT`` and is not that, whole (a wrapped, space-separated or cut result is
+            never dropped beside a good one: the turn is attention, naming the expected JSON form)
   review    the last line is ``REVIEW_REQUEST <pr> <40-hex sha>``
   confirm   the last line is ``CONFIRM_REQUEST <pr> <40-hex sha>``
   handback  the first line starts with ``HANDBACK``
@@ -538,7 +538,10 @@ def classify(message: str) -> Turn:
     results = tuple(m.group(1) for m in (RESULT.fullmatch(line) for line in claimed) if m)
     if len(results) != len(claimed):
         # One result read and another dropped would conclude part of a turn and resume the worker.
-        return Turn("other", "an EXECUTION_RESULT line that is not `EXECUTION_RESULT {json}` whole on its own line")
+        return Turn(
+            "other",
+            'an EXECUTION_RESULT line that is not `EXECUTION_RESULT {"request_id":"...","run":"/abs/path","exit":0,"observed_sha":"<40-hex>"}` whole on its own line',
+        )
     if results:
         found.append(Turn("result", results=results))
     ask = ASK.fullmatch(lines[-1])

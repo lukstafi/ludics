@@ -762,7 +762,22 @@ text="gemini did: $(LC_ALL=C; printf '%s' "${msg:0:40}" | tr '\n' ' ')"
 # SHIM_AGY_SAY names a file whose content is this turn's final message, whole (a marker a driver reads).
 if [ -n "${SHIM_AGY_SAY:-}" ] && [ -s "$SHIM_AGY_SAY" ]; then text=$(cat "$SHIM_AGY_SAY"); fi
 jq -cn --arg c "$cid" '{event:"step_update",step_update:{conversation_id:$c,step_index:0,state:"DONE",step_type:"user_input"}}'
-jq -cn --arg c "$cid" --arg t "$text" '{event:"result",result:{conversation_id:$c,status:"SUCCESS",response:$t,num_turns:1}}'
+# SHIM_AGY_PROGRESS (optional) names a file whose lines are emitted as earlier DONE agent_response
+# steps before the final reply, concatenated into .result.response as real agy does (#1308).
+if [ -n "${SHIM_AGY_PROGRESS:-}" ] && [ -s "$SHIM_AGY_PROGRESS" ]; then
+  full="" idx=1
+  while IFS= read -r pline || [ -n "$pline" ]; do
+    jq -cn --arg c "$cid" --argjson i "$idx" --arg d "${pline}"$'\n' \
+      '{event:"step_update",step_update:{conversation_id:$c,step_index:$i,state:"DONE",step_type:"agent_response",text_delta:$d}}'
+    full+="${pline}"$'\n'
+    idx=$((idx + 1))
+  done < "$SHIM_AGY_PROGRESS"
+  jq -cn --arg c "$cid" --argjson i "$idx" --arg d "$text" \
+    '{event:"step_update",step_update:{conversation_id:$c,step_index:$i,state:"DONE",step_type:"agent_response",text_delta:$d}}'
+  jq -cn --arg c "$cid" --arg t "${full}${text}" '{event:"result",result:{conversation_id:$c,status:"SUCCESS",response:$t,num_turns:1}}'
+else
+  jq -cn --arg c "$cid" --arg t "$text" '{event:"result",result:{conversation_id:$c,status:"SUCCESS",response:$t,num_turns:1}}'
+fi
 exit 0
 EOF
 REAL_GIT=$(command -v git)
@@ -2771,6 +2786,47 @@ printf '%s\n' '{"event":"init","conversation_id":"g1"}' '{"event":"result","resu
 expect "...and a latest turn that ended ERROR is NO RESULT naming it" 1 "^NO RESULT testbox/lr-gemini: the latest turn ended ERROR: quota exhausted$" -- "$FW" log testbox lr-gemini --last-result
 jq -cn '{event:"init",conversation_id:"g2"}' | fixture_stream lr-gemini-none gemini
 expect "a gemini stream with no result is NO RESULT" 1 "^NO RESULT testbox/lr-gemini-none: no result event in the stream" -- "$FW" log testbox lr-gemini-none --last-result
+# #1308: agy concatenates earlier reactive-wakeup agent_response steps into .result.response;
+# log --last-result returns only the last non-empty DONE agent_response step when it is a
+# line-boundary suffix of .result.response, and falls back fail-closed to .result.response otherwise.
+jq -cn '
+  {event:"init",conversation_id:"g3"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"Waiting for `dune fmt` (`task-360`) to finish.\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE"}},
+  {event:"step_update",step_update:{step_index:3,step_type:"agent_response",state:"DONE",text_delta:"Codex approved PR #2266 (`8ef3a0f9b`). Waiting for CI.\n"}},
+  {event:"step_update",step_update:{step_index:4,step_type:"agent_response",state:"ACTIVE",text_delta:"HANDBACK t2416\n"}},
+  {event:"step_update",step_update:{step_index:4,step_type:"agent_response",state:"DONE",text_delta:"Merged /pull/2266.\n"}},
+  {event:"step_update",step_update:{step_index:5,step_type:"agent_response",state:"DONE",text_delta:""}},
+  {event:"result",result:{conversation_id:"g3",status:"SUCCESS",response:"Waiting for `dune fmt` (`task-360`) to finish.\nCodex approved PR #2266 (`8ef3a0f9b`). Waiting for CI.\nHANDBACK t2416\nMerged /pull/2266.\n"}}' | fixture_stream lr-gemini-steps gemini
+printf 'HANDBACK t2416\nMerged /pull/2266.\n\n' > "$TMP/want-gemini-steps"
+expect_exact "a multi-step gemini stream prints only the last completed agent_response step" 0 "$TMP/want-gemini-steps" -- "$FW" log testbox lr-gemini-steps --last-result
+# Turn isolation: a later turn with no step_update prints its own response, not the earlier turn's step.
+jq -cn '{event:"result",result:{conversation_id:"g3",status:"SUCCESS",response:"turn two plain"}}' >> "$ISSUE_WAVE_STATE/workers/lr-gemini-steps/stream.jsonl"
+printf 'turn two plain\n' > "$TMP/want-gemini-t2"
+expect_exact "...and a later turn without step_updates does not inherit the earlier turn's step" 0 "$TMP/want-gemini-t2" -- "$FW" log testbox lr-gemini-steps --last-result
+# An unlisted leading line inside the final agent_response step itself stays intact (attention in wave drive).
+jq -cn '
+  {event:"init",conversation_id:"g4"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"Merging PR #2301 via pr-review.sh merge --wait.\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"DONE",text_delta:"Summary before marker.\nHANDBACK t724\n"}},
+  {event:"result",result:{conversation_id:"g4",status:"SUCCESS",response:"Merging PR #2301 via pr-review.sh merge --wait.\nSummary before marker.\nHANDBACK t724\n"}}' | fixture_stream lr-gemini-prose gemini
+printf 'Summary before marker.\nHANDBACK t724\n\n' > "$TMP/want-gemini-prose"
+expect_exact "...while prose inside the final step itself stays intact" 0 "$TMP/want-gemini-prose" -- "$FW" log testbox lr-gemini-prose --last-result
+# Fail-closed fallback: if .done is not a line-boundary suffix of .result.response (mid-word suffix
+# or trailing uncompleted text), fall back to .result.response whole.
+jq -cn '
+  {event:"init",conversation_id:"g5"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"HANDBACK t9"}},
+  {event:"result",result:{conversation_id:"g5",status:"SUCCESS",response:"prefixHANDBACK t9"}}' | fixture_stream lr-gemini-midword gemini
+printf 'prefixHANDBACK t9\n' > "$TMP/want-gemini-midword"
+expect_exact "...and a mid-word suffix falls back fail-closed to result.response" 0 "$TMP/want-gemini-midword" -- "$FW" log testbox lr-gemini-midword --last-result
+jq -cn '
+  {event:"init",conversation_id:"g6"},
+  {event:"step_update",step_update:{step_index:1,step_type:"agent_response",state:"DONE",text_delta:"HANDBACK t9\n"}},
+  {event:"step_update",step_update:{step_index:2,step_type:"agent_response",state:"ACTIVE",text_delta:"trailing"}},
+  {event:"result",result:{conversation_id:"g6",status:"SUCCESS",response:"HANDBACK t9\ntrailing"}}' | fixture_stream lr-gemini-active gemini
+printf 'HANDBACK t9\ntrailing\n' > "$TMP/want-gemini-active"
+expect_exact "...and a trailing uncompleted step falls back fail-closed to result.response" 0 "$TMP/want-gemini-active" -- "$FW" log testbox lr-gemini-active --last-result
 }
 
 section "halt" && {
@@ -6975,6 +7031,43 @@ expect "a turn answered is never read again, and a closed task is no longer serv
 expect "the heartbeat says the driver's state, and no attention when every turn was answered" 0 "^HEARTBEAT drive: NOT RUNNING; .* DRIVE t81 turn 1: handback answered" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --sleep 0
 grep -q "^HEARTBEAT attention" <<<"$out" && ko "attention where none was raised: $out" || ok "...and prints no attention line"
 "$FW" close testbox wk-81 >/dev/null 2>&1
+# #1308: a Gemini (agy) worker whose turn had earlier reactive-wakeup progress steps before its
+# final HANDBACK step is closed by wave drive (with a clean hand-back file), whereas an unlisted
+# leading line or a second marker inside the final step itself stays DRIVE ATTENTION.
+jq '.profiles.neon = {transport:"cli", kind:"gemini"}' "$K/wave.json" > "$K/wave-gemini.json" && mv "$K/wave-gemini.json" "$K/wave.json"
+printf '# Task @@T@@\n' > "$K/tasks/t88.md"
+printf '# Task @@T@@\n' > "$K/tasks/t89.md"
+printf 'Waiting for `dune fmt` (`task-360`) to finish.\nCodex approved PR #2266 (`8ef3a0f9b`). Waiting for CI.\n' > "$K/agy-progress"
+printf 'HANDBACK t88\nMerged https://github.com/example/project/pull/16. Nothing to propose.\n' > "$K/agy-say"
+export SHIM_AGY_PROGRESS="$K/agy-progress" SHIM_AGY_SAY="$K/agy-say"
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t88", profile:"neon", host:"testbox"}]}' > "$K/queue.json"
+expect "wave drive launches a queued gemini task" 0 "^DRIVE t88 launch: launch answered: WAVE LAUNCH t88: launched testbox/wk-88 " -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+"$FW" attach testbox wk-88 --interval 1 >/dev/null 2>&1
+jq -n --arg m "$(printf 'd%.0s' $(seq 40))" '{number:16, state:"MERGED", headRefName:"gemini/wk-88", mergeCommit:{oid:$m}}' > "$K/pr-view.json"
+expect "a gemini hand-back after reactive-wakeup progress steps is closed by wave drive" 0 \
+  '^DRIVE t88 turn 0: handback answered: BOARD CLOSE wkv: "t88" merged example/project#16 at dddddddddddd; 1 standing concluded, 0 already; row set' -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+[ "$(head -n 1 "$K/handbacks/t88.md")" = "HANDBACK t88" ] && ! grep -q "Waiting for" "$K/handbacks/t88.md" &&
+  ok "...and handbacks/t88.md starts with HANDBACK without leading progress lines" || ko "t88 handback: $(cat "$K/handbacks/t88.md" 2>&1)"
+"$FW" close testbox wk-88 >/dev/null 2>&1
+printf 'Summary before marker.\nHANDBACK t89\nMerged https://github.com/example/project/pull/17.\n' > "$K/agy-say"
+jq -n '{capacity:{testbox:1}, tasks:[{task:"t89", profile:"neon", host:"testbox"}]}' > "$K/queue.json"
+expect "wave drive launches the negative-control gemini task" 0 "^DRIVE t89 launch: launch answered: WAVE LAUNCH t89: launched testbox/wk-89 " -- \
+  "${FWD[@]}" wave drive "$K/wave.json" --once
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "an unlisted leading line inside the final gemini step stays attention" 0 \
+  "^DRIVE ATTENTION t89 turn 0: no marker this driver answers;" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+printf 'HANDBACK t89\nMerged https://github.com/example/project/pull/17.\nREVIEW_REQUEST 17 %s\n' "$pbase" > "$K/agy-say"
+printf 'try again\n' > "$K/retry-msg.md"
+setup_step "could not resume wk-89 (setup)" "$FW" unstick testbox wk-89 --message "$K/retry-msg.md"
+"$FW" attach testbox wk-89 --interval 1 >/dev/null 2>&1
+expect "a second marker inside the final gemini step stays attention" 0 \
+  "^DRIVE ATTENTION t89 turn 1: a final message with more than one marker: review, handback" -- "${FWD[@]}" wave drive "$K/wave.json" --once
+setup_step "could not close t89's row (setup)" "${FWK[@]}" board set wkv t89 state=dropped
+"$FW" close testbox wk-89 >/dev/null 2>&1
+fixture_done wkv-t89-testbox-iterate
+unset SHIM_AGY_PROGRESS SHIM_AGY_SAY
 # The queue's waits, end to end (#1130): a prepared task whose base the branch moved past is taken
 # back with wave unprep and prepared again under its own id; a task waiting on its host's one slot
 # starts when the task holding it merges; a task after a native task with no row is told once, and

@@ -2840,7 +2840,13 @@ class Markers(unittest.TestCase):
                              ('EXECUTION_RESULT {"request_id":"a"}\nEXECUTION_RESULT {"request_id":"b"', "an EXECUTION_RESULT line that is not"),
                              ('EXECUTION_RESULT\n{"request_id":"a"}', "an EXECUTION_RESULT line that is not"),
                              (f'EXECUTION_RESULT {{}} done\nREVIEW_REQUEST 7 {A}', "an EXECUTION_RESULT line that is not"),
+                             (f"EXECUTION_RESULT req-1 pass 0 {A} /tmp/run/log",
+                              'EXECUTION_RESULT {"request_id":"...","run":"/abs/path","exit":0,"observed_sha":"<40-hex>"}'),
                              ("The HANDBACK follows\nPR 7", "the last line starts 'PR'"),
+                             ("Summary before marker.\nHANDBACK t42\nPR /pull/7", "the last line starts 'PR'"),
+                             (f"REVIEW_REQUEST 7 {A}\nHANDBACK t42\nPR /pull/7", "the last line starts 'PR'"),
+                             ("HANDBACK t42\nPR /pull/7\nEXECUTION_REQUEST\n{}\nEND_EXECUTION_REQUEST",
+                              "more than one marker: request, handback"),
                              (f"HANDBACK t42\n...\nREVIEW_REQUEST 7 {A}", "more than one marker: review, handback"),
                              (f"EXECUTION_REQUEST\n{{}}\nEND_EXECUTION_REQUEST\nEXECUTION_RESULT {{}}", "more than one marker: request, result"),
                              # A plan's Verification may quote a marker: the envelope is read first.
