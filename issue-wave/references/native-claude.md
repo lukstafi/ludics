@@ -201,11 +201,10 @@ and a release through five PRs on 2026-09-15 with no stranded worker.
    names a checkout refuses any other worktree (ludics-lite#749). Or the block names the leg's
    box-relative runner instead of `command`: `"runner": "<runner-executable> <runner-args>"` with
    `"clone": "<the box's checkout>"`. Give the executable and arguments as an array or one line of
-   shell words. Use the full `command` for shell syntax such as redirection. The assignment adds `--wait-window`
-   for correctness. If you need `--cpu`, `--gpu` or another leg option, give the full leg in
-   `command` and put the leg options before its `--`. Use `command` also for a runner that takes a
-   literal `--cpu` or `--gpu` argument, with that runner argument after `--`. Keep `checkout` for
-   the worktree and put the clone path in the leg's `--checkout` (ludics#869, #1245).
+   shell words. Put leg options in `"leg_options"`. Assignment adds `--wait-window` for correctness
+   by default. Use a full `command` for shell syntax or when the runner owns a literal `--cpu`,
+   `--gpu` or `--reads-no-config` argument, which goes after the leg's `--` (ludics#1262). Keep
+   `checkout` for the worktree and put the clone path in the leg's `--checkout` (ludics#869, #1245).
 
    The task notification that follows is this handoff, not completion. Several blocks are
    assigned together, each on its own outcome (step 3), so a resumed worker holds every assignment

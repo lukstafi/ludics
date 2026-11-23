@@ -14,6 +14,14 @@ is that script, once, inside the reservation:
 ``execution hold --request <id> --worktree <dir> --rev <rev> [--checkout <dir>]`` is this verb on
 the box it runs on, for a measurement (``hold_in_worktree``, ludics-lite#816).
 
+THE CLI OPTIONS (ludics#1292). ``CLI_OPTIONS`` is the one table both this verb's parser
+(``parse_args``) and ``execution assign`` read, and is the closed boundary of direct ``execution
+leg`` options: each entry states its argument form (``OptionSpec.value``; ``REQUIRED_VALUE_FLAGS``
+names the entries requiring a value in the next argv entry) and its assignment policy
+(``AssignPolicy``: ``AllowInLegOptions``, ``SetByAssign``, ``RefuseInRequest``, or ``RunnerOnly``).
+``parse_args`` accepts only options in ``CLI_OPTIONS`` plus the ``--`` separator before the runner
+argv; words after ``--`` belong to the runner and are outside this table.
+
 THE RESERVATION. ``--request`` names a dispatched record (``launching``, ``running`` or
 ``uncertain``; a standing iteration record counts), read from the anchor's registry, which needs no
 coordinator identity. The box is the record's execution host (``--box``, when given, must be it);
@@ -389,8 +397,9 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
-from types import FrameType
-from typing import Any
+from dataclasses import dataclass
+from types import FrameType, MappingProxyType
+from typing import Any, Literal, assert_never
 
 from ludics import cli
 from ludics.fleetworker import execution, graces, revision, slot
@@ -406,7 +415,72 @@ USAGE = (
     " [--wait <seconds>] [--wait-window[=<seconds>]] [--deadline <seconds>] -- <runner command...>"
 )
 FILE_WORD = "{file}"  # the runner word THE FILE replaces with the shipped copy's path
-OPTIONAL_VALUE_FLAGS = frozenset(("--remote", "--base", "--control", "--file"))
+OptionValue = Literal["none", "string", "whole", "positive", "optional_whole"]
+
+
+@dataclass(frozen=True)
+class AllowInLegOptions:
+    """Accepted in ``execution assign``'s ``leg_options`` (for any kind, or correctness only)."""
+
+    kinds: Literal["any", "correctness"] = "any"
+    refuse_in_runner: bool = False
+    slot: bool = False
+
+
+@dataclass(frozen=True)
+class SetByAssign:
+    """Owned by the reservation or request fields; never accepted in ``leg_options``."""
+
+    owner: str
+
+
+@dataclass(frozen=True)
+class RefuseInRequest:
+    """Refused in runner requests: neither accepted in ``leg_options`` nor passed through ``runner``."""
+
+
+@dataclass(frozen=True)
+class RunnerOnly:
+    """Never accepted in ``leg_options``; a matching word in ``runner`` keeps its runner meaning."""
+
+
+AssignPolicy = AllowInLegOptions | SetByAssign | RefuseInRequest | RunnerOnly
+ASSIGN_POLICY_TYPES = (AllowInLegOptions, SetByAssign, RefuseInRequest, RunnerOnly)
+
+
+@dataclass(frozen=True)
+class OptionSpec:
+    """One direct CLI option ``execution leg`` accepts, and its assignment policy."""
+
+    value: OptionValue
+    assign: AssignPolicy
+
+    @property
+    def takes_value(self) -> bool:
+        """Whether the option requires a value in the next argv entry."""
+        return self.value in ("string", "whole", "positive")
+
+
+# THE CLI OPTIONS (ludics#1292): the one table both this parser and execution assign read.
+CLI_OPTIONS: Mapping[str, OptionSpec] = MappingProxyType({
+    "--request": OptionSpec("string", SetByAssign("request_id")),
+    "--box": OptionSpec("string", SetByAssign("reservation execution_host")),
+    "--rev": OptionSpec("string", SetByAssign("requested_revision")),
+    "--checkout": OptionSpec("string", SetByAssign("clone")),
+    "--worktree": OptionSpec("string", SetByAssign("checkout")),
+    "--remote": OptionSpec("string", AllowInLegOptions("any")),
+    "--base": OptionSpec("string", AllowInLegOptions("any")),
+    "--control": OptionSpec("string", AllowInLegOptions("any")),
+    "--file": OptionSpec("string", AllowInLegOptions("any")),
+    "--reads-no-config": OptionSpec("none", AllowInLegOptions("any", refuse_in_runner=True)),
+    "--cpu": OptionSpec("none", AllowInLegOptions("correctness", refuse_in_runner=True, slot=True)),
+    "--gpu": OptionSpec("none", AllowInLegOptions("correctness", refuse_in_runner=True, slot=True)),
+    "--wait": OptionSpec("whole", AllowInLegOptions("correctness")),
+    "--wait-window": OptionSpec("optional_whole", AllowInLegOptions("correctness")),
+    "--deadline": OptionSpec("positive", AllowInLegOptions("any")),
+})
+# Direct CLI flags taking a required value in the next argv entry (derived from CLI_OPTIONS).
+REQUIRED_VALUE_FLAGS = frozenset(flag for flag, spec in CLI_OPTIONS.items() if spec.takes_value)
 DISPATCHED = ("launching", "running", "uncertain")
 HEX = re.compile(r"[0-9a-fA-F]{7,}")
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -1363,7 +1437,16 @@ def cmd_leg(cfg: Config, args: list[str], *, hold: bool = False) -> int:
         return 128 + stopped.signum
 
 
-def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
+@dataclass(frozen=True)
+class ParsedLeg:
+    values: dict[str, str]
+    slot_flags: list[str]
+    runner: list[str]
+    no_config: bool
+
+
+def parse_args(args: list[str]) -> ParsedLeg:
+    """Parse direct ``execution leg`` options from ``CLI_OPTIONS`` up to ``--``."""
     values: dict[str, str] = {}
     slot_flags: list[str] = []
     runner: list[str] = []
@@ -1374,34 +1457,49 @@ def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
         if arg == "--":
             runner = args[i + 1 :]
             break
-        if arg == "--reads-no-config":
-            no_config = True
-            i += 1
-            continue
-        if arg in ("--request", "--box", "--rev", "--checkout", "--worktree") or arg in OPTIONAL_VALUE_FLAGS:
-            if i + 1 >= len(args) or not args[i + 1]:
-                die(f"execution leg: expected a value for {arg}")
-            values[arg] = args[i + 1]
-            i += 2
-            continue
-        if arg in slot_flags and arg in ("--wait", "--deadline"):
-            die(f"execution leg: {arg} given twice")
-        if arg in ("--wait", "--deadline"):
-            # --wait 0 is the slot's refuse-at-once; a deadline is positive.
-            if i + 1 >= len(args) or not (SECONDS if arg == "--deadline" else WHOLE).fullmatch(args[i + 1]):
-                die(f"execution leg: {arg} takes a {'positive ' if arg == '--deadline' else ''}whole number of seconds")
-            slot_flags += [arg, args[i + 1]]
-            i += 2
-            continue
-        if arg in ("--cpu", "--gpu", "--wait-window") or (
-            arg.startswith("--wait-window=") and WHOLE.fullmatch(arg[len("--wait-window=") :])
-        ):
+        flag, equals, bound = arg.partition("=")
+        spec = CLI_OPTIONS.get(flag)
+        if spec is None:
+            die(USAGE)
+        if equals:
+            if spec.value != "optional_whole" or not WHOLE.fullmatch(bound):
+                die(USAGE)
             slot_flags.append(arg)
             i += 1
             continue
-        die(USAGE)
+        match spec.value:
+            case "none":
+                if flag == "--reads-no-config":
+                    no_config = True
+                else:
+                    slot_flags.append(flag)
+                i += 1
+            case "optional_whole":
+                slot_flags.append(flag)
+                i += 1
+            case "string":
+                if i + 1 >= len(args) or not args[i + 1]:
+                    die(f"execution leg: expected a value for {flag}")
+                values[flag] = args[i + 1]
+                i += 2
+            case "whole" | "positive":
+                if flag in slot_flags:
+                    die(f"execution leg: {flag} given twice")
+                pattern = SECONDS if spec.value == "positive" else WHOLE
+                if i + 1 >= len(args) or not pattern.fullmatch(args[i + 1]):
+                    die(f"execution leg: {flag} takes a {'positive ' if spec.value == 'positive' else ''}whole number of seconds")
+                slot_flags += [flag, args[i + 1]]
+                i += 2
+            case _:
+                assert_never(spec.value)
     if not runner:
         die(USAGE)
+    return ParsedLeg(values, slot_flags, runner, no_config)
+
+
+def leg_command(cfg: Config, args: list[str], *, hold: bool = False) -> int:
+    parsed = parse_args(args)
+    values, slot_flags, runner, no_config = parsed.values, parsed.slot_flags, parsed.runner, parsed.no_config
     try:
         graces.runner(cfg.env)  # THE GRACES' input, refused before anything reaches the box
     except ValueError as exc:

@@ -1,23 +1,26 @@
 """ludics.fleetworker.assign: ``execution assign``'s readers and its outcomes (the shell suite's
 "execution assign" section drives the verb end to end, against the registry)."""
 
+import ast
 import contextlib
 import errno
+import inspect
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, assert_never, cast
 from unittest import mock
 
 from ludics import cli
-from ludics.fleetworker import assign, execution, boardstore
+from ludics.fleetworker import assign, boardstore, execution, leg
 from ludics.fleetworker.assign import (StepResult, assigned_revision, base_problem, block_problem, cmd_assign, fleet_worker_word,
                                        leg_command, parse, payload_of, read_blocks)
 from ludics.fleetworker.config import Config, load_config
@@ -116,6 +119,114 @@ class Readers(unittest.TestCase):
                 self.assertIn("only for correctness",
                               block_problem({**leg, "kind": "measurement", "leg_options": [flag]}) or "")
         self.assertIn("only for runner requests", block_problem(block("a", leg_options=[])) or "")
+
+    def test_every_leg_parser_option_has_an_assignment_policy(self) -> None:
+        short_or_long = re.compile(r"--?[A-Za-z0-9][A-Za-z0-9-]*=?")
+        long_only = re.compile(r"--[A-Za-z0-9][A-Za-z0-9-]*=?")
+        parser_options: set[str] = set()
+        for fn, pattern, follow_globals in ((leg.parse_args, short_or_long, True),
+                                            (leg.leg_command, long_only, False)):
+            tree = ast.parse(inspect.getsource(fn))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and pattern.fullmatch(node.value):
+                    parser_options.add(node.value.removesuffix("="))
+                elif follow_globals and isinstance(node, ast.Name):
+                    value: Any = vars(leg).get(node.id)
+                    if isinstance(value, Mapping):
+                        for key in cast(Mapping[Any, Any], value):
+                            if isinstance(key, str) and pattern.fullmatch(key):
+                                parser_options.add(key.removesuffix("="))
+                    elif isinstance(value, (tuple, list, set, frozenset)):
+                        for item in cast(tuple[Any, ...] | list[Any] | set[Any] | frozenset[Any], value):
+                            if isinstance(item, str) and pattern.fullmatch(item):
+                                parser_options.add(item.removesuffix("="))
+        table_options = set(leg.CLI_OPTIONS)
+        self.assertEqual(parser_options, table_options, "every leg parser option must be classified in leg.CLI_OPTIONS")
+        usage_options = set(re.findall(r"--[A-Za-z0-9][A-Za-z0-9-]*", leg.USAGE))
+        self.assertEqual(usage_options, table_options)
+        self.assertEqual(leg.REQUIRED_VALUE_FLAGS, {flag for flag, spec in leg.CLI_OPTIONS.items() if spec.takes_value})
+        self.assertEqual((assign.LEG_OPTIONS, assign.CORRECTNESS_LEG_OPTIONS, assign.LEG_SLOT_FLAGS, assign.RUNNER_LEG_FLAGS),
+                         assign.option_sets(leg.CLI_OPTIONS))
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(cli.Exit) as unknown:
+            leg.parse_args(["--unclassified-option", "--", "true"])
+        self.assertEqual(unknown.exception.rc, 2)
+
+        sample_values = {
+            "--request": "r1", "--box": "rog", "--rev": SHA, "--checkout": "/c", "--worktree": "/w",
+            "--remote": "origin", "--base": "main", "--control": "local.patch", "--file": "local.txt",
+        }
+        for flag, spec in leg.CLI_OPTIONS.items():
+            with self.subTest(flag=flag):
+                self.assertIsInstance(spec.assign, leg.ASSIGN_POLICY_TYPES)
+                match spec.value:
+                    case "none":
+                        argv = [flag]
+                    case "optional_whole":
+                        argv = [flag]
+                        self.assertEqual(leg.parse_args([f"{flag}=10", "--", "true"]).runner, ["true"])
+                    case "string":
+                        argv = [flag, sample_values.get(flag, "value")]
+                    case "whole":
+                        argv = [flag, "0"]
+                    case "positive":
+                        argv = [flag, "10"]
+                    case _:
+                        assert_never(spec.value)
+                self.assertEqual(leg.parse_args([*argv, "--", "true"]).runner, ["true"])
+
+                runner = ["check", "{file}"] if flag == "--file" else ["check"]
+                correctness_req = block("a", runner=runner, clone="/c", checkout="/w", leg_options=argv)
+                measurement_req = block("a", kind="measurement", runner=runner, clone="/c", checkout="/w", leg_options=argv)
+                in_runner = block("a", runner=["check", flag], clone="/c", checkout="/w")
+                match spec.assign:
+                    case leg.AllowInLegOptions(kinds=kinds, refuse_in_runner=refuse_in_runner):
+                        self.assertIsNone(block_problem(correctness_req))
+                        match kinds:
+                            case "any":
+                                self.assertIsNone(block_problem(measurement_req))
+                            case "correctness":
+                                self.assertIn("only for correctness", block_problem(measurement_req) or "")
+                            case _:
+                                assert_never(kinds)
+                        if refuse_in_runner:
+                            self.assertIn(f"runner contains {flag}", block_problem(in_runner) or "")
+                        else:
+                            self.assertIsNone(block_problem(in_runner))
+                    case leg.SetByAssign() | leg.RunnerOnly():
+                        self.assertIn(f"unsupported option {flag}", block_problem(correctness_req) or "")
+                        self.assertIsNone(block_problem(in_runner))
+                    case leg.RefuseInRequest():
+                        self.assertIn(f"unsupported option {flag}", block_problem(correctness_req) or "")
+                        self.assertIn(f"runner contains {flag}", block_problem(in_runner) or "")
+                    case _:
+                        assert_never(spec.assign)
+
+    def test_option_policy_table_covers_refused_and_runner_only_policies(self) -> None:
+        extended = {
+            **leg.CLI_OPTIONS,
+            "--internal-flag": leg.OptionSpec("none", leg.RefuseInRequest()),
+            "--runner-owned": leg.OptionSpec("none", leg.RunnerOnly()),
+        }
+        allowed, correctness_only, slot_flags, runner_refused = assign.option_sets(extended)
+        self.assertNotIn("--internal-flag", allowed)
+        self.assertIn("--internal-flag", runner_refused)
+        self.assertNotIn("--runner-owned", allowed)
+        self.assertNotIn("--runner-owned", runner_refused)
+        with (mock.patch.object(leg, "CLI_OPTIONS", extended),
+              mock.patch.multiple(assign, LEG_OPTIONS=allowed, CORRECTNESS_LEG_OPTIONS=correctness_only,
+                                  LEG_SLOT_FLAGS=slot_flags, RUNNER_LEG_FLAGS=runner_refused)):
+            self.assertIn("unsupported option --internal-flag",
+                          block_problem(block("a", runner=["check"], clone="/c", checkout="/w",
+                                              leg_options=["--internal-flag"])) or "")
+            refused = block_problem(block("a", runner=["check", "--internal-flag"], clone="/c", checkout="/w")) or ""
+            self.assertIn("runner contains --internal-flag", refused)
+            self.assertNotIn("Move leg flags into", refused)
+            self.assertIn('full leg in "command" with those flags after --', refused)
+            self.assertIn("unsupported option --runner-owned",
+                          block_problem(block("a", runner=["check"], clone="/c", checkout="/w",
+                                              leg_options=["--runner-owned"])) or "")
+            self.assertIsNone(block_problem(block("a", runner=["check", "--runner-owned"], clone="/c", checkout="/w")))
 
     def test_file_pairing_is_checked_when_the_runner_argv_is_known(self) -> None:
         leg = block("a", runner=["check", "prefix{file}"], clone="/c", checkout="/w")

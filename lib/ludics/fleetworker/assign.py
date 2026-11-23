@@ -39,12 +39,17 @@ the registry is asked, so a malformed request reserves nothing, and neither do i
   execution leg --request <id> --rev <revision> --checkout <clone> --worktree <checkout> [leg options]
   -- <runner>`` -- its ``clone`` and ``checkout`` required (absolute), its ``requested_revision`` a full
   40-hex SHA or ``head-of:<branch>`` (free text names no commit a leg can move to), ``--wait-window``
-  defaulted for correctness. The closed ``leg_options`` allowlist (an array of argv words):
-  ``--remote <name>``, ``--base <branch>``, ``--control <patch>``, ``--file <local file>``,
-  ``--reads-no-config``, ``--deadline <positive seconds>``; correctness also takes ``--cpu`` or
-  ``--gpu``, ``--wait <seconds>`` and ``--wait-window[=<seconds>]``. Each option occurs at most once.
-  A supplied window bound replaces the default. The reservation and the shorthand fields own
-  ``--box``, ``--request``, ``--rev``, ``--checkout`` and ``--worktree``.
+  defaulted for correctness. ``leg.CLI_OPTIONS`` is the one table both ``leg.py`` and this module
+  read, and is the closed boundary (ludics#1292): every direct ``execution leg`` option has one
+  ``AssignPolicy`` there (``AllowInLegOptions``, ``SetByAssign``, ``RefuseInRequest`` or
+  ``RunnerOnly``), from which ``LEG_OPTIONS``, ``CORRECTNESS_LEG_OPTIONS``, ``LEG_SLOT_FLAGS`` and
+  ``RUNNER_LEG_FLAGS`` are derived (options outside ``leg.CLI_OPTIONS`` are neither accepted in
+  ``leg_options`` nor classified as leg flags in ``runner``). The closed ``leg_options`` allowlist
+  (an array of argv words): ``--remote <name>``, ``--base <branch>``, ``--control <patch>``,
+  ``--file <local file>``, ``--reads-no-config``, ``--deadline <positive seconds>``; correctness also
+  takes ``--cpu`` or ``--gpu``, ``--wait <seconds>`` and ``--wait-window[=<seconds>]``. Each option
+  occurs at most once. A supplied window bound replaces the default. The reservation and the shorthand
+  fields own ``--box``, ``--request``, ``--rev``, ``--checkout`` and ``--worktree`` (``SetByAssign``).
   Assignment checks remote and branch name syntax, and the ``--file`` / ``{file}`` pairing for a
   runner array. The leg checks file readability, remote refs and the runtime argv of a string runner.
   The shorthand takes the complete runner command, including its executable. The exact words
@@ -162,10 +167,10 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, TextIO, cast
+from typing import Any, TextIO, assert_never, cast
 
 from ludics import cli, proc
 from ludics.fleetworker import execution, leg
@@ -186,10 +191,36 @@ BLOCK_FIELDS = frozenset((*BLOCK_REQUIRED, "checkout", "command", "runner", "clo
 OPEN, CLOSE = "EXECUTION_REQUEST", "END_EXECUTION_REQUEST"
 OBJECT_ID = re.compile(r"[0-9a-f]{40}")
 HEAD_OF = "head-of:"
-LEG_SLOT_FLAGS = frozenset(("--cpu", "--gpu"))
-RUNNER_LEG_FLAGS = LEG_SLOT_FLAGS | {"--reads-no-config"}
-CORRECTNESS_LEG_OPTIONS = LEG_SLOT_FLAGS | {"--wait", "--wait-window"}
-LEG_OPTIONS = leg.OPTIONAL_VALUE_FLAGS | CORRECTNESS_LEG_OPTIONS | {"--reads-no-config", "--deadline"}
+
+
+def option_sets(
+    options: Mapping[str, leg.OptionSpec],
+) -> tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]:
+    """Derive assignment's closed option sets from ``leg.CLI_OPTIONS``."""
+    allowed: set[str] = set()
+    correctness_only: set[str] = set()
+    slot_flags: set[str] = set()
+    runner_refused: set[str] = set()
+    for flag, spec in options.items():
+        match spec.assign:
+            case leg.AllowInLegOptions(kinds=kinds, refuse_in_runner=refuse_in_runner, slot=slot):
+                allowed.add(flag)
+                if kinds == "correctness":
+                    correctness_only.add(flag)
+                if slot:
+                    slot_flags.add(flag)
+                if refuse_in_runner:
+                    runner_refused.add(flag)
+            case leg.RefuseInRequest():
+                runner_refused.add(flag)
+            case leg.SetByAssign() | leg.RunnerOnly():
+                pass
+            case _:
+                assert_never(spec.assign)
+    return frozenset(allowed), frozenset(correctness_only), frozenset(slot_flags), frozenset(runner_refused)
+
+
+LEG_OPTIONS, CORRECTNESS_LEG_OPTIONS, LEG_SLOT_FLAGS, RUNNER_LEG_FLAGS = option_sets(leg.CLI_OPTIONS)
 SHELL_PUNCTUATION = "();<>|&"
 ABSOLUTE = re.compile(r"/|[A-Za-z]:[/\\]")
 ACTION_REQUIRED_LINE = "ASSIGN ACTION REQUIRED "
@@ -332,26 +363,27 @@ def leg_options_problem(options: Any, kind: str, runner: str | list[str]) -> str
     while i < len(words):
         word = cast(str, words[i])
         flag, equals, bound = word.partition("=")
-        if flag not in LEG_OPTIONS or (equals and flag != "--wait-window"):
+        spec = leg.CLI_OPTIONS.get(flag)
+        if spec is None or flag not in LEG_OPTIONS or (equals and spec.value != "optional_whole"):
             return f"leg_options has unsupported option {execution.shown(word) if word.isprintable() else ascii(word)}"
         if flag in CORRECTNESS_LEG_OPTIONS and kind == "measurement":
             return f"leg_options {flag} is only for correctness requests"
         if flag in seen:
             return f"leg_options gives {flag} twice"
         seen.add(flag)
-        if LEG_SLOT_FLAGS <= seen:
-            return "leg_options --cpu and --gpu are exclusive"
+        if len(LEG_SLOT_FLAGS & seen) > 1:
+            return f"leg_options {' and '.join(sorted(LEG_SLOT_FLAGS & seen))} are exclusive"
         i += 1
         if equals and not leg.WHOLE.fullmatch(bound):
-            return "leg_options --wait-window=<seconds> takes a whole number of seconds"
-        if flag in leg.OPTIONAL_VALUE_FLAGS or flag in ("--wait", "--deadline"):
+            return f"leg_options {flag}=<seconds> takes a whole number of seconds"
+        if flag in leg.REQUIRED_VALUE_FLAGS:
             if i == len(words) or words[i].startswith("--"):
                 return f"leg_options {flag} needs a value in the next array entry"
             value = cast(str, words[i])
-            if flag == "--wait" and not leg.WHOLE.fullmatch(value):
-                return "leg_options --wait takes a whole number of seconds"
-            if flag == "--deadline" and not leg.SECONDS.fullmatch(value):
-                return "leg_options --deadline takes a positive whole number of seconds"
+            if spec.value == "whole" and not leg.WHOLE.fullmatch(value):
+                return f"leg_options {flag} takes a whole number of seconds"
+            if spec.value == "positive" and not leg.SECONDS.fullmatch(value):
+                return f"leg_options {flag} takes a positive whole number of seconds"
             if flag == "--remote" and not leg.remote_name_ok(value):
                 return "leg_options --remote must be a remote's name"
             if flag == "--base" and not leg.base_branch_ok(value):
@@ -385,7 +417,7 @@ def runner_problem(runner: str | list[str], kind: str, revision: str) -> str | N
         return None
 
     # Show the form without echoing request data (a usage refusal: exit 2, no THE STATUS file).
-    choices = flags if kind == "correctness" else flags - LEG_SLOT_FLAGS
+    choices = {flag for flag in flags if flag in LEG_OPTIONS and (kind == "correctness" or flag not in CORRECTNESS_LEG_OPTIONS)}
     guidance = ""
     if choices:
         options = [sorted(choices)]
