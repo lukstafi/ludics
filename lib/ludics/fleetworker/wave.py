@@ -151,9 +151,12 @@ Closed list of exit conditions (fail-closed):
                   what ``waveloop.py`` writes; no other wording or substring matches)
   loop stopped    a configured loop ``<name>`` whose ``logs/loop-<name>.lock`` went from held to not held
   halt            ``halted`` exited 1 when the last readable ``halted`` read did not exit 1
-                  (``halt appeared``), or exited 1 with different stdout lines (``halt changed``);
-                  clearing a halt (exit 0) or an unreachable anchor (exit 4) does not exit, and a
-                  transient unreadable ``halted`` preserves the last readable halt state in memory
+                  (``halt appeared``), or exited 1 with a different normalized halt reason/id
+                  (``halt changed``; leading UTC timestamps on ``HALTED`` / ``update`` lines are
+                  ignored so reissuing the same reason stays quiet while the full read keeps the
+                  original text); clearing a halt (exit 0) or an unreachable anchor (exit 4) does
+                  not exit, and a transient unreadable ``halted`` preserves the last readable halt
+                  state in memory
   board done      any board row whose derived phase (``takeover.phase_of``: ``merged``, ``done``,
                   ``closed``, ``dropped``) is in ``DONE_STATES`` now and was not in the previous read
                   (including a newly added done row; bounded to 5 tasks + ``+N more``); live-state
@@ -163,14 +166,20 @@ Closed list of exit conditions (fail-closed):
                   for at least ``--max-quiet`` seconds (each sleep is capped to the remaining budget);
                   any non-exit change resets the quiet timer; an unread board does not reset it
 
-A non-exit tick prints nothing to stdout and still updates ``logs/heartbeat.last`` when the board
-read (preserving ``at`` and ``read`` on an unchanged tick while updating ``checked_at`` and
-``loop_running``). When an exit condition or the stall bound triggers, it prints
-``HEARTBEAT wake <wave>: <comma-separated causes>`` first, then the full read (ending with
-``HEARTBEAT <wave> <UTC time>``), and updates ``logs/heartbeat.last`` when the board read.
+A non-exit tick prints nothing to stdout (capturing board-read diagnostics such as
+``BOARD UNREACHABLE`` so they do not leak on quiet ticks) and still updates ``logs/heartbeat.last``:
+when the board reads, unchanged ticks keep ``at`` and ``read`` from the last complete snapshot
+while updating ``checked_at`` and ``loop_running``; when the board is unreadable, the last complete
+``at``/``parts``/``read`` stays untouched while ``alert_state`` records the latest non-board state
+so a reported alert is not replayed on re-arm. When an exit condition or the stall bound triggers,
+it prints ``HEARTBEAT wake <wave>: <comma-separated causes>`` first, then the full read (including
+any captured board diagnostic and ending with ``HEARTBEAT <wave> <UTC time>``), and updates
+``logs/heartbeat.last``.
 """
 
+import contextlib
 import fcntl
+import io
 import json
 import os
 import re
@@ -524,9 +533,9 @@ def lock_held(path: str) -> bool | None:
     """True when another process holds an exclusive flock on ``path``, False when unlocked, None when absent."""
     if not os.path.exists(path):
         return None
-    with open(path, "a", encoding="utf-8") as held:
+    with open(path, "rb") as held:
         try:
-            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(held.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
         except OSError:
             return True
     return False
@@ -731,6 +740,14 @@ def loop_alert(name: str, line: str | None) -> str | None:
     return match.group(1) if match else None
 
 
+_HALT_STAMP = re.compile(r"^(HALTED|update) \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z ")
+
+
+def halt_signature(lines: tuple[str, ...]) -> tuple[str, ...]:
+    """Normalize leading UTC timestamps on ``halted`` lines so reissuing the same reason stays quiet."""
+    return tuple(_HALT_STAMP.sub(r"\1 ", line) for line in lines)
+
+
 def halt_state(raw: Any) -> tuple[int, tuple[str, ...]] | None:
     """``(exit_code, stdout_lines)`` from ``parts['halted']``, or None on an unexpected shape."""
     if not isinstance(raw, list) or not raw:
@@ -756,11 +773,7 @@ def driver_running(own: Any) -> bool:
     return isinstance(first, str) and first.startswith("HEARTBEAT drive: running")
 
 
-def saved_loop_running(saved: dict[str, Any] | None) -> dict[str, bool] | None:
-    """``loop_running`` map from ``heartbeat.last``, or None when absent or malformed."""
-    if saved is None:
-        return None
-    raw = saved.get("loop_running")
+def _parse_bool_map(raw: Any) -> dict[str, bool] | None:
     if not isinstance(raw, dict):
         return None
     result: dict[str, bool] = {}
@@ -769,6 +782,36 @@ def saved_loop_running(saved: dict[str, Any] | None) -> dict[str, bool] | None:
             return None
         result[k] = v
     return result
+
+
+def saved_loop_running(saved: dict[str, Any] | None) -> dict[str, bool] | None:
+    """``loop_running`` map from ``heartbeat.last``, or None when absent or malformed."""
+    return _parse_bool_map(saved.get("loop_running")) if saved is not None else None
+
+
+def _loops_by_name(raw: Any) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if isinstance(raw, list):
+        for entry in cast(list[Any], raw):
+            if isinstance(entry, str) and entry.startswith("HEARTBEAT loop ") and ": " in entry:
+                head, _, body = entry.partition(": ")
+                out[head.removeprefix("HEARTBEAT loop ")] = body
+    return out
+
+
+def saved_alert_state(path: str) -> dict[str, Any] | None:
+    """Read ``alert_state`` from ``heartbeat.last`` (persisted across unread-board wakes), or None."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data: Any = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    doc = cast(dict[str, Any], data)
+    if doc.get("v") != HEARTBEAT_STATE or not isinstance(doc.get("alert_state"), dict):
+        return None
+    return cast(dict[str, Any], doc["alert_state"])
 
 
 @dataclass(frozen=True)
@@ -783,6 +826,7 @@ class HeartbeatTick:
     rows: list[Any] | None
     loop_raw: dict[str, str | None]
     loop_running: dict[str, bool]
+    board_notes: list[str]
 
 
 def take_tick(cfg: Config, wave: Wave, *, consume_attention: bool = True) -> HeartbeatTick:
@@ -798,7 +842,12 @@ def take_tick(cfg: Config, wave: Wave, *, consume_attention: bool = True) -> Hea
     loop_running = {name: lock_held(loop_lock(wave, name)) is True for name in wave.loops}
     loops = [f"HEARTBEAT loop {name}: {line if line is not None else 'no log yet'}" for name, line in loop_raw.items()]
     own, attention = driver_lines(wave, consume=consume_attention)
-    rows = board_rows(cfg, wave)
+    # Capture stdout emitted by board_rows (e.g. BOARD UNREACHABLE) so quiet ticks print nothing
+    # and waking ticks still print HEARTBEAT wake first.
+    board_buf = io.StringIO()
+    with contextlib.redirect_stdout(board_buf):
+        rows = board_rows(cfg, wave)
+    board_notes = board_buf.getvalue().splitlines()
     parts: dict[str, Any] = {
         "board rows": rows,
         "prs": [steady_prs_line(line) for line in prs.out.splitlines()] + [f"exit={prs.rc}"],
@@ -817,17 +866,34 @@ def take_tick(cfg: Config, wave: Wave, *, consume_attention: bool = True) -> Hea
         *attention,
         f"HEARTBEAT {wave.wave} {stamp}",
     ]
-    return HeartbeatTick(stamp, prs.rc, halted.rc, parts, read, own, attention, rows, loop_raw, loop_running)
+    return HeartbeatTick(stamp, prs.rc, halted.rc, parts, read, own, attention, rows, loop_raw, loop_running, board_notes)
+
+
+def _alert_state_of(tick: HeartbeatTick, prev_halted: tuple[int, tuple[str, ...]] | None) -> dict[str, Any]:
+    cur_h = halt_state(tick.parts["halted"])
+    if cur_h is not None and cur_h[0] in (0, 1):
+        halted_part: Any = tick.parts["halted"]
+    elif prev_halted is not None:
+        halted_part = [*prev_halted[1], f"exit={prev_halted[0]}"]
+    else:
+        halted_part = tick.parts["halted"]
+    return {
+        "loops": tick.parts["loops"],
+        "loop_running": tick.loop_running,
+        "halted": halted_part,
+        "driver": tick.own,
+    }
 
 
 def save_heartbeat_state(
     state: str,
     *,
-    at: str,
+    at: str | None,
     checked_at: str,
-    parts: dict[str, Any],
+    parts: dict[str, Any] | None,
     read: list[str],
     loop_running: dict[str, bool],
+    alert_state: dict[str, Any] | None = None,
 ) -> None:
     os.makedirs(os.path.dirname(state), exist_ok=True)
     payload: dict[str, Any] = {
@@ -838,6 +904,8 @@ def save_heartbeat_state(
         "read": read,
         "loop_running": loop_running,
     }
+    if alert_state is not None:
+        payload["alert_state"] = alert_state
     write_atomically(state, json.dumps(payload, ensure_ascii=False) + "\n")
 
 
@@ -851,6 +919,8 @@ def emit_full_read(tick: HeartbeatTick, prev_at: str | None, prev_parts: dict[st
         moved[moved.index("board rows")] = changed_board_rows(prev_parts.get("board rows"), tick.rows)
     if prev_at is not None and (moved or tick.attention):
         cli.say(f"HEARTBEAT changed since {prev_at}: {', '.join([*moved, *(['attention'] if tick.attention else [])])}")
+    for note in tick.board_notes:
+        cli.say(note)
     if tick.rows is None:
         cli.say("HEARTBEAT board: did not read, so this tick is not called unchanged")
     for line in tick.read:
@@ -859,9 +929,11 @@ def emit_full_read(tick: HeartbeatTick, prev_at: str | None, prev_parts: dict[st
 
 def attention_causes(
     wave: Wave,
-    prev_parts: dict[str, Any] | None,
+    prev_rows: Any,
+    prev_loops: dict[str, str],
     prev_loop_running: dict[str, bool],
     prev_halted: tuple[int, tuple[str, ...]] | None,
+    prev_driver_running: bool,
     tick: HeartbeatTick,
 ) -> list[str]:
     """Closed list of event causes that end ``wave heartbeat --until-attention`` (UNTIL-ATTENTION MODE)."""
@@ -869,12 +941,6 @@ def attention_causes(
     if tick.attention:
         causes.append("attention")
 
-    prev_loops: dict[str, str] = {}
-    if prev_parts is not None and isinstance(prev_parts.get("loops"), list):
-        for entry in cast(list[Any], prev_parts["loops"]):
-            if isinstance(entry, str) and entry.startswith("HEARTBEAT loop ") and ": " in entry:
-                head, _, body = entry.partition(": ")
-                prev_loops[head.removeprefix("HEARTBEAT loop ")] = body
     for name in wave.loops:
         raw = tick.loop_raw.get(name)
         alert = loop_alert(name, raw)
@@ -888,16 +954,15 @@ def attention_causes(
     if cur_halted is not None and cur_halted[0] == 1:
         if prev_halted is None or prev_halted[0] != 1:
             causes.append("halt appeared")
-        elif cur_halted[1] != prev_halted[1]:
+        elif halt_signature(cur_halted[1]) != halt_signature(prev_halted[1]):
             causes.append("halt changed")
 
-    if prev_parts is not None and tick.rows is not None:
-        done_now = done_board_rows(prev_parts.get("board rows"), tick.rows)
+    if prev_rows is not None and tick.rows is not None:
+        done_now = done_board_rows(prev_rows, tick.rows)
         if done_now is not None:
             causes.append(done_now)
 
-    prev_own = prev_parts.get("driver") if prev_parts is not None else None
-    if driver_running(prev_own) and not driver_running(tick.own):
+    if prev_driver_running and not driver_running(tick.own):
         causes.append("driver stopped")
 
     return causes
@@ -957,35 +1022,55 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
         return 0
 
     saved = saved_read(state)
-
-    prev_parts: dict[str, Any] | None = None
-    prev_at: str | None = None
-    prev_read: list[str] | None = None
+    alerts = saved_alert_state(state)
+    # Complete-snapshot fields (at, parts, read) always stay in lockstep; non-board alert baselines
+    # may advance ahead of them when the board is temporarily unreadable.
+    saved_parts: dict[str, Any] | None = None
+    saved_at: str | None = None
+    saved_read_lines: list[str] | None = None
+    prev_loops: dict[str, str] = {}
     prev_loop_running: dict[str, bool] = {}
     prev_halted: tuple[int, tuple[str, ...]] | None = None
+    prev_driver_running = False
     if saved is not None:
-        prev_parts = dict(cast(dict[str, Any], saved["parts"]))
-        prev_at = cast(str, saved["at"])
+        saved_parts = dict(cast(dict[str, Any], saved["parts"]))
+        saved_at = cast(str, saved["at"])
         raw_read = saved.get("read")
         if isinstance(raw_read, list) and all(isinstance(x, str) for x in cast(list[Any], raw_read)):
-            prev_read = list(cast(list[str], raw_read))
+            saved_read_lines = list(cast(list[str], raw_read))
+        prev_loops = _loops_by_name(saved_parts.get("loops"))
         saved_loops = saved_loop_running(saved)
         prev_loop_running = saved_loops if saved_loops is not None else {name: lock_held(loop_lock(wave, name)) is True for name in wave.loops}
-        h = halt_state(prev_parts.get("halted"))
+        h = halt_state(saved_parts.get("halted"))
         if h is not None and h[0] in (0, 1):
             prev_halted = h
-    elif not has_unread_attention(wave):
+        prev_driver_running = driver_running(saved_parts.get("driver"))
+    if alerts is not None:
+        prev_loops = _loops_by_name(alerts.get("loops"))
+        alert_loops = _parse_bool_map(alerts.get("loop_running"))
+        if alert_loops is not None:
+            prev_loop_running = alert_loops
+        h = halt_state(alerts.get("halted"))
+        if h is not None and h[0] in (0, 1):
+            prev_halted = h
+        prev_driver_running = driver_running(alerts.get("driver"))
+    elif saved is None and not has_unread_attention(wave):
         base = take_tick(cfg, wave, consume_attention=False)
-        prev_parts = dict(base.parts)
-        prev_at = base.stamp
-        prev_read = base.read
+        prev_loops = _loops_by_name(base.parts["loops"])
         prev_loop_running = dict(base.loop_running)
         h = halt_state(base.parts["halted"])
         if h is not None and h[0] in (0, 1):
             prev_halted = h
+        prev_driver_running = driver_running(base.own)
         if base.rows is not None:
+            saved_parts = dict(base.parts)
+            saved_at = base.stamp
+            saved_read_lines = base.read
             save_heartbeat_state(state, at=base.stamp, checked_at=base.stamp, parts=base.parts, read=base.read,
                                  loop_running=base.loop_running)
+        else:
+            save_heartbeat_state(state, at=None, checked_at=base.stamp, parts=None, read=[],
+                                 loop_running=base.loop_running, alert_state=_alert_state_of(base, prev_halted))
 
     quiet_since = clock()
     quiet_deadline = quiet_since + quiet_bound
@@ -995,12 +1080,17 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
         if wait > 0:
             nap(wave, wait)
         tick = take_tick(cfg, wave)
-        causes = attention_causes(wave, prev_parts, prev_loop_running, prev_halted, tick)
-        moved = (
-            tick.rows is not None
-            and prev_parts is not None
-            and (prev_parts != tick.parts or prev_loop_running != tick.loop_running)
+        causes = attention_causes(
+            wave,
+            saved_parts.get("board rows") if saved_parts is not None else None,
+            prev_loops,
+            prev_loop_running,
+            prev_halted,
+            prev_driver_running,
+            tick,
         )
+        snapshot_changed = tick.rows is not None and (saved_parts is None or saved_parts != tick.parts)
+        moved = tick.rows is not None and (snapshot_changed or prev_loop_running != tick.loop_running)
         now = clock()
         if not causes:
             if moved:
@@ -1011,33 +1101,50 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
                 causes.append(f"quiet {elapsed}s (max-quiet {quiet_bound}s)")
         if causes:
             cli.say(f"HEARTBEAT wake {wave.wave}: {', '.join(causes)}")
-            emit_full_read(tick, prev_at, prev_parts)
+            emit_full_read(tick, saved_at, saved_parts)
             if tick.rows is not None:
                 save_heartbeat_state(state, at=tick.stamp, checked_at=tick.stamp, parts=tick.parts, read=tick.read,
                                      loop_running=tick.loop_running)
+            else:
+                save_heartbeat_state(
+                    state,
+                    at=saved_at,
+                    checked_at=tick.stamp,
+                    parts=saved_parts,
+                    read=saved_read_lines if saved_read_lines is not None else [],
+                    loop_running=tick.loop_running,
+                    alert_state=_alert_state_of(tick, prev_halted),
+                )
             return 0
         if tick.rows is not None:
-            if moved or prev_at is None:
-                prev_at = tick.stamp
-                prev_read = tick.read
+            if snapshot_changed or saved_at is None:
+                saved_at = tick.stamp
+                saved_read_lines = tick.read
+                saved_parts = dict(tick.parts)
             save_heartbeat_state(
                 state,
-                at=prev_at,
+                at=saved_at,
                 checked_at=tick.stamp,
-                parts=tick.parts,
-                read=prev_read if prev_read is not None else tick.read,
+                parts=saved_parts,
+                read=saved_read_lines if saved_read_lines is not None else tick.read,
                 loop_running=tick.loop_running,
             )
-            prev_parts = dict(tick.parts)
-        elif prev_parts is not None:
-            # Board unread: keep prior board rows in memory while tracking other live fields.
-            prev_parts = {**tick.parts, "board rows": prev_parts.get("board rows")}
         else:
-            prev_parts = dict(tick.parts)
+            save_heartbeat_state(
+                state,
+                at=saved_at,
+                checked_at=tick.stamp,
+                parts=saved_parts,
+                read=saved_read_lines if saved_read_lines is not None else [],
+                loop_running=tick.loop_running,
+                alert_state=_alert_state_of(tick, prev_halted),
+            )
+        prev_loops = _loops_by_name(tick.parts["loops"])
         prev_loop_running = dict(tick.loop_running)
         h = halt_state(tick.parts["halted"])
         if h is not None and h[0] in (0, 1):
             prev_halted = h
+        prev_driver_running = driver_running(tick.own)
 
 
 def cmd_wave(cfg: Config, args: list[str]) -> int:

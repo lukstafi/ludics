@@ -251,9 +251,11 @@ driver hands you as an attention line.
    changed), then counts the rest. Its default sleep is 20 minutes (`wave.py`'s header, *THE
    SLEEP*): when every remaining worker is either native (its hand-off returns to you on its own) or
    served by the driver, and every native task still to launch is in `queue.json` (its cue is an
-   attention line), every wake that matters ends the sleep early. Pass a shorter `--sleep` (600)
-   only while a wake that matters does not: a CLI worker you answer yourself with no driver, or a
-   native task you launch on a merge without queueing it.
+   attention line), every wake that matters ends the sleep early. When a wake that matters sits
+   outside `--until-attention`'s closed list — such as a CLI worker you answer yourself with no
+   driver, or a native task you launch on a merge without queueing it unless you wait on its
+   prerequisite row reaching a done state — run plain `fleet-worker.sh wave heartbeat <wave.json>
+   --sleep 600` (single ticks, without `--until-attention`) instead.
 
 7. **For a paired worker's plan,** use `peer-plan.sh save-plan <plan dir> --from-transcript
    <file>` ([paired-planning.md](paired-planning.md)).

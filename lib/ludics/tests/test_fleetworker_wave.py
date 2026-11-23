@@ -4852,13 +4852,14 @@ class Heartbeat(unittest.TestCase):
             self.assertEqual(now[0], 1200.0)
             self.assertTrue(out.startswith("HEARTBEAT wake wv: halt appeared\n"))
 
-            # Same halt, transient unreachable (exit 4), same halt again -> all quiet; reason change exits.
+            # Same halt, reissued same reason with new timestamp, transient unreachable (exit 4), same halt again -> all quiet; reason change exits.
             now[0] = 0.0
             idx[0] = 0
             halted_seq = [
                 (1, "HALTED 2026-11-23T12:00:00Z id=1 red at aaa\n"),
+                (1, "HALTED 2026-11-23T12:05:00Z id=1 red at aaa\n"),
                 (4, "HALTED? UNREACHABLE anchor\n"),
-                (1, "HALTED 2026-11-23T12:00:00Z id=1 red at aaa\n"),
+                (1, "HALTED 2026-11-23T12:05:00Z id=1 red at aaa\n"),
                 (1, "HALTED 2026-11-23T12:15:00Z id=1 red at aaa test=foo\n"),
             ]
             with (mock.patch.object(wave, "run", side_effect=fake_run),
@@ -4867,8 +4868,9 @@ class Heartbeat(unittest.TestCase):
                   mock.patch.object(wave, "sleep", side_effect=advance)):
                 rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
             self.assertEqual(rc, 0)
-            self.assertEqual(now[0], 2400.0)
+            self.assertEqual(now[0], 3000.0)
             self.assertTrue(out.startswith("HEARTBEAT wake wv: halt changed\n"))
+            self.assertIn("HALTED 2026-11-23T12:15:00Z id=1 red at aaa test=foo\n", out)
 
             # Clearing a halt does not wake (runs until max-quiet).
             now[0] = 0.0
@@ -4958,6 +4960,91 @@ class Heartbeat(unittest.TestCase):
                 rc, _, err_out = captured(wave.cmd_heartbeat, cfg, bad)
                 self.assertEqual(rc, 2, f"{bad}: {err_out}")
                 self.assertIn(why, err_out)
+
+    def test_until_attention_board_outage_silence_persistence_and_read_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "wave.json")
+            with open(path, "w") as f:
+                json.dump(wave_data(d), f)
+            logs = os.path.join(d, "logs")
+            os.makedirs(logs)
+            loop_file = os.path.join(logs, "loop-cc.log")
+            with open(loop_file, "w") as f:
+                f.write("2026-11-23T12:00:00Z LOOP cc PASS wv-cc-1 at abc\n")
+            cfg = load_config(SCRIPT, {"HOME": d})
+            now = [0.0]
+
+            def advance(dt: float) -> None:
+                now[0] += dt
+                if now[0] == 1200.0:
+                    with open(loop_file, "a") as f:
+                        f.write("2026-11-23T12:10:00Z LOOP cc UNKNOWN: tip-run exited 4\n")
+
+            def fake_rows(*_: Any) -> list[Any] | None:
+                if now[0] == 0.0:
+                    return [["t7", [["state", "reviewing"]]]]
+                # Simulate board_status printing BOARD UNREACHABLE on anchor outage during quiet and waking ticks.
+                print("BOARD UNREACHABLE anchor")
+                return None
+
+            with (mock.patch.object(wave, "run", return_value=Done(0, "")),
+                  mock.patch.object(wave, "board_rows", side_effect=fake_rows),
+                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
+                  mock.patch.object(wave, "sleep", side_effect=advance)):
+                rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "3600"])
+            self.assertEqual(rc, 0)
+            lines = out.rstrip("\n").split("\n")
+            self.assertEqual(lines[0], "HEARTBEAT wake wv: loop cc UNKNOWN", "BOARD UNREACHABLE must not precede HEARTBEAT wake")
+            self.assertEqual(lines.count("BOARD UNREACHABLE anchor"), 1, "quiet tick's BOARD UNREACHABLE must not leak")
+            self.assertIn("HEARTBEAT board: did not read, so this tick is not called unchanged", lines)
+
+            # Re-arming while the board stays unreadable must not replay the already-reported LOOP UNKNOWN.
+            def advance_only(dt: float) -> None:
+                now[0] += dt
+
+            def unreachable_rows(*_: Any) -> list[Any] | None:
+                print("BOARD UNREACHABLE anchor")
+                return None
+
+            now[0] = 0.0
+            with (mock.patch.object(wave, "run", return_value=Done(0, "")),
+                  mock.patch.object(wave, "board_rows", side_effect=unreachable_rows),
+                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
+                  mock.patch.object(wave, "sleep", side_effect=advance_only)):
+                rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "1200"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(now[0], 1200.0)
+            self.assertTrue(out.startswith("HEARTBEAT wake wv: quiet 1200s (max-quiet 1200s)\n"))
+
+            # PR change during an unreadable board tick must refresh heartbeat.last's read when the board recovers.
+            now[0] = 0.0
+            state_file = os.path.join(logs, "heartbeat.last")
+            os.remove(state_file)
+            with open(loop_file, "w") as f:
+                f.write("2026-11-23T12:20:00Z LOOP cc PASS wv-cc-2 at def\n")
+
+            def fake_prs_sync(argv: list[str], **_: Any) -> Done:
+                if argv[1] == "prs":
+                    rounds = 1 if now[0] == 0.0 else 2
+                    return Done(0, f"o/staging#7 rounds={rounds} ci=green branch=current head=10m claude/w1-7: T\n")
+                return Done(0, "launches open\n")
+
+            def fake_rows_sync(*_: Any) -> list[Any] | None:
+                if now[0] == 600.0:
+                    return None
+                return [["t7", [["state", "reviewing"]]]]
+
+            with (mock.patch.object(wave, "run", side_effect=fake_prs_sync),
+                  mock.patch.object(wave, "board_rows", side_effect=fake_rows_sync),
+                  mock.patch.object(wave, "clock", side_effect=lambda: now[0]),
+                  mock.patch.object(wave, "sleep", side_effect=advance_only)):
+                rc, out, _ = captured(wave.cmd_heartbeat, cfg, [path, "--sleep", "600", "--until-attention", "--max-quiet", "1200"])
+            self.assertEqual(rc, 0)
+            # t=0 baseline (rounds=1), t=600 unread (rounds=2), t=1200 recovery refreshes snapshot & resets quiet -> exits at t=2400.
+            self.assertEqual(now[0], 2400.0)
+            with open(state_file) as f:
+                saved = json.load(f)
+            self.assertIn("o/staging#7 rounds=2 ci=green branch=current head=10m claude/w1-7: T", saved["read"])
 
 
 if __name__ == "__main__":
