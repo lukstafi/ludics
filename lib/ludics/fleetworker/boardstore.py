@@ -32,6 +32,8 @@ as ``registry.py``'s header states it for the registry; any other word is the pa
         ``t2032``, made an empty second row each time); the refusal names the nearest task the
         board has. ``new_row`` on a task that has its row is no refusal, as ``create`` is none on
         a board that exists.
+        ``planner`` and ``planner_effort`` can be set on rows with ``planning=paired`` or
+        ``planning=paired+critique``. Setting the mode to anything else clears those fields.
         THE LAUNCH STAMP: a write that leaves the row's ``state`` with ``launched`` as its first
         word (``;:,.`` stripped, case ignored) adds ``launched_at`` if the row has no stamp. The
         stamp is the store's clock (the same as ``updated_at``), and only a set naming
@@ -174,6 +176,7 @@ type Doc = dict[str, Any]
 
 WAVE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+PLANNER_KEYS = ("planner", "planner_effort")
 # THE LAUNCH-ATTEMPT IDENTITY (the header): the one launch-attempt ID grammar shared by
 # ``board spawned`` (#1294) and ``wave launch`` (#1290), sharing WAVE's token grammar.
 LAUNCH_ID = WAVE
@@ -729,6 +732,13 @@ def main(argv: list[str]) -> None:
             before = None if created else dict(fields)
             for key, value in pairs:
                 fields[key] = value
+            if action == "set" and fields.get("planning") not in ("paired", "paired+critique"):
+                changed = dict(pairs)
+                if any(key in changed for key in PLANNER_KEYS):
+                    refuse(f"planner fields require a paired planning mode on {json.dumps(task)}")
+                if "planning" in changed:
+                    for key in PLANNER_KEYS:
+                        fields.pop(key, None)
             if created:
                 for key in COUNTERS:
                     fields.setdefault(key, "0")  # THE COUNTERS START AT ZERO (the header)

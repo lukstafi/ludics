@@ -27,6 +27,7 @@ LIB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)
 ROOT = os.path.dirname(LIB)
 ENTRY = os.path.join(ROOT, "issue-wave", "scripts", "peer-plan.sh")
 BG_RUN = os.path.join(ROOT, "issue-wave", "scripts", "bg-run.sh")
+FLEET = os.path.join(ROOT, "issue-wave", "scripts", "fleet-worker.sh")
 ISSUE: dict[str, object] = {"number": 7, "title": "t", "body": "has a ``` fence\n````\n", "comments": []}
 
 # The codex fake is this suite's own program, over FakeTool's: it records its stdin and cwd beside
@@ -161,6 +162,28 @@ class PeerPlan(unittest.TestCase):
     def entry(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run([ENTRY, *args], capture_output=True, text=True, check=False)
 
+    def fleet(self, *args: str) -> str:
+        done = subprocess.run([FLEET, *args], capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 0, (done.stdout, done.stderr))
+        return done.stdout
+
+    def paired_board(self, mode: str) -> None:
+        state = os.path.join(self.tmp, "fleet")
+        env = mock.patch.dict(os.environ, {
+            "FLEET_ANCHOR": "local", "FLEET_ANCHOR_STATE": state, "ISSUE_WAVE_STATE": state,
+            "FLEET_LOCAL_BOX": "testbox", "FLEET_BOXES": "testbox", "FLEET_SKILLS_REPO": ROOT,
+            "FLEET_COORDINATOR": "peerplan-test",
+        })
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("FLEET_REGISTRY_PIN", None)
+        self.fleet("claim")
+        self.fleet("board", "set", "--create", "--new-row", "w", "t7", f"planning={mode}", "model=worker/high")
+        self.fleet("board", "set", "--new-row", "w", "t8", "state=pending")
+
+    def board_fields(self) -> dict[str, dict[str, str]]:
+        return {row["task"]: row["fields"] for row in json.loads(self.fleet("board", "show", "w", "--json"))["tasks"]}
+
     def wait(self, run: str) -> str:
         done = subprocess.run([BG_RUN, "wait", run, "--within", "60"], capture_output=True, text=True, check=False)
         # The verdict word: a run that finished before the wait reads `rc=0 (finished earlier, ...)`.
@@ -260,6 +283,30 @@ class PeerPlan(unittest.TestCase):
         self.assertEqual(second.argv[:-2], first.argv, "the critique keeps the plan's tool bound, MCP servers included")
         self.assertIn("my plan", second.stdin)
 
+    def test_the_paired_row_records_the_default_planner_and_an_unpaired_row_has_none(self) -> None:
+        self.paired_board("paired")
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--wave", "w", "--task", "t7")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        rows = self.board_fields()
+        self.assertEqual((rows["t7"]["planner"], rows["t7"]["planner_effort"], rows["t7"]["model"]),
+                         ("fable", "high", "worker/high"))
+        self.assertNotIn("planner", rows["t8"])
+        self.assertNotIn("planner_effort", rows["t8"])
+
+    def test_a_board_refusal_stops_the_run_before_dispatch(self) -> None:
+        self.paired_board("paired")
+        done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+                          "--wave", "w", "--task", "t8")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        run = done.stdout.strip()
+        self.assertEqual(self.wait(run), "rc=1")
+        with open(os.path.join(run, "log"), encoding="utf-8") as f:
+            self.assertIn("planner fields require a paired planning mode", f.read())
+        self.assertNotIn("planner", self.board_fields()["t8"])
+        self.assertFalse(os.path.exists(os.path.join(self.claude.dir, "calls.jsonl")))
+
     def test_a_claude_critique_refuses_a_whitespace_only_thread_and_bad_effort_exits_cleanly(self) -> None:
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main")
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -291,10 +338,13 @@ class PeerPlan(unittest.TestCase):
     def test_a_gemini_planner_runs_agy_in_a_clone_and_resumes_its_conversation(self) -> None:
         """THE PLANNER: a gemini-... model plans through agy with every tool approved, in a clone with no
         remote: its own write stays in the clone, and the checkout gains no worktree."""
+        self.paired_board("paired")
         done = self.entry("start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
-                          "--model", "gemini-4-neon-high")
+                          "--model", "gemini-4-neon-high", "--effort", "low", "--wave", "w", "--task", "t7")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.wait(done.stdout.strip()), "rc=0")
+        fields = self.board_fields()["t7"]
+        self.assertEqual((fields["planner"], fields["planner_effort"]), ("gemini-4-neon-high", ""))
         wt = os.path.join(self.dir, "worktree")
         with open(os.path.join(self.dir, "peer-plan.md"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "plan")
@@ -359,17 +409,25 @@ class PeerPlan(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.dir, "peer-plan.md")), "an error result is never written as a plan")
 
     def test_managed_runs_start_in_the_callers_session(self) -> None:
+        self.paired_board("paired+critique")
         done = self.entry(
-            "start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main", "--model", "gpt-6.2-sol", "--managed"
+            "start", self.dir, "--issue", "o/r#7", "--checkout", self.repo, "--base", "main",
+            "--wave", "w", "--task", "t7", "--model", "gpt-6.2-sol", "--effort", "medium", "--managed",
         )
         self.assertEqual(done.returncode, 0, done.stderr)
         run = done.stdout.strip()
         self.assertFalse(os.path.exists(os.path.join(self.codex.dir, "calls.jsonl")), "nothing started")
+        self.assertNotIn("planner", self.board_fields()["t7"])
         with open(os.path.join(self.dir, "plan-run"), encoding="utf-8") as f:
             self.assertEqual(f.read().strip(), run)
         # The coordinator's own foreground start, as a managed command session holds it.
         subprocess.run([BG_RUN, "start", run, "--", ENTRY, "_run", "plan", self.dir], check=True)
         self.assertEqual(self.wait(run), "rc=0")
+        fields = self.board_fields()["t7"]
+        self.assertEqual((fields["planner"], fields["planner_effort"]), ("gpt-6.2-sol", "medium"))
+        first = self.codex_calls()[0]
+        self.assertIn("gpt-6.2-sol", first.argv)
+        self.assertIn("model_reasoning_effort=medium", first.argv)
         mine = os.path.join(self.dir, "claude-plan.md")
         with open(mine, "w", encoding="utf-8") as f:
             f.write("my plan\n")

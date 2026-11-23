@@ -781,6 +781,12 @@ and patches `os.replace` between records. The wave board's store,
 `lib/ludics/fleetworker/boardstore.py` (`fleet-worker.sh board`, ludics-lite#619), is the other
 shipped module, under the same rules: self-contained, its argv a contract (its header).
 
+Agent notes (wave-20261123-ludics, t1273). Peer planning writes the model and effort from its
+launch metadata through the coordinator's board lease at dispatch. A managed allocation leaves
+the fields absent until its run starts. The run verdict determines plan availability. The five
+selected regressions fail on base `bdfb4623` and pass with the change. Logs are in the task's
+`runs/negative-base-final.log` and `runs/targeted.log` on mac-studio.
+
 Every other far side of `fleet-worker.sh` -- the bash a worker verb runs on its box, local child or
 `ssh <box> bash -s` -- is still bash, the shell's heredocs byte for byte, in
 `lib/ludics/fleetworker/farside.py`: a box needs no Python for a worker's record, only for the

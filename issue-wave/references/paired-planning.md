@@ -35,11 +35,13 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    once, here. Both planners must read one tree, so resolve the base to one SHA after a fetch
    (`git -C <main checkout> rev-parse origin/<base>`), launch the worker from it (`--base <sha>
    --base-branch <base>` for a CLI launch; the start point of a native worker's worktree), and once the launch has
-   succeeded, start the planner on the same SHA:
+   succeeded, start the planner on the same SHA. For a row made by hand, set
+   `planning=<mode> plan_dir=<plan-dir>` on it before starting the planner. Wave prep already
+   records both.
 
    ```bash
    ~/.claude/skills/issue-wave/scripts/peer-plan.sh start <plan-dir> --issue <owner/repo>#<n> \
-     --checkout <the project's main checkout> --base <that sha>
+     --checkout <the project's main checkout> --base <that sha> --wave <wave> --task <task>
    ```
 
    It reads the issue with `gh` (the planner's sandbox has no network) and adds a detached
@@ -52,8 +54,11 @@ plan directory is `$ISSUE_WAVE_STATE/plans/<wave>-<issue>`:
    ([native-codex.md](native-codex.md#local-managed-command-sessions)), passes `--managed` to
    `start` and `critique` instead. That only allocates and records the run directory, and the
    coordinator runs `bg-run.sh start <run> -- peer-plan.sh _run plan <plan-dir>` (`critique`
-   for the critique) in a managed foreground session it keeps. Record the mode and `<plan-dir>` on the board (`board set <wave>
-   <task> planning=<mode> plan_dir=<plan-dir>`). The worker's brief carries the addition below.
+   for the critique) in a managed foreground session it keeps. The planning run uses the
+   coordinator's board lease to write `planner` and `planner_effort` on the paired row before
+   dispatch. For agy the full model slug carries the effort. A board write failure ends the run
+   before dispatch and its log gives the diagnostic. Use the run verdict in step 2 to determine
+   whether a plan is available. The worker's brief carries the addition below.
 2. **On `PLAN_READY`** (the worker's handoff): save the block's plan to `<plan-dir>/claude-plan.md`.
    For a native Claude worker, give `save-plan` the task notification's output file (a symlink to
    the worker's transcript). It takes the last `PLAN_READY` block of the worker's own messages, and
