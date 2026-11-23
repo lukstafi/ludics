@@ -1219,6 +1219,16 @@ if [ "$rc" -eq 125 ] \
 else
   ko "outside lib/ *.py leading --: rc=$rc -- $out"
 fi
+# If the first word after `--` is a helper option name, dropping `--` would let the helper consume
+# it (e.g. changing --base): suggest --command to preserve the suite's argv verbatim.
+run_py scripts/test-plain.py -- --base fixed
+if [ "$rc" -eq 125 ] \
+  && grep -qF -- '--command --also scripts/test-plain.py -- python3 ./scripts/test-plain.py --base fixed' <<<"$out" \
+  && ! grep -qF 'PYTHONPATH=' <<<"$out"; then
+  ok "...and when a helper option name follows \`--\`, the correction uses --command instead of dropping \`--\`"
+else
+  ko "outside lib/ *.py -- --base: rc=$rc -- $out"
+fi
 py_clean "after the *.py cases"
 
 # ---- --command: a project's own runner, from the root of the run's tree (ludics-lite#765) -------
@@ -1308,11 +1318,16 @@ fi
 # A symlink outside the checkout pointing to an external executable gets the `env` correction too
 # (not the checkout-symlink refusal); one pointing INTO the checkout never suggests `env`.
 ln -s /bin/bash "$TMP/ext-bash"
+q_ext=$(printf '%q' "$TMP/ext-bash")
+case "$TMP/ext-bash" in
+*=*) want_ext="-- sh -c " ;;
+*) want_ext="--command --also test-toy.sh -- env $q_ext scripts/test-toy.sh" ;;
+esac
 run_rab --command --also test-toy.sh -- "$TMP/ext-bash" scripts/test-toy.sh
 if [ "$rc" -eq 125 ] \
   && grep -qF 'is not inside this checkout' <<<"$out" \
-  && grep -qF -- "--command --also test-toy.sh -- env $TMP/ext-bash scripts/test-toy.sh" <<<"$out"; then
-  ok "--command refuses an external symlink to an external executable with the corrected env command"
+  && grep -qF -- "$want_ext" <<<"$out"; then
+  ok "--command refuses an external symlink to an external executable with the corrected wrapper command"
 else
   ko "--command external symlink: rc=$rc -- $out"
 fi
@@ -1325,15 +1340,49 @@ if [ "$rc" -eq 125 ] \
 else
   ko "--command external symlink into checkout: rc=$rc -- $out"
 fi
+# A symlinked parent directory + `..` that physically lands inside the checkout runs the run tree's
+# copy rather than being misclassified as external.
+ln -s "$R/scripts" "$TMP/repo-alias"
+run_rab --command -- "$TMP/repo-alias/../scripts/test-toy.sh"
+if [ "$rc" -eq 0 ] && grep -qF 'exit 0 on origin/main: 1 passed, 0 failed' <<<"$out"; then
+  ok "--command resolves symlinked parent directories physically before \`..\`"
+else
+  ko "--command symlinked parent ..: rc=$rc -- $out"
+fi
+# A symlink chain through a target whose name ends in a newline still detects a target inside the
+# checkout and never suggests `env`.
+ln -s "$R/scripts/test-toy.sh" "$TMP/ext-nl.sh"$'\n'
+ln -s "$TMP/ext-nl.sh"$'\n' "$TMP/ext-to-nl.sh"
+run_rab --command -- "$TMP/ext-to-nl.sh"
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'is a symlink into this checkout' <<<"$out" \
+  && ! grep -qF -- '-- env ' <<<"$out"; then
+  ok "--command preserves trailing newlines in symlink targets when checking checkout membership"
+else
+  ko "--command newline symlink target: rc=$rc -- $out"
+fi
+# An external script whose env interpreter is missing is refused on that interpreter (125), never
+# recommended through `env` (where env's 127 would look like a base failure).
+printf '#!/usr/bin/env run-against-base-no-such-interpreter\nexit 0\n' >"$TMP/ext-envmiss.sh"
+chmod +x "$TMP/ext-envmiss.sh"
+run_rab --command -- "$TMP/ext-envmiss.sh"
+if [ "$rc" -eq 125 ] \
+  && grep -qF 'needs run-against-base-no-such-interpreter, which is not on PATH here' <<<"$out" \
+  && ! grep -qF -- '-- env ' <<<"$out"; then
+  ok "--command refuses an external script with a missing env interpreter without suggesting env"
+else
+  ko "--command external missing env interp: rc=$rc -- $out"
+fi
 # An absolute external executable whose path holds `=` gets `sh -c`, since `env` reads `=` as an
 # assignment; a non-executable outside file or a relative escaping path gets no `env` suggestion.
 mkdir -p "$TMP/dir=eq"
 cp -p "$TMP/outside.sh" "$TMP/dir=eq/prog"
+q_eq=$(printf '%q' "$TMP/dir=eq/prog")
 run_rab --command -- "$TMP/dir=eq/prog" arg1
 if [ "$rc" -eq 125 ] \
   && grep -qF 'is not inside this checkout' <<<"$out" \
   && grep -qF -- '-- sh -c ' <<<"$out" \
-  && grep -qF -- "$TMP/dir=eq/prog arg1" <<<"$out" \
+  && grep -qF -- "$q_eq arg1" <<<"$out" \
   && ! grep -qF -- '-- env ' <<<"$out"; then
   ok "--command refuses an external executable containing \`=\` with the sh -c form, not env"
 else

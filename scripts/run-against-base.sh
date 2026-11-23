@@ -335,8 +335,9 @@ resolve() {
   [ -L "$arg" ] && die "$arg is a symlink; name the file it points at"
   # Split with parameter expansion, and read the resolved directory back through a trailing `x`:
   # a command substitution strips trailing newlines, which a git filename may end in, and would
-  # then name a different file than the one checked above.
-  dir=$(CDPATH= cd "${arg%/*}/" && pwd -P && printf x) || die "cannot resolve: $arg"
+  # then name a different file than the one checked above. `-P` resolves symlinked parents
+  # physically before `..`, matching the file the kernel opens.
+  dir=$(CDPATH= cd -P -- "${arg%/*}/" && pwd -P && printf x) || die "cannot resolve: $arg"
   dir=${dir%x}
   dir=${dir%$'\n'}
   R_ABS="$dir/${arg##*/}"
@@ -457,7 +458,7 @@ if [ -n "$CMD_MODE" ]; then
     # path holds `=`, which env reads as an assignment). A symlink outside the checkout whose
     # target lies inside it is refused without suggesting `env`, since that would run the live
     # working tree's copy (#1296).
-    cdir=$(CDPATH= cd "${cmd_word%/*}/" 2>/dev/null && pwd -P && printf x) || cdir=
+    cdir=$(CDPATH= cd -P -- "${cmd_word%/*}/" 2>/dev/null && pwd -P && printf x) || cdir=
     cdir=${cdir%x}
     cdir=${cdir%$'\n'}
     cabs="$cdir/${cmd_word##*/}"
@@ -474,15 +475,16 @@ if [ -n "$CMD_MODE" ]; then
         n=0
         while [ -L "$f" ]; do
           [ "$n" -lt 40 ] || die "--command: $(printf '%q' "$cmd_word") is a symlink loop"
-          fdir=$(CDPATH= cd "${f%/*}/" 2>/dev/null && pwd -P && printf x) \
+          fdir=$(CDPATH= cd -P -- "${f%/*}/" 2>/dev/null && pwd -P && printf x) \
             || die "--command: cannot resolve the directory of $(printf '%q' "$cmd_word")"
           fdir=${fdir%x}
           fdir=${fdir%$'\n'}
-          t=$(readlink "$f") || die "--command: cannot read the symlink $(printf '%q' "$f")"
+          t=$(readlink -n "$f" && printf x) || die "--command: cannot read the symlink $(printf '%q' "$f")"
+          t=${t%x}
           case "$t" in /*) f=$t ;; *) f="$fdir/$t" ;; esac
           n=$((n + 1))
         done
-        fdir=$(CDPATH= cd "${f%/*}/" 2>/dev/null && pwd -P && printf x) \
+        fdir=$(CDPATH= cd -P -- "${f%/*}/" 2>/dev/null && pwd -P && printf x) \
           || die "--command: cannot resolve the directory of $(printf '%q' "$cmd_word")"
         fdir=${fdir%x}
         fdir=${fdir%$'\n'}
@@ -491,6 +493,7 @@ if [ -n "$CMD_MODE" ]; then
           die "--command: $(printf '%q' "$cmd_word") is a symlink into this checkout ($TOP), so running it externally would run the live working tree's copy; name the checkout file by its path"
           ;;
         esac
+        check_interp "$cmd_word" "$cmd_word" ""
         case "$cmd_word" in
         *=*)
           # shellcheck disable=SC2016 # literal command shown to the caller
@@ -600,8 +603,22 @@ else
   *.py)
     if [ $# -gt 0 ] && [ "$1" = -- ]; then
       while [ $# -gt 0 ] && [ "$1" = -- ]; do shift; done
-      fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${@+"$@"})
-      die "in the suite form, there is no \`--\` before a *.py suite's arguments (the first non-option word ends the helper's options, so \`--\` would go straight to $rel); drop the \`--\`: $(shell_join "${fixed[@]}")"
+      case "${1-}" in
+      --base | --also | --mutate | --revert | --timeout | --tally | --mutants | --red)
+        # Dropping `--` would let the helper consume the suite's own leading option; use --command
+        # to pass it verbatim (if it was meant for the helper, place it before the suite args).
+        if [ -n "$module" ]; then
+          fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- scripts/py -m unittest "$module" ${@+"$@"})
+        else
+          fixed=("$0" --command ${OPTS[@]+"${OPTS[@]}"} --also "$suite_arg" -- python3 "./$rel" ${@+"$@"})
+        fi
+        die "in the suite form, there is no \`--\` before a *.py suite's arguments, and $(printf '%q' "$1") is a helper option name -- use --command to pass it to $rel verbatim (or place helper options directly after the suite path): $(shell_join "${fixed[@]}")"
+        ;;
+      *)
+        fixed=("$0" "$suite_arg" ${OPTS[@]+"${OPTS[@]}"} ${@+"$@"})
+        die "in the suite form, there is no \`--\` before a *.py suite's arguments (the first non-option word ends the helper's options, so \`--\` would go straight to $rel); drop the \`--\`: $(shell_join "${fixed[@]}")"
+        ;;
+      esac
     fi
     ;;
   esac
