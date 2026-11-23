@@ -1058,8 +1058,8 @@ the three is exit 2. If the base moves during the build (#1241), the suite check
 candidate's two parents, the full-command fallback, the configured `recheck` and refreshed plan,
 and a compiler refusal for two individually green changes. The retained build log and status are
 checked for each built base on a refused refresh and for the single candidate on a stable base. Two
-disjoint moves require two fresh verdicts, a second move that overlaps the PR refuses, and a
-third move exhausts the refresh limit (#1269). The suite covers lease takeover after expiry,
+disjoint moves require two fresh verdicts, a second move that overlaps the PR refuses with both
+retained build logs, and a third move exhausts the refresh limit (#1269). The suite covers lease takeover after expiry,
 an unread tip, a retarget and a stale gateway resend. The compiler witness uses `cc` on POSIX. A repository without
 `.github/ship-pr-merge-build` merges the clash unbuilt, as before; a failed build whose failure the
 base alone shares (the same command on the base tip's tree, the merge's parents) is refused naming

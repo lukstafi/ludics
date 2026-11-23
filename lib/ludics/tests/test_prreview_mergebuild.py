@@ -8,6 +8,7 @@ test-pr-review-merge.sh runs the same build end to end through `merge`; these pi
 regression would bend first.
 """
 
+import concurrent.futures
 import contextlib
 import io
 import json
@@ -19,6 +20,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -505,13 +507,18 @@ class Build(Repo):
     def test_log_and_status_survive_cleanup_on_pass_and_refusal(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
         kept_head = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head
-        directory = kept_head / self.tip
+        candidate = kept_head / self.tip
         seen = Path(self.dir) / "scratch-tree"
         for status in (0, 1):
             with self.subTest(status=status):
                 command = f"pwd -P > {shlex.quote(str(seen))}; printf 'evidence {status}\\n'; exit {status}"
                 rc, out = self.build(head, command)
                 self.assertEqual(rc, status, out)
+                receipts = [json.loads(line) for line in
+                            (Path(self.dir) / "state/merge-builds/owner--repo.jsonl").read_text().splitlines()]
+                receipt = receipts[-2] if status else receipts[-1]
+                directory = Path(receipt["log_dir"])
+                self.assertEqual(directory.parent, candidate / "build")
                 with self.subTest(check="printed path"):
                     self.assertIn(f"retained log/status in {shlex.quote(str(directory))}", out)
                 self.assertFalse(Path(seen.read_text().strip()).parent.exists(), "scratch was removed")
@@ -521,13 +528,42 @@ class Build(Repo):
                 with self.subTest(check="status survives"):
                     self.assertTrue((directory / "build.status").is_file())
                     self.assertEqual((directory / "build.status").read_text().strip(), str(status))
-                receipts = [json.loads(line) for line in
-                            (Path(self.dir) / "state/merge-builds/owner--repo.jsonl").read_text().splitlines()]
-                self.assertEqual(receipts[-1]["log_dir"], str(directory))
-                self.assertEqual(receipts[-1]["outcome"], "passed" if status == 0 else "failed")
-                self.assertEqual(list(kept_head.iterdir()), [directory], "same-pair retries reuse the directory")
+                self.assertEqual(receipt["outcome"], "passed" if status == 0 else "failed")
+                self.assertEqual(list(kept_head.iterdir()), [candidate], "same-candidate retries reuse the candidate directory")
+                self.assertEqual(list((candidate / "build").glob("*/build.log")), [directory / "build.log"])
                 if status:
-                    self.assertEqual((directory / "base.log").read_text(), "evidence 1\n")
+                    previous = Path(receipts[0]["log_dir"])
+                    self.assertNotEqual(previous, directory)
+                    self.assertFalse(previous.exists(), "the first receipt no longer resolves after replacement")
+                    base = Path(receipts[-1]["log_dir"])
+                    self.assertEqual(base.parent, candidate / "base")
+                    self.assertEqual((base / "base.log").read_text(), "evidence 1\n")
+
+    def test_interrupted_status_copy_leaves_the_previous_pair(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.build(head, "printf 'first attempt\\n'")
+        self.assertEqual(rc, 0, out)
+        receipt = Path(self.dir) / "state/merge-builds/owner--repo.jsonl"
+        first = receipt.read_text()
+        directory = Path(json.loads(first)["log_dir"])
+        copyfile = shutil.copyfile
+        copied: list[str] = []
+
+        def fail_status(source: str, destination: str | os.PathLike[str]) -> None:
+            if Path(source).name == "build.status":
+                raise OSError("status copy interrupted")
+            copyfile(source, destination)
+            copied.append(Path(source).name)
+
+        with mock.patch.object(mergebuild.shutil, "copyfile", side_effect=fail_status):
+            rc, out = self.build(head, "printf 'second attempt\\n'; exit 1")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("status copy interrupted", out)
+        self.assertEqual(copied, ["build.log"], "the new log copied before the status failed")
+        self.assertEqual(receipt.read_text(), first)
+        self.assertEqual((directory / "build.log").read_text(), "first attempt\n")
+        self.assertEqual((directory / "build.status").read_text().strip(), "0")
+        self.assertEqual(list(directory.parent.glob("*/build.log")), [directory / "build.log"])
 
     def test_never_started_attempts_have_a_distinct_receipt(self) -> None:
         subject = mergebuild._Subject("fixture", "NOT built", "REFUSED", "7", "owner/repo")  # pyright: ignore[reportPrivateUsage]
@@ -557,6 +593,80 @@ class Build(Repo):
             rc, out = self.build(head)
         self.assertEqual(rc, 3, out)
         self.assertIn("could not retain merge-build log/status", out)
+
+    @unittest.skipUnless(os.name == "posix", "retention locking needs POSIX")
+    def test_same_candidate_retry_waits_before_staging(self) -> None:
+        import fcntl
+
+        scratch = Path(self.dir)
+        first_log, first_status = scratch / "first.log", scratch / "first.status"
+        second_log, second_status = scratch / "second.log", scratch / "second.status"
+        first_log.write_text("first attempt\n")
+        first_status.write_text("0\n")
+        second_log.write_text("second attempt\n")
+        second_status.write_text("1\n")
+        candidate = ("owner/repo", "7", "a" * 40, "b" * 40, "build")
+        flock = fcntl.flock
+        contended = threading.Event()
+
+        def observe_lock(lock: io.BufferedWriter, operation: int) -> None:
+            self.assertEqual(operation, fcntl.LOCK_EX)
+            with self.assertRaises(BlockingIOError):
+                flock(lock, operation | fcntl.LOCK_NB)
+            contended.set()
+            flock(lock, operation)
+
+        def retry() -> str:
+            with mergebuild._retain(*candidate, str(second_log), str(second_status)) as attempt:  # pyright: ignore[reportPrivateUsage]
+                assert attempt is not None
+                return attempt
+
+        with concurrent.futures.ThreadPoolExecutor(1) as workers:
+            with (
+                mergebuild._retain(*candidate, str(first_log), str(first_status)) as attempt,  # pyright: ignore[reportPrivateUsage]
+                mock.patch.object(fcntl, "flock", side_effect=observe_lock),
+            ):
+                assert attempt is not None
+                first = Path(attempt)
+                pending = workers.submit(retry)
+                self.assertTrue(contended.wait(5), "the retry must contend on the first writer's lock")
+                self.assertFalse((first.parent / ".pending").exists(), "the retry is waiting before either copy")
+                self.assertEqual((first / "build.log").read_text(), "first attempt\n")
+                self.assertEqual((first / "build.status").read_text(), "0\n")
+            second = Path(pending.result(timeout=5))
+        self.assertEqual((second / "build.log").read_text(), "second attempt\n")
+        self.assertEqual((second / "build.status").read_text(), "1\n")
+        self.assertFalse(first.exists(), "the retry retired only the previous attempt")
+
+    def test_published_pair_has_a_receipt_when_retirement_fails(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        rc, out = self.build(head, "printf 'first attempt\\n'")
+        self.assertEqual(rc, 0, out)
+        receipt = Path(self.dir) / "state/merge-builds/owner--repo.jsonl"
+        first = Path(json.loads(receipt.read_text())["log_dir"])
+        rmtree = shutil.rmtree
+
+        def fail_retirement(path: str | os.PathLike[str], ignore_errors: bool = False) -> None:
+            if Path(path).name == ".retired":
+                raise PermissionError("retired evidence is read-only")
+            rmtree(path, ignore_errors=ignore_errors)
+
+        with mock.patch.object(mergebuild.shutil, "rmtree", side_effect=fail_retirement):
+            rc, out = self.build(head, "printf 'second attempt\\n'")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("retired evidence is read-only", out)
+        rows = [json.loads(line) for line in receipt.read_text().splitlines()]
+        self.assertEqual(len(rows), 2, "the receipt was written before retirement")
+        second = Path(rows[-1]["log_dir"])
+        self.assertFalse(first.exists(), "the older attempt was renamed before its deletion failed")
+        self.assertIn(f"retained log/status in {shlex.quote(str(second))}", out)
+        self.assertEqual((second / "build.log").read_text(), "second attempt\n")
+        self.assertEqual((second / "build.status").read_text().strip(), "0")
+
+        rc, out = self.build(head, "printf 'third attempt\\n'")
+        self.assertEqual(rc, 0, out)
+        kept, = first.parent.glob("*/build.log")
+        self.assertEqual(kept.read_text(), "third attempt\n")
 
     def test_a_passed_build_names_its_merge_commit_and_both_parents_in_full(self) -> None:
         """PROVENANCE (#1024): the scratch repository goes with the build, so what the build
@@ -1254,10 +1364,11 @@ class Plan(Repo):
         self.assertIn("Nothing was built and no slot was taken", out)
         self.assertIn("  | owed: the whole suite", out, "the plan's output is shown")
         self.assertNotIn("the build ran", out)
-        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head / self.tip
-        self.assertIn("ship-pr-merge-plan: unadmitted", (retained / "plan.log").read_text())
-        self.assertEqual((retained / "plan.status").read_text().strip(), "0")
-        self.assertFalse((retained / "build.log").exists(), "no build ran")
+        candidate = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head / self.tip
+        log, = (candidate / "plan").glob("*/plan.log")
+        self.assertIn("ship-pr-merge-plan: unadmitted", log.read_text())
+        self.assertEqual(log.with_suffix(".status").read_text().strip(), "0")
+        self.assertFalse((candidate / "build").exists(), "no build ran")
         self.assertEqual(buildhistory.read("owner/repo", self.BUILD), [], "no build went into the history")
 
     def test_a_record_that_admits_it_goes_on_to_the_build(self) -> None:
@@ -1282,7 +1393,7 @@ class Plan(Repo):
         head, tip = self.sides("keep", "seam() { :; }")
         git(self.clone, "fetch", "-q", "--no-tags", "--refmap=", "origin", "refs/pull/7/head", "refs/heads/main")
         refs = self.refs()
-        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/plan-only" / head / tip
+        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/plan-only" / head / tip / "plan"
         for word in ("admitted runtest", "nothing-owed"):
             with self.subTest(word=word):
                 verdict = f"ship-pr-merge-plan: {word}"
@@ -1296,7 +1407,8 @@ class Plan(Repo):
                     mergebuild.dry_build("owner/repo", head, "main", tip, config, "test", self.clone, plan_only=True)
                 self.assertIn(verdict, out.getvalue())
                 self.assertEqual([Path(call.args[1]).name for call in git_calls.call_args_list if "checkout" in call.args[0]], ["plan"])
-                self.assertEqual((retained / "plan.log").read_text().strip(), verdict)
+                log, = retained.glob("*/plan.log")
+                self.assertEqual(log.read_text().strip(), verdict)
                 self.assert_untouched(refs)
 
     def test_the_plan_runs_under_the_commands_contract(self) -> None:
@@ -1358,12 +1470,13 @@ class Plan(Repo):
                 raise subprocess.TimeoutExpired(argv, timeout)
             return out, err
 
-        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head / self.tip
+        retained = Path(self.dir) / "state/merge-builds/logs/owner--repo/7" / head / self.tip / "plan"
         for status in (0, 9):
             with self.subTest(status=status):
                 with mock.patch.object(subprocess.Popen, "communicate", new=struck):
                     rc, out = self.planned(head, f"echo 'ship-pr-merge-plan: unadmitted x'; exit {status}")
-                self.assertEqual((retained / "plan.status").read_text().strip(), str(status))
+                kept, = retained.glob("*/plan.status")
+                self.assertEqual(kept.read_text().strip(), str(status))
                 self.assertEqual(rc, 0, out)
                 self.assertIn("the plan gave NO VERDICT", out)
                 self.assertIn("it did not finish within 60s (the plan-timeout)", out)
@@ -1616,6 +1729,14 @@ class DryRun(Repo):
         done = self.dry("--base", tip, "--head", head, "--config", compatible)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("PASSED", done.stdout)
+        logs = Path(self.dir) / "state/merge-builds/logs"
+        self.assertFalse(logs.exists(), "config-only runs have no retention directory")
+
+        done = self.dry("--base", tip, "--head", head, "--config", compatible, repo="owner/repo")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        kept, = (logs / "owner--repo/dry-run" / head / tip / "build").glob("*/build.status")
+        self.assertEqual(kept.read_text().strip(), "0")
+        self.assertIn(f"retained log/status in {shlex.quote(str(kept.parent))}", done.stdout)
 
     def test_no_build_when_the_trigger_does_not_hold(self) -> None:
         head, tip = self.sides("hook", "seam() { :; }")

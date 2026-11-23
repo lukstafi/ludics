@@ -1464,9 +1464,19 @@ applies the trigger, runs the command, and exits as `merge`'s build step would (
 refused); it reads no PR, fetches nothing and merges nothing. A config change's negative control is
 that run on a pair the config must refuse.
 
-The build prints its retained log/status directory, kept under ship-pr's state directory as
-`merge-builds/logs/<owner>--<repo>/<pr>/<head>/<base>/` on success and refusal alike, and records it
-in the JSONL receipt. Same-candidate retries replace those files. Old candidates remain until manual removal.
+The build prints its attempt directory under ship-pr's state directory and records it as `log_dir`
+in the JSONL receipt on success and refusal alike. For PR 7 in `owner/repo`, the build pair lives at
+`merge-builds/logs/owner--repo/7/<head>/<base>/build/<attempt>/` and its base-alone comparison lives at
+`merge-builds/logs/owner--repo/7/<head>/<base>/base/<attempt>/`.
+
+A repository-named dry run retains its build under
+`merge-builds/logs/owner--repo/dry-run/<head>/<base>/build/<attempt>/`.
+A repository-named plan-only run retains `plan.log` and `plan.status` under
+`merge-builds/logs/owner--repo/plan-only/<head>/<base>/plan/<attempt>/`.
+A dry run that names only a config file has no retention directory. Same-candidate retries publish a
+complete pair before removing the earlier attempt path. A missing attempt path in a receipt means
+its evidence was replaced or removed. A legacy receipt naming just the candidate directory has no
+attempt identity. Old candidates remain until manual removal.
 
 **A merge build that overruns its bound** ends `merge` with exit 4 and no verdict. The refusal shows
 how far the build got and what the same command has taken on this box, and says when a re-run will

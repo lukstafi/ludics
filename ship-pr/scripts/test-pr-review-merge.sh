@@ -4027,9 +4027,17 @@ test_a_merge_commit_that_does_not_build_is_refused() {
   (cd "$TEST_ROOT/build-clash/work" && sh ./api.sh) || bail "the base's tip alone must run clean"
 }
 
+kept_build_log() (
+  shopt -s nullglob
+  local -a logs
+  logs=("$1"/build/*/build.log)
+  assert_eq "${#logs[@]}" 1 "one retained build log for $1"
+  printf '%s\n' "${logs[0]}"
+)
+
 # The control: the same layout, whose merge commit builds, merges -- bound to the gated head.
 test_a_merge_commit_that_builds_merges() {
-  local state="$TEST_ROOT/stable build state" kept
+  local state="$TEST_ROOT/stable build state" kept log
   local -a logs
   reset
   build_fixture compatible
@@ -4044,11 +4052,12 @@ test_a_merge_commit_that_builds_merges() {
   assert_eq "$(grep -cF "merge build $REPO#7: PASSED" "$OUT_FILE")" 1 "an unchanged base builds once"
   kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
   shopt -s nullglob
-  logs=("$kept"/*/build.log)
+  logs=("$kept"/*/build/*/build.log)
   [ ! -e "$kept/build.log" ] || bail "the stable base should have no head-only build log"
   assert_eq "${#logs[@]}" 1 "an unchanged base keeps one build log"
-  assert_eq "${logs[0]}" "$kept/$BUILD_TIP/build.log" "the retained log belongs to the candidate base"
-  assert_eq "$(cat "$kept/$BUILD_TIP/build.status")" 0 "the retained candidate passed"
+  log=$(kept_build_log "$kept/$BUILD_TIP")
+  assert_eq "${logs[0]}" "$log" "the retained log belongs to the candidate base"
+  assert_eq "$(cat "${log%.log}.status")" 0 "the retained candidate passed"
   assert_eq "$(merge_calls)" 1 "one merge write follows the build"
   assert_contains "$MERGE_CALLS" "--match-head-commit $BUILD_HEAD " "the merge is bound to the gated head"
   assert_clone_untouched
@@ -4128,7 +4137,7 @@ test_a_build_whose_base_moves_refreshes_with_the_full_command() {
 }
 
 test_two_green_heads_cannot_land_a_union_that_fails_to_compile() {
-  local first second landing state="$TEST_ROOT/compiler build state" kept
+  local first second landing state="$TEST_ROOT/compiler build state" kept original union
   reset
   moving_build_fixture compile-clash
   first=$BUILD_TIP
@@ -4161,10 +4170,12 @@ test_two_green_heads_cannot_land_a_union_that_fails_to_compile() {
   assert_contains "$MERGE_STDOUT" "conflicting types for" "the compiler caught the interface change"
   assert_contains "$MERGE_STDOUT" "main alone PASSED" "the failure belongs to the union"
   kept="$state/merge-builds/logs/${REPO/\//--}/7/$second"
-  assert_contains "$MERGE_STDERR" "$kept/$BUILD_START/build.log" "the refusal names the original build log"
-  assert_contains "$MERGE_STDERR" "$kept/$landing/build.log" "the refusal names the failed union's build log"
-  assert_eq "$(cat "$kept/$BUILD_START/build.status")" 0 "the retained original candidate passed"
-  assert_eq "$(cat "$kept/$landing/build.status")" 1 "the retained union failed"
+  original=$(kept_build_log "$kept/$BUILD_START")
+  union=$(kept_build_log "$kept/$landing")
+  assert_contains "$MERGE_STDERR" "$original" "the refusal names the original build log"
+  assert_contains "$MERGE_STDERR" "$union" "the refusal names the failed union's build log"
+  assert_eq "$(cat "${original%.log}.status")" 0 "the retained original candidate passed"
+  assert_eq "$(cat "${union%.log}.status")" 1 "the retained union failed"
   assert_no_merge_call
   assert_clone_untouched
 }
@@ -4204,14 +4215,13 @@ test_a_refresh_cannot_waive_a_new_shared_base_failure() {
   assert_contains "$MERGE_STDERR" "--override covers only the initial build on base $BUILD_TIP" "the earlier base is named"
   assert_contains "$MERGE_STDERR" "--override reason for $BUILD_LATER" "the caller needs a reason for this failure"
   kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
-  original="$kept/$BUILD_TIP"
-  refreshed="$kept/$BUILD_LATER"
-  [ -f "$original/build.log" ] || bail "the original candidate's log must survive the failed refresh"
-  assert_eq "$(cat "$original/build.status")" 0 "the retained initial candidate passed"
-  assert_eq "$(cat "$refreshed/build.log")" "known baseline red" "the retained refresh log has the new failure"
-  assert_eq "$(cat "$refreshed/build.status")" 1 "the retained refreshed candidate failed"
-  assert_contains "$MERGE_STDERR" "$original/build.log" "the refusal names the original candidate's log"
-  assert_contains "$MERGE_STDERR" "$refreshed/build.log" "the refusal names the refreshed candidate's log"
+  original=$(kept_build_log "$kept/$BUILD_TIP")
+  refreshed=$(kept_build_log "$kept/$BUILD_LATER")
+  assert_eq "$(cat "${original%.log}.status")" 0 "the retained initial candidate passed"
+  assert_eq "$(cat "$refreshed")" "known baseline red" "the retained refresh log has the new failure"
+  assert_eq "$(cat "${refreshed%.log}.status")" 1 "the retained refreshed candidate failed"
+  assert_contains "$MERGE_STDERR" "$original" "the refusal names the original candidate's log"
+  assert_contains "$MERGE_STDERR" "$refreshed" "the refusal names the refreshed candidate's log"
   assert_no_merge_call
 }
 
@@ -4231,7 +4241,7 @@ test_a_second_refresh_refers_to_the_original_override_base() {
 }
 
 test_a_refresh_runs_the_new_candidates_plan_before_the_build() {
-  local state="$TEST_ROOT/plan refresh state" kept
+  local state="$TEST_ROOT/plan refresh state" kept original
   reset
   moving_build_fixture compatible
   export BUILD_PROBE_NEXT="$BUILD_LATER"
@@ -4245,8 +4255,9 @@ test_a_refresh_runs_the_new_candidates_plan_before_the_build() {
   assert_contains "$MERGE_STDERR" "merged with ${BUILD_LATER:0:8} owes runtest" "the plan read the new base"
   assert_eq "$(cat "$BUILD_PROBE_LOG")" "full $BUILD_TIP $BUILD_HEAD" "the new candidate took no build slot"
   kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
-  assert_contains "$MERGE_STDERR" "$kept/$BUILD_TIP/build.log" "the refusal names the original build log"
-  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_LATER/build.log" "the unbuilt candidate has no build log"
+  original=$(kept_build_log "$kept/$BUILD_TIP")
+  assert_contains "$MERGE_STDERR" "$original" "the refusal names the original build log"
+  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_LATER/build/" "the unbuilt candidate has no build log"
   assert_no_merge_call
 }
 
@@ -4269,7 +4280,7 @@ test_a_base_that_moves_twice_by_disjoint_changes_is_rebuilt_and_merged() {
 }
 
 test_a_second_move_that_overlaps_the_pr_is_refused() {
-  local replacement
+  local replacement state="$TEST_ROOT/overlap refresh state" kept original refreshed
   reset
   moving_build_fixture compatible overlap
   # A replacement in the caller's clone would hide the overlap from a diff made there.
@@ -4278,7 +4289,7 @@ test_a_second_move_that_overlaps_the_pr_is_refused() {
   git -C "$BUILD_CLONE" replace "$BUILD_LAST" "$replacement"
   BUILD_REFS=$(git -C "$BUILD_CLONE" for-each-ref --format='%(refname) %(objectname)')
   BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST")
-  FLEET_LOCAL_BOX=not-a-fleet-box run_merge
+  BUDGET_DIR="$state" FLEET_LOCAL_BOX=not-a-fleet-box run_merge
   if [ "$MERGE_BUILD_RUNS" -eq 0 ]; then
     assert_posix_only_refusal "rejecting a second move with overlap" "trigger always: every merge of this repository is built"
     return 0
@@ -4290,12 +4301,17 @@ test_a_second_move_that_overlaps_the_pr_is_refused() {
     "the refusal names the overlap rule and file"
   assert_eq "$(cat "$BUILD_PROBE_LOG")" "$(printf 'full %s %s\n' "$BUILD_TIP" "$BUILD_HEAD" "$BUILD_LATER" "$BUILD_HEAD")" \
     "the overlapping candidate never builds"
+  kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
+  original=$(kept_build_log "$kept/$BUILD_TIP")
+  refreshed=$(kept_build_log "$kept/$BUILD_LATER")
+  assert_contains "$MERGE_STDERR" "$original" "the overlap refusal names the original build log"
+  assert_contains "$MERGE_STDERR" "$refreshed" "the overlap refusal names the refreshed build log"
   assert_no_merge_call
   assert_clone_untouched
 }
 
 test_a_base_that_outruns_the_refresh_limit_is_refused() {
-  local state="$TEST_ROOT/refresh limit state" kept base
+  local state="$TEST_ROOT/refresh limit state" kept base log
   reset
   moving_build_fixture compatible
   BUILD_PROBE_MOVES=$(printf '%s %s\n' "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LATER" "$BUILD_LAST" "$BUILD_LAST" "$BUILD_NEXT")
@@ -4312,11 +4328,11 @@ test_a_base_that_outruns_the_refresh_limit_is_refused() {
     "two refreshes ran"
   kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
   for base in "$BUILD_TIP" "$BUILD_LATER" "$BUILD_LAST"; do
-    [ -f "$kept/$base/build.log" ] || bail "the build log for $base must survive both refreshes"
-    assert_eq "$(cat "$kept/$base/build.status")" 0 "the retained build for $base passed"
-    assert_contains "$MERGE_STDERR" "$kept/$base/build.log" "the refusal names the retained log for $base"
+    log=$(kept_build_log "$kept/$base")
+    assert_eq "$(cat "${log%.log}.status")" 0 "the retained build for $base passed"
+    assert_contains "$MERGE_STDERR" "$log" "the refusal names the retained log for $base"
   done
-  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_NEXT/build.log" "the final unbuilt tip has no build log"
+  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_NEXT/build/" "the final unbuilt tip has no build log"
   assert_no_merge_call
 }
 
@@ -4433,7 +4449,7 @@ test_a_base_modified_merge_response_refreshes_the_next_attempt() {
 }
 
 test_a_gateway_refusal_never_resends_a_stale_build() (
-  local state="$TEST_ROOT/gateway build state" kept
+  local state="$TEST_ROOT/gateway build state" kept original
   reset
   moving_build_fixture compatible
   retune API_ATTEMPTS=3
@@ -4447,8 +4463,9 @@ test_a_gateway_refusal_never_resends_a_stale_build() (
   assert_contains "$MERGE_STDERR" "moved before a merge request could be resent ($BUILD_TIP -> $BUILD_LATER)" \
     "both bases are named"
   kept="$state/merge-builds/logs/${REPO/\//--}/7/$BUILD_HEAD"
-  assert_contains "$MERGE_STDERR" "$kept/$BUILD_TIP/build.log" "the refusal names the retained build log"
-  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_LATER/build.log" "the live tip has no build log"
+  original=$(kept_build_log "$kept/$BUILD_TIP")
+  assert_contains "$MERGE_STDERR" "$original" "the refusal names the retained build log"
+  assert_not_contains "$MERGE_STDERR" "$kept/$BUILD_LATER/build/" "the live tip has no build log"
   assert_eq "$(merge_calls)" 1 "no write was resent"
 )
 

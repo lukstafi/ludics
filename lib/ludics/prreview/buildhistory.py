@@ -12,9 +12,10 @@ per box: a duration is this box's, under this box's load. Its fields: ``at`` (UT
 ``command`` (a digest of the config's command), ``outcome``, ``seconds`` (the command's own run,
 slot and window waits left out; for ``unstarted``, the wrapper wait instead) and ``bound`` (the
 ``timeout`` it ran under). ``outcome`` is ``passed``, ``overran``, ``failed`` or ``unstarted`` (the
-command never began). Rows also name ``log_dir``, the retained artifacts (mergebuild.py, LOG
-RETENTION); failed and unstarted rows are excluded from timing advice because a failure stops early
-and an unstarted command has no duration. Legacy rows without log_dir remain readable.
+command never began). Rows also name ``log_dir``, the retained attempt's directory (mergebuild.py,
+LOG RETENTION). If that path is missing, the pair was replaced or removed. Legacy rows without
+an attempt directory remain readable for timing advice. Failed and unstarted rows are excluded
+from that advice because a failure stops early and an unstarted command has no duration.
 
 THE TIER -- the boundary. A repository's command is one opaque string, and which tiers it runs is
 its own choice (mergebuild.py, THE COMMAND'S CONTRACT), so "what this tier took before" is read as
@@ -24,8 +25,10 @@ one. The advice says so, and the tail of the output names the tier where the com
 is read from the log: its wording is the project's.
 
 THE READER, a fail-closed allowlist: the file's last ``READ_BYTES`` (the first line of a cut read is
-dropped) and in them the lines that are one JSON object with the fields above, of their types, whose
-``command`` is this command's. Any other line is skipped. A file that cannot be read is no history.
+dropped) and in them the lines with a JSON object naming this command's digest, a string ``at``,
+an outcome of ``passed`` or ``overran``, nonnegative integer seconds and a positive integer bound.
+The timing reader ignores ``log_dir`` and other fields. Any other line is skipped. A file that
+cannot be read is no history.
 Receipt reads and writes inform a message, so they are fail-open: a write that fails is dropped, and
 neither a read nor a receipt write changes a merge's verdict. Artifact copying and its failure
 policy belong to mergebuild.py (LOG RETENTION). Nothing trims the file, and only its tail is ever
