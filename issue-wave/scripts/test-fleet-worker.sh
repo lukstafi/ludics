@@ -4412,7 +4412,7 @@ expect "row with absent transport applies the CLI exit gate" 0 '; row set; NOTE 
 [ -d "$cw_wt_open/_build" ] && ok "...absent-transport row kept its worktree" || ko "absent-transport row lost worktree"
 # 6) Positive CLI path: a real IDLE Claude worker is closed, confirmed EXITED via real status, and loses its worktree.
 setup_step "could not launch w-idle-close (setup)" env SHIM_BASE_TIP="$cw_base" "$FW" launch testbox w-idle-close --target-repo example/project --kind claude --brief "$brief" --repo "$TMP/cw-fc/co" --branch claude/idle-close
-"$FW" attach testbox w-idle-close --interval 1 >/dev/null 2>&1 || ko "w-idle-close never became IDLE (setup)"
+setup_step "w-idle-close never became IDLE (setup)" "$FW" attach testbox w-idle-close --interval 1
 cw_wt_idle="$TMP/cw-fc/co-worktrees/w-idle-close"
 mkdir -p "$cw_wt_idle/_build" && printf 'built\n' > "$cw_wt_idle/_build/o"
 cw_idle_st=$("$FW" status testbox w-idle-close)
