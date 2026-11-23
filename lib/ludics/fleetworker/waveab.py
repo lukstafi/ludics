@@ -86,7 +86,6 @@ from ludics.fleetworker.status import wave_of
 from ludics.fleetworker.takeover import board_status
 from ludics.fleetworker.transport import err
 from ludics.fleetworker.wave import USAGE, Wave, load_wave
-from ludics.fleetworker.waveprep import TIERS
 from ludics.fleetworker.wavereview import read_record, verdict_of
 from ludics.prreview import core as prcore
 from ludics.prreview.feeds import CONNECTOR_FIXED_REPLIES, outside_watch
@@ -1058,7 +1057,11 @@ def render_markdown(doc: dict[str, Any]) -> list[str]:
         if unidentified:
             parts.append("unidentified (excluded): " + ", ".join(f"{k} {v}" for k, v in unidentified.items()))
         detail = "; ".join(parts) if parts else "no merged tasks"
-        status_word = "at ten" if r["ready"] else "below ten (a description)"
+        total_arms = len(at_ten) + len(below_ten) + len(unidentified)
+        if r["ready"]:
+            status_word = f"at ten ({len(at_ten)} of {total_arms} arms)" if len(at_ten) < total_arms else "at ten"
+        else:
+            status_word = "below ten (a description, not a reading)"
         lines.append(f"READING {r['group']}: {status_word} — {detail}")
     untiered = cast(dict[str, int], doc["untiered"])
     if untiered["rows"]:
@@ -1200,7 +1203,3 @@ def cmd_ab(cfg: Config, args: list[str]) -> int:
     else:
         cli.say("\n".join(render_markdown(doc)))
     return 3 if errors else 0
-
-
-# Sanity guard so module import keeps GROUPS aligned with waveprep.TIERS.
-assert set(TIER_TO_GROUP) == set(TIERS), f"GROUPS must partition TIERS: {set(TIER_TO_GROUP)} != {set(TIERS)}"

@@ -361,11 +361,30 @@ class GroupingAndThresholds(BaseWaveAb):
         self.assertEqual(wave_parity["cli/codex gpt-6.2-sol/high"], {"odd": 23, "even": 0, "no_number": 0})
 
         # Markdown renders readings, host section before comparison, and reassigned section
-        self.assertIn("READING D1+D1/D2: at ten", out_m)
-        self.assertIn("READING D2: below ten (a description)", out_m)
+        self.assertIn("READING D1+D1/D2: at ten —", out_m)
+        self.assertIn("READING D2: below ten (a description, not a reading) —", out_m)
         self.assertIn("IMBALANCED", out_m)
         self.assertLess(out_m.index("## Agent host distribution"), out_m.index("## Comparison"))
         self.assertIn("approved host test", out_m)
+
+    def test_three_arm_group_with_two_at_ten_marks_partial_arm_count(self) -> None:
+        wpath = self.make_wave("w-three")
+        for i in range(10):
+            self.add_row("w-three", f"ts{i}", state="merged", tier="D2", transport=SOL_ARM[0], kind=SOL_ARM[1],
+                         model=SOL_ARM[2], agent_host="mac-studio", repository="o/repo", pr=str(10 + i))
+            self.add_row("w-three", f"tn{i}", state="merged", tier="D2", transport=NEON_ARM[0], kind=NEON_ARM[1],
+                         model=NEON_ARM[2], agent_host="mac-studio", repository="o/repo", pr=str(30 + i))
+        self.add_row("w-three", "ta0", state="merged", tier="D2", transport=ASTRA_ARM[0], kind=ASTRA_ARM[1],
+                     model=ASTRA_ARM[2], agent_host="mac-studio", repository="o/repo", pr="50")
+
+        rc_j, out_j, _ = self.run_ab(wpath, "--no-github", "--json")
+        rc_m, out_m, _ = self.run_ab(wpath, "--no-github")
+        self.assertEqual((rc_j, rc_m), (0, 0))
+        d2 = {r["group"]: r for r in json.loads(out_j)["readings"]}["D2"]
+        self.assertTrue(d2["ready"])
+        self.assertEqual(d2["below_ten"], {"cli/codex gpt-6.2-astra/high": 1})
+        self.assertIn("READING D2: at ten (2 of 3 arms) —", out_m)
+        self.assertIn("below ten: cli/codex gpt-6.2-astra/high 1 of 10", out_m)
 
 
 class MissingPartialAndErrors(BaseWaveAb):
