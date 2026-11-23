@@ -54,6 +54,8 @@ class ReadonlyArgv(unittest.TestCase):
             ("flag tools spec", {"model": "opus", "bound": claude.BuiltinTools("--mcp-config")}),
             ("empty allowed", {"model": "opus", "bound": claude.ToolRules([], ["Edit"])}),
             ("empty disallowed", {"model": "opus", "bound": claude.ToolRules(["Read"], [])}),
+            ("bare string allowed", {"model": "opus", "bound": claude.ToolRules("Read", ["Edit"])}),
+            ("bare string disallowed", {"model": "opus", "bound": claude.ToolRules(["Read"], "Write")}),
             ("empty rule entry", {"model": "opus", "bound": claude.ToolRules(["Read", ""], ["Edit"])}),
             ("flag in allowed", {"model": "opus", "bound": claude.ToolRules(["--mcp-config"], ["Edit"])}),
             ("flag in disallowed", {"model": "opus", "bound": claude.ToolRules(["Read"], ["--mcp-config"])}),

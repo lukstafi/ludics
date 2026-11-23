@@ -77,6 +77,8 @@ def readonly_argv(
                 raise ValueError(f"tools spec must not start with '-', got {spec!r}")
             words += ["--tools", spec]
         case ToolRules(allowed, disallowed):
+            if isinstance(allowed, str) or isinstance(disallowed, str):
+                raise ValueError("ToolRules allowed and disallowed must be sequences of tool names, not bare strings")
             if not allowed or not disallowed:
                 raise ValueError("ToolRules requires non-empty allowed and disallowed tool lists")
             if any(not item or item.startswith("-") for item in (*allowed, *disallowed)):

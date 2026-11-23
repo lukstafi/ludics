@@ -512,12 +512,20 @@ def run_planner(d: str, kind: str) -> int:
         stdin = agy.message(brief)
     elif claude:
         tool = "claude"
-        argv = claude_cli.readonly_argv(
-            meta.model,
-            claude_cli.BuiltinTools(CLAUDE_TOOLS),
-            effort=meta.effort,
-            resume=read(os.path.join(d, "thread")).strip() if kind == "critique" else "",
-        )
+        resume = ""
+        if kind == "critique":
+            resume = read(os.path.join(d, "thread")).strip()
+            if not resume:
+                raise cli.Exit(1, f"the planning run in {d} recorded no session id: there is nothing to resume")
+        try:
+            argv = claude_cli.readonly_argv(
+                meta.model,
+                claude_cli.BuiltinTools(CLAUDE_TOOLS),
+                effort=meta.effort,
+                resume=resume,
+            )
+        except ValueError as err:
+            raise cli.Exit(1, str(err)) from None
     else:
         tool = "codex"
         effort = f"model_reasoning_effort={meta.effort}"
