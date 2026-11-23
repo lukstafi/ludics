@@ -999,10 +999,10 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   leg's temporary record on that box, separate from the verdict markers, with internal contents.
   The leg clears any inherited `FLEET_LEG_RUN_RECORD` and sets it to the record's path for its
   main runner when the hook is configured, so the runner can tie its receipt to that invocation.
-  The hook runs under a nested `execution slot --deadline
-  300` with the run's CPU/GPU flags and closed stdin. Its output goes to stderr and any
-  failure is warned about with its exit status. The main and control verdicts retain their usual
-  rules. The hook decides which runs to publish and is responsible for leaving the worktree unchanged.
+  The hook runs under a nested `execution slot --deadline 300` with the run's CPU/GPU flags and
+  closed stdin. Its output goes to stderr and any failure is warned about with its exit status.
+  The main and control verdicts retain their usual rules. The hook decides which runs to publish
+  and is responsible for leaving the worktree unchanged.
   Add the `owed-record` directive once the caller's skills checkout supports it. An older
   caller refuses the directive before running the leg, just as it does for `run-report`.
 
@@ -1012,12 +1012,12 @@ fleet-worker.sh execution leg --request <id> [--box <box>] --rev <sha|branch> \
   outside the default state directory. A missing link leaves the variable unset. When
   nesting a leg from a caller that predates receipt pointers, unset both receipt variables
   before invoking it so it cannot inherit the outer leg's pointer or receipt directory.
-  A pointer other than a symlink to an existing
-  absolute directory skips publication with a warning. The hook still verifies that the
-  receipt belongs to this leg's run record and observed SHA and meets the project's publication
-  rules. The leg reads only the pointer. Its cleanup takes the record and pointer away even
-  after failure or a handled stop. Unexpected contents that prevent removal of the temporary
-  directory are left in place with a warning. The runner keeps its receipt directory.
+  A pointer other than a symlink to an existing absolute directory skips publication with a
+  warning. The hook still verifies that the receipt belongs to this leg's run record and observed
+  SHA and meets the project's publication rules. The leg reads only the pointer. Its cleanup takes
+  the record and pointer away even after failure or a handled stop. Unexpected contents that
+  prevent removal of the temporary directory are left in place with a warning. The runner keeps
+  its receipt directory.
 - **The failing lines.** A failed leg's log said the verdict and the goldens that differ, not the
   claims that failed, so each failed leg cost an ssh session to the far side (ludics#1040). Which
   lines count as failing, and where the runner keeps them, are the project's: it names

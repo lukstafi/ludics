@@ -451,14 +451,13 @@ class BackendPin(unittest.TestCase):
 
 
 RUNS_SCRIPT = leg.LEG.split("<<'FLEET_LEG_RUNS'", 1)[1].split("\n", 1)[1].split("\nFLEET_LEG_RUNS\n", 1)[0]
+RUNS_BASH = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"  # 3.2 on macOS
 
 
 class FailingLines(unittest.TestCase):
     """THE FAILING LINES (ludics#1040): the far side's runs script copies a failed run's fail-lines
     output back, bounded by bytes and lines; a passing run, and a project that declares none, copy
     nothing. The script is LEG's own, cut out of it, with an `execution slot` that runs its command."""
-
-    bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"  # 3.2 on macOS
 
     def runs(self, fail: str, *runner: str) -> tuple[int, str]:
         with tempfile.TemporaryDirectory() as d:
@@ -471,8 +470,8 @@ class FailingLines(unittest.TestCase):
             Path(wt, "log").write_text("ok: true\nFAIL: claim one\nnoise\nx: false\n")
             results = Path(d, "results")
             results.write_text("")
-            done = subprocess.run([self.bash, "-c", RUNS_SCRIPT, "x", str(wt), "", str(results), "testbox", str(fw), "h", "",
-                                   fail, "", "req", "", "2", "--deadline", "30", *runner], capture_output=True, text=True)
+            done = subprocess.run([RUNS_BASH, "-c", RUNS_SCRIPT, "x", str(wt), "", str(results), "testbox", str(fw), "h", "",
+                                   fail, "", "req", "", "", "2", "--deadline", "30", *runner], capture_output=True, text=True)
             self.assertEqual(sorted(p.name for p in Path(d).iterdir()), ["fw", "results", "wt"])
             return done.returncode, done.stderr
 
@@ -532,7 +531,6 @@ class FailingLines(unittest.TestCase):
 
 class OwedReceipt(unittest.TestCase):
     def test_callback_receives_only_a_valid_pointer_target(self) -> None:
-        bash = "/bin/bash" if os.path.exists("/bin/bash") else shutil.which("bash") or "bash"
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             wt = root / "wt"
@@ -555,6 +553,7 @@ class OwedReceipt(unittest.TestCase):
             target = root / "receipt with trailing newline\n"
             target.mkdir()
             record = root / "record"
+            pointer = root / "pointer"
             results = root / "results"
             for runner, expected in (
                 ("true", "unset"),
@@ -565,10 +564,11 @@ class OwedReceipt(unittest.TestCase):
             ):
                 with self.subTest(runner=runner):
                     results.write_text("")
-                    record.with_suffix(".receipt").unlink(missing_ok=True)
+                    pointer.unlink(missing_ok=True)
                     done = subprocess.run(
-                        [bash, "-c", RUNS_SCRIPT, "x", str(wt), "", str(results), "testbox", str(fw), head, "", "",
-                         "hook", "req", str(record), "2", "--deadline", "30", bash, "-ec", runner, "x", str(target)],
+                        [RUNS_BASH, "-c", RUNS_SCRIPT, "x", str(wt), "", str(results), "testbox", str(fw), head, "", "",
+                         "hook", "req", str(record), str(pointer), "2", "--deadline", "30",
+                         RUNS_BASH, "-ec", runner, "x", str(target)],
                         capture_output=True, text=True, env={**os.environ, "EXPECTED": expected or ""},
                     )
                     self.assertEqual(done.returncode, 0, done.stderr)

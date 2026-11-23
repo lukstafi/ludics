@@ -849,20 +849,18 @@ nnest="$1"; shift; nest=()
 while [ "$nnest" -gt 0 ]; do nest+=("$1"); shift; nnest=$((nnest - 1)); done
 patch=""; [ -z "$pname" ] || patch="$STATE/leg-control/$pname"
 lfile=""; [ -z "$fname" ] || lfile="$STATE/leg-files/$fname"
-ref="refs/fleet-leg/$$"; results=""; planned=""; owed_state=""; run_record=""
+ref="refs/fleet-leg/$$"; results=""; planned=""; owed_state=""; run_record=""; receipt_link=""
 say() { printf 'EXECUTION LEG %s: %s\n' "$BOX" "$*" >&2; }
 cleanup() {
-  local pointer
   [ -z "$patch" ] || rm -f "$patch"
   [ -z "$lfile" ] || rm -f "$lfile"
   [ -z "$planned" ] || rm -f "$planned"
-  if [ -n "$run_record" ]; then
-    rm -f "$run_record"
-    pointer="$run_record.receipt"
-    if [ ! -L "$pointer" ] && [ -d "$pointer" ]; then
-      rmdir "$pointer" 2>/dev/null
+  [ -z "$run_record" ] || rm -f "$run_record"
+  if [ -n "$receipt_link" ]; then
+    if [ ! -L "$receipt_link" ] && [ -d "$receipt_link" ]; then
+      rmdir "$receipt_link" 2>/dev/null
     else
-      rm -f "$pointer"
+      rm -f "$receipt_link"
     fi
   fi
   if [ -n "$owed_state" ] && ! rmdir "$owed_state" 2>/dev/null; then
@@ -1034,6 +1032,7 @@ if [ -n "$pin_owed" ]; then
   owed_state=$(mktemp -d "${TMPDIR:-/tmp}/fleet-leg-owed.XXXXXX") || refuse "cannot create an owed-record directory on $BOX"
   owed_dir=$(CDPATH= cd "$owed_state" && pwd -P) || refuse "cannot resolve the owed-record directory on $BOX"
   run_record="$owed_dir/record"
+  receipt_link="$owed_dir/record.receipt"
   printf 'request=%s\nobserved_sha=%s\n' "$request" "$head" >"$run_record" || refuse "cannot write the owed-record run file on $BOX"
 fi
 # The runs, under ONE slot (or the measurement's hold): the main run, then the control. Each step
@@ -1045,7 +1044,7 @@ fi
 # leftover background child cannot overlap the control run, nor outlive the leg.
 cat > "$results.sh" <<'FLEET_LEG_RUNS' || refuse "cannot write a scratch file on $BOX"
 wt="$1" patch="$2" results="$3" box="$4" fw="$5" head="$6" report="$7" fail="$8" owed="$9"
-request="${10}" run_record="${11}" n="${12}"; shift 12
+request="${10}" run_record="${11}" receipt_link="${12}" n="${13}"; shift 13
 nest=(); while [ "$n" -gt 0 ]; do nest+=("$1"); shift; n=$((n - 1)); done
 cd "$wt" || exit 1
 # THE RUN REPORT (see the header): after a run that started, the project's report, in its own nested
@@ -1071,14 +1070,13 @@ said() {
 }
 # THE OWED RECORD (see the header): judge the main runner's tree before another hook can change it.
 publish_owed() {
-  local now dirty orc pointer receipt FLEET_LEG_RECEIPT_DIR
+  local now dirty orc receipt FLEET_LEG_RECEIPT_DIR
   [ -n "$owed" ] && [ "$1" -eq 0 ] && grep -qx main-started "$results" || return 0
   now=$(git rev-parse --verify -q 'HEAD^{commit}') && [ "$now" = "$head" ] || return 0
   dirty=$(git status --porcelain --untracked-files=all --ignore-submodules=none) && [ -z "$dirty" ] || return 0
-  pointer="$run_record.receipt"
-  if [ -e "$pointer" ] || [ -L "$pointer" ]; then
+  if [ -e "$receipt_link" ] || [ -L "$receipt_link" ]; then
     # The sentinel protects trailing newlines from command substitution.
-    if [ -L "$pointer" ] && receipt=$(readlink -n "$pointer" && printf '.'); then
+    if [ -L "$receipt_link" ] && receipt=$(readlink -n "$receipt_link" && printf '.'); then
       receipt=${receipt%.}
     fi
     if [[ ${receipt:-} != /* ]] || [ ! -d "$receipt" ]; then
@@ -1130,12 +1128,12 @@ failing() {
 go() {
   local tag="$1"; shift
   "$fw" execution slot "${nest[@]}" -- bash -c '
-    case "$4" in */*) [ -f "$4" ] && [ -x "$4" ] ;; *) command -v "$4" >/dev/null ;; esac ||
-      { printf "%s-unexecutable\n" "$1" >> "$2"; printf "EXECUTION LEG: %s is not an executable command here\n" "$4" >&2; exit 127; }
+    case "$5" in */*) [ -f "$5" ] && [ -x "$5" ] ;; *) command -v "$5" >/dev/null ;; esac ||
+      { printf "%s-unexecutable\n" "$1" >> "$2"; printf "EXECUTION LEG: %s is not an executable command here\n" "$5" >&2; exit 127; }
     if [ "$1" = main ] && [ -n "$3" ]; then
-      export FLEET_LEG_RUN_RECORD="$3" FLEET_LEG_RECEIPT_LINK="$3.receipt"
+      export FLEET_LEG_RUN_RECORD="$3" FLEET_LEG_RECEIPT_LINK="$4"
     fi
-    printf "%s-started\n" "$1" >> "$2"; shift 3; exec "$@"' leg-run "$tag" "$results" "$run_record" "$@" </dev/null
+    printf "%s-started\n" "$1" >> "$2"; shift 4; exec "$@"' leg-run "$tag" "$results" "$run_record" "$receipt_link" "$@" </dev/null
 }
 printf "started\n" >> "$results"
 go main "$@"; rc=$?
@@ -1168,7 +1166,7 @@ FLEET_LEG_RUNS
 # does not end it before the control is reverted and its files are removed.
 stop_asked=""
 trap 'stop_asked=1' TERM INT HUP
-fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "$pin_report" "$pin_fail" "$pin_owed" "$request" "$run_record" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
+fleet_worker "${wrap[@]}" -- bash "$results.sh" "$wt" "$patch" "$results" "$BOX" "$fw" "$head" "$pin_report" "$pin_fail" "$pin_owed" "$request" "$run_record" "$receipt_link" "${#nest[@]}" "${nest[@]}" "$@" </dev/null; wrc=$?
 trap '' PIPE
 [ -z "$stop_asked" ] || say "stopped (a signal from the leg's stop, or its group's): the wrapper exit $wrc"
 fact() { sed -n "s/^$1=//p" "$results" | head -n1; }
