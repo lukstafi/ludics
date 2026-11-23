@@ -4337,6 +4337,8 @@ test_a_merge_takes_over_an_expired_lease_for_the_refresh() {
   fi
   assert_eq "$MERGE_RC" 0 "the expired lease is taken over and the new candidate merges ($MERGE_OUTPUT)"
   assert_contains "$MERGE_STDERR" "took over the expired merge lease of $REPO#8" "the old holder is identified"
+  assert_contains "$MERGE_STDERR" "$REPO#7: acquired merge lease on local" "the merge logs acquisition"
+  assert_contains "$MERGE_STDERR" "$REPO#7: merge lease release acknowledged on local" "the merge logs acknowledged release"
   assert_eq "$(cat "$BUILD_LEASE_PROBE")" "$(printf '8\n7\n')" "the initial build is unleased and the refresh is leased"
   assert_eq "$(merge_calls)" 1 "the latest candidate reaches the merge call"
   [ ! -e "$BUILD_LEASE_RECORD" ] || bail "the merge lease survived the call"

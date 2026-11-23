@@ -585,6 +585,9 @@ prreview/mergelease.py fleetworker/mergelease.py
     ship-pr/scripts/test-pr-review-merge.sh
     lib/ludics/tests/test_prreview_mergelease.py
 
+prreview/leasepreflight.py
+    lib/ludics/tests/test_prreview_mergelease.py
+
 prreview/localreview.py
     lib/ludics/tests/test_prreview_localreview.py
 
@@ -607,6 +610,12 @@ build and the refresh. The lease units cover concurrent acquisition and the old 
 to renew or release the successor's lease. The four new gate and lease cases fail at the launch
 base `e841b7cd9`: it stops after the first refresh and rejects `lease fleet`. The overlap check
 uses the build's scratch repository so a local replacement ref cannot hide a shared path.
+
+Agent notes (#1315): `pr-review.sh lease-preflight` checks each box's served reader with a fixed
+`lease fleet` fixture. The box's own fleet config and transport resolve the anchor, and the
+probe compares the anchor name, host, device and inode. It does not inspect live lease records
+or establish that in-flight merges are drained. The lease context logs successful acquire and
+acknowledged release, including when leaving the context after a refusal.
 
 Agent notes (#1257): `Merge.merge_call` classifies failed merge answers by whole first stderr
 line. The allowlist binds CLI preflight refusals to the target PR and GraphQL refusals to the

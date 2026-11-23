@@ -1387,9 +1387,16 @@ retarget or an unread base also requires a fresh invocation.
 
 On a busy fleet repository, add `lease fleet` alongside `trigger always` to serialize the final
 checks, refreshes and merge call across boxes. The initial builds run in parallel. Every merging
-box must carry this reader and resolve the same fleet anchor and state directory. Drain in-flight
-merges before enabling the line, since they still use the config they read at the gate. Older
-readers reject `lease fleet` with exit 2. A waiter
+box must carry this reader and resolve the same fleet anchor and state directory. Before enabling
+the line, run `pr-review.sh lease-preflight <owner/repo>`. It checks the configured roster, or
+just the names given after `--boxes`, and refuses if a box rejects the directive, is unreachable,
+or resolves a different anchor directory. The probe parses a synthetic config with each box's
+served reader and compares the anchor name, host, device and inode. Configure the anchor with a
+plain fleet name and a state path that is absolute after expanding a leading `$HOME/`. The probe
+reads no repository config
+or lease records and acquires nothing. Drain in-flight merges separately before enabling the line,
+since they still use the config they read at the gate. Older readers reject `lease fleet` with
+exit 2. `merge` logs lease acquisition and acknowledged release on stderr. A waiter
 has 1,800 seconds to acquire the lease, including time a holder spends waiting
 for a refresh's slot. A dead holder's lease expires 120 seconds after its last renewal. A timeout
 or lost lease refuses a new merge write. Removing the line restores unleased merges. The lease

@@ -53,6 +53,7 @@ NOT_PATHS: frozenset[tuple[str, str]] = frozenset({
     ("comment.py", "--coordinator"),
     ("comment.py", "--coordinator="),
     ("core.py", "--field"), ("core.py", "--raw-field"), ("core.py", "-F"), ("core.py", "-f"),  # gh's, read back
+    ("leasepreflight.py", "--boxes"),
     ("merge.py", "--allow-no-verdict"), ("merge.py", "--auto"), ("merge.py", "--auto="),
     ("merge.py", "--check"), ("merge.py", "--check="), ("merge.py", "--match-head-commit"),
     ("merge.py", "--match-head-commit="), ("merge.py", "--override"), ("merge.py", "--override="),
