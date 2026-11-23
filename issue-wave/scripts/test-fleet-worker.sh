@@ -7487,7 +7487,7 @@ expect "...so the next tick raises attention and refuses to launch t93 on testbo
 setup_step "could not drop t92 (setup)" "${FWK[@]}" board set wkv t92 state=dropped
 settle wk-92
 fixture_done wkv-t92-testbox-iterate
-# 3. Uncertain / post-reservation lease loss (standing reservation dispatched, conclusion loses lease) keeps the hold.
+# 3. Post-reservation lease loss (outcome=reserved: standing reservation dispatched, conclusion loses lease) keeps the hold.
 setup_step "could not prepare t94 (setup)" "${FWK[@]}" wave prep "$K/wave.json" t94 --base master --profile sol
 jq -n '{capacity:{testbox:1}, tasks:[{task:"t94", profile:"sol", host:"testbox"}, {task:"t95", profile:"sol", host:"testbox"}]}' > "$K/queue.json"
 : > "$K/steal-reserved"

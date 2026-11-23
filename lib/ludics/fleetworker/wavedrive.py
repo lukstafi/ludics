@@ -278,7 +278,9 @@ the row not set, exit 4 with the reservation dispatched), so it holds a slot on 
 until the row leaves ``pending`` (the coordinator set it ``launched``, where the row itself then
 counts, or closed it). Only ``WAVE LAUNCH REFUSED``, the verb's own reads refusing before it
 starts anything, holds none. The launch is written to the ledger (``launching``, carrying a fresh
-``launch_id`` matching ``boardstore.LAUNCH_ID``) before it is made: a driver that stops inside one
+``launch_id`` matching ``boardstore.LAUNCH_ID`` — each ``wave launch`` invocation, including a retry
+after a pre-start refusal, gets its own attempt number so a status file from an earlier invocation
+can never match a later one) before it is made: a driver that stops inside one
 leaves that line, and the next driver makes it attention, final, holding the slot, since it cannot
 know how the launch ended. The driver passes ``--status <file> --launch-id <id>`` to ``wave launch``
 (wavelaunch.py, THE STATUS; ludics#1290). On a lost lease (exit 6), the driver reads only that status

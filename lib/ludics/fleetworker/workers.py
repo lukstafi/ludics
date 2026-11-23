@@ -12,7 +12,9 @@ last act on every non-usage exit (never on usage exit 2): ``{"exit", "host", "wo
 "outcome"}``, where ``outcome`` is one of ``LAUNCH_OUTCOMES``:
   - ``pre-start``: refused or failed before any standing reservation was created and before
     any spawn was issued (including an initial or pre-preparation lease gate refusal, and a
-    standing ``execution run`` lease refusal before registry mutation);
+    standing ``execution run`` lease refusal before registry mutation; in the ``execution run``
+    case a clean prepared worktree at prep's base may already exist on the host, which step 3
+    of the next ``wave launch`` reuses);
   - ``not-started``: a standing reservation was created and cleanly concluded ``not-launched``;
   - ``reserved``: a standing reservation was created and could not be concluded (for example,
     post-reservation lease loss or a failed ``not-launched`` conclusion);
@@ -58,17 +60,17 @@ _DIGITS = re.compile(r"[0-9]+")
 LAUNCH_OUTCOMES = ("pre-start", "not-started", "reserved", "started", "uncertain")
 
 
-def write_launch_status(path: str, rc: int, host: str, worker: str, outcome: str) -> None:
-    """Write ``launch --status`` atomically; a write failure is a NOTE and never changes the exit."""
-    payload = json.dumps({"exit": rc, "host": host, "worker": worker, "outcome": outcome}, ensure_ascii=False) + "\n"
+def write_status_file(path: str, fields: dict[str, Any], note_prefix: str) -> None:
+    """Atomically write a JSON status file; a write failure emits a NOTE and never changes the exit."""
+    payload = json.dumps(fields, ensure_ascii=False) + "\n"
     try:
         write_atomically(path, payload)
     except OSError as exc:
-        err(f"LAUNCH STATUS NOTE {host}/{worker}: cannot write {shlex.quote(path)} ({exc.strerror}): {payload.rstrip()}")
+        err(f"{note_prefix}: cannot write {shlex.quote(path)} ({exc.strerror}): {payload.rstrip()}")
 
 
-def read_launch_status(path: str, rc: int, host: str, worker: str) -> dict[str, Any] | None:
-    """Read ``launch --status`` fail-closed: exact schema, matching exit/host/worker, known outcome."""
+def read_status_file(path: str, expected: dict[str, Any], outcomes: tuple[str, ...]) -> dict[str, Any] | None:
+    """Read a JSON status file fail-closed: exact key set, matching expected fields, known outcome."""
     try:
         with open(path, encoding="utf-8") as f:
             data: Any = json.load(f)
@@ -77,12 +79,22 @@ def read_launch_status(path: str, rc: int, host: str, worker: str) -> dict[str, 
     if not isinstance(data, dict):
         return None
     st = cast(dict[str, Any], data)
-    if (set(st) != {"exit", "host", "worker", "outcome"}
-            or type(st["exit"]) is not int or st["exit"] != rc
-            or st["host"] != host or st["worker"] != worker
-            or st["outcome"] not in LAUNCH_OUTCOMES):
+    if (set(st) != {*expected, "outcome"}
+            or st["outcome"] not in outcomes
+            or any(type(st[key]) is not type(val) or st[key] != val for key, val in expected.items())):
         return None
     return st
+
+
+def write_launch_status(path: str, rc: int, host: str, worker: str, outcome: str) -> None:
+    """Write ``launch --status`` atomically; a write failure is a NOTE and never changes the exit."""
+    write_status_file(path, {"exit": rc, "host": host, "worker": worker, "outcome": outcome},
+                      f"LAUNCH STATUS NOTE {host}/{worker}")
+
+
+def read_launch_status(path: str, rc: int, host: str, worker: str) -> dict[str, Any] | None:
+    """Read ``launch --status`` fail-closed: exact schema, matching exit/host/worker, known outcome."""
+    return read_status_file(path, {"exit": rc, "host": host, "worker": worker}, LAUNCH_OUTCOMES)
 
 
 def valid_name(name: str) -> bool:

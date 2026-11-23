@@ -92,11 +92,11 @@ from ludics.fleetworker.boardstore import LAUNCH_ID, placement_word
 from ludics.fleetworker.config import Config
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import LEASE_LOST_STATUS
-from ludics.fleetworker.transport import err, prelude, run, run_on, substitution
+from ludics.fleetworker.transport import prelude, run, run_on, substitution
 from ludics.fleetworker.wave import USAGE, Wave, load_wave
 from ludics.fleetworker.wavebrief import write_atomically
 from ludics.fleetworker.waveprep import READY, Rivalry, Stop, check_rivals, task_lock
-from ludics.fleetworker.workers import LAUNCH_OUTCOMES, read_launch_status
+from ludics.fleetworker.workers import LAUNCH_OUTCOMES, read_launch_status, read_status_file, write_status_file
 
 # Far side of step 3's read, after the prelude. Arg: the worktree path. Prints `worktree=absent`, or
 # `worktree=<HEAD or unreadable> dirty=<count of git status --porcelain entries, or unreadable>`.
@@ -200,33 +200,20 @@ def read_manifest(path: str, task: str) -> tuple[dict[str, Any], Record, list[st
 
 def write_wave_launch_status(path: str, rc: int, wave_name: str, task: str, host: str, launch_id: str, outcome: str) -> None:
     """THE STATUS (the header): replaced whole; a write failure is a NOTE and never changes the exit."""
-    payload = json.dumps(
+    write_status_file(
+        path,
         {"exit": rc, "wave": wave_name, "task": task, "host": host, "launch_id": launch_id, "outcome": outcome},
-        ensure_ascii=False,
-    ) + "\n"
-    try:
-        write_atomically(path, payload)
-    except OSError as exc:
-        err(f"WAVE LAUNCH STATUS NOTE {task}: cannot write {shlex.quote(path)} ({exc.strerror}): {payload.rstrip()}")
+        f"WAVE LAUNCH STATUS NOTE {task}",
+    )
 
 
 def read_wave_launch_status(path: str, rc: int, wave_name: str, task: str, host: str, launch_id: str) -> dict[str, Any] | None:
     """Read ``wave launch --status`` fail-closed: exact schema, matching exit/wave/task/host/launch_id, known outcome."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            data: Any = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    st = cast(dict[str, Any], data)
-    if (set(st) != {"exit", "wave", "task", "host", "launch_id", "outcome"}
-            or type(st["exit"]) is not int or st["exit"] != rc
-            or st["wave"] != wave_name or st["task"] != task
-            or st["host"] != host or st["launch_id"] != launch_id
-            or st["outcome"] not in LAUNCH_OUTCOMES):
-        return None
-    return st
+    return read_status_file(
+        path,
+        {"exit": rc, "wave": wave_name, "task": task, "host": host, "launch_id": launch_id},
+        LAUNCH_OUTCOMES,
+    )
 
 
 def launched(cfg: Config, path: str, task: str, *, status_file: str = "", launch_id: str = "") -> int:
