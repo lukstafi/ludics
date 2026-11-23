@@ -232,8 +232,11 @@ def read_wave_launch_status(path: str, rc: int, wave_name: str, task: str, host:
 def launched(cfg: Config, path: str, task: str, *, status_file: str = "", launch_id: str = "") -> int:
     wave = load_wave(path, "launch")
     manifest_path = os.path.join(wave.directory, "prep", f"{task}.json")
-    if status_file and os.path.realpath(status_file) in {os.path.realpath(path), os.path.realpath(manifest_path)}:
-        die("wave launch: --status names a file of its own, never the wave file or prep manifest")
+    lock_path = os.path.join(wave.directory, "prep", f"{task}.lock")
+    if status_file and os.path.realpath(status_file) in {
+        os.path.realpath(path), os.path.realpath(manifest_path), os.path.realpath(lock_path),
+    }:
+        die("wave launch: --status names a file of its own, never the wave file, prep manifest or task lock")
     status_host = [""]
 
     def finish(rc: int, outcome: str, host: str = "") -> int:
@@ -303,6 +306,8 @@ def launched_locked(
                        "--status", launch_status_path, "--", *cli_args(record)], capture=True)
         cli.emit(substitution(started.out))
         if started.rc != 0:
+            if started.rc == 2:
+                return 2
             child = read_launch_status(launch_status_path, started.rc, record.host, record.worker)
             outcome = str(child["outcome"]) if child is not None else "uncertain"
             return finish(started.rc, outcome, record.host)
@@ -371,7 +376,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
     while i < len(args):
         arg = args[i]
         if arg in ("--status", "--launch-id"):
-            if i + 1 >= len(args) or not args[i + 1]:
+            if i + 1 >= len(args) or not args[i + 1] or args[i + 1].startswith("-"):
                 die(f"wave launch: expected a value for {arg}; usage: {USAGE}")
             value = args[i + 1]
             if arg == "--status":

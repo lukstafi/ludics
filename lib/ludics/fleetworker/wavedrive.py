@@ -1276,11 +1276,12 @@ class Driver:
                                       + (f" (the refresh of {self.wave.agent_host}'s skills checkout before it: {fresh[:300]})" if fresh else ""))
         host = record.host if record is not None else queued.host
         launch_id = self.next_launch_id(queued.task)
-        # A SLOT HELD (the header): the launch is on record before it is made, so a driver that stops
-        # inside it leaves a line the next one reads.
-        self.note(slot, LAUNCH, "launch", "launching", f"wave launch on {host}", holds=host, launch_id=launch_id)
         with tempfile.TemporaryDirectory(prefix="ludics-drive-launch-") as status_dir:
             status_file = os.path.join(status_dir, "status.json")
+            # A SLOT HELD (the header): the launch is on record before it is made, so a driver that stops
+            # inside it leaves a line the next one reads. Create the status directory first so a
+            # temp-directory error cannot leave a slot held without invoking wave launch.
+            self.note(slot, LAUNCH, "launch", "launching", f"wave launch on {host}", holds=host, launch_id=launch_id)
             try:
                 done = self.call("wave", "launch", self.wave.path, queued.task,
                                  "--status", status_file, "--launch-id", launch_id, gated=True)

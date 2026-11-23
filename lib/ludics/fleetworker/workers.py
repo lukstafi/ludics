@@ -186,7 +186,7 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                 if status_file:
                     die("launch: --status may be given at most once")
                 status_file = _value(rest, i)
-                if not status_file:
+                if not status_file or status_file.startswith("-"):
                     die("launch: --status <local path> required")
                 i += 1
             case "--standing":
@@ -373,9 +373,9 @@ def cmd_launch(cfg: Config, args: list[str]) -> int:
                 cli.say(f"LAUNCH UNKNOWN {label}: reservation {request_id} outcome unknown; reconcile it; worktree kept")
                 return finish(4, "uncertain")
             cli.say(f"LAUNCH REFUSED {label}: standing reservation failed; worktree kept")
-            # execution run exits 1 (refused) or LEASE_LOST_STATUS (lease_mutation before registry_command):
-            # no reservation was created and no spawn was issued; any other nonzero exit is not proven.
-            return finish(rc, "pre-start" if rc in (1, LEASE_LOST_STATUS) else "uncertain")
+            # Only LEASE_LOST_STATUS (lease_mutation before registry_command) proves no reservation
+            # was published: exit 1 can follow a post-publish directory sync failure in registry.py.
+            return finish(rc, "pre-start" if rc == LEASE_LOST_STATUS else "uncertain")
         # A halt/adoption while reserving still fences startup. No start was attempted here,
         # so conclude not-launched; a failed conclusion must be reported as unknown.
         rc = anchor_gate(cfg, "LAUNCH", label, force)

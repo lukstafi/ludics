@@ -1073,20 +1073,25 @@ class MixedWave(WaveDirCase):
                     self.assertIsNotNone(st)
                     assert st is not None
                     self.assertEqual(st["outcome"], want)
-            # Invalid --launch-id or colliding --status refuses with exit 2 and writes no status.
+            # Invalid --launch-id, flag-like --status, colliding --status, or nested usage exit 2 writes no status.
             untouched = os.path.join(self.wavedir, "untouched.json")
             for bad, why in (
                 (["--launch-id", "bad id", "--status", untouched], "--launch-id must be"),
+                (["--status", "--launch-id"], "expected a value for --status"),
                 (["--status", self.path], "names a file of its own"),
                 (["--status", os.path.join(self.wavedir, "prep", "t42.json")], "names a file of its own"),
+                (["--status", os.path.join(self.wavedir, "prep", "t42.lock")], "names a file of its own"),
                 (["--status", untouched, "--status", untouched], "at most once"),
                 (["--launch-id", "wv-t42-1", "--launch-id", "wv-t42-2"], "at most once"),
             ):
                 rc, _, err = self.start("t42", *bad)
                 self.assertEqual(rc, 2, bad)
                 self.assertIn(why, err)
+            self.launch, self.launch_status = Done(2, ""), None
+            self.assertEqual(self.start("t42", "--status", untouched, "--launch-id", "wv-t42-u")[0], 2)
             self.assertFalse(os.path.exists(untouched))
             # Unwritable --status emits a NOTE and keeps exit 6.
+            self.launch = Done(6, "LAUNCH REFUSED far/w1-42: coordinator lease held by other\n")
             rc, _, err = self.start("t42", "--status", self.wavedir, "--launch-id", "wv-t42-3")
             self.assertEqual(rc, 6)
             self.assertIn("WAVE LAUNCH STATUS NOTE t42:", err)

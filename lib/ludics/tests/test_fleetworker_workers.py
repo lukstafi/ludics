@@ -285,6 +285,7 @@ class StandingLaunch(unittest.TestCase):
             ([6], 0, 0, 0, 6, "pre-start"),
             ([0, 6], 0, 0, 0, 6, "pre-start"),
             ([0, 0], 6, 0, 0, 6, "pre-start"),
+            ([0, 0], 1, 0, 0, 1, "uncertain"),
             ([0, 0], 4, 0, 0, 4, "uncertain"),
             ([0, 0, 6], 0, 0, 0, 6, "reserved"),
             ([0, 0, 1], 0, 0, 6, 6, "reserved"),
@@ -337,6 +338,7 @@ class StandingLaunch(unittest.TestCase):
             open(brief, "w", encoding="utf-8").close()
             for extra, why in (
                 (["--status"], "--status <local path> required"),
+                (["--status", "--no-cross"], "--status <local path> required"),
                 (["--status", os.path.join(d, "a"), "--status", os.path.join(d, "b")], "at most once"),
                 (["--status", brief], "names a file of its own"),
                 (["--result-file", os.path.join(d, "r"), "--status", os.path.join(d, "r")], "names a file of its own"),

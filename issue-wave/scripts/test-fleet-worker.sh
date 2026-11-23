@@ -7416,7 +7416,8 @@ if [ -n "\${STEAL_ON_PR_LIST:-}" ] && [ -e "\$STEAL_ON_PR_LIST" ] && [ "\$1 \$2"
   rm -f "\$STEAL_ON_PR_LIST"
   FLEET_COORDINATOR=other-session "$FW" claim --take >/dev/null 2>&1 || true
 fi
-if [ -n "\${STEAL_AFTER_START_WORKER:-}" ] && [ -e "\$STEAL_AFTER_START_WORKER" ] && [ "\$1" = api ] &&
+if [ -n "\${STEAL_AFTER_START_WORKER:-}" ] && [ -e "\$STEAL_AFTER_START_WORKER" ] &&
+   [ "\$1" = api ] && [ "\$4" = "repos/example/project/commits/$pbase" ] &&
    [ -f "$ISSUE_WAVE_STATE/workers/\${STEAL_WORKER_NAME}/meta" ]; then
   rm -f "\$STEAL_AFTER_START_WORKER"
   FLEET_COORDINATOR=other-session "$FW" claim --take >/dev/null 2>&1 || true
@@ -7474,6 +7475,7 @@ expect "lease lost after a worker started stops the driver without releasing its
   env PATH="$K/bin-lease:$K/bin:$PATH" STEAL_AFTER_START_WORKER="$K/steal-poststart" STEAL_WORKER_NAME="wk-92" \
   REVIEW_STDIN="$K/review-stdin" SHIM_GH_PR_VIEW="$K/pr-view.json" FLEET_BOXES="testbox other" "$FW" wave drive "$K/wave.json" --once
 [ ! -e "$K/steal-poststart" ] && [ -f "$ISSUE_WAVE_STATE/workers/wk-92/meta" ] &&
+  jq -e '.done[-1] == "launched testbox/wk-92"' "$K/prep/t92.json" >/dev/null 2>&1 &&
   [ "$(jq -rs '[.[] | select(.task == "t92" and .turn == -1)] | last | "\(.status) \(.holds // "none")"' "$K/logs/drive.jsonl")" = "launching testbox" ] &&
   ok "...the worker started and the ledger keeps holding testbox" || ko "post-start state: $(grep '"t92"' "$K/logs/drive.jsonl")"
 setup_step "could not reclaim coordinator lease after post-start loss (setup)" "$FW" claim --take
