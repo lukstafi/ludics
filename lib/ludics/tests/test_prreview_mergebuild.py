@@ -747,6 +747,24 @@ class Build(Repo):
             rc, out = self.build(head, "true")
         self.assert_deadline_overrun(rc, out)
 
+    def test_a_base_alone_status_at_the_slot_build_deadline_is_an_overrun(self) -> None:
+        head, _ = self.sides("keep", "seam() { :; }")
+        # The candidate differs from its first parent. Only the base-alone tree reaches status 0.
+        command = "git diff --quiet HEAD^1 HEAD"
+        runner = self.slot_script('"$@" && exit 124')
+        with mock.patch.object(mergebuild, "_slot_runner", return_value=runner):
+            rc, out = self.build(head, command, override="check whether the base shares the failure")
+        with self.subTest(check="verdict"):
+            self.assertEqual(rc, 4, out)
+            self.assertIn("FAILED (exit 1)", out)
+            self.assertIn("the build of main alone", out)
+            self.assertIn("did not finish within", out)
+        with self.subTest(check="receipts"):
+            path = Path(self.dir) / "state/merge-builds/owner--repo.jsonl"
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual((Path(rows[-1]["log_dir"]) / "base.status").read_text().strip(), "0")
+            self.assertEqual([row["outcome"] for row in rows], ["failed", "overran"])
+
     def test_a_build_that_exits_124_within_its_bound_reports_its_status(self) -> None:
         head, _ = self.sides("keep", "seam() { :; }")
         runner = self.slot_script('exec "$@"')

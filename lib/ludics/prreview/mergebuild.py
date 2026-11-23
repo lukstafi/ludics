@@ -1754,7 +1754,8 @@ def _say_progress(label: str, took: int, bound: int, log: str) -> None:
 
 
 def _no_verdict(label: str, stop: str, config: BuildConfig, ran: _Ran, what: str) -> NoReturn:
-    """A run with no status of its own: what the wrapper said, then exit 4 (past the bound) or 3."""
+    """A run with no verdict: show what the wrapper said, then exit 4 for a deadline
+    (THE BUILD DEADLINE) or 3 for another wrapper failure."""
     done = ran.done
     for line in (done.stdout + done.stderr).splitlines():
         cli.say(f"  | {line}")

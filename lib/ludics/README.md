@@ -645,8 +645,9 @@ Agent notes (wave-20261123-ludics, t1291; refs #1291). Merge builds reserve oute
 the supervisor or slot deadline. The inner wrapper keeps an in-time exit 124 in the status
 file and returns 1. A deadline on a started command yields exit 4 and an `overran` JSONL
 receipt even if the retained status contains 0. When the status is present, its timestamp
-still marks the end of the command's duration. Both deadline fixtures report a passed verdict
-and receipt on launch base `7cea8c06`.
+still marks the end of the command's duration. On launch base `7cea8c06`, both candidate fixtures
+report a pass and the base-alone fixture reports a successful comparison build. All three receipts
+say `passed` for the timed-out attempt on that base.
 
 ## Checking
 
