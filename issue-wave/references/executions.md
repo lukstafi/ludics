@@ -1196,15 +1196,19 @@ the removal discards it. A measurement
 there, and a one-off leg on a box the plan names no iteration for, still go through a request.
 
 The removal is `fleet-worker.sh farside-close <wave> [--task <task>]... [--regenerable <dir>]...
-[--remote <name>] [--dry-run]`, with the lease (a dry run needs none). It reads the board's `farside`
+[--remote <name>] [--dry-run]`, with the lease (a dry run needs none). For a task whose PR `board
+close` verifies merged, `board close` runs `farside-close <wave> --task <task>` right after closing
+the row (any refusal becomes a `NOTE`, never failing the close); close-out's `farside-close <wave>`
+sweeps whatever stayed. It reads the board's `farside`
 words and nothing else, and removes a worktree only when its row's state is a done word, no
 outstanding reservation refers to it, no leg holds its lock, the tree is clean, no ignored path
-is left but what `--regenerable` names, and HEAD is on a branch of the remote, asked afresh. Which
-directories are regenerable is the project's to say, in its AGENTS.md. A `--regenerable` value is a
+is left but what the project's `.github/fleet-regenerable` (read from `refs/remotes/<remote>/HEAD`,
+never from the worktree) or `--regenerable` names, and HEAD is proved by a concluded observation or
+on a branch of the remote, asked afresh. A regenerable value is a
 directory path inside the worktree (`_build`, `test/config/log_files`) or `**/<path>`, that path at
 any depth (`**/log_files`, quoted against the shell), and it matches only a directory git reports
 as wholly ignored. A worktree that fails only that
-last gate loses its `--regenerable` directories and stays, `TRIMMED`; any other failure is `KEPT`, its
+last gate loses its regenerable directories and stays, `TRIMMED`; any other failure is `KEPT`, its
 reason on its line, for you to act on. It prints one line per word, re-runs safely (what went reads
 `GONE`), writes neither board nor registry, and exits 0 when nothing stayed, 3 when something did, 4
 when a box did not answer: wake that box and run it again. The gates, their boundary and the

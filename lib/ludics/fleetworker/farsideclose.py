@@ -38,22 +38,42 @@ THE GATES, in order; the first that fails keeps the worktree, and says why.
     (assume-unchanged, skip-worktree: refused outright, where that helper probes a copy of the index,
     since a leg's worktree carries neither); no private ref (``refs/worktree/``, ``refs/bisect/``,
     ``refs/rewritten/``).
-  - No ignored data but what ``--regenerable`` names. Ignored files are the class a plain status
+  - No ignored data but what ``--regenerable`` or the repository's ``.github/fleet-regenerable``
+    names. Ignored files are the class a plain status
     does not show, and a removal takes them with the tree. ``--regenerable`` is repeatable, has no
-    default, and is the project's to say (OCANNL's AGENTS.md names its directories). It matches only
+    default, and adds to any entries in ``.github/fleet-regenerable``. Either source matches only
     the entries git's own status reports as WHOLLY ignored directories (one ``!! <path>/`` entry, so
     nothing tracked or untracked is in it, and a symlink, listed without the ``/``, never matches);
     it never walks the tree. A value is one of two shapes, a fail-closed allowlist (ludics#1049):
     ``<path>``, a relative directory path matching that entry exactly (``_build``,
     ``test/config/log_files``), or ``**/<path>``, the same at any depth, the top included
-    (``**/log_files``). Each component is a plain name (letters, digits, ``.``, ``_``, ``-``, no
-    leading ``-``, not ``.``, ``..`` or ``.git``); no other glob, no absolute path, no empty component,
-    so no value escapes the worktree and none matches everything. Any other ignored path keeps the
-    worktree, and is named. post-merge-cleanup.sh's ``--regenerable`` takes the first shape with one
-    component only: it resolves the name on the filesystem and removes it before its gates, where a
-    pattern would need this status-based match first. A list the project keeps in the tree being
-    judged (its ``.github/fleet-leg``) is deliberately not read: the worktree would vouch for the
-    removal of its own data.
+    (``**/log_files``). Each component is a plain ASCII name (letters, digits, ``.``, ``_``, ``-``,
+    no leading ``-``, not ``.``, ``..`` or ``.git``); no other glob, no absolute path, no empty
+    component, so no value escapes the worktree and none matches everything. Any other ignored path
+    keeps the worktree, and is named. post-merge-cleanup.sh's ``--regenerable`` takes the first
+    shape with one component only: it resolves the name on the filesystem and removes it before its
+    gates, where a pattern would need this status-based match first.
+  - THE PROJECT FILE (``.github/fleet-regenerable``, ludics#1310): what it reads and what it
+    deliberately does not, a fail-closed allowlist. On the box, it resolves the default branch name
+    from ``refs/remotes/<remote>/HEAD`` (which must be a symbolic ref pointing under
+    ``refs/remotes/<remote>/``), fetches ONLY ``+refs/heads/<branch>`` from ``<remote>`` into a
+    private ref ``refs/fleet-close-policy/<token>`` (bounded by ``FLEET_FETCH_TIMEOUT``, with
+    ``--refmap=`` so no ref of the served checkout moves, deleted on exit), resolves that exact
+    ref with ``show-ref --verify --hash`` and verifies it is a commit, and reads ONLY its blob at
+    ``.github/fleet-regenerable`` with ``GIT_NO_REPLACE_OBJECTS=1`` and ``GIT_NO_LAZY_FETCH=1``.
+    It deliberately does NOT read the worktree's working tree, index or ``HEAD``, a stale local
+    tracking ref when the remote cannot be asked (a merged PR that revokes a directory must never
+    be undercut by a pre-merge local ref), any local branch (``refs/heads/*``), any other
+    remote's ref, any ``refs/replace/*`` object replacement, or a symbolic ref pointing outside
+    ``refs/remotes/<remote>/``. If ``refs/remotes/<remote>/HEAD`` is absent or points outside
+    ``refs/remotes/<remote>/``, if the fetch fails (freshness unverified), or if the fetched commit
+    has no ``.github/fleet-regenerable``, zero project entries are added and ``--regenerable``
+    alone applies. When present, the entry must be a regular file (git mode ``100644`` or
+    ``100755``, never a symlink, tree or submodule), hold no NUL byte and no CR (``\r``), and every
+    line after stripping leading/trailing ASCII spaces and tabs must be blank, start with ``#``, or
+    be one valid ``--regenerable`` value (no inline ``#`` comment, no extra words). Any read error
+    (including a missing object in a partial clone), wrong mode, NUL/CR byte or line outside this
+    grammar returns ``KEPT`` naming the file, ref and reason, removing and trimming nothing.
   - HEAD exactly matches a concluded record's observed_sha for this wave and row's nonempty
     worker, execution host and exact checkout (trailing slash ignored), or is on a remote branch.
     Only full lowercase object IDs qualify. Requested/resolved revisions express intent, not an
@@ -117,7 +137,11 @@ from ludics.fleetworker.transport import err, fleet_name, is_local, prelude, run
 from ludics.postmergecleanup.cleanup import ACTIVE_OPERATIONS
 
 USAGE = "farside-close <wave> [--task <task>]... [--regenerable <dir>]... [--remote <name>] [--dry-run]"
-REGENERABLE = re.compile(r"\.?[A-Za-z0-9_][A-Za-z0-9._-]*")  # one component: no separator, no `..`, no option
+# Single source of truth for the ASCII regenerable component character classes (shared by Python's
+# REGENERABLE regex and CLOSE's bash valid_regen so the CLI and .github/fleet-regenerable stay in step).
+_REGEN_HEAD = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
+_REGEN_TAIL = _REGEN_HEAD + ".-"
+REGENERABLE = re.compile(rf"\.?[{_REGEN_HEAD}][{_REGEN_TAIL}]*")  # one component: no separator, no `..`, no option
 ANY_DEPTH = "**/"  # a --regenerable prefix: the directory path at any depth (the header)
 CLEARED = ("REMOVED", "GONE", "WOULD-REMOVE")  # the verdicts that leave nothing to look at
 FAR_VERDICTS = ("REMOVED", "TRIMMED", "KEPT", "GONE", "WOULD-REMOVE", "WOULD-TRIM")
@@ -126,14 +150,44 @@ FAR_VERDICTS = ("REMOVED", "TRIMMED", "KEPT", "GONE", "WOULD-REMOVE", "WOULD-TRI
 # in seconds, dry (0|1), this run's token, the space-separated allowed observed SHAs, then the --regenerable values (``regenerable``'s
 # shapes: their components hold no glob character, so each is matched literally). Its stdout is one line,
 # `<verdict><TAB><why>`, whatever it found; every other word goes to stderr.
-CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5" observed="$6"; shift 6
+VALID_REGEN = (
+    "valid_regen() {\n"
+    '  local v="$1" p rest part\n'
+    '  case "$v" in\n'
+    "    '**/'*) p=${v:3} ;;\n"
+    '    *) p=$v ;;\n'
+    "  esac\n"
+    '  [ -n "$p" ] || return 1\n'
+    '  case "$p" in /*|*/|*//*) return 1 ;; esac\n'
+    "  rest=$p\n"
+    "  while :; do\n"
+    '    case "$rest" in\n'
+    '      */*) part=${rest%%/*}; rest=${rest#*/} ;;\n'
+    '      *) part=$rest; rest="" ;;\n'
+    "    esac\n"
+    '    case "$part" in\n'
+    "      ''|.|..|.[Gg][Ii][Tt]) return 1 ;;\n"
+    f"      *[!{_REGEN_TAIL}]*) return 1 ;;\n"
+    f"      .[{_REGEN_HEAD}]*) ;;\n"
+    f"      [{_REGEN_HEAD}]*) ;;\n"
+    "      *) return 1 ;;\n"
+    "    esac\n"
+    '    [ -n "$rest" ] || break\n'
+    "  done\n"
+    "  return 0\n"
+    "}\n"
+)
+CLOSE = WORKTREE + f"operations={shlex.quote(' '.join(ACTIVE_OPERATIONS))}\n" + VALID_REGEN + r"""wt=$(expand_tilde "$1") remote="$2" fetch_timeout="$3" dry="$4" token="$5" observed="$6"; shift 6
 # No trailing `/`: `[ -L "$wt/" ]` follows the link and reads the directory behind it.
 wt=${wt%"${wt##*[!/]}"}
-ns="refs/fleet-close/$token"; cdir=""
+ns="refs/fleet-close/$token"; pref="refs/fleet-close-policy/$token"; cdir=""
 verdict() {
-  [ -z "$cdir" ] || git --git-dir="$cdir" for-each-ref --format='%(refname)' "$ns/" 2>/dev/null | while IFS= read -r r; do
-    git --git-dir="$cdir" update-ref -d "$r" >/dev/null 2>&1
-  done
+  if [ -n "$cdir" ]; then
+    git --git-dir="$cdir" update-ref -d "$pref" >/dev/null 2>&1
+    git --git-dir="$cdir" for-each-ref --format='%(refname)' "$ns/" 2>/dev/null | while IFS= read -r r; do
+      git --git-dir="$cdir" update-ref -d "$r" >/dev/null 2>&1
+    done
+  fi
   printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ')"
   exit 0
 }
@@ -165,6 +219,46 @@ hidden=$(printf '%s\n' "$flagged" | grep -c '^[a-zS] ')
 [ "$hidden" -eq 0 ] || kept "$hidden path(s) hidden from status by an index flag (assume-unchanged or skip-worktree)"
 private=$(git -C "$wt" for-each-ref --count=1 --format='%(refname)' refs/worktree/ refs/bisect/ refs/rewritten/ 2>/dev/null) || kept "cannot read its refs"
 [ -z "$private" ] || kept "it holds a private ref: $private"
+# THE PROJECT FILE (.github/fleet-regenerable, ludics#1310): fetch the remote's default branch
+# into a private ref so a revoked entry on the remote is never honored from a stale local ref, and
+# read with replacement objects and lazy partial-clone fetches disabled (the header).
+allow=("$@")
+rhead=$(git -C "$wt" symbolic-ref -q "refs/remotes/$remote/HEAD" 2>/dev/null) || rhead=""
+case "$rhead" in
+  "refs/remotes/$remote/"?*)
+    rbranch=${rhead#"refs/remotes/$remote/"}
+    ( exec 9>&-; bounded "$fetch_timeout" env GIT_TERMINAL_PROMPT=0 git -C "$wt" fetch -q --no-tags --refmap= "$remote" "+refs/heads/$rbranch:$pref" >&2 ); drc=$?
+    if [ "$drc" -eq 0 ]; then
+      rsha=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" show-ref --verify --hash "$pref" 2>/dev/null) || rsha=""
+      [ -n "$rsha" ] && [ "$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" cat-file -t "$rsha" 2>/dev/null)" = commit ] ||
+        kept "cannot verify $remote/$rbranch commit for .github/fleet-regenerable"
+      entry=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" ls-tree "$rsha" -- .github/fleet-regenerable 2>/dev/null) ||
+        kept "cannot inspect .github/fleet-regenerable at $remote/$rbranch"
+      if [ -n "$entry" ]; then
+        mode=${entry%% *}
+        case "$mode" in
+          100644|100755) ;;
+          *) kept ".github/fleet-regenerable at $remote/$rbranch is not a regular file (mode $mode)" ;;
+        esac
+        fsize=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" cat-file -s "$rsha:.github/fleet-regenerable" 2>/dev/null) ||
+          kept "cannot read .github/fleet-regenerable at $remote/$rbranch"
+        fbytes=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" cat-file blob "$rsha:.github/fleet-regenerable" 2>/dev/null) ||
+          kept "cannot read .github/fleet-regenerable at $remote/$rbranch"
+        ncount=$(GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 git -C "$wt" cat-file blob "$rsha:.github/fleet-regenerable" 2>/dev/null | LC_ALL=C tr -d '\000' | wc -c | tr -d ' ')
+        [ "$ncount" = "$fsize" ] || kept ".github/fleet-regenerable at $remote/$rbranch holds NUL bytes"
+        sp=" $(printf '\t')" cr=$(printf '\r') ln=0
+        while IFS= read -r raw || [ -n "$raw" ]; do
+          ln=$((ln + 1))
+          case "$raw" in *"$cr"*) kept ".github/fleet-regenerable at $remote/$rbranch line $ln holds a CR byte" ;; esac
+          line=${raw#"${raw%%[!$sp]*}"}
+          line=${line%"${line##*[!$sp]}"}
+          case "$line" in ''|'#'*) continue ;; esac
+          valid_regen "$line" || kept ".github/fleet-regenerable at $remote/$rbranch line $ln is not a regenerable directory path: $(printf '%q' "$line")"
+          allow+=("$line")
+        done <<< "$fbytes"
+      fi
+    fi ;;
+esac
 # The ignored paths, NUL-delimited, no quoting by git. A fully ignored directory is one entry, its
 # name ending in `/` (traditional mode, untracked files not listed one by one); a status that fails
 # must not read as none, so its own exit closes the listing, in a record no status entry can be.
@@ -177,7 +271,7 @@ while IFS= read -r -d '' e; do
   esac
   p=${e#\!\! }; hit=""
   # A directory entry only (its `/`): exactly the path, or, for `**/<path>`, the path at any depth.
-  for r in "$@"; do
+  for r in ${allow[@]+"${allow[@]}"}; do
     case "$r" in
       '**/'*) s=${r:3}; case "$p" in "$s/" | */"$s/") hit=1 ;; esac ;;
       *) [ "$p" != "$r/" ] || hit=1 ;;

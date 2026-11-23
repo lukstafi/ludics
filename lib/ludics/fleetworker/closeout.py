@@ -30,6 +30,17 @@ WHAT IT DOES, in this order, each read before any write:
 6. With a PR, ``board set``: ``state`` ``merged #<n> at <sha>``, ``merge`` the full SHA, ``pr``, and ``agent`` when
    given. It comes last, so a row reads done only once every step before it landed. A row already
    holding those values is not written.
+7. With a verified merged PR and a non-empty ``farside`` key on the row (ludics#1310),
+   ``farside-close <wave> --task <task>`` runs after ``board set``, applying every gate of
+   ``farside-close`` (clean tree, no outstanding reservation, no not-done row naming the path,
+   only ignored directories allowed by the project's ``.github/fleet-regenerable`` on
+   ``origin/<main>``, HEAD proved). For a CLI row (``boardstore.cli_row``: ``transport=cli`` or
+   absent), ``status <agent_host> <worker>`` is checked first; an ``IDLE`` stream worker is closed
+   with ``fleet-worker.sh close <agent_host> <worker>`` and re-read, and removal proceeds only
+   once ``status`` reports ``EXITED(<n>)`` (a live running/orphaned worker or one whose ``close``
+   refuses keeps its worktrees). Any worktree kept, trimmed, unreachable, or refused is reported
+   as a ``NOTE`` on the close line and never fails the close (exit stays 0; close-out's
+   ``farside-close`` or a re-run retries it). ``--no-pr`` and unmerged closes remove nothing.
 
 THE VERDICT. ``conclude --standing-handback`` takes no default because its verdict is the hand-back's
 word. Here ``pass`` is what this verb establishes: a standing record is concluded as the worker's
@@ -59,14 +70,11 @@ conclude that record by hand, with its evidence, and re-run), and a PR number ch
 each write's own lease lock: the lease has one coordinator.
 
 WHAT IT DOES NOT DO. It does not verify the hand-back (the coordinator reads that, and names it in
-``--evidence``), read the worktree's cleanliness, remove anything, or close the issue. It concludes
-no record but a standing one: any other request of this worker still open is named in the line, for
-the coordinator to resolve. It removes no far-side worktree: ``farside-close`` is that step, run
-after this one since it waits for the row's done word and its concluded records, and left to the
-coordinator because a removal is another kind of step (the project's ``--regenerable``, a box that
-may be asleep, ``ls`` first, a KEPT to act on), which must not turn a finished close into a failed
-one. A row whose ``farside`` key names a worktree gets a ``NOTE`` naming that command. A task without
-a merged PR or matching run evidence keeps the steps by hand.
+``--evidence``), close the issue, or remove worktrees on ``--no-pr`` or unmerged closes (a
+``--no-pr`` row whose ``farside`` key names a worktree gets a ``NOTE`` naming ``farside-close``).
+It concludes no record but a standing one: any other request of this worker still open is named in
+the line, for the coordinator to resolve, and keeps its worktrees through ``farside-close``'s
+reservation gate. A task without a merged PR or matching run evidence keeps the steps by hand.
 
 Exit: 0 closed (or already closed); 1 refused, or a write refused -- the line says what landed, and a
 re-run resumes; 2 usage; 4 the anchor or GitHub did not answer. The steps run through this
@@ -79,17 +87,20 @@ import json
 import os
 import re
 import shlex
+import subprocess
+import sys
 import tempfile
 from typing import Any, cast
 
 from ludics import cli
+from ludics.fleetworker.boardstore import cli_row
 from ludics.fleetworker.config import Config
 from ludics.fleetworker import execution as ex
 from ludics.fleetworker.execution import field, listing, record_of, recorded_checkout, records_of
 from ludics.fleetworker.identity import die
 from ludics.fleetworker.lease import mutation_failure_status
 from ludics.fleetworker.takeover import KEYS, board_document, gh_json, row_of
-from ludics.fleetworker.transport import run, substitution
+from ludics.fleetworker.transport import substitution
 
 USAGE = "board close <wave> <task> [--pr <n> | --no-pr [--run <absolute-dir>]...] [--agent <id>] [--evidence <text>]"
 OID = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
@@ -206,10 +217,29 @@ def to_conclude(wave: str, task: str, records: list[dict[str, Any]], ids: list[s
     return todo, [str(r.get("request_id")) for r in left]
 
 
+def stepped_both(cfg: Config, args: list[str]) -> tuple[int, str, str]:
+    """This fleet-worker.sh with ``args``, capturing stdout and stderr while forwarding stderr."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    argv = cfg.shim_command(*args)
+    try:
+        done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        msg = f"{argv[0]}: {exc.strerror}"
+        sys.stderr.write(msg + "\n")
+        sys.stderr.flush()
+        return 127, "", msg
+    err_text = done.stderr.decode("utf-8", "surrogateescape")
+    if err_text:
+        sys.stderr.write(err_text)
+        sys.stderr.flush()
+    return done.returncode, substitution(done.stdout.decode("utf-8", "surrogateescape")), substitution(err_text)
+
+
 def stepped(cfg: Config, args: list[str]) -> tuple[int, str]:
-    """This fleet-worker.sh with ``args``: its status and its output, captured."""
-    done = run(cfg.shim_command(*args), capture=True)
-    return done.rc, substitution(done.out)
+    """This fleet-worker.sh with ``args``: its status and its stdout, captured."""
+    rc, out, _ = stepped_both(cfg, args)
+    return rc, out
 
 
 def step(cfg: Config, args: list[str]) -> tuple[int, str]:
@@ -327,6 +357,63 @@ def no_pr_payloads(cfg: Config, wave: str, task: str, records: list[dict[str, An
     return matched
 
 
+EXITED = re.compile(r"EXITED\([0-9]+\)")
+
+
+def _last_line(out: str, err_out: str, fallback: str) -> str:
+    lines = [line for line in out.splitlines() if line.strip()]
+    if lines:
+        return lines[-1]
+    err_lines = [line for line in err_out.splitlines() if line.strip()]
+    return err_lines[-1] if err_lines else fallback
+
+
+def close_worktrees(cfg: Config, wave: str, task: str, fields: dict[str, str]) -> str:
+    """Remove a merged task's ``farside`` worktrees through ``farside-close --task`` (#1310).
+    For a CLI row (``boardstore.cli_row``: ``transport=cli`` or absent), checks ``status
+    <agent_host> <worker>``, closes an ``IDLE`` stream worker first and re-reads ``status``, and
+    proceeds only once ``status`` reports ``EXITED(<n>)``.
+    Returns the suffix for ``BOARD CLOSE``: ``; worktrees: <counts>`` when every word cleared,
+    or ``; NOTE ...`` when any worktree stayed or the call refused. Never fails the close."""
+    cmd = shlex.join(["farside-close", wave, "--task", task])
+    if cli_row(fields):
+        host, worker = fields.get("agent_host", ""), fields.get("worker", "")
+        if not host or not worker:
+            return f"; NOTE CLI worker identity missing (agent_host/worker); confirm it exited, then run {cmd}"
+        src, sout, serr = stepped_both(cfg, ["status", host, worker])
+        slines = [line for line in sout.splitlines() if line.strip()]
+        first = slines[0].split(None, 1)[0] if slines else ""
+        close_note = ""
+        if src == 0 and first == "IDLE":
+            crc, cout, cerr = stepped_both(cfg, ["close", host, worker])
+            if crc != 0:
+                close_note = f"; close: {_last_line(cout, cerr, f'exit {crc}')}"
+            src, sout, serr = stepped_both(cfg, ["status", host, worker])
+            slines = [line for line in sout.splitlines() if line.strip()]
+            first = slines[0].split(None, 1)[0] if slines else ""
+        if src != 0 or not EXITED.fullmatch(first):
+            why = first if src == 0 and first else _last_line(sout, serr, f"status exit {src}")
+            return (f"; NOTE CLI worker {shlex.quote(worker)} on {shlex.quote(host)} is not exited ({why}{close_note});"
+                    f" close it first, then run {cmd}")
+    rc, out, err_out = stepped_both(cfg, ["farside-close", wave, "--task", task])
+    lines = [line for line in out.splitlines() if line.strip()]
+    prefix = f"FARSIDE CLOSE {wave}: "
+    counts = lines[-1].removeprefix(prefix) if lines and lines[-1].startswith(prefix) else ""
+    if rc == 0:
+        return f"; worktrees: {counts}" if counts else "; worktrees: cleared"
+    stayed = [
+        line for line in lines
+        if line.startswith("FARSIDE ")
+        and not line.startswith("FARSIDE CLOSE ")
+        and line.split(None, 2)[1:2] not in (["REMOVED"], ["GONE"], ["WOULD-REMOVE"])
+    ]
+    if stayed:
+        head = f" ({counts})" if counts else f" (exit {rc})"
+        return f"; NOTE {cmd}{head}: {'; '.join(stayed)}"
+    last = _last_line(out, err_out, "")
+    return f"; NOTE {cmd} (exit {rc}" + (f": {last})" if last else ")")
+
+
 def cmd_close(cfg: Config, args: list[str]) -> int:
     wave, task, flags = parsed(args)
     doc = board_document(cfg, wave)
@@ -398,7 +485,11 @@ def cmd_close(cfg: Config, args: list[str]) -> int:
             if wrote else "already closed")
     note = f"; NOTE still open: {' '.join(others)}" if others else ""
     far = [word for word in fields.get("farside", "").split() if word != "none"]
-    note += f"; NOTE {len(far)} far-side worktree(s): farside-close {wave} --task {task}" if far else ""
+    if far:
+        if no_pr:
+            note += f"; NOTE {len(far)} far-side worktree(s): {shlex.join(['farside-close', wave, '--task', task])}"
+        else:
+            note += close_worktrees(cfg, wave, task, fields)
     summary = outcome if no_pr else f"merged {repo}#{pr} at {sha[:12]}"
     cli.say(f"BOARD CLOSE {wave}: {json.dumps(task, ensure_ascii=False)} {summary}; {tail}{note}")
     return 0

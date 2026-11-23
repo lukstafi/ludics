@@ -338,8 +338,9 @@ before and after. Nothing re-applies those, and a feature update can reset them,
 
 ## Tests
 
-For a ludics wave, ignored Python caches are regenerable: pass
-`farside-close <wave> --regenerable '**/__pycache__'` at coordinator close-out.
+For a ludics wave, ignored Python caches are listed in `.github/fleet-regenerable`
+(`**/__pycache__`), which `farside-close` reads from `origin/main` automatically (additional
+directories may still be passed with `--regenerable`).
 
 **Before every push, run `scripts/preflight.sh` from the checkout.** It is CI's `lint` job — the
 same command the workflow runs, not a reconstruction of it: shell syntax, the two-way mode rule,
