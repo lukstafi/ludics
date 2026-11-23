@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from typing import Any
 
@@ -306,6 +307,44 @@ class UnstickTally(unittest.TestCase):
             rc, counted = self.unstick(failed, "--message", self.msg)
             self.assertEqual(rc, failed)
             counted.assert_not_called()
+
+
+class FreshnessCache(unittest.TestCase):
+    def setUp(self) -> None:
+        tree = tempfile.TemporaryDirectory()
+        self.addCleanup(tree.cleanup)
+        self.repo = Path(tree.name)
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        self.cache = self.repo / "[pkg]" / "__pycache__"
+        self.cache.mkdir(parents=True)
+        self.bytecode = self.cache / "cached.pyc"
+        self.bytecode.touch()
+
+    def remove(self) -> subprocess.CompletedProcess[str]:
+        relative = f"{self.cache.relative_to(self.repo)}/"
+        return subprocess.run(
+            ["/bin/bash", "-uc", f'{farside.FRESHNESS}\nrepo="$1"; remove_ignored_bytecode_cache "$2"',
+             "cache-test", str(self.repo), relative],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_cache_contents_are_removed_under_a_literal_path(self) -> None:
+        (self.cache / ".hidden.pyc").touch()
+        result = self.remove()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.cache.exists())
+
+    def test_an_indexed_file_at_the_literal_path_disqualifies_the_cache(self) -> None:
+        subprocess.run(["git", "--literal-pathspecs", "add", "-f", "--", str(self.bytecode)], cwd=self.repo, check=True)
+        self.assertEqual(self.remove().returncode, 1)
+        self.assertTrue(self.bytecode.is_file())
+
+    def test_a_nested_directory_even_with_a_pyc_name_disqualifies_the_cache(self) -> None:
+        nested = self.cache / "subdir.pyc"
+        nested.mkdir()
+        self.assertEqual(self.remove().returncode, 1)
+        self.assertTrue(self.bytecode.is_file())
+        self.assertTrue(nested.is_dir())
 
 
 class Readings(unittest.TestCase):

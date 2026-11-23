@@ -1715,22 +1715,17 @@ git -C "$repo" config --unset status.relativePaths
 printf '*.tmp\n' > "$TMP/excludes"; git -C "$repo" config core.excludesFile "$TMP/excludes"; touch "$repo/ship-pr/x.tmp"
 expect "an ignored file under the served tree still refuses" 1 "local change(s) in the served tree" -- "$FW" preflight testbox --no-probe
 rm "$repo/ship-pr/x.tmp" "$repo/ship-pr/scripts.sh"
-# Python bytecode caches under lib/ (ludics-lite#585): still refused, but with the directories to
-# remove named, shell-quoted (this checkout's path has a space) -- and only while every served
-# entry is one: a single other entry keeps the plain refusal.
+# Launch preflight uses the same cache cleanup as refresh.
 printf '__pycache__/\n' > "$TMP/excludes"
-mkdir -p "$repo/lib/ludics/__pycache__" "$repo/lib/ludics/fleetworker/__pycache__"
-touch "$repo/lib/ludics/__pycache__/cli.cpython-312.pyc" "$repo/lib/ludics/fleetworker/__pycache__/farside.cpython-312.pyc" "$repo/lib/ludics/fleetworker/__pycache__/slot.cpython-312.pyc"
-expect "bytecode caches under lib/ refuse, naming the repair" 1 "PREFLIGHT REFUSED testbox: 2 local change(s) in the served tree, every one an ignored Python bytecode cache under lib/" -- "$FW" preflight testbox --no-probe
-want_repair="-- repair, on testbox: rm -rf $(printf '%q' "$repo/lib/ludics/__pycache__") $(printf '%q' "$repo/lib/ludics/fleetworker/__pycache__")"
-grep -qF -- "$want_repair" <<<"$out" && ok "...each cache directory once, shell-quoted" || ko "the repair is not '$want_repair' -- $out"
-git -C "$repo" update-index --skip-worktree ship-pr/SKILL.md
-expect "...but an index-hidden file beside them keeps the plain refusal" 1 "PREFLIGHT REFUSED testbox: 1 index-hidden (skip-worktree/assume-unchanged) file(s) in the served tree; 2 local change(s) in the served tree$" -- "$FW" preflight testbox --no-probe
-git -C "$repo" update-index --no-skip-worktree ship-pr/SKILL.md
-touch "$repo/ship-pr/x.tmp"; printf '__pycache__/\n*.tmp\n' > "$TMP/excludes"
-expect "...as does one other ignored file beside them" 1 "PREFLIGHT REFUSED testbox: 3 local change(s) in the served tree$" -- "$FW" preflight testbox --no-probe
-grep -qE 'bytecode|rm -rf' <<<"$out" && ko "a mixed served tree was offered the bytecode repair -- $out" || ok "...with no repair offered for it"
-rm -rf "${repo:?}/lib" "$repo/ship-pr/x.tmp"; git -C "$repo" config --unset core.excludesFile
+cache="$repo/lib/ludics/__pycache__"
+mkdir -p "$cache"
+touch "$cache/cli.cpython-312.pyc"
+expect "preflight removes an ignored bytecode cache" 0 "^PREFLIGHT OK testbox" -- "$FW" preflight testbox --no-probe
+grep -qxF "REMOVED $(printf '%q' "$cache") (ignored bytecode cache)" <<<"$out" && [ ! -e "$cache" ] \
+  && ok "...and logs the removed cache" || ko "preflight did not report a removal: $out"
+if [ -d "$cache" ]; then rm "$cache/cli.cpython-312.pyc"; rmdir "$cache"; fi
+rmdir "$repo/lib/ludics" "$repo/lib"
+git -C "$repo" config --unset core.excludesFile
 touch "$repo/ship-pr/a b.sh"
 expect "an untracked served file whose path git would quote still refuses" 1 "1 local change(s) in the served tree" -- "$FW" preflight testbox --no-probe
 rm "$repo/ship-pr/a b.sh"
@@ -5639,12 +5634,43 @@ rreq() { # <id> [execution host] -> a reservation payload, on `other` unless nam
 FWR=(env FLEET_BOXES="testbox other" SHIM_SSH_LOCAL=other "$FW")
 cur=$(git -C "$repo" rev-parse HEAD)
 expect "a current checkout reports already current" 0 "^REFRESH OK testbox skills=${cur:0:9} (already current)$" -- "$FW" refresh testbox
+printf '__pycache__\n*.tmp\n' > "$TMP/refresh-excludes"
+git -C "$repo" config core.excludesFile "$TMP/refresh-excludes"
+cache="$repo/__pycache__"; nested_cache="$repo/ship-pr/__pycache__"
+mkdir "$cache" "$nested_cache"
+touch "$cache/one.pyc" "$cache/two.pyc" "$nested_cache/three.pyc"
+expect "refresh removes ignored directories of regular .pyc files" 0 "^REFRESH OK testbox" -- "$FW" refresh testbox
+for removed_cache in "$cache" "$nested_cache"; do
+  removed_line="REMOVED $(printf '%q' "$removed_cache") (ignored bytecode cache)"
+  [ ! -e "$removed_cache" ] && [ "$(grep -cxF "$removed_line" <<<"$out")" -eq 1 ] \
+    && ok "...and reports the shell-quoted directory once" || ko "missing removal or notice for $removed_line: $out"
+done
+# The base control also reaches the refusal cases after its cache assertions fail.
+if [ -d "$cache" ]; then rm "$cache/one.pyc" "$cache/two.pyc"; rmdir "$cache"; fi
+if [ -d "$nested_cache" ]; then rm "$nested_cache/three.pyc"; rmdir "$nested_cache"; fi
+mkdir "$cache"
+touch "$cache/one.pyc" "$cache/.keep"
+expect "refresh refuses a cache containing a non-bytecode file" 1 "1 local change(s) in the served tree" -- "$FW" refresh testbox
+[ -f "$cache/one.pyc" ] && [ -f "$cache/.keep" ] && ok "...leaving the full directory" || ko "refresh removed part of the mixed cache"
+rm "$cache/.keep"
+ln -s ../ship-pr/SKILL.md "$cache/link.pyc"
+expect "refresh refuses a symlink inside a cache even with a .pyc name" 1 "1 local change(s) in the served tree" -- "$FW" refresh testbox
+[ -f "$cache/one.pyc" ] && [ -L "$cache/link.pyc" ] && ok "...leaving the cache with the symlink" || ko "refresh removed part of the symlink cache"
+rm "$cache/one.pyc" "$cache/link.pyc"; rmdir "$cache"
+ln -s ship-pr "$cache"
+expect "refresh refuses an ignored symlink named __pycache__" 1 "1 local change(s) in the served tree" -- "$FW" refresh testbox
+[ -L "$cache" ] && ok "...leaving the directory symlink" || ko "refresh removed the cache symlink"
+rm "$cache"
+touch "$repo/note.tmp"
+expect "refresh still refuses an ignored file outside a bytecode cache" 1 "1 local change(s) in the served tree" -- "$FW" refresh testbox
+[ -f "$repo/note.tmp" ] && ok "...leaving the ignored file" || ko "refresh removed the ignored file"
+rm "$repo/note.tmp"
 upstream stale-1
 expect "a stale checkout is fast-forwarded, and says from where" 0 "^REFRESH OK testbox skills=[0-9a-f]* (fast-forwarded from ${cur:0:9})$" -- "$FW" refresh testbox
 [ "$(git -C "$repo" rev-parse HEAD)" = "$(git -C "$TMP/refresh-up" rev-parse HEAD)" ] && ok "...to origin/main" || ko "refresh did not bring the checkout to origin/main"
 upstream stale-2; cur=$(git -C "$repo" rev-parse HEAD)
 echo local-fix >> "$repo/issue-wave/SKILL.md"
-expect "a divergent checkout is reported, not refreshed" 1 "^REFRESH FAILED testbox: 1 local change(s) in the served tree -- left as it is, never reset" -- "$FW" refresh testbox
+expect "a divergent checkout is reported, not refreshed" 1 "^REFRESH FAILED testbox: 1 local change(s) in the served tree" -- "$FW" refresh testbox
 [ "$(git -C "$repo" rev-parse HEAD)" = "$cur" ] && grep -q local-fix "$repo/issue-wave/SKILL.md" && ok "...and left exactly as it was: HEAD and the local edit" || ko "a divergent checkout was moved or reset"
 git -C "$repo" checkout -q -- issue-wave/SKILL.md
 expect "a stalling fetch is bounded by FLEET_REFRESH_TIMEOUT and reported" 1 "REFRESH FAILED testbox: git fetch in .* timed out after 2s" -- env SHIM_GIT_HANG_FETCH=1 FLEET_REFRESH_TIMEOUT=2 "$FW" refresh testbox
@@ -5673,9 +5699,14 @@ expect "refresh needs a box" 2 "refresh: which box" -- "$FW" refresh
 # The execution path. The checkout is stale again; a dispatch to `other` refreshes it, on stderr,
 # with the record alone on stdout and the dispatch's own status.
 upstream stale-3; cur=$(git -C "$repo" rev-parse HEAD)
+mkdir "$cache"; touch "$cache/run.pyc"
 "${FWR[@]}" execution run "$(rreq rf-a)" > "$TMP/rf-a.out" 2> "$TMP/rf-a.err"; rc=$?
 [ "$rc" -eq 0 ] && jq -e '.state == "launching"' "$TMP/rf-a.out" >/dev/null && ok "a cross-box execution run dispatches, with only the record on stdout" || ko "cross-box run: rc=$rc $(cat "$TMP/rf-a.out" "$TMP/rf-a.err")"
+grep -qxF "REMOVED $(printf '%q' "$cache") (ignored bytecode cache)" "$TMP/rf-a.err" && [ ! -e "$cache" ] \
+  && ok "...and reports the removed cache on stderr" || ko "cross-box run did not remove the cache: $(cat "$TMP/rf-a.err")"
 grep -q "^REFRESH OK other skills=[0-9a-f]* (fast-forwarded from ${cur:0:9})$" "$TMP/rf-a.err" && ok "...and fast-forwards the execution host's skills checkout, reported on stderr" || ko "cross-box run did not refresh: $(cat "$TMP/rf-a.err")"
+if [ -d "$cache" ]; then rm "$cache/run.pyc"; rmdir "$cache"; fi
+git -C "$repo" config --unset core.excludesFile
 fixture_done rf-a
 expect "a refused dispatch never touches the execution host" 1 "already dispatched" -- "${FWR[@]}" execution run "$(rreq rf-a)"
 grep -q REFRESH <<<"$out" && ko "a refused run refreshed the box: $out" || ok "...(no refresh line)"
@@ -5684,7 +5715,7 @@ expect "a run on the anchor and local box refreshes it too (no launch need have 
 upstream stale-4b; cur=$(git -C "$repo" rev-parse HEAD)
 fixture_done rf-b
 echo local-fix >> "$repo/issue-wave/SKILL.md"
-expect "a divergent execution host is reported and the dispatch still stands" 0 "REFRESH FAILED other: 1 local change(s) in the served tree -- left as it is, never reset" -- "${FWR[@]}" execution run "$(rreq rf-c)"
+expect "a divergent execution host is reported and the dispatch still stands" 0 "REFRESH FAILED other: 1 local change(s) in the served tree" -- "${FWR[@]}" execution run "$(rreq rf-c)"
 [ "$(git -C "$repo" rev-parse HEAD)" = "$cur" ] && grep -q local-fix "$repo/issue-wave/SKILL.md" && ok "...with the checkout left as it was" || ko "a divergent execution host was moved or reset"
 git -C "$repo" checkout -q -- issue-wave/SKILL.md; fixture_done rf-c
 # A dispatch whose record cannot be read says so, rather than skipping the refresh silently. Not a
