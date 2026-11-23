@@ -695,7 +695,12 @@ D2/D3 with D3) once each arm has ten merged tasks in the group: a smaller count 
 description. A reading of the code itself pairs PRs by area before any diff is
 read and takes a blind judge of each family, since a judge of one family prefers its own (the
 2026-11-20 retrospective). When a reading is in, the maintainer sets the default for that group and
-its split ends. Read the comparison's task fields with `fleet-worker.sh status --json`.
+its split ends. Run `fleet-worker.sh wave ab <wave.json>...` for the comparison table,
+per-arm `agent_host` counts, and ten-per-arm status (`--json` prints the joined document,
+`--no-github` skips PR reads); it marks a group ready once at least two complete arms reach ten
+merged tasks (naming any arm still below ten), reads the task fields through `status --json`
+alongside `reviews/*.json` and GitHub PRs, sets reassigned rows apart, and prints missing or
+partial data without guessing.
 `tier` comes from prep's `--tier` or the queue entry, `model` from the profile or native launch,
 `planner` and `planner_effort` from the paired planner's invocation, and `launched_at` from
 the board's first launch stamp. Give every task its tier at prep.

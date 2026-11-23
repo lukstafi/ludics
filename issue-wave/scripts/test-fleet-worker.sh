@@ -7401,6 +7401,9 @@ expect "heartbeat refuses --max-quiet without --until-attention" 2 "--max-quiet 
 expect "heartbeat refuses --sleep 0 with --until-attention" 2 "--until-attention requires a positive --sleep" -- "${FWK[@]}" wave heartbeat "$K/wave.json" --until-attention --sleep 0
 expect "wave unprep refuses a launched task" 1 "^WAVE UNPREP REFUSED t84: .* records a launch" -- "${FWK[@]}" wave unprep "$K/wave.json" t84
 expect "wave unprep of a task with no manifest has nothing to undo" 0 "^WAVE UNPREP t99: nothing recorded to undo" -- "${FWK[@]}" wave unprep "$K/wave.json" t99
+expect "wave ab reads a wave's board through the shim (--no-github)" 0 "READING D2: below ten" -- "${FWK[@]}" wave ab "$K/wave.json" --no-github
+expect "wave ab --json emits a version-1 document" 0 '"version": 1' -- "${FWK[@]}" wave ab "$K/wave.json" --no-github --json
+expect "wave ab refuses missing wave paths" 2 "wave ab: name at least one wave.json file" -- "${FWK[@]}" wave ab
 setup_step "could not restore the project's master (setup)" git -C "$K/pusher" push -q -f origin "$pbase:refs/heads/master"
 setup_step "could not restore the project's origin/master (setup)" git -C "$proj" update-ref refs/remotes/origin/master "$pbase"
 rm -f "$K/queue.json"

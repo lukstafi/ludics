@@ -455,6 +455,10 @@ fleetworker/wave.py fleetworker/wavebrief.py fleetworker/waveprep.py fleetworker
     lib/ludics/tests/test_fleetworker_wave.py
     lib/ludics/tests/test_checkprompts_cli.py
 
+fleetworker/waveab.py
+    issue-wave/scripts/test-fleet-worker.sh "wave kit"
+    lib/ludics/tests/test_fleetworker_waveab.py
+
 peerplan/__main__.py peerplan/plan.py peerplan/transcript.py
     lib/ludics/tests/test_peerplan.py
 

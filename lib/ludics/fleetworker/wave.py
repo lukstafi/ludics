@@ -21,6 +21,7 @@ loop orphaning its run. The kit is those four, project-neutral, so a wave direct
   wave decisions <wave.json>                                                               wavedecide.py
   wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm                         wavereview.py
               [--issue <N> | --source <N>] [--dry-run | --posted <url> | --again]
+  wave ab <wave.json>... [--json] [--no-github]                                            waveab.py
 
 It wraps the mechanisms that exist and re-implements none: ``execution run`` takes the
 reservations, ``board set`` writes the row, ``execution tip-run`` runs and concludes each loop run,
@@ -209,7 +210,8 @@ USAGE = (
     "wave decide <wave.json> <issue> --tier 2|mid-wave|3 --call <line> --body-file <file> --by <model> [--task <task>]"
     " [--posted <url>] | wave decisions <wave.json> | "
     "wave review <wave.json> <task> <pr> <sha> --kind at-open|confirm [--issue <N> | --source <N>]"
-    " [--dry-run | --posted <url> | --again]"
+    " [--dry-run | --posted <url> | --again] | "
+    "wave ab <wave.json>... [--json] [--no-github]"
 )
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
@@ -1157,9 +1159,11 @@ def cmd_heartbeat(cfg: Config, args: list[str]) -> int:
 
 
 def cmd_wave(cfg: Config, args: list[str]) -> int:
-    from ludics.fleetworker import wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
+    from ludics.fleetworker import waveab, wavedecide, wavedrive, wavelaunch, waveloop, waveprep, wavereview, waveunprep
 
     match args[:1]:
+        case ["ab"]:
+            return waveab.cmd_ab(cfg, args[1:])
         case ["render"]:
             return cmd_render(args[1:])
         case ["prep"]:

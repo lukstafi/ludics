@@ -10,12 +10,13 @@
 - a heartbeat;
 - the review checkpoint;
 - the handoff driver;
-- the decision record.
+- the decision record;
+- the read-only A/B comparison reading.
 
 With the kit, the wave directory holds data only: no script is copied forward from the last
 wave. The contracts are the module headers in `lib/ludics/fleetworker/`: `wave.py` for the wave
 file and the heartbeat, `wavebrief.py`, `waveprep.py`, `wavelaunch.py`, `waveloop.py`,
-`wavereview.py`, `wavedrive.py` and `wavedecide.py`. This page covers what a coordinator puts in the wave directory and when it calls each verb.
+`wavereview.py`, `wavedrive.py`, `wavedecide.py` and `waveab.py`. This page covers what a coordinator puts in the wave directory and when it calls each verb.
 
 ## The wave directory
 
@@ -416,3 +417,13 @@ driver hands you as an attention line.
     reporting any refusal as a `NOTE` without failing the close. At wave close-out, run
     `fleet-worker.sh farside-close <wave>` once to sweep any worktrees kept during the wave
     (open reservations, unlisted ignored files, unreachable boxes, or `--no-pr` rows).
+12. **An A/B comparison across waves** is read with one read-only verb (no lease, nothing written):
+
+    ```
+    fleet-worker.sh wave ab <wave.json>... [--json] [--no-github]
+    ```
+
+    It joins each named wave's board rows, posted `reviews/*.json` checkpoint records, and GitHub
+    PRs, prints per-wave `split` and issue-number parity, per-arm `agent_host` counts, the
+    three-group comparison table, ten-per-arm readings, reassigned rows set apart, and any missing
+    or partial data without guessing (`waveab.py`).
